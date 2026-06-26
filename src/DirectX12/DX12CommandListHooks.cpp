@@ -389,7 +389,6 @@ static bool UpdateIaTextureCandidateFromVertexViews(
 static bool DX12ShouldBypassIaTextureDrawWork(ID3D12GraphicsCommandList *commandList)
 {
 	return DX12ModHasActiveTextureOverrides() &&
-		!DX12ModHasActivePreSkinTextureOverrides() &&
 		!DX12ModHasActiveShaderOverrides() &&
 		!DX12ModNeedsPresentReplacement() &&
 		!DX12HuntIsEnabled() &&
@@ -885,7 +884,6 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 	if (original) {
 		LogQueueStage("ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		original(queue, numCommandLists, commandLists);
-		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
 		LogQueueStage("ExecuteCommandLists", "afterOriginal", queue, numCommandLists);
 	}
 }
@@ -1036,9 +1034,8 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 		DX12BindingRecordDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
 			startVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
-		if (DX12HuntShouldSkipDraw(commandList, false))
+		if (DX12HuntProcessDraw(commandList, false))
 			return;
-		DX12HuntRecordDraw(commandList, false);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		// D3D12 draw calls only append commands to the current command list.
@@ -1063,8 +1060,6 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 		return;
 	}
 	const DX12CommandListRuntimeState runtimeState = DX12CommandListRuntimeGetState(commandList);
-	if (DX12ModHasActivePreSkinTextureOverrides())
-		SyncHuntIaFromRuntimeState(commandList, runtimeState.ia);
 	const DX12IaReplacementExecutorCallbacks iaCallbacks =
 		MakeIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = {};
@@ -1112,9 +1107,8 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 		DX12BindingRecordDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
 			startIndexLocation, baseVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
-		if (DX12HuntShouldSkipDraw(commandList, true))
+		if (DX12HuntProcessDraw(commandList, true))
 			return;
-		DX12HuntRecordDraw(commandList, true);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		// Keep the common no-override path lock-free after hunting decisions.
@@ -1138,8 +1132,6 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 		return;
 	}
 	const DX12CommandListRuntimeState runtimeState = DX12CommandListRuntimeGetState(commandList);
-	if (DX12ModHasActivePreSkinTextureOverrides())
-		SyncHuntIaFromRuntimeState(commandList, runtimeState.ia);
 	const DX12IaReplacementExecutorCallbacks iaCallbacks =
 		MakeIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = {};
@@ -1180,8 +1172,7 @@ static void STDMETHODCALLTYPE HookedDispatch(
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
 		DX12BindingRecordDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 	if (DX12HuntIsEnabled()) {
-		DX12HuntRecordDispatch(commandList);
-		if (DX12HuntShouldSkipDispatch(commandList))
+		if (DX12HuntProcessDispatch(commandList))
 			return;
 	}
 	PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
@@ -1282,7 +1273,7 @@ static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
 			" topology=%u", static_cast<UINT>(topology));
 		DX12CommandListCapturePrimitiveTopology(commandList, topology);
 	} else {
-		if (DX12ModHasActiveTextureOverrides())
+		if (DX12ModHasActiveTextureOverrides() || DX12HuntIsEnabled())
 			DX12CommandListRuntimeRememberPrimitiveTopology(commandList, topology);
 	}
 
@@ -1828,6 +1819,9 @@ static void STDMETHODCALLTYPE HookedIASetIndexBuffer(
 					commandList, DX12CommandListRuntimeGetState(commandList).ia);
 				UpdateIaTextureCandidateFlag(commandList);
 			}
+		} else if (DX12HuntIsEnabled()) {
+			DX12Profiling::RecordIaHuntIaUpdate();
+			DX12HuntSetIndexBuffer(commandList, view);
 		}
 	}
 
@@ -1865,6 +1859,9 @@ static void STDMETHODCALLTYPE HookedIASetVertexBuffers(
 					commandList, DX12CommandListRuntimeGetState(commandList).ia);
 				UpdateIaTextureCandidateFlag(commandList);
 			}
+		} else if (DX12HuntIsEnabled()) {
+			DX12Profiling::RecordIaHuntIaUpdate();
+			DX12HuntSetVertexBuffers(commandList, startSlot, count, views);
 		}
 	}
 

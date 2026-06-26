@@ -322,6 +322,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	PFN_PRESENT original = GetPresentOriginal(swapChain);
 	if (!original)
 		return DXGI_ERROR_INVALID_CALL;
+	if (DX12HuntShouldDrawOverlay())
+		DX12UpdateOverlayWindowForSwapChain(swapChain);
 	LogPresentStage("Present", "beforeOriginal", swapChain);
 	HRESULT hr = original(swapChain, syncInterval, flags);
 	LogPresentStage("Present", "afterOriginal", swapChain, hr);
@@ -340,12 +342,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 
 	DX12CommandListRuntimeBumpTrackingGeneration();
 
-	if (DX12HuntShouldDrawOverlay()) {
-		if (DX12GetOverlayWindow())
-			DX12UpdateOverlayWindowForSwapChain(swapChain);
-		else
-			DX12DrawSwapChainText(swapChain);
-	}
 	if (dumpFrame) {
 		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());
@@ -362,7 +358,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 		DX12BindingBeginFrame();
 		DX12ShaderDumpBeginCapture();
 	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-	           DX12HuntIsEnabled() || DX12ModHasActiveTextureOverrides()) {
+	           DX12ModHasActiveTextureOverrides()) {
 		// Binding tracking is needed by an active subsystem — reset per-frame
 		// state.  When nothing is active we skip this entirely so the binding
 		// tracker stays idle and does not consume CPU every frame.
@@ -371,6 +367,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	}
 	// else: no capture, no hunt, no texture overrides — skip binding frame
 	//       reset to save CPU on the Present path.
+
+	// 增量更新 visited 列表：移除帧内未见过的哈希，添加帧内新出现的哈希
+	DX12HuntEndFrame();
+
 	DX12Profiling::EndFrame();
 	LogPresentStage("Present", "end", swapChain, hr);
 	return hr;
@@ -386,6 +386,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	PFN_PRESENT1 original = GetPresent1Original(swapChain);
 	if (!original)
 		return DXGI_ERROR_INVALID_CALL;
+	if (DX12HuntShouldDrawOverlay())
+		DX12UpdateOverlayWindowForSwapChain(swapChain);
 	LogPresentStage("Present1", "beforeOriginal", swapChain);
 	HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
 	LogPresentStage("Present1", "afterOriginal", swapChain, hr);
@@ -402,12 +404,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	// tracking predicates are invalidated once per frame.
 	DX12CommandListRuntimeBumpTrackingGeneration();
 
-	if (DX12HuntShouldDrawOverlay()) {
-		if (DX12GetOverlayWindow())
-			DX12UpdateOverlayWindowForSwapChain(swapChain);
-		else
-			DX12DrawSwapChainText(swapChain);
-	}
 	if (dumpFrame) {
 		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());
@@ -424,7 +420,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 		DX12BindingBeginFrame();
 		DX12ShaderDumpBeginCapture();
 	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-	           DX12HuntIsEnabled() || DX12ModHasActiveTextureOverrides()) {
+	           DX12ModHasActiveTextureOverrides()) {
 		// Binding tracking is needed by an active subsystem — reset per-frame
 		// state.  When nothing is active we skip this entirely so the binding
 		// tracker stays idle and does not consume CPU every frame.
@@ -433,6 +429,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	}
 	// else: no capture, no hunt, no texture overrides — skip binding frame
 	//       reset to save CPU on the Present path.
+
+	// 增量更新 visited 列表：移除帧内未见过的哈希，添加帧内新出现的哈希
+	DX12HuntEndFrame();
+
 	DX12Profiling::EndFrame();
 	LogPresentStage("Present1", "end", swapChain, hr);
 	return hr;

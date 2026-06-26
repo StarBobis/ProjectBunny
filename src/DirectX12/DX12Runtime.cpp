@@ -42,7 +42,7 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 	gConfigLoaded = gConfig.Load(configPath.c_str());
 	bool startOverlay = false;
 	if (gConfigLoaded) {
-		startOverlay = gConfig.Runtime().enableOverlay && !gConfig.Runtime().dx12SafeMode;
+		startOverlay = false;
 		DX12ModSetSafeMode(gConfig.Runtime().dx12SafeMode);
 		DX12LogJsonFunc("DX12Config",
 			"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"overlayStarted\":%s",
@@ -69,12 +69,8 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 	if (thread)
 		CloseHandle(thread);
 
-	if (startOverlay) {
-		HANDLE overlayThread = CreateThread(nullptr, 0, DX12OverlayThread, nullptr, 0, nullptr);
-		if (overlayThread)
-			CloseHandle(overlayThread);
-	}
-	DX12EndReleaseStartupLogging();
+	// The DX12 overlay is created lazily as a child of the game window from
+	// Present, once the swap-chain OutputWindow is known.
 }
 
 void BunnyDX12RuntimeShutdown()

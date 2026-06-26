@@ -43,10 +43,15 @@ target_link_libraries(DirectX12 PRIVATE
     Nektra::NktHookLib
     crc32c
     dxgi.lib
+    d3d11.lib
+    d2d1.lib
+    dwrite.lib
     User32.lib
     Gdi32.lib
     Shlwapi.lib
 )
+
+target_link_options(DirectX12 PRIVATE /ignore:4099)
 
 target_sources(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/d3d12Wrapper.def

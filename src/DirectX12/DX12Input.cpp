@@ -16,7 +16,10 @@ static bool gF11WasDown = false;
 static volatile LONG gReloadInProgress = 0;
 static bool gNumpad0WasDown = false;
 static bool gNumpadAddWasDown = false;
+static bool gNumpad3WasDown = false;
+static bool gNumpad6WasDown = false;
 static bool gNumpad9WasDown = false;
+static bool gNumpadSubtractWasDown = false;
 
 struct RepeatKeyState
 {
@@ -31,6 +34,10 @@ static RepeatKeyState gRepeatNumpad4;
 static RepeatKeyState gRepeatNumpad5;
 static RepeatKeyState gRepeatNumpad7;
 static RepeatKeyState gRepeatNumpad8;
+static RepeatKeyState gRepeatNumpadDivide;
+static RepeatKeyState gRepeatNumpadMultiply;
+static RepeatKeyState gRepeatNumpad1d; // Decimal+1 CS prev
+static RepeatKeyState gRepeatNumpad2d; // Decimal+2 CS next
 
 static void ResetHuntRepeatKeys()
 {
@@ -40,6 +47,10 @@ static void ResetHuntRepeatKeys()
 	gRepeatNumpad5 = RepeatKeyState();
 	gRepeatNumpad7 = RepeatKeyState();
 	gRepeatNumpad8 = RepeatKeyState();
+	gRepeatNumpadDivide = RepeatKeyState();
+	gRepeatNumpadMultiply = RepeatKeyState();
+	gRepeatNumpad1d = RepeatKeyState();
+	gRepeatNumpad2d = RepeatKeyState();
 }
 
 static bool KeyPressed(int vk, bool *wasDown)
@@ -50,12 +61,11 @@ static bool KeyPressed(int vk, bool *wasDown)
 	return pressed;
 }
 
-static bool KeyPressedOrRepeated(int vk, RepeatKeyState *state)
+static bool KeyPressedOrRepeated(int vk, RepeatKeyState *state, DWORD now)
 {
 	if (!state)
 		return false;
 
-	const DWORD now = GetTickCount();
 	const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
 	if (!down) {
 		*state = RepeatKeyState();
@@ -168,40 +178,62 @@ void DX12PollInput()
 		return;
 	}
 
+	// === 快捷键布局 ===
+	// PS:  1/2 翻找, 3 复制
+	// VS:  4/5 翻找, 6 复制
+	// IB:  7/8 翻找, 9 复制
+	// VB:  / * 翻找, - 复制
+	// CS:  Del+1 翻找, Del+2 翻找, Del+3 复制
+	// Num0  toggle, Num+  reset
+
 	if (!decimalDown && KeyPressed(VK_ADD, &gNumpadAddWasDown)) {
 		DX12LogJsonFunc("InputHotkey", "\"key\":\"NumpadAdd\",\"action\":\"HuntResetSelection\"");
 		DX12HuntResetSelection();
 	}
+	if (!decimalDown && KeyPressed(VK_NUMPAD3, &gNumpad3WasDown)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad3\",\"action\":\"HuntCopyPS\"");
+		DX12HuntCopyPS();
+	}
+	if (!decimalDown && KeyPressed(VK_NUMPAD6, &gNumpad6WasDown)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad6\",\"action\":\"HuntCopyVS\"");
+		DX12HuntCopyVS();
+	}
 	if (!decimalDown && KeyPressed(VK_NUMPAD9, &gNumpad9WasDown)) {
-		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad9\",\"action\":\"HuntCopySelectedHash\"");
-		DX12HuntCopySelectedHash();
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad9\",\"action\":\"HuntCopyIB\"");
+		DX12HuntCopyIB();
 	}
-	if (KeyPressedOrRepeated(VK_NUMPAD1, &gRepeatNumpad1)) {
-		if (decimalDown)
-			DX12HuntPreviousCS();
-		else
-			DX12HuntPreviousPS();
+	if (!decimalDown && KeyPressed(VK_SUBTRACT, &gNumpadSubtractWasDown)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"NumpadSubtract\",\"action\":\"HuntCopyVB\"");
+		DX12HuntCopyVB();
 	}
-	if (KeyPressedOrRepeated(VK_NUMPAD2, &gRepeatNumpad2)) {
-		if (decimalDown)
-			DX12HuntNextCS();
-		else
-			DX12HuntNextPS();
+	if (decimalDown && KeyPressed(VK_NUMPAD3, &gNumpad3WasDown)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Decimal+Numpad3\",\"action\":\"HuntCopyCS\"");
+		DX12HuntCopyCS();
 	}
-	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD4, &gRepeatNumpad4))
+	const DWORD repeatNow = GetTickCount();
+	// PS: 1/2 prev/next (no decimal)
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD1, &gRepeatNumpad1, repeatNow))
+		DX12HuntPreviousPS();
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD2, &gRepeatNumpad2, repeatNow))
+		DX12HuntNextPS();
+	// VS: 4/5 prev/next
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD4, &gRepeatNumpad4, repeatNow))
 		DX12HuntPreviousVS();
-	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD5, &gRepeatNumpad5))
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD5, &gRepeatNumpad5, repeatNow))
 		DX12HuntNextVS();
-	if (KeyPressedOrRepeated(VK_NUMPAD7, &gRepeatNumpad7)) {
-		if (decimalDown)
-			DX12HuntPreviousVB();
-		else
-			DX12HuntPreviousIB();
-	}
-	if (KeyPressedOrRepeated(VK_NUMPAD8, &gRepeatNumpad8)) {
-		if (decimalDown)
-			DX12HuntNextVB();
-		else
-			DX12HuntNextIB();
-	}
+	// IB: 7/8 prev/next
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD7, &gRepeatNumpad7, repeatNow))
+		DX12HuntPreviousIB();
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD8, &gRepeatNumpad8, repeatNow))
+		DX12HuntNextIB();
+	// CS: Decimal+1/2 prev/next
+	if (decimalDown && KeyPressedOrRepeated(VK_NUMPAD1, &gRepeatNumpad1d, repeatNow))
+		DX12HuntPreviousCS();
+	if (decimalDown && KeyPressedOrRepeated(VK_NUMPAD2, &gRepeatNumpad2d, repeatNow))
+		DX12HuntNextCS();
+	// VB: / and * prev/next
+	if (KeyPressedOrRepeated(VK_DIVIDE, &gRepeatNumpadDivide, repeatNow))
+		DX12HuntPreviousVB();
+	if (KeyPressedOrRepeated(VK_MULTIPLY, &gRepeatNumpadMultiply, repeatNow))
+		DX12HuntNextVB();
 }

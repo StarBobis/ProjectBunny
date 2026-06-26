@@ -1,10 +1,8 @@
 #include "DX12State.h"
 
 #include <Shlwapi.h>
-#include <atomic>
 #include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -20,14 +18,11 @@ static FILE *gLog = nullptr;
 static unsigned long long gLogLineNo = 0;
 static volatile LONG gPresentCount = 0;
 static HWND gOverlayWindow = nullptr;
-static wchar_t gOverlayStatus[512] = L"3DMigoto DX12 hook alive";
+static wchar_t gOverlayStatus[512] = L"";
 static COLORREF gOverlayStatusColor = RGB(0, 255, 0);
 static DWORD gOverlayStatusExpireTick = 0;
 static ID3D12CommandQueue *gCommandQueue = nullptr;
 static SRWLOCK gStateLock = SRWLOCK_INIT;
-#if !defined(_DEBUG)
-static std::atomic<bool> gReleaseStartupLogging{ true };
-#endif
 static CNktHookLib gHookMgr;
 static std::unordered_set<void*> gHookedFunctions;
 static std::unordered_map<void*, void*> gOriginalFunctions;
@@ -55,15 +50,17 @@ bool DX12IsInternalReplay()
 
 void DX12HotPathUpdate()
 {
-	// Heavy tracking subsystems that need full binding-tracker data.
+	// Heavy tracking subsystems that need full BindingTracker data.
 	const bool needsHeavyTracking =
 		DX12FrameAnalysisIsActive() ||
 		DX12FrameAnalysisIsCapturing() ||
 		DX12FrameAnalysisIsCaptureRequested() ||
 		DX12ShaderDumpIsCapturingFrame() ||
 		DX12ShaderDumpIsCaptureRequested() ||
-		DX12ShaderDumpIsBusy() ||
-		DX12HuntIsEnabled();
+		DX12ShaderDumpIsBusy();
+
+	// Hunt needs draw/dispatch/PSO/IA hooks, but not the full BindingTracker.
+	const bool needsHunt = DX12HuntIsEnabled();
 
 	// Mod work that needs draw/dispatch hooks but NOT binding hooks.
 	const bool needsModWork =
@@ -75,10 +72,9 @@ void DX12HotPathUpdate()
 
 	// Skip-all: only when NOTHING is active.
 	InterlockedExchange(&gDX12HotPathSkipAll,
-		(needsHeavyTracking || needsModWork) ? 0 : 1);
+		(needsHeavyTracking || needsHunt || needsModWork) ? 0 : 1);
 
-	// Skip-bindings: when no heavy tracking is needed.  Mod work alone does
-	// NOT require binding tracking — the draw hooks handle mod matching.
+	// Skip-bindings: only heavy capture/dump paths need the BindingTracker.
 	InterlockedExchange(&gDX12HotPathSkipBindings,
 		needsHeavyTracking ? 0 : 1);
 }
@@ -95,9 +91,6 @@ HINSTANCE DX12GetModule()
 
 bool DX12OpenLogFile()
 {
-#if !defined(_DEBUG)
-	gReleaseStartupLogging.store(true, std::memory_order_relaxed);
-#endif
 	wchar_t path[MAX_PATH];
 	if (!GetModuleFileNameW(gModule, path, MAX_PATH))
 		return false;
@@ -108,24 +101,6 @@ bool DX12OpenLogFile()
 	gLogLineNo = 0;
 	return gLog != nullptr;
 }
-
-#if !defined(_DEBUG)
-void DX12EndReleaseStartupLogging()
-{
-	gReleaseStartupLogging.store(false, std::memory_order_relaxed);
-}
-
-static bool DX12ReleaseShouldLogFunction(const char *func)
-{
-	if (gReleaseStartupLogging.load(std::memory_order_relaxed))
-		return true;
-	return func && strcmp(func, "DX12ModRuntimeReload") == 0;
-}
-#else
-void DX12EndReleaseStartupLogging()
-{
-}
-#endif
 
 static void MakeLogTime(char *buffer, size_t bufferSize)
 {
@@ -174,10 +149,6 @@ void DX12Log(const char *fmt, ...)
 {
 	if (!gLog)
 		return;
-#if !defined(_DEBUG)
-	if (!DX12ReleaseShouldLogFunction("Log"))
-		return;
-#endif
 
 	va_list args;
 	char message[2048];
@@ -200,10 +171,6 @@ void DX12LogJsonFunc(const char *func, const char *fmt, ...)
 {
 	if (!gLog)
 		return;
-#if !defined(_DEBUG)
-	if (!DX12ReleaseShouldLogFunction(func))
-		return;
-#endif
 
 	char funcJson[512];
 	char extra[4096];
@@ -225,10 +192,6 @@ void DX12LogJsonFuncFlush(const char *func, const char *fmt, ...)
 {
 	if (!gLog)
 		return;
-#if !defined(_DEBUG)
-	if (!DX12ReleaseShouldLogFunction(func))
-		return;
-#endif
 
 	char funcJson[512];
 	char extra[4096];
@@ -371,7 +334,7 @@ static void SetOverlayStatusColorLocked(const wchar_t *status, COLORREF color)
 	if (status && status[0])
 		wcsncpy_s(gOverlayStatus, status, _TRUNCATE);
 	else
-		wcsncpy_s(gOverlayStatus, L"3DMigoto DX12 hook alive", _TRUNCATE);
+		gOverlayStatus[0] = L'\0';
 	gOverlayStatusColor = color;
 	gOverlayStatusExpireTick = 0;
 }
@@ -413,7 +376,7 @@ void DX12SetOverlayStatusTemporary(const wchar_t *status, DWORD durationMs)
 	if (status && status[0])
 		wcsncpy_s(gOverlayStatus, status, _TRUNCATE);
 	else
-		wcsncpy_s(gOverlayStatus, L"3DMigoto DX12 hook alive", _TRUNCATE);
+		gOverlayStatus[0] = L'\0';
 	gOverlayStatusColor = RGB(0, 255, 0);
 	gOverlayStatusExpireTick = durationMs ? GetTickCount() + durationMs : 0;
 	ReleaseSRWLockExclusive(&gStateLock);
@@ -427,7 +390,7 @@ void DX12ClearExpiredOverlayStatus()
 	if (gOverlayStatusExpireTick) {
 		const DWORD now = GetTickCount();
 		if (static_cast<LONG>(now - gOverlayStatusExpireTick) >= 0) {
-			wcsncpy_s(gOverlayStatus, L"3DMigoto DX12 hook alive", _TRUNCATE);
+			gOverlayStatus[0] = L'\0';
 			gOverlayStatusColor = RGB(0, 255, 0);
 			gOverlayStatusExpireTick = 0;
 			changed = true;
