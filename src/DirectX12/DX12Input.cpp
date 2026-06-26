@@ -51,6 +51,10 @@ static void ResetHuntRepeatKeys()
 	gRepeatNumpadMultiply = RepeatKeyState();
 	gRepeatNumpad1d = RepeatKeyState();
 	gRepeatNumpad2d = RepeatKeyState();
+	gNumpad3WasDown = false;
+	gNumpad6WasDown = false;
+	gNumpad9WasDown = false;
+	gNumpadSubtractWasDown = false;
 }
 
 static bool KeyPressed(int vk, bool *wasDown)
