@@ -155,6 +155,8 @@ uint32_t DX12HashIaBufferView(
 	uint32_t hash = DX12HashBufferResourceView(&summary, gpuVirtualAddress, size);
 	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'A');
 	hash = HashBytes(hash, &tag, sizeof(tag));
+	hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
+	hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));

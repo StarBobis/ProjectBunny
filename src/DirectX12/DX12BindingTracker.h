@@ -58,6 +58,9 @@ struct DX12FrameIaBufferBinding
 	UINT producerShaderRegister = UINT_MAX;
 	UINT64 gpuVa = 0;
 	UINT64 size = 0;
+	UINT64 viewGpuVa = 0;
+	UINT64 viewSize = 0;
+	UINT64 viewOffset = 0;
 	UINT stride = 0;
 	UINT slot = 0;
 	UINT format = 0;
@@ -124,7 +127,6 @@ void DX12BindingRecordStateEvent(ID3D12GraphicsCommandList *commandList, const c
 bool DX12BindingSetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList, UINT count,
 	ID3D12DescriptorHeap *const *heaps);
-// Overload with pre-parsed heap pointers — avoids re-iterating to call GetDesc().
 bool DX12BindingSetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
@@ -184,8 +186,6 @@ bool DX12BindingGetCurrentComputeRootConstants(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentRootConstants> *constants);
 
-// Combined query for all compute bindings — does ONE pass instead of 4 separate ones.
-// Returns true if any binding type was found.
 bool DX12BindingGetCurrentComputeAll(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentComputeUavBinding> *uavs,

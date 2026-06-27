@@ -10,6 +10,7 @@
 
 #include "DX12FrameAnalysis.h"
 #include "DX12FrameAnalysisManifest.h"
+#include "DX12IaRegionHash.h"
 #include "DX12Json.h"
 #include "DX12ResourceTracker.h"
 #include "DX12State.h"
@@ -199,6 +200,9 @@ struct FlatBufferRow
 	UINT producerShaderRegister = UINT_MAX;
 	UINT64 gpuVa = 0;
 	UINT64 size = 0;
+	UINT64 viewGpuVa = 0;
+	UINT64 viewSize = 0;
+	UINT64 viewOffset = 0;
 	UINT stride = 0;
 	UINT slot = 0;
 	UINT format = 0;
@@ -239,17 +243,68 @@ static std::string NextBufferId(const char *prefix, UINT *nextId)
 	return id;
 }
 
+static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event)
+{
+	DX12IaRegionDraw draw = {};
+	draw.indexed = event.kind == "draw_indexed";
+	draw.vertexCount = event.vertexCountPerInstance;
+	draw.indexCount = event.indexCountPerInstance;
+	draw.firstVertex = event.startVertexLocation;
+	draw.firstIndex = event.startIndexLocation;
+	draw.baseVertex = event.baseVertexLocation;
+	return draw;
+}
+
+static bool IaRegionForEvent(
+	const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region)
+{
+	if (!region || !DX12BindingIsDrawEvent(event))
+		return false;
+	*region = DX12IaRegion();
+	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
+	if (role && !strcmp(role, "IB")) {
+		if (!draw.indexed || !event.indexBufferValid)
+			return false;
+		return DX12GetIndexBufferRegion(event.indexBuffer, draw, region);
+	}
+	if (slot >= MaxVertexBufferSlots || !event.vertexBufferValid[slot])
+		return false;
+	return DX12GetVertexBufferRegion(slot, event.vertexBuffers[slot], draw, region);
+}
+
+static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot)
+{
+	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
+	if (role && !strcmp(role, "IB"))
+		return draw.indexed && event.indexBufferValid ?
+			DX12HashIndexBufferRegion(event.indexBuffer, draw) : 0;
+	if (slot >= MaxVertexBufferSlots || !event.vertexBufferValid[slot])
+		return 0;
+	return DX12HashVertexBufferRegion(slot, event.vertexBuffers[slot], draw);
+}
+
 static const FlatBufferRow *GetOrAddBufferRow(
 	std::vector<FlatBufferRow> *rows, std::unordered_map<std::string, size_t> *rowByKey,
 	UINT *nextVbId, UINT *nextIbId, const BindingEvent &event, const char *role,
-	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot, UINT format)
+	UINT slot)
 {
-	if (!rows || !rowByKey || gpuVa == 0 || size == 0)
+	if (!rows || !rowByKey)
 		return nullptr;
 
+	DX12IaRegion region = {};
+	if (!IaRegionForEvent(event, role, slot, &region))
+		return nullptr;
+	const bool ib = role && !strcmp(role, "IB");
+	const D3D12_VERTEX_BUFFER_VIEW &vb = event.vertexBuffers[slot];
+	const UINT64 viewGpuVa = ib ? event.indexBuffer.BufferLocation : vb.BufferLocation;
+	const UINT64 viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
+	const UINT stride = ib ? 0 : vb.StrideInBytes;
+	const UINT format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
 	DX12BufferResourceSummary resource;
-	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVa, size, &resource);
-	const uint32_t huntHash = DX12HashIaBufferView(gpuVa, size, stride, format, slot);
+	const bool resolved = DX12ResolveBufferResourceByGpuVa(region.gpuVa, region.size, &resource);
+	const uint32_t huntHash = IaRegionHashForEvent(event, role, slot);
+	if (!huntHash)
+		return nullptr;
 	std::string key = MakeBufferKey(role, huntHash);
 	auto found = rowByKey->find(key);
 	if (found != rowByKey->end() && found->second < rows->size())
@@ -264,8 +319,11 @@ static const FlatBufferRow *GetOrAddBufferRow(
 	row.dispatchId = event.dispatchId;
 	row.psoIndex = event.shaderInfo.psoIndex;
 	row.shaderInfo = event.shaderInfo;
-	row.gpuVa = gpuVa;
-	row.size = size;
+	row.gpuVa = region.gpuVa;
+	row.size = region.size;
+	row.viewGpuVa = viewGpuVa;
+	row.viewSize = viewSize;
+	row.viewOffset = region.viewOffset;
 	row.stride = stride;
 	row.slot = slot;
 	row.format = format;
@@ -285,9 +343,8 @@ static std::string BufferIdsForEvent(
 	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 		if (!event.vertexBufferValid[slot])
 			continue;
-		const D3D12_VERTEX_BUFFER_VIEW &view = event.vertexBuffers[slot];
 		const FlatBufferRow *row = GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
-			event, "VB", view.BufferLocation, view.SizeInBytes, view.StrideInBytes, slot, 0);
+			event, "VB", slot);
 		if (!row)
 			continue;
 		if (!ids.empty())
@@ -308,8 +365,7 @@ static std::string IndexBufferIdForEvent(
 		return "";
 
 	const FlatBufferRow *row = GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
-		event, "IB", event.indexBuffer.BufferLocation, event.indexBuffer.SizeInBytes, 0, 0,
-		static_cast<UINT>(event.indexBuffer.Format));
+		event, "IB", 0);
 	return row ? row->id : "";
 }
 
@@ -333,12 +389,19 @@ static void CollectFlatBuffersForEvents(
 
 static void AddFrameIaBufferRow(
 	std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId,
-	const BindingEvent &event, const char *role, UINT64 gpuVa, UINT64 size,
-	UINT stride, UINT slot, UINT format)
+	const BindingEvent &event, const char *role, UINT slot)
 {
-	if (!rows || gpuVa == 0 || size == 0)
+	if (!rows)
 		return;
 
+	DX12IaRegion region = {};
+	if (!IaRegionForEvent(event, role, slot, &region))
+		return;
+	const uint32_t huntHash = IaRegionHashForEvent(event, role, slot);
+	if (!huntHash)
+		return;
+	const bool ib = role && !strcmp(role, "IB");
+	const D3D12_VERTEX_BUFFER_VIEW &vb = event.vertexBuffers[slot];
 	FlatBufferRow row;
 	row.id = NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
 		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
@@ -348,13 +411,16 @@ static void AddFrameIaBufferRow(
 	row.dispatchId = event.dispatchId;
 	row.psoIndex = event.shaderInfo.psoIndex;
 	row.shaderInfo = event.shaderInfo;
-	row.gpuVa = gpuVa;
-	row.size = size;
-	row.stride = stride;
+	row.gpuVa = region.gpuVa;
+	row.size = region.size;
+	row.viewGpuVa = ib ? event.indexBuffer.BufferLocation : vb.BufferLocation;
+	row.viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
+	row.viewOffset = region.viewOffset;
+	row.stride = ib ? 0 : vb.StrideInBytes;
 	row.slot = slot;
-	row.format = format;
-	row.resolved = DX12ResolveBufferResourceByGpuVa(gpuVa, size, &row.resource);
-	row.huntHash = DX12HashIaBufferView(gpuVa, size, stride, format, slot);
+	row.format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
+	row.resolved = DX12ResolveBufferResourceByGpuVa(region.gpuVa, region.size, &row.resource);
+	row.huntHash = huntHash;
 	rows->push_back(row);
 }
 
@@ -373,14 +439,10 @@ static void CollectFrameIaBuffersForEvents(
 		for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 			if (!event.vertexBufferValid[slot])
 				continue;
-			const D3D12_VERTEX_BUFFER_VIEW &view = event.vertexBuffers[slot];
-			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "VB",
-				view.BufferLocation, view.SizeInBytes, view.StrideInBytes, slot, 0);
+			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "VB", slot);
 		}
 		if (event.indexBufferValid) {
-			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "IB",
-				event.indexBuffer.BufferLocation, event.indexBuffer.SizeInBytes, 0, 0,
-				static_cast<UINT>(event.indexBuffer.Format));
+			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "IB", 0);
 		}
 	}
 }
@@ -528,6 +590,9 @@ static DX12FrameIaBufferBinding FrameIaBufferFromFlatRow(const FlatBufferRow &ro
 	buffer.producerShaderRegister = row.producerShaderRegister;
 	buffer.gpuVa = row.gpuVa;
 	buffer.size = row.size;
+	buffer.viewGpuVa = row.viewGpuVa;
+	buffer.viewSize = row.viewSize;
+	buffer.viewOffset = row.viewOffset;
 	buffer.stride = row.stride;
 	buffer.slot = row.slot;
 	buffer.format = row.format;
@@ -550,14 +615,16 @@ void DX12BuildIaBufferFileName(
 	wchar_t shaderPart[96];
 	BuildShaderHashNamePart(buffer.shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
 	swprintf_s(fileName, fileNameCount,
-		L"%c%06llu-pso%llu%s-ia_%S_slot%u_va%016llx_size%llu_stride%u_fmt%u.buf",
+		L"%c%06llu-pso%llu%s-ia_%S_slot%u_hash%08x_va%016llx_off%llu_size%llu_stride%u_fmt%u.buf",
 		eventKind,
 		static_cast<unsigned long long>(eventId),
 		static_cast<unsigned long long>(buffer.psoIndex),
 		shaderPart,
 		role,
 		buffer.slot,
+		buffer.huntHash,
 		static_cast<unsigned long long>(buffer.gpuVa),
+		static_cast<unsigned long long>(buffer.viewOffset),
 		static_cast<unsigned long long>(buffer.size),
 		buffer.stride,
 		buffer.format);
@@ -687,7 +754,7 @@ static void WriteFlatFrameAnalysisFiles(
 		DX12GetCurrentFrameResourceBindings(&resourceBindings);
 		ClassifyIaBufferSkinning(&buffers, resourceBindings);
 		fprintf(bufferFile,
-			"buffer_id,role,hunt_hash,resource,file,gpu_va,resource_gpu_va,offset,size,stride,slot,format,"
+			"buffer_id,role,hunt_hash,resource,file,gpu_va,resource_gpu_va,offset,size,view_gpu_va,view_size,view_offset,stride,slot,format,"
 			"resolved,current_state,has_current_state,heap_type,resource_size,skin_source,"
 			"producer_event,producer_draw,producer_dispatch,producer_pso,producer_bind,"
 			"producer_root,producer_reg\n");
@@ -697,7 +764,7 @@ static void WriteFlatFrameAnalysisFiles(
 			wchar_t fileName[MAX_PATH];
 			DX12BuildIaBufferFileName(iaBuffer, fileName, ARRAYSIZE(fileName));
 			fprintf(bufferFile,
-				"%s,%s,%08x,%p,%S,0x%llx,0x%llx,%llu,%llu,%u,%u,%u,%u,0x%x,%u,%u,%llu,%s,%llu,%llu,%llu,%llu,%s,%u,%u\n",
+				"%s,%s,%08x,%p,%S,0x%llx,0x%llx,%llu,%llu,0x%llx,%llu,%llu,%u,%u,%u,%u,0x%x,%u,%u,%llu,%s,%llu,%llu,%llu,%llu,%s,%u,%u\n",
 				row.id.c_str(),
 				row.role.c_str(),
 				row.huntHash,
@@ -707,6 +774,9 @@ static void WriteFlatFrameAnalysisFiles(
 				static_cast<unsigned long long>(row.resolved ? row.resource.gpuVirtualAddress : 0),
 				static_cast<unsigned long long>(row.resolved ? row.resource.resourceOffset : 0),
 				static_cast<unsigned long long>(row.size),
+				static_cast<unsigned long long>(row.viewGpuVa),
+				static_cast<unsigned long long>(row.viewSize),
+				static_cast<unsigned long long>(row.viewOffset),
 				row.stride,
 				row.slot,
 				row.format,

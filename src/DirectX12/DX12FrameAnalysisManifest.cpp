@@ -339,6 +339,9 @@ void DX12FrameAnalysisManifestWriteIaBinding(
 		"\"gpu\":\"0x%llx\","
 		"\"offset\":%llu,"
 		"\"bytes\":%llu,"
+		"\"view_gpu\":\"0x%llx\","
+		"\"view_offset\":%llu,"
+		"\"view_bytes\":%llu,"
 		"\"stride\":%u,"
 		"\"fmt\":%u,"
 		"\"fmt_name\":%s,"
@@ -367,6 +370,9 @@ void DX12FrameAnalysisManifestWriteIaBinding(
 		static_cast<unsigned long long>(buffer.gpuVa),
 		static_cast<unsigned long long>(sourceOffset),
 		static_cast<unsigned long long>(copyBytes),
+		static_cast<unsigned long long>(buffer.viewGpuVa),
+		static_cast<unsigned long long>(buffer.viewOffset),
+		static_cast<unsigned long long>(buffer.viewSize),
 		buffer.stride,
 		buffer.format,
 		fmtNameJson,

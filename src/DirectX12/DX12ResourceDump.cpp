@@ -1224,10 +1224,11 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 
 	for (const DX12FrameIaBufferBinding &buffer : iaBuffers) {
 		char key[128];
-		sprintf_s(key, "ia|%p|%llu|%llu|%u|%u",
+		sprintf_s(key, "ia|%p|%llu|%llu|%08x|%u|%u",
 			buffer.resource.resource,
 			static_cast<unsigned long long>(buffer.resource.resourceOffset),
 			static_cast<unsigned long long>(buffer.size),
+			buffer.huntHash,
 			buffer.stride,
 			buffer.format);
 		auto canonicalIt = canonicalTaskByKey.find(key);

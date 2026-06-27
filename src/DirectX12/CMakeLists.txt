@@ -17,6 +17,7 @@ add_library(DirectX12 SHARED
     DX12FrameAnalysis.cpp
     DX12FrameAnalysisManifest.cpp
     DX12HookManager.cpp
+    DX12IaRegionHash.cpp
     DX12IaReplacementExecutor.cpp
     DX12Input.cpp
     DX12Json.cpp

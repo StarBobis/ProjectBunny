@@ -1044,10 +1044,10 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 	if (gDX12HotPathSkipBindings && DX12HuntIsEnabled() && !DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntShouldSkipDraw(
-				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0))
+				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0, 0))
 			return;
 		DX12HuntRecordDraw(
-			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0);
+			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0, 0);
 		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
@@ -1063,10 +1063,10 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 			startVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
 		if (DX12HuntShouldSkipDraw(
-				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0))
+				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0, 0))
 			return;
 		DX12HuntRecordDraw(
-			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0);
+			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0, 0);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
@@ -1115,10 +1115,12 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	if (gDX12HotPathSkipBindings && DX12HuntIsEnabled() && !DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntShouldSkipDraw(
-				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation))
+				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation,
+				baseVertexLocation))
 			return;
 		DX12HuntRecordDraw(
-			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation);
+			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation,
+			baseVertexLocation);
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
 		if (original)
@@ -1136,10 +1138,12 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 			startIndexLocation, baseVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
 		if (DX12HuntShouldSkipDraw(
-				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation))
+				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation,
+				baseVertexLocation))
 			return;
 		DX12HuntRecordDraw(
-			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation);
+			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation,
+			baseVertexLocation);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();

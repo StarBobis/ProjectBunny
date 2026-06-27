@@ -16,6 +16,14 @@ There was also a hook activation issue: command lists created before hunting was
 
 DX12 hunting IA selection now uses draw-region hashes derived from the IA view plus draw arguments. `DrawInstanced` and `DrawIndexedInstanced` pass counts and start locations into hunting, and both selection recording and skip checks use the same computed hash.
 
+The draw-region hash algorithm is centralized in `DX12IaRegionHash`. Hunting, F8 IA frame analysis dump, manifest `BindIA` hash fields, and Mod IA `[TextureOverride] hash=` matching all call this helper instead of maintaining separate hash calculations.
+
+For indexed draws, the helper receives `BaseVertexLocation` for VB region offset calculation. This matches the DX11 `DrawCallInfo` shape, where indexed draw constructors store base vertex in `FirstVertex` and the VB region helpers consume `FirstVertex`.
+
+When the IA GPU virtual address resolves to a tracked buffer resource, `DX12HashIaBufferView` includes the resolved resource offset and region size. This keeps regions in one packed buffer distinct while preserving resource metadata stability.
+
+F8 IA dump tasks copy the same byte region that produced `hunt_hash`. Dump filenames include the region hash, and `BuffersDX12.csv` exposes both region and original view coordinates.
+
 Visited IB/VB hashes are aged at Present with a short frame lifetime to keep the overlay focused on currently visible draw work instead of all historical bindings.
 
 When command lists are submitted after hunting activation, the command-list hook installer runs even for command lists whose lifecycle metadata was already registered.
@@ -24,8 +32,8 @@ Hunting copies PSO and IA state while holding the hunting lock, then performs sh
 
 ## Consequences
 
-Num7/Num8 should cycle a much smaller, visible-frame-oriented IB set. The copied hash, overlay text, and green/skip behavior now refer to the same IA region.
+Num7/Num8 should cycle a much smaller, visible-frame-oriented IB set. The copied hash, overlay text, green/skip behavior, F8 dump hash, and Mod matching hash now refer to the same IA region.
 
-The hunting hot path still avoids COM ownership and driver calls while holding the hunting lock. It stores copied D3D12 view metadata and computes CRC-based view hashes from already-known values.
+The hunting hot path still avoids COM ownership and driver calls while holding the hunting lock. It stores copied D3D12 view metadata under the hunting lock, then computes region hashes after releasing it.
 
 DX12 still has broader fallback-style paths in command-list original lookup, resource loading, dispatch probe state, overlay fallback, and resource dump copy. Those were not part of this fix and should be reviewed separately before being treated as final architecture.

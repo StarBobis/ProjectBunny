@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "DX12Overlay.h"
+#include "DX12IaRegionHash.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12State.h"
@@ -58,16 +59,7 @@ struct HuntIaBuffer
 	ID3D12Resource *resource = nullptr;
 	UINT64 resourceGpuVa = 0;
 	UINT64 resourceBytes = 0;
-	uint32_t hash = 0;
 	bool valid = false;
-};
-
-struct HuntDrawInfo
-{
-	UINT vertexCount = 0;
-	UINT indexCount = 0;
-	UINT firstVertex = 0;
-	UINT firstIndex = 0;
 };
 
 struct HuntIaState
@@ -109,7 +101,6 @@ static HuntIaBuffer MakeIaView(
 	buffer.stride = stride;
 	buffer.format = format;
 	buffer.valid = true;
-	buffer.hash = DX12HashIaBufferView(gpuVa, size, stride, format, slot);
 	return buffer;
 }
 static UINT64 SelectedHashLocked(const StageSelection &stage)
@@ -132,44 +123,24 @@ static void AddVisitedLocked(StageSelection &stage, UINT64 hash)
 		stage.selected %= stage.visited.size();
 }
 
-static uint32_t IaHash(const HuntIaBuffer &buffer)
-{
-	if (!buffer.valid)
-		return 0;
-	return buffer.hash;
-}
-
-static UINT FormatIndexStride(UINT format)
-{
-	return format == DXGI_FORMAT_R32_UINT ? 4 : 2;
-}
-
-static uint32_t IaRegionHash(const HuntIaBuffer &buffer, const HuntDrawInfo &draw, bool indexed)
+static uint32_t IaRegionHash(const HuntIaBuffer &buffer, const DX12IaRegionDraw &draw)
 {
 	if (!buffer.valid)
 		return 0;
 
-	UINT64 offset = 0;
-	UINT64 size = buffer.size;
-	if (indexed && buffer.format) {
-		const UINT stride = FormatIndexStride(buffer.format);
-		offset = static_cast<UINT64>(stride) * draw.firstIndex;
-		size = static_cast<UINT64>(stride) * draw.indexCount;
-	} else if (buffer.stride) {
-		const UINT vertexCount = draw.vertexCount ? draw.vertexCount :
-			((3 * draw.indexCount + 10) / 20 + 3);
-		offset = static_cast<UINT64>(buffer.stride) * draw.firstVertex;
-		size = static_cast<UINT64>(buffer.stride) * vertexCount;
+	if (buffer.format) {
+		D3D12_INDEX_BUFFER_VIEW view = {};
+		view.BufferLocation = buffer.gpuVa;
+		view.SizeInBytes = buffer.size;
+		view.Format = static_cast<DXGI_FORMAT>(buffer.format);
+		return DX12HashIndexBufferRegion(view, draw);
 	}
-	if (!size)
-		return 0;
-	if (offset >= buffer.size)
-		return 0;
-	if (size > buffer.size - offset)
-		size = buffer.size - offset;
 
-	return DX12HashIaBufferView(
-		buffer.gpuVa + offset, size, buffer.stride, buffer.format, buffer.slot);
+	D3D12_VERTEX_BUFFER_VIEW view = {};
+	view.BufferLocation = buffer.gpuVa;
+	view.SizeInBytes = buffer.size;
+	view.StrideInBytes = buffer.stride;
+	return DX12HashVertexBufferRegion(buffer.slot, view, draw);
 }
 
 static void AddVisitedLocked(IaSelection &selection, uint32_t hash)
@@ -353,16 +324,19 @@ void DX12HuntSetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 
 void DX12HuntRecordDraw(
 	ID3D12GraphicsCommandList *commandList, bool indexed,
-	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex)
+	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex,
+	INT baseVertex)
 {
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	HuntDrawInfo draw;
+	DX12IaRegionDraw draw = {};
+	draw.indexed = indexed;
 	draw.vertexCount = vertexCount;
 	draw.indexCount = indexCount;
 	draw.firstVertex = firstVertex;
 	draw.firstIndex = firstIndex;
+	draw.baseVertex = baseVertex;
 
 	ID3D12PipelineState *pipelineState = nullptr;
 	HuntIaState iaState;
@@ -379,9 +353,9 @@ void DX12HuntRecordDraw(
 	std::vector<uint32_t> vbHashes;
 	if (hasIaState) {
 		if (indexed && iaState.indexBuffer.valid)
-			ibHash = IaRegionHash(iaState.indexBuffer, draw, true);
+			ibHash = IaRegionHash(iaState.indexBuffer, draw);
 		for (const HuntIaBuffer &buffer : iaState.vertexBuffers) {
-			uint32_t hash = IaRegionHash(buffer, draw, false);
+			uint32_t hash = IaRegionHash(buffer, draw);
 			if (hash)
 				vbHashes.push_back(hash);
 		}
@@ -489,15 +463,18 @@ void DX12HuntSetVertexBuffers(
 
 bool DX12HuntShouldSkipDraw(
 	ID3D12GraphicsCommandList *commandList, bool indexed,
-	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex)
+	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex,
+	INT baseVertex)
 {
 	if (!commandList)
 		return false;
-	HuntDrawInfo draw;
+	DX12IaRegionDraw draw = {};
+	draw.indexed = indexed;
 	draw.vertexCount = vertexCount;
 	draw.indexCount = indexCount;
 	draw.firstVertex = firstVertex;
 	draw.firstIndex = firstIndex;
+	draw.baseVertex = baseVertex;
 
 	bool enabled = false;
 	bool vsArmed = false;
@@ -539,11 +516,11 @@ bool DX12HuntShouldSkipDraw(
 	if (!hasIaState)
 		return false;
 	if (indexed && ibArmed && selectedIB && iaState.indexBuffer.valid &&
-	    IaRegionHash(iaState.indexBuffer, draw, true) == selectedIB)
+	    IaRegionHash(iaState.indexBuffer, draw) == selectedIB)
 		return true;
 	if (vbArmed && selectedVB) {
 		for (const HuntIaBuffer &buffer : iaState.vertexBuffers) {
-			if (IaRegionHash(buffer, draw, false) == selectedVB)
+			if (IaRegionHash(buffer, draw) == selectedVB)
 				return true;
 		}
 	}
@@ -568,123 +545,6 @@ bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList)
 	ReleaseSRWLockShared(&gHuntLock);
 	return enabled && csArmed && selectedCS &&
 		PsoShouldSkip(pipelineState, true, 0, 0, selectedCS);
-}
-
-bool DX12HuntGetIaHashes(
-	ID3D12GraphicsCommandList *commandList, uint32_t *ibHash,
-	uint32_t *vbHashes, size_t vbHashCount, size_t *vbHashWritten)
-{
-	if (ibHash)
-		*ibHash = 0;
-	if (vbHashWritten)
-		*vbHashWritten = 0;
-	if (!commandList)
-		return false;
-
-	AcquireSRWLockShared(&gHuntLock);
-	auto state = gCommandListIa.find(commandList);
-	if (state == gCommandListIa.end()) {
-		ReleaseSRWLockShared(&gHuntLock);
-		return false;
-	}
-
-	if (ibHash)
-		*ibHash = IaHash(state->second.indexBuffer);
-
-	size_t written = 0;
-	if (vbHashes && vbHashCount) {
-		for (const HuntIaBuffer &buffer : state->second.vertexBuffers) {
-			uint32_t hash = IaHash(buffer);
-			if (!hash)
-				continue;
-			bool duplicate = false;
-			for (size_t i = 0; i < written; ++i) {
-				if (vbHashes[i] == hash) {
-					duplicate = true;
-					break;
-				}
-			}
-			if (duplicate)
-				continue;
-			if (written >= vbHashCount)
-				break;
-			vbHashes[written++] = hash;
-		}
-	}
-	if (vbHashWritten)
-		*vbHashWritten = written;
-	ReleaseSRWLockShared(&gHuntLock);
-	return (ibHash && *ibHash) || written > 0;
-}
-
-bool DX12HuntGetIaHashState(ID3D12GraphicsCommandList *commandList, DX12IaHashState *outState)
-{
-	if (!outState)
-		return false;
-	*outState = DX12IaHashState();
-	if (!commandList)
-		return false;
-
-	AcquireSRWLockShared(&gHuntLock);
-	auto state = gCommandListIa.find(commandList);
-	if (state == gCommandListIa.end()) {
-		ReleaseSRWLockShared(&gHuntLock);
-		return false;
-	}
-
-	const HuntIaBuffer &ib = state->second.indexBuffer;
-	outState->indexHash = IaHash(ib);
-	if (outState->indexHash) {
-		outState->hasIndexBuffer = true;
-		outState->indexView.BufferLocation = ib.gpuVa;
-		outState->indexView.SizeInBytes = ib.size;
-		outState->indexView.Format = static_cast<DXGI_FORMAT>(ib.format);
-	}
-
-	for (const HuntIaBuffer &buffer : state->second.vertexBuffers) {
-		uint32_t hash = IaHash(buffer);
-		if (!hash)
-			continue;
-		DX12IaBufferHash item;
-		item.slot = buffer.slot;
-		item.hash = hash;
-		item.vertexView.BufferLocation = buffer.gpuVa;
-		item.vertexView.SizeInBytes = buffer.size;
-		item.vertexView.StrideInBytes = buffer.stride;
-		outState->vertexBuffers.push_back(item);
-	}
-	ReleaseSRWLockShared(&gHuntLock);
-	return outState->hasIndexBuffer || !outState->vertexBuffers.empty();
-}
-
-bool DX12HuntHashIndexBufferView(const D3D12_INDEX_BUFFER_VIEW *view, uint32_t *hash)
-{
-	if (hash)
-		*hash = 0;
-	if (!view || !view->BufferLocation || !view->SizeInBytes)
-		return false;
-
-	HuntIaBuffer buffer = MakeIaView(
-		"IB", 0, view->BufferLocation, view->SizeInBytes,
-		0, static_cast<UINT>(view->Format));
-	if (hash)
-		*hash = IaHash(buffer);
-	return IaHash(buffer) != 0;
-}
-
-bool DX12HuntHashVertexBufferView(UINT slot, const D3D12_VERTEX_BUFFER_VIEW *view, uint32_t *hash)
-{
-	if (hash)
-		*hash = 0;
-	if (!view || !view->BufferLocation || !view->SizeInBytes)
-		return false;
-
-	HuntIaBuffer buffer = MakeIaView(
-		"VB", slot, view->BufferLocation, view->SizeInBytes,
-		view->StrideInBytes, 0);
-	if (hash)
-		*hash = IaHash(buffer);
-	return IaHash(buffer) != 0;
 }
 
 bool DX12HuntIsEnabled()

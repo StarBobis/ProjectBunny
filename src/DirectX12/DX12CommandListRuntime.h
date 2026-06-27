@@ -10,10 +10,8 @@ struct DX12ActiveIaState
 {
 	bool hasIndexBuffer = false;
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
-	uint32_t indexHash = 0;
 	bool hasVertexBuffer[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
-	uint32_t vertexHashes[32] = {};
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
@@ -70,9 +68,8 @@ void DX12CommandListRuntimeRememberPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
 void DX12CommandListRuntimeBumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 bool DX12CommandListRuntimeBuildIaHashState(
-	const DX12ActiveIaState &ia, DX12IaHashState *state);
-bool DX12CommandListRuntimeGetIaHashState(
-	ID3D12GraphicsCommandList *commandList, DX12IaHashState *state);
+	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
+	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 ID3D12PipelineState *DX12CommandListRuntimeGetPipelineState(
 	ID3D12GraphicsCommandList *commandList);
 DX12CommandListRuntimeState DX12CommandListRuntimeGetState(

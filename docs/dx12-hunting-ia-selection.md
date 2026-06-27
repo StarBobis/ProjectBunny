@@ -4,13 +4,15 @@ DX12 hunting IA selection should mirror the DX11 hunting model.
 
 DX11 does not treat a whole index buffer binding as the hunting identity when region hashing is active. During `BeforeDraw`, it combines the current IA binding with the draw arguments, then computes a buffer region hash from `FirstIndex`/`IndexCount` for IB and `FirstVertex`/estimated vertex count for VB. The overlay and matching path use the same hash, so the copied value and selected green/skip behavior refer to the same draw-visible region.
 
-DX12 follows that shape:
+DX12 follows that shape through one shared IA region hash helper:
 
 1. `IASetIndexBuffer` and `IASetVertexBuffers` store lightweight view metadata on the command list.
 2. `DrawInstanced` and `DrawIndexedInstanced` pass draw counts and start locations into hunting.
 3. Hunting derives an IA region hash from the stored view plus draw arguments.
-4. Selection, overlay display, copy, and skip checks use that same region hash.
-5. Present purges stale IA hashes on a short frame lifetime, matching DX11's `overlay_buffer_hash_lifetime` behavior instead of growing an unbounded history.
+4. F8 frame analysis IA dumps derive filenames, `hunt_hash`, manifest `hash`, and copied byte ranges from the same region.
+5. Mod `[TextureOverride] hash=` IA matching builds its draw-time hash state from that same region helper.
+6. Selection, overlay display, copy, skip checks, dump output, and Mod matching use that same region hash.
+7. Present purges stale IA hashes on a short frame lifetime, matching DX11's `overlay_buffer_hash_lifetime` behavior instead of growing an unbounded history.
 
 This avoids a giant historical IB list and prevents mismatches where the overlay advances to one hash while draw skipping checks a different hash.
 
@@ -19,3 +21,9 @@ The hunting lock should only protect copied command-list state and visited-selec
 Hot-path hook activation must also include command lists that were created before hunting was toggled. DX12 games commonly reuse command lists, so activating only swapchain and command queue hooks is insufficient. When hunting is enabled, command lists submitted through `ExecuteCommandLists` should be offered to the command-list hook installer even if their lifecycle state was already registered earlier.
 
 The D3D12 API shape supports this design: `DrawIndexedInstanced` provides the first index location and index count for the draw, while `D3D12_INDEX_BUFFER_VIEW` and `D3D12_VERTEX_BUFFER_VIEW` provide the bound GPU address, size, format, and stride. A draw-region hunting identity must therefore combine both pieces of state.
+
+The shared helper mirrors the DX11 region rules: IB offset is `indexStride * FirstIndex`, IB size is `indexStride * IndexCount`, VB offset is `stride * FirstVertex`, and VB size uses the explicit vertex count or the DX11 indexed-draw estimate `(3 * IndexCount + 10) / 20 + 3`. For indexed draws DX12 passes `BaseVertexLocation` as the VB first vertex because DX11 stores that value in `DrawCallInfo::FirstVertex`.
+
+`DX12HashIaBufferView` must include the resolved resource offset and region size when a GPU address resolves to a known buffer resource. Otherwise two regions inside one buffer collapse to the same hash and the region mechanism becomes indistinguishable from whole-resource matching.
+
+F8 IA dump rows intentionally keep both region fields and original view fields. `gpu_va`, `offset`, and `size` describe the region that was hashed and dumped. `view_gpu_va`, `view_size`, and `view_offset` describe where that region came from inside the original IA view.

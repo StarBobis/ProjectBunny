@@ -225,7 +225,9 @@ bool DX12IaReplacementHandleDrawOverrides(
 	const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
 	const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
-	if (DX12CommandListRuntimeBuildIaHashState(runtimeState.ia, &iaState)) {
+	if (DX12CommandListRuntimeBuildIaHashState(
+		runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
+		draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState)) {
 		DX12Profiling::RecordIaHashStateResult(true);
 		if (DX12ModPrepareShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,
