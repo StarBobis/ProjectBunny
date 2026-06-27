@@ -823,6 +823,9 @@ static bool ProducerMatchesAnyVlr(
 	for (const DX12VertexLimitRaiseConfig &vlr : gVertexLimitRaiseConfigs) {
 		if (vlr.hasMatchCs && vlr.matchCs != computeShaderHash)
 			continue;
+		// Also skip if config doesn't match but vlr was derived from hash
+		if (!vlr.hasMatchCs)
+			continue;
 		if (!ProducerMatchesReplacementTarget(producer, vlr))
 			continue;
 		if (match)

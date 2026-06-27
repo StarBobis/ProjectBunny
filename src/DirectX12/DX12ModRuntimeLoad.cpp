@@ -34,8 +34,8 @@ static std::vector<DX12VertexLimitRaiseConfig> CollectVertexLimitRaiseConfigs(
 				continue;
 			DX12VertexLimitRaiseConfig out;
 			out.section = config.originalSection.empty() ? config.section : config.originalSection;
-			out.hasMatchCs = config.hasMatchCs;
-			out.matchCs = config.matchCs;
+			out.hasMatchCs = config.hasMatchCs || config.hasCsHash;
+			out.matchCs = config.hasCsHash ? config.csHash : config.matchCs;
 			out.overrideByteStride = config.overrideByteStride;
 			out.overrideVertexCount = config.overrideVertexCount;
 			out.overrideByteWidth = config.overrideByteWidth;
@@ -47,9 +47,15 @@ static std::vector<DX12VertexLimitRaiseConfig> CollectVertexLimitRaiseConfigs(
 	return configs;
 }
 
+static uint64_t GetPreSkinCsHash(const Bunny::TextureOverrideConfig &config)
+{
+	return config.hasCsHash ? config.csHash : config.matchCs;
+}
+
 static bool IsComputePreSkinTextureOverride(const Bunny::TextureOverrideConfig &config)
 {
-	return config.hasMatchCs && !config.preSkinMatchCsSrvHashes.empty() &&
+	const bool hasCsHash = config.hasMatchCs || config.hasCsHash;
+	return hasCsHash && !config.preSkinMatchCsSrvHashes.empty() &&
 		!config.preSkinCsSrvResources.empty();
 }
 
@@ -78,7 +84,7 @@ static void BuildDx12PreSkinTextureOverrideIndex(
 			candidate.order = order++;
 			const size_t index = preSkinTextureOverrides->size();
 			preSkinTextureOverrides->push_back(std::move(candidate));
-			(*matchCsTextureOverrideIndex)[config.matchCs].push_back(index);
+			(*matchCsTextureOverrideIndex)[GetPreSkinCsHash(config)].push_back(index);
 		}
 	}
 }
@@ -93,7 +99,7 @@ static void BuildDx12ExplicitMatchCsResourceIndex(
 	resourceSections->clear();
 	for (const auto &bucket : textureOverrides) {
 		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
-			if (!config.hasMatchCs)
+			if (!config.hasMatchCs && !config.hasCsHash)
 				continue;
 			for (const auto &item : config.preSkinCsSrvResources) {
 				if (item.second.empty())
@@ -123,7 +129,7 @@ static bool HasPreSkinTextureOverrideCandidates(
 			if (IsComputePreSkinTextureOverride(config)) {
 				found = true;
 				if (matchCsHashes)
-					matchCsHashes->insert(config.matchCs);
+					matchCsHashes->insert(GetPreSkinCsHash(config));
 				continue;
 			}
 			if (config.hasVertexLimitRaise && config.overrideByteWidth) {

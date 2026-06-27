@@ -308,11 +308,11 @@ void ParseTextureOverrideSections(
 				continue;
 			}
 
-			if (key == L"match_cs") {
+			if (key == L"cs_hash") {
 				uint64_t value = 0;
 				if (ParseShaderOverrideHash(entry.value, &value)) {
-					config.matchCs = value;
-					config.hasMatchCs = true;
+					config.csHash = value;
+					config.hasCsHash = true;
 				}
 				continue;
 			}
@@ -400,7 +400,7 @@ void ParseTextureOverrideSections(
 			config.hasMatchVertexCount || config.hasMatchIndexCount ||
 			config.hasMatchInstanceCount || config.hasMatchFirstVertex ||
 			config.hasMatchFirstIndex || config.hasMatchFirstInstance;
-		if (hasHash || config.hasVertexLimitRaise || config.hasMatchCs || hasDrawContextMatch)
+		if (hasHash || config.hasVertexLimitRaise || config.hasMatchCs || config.hasCsHash || hasDrawContextMatch)
 			(*textureOverrides)[config.hash].push_back(config);
 	}
 

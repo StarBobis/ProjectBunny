@@ -827,7 +827,7 @@ static bool FindMatchCsTextureOverrideLocked(
 		const DX12PreSkinTextureOverrideCandidate &candidate =
 			gPreSkinTextureOverrides[index];
 		const Bunny::TextureOverrideConfig &config = candidate.config;
-		if (!IsComputePreSkinTextureOverride(config) || config.matchCs != csHash)
+		if (!IsComputePreSkinTextureOverride(config) || GetPreSkinCsHash(config) != csHash)
 			continue;
 		const uint64_t inputKey = MakePreSkinMatchCsInputCacheKey(
 			csHash, candidate, 0, uavs, srvs, cbvs, rootConstants);

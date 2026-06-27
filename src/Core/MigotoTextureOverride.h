@@ -48,6 +48,7 @@ struct TextureOverrideConfig
 	bool hasMatchFirstInstance = false;
 	bool hasMatchCs = false;
 	bool hasMatchUavBytes = false;
+	bool hasCsHash = false;
 	std::map<uint32_t, uint32_t> preSkinMatchCsSrvHashes;
 	std::map<uint32_t, std::wstring> preSkinCsSrvResources;
 	NumericMatch matchVertexCount;
@@ -58,6 +59,7 @@ struct TextureOverrideConfig
 	NumericMatch matchFirstInstance;
 	uint64_t matchCs = 0;
 	uint64_t matchUavBytes = 0;
+	uint64_t csHash = 0;
 	bool hasMatchPriority = false;
 	int matchPriority = 0;
 	bool hasVertexLimitRaise = false;

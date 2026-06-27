@@ -183,6 +183,15 @@ bool DX12BindingGetCurrentShaderResourceBindings(
 bool DX12BindingGetCurrentComputeRootConstants(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentRootConstants> *constants);
+
+// Combined query for all compute bindings — does ONE pass instead of 4 separate ones.
+// Returns true if any binding type was found.
+bool DX12BindingGetCurrentComputeAll(
+	ID3D12GraphicsCommandList *commandList,
+	std::vector<DX12CurrentComputeUavBinding> *uavs,
+	std::vector<DX12CurrentComputeUavBinding> *srvs,
+	std::vector<DX12CurrentComputeUavBinding> *cbvs,
+	std::vector<DX12CurrentRootConstants> *constants);
 UINT64 DX12BindingGetComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 bool DX12BindingGetCurrentDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,

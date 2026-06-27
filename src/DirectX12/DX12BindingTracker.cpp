@@ -564,6 +564,167 @@ bool DX12BindingGetCurrentComputeCbvs(
 		D3D12_ROOT_PARAMETER_TYPE_CBV, cbvs);
 }
 
+bool DX12BindingGetCurrentComputeAll(
+	ID3D12GraphicsCommandList *commandList,
+	std::vector<DX12CurrentComputeUavBinding> *uavs,
+	std::vector<DX12CurrentComputeUavBinding> *srvs,
+	std::vector<DX12CurrentComputeUavBinding> *cbvs,
+	std::vector<DX12CurrentRootConstants> *constants)
+{
+	if (!commandList)
+		return false;
+	if (uavs) uavs->clear();
+	if (srvs) srvs->clear();
+	if (cbvs) cbvs->clear();
+	if (constants) constants->clear();
+
+	CommandListBindingState snapshot;
+	bool found = false;
+	BindingShard &shard = BindingShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		snapshot = it->second;
+		found = true;
+	}
+	ReleaseSRWLockShared(&shard.lock);
+	if (!found) return false;
+
+	// Single pass: iterate 64 root params once, collect all 4 binding types
+	BindingEvent event;
+	event.pipelineState = snapshot.pipelineState;
+	event.graphicsRootSignature = snapshot.graphicsRootSignature;
+	event.computeRootSignature = snapshot.computeRootSignature;
+	if (snapshot.pipelineState) {
+		DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event.shaderInfo);
+		ID3D12RootSignature *psoRootSignature = nullptr;
+		if (DX12GetPsoRootSignature(event.shaderInfo.psoIndex, &psoRootSignature)) {
+			if (!event.computeRootSignature)
+				event.computeRootSignature = psoRootSignature;
+		}
+	}
+
+	DX12RootSignatureSummary rootSignature;
+	const bool hasRootSignature = GetRootSignatureForEvent(event, true, &rootSignature);
+
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		// --- Descriptor tables ---
+		const RootTableState &table = snapshot.computeTables[root];
+		if (table.valid) {
+			const DX12RootParameterSummary *parameter =
+				hasRootSignature ? FindRootParameter(rootSignature, root) : nullptr;
+			if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
+				DX12DescriptorHeapSummary heap = {};
+				if (!DX12FindDescriptorHeapByGpuHandle(table.baseDescriptor,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) || heap.increment == 0)
+					continue;
+				const UINT64 tableBase = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+				for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+					std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
+					const char *kind = nullptr;
+					if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && uavs) { out = uavs; kind = "UAV"; }
+					else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && srvs) { out = srvs; kind = "SRV"; }
+					else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) { out = cbvs; kind = "CBV"; }
+					else { continue; }
+
+					UINT count = range.numDescriptors == UINT_MAX ? 1 : range.numDescriptors;
+					count = min(count, MaxDescriptorsPerRangeDump);
+					for (UINT offset = 0; offset < count; ++offset) {
+						const UINT64 di = tableBase + range.effectiveOffset + offset;
+						if (di >= heap.numDescriptors) break;
+						const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
+						DX12DescriptorSummary desc = {};
+						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc) || desc.kind != kind)
+							continue;
+						DX12CurrentComputeUavBinding b;
+						b.rootParameterIndex = root;
+						b.rangeIndex = range.rangeIndex;
+						b.shaderVisibility = range.shaderVisibility;
+						b.shaderRegister = range.baseShaderRegister + offset;
+						b.registerSpace = range.registerSpace;
+						b.descriptorOffset = range.effectiveOffset + offset;
+						b.descriptorIncrement = heap.increment;
+						b.tableCopyCount = count;
+						b.tableCpuStart = heap.cpuStart + static_cast<SIZE_T>(tableBase) * heap.increment;
+						b.tableGpuStart.ptr = heap.gpuStart + tableBase * heap.increment;
+						b.tableHeap = heap.heap;
+						b.descriptor = desc;
+						b.hasDescriptor = true;
+						out->push_back(std::move(b));
+					}
+				}
+			} else {
+				// Single descriptor (not a table)
+				DX12DescriptorHeapSummary heap = {};
+				if (!DX12FindDescriptorHeapByGpuHandle(table.baseDescriptor,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) || !heap.increment)
+					continue;
+				const UINT64 di = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
+				DX12DescriptorSummary desc = {};
+				if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
+					continue;
+				std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
+				if (desc.kind == "UAV" && uavs) out = uavs;
+				else if (desc.kind == "SRV" && srvs) out = srvs;
+				else if (desc.kind == "CBV" && cbvs) out = cbvs;
+				if (!out) continue;
+				DX12CurrentComputeUavBinding b;
+				b.rootParameterIndex = root;
+				b.shaderVisibility = parameter ? parameter->shaderVisibility : D3D12_SHADER_VISIBILITY_ALL;
+				b.descriptorIncrement = heap.increment;
+				b.tableCopyCount = 1;
+				b.tableCpuStart = cpuHandle;
+				b.tableGpuStart = table.baseDescriptor;
+				b.tableHeap = heap.heap;
+				b.descriptor = desc;
+				b.hasDescriptor = true;
+				out->push_back(std::move(b));
+			}
+		}
+
+		// --- Root descriptors (CBV/SRV/UAV by GPU VA) ---
+		const RootDescriptorState &rd = snapshot.computeRootDescriptors[root];
+		if (rd.valid) {
+			std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
+			if (rd.type == D3D12_ROOT_PARAMETER_TYPE_UAV && uavs) out = uavs;
+			else if (rd.type == D3D12_ROOT_PARAMETER_TYPE_SRV && srvs) out = srvs;
+			else if (rd.type == D3D12_ROOT_PARAMETER_TYPE_CBV && cbvs) out = cbvs;
+			if (out) {
+				DX12CurrentComputeUavBinding b;
+				b.rootParameterIndex = root;
+				if (hasRootSignature) {
+					const DX12RootParameterSummary *p = FindRootParameter(rootSignature, root);
+					if (p) {
+						b.shaderVisibility = p->shaderVisibility;
+						b.shaderRegister = p->shaderRegister;
+						b.registerSpace = p->registerSpace;
+					}
+				}
+				b.rootDescriptor = true;
+				b.gpuVirtualAddress = rd.address;
+				out->push_back(std::move(b));
+			}
+		}
+
+		// --- Root constants ---
+		if (constants) {
+			const RootConstantsState &rc = snapshot.computeRootConstants[root];
+			if (rc.valid) {
+				DX12CurrentRootConstants c;
+				c.rootParameterIndex = root;
+				c.maxSet = rc.maxSet;
+				memcpy(c.values, rc.values, sizeof(c.values));
+				memcpy(c.valueValid, rc.valueValid, sizeof(c.valueValid));
+				constants->push_back(c);
+			}
+		}
+	}
+
+	return (uavs && !uavs->empty()) || (srvs && !srvs->empty()) ||
+		(cbvs && !cbvs->empty()) || (constants && !constants->empty());
+}
+
 bool DX12BindingGetCurrentShaderResourceBindings(
 	ID3D12GraphicsCommandList *commandList,
 	bool compute,

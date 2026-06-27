@@ -96,8 +96,11 @@ bool DX12ModNeedsPreSkinningUavProbe()
 // Returns true when pre-skin binding tracking is actively needed.
 // Automatically disables after kPreSkinBindingIdleMax consecutive frames
 // with zero active overrides, saving ~1500+ lock acquisitions per frame.
+// Note: idle counter is reset when a matching pre-skin CS dispatch is probed.
 bool DX12ModNeedsPreSkinningBindingTracking()
 {
+	if (gHasPreSkinTextureOverrideCandidates == 0)
+		return false;
 	if (!DX12ModHasActivePreSkinTextureOverrides())
 		return gPreSkinBindingIdleFrames < kPreSkinBindingIdleMax;
 	return true;
@@ -132,6 +135,10 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 			gPreSkinMatchCsHashes.end();
 	}
 	ReleaseSRWLockShared(&gModLock);
+	// Reset binding tracking idle counter: as long as a matching CS dispatch
+	// runs, keep binding tracking active so the probe can access bindings.
+	if (shouldProbe)
+		InterlockedExchange(&gPreSkinBindingIdleFrames, 0);
 	DX12Profiling::RecordPreSkinCsTest(shouldProbe);
 	return shouldProbe;
 }

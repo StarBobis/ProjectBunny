@@ -1618,8 +1618,58 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 		static_cast<unsigned long long>(argumentBufferOffset), countBuffer,
 		static_cast<unsigned long long>(countBufferOffset));
 	DX12CommandListCommandRecordExecuteIndirect(commandList);
+
+	// Pre-skin probe for games that dispatch compute shaders via ExecuteIndirect
+	// (e.g. ZZZ).  The individual Dispatch inside ExecuteIndirect is invisible
+	// to our Dispatch hook, so we intercept at the ExecuteIndirect level and
+	// apply binding patches if the current compute PSO has a pre-skin CS hash.
+	if (DX12ModNeedsPreSkinningUavProbe()) {
+		ID3D12PipelineState *pipelineState = DX12CommandListRuntimeGetPipelineState(commandList);
+		if (!pipelineState) {
+			DX12Log("HookedExecuteIndirect: no PSO from runtime state\n");
+		} else {
+			DX12PsoShaderInfo shaderInfo = {};
+			if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo)) {
+				DX12Log("HookedExecuteIndirect: GetShaderInfo failed\n");
+			} else if (!shaderInfo.hasCS) {
+				DX12Log("HookedExecuteIndirect: PSO is not compute (hasCS=false)\n");
+			} else {
+				DX12Log("HookedExecuteIndirect: compute PSO cs=%016llx\n",
+					static_cast<unsigned long long>(shaderInfo.cs));
+				if (!DX12ModShouldTrackPreSkinBindingsForCs(shaderInfo.cs)) {
+					DX12Log("HookedExecuteIndirect: CS not in pre-skin list\n");
+				} else {
+					DX12Log("HookedExecuteIndirect: pre-skin CS match!\n");
+					std::vector<DX12CurrentComputeUavBinding> uavs, srvs, cbvs;
+					std::vector<DX12CurrentRootConstants> rootConstants;
+					if (DX12BindingGetCurrentComputeAll(commandList, &uavs, &srvs, &cbvs, &rootConstants)) {
+						DX12Log("HookedExecuteIndirect: bindings found uavs=%zu srvs=%zu cbvs=%zu\n",
+							uavs.size(), srvs.size(), cbvs.size());
+						UINT originalVertexCount = 0, overrideVertexCount = 0;
+						DX12PreSkinDispatchOverride dispatchOverride;
+						if (DX12ModApplyPreSkinningUavReplacement(
+							    commandList, shaderInfo.cs,
+							    uavs, srvs, cbvs, rootConstants,
+							    &originalVertexCount, &overrideVertexCount,
+							    &dispatchOverride)) {
+							DX12Log("HookedExecuteIndirect: pre-skin APPLIED! origVtx=%u newVtx=%u\n",
+								originalVertexCount, overrideVertexCount);
+						} else {
+							DX12Log("HookedExecuteIndirect: pre-skin matching failed\n");
+						}
+					} else {
+						DX12Log("HookedExecuteIndirect: no compute bindings found\n");
+					}
+				}
+			}
+		}
+	}
+
 	gOrigExecuteIndirect(commandList, commandSignature, maxCommandCount, argumentBuffer,
 		argumentBufferOffset, countBuffer, countBufferOffset);
+
+	// Restore pre-skin patches that were applied before ExecuteIndirect
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 }
 
 void DX12HookCommandQueue(IUnknown *commandQueue)

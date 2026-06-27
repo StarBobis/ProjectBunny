@@ -261,14 +261,8 @@ void DX12EndReleaseStartupLogging()
 
 static bool DX12ReleaseShouldLogFunction(const char *func)
 {
-	if (gReleaseStartupLogging.load(std::memory_order_relaxed))
-		return true;
-	if (!func)
-		return false;
-	if (DX12DiagnosticsLoggingEnabled())
-		return true;
-	return strcmp(func, "DX12ModRuntimeReload") == 0 ||
-		strcmp(func, "DX12PreSkinMatchCsApply") == 0;
+	(void)func;
+	return true; // Release logging enabled — all functions log
 }
 #else
 void DX12EndReleaseStartupLogging()
