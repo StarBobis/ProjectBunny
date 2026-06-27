@@ -1,6 +1,7 @@
 #include "DX12Runtime.h"
 
 #include "DX12Overlay.h"
+#include "DX12Input.h"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.h"
 #include "DX12State.h"
@@ -65,6 +66,7 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 			configPath.c_str(), gConfig.Error().c_str());
 	}
 	DX12HotPathUpdate();
+	DX12StartInputThread();
 
 	HANDLE thread = CreateThread(nullptr, 0, DX12WorkerThread, nullptr, 0, nullptr);
 	if (thread)
@@ -82,6 +84,7 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 void BunnyDX12RuntimeShutdown()
 {
 	DX12Log("*** 3DMigoto DX12 runtime shutting down ***\n");
+	DX12StopInputThread();
 	DX12CloseOverlayWindow();
 	DX12UnhookAll();
 	DX12CloseLogFile();

@@ -4,6 +4,7 @@
 #include <dxgi1_4.h>
 
 #include "DX12BindingTracker.h"
+#include "DX12CommandListHooks.h"
 #include "DX12CommandListRuntime.h"
 #include "DX12DeviceHooks.h"
 #include "DX12FrameAnalysis.h"
@@ -43,6 +44,8 @@ static PFN_PRESENT1 gOrigPresent1 = nullptr;
 static PFN_CREATE_DXGI_FACTORY gOrigCreateDXGIFactory = nullptr;
 static PFN_CREATE_DXGI_FACTORY gOrigCreateDXGIFactory1 = nullptr;
 static PFN_CREATE_DXGI_FACTORY2 gOrigCreateDXGIFactory2 = nullptr;
+static SRWLOCK gKnownSwapChainLock = SRWLOCK_INIT;
+static IDXGISwapChain *gKnownSwapChain = nullptr;
 
 static HRESULT WINAPI HookedCreateDXGIFactory(REFIID riid, void **factory);
 static HRESULT WINAPI HookedCreateDXGIFactory1(REFIID riid, void **factory);
@@ -151,6 +154,9 @@ static void HookSwapChain(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
 		return;
+	AcquireSRWLockExclusive(&gKnownSwapChainLock);
+	gKnownSwapChain = swapChain;
+	ReleaseSRWLockExclusive(&gKnownSwapChainLock);
 	if (!DX12HotPathHooksNeeded()) {
 		DX12LogJsonFunc("DX12HotPathHookGate",
 			"\"object\":\"swapchain\",\"action\":\"skip\",\"swapchain\":\"%p\"",
@@ -171,6 +177,19 @@ static void HookSwapChain(IDXGISwapChain *swapChain)
 		DX12InstallVTableHooks(swapChain1, swapChain1Hooks);
 		swapChain1->Release();
 	}
+}
+
+void DX12ActivateHotPathHooks()
+{
+	IDXGISwapChain *swapChain = nullptr;
+	AcquireSRWLockShared(&gKnownSwapChainLock);
+	swapChain = gKnownSwapChain;
+	ReleaseSRWLockShared(&gKnownSwapChainLock);
+	if (swapChain)
+		HookSwapChain(swapChain);
+	DX12ActivateCommandQueueHotPathHooks();
+	if (swapChain)
+		DX12UpdateOverlayWindowForSwapChain(swapChain);
 }
 
 static void HookDeviceFromDXGIArgument(IUnknown *device)

@@ -221,6 +221,8 @@ static SRWLOCK gHookedVTableLock = SRWLOCK_INIT;
 static std::unordered_set<void*> gHookedCommandListVTables;
 static SRWLOCK gRegisteredListLock = SRWLOCK_INIT;
 static std::unordered_set<void*> gRegisteredCommandLists;
+static SRWLOCK gKnownCommandQueueLock = SRWLOCK_INIT;
+static IUnknown *gKnownCommandQueue = nullptr;
 
 static bool ShouldHookCommandListVTable(void *vtable)
 {
@@ -1700,6 +1702,7 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 {
 	if (!commandQueue)
 		return;
+	DX12RememberCommandQueueForHotPath(commandQueue);
 	if (!DX12HotPathHooksNeeded()) {
 		DX12LogJsonFunc("DX12HotPathHookGate",
 			"\"object\":\"command_queue\",\"action\":\"skip\",\"queue\":\"%p\"",
@@ -1718,6 +1721,25 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 	};
 	DX12InstallVTableHooks(queue, queueHooks);
 	queue->Release();
+}
+
+void DX12RememberCommandQueueForHotPath(IUnknown *commandQueue)
+{
+	if (!commandQueue)
+		return;
+	AcquireSRWLockExclusive(&gKnownCommandQueueLock);
+	gKnownCommandQueue = commandQueue;
+	ReleaseSRWLockExclusive(&gKnownCommandQueueLock);
+}
+
+void DX12ActivateCommandQueueHotPathHooks()
+{
+	IUnknown *queue = nullptr;
+	AcquireSRWLockShared(&gKnownCommandQueueLock);
+	queue = gKnownCommandQueue;
+	ReleaseSRWLockShared(&gKnownCommandQueueLock);
+	if (queue)
+		DX12HookCommandQueue(queue);
 }
 
 void DX12HookCommandList(IUnknown *commandList)

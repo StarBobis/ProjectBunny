@@ -291,6 +291,10 @@ static bool DX12ReleaseShouldLogFunction(const char *func)
 		return true;
 	if (!strcmp(func, "DX12HotPathHookGate"))
 		return true;
+	if (!strcmp(func, "InputHotkey"))
+		return true;
+	if (!strcmp(func, "DX12InputThread"))
+		return true;
 	return false;
 }
 #else

@@ -12,6 +12,7 @@
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12State.h"
+#include "DXGIHooks.h"
 
 enum class HuntStage
 {
@@ -529,10 +530,12 @@ void DX12HuntToggle()
 
 	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 	DX12HuntRefreshOverlay();
-	if (enabled)
-		DX12EnsureOverlayWindow();
-	else
+	if (enabled) {
+		DX12ShowOverlayWindowFallback();
+		DX12ActivateHotPathHooks();
+	} else {
 		DX12CloseOverlayWindow();
+	}
 }
 
 void DX12HuntPreviousVS() { AdvanceStage(gVS, HuntCopyTarget::VS, -1); }

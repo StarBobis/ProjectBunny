@@ -211,6 +211,20 @@ void DX12EnsureOverlayWindow()
 		"\"status\":\"failed\",\"error\":%lu,\"reason\":\"create_thread\"", GetLastError());
 }
 
+void DX12ShowOverlayWindowFallback()
+{
+	DX12EnsureOverlayWindow();
+	HWND overlay = DX12GetOverlayWindow();
+	if (!overlay || !IsWindow(overlay))
+		return;
+
+	int x = GetSystemMetrics(SM_XVIRTUALSCREEN) + 20;
+	int y = GetSystemMetrics(SM_YVIRTUALSCREEN) + 20;
+	SetWindowPos(overlay, HWND_TOPMOST, x, y, 900, 180,
+		SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	InvalidateRect(overlay, nullptr, FALSE);
+}
+
 bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
