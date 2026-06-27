@@ -38,8 +38,9 @@ struct DumpTask
 	ID3D12Resource *source = nullptr;
 	ID3D12Resource *readback = nullptr;
 	D3D12_RESOURCE_DESC desc = {};
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT textureLayout = {};
-	UINT textureRows = 0;
+	std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> textureLayouts;
+	std::vector<UINT> textureRows;
+	std::vector<UINT64> textureRowSizes;
 	UINT64 sourceOffset = 0;
 	UINT64 copyBytes = 0;
 	UINT64 readbackOffset = 0;
@@ -288,16 +289,208 @@ static void WriteU32(FILE *file, uint32_t value)
 	fwrite(&value, sizeof(value), 1, file);
 }
 
-static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc, UINT64 rowPitch)
+static bool IsBlockCompressedFormat(DXGI_FORMAT format)
+{
+	switch (format) {
+	case DXGI_FORMAT_BC1_TYPELESS:
+	case DXGI_FORMAT_BC1_UNORM:
+	case DXGI_FORMAT_BC1_UNORM_SRGB:
+	case DXGI_FORMAT_BC2_TYPELESS:
+	case DXGI_FORMAT_BC2_UNORM:
+	case DXGI_FORMAT_BC2_UNORM_SRGB:
+	case DXGI_FORMAT_BC3_TYPELESS:
+	case DXGI_FORMAT_BC3_UNORM:
+	case DXGI_FORMAT_BC3_UNORM_SRGB:
+	case DXGI_FORMAT_BC4_TYPELESS:
+	case DXGI_FORMAT_BC4_UNORM:
+	case DXGI_FORMAT_BC4_SNORM:
+	case DXGI_FORMAT_BC5_TYPELESS:
+	case DXGI_FORMAT_BC5_UNORM:
+	case DXGI_FORMAT_BC5_SNORM:
+	case DXGI_FORMAT_BC6H_TYPELESS:
+	case DXGI_FORMAT_BC6H_UF16:
+	case DXGI_FORMAT_BC6H_SF16:
+	case DXGI_FORMAT_BC7_TYPELESS:
+	case DXGI_FORMAT_BC7_UNORM:
+	case DXGI_FORMAT_BC7_UNORM_SRGB:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static uint32_t BitsPerPixel(DXGI_FORMAT format)
+{
+	switch (format) {
+	case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+	case DXGI_FORMAT_R32G32B32A32_FLOAT:
+	case DXGI_FORMAT_R32G32B32A32_UINT:
+	case DXGI_FORMAT_R32G32B32A32_SINT:
+		return 128;
+	case DXGI_FORMAT_R32G32B32_TYPELESS:
+	case DXGI_FORMAT_R32G32B32_FLOAT:
+	case DXGI_FORMAT_R32G32B32_UINT:
+	case DXGI_FORMAT_R32G32B32_SINT:
+		return 96;
+	case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+	case DXGI_FORMAT_R16G16B16A16_FLOAT:
+	case DXGI_FORMAT_R16G16B16A16_UNORM:
+	case DXGI_FORMAT_R16G16B16A16_UINT:
+	case DXGI_FORMAT_R16G16B16A16_SNORM:
+	case DXGI_FORMAT_R16G16B16A16_SINT:
+	case DXGI_FORMAT_R32G32_TYPELESS:
+	case DXGI_FORMAT_R32G32_FLOAT:
+	case DXGI_FORMAT_R32G32_UINT:
+	case DXGI_FORMAT_R32G32_SINT:
+	case DXGI_FORMAT_R32G8X24_TYPELESS:
+	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+	case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+	case DXGI_FORMAT_Y416:
+	case DXGI_FORMAT_Y210:
+	case DXGI_FORMAT_Y216:
+		return 64;
+	case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+	case DXGI_FORMAT_R10G10B10A2_UNORM:
+	case DXGI_FORMAT_R10G10B10A2_UINT:
+	case DXGI_FORMAT_R11G11B10_FLOAT:
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+	case DXGI_FORMAT_R8G8B8A8_UINT:
+	case DXGI_FORMAT_R8G8B8A8_SNORM:
+	case DXGI_FORMAT_R8G8B8A8_SINT:
+	case DXGI_FORMAT_R16G16_TYPELESS:
+	case DXGI_FORMAT_R16G16_FLOAT:
+	case DXGI_FORMAT_R16G16_UNORM:
+	case DXGI_FORMAT_R16G16_UINT:
+	case DXGI_FORMAT_R16G16_SNORM:
+	case DXGI_FORMAT_R16G16_SINT:
+	case DXGI_FORMAT_R32_TYPELESS:
+	case DXGI_FORMAT_D32_FLOAT:
+	case DXGI_FORMAT_R32_FLOAT:
+	case DXGI_FORMAT_R32_UINT:
+	case DXGI_FORMAT_R32_SINT:
+	case DXGI_FORMAT_R24G8_TYPELESS:
+	case DXGI_FORMAT_D24_UNORM_S8_UINT:
+	case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+	case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+	case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+	case DXGI_FORMAT_R8G8_B8G8_UNORM:
+	case DXGI_FORMAT_G8R8_G8B8_UNORM:
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+	case DXGI_FORMAT_B8G8R8X8_UNORM:
+	case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+	case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+	case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+	case DXGI_FORMAT_AYUV:
+	case DXGI_FORMAT_Y410:
+	case DXGI_FORMAT_YUY2:
+		return 32;
+	case DXGI_FORMAT_P010:
+	case DXGI_FORMAT_P016:
+		return 24;
+	case DXGI_FORMAT_R8G8_TYPELESS:
+	case DXGI_FORMAT_R8G8_UNORM:
+	case DXGI_FORMAT_R8G8_UINT:
+	case DXGI_FORMAT_R8G8_SNORM:
+	case DXGI_FORMAT_R8G8_SINT:
+	case DXGI_FORMAT_R16_TYPELESS:
+	case DXGI_FORMAT_R16_FLOAT:
+	case DXGI_FORMAT_D16_UNORM:
+	case DXGI_FORMAT_R16_UNORM:
+	case DXGI_FORMAT_R16_UINT:
+	case DXGI_FORMAT_R16_SNORM:
+	case DXGI_FORMAT_R16_SINT:
+	case DXGI_FORMAT_B5G6R5_UNORM:
+	case DXGI_FORMAT_B5G5R5A1_UNORM:
+	case DXGI_FORMAT_B4G4R4A4_UNORM:
+		return 16;
+	case DXGI_FORMAT_NV12:
+	case DXGI_FORMAT_420_OPAQUE:
+	case DXGI_FORMAT_NV11:
+		return 12;
+	case DXGI_FORMAT_R8_TYPELESS:
+	case DXGI_FORMAT_R8_UNORM:
+	case DXGI_FORMAT_R8_UINT:
+	case DXGI_FORMAT_R8_SNORM:
+	case DXGI_FORMAT_R8_SINT:
+	case DXGI_FORMAT_A8_UNORM:
+	case DXGI_FORMAT_AI44:
+	case DXGI_FORMAT_IA44:
+	case DXGI_FORMAT_P8:
+		return 8;
+	case DXGI_FORMAT_R1_UNORM:
+		return 1;
+	case DXGI_FORMAT_BC1_TYPELESS:
+	case DXGI_FORMAT_BC1_UNORM:
+	case DXGI_FORMAT_BC1_UNORM_SRGB:
+	case DXGI_FORMAT_BC4_TYPELESS:
+	case DXGI_FORMAT_BC4_UNORM:
+	case DXGI_FORMAT_BC4_SNORM:
+		return 4;
+	case DXGI_FORMAT_BC2_TYPELESS:
+	case DXGI_FORMAT_BC2_UNORM:
+	case DXGI_FORMAT_BC2_UNORM_SRGB:
+	case DXGI_FORMAT_BC3_TYPELESS:
+	case DXGI_FORMAT_BC3_UNORM:
+	case DXGI_FORMAT_BC3_UNORM_SRGB:
+	case DXGI_FORMAT_BC5_TYPELESS:
+	case DXGI_FORMAT_BC5_UNORM:
+	case DXGI_FORMAT_BC5_SNORM:
+	case DXGI_FORMAT_BC6H_TYPELESS:
+	case DXGI_FORMAT_BC6H_UF16:
+	case DXGI_FORMAT_BC6H_SF16:
+	case DXGI_FORMAT_BC7_TYPELESS:
+	case DXGI_FORMAT_BC7_UNORM:
+	case DXGI_FORMAT_BC7_UNORM_SRGB:
+		return 8;
+	default:
+		return 0;
+	}
+}
+
+static UINT MipSize(UINT64 value, UINT mip)
+{
+	UINT64 size = value >> mip;
+	return static_cast<UINT>(size ? size : 1);
+}
+
+static UINT64 TextureMipBytes(const D3D12_RESOURCE_DESC &desc, UINT mip)
+{
+	const UINT width = MipSize(desc.Width, mip);
+	const UINT height = MipSize(desc.Height, mip);
+	if (IsBlockCompressedFormat(desc.Format)) {
+		const UINT blockBytes = BitsPerPixel(desc.Format) == 4 ? 8 : 16;
+		const UINT blocksWide = std::max<UINT>(1, (width + 3) / 4);
+		const UINT blocksHigh = std::max<UINT>(1, (height + 3) / 4);
+		return static_cast<UINT64>(blocksWide) * blocksHigh * blockBytes;
+	}
+	const uint32_t bpp = BitsPerPixel(desc.Format);
+	if (!bpp)
+		return 0;
+	return (static_cast<UINT64>(width) * height * bpp + 7) / 8;
+}
+
+static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc)
 {
 	WriteU32(file, MakeFourCC('D', 'D', 'S', ' '));
 	WriteU32(file, 124);
-	WriteU32(file, 0x0002100f);
+	uint32_t flags = 0x00001007;
+	if (desc.MipLevels > 1)
+		flags |= 0x00020000;
+	if (IsBlockCompressedFormat(desc.Format))
+		flags |= 0x00080000;
+	else
+		flags |= 0x00000008;
+	WriteU32(file, flags);
 	WriteU32(file, desc.Height);
 	WriteU32(file, static_cast<uint32_t>(desc.Width));
-	WriteU32(file, static_cast<uint32_t>(rowPitch));
+	WriteU32(file, static_cast<uint32_t>(TextureMipBytes(desc, 0)));
 	WriteU32(file, 0);
-	WriteU32(file, 1);
+	WriteU32(file, desc.MipLevels ? desc.MipLevels : 1);
 	for (int i = 0; i < 11; ++i)
 		WriteU32(file, 0);
 
@@ -310,7 +503,10 @@ static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc, UINT64 r
 	WriteU32(file, 0);
 	WriteU32(file, 0);
 
-	WriteU32(file, 0x00001000);
+	uint32_t caps = 0x00001000;
+	if (desc.MipLevels > 1)
+		caps |= 0x00400008;
+	WriteU32(file, caps);
 	WriteU32(file, 0);
 	WriteU32(file, 0);
 	WriteU32(file, 0);
@@ -319,7 +515,7 @@ static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc, UINT64 r
 	WriteU32(file, static_cast<uint32_t>(desc.Format));
 	WriteU32(file, D3D12_RESOURCE_DIMENSION_TEXTURE2D);
 	WriteU32(file, 0);
-	WriteU32(file, 1);
+	WriteU32(file, desc.DepthOrArraySize ? desc.DepthOrArraySize : 1);
 	WriteU32(file, 0);
 }
 
@@ -328,11 +524,19 @@ static bool WriteTextureDDSFile(FILE *file, const DumpTask &task, const void *ma
 	if (!file || !mappedData)
 		return false;
 
-	WriteDDSHeader(file, task.desc, task.textureLayout.Footprint.RowPitch);
-	const uint8_t *base = static_cast<const uint8_t*>(mappedData) + task.readbackOffset;
-	for (UINT row = 0; row < task.textureRows; ++row) {
-		const uint8_t *src = base + static_cast<size_t>(row) * task.textureLayout.Footprint.RowPitch;
-		fwrite(src, 1, task.textureLayout.Footprint.RowPitch, file);
+	if (task.textureLayouts.size() != task.textureRows.size() ||
+		task.textureLayouts.size() != task.textureRowSizes.size())
+		return false;
+
+	WriteDDSHeader(file, task.desc);
+	const uint8_t *mapped = static_cast<const uint8_t*>(mappedData);
+	for (size_t subresource = 0; subresource < task.textureLayouts.size(); ++subresource) {
+		const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout = task.textureLayouts[subresource];
+		const uint8_t *base = mapped + layout.Offset;
+		for (UINT row = 0; row < task.textureRows[subresource]; ++row) {
+			const uint8_t *src = base + static_cast<size_t>(row) * layout.Footprint.RowPitch;
+			fwrite(src, 1, static_cast<size_t>(task.textureRowSizes[subresource]), file);
+		}
 	}
 	return true;
 }
@@ -490,13 +694,17 @@ static uint32_t HashDumpTaskData(const DumpTask &task, const void *mappedData)
 	hash = HashBytes(hash, &task.isTexture, sizeof(task.isTexture));
 
 	if (task.isTexture) {
-		hash = HashBytes(hash, &task.textureLayout.Footprint.RowPitch,
-			sizeof(task.textureLayout.Footprint.RowPitch));
-		hash = HashBytes(hash, &task.textureRows, sizeof(task.textureRows));
-		const uint8_t *base = static_cast<const uint8_t*>(mappedData) + task.readbackOffset;
-		for (UINT row = 0; row < task.textureRows; ++row) {
-			const uint8_t *src = base + static_cast<size_t>(row) * task.textureLayout.Footprint.RowPitch;
-			hash = HashBytes(hash, src, static_cast<size_t>(task.textureLayout.Footprint.RowPitch));
+		const uint8_t *mapped = static_cast<const uint8_t*>(mappedData);
+		for (size_t subresource = 0; subresource < task.textureLayouts.size(); ++subresource) {
+			const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout = task.textureLayouts[subresource];
+			hash = HashBytes(hash, &layout.Footprint.RowPitch, sizeof(layout.Footprint.RowPitch));
+			hash = HashBytes(hash, &task.textureRows[subresource], sizeof(task.textureRows[subresource]));
+			hash = HashBytes(hash, &task.textureRowSizes[subresource], sizeof(task.textureRowSizes[subresource]));
+			const uint8_t *base = mapped + layout.Offset;
+			for (UINT row = 0; row < task.textureRows[subresource]; ++row) {
+				const uint8_t *src = base + static_cast<size_t>(row) * layout.Footprint.RowPitch;
+				hash = HashBytes(hash, src, static_cast<size_t>(task.textureRowSizes[subresource]));
+			}
 		}
 		return hash;
 	}
@@ -753,9 +961,14 @@ static bool PrepareTask(
 			task->skipNote = "multisampled_texture_not_supported";
 			return false;
 		}
-		UINT64 rowSize = 0;
-		device->GetCopyableFootprints(&task->desc, 0, 1, 0,
-			&task->textureLayout, &task->textureRows, &rowSize, &task->copyBytes);
+		const UINT mipLevels = task->desc.MipLevels ? task->desc.MipLevels : 1;
+		const UINT subresourceCount = mipLevels * task->desc.DepthOrArraySize;
+		task->textureLayouts.resize(subresourceCount);
+		task->textureRows.resize(subresourceCount);
+		task->textureRowSizes.resize(subresourceCount);
+		device->GetCopyableFootprints(&task->desc, 0, subresourceCount, 0,
+			task->textureLayouts.data(), task->textureRows.data(),
+			task->textureRowSizes.data(), &task->copyBytes);
 		task->isTexture = true;
 	} else if (task->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
 		task->sourceOffset = task->binding.descriptor.resourceOffset;
@@ -1132,16 +1345,17 @@ static bool ExecuteCopyBatch(
 				WriteResourceBarrier(commandList, task.source, task.sourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
 			if (task.isTexture) {
-				D3D12_TEXTURE_COPY_LOCATION src = {};
-				src.pResource = task.source;
-				src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-				src.SubresourceIndex = 0;
-				D3D12_TEXTURE_COPY_LOCATION dst = {};
-				dst.pResource = task.readback;
-				dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-				dst.PlacedFootprint = task.textureLayout;
-				dst.PlacedFootprint.Offset = 0;
-				commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+				for (UINT subresource = 0; subresource < task.textureLayouts.size(); ++subresource) {
+					D3D12_TEXTURE_COPY_LOCATION src = {};
+					src.pResource = task.source;
+					src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+					src.SubresourceIndex = subresource;
+					D3D12_TEXTURE_COPY_LOCATION dst = {};
+					dst.pResource = task.readback;
+					dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+					dst.PlacedFootprint = task.textureLayouts[subresource];
+					commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+				}
 			} else {
 				commandList->CopyBufferRegion(task.readback, 0, task.source,
 					task.sourceOffset, task.copyBytes);
@@ -1193,20 +1407,7 @@ static bool ExecuteCopyBatch(
 	return ok;
 }
 
-static bool ExecuteCopyTask(ID3D12Device *device, ID3D12CommandQueue *queue, DumpTask *task)
-{
-	if (!device || !queue || !task || !task->ready || !task->readback)
-		return false;
-
-	task->copied = false;
-	std::vector<DumpTask> singleTask;
-	singleTask.push_back(std::move(*task));
-	const bool ok = ExecuteCopyBatch(device, queue, &singleTask);
-	*task = std::move(singleTask[0]);
-	return ok && task->copied;
-}
-
-static size_t ExecuteCopyTasksWithFallback(
+static size_t ExecuteCopyTasks(
 	ID3D12Device *device, ID3D12CommandQueue *queue, std::vector<DumpTask> *tasks, bool *batchOkOut)
 {
 	if (batchOkOut)
@@ -1226,35 +1427,15 @@ static size_t ExecuteCopyTasksWithFallback(
 		return copied;
 	}
 
-	DX12FrameAnalysisLogJsonFunc("ResourceCopyBatchFallback",
+	DX12FrameAnalysisLogJsonFunc("ResourceCopyBatchFailed",
 		"\"tasks\":%zu",
 		tasks->size());
-	size_t copied = 0;
-	size_t failed = 0;
-	bool stopped = false;
 	for (DumpTask &task : *tasks) {
-		if (!task.ready || !task.readback)
-			continue;
-		if (FAILED(device->GetDeviceRemovedReason())) {
-			DX12FrameAnalysisLogJsonFunc("ResourceCopyFallbackStopped",
-				"\"reason\":\"device_removed\",\"copied\":%zu,\"tasks\":%zu",
-				copied, tasks->size());
-			stopped = true;
-			break;
-		}
-		if (ExecuteCopyTask(device, queue, &task)) {
-			copied++;
-			continue;
-		}
-		failed++;
 		task.copied = false;
 		if (!task.skipNote)
-			task.skipNote = "copy_failed";
+			task.skipNote = "copy_batch_failed";
 	}
-	DX12FrameAnalysisLogJsonFunc("ResourceCopyFallbackComplete",
-		"\"tasks\":%zu,\"copied\":%zu,\"failed\":%zu,\"stopped\":%s",
-		tasks->size(), copied, failed, stopped ? "true" : "false");
-	return copied;
+	return 0;
 }
 
 static size_t ExecuteReadbackCopyTasks(
@@ -1280,7 +1461,7 @@ static size_t ExecuteReadbackCopyTasks(
 		return CountCopiedTasks(*tasks);
 
 	bool batchOk = false;
-	ExecuteCopyTasksWithFallback(device, queue, &readbackTasks, &batchOk);
+	ExecuteCopyTasks(device, queue, &readbackTasks, &batchOk);
 	if (batchOkOut)
 		*batchOkOut = batchOk;
 	for (size_t i = 0; i < readbackTasks.size(); ++i)

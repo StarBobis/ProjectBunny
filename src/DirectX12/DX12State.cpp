@@ -94,6 +94,20 @@ bool DX12IsInternalReplay()
 
 void DX12HotPathUpdate()
 {
+	// Fast path: if already skipping all and no activity is present, avoid InterlockedExchange storm
+	if (gDX12HotPathSkipAll &&
+		!DX12FrameAnalysisIsActive() &&
+		!DX12FrameAnalysisIsCapturing() &&
+		!DX12FrameAnalysisIsCaptureRequested() &&
+		!DX12ShaderDumpIsCapturingFrame() &&
+		!DX12ShaderDumpIsCaptureRequested() &&
+		!DX12ShaderDumpIsBusy() &&
+		!DX12HuntNeedsHotPath() &&
+		!DX12ModHasActiveShaderOverrides() &&
+		!DX12ModNeedsPresentReplacement() &&
+		!DX12ModNeedsPreSkinningUavProbe())
+		return;
+
 	const bool needsHeavyTracking =
 		DX12FrameAnalysisIsActive() ||
 		DX12FrameAnalysisIsCapturing() ||
