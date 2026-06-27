@@ -153,6 +153,17 @@ static const char *ApiFunctionName(const char *kind)
 	return kind;
 }
 
+static const char *RootDescriptorKindName(UINT rangeType)
+{
+	if (rangeType == D3D12_ROOT_PARAMETER_TYPE_CBV)
+		return "CBV";
+	if (rangeType == D3D12_ROOT_PARAMETER_TYPE_SRV)
+		return "SRV";
+	if (rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV)
+		return "UAV";
+	return "";
+}
+
 void DX12FrameAnalysisManifestWriteCall(
 	const char *functionName, UINT64 eventSerial, UINT64 drawId, UINT64 dispatchId,
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
@@ -421,18 +432,23 @@ void DX12FrameAnalysisManifestWriteResourceBinding(
 	const uint32_t viewHash = DX12HashDescriptorBufferView(
 		binding.hasDescriptor ? &descriptor : nullptr, fallbackGpuVa, fallbackSize);
 	sprintf_s(hash, sizeof(hash), "%08x", viewHash);
+	char huntHash[16];
+	sprintf_s(huntHash, sizeof(huntHash), "%08x", viewHash);
 
 	char vsJson[64], psJson[64], csJson[64];
 	char bindJson[64], kindJson[32], dimJson[32], fmtNameJson[64];
-	char hashJson[32], fileHashJson[32], fileJson[512], resourceJson[32];
+	char hashJson[32], huntHashJson[32], fileHashJson[32], fileJson[512], resourceJson[32];
+	const char *kind = descriptor.kind.empty() && binding.rootDescriptor ?
+		RootDescriptorKindName(binding.rangeType) : descriptor.kind.c_str();
 	DX12JsonEscapeString(vsJson, sizeof(vsJson), vs);
 	DX12JsonEscapeString(psJson, sizeof(psJson), ps);
 	DX12JsonEscapeString(csJson, sizeof(csJson), cs);
 	DX12JsonEscapeString(bindJson, sizeof(bindJson), binding.bindSpace.c_str());
-	DX12JsonEscapeString(kindJson, sizeof(kindJson), descriptor.kind.c_str());
+	DX12JsonEscapeString(kindJson, sizeof(kindJson), kind);
 	DX12JsonEscapeString(dimJson, sizeof(dimJson), ResourceDimensionName(desc.Dimension));
 	DX12JsonEscapeString(fmtNameJson, sizeof(fmtNameJson), DxgiFormatName(static_cast<UINT>(desc.Format)));
 	DX12JsonEscapeString(hashJson, sizeof(hashJson), hash);
+	DX12JsonEscapeString(huntHashJson, sizeof(huntHashJson), huntHash);
 	DX12JsonEscapeString(fileHashJson, sizeof(fileHashJson), fileHash);
 	DX12JsonEscapeWString(fileJson, sizeof(fileJson), DedupedFileName(filePath));
 	sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", descriptor.resource);
@@ -471,6 +487,7 @@ void DX12FrameAnalysisManifestWriteResourceBinding(
 		"\"state_known\":%s,"
 		"\"file\":%s,"
 		"\"hash\":%s,"
+		"\"hunt_hash\":%s,"
 		"\"file_hash\":%s",
 		static_cast<unsigned long long>(binding.eventSerial),
 		static_cast<unsigned long long>(binding.psoIndex),
@@ -503,6 +520,7 @@ void DX12FrameAnalysisManifestWriteResourceBinding(
 		hasCurrentState ? "true" : "false",
 		fileJson,
 		hashJson,
+		huntHashJson,
 		fileHashJson);
 
 	DX12FrameAnalysisLogJsonFields(buffer);

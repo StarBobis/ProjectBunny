@@ -702,6 +702,11 @@ bool ShouldTrackComputeDescriptorMetadata()
 	return InterlockedCompareExchange(&gDX12HotPathTrackResourceMetadata, 0, 0) != 0;
 }
 
+bool ShouldTrackDescriptorCreationMetadata()
+{
+	return true;
+}
+
 bool ShouldTrackResourceMetadata()
 {
 	return InterlockedCompareExchange(&gDX12HotPathTrackResourceMetadata, 0, 0) != 0;

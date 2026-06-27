@@ -133,7 +133,9 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 	if (DX12IsInternalReplay())
 		return original ? original(device, desc, riid, heap) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
-	if (SUCCEEDED(hr) && ShouldTrackResourceMetadata() && desc && heap && *heap) {
+	if (SUCCEEDED(hr) && desc && heap && *heap &&
+	    (desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
+	     desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)) {
 		ID3D12DescriptorHeap *descriptorHeap = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*heap)->QueryInterface(IID_PPV_ARGS(&descriptorHeap)))) {
 			DescriptorHeapRecord record;
@@ -207,7 +209,7 @@ static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
 		return;
 	}
 	original(device, desc, destDescriptor);
-	if (!ShouldTrackComputeDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	if (desc) {
 		DescriptorRecord record;
@@ -236,7 +238,7 @@ static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
 		return;
 	}
 	original(device, resource, desc, destDescriptor);
-	if (!ShouldTrackComputeDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
 	record.kind = "SRV";
@@ -271,7 +273,7 @@ static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
 			descToUse = &adjustedDesc;
 	}
 	original(device, resource, counterResource, descToUse, destDescriptor);
-	if (!ShouldTrackComputeDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
 	record.kind = "UAV";

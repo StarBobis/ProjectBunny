@@ -55,6 +55,23 @@ struct DumpTask
 	const char *skipNote = nullptr;
 };
 
+struct DumpedTaskRow
+{
+	DumpTaskSource sourceKind = DumpTaskSource::Descriptor;
+	DX12FrameResourceBinding binding;
+	DX12FrameIaBufferBinding iaBuffer;
+	D3D12_RESOURCE_DESC desc = {};
+	UINT64 sourceOffset = 0;
+	UINT64 copyBytes = 0;
+	D3D12_RESOURCE_STATES sourceState = D3D12_RESOURCE_STATE_COMMON;
+	bool stateKnown = false;
+	bool isTexture = false;
+	std::wstring semanticName;
+	std::wstring dedupePath;
+	std::string status;
+	std::string note;
+};
+
 static constexpr uint32_t MakeFourCC(char a, char b, char c, char d)
 {
 	return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
@@ -156,6 +173,15 @@ static const char *RootDescriptorKindName(UINT rangeType)
 		return "SRV";
 	if (rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV)
 		return "UAV";
+	return "";
+}
+
+static const char *BindingKindName(const DX12FrameResourceBinding &binding)
+{
+	if (!binding.descriptor.kind.empty())
+		return binding.descriptor.kind.c_str();
+	if (binding.rootDescriptor)
+		return RootDescriptorKindName(binding.rangeType);
 	return "";
 }
 
@@ -849,6 +875,35 @@ static const char *ShortDescriptorKind(const std::string &kind)
 	return kind.empty() ? "res" : kind.c_str();
 }
 
+static const wchar_t *FileNameFromPath(const std::wstring &path)
+{
+	const wchar_t *text = path.c_str();
+	const wchar_t *slash = wcsrchr(text, L'\\');
+	return slash ? slash + 1 : text;
+}
+
+static void FileHashFromPath(const std::wstring &path, char *hash, size_t hashCount)
+{
+	if (!hash || hashCount == 0)
+		return;
+	hash[0] = '\0';
+	const wchar_t *name = FileNameFromPath(path);
+	size_t i = 0;
+	for (; i < hashCount - 1 && i < 8 && name[i] && name[i] != L'-'; ++i)
+		hash[i] = static_cast<char>(name[i]);
+	hash[i] = '\0';
+}
+
+static uint32_t DescriptorHuntHash(const DX12FrameResourceBinding &binding, UINT64 copyBytes)
+{
+	const DX12DescriptorSummary &descriptor = binding.descriptor;
+	const UINT64 fallbackGpuVa = descriptor.gpuVirtualAddress ?
+		descriptor.gpuVirtualAddress : binding.gpuVirtualAddress;
+	const UINT64 fallbackSize = descriptor.viewSize ? descriptor.viewSize : copyBytes;
+	return DX12HashDescriptorBufferView(
+		binding.hasDescriptor ? &descriptor : nullptr, fallbackGpuVa, fallbackSize);
+}
+
 static void FormatEventPrefix(UINT64 drawId, UINT64 dispatchId, wchar_t *text, size_t textCount)
 {
 	if (!text || textCount == 0)
@@ -929,6 +984,89 @@ static void WriteIndexRow(
 	DX12FrameAnalysisManifestWriteResourceBinding(
 		task.binding, desc, sourceOffset, copyBytes, sourceState,
 		hasCurrentState, filePath);
+}
+
+static void AddDumpedTaskRow(
+	std::vector<DumpedTaskRow> *rows, const char *status, const DumpTask &task,
+	const D3D12_RESOURCE_DESC &desc, UINT64 sourceOffset, UINT64 copyBytes,
+	D3D12_RESOURCE_STATES sourceState, bool stateKnown,
+	const wchar_t *semanticName, const std::wstring &dedupePath, const char *note)
+{
+	if (!rows)
+		return;
+	DumpedTaskRow row;
+	row.sourceKind = task.sourceKind;
+	row.binding = task.binding;
+	row.iaBuffer = task.iaBuffer;
+	row.desc = desc;
+	row.sourceOffset = sourceOffset;
+	row.copyBytes = copyBytes;
+	row.sourceState = sourceState;
+	row.stateKnown = stateKnown;
+	row.isTexture = task.isTexture;
+	row.semanticName = semanticName ? semanticName : L"";
+	row.dedupePath = dedupePath;
+	row.status = status ? status : "";
+	row.note = note ? note : "";
+	rows->push_back(std::move(row));
+}
+
+static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<DumpedTaskRow> &rows)
+{
+	if (!dir)
+		return;
+	wchar_t summaryDir[MAX_PATH];
+	swprintf_s(summaryDir, L"%s\\summary", dir);
+	EnsureDirectory(summaryDir);
+	wchar_t path[MAX_PATH];
+	swprintf_s(path, L"%s\\ResourceBindingsDX12.csv", summaryDir);
+	FILE *file = _wfsopen(path, L"w", _SH_DENYNO);
+	if (!file)
+		return;
+	fprintf(file,
+		"call_index,type,pso,cs,kind,bind,root,range,reg,space,resource,file,file_hash,hunt_hash,semantic_file,offset,size,stride,format,status,note\n");
+	for (const DumpedTaskRow &row : rows) {
+		if (row.sourceKind != DumpTaskSource::Descriptor)
+			continue;
+		const DX12FrameResourceBinding &binding = row.binding;
+		const DX12DescriptorSummary &descriptor = binding.descriptor;
+		const char *kind = BindingKindName(binding);
+		char cs[32] = "-";
+		if (binding.shaderInfo.hasCS)
+			sprintf_s(cs, sizeof(cs), "%016llx",
+				static_cast<unsigned long long>(binding.shaderInfo.cs));
+		char fileHash[16];
+		FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+		const uint32_t huntHash = DescriptorHuntHash(binding, row.copyBytes);
+		fprintf(file,
+			"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+			static_cast<unsigned long long>(binding.eventSerial),
+			binding.dispatchId ? "dispatch" : "draw",
+			static_cast<unsigned long long>(binding.psoIndex),
+			cs,
+			kind,
+			binding.bindSpace.c_str(),
+			binding.rootParameterIndex,
+			binding.rangeIndex,
+			binding.shaderRegister,
+			binding.registerSpace,
+			descriptor.resource,
+			FileNameFromPath(row.dedupePath),
+			fileHash,
+			huntHash,
+			FileNameFromPath(row.semanticName),
+			static_cast<unsigned long long>(row.sourceOffset),
+			static_cast<unsigned long long>(row.copyBytes),
+			descriptor.structureByteStride,
+			descriptor.viewFormat,
+			row.status.c_str(),
+			row.note.c_str());
+	}
+	fclose(file);
+	char fields[512] = "";
+	DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
+	DX12JsonAppendRawField(fields, sizeof(fields), "rows", std::to_string(rows.size()).c_str());
+	DX12FrameAnalysisLogJsonFunc("ResourceBindingsCsvWritten", "%s", fields + 1);
 }
 
 static bool ExecuteCopyBatch(
@@ -1278,6 +1416,7 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 	UINT failed = 0;
 	UINT linked = 0;
 	std::unordered_map<std::string, std::wstring> dedupePathByKey;
+	std::vector<DumpedTaskRow> dumpedRows;
 	std::unordered_set<std::wstring> loggedFileDumps;
 	for (DumpTask &task : tasks) {
 		bool ok = task.copied;
@@ -1305,6 +1444,9 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 		WriteIndexRow(nullptr, "dumped", task, task.desc,
 			task.sourceOffset, task.copyBytes, task.sourceState, task.stateKnown,
 			task.fileName.c_str(), dedupePath.c_str(), "");
+		AddDumpedTaskRow(&dumpedRows, "dumped", task, task.desc,
+			task.sourceOffset, task.copyBytes, task.sourceState, task.stateKnown,
+			task.fileName.c_str(), dedupePath, "");
 	}
 
 	for (DumpTask &task : duplicateTasks) {
@@ -1318,6 +1460,9 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 		WriteIndexRow(nullptr, "linked", task, task.desc,
 			task.sourceOffset, task.copyBytes, task.sourceState, task.stateKnown,
 			task.fileName.c_str(), dedupeIt->second.c_str(), "already_dumped");
+		AddDumpedTaskRow(&dumpedRows, "linked", task, task.desc,
+			task.sourceOffset, task.copyBytes, task.sourceState, task.stateKnown,
+			task.fileName.c_str(), dedupeIt->second, "already_dumped");
 	}
 
 	UINT skipped = 0;
@@ -1329,6 +1474,7 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 	ReleaseTasks(&tasks);
 	device->Release();
 	queue->Release();
+	WriteResourceBindingsCsv(dir, dumpedRows);
 
 	DX12FrameAnalysisLogJsonFunc("ResourceSummary",
 		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu",

@@ -807,8 +807,8 @@ static void WriteFlatFrameAnalysisFiles(
 	if (frameFile) {
 		fprintf(frameFile,
 			"events,dropped,max_events,draw_rows,dispatch_rows,descriptor_heaps,descriptors,buffers,"
-			"draw_calls_csv,buffers_csv,current_frame_resources,current_frame_resource_files\n");
-		fprintf(frameFile, "%zu,%llu,%u,%zu,%zu,%zu,%zu,%zu,summary\\DrawCallsDX12.csv,summary\\BuffersDX12.csv,summary\\CurrentFrameResourcesDX12.txt,summary\\CurrentFrameResourceFilesDX12.txt\n",
+			"draw_calls_csv,buffers_csv,resource_bindings_csv\n");
+		fprintf(frameFile, "%zu,%llu,%u,%zu,%zu,%zu,%zu,%zu,summary\\DrawCallsDX12.csv,summary\\BuffersDX12.csv,summary\\ResourceBindingsDX12.csv\n",
 			events.size(),
 			static_cast<unsigned long long>(droppedEvents),
 			MaxTrackedEvents,
