@@ -164,9 +164,30 @@ static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapC
 
 static void RunPostPresentUi(IDXGISwapChain *swapChain)
 {
-	DX12UiConsumeActions();
-	DX12HotPathUpdate();
 	DX12NativeOverlayRender(swapChain);
+}
+
+static void ConsumeUiActionsForFrame()
+{
+	if (!DX12UiConsumeActions())
+		return;
+	DX12HotPathUpdate();
+	DX12CommandListRuntimeBumpTrackingGeneration();
+}
+
+static void BeginFrameAnalysisCapture(LONG present)
+{
+	DX12BindingBeginFrame();
+	DX12FrameAnalysisBeginCapture();
+	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12FrameAnalysisLogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
+}
+
+static void BeginShaderDumpCapture()
+{
+	DX12BindingBeginFrame();
+	DX12ShaderDumpBeginCapture();
+	DX12CommandListRuntimeBumpTrackingGeneration();
 }
 
 static void HookSwapChain(IDXGISwapChain *swapChain)
@@ -406,6 +427,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 		return original ? original(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
 	}
 
+	ConsumeUiActionsForFrame();
+
 	static volatile LONG firstPresentLog = 0;
 	if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 		DX12LogJsonFuncFlush("DX12PresentFirst",
@@ -482,13 +505,9 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysisIsCaptureRequested()) {
-		DX12BindingBeginFrame();
-		DX12FrameAnalysisBeginCapture();
-		DX12FrameAnalysisLogJsonFunc("FrameCaptureBegin",
-			"\"present\":%ld", DX12GetPresentCount());
+		BeginFrameAnalysisCapture(DX12GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
-		DX12BindingBeginFrame();
-		DX12ShaderDumpBeginCapture();
+		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingBeginFrame();
@@ -506,6 +525,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 		PFN_PRESENT1 original = GetPresent1Original(swapChain);
 		return original ? original(swapChain, syncInterval, flags, presentParameters) : DXGI_ERROR_INVALID_CALL;
 	}
+
+	ConsumeUiActionsForFrame();
 
 	static volatile LONG firstPresent1Log = 0;
 	if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
@@ -582,13 +603,9 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysisIsCaptureRequested()) {
-		DX12BindingBeginFrame();
-		DX12FrameAnalysisBeginCapture();
-		DX12FrameAnalysisLogJsonFunc("FrameCaptureBegin",
-			"\"present\":%ld", DX12GetPresentCount());
+		BeginFrameAnalysisCapture(DX12GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
-		DX12BindingBeginFrame();
-		DX12ShaderDumpBeginCapture();
+		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingBeginFrame();

@@ -68,11 +68,11 @@ static void RunFrameAnalysisRequest()
 	}
 }
 
-void DX12UiConsumeActions()
+bool DX12UiConsumeActions()
 {
 	const LONG actions = InterlockedExchange(&gPendingUiActions, 0);
 	if (!actions)
-		return;
+		return false;
 
 	const bool huntToggleRequested = (actions & DX12_UI_ACTION_HUNT_TOGGLE) != 0;
 
@@ -112,4 +112,5 @@ void DX12UiConsumeActions()
 		DX12RequestModReload();
 	if (actions & DX12_UI_ACTION_PROFILING)
 		DX12Profiling::Toggle();
+	return true;
 }

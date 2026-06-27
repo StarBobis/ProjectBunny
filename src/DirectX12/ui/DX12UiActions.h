@@ -17,5 +17,4 @@ void DX12UiRequestFrameAnalysis();
 void DX12UiRequestShaderDump();
 void DX12UiRequestModReload();
 void DX12UiRequestProfilingToggle();
-void DX12UiConsumeActions();
-
+bool DX12UiConsumeActions();

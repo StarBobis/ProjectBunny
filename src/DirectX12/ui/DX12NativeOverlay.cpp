@@ -1,5 +1,6 @@
 #include "DX12NativeOverlay.h"
 
+#include <dwmapi.h>
 #include <stdint.h>
 #include <vector>
 
@@ -10,11 +11,13 @@
 #include "DX12UiActions.h"
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
-static constexpr UINT kOverlayWidth = 820;
-static constexpr UINT kOverlayHeight = 620;
+static constexpr UINT kOverlayClientWidth = 820;
+static constexpr UINT kOverlayClientHeight = 640;
 static constexpr int kOverlayGap = 8;
 static constexpr UINT_PTR kUiRefreshTimer = 1;
 static constexpr UINT kUiRefreshMs = 100;
+static constexpr DWORD kOverlayStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+static constexpr DWORD kOverlayExStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 
 enum UiControlId
 {
@@ -80,6 +83,34 @@ static bool GetGameWindowRect(HWND hwnd, RECT *rect)
 	if (!GetWindowRect(hwnd, rect))
 		return false;
 	return rect->right > rect->left && rect->bottom > rect->top;
+}
+
+static bool IsGameWindowDisplayable(HWND hwnd, RECT *rect)
+{
+	if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd))
+		return false;
+
+	BOOL cloaked = FALSE;
+	if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+		return false;
+
+	RECT client = {};
+	if (!GetClientRect(hwnd, &client) || client.right <= client.left || client.bottom <= client.top)
+		return false;
+
+	return GetGameWindowRect(hwnd, rect);
+}
+
+static bool GetOverlayWindowSize(int *width, int *height)
+{
+	RECT rect = { 0, 0, static_cast<LONG>(kOverlayClientWidth), static_cast<LONG>(kOverlayClientHeight) };
+	if (!AdjustWindowRectEx(&rect, kOverlayStyle, FALSE, kOverlayExStyle))
+		return false;
+	if (width)
+		*width = rect.right - rect.left;
+	if (height)
+		*height = rect.bottom - rect.top;
+	return true;
 }
 
 static HWND AddControl(HWND parent, const wchar_t *className, const wchar_t *text,
@@ -187,14 +218,17 @@ static void FollowGameWindow()
 	HWND overlay = gOverlayWindow;
 	HWND game = GetSharedGameWindow();
 	RECT rect = {};
-	if (!overlay || !game || !GetGameWindowRect(game, &rect) || !IsWindowVisible(game) || IsIconic(game)) {
+	if (!overlay || !IsGameWindowDisplayable(game, &rect)) {
 		if (overlay)
 			ShowWindow(overlay, SW_HIDE);
 		return;
 	}
 
+	int width = 0;
+	int height = 0;
+	GetOverlayWindowSize(&width, &height);
 	SetWindowPos(overlay, HWND_TOPMOST, rect.right + kOverlayGap, rect.top,
-		kOverlayWidth, kOverlayHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+		width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 static void RunCommand(int id)
@@ -303,12 +337,15 @@ static DWORD WINAPI UiThreadProc(void*)
 		return 0;
 	}
 
+	int width = 0;
+	int height = 0;
+	GetOverlayWindowSize(&width, &height);
 	HWND hwnd = CreateWindowExW(
-		WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+		kOverlayExStyle,
 		kOverlayWindowClass,
 		L"3DMigoto DX12",
-		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-		CW_USEDEFAULT, CW_USEDEFAULT, kOverlayWidth, kOverlayHeight,
+		kOverlayStyle,
+		CW_USEDEFAULT, CW_USEDEFAULT, width, height,
 		nullptr, nullptr, DX12GetModule(), nullptr);
 	if (!hwnd) {
 		InterlockedExchange(&gThreadStarted, 0);

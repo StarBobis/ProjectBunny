@@ -89,6 +89,7 @@ target_link_libraries(DirectX12 PRIVATE
     d3dcompiler.lib
     User32.lib
     Gdi32.lib
+    Dwmapi.lib
     Shlwapi.lib
 )
 
