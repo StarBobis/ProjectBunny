@@ -2,42 +2,73 @@
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
+    # Entry point (root)
     D3D12Wrapper.cpp
-    DX12BindingTracker.cpp
-    DX12BindingTrackerFrameExport.cpp
-    DX12BindingTrackerResourceExport.cpp
-    DX12CommandListCommandRecorder.cpp
-    DX12CommandListLifecycle.cpp
-    DX12CommandListStateCapture.cpp
-    DX12CommandListRuntime.cpp
-    DX12CommandListHooks.cpp
-    DX12DeviceHooks.cpp
-    DX12DispatchHookFlow.cpp
-    DX12DrawHookFlow.cpp
-    DX12FrameAnalysis.cpp
-    DX12FrameAnalysisManifest.cpp
-    DX12HookManager.cpp
-    DX12IaRegionHash.cpp
-    DX12IaReplacementExecutor.cpp
-    DX12Input.cpp
-    DX12Json.cpp
-    DX12ModRuntime.cpp
-    DX12Overlay.cpp
-    DX12Profiling.cpp
-    DX12ResourceDump.cpp
-    DX12ResourceMetadataDump.cpp
-    DX12ResourceTracker.cpp
-    DX12ResourceTrackerHooks.cpp
-    DX12ResourceTrackerQueries.cpp
-    DX12Runtime.cpp
-    DX12ShaderDump.cpp
-    DX12ShaderHunt.cpp
-    DX12State.cpp
-    DXGIHooks.cpp
+
+    # Core
+    core/DX12Runtime.cpp
+    core/DX12State.cpp
+    core/DX12Input.cpp
+    core/DX12Json.cpp
+    core/DX12Overlay.cpp
+    core/DX12Profiling.cpp
+
+    # Hooks infrastructure
+    hooks/DX12DeviceHooks.cpp
+    hooks/DX12DispatchHookFlow.cpp
+    hooks/DX12DrawHookFlow.cpp
+    hooks/DX12HookManager.cpp
+    hooks/DXGIHooks.cpp
+
+    # Resource tracking
+    resource_tracker/DX12ResourceTracker.cpp
+    resource_tracker/DX12ResourceTrackerHooks.cpp
+    resource_tracker/DX12ResourceTrackerQueries.cpp
+
+    # Binding/descriptor tracking
+    binding_tracker/DX12BindingTracker.cpp
+    binding_tracker/DX12BindingTrackerFrameExport.cpp
+    binding_tracker/DX12BindingTrackerResourceExport.cpp
+
+    # Frame analysis
+    frame_analysis/DX12FrameAnalysis.cpp
+    frame_analysis/DX12FrameAnalysisManifest.cpp
+
+    # Input Assembler (IA)
+    ia/DX12IaRegionHash.cpp
+    ia/DX12IaReplacementExecutor.cpp
+
+    # Shader dump & hunt
+    shader/DX12ShaderDump.cpp
+    shader/DX12ShaderHunt.cpp
+
+    # Resource dump
+    resource_dump/DX12ResourceDump.cpp
+    resource_dump/DX12ResourceMetadataDump.cpp
+
+    # Command list hooks & runtime
+    command_list/DX12CommandListHooks.cpp
+    command_list/DX12CommandListRuntime.cpp
+    command_list/DX12CommandListLifecycle.cpp
+    command_list/DX12CommandListCommandRecorder.cpp
+    command_list/DX12CommandListStateCapture.cpp
+
+    # Mod runtime
+    mod_runtime/DX12ModRuntime.cpp
 )
 
 target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/binding_tracker
+    ${CMAKE_CURRENT_SOURCE_DIR}/command_list
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/frame_analysis
+    ${CMAKE_CURRENT_SOURCE_DIR}/hooks
+    ${CMAKE_CURRENT_SOURCE_DIR}/ia
+    ${CMAKE_CURRENT_SOURCE_DIR}/mod_runtime
+    ${CMAKE_CURRENT_SOURCE_DIR}/resource_dump
+    ${CMAKE_CURRENT_SOURCE_DIR}/resource_tracker
+    ${CMAKE_CURRENT_SOURCE_DIR}/shader
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty

@@ -19,10 +19,6 @@
 #include "DX12ShaderDump.h"
 #include "DX12State.h"
 
-static constexpr UINT64 MaxResourceDumpBytes = 256ull * 1024ull * 1024ull;
-static constexpr UINT64 DefaultFrameReadbackBudgetBytes = 1536ull * 1024ull * 1024ull;
-static constexpr UINT64 MaxGenericBufferTextScalars = 4096;
-static constexpr UINT64 MaxIaBufferTextRows = 1024ull * 1024ull;
 
 enum class DumpTaskSource
 {
@@ -141,10 +137,10 @@ static UINT64 FrameReadbackBudgetBytes()
 	wchar_t value[32] = {};
 	DWORD chars = GetEnvironmentVariableW(L"MIGOTO_DX12_MAX_FRAME_READBACK_MB", value, ARRAYSIZE(value));
 	if (chars == 0)
-		return DefaultFrameReadbackBudgetBytes;
+		return 0; // 0 = no budget limit
 	UINT64 mb = wcstoull(value, nullptr, 10);
 	if (mb == 0)
-		return DefaultFrameReadbackBudgetBytes;
+		return 0; // 0 = no budget limit
 	return mb * 1024ull * 1024ull;
 }
 
@@ -574,12 +570,8 @@ static bool WriteGenericBufferTextFile(FILE *file, const DumpTask &task, const u
 		fprintf(file, "stride: %u\n", stride);
 
 	const UINT64 floatCount = task.copyBytes / sizeof(float);
-	const UINT64 writtenCount = floatCount > MaxGenericBufferTextScalars ?
-		MaxGenericBufferTextScalars : floatCount;
-	if (floatCount > writtenCount)
-		fprintf(file, "truncated: 1\nshown floats: %llu\n", static_cast<unsigned long long>(writtenCount));
 	const float *floats = reinterpret_cast<const float*>(data);
-	for (UINT64 i = 0; i < writtenCount; ++i)
+	for (UINT64 i = 0; i < floatCount; ++i)
 		fprintf(file, "buf[%llu]: %.9g\n", static_cast<unsigned long long>(i), floats[i]);
 	return true;
 }
@@ -600,11 +592,7 @@ static bool WriteIndexBufferTextFile(FILE *file, const DumpTask &task, const uin
 	if (buffer.format == DXGI_FORMAT_R16_UINT) {
 		const uint16_t *indices = reinterpret_cast<const uint16_t*>(data);
 		const UINT64 count = task.copyBytes / 2;
-		const UINT64 writtenCount = count > MaxIaBufferTextRows * 3 ?
-			MaxIaBufferTextRows * 3 : count;
-		if (count > writtenCount)
-			fprintf(file, "truncated: 1\nshown indices: %llu\n", static_cast<unsigned long long>(writtenCount));
-		for (UINT64 i = 0; i < writtenCount; ++i) {
+		for (UINT64 i = 0; i < count; ++i) {
 			if (i % 3 == 0)
 				fprintf(file, "\n");
 			else
@@ -617,11 +605,7 @@ static bool WriteIndexBufferTextFile(FILE *file, const DumpTask &task, const uin
 	if (buffer.format == DXGI_FORMAT_R32_UINT) {
 		const uint32_t *indices = reinterpret_cast<const uint32_t*>(data);
 		const UINT64 count = task.copyBytes / 4;
-		const UINT64 writtenCount = count > MaxIaBufferTextRows * 3 ?
-			MaxIaBufferTextRows * 3 : count;
-		if (count > writtenCount)
-			fprintf(file, "truncated: 1\nshown indices: %llu\n", static_cast<unsigned long long>(writtenCount));
-		for (UINT64 i = 0; i < writtenCount; ++i) {
+		for (UINT64 i = 0; i < count; ++i) {
 			if (i % 3 == 0)
 				fprintf(file, "\n");
 			else
@@ -646,12 +630,8 @@ static bool WriteVertexBufferTextFile(FILE *file, const DumpTask &task, const ui
 
 	const UINT stride = buffer.stride ? buffer.stride : 16;
 	const UINT64 vertexCount = stride ? task.copyBytes / stride : 0;
-	const UINT64 writtenCount = vertexCount > MaxIaBufferTextRows ?
-		MaxIaBufferTextRows : vertexCount;
 	fprintf(file, "vertex count: %llu\n", static_cast<unsigned long long>(vertexCount));
-	if (vertexCount > writtenCount)
-		fprintf(file, "truncated: 1\nshown vertices: %llu\n", static_cast<unsigned long long>(writtenCount));
-	for (UINT64 v = 0; v < writtenCount; ++v) {
+	for (UINT64 v = 0; v < vertexCount; ++v) {
 		const uint8_t *vertex = data + v * stride;
 		fprintf(file, "vertex[%llu]", static_cast<unsigned long long>(v));
 		const UINT floatCount = stride / sizeof(float);
@@ -768,10 +748,33 @@ static bool WriteDedupedResourceFile(
 static bool LinkTaskToDedupedFile(
 	const wchar_t *resourceDir, const DumpTask &task, const std::wstring &dedupePath)
 {
-	(void)resourceDir;
-	(void)task;
-	if (dedupePath.empty())
+	if (!resourceDir || task.fileName.empty() || dedupePath.empty())
 		return false;
+
+	wchar_t sourcePath[MAX_PATH];
+	wchar_t destPath[MAX_PATH];
+	swprintf_s(sourcePath, L"%s\\%s", resourceDir, dedupePath.c_str());
+	swprintf_s(destPath, L"%s\\%s", resourceDir, task.fileName.c_str());
+
+	if (GetFileAttributesW(sourcePath) == INVALID_FILE_ATTRIBUTES)
+		return false;
+	if (GetFileAttributesW(destPath) != INVALID_FILE_ATTRIBUTES)
+		return true;
+	if (CreateHardLinkW(destPath, sourcePath, nullptr))
+		return true;
+	if (!CopyFileW(sourcePath, destPath, TRUE))
+		return false;
+
+	if (!task.isTexture) {
+		wchar_t sourceTextPath[MAX_PATH];
+		wchar_t destTextPath[MAX_PATH];
+		BuildTextFileName(sourcePath, sourceTextPath, ARRAYSIZE(sourceTextPath));
+		BuildTextFileName(destPath, destTextPath, ARRAYSIZE(destTextPath));
+		if (GetFileAttributesW(sourceTextPath) != INVALID_FILE_ATTRIBUTES &&
+			GetFileAttributesW(destTextPath) == INVALID_FILE_ATTRIBUTES)
+			CopyFileW(sourceTextPath, destTextPath, TRUE);
+	}
+
 	return true;
 }
 
@@ -852,8 +855,8 @@ static bool CreateReadbackForTask(
 	if (!device || !task)
 		return false;
 
-	if (task->copyBytes == 0 || task->copyBytes > MaxResourceDumpBytes) {
-		task->skipNote = "copy_size_zero_or_too_large";
+	if (task->copyBytes == 0) {
+		task->skipNote = "copy_size_zero";
 		return false;
 	}
 	if (frameReadbackBytes && frameReadbackBudgetBytes > 0 &&
@@ -896,8 +899,8 @@ static bool PrepareDirectMapTask(DumpTask *task)
 		task->skipNote = "gpu_copy_disabled";
 		return false;
 	}
-	if (task->copyBytes == 0 || task->copyBytes > MaxResourceDumpBytes) {
-		task->skipNote = "copy_size_zero_or_too_large";
+	if (task->copyBytes == 0) {
+		task->skipNote = "copy_size_zero";
 		return false;
 	}
 
@@ -950,11 +953,16 @@ static bool PrepareTask(
 		static_cast<D3D12_RESOURCE_STATES>(task->binding.descriptor.currentState) :
 		GuessSourceState(task->binding);
 	task->stateKnown = StateTrackingAllowsCopy(task->binding.descriptor);
-	if (!unsafeCopy && !task->stateKnown) {
-		task->skipNote = "state_unknown";
-		return false;
-	}
 	task->needsBarrier = ResourceNeedsBarrier(task->binding.descriptor);
+	if (!unsafeCopy && !task->stateKnown) {
+		// State unknown (e.g. per-subresource barrier on texture).
+		// Skip barrier to avoid GPU hang from wrong state transition;
+		// attempt copy with guessed source state. If the resource is
+		// already in a compatible state (COMMON, SRV etc.) the copy will
+		// succeed; otherwise it may produce partial/garbage data, but
+		// this path is far better than skipping textures entirely.
+		task->needsBarrier = false;
+	}
 
 	if (task->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
 		if (task->desc.SampleDesc.Count > 1) {
@@ -1017,11 +1025,11 @@ static bool PrepareIaBufferTask(
 		static_cast<D3D12_RESOURCE_STATES>(buffer.resource.currentState) :
 		GuessIaBufferSourceState(buffer);
 	task->stateKnown = StateTrackingAllowsCopy(buffer.resource);
-	if (!unsafeCopy && !task->stateKnown) {
-		task->skipNote = "state_unknown";
-		return false;
-	}
 	task->needsBarrier = ResourceNeedsBarrier(buffer.resource);
+	if (!unsafeCopy && !task->stateKnown) {
+		// State unknown - skip barrier, attempt copy with guessed state.
+		task->needsBarrier = false;
+	}
 	task->isTexture = false;
 
 	if (!gpuCopy) {
@@ -1487,8 +1495,8 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 	const UINT64 frameReadbackBudget = FrameReadbackBudgetBytes();
 	UINT64 frameReadbackBytes = 0;
 	DX12FrameAnalysisLogJsonFunc("ResourceDump",
-		"\"bindings\":%zu,\"ia\":%zu,\"maxBytes\":%llu,\"frameReadbackBudget\":%llu,\"unsafeCopy\":%u,\"gpuCopy\":%u,\"stateTracking\":1",
-		bindings.size(), iaBuffers.size(), static_cast<unsigned long long>(MaxResourceDumpBytes),
+		"\"bindings\":%zu,\"ia\":%zu,\"frameReadbackBudget\":%llu,\"unsafeCopy\":%u,\"gpuCopy\":%u,\"stateTracking\":1",
+		bindings.size(), iaBuffers.size(),
 		static_cast<unsigned long long>(frameReadbackBudget),
 		UnsafeResourceCopyEnabled() ? 1 : 0,
 		GpuResourceCopyEnabled() ? 1 : 0);
@@ -1553,6 +1561,7 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 				duplicate.binding.descriptor = tasks[canonicalIt->second].binding.descriptor;
 			}
 			duplicate.sourceKind = DumpTaskSource::Descriptor;
+			duplicate.dedupeKey = key;
 			wchar_t fileName[MAX_PATH];
 			BuildFileName(duplicate, fileName, ARRAYSIZE(fileName));
 			duplicate.fileName = fileName;
@@ -1595,6 +1604,7 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 			duplicate = tasks[canonicalIt->second];
 			duplicate.sourceKind = DumpTaskSource::InputAssembler;
 			duplicate.iaBuffer = buffer;
+			duplicate.dedupeKey = key;
 			wchar_t fileName[MAX_PATH];
 			DX12BuildIaBufferFileName(buffer, fileName, ARRAYSIZE(fileName));
 			duplicate.fileName = fileName;
@@ -1657,6 +1667,11 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 		if (!ok)
 			continue;
 
+		if (!LinkTaskToDedupedFile(resourceDir, task, dedupePath)) {
+			failed++;
+			continue;
+		}
+
 		if (loggedFileDumps.insert(dedupePath).second) {
 			DX12FrameAnalysisManifestWriteFileDump(
 				dedupePath.c_str(), task.isTexture, task.copyBytes, "dumped", "");
@@ -1676,6 +1691,14 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 			if (task.sourceKind == DumpTaskSource::Descriptor)
 				AddBindingRow(&dumpedRows, "failed", task.binding, L"",
 					task.fileName.c_str(), "dedupe_source_missing");
+			continue;
+		}
+
+		if (!LinkTaskToDedupedFile(resourceDir, task, dedupeIt->second)) {
+			failed++;
+			if (task.sourceKind == DumpTaskSource::Descriptor)
+				AddBindingRow(&dumpedRows, "failed", task.binding, L"",
+					task.fileName.c_str(), "dedupe_link_failed");
 			continue;
 		}
 

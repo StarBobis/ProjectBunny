@@ -15,6 +15,11 @@
 #include <vector>
 #include <unordered_map>
 
+// C++17 std::byte conflicts with Windows SDK ::byte on MSVC when used
+// with using namespace std. Force byte -> unsigned char at preprocessor
+// level to eliminate the ambiguity entirely.
+#define byte unsigned char
+
 using namespace std;
 
 // VS2013 BUG WORKAROUND: Make sure this class has a unique type name!

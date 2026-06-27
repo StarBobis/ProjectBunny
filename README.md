@@ -8,10 +8,12 @@ This project is used to refactor and improve the original 3Dmigoto project.
 
 # Core Change
 
-- Refactor to CMake Project.
-- Use ninja to compile.
-- DX11 part will follow update with SpectrumQT's XXMI-Libs-Package version of 3Dmigoto.
-- DX12 part start from zero, and will continue to develop and iterate.
+- 使用CMake重构项目，更加灵活
+- 使用Ninja编译项目
+- DX11部分随 SpectrumQT的 XXMI-Libs-Package 版本 3Dmigoto 而更新.
+- 使用C++ 17标准，而不是C++14标准
+- 使用VSCode开发而不是Visual Studio开发
+- 
 
 # Development Environment
 
