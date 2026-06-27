@@ -803,10 +803,6 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 			DX12IsInternalReplay() ? "true" : "false");
 
 	if (gDX12HotPathSkipAll) {
-		if (DX12HuntIsEnabled()) {
-			for (UINT i = 0; commandLists && i < numCommandLists; ++i)
-				RegisterSubmittedCommandList(commandLists[i]);
-		}
 		PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
 		if (original) {
@@ -819,6 +815,10 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 				DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
 					"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 					queue, numCommandLists);
+		}
+		if (DX12HuntIsEnabled()) {
+			for (UINT i = 0; commandLists && i < numCommandLists; ++i)
+				RegisterSubmittedCommandList(commandLists[i]);
 		}
 		return;
 	}
@@ -833,8 +833,6 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 
 	DX12_PROFILE_SCOPE(ExecuteCommandLists);
 	LogDX12Call("ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
-	for (UINT i = 0; commandLists && i < numCommandLists; ++i)
-		RegisterSubmittedCommandList(commandLists[i]);
 	PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 		DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
 	if (original) {
@@ -857,6 +855,8 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
 		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
+		for (UINT i = 0; commandLists && i < numCommandLists; ++i)
+			RegisterSubmittedCommandList(commandLists[i]);
 #if defined(_DEBUG)
 		LogQueueStage("ExecuteCommandLists", "afterNotify", queue, numCommandLists,
 			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);

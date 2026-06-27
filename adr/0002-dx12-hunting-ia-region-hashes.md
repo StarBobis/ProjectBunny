@@ -28,6 +28,8 @@ Visited IB/VB hashes are aged at Present with a short frame lifetime to keep the
 
 When command lists are submitted after hunting activation, the command-list hook installer runs even for command lists whose lifecycle metadata was already registered.
 
+Queue submission calls the original `ExecuteCommandLists` before submitted-command-list registration, command-list hook installation, and hunt-summary publishing. These are bookkeeping operations around submitted work and can wait until after the game has entered the driver. This avoids pre-submit stalls from COM queries, hook installation, and Hunting container work during rapid Hunting toggles.
+
 Hunting copies PSO and IA state while holding the hunting lock, then performs shader metadata lookup and IA hash computation outside that lock before writing back the resulting visited hashes.
 
 ## Consequences
