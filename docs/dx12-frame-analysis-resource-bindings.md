@@ -12,4 +12,8 @@ Descriptor table bindings depend on descriptor heap metadata. F8 is requested af
 
 Descriptor heap metadata is lightweight and should include heap pointer, type, descriptor count, CPU start, GPU start, and increment. CBV/SRV/UAV descriptor creation metadata should include the resource pointer, view desc, GPU VA, resource offset, view size, stride, format, and current known resource state. Descriptor copy tracking can remain gated behind the frame-analysis or preskinning hot path because copies may occur frequently, but creation metadata must not depend on the capture window.
 
-`summary/ResourceBindingsDX12.csv` is the stable machine-readable bridge for ZZMIDX12. It records call index, dispatch/draw type, PSO, CS hash, resource kind, root parameter, register, resource pointer, actual deduped file, file hash, binding hash, offset, size, stride, and format.
+`BindResource` is binding evidence, not only a file-dump receipt. SRV/UAV/CBV rows must be emitted even when the resource copy is skipped or fails, with `status` and `note` carrying the reason. GPU preskinning producer detection depends on the UAV binding evidence, so it must not disappear just because no deduped file was written.
+
+`summary/ResourceBindingsDX12.csv` is the stable machine-readable bridge for ZZMIDX12. It records call index, dispatch/draw type, PSO, CS hash, resource kind, root parameter, register, resource pointer, actual deduped file, file hash, binding hash, offset, size, stride, format, status, and note.
+
+Texture dumping follows the same resource binding path. Texture2D SRV/UAV bindings should enter the dump candidate set and write `.dds` files through the DX12 copyable-footprint path when state, format, sample count, and budget allow it. If a texture cannot be copied, the SRV/UAV binding row still remains visible with a skip reason.

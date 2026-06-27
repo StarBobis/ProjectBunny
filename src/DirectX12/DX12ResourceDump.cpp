@@ -620,17 +620,21 @@ static bool ShouldDumpBinding(const DX12FrameResourceBinding &binding)
 			 binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV);
 	if (!binding.hasDescriptor)
 		return false;
+	if (!binding.descriptor.resource || !binding.descriptor.hasResourceDesc)
+		return false;
 	const bool isBufferResource =
-		binding.descriptor.hasResourceDesc &&
-		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-		binding.descriptor.resource != nullptr;
-	if (!isBufferResource)
+		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+	const bool isTextureResource =
+		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	if (!isBufferResource && !isTextureResource)
 		return false;
 	if (isDispatch)
 		return binding.descriptor.kind == "CBV" ||
 			binding.descriptor.kind == "SRV" ||
 			binding.descriptor.kind == "UAV";
-	return binding.descriptor.kind == "CBV";
+	if (binding.descriptor.kind == "CBV")
+		return isBufferResource;
+	return binding.descriptor.kind == "SRV" || binding.descriptor.kind == "UAV";
 }
 
 static bool CreateReadbackForTask(
@@ -1011,6 +1015,28 @@ static void AddDumpedTaskRow(
 	rows->push_back(std::move(row));
 }
 
+static void AddBindingRow(
+	std::vector<DumpedTaskRow> *rows, const char *status, const DX12FrameResourceBinding &binding,
+	const std::wstring &dedupePath, const wchar_t *semanticName, const char *note)
+{
+	if (!rows)
+		return;
+	DumpTask task;
+	task.sourceKind = DumpTaskSource::Descriptor;
+	task.binding = binding;
+	task.isTexture = binding.descriptor.hasResourceDesc &&
+		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	const D3D12_RESOURCE_DESC desc = binding.descriptor.hasResourceDesc ?
+		binding.descriptor.resourceDesc : D3D12_RESOURCE_DESC();
+	const UINT64 sourceOffset = binding.descriptor.resourceOffset;
+	const UINT64 copyBytes = binding.descriptor.viewSize;
+	const D3D12_RESOURCE_STATES sourceState = binding.descriptor.hasCurrentState ?
+		static_cast<D3D12_RESOURCE_STATES>(binding.descriptor.currentState) :
+		GuessSourceState(binding);
+	AddDumpedTaskRow(rows, status, task, desc, sourceOffset, copyBytes,
+		sourceState, binding.descriptor.hasCurrentState, semanticName, dedupePath, note);
+}
+
 static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<DumpedTaskRow> &rows)
 {
 	if (!dir)
@@ -1301,10 +1327,23 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 	std::vector<DumpTask> skippedTasks;
 	std::unordered_map<std::string, size_t> canonicalTaskByKey;
 	UINT duplicates = 0;
+	UINT candidateCbv = 0;
+	UINT candidateSrv = 0;
+	UINT candidateUav = 0;
+	UINT candidateTextures = 0;
 
 	for (const DX12FrameResourceBinding &binding : bindings) {
 		if (!ShouldDumpBinding(binding))
 			continue;
+		if (binding.descriptor.kind == "CBV")
+			candidateCbv++;
+		else if (binding.descriptor.kind == "SRV")
+			candidateSrv++;
+		else if (binding.descriptor.kind == "UAV")
+			candidateUav++;
+		if (binding.descriptor.hasResourceDesc &&
+			binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+			candidateTextures++;
 		if (!binding.hasDescriptor && !binding.rootDescriptor) {
 			DumpTask skipped;
 			skipped.binding = binding;
@@ -1453,6 +1492,9 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 		auto dedupeIt = dedupePathByKey.find(task.dedupeKey);
 		if (dedupeIt == dedupePathByKey.end()) {
 			failed++;
+			if (task.sourceKind == DumpTaskSource::Descriptor)
+				AddBindingRow(&dumpedRows, "failed", task.binding, L"",
+					task.fileName.c_str(), "dedupe_source_missing");
 			continue;
 		}
 
@@ -1467,8 +1509,18 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 
 	UINT skipped = 0;
 	for (const DumpTask &task : skippedTasks) {
-		(void)task;
 		skipped++;
+		if (task.sourceKind == DumpTaskSource::Descriptor) {
+			WriteIndexRow(nullptr, "skipped", task, task.binding.descriptor.resourceDesc,
+				task.binding.descriptor.resourceOffset, task.binding.descriptor.viewSize,
+				task.binding.descriptor.hasCurrentState ?
+					static_cast<D3D12_RESOURCE_STATES>(task.binding.descriptor.currentState) :
+					GuessSourceState(task.binding),
+				task.binding.descriptor.hasCurrentState, L"", L"",
+				task.skipNote ? task.skipNote : "skipped");
+			AddBindingRow(&dumpedRows, "skipped", task.binding, L"",
+				task.fileName.c_str(), task.skipNote ? task.skipNote : "skipped");
+		}
 	}
 
 	ReleaseTasks(&tasks);
@@ -1477,8 +1529,9 @@ void DX12DumpCurrentFrameResources(const wchar_t *dir)
 	WriteResourceBindingsCsv(dir, dumpedRows);
 
 	DX12FrameAnalysisLogJsonFunc("ResourceSummary",
-		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu",
+		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_textures\":%u",
 		dumpedTextures, dumpedBuffers, linked, skipped, duplicates, failed,
 		static_cast<unsigned long long>(frameReadbackBytes),
-		bindings.size(), iaBuffers.size());
+		bindings.size(), iaBuffers.size(),
+		candidateCbv, candidateSrv, candidateUav, candidateTextures);
 }

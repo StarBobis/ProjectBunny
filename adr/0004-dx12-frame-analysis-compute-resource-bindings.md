@@ -16,7 +16,9 @@ DX12's binding model makes this unavoidable: command lists bind compute descript
 
 DX12 records CBV/SRV/UAV descriptor creation metadata and shader-visible descriptor heap metadata from creation time. Descriptor copy tracking remains gated behind the frame-analysis or preskinning hot path because descriptor copies can be frequent.
 
-FrameAnalysis writes `BindResource` events for copied descriptor resources and includes `hunt_hash` alongside `hash` and `file_hash`. It also writes `summary/ResourceBindingsDX12.csv` so tools can join dispatch SRV/UAV/CBV bindings to deduped files without parsing the full JSON log.
+FrameAnalysis writes `BindResource` events for descriptor resources and includes `hunt_hash` alongside `hash` and `file_hash`. These rows are emitted for skipped resources as well as copied resources, because compute SRV/UAV evidence is required for GPU preskinning even when a deduped file is not produced. It also writes `summary/ResourceBindingsDX12.csv` so tools can join dispatch SRV/UAV/CBV bindings to deduped files without parsing the full JSON log.
+
+Texture2D SRV/UAV bindings are dump candidates. Successful copies are written as `.dds` files through the same deduped resource path as buffers; skipped texture copies keep their binding row and skip note.
 
 `FrameAnalysisDX12.csv` points at `summary/ResourceBindingsDX12.csv` instead of stale current-frame resource file names that are not produced by the resource dump path.
 
