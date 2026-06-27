@@ -707,6 +707,58 @@ static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocati
 	return false;
 }
 
+static bool DescriptorSlotForHandleLocked(
+	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DescriptorSlotLocation *location, UINT *slotsAvailable)
+{
+	if (!cpuHandle || !location)
+		return false;
+	for (size_t heapIndex = 0; heapIndex < gDescriptorHeaps.size(); ++heapIndex) {
+		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+		if (heap.desc.Type != type || heap.cpuStart == 0 ||
+			heap.increment == 0 || heap.desc.NumDescriptors == 0)
+			continue;
+		const SIZE_T begin = heap.cpuStart;
+		const SIZE_T offset = cpuHandle >= begin ? cpuHandle - begin : 0;
+		if (cpuHandle < begin || offset % heap.increment != 0)
+			continue;
+		const SIZE_T slot = offset / heap.increment;
+		if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
+			continue;
+		location->heapIndex = heapIndex;
+		location->slot = static_cast<UINT>(slot);
+		if (slotsAvailable)
+			*slotsAvailable = heap.desc.NumDescriptors - location->slot;
+		return true;
+	}
+	return false;
+}
+
+static bool FindLatestDescriptorAtSlotLocked(
+	const DescriptorSlotLocation &location, DescriptorRecord *record)
+{
+	if (!record || location.heapIndex >= gDescriptorHeaps.size())
+		return false;
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	auto slot = heap.slots.find(location.slot);
+	if (slot == heap.slots.end())
+		return false;
+	*record = slot->second;
+	return true;
+}
+
+static void RecordDescriptorAtSlotLocked(
+	DescriptorRecord &&record, const DescriptorSlotLocation &location)
+{
+	++gDescriptorCopyRecordsSeen;
+	DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	auto existing = heap.slots.find(location.slot);
+	if (existing != heap.slots.end())
+		gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+	auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
+	gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
+}
+
 static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied)
 {
 	if (copied)
@@ -805,14 +857,62 @@ void RecordDescriptorCopyRange(
 		return;
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	for (UINT i = 0; i < count; ++i) {
-		const SIZE_T srcHandle = srcStart.ptr + static_cast<SIZE_T>(i) * increment;
-		const SIZE_T destHandle = destStart.ptr + static_cast<SIZE_T>(i) * increment;
-		DescriptorRecord copied;
-		if (FindLatestDescriptorLocked(srcHandle, &copied)) {
-			copied.cpuHandle = destHandle;
-			RecordDescriptorLocked(std::move(copied));
+	UINT processed = 0;
+	while (processed < count) {
+		const SIZE_T srcHandle =
+			srcStart.ptr + static_cast<SIZE_T>(processed) * increment;
+		const SIZE_T destHandle =
+			destStart.ptr + static_cast<SIZE_T>(processed) * increment;
+		DescriptorSlotLocation srcLocation = {};
+		DescriptorSlotLocation destLocation = {};
+		UINT srcSlotsAvailable = 0;
+		UINT destSlotsAvailable = 0;
+		const bool srcInHeap = DescriptorSlotForHandleLocked(
+			srcHandle, type, &srcLocation, &srcSlotsAvailable);
+		const bool destInHeap = DescriptorSlotForHandleLocked(
+			destHandle, type, &destLocation, &destSlotsAvailable);
+		const UINT remaining = count - processed;
+		const UINT chunk = min(remaining, min(
+			srcInHeap ? srcSlotsAvailable : 1,
+			destInHeap ? destSlotsAvailable : 1));
+
+		// D3D12 descriptor copies are CPU-immediate range operations. Preserve
+		// that model in the tracker by locating each contiguous source/dest
+		// heap span once instead of rescanning all heaps for every descriptor.
+		if (destInHeap) {
+			for (UINT i = 0; i < chunk; ++i) {
+				DescriptorRecord copied;
+				bool found = false;
+				if (srcInHeap) {
+					DescriptorSlotLocation currentSrc = srcLocation;
+					currentSrc.slot += i;
+					found = FindLatestDescriptorAtSlotLocked(currentSrc, &copied);
+				} else {
+					const SIZE_T currentSrcHandle =
+						srcHandle + static_cast<SIZE_T>(i) * increment;
+					found = FindLatestDescriptorLocked(currentSrcHandle, &copied);
+				}
+				if (!found)
+					continue;
+				DescriptorSlotLocation currentDest = destLocation;
+				currentDest.slot += i;
+				copied.cpuHandle = destHandle + static_cast<SIZE_T>(i) * increment;
+				RecordDescriptorAtSlotLocked(std::move(copied), currentDest);
+			}
+		} else {
+			for (UINT i = 0; i < chunk; ++i) {
+				const SIZE_T currentSrcHandle =
+					srcHandle + static_cast<SIZE_T>(i) * increment;
+				const SIZE_T currentDestHandle =
+					destHandle + static_cast<SIZE_T>(i) * increment;
+				DescriptorRecord copied;
+				if (FindLatestDescriptorLocked(currentSrcHandle, &copied)) {
+					copied.cpuHandle = currentDestHandle;
+					RecordDescriptorLocked(std::move(copied));
+				}
+			}
 		}
+		processed += chunk;
 	}
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
