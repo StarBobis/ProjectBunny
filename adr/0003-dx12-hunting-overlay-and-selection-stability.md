@@ -26,6 +26,10 @@ Num0 Hunting toggle is edge-triggered and cooldown-gated. Rapid duplicate Num0 e
 
 The HDC text drawing path into the game window is removed from Hunting overlay display. Hunting display uses the overlay window, and both full Present and first Present skip paths update overlay positioning while Hunting is active.
 
+Overlay show requests do not display the overlay at a placeholder virtual-screen position. The overlay is shown only when a valid swapchain target rect has been published, so early Hunting activation cannot place green text at the desktop corner before Present catches up.
+
+Hunting disable keeps the hot path alive for one Present drain boundary. The Hunting active flag and selected hashes are disabled immediately, but `DX12HotPathUpdate` treats a pending drain as hot-path work until `DX12HuntOnPresent` observes the disabled state and clears it. This avoids a hard transition from full Hunting hook flow to skip flow in the same input event.
+
 DX12 IA selection stores `selectedHash` for IB and VB. The current position is derived from the visible set when possible. If the selected hash is not visible, Num7/Num8 advance through the current visible set using the nearest lower-bound entry, matching DX11's overlay buffer lifetime behavior.
 
 Hunting toggle clears old command-list IA state and bumps command-list tracking generation. This prevents command lists recorded before Hunting from contributing stale IA metadata to the first visible hunt set.

@@ -86,6 +86,7 @@ struct HuntCommandListVisits
 static SRWLOCK gHuntLock = SRWLOCK_INIT;
 static bool gHuntingEnabled = false;
 static volatile LONG gHuntingActive = 0;
+static volatile LONG gHuntingHotPathDrain = 0;
 static std::unordered_map<ID3D12GraphicsCommandList*, ID3D12PipelineState*> gCommandListPso;
 static std::unordered_map<ID3D12GraphicsCommandList*, HuntIaState> gCommandListIa;
 static std::unordered_map<ID3D12GraphicsCommandList*, HuntCommandListVisits> gCommandListVisits;
@@ -655,6 +656,12 @@ bool DX12HuntIsEnabled()
 	return gHuntingActive != 0;
 }
 
+bool DX12HuntNeedsHotPath()
+{
+	return InterlockedCompareExchange(&gHuntingActive, 0, 0) != 0 ||
+		InterlockedCompareExchange(&gHuntingHotPathDrain, 0, 0) != 0;
+}
+
 bool DX12HuntShouldDrawOverlay()
 {
 	return DX12HuntIsEnabled();
@@ -670,6 +677,7 @@ void DX12HuntToggle()
 	gHuntingEnabled = !gHuntingEnabled;
 	bool enabled = gHuntingEnabled;
 	InterlockedExchange(&gHuntingActive, enabled ? 1 : 0);
+	InterlockedExchange(&gHuntingHotPathDrain, enabled ? 0 : 1);
 	oldIa.swap(gCommandListIa);
 	oldIB.visited.swap(gIB.visited);
 	oldIB.lastSeenFrame.swap(gIB.lastSeenFrame);
@@ -706,8 +714,11 @@ void DX12HuntToggle()
 
 void DX12HuntOnPresent()
 {
-	if (!DX12HuntIsEnabled())
+	if (!DX12HuntIsEnabled()) {
+		if (InterlockedExchange(&gHuntingHotPathDrain, 0) != 0)
+			DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"drain_present\",\"enabled\":false");
 		return;
+	}
 
 	size_t ibCount = 0;
 	size_t vbCount = 0;

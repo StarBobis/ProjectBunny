@@ -103,7 +103,7 @@ void DX12HotPathUpdate()
 		DX12ShaderDumpIsBusy();
 
 	const bool needsRecordWork =
-		DX12HuntIsEnabled() ||
+		DX12HuntNeedsHotPath() ||
 		DX12ModHasActiveShaderOverrides() ||
 		DX12ModNeedsPresentReplacement() ||
 		DX12ModNeedsPreSkinningUavProbe();
@@ -140,7 +140,7 @@ void DX12HotPathUpdate()
 bool DX12HotPathHooksNeeded()
 {
 	return InterlockedCompareExchange(&gDX12HotPathSkipAll, 0, 0) == 0 ||
-		DX12HuntIsEnabled();
+		DX12HuntNeedsHotPath();
 }
 
 static bool DX12EnvironmentFlagEnabled(const wchar_t *name)

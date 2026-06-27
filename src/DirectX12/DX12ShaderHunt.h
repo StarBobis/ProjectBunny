@@ -26,6 +26,7 @@ bool DX12HuntShouldSkipDraw(
 	INT baseVertex);
 bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList);
 bool DX12HuntIsEnabled();
+bool DX12HuntNeedsHotPath();
 bool DX12HuntShouldDrawOverlay();
 void DX12HuntToggle();
 void DX12HuntOnPresent();

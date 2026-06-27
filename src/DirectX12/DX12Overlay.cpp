@@ -100,12 +100,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 	case WM_NCHITTEST:
 		return HTTRANSPARENT;
 	case WM_DX12_OVERLAY_SHOW:
-		SetWindowPos(hwnd, HWND_TOPMOST,
-			GetSystemMetrics(SM_XVIRTUALSCREEN) + 20,
-			GetSystemMetrics(SM_YVIRTUALSCREEN) + 20,
-			900, 180, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-		InvalidateRect(hwnd, nullptr, FALSE);
+	{
+		RECT target = {};
+		AcquireSRWLockShared(&gOverlayTargetLock);
+		target = gOverlayTargetRect;
+		ReleaseSRWLockShared(&gOverlayTargetLock);
+		const int width = target.right - target.left;
+		const int height = target.bottom - target.top;
+		if (width > 0 && height > 0) {
+			SetWindowPos(hwnd, HWND_TOPMOST, target.left, target.top, width, height,
+				SWP_NOACTIVATE | SWP_SHOWWINDOW);
+			InvalidateRect(hwnd, nullptr, FALSE);
+		}
 		return 0;
+	}
 	case WM_DX12_OVERLAY_HIDE:
 		ShowWindow(hwnd, SW_HIDE);
 		return 0;
