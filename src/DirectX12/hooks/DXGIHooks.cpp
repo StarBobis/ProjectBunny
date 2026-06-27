@@ -9,7 +9,7 @@
 #include "DX12DeviceHooks.h"
 #include "DX12FrameAnalysis.h"
 #include "DX12HookManager.h"
-#include "DX12ImGuiOverlay.h"
+#include "DX12NativeOverlay.h"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.h"
 #include "DX12ShaderHunt.h"
@@ -166,9 +166,7 @@ static void RunPostPresentUi(IDXGISwapChain *swapChain)
 {
 	DX12UiConsumeActions();
 	DX12HotPathUpdate();
-	LogPresentStage("Overlay", "beforeRender", swapChain);
-	DX12ImGuiOverlayRender(swapChain);
-	LogPresentStage("Overlay", "afterRender", swapChain);
+	DX12NativeOverlayRender(swapChain);
 }
 
 static void HookSwapChain(IDXGISwapChain *swapChain)
@@ -342,7 +340,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
 	DX12LogJsonFunc("IDXGIFactory::CreateSwapChain",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain && (!desc || !DX12ImGuiOverlayIsOverlayWindow(desc->OutputWindow)))
+	if (SUCCEEDED(hr) && swapChain && (!desc || !DX12NativeOverlayIsOverlayWindow(desc->OutputWindow)))
 		HookSwapChain(*swapChain);
 	return hr;
 }
@@ -360,7 +358,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
 	DX12LogJsonFunc("IDXGIFactory2::CreateSwapChainForHwnd",
 		"\"device\":\"%p\",\"hwnd\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, window, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain && !DX12ImGuiOverlayIsOverlayWindow(window))
+	if (SUCCEEDED(hr) && swapChain && !DX12NativeOverlayIsOverlayWindow(window))
 		HookSwapChain(*swapChain);
 	return hr;
 }
@@ -603,7 +601,7 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
 {
 	LogDXGIHookCall("IDXGISwapChain::ResizeBuffers", swapChain);
 	if (!DX12IsInternalReplay())
-		DX12ImGuiOverlayInvalidate(swapChain);
+		DX12NativeOverlayInvalidate(swapChain);
 	auto original = GetResizeBuffersOriginal(swapChain);
 	HRESULT hr = original ? original(swapChain, bufferCount, width, height, newFormat, swapChainFlags) :
 		DXGI_ERROR_INVALID_CALL;

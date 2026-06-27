@@ -14,7 +14,7 @@ add_library(DirectX12 SHARED
     core/DX12Profiling.cpp
 
     # UI
-    ui/DX12ImGuiOverlay.cpp
+    ui/DX12NativeOverlay.cpp
     ui/DX12UiActions.cpp
 
     # Hooks infrastructure
@@ -60,13 +60,6 @@ add_library(DirectX12 SHARED
     # Mod runtime
     mod_runtime/DX12ModRuntime.cpp
 
-    # Dear ImGui
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/imgui.cpp
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/imgui_draw.cpp
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/imgui_tables.cpp
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/imgui_widgets.cpp
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/backends/imgui_impl_dx12.cpp
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui/backends/imgui_impl_win32.cpp
 )
 
 target_include_directories(DirectX12 PRIVATE
@@ -85,7 +78,6 @@ target_include_directories(DirectX12 PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty
-    ${CMAKE_SOURCE_DIR}/3rdparty/imgui
     ${CMAKE_SOURCE_DIR}/3rdparty/crc32c-hw-1.0.5/include
 )
 
