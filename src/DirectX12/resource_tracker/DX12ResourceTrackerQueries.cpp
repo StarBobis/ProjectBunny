@@ -292,6 +292,15 @@ void DX12GetResourceMetadataSnapshot(
 {
 	AcquireSRWLockShared(&gResourceLock);
 	AcquireSRWLockShared(&gDescriptorLock);
+	std::vector<const DescriptorRecord*> liveDescriptors;
+	liveDescriptors.reserve(gDescriptorByCpuHandle.size());
+	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		for (const auto &slot : heap.slots)
+			liveDescriptors.push_back(&slot.second);
+	}
+	for (const DescriptorRecord &record : gDescriptors)
+		liveDescriptors.push_back(&record);
+
 	size_t descriptorStateKnown = 0;
 	size_t cbvDescriptors = 0;
 	size_t srvDescriptors = 0;
@@ -299,7 +308,8 @@ void DX12GetResourceMetadataSnapshot(
 	size_t rtvDescriptors = 0;
 	size_t dsvDescriptors = 0;
 	size_t textureDescriptors = 0;
-	for (const DescriptorRecord &record : gDescriptors) {
+	for (const DescriptorRecord *recordPtr : liveDescriptors) {
+		const DescriptorRecord &record = *recordPtr;
 		if (record.hasCurrentState)
 			descriptorStateKnown++;
 		if (record.kind == DescriptorKind::CBV)
@@ -318,7 +328,7 @@ void DX12GetResourceMetadataSnapshot(
 	}
 	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotBegin",
 		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"heaps\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
-		gRootSignatures.size(), gDescriptors.size(), descriptorStateKnown,
+		gRootSignatures.size(), liveDescriptors.size(), descriptorStateKnown,
 		gResources.size(),
 		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
 		gPsoRoots.size(), gDescriptorHeaps.size(),
@@ -330,7 +340,7 @@ void DX12GetResourceMetadataSnapshot(
 		descriptorHeaps ? 1 : 0);
 	DX12LogJsonFunc("DX12MetadataSnapshot",
 		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"heaps\":%zu",
-		gDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
+		liveDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
 		rtvDescriptors, dsvDescriptors, textureDescriptors,
 		gResources.size(), gDescriptorHeaps.size());
 
@@ -356,10 +366,10 @@ void DX12GetResourceMetadataSnapshot(
 
 	if (descriptors) {
 		descriptors->clear();
-		descriptors->reserve(gDescriptors.size());
-		for (const DescriptorRecord &record : gDescriptors) {
+		descriptors->reserve(liveDescriptors.size());
+		for (const DescriptorRecord *recordPtr : liveDescriptors) {
 			DX12DescriptorSummary summary;
-			FillDescriptorSummary(&summary, record);
+			FillDescriptorSummary(&summary, *recordPtr);
 			descriptors->push_back(summary);
 		}
 		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
@@ -413,11 +423,31 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 
 	AcquireSRWLockShared(&gDescriptorLock);
 	auto found = gDescriptorByCpuHandle.find(cpuHandle);
-	if (found == gDescriptorByCpuHandle.end() || found->second >= gDescriptors.size()) {
+	if (found == gDescriptorByCpuHandle.end()) {
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return false;
 	}
-	FillDescriptorSummary(summary, gDescriptors[found->second]);
+	const DescriptorSlotLocation &location = found->second;
+	if (location.heapIndex == SIZE_MAX) {
+		if (location.slot >= gDescriptors.size()) {
+			ReleaseSRWLockShared(&gDescriptorLock);
+			return false;
+		}
+		FillDescriptorSummary(summary, gDescriptors[location.slot]);
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return true;
+	}
+	if (location.heapIndex >= gDescriptorHeaps.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	auto slot = heap.slots.find(location.slot);
+	if (slot == heap.slots.end()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	FillDescriptorSummary(summary, slot->second);
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return true;
 }

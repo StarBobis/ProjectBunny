@@ -34,15 +34,6 @@ struct RootSignatureRecord
 	std::vector<DX12RootParameterSummary> parameters;
 };
 
-struct DescriptorHeapRecord
-{
-	ID3D12DescriptorHeap *heap = nullptr;
-	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-	SIZE_T cpuStart = 0;
-	UINT64 gpuStart = 0;
-	UINT increment = 0;
-};
-
 struct DescriptorRecord
 {
 	std::string kind;
@@ -65,6 +56,22 @@ struct DescriptorRecord
 	D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
 	D3D12_SAMPLER_DESC sampler = {};
 	bool hasDesc = false;
+};
+
+struct DescriptorHeapRecord
+{
+	ID3D12DescriptorHeap *heap = nullptr;
+	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+	SIZE_T cpuStart = 0;
+	UINT64 gpuStart = 0;
+	UINT increment = 0;
+	std::unordered_map<UINT, DescriptorRecord> slots;
+};
+
+struct DescriptorSlotLocation
+{
+	size_t heapIndex = 0;
+	UINT slot = 0;
 };
 
 struct ResourceRecord
@@ -101,7 +108,7 @@ extern std::vector<DescriptorHeapRecord> gDescriptorHeaps;
 extern std::vector<DescriptorRecord> gDescriptors;
 extern std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 extern std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
-extern std::unordered_map<SIZE_T, size_t> gDescriptorByCpuHandle;
+extern std::unordered_map<SIZE_T, DescriptorSlotLocation> gDescriptorByCpuHandle;
 extern std::vector<PsoRootRecord> gPsoRoots;
 extern std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 extern std::vector<ResourceRecord> gResources;
@@ -138,6 +145,7 @@ bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void FillSrvBufferView(DescriptorRecord *record);
 void FillUavBufferView(DescriptorRecord *record);
 void LogResourceTrackerStatsLocked();
+void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap);
 void RecordDescriptor(DescriptorRecord &&record);
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();

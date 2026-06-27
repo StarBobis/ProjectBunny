@@ -84,6 +84,49 @@ static PFN_CREATE_COMMITTED_RESOURCE3 gOrigCreateCommittedResource3 = nullptr;
 static PFN_CREATE_PLACED_RESOURCE2 gOrigCreatePlacedResource2 = nullptr;
 static PFN_CREATE_RESERVED_RESOURCE2 gOrigCreateReservedResource2 = nullptr;
 
+static const GUID DX12DescriptorHeapReleaseTrackerGuid =
+{ 0x28c66065, 0x55b7, 0x46df, { 0x9e, 0x1e, 0x08, 0x52, 0x8d, 0x31, 0xcb, 0x1a } };
+
+class DescriptorHeapReleaseTracker : public IUnknown
+{
+public:
+	explicit DescriptorHeapReleaseTracker(ID3D12DescriptorHeap *heap) : mRef(1), mHeap(heap) {}
+
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override
+	{
+		if (!object)
+			return E_POINTER;
+		if (riid == IID_IUnknown) {
+			*object = static_cast<IUnknown*>(this);
+			AddRef();
+			return S_OK;
+		}
+		*object = nullptr;
+		return E_NOINTERFACE;
+	}
+
+	ULONG STDMETHODCALLTYPE AddRef() override
+	{
+		return static_cast<ULONG>(InterlockedIncrement(&mRef));
+	}
+
+	ULONG STDMETHODCALLTYPE Release() override
+	{
+		const LONG ref = InterlockedDecrement(&mRef);
+		if (ref == 0) {
+			AcquireSRWLockExclusive(&gDescriptorLock);
+			InvalidateDescriptorHeapLocked(mHeap);
+			ReleaseSRWLockExclusive(&gDescriptorLock);
+			delete this;
+		}
+		return static_cast<ULONG>(ref);
+	}
+
+private:
+	volatile LONG mRef;
+	ID3D12DescriptorHeap *mHeap;
+};
+
 static void LogResourceHookCall(const char *api, const void *object)
 {
 	if (!DX12ShouldLogHookCall(api))
@@ -149,16 +192,26 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 			record.cpuStart = descriptorHeap->GetCPUDescriptorHandleForHeapStart().ptr;
 			record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
 			record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
+			DescriptorHeapReleaseTracker *releaseTracker =
+				new DescriptorHeapReleaseTracker(descriptorHeap);
+			if (releaseTracker) {
+				descriptorHeap->SetPrivateDataInterface(
+					DX12DescriptorHeapReleaseTrackerGuid, releaseTracker);
+				releaseTracker->Release();
+			}
 			descriptorHeap->Release();
 
 			AcquireSRWLockExclusive(&gDescriptorLock);
 			++gDescriptorHeapRecordsSeen;
 			auto found = gDescriptorHeapByPtr.find(record.heap);
 			if (found != gDescriptorHeapByPtr.end()) {
-				gDescriptorHeaps[found->second] = record;
+				DescriptorHeapRecord &old = gDescriptorHeaps[found->second];
+				for (const auto &slot : old.slots)
+					gDescriptorByCpuHandle.erase(slot.second.cpuHandle);
+				gDescriptorHeaps[found->second] = std::move(record);
 			} else {
 				gDescriptorHeapByPtr[record.heap] = gDescriptorHeaps.size();
-				gDescriptorHeaps.push_back(record);
+				gDescriptorHeaps.push_back(std::move(record));
 			}
 			LogResourceTrackerStatsLocked();
 			ReleaseSRWLockExclusive(&gDescriptorLock);

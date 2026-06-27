@@ -19,7 +19,7 @@ std::vector<DescriptorHeapRecord> gDescriptorHeaps;
 std::vector<DescriptorRecord> gDescriptors;
 std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
-std::unordered_map<SIZE_T, size_t> gDescriptorByCpuHandle;
+std::unordered_map<SIZE_T, DescriptorSlotLocation> gDescriptorByCpuHandle;
 std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
@@ -38,6 +38,23 @@ LONG gLastResourceStatsPresent = -1;
 static constexpr LONG kResourceStatsLogInterval = 300;
 
 void LogResourceTrackerStatsLocked();
+
+void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
+{
+	if (!heap)
+		return;
+	auto found = gDescriptorHeapByPtr.find(heap);
+	if (found == gDescriptorHeapByPtr.end() || found->second >= gDescriptorHeaps.size())
+		return;
+	DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
+	for (const auto &slot : record.slots)
+		gDescriptorByCpuHandle.erase(slot.second.cpuHandle);
+	record.slots.clear();
+	record.cpuStart = 0;
+	record.gpuStart = 0;
+	record.increment = 0;
+	gDescriptorHeapByPtr.erase(found);
+}
 
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
 	LPCVOID, SIZE_T, REFIID, void**);
@@ -628,7 +645,7 @@ void LogResourceTrackerStatsLocked()
 	DX12LogDebugJsonFunc("DX12ResourceTrackerStats",
 		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
 		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
-		"\"descriptors\":%zu,\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
+		"\"descriptors\":%zu,\"descriptorSlots\":%zu,\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
 		present,
 		gRootSignatures.size(),
@@ -636,6 +653,7 @@ void LogResourceTrackerStatsLocked()
 		gDescriptorHeaps.size(),
 		static_cast<unsigned long long>(gDescriptorHeapRecordsSeen),
 		gDescriptors.size(),
+		gDescriptorByCpuHandle.size(),
 		static_cast<unsigned long long>(gDescriptorRecordsSeen),
 		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
 		gResources.size(),
@@ -656,19 +674,68 @@ static void UpdateDescriptorResourceStateLocked(
 			descriptor.hasCurrentState = hasState;
 		}
 	}
+	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		for (auto &slot : heap.slots) {
+			DescriptorRecord &descriptor = slot.second;
+			if (descriptor.resource == resource) {
+				descriptor.currentState = state;
+				descriptor.hasCurrentState = hasState;
+			}
+		}
+	}
+}
+
+static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocation *location)
+{
+	if (!cpuHandle || !location)
+		return false;
+	for (size_t heapIndex = 0; heapIndex < gDescriptorHeaps.size(); ++heapIndex) {
+		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+		if (heap.cpuStart == 0 || heap.increment == 0 || heap.desc.NumDescriptors == 0)
+			continue;
+		const SIZE_T begin = heap.cpuStart;
+		const SIZE_T offset = cpuHandle >= begin ? cpuHandle - begin : 0;
+		if (cpuHandle < begin || offset % heap.increment != 0)
+			continue;
+		const SIZE_T slot = offset / heap.increment;
+		if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
+			continue;
+		location->heapIndex = heapIndex;
+		location->slot = static_cast<UINT>(slot);
+		return true;
+	}
+	return false;
+}
+
+static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied)
+{
+	if (copied)
+		++gDescriptorCopyRecordsSeen;
+	else
+		++gDescriptorRecordsSeen;
+
+	DescriptorSlotLocation location = {};
+	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {
+		DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+		auto existing = heap.slots.find(location.slot);
+		if (existing != heap.slots.end())
+			gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+		auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
+		gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
+		return;
+	}
+
+	gDescriptors.push_back(std::move(record));
+	DescriptorSlotLocation legacy = {};
+	legacy.heapIndex = SIZE_MAX;
+	legacy.slot = static_cast<UINT>(gDescriptors.size() - 1);
+	gDescriptorByCpuHandle[gDescriptors.back().cpuHandle] = legacy;
 }
 
 void RecordDescriptor(DescriptorRecord &&record)
 {
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gDescriptorRecordsSeen;
-	auto found = gDescriptorByCpuHandle.find(record.cpuHandle);
-	if (found != gDescriptorByCpuHandle.end()) {
-		gDescriptors[found->second] = std::move(record);
-	} else {
-		gDescriptorByCpuHandle[record.cpuHandle] = gDescriptors.size();
-		gDescriptors.push_back(std::move(record));
-	}
+	RecordDescriptorInCacheLocked(std::move(record), false);
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
@@ -700,23 +767,29 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 		return false;
 
 	auto found = gDescriptorByCpuHandle.find(cpuHandle);
-	if (found == gDescriptorByCpuHandle.end() || found->second >= gDescriptors.size())
+	if (found == gDescriptorByCpuHandle.end())
 		return false;
 
-	*record = gDescriptors[found->second];
+	const DescriptorSlotLocation &location = found->second;
+	if (location.heapIndex == SIZE_MAX) {
+		if (location.slot >= gDescriptors.size())
+			return false;
+		*record = gDescriptors[location.slot];
+		return true;
+	}
+	if (location.heapIndex >= gDescriptorHeaps.size())
+		return false;
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	auto slot = heap.slots.find(location.slot);
+	if (slot == heap.slots.end())
+		return false;
+	*record = slot->second;
 	return true;
 }
 
 static void RecordDescriptorLocked(DescriptorRecord &&record)
 {
-	++gDescriptorCopyRecordsSeen;
-	auto found = gDescriptorByCpuHandle.find(record.cpuHandle);
-	if (found != gDescriptorByCpuHandle.end()) {
-		gDescriptors[found->second] = std::move(record);
-	} else {
-		gDescriptorByCpuHandle[record.cpuHandle] = gDescriptors.size();
-		gDescriptors.push_back(std::move(record));
-	}
+	RecordDescriptorInCacheLocked(std::move(record), true);
 }
 
 void RecordDescriptorCopyRange(
