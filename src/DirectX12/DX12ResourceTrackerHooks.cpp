@@ -172,7 +172,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateRootSignature(
 	if (DX12IsInternalReplay())
 		return original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
 	HRESULT hr = original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
-	if (SUCCEEDED(hr) && ShouldTrackResourceMetadata() && blob && blobLength && rootSignature && *rootSignature) {
+	if (SUCCEEDED(hr) && blob && blobLength && rootSignature && *rootSignature) {
 		RootSignatureRecord record;
 		record.rootSignature = static_cast<ID3D12RootSignature*>(*rootSignature);
 		record.hash = Fnv1a64(blob, blobLength);

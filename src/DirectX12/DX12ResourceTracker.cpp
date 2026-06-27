@@ -699,7 +699,7 @@ bool ShouldTrackFullDescriptorMetadata()
 
 bool ShouldTrackComputeDescriptorMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathTrackResourceMetadata, 0, 0) != 0;
+	return true;
 }
 
 bool ShouldTrackDescriptorCreationMetadata()

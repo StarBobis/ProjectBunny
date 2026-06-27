@@ -10,11 +10,13 @@ FrameAnalysis could dump IA buffers, but `ResourceDump` reported `bindings=0` an
 
 The immediate cause was missing descriptor heap metadata. Descriptor records can exist without usable heap records, but descriptor table resolution starts from the GPU descriptor handle and must map it back through a shader-visible descriptor heap to a CPU descriptor handle. Since F8 is requested after most heaps were created, gating heap metadata behind capture-time resource tracking loses that mapping.
 
+The next DX11 comparison exposed the same issue for root signatures and descriptor copies. DX11 queries every SRV slot directly from the context, while DX12 must expand descriptor tables through root signature descriptor ranges. If root signature metadata is not retained from creation time, DX12 sees only the table base descriptor, commonly a CBV, and no texture SRV candidates are produced. If descriptor copies are not retained, expanded shader-visible heap slots cannot resolve back to the original SRV/UAV descriptor records.
+
 DX12's binding model makes this unavoidable: command lists bind compute descriptor tables through root parameters and GPU descriptor handles, while root descriptors bind GPU virtual addresses directly. A useful dump must preserve enough creation-time metadata to resolve both forms later.
 
 ## Decision
 
-DX12 records CBV/SRV/UAV descriptor creation metadata and shader-visible descriptor heap metadata from creation time. Descriptor copy tracking remains gated behind the frame-analysis or preskinning hot path because descriptor copies can be frequent.
+DX12 records root signature metadata, CBV/SRV/UAV descriptor creation metadata, shader-visible descriptor heap metadata, and descriptor copy metadata from creation time. Descriptor copy tracking stores only metadata needed to preserve latest destination-handle contents.
 
 FrameAnalysis writes `BindResource` events for descriptor resources and includes `hunt_hash` alongside `hash` and `file_hash`. These rows are emitted for skipped resources as well as copied resources, because compute SRV/UAV evidence is required for GPU preskinning even when a deduped file is not produced. It also writes `summary/ResourceBindingsDX12.csv` so tools can join dispatch SRV/UAV/CBV bindings to deduped files without parsing the full JSON log.
 

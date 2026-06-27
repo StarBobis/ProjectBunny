@@ -402,10 +402,54 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 
 	bindings->clear();
 	std::unordered_set<std::string> seen;
+	size_t drawEvents = 0;
+	size_t dispatchEvents = 0;
+	size_t graphicsTables = 0;
+	size_t computeTables = 0;
+	size_t graphicsTablesWithRoots = 0;
+	size_t computeTablesWithRoots = 0;
+	size_t rootRangeTables = 0;
+	size_t tableStartOnly = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
 			continue;
+		if (DX12BindingIsDrawEvent(event))
+			drawEvents++;
+		if (DX12BindingIsDispatchEvent(event))
+			dispatchEvents++;
+		DX12RootSignatureSummary graphicsRoot;
+		DX12RootSignatureSummary computeRoot;
+		const bool hasGraphicsRoot = DX12BindingGetRootSignatureForEvent(event, false, &graphicsRoot);
+		const bool hasComputeRoot = DX12BindingGetRootSignatureForEvent(event, true, &computeRoot);
 		for (UINT i = 0; i < MaxRootParameters; ++i) {
+			if (event.graphicsTables[i].valid) {
+				graphicsTables++;
+				if (hasGraphicsRoot) {
+					graphicsTablesWithRoots++;
+					const DX12RootParameterSummary *parameter =
+						DX12BindingFindRootParameter(graphicsRoot, i);
+					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+						rootRangeTables++;
+					else
+						tableStartOnly++;
+				} else {
+					tableStartOnly++;
+				}
+			}
+			if (event.computeTables[i].valid) {
+				computeTables++;
+				if (hasComputeRoot) {
+					computeTablesWithRoots++;
+					const DX12RootParameterSummary *parameter =
+						DX12BindingFindRootParameter(computeRoot, i);
+					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+						rootRangeTables++;
+					else
+						tableStartOnly++;
+				} else {
+					tableStartOnly++;
+				}
+			}
 			CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				heaps, descriptorsByCpuHandle, &seen);
@@ -425,8 +469,12 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		}
 	}
 	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu",
-		bindings->size(), seen.size());
+		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu",
+		bindings->size(), seen.size(),
+		drawEvents, dispatchEvents,
+		graphicsTables, computeTables,
+		graphicsTablesWithRoots, computeTablesWithRoots,
+		rootRangeTables, tableStartOnly);
 }
 
 static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<BindingEvent> &events)
