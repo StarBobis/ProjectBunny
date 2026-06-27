@@ -1224,6 +1224,80 @@ static void AddBindingRow(
 		sourceState, binding.descriptor.hasCurrentState, semanticName, dedupePath, note);
 }
 
+static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
+{
+	if (!file)
+		return;
+
+	const DX12FrameResourceBinding &binding = row.binding;
+	const DX12DescriptorSummary &descriptor = binding.descriptor;
+	const char *kind = BindingKindName(binding);
+	char cs[32] = "-";
+	if (binding.shaderInfo.hasCS)
+		sprintf_s(cs, sizeof(cs), "%016llx",
+			static_cast<unsigned long long>(binding.shaderInfo.cs));
+	char fileHash[16];
+	FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+	const uint32_t huntHash = DescriptorHuntHash(binding, row.copyBytes);
+	fprintf(file,
+		"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+		static_cast<unsigned long long>(binding.eventSerial),
+		binding.dispatchId ? "dispatch" : "draw",
+		static_cast<unsigned long long>(binding.psoIndex),
+		cs,
+		kind,
+		binding.bindSpace.c_str(),
+		binding.rootParameterIndex,
+		binding.rangeIndex,
+		binding.shaderRegister,
+		binding.registerSpace,
+		descriptor.resource,
+		FileNameFromPath(row.dedupePath),
+		fileHash,
+		huntHash,
+		FileNameFromPath(row.semanticName),
+		static_cast<unsigned long long>(row.sourceOffset),
+		static_cast<unsigned long long>(row.copyBytes),
+		descriptor.structureByteStride,
+		descriptor.viewFormat,
+		row.status.c_str(),
+		row.note.c_str());
+}
+
+static void WriteIaResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
+{
+	if (!file)
+		return;
+
+	const DX12FrameIaBufferBinding &buffer = row.iaBuffer;
+	char cs[32] = "-";
+	if (buffer.shaderInfo.hasCS)
+		sprintf_s(cs, sizeof(cs), "%016llx",
+			static_cast<unsigned long long>(buffer.shaderInfo.cs));
+	char fileHash[16];
+	FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+	const UINT64 eventId = buffer.dispatchId ? buffer.dispatchId : buffer.drawId;
+	fprintf(file,
+		"%llu,ia,%llu,%s,%s,ia,%u,0,%u,0,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+		static_cast<unsigned long long>(eventId),
+		static_cast<unsigned long long>(buffer.psoIndex),
+		cs,
+		buffer.role.empty() ? "BUF" : buffer.role.c_str(),
+		buffer.slot,
+		buffer.slot,
+		buffer.resource.resource,
+		FileNameFromPath(row.dedupePath),
+		fileHash,
+		buffer.huntHash,
+		FileNameFromPath(row.semanticName),
+		static_cast<unsigned long long>(row.sourceOffset),
+		static_cast<unsigned long long>(row.copyBytes),
+		buffer.stride,
+		buffer.format,
+		row.status.c_str(),
+		row.note.c_str());
+}
+
 static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<DumpedTaskRow> &rows)
 {
 	if (!dir)
@@ -1239,41 +1313,10 @@ static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<Dumpe
 	fprintf(file,
 		"call_index,type,pso,cs,kind,bind,root,range,reg,space,resource,file,file_hash,hunt_hash,semantic_file,offset,size,stride,format,status,note\n");
 	for (const DumpedTaskRow &row : rows) {
-		if (row.sourceKind != DumpTaskSource::Descriptor)
-			continue;
-		const DX12FrameResourceBinding &binding = row.binding;
-		const DX12DescriptorSummary &descriptor = binding.descriptor;
-		const char *kind = BindingKindName(binding);
-		char cs[32] = "-";
-		if (binding.shaderInfo.hasCS)
-			sprintf_s(cs, sizeof(cs), "%016llx",
-				static_cast<unsigned long long>(binding.shaderInfo.cs));
-		char fileHash[16];
-		FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
-		const uint32_t huntHash = DescriptorHuntHash(binding, row.copyBytes);
-		fprintf(file,
-			"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
-			static_cast<unsigned long long>(binding.eventSerial),
-			binding.dispatchId ? "dispatch" : "draw",
-			static_cast<unsigned long long>(binding.psoIndex),
-			cs,
-			kind,
-			binding.bindSpace.c_str(),
-			binding.rootParameterIndex,
-			binding.rangeIndex,
-			binding.shaderRegister,
-			binding.registerSpace,
-			descriptor.resource,
-			FileNameFromPath(row.dedupePath),
-			fileHash,
-			huntHash,
-			FileNameFromPath(row.semanticName),
-			static_cast<unsigned long long>(row.sourceOffset),
-			static_cast<unsigned long long>(row.copyBytes),
-			descriptor.structureByteStride,
-			descriptor.viewFormat,
-			row.status.c_str(),
-			row.note.c_str());
+		if (row.sourceKind == DumpTaskSource::Descriptor)
+			WriteDescriptorResourceBindingCsvRow(file, row);
+		else if (row.sourceKind == DumpTaskSource::InputAssembler)
+			WriteIaResourceBindingCsvRow(file, row);
 	}
 	fclose(file);
 	char fields[512] = "";
@@ -1695,6 +1738,16 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 				task.skipNote ? task.skipNote : "skipped");
 			AddBindingRow(&dumpedRows, "skipped", task.binding, L"",
 				task.fileName.c_str(), task.skipNote ? task.skipNote : "skipped");
+		} else if (task.sourceKind == DumpTaskSource::InputAssembler) {
+			const D3D12_RESOURCE_DESC desc = task.iaBuffer.resource.hasResourceDesc ?
+				task.iaBuffer.resource.resourceDesc : D3D12_RESOURCE_DESC();
+			const D3D12_RESOURCE_STATES state = task.iaBuffer.resource.hasCurrentState ?
+				static_cast<D3D12_RESOURCE_STATES>(task.iaBuffer.resource.currentState) :
+				GuessIaBufferSourceState(task.iaBuffer);
+			AddDumpedTaskRow(&dumpedRows, "skipped", task, desc,
+				task.iaBuffer.resource.resourceOffset, task.iaBuffer.size,
+				state, task.iaBuffer.resource.hasCurrentState,
+				task.fileName.c_str(), L"", task.skipNote ? task.skipNote : "skipped");
 		}
 	}
 

@@ -17,6 +17,7 @@
 #include "DX12FrameAnalysis.h"
 #include "DX12Json.h"
 #include "DX12ModRuntime.h"
+#include "DX12ShaderHunt.h"
 #include "DX12State.h"
 #include "crc32c.h"
 

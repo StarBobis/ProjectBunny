@@ -675,7 +675,8 @@ void RecordDescriptor(DescriptorRecord &&record)
 
 bool ShouldTrackFullDescriptorMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0;
+	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0 ||
+		DX12HuntNeedsHotPath();
 }
 
 bool ShouldTrackComputeDescriptorMetadata()
@@ -687,7 +688,8 @@ bool ShouldTrackComputeDescriptorMetadata()
 bool ShouldTrackDescriptorCreationMetadata()
 {
 	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0 ||
-		ShouldTrackResourceMetadata();
+		ShouldTrackResourceMetadata() ||
+		DX12HuntNeedsHotPath();
 }
 
 bool ShouldTrackResourceMetadata()

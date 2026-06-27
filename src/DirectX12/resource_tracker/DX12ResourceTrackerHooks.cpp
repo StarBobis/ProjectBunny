@@ -140,8 +140,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 	if (DX12IsInternalReplay())
 		return original ? original(device, desc, riid, heap) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
-	if (!ShouldTrackDescriptorCreationMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && desc && heap && *heap &&
 	    (desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
 	     desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)) {
@@ -181,8 +179,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateRootSignature(
 	if (DX12IsInternalReplay())
 		return original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
 	HRESULT hr = original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
-	if (!ShouldTrackDescriptorCreationMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && blob && blobLength && rootSignature && *rootSignature) {
 		RootSignatureRecord record;
 		record.rootSignature = static_cast<ID3D12RootSignature*>(*rootSignature);
@@ -483,8 +479,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -510,8 +504,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
 			initialState, optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialState, optimizedClearValue, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -537,8 +529,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
 			optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -572,8 +562,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, protectedSession, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -599,8 +587,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
 			optimizedClearValue, protectedSession, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, protectedSession, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -634,8 +620,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, protectedSession, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -662,8 +646,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
 			initialState, optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialState, optimizedClearValue, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -701,8 +683,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialLayout, optimizedClearValue, protectedSession, numCastableFormats,
 		castableFormats, riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -733,8 +713,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialLayout, optimizedClearValue, numCastableFormats, castableFormats,
 		riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
@@ -765,8 +743,6 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
 	HRESULT hr = original(device, desc, initialLayout,
 		optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
 		riid, resource);
-	if (!ShouldTrackResourceMetadata())
-		return hr;
 	if (SUCCEEDED(hr) && resource && *resource) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
