@@ -445,8 +445,7 @@ static bool GetCurrentDescriptors(
 						continue;
 					const UINT64 tableBaseIndex =
 						(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-					UINT count = range.numDescriptors == UINT_MAX ? 1 : range.numDescriptors;
-					count = min(count, MaxDescriptorsPerRangeDump);
+					const UINT count = DX12BindingDescriptorCountForRange(heap, tableBaseIndex, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 descriptorIndex =
 							tableBaseIndex + range.effectiveOffset + offset;
@@ -617,8 +616,7 @@ bool DX12BindingGetCurrentComputeAll(
 					else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) { out = cbvs; kind = "CBV"; }
 					else { continue; }
 
-					UINT count = range.numDescriptors == UINT_MAX ? 1 : range.numDescriptors;
-					count = min(count, MaxDescriptorsPerRangeDump);
+					const UINT count = DX12BindingDescriptorCountForRange(heap, tableBase, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 di = tableBase + range.effectiveOffset + offset;
 						if (di >= heap.numDescriptors) break;

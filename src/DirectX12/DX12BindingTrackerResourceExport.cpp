@@ -175,8 +175,7 @@ static void WriteFrameResourceBinding(
 			if (!heap)
 				continue;
 			const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-			UINT count = range.numDescriptors == UINT_MAX ? 1 : range.numDescriptors;
-			count = min(count, MaxDescriptorsPerRangeDump);
+			const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
 			for (UINT offset = 0; offset < count; ++offset) {
 				const UINT64 descriptorIndex = tableBaseIndex + range.effectiveOffset + offset;
 				if (descriptorIndex >= heap->numDescriptors)
@@ -264,8 +263,7 @@ static void CollectFrameResourceBinding(
 			if (!heap)
 				continue;
 			const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-			UINT count = range.numDescriptors == UINT_MAX ? 1 : range.numDescriptors;
-			count = min(count, MaxDescriptorsPerRangeDump);
+			const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
 			for (UINT offset = 0; offset < count; ++offset) {
 				const UINT64 descriptorIndex = tableBaseIndex + range.effectiveOffset + offset;
 				if (descriptorIndex >= heap->numDescriptors)
@@ -410,6 +408,8 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	size_t computeTablesWithRoots = 0;
 	size_t rootRangeTables = 0;
 	size_t tableStartOnly = 0;
+	size_t unboundedRanges = 0;
+	size_t unboundedDescriptors = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
 			continue;
@@ -428,10 +428,25 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 					graphicsTablesWithRoots++;
 					const DX12RootParameterSummary *parameter =
 						DX12BindingFindRootParameter(graphicsRoot, i);
-					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 						rootRangeTables++;
-					else
+						const DX12DescriptorHeapSummary *heap =
+							DX12BindingFindHeapForGpuHandle(heaps, event.graphicsTables[i],
+								D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						if (heap && heap->increment) {
+							const UINT64 tableBaseIndex =
+								(event.graphicsTables[i].baseDescriptor.ptr - heap->gpuStart) / heap->increment;
+							for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+								if (range.numDescriptors != UINT_MAX)
+									continue;
+								unboundedRanges++;
+								unboundedDescriptors +=
+									DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+							}
+						}
+					} else {
 						tableStartOnly++;
+					}
 				} else {
 					tableStartOnly++;
 				}
@@ -442,10 +457,25 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 					computeTablesWithRoots++;
 					const DX12RootParameterSummary *parameter =
 						DX12BindingFindRootParameter(computeRoot, i);
-					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+					if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 						rootRangeTables++;
-					else
+						const DX12DescriptorHeapSummary *heap =
+							DX12BindingFindHeapForGpuHandle(heaps, event.computeTables[i],
+								D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						if (heap && heap->increment) {
+							const UINT64 tableBaseIndex =
+								(event.computeTables[i].baseDescriptor.ptr - heap->gpuStart) / heap->increment;
+							for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+								if (range.numDescriptors != UINT_MAX)
+									continue;
+								unboundedRanges++;
+								unboundedDescriptors +=
+									DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+							}
+						}
+					} else {
 						tableStartOnly++;
+					}
 				} else {
 					tableStartOnly++;
 				}
@@ -469,12 +499,13 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		}
 	}
 	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu",
+		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu",
 		bindings->size(), seen.size(),
 		drawEvents, dispatchEvents,
 		graphicsTables, computeTables,
 		graphicsTablesWithRoots, computeTablesWithRoots,
-		rootRangeTables, tableStartOnly);
+		rootRangeTables, tableStartOnly,
+		unboundedRanges, unboundedDescriptors);
 }
 
 static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<BindingEvent> &events)

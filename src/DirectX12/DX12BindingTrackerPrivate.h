@@ -25,6 +25,22 @@ constexpr UINT MaxVertexBufferSlots = 32;
 constexpr UINT MaxTrackedEvents = 20000;
 constexpr UINT MaxDescriptorsPerRangeDump = 256;
 
+inline UINT DX12BindingDescriptorCountForRange(
+	const DX12DescriptorHeapSummary &heap,
+	UINT64 tableBaseIndex,
+	const DX12RootDescriptorRangeSummary &range)
+{
+	const UINT64 firstDescriptor = tableBaseIndex + range.effectiveOffset;
+	if (firstDescriptor >= heap.numDescriptors)
+		return 0;
+
+	const UINT64 heapAvailable = heap.numDescriptors - firstDescriptor;
+	const UINT64 declaredCount =
+		range.numDescriptors == UINT_MAX ? heapAvailable : range.numDescriptors;
+	const UINT64 boundedCount = min(declaredCount, static_cast<UINT64>(MaxDescriptorsPerRangeDump));
+	return boundedCount > UINT_MAX ? UINT_MAX : static_cast<UINT>(boundedCount);
+}
+
 struct RootTableState
 {
 	bool valid = false;

@@ -22,12 +22,14 @@ FrameAnalysis writes `BindResource` events for descriptor resources and includes
 
 Texture2D SRV/UAV bindings are dump candidates. Successful copies are written as `.dds` files through the same deduped resource path as buffers; skipped texture copies keep their binding row and skip note.
 
+Unbounded descriptor ranges are expanded against the descriptor heap instead of being collapsed to one descriptor. Expansion remains bounded by the frame-analysis per-range descriptor budget, so bindless tables can expose texture SRVs without turning F8 into an unbounded heap walk.
+
 `FrameAnalysisDX12.csv` points at `summary/ResourceBindingsDX12.csv` instead of stale current-frame resource file names that are not produced by the resource dump path.
 
 ## Consequences
 
 ZZMIDX12 can correlate draw-time GPU preskinning VBs with prior compute UAV producers and inspect the dispatch SRV inputs and UAV outputs.
 
-Creation-time descriptor metadata increases long-lived metadata volume, so descriptor cache pruning remains important. The design avoids enabling descriptor copy tracking permanently and does not add driver calls to draw or dispatch hot paths.
+Creation-time descriptor metadata increases long-lived metadata volume, so descriptor cache pruning remains important. The design avoids enabling descriptor copy tracking permanently and does not add driver calls to draw or dispatch hot paths. F8 logs `unbounded_ranges` and `unbounded_descriptors` in `BindingResourcesCollected` so bindless descriptor expansion can be validated from the capture log.
 
 Remaining fallback-style paths in original function lookup and resource copy are unchanged and should be reviewed separately.
