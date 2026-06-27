@@ -18,6 +18,8 @@ Num0 Hunting disable hides the overlay window instead of destroying it. Runtime 
 
 Overlay window operations are owned by the overlay thread. Show, hide, position, and repaint are requested with private `WM_APP` messages posted to the overlay window. Input and Present threads do not directly call overlay `ShowWindow`, `SetWindowPos`, or `InvalidateRect`; they only update lightweight state and post messages. Hunting disable also stops refreshing the off-state overlay text and posts only the hide request after toggling state.
 
+Hunting disable does not bump command-list tracking generation. The disabled atomic is sufficient to stop hunt recording, and avoiding the bump prevents repeated Num0 off/on stress from forcing command-list runtime tracking cache refreshes on every off edge. Stale IA containers are swapped out while holding the Hunting lock and destroyed after the lock is released.
+
 The HDC text drawing path into the game window is removed from Hunting overlay display. Hunting display uses the overlay window, and both full Present and first Present skip paths update overlay positioning while Hunting is active.
 
 DX12 IA selection stores `selectedHash` for IB and VB. The current position is derived from the visible set when possible. If the selected hash is not visible, Num7/Num8 advance through the current visible set using the nearest lower-bound entry, matching DX11's overlay buffer lifetime behavior.

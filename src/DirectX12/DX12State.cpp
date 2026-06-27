@@ -300,6 +300,8 @@ static bool DX12ReleaseShouldLogFunction(const char *func)
 		return true;
 	if (!strcmp(func, "DX12HuntIaStats"))
 		return true;
+	if (!strcmp(func, "DX12HuntToggle"))
+		return true;
 	if (!strncmp(func, "OverlayWindow", 13))
 		return true;
 	return false;

@@ -8,7 +8,11 @@ This avoids a crash-prone lifetime pattern where the input thread disables hunti
 
 Window visibility, positioning, and repaint requests must be marshalled to the overlay window thread with private `WM_APP` messages. Input and Present threads may flip atomics, copy `HWND`/`RECT` target metadata under a short lock, and call `PostMessageW`, but they should not call `ShowWindow`, `SetWindowPos`, or `InvalidateRect` directly on the overlay window. A Release hang that stops immediately after `DX12 hunting toggled off` should first be checked for a synchronous cross-thread window call in the Hunting disable path.
 
-The Hunting disable path should not refresh the overlay text after switching to disabled. It should record the state change, bump command-list tracking generation, and post a hide request. This mirrors DX11's toggle shape more closely: the hotkey changes the hunting mode, while overlay presentation is handled by the normal rendering/window owner path.
+The Hunting disable path should not refresh the overlay text after switching to disabled. It should record the state change and post a hide request. This mirrors DX11's toggle shape more closely: the hotkey changes the hunting mode, while overlay presentation is handled by the normal rendering/window owner path.
+
+Hunting disable should not bump command-list tracking generation. The hot path already checks the hunting atomic before recording IA hunt data, and Present-side hot-path gating will settle after the disabled state is visible. Repeated Num0 off/on stress should not force all command-list runtime caches to refresh on every off edge.
+
+When Hunting toggles, stale IA containers should be swapped out under the Hunting lock and destroyed after the lock has been released. The lock protects only container ownership changes and selection state, not large container destruction.
 
 Present skip paths still need to update the overlay while hunting is active. A first Present can still be in the hot-path skip mode immediately after Num0 enables hunting, so the skip branch must run the same lightweight overlay positioning step before it updates hot-path gates.
 

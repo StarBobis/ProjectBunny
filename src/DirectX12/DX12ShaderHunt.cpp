@@ -662,31 +662,42 @@ bool DX12HuntShouldDrawOverlay()
 
 void DX12HuntToggle()
 {
+	std::unordered_map<ID3D12GraphicsCommandList*, HuntIaState> oldIa;
+	IaSelection oldIB;
+	IaSelection oldVB;
+
 	AcquireSRWLockExclusive(&gHuntLock);
 	gHuntingEnabled = !gHuntingEnabled;
 	bool enabled = gHuntingEnabled;
 	InterlockedExchange(&gHuntingActive, enabled ? 1 : 0);
-	gCommandListIa.clear();
-	gIB.visited.clear();
-	gIB.lastSeenFrame.clear();
+	oldIa.swap(gCommandListIa);
+	oldIB.visited.swap(gIB.visited);
+	oldIB.lastSeenFrame.swap(gIB.lastSeenFrame);
+	oldVB.visited.swap(gVB.visited);
+	oldVB.lastSeenFrame.swap(gVB.lastSeenFrame);
 	gIB.selected = 0;
 	gIB.selectedHash = 0;
-	gVB.visited.clear();
-	gVB.lastSeenFrame.clear();
 	gVB.selected = 0;
 	gVB.selectedHash = 0;
 	ReleaseSRWLockExclusive(&gHuntLock);
 
-	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
+	DX12LogJsonFunc("DX12HuntToggle",
+		"\"stage\":\"state\",\"enabled\":%s,\"oldIa\":%zu,\"oldIb\":%zu,\"oldVb\":%zu",
+		enabled ? "true" : "false", oldIa.size(), oldIB.visited.size(), oldVB.visited.size());
 	if (enabled) {
 		DX12HuntRefreshOverlay();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
 		DX12CommandListRuntimeBumpTrackingGeneration();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"bump_generation\",\"enabled\":true");
 		DX12ShowOverlayWindow();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"show_overlay\",\"enabled\":true");
 		DX12ActivateHotPathHooks();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"activate_hooks\",\"enabled\":true");
 	} else {
-		DX12CommandListRuntimeBumpTrackingGeneration();
 		DX12HideOverlayWindow();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"hide_overlay\",\"enabled\":false");
 	}
+	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 }
 
 void DX12HuntOnPresent()
