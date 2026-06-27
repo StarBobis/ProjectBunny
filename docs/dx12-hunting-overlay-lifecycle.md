@@ -21,3 +21,5 @@ Present skip paths still need to update the overlay while hunting is active. A f
 Hunting text should be rendered through the overlay window, not by drawing directly into the game window HDC. Direct HDC text is overwritten by normal frame presentation and reads as flicker. The overlay window can stay hidden until a swapchain target is known, then be positioned over the target client rect.
 
 DX12 input polling should follow DX11's default hunting repeat cadence. DX11's default `repeat_rate` is 8 operations per second, so DX12 hunting navigation repeat uses a 125 ms interval after the initial delay. Num0 itself remains an edge-triggered toggle and resets hunting repeat-key state after toggling.
+
+Num0 should also have a short cooldown. Hunting enable and disable changes hot-path gates, overlay visibility, command-list generation, and hook activation state, so accepting dozens of Num0 edges per second turns a mode switch into a runtime stress loop. Navigation keys can repeat; Hunting toggle is a mode transition and should reject rapid duplicate edges.

@@ -20,6 +20,7 @@ static HANDLE gInputThread = nullptr;
 static bool gNumpad0WasDown = false;
 static bool gNumpadAddWasDown = false;
 static bool gNumpad9WasDown = false;
+static DWORD gLastHuntToggleTick = 0;
 
 struct RepeatKeyState
 {
@@ -162,9 +163,15 @@ static void DX12PollInputCore()
 
 	const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
 	if (!decimalDown && KeyPressed(VK_NUMPAD0, &gNumpad0WasDown)) {
-		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggle\"");
-		DX12HuntToggle();
-		ResetHuntRepeatKeys();
+		const DWORD now = GetTickCount();
+		if (now - gLastHuntToggleTick >= 500) {
+			gLastHuntToggleTick = now;
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggle\"");
+			DX12HuntToggle();
+			ResetHuntRepeatKeys();
+		} else {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggleSkipped\",\"reason\":\"cooldown\"");
+		}
 	}
 
 	if (!DX12HuntIsEnabled()) {

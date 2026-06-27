@@ -20,6 +20,8 @@ When the loaded ini has no active overrides, no present runtime effect, no pre-s
 
 Input polling must not depend exclusively on `Present` when hot path hooks are gated off. A lightweight input thread owns DX12 hotkeys while the runtime is otherwise idle. When hunt is enabled, cached swapchain and command queue pointers are used to activate the previously gated hot path hooks. The `Present` path only polls input if the input thread failed to start, preventing duplicate key edges.
 
+The cached command queue used for later hot-path activation must be a direct queue. Copy and compute queues can be created after the direct queue and must not overwrite the activation cache, otherwise Hunting enable will repeatedly try to activate hooks on a non-direct queue while the real graphics queue is left stale.
+
 For first-present crashes, `DX12PresentFirst` stages split the boundary:
 
 1. `after_original_skip` means the real `Present` or `Present1` returned successfully.

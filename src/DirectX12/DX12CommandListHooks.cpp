@@ -1738,17 +1738,30 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 {
 	if (!commandQueue)
 		return;
+
+	ID3D12CommandQueue *queue = nullptr;
+	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
+		return;
+
+	D3D12_COMMAND_QUEUE_DESC desc = queue->GetDesc();
+	if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
+		static volatile LONG nonDirectLogs = 0;
+		if (InterlockedIncrement(&nonDirectLogs) <= 8)
+			DX12LogJsonFunc("DX12CommandQueueState",
+				"\"event\":\"ignore_non_direct_hotpath\",\"queue\":\"%p\",\"type\":%d",
+				queue, static_cast<int>(desc.Type));
+		queue->Release();
+		return;
+	}
+
 	DX12RememberCommandQueueForHotPath(commandQueue);
 	if (!DX12HotPathHooksNeeded()) {
 		DX12LogJsonFunc("DX12HotPathHookGate",
 			"\"object\":\"command_queue\",\"action\":\"skip\",\"queue\":\"%p\"",
 			commandQueue);
+		queue->Release();
 		return;
 	}
-
-	ID3D12CommandQueue *queue = nullptr;
-	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
-		return;
 
 	DX12SetCommandQueue(queue);
 	DX12VTableHook queueHooks[] = {

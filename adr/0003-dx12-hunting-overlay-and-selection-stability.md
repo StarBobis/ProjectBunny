@@ -22,6 +22,8 @@ Hunting disable does not bump command-list tracking generation. The disabled ato
 
 Hunting toggles update the DX12 hot-path gate immediately after the hunting atomic changes. This prevents the full command queue and command list hook path from staying enabled until the next Present after a Num0 disable.
 
+Num0 Hunting toggle is edge-triggered and cooldown-gated. Rapid duplicate Num0 edges are rejected so mode transitions do not repeatedly flip hot-path gates, overlay visibility, tracking generation, and hook activation state in a tight loop.
+
 The HDC text drawing path into the game window is removed from Hunting overlay display. Hunting display uses the overlay window, and both full Present and first Present skip paths update overlay positioning while Hunting is active.
 
 DX12 IA selection stores `selectedHash` for IB and VB. The current position is derived from the visible set when possible. If the selected hash is not visible, Num7/Num8 advance through the current visible set using the nearest lower-bound entry, matching DX11's overlay buffer lifetime behavior.
