@@ -15,3 +15,9 @@ The release log lifecycle is:
 If a future hang log ends at a repeated D3D12 export such as `D3D12SerializeRootSignature`, first verify release logging did not stay globally enabled before investigating mod ini syntax.
 
 Repeated polling logs, such as deferred DXGI hook attempts before `dxgi.dll` is loaded, must be rate limited. A repeated plain `Log` message can corrupt the usefulness of a crash log by drowning out the last structural event.
+
+For first-present crashes, `DX12PresentFirst` stages split the boundary:
+
+1. `after_original_skip` means the real `Present` or `Present1` returned successfully.
+2. `before_hotpath_update_skip` means present count increment completed.
+3. `return_skip` means the hook reached its return statement and any later termination happened after control returned to the game.

@@ -23,3 +23,5 @@ The normal release hot path avoids logging pressure from high-frequency D3D12 ex
 Targeted full release logging remains available through an explicit environment variable.
 
 Future diagnostics should add precise logs or debug-only logs instead of restoring always-on release hook logging.
+
+First-frame crash probes should prefer one-shot flushed boundary events around the real API call and hook return path. This keeps the release hot path quiet while still separating original API failure from wrapper-tail failure and post-return termination.

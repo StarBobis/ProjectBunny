@@ -384,7 +384,15 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 				"\"api\":\"Present\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		DX12IncrementPresentCount();
+		if (InterlockedCompareExchange(&firstPresentLog, 4, 3) == 3)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		DX12HotPathUpdate();
+		if (InterlockedCompareExchange(&firstPresentLog, 5, 4) == 4)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		return hr;
 	}
 
@@ -475,7 +483,15 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 				"\"api\":\"Present1\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		DX12IncrementPresentCount();
+		if (InterlockedCompareExchange(&firstPresent1Log, 4, 3) == 3)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		DX12HotPathUpdate();
+		if (InterlockedCompareExchange(&firstPresent1Log, 5, 4) == 4)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present1\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		return hr;
 	}
 
