@@ -74,32 +74,36 @@ void DX12UiConsumeActions()
 	if (!actions)
 		return;
 
-	if (actions & DX12_UI_ACTION_HUNT_TOGGLE)
+	const bool huntToggleRequested = (actions & DX12_UI_ACTION_HUNT_TOGGLE) != 0;
+
+	if (huntToggleRequested)
 		DX12HuntToggle();
-	if (actions & DX12_UI_ACTION_HUNT_PREV_VS)
-		DX12HuntPreviousVS();
-	if (actions & DX12_UI_ACTION_HUNT_NEXT_VS)
-		DX12HuntNextVS();
-	if (actions & DX12_UI_ACTION_HUNT_PREV_PS)
-		DX12HuntPreviousPS();
-	if (actions & DX12_UI_ACTION_HUNT_NEXT_PS)
-		DX12HuntNextPS();
-	if (actions & DX12_UI_ACTION_HUNT_PREV_CS)
-		DX12HuntPreviousCS();
-	if (actions & DX12_UI_ACTION_HUNT_NEXT_CS)
-		DX12HuntNextCS();
-	if (actions & DX12_UI_ACTION_HUNT_PREV_IB)
-		DX12HuntPreviousIB();
-	if (actions & DX12_UI_ACTION_HUNT_NEXT_IB)
-		DX12HuntNextIB();
-	if (actions & DX12_UI_ACTION_HUNT_PREV_VB)
-		DX12HuntPreviousVB();
-	if (actions & DX12_UI_ACTION_HUNT_NEXT_VB)
-		DX12HuntNextVB();
-	if (actions & DX12_UI_ACTION_HUNT_COPY)
-		DX12HuntCopySelectedHash();
-	if (actions & DX12_UI_ACTION_HUNT_RESET)
-		DX12HuntResetSelection();
+	if (!huntToggleRequested && DX12HuntIsEnabled()) {
+		if (actions & DX12_UI_ACTION_HUNT_PREV_VS)
+			DX12HuntPreviousVS();
+		if (actions & DX12_UI_ACTION_HUNT_NEXT_VS)
+			DX12HuntNextVS();
+		if (actions & DX12_UI_ACTION_HUNT_PREV_PS)
+			DX12HuntPreviousPS();
+		if (actions & DX12_UI_ACTION_HUNT_NEXT_PS)
+			DX12HuntNextPS();
+		if (actions & DX12_UI_ACTION_HUNT_PREV_CS)
+			DX12HuntPreviousCS();
+		if (actions & DX12_UI_ACTION_HUNT_NEXT_CS)
+			DX12HuntNextCS();
+		if (actions & DX12_UI_ACTION_HUNT_PREV_IB)
+			DX12HuntPreviousIB();
+		if (actions & DX12_UI_ACTION_HUNT_NEXT_IB)
+			DX12HuntNextIB();
+		if (actions & DX12_UI_ACTION_HUNT_PREV_VB)
+			DX12HuntPreviousVB();
+		if (actions & DX12_UI_ACTION_HUNT_NEXT_VB)
+			DX12HuntNextVB();
+		if (actions & DX12_UI_ACTION_HUNT_COPY)
+			DX12HuntCopySelectedHash();
+		if (actions & DX12_UI_ACTION_HUNT_RESET)
+			DX12HuntResetSelection();
+	}
 	if (actions & DX12_UI_ACTION_FRAME_ANALYSIS)
 		RunFrameAnalysisRequest();
 	if (actions & DX12_UI_ACTION_SHADER_DUMP)
@@ -109,4 +113,3 @@ void DX12UiConsumeActions()
 	if (actions & DX12_UI_ACTION_PROFILING)
 		DX12Profiling::Toggle();
 }
-

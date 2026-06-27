@@ -134,7 +134,7 @@ static PFN_RESIZE_BUFFERS GetResizeBuffersOriginal(IDXGISwapChain *swapChain)
 
 static void LogPresentStage(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK)
 {
-	if (!DX12DiagnosticsLoggingEnabled())
+	if (!DX12VerboseDiagnosticsEnabled())
 		return;
 	DX12LogDebugJsonFuncFlush("DX12PresentStage",
 		"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -447,8 +447,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	{
 		const LONG draws = InterlockedExchange(&gPerFrameTotalDraws, 0);
 		const LONG dispatches = InterlockedExchange(&gPerFrameTotalDispatches, 0);
-		DX12LogJsonFunc("DX12PerFrameCounters",
-			"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
+		if (DX12VerboseDiagnosticsEnabled()) {
+			DX12LogJsonFunc("DX12PerFrameCounters",
+				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
+		}
 	}
 
 	DX12Profiling::BeginFrame();
@@ -545,8 +547,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	{
 		const LONG draws = InterlockedExchange(&gPerFrameTotalDraws, 0);
 		const LONG dispatches = InterlockedExchange(&gPerFrameTotalDispatches, 0);
-		DX12LogJsonFunc("DX12PerFrameCounters",
-			"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
+		if (DX12VerboseDiagnosticsEnabled()) {
+			DX12LogJsonFunc("DX12PerFrameCounters",
+				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
+		}
 	}
 
 	DX12Profiling::BeginFrame();

@@ -10,6 +10,7 @@ bool DX12OpenLogFile();
 void DX12CloseLogFile();
 void DX12EndReleaseStartupLogging();
 bool DX12DiagnosticsLoggingEnabled();
+bool DX12VerboseDiagnosticsEnabled();
 void DX12Log(const char *fmt, ...);
 void DX12LogJsonFunc(const char *func, const char *fmt, ...);
 void DX12LogJsonFuncFlush(const char *func, const char *fmt, ...);

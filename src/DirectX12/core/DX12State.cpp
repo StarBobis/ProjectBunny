@@ -160,7 +160,17 @@ bool DX12HotPathHooksNeeded()
 static bool DX12HookCallLoggingEnabled()
 {
 #if defined(_DEBUG)
-	return true;
+	static LONG sEnabled = -1;
+	LONG enabled = InterlockedCompareExchange(&sEnabled, 0, -1);
+	if (enabled == -1) {
+		char value[16] = {};
+		const DWORD len = GetEnvironmentVariableA("ZZMIDX12_VERBOSE_DIAGNOSTICS", value, ARRAYSIZE(value));
+		const bool requested = len > 0 &&
+			(!_stricmp(value, "1") || !_stricmp(value, "true") || !_stricmp(value, "yes"));
+		enabled = requested ? 1 : 0;
+		InterlockedExchange(&sEnabled, enabled);
+	}
+	return enabled != 0;
 #else
 	return false;
 #endif
@@ -173,6 +183,11 @@ bool DX12DiagnosticsLoggingEnabled()
 #else
 	return false;
 #endif
+}
+
+bool DX12VerboseDiagnosticsEnabled()
+{
+	return DX12HookCallLoggingEnabled();
 }
 
 bool DX12ShouldLogHookCall(const char *api)

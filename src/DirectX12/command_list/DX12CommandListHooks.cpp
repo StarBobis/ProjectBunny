@@ -494,6 +494,8 @@ static void LogQueueStage(
 	ULONGLONG elapsedMs = 0)
 {
 #if defined(_DEBUG)
+	if (!DX12VerboseDiagnosticsEnabled())
+		return;
 	if (SUCCEEDED(hr) && elapsedMs < 4 && stage && !strcmp(stage, "beforeOriginal"))
 		return;
 	if (SUCCEEDED(hr) && elapsedMs < 4 && api)
@@ -521,6 +523,8 @@ static void LogCommandListStage(
 	HRESULT hr = S_OK, ULONGLONG elapsedMs = 0)
 {
 #if defined(_DEBUG)
+	if (!DX12VerboseDiagnosticsEnabled())
+		return;
 	if (SUCCEEDED(hr) && elapsedMs < 4)
 		return;
 	DX12LogDebugJsonFunc("DX12CommandListStage",
@@ -540,6 +544,8 @@ static void LogCommandListStage(
 static void LogCommandListStageEdge(
 	const char *api, const char *stage, ID3D12GraphicsCommandList *commandList)
 {
+	if (!DX12VerboseDiagnosticsEnabled())
+		return;
 	DX12LogDebugJsonFunc("DX12CommandListStage",
 		"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"commandList\":\"%p\"",
 		api ? api : "", stage ? stage : "", DX12GetPresentCount(), commandList);
@@ -659,8 +665,7 @@ static void RegisterCommandListBase(
 	if (!baseList)
 		return;
 
-	if (DX12HotPathHooksNeeded())
-		DX12HookCommandList(baseList);
+	DX12HookCommandList(baseList);
 	if (ShouldRegisterCommandListPointer(baseList))
 		DX12CommandListLifecycleRegister(baseList, initialState);
 }
@@ -993,9 +998,9 @@ static HRESULT STDMETHODCALLTYPE HookedResetCommandList(
 	ID3D12PipelineState *initialState)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigResetCommandList)
-			return gOrigResetCommandList(commandList, allocator, initialState);
-		return E_FAIL;
+		PFN_RESET_COMMAND_LIST original =
+			DX12_CL_ORIG(commandList, 10, PFN_RESET_COMMAND_LIST, ResetCommandList);
+		return original ? original(commandList, allocator, initialState) : E_FAIL;
 	}
 	DX12_PROFILE_SCOPE(ResetCommandList);
 	LogDX12Call("ID3D12GraphicsCommandList::Reset", commandList,
@@ -1048,8 +1053,10 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 	UINT startVertexLocation, UINT startInstanceLocation)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigDrawInstanced)
-			gOrigDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
+		PFN_DRAW_INSTANCED original =
+			DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
+		if (original)
+			original(commandList, vertexCountPerInstance, instanceCount,
 				startVertexLocation, startInstanceLocation);
 		return;
 	}
@@ -1118,8 +1125,10 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	UINT startIndexLocation, INT baseVertexLocation, UINT startInstanceLocation)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigDrawIndexedInstanced)
-			gOrigDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
+		PFN_DRAW_INDEXED_INSTANCED original =
+			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
+		if (original)
+			original(commandList, indexCountPerInstance, instanceCount,
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
 		return;
 	}
@@ -1198,8 +1207,9 @@ static void STDMETHODCALLTYPE HookedDispatch(
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigDispatch)
-			gOrigDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
+		if (original)
+			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
 	}
 	DX12_PROFILE_SCOPE(Dispatch);
@@ -1324,8 +1334,10 @@ static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigIASetPrimitiveTopology)
-			gOrigIASetPrimitiveTopology(commandList, topology);
+		PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
+			DX12_CL_ORIG(commandList, 20, PFN_IA_SET_PRIMITIVE_TOPOLOGY, IASetPrimitiveTopology);
+		if (original)
+			original(commandList, topology);
 		return;
 	}
 	DX12_PROFILE_SCOPE(IASetPrimitiveTopology);
@@ -1376,8 +1388,10 @@ static void STDMETHODCALLTYPE HookedSetPipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigSetPipelineState)
-			gOrigSetPipelineState(commandList, pipelineState);
+		PFN_SET_PIPELINE_STATE original =
+			DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, SetPipelineState);
+		if (original)
+			original(commandList, pipelineState);
 		return;
 	}
 	DX12_PROFILE_SCOPE(SetPipelineState);
@@ -1407,8 +1421,10 @@ static void STDMETHODCALLTYPE HookedResourceBarrier(
 	const D3D12_RESOURCE_BARRIER *barriers)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigResourceBarrier)
-			gOrigResourceBarrier(commandList, numBarriers, barriers);
+		PFN_RESOURCE_BARRIER original =
+			DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, ResourceBarrier);
+		if (original)
+			original(commandList, numBarriers, barriers);
 		return;
 	}
 	DX12_PROFILE_SCOPE(ResourceBarrier);
@@ -1450,8 +1466,10 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootUnorderedAccessView(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigSetGraphicsRootUnorderedAccessView)
-			gOrigSetGraphicsRootUnorderedAccessView(commandList, rootParameterIndex, address);
+		PFN_SET_ROOT_GPU_VA original =
+			DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, SetGraphicsRootUnorderedAccessView);
+		if (original)
+			original(commandList, rootParameterIndex, address);
 		return;
 	}
 	DX12_PROFILE_SCOPE(SetGraphicsRootUnorderedAccessView);
@@ -1479,8 +1497,10 @@ static void STDMETHODCALLTYPE HookedIASetIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigIASetIndexBuffer)
-			gOrigIASetIndexBuffer(commandList, view);
+		PFN_IA_SET_INDEX_BUFFER original =
+			DX12_CL_ORIG(commandList, 43, PFN_IA_SET_INDEX_BUFFER, IASetIndexBuffer);
+		if (original)
+			original(commandList, view);
 		return;
 	}
 	DX12_PROFILE_SCOPE(IASetIndexBuffer);
@@ -1512,8 +1532,10 @@ static void STDMETHODCALLTYPE HookedIASetVertexBuffers(
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (gDX12HotPathSkipAll) {
-		if (gOrigIASetVertexBuffers)
-			gOrigIASetVertexBuffers(commandList, startSlot, count, views);
+		PFN_IA_SET_VERTEX_BUFFERS original =
+			DX12_CL_ORIG(commandList, 44, PFN_IA_SET_VERTEX_BUFFERS, IASetVertexBuffers);
+		if (original)
+			original(commandList, startSlot, count, views);
 		return;
 	}
 	DX12_PROFILE_SCOPE(IASetVertexBuffers);
@@ -1674,6 +1696,15 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 	UINT maxCommandCount, ID3D12Resource *argumentBuffer, UINT64 argumentBufferOffset,
 	ID3D12Resource *countBuffer, UINT64 countBufferOffset)
 {
+	PFN_EXECUTE_INDIRECT original =
+		DX12_CL_ORIG(commandList, 59, PFN_EXECUTE_INDIRECT, ExecuteIndirect);
+	if (gDX12HotPathSkipAll) {
+		if (original)
+			original(commandList, commandSignature, maxCommandCount, argumentBuffer,
+				argumentBufferOffset, countBuffer, countBufferOffset);
+		return;
+	}
+
 	LogDX12Call("ID3D12GraphicsCommandList::ExecuteIndirect", commandList,
 		" signature=%p max=%u args=%p argOffset=%llu count=%p countOffset=%llu",
 		commandSignature, maxCommandCount, argumentBuffer,
@@ -1727,8 +1758,9 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 		}
 	}
 
-	gOrigExecuteIndirect(commandList, commandSignature, maxCommandCount, argumentBuffer,
-		argumentBufferOffset, countBuffer, countBufferOffset);
+	if (original)
+		original(commandList, commandSignature, maxCommandCount, argumentBuffer,
+			argumentBufferOffset, countBuffer, countBufferOffset);
 
 	// Restore pre-skin patches that were applied before ExecuteIndirect
 	DX12ModRestorePreSkinningUavReplacement(commandList);
@@ -1755,14 +1787,6 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 	}
 
 	DX12RememberCommandQueueForHotPath(commandQueue);
-	if (!DX12HotPathHooksNeeded()) {
-		DX12LogJsonFunc("DX12HotPathHookGate",
-			"\"object\":\"command_queue\",\"action\":\"skip\",\"queue\":\"%p\"",
-			commandQueue);
-		queue->Release();
-		return;
-	}
-
 	DX12SetCommandQueue(queue);
 	DX12VTableHook queueHooks[] = {
 		{10, reinterpret_cast<void**>(&gOrigQueueExecuteCommandLists),
@@ -1794,8 +1818,6 @@ void DX12ActivateCommandQueueHotPathHooks()
 void DX12HookCommandList(IUnknown *commandList)
 {
 	if (!commandList)
-		return;
-	if (!DX12HotPathHooksNeeded())
 		return;
 
 	ID3D12GraphicsCommandList *baseList = nullptr;

@@ -3,8 +3,25 @@
 #include <d3d12.h>
 #include <dxgi.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "DX12CommandListRuntime.h"
+
+enum DX12HuntListCategory
+{
+	DX12_HUNT_LIST_VS,
+	DX12_HUNT_LIST_PS,
+	DX12_HUNT_LIST_CS,
+	DX12_HUNT_LIST_IB,
+	DX12_HUNT_LIST_VB,
+};
+
+struct DX12HuntListItem
+{
+	wchar_t label[64];
+	UINT64 hash;
+	bool selected;
+};
 
 void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 void DX12HuntSetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
@@ -43,3 +60,7 @@ void DX12HuntNextVB();
 void DX12HuntCopySelectedHash();
 void DX12HuntResetSelection();
 void DX12HuntRefreshOverlay();
+size_t DX12HuntGetListItems(
+	DX12HuntListCategory category, DX12HuntListItem *items, size_t itemCount);
+void DX12HuntSelectListItem(DX12HuntListCategory category, size_t index);
+void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash);

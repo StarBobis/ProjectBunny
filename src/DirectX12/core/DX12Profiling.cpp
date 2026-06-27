@@ -160,7 +160,7 @@ static void ResetFrame()
 void Init()
 {
 	QueryPerformanceFrequency(&gPerfFrequency);
-	InterlockedExchange(&gCollectCounters, DX12DiagnosticsLoggingEnabled() ? 1 : 0);
+	InterlockedExchange(&gCollectCounters, 0);
 }
 
 void BeginFrame()
@@ -177,7 +177,7 @@ void EndFrame()
 
 	if (gMode == Mode::SUMMARY) {
 		FlushFrame();
-	} else if (DX12DiagnosticsLoggingEnabled()) {
+	} else if (DX12VerboseDiagnosticsEnabled()) {
 		LogFrameStats();
 	}
 
@@ -196,7 +196,7 @@ void Toggle()
 		if (gMode == Mode::SUMMARY)
 			FlushFrame();
 		gMode = Mode::NONE;
-		InterlockedExchange(&gCollectCounters, DX12DiagnosticsLoggingEnabled() ? 1 : 0);
+		InterlockedExchange(&gCollectCounters, 0);
 		if (!ShouldCollectCounters())
 			ResetFrame();
 		DX12Log("DX12 profiling disabled\n");
