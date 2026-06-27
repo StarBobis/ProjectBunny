@@ -75,6 +75,39 @@ UINT64 Fnv1a64(const void *data, size_t size)
 	return hash;
 }
 
+static UINT64 HashDescriptorValue(const DescriptorRecord &record)
+{
+	UINT64 hash = 14695981039346656037ull;
+	auto append = [&hash](const void *data, size_t size) {
+		const uint8_t *bytes = static_cast<const uint8_t*>(data);
+		for (size_t i = 0; i < size; ++i) {
+			hash ^= bytes[i];
+			hash *= 1099511628211ull;
+		}
+	};
+	append(record.kind.data(), record.kind.size());
+	append(&record.resource, sizeof(record.resource));
+	append(&record.counterResource, sizeof(record.counterResource));
+	append(&record.gpuVirtualAddress, sizeof(record.gpuVirtualAddress));
+	append(&record.resourceOffset, sizeof(record.resourceOffset));
+	append(&record.viewSize, sizeof(record.viewSize));
+	append(&record.hasDesc, sizeof(record.hasDesc));
+	if (record.kind == DescriptorKind::CBV) {
+		append(&record.cbv, sizeof(record.cbv));
+	} else if (record.kind == DescriptorKind::SRV) {
+		append(&record.srv, sizeof(record.srv));
+	} else if (record.kind == DescriptorKind::UAV) {
+		append(&record.uav, sizeof(record.uav));
+	} else if (record.kind == DescriptorKind::RTV) {
+		append(&record.rtv, sizeof(record.rtv));
+	} else if (record.kind == DescriptorKind::DSV) {
+		append(&record.dsv, sizeof(record.dsv));
+	} else if (record.kind == DescriptorKind::Sampler) {
+		append(&record.sampler, sizeof(record.sampler));
+	}
+	return hash ? hash : 1;
+}
+
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc)
 {
 	D3D12_RESOURCE_DESC out = {};
@@ -146,7 +179,6 @@ void RecordResource(
 	if (!resource)
 		return;
 
-	ID3D12Resource *canonical = CanonicalResource(resource);
 	ResourceRecord record;
 	record.resource = resource;
 	record.desc = desc ? *desc : resource->GetDesc();
@@ -169,22 +201,43 @@ void RecordResource(
 	}
 
 	AcquireSRWLockExclusive(&gResourceLock);
+	ID3D12Resource *canonical = resource;
 	auto found = gResourceByPtr.find(canonical);
+	if (found == gResourceByPtr.end()) {
+		// COM identity canonicalization is only needed for uncommon duplicate
+		// wrappers. Avoid paying QueryInterface on every transient resource.
+		ID3D12Resource *identity = CanonicalResource(resource);
+		if (identity != resource) {
+			canonical = identity;
+			found = gResourceByPtr.find(canonical);
+		}
+	}
+	bool gpuVaIndexChanged = false;
 	if (found != gResourceByPtr.end()) {
 		ResourceRecord &existing = gResources[found->second];
-		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress)
+		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress) {
 			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
+			gpuVaIndexChanged = true;
+		}
 		gResources[found->second] = record;
-		if (record.gpuVirtualAddress && record.size)
+		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
+			gpuVaIndexChanged = true;
+		}
 	} else {
 		gResourceByPtr[canonical] = gResources.size();
-		if (record.gpuVirtualAddress && record.size)
+		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = gResources.size();
+			gpuVaIndexChanged = true;
+		}
 		gResources.push_back(record);
 	}
-	gBufferResolveCache.clear();
-	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+	if (gpuVaIndexChanged) {
+		// Descriptor creation resolves CBV/SRV/UAV GPU VAs constantly; keep
+		// its cache warm unless the buffer VA index actually changed.
+		gBufferResolveCache.clear();
+		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+	}
 	gResourcesRecordedFromCreate++;
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
@@ -685,53 +738,64 @@ static void UpdateDescriptorResourceStateLocked(
 	}
 }
 
-static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocation *location)
+static bool DescriptorSlotFromHeapLocked(
+	size_t heapIndex, SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
+	DescriptorSlotLocation *location, UINT *slotsAvailable)
+{
+	if (heapIndex >= gDescriptorHeaps.size() || !cpuHandle || !location)
+		return false;
+	DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+	if ((requiredType && heap.desc.Type != *requiredType) ||
+		heap.cpuStart == 0 || heap.increment == 0 || heap.desc.NumDescriptors == 0)
+		return false;
+	const SIZE_T begin = heap.cpuStart;
+	const SIZE_T offset = cpuHandle >= begin ? cpuHandle - begin : 0;
+	if (cpuHandle < begin || offset % heap.increment != 0)
+		return false;
+	const SIZE_T slot = offset / heap.increment;
+	if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
+		return false;
+	location->heapIndex = heapIndex;
+	location->slot = static_cast<UINT>(slot);
+	if (slotsAvailable)
+		*slotsAvailable = heap.desc.NumDescriptors - location->slot;
+	return true;
+}
+
+static bool DescriptorSlotForHandleLocked(
+	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
+	DescriptorSlotLocation *location, UINT *slotsAvailable)
 {
 	if (!cpuHandle || !location)
 		return false;
-	for (size_t heapIndex = 0; heapIndex < gDescriptorHeaps.size(); ++heapIndex) {
-		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
-		if (heap.cpuStart == 0 || heap.increment == 0 || heap.desc.NumDescriptors == 0)
-			continue;
-		const SIZE_T begin = heap.cpuStart;
-		const SIZE_T offset = cpuHandle >= begin ? cpuHandle - begin : 0;
-		if (cpuHandle < begin || offset % heap.increment != 0)
-			continue;
-		const SIZE_T slot = offset / heap.increment;
-		if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
-			continue;
-		location->heapIndex = heapIndex;
-		location->slot = static_cast<UINT>(slot);
+	struct DescriptorHeapLookupCache
+	{
+		size_t heapIndex = SIZE_MAX;
+	};
+	static thread_local DescriptorHeapLookupCache cache;
+	if (DescriptorSlotFromHeapLocked(
+			cache.heapIndex, cpuHandle, requiredType, location, slotsAvailable))
 		return true;
+	for (size_t heapIndex = 0; heapIndex < gDescriptorHeaps.size(); ++heapIndex) {
+		if (DescriptorSlotFromHeapLocked(
+				heapIndex, cpuHandle, requiredType, location, slotsAvailable)) {
+			cache.heapIndex = heapIndex;
+			return true;
+		}
 	}
 	return false;
+}
+
+static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocation *location)
+{
+	return DescriptorSlotForHandleLocked(cpuHandle, nullptr, location, nullptr);
 }
 
 static bool DescriptorSlotForHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DescriptorSlotLocation *location, UINT *slotsAvailable)
 {
-	if (!cpuHandle || !location)
-		return false;
-	for (size_t heapIndex = 0; heapIndex < gDescriptorHeaps.size(); ++heapIndex) {
-		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
-		if (heap.desc.Type != type || heap.cpuStart == 0 ||
-			heap.increment == 0 || heap.desc.NumDescriptors == 0)
-			continue;
-		const SIZE_T begin = heap.cpuStart;
-		const SIZE_T offset = cpuHandle >= begin ? cpuHandle - begin : 0;
-		if (cpuHandle < begin || offset % heap.increment != 0)
-			continue;
-		const SIZE_T slot = offset / heap.increment;
-		if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
-			continue;
-		location->heapIndex = heapIndex;
-		location->slot = static_cast<UINT>(slot);
-		if (slotsAvailable)
-			*slotsAvailable = heap.desc.NumDescriptors - location->slot;
-		return true;
-	}
-	return false;
+	return DescriptorSlotForHandleLocked(cpuHandle, &type, location, slotsAvailable);
 }
 
 static bool FindLatestDescriptorAtSlotLocked(
@@ -751,10 +815,16 @@ static void RecordDescriptorAtSlotLocked(
 	DescriptorRecord &&record, const DescriptorSlotLocation &location)
 {
 	++gDescriptorCopyRecordsSeen;
+	if (record.valueId == 0)
+		record.valueId = HashDescriptorValue(record);
 	DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
 	auto existing = heap.slots.find(location.slot);
-	if (existing != heap.slots.end())
+	if (existing != heap.slots.end()) {
+		if (existing->second.valueId == record.valueId &&
+			existing->second.cpuHandle == record.cpuHandle)
+			return;
 		gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+	}
 	auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
 	gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
 }
@@ -765,13 +835,19 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		++gDescriptorCopyRecordsSeen;
 	else
 		++gDescriptorRecordsSeen;
+	if (record.valueId == 0)
+		record.valueId = HashDescriptorValue(record);
 
 	DescriptorSlotLocation location = {};
 	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {
 		DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
 		auto existing = heap.slots.find(location.slot);
-		if (existing != heap.slots.end())
+		if (existing != heap.slots.end()) {
+			if (existing->second.valueId == record.valueId &&
+				existing->second.cpuHandle == record.cpuHandle)
+				return;
 			gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+		}
 		auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
 		gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
 		return;

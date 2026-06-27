@@ -37,6 +37,7 @@ struct RootSignatureRecord
 struct DescriptorRecord
 {
 	std::string kind;
+	UINT64 valueId = 0;
 	SIZE_T cpuHandle = 0;
 	ID3D12Resource *resource = nullptr;
 	ID3D12Resource *counterResource = nullptr;
