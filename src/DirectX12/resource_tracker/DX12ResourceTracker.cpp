@@ -514,26 +514,51 @@ void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource)
 	ReleaseSRWLockShared(&gResourceLock);
 }
 
+void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
+{
+	if (!record || !resource)
+		return;
+
+	record->resource = resource;
+	if (ShouldTrackResourceMetadata()) {
+		// Full texture/resource metadata is only needed while dumping. The
+		// normal hot path keeps just enough identity for Mod matching.
+		FillResourceInfo(record, resource);
+	}
+}
+
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 {
 	if (!record || gpuVa == 0)
 		return false;
 
 	bool resolved = false;
+	const UINT64 requestedEnd = gpuVa + size;
+	if (requestedEnd < gpuVa)
+		return false;
+
 	AcquireSRWLockShared(&gResourceLock);
-	for (const ResourceRecord &resource : gResources) {
-		if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-			resource.gpuVirtualAddress == 0 || resource.size == 0)
-			continue;
-		const UINT64 begin = resource.gpuVirtualAddress;
-		const UINT64 end = begin + resource.size;
-		const UINT64 requestedEnd = gpuVa + size;
-		if (gpuVa >= begin && requestedEnd <= end) {
+	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVa);
+	if (foundBuffer != gBufferResourceByGpuVa.begin()) {
+		--foundBuffer;
+		if (foundBuffer->second < gResources.size()) {
+			const ResourceRecord &resource = gResources[foundBuffer->second];
+			const UINT64 begin = resource.gpuVirtualAddress;
+			const UINT64 end = begin + resource.size;
+			if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+				begin == 0 || resource.size == 0 ||
+				gpuVa < begin || requestedEnd > end) {
+				ReleaseSRWLockShared(&gResourceLock);
+				return false;
+			}
 			record->resource = resource.resource;
-			record->resourceDesc = resource.desc;
-			record->hasResourceDesc = true;
 			record->resourceOffset = gpuVa - begin;
 			record->viewSize = size;
+			record->gpuVirtualAddress = gpuVa;
+			if (ShouldTrackResourceMetadata()) {
+				record->resourceDesc = resource.desc;
+				record->hasResourceDesc = true;
+			}
 			if (resource.hasHeapType) {
 				record->resourceHeapType = static_cast<UINT>(resource.heapType);
 				record->hasResourceHeapType = true;
@@ -541,7 +566,6 @@ bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 			record->currentState = resource.currentState;
 			record->hasCurrentState = resource.hasCurrentState;
 			resolved = true;
-			break;
 		}
 	}
 	ReleaseSRWLockShared(&gResourceLock);

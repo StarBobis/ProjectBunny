@@ -142,6 +142,7 @@ void RecordResource(ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc, c
 void CleanupTrackedResources();
 void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_T blobLength);
 void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);
+void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void FillSrvBufferView(DescriptorRecord *record);
 void FillUavBufferView(DescriptorRecord *record);

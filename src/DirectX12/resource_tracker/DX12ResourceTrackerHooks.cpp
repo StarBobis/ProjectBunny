@@ -301,7 +301,7 @@ static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
 	DescriptorRecord record;
 	record.kind = "SRV";
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourceInfo(&record, resource);
+	FillResourcePointerInfo(&record, resource);
 	if (desc) {
 		record.srv = *desc;
 		record.hasDesc = true;
@@ -337,7 +337,7 @@ static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
 	record.kind = "UAV";
 	record.cpuHandle = destDescriptor.ptr;
 	record.counterResource = counterResource;
-	FillResourceInfo(&record, resource);
+	FillResourcePointerInfo(&record, resource);
 	if (descToUse) {
 		record.uav = *descToUse;
 		record.hasDesc = true;
@@ -365,7 +365,7 @@ static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
 	DescriptorRecord record;
 	record.kind = "RTV";
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourceInfo(&record, resource);
+	FillResourcePointerInfo(&record, resource);
 	if (desc) {
 		record.rtv = *desc;
 		record.hasDesc = true;
@@ -392,7 +392,7 @@ static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
 	DescriptorRecord record;
 	record.kind = "DSV";
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourceInfo(&record, resource);
+	FillResourcePointerInfo(&record, resource);
 	if (desc) {
 		record.dsv = *desc;
 		record.hasDesc = true;

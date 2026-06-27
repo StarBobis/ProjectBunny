@@ -225,7 +225,44 @@ uint32_t DX12HashDescriptorBufferView(
 	return hash;
 }
 
-static void FillDescriptorSummary(DX12DescriptorSummary *summary, const DescriptorRecord &record)
+static void CompleteDescriptorSummaryResourceInfo(
+	DX12DescriptorSummary *summary, bool resourceLockHeld)
+{
+	if (!summary || !summary->resource)
+		return;
+	if (!summary->hasResourceDesc) {
+		summary->resourceDesc = summary->resource->GetDesc();
+		summary->hasResourceDesc = true;
+		if (summary->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+			summary->gpuVirtualAddress == 0)
+			summary->gpuVirtualAddress = summary->resource->GetGPUVirtualAddress();
+	}
+
+	if (!resourceLockHeld)
+		AcquireSRWLockShared(&gResourceLock);
+	ID3D12Resource *canonical = CanonicalResource(summary->resource);
+	auto found = gResourceByPtr.find(canonical);
+	if (found == gResourceByPtr.end() || found->second >= gResources.size()) {
+		if (!resourceLockHeld)
+			ReleaseSRWLockShared(&gResourceLock);
+		return;
+	}
+	const ResourceRecord &resource = gResources[found->second];
+	if (!summary->hasResourceHeapType && resource.hasHeapType) {
+		summary->resourceHeapType = static_cast<UINT>(resource.heapType);
+		summary->hasResourceHeapType = true;
+	}
+	if (!summary->hasCurrentState) {
+		summary->currentState = static_cast<UINT>(resource.currentState);
+		summary->hasCurrentState = resource.hasCurrentState;
+	}
+	if (!resourceLockHeld)
+		ReleaseSRWLockShared(&gResourceLock);
+}
+
+static void FillDescriptorSummary(
+	DX12DescriptorSummary *summary, const DescriptorRecord &record,
+	bool completeResourceInfo = true, bool resourceLockHeld = false)
 {
 	if (!summary)
 		return;
@@ -244,6 +281,8 @@ static void FillDescriptorSummary(DX12DescriptorSummary *summary, const Descript
 	summary->currentState = static_cast<UINT>(record.currentState);
 	summary->hasCurrentState = record.hasCurrentState;
 	summary->hasDesc = record.hasDesc;
+	if (completeResourceInfo)
+		CompleteDescriptorSummaryResourceInfo(summary, resourceLockHeld);
 
 	if (record.kind == "CBV") {
 		summary->cbvSize = record.cbv.SizeInBytes;
@@ -312,6 +351,12 @@ void DX12GetResourceMetadataSnapshot(
 		const DescriptorRecord &record = *recordPtr;
 		if (record.hasCurrentState)
 			descriptorStateKnown++;
+		D3D12_RESOURCE_DESC resourceDesc = record.resourceDesc;
+		bool hasResourceDesc = record.hasResourceDesc;
+		if (!hasResourceDesc && record.resource) {
+			resourceDesc = record.resource->GetDesc();
+			hasResourceDesc = true;
+		}
 		if (record.kind == DescriptorKind::CBV)
 			cbvDescriptors++;
 		else if (record.kind == DescriptorKind::SRV)
@@ -322,8 +367,8 @@ void DX12GetResourceMetadataSnapshot(
 			rtvDescriptors++;
 		else if (record.kind == DescriptorKind::DSV)
 			dsvDescriptors++;
-		if (record.hasResourceDesc &&
-			record.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		if (hasResourceDesc &&
+			resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
 			textureDescriptors++;
 	}
 	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotBegin",
@@ -369,7 +414,7 @@ void DX12GetResourceMetadataSnapshot(
 		descriptors->reserve(liveDescriptors.size());
 		for (const DescriptorRecord *recordPtr : liveDescriptors) {
 			DX12DescriptorSummary summary;
-			FillDescriptorSummary(&summary, *recordPtr);
+			FillDescriptorSummary(&summary, *recordPtr, true, true);
 			descriptors->push_back(summary);
 		}
 		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
