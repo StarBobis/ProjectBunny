@@ -133,6 +133,9 @@ void RecordResource(
 	ResourceRecord record;
 	record.resource = resource;
 	record.desc = desc ? *desc : resource->GetDesc();
+	if (!ShouldTrackResourceMetadata() &&
+	    record.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		return;
 	if (heapProperties) {
 		record.heapType = heapProperties->Type;
 		record.hasHeapType = true;

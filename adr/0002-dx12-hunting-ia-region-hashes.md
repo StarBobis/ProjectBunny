@@ -24,6 +24,8 @@ When the IA GPU virtual address resolves to a tracked buffer resource, `DX12Hash
 
 F8 IA dump tasks copy the same byte region that produced `hunt_hash`. Dump filenames include the region hash, and `BuffersDX12.csv` exposes both region and original view coordinates.
 
+DX12 records lightweight buffer resource metadata at resource creation time even when full frame-analysis metadata tracking is disabled. Frame analysis can be requested after most IB/VB buffers already exist, and IA dump cannot produce deduped files unless the captured IA GPU virtual address can be resolved to its owning buffer resource. Non-buffer resource metadata remains gated by the hot-path tracking state.
+
 Visited IB/VB hashes are aged at Present with a short frame lifetime to keep the overlay focused on currently visible draw work instead of all historical bindings.
 
 When command lists are submitted after hunting activation, the command-list hook installer runs even for command lists whose lifecycle metadata was already registered.

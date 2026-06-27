@@ -35,3 +35,5 @@ The shared helper mirrors the DX11 region rules: IB offset is `indexStride * Fir
 `DX12HashIaBufferView` must include the resolved resource offset and region size when a GPU address resolves to a known buffer resource. Otherwise two regions inside one buffer collapse to the same hash and the region mechanism becomes indistinguishable from whole-resource matching.
 
 F8 IA dump rows intentionally keep both region fields and original view fields. `gpu_va`, `offset`, and `size` describe the region that was hashed and dumped. `view_gpu_va`, `view_size`, and `view_offset` describe where that region came from inside the original IA view.
+
+F8 IA deduped buffer files require a resource-creation-time buffer VA registry. Most IB/VB resources are created long before F8 is pressed, so enabling resource metadata only during frame analysis cannot resolve IA GPU virtual addresses back to `ID3D12Resource`. DX12 should keep lightweight buffer resource metadata from creation hooks for the process lifetime and use the captured IA region to resolve and dump only the selected frame's byte ranges.
