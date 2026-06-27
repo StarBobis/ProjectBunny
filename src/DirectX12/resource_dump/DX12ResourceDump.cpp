@@ -1607,6 +1607,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	UINT failed = 0;
 	UINT linked = 0;
 	std::unordered_map<std::string, std::wstring> dedupePathByKey;
+	std::unordered_map<std::string, const char*> dedupeFailureReasonByKey;
 	std::vector<DumpedTaskRow> dumpedRows;
 	std::unordered_set<std::wstring> loggedFileDumps;
 	for (DumpTask &task : tasks) {
@@ -1625,11 +1626,17 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		else
 			failed++;
 
-		if (!ok)
+		if (!ok) {
+			if (!task.dedupeKey.empty())
+				dedupeFailureReasonByKey[task.dedupeKey] =
+					task.skipNote ? task.skipNote : "resource_dump_failed";
 			continue;
+		}
 
 		if (!LinkTaskToDedupedFile(resourceDir, task, dedupePath)) {
 			failed++;
+			if (!task.dedupeKey.empty())
+				dedupeFailureReasonByKey[task.dedupeKey] = "dedupe_link_failed";
 			continue;
 		}
 
@@ -1649,9 +1656,12 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		auto dedupeIt = dedupePathByKey.find(task.dedupeKey);
 		if (dedupeIt == dedupePathByKey.end()) {
 			failed++;
+			auto reasonIt = dedupeFailureReasonByKey.find(task.dedupeKey);
+			const char *reason = reasonIt != dedupeFailureReasonByKey.end() ?
+				reasonIt->second : "dedupe_source_missing";
 			if (task.sourceKind == DumpTaskSource::Descriptor)
 				AddBindingRow(&dumpedRows, "failed", task.binding, L"",
-					task.fileName.c_str(), "dedupe_source_missing");
+					task.fileName.c_str(), reason);
 			continue;
 		}
 
