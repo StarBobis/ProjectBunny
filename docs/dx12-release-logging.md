@@ -18,7 +18,7 @@ Repeated polling logs, such as deferred DXGI hook attempts before `dxgi.dll` is 
 
 When the loaded ini has no active overrides, no present runtime effect, no pre-skin probe, no active hunt, and no capture request, DX12 should not install frame hot path hooks. Creation hooks can remain active to discover devices and swapchains, but `Present`, `Present1`, command queue submit, and command list hooks should be gated behind `DX12HotPathHooksNeeded`.
 
-Input polling must not depend exclusively on `Present` when hot path hooks are gated off. A lightweight input thread owns the Num0 hunt toggle while the runtime is otherwise idle. When hunt is enabled, cached swapchain and command queue pointers are used to activate the previously gated hot path hooks.
+Input polling must not depend exclusively on `Present` when hot path hooks are gated off. A lightweight input thread owns DX12 hotkeys while the runtime is otherwise idle. When hunt is enabled, cached swapchain and command queue pointers are used to activate the previously gated hot path hooks. The `Present` path only polls input if the input thread failed to start, preventing duplicate key edges.
 
 For first-present crashes, `DX12PresentFirst` stages split the boundary:
 

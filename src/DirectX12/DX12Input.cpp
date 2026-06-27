@@ -15,6 +15,7 @@ static bool gF10WasDown = false;
 static bool gF11WasDown = false;
 static volatile LONG gReloadInProgress = 0;
 static volatile LONG gInputThreadStopRequested = 0;
+static volatile LONG gInputThreadActive = 0;
 static HANDLE gInputThread = nullptr;
 static bool gNumpad0WasDown = false;
 static bool gNumpadAddWasDown = false;
@@ -122,40 +123,7 @@ static void RequestDx12Reload()
 	DX12SetOverlayError(L"F10 reload failed: cannot start thread");
 }
 
-static DWORD WINAPI DX12InputThreadProc(void*)
-{
-	while (InterlockedCompareExchange(&gInputThreadStopRequested, 0, 0) == 0) {
-		const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
-		if (!decimalDown && KeyPressed(VK_NUMPAD0, &gNumpad0WasDown)) {
-			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggle\",\"source\":\"thread\"");
-			DX12HuntToggle();
-		}
-		Sleep(50);
-	}
-	return 0;
-}
-
-void DX12StartInputThread()
-{
-	if (gInputThread)
-		return;
-	InterlockedExchange(&gInputThreadStopRequested, 0);
-	gInputThread = CreateThread(nullptr, 0, DX12InputThreadProc, nullptr, 0, nullptr);
-	if (!gInputThread)
-		DX12LogJsonFunc("DX12InputThread", "\"status\":\"failed\",\"error\":%lu", GetLastError());
-}
-
-void DX12StopInputThread()
-{
-	InterlockedExchange(&gInputThreadStopRequested, 1);
-	if (gInputThread) {
-		WaitForSingleObject(gInputThread, 1000);
-		CloseHandle(gInputThread);
-		gInputThread = nullptr;
-	}
-}
-
-void DX12PollInput()
+static void DX12PollInputCore()
 {
 	const bool f8Down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
 	if (f8Down && !gF8WasDown) {
@@ -193,7 +161,7 @@ void DX12PollInput()
 	gF11WasDown = f11Down;
 
 	const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
-	if (DX12HuntIsEnabled() && !decimalDown && KeyPressed(VK_NUMPAD0, &gNumpad0WasDown)) {
+	if (!decimalDown && KeyPressed(VK_NUMPAD0, &gNumpad0WasDown)) {
 		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggle\"");
 		DX12HuntToggle();
 	}
@@ -239,4 +207,45 @@ void DX12PollInput()
 		else
 			DX12HuntNextIB();
 	}
+}
+
+static DWORD WINAPI DX12InputThreadProc(void*)
+{
+	while (InterlockedCompareExchange(&gInputThreadStopRequested, 0, 0) == 0) {
+		DX12PollInputCore();
+		Sleep(50);
+	}
+	InterlockedExchange(&gInputThreadActive, 0);
+	return 0;
+}
+
+void DX12StartInputThread()
+{
+	if (gInputThread)
+		return;
+	InterlockedExchange(&gInputThreadStopRequested, 0);
+	InterlockedExchange(&gInputThreadActive, 1);
+	gInputThread = CreateThread(nullptr, 0, DX12InputThreadProc, nullptr, 0, nullptr);
+	if (!gInputThread) {
+		InterlockedExchange(&gInputThreadActive, 0);
+		DX12LogJsonFunc("DX12InputThread", "\"status\":\"failed\",\"error\":%lu", GetLastError());
+	}
+}
+
+void DX12StopInputThread()
+{
+	InterlockedExchange(&gInputThreadStopRequested, 1);
+	if (gInputThread) {
+		WaitForSingleObject(gInputThread, 1000);
+		CloseHandle(gInputThread);
+		gInputThread = nullptr;
+	}
+	InterlockedExchange(&gInputThreadActive, 0);
+}
+
+void DX12PollInput()
+{
+	if (InterlockedCompareExchange(&gInputThreadActive, 0, 0) != 0)
+		return;
+	DX12PollInputCore();
 }

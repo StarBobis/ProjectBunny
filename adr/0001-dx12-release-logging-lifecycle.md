@@ -28,4 +28,4 @@ First-frame crash probes should prefer one-shot flushed boundary events around t
 
 An empty runtime configuration should not install frame hot path hooks. If future diagnostics or hunting need hotkeys with no active mod, that should be represented as an explicit diagnostic or hunt mode that turns the hot path on deliberately.
 
-Num0 hunting is that explicit mode. It is detected by a lightweight input thread, shows the overlay immediately, and then activates cached swapchain and command queue hot path hooks.
+Num0 hunting is that explicit mode. DX12 hotkeys are detected by a lightweight input thread, which shows the overlay immediately and then activates cached swapchain and command queue hot path hooks. Present-side polling is only a backup when the input thread is unavailable.
