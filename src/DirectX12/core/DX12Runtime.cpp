@@ -1,7 +1,6 @@
 #include "DX12Runtime.h"
 
-#include "DX12Overlay.h"
-#include "DX12Input.h"
+#include "DX12ImGuiOverlay.h"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.h"
 #include "DX12State.h"
@@ -41,16 +40,13 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 
 	std::wstring configPath = Bunny::FindDefaultConfigPath(module);
 	gConfigLoaded = gConfig.Load(configPath.c_str());
-	bool startOverlay = false;
 	if (gConfigLoaded) {
-		startOverlay = gConfig.Runtime().enableOverlay && !gConfig.Runtime().dx12SafeMode;
 		DX12ModSetSafeMode(gConfig.Runtime().dx12SafeMode);
 		DX12LogJsonFunc("DX12Config",
-			"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"overlayStarted\":%s",
+			"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"overlayStarted\":true",
 			gConfig.Path().c_str(),
 			gConfig.Runtime().dx12SafeMode ? "true" : "false",
-			gConfig.Runtime().enableOverlay ? "true" : "false",
-			startOverlay ? "true" : "false");
+			gConfig.Runtime().enableOverlay ? "true" : "false");
 		std::wstring modStatus;
 		bool modWarnings = false;
 		bool modErrors = false;
@@ -66,26 +62,19 @@ void BunnyDX12RuntimeInitialize(HINSTANCE module, DX12LoadRealD3D12Fn loadRealD3
 			configPath.c_str(), gConfig.Error().c_str());
 	}
 	DX12HotPathUpdate();
-	DX12StartInputThread();
 
 	HANDLE thread = CreateThread(nullptr, 0, DX12WorkerThread, nullptr, 0, nullptr);
 	if (thread)
 		CloseHandle(thread);
 	DX12FinalizeHooks();
 
-	if (startOverlay) {
-		HANDLE overlayThread = CreateThread(nullptr, 0, DX12OverlayThread, nullptr, 0, nullptr);
-		if (overlayThread)
-			CloseHandle(overlayThread);
-	}
 	DX12EndReleaseStartupLogging();
 }
 
 void BunnyDX12RuntimeShutdown()
 {
 	DX12Log("*** 3DMigoto DX12 runtime shutting down ***\n");
-	DX12StopInputThread();
-	DX12CloseOverlayWindow();
+	DX12ImGuiOverlayShutdown();
 	DX12UnhookAll();
 	DX12CloseLogFile();
 	gLoadRealD3D12 = nullptr;
