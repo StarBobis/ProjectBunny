@@ -16,6 +16,12 @@ DX12 follows that shape through one shared IA region hash helper:
 
 This avoids a giant historical IB list and prevents mismatches where the overlay advances to one hash while draw skipping checks a different hash.
 
+IB/VB selection state should store the selected hash, not only a positional index into the current set. DX11 keeps `mSelectedIndexBuffer` and `mSelectedVertexBuffer` as the durable selection identity, while position is display metadata. When the visible set is purged by the short frame lifetime, DX12 must keep the selected hash stable and only use set position to display or advance. If the selected hash is not currently visible, Num7/Num8 should use the current visible set to find the nearest next or previous hash with `lower_bound` semantics.
+
+When Hunting toggles on, DX12 clears old command-list IA state and bumps the command-list tracking generation. Command lists can be recorded before hunting becomes active, and carrying their stale IA metadata into the first hunt frame makes the IB list look like historical command-list contents instead of the currently hunted scene.
+
+DX12 command-list hooks observe draw recording, while DX11's immediate context hunting observes work as it is issued. To keep IB/VB counts closer to DX11, DX12 draw hooks should record per-command-list hunt summaries, and `ExecuteCommandLists` should publish those summaries into the global visible overlay sets at submission time. This avoids adding IA hashes from command lists that were recorded but not submitted in the hunted frame.
+
 The hunting lock should only protect copied command-list state and visited-selection containers. PSO metadata lookup and IA hash calculation happen after the command-list state is copied out, so hunting does not hold its own lock while entering shader dump or resource tracker locks.
 
 Hot-path hook activation must also include command lists that were created before hunting was toggled. DX12 games commonly reuse command lists, so activating only swapchain and command queue hooks is insufficient. When hunting is enabled, command lists submitted through `ExecuteCommandLists` should be offered to the command-list hook installer even if their lifecycle state was already registered earlier.

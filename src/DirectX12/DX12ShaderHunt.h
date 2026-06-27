@@ -17,6 +17,7 @@ void DX12HuntRecordDraw(
 	ID3D12GraphicsCommandList *commandList, bool indexed,
 	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex,
 	INT baseVertex);
+void DX12HuntPublishCommandList(ID3D12GraphicsCommandList *commandList);
 void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList);
 void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList);
 bool DX12HuntShouldSkipDraw(

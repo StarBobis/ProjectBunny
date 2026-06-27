@@ -410,6 +410,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 				swapChain, hr);
 		DX12IncrementPresentCount();
 		DX12HuntOnPresent();
+		if (DX12HuntShouldDrawOverlay())
+			DX12UpdateOverlayWindowForSwapChain(swapChain);
 		if (InterlockedCompareExchange(&firstPresentLog, 4, 3) == 3)
 			DX12LogJsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -453,12 +455,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	DX12HotPathUpdate();
 	LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
 
-	if (DX12HuntShouldDrawOverlay()) {
-		if (DX12GetOverlayWindow())
-			DX12UpdateOverlayWindowForSwapChain(swapChain);
-		else
-			DX12DrawSwapChainText(swapChain);
-	}
+	if (DX12HuntShouldDrawOverlay())
+		DX12UpdateOverlayWindowForSwapChain(swapChain);
 	if (dumpFrame) {
 		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());
@@ -508,6 +506,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 				swapChain, hr);
 		DX12IncrementPresentCount();
 		DX12HuntOnPresent();
+		if (DX12HuntShouldDrawOverlay())
+			DX12UpdateOverlayWindowForSwapChain(swapChain);
 		if (InterlockedCompareExchange(&firstPresent1Log, 4, 3) == 3)
 			DX12LogJsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -550,12 +550,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	DX12HotPathUpdate();
 	LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
 
-	if (DX12HuntShouldDrawOverlay()) {
-		if (DX12GetOverlayWindow())
-			DX12UpdateOverlayWindowForSwapChain(swapChain);
-		else
-			DX12DrawSwapChainText(swapChain);
-	}
+	if (DX12HuntShouldDrawOverlay())
+		DX12UpdateOverlayWindowForSwapChain(swapChain);
 	if (dumpFrame) {
 		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());

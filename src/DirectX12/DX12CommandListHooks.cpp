@@ -653,6 +653,18 @@ static const DX12IaReplacementExecutorCallbacks &GetCachedIaReplacementCallbacks
 	return tIaCallbacksCache.callbacks;
 }
 
+static void RegisterCommandListBase(
+	ID3D12GraphicsCommandList *baseList, ID3D12PipelineState *initialState)
+{
+	if (!baseList)
+		return;
+
+	if (DX12HotPathHooksNeeded())
+		DX12HookCommandList(baseList);
+	if (ShouldRegisterCommandListPointer(baseList))
+		DX12CommandListLifecycleRegister(baseList, initialState);
+}
+
 static void RegisterCommandList(IUnknown *commandList, ID3D12PipelineState *initialState)
 {
 	if (!commandList)
@@ -660,10 +672,20 @@ static void RegisterCommandList(IUnknown *commandList, ID3D12PipelineState *init
 
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-		if (DX12HotPathHooksNeeded())
-			DX12HookCommandList(baseList);
-		if (ShouldRegisterCommandListPointer(baseList))
-			DX12CommandListLifecycleRegister(baseList, initialState);
+		RegisterCommandListBase(baseList, initialState);
+		baseList->Release();
+	}
+}
+
+static void RegisterSubmittedCommandList(IUnknown *commandList)
+{
+	if (!commandList)
+		return;
+
+	ID3D12GraphicsCommandList *baseList = nullptr;
+	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
+		RegisterCommandListBase(baseList, nullptr);
+		DX12HuntPublishCommandList(baseList);
 		baseList->Release();
 	}
 }
@@ -781,6 +803,10 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 			DX12IsInternalReplay() ? "true" : "false");
 
 	if (gDX12HotPathSkipAll) {
+		if (DX12HuntIsEnabled()) {
+			for (UINT i = 0; commandLists && i < numCommandLists; ++i)
+				RegisterSubmittedCommandList(commandLists[i]);
+		}
 		PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
 		if (original) {
@@ -808,7 +834,7 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 	DX12_PROFILE_SCOPE(ExecuteCommandLists);
 	LogDX12Call("ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
 	for (UINT i = 0; commandLists && i < numCommandLists; ++i)
-		RegisterCommandList(commandLists[i], nullptr);
+		RegisterSubmittedCommandList(commandLists[i]);
 	PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 		DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
 	if (original) {

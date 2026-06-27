@@ -3,8 +3,10 @@
 #include "DX12State.h"
 
 static volatile LONG gOverlayStarting = 0;
+static volatile LONG gOverlayVisible = 0;
 static HWND gOverlayTargetWindow = nullptr;
 static RECT gOverlayTargetRect = {};
+static constexpr UINT WM_DX12_OVERLAY_DESTROY = WM_APP + 0x512;
 
 static int MeasureOverlayTextBlock(HDC dc, const wchar_t *text, int *width, int *lines)
 {
@@ -131,6 +133,10 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 		return 0;
 	}
 	case WM_CLOSE:
+		ShowWindow(hwnd, SW_HIDE);
+		InterlockedExchange(&gOverlayVisible, 0);
+		return 0;
+	case WM_DX12_OVERLAY_DESTROY:
 		DestroyWindow(hwnd);
 		return 0;
 	case WM_DESTROY:
@@ -211,8 +217,9 @@ void DX12EnsureOverlayWindow()
 		"\"status\":\"failed\",\"error\":%lu,\"reason\":\"create_thread\"", GetLastError());
 }
 
-void DX12ShowOverlayWindowFallback()
+void DX12ShowOverlayWindow()
 {
+	InterlockedExchange(&gOverlayVisible, 1);
 	DX12EnsureOverlayWindow();
 	HWND overlay = DX12GetOverlayWindow();
 	if (!overlay || !IsWindow(overlay))
@@ -225,14 +232,27 @@ void DX12ShowOverlayWindowFallback()
 	InvalidateRect(overlay, nullptr, FALSE);
 }
 
+void DX12HideOverlayWindow()
+{
+	InterlockedExchange(&gOverlayVisible, 0);
+	HWND overlay = DX12GetOverlayWindow();
+	if (!overlay || !IsWindow(overlay))
+		return;
+	ShowWindow(overlay, SW_HIDE);
+}
+
 bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
 		return false;
+	if (InterlockedCompareExchange(&gOverlayVisible, 0, 0) == 0)
+		return false;
 
 	HWND overlay = DX12GetOverlayWindow();
-	if (!overlay || !IsWindow(overlay))
+	if (!overlay || !IsWindow(overlay)) {
+		DX12EnsureOverlayWindow();
 		return false;
+	}
 
 	DXGI_SWAP_CHAIN_DESC desc = {};
 	if (FAILED(swapChain->GetDesc(&desc)) || !desc.OutputWindow || !IsWindow(desc.OutputWindow))
@@ -274,37 +294,9 @@ bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
 	return true;
 }
 
-void DX12DrawSwapChainText(IDXGISwapChain *swapChain)
-{
-	if (!swapChain)
-		return;
-
-	DXGI_SWAP_CHAIN_DESC desc = {};
-	if (FAILED(swapChain->GetDesc(&desc)) || !desc.OutputWindow || !IsWindow(desc.OutputWindow))
-		return;
-
-	HDC dc = GetDC(desc.OutputWindow);
-	if (!dc)
-		return;
-
-	int oldBkMode = SetBkMode(dc, TRANSPARENT);
-	COLORREF oldTextColor = SetTextColor(dc, DX12GetOverlayStatusColor());
-	HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-	HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
-	wchar_t text[512];
-	DX12GetOverlayStatus(text, ARRAYSIZE(text));
-	DrawOverlayTextBlock(dc, text, 20, 20);
-
-	if (oldFont)
-		SelectObject(dc, oldFont);
-	SetTextColor(dc, oldTextColor);
-	SetBkMode(dc, oldBkMode);
-	ReleaseDC(desc.OutputWindow, dc);
-}
-
 void DX12CloseOverlayWindow()
 {
 	HWND hwnd = DX12GetOverlayWindow();
 	if (hwnd)
-		PostMessageW(hwnd, WM_CLOSE, 0, 0);
+		PostMessageW(hwnd, WM_DX12_OVERLAY_DESTROY, 0, 0);
 }

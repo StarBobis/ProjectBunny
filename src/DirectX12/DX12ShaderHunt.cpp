@@ -4,11 +4,13 @@
 
 #include <stdint.h>
 
+#include <iterator>
 #include <set>
 #include <unordered_map>
 #include <vector>
 
 #include "DX12Overlay.h"
+#include "DX12CommandListRuntime.h"
 #include "DX12IaRegionHash.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
@@ -44,6 +46,7 @@ struct IaSelection
 	std::set<uint32_t> visited;
 	std::unordered_map<uint32_t, UINT64> lastSeenFrame;
 	size_t selected = 0;
+	uint32_t selectedHash = 0;
 	bool armed = false;
 };
 
@@ -68,11 +71,24 @@ struct HuntIaState
 	std::vector<HuntIaBuffer> vertexBuffers;
 };
 
+struct HuntCommandListVisits
+{
+	std::set<UINT64> vs;
+	std::set<UINT64> ps;
+	std::set<UINT64> cs;
+	std::set<uint32_t> ib;
+	std::set<uint32_t> vb;
+	UINT64 draws = 0;
+	UINT64 dispatches = 0;
+	UINT64 indirects = 0;
+};
+
 static SRWLOCK gHuntLock = SRWLOCK_INIT;
 static bool gHuntingEnabled = false;
 static volatile LONG gHuntingActive = 0;
 static std::unordered_map<ID3D12GraphicsCommandList*, ID3D12PipelineState*> gCommandListPso;
 static std::unordered_map<ID3D12GraphicsCommandList*, HuntIaState> gCommandListIa;
+static std::unordered_map<ID3D12GraphicsCommandList*, HuntCommandListVisits> gCommandListVisits;
 static StageSelection gVS;
 static StageSelection gPS;
 static StageSelection gCS;
@@ -143,14 +159,39 @@ static uint32_t IaRegionHash(const HuntIaBuffer &buffer, const DX12IaRegionDraw 
 	return DX12HashVertexBufferRegion(buffer.slot, view, draw);
 }
 
+static void SyncIaSelectionPositionLocked(IaSelection &selection)
+{
+	if (selection.visited.empty()) {
+		selection.selected = 0;
+		if (!selection.armed)
+			selection.selectedHash = 0;
+		return;
+	}
+	if (selection.selectedHash) {
+		auto it = selection.visited.find(selection.selectedHash);
+		if (it != selection.visited.end()) {
+			selection.selected = static_cast<size_t>(
+				std::distance(selection.visited.begin(), it));
+			return;
+		}
+		if (selection.armed)
+			return;
+	}
+	if (!selection.armed)
+		return;
+	selection.selected %= selection.visited.size();
+	auto it = selection.visited.begin();
+	std::advance(it, selection.selected);
+	selection.selectedHash = *it;
+}
+
 static void AddVisitedLocked(IaSelection &selection, uint32_t hash)
 {
 	if (!hash)
 		return;
 	selection.visited.insert(hash);
 	selection.lastSeenFrame[hash] = gPresentFrames;
-	if (!selection.visited.empty())
-		selection.selected %= selection.visited.size();
+	SyncIaSelectionPositionLocked(selection);
 }
 
 static void PurgeStaleIaLocked(IaSelection &selection)
@@ -169,7 +210,7 @@ static void PurgeStaleIaLocked(IaSelection &selection)
 		selection.selected = 0;
 		return;
 	}
-	selection.selected %= selection.visited.size();
+	SyncIaSelectionPositionLocked(selection);
 }
 
 static void AddPsoVisitedLocked(const DX12PsoShaderInfo &info, bool draw, bool dispatch)
@@ -189,18 +230,17 @@ static size_t DisplayIndexLocked(const StageSelection &stage)
 
 static size_t DisplayIndexLocked(const IaSelection &selection)
 {
-	return selection.armed && !selection.visited.empty() ? selection.selected + 1 : 0;
+	if (!selection.armed || selection.visited.empty() || !selection.selectedHash)
+		return 0;
+	auto it = selection.visited.find(selection.selectedHash);
+	if (it == selection.visited.end())
+		return 0;
+	return static_cast<size_t>(std::distance(selection.visited.begin(), it)) + 1;
 }
 
 static uint32_t SelectedIaHashLocked(const IaSelection &selection)
 {
-	if (selection.visited.empty())
-		return 0;
-
-	size_t index = selection.selected % selection.visited.size();
-	auto it = selection.visited.begin();
-	std::advance(it, index);
-	return *it;
+	return selection.selectedHash;
 }
 
 static void AdvanceStage(StageSelection &stage, HuntCopyTarget target, int delta)
@@ -240,11 +280,32 @@ static void AdvanceIa(IaSelection &selection, HuntCopyTarget target, int delta)
 	selection.armed = true;
 	gLastCopyTarget = target;
 	if (!selection.visited.empty()) {
-		const size_t size = selection.visited.size();
-		if (delta < 0)
-			selection.selected = (selection.selected + size - 1) % size;
-		else
-			selection.selected = (selection.selected + 1) % size;
+		auto it = selection.selectedHash ?
+			selection.visited.find(selection.selectedHash) : selection.visited.end();
+		if (!selection.selectedHash) {
+			it = delta < 0 ? std::prev(selection.visited.end()) : selection.visited.begin();
+		} else if (it == selection.visited.end()) {
+			it = selection.visited.lower_bound(selection.selectedHash);
+			if (delta < 0) {
+				if (it == selection.visited.begin())
+					it = std::prev(selection.visited.end());
+				else
+					--it;
+			} else if (it == selection.visited.end()) {
+				it = selection.visited.begin();
+			}
+		} else if (delta < 0) {
+			if (it == selection.visited.begin())
+				it = std::prev(selection.visited.end());
+			else
+				--it;
+		} else {
+			++it;
+			if (it == selection.visited.end())
+				it = selection.visited.begin();
+		}
+		selection.selectedHash = *it;
+		selection.selected = static_cast<size_t>(std::distance(selection.visited.begin(), it));
 	}
 	selected = DisplayIndexLocked(selection);
 	count = selection.visited.size();
@@ -298,6 +359,7 @@ void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 	AcquireSRWLockExclusive(&gHuntLock);
 	gCommandListPso[commandList] = pipelineState;
 	gCommandListIa.erase(commandList);
+	gCommandListVisits.erase(commandList);
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
 
@@ -363,12 +425,45 @@ void DX12HuntRecordDraw(
 
 	AcquireSRWLockExclusive(&gHuntLock);
 	if (gHuntingEnabled) {
-		gDrawCalls++;
-		if (hasInfo)
-			AddPsoVisitedLocked(info, true, false);
+		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		visits.draws++;
+		if (hasInfo) {
+			if (info.hasVS)
+				visits.vs.insert(info.vs);
+			if (info.hasPS)
+				visits.ps.insert(info.ps);
+		}
 		if (ibHash)
-			AddVisitedLocked(gIB, ibHash);
+			visits.ib.insert(ibHash);
 		for (uint32_t hash : vbHashes)
+			visits.vb.insert(hash);
+	}
+	ReleaseSRWLockExclusive(&gHuntLock);
+}
+
+void DX12HuntPublishCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	if (!DX12HuntIsEnabled() || !commandList)
+		return;
+
+	HuntCommandListVisits visits;
+	AcquireSRWLockExclusive(&gHuntLock);
+	auto it = gCommandListVisits.find(commandList);
+	if (it != gCommandListVisits.end())
+		visits = it->second;
+	if (gHuntingEnabled) {
+		gDrawCalls += visits.draws;
+		gDispatchCalls += visits.dispatches;
+		gIndirectCalls += visits.indirects;
+		for (UINT64 hash : visits.vs)
+			AddVisitedLocked(gVS, hash);
+		for (UINT64 hash : visits.ps)
+			AddVisitedLocked(gPS, hash);
+		for (UINT64 hash : visits.cs)
+			AddVisitedLocked(gCS, hash);
+		for (uint32_t hash : visits.ib)
+			AddVisitedLocked(gIB, hash);
+		for (uint32_t hash : visits.vb)
 			AddVisitedLocked(gVB, hash);
 	}
 	ReleaseSRWLockExclusive(&gHuntLock);
@@ -389,9 +484,10 @@ void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList)
 
 	AcquireSRWLockExclusive(&gHuntLock);
 	if (gHuntingEnabled) {
-		gDispatchCalls++;
-		if (hasInfo)
-			AddPsoVisitedLocked(info, false, true);
+		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		visits.dispatches++;
+		if (hasInfo && info.hasCS)
+			visits.cs.insert(info.cs);
 	}
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
@@ -411,9 +507,16 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 
 	AcquireSRWLockExclusive(&gHuntLock);
 	if (gHuntingEnabled) {
-		gIndirectCalls++;
-		if (hasInfo)
-			AddPsoVisitedLocked(info, true, true);
+		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		visits.indirects++;
+		if (hasInfo) {
+			if (info.hasVS)
+				visits.vs.insert(info.vs);
+			if (info.hasPS)
+				visits.ps.insert(info.ps);
+			if (info.hasCS)
+				visits.cs.insert(info.cs);
+		}
 	}
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
@@ -563,21 +666,26 @@ void DX12HuntToggle()
 	gHuntingEnabled = !gHuntingEnabled;
 	bool enabled = gHuntingEnabled;
 	InterlockedExchange(&gHuntingActive, enabled ? 1 : 0);
-	if (!enabled) {
-		gIB.visited.clear();
-		gIB.lastSeenFrame.clear();
-		gVB.visited.clear();
-		gVB.lastSeenFrame.clear();
-	}
+	gCommandListIa.clear();
+	gIB.visited.clear();
+	gIB.lastSeenFrame.clear();
+	gIB.selected = 0;
+	gIB.selectedHash = 0;
+	gVB.visited.clear();
+	gVB.lastSeenFrame.clear();
+	gVB.selected = 0;
+	gVB.selectedHash = 0;
 	ReleaseSRWLockExclusive(&gHuntLock);
 
 	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 	DX12HuntRefreshOverlay();
 	if (enabled) {
-		DX12ShowOverlayWindowFallback();
+		DX12CommandListRuntimeBumpTrackingGeneration();
+		DX12ShowOverlayWindow();
 		DX12ActivateHotPathHooks();
 	} else {
-		DX12CloseOverlayWindow();
+		DX12CommandListRuntimeBumpTrackingGeneration();
+		DX12HideOverlayWindow();
 	}
 }
 

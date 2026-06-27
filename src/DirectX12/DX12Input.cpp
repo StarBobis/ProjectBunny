@@ -73,7 +73,7 @@ static bool KeyPressedOrRepeated(int vk, RepeatKeyState *state)
 	}
 
 	const DWORD initialDelayMs = 350;
-	const DWORD repeatMs = 85;
+	const DWORD repeatMs = 125;
 	if (now - state->firstDownTick >= initialDelayMs &&
 	    now - state->lastRepeatTick >= repeatMs) {
 		state->lastRepeatTick = now;
@@ -164,6 +164,7 @@ static void DX12PollInputCore()
 	if (!decimalDown && KeyPressed(VK_NUMPAD0, &gNumpad0WasDown)) {
 		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad0\",\"action\":\"HuntToggle\"");
 		DX12HuntToggle();
+		ResetHuntRepeatKeys();
 	}
 
 	if (!DX12HuntIsEnabled()) {

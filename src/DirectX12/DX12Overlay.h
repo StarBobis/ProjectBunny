@@ -5,8 +5,8 @@
 
 DWORD WINAPI DX12OverlayThread(void*);
 void DX12EnsureOverlayWindow();
-void DX12ShowOverlayWindowFallback();
+void DX12ShowOverlayWindow();
+void DX12HideOverlayWindow();
 bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain);
-void DX12DrawSwapChainText(IDXGISwapChain *swapChain);
 void DX12CloseOverlayWindow();
 
