@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.h"
+#include "DX12Overlay.h"
 #include "DX12Json.h"
 #include "DX12ModRuntime.h"
 #include "DX12ShaderDump.h"
@@ -614,9 +615,7 @@ static void SetOverlayStatusColorLocked(const wchar_t *status, COLORREF color)
 
 static void InvalidateOverlayStatus()
 {
-	HWND hwnd = DX12GetOverlayWindow();
-	if (hwnd)
-		InvalidateRect(hwnd, nullptr, FALSE);
+	DX12RequestOverlayRepaint();
 }
 
 void DX12SetOverlayStatus(const wchar_t *status)

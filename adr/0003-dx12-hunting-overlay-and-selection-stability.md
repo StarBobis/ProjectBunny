@@ -16,6 +16,8 @@ DX12 IA selection also stored only a position in the current `std::set`. With th
 
 Num0 Hunting disable hides the overlay window instead of destroying it. Runtime shutdown remains the path that posts a dedicated overlay destroy message so the window thread can destroy its own window and exit the message loop.
 
+Overlay window operations are owned by the overlay thread. Show, hide, position, and repaint are requested with private `WM_APP` messages posted to the overlay window. Input and Present threads do not directly call overlay `ShowWindow`, `SetWindowPos`, or `InvalidateRect`; they only update lightweight state and post messages. Hunting disable also stops refreshing the off-state overlay text and posts only the hide request after toggling state.
+
 The HDC text drawing path into the game window is removed from Hunting overlay display. Hunting display uses the overlay window, and both full Present and first Present skip paths update overlay positioning while Hunting is active.
 
 DX12 IA selection stores `selectedHash` for IB and VB. The current position is derived from the visible set when possible. If the selected hash is not visible, Num7/Num8 advance through the current visible set using the nearest lower-bound entry, matching DX11's overlay buffer lifetime behavior.
@@ -29,6 +31,8 @@ DX12 hunting navigation repeat uses 125 ms after the initial delay, matching DX1
 ## Consequences
 
 Closing Hunting no longer tears down the overlay window while hooks and input can still reference overlay state.
+
+Closing Hunting also avoids synchronous cross-thread window calls, reducing the risk of Release hangs when Num0 disables the overlay while Present or the overlay message loop is active.
 
 The green text should stay stable because it is no longer drawn directly into the swapchain target and overwritten by subsequent presents.
 

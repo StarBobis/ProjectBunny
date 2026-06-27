@@ -678,8 +678,8 @@ void DX12HuntToggle()
 	ReleaseSRWLockExclusive(&gHuntLock);
 
 	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
-	DX12HuntRefreshOverlay();
 	if (enabled) {
+		DX12HuntRefreshOverlay();
 		DX12CommandListRuntimeBumpTrackingGeneration();
 		DX12ShowOverlayWindow();
 		DX12ActivateHotPathHooks();

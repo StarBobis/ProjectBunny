@@ -4,9 +4,10 @@
 
 static volatile LONG gOverlayStarting = 0;
 static volatile LONG gOverlayVisible = 0;
+static DWORD gOverlayThreadId = 0;
 static HWND gOverlayTargetWindow = nullptr;
 static RECT gOverlayTargetRect = {};
-static constexpr UINT WM_DX12_OVERLAY_DESTROY = WM_APP + 0x512;
+static SRWLOCK gOverlayTargetLock = SRWLOCK_INIT;
 
 static int MeasureOverlayTextBlock(HDC dc, const wchar_t *text, int *width, int *lines)
 {
@@ -98,6 +99,34 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 	switch (msg) {
 	case WM_NCHITTEST:
 		return HTTRANSPARENT;
+	case WM_DX12_OVERLAY_SHOW:
+		SetWindowPos(hwnd, HWND_TOPMOST,
+			GetSystemMetrics(SM_XVIRTUALSCREEN) + 20,
+			GetSystemMetrics(SM_YVIRTUALSCREEN) + 20,
+			900, 180, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return 0;
+	case WM_DX12_OVERLAY_HIDE:
+		ShowWindow(hwnd, SW_HIDE);
+		return 0;
+	case WM_DX12_OVERLAY_POSITION:
+	{
+		RECT target = {};
+		AcquireSRWLockShared(&gOverlayTargetLock);
+		target = gOverlayTargetRect;
+		ReleaseSRWLockShared(&gOverlayTargetLock);
+		const int width = target.right - target.left;
+		const int height = target.bottom - target.top;
+		if (width > 0 && height > 0) {
+			SetWindowPos(hwnd, HWND_TOPMOST, target.left, target.top, width, height,
+				SWP_NOACTIVATE | SWP_SHOWWINDOW);
+			InvalidateRect(hwnd, nullptr, FALSE);
+		}
+		return 0;
+	}
+	case WM_DX12_OVERLAY_REPAINT:
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return 0;
 	case WM_TIMER:
 		DX12ClearExpiredOverlayStatus();
 		InvalidateRect(hwnd, nullptr, TRUE);
@@ -150,6 +179,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 
 DWORD WINAPI DX12OverlayThread(void*)
 {
+	gOverlayThreadId = GetCurrentThreadId();
 	const wchar_t className[] = L"3DMigotoDX12LightweightOverlay";
 
 	WNDCLASSW wc = {};
@@ -173,6 +203,7 @@ DWORD WINAPI DX12OverlayThread(void*)
 	if (!hwnd) {
 		DX12LogJsonFunc("OverlayWindowCreate",
 			"\"status\":\"failed\",\"error\":%lu", GetLastError());
+		gOverlayThreadId = 0;
 		InterlockedExchange(&gOverlayStarting, 0);
 		return 0;
 	}
@@ -194,6 +225,7 @@ DWORD WINAPI DX12OverlayThread(void*)
 		DispatchMessageW(&msg);
 	}
 
+	gOverlayThreadId = 0;
 	return 0;
 }
 
@@ -222,23 +254,29 @@ void DX12ShowOverlayWindow()
 	InterlockedExchange(&gOverlayVisible, 1);
 	DX12EnsureOverlayWindow();
 	HWND overlay = DX12GetOverlayWindow();
-	if (!overlay || !IsWindow(overlay))
+	if (!overlay)
 		return;
-
-	int x = GetSystemMetrics(SM_XVIRTUALSCREEN) + 20;
-	int y = GetSystemMetrics(SM_YVIRTUALSCREEN) + 20;
-	SetWindowPos(overlay, HWND_TOPMOST, x, y, 900, 180,
-		SWP_NOACTIVATE | SWP_SHOWWINDOW);
-	InvalidateRect(overlay, nullptr, FALSE);
+	PostMessageW(overlay, WM_DX12_OVERLAY_SHOW, 0, 0);
 }
 
 void DX12HideOverlayWindow()
 {
 	InterlockedExchange(&gOverlayVisible, 0);
 	HWND overlay = DX12GetOverlayWindow();
-	if (!overlay || !IsWindow(overlay))
+	if (!overlay)
 		return;
-	ShowWindow(overlay, SW_HIDE);
+	PostMessageW(overlay, WM_DX12_OVERLAY_HIDE, 0, 0);
+}
+
+void DX12RequestOverlayRepaint()
+{
+	HWND overlay = DX12GetOverlayWindow();
+	if (!overlay)
+		return;
+	if (GetCurrentThreadId() == gOverlayThreadId)
+		InvalidateRect(overlay, nullptr, FALSE);
+	else
+		PostMessageW(overlay, WM_DX12_OVERLAY_REPAINT, 0, 0);
 }
 
 bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
@@ -249,7 +287,7 @@ bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
 		return false;
 
 	HWND overlay = DX12GetOverlayWindow();
-	if (!overlay || !IsWindow(overlay)) {
+	if (!overlay) {
 		DX12EnsureOverlayWindow();
 		return false;
 	}
@@ -279,18 +317,24 @@ bool DX12UpdateOverlayWindowForSwapChain(IDXGISwapChain *swapChain)
 	if (width <= 0 || height <= 0)
 		return false;
 
-	if (gOverlayTargetWindow != desc.OutputWindow ||
-	    !EqualRect(&gOverlayTargetRect, &target)) {
+	bool changed = false;
+	AcquireSRWLockExclusive(&gOverlayTargetLock);
+	changed = gOverlayTargetWindow != desc.OutputWindow ||
+		!EqualRect(&gOverlayTargetRect, &target);
+	if (changed) {
 		gOverlayTargetWindow = desc.OutputWindow;
 		gOverlayTargetRect = target;
-		DX12LogJsonFunc("OverlayWindowTarget",
-			"\"hwnd\":\"%p\",\"target\":\"%p\",\"x\":%ld,\"y\":%ld,\"width\":%d,\"height\":%d",
-			overlay, desc.OutputWindow, target.left, target.top, width, height);
 	}
+	ReleaseSRWLockExclusive(&gOverlayTargetLock);
+	if (!changed)
+		return true;
 
-	SetWindowPos(overlay, HWND_TOPMOST, target.left, target.top, width, height,
-		SWP_NOACTIVATE | SWP_SHOWWINDOW);
-	InvalidateRect(overlay, nullptr, FALSE);
+	DX12LogJsonFunc("OverlayWindowTarget",
+		"\"hwnd\":\"%p\",\"target\":\"%p\",\"x\":%ld,\"y\":%ld,\"width\":%d,\"height\":%d",
+		overlay, desc.OutputWindow, target.left, target.top, width, height);
+
+	if (!PostMessageW(overlay, WM_DX12_OVERLAY_POSITION, 0, 0))
+		return false;
 	return true;
 }
 
