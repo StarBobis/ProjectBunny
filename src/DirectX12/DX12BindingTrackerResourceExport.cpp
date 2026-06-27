@@ -197,20 +197,6 @@ static void WriteFrameResourceBinding(
 
 	if (wroteRange)
 		return;
-
-	const DX12DescriptorHeapSummary *heap = DX12BindingFindHeapForGpuHandle(heaps, table, heapType);
-	if (!heap)
-		return;
-
-	const UINT64 descriptorIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-	const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
-	const DX12DescriptorSummary *descriptor = DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
-	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
-			UINT_MAX, heap->heap, descriptorIndex, false))
-		return;
-	WriteDescriptorResourceRow(file, event, bindSpace, table.rootParameterIndex,
-		UINT_MAX, UINT_MAX, UINT_MAX, 0, 0, heap, descriptorIndex,
-		table.baseDescriptor.ptr, cpuHandle, descriptor);
 }
 
 static void WriteFrameRootDescriptor(
@@ -306,37 +292,6 @@ static void CollectFrameResourceBinding(
 
 	if (collectedRange)
 		return;
-
-	const DX12DescriptorHeapSummary *heap = DX12BindingFindHeapForGpuHandle(heaps, table, heapType);
-	if (!heap)
-		return;
-
-	const UINT64 descriptorIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-	const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
-	const DX12DescriptorSummary *descriptor = DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
-	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
-			UINT_MAX, heap->heap, descriptorIndex, false))
-		return;
-
-	DX12FrameResourceBinding binding;
-	binding.eventSerial = event.serial;
-	binding.drawId = event.drawId;
-	binding.dispatchId = event.dispatchId;
-	binding.psoIndex = event.shaderInfo.psoIndex;
-	binding.shaderInfo = event.shaderInfo;
-	binding.bindSpace = bindSpace ? bindSpace : "";
-	binding.rootParameterIndex = table.rootParameterIndex;
-	binding.heap = heap->heap;
-	binding.heapType = heap->type;
-	binding.descriptorIndex = descriptorIndex;
-	binding.gpuHandle = table.baseDescriptor.ptr;
-	binding.cpuHandle = cpuHandle;
-	binding.heapGpuStart = heap->gpuStart;
-	if (descriptor) {
-		binding.descriptor = *descriptor;
-		binding.hasDescriptor = true;
-	}
-	bindings->push_back(std::move(binding));
 }
 
 static void CollectFrameRootDescriptorBinding(
@@ -410,6 +365,15 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	size_t tableStartOnly = 0;
 	size_t unboundedRanges = 0;
 	size_t unboundedDescriptors = 0;
+	size_t graphicsTablesWithoutRoots = 0;
+	size_t computeTablesWithoutRoots = 0;
+	size_t descriptorTablesWithoutRanges = 0;
+	size_t samplerBindings = 0;
+	size_t cbvBindings = 0;
+	size_t srvBindings = 0;
+	size_t uavBindings = 0;
+	size_t untrackedBindings = 0;
+	size_t textureBindings = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
 			continue;
@@ -446,9 +410,11 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 						}
 					} else {
 						tableStartOnly++;
+						descriptorTablesWithoutRanges++;
 					}
 				} else {
 					tableStartOnly++;
+					graphicsTablesWithoutRoots++;
 				}
 			}
 			if (event.computeTables[i].valid) {
@@ -475,9 +441,11 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 						}
 					} else {
 						tableStartOnly++;
+						descriptorTablesWithoutRanges++;
 					}
 				} else {
 					tableStartOnly++;
+					computeTablesWithoutRoots++;
 				}
 			}
 			CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
@@ -498,14 +466,35 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 				event.computeRootDescriptors[i], &seen);
 		}
 	}
+	for (const DX12FrameResourceBinding &binding : *bindings) {
+		if (!binding.hasDescriptor) {
+			untrackedBindings++;
+			continue;
+		}
+		if (binding.descriptor.kind == "CBV")
+			cbvBindings++;
+		else if (binding.descriptor.kind == "SRV")
+			srvBindings++;
+		else if (binding.descriptor.kind == "UAV")
+			uavBindings++;
+		else if (binding.descriptor.kind == "Sampler")
+			samplerBindings++;
+		if (binding.descriptor.hasResourceDesc &&
+			binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+			textureBindings++;
+	}
 	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu",
+		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu",
 		bindings->size(), seen.size(),
 		drawEvents, dispatchEvents,
 		graphicsTables, computeTables,
 		graphicsTablesWithRoots, computeTablesWithRoots,
 		rootRangeTables, tableStartOnly,
-		unboundedRanges, unboundedDescriptors);
+		graphicsTablesWithoutRoots, computeTablesWithoutRoots,
+		descriptorTablesWithoutRanges,
+		unboundedRanges, unboundedDescriptors,
+		cbvBindings, srvBindings, uavBindings, samplerBindings,
+		textureBindings, untrackedBindings);
 }
 
 static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<BindingEvent> &events)
@@ -584,4 +573,16 @@ static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<Binding
 		DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 		DX12FrameAnalysisLogJsonFunc("CurrentFrameResourcesWritten", "%s", fields + 1);
 	}
+}
+
+void DX12DumpCurrentFrameResourceTable(const wchar_t *dir)
+{
+	if (!dir)
+		return;
+
+	std::vector<BindingEvent> events;
+	AcquireSRWLockShared(&gEventsLock);
+	events = gEvents;
+	ReleaseSRWLockShared(&gEventsLock);
+	WriteFrameResourceFile(dir, events);
 }

@@ -1156,6 +1156,34 @@ static bool TryDumpCurrentFrameResources(const wchar_t *dir)
 	return ok;
 }
 
+static bool TryDumpCurrentFrameResourceTable(const wchar_t *dir)
+{
+	bool ok = true;
+	__try {
+		DX12DumpCurrentFrameResourceTable(dir);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		ok = false;
+		DX12Log("Current-frame resource table skipped after exception=0x%lx\n",
+			GetExceptionCode());
+	}
+	return ok;
+}
+
+static bool TryDumpResourceMetadata(const wchar_t *dir)
+{
+	bool ok = true;
+	__try {
+		DX12DumpResourceMetadata(dir);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		ok = false;
+		DX12Log("Resource metadata skipped after exception=0x%lx\n",
+			GetExceptionCode());
+	}
+	return ok;
+}
+
 static size_t AlignUp(size_t value, size_t alignment)
 {
 	return (value + alignment - 1) & ~(alignment - 1);
@@ -1596,18 +1624,27 @@ void DX12DumpFrameAnalysis()
 		DX12FrameAnalysisLogJsonFunc("FrameAnalysisSummary", "%s", fields + 1);
 	}
 	bool bindingTraceOk = TryDumpBindingTrace(dir);
+	bool resourceTableOk = TryDumpCurrentFrameResourceTable(dir);
+	bool metadataOk = TryDumpResourceMetadata(dir);
+	bool psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
 	bool resourceFilesOk = TryDumpCurrentFrameResources(dir);
 
 	DX12SetOverlayStatus(L"F8 frame analysis complete");
 	DX12LogJsonFunc("FrameAnalysisDumpComplete",
-		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceFiles\":%u",
+		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u",
 		shaders.size(), psos.size(),
 		bindingTraceOk ? 1 : 0,
+		resourceTableOk ? 1 : 0,
+		metadataOk ? 1 : 0,
+		psoSummaryOk ? 1 : 0,
 		resourceFilesOk ? 1 : 0);
 	DX12FrameAnalysisLogJsonFunc("FrameAnalysisComplete",
-		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceFiles\":%u",
+		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u",
 		shaders.size(), psos.size(),
 		bindingTraceOk ? 1 : 0,
+		resourceTableOk ? 1 : 0,
+		metadataOk ? 1 : 0,
+		psoSummaryOk ? 1 : 0,
 		resourceFilesOk ? 1 : 0);
 }
 

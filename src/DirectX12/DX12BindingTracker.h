@@ -214,3 +214,4 @@ void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers
 void DX12BuildIaBufferFileName(
 	const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount);
 void DX12DumpBindingTrace(const wchar_t *dir);
+void DX12DumpCurrentFrameResourceTable(const wchar_t *dir);
