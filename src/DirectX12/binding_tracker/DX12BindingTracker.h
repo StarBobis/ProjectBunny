@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "DX12FrameAnalysis.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 
@@ -213,5 +214,5 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers);
 void DX12BuildIaBufferFileName(
 	const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount);
-void DX12DumpBindingTrace(const wchar_t *dir);
-void DX12DumpCurrentFrameResourceTable(const wchar_t *dir);
+DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir);
+DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir);

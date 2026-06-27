@@ -2,4 +2,6 @@
 
 #include <Windows.h>
 
-void DX12DumpCurrentFrameResources(const wchar_t *dir);
+#include "DX12FrameAnalysis.h"
+
+DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir);

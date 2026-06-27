@@ -155,7 +155,7 @@ static void WriteFrameResourceBinding(
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const std::unordered_map<SIZE_T, const DX12DescriptorSummary*> &descriptorsByCpuHandle,
-	std::unordered_set<std::string> *seen)
+	std::unordered_set<std::string> *seen, size_t *untrackedSkipped)
 {
 	if (!file || !table.valid || !seen)
 		return;
@@ -183,6 +183,11 @@ static void WriteFrameResourceBinding(
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
 				const DX12DescriptorSummary *descriptor = DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
+				if (!descriptor) {
+					if (untrackedSkipped)
+						(*untrackedSkipped)++;
+					continue;
+				}
 				if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 						range.rangeIndex, heap->heap, descriptorIndex, false))
 					continue;
@@ -229,7 +234,7 @@ static void CollectFrameResourceBinding(
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const std::unordered_map<SIZE_T, const DX12DescriptorSummary*> &descriptorsByCpuHandle,
-	std::unordered_set<std::string> *seen)
+	std::unordered_set<std::string> *seen, size_t *untrackedSkipped)
 {
 	if (!bindings || !table.valid || !seen)
 		return;
@@ -257,6 +262,11 @@ static void CollectFrameResourceBinding(
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
 				const DX12DescriptorSummary *descriptor = DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
+				if (!descriptor) {
+					if (untrackedSkipped)
+						(*untrackedSkipped)++;
+					continue;
+				}
 				if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 						range.rangeIndex, heap->heap, descriptorIndex, false))
 					continue;
@@ -280,10 +290,8 @@ static void CollectFrameResourceBinding(
 				binding.gpuHandle = gpuHandle;
 				binding.cpuHandle = cpuHandle;
 				binding.heapGpuStart = heap->gpuStart;
-				if (descriptor) {
-					binding.descriptor = *descriptor;
-					binding.hasDescriptor = true;
-				}
+				binding.descriptor = *descriptor;
+				binding.hasDescriptor = true;
 				bindings->push_back(std::move(binding));
 				collectedRange = true;
 			}
@@ -373,6 +381,7 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	size_t srvBindings = 0;
 	size_t uavBindings = 0;
 	size_t untrackedBindings = 0;
+	size_t untrackedSkipped = 0;
 	size_t textureBindings = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
@@ -450,16 +459,16 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 			}
 			CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			CollectFrameResourceBinding(bindings, event, "graphics_sampler",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			CollectFrameResourceBinding(bindings, event, "compute_cbv_srv_uav",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			CollectFrameResourceBinding(bindings, event, "compute_sampler",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			CollectFrameRootDescriptorBinding(bindings, event, "graphics_root",
 				event.graphicsRootDescriptors[i], &seen);
 			CollectFrameRootDescriptorBinding(bindings, event, "compute_root",
@@ -484,7 +493,7 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 			textureBindings++;
 	}
 	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu",
+		"\"bindings\":%zu,\"unique\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu,\"untracked_skipped\":%zu",
 		bindings->size(), seen.size(),
 		drawEvents, dispatchEvents,
 		graphicsTables, computeTables,
@@ -494,13 +503,18 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		descriptorTablesWithoutRanges,
 		unboundedRanges, unboundedDescriptors,
 		cbvBindings, srvBindings, uavBindings, samplerBindings,
-		textureBindings, untrackedBindings);
+		textureBindings, untrackedBindings, untrackedSkipped);
 }
 
-static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<BindingEvent> &events)
+static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
+	const wchar_t *dir, const std::vector<BindingEvent> &events)
 {
+	DX12FrameAnalysisDumpResult result;
 	if (!dir)
-		return;
+	{
+		result.reason = "missing_directory";
+		return result;
+	}
 
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
@@ -520,8 +534,14 @@ static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<Binding
 	DX12BindingGetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
 	swprintf_s(path, L"%s\\CurrentFrameResourcesDX12.txt", summaryDir);
 	FILE *file = _wfsopen(path, L"w", _SH_DENYNO);
-	if (!file)
-		return;
+	if (!file) {
+		result.reason = "open_failed";
+		char fields[512] = "";
+		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
+		DX12FrameAnalysisLogJsonFunc("CurrentFrameResourcesFailed", "%s", fields + 1);
+		return result;
+	}
 	{
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
@@ -539,20 +559,21 @@ static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<Binding
 
 	std::unordered_set<std::string> seen;
 	size_t eventRows = 0;
+	size_t untrackedSkipped = 0;
 	for (const BindingEvent &event : events) {
 		for (UINT i = 0; i < MaxRootParameters; ++i) {
 			WriteFrameResourceBinding(file, event, "graphics_cbv_srv_uav",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			WriteFrameResourceBinding(file, event, "graphics_sampler",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			WriteFrameResourceBinding(file, event, "compute_cbv_srv_uav",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			WriteFrameResourceBinding(file, event, "compute_sampler",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-				heaps, descriptorsByCpuHandle, &seen);
+				heaps, descriptorsByCpuHandle, &seen, &untrackedSkipped);
 			WriteFrameRootDescriptor(file, event, "graphics_root",
 				event.graphicsRootDescriptors[i], &seen);
 			WriteFrameRootDescriptor(file, event, "compute_root",
@@ -561,28 +582,37 @@ static void WriteFrameResourceFile(const wchar_t *dir, const std::vector<Binding
 		eventRows++;
 	}
 	DX12FrameAnalysisLogJsonFunc("FrameResourceFileProcessed",
-		"\"events\":%zu,\"bindings\":%zu",
-		eventRows, seen.size());
+		"\"events\":%zu,\"bindings\":%zu,\"untracked_skipped\":%zu",
+		eventRows, seen.size(), untrackedSkipped);
 
 	fclose(file);
 	{
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
 		DX12JsonAppendRawField(fields, sizeof(fields), "bindings", std::to_string(seen.size()).c_str());
+		DX12JsonAppendRawField(fields, sizeof(fields), "untracked_skipped", std::to_string(untrackedSkipped).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "heaps", std::to_string(heaps.size()).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 		DX12FrameAnalysisLogJsonFunc("CurrentFrameResourcesWritten", "%s", fields + 1);
 	}
+	result.ok = true;
+	result.written = seen.size();
+	result.skipped = untrackedSkipped;
+	return result;
 }
 
-void DX12DumpCurrentFrameResourceTable(const wchar_t *dir)
+DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir)
 {
+	DX12FrameAnalysisDumpResult result;
 	if (!dir)
-		return;
+	{
+		result.reason = "missing_directory";
+		return result;
+	}
 
 	std::vector<BindingEvent> events;
 	AcquireSRWLockShared(&gEventsLock);
 	events = gEvents;
 	ReleaseSRWLockShared(&gEventsLock);
-	WriteFrameResourceFile(dir, events);
+	return WriteFrameResourceFile(dir, events);
 }

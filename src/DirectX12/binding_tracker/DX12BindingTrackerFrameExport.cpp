@@ -826,10 +826,14 @@ static void WriteFlatFrameAnalysisFiles(
 	}
 }
 
-void DX12DumpBindingTrace(const wchar_t *dir)
+DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 {
+	DX12FrameAnalysisDumpResult result;
 	if (!dir)
-		return;
+	{
+		result.reason = "missing_directory";
+		return result;
+	}
 
 	std::vector<BindingEvent> events;
 	UINT64 droppedEvents = 0;
@@ -876,4 +880,8 @@ void DX12DumpBindingTrace(const wchar_t *dir)
 		events.size(), static_cast<unsigned long long>(droppedEvents));
 
 	WriteFlatFrameAnalysisFiles(dir, events, droppedEvents);
+	result.ok = true;
+	result.written = events.size();
+	result.skipped = static_cast<size_t>(droppedEvents);
+	return result;
 }

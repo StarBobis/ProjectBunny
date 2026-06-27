@@ -157,21 +157,10 @@ bool DX12HotPathHooksNeeded()
 		DX12HuntNeedsHotPath();
 }
 
-static bool DX12EnvironmentFlagEnabled(const wchar_t *name)
-{
-	wchar_t value[32] = {};
-	DWORD chars = GetEnvironmentVariableW(name, value, ARRAYSIZE(value));
-	if (!chars)
-		return false;
-	return value[0] == L'1' ||
-		value[0] == L'y' || value[0] == L'Y' ||
-		value[0] == L't' || value[0] == L'T';
-}
-
 static bool DX12HookCallLoggingEnabled()
 {
 #if defined(_DEBUG)
-	return DX12EnvironmentFlagEnabled(L"MIGOTO_DX12_DIAGNOSTIC_LOGS");
+	return true;
 #else
 	return false;
 #endif
@@ -287,8 +276,6 @@ void DX12EndReleaseStartupLogging()
 
 static bool DX12ReleaseShouldLogFunction(const char *func)
 {
-	if (DX12EnvironmentFlagEnabled(L"MIGOTO_DX12_RELEASE_LOGS"))
-		return true;
 	if (gReleaseStartupLogging.load(std::memory_order_relaxed))
 		return true;
 	if (!func)

@@ -3,6 +3,15 @@
 #include <Windows.h>
 #include <stdio.h>
 
+struct DX12FrameAnalysisDumpResult
+{
+	bool ok = false;
+	size_t written = 0;
+	size_t skipped = 0;
+	size_t failed = 0;
+	const char *reason = "";
+};
+
 class DX12FrameAnalysisState
 {
 public:

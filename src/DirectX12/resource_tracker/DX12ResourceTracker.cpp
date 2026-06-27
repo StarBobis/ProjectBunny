@@ -35,8 +35,6 @@ UINT64 gDescriptorHeapRecordsSeen = 0;
 UINT64 gRootSignatureRecordsSeen = 0;
 UINT64 gPsoRootRecordsSeen = 0;
 LONG gLastResourceStatsPresent = -1;
-static constexpr size_t kMaxTrackedDescriptors = 131072;
-static constexpr size_t kDescriptorPruneBatch = 32768;
 static constexpr LONG kResourceStatsLogInterval = 300;
 
 void LogResourceTrackerStatsLocked();
@@ -619,22 +617,6 @@ void FillUavBufferView(DescriptorRecord *record)
 			record->resourceDesc.Width - record->resourceOffset : 0;
 }
 
-static void RebuildDescriptorIndexLocked()
-{
-	gDescriptorByCpuHandle.clear();
-	for (size_t i = 0; i < gDescriptors.size(); ++i)
-		gDescriptorByCpuHandle[gDescriptors[i].cpuHandle] = i;
-}
-
-static void PruneDescriptorCacheLocked()
-{
-	if (gDescriptors.size() <= kMaxTrackedDescriptors)
-		return;
-	const size_t eraseCount = (std::min)(kDescriptorPruneBatch, gDescriptors.size());
-	gDescriptors.erase(gDescriptors.begin(), gDescriptors.begin() + eraseCount);
-	RebuildDescriptorIndexLocked();
-}
-
 void LogResourceTrackerStatsLocked()
 {
 	const LONG present = DX12GetPresentCount();
@@ -687,7 +669,6 @@ void RecordDescriptor(DescriptorRecord &&record)
 		gDescriptorByCpuHandle[record.cpuHandle] = gDescriptors.size();
 		gDescriptors.push_back(std::move(record));
 	}
-	PruneDescriptorCacheLocked();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
@@ -759,7 +740,6 @@ void RecordDescriptorCopyRange(
 			RecordDescriptorLocked(std::move(copied));
 		}
 	}
-	PruneDescriptorCacheLocked();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }

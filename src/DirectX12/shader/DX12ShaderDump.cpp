@@ -1129,59 +1129,67 @@ static bool TryWritePsoResourceSummaryFile(
 	return ok;
 }
 
-static bool TryDumpBindingTrace(const wchar_t *dir)
+static DX12FrameAnalysisDumpResult TryDumpBindingTrace(const wchar_t *dir)
 {
-	bool ok = true;
+	DX12FrameAnalysisDumpResult result;
 	__try {
-		DX12DumpBindingTrace(dir);
+		result = DX12DumpBindingTrace(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		ok = false;
+		result.ok = false;
+		result.failed = 1;
+		result.reason = "exception";
 		DX12Log("Binding trace skipped after exception=0x%lx\n", GetExceptionCode());
 	}
-	return ok;
+	return result;
 }
 
-static bool TryDumpCurrentFrameResources(const wchar_t *dir)
+static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *dir)
 {
-	bool ok = true;
+	DX12FrameAnalysisDumpResult result;
 	__try {
-		DX12DumpCurrentFrameResources(dir);
+		result = DX12DumpCurrentFrameResources(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		ok = false;
+		result.ok = false;
+		result.failed = 1;
+		result.reason = "exception";
 		DX12Log("Current-frame resource files skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
-	return ok;
+	return result;
 }
 
-static bool TryDumpCurrentFrameResourceTable(const wchar_t *dir)
+static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResourceTable(const wchar_t *dir)
 {
-	bool ok = true;
+	DX12FrameAnalysisDumpResult result;
 	__try {
-		DX12DumpCurrentFrameResourceTable(dir);
+		result = DX12DumpCurrentFrameResourceTable(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		ok = false;
+		result.ok = false;
+		result.failed = 1;
+		result.reason = "exception";
 		DX12Log("Current-frame resource table skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
-	return ok;
+	return result;
 }
 
-static bool TryDumpResourceMetadata(const wchar_t *dir)
+static DX12FrameAnalysisDumpResult TryDumpResourceMetadata(const wchar_t *dir)
 {
-	bool ok = true;
+	DX12FrameAnalysisDumpResult result;
 	__try {
-		DX12DumpResourceMetadata(dir);
+		result = DX12DumpResourceMetadata(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		ok = false;
+		result.ok = false;
+		result.failed = 1;
+		result.reason = "exception";
 		DX12Log("Resource metadata skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
-	return ok;
+	return result;
 }
 
 static size_t AlignUp(size_t value, size_t alignment)
@@ -1623,29 +1631,41 @@ void DX12DumpFrameAnalysis()
 		DX12JsonAppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
 		DX12FrameAnalysisLogJsonFunc("FrameAnalysisSummary", "%s", fields + 1);
 	}
-	bool bindingTraceOk = TryDumpBindingTrace(dir);
-	bool resourceTableOk = TryDumpCurrentFrameResourceTable(dir);
-	bool metadataOk = TryDumpResourceMetadata(dir);
+	DX12FrameAnalysisDumpResult bindingTrace = TryDumpBindingTrace(dir);
+	DX12FrameAnalysisDumpResult resourceTable = TryDumpCurrentFrameResourceTable(dir);
+	DX12FrameAnalysisDumpResult metadata = TryDumpResourceMetadata(dir);
 	bool psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
-	bool resourceFilesOk = TryDumpCurrentFrameResources(dir);
+	DX12FrameAnalysisDumpResult resourceFiles = TryDumpCurrentFrameResources(dir);
 
 	DX12SetOverlayStatus(L"F8 frame analysis complete");
 	DX12LogJsonFunc("FrameAnalysisDumpComplete",
-		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u",
+		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u,\"bindingTraceWritten\":%zu,\"resourceTableWritten\":%zu,\"metadataWritten\":%zu,\"resourceFilesWritten\":%zu,\"resourceFilesSkipped\":%zu,\"resourceFilesFailed\":%zu",
 		shaders.size(), psos.size(),
-		bindingTraceOk ? 1 : 0,
-		resourceTableOk ? 1 : 0,
-		metadataOk ? 1 : 0,
+		bindingTrace.ok ? 1 : 0,
+		resourceTable.ok ? 1 : 0,
+		metadata.ok ? 1 : 0,
 		psoSummaryOk ? 1 : 0,
-		resourceFilesOk ? 1 : 0);
+		resourceFiles.ok ? 1 : 0,
+		bindingTrace.written,
+		resourceTable.written,
+		metadata.written,
+		resourceFiles.written,
+		resourceFiles.skipped,
+		resourceFiles.failed);
 	DX12FrameAnalysisLogJsonFunc("FrameAnalysisComplete",
-		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u",
+		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u,\"bindingTraceWritten\":%zu,\"resourceTableWritten\":%zu,\"metadataWritten\":%zu,\"resourceFilesWritten\":%zu,\"resourceFilesSkipped\":%zu,\"resourceFilesFailed\":%zu",
 		shaders.size(), psos.size(),
-		bindingTraceOk ? 1 : 0,
-		resourceTableOk ? 1 : 0,
-		metadataOk ? 1 : 0,
+		bindingTrace.ok ? 1 : 0,
+		resourceTable.ok ? 1 : 0,
+		metadata.ok ? 1 : 0,
 		psoSummaryOk ? 1 : 0,
-		resourceFilesOk ? 1 : 0);
+		resourceFiles.ok ? 1 : 0,
+		bindingTrace.written,
+		resourceTable.written,
+		metadata.written,
+		resourceFiles.written,
+		resourceFiles.skipped,
+		resourceFiles.failed);
 }
 
 static void DX12DumpShaderRecords(

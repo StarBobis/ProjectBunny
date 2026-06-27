@@ -69,10 +69,14 @@ static void WriteResourceDesc(FILE *file, const DX12DescriptorSummary &record)
 		static_cast<unsigned long long>(desc.SampleDesc.Count));
 }
 
-void DX12DumpResourceMetadata(const wchar_t *dir)
+DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 {
+	DX12FrameAnalysisDumpResult result;
 	if (!dir)
-		return;
+	{
+		result.reason = "missing_directory";
+		return result;
+	}
 
 	std::vector<DX12RootSignatureSummary> rootSignatures;
 	std::vector<DX12DescriptorHeapSummary> descriptorHeaps;
@@ -86,8 +90,14 @@ void DX12DumpResourceMetadata(const wchar_t *dir)
 	GetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
 	swprintf_s(path, L"%s\\ResourceMetadataDX12.txt", summaryDir);
 	FILE *file = _wfsopen(path, L"w", _SH_DENYNO);
-	if (!file)
-		return;
+	if (!file) {
+		result.reason = "open_failed";
+		char fields[512] = "";
+		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
+		DX12FrameAnalysisLogJsonFunc("ResourceMetadataFailed", "%s", fields + 1);
+		return result;
+	}
 
 	fprintf(file, "DX12 Resource Metadata\n");
 	fprintf(file, "======================\n");
@@ -210,4 +220,7 @@ void DX12DumpResourceMetadata(const wchar_t *dir)
 	DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 	DX12JsonAppendRawField(fields, sizeof(fields), "psoRoots", std::to_string(psoRoots.size()).c_str());
 	DX12FrameAnalysisLogJsonFunc("ResourceMetadataWritten", "%s", fields + 1);
+	result.ok = true;
+	result.written = 1;
+	return result;
 }

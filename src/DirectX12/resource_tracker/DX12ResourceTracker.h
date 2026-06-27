@@ -5,7 +5,10 @@
 #include <stdint.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include "DX12FrameAnalysis.h"
 
 struct DX12RootDescriptorRangeSummary
 {
@@ -44,6 +47,28 @@ struct DX12RootSignatureSummary
 	UINT staticSamplerCount = 0;
 	bool parsed = false;
 	std::vector<DX12RootParameterSummary> parameters;
+};
+
+// Named constants for descriptor kind strings used throughout DX12 code.
+// Usage: descriptor.kind == DescriptorKind::SRV  instead of  descriptor.kind == "SRV"
+struct DescriptorKind {
+	static constexpr std::string_view CBV = "CBV";
+	static constexpr std::string_view SRV = "SRV";
+	static constexpr std::string_view UAV = "UAV";
+	static constexpr std::string_view RTV = "RTV";
+	static constexpr std::string_view DSV = "DSV";
+	static constexpr std::string_view Sampler = "Sampler";
+	// Long-form names set by CreateShaderResourceView etc.
+	static constexpr std::string_view CONSTANT_BUFFER_VIEW = "CONSTANT_BUFFER_VIEW";
+	static constexpr std::string_view SHADER_RESOURCE_VIEW = "SHADER_RESOURCE_VIEW";
+	static constexpr std::string_view UNORDERED_ACCESS_VIEW = "UNORDERED_ACCESS_VIEW";
+	static constexpr std::string_view RENDER_TARGET_VIEW = "RENDER_TARGET_VIEW";
+	static constexpr std::string_view DEPTH_STENCIL_VIEW = "DEPTH_STENCIL_VIEW";
+};
+
+struct IaBufferRole {
+	static constexpr std::string_view IB = "IB";
+	static constexpr std::string_view VB = "VB";
 };
 
 struct DX12DescriptorSummary
@@ -141,4 +166,4 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 bool DX12FindDescriptorHeapByGpuHandle(
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);
-void DX12DumpResourceMetadata(const wchar_t *dir);
+DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir);
