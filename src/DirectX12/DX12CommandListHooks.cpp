@@ -660,10 +660,10 @@ static void RegisterCommandList(IUnknown *commandList, ID3D12PipelineState *init
 
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-		if (ShouldRegisterCommandListPointer(baseList)) {
+		if (DX12HotPathHooksNeeded())
 			DX12HookCommandList(baseList);
+		if (ShouldRegisterCommandListPointer(baseList))
 			DX12CommandListLifecycleRegister(baseList, initialState);
-		}
 		baseList->Release();
 	}
 }
@@ -1043,9 +1043,11 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 
 	if (gDX12HotPathSkipBindings && DX12HuntIsEnabled() && !DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
-		if (DX12HuntShouldSkipDraw(commandList, false))
+		if (DX12HuntShouldSkipDraw(
+				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0))
 			return;
-		DX12HuntRecordDraw(commandList, false);
+		DX12HuntRecordDraw(
+			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0);
 		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
@@ -1060,9 +1062,11 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 		DX12BindingRecordDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
 			startVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
-		if (DX12HuntShouldSkipDraw(commandList, false))
+		if (DX12HuntShouldSkipDraw(
+				commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0))
 			return;
-		DX12HuntRecordDraw(commandList, false);
+		DX12HuntRecordDraw(
+			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
@@ -1072,7 +1076,6 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 				startVertexLocation, startInstanceLocation);
 		return;
 	}
-	// Cache runtime state ptr once — GetStatePtrFast TLS-caches after first call
 	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
 		GetCachedIaReplacementCallbacks(commandList);
@@ -1111,9 +1114,11 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 
 	if (gDX12HotPathSkipBindings && DX12HuntIsEnabled() && !DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
-		if (DX12HuntShouldSkipDraw(commandList, true))
+		if (DX12HuntShouldSkipDraw(
+				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation))
 			return;
-		DX12HuntRecordDraw(commandList, true);
+		DX12HuntRecordDraw(
+			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation);
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
 		if (original)
@@ -1130,9 +1135,11 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 		DX12BindingRecordDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
 			startIndexLocation, baseVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
-		if (DX12HuntShouldSkipDraw(commandList, true))
+		if (DX12HuntShouldSkipDraw(
+				commandList, true, 0, indexCountPerInstance, 0, startIndexLocation))
 			return;
-		DX12HuntRecordDraw(commandList, true);
+		DX12HuntRecordDraw(
+			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation);
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
@@ -1143,7 +1150,6 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
 		return;
 	}
-	// Cache runtime state ptr once — GetStatePtrFast TLS-caches after first call
 	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
 		GetCachedIaReplacementCallbacks(commandList);

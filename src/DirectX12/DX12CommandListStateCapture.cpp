@@ -105,7 +105,6 @@ void DX12CommandListCaptureDescriptorHeaps(
 		DX12BindingRecordStateEvent(commandList, "set_heaps");
 }
 
-// Overload that accepts pre-parsed heap pointers — avoids re-iterating heaps/GetDesc().
 void DX12CommandListCaptureDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,

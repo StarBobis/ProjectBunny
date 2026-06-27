@@ -13,10 +13,14 @@ void DX12HuntSetIndexBuffer(
 void DX12HuntSetVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views);
-void DX12HuntRecordDraw(ID3D12GraphicsCommandList *commandList, bool indexed);
+void DX12HuntRecordDraw(
+	ID3D12GraphicsCommandList *commandList, bool indexed,
+	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex);
 void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList);
 void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList);
-bool DX12HuntShouldSkipDraw(ID3D12GraphicsCommandList *commandList, bool indexed);
+bool DX12HuntShouldSkipDraw(
+	ID3D12GraphicsCommandList *commandList, bool indexed,
+	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex);
 bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList);
 bool DX12HuntIsEnabled();
 bool DX12HuntShouldDrawOverlay();
@@ -28,6 +32,7 @@ bool DX12HuntHashIndexBufferView(const D3D12_INDEX_BUFFER_VIEW *view, uint32_t *
 bool DX12HuntHashVertexBufferView(UINT slot, const D3D12_VERTEX_BUFFER_VIEW *view, uint32_t *hash);
 
 void DX12HuntToggle();
+void DX12HuntOnPresent();
 void DX12HuntPreviousVS();
 void DX12HuntNextVS();
 void DX12HuntPreviousPS();

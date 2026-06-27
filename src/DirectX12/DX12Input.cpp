@@ -180,32 +180,48 @@ static void DX12PollInputCore()
 		DX12HuntCopySelectedHash();
 	}
 	if (KeyPressedOrRepeated(VK_NUMPAD1, &gRepeatNumpad1)) {
-		if (decimalDown)
+		if (decimalDown) {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Decimal+Numpad1\",\"action\":\"HuntPreviousCS\"");
 			DX12HuntPreviousCS();
-		else
+		} else {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad1\",\"action\":\"HuntPreviousPS\"");
 			DX12HuntPreviousPS();
+		}
 	}
 	if (KeyPressedOrRepeated(VK_NUMPAD2, &gRepeatNumpad2)) {
-		if (decimalDown)
+		if (decimalDown) {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Decimal+Numpad2\",\"action\":\"HuntNextCS\"");
 			DX12HuntNextCS();
-		else
+		} else {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad2\",\"action\":\"HuntNextPS\"");
 			DX12HuntNextPS();
+		}
 	}
-	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD4, &gRepeatNumpad4))
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD4, &gRepeatNumpad4)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad4\",\"action\":\"HuntPreviousVS\"");
 		DX12HuntPreviousVS();
-	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD5, &gRepeatNumpad5))
+	}
+	if (!decimalDown && KeyPressedOrRepeated(VK_NUMPAD5, &gRepeatNumpad5)) {
+		DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad5\",\"action\":\"HuntNextVS\"");
 		DX12HuntNextVS();
+	}
 	if (KeyPressedOrRepeated(VK_NUMPAD7, &gRepeatNumpad7)) {
-		if (decimalDown)
+		if (decimalDown) {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Decimal+Numpad7\",\"action\":\"HuntPreviousVB\"");
 			DX12HuntPreviousVB();
-		else
+		} else {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad7\",\"action\":\"HuntPreviousIB\"");
 			DX12HuntPreviousIB();
+		}
 	}
 	if (KeyPressedOrRepeated(VK_NUMPAD8, &gRepeatNumpad8)) {
-		if (decimalDown)
+		if (decimalDown) {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Decimal+Numpad8\",\"action\":\"HuntNextVB\"");
 			DX12HuntNextVB();
-		else
+		} else {
+			DX12LogJsonFunc("InputHotkey", "\"key\":\"Numpad8\",\"action\":\"HuntNextIB\"");
 			DX12HuntNextIB();
+		}
 	}
 }
 

@@ -409,6 +409,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 				"\"api\":\"Present\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		DX12IncrementPresentCount();
+		DX12HuntOnPresent();
 		if (InterlockedCompareExchange(&firstPresentLog, 4, 3) == 3)
 			DX12LogJsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -443,9 +444,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	LogPresentStage("Present", "afterOriginal", swapChain, hr);
 	LogPresentDeviceRemovedReason("Present", swapChain, hr);
 	DX12IncrementPresentCount();
-
-	// Bump tracking generation BEFORE Present blocks on GPU,
-	// so next frame's TLS caches are fresh when recording starts.
+	DX12HuntOnPresent();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 
 	LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
@@ -508,6 +507,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 				"\"api\":\"Present1\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		DX12IncrementPresentCount();
+		DX12HuntOnPresent();
 		if (InterlockedCompareExchange(&firstPresent1Log, 4, 3) == 3)
 			DX12LogJsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -541,9 +541,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	LogPresentStage("Present1", "afterOriginal", swapChain, hr);
 	LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 	DX12IncrementPresentCount();
-
-	// Bump tracking generation BEFORE Present blocks on GPU,
-	// so next frame's TLS caches are fresh when recording starts.
+	DX12HuntOnPresent();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 
 	LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
