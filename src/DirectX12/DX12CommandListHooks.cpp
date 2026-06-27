@@ -771,11 +771,27 @@ static void STDMETHODCALLTYPE HookedQueueCopyTileMappings(
 static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists)
 {
+	static volatile LONG firstExecuteLog = 0;
+	if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
+		DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
+			"\"stage\":\"enter\",\"queue\":\"%p\",\"count\":%u,\"skipAll\":%ld,\"internalReplay\":%s",
+			queue, numCommandLists, gDX12HotPathSkipAll,
+			DX12IsInternalReplay() ? "true" : "false");
+
 	if (gDX12HotPathSkipAll) {
 		PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
-		if (original)
+		if (original) {
+			if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
+				DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
+					"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
+					queue, numCommandLists);
 			original(queue, numCommandLists, commandLists);
+			if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
+				DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
+					"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
+					queue, numCommandLists);
+		}
 		return;
 	}
 
@@ -794,11 +810,19 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 	PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 		DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
 	if (original) {
+		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
+			DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
+				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
+				queue, numCommandLists);
 #if defined(_DEBUG)
 		LogQueueStage("ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		ULONGLONG startTick = GetTickCount64();
 #endif
 		original(queue, numCommandLists, commandLists);
+		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
+			DX12LogJsonFuncFlush("DX12ExecuteCommandListsFirst",
+				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
+				queue, numCommandLists);
 #if defined(_DEBUG)
 		ULONGLONG originalEndTick = GetTickCount64();
 		LogQueueStage("ExecuteCommandLists", "afterOriginal", queue, numCommandLists,

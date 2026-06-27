@@ -364,11 +364,25 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
 
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 {
+	static volatile LONG firstPresentLog = 0;
+	if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
+		DX12LogJsonFuncFlush("DX12PresentFirst",
+			"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
+			swapChain, syncInterval, flags, gDX12HotPathSkipAll);
+
 	if (gDX12HotPathSkipAll) {
 		PFN_PRESENT original = GetPresentOriginal(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
+		if (InterlockedCompareExchange(&firstPresentLog, 2, 1) == 1)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
+				swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags);
+		if (InterlockedCompareExchange(&firstPresentLog, 3, 2) == 2)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		DX12IncrementPresentCount();
 		DX12HotPathUpdate();
 		return hr;
@@ -441,11 +455,25 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS *presentParameters)
 {
+	static volatile LONG firstPresent1Log = 0;
+	if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
+		DX12LogJsonFuncFlush("DX12PresentFirst",
+			"\"api\":\"Present1\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
+			swapChain, syncInterval, flags, gDX12HotPathSkipAll);
+
 	if (gDX12HotPathSkipAll) {
 		PFN_PRESENT1 original = GetPresent1Original(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
+		if (InterlockedCompareExchange(&firstPresent1Log, 2, 1) == 1)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present1\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
+				swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
+		if (InterlockedCompareExchange(&firstPresent1Log, 3, 2) == 2)
+			DX12LogJsonFuncFlush("DX12PresentFirst",
+				"\"api\":\"Present1\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
+				swapChain, hr);
 		DX12IncrementPresentCount();
 		DX12HotPathUpdate();
 		return hr;
@@ -526,7 +554,9 @@ void DX12InstallDXGIHooks()
 
 	HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
 	if (!dxgi) {
-		DX12Log("dxgi.dll is not loaded yet; DXGI hook deferred\n");
+		static volatile LONG deferredLogs = 0;
+		if (InterlockedIncrement(&deferredLogs) <= 4)
+			DX12Log("dxgi.dll is not loaded yet; DXGI hook deferred\n");
 		AcquireSRWLockExclusive(&gDXGIHookLock);
 		gDXGIHookAttempted = false;
 		ReleaseSRWLockExclusive(&gDXGIHookLock);

@@ -43,8 +43,6 @@ static std::unordered_set<void*> gHookedFunctions;
 static std::unordered_map<void*, void*> gOriginalFunctions;
 static volatile LONG gHooksFinalized = 0;
 
-// Per-vtable original function cache: maps vtable_ptr → originals[256].
-// Populated during DX12InstallVTableHooks; read-only afterwards (no lock needed).
 static std::unordered_map<void*, std::array<void*, 256>> gVtableOriginals;
 
 void DX12CacheVtableOriginals(void *vtable, size_t maxSlot)
@@ -141,8 +139,6 @@ static bool DX12EnvironmentFlagEnabled(const wchar_t *name)
 static bool DX12HookCallLoggingEnabled()
 {
 #if defined(_DEBUG)
-	// Per-hook-call logging: OFF by default (too expensive to log every API call).
-	// Enable with MIGOTO_DX12_DIAGNOSTIC_LOGS=1 env var.
 	return DX12EnvironmentFlagEnabled(L"MIGOTO_DX12_DIAGNOSTIC_LOGS");
 #else
 	return false;
@@ -152,7 +148,6 @@ static bool DX12HookCallLoggingEnabled()
 bool DX12DiagnosticsLoggingEnabled()
 {
 #if defined(_DEBUG)
-	// Debug builds: frame stats & profiling counters always active
 	return true;
 #else
 	return false;
@@ -162,7 +157,6 @@ bool DX12DiagnosticsLoggingEnabled()
 bool DX12ShouldLogHookCall(const char *api)
 {
 #if defined(_DEBUG)
-	// Per-hook-call logging is gated separately — too expensive to log every call
 	if (!api || !api[0] || DX12IsInternalReplay() || !DX12HookCallLoggingEnabled())
 		return false;
 	return true;
@@ -261,8 +255,35 @@ void DX12EndReleaseStartupLogging()
 
 static bool DX12ReleaseShouldLogFunction(const char *func)
 {
-	(void)func;
-	return true; // Release logging enabled — all functions log
+	if (DX12EnvironmentFlagEnabled(L"MIGOTO_DX12_RELEASE_LOGS"))
+		return true;
+	if (gReleaseStartupLogging.load(std::memory_order_relaxed))
+		return true;
+	if (!func)
+		return false;
+	if (!strcmp(func, "Log"))
+		return true;
+	if (!strcmp(func, "HookInstall"))
+		return true;
+	if (!strcmp(func, "DeviceHooksReady"))
+		return true;
+	if (!strcmp(func, "D3D12CreateDevice"))
+		return true;
+	if (!strncmp(func, "CreateDXGIFactory", 17))
+		return true;
+	if (!strncmp(func, "IDXGIFactory", 12))
+		return true;
+	if (!strncmp(func, "IDXGISwapChain", 14))
+		return true;
+	if (!strncmp(func, "ID3D12CommandQueue", 18))
+		return true;
+	if (!strcmp(func, "DX12CommandQueueState"))
+		return true;
+	if (!strcmp(func, "DX12ExecuteCommandListsFirst"))
+		return true;
+	if (!strcmp(func, "DX12PresentFirst"))
+		return true;
+	return false;
 }
 #else
 void DX12EndReleaseStartupLogging()
@@ -658,10 +679,16 @@ void DX12SetCommandQueue(ID3D12CommandQueue *queue)
 	if (queue) {
 		D3D12_COMMAND_QUEUE_DESC desc = queue->GetDesc();
 		if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-			DX12Log("Ignoring non-direct command queue for frame analysis readback: queue=%p type=%d\n",
-				queue, static_cast<int>(desc.Type));
+			static volatile LONG nonDirectLogs = 0;
+			if (InterlockedIncrement(&nonDirectLogs) <= 8)
+				DX12LogJsonFunc("DX12CommandQueueState",
+					"\"event\":\"ignore_non_direct\",\"queue\":\"%p\",\"type\":%d",
+					queue, static_cast<int>(desc.Type));
 			return;
 		}
+		DX12LogJsonFunc("DX12CommandQueueState",
+			"\"event\":\"accept_direct\",\"queue\":\"%p\",\"type\":%d",
+			queue, static_cast<int>(desc.Type));
 	}
 
 	if (queue)
