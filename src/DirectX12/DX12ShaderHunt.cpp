@@ -684,6 +684,10 @@ void DX12HuntToggle()
 	DX12LogJsonFunc("DX12HuntToggle",
 		"\"stage\":\"state\",\"enabled\":%s,\"oldIa\":%zu,\"oldIb\":%zu,\"oldVb\":%zu",
 		enabled ? "true" : "false", oldIa.size(), oldIB.visited.size(), oldVB.visited.size());
+	DX12HotPathUpdate();
+	DX12LogJsonFunc("DX12HuntToggle",
+		"\"stage\":\"hotpath_update\",\"enabled\":%s",
+		enabled ? "true" : "false");
 	if (enabled) {
 		DX12HuntRefreshOverlay();
 		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");

@@ -12,6 +12,8 @@ The Hunting disable path should not refresh the overlay text after switching to 
 
 Hunting disable should not bump command-list tracking generation. The hot path already checks the hunting atomic before recording IA hunt data, and Present-side hot-path gating will settle after the disabled state is visible. Repeated Num0 off/on stress should not force all command-list runtime caches to refresh on every off edge.
 
+Hunting enable and disable should call `DX12HotPathUpdate` immediately after the hunting atomic changes. The gate must not wait for the next Present, because quick Num0 stress can otherwise leave command queue and command list hooks in the full hot path after Hunting has already been disabled.
+
 When Hunting toggles, stale IA containers should be swapped out under the Hunting lock and destroyed after the lock has been released. The lock protects only container ownership changes and selection state, not large container destruction.
 
 Present skip paths still need to update the overlay while hunting is active. A first Present can still be in the hot-path skip mode immediately after Num0 enables hunting, so the skip branch must run the same lightweight overlay positioning step before it updates hot-path gates.

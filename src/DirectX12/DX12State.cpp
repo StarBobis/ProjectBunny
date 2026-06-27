@@ -30,6 +30,7 @@ static std::deque<std::string> gLogQueue;
 static volatile LONG gLogDroppedLines = 0;
 static volatile LONG gLogStopRequested = 0;
 static volatile LONG gPresentCount = 0;
+static volatile LONG gHotPathStateMask = -1;
 static HWND gOverlayWindow = nullptr;
 static wchar_t gOverlayStatus[512] = L"3DMigoto DX12 hook alive";
 static COLORREF gOverlayStatusColor = RGB(0, 255, 0);
@@ -113,17 +114,27 @@ void DX12HotPathUpdate()
 		needsHeavyTracking ||
 		DX12ModNeedsShaderDescriptorTracking();
 
-	InterlockedExchange(&gDX12HotPathSkipAll,
-		(needsHeavyTracking || needsRecordWork) ? 0 : 1);
+	const LONG skipAll = (needsHeavyTracking || needsRecordWork) ? 0 : 1;
+	const LONG skipBindings = needsBindingState ? 0 : 1;
+	const LONG skipGraphicsBindings = needsGraphicsBindingState ? 0 : 1;
+	const LONG trackResourceMetadata =
+		(needsHeavyTracking || DX12ModNeedsPreSkinningUavProbe()) ? 1 : 0;
 
-	InterlockedExchange(&gDX12HotPathSkipBindings,
-		needsBindingState ? 0 : 1);
+	InterlockedExchange(&gDX12HotPathSkipAll, skipAll);
+	InterlockedExchange(&gDX12HotPathSkipBindings, skipBindings);
+	InterlockedExchange(&gDX12HotPathSkipGraphicsBindings, skipGraphicsBindings);
+	InterlockedExchange(&gDX12HotPathTrackResourceMetadata, trackResourceMetadata);
 
-	InterlockedExchange(&gDX12HotPathSkipGraphicsBindings,
-		needsGraphicsBindingState ? 0 : 1);
-
-	InterlockedExchange(&gDX12HotPathTrackResourceMetadata,
-		(needsHeavyTracking || DX12ModNeedsPreSkinningUavProbe()) ? 1 : 0);
+	const LONG mask =
+		(skipAll ? 1 : 0) |
+		(skipBindings ? 2 : 0) |
+		(skipGraphicsBindings ? 4 : 0) |
+		(trackResourceMetadata ? 8 : 0);
+	if (InterlockedExchange(&gHotPathStateMask, mask) != mask) {
+		DX12LogJsonFunc("DX12HotPathState",
+			"\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
+			skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata);
+	}
 }
 
 bool DX12HotPathHooksNeeded()
@@ -291,6 +302,8 @@ static bool DX12ReleaseShouldLogFunction(const char *func)
 	if (!strcmp(func, "DX12PresentFirst"))
 		return true;
 	if (!strcmp(func, "DX12HotPathHookGate"))
+		return true;
+	if (!strcmp(func, "DX12HotPathState"))
 		return true;
 	if (!strcmp(func, "InputHotkey"))
 		return true;
