@@ -26,6 +26,10 @@ F8 IA dump tasks copy the same byte region that produced `hunt_hash`. Dump filen
 
 DX12 records lightweight buffer resource metadata at resource creation time even when full frame-analysis metadata tracking is disabled. Frame analysis can be requested after most IB/VB buffers already exist, and IA dump cannot produce deduped files unless the captured IA GPU virtual address can be resolved to its owning buffer resource. Non-buffer resource metadata remains gated by the hot-path tracking state.
 
+The buffer metadata registry is indexed by GPU virtual address for ordered range lookup. Hunting IA hashes can resolve multiple buffer regions per draw, so the lookup must not scan the full resource history. DX11's region-hash path is cache-oriented around the current resource and region; DX12's equivalent must keep GPU VA resolution logarithmic and cache resolved buffer ranges.
+
+DX12 buffer VA resolution uses a thread-local recent range cache in front of the global ordered range cache. The cache key is the owning buffer range, not each draw-region start address, because region hashing commonly walks many offsets inside the same IB/VB resource. Resource creation, cleanup, and resource-state updates bump the cache generation so stale thread-local entries are dropped before reuse.
+
 Visited IB/VB hashes are aged at Present with a short frame lifetime to keep the overlay focused on currently visible draw work instead of all historical bindings.
 
 When command lists are submitted after hunting activation, the command-list hook installer runs even for command lists whose lifecycle metadata was already registered.

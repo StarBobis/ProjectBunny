@@ -24,7 +24,9 @@ std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
 std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
-std::unordered_map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+std::map<UINT64, size_t> gBufferResourceByGpuVa;
+std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+std::atomic<UINT64> gBufferResolveGeneration{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
 UINT64 gDescriptorRecordsSeen = 0;
@@ -154,12 +156,20 @@ void RecordResource(
 	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
 	if (found != gResourceByPtr.end()) {
+		ResourceRecord &existing = gResources[found->second];
+		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress)
+			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
 		gResources[found->second] = record;
+		if (record.gpuVirtualAddress && record.size)
+			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
 	} else {
 		gResourceByPtr[canonical] = gResources.size();
+		if (record.gpuVirtualAddress && record.size)
+			gBufferResourceByGpuVa[record.gpuVirtualAddress] = gResources.size();
 		gResources.push_back(record);
 	}
 	gBufferResolveCache.clear();
+	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 	gResourcesRecordedFromCreate++;
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
@@ -179,7 +189,9 @@ void CleanupTrackedResources()
 	gPsoRootByIndex.clear();
 	gResources.clear();
 	gResourceByPtr.clear();
+	gBufferResourceByGpuVa.clear();
 	gBufferResolveCache.clear();
+	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
@@ -803,8 +815,10 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			resourceStateChanged = true;
 		}
 	}
-	if (resourceStateChanged)
+	if (resourceStateChanged) {
 		gBufferResolveCache.clear();
+		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+	}
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
 }

@@ -51,53 +51,89 @@ bool DX12ResolveBufferResourceByGpuVa(
 
 	*summary = DX12BufferResourceSummary();
 	const UINT64 requestedEnd = gpuVirtualAddress + size;
-	bool resolved = false;
-	AcquireSRWLockShared(&gResourceLock);
-	auto cached = gBufferResolveCache.find(gpuVirtualAddress);
-	if (cached != gBufferResolveCache.end() &&
-	    requestedEnd <= cached->second.end) {
-		*summary = cached->second.summary;
-		summary->resourceOffset = gpuVirtualAddress - cached->second.begin;
-		summary->viewSize = size;
-		ReleaseSRWLockShared(&gResourceLock);
-		return true;
+	if (requestedEnd < gpuVirtualAddress)
+		return false;
+
+	struct LocalBufferResolveCache
+	{
+		UINT64 generation = 0;
+		size_t next = 0;
+		BufferResolveCacheEntry entries[8] = {};
+	};
+	static thread_local LocalBufferResolveCache localCache;
+	const UINT64 generation = gBufferResolveGeneration.load(std::memory_order_relaxed);
+	if (localCache.generation != generation) {
+		localCache = LocalBufferResolveCache();
+		localCache.generation = generation;
+	}
+	for (const BufferResolveCacheEntry &entry : localCache.entries) {
+		if (entry.begin && gpuVirtualAddress >= entry.begin && requestedEnd <= entry.end) {
+			*summary = entry.summary;
+			summary->resourceOffset = gpuVirtualAddress - entry.begin;
+			summary->viewSize = size;
+			return true;
+		}
 	}
 
-	for (const ResourceRecord &resource : gResources) {
-		if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-			resource.gpuVirtualAddress == 0 || resource.size == 0)
-			continue;
-		const UINT64 begin = resource.gpuVirtualAddress;
-		const UINT64 end = begin + resource.size;
-		if (gpuVirtualAddress >= begin && requestedEnd <= end) {
-			summary->resource = resource.resource;
-			summary->resourceDesc = resource.desc;
-			summary->hasResourceDesc = true;
-			summary->gpuVirtualAddress = resource.gpuVirtualAddress;
-			summary->resourceOffset = gpuVirtualAddress - begin;
+	bool resolved = false;
+	UINT64 resolvedBegin = 0;
+	UINT64 resolvedEnd = 0;
+	AcquireSRWLockShared(&gResourceLock);
+	auto cached = gBufferResolveCache.upper_bound(gpuVirtualAddress);
+	if (cached != gBufferResolveCache.begin()) {
+		--cached;
+		if (gpuVirtualAddress >= cached->second.begin &&
+		    requestedEnd <= cached->second.end) {
+			*summary = cached->second.summary;
+			summary->resourceOffset = gpuVirtualAddress - cached->second.begin;
 			summary->viewSize = size;
-			if (resource.hasHeapType) {
-				summary->resourceHeapType = static_cast<UINT>(resource.heapType);
-				summary->hasResourceHeapType = true;
+			localCache.entries[localCache.next++ % 8] = cached->second;
+			ReleaseSRWLockShared(&gResourceLock);
+			return true;
+		}
+	}
+
+	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	if (foundBuffer != gBufferResourceByGpuVa.begin()) {
+		--foundBuffer;
+		if (foundBuffer->second < gResources.size()) {
+			const ResourceRecord &resource = gResources[foundBuffer->second];
+			const UINT64 begin = resource.gpuVirtualAddress;
+			const UINT64 end = begin + resource.size;
+			if (resource.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+			    begin != 0 && resource.size != 0 &&
+			    gpuVirtualAddress >= begin && requestedEnd <= end) {
+				summary->resource = resource.resource;
+				summary->resourceDesc = resource.desc;
+				summary->hasResourceDesc = true;
+				summary->gpuVirtualAddress = resource.gpuVirtualAddress;
+				summary->resourceOffset = gpuVirtualAddress - begin;
+				summary->viewSize = size;
+				if (resource.hasHeapType) {
+					summary->resourceHeapType = static_cast<UINT>(resource.heapType);
+					summary->hasResourceHeapType = true;
+				}
+				summary->currentState = static_cast<UINT>(resource.currentState);
+				summary->hasCurrentState = resource.hasCurrentState;
+				resolvedBegin = begin;
+				resolvedEnd = end;
+				resolved = true;
 			}
-			summary->currentState = static_cast<UINT>(resource.currentState);
-			summary->hasCurrentState = resource.hasCurrentState;
-			resolved = true;
-			break;
 		}
 	}
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (resolved) {
-		AcquireSRWLockExclusive(&gResourceLock);
 		BufferResolveCacheEntry entry;
-		entry.begin = summary->gpuVirtualAddress;
-		entry.end = summary->gpuVirtualAddress +
-			(summary->hasResourceDesc ? summary->resourceDesc.Width : summary->viewSize);
+		entry.begin = resolvedBegin;
+		entry.end = resolvedEnd;
 		entry.summary = *summary;
 		entry.summary.resourceOffset = 0;
 		entry.summary.viewSize = entry.end - entry.begin;
-		gBufferResolveCache[gpuVirtualAddress] = entry;
+		localCache.entries[localCache.next++ % 8] = entry;
+		AcquireSRWLockExclusive(&gResourceLock);
+		if (gBufferResolveGeneration.load(std::memory_order_relaxed) == generation)
+			gBufferResolveCache[entry.begin] = entry;
 		ReleaseSRWLockExclusive(&gResourceLock);
 	}
 	return resolved;

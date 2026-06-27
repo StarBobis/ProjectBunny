@@ -8,6 +8,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -103,7 +105,9 @@ extern std::vector<PsoRootRecord> gPsoRoots;
 extern std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 extern std::vector<ResourceRecord> gResources;
 extern std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
-extern std::unordered_map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
+extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+extern std::atomic<UINT64> gBufferResolveGeneration;
 extern bool gCleanupRegistered;
 extern UINT64 gResourcesRecordedFromCreate;
 extern UINT64 gDescriptorRecordsSeen;
