@@ -57,6 +57,7 @@ extern volatile LONG gPerFrameTotalDraws;
 extern volatile LONG gPerFrameTotalDispatches;
 
 void DX12HotPathUpdate();
+bool DX12HotPathHooksNeeded();
 bool DX12ShouldLogHookCall(const char *api);
 
 void DX12EnterInternalReplay();

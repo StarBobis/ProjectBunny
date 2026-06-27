@@ -125,6 +125,12 @@ void DX12HotPathUpdate()
 		(needsHeavyTracking || DX12ModNeedsPreSkinningUavProbe()) ? 1 : 0);
 }
 
+bool DX12HotPathHooksNeeded()
+{
+	return InterlockedCompareExchange(&gDX12HotPathSkipAll, 0, 0) == 0 ||
+		DX12HuntIsEnabled();
+}
+
 static bool DX12EnvironmentFlagEnabled(const wchar_t *name)
 {
 	wchar_t value[32] = {};
@@ -282,6 +288,8 @@ static bool DX12ReleaseShouldLogFunction(const char *func)
 	if (!strcmp(func, "DX12ExecuteCommandListsFirst"))
 		return true;
 	if (!strcmp(func, "DX12PresentFirst"))
+		return true;
+	if (!strcmp(func, "DX12HotPathHookGate"))
 		return true;
 	return false;
 }

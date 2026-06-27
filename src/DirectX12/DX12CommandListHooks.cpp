@@ -1700,6 +1700,12 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 {
 	if (!commandQueue)
 		return;
+	if (!DX12HotPathHooksNeeded()) {
+		DX12LogJsonFunc("DX12HotPathHookGate",
+			"\"object\":\"command_queue\",\"action\":\"skip\",\"queue\":\"%p\"",
+			commandQueue);
+		return;
+	}
 
 	ID3D12CommandQueue *queue = nullptr;
 	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
@@ -1717,6 +1723,8 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 void DX12HookCommandList(IUnknown *commandList)
 {
 	if (!commandList)
+		return;
+	if (!DX12HotPathHooksNeeded())
 		return;
 
 	ID3D12GraphicsCommandList *baseList = nullptr;

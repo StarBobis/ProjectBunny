@@ -16,6 +16,8 @@ If a future hang log ends at a repeated D3D12 export such as `D3D12SerializeRoot
 
 Repeated polling logs, such as deferred DXGI hook attempts before `dxgi.dll` is loaded, must be rate limited. A repeated plain `Log` message can corrupt the usefulness of a crash log by drowning out the last structural event.
 
+When the loaded ini has no active overrides, no present runtime effect, no pre-skin probe, no active hunt, and no capture request, DX12 should not install frame hot path hooks. Creation hooks can remain active to discover devices and swapchains, but `Present`, `Present1`, command queue submit, and command list hooks should be gated behind `DX12HotPathHooksNeeded`.
+
 For first-present crashes, `DX12PresentFirst` stages split the boundary:
 
 1. `after_original_skip` means the real `Present` or `Present1` returned successfully.

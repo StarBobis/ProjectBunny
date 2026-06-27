@@ -151,6 +151,12 @@ static void HookSwapChain(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
 		return;
+	if (!DX12HotPathHooksNeeded()) {
+		DX12LogJsonFunc("DX12HotPathHookGate",
+			"\"object\":\"swapchain\",\"action\":\"skip\",\"swapchain\":\"%p\"",
+			swapChain);
+		return;
+	}
 
 	DX12VTableHook swapChainHooks[] = {
 		{8, reinterpret_cast<void**>(&gOrigPresent), HookedPresent, "IDXGISwapChain::Present"},
