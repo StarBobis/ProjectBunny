@@ -70,6 +70,20 @@ struct DX12FrameIaBufferBinding
 	DX12BufferResourceSummary resource;
 };
 
+struct DX12FrameOutputBinding
+{
+	std::string kind;
+	UINT64 eventSerial = 0;
+	UINT64 drawId = 0;
+	UINT64 dispatchId = 0;
+	UINT64 psoIndex = 0;
+	DX12PsoShaderInfo shaderInfo;
+	UINT slot = 0;
+	SIZE_T cpuHandle = 0;
+	DX12DescriptorSummary descriptor;
+	bool hasDescriptor = false;
+};
+
 struct DX12CurrentIaBuffer
 {
 	std::string role;
@@ -167,6 +181,14 @@ void DX12BindingSetIndexBuffer(
 void DX12BindingSetVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views);
+void DX12BindingRecordOutputTargets(
+	ID3D12GraphicsCommandList *commandList, UINT numRenderTargetDescriptors,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors,
+	BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor);
+void DX12BindingRecordRenderTargetClear(
+	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView);
+void DX12BindingRecordDepthStencilClear(
+	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView);
 bool DX12BindingGetCurrentIaState(
 	ID3D12GraphicsCommandList *commandList, DX12CurrentIaState *state);
 bool DX12BindingGetCurrentComputeUavs(
@@ -212,6 +234,7 @@ void DX12BindingBeginFrame();
 void DX12GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos);
 void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *bindings);
 void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers);
+void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings);
 void DX12BuildIaBufferFileName(
 	const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount);
 DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir);

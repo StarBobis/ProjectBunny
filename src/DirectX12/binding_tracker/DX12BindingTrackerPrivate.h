@@ -22,7 +22,9 @@ inline void DX12BindingGetSummaryDirectory(const wchar_t *dir, wchar_t *path, si
 }
 constexpr UINT MaxRootParameters = 64;
 constexpr UINT MaxVertexBufferSlots = 32;
+constexpr UINT MaxRenderTargetSlots = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
 constexpr UINT MaxTrackedEvents = 20000;
+constexpr UINT MaxTrackedOutputEvents = 4096;
 constexpr UINT MaxDescriptorsPerRangeDump = 256;
 
 inline UINT DX12BindingDescriptorCountForRange(
@@ -83,6 +85,10 @@ struct CommandListBindingState
 	bool vertexBufferValid[MaxVertexBufferSlots] = {};
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
 	bool indexBufferValid = false;
+	D3D12_CPU_DESCRIPTOR_HANDLE renderTargets[MaxRenderTargetSlots] = {};
+	bool renderTargetValid[MaxRenderTargetSlots] = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE depthStencil = {};
+	bool depthStencilValid = false;
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT64 drawSerial = 0;
 	UINT64 dispatchSerial = 0;
@@ -124,6 +130,19 @@ struct BindingEvent
 	UINT threadGroupCountZ = 0;
 };
 
+struct OutputBindingEvent
+{
+	UINT64 serial = 0;
+	std::string kind;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	ID3D12PipelineState *pipelineState = nullptr;
+	DX12PsoShaderInfo shaderInfo = {};
+	UINT64 drawId = 0;
+	UINT64 dispatchId = 0;
+	UINT slot = 0;
+	SIZE_T cpuHandle = 0;
+};
+
 constexpr size_t kBindingShardCount = 64;
 
 struct BindingShard
@@ -135,10 +154,13 @@ struct BindingShard
 extern BindingShard gBindingShards[kBindingShardCount];
 extern SRWLOCK gEventsLock;
 extern std::vector<BindingEvent> gEvents;
+extern std::vector<OutputBindingEvent> gOutputEvents;
 extern UINT64 gEventSerial;
+extern UINT64 gOutputEventSerial;
 extern volatile LONG64 gGlobalDrawSerial;
 extern volatile LONG64 gGlobalDispatchSerial;
 extern UINT64 gDroppedEvents;
+extern UINT64 gDroppedOutputEvents;
 
 // Per-thread read cache for binding tracker: avoids SRWLOCK on repeated identical calls.
 // Key insight: D3D12 command lists are single-threaded, so TLS cache is safe.

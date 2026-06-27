@@ -166,4 +166,7 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 bool DX12FindDescriptorHeapByGpuHandle(
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);
+bool DX12FindDescriptorHeapByCpuHandle(
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DX12DescriptorHeapSummary *summary);
 DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir);

@@ -207,11 +207,13 @@ void DX12FrameAnalysisEnd()
 void DX12FrameAnalysisRequestCapture()
 {
 	DX12FrameAnalysisState::Get().RequestCapture();
+	DX12HotPathUpdate();
 }
 
 void DX12FrameAnalysisBeginCapture()
 {
 	DX12FrameAnalysisState::Get().BeginCapture();
+	DX12HotPathUpdate();
 }
 
 bool DX12FrameAnalysisEndCapture()

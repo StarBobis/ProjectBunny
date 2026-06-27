@@ -10,10 +10,13 @@
 BindingShard gBindingShards[kBindingShardCount];
 SRWLOCK gEventsLock = SRWLOCK_INIT;
 std::vector<BindingEvent> gEvents;
+std::vector<OutputBindingEvent> gOutputEvents;
 UINT64 gEventSerial = 0;
+UINT64 gOutputEventSerial = 0;
 volatile LONG64 gGlobalDrawSerial = 0;
 volatile LONG64 gGlobalDispatchSerial = 0;
 UINT64 gDroppedEvents = 0;
+UINT64 gDroppedOutputEvents = 0;
 
 static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
@@ -68,6 +71,46 @@ static void StoreEventLocked(
 		}
 	}
 	gEvents.push_back(event);
+}
+
+static void StoreOutputEventLocked(
+	const char *kind, ID3D12GraphicsCommandList *commandList,
+	const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle)
+{
+	if (!cpuHandle)
+		return;
+	for (const OutputBindingEvent &existing : gOutputEvents) {
+		if (existing.cpuHandle == cpuHandle && existing.kind == (kind ? kind : ""))
+			return;
+	}
+	if (gOutputEvents.size() >= MaxTrackedOutputEvents) {
+		gDroppedOutputEvents++;
+		return;
+	}
+
+	OutputBindingEvent event;
+	event.serial = ++gOutputEventSerial;
+	event.kind = kind ? kind : "";
+	event.commandList = commandList;
+	event.pipelineState = state.pipelineState;
+	event.drawId = state.drawSerial;
+	event.dispatchId = state.dispatchSerial;
+	event.slot = slot;
+	event.cpuHandle = cpuHandle;
+	if (state.pipelineState)
+		DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
+	gOutputEvents.push_back(event);
+}
+
+static void StoreCurrentOutputTargetsLocked(
+	ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state)
+{
+	for (UINT i = 0; i < MaxRenderTargetSlots; ++i) {
+		if (state.renderTargetValid[i])
+			StoreOutputEventLocked("RTV", commandList, state, i, state.renderTargets[i].ptr);
+	}
+	if (state.depthStencilValid)
+		StoreOutputEventLocked("DSV", commandList, state, 0, state.depthStencil.ptr);
 }
 
 void DX12BindingRegisterCommandList(ID3D12GraphicsCommandList *commandList)
@@ -310,6 +353,126 @@ void DX12BindingSetVertexBuffers(
 		}
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12BindingRecordOutputTargets(
+	ID3D12GraphicsCommandList *commandList, UINT numRenderTargetDescriptors,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors,
+	BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor)
+{
+	if (!commandList)
+		return;
+
+	CommandListBindingState snapshot;
+	bool found = false;
+	BindingShard &shard = BindingShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		snapshot = it->second;
+		found = true;
+	}
+	ReleaseSRWLockShared(&shard.lock);
+	if (!found)
+		snapshot = CommandListBindingState();
+
+	AcquireSRWLockExclusive(&gEventsLock);
+	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
+		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
+		if (singleHandleToDescriptorRange && i > 0) {
+			DX12DescriptorHeapSummary heap = {};
+			if (!DX12FindDescriptorHeapByCpuHandle(
+					renderTargetDescriptors[0], D3D12_DESCRIPTOR_HEAP_TYPE_RTV, &heap) ||
+				!heap.increment)
+				continue;
+			handle.ptr = renderTargetDescriptors[0].ptr +
+				static_cast<SIZE_T>(i) * heap.increment;
+		}
+		StoreOutputEventLocked("RTV", commandList, snapshot, i, handle.ptr);
+	}
+	if (depthStencilDescriptor)
+		StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilDescriptor->ptr);
+	ReleaseSRWLockExclusive(&gEventsLock);
+
+	AcquireSRWLockExclusive(&shard.lock);
+	CommandListBindingState &state = shard.states[commandList];
+	for (UINT i = 0; i < MaxRenderTargetSlots; ++i) {
+		state.renderTargets[i] = {};
+		state.renderTargetValid[i] = false;
+	}
+	for (UINT i = 0; i < numRenderTargetDescriptors && i < MaxRenderTargetSlots; ++i) {
+		D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
+		if (renderTargetDescriptors) {
+			handle = renderTargetDescriptors[i];
+			if (singleHandleToDescriptorRange && i > 0) {
+				DX12DescriptorHeapSummary heap = {};
+				if (DX12FindDescriptorHeapByCpuHandle(
+						renderTargetDescriptors[0], D3D12_DESCRIPTOR_HEAP_TYPE_RTV, &heap) &&
+					heap.increment) {
+					handle.ptr = renderTargetDescriptors[0].ptr +
+						static_cast<SIZE_T>(i) * heap.increment;
+				}
+			}
+		}
+		state.renderTargets[i] = handle;
+		state.renderTargetValid[i] = handle.ptr != 0;
+	}
+	if (depthStencilDescriptor) {
+		state.depthStencil = *depthStencilDescriptor;
+		state.depthStencilValid = depthStencilDescriptor->ptr != 0;
+	} else {
+		state.depthStencil = {};
+		state.depthStencilValid = false;
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12BindingRecordRenderTargetClear(
+	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView)
+{
+	if (!commandList || !renderTargetView.ptr)
+		return;
+
+	CommandListBindingState snapshot;
+	bool found = false;
+	BindingShard &shard = BindingShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		snapshot = it->second;
+		found = true;
+	}
+	ReleaseSRWLockShared(&shard.lock);
+	if (!found)
+		return;
+
+	AcquireSRWLockExclusive(&gEventsLock);
+	StoreOutputEventLocked("RTV", commandList, snapshot, 0, renderTargetView.ptr);
+	ReleaseSRWLockExclusive(&gEventsLock);
+}
+
+void DX12BindingRecordDepthStencilClear(
+	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView)
+{
+	if (!commandList || !depthStencilView.ptr)
+		return;
+
+	CommandListBindingState snapshot;
+	bool found = false;
+	BindingShard &shard = BindingShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		snapshot = it->second;
+		found = true;
+	}
+	ReleaseSRWLockShared(&shard.lock);
+	if (!found)
+		return;
+
+	AcquireSRWLockExclusive(&gEventsLock);
+	StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilView.ptr);
+	ReleaseSRWLockExclusive(&gEventsLock);
 }
 
 bool DX12BindingGetCurrentIaState(
@@ -777,6 +940,7 @@ void DX12BindingRecordDrawInstanced(
 		event.startVertexLocation = startVertexLocation;
 		event.startInstanceLocation = startInstanceLocation;
 	}
+	StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
 
@@ -808,6 +972,7 @@ void DX12BindingRecordDrawIndexedInstanced(
 		event.baseVertexLocation = baseVertexLocation;
 		event.startInstanceLocation = startInstanceLocation;
 	}
+	StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
 
@@ -844,8 +1009,11 @@ void DX12BindingBeginFrame()
 {
 	AcquireSRWLockExclusive(&gEventsLock);
 	gEvents.clear();
+	gOutputEvents.clear();
 	gEventSerial = 0;
+	gOutputEventSerial = 0;
 	gDroppedEvents = 0;
+	gDroppedOutputEvents = 0;
 	InterlockedExchange64(&gGlobalDrawSerial, 0);
 	InterlockedExchange64(&gGlobalDispatchSerial, 0);
 	ReleaseSRWLockExclusive(&gEventsLock);

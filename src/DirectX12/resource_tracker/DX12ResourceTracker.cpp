@@ -681,15 +681,12 @@ bool ShouldTrackFullDescriptorMetadata()
 
 bool ShouldTrackComputeDescriptorMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0 ||
-		ShouldTrackResourceMetadata();
+	return true;
 }
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0 ||
-		ShouldTrackResourceMetadata() ||
-		DX12HuntNeedsHotPath();
+	return true;
 }
 
 bool ShouldTrackResourceMetadata()

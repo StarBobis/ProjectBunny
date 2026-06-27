@@ -140,9 +140,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 	if (DX12IsInternalReplay())
 		return original ? original(device, desc, riid, heap) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
-	if (SUCCEEDED(hr) && desc && heap && *heap &&
-	    (desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
-	     desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)) {
+	if (SUCCEEDED(hr) && desc && heap && *heap) {
 		ID3D12DescriptorHeap *descriptorHeap = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*heap)->QueryInterface(IID_PPV_ARGS(&descriptorHeap)))) {
 			DescriptorHeapRecord record;
@@ -309,7 +307,7 @@ static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
 		return;
 	}
 	original(device, resource, desc, destDescriptor);
-	if (!ShouldTrackFullDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
 	record.kind = "RTV";
@@ -336,7 +334,7 @@ static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
 		return;
 	}
 	original(device, resource, desc, destDescriptor);
-	if (!ShouldTrackFullDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
 	record.kind = "DSV";
@@ -363,7 +361,7 @@ static void STDMETHODCALLTYPE HookedCreateSampler(
 		return;
 	}
 	original(device, desc, destDescriptor);
-	if (!ShouldTrackFullDescriptorMetadata())
+	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	if (desc) {
 		DescriptorRecord record;

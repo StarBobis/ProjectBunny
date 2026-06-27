@@ -10,6 +10,7 @@
 
 #include "DX12FrameAnalysis.h"
 #include "DX12Json.h"
+#include "DX12State.h"
 
 static bool InsertBindingSeen(
 	std::unordered_set<std::string> *seen, const BindingEvent &event,
@@ -504,6 +505,61 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		unboundedRanges, unboundedDescriptors,
 		cbvBindings, srvBindings, uavBindings, samplerBindings,
 		textureBindings, untrackedBindings, untrackedSkipped);
+}
+
+void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings)
+{
+	if (!bindings)
+		return;
+
+	std::vector<OutputBindingEvent> events;
+	AcquireSRWLockShared(&gEventsLock);
+	events = gOutputEvents;
+	const UINT64 dropped = gDroppedOutputEvents;
+	ReleaseSRWLockShared(&gEventsLock);
+
+	std::unordered_set<std::string> seen;
+	bindings->clear();
+	bindings->reserve(events.size());
+	size_t rtv = 0;
+	size_t dsv = 0;
+	size_t untracked = 0;
+	for (const OutputBindingEvent &event : events) {
+		if (!event.cpuHandle)
+			continue;
+		char key[96];
+		sprintf_s(key, "%s|%zx", event.kind.c_str(), event.cpuHandle);
+		if (!seen.insert(key).second)
+			continue;
+
+		DX12FrameOutputBinding binding;
+		binding.kind = event.kind;
+		binding.eventSerial = event.serial;
+		binding.drawId = event.drawId;
+		binding.dispatchId = event.dispatchId;
+		binding.psoIndex = event.shaderInfo.psoIndex;
+		binding.shaderInfo = event.shaderInfo;
+		binding.slot = event.slot;
+		binding.cpuHandle = event.cpuHandle;
+		binding.hasDescriptor = DX12FindDescriptorSummaryByCpuHandle(
+			event.cpuHandle, &binding.descriptor);
+		if (binding.kind == "RTV")
+			rtv++;
+		else if (binding.kind == "DSV")
+			dsv++;
+		if (!binding.hasDescriptor)
+			untracked++;
+		bindings->push_back(std::move(binding));
+	}
+
+	DX12FrameAnalysisLogJsonFunc("OutputResourcesCollected",
+		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
+		bindings->size(), rtv, dsv, untracked,
+		static_cast<unsigned long long>(dropped));
+	DX12LogJsonFunc("DX12OutputResourcesCollected",
+		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
+		bindings->size(), rtv, dsv, untracked,
+		static_cast<unsigned long long>(dropped));
 }
 
 static DX12FrameAnalysisDumpResult WriteFrameResourceFile(

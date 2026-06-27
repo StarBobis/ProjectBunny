@@ -293,20 +293,46 @@ void DX12GetResourceMetadataSnapshot(
 	AcquireSRWLockShared(&gResourceLock);
 	AcquireSRWLockShared(&gDescriptorLock);
 	size_t descriptorStateKnown = 0;
+	size_t cbvDescriptors = 0;
+	size_t srvDescriptors = 0;
+	size_t uavDescriptors = 0;
+	size_t rtvDescriptors = 0;
+	size_t dsvDescriptors = 0;
+	size_t textureDescriptors = 0;
 	for (const DescriptorRecord &record : gDescriptors) {
 		if (record.hasCurrentState)
 			descriptorStateKnown++;
+		if (record.kind == DescriptorKind::CBV)
+			cbvDescriptors++;
+		else if (record.kind == DescriptorKind::SRV)
+			srvDescriptors++;
+		else if (record.kind == DescriptorKind::UAV)
+			uavDescriptors++;
+		else if (record.kind == DescriptorKind::RTV)
+			rtvDescriptors++;
+		else if (record.kind == DescriptorKind::DSV)
+			dsvDescriptors++;
+		if (record.hasResourceDesc &&
+			record.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+			textureDescriptors++;
 	}
 	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotBegin",
-		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"heaps\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
+		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"heaps\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
 		gRootSignatures.size(), gDescriptors.size(), descriptorStateKnown,
 		gResources.size(),
 		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
 		gPsoRoots.size(), gDescriptorHeaps.size(),
+		cbvDescriptors, srvDescriptors, uavDescriptors, rtvDescriptors, dsvDescriptors,
+		textureDescriptors,
 		rootSignatures ? 1 : 0,
 		descriptors ? 1 : 0,
 		psoRoots ? 1 : 0,
 		descriptorHeaps ? 1 : 0);
+	DX12LogJsonFunc("DX12MetadataSnapshot",
+		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"heaps\":%zu",
+		gDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
+		rtvDescriptors, dsvDescriptors, textureDescriptors,
+		gResources.size(), gDescriptorHeaps.size());
 
 	if (rootSignatures) {
 		rootSignatures->clear();
@@ -411,6 +437,37 @@ bool DX12FindDescriptorHeapByGpuHandle(
 		const UINT64 end = begin +
 			static_cast<UINT64>(record.desc.NumDescriptors) * record.increment;
 		if (gpuHandle.ptr < begin || gpuHandle.ptr >= end)
+			continue;
+		summary->heap = record.heap;
+		summary->type = static_cast<UINT>(record.desc.Type);
+		summary->numDescriptors = record.desc.NumDescriptors;
+		summary->flags = static_cast<UINT>(record.desc.Flags);
+		summary->nodeMask = record.desc.NodeMask;
+		summary->cpuStart = record.cpuStart;
+		summary->gpuStart = record.gpuStart;
+		summary->increment = record.increment;
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return true;
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return false;
+}
+
+bool DX12FindDescriptorHeapByCpuHandle(
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (!cpuHandle.ptr || !summary)
+		return false;
+
+	AcquireSRWLockShared(&gDescriptorLock);
+	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
+		if (record.desc.Type != type || record.cpuStart == 0 || record.increment == 0)
+			continue;
+		const SIZE_T begin = record.cpuStart;
+		const SIZE_T end = begin +
+			static_cast<SIZE_T>(record.desc.NumDescriptors) * record.increment;
+		if (cpuHandle.ptr < begin || cpuHandle.ptr >= end)
 			continue;
 		summary->heap = record.heap;
 		summary->type = static_cast<UINT>(record.desc.Type);

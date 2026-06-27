@@ -1577,6 +1577,9 @@ static void STDMETHODCALLTYPE HookedOMSetRenderTargets(
 	LogDX12Call("ID3D12GraphicsCommandList::OMSetRenderTargets", commandList,
 		" rtCount=%u singleRange=%u dsv=%p", numRenderTargetDescriptors,
 		singleHandleToDescriptorRange, depthStencilDescriptor);
+	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+		DX12BindingRecordOutputTargets(commandList, numRenderTargetDescriptors,
+			renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 	gOrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
 		renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 }
@@ -1588,6 +1591,8 @@ static void STDMETHODCALLTYPE HookedClearDepthStencilView(
 	LogDX12Call("ID3D12GraphicsCommandList::ClearDepthStencilView", commandList,
 		" dsv=0x%llx flags=0x%x rects=%u", static_cast<unsigned long long>(depthStencilView.ptr),
 		static_cast<UINT>(clearFlags), numRects);
+	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+		DX12BindingRecordDepthStencilClear(commandList, depthStencilView);
 	gOrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
 }
 
@@ -1597,6 +1602,8 @@ static void STDMETHODCALLTYPE HookedClearRenderTargetView(
 {
 	LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
 		" rtv=0x%llx rects=%u", static_cast<unsigned long long>(renderTargetView.ptr), numRects);
+	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+		DX12BindingRecordRenderTargetClear(commandList, renderTargetView);
 	gOrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
 }
 
