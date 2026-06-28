@@ -300,8 +300,10 @@ static const FlatBufferRow *GetOrAddBufferRow(
 	const UINT64 viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
 	const UINT stride = ib ? 0 : vb.StrideInBytes;
 	const UINT format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
+	const UINT64 dumpGpuVa = ib ? region.gpuVa : viewGpuVa;
+	const UINT64 dumpSize = ib ? region.size : viewSize;
 	DX12BufferResourceSummary resource;
-	const bool resolved = DX12ResolveBufferResourceByGpuVa(region.gpuVa, region.size, &resource);
+	const bool resolved = DX12ResolveBufferResourceByGpuVa(dumpGpuVa, dumpSize, &resource);
 	const uint32_t huntHash = IaRegionHashForEvent(event, role, slot);
 	if (!huntHash)
 		return nullptr;
@@ -319,17 +321,20 @@ static const FlatBufferRow *GetOrAddBufferRow(
 	row.dispatchId = event.dispatchId;
 	row.psoIndex = event.shaderInfo.psoIndex;
 	row.shaderInfo = event.shaderInfo;
-	row.gpuVa = region.gpuVa;
-	row.size = region.size;
+	// VB hashes stay draw-region based so Hunting, Dump and Mod matching use
+	// one identity, but Blender/SSMT need the full IA view bytes to satisfy
+	// max(index) < vertex_count for indexed mesh reconstruction.
+	row.gpuVa = dumpGpuVa;
+	row.size = dumpSize;
 	row.viewGpuVa = viewGpuVa;
 	row.viewSize = viewSize;
-	row.viewOffset = region.viewOffset;
 	row.stride = stride;
 	row.slot = slot;
 	row.format = format;
 	row.huntHash = huntHash;
 	row.resolved = resolved;
 	row.resource = resource;
+	row.viewOffset = resolved ? resource.resourceOffset : region.viewOffset;
 	(*rowByKey)[key] = rows->size();
 	rows->push_back(row);
 	return &rows->back();
@@ -402,6 +407,10 @@ static void AddFrameIaBufferRow(
 		return;
 	const bool ib = role && !strcmp(role, "IB");
 	const D3D12_VERTEX_BUFFER_VIEW &vb = event.vertexBuffers[slot];
+	const UINT64 viewGpuVa = ib ? event.indexBuffer.BufferLocation : vb.BufferLocation;
+	const UINT64 viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
+	const UINT64 dumpGpuVa = ib ? region.gpuVa : viewGpuVa;
+	const UINT64 dumpSize = ib ? region.size : viewSize;
 	FlatBufferRow row;
 	row.id = NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
 		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
@@ -411,15 +420,15 @@ static void AddFrameIaBufferRow(
 	row.dispatchId = event.dispatchId;
 	row.psoIndex = event.shaderInfo.psoIndex;
 	row.shaderInfo = event.shaderInfo;
-	row.gpuVa = region.gpuVa;
-	row.size = region.size;
-	row.viewGpuVa = ib ? event.indexBuffer.BufferLocation : vb.BufferLocation;
-	row.viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
-	row.viewOffset = region.viewOffset;
+	row.gpuVa = dumpGpuVa;
+	row.size = dumpSize;
+	row.viewGpuVa = viewGpuVa;
+	row.viewSize = viewSize;
 	row.stride = ib ? 0 : vb.StrideInBytes;
 	row.slot = slot;
 	row.format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
-	row.resolved = DX12ResolveBufferResourceByGpuVa(region.gpuVa, region.size, &row.resource);
+	row.resolved = DX12ResolveBufferResourceByGpuVa(dumpGpuVa, dumpSize, &row.resource);
+	row.viewOffset = row.resolved ? row.resource.resourceOffset : region.viewOffset;
 	row.huntHash = huntHash;
 	rows->push_back(row);
 }
@@ -756,7 +765,7 @@ static void WriteFlatFrameAnalysisFiles(
 		fprintf(bufferFile,
 			"buffer_id,role,hunt_hash,resource,file,gpu_va,resource_gpu_va,offset,size,view_gpu_va,view_size,view_offset,stride,slot,format,"
 			"resolved,current_state,has_current_state,heap_type,resource_size,skin_source,"
-			"producer_event,producer_draw,producer_dispatch,producer_pso,producer_bind,"
+			"dump_scope,producer_event,producer_draw,producer_dispatch,producer_pso,producer_bind,"
 			"producer_root,producer_reg\n");
 		for (const FlatBufferRow &row : buffers) {
 			UINT64 resourceSize = row.resource.hasResourceDesc ? row.resource.resourceDesc.Width : 0;
@@ -764,7 +773,7 @@ static void WriteFlatFrameAnalysisFiles(
 			wchar_t fileName[MAX_PATH];
 			DX12BuildIaBufferFileName(iaBuffer, fileName, ARRAYSIZE(fileName));
 			fprintf(bufferFile,
-				"%s,%s,%08x,%p,%S,0x%llx,0x%llx,%llu,%llu,0x%llx,%llu,%llu,%u,%u,%u,%u,0x%x,%u,%u,%llu,%s,%llu,%llu,%llu,%llu,%s,%u,%u\n",
+				"%s,%s,%08x,%p,%S,0x%llx,0x%llx,%llu,%llu,0x%llx,%llu,%llu,%u,%u,%u,%u,0x%x,%u,%u,%llu,%s,%s,%llu,%llu,%llu,%llu,%s,%u,%u\n",
 				row.id.c_str(),
 				row.role.c_str(),
 				row.huntHash,
@@ -786,6 +795,7 @@ static void WriteFlatFrameAnalysisFiles(
 				row.resolved && row.resource.hasResourceHeapType ? row.resource.resourceHeapType : 0,
 				static_cast<unsigned long long>(resourceSize),
 				row.skinningClass.empty() ? "unknown" : row.skinningClass.c_str(),
+				row.role == "IB" ? "draw_slice" : "full_view",
 				static_cast<unsigned long long>(row.producerEventSerial),
 				static_cast<unsigned long long>(row.producerDrawId),
 				static_cast<unsigned long long>(row.producerDispatchId),

@@ -151,6 +151,16 @@ bool DX12DumpBuildSemanticSlot(
 	if (!text || textCount == 0)
 		return false;
 	text[0] = '\0';
+	if (binding.bindSpace == "hunting_metadata") {
+		sprintf_s(text, textCount, "meta-d%llu",
+			static_cast<unsigned long long>(binding.descriptorIndex));
+		return true;
+	}
+	if (binding.bindSpace == "hunting_resource") {
+		sprintf_s(text, textCount, "res-d%llu",
+			static_cast<unsigned long long>(binding.descriptorIndex));
+		return true;
+	}
 	if (binding.shaderRegister == UINT_MAX)
 		return false;
 	const char registerPrefix = DX12DumpRegisterPrefix(binding.rangeType, binding.descriptor.kind);

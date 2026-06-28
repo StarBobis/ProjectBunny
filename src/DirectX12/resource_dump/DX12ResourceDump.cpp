@@ -1080,6 +1080,49 @@ static void BuildDescriptorDedupeKey(
 		descriptor.viewDimension);
 }
 
+static void BuildDescriptorResourceDedupeKey(
+	const DX12DescriptorSummary &descriptor, char *key, size_t keyCount)
+{
+	if (!key || keyCount == 0)
+		return;
+	sprintf_s(key, keyCount, "%p|0|0|%u|%u",
+		descriptor.resource,
+		descriptor.hasResourceDesc ? static_cast<UINT>(descriptor.resourceDesc.Format) : 0,
+		descriptor.hasResourceDesc ? static_cast<UINT>(descriptor.resourceDesc.Dimension) : 0);
+}
+
+static void BuildBindingDedupeKeyForCurrentMode(
+	const DX12FrameResourceBinding &binding, char *key, size_t keyCount)
+{
+	if (!key || keyCount == 0)
+		return;
+	if (DX12IsHuntingMode() &&
+		binding.descriptor.hasResourceDesc &&
+		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
+		// Hunting is a resource discovery pass. The descriptor slot and view
+		// still describe where the texture was seen, but one ID3D12Resource must
+		// produce one readback, matching RenderDoc-style capture granularity.
+		BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
+		return;
+	}
+	BuildDescriptorDedupeKey(binding.descriptor, key, keyCount);
+}
+
+static void BuildOutputDedupeKeyForCurrentMode(
+	const DX12FrameOutputBinding &output, const DX12FrameResourceBinding &binding,
+	char *key, size_t keyCount)
+{
+	if (!key || keyCount == 0)
+		return;
+	if (DX12IsHuntingMode() &&
+		binding.descriptor.hasResourceDesc &&
+		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
+		BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
+		return;
+	}
+	BuildOutputDedupeKey(output, binding, key, keyCount);
+}
+
 static void BuildResourceDedupeKey(
 	const DX12ResourceSummary &resource, char *key, size_t keyCount)
 {
@@ -1491,7 +1534,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 			sprintf_s(key, "root|0x%llx",
 				static_cast<unsigned long long>(binding.gpuVirtualAddress));
 		} else {
-			BuildDescriptorDedupeKey(binding.descriptor, key, ARRAYSIZE(key));
+			BuildBindingDedupeKeyForCurrentMode(binding, key, ARRAYSIZE(key));
 		}
 		auto canonicalIt = canonicalTaskByKey.find(key);
 		if (canonicalIt != canonicalTaskByKey.end()) {
@@ -1591,7 +1634,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 			candidateTextures++;
 
 		char key[160];
-		BuildOutputDedupeKey(output, binding, key, ARRAYSIZE(key));
+		BuildOutputDedupeKeyForCurrentMode(output, binding, key, ARRAYSIZE(key));
 		auto canonicalIt = canonicalTaskByKey.find(key);
 		if (canonicalIt != canonicalTaskByKey.end()) {
 			DumpTask duplicate;
@@ -1641,7 +1684,10 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 			metadataTextureCandidates++;
 
 			char key[160];
-			BuildDescriptorDedupeKey(descriptor, key, ARRAYSIZE(key));
+			// Hunting metadata is a resource-discovery pass. Deduplicate at
+			// resource granularity so descriptor-table churn cannot explode into
+			// tens of thousands of duplicate readbacks.
+			BuildDescriptorResourceDedupeKey(descriptor, key, ARRAYSIZE(key));
 			auto canonicalIt = canonicalTaskByKey.find(key);
 			if (canonicalIt != canonicalTaskByKey.end()) {
 				DumpTask duplicate;

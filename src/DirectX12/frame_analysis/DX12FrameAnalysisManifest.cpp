@@ -336,6 +336,7 @@ void DX12FrameAnalysisManifestWriteIaBinding(
 	sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", buffer.resource.resource);
 
 	char buffer2[2048];
+	const bool ib = buffer.role == "IB";
 	sprintf_s(buffer2, sizeof(buffer2),
 		"\"func\":\"BindIA\","
 		"\"call_index\":%llu,"
@@ -353,6 +354,8 @@ void DX12FrameAnalysisManifestWriteIaBinding(
 		"\"view_gpu\":\"0x%llx\","
 		"\"view_offset\":%llu,"
 		"\"view_bytes\":%llu,"
+		"\"dump_scope\":\"%s\","
+		"\"dump_is_draw_slice\":%s,"
 		"\"stride\":%u,"
 		"\"fmt\":%u,"
 		"\"fmt_name\":%s,"
@@ -384,6 +387,8 @@ void DX12FrameAnalysisManifestWriteIaBinding(
 		static_cast<unsigned long long>(buffer.viewGpuVa),
 		static_cast<unsigned long long>(buffer.viewOffset),
 		static_cast<unsigned long long>(buffer.viewSize),
+		ib ? "draw_slice" : "full_view",
+		ib ? "true" : "false",
 		buffer.stride,
 		buffer.format,
 		fmtNameJson,
