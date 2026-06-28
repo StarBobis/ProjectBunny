@@ -275,6 +275,31 @@ static bool PrepareHuntingIaBufferTask(
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
+bool DX12DumpPrepareHuntingMetadataTextureTask(
+	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
+{
+	if (!device || !task || !DX12IsHuntingMode())
+		return false;
+	if (!descriptor.resource || !descriptor.hasResourceDesc ||
+		!DX12DumpIsTextureResourceDimension(descriptor.resourceDesc.Dimension))
+		return false;
+
+	DX12FrameResourceBinding binding;
+	binding.bindSpace = "hunting_metadata";
+	binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	binding.descriptor = descriptor;
+	binding.hasDescriptor = true;
+	if (binding.descriptor.kind.empty())
+		binding.descriptor.kind = DescriptorKind::SRV;
+
+	if (!FillDescriptorDumpTask(device, binding, task))
+		return false;
+	// Hunting is resource-discovery oriented: metadata texture descriptors must
+	// not depend on a draw event using the descriptor table in the captured frame.
+	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
+}
+
 static bool PrepareModDescriptorTask(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)

@@ -17,6 +17,7 @@
 #include "DX12FrameAnalysisManifest.h"
 #include "DX12Json.h"
 #include "DX12ResourceDumpPrepare.h"
+#include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12ResourceDumpUtil.h"
 #include "DX12State.h"
@@ -813,6 +814,14 @@ static void FormatEventPrefix(UINT64 drawId, UINT64 dispatchId, wchar_t *text, s
 			static_cast<unsigned long long>(0));
 }
 
+static void FormatMetadataPrefix(UINT64 descriptorIndex, wchar_t *text, size_t textCount)
+{
+	if (!text || textCount == 0)
+		return;
+	swprintf_s(text, textCount, L"m%06llu",
+		static_cast<unsigned long long>(descriptorIndex));
+}
+
 static void FormatEventPrefixWithSerial(
 	UINT64 drawId, UINT64 dispatchId, UINT64 eventSerial, wchar_t *text, size_t textCount)
 {
@@ -870,8 +879,12 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 			task.outputBinding.drawId, task.outputBinding.dispatchId,
 			task.outputBinding.eventSerial, eventPrefix, ARRAYSIZE(eventPrefix));
 	} else {
-		FormatEventPrefix(task.binding.drawId, task.binding.dispatchId,
-			eventPrefix, ARRAYSIZE(eventPrefix));
+		if (task.binding.bindSpace == "hunting_metadata")
+			FormatMetadataPrefix(task.binding.descriptorIndex,
+				eventPrefix, ARRAYSIZE(eventPrefix));
+		else
+			FormatEventPrefix(task.binding.drawId, task.binding.dispatchId,
+				eventPrefix, ARRAYSIZE(eventPrefix));
 	}
 	wchar_t shaderPart[96];
 	BuildShaderHashNamePart(binding->shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
@@ -999,6 +1012,19 @@ static void BuildOutputDedupeKey(
 		binding.descriptor.viewDimension);
 }
 
+static void BuildDescriptorDedupeKey(
+	const DX12DescriptorSummary &descriptor, char *key, size_t keyCount)
+{
+	if (!key || keyCount == 0)
+		return;
+	sprintf_s(key, keyCount, "%p|%llu|%llu|%u|%u",
+		descriptor.resource,
+		static_cast<unsigned long long>(descriptor.resourceOffset),
+		static_cast<unsigned long long>(descriptor.viewSize),
+		descriptor.viewFormat,
+		descriptor.viewDimension);
+}
+
 static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
 {
 	if (!file)
@@ -1007,6 +1033,8 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 	const DX12FrameResourceBinding &binding = row.binding;
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
 	const char *kind = BindingKindName(binding);
+	const char *rowType = binding.bindSpace == "hunting_metadata" ? "metadata" :
+		(binding.dispatchId ? "dispatch" : "draw");
 	char cs[32] = "-";
 	if (binding.shaderInfo.hasCS)
 		sprintf_s(cs, sizeof(cs), "%016llx",
@@ -1017,7 +1045,7 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 	fprintf(file,
 		"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
 		static_cast<unsigned long long>(binding.eventSerial),
-		binding.dispatchId ? "dispatch" : "draw",
+		rowType,
 		static_cast<unsigned long long>(binding.psoIndex),
 		cs,
 		kind,
@@ -1357,6 +1385,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	UINT candidateTextures = 0;
 	UINT candidateRtv = 0;
 	UINT candidateDsv = 0;
+	UINT metadataTextureCandidates = 0;
 
 	for (const DX12FrameResourceBinding &binding : bindings) {
 		if (!DX12DumpShouldDumpBinding(binding))
@@ -1383,10 +1412,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 			sprintf_s(key, "root|0x%llx",
 				static_cast<unsigned long long>(binding.gpuVirtualAddress));
 		} else {
-			sprintf_s(key, "%p|%llu|%llu",
-				binding.descriptor.resource,
-				static_cast<unsigned long long>(binding.descriptor.resourceOffset),
-				static_cast<unsigned long long>(binding.descriptor.viewSize));
+			BuildDescriptorDedupeKey(binding.descriptor, key, ARRAYSIZE(key));
 		}
 		auto canonicalIt = canonicalTaskByKey.find(key);
 		if (canonicalIt != canonicalTaskByKey.end()) {
@@ -1524,6 +1550,66 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		}
 	}
 
+	if (DX12IsHuntingMode()) {
+		std::vector<DX12DescriptorSummary> metadataDescriptors;
+		DX12GetResourceMetadataSnapshot(nullptr, &metadataDescriptors, nullptr, nullptr);
+		UINT64 metadataIndex = 0;
+		for (const DX12DescriptorSummary &descriptor : metadataDescriptors) {
+			metadataIndex++;
+			if (!descriptor.resource || !descriptor.hasResourceDesc ||
+				!DX12DumpIsTextureResourceDimension(descriptor.resourceDesc.Dimension))
+				continue;
+			metadataTextureCandidates++;
+
+			char key[160];
+			BuildDescriptorDedupeKey(descriptor, key, ARRAYSIZE(key));
+			auto canonicalIt = canonicalTaskByKey.find(key);
+			if (canonicalIt != canonicalTaskByKey.end()) {
+				DumpTask duplicate;
+				duplicate = tasks[canonicalIt->second];
+				duplicate.sourceKind = DumpTaskSource::Descriptor;
+				duplicate.binding = DX12FrameResourceBinding();
+				duplicate.binding.bindSpace = "hunting_metadata";
+				duplicate.binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+				duplicate.binding.descriptorIndex = metadataIndex;
+				duplicate.binding.descriptor = descriptor;
+				duplicate.binding.hasDescriptor = true;
+				duplicate.dedupeKey = key;
+				wchar_t fileName[MAX_PATH];
+				BuildFileName(duplicate, fileName, ARRAYSIZE(fileName));
+				duplicate.fileName = fileName;
+				duplicate.skipNote = "already_dumped";
+				duplicateTasks.push_back(std::move(duplicate));
+				duplicates++;
+				continue;
+			}
+
+			DumpTask task;
+			if (DX12DumpPrepareHuntingMetadataTextureTask(
+					device, descriptor, &task, &frameReadbackBytes, frameReadbackBudget)) {
+				task.binding.descriptorIndex = metadataIndex;
+				task.dedupeKey = key;
+				wchar_t fileName[MAX_PATH];
+				BuildFileName(task, fileName, ARRAYSIZE(fileName));
+				task.fileName = fileName;
+				canonicalTaskByKey.emplace(task.dedupeKey, tasks.size());
+				tasks.push_back(std::move(task));
+			} else {
+				task.sourceKind = DumpTaskSource::Descriptor;
+				task.binding.bindSpace = "hunting_metadata";
+				task.binding.descriptorIndex = metadataIndex;
+				task.binding.descriptor = descriptor;
+				task.binding.hasDescriptor = descriptor.resource != nullptr;
+				if (task.skipNote == nullptr)
+					task.skipNote = "metadata_texture_prepare_failed";
+				skippedTasks.push_back(std::move(task));
+			}
+		}
+		DX12FrameAnalysisLogJsonFunc("HuntingMetadataTexturesQueued",
+			"\"descriptors\":%zu,\"candidates\":%u,\"tasks\":%zu,\"duplicates\":%u",
+			metadataDescriptors.size(), metadataTextureCandidates, tasks.size(), duplicates);
+	}
+
 	bool readbackCopyOk = false;
 	const size_t copiedTasks = ExecuteReadbackCopyTasks(device, queue, &tasks, &readbackCopyOk);
 	DX12FrameAnalysisLogJsonFunc("ResourceCopyResult",
@@ -1659,12 +1745,12 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	WriteResourceBindingsCsv(dir, dumpedRows);
 
 	DX12FrameAnalysisLogJsonFunc("ResourceSummary",
-		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u",
+		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"metadata_texture_candidates\":%u",
 		dumpedTextures, dumpedBuffers, linked, skipped, duplicates, failed,
 		static_cast<unsigned long long>(frameReadbackBytes),
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		candidateCbv, candidateSrv, candidateUav, candidateRtv, candidateDsv,
-		candidateTextures);
+		candidateTextures, metadataTextureCandidates);
 	result.ok = failed == 0;
 	result.written = static_cast<size_t>(dumpedTextures) + dumpedBuffers + linked;
 	result.skipped = skipped;

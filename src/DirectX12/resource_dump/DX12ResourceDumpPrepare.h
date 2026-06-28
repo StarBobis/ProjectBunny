@@ -48,6 +48,9 @@ bool DX12DumpGpuResourceCopyEnabled();
 bool DX12DumpPrepareDescriptorTaskForCurrentMode(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);
+bool DX12DumpPrepareHuntingMetadataTextureTask(
+	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);
 bool DX12DumpPrepareIaBufferTaskForCurrentMode(
 	ID3D12Device *device, const DX12FrameIaBufferBinding &buffer, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);

@@ -11,6 +11,12 @@ bool DX12DumpIsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 
 bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 {
+	if (binding.bindSpace == "hunting_metadata")
+		return binding.hasDescriptor &&
+			binding.descriptor.resource &&
+			binding.descriptor.hasResourceDesc &&
+			DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+
 	const bool isDispatch = binding.dispatchId != 0;
 	const bool isDraw = binding.drawId != 0;
 	if (!isDispatch && !isDraw)
@@ -69,6 +75,8 @@ const char *DX12DumpShortBindSpace(const std::string &bindSpace)
 		return "cmp";
 	if (bindSpace == "compute_sampler")
 		return "csp";
+	if (bindSpace == "hunting_metadata")
+		return "meta";
 	return bindSpace.empty() ? "unk" : bindSpace.c_str();
 }
 
