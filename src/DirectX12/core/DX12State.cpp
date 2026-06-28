@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.h"
+#include "DX12CommandListRuntime.h"
 #include "DX12Overlay.h"
 #include "DX12Json.h"
 #include "DX12ModRuntime.h"
@@ -174,6 +175,10 @@ void DX12HotPathUpdate()
 		(skipGraphicsBindings ? 4 : 0) |
 		(trackResourceMetadata ? 8 : 0);
 	if (InterlockedExchange(&gHotPathStateMask, mask) != mask) {
+		// Command lists cache binding-capture decisions. Mode or capture-state
+		// changes must invalidate that cache, otherwise Hunting can keep using
+		// a Mod-era "do not track bindings" decision and lose SRV texture tables.
+		DX12CommandListRuntimeBumpTrackingGeneration();
 		DX12LogJsonFunc("DX12HotPathState",
 			"\"mode\":\"%s\",\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
 			huntingMode ? "Hunting" : "Mod",

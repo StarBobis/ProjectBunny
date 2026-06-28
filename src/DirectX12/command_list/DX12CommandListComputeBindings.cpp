@@ -33,7 +33,7 @@ static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
 	}
 	DX12CommandListRuntimeSetDescriptorHeaps(commandList, cbvSrvUav, sampler);
 
-	if (gDX12HotPathSkipBindings) {
+	if (gDX12HotPathSkipBindings && !DX12CommandListCaptureShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_DESCRIPTOR_HEAPS original =
 			DX12_CL_ORIG(commandList, 28, PFN_SET_DESCRIPTOR_HEAPS, SetDescriptorHeaps);
@@ -63,7 +63,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootSignature(
 	}
 	DX12_PROFILE_SCOPE(SetComputeRootSignature);
 
-	if (gDX12HotPathSkipBindings) {
+	if (gDX12HotPathSkipBindings && !DX12CommandListCaptureShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_SIGNATURE original =
 			DX12_CL_ORIG(commandList, 29, PFN_SET_ROOT_SIGNATURE, SetComputeRootSignature);
@@ -94,7 +94,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootSignature(
 	}
 	DX12_PROFILE_SCOPE(SetGraphicsRootSignature);
 
-	if (gDX12HotPathSkipGraphicsBindings) {
+	if (gDX12HotPathSkipGraphicsBindings && !DX12CommandListCaptureShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_SIGNATURE original =
 			DX12_CL_ORIG(commandList, 30, PFN_SET_ROOT_SIGNATURE, SetGraphicsRootSignature);
@@ -132,7 +132,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootDescriptorTable(
 		return;
 	}
 
-	if (gDX12HotPathSkipBindings) {
+	if (gDX12HotPathSkipBindings && !DX12CommandListCaptureShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
 			DX12_CL_ORIG(commandList, 31, PFN_SET_ROOT_DESCRIPTOR_TABLE, SetComputeRootDescriptorTable);
@@ -166,7 +166,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootDescriptorTable(
 	}
 	DX12_PROFILE_SCOPE(SetGraphicsRootDescriptorTable);
 
-	if (gDX12HotPathSkipGraphicsBindings) {
+	if (gDX12HotPathSkipGraphicsBindings && !DX12CommandListCaptureShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
 			DX12_CL_ORIG(commandList, 32, PFN_SET_ROOT_DESCRIPTOR_TABLE, SetGraphicsRootDescriptorTable);
