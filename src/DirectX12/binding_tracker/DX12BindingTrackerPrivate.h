@@ -100,6 +100,7 @@ struct BindingEvent
 	std::string kind;
 	UINT64 drawId = 0;
 	UINT64 dispatchId = 0;
+	UINT64 descriptorEpoch = 0;
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	ID3D12PipelineState *pipelineState = nullptr;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
@@ -128,7 +129,6 @@ struct BindingEvent
 	UINT threadGroupCountX = 0;
 	UINT threadGroupCountY = 0;
 	UINT threadGroupCountZ = 0;
-	std::vector<DX12FrameResourceBinding> resourceBindings;
 };
 
 struct OutputBindingEvent

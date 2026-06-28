@@ -124,39 +124,63 @@ static std::string ResourceRefsForEvent(
 {
 	std::string refs;
 	std::unordered_set<std::string> seen;
+	DX12RootSignatureSummary rootSignature;
+	const bool dispatch = DX12BindingIsDispatchEvent(event);
+	const bool hasRootSignature =
+		DX12BindingGetRootSignatureForEvent(event, dispatch, &rootSignature);
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
 		struct TableRef {
 			const char *space;
 			const RootTableState &table;
 			UINT heapType;
 		};
-		const TableRef tables[] = {
-			{ "g", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV },
-			{ "gs", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER },
-			{ "c", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV },
-			{ "cs", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER },
+		const TableRef tables[] = { dispatch ?
+			TableRef{ "c", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV } :
+			TableRef{ "g", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV },
+			dispatch ?
+			TableRef{ "cs", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER } :
+			TableRef{ "gs", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER },
 		};
 		for (const TableRef &entry : tables) {
 			if (!entry.table.valid)
 				continue;
-			const DX12DescriptorHeapSummary *heap =
-				DX12BindingFindHeapForGpuHandle(heaps, entry.table, entry.heapType);
-			if (!heap)
+			const DX12RootParameterSummary *parameter =
+				hasRootSignature ? DX12BindingFindRootParameter(rootSignature, i) : nullptr;
+			if (!parameter ||
+					parameter->parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
 				continue;
-			const UINT64 descriptorIndex = (entry.table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-			const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
-			const DX12DescriptorSummary *descriptor = DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
-			char key[128];
-			sprintf_s(key, "%s%u:%llu:%p",
-				entry.space,
-				entry.table.rootParameterIndex,
-				static_cast<unsigned long long>(descriptorIndex),
-				descriptor ? descriptor->resource : nullptr);
-			if (!seen.insert(key).second)
-				continue;
-			if (!refs.empty())
-				refs += ";";
-			refs += key;
+			for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+				if (DX12BindingHeapTypeForDescriptorRange(range.rangeType) != entry.heapType)
+					continue;
+				const DX12DescriptorHeapSummary *heap =
+					DX12BindingFindHeapForTableRange(heaps, entry.table, &range, entry.heapType);
+				if (!heap)
+					continue;
+				const UINT64 tableBase = (entry.table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
+				const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBase, range);
+				for (UINT offset = 0; offset < count; ++offset) {
+					const UINT64 descriptorIndex = tableBase + range.effectiveOffset + offset;
+					if (descriptorIndex >= heap->numDescriptors)
+						break;
+					const SIZE_T cpuHandle =
+						heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
+					const DX12DescriptorSummary *descriptor =
+						DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
+					char key[160];
+					sprintf_s(key, "%s%u:%u:%u:%llu:%p",
+						entry.space,
+						entry.table.rootParameterIndex,
+						range.rangeType,
+						range.baseShaderRegister + offset,
+						static_cast<unsigned long long>(descriptorIndex),
+						descriptor ? descriptor->resource : nullptr);
+					if (!seen.insert(key).second)
+						continue;
+					if (!refs.empty())
+						refs += ";";
+					refs += key;
+				}
+			}
 		}
 	}
 	return refs;
@@ -469,6 +493,12 @@ static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSi
 
 static bool BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding)
 {
+	if (!binding.usageClass.empty())
+		return binding.usageClass == "UAV" &&
+			binding.hasDescriptor &&
+			binding.descriptor.resource &&
+			binding.descriptor.hasResourceDesc &&
+			binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
 	if (binding.rootDescriptor)
 		return binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV &&
 			binding.gpuVirtualAddress != 0;
@@ -493,6 +523,18 @@ static BufferProducer ProducerFromBinding(const DX12FrameResourceBinding &bindin
 	producer.bindSpace = binding.bindSpace;
 	producer.rootParameterIndex = binding.rootParameterIndex;
 	producer.shaderRegister = binding.shaderRegister;
+	if (!binding.usageClass.empty()) {
+		producer.resource = binding.descriptor.resource;
+		producer.begin = binding.usageBegin ? binding.usageBegin :
+			binding.descriptor.gpuVirtualAddress + binding.descriptor.resourceOffset;
+		const UINT64 bytes = binding.usageBytes ? binding.usageBytes :
+			binding.descriptor.viewSize ? binding.descriptor.viewSize :
+			binding.descriptor.resourceDesc.Width;
+		producer.end = producer.begin + bytes;
+		if (producer.end < producer.begin)
+			producer.end = producer.begin;
+		return producer;
+	}
 	if (binding.rootDescriptor) {
 		DX12BufferResourceSummary resource;
 		if (DX12ResolveBufferResourceByGpuVa(binding.gpuVirtualAddress, 1, &resource)) {
@@ -528,7 +570,7 @@ static const BufferProducer *FindLatestProducerForBuffer(
 			continue;
 		if (producer.resource != row.resource.resource)
 			continue;
-		if (!RangesOverlap(row.gpuVa, row.size, producer.begin, producer.end - producer.begin))
+		if (!RangesOverlap(row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin))
 			continue;
 		if (!best || producer.eventSerial > best->eventSerial)
 			best = &producer;
@@ -634,7 +676,8 @@ void DX12BuildIaBufferFileName(
 		buffer.huntHash,
 		static_cast<unsigned long long>(buffer.gpuVa),
 		static_cast<unsigned long long>(buffer.viewOffset),
-		static_cast<unsigned long long>(buffer.size),
+		static_cast<unsigned long long>(
+			buffer.role == IaBufferRole::VB ? buffer.viewSize : buffer.size),
 		buffer.stride,
 		buffer.format);
 }

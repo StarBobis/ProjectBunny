@@ -109,13 +109,28 @@ static const char *RootDescriptorKindName(UINT rangeType)
 	return "";
 }
 
+static const char *DescriptorRangeKindName(UINT rangeType)
+{
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+		return DescriptorKind::CBV.data();
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+		return DescriptorKind::SRV.data();
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+		return DescriptorKind::UAV.data();
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+		return DescriptorKind::Sampler.data();
+	return "";
+}
+
 static const char *BindingKindName(const DX12FrameResourceBinding &binding)
 {
+	if (!binding.usageClass.empty())
+		return binding.usageClass.c_str();
 	if (!binding.descriptor.kind.empty())
 		return binding.descriptor.kind.c_str();
 	if (binding.rootDescriptor)
 		return RootDescriptorKindName(binding.rangeType);
-	return "";
+	return DescriptorRangeKindName(binding.rangeType);
 }
 
 static DX12FrameResourceBinding ResourceBindingFromOutputBinding(
@@ -794,6 +809,17 @@ static void FileHashFromPath(const std::wstring &path, char *hash, size_t hashCo
 static uint32_t DescriptorHuntHash(const DX12FrameResourceBinding &binding, UINT64 copyBytes)
 {
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
+	if (!binding.hasDescriptor) {
+		uint32_t hash = MakeFourCC('D', 'S', 'L', 'T');
+		hash = HashBytes(hash, &binding.psoIndex, sizeof(binding.psoIndex));
+		hash = HashBytes(hash, &binding.rootParameterIndex, sizeof(binding.rootParameterIndex));
+		hash = HashBytes(hash, &binding.rangeIndex, sizeof(binding.rangeIndex));
+		hash = HashBytes(hash, &binding.rangeType, sizeof(binding.rangeType));
+		hash = HashBytes(hash, &binding.shaderRegister, sizeof(binding.shaderRegister));
+		hash = HashBytes(hash, &binding.registerSpace, sizeof(binding.registerSpace));
+		hash = HashBytes(hash, &binding.descriptorIndex, sizeof(binding.descriptorIndex));
+		return hash;
+	}
 	const UINT64 fallbackGpuVa = descriptor.gpuVirtualAddress ?
 		descriptor.gpuVirtualAddress : binding.gpuVirtualAddress;
 	const UINT64 fallbackSize = descriptor.viewSize ? descriptor.viewSize : copyBytes;
@@ -1018,8 +1044,8 @@ static void AddBindingRow(
 		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
 	const D3D12_RESOURCE_DESC desc = binding.descriptor.hasResourceDesc ?
 		binding.descriptor.resourceDesc : D3D12_RESOURCE_DESC();
-	const UINT64 sourceOffset = binding.descriptor.resourceOffset;
-	const UINT64 copyBytes = binding.descriptor.viewSize;
+	const UINT64 sourceOffset = binding.usageBytes ? 0 : binding.descriptor.resourceOffset;
+	const UINT64 copyBytes = binding.usageBytes ? binding.usageBytes : binding.descriptor.viewSize;
 	const D3D12_RESOURCE_STATES sourceState = binding.descriptor.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(binding.descriptor.currentState) :
 		DX12DumpGuessDescriptorSourceState(binding);
@@ -1508,15 +1534,32 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	UINT candidateRtv = 0;
 	UINT candidateDsv = 0;
 	UINT metadataTextureCandidates = 0;
+	UINT untrackedDescriptorSlots = 0;
+	UINT untrackedComputeUavSlots = 0;
 
 	for (const DX12FrameResourceBinding &binding : bindings) {
-		if (!DX12DumpShouldDumpBinding(binding))
+		if (!DX12DumpShouldDumpBinding(binding)) {
+			if (!binding.hasDescriptor && !binding.rootDescriptor &&
+					(binding.bindSpace == "compute_cbv_srv_uav" ||
+					 binding.bindSpace == "graphics_cbv_srv_uav")) {
+				DumpTask skipped;
+				skipped.sourceKind = DumpTaskSource::Descriptor;
+				skipped.binding = binding;
+				skipped.skipNote = "untracked_descriptor";
+				skippedTasks.push_back(std::move(skipped));
+				untrackedDescriptorSlots++;
+				if (binding.bindSpace == "compute_cbv_srv_uav" &&
+						binding.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+					untrackedComputeUavSlots++;
+			}
 			continue;
-		if (binding.descriptor.kind == DescriptorKind::CBV)
+		}
+		const char *bindingKind = BindingKindName(binding);
+		if (!strcmp(bindingKind, DescriptorKind::CBV.data()))
 			candidateCbv++;
-		else if (binding.descriptor.kind == DescriptorKind::SRV)
+		else if (!strcmp(bindingKind, DescriptorKind::SRV.data()))
 			candidateSrv++;
-		else if (binding.descriptor.kind == DescriptorKind::UAV)
+		else if (!strcmp(bindingKind, DescriptorKind::UAV.data()))
 			candidateUav++;
 		if (binding.descriptor.hasResourceDesc &&
 			DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension))
@@ -1957,12 +2000,13 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	WriteResourceBindingsCsv(dir, dumpedRows);
 
 	DX12FrameAnalysisLogJsonFunc("ResourceSummary",
-		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"metadata_texture_candidates\":%u",
+		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"metadata_texture_candidates\":%u,\"untracked_descriptor_slots\":%u,\"untracked_compute_uav_slots\":%u",
 		dumpedTextures, dumpedBuffers, linked, skipped, duplicates, failed,
 		static_cast<unsigned long long>(frameReadbackBytes),
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		candidateCbv, candidateSrv, candidateUav, candidateRtv, candidateDsv,
-		candidateTextures, metadataTextureCandidates);
+		candidateTextures, metadataTextureCandidates,
+		untrackedDescriptorSlots, untrackedComputeUavSlots);
 	result.ok = failed == 0;
 	result.written = static_cast<size_t>(dumpedTextures) + dumpedBuffers + linked;
 	result.skipped = skipped;

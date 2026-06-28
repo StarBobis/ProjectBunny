@@ -11,6 +11,14 @@ bool DX12DumpIsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 
 bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 {
+	if (!binding.usageClass.empty()) {
+		if (!binding.hasDescriptor)
+			return true;
+		return binding.descriptor.resource &&
+			binding.descriptor.hasResourceDesc &&
+			binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+	}
+
 	if (binding.bindSpace == "hunting_metadata" ||
 		binding.bindSpace == "hunting_resource")
 		return binding.hasDescriptor &&
@@ -30,7 +38,8 @@ bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 	const bool isComputeSpace =
 		binding.bindSpace == "compute_cbv_srv_uav" ||
 		binding.bindSpace == "compute_sampler" ||
-		binding.bindSpace == "compute_root";
+		binding.bindSpace == "compute_root" ||
+		binding.bindSpace == "hunting_uav_state";
 	const bool isOutputSpace = binding.bindSpace == "output";
 	if (isOutputSpace)
 		return binding.hasDescriptor &&

@@ -19,6 +19,7 @@ std::vector<DescriptorHeapRecord> gDescriptorHeaps;
 std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
+std::unordered_map<SIZE_T, DescriptorRecord> gDescriptorByCpuHandle;
 std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
@@ -35,6 +36,7 @@ UINT64 gDescriptorCopyRecordsSeen = 0;
 UINT64 gDescriptorHeapRecordsSeen = 0;
 UINT64 gRootSignatureRecordsSeen = 0;
 UINT64 gPsoRootRecordsSeen = 0;
+UINT64 gDescriptorEpoch = 0;
 LONG gLastResourceStatsPresent = -1;
 static constexpr LONG kResourceStatsLogInterval = 300;
 
@@ -77,8 +79,14 @@ static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
 		return;
 	for (UINT slot = 0; slot < heap->occupied.size(); ++slot)
 		ClearDescriptorHeapSlotLocked(heap, slot);
+	for (std::vector<DescriptorRecord> &history : heap->slotHistory) {
+		for (DescriptorRecord &record : history)
+			ReleaseDescriptorRecordResources(&record);
+	}
 	heap->slots.clear();
 	heap->occupied.clear();
+	heap->slotHistory.clear();
+	heap->slotHistoryEpochs.clear();
 	heap->liveSlots = 0;
 }
 
@@ -91,7 +99,23 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 	// the same granularity as CopyDescriptors and descriptor creation APIs.
 	record->slots.resize(record->desc.NumDescriptors);
 	record->occupied.assign(record->desc.NumDescriptors, 0);
+	record->slotHistory.resize(record->desc.NumDescriptors);
+	record->slotHistoryEpochs.resize(record->desc.NumDescriptors);
 	record->liveSlots = 0;
+}
+
+static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot, const DescriptorRecord &record)
+{
+	if (!heap || slot >= heap->slotHistory.size() || slot >= heap->slotHistoryEpochs.size())
+		return;
+	if (!DX12IsHuntingMode() && !DX12FrameAnalysisIsActive() &&
+			!DX12FrameAnalysisIsCaptureRequested() && !DX12FrameAnalysisIsCapturing())
+		return;
+	// Hunting needs RenderDoc-like event granularity: later descriptor heap
+	// reuse must not rewrite what an earlier dispatch saw.
+	++gDescriptorEpoch;
+	heap->slotHistory[slot].push_back(CloneDescriptorRecord(record));
+	heap->slotHistoryEpochs[slot].push_back(gDescriptorEpoch);
 }
 
 static void StoreDescriptorAtHeapSlotLocked(
@@ -99,9 +123,12 @@ static void StoreDescriptorAtHeapSlotLocked(
 {
 	if (!heap || slot >= heap->slots.size())
 		return;
+	const bool wasOccupied = DescriptorHeapSlotOccupied(*heap, slot);
+	AppendDescriptorHistoryLocked(heap, slot, record);
 	heap->slots[slot] = std::move(record);
 	heap->occupied[slot] = 1;
-	heap->liveSlots++;
+	if (!wasOccupied)
+		heap->liveSlots++;
 }
 
 static size_t LiveDescriptorHeapSlotsLocked()
@@ -118,6 +145,33 @@ static size_t DescriptorHeapSlotCapacityLocked()
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
 		capacity += heap.slots.size();
 	return capacity;
+}
+
+static size_t DescriptorHeapHistoryEntriesLocked()
+{
+	size_t entries = 0;
+	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		for (const std::vector<DescriptorRecord> &history : heap.slotHistory)
+			entries += history.size();
+	}
+	return entries;
+}
+
+static void ClearCpuDescriptorLedgerLocked()
+{
+	for (auto &entry : gDescriptorByCpuHandle)
+		ReleaseDescriptorRecordResources(&entry.second);
+	gDescriptorByCpuHandle.clear();
+}
+
+void StoreCpuDescriptorRecordLocked(const DescriptorRecord &record)
+{
+	if (!record.cpuHandle)
+		return;
+	auto found = gDescriptorByCpuHandle.find(record.cpuHandle);
+	if (found != gDescriptorByCpuHandle.end())
+		ReleaseDescriptorRecordResources(&found->second);
+	gDescriptorByCpuHandle[record.cpuHandle] = CloneDescriptorRecord(record);
 }
 
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
@@ -428,6 +482,7 @@ void CleanupTrackedResources()
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps)
 		ClearDescriptorHeapLocked(&heap);
+	ClearCpuDescriptorLedgerLocked();
 	gRootSignatures.clear();
 	gDescriptorHeaps.clear();
 	gRootSignatureByPtr.clear();
@@ -710,6 +765,13 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 		// delays readback until FrameAnalysis, so descriptor resources need a
 		// COM reference or transient texture pointers can expire before copy.
 		FillResourceInfo(record, resource);
+	} else {
+		const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+		if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+			record->resourceDesc = desc;
+			record->hasResourceDesc = true;
+			record->gpuVirtualAddress = resource->GetGPUVirtualAddress();
+		}
 	}
 }
 
@@ -908,11 +970,12 @@ void LogResourceTrackerStatsLocked()
 	DX12LogDebugJsonFunc("DX12ResourceTrackerStats",
 		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
 		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
-		"\"descriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,"
+		"\"descriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,\"descriptorHistoryEntries\":%zu,"
 		"\"descriptorHeapRanges\":%zu,"
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
-		"\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
+		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
+		"\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
 		present,
 		gRootSignatures.size(),
 		static_cast<unsigned long long>(gRootSignatureRecordsSeen),
@@ -920,6 +983,7 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gDescriptorHeapRecordsSeen),
 		LiveDescriptorHeapSlotsLocked(),
 		DescriptorHeapSlotCapacityLocked(),
+		DescriptorHeapHistoryEntriesLocked(),
 		gDescriptorHeapByCpuStart.size(),
 		static_cast<unsigned long long>(gDescriptorRecordsSeen),
 		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
@@ -927,6 +991,7 @@ void LogResourceTrackerStatsLocked()
 		gResources.size(),
 		gFreeResourceSlots.size(),
 		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
+		gDescriptorByCpuHandle.size(),
 		gPsoRoots.size(),
 		static_cast<unsigned long long>(gPsoRootRecordsSeen));
 }
@@ -1057,6 +1122,10 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 {
 	if (record.valueId == 0)
 		record.valueId = HashDescriptorValue(record);
+	// D3D12 descriptor creation writes a CPU descriptor first; the game may
+	// later copy it into a shader-visible heap. Keep that CPU ledger so
+	// CopyDescriptors can preserve RenderDoc-like slot granularity.
+	StoreCpuDescriptorRecordLocked(record);
 
 	DescriptorSlotLocation location = {};
 	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {
@@ -1091,6 +1160,49 @@ void RecordDescriptor(DescriptorRecord &&record)
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 
+void DX12PrimeDescriptorHistoryForHunting()
+{
+	if (!DX12IsHuntingMode())
+		return;
+
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	size_t occupied = 0;
+	size_t primed = 0;
+	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		const UINT slotCount = static_cast<UINT>(
+			min(heap.slots.size(), heap.occupied.size()));
+		for (UINT slot = 0; slot < slotCount; ++slot) {
+			if (!DescriptorHeapSlotOccupied(heap, slot))
+				continue;
+			occupied++;
+			if (slot < heap.slotHistory.size() && !heap.slotHistory[slot].empty())
+				continue;
+			const DescriptorRecord *record = DescriptorHeapSlot(&heap, slot);
+			if (!record)
+				continue;
+			AppendDescriptorHistoryLocked(&heap, slot, *record);
+			primed++;
+		}
+	}
+	DX12LogJsonFunc("DX12DescriptorHistoryPrime",
+		"\"heaps\":%zu,\"occupied\":%zu,\"primed\":%zu,\"epoch\":%llu,\"historyEntries\":%zu",
+		gDescriptorHeaps.size(),
+		occupied,
+		primed,
+		static_cast<unsigned long long>(gDescriptorEpoch),
+		DescriptorHeapHistoryEntriesLocked());
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+}
+
+UINT64 CurrentDescriptorEpoch()
+{
+	AcquireSRWLockShared(&gDescriptorLock);
+	const UINT64 epoch = gDescriptorEpoch;
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return epoch;
+}
+
 bool ShouldTrackFullDescriptorMetadata()
 {
 	return DX12IsHuntingMode();
@@ -1105,12 +1217,10 @@ bool ShouldTrackComputeDescriptorMetadata()
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	// Mod mode should not maintain the descriptor universe unless a loaded
-	// TextureOverride actually needs descriptor-table data. Hunting keeps the
-	// old full-recording path for reliable Frame Dump.
-	return DX12IsHuntingMode() ||
-		DX12ModNeedsShaderDescriptorTracking() ||
-		DX12ModNeedsPreSkinningUavProbe();
+	// Descriptor creation is the only lossless point for buffer SRV/UAV view
+	// metadata. Keep a light CPU descriptor ledger always; expensive binding
+	// walks and resource readbacks remain gated by Hunting/Mod needs.
+	return true;
 }
 
 bool ShouldTrackResourceMetadata()
@@ -1131,8 +1241,15 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 		return false;
 
 	DescriptorSlotLocation heapLocation = {};
-	if (DescriptorSlotForHandleLocked(cpuHandle, &heapLocation))
-		return FindLatestDescriptorAtSlotLocked(heapLocation, record);
+	if (DescriptorSlotForHandleLocked(cpuHandle, &heapLocation) &&
+			FindLatestDescriptorAtSlotLocked(heapLocation, record))
+		return true;
+
+	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	if (found != gDescriptorByCpuHandle.end()) {
+		*record = CloneDescriptorRecord(found->second);
+		return true;
+	}
 
 	return false;
 }

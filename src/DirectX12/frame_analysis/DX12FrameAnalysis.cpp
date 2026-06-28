@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "DX12Json.h"
+#include "DX12ResourceTracker.h"
 #include "DX12State.h"
 
 DX12FrameAnalysisState::DX12FrameAnalysisState() :
@@ -208,12 +209,14 @@ void DX12FrameAnalysisRequestCapture()
 {
 	DX12FrameAnalysisState::Get().RequestCapture();
 	DX12HotPathUpdate();
+	DX12PrimeDescriptorHistoryForHunting();
 }
 
 void DX12FrameAnalysisBeginCapture()
 {
 	DX12FrameAnalysisState::Get().BeginCapture();
 	DX12HotPathUpdate();
+	DX12PrimeDescriptorHistoryForHunting();
 }
 
 bool DX12FrameAnalysisEndCapture()

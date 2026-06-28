@@ -35,6 +35,9 @@ struct DX12FrameResourceBinding
 	SIZE_T cpuHandle = 0;
 	UINT64 heapGpuStart = 0;
 	UINT64 gpuVirtualAddress = 0;
+	std::string usageClass;
+	UINT64 usageBegin = 0;
+	UINT64 usageBytes = 0;
 	DX12DescriptorSummary descriptor;
 	bool hasDescriptor = false;
 };
@@ -232,8 +235,6 @@ void DX12BindingRecordDispatch(
 	UINT threadGroupCountY, UINT threadGroupCountZ);
 void DX12BindingBeginFrame();
 void DX12GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos);
-void DX12BindingCaptureEventResourceBindings(
-	const struct BindingEvent &event, std::vector<DX12FrameResourceBinding> *bindings);
 void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *bindings);
 void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers);
 void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings);

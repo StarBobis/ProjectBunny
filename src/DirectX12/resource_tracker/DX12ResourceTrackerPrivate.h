@@ -71,6 +71,8 @@ struct DescriptorHeapRecord
 	UINT increment = 0;
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
+	std::vector<std::vector<DescriptorRecord>> slotHistory;
+	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	size_t liveSlots = 0;
 };
 
@@ -114,6 +116,7 @@ extern std::vector<DescriptorHeapRecord> gDescriptorHeaps;
 extern std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 extern std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 extern std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
+extern std::unordered_map<SIZE_T, DescriptorRecord> gDescriptorByCpuHandle;
 extern std::vector<PsoRootRecord> gPsoRoots;
 extern std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 extern std::vector<ResourceRecord> gResources;
@@ -130,6 +133,7 @@ extern UINT64 gDescriptorCopyRecordsSeen;
 extern UINT64 gDescriptorHeapRecordsSeen;
 extern UINT64 gRootSignatureRecordsSeen;
 extern UINT64 gPsoRootRecordsSeen;
+extern UINT64 gDescriptorEpoch;
 extern LONG gLastResourceStatsPresent;
 
 uint32_t HashBytes(uint32_t seed, const void *data, size_t size);
@@ -157,6 +161,7 @@ void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);
 void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource);
 void ReleaseDescriptorRecordResources(DescriptorRecord *record);
 DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record);
+void StoreCpuDescriptorRecordLocked(const DescriptorRecord &record);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void SetDescriptorKind(DescriptorRecord *record, UINT kindId);
 void FillSrvBufferView(DescriptorRecord *record);
@@ -171,6 +176,7 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable);
 void RecordDescriptor(DescriptorRecord &&record);
+void DX12PrimeDescriptorHistoryForHunting();
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();
 bool ShouldTrackDescriptorCreationMetadata();

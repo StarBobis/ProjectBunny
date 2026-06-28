@@ -40,6 +40,7 @@ static bool BuildEvent(
 	const bool isDispatchKind = kind && !strcmp(kind, "dispatch");
 	event->drawId = isDrawKind ? state.drawSerial : 0;
 	event->dispatchId = isDispatchKind ? state.dispatchSerial : 0;
+	event->descriptorEpoch = CurrentDescriptorEpoch();
 	event->commandList = commandList;
 	event->pipelineState = state.pipelineState;
 	event->graphicsRootSignature = state.graphicsRootSignature;
@@ -67,25 +68,7 @@ static bool BuildEvent(
 				event->computeRootSignature = psoRootSignature;
 		}
 	}
-	if (DX12IsHuntingMode() && (isDrawKind || isDispatchKind))
-		DX12BindingCaptureEventResourceBindings(*event, &event->resourceBindings);
 	return true;
-}
-
-static void NormalizeCapturedResourceBinding(
-	DX12FrameResourceBinding *binding, const BindingEvent &event)
-{
-	if (!binding)
-		return;
-
-	// Captured descriptor-table rows are an event snapshot.  Keep their event
-	// identity in one place so later dump filters do not drop valid SRVs just
-	// because the binding row carried stale draw/dispatch metadata.
-	binding->eventSerial = event.serial;
-	binding->drawId = event.drawId;
-	binding->dispatchId = event.dispatchId;
-	binding->psoIndex = event.shaderInfo.psoIndex;
-	binding->shaderInfo = event.shaderInfo;
 }
 
 static void StoreEventLocked(const BindingEvent &event)
@@ -96,8 +79,6 @@ static void StoreEventLocked(const BindingEvent &event)
 	}
 	BindingEvent stored = event;
 	stored.serial = ++gEventSerial;
-	for (DX12FrameResourceBinding &binding : stored.resourceBindings)
-		NormalizeCapturedResourceBinding(&binding, stored);
 	gEvents.push_back(std::move(stored));
 }
 

@@ -735,6 +735,8 @@ void DX12HuntToggle()
 		"\"stage\":\"hotpath_update\",\"enabled\":%s",
 		enabled ? "true" : "false");
 	if (enabled) {
+		DX12PrimeDescriptorHistoryForHunting();
+		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"prime_descriptor_history\",\"enabled\":true");
 		DX12HuntRefreshOverlay();
 		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
 		DX12CommandListRuntimeBumpTrackingGeneration();

@@ -255,8 +255,16 @@ static bool FillIaDumpTask(const DX12FrameIaBufferBinding &buffer, DumpTask *tas
 		task->skipNote = "unsupported_dimension";
 		return false;
 	}
-	task->sourceOffset = buffer.resource.resourceOffset;
-	task->copyBytes = buffer.size;
+	// IA VB files must represent the full buffer view, not the draw-trimmed
+	// vertex byte count, or indexed mesh reconstruction can reference vertices
+	// that were never dumped. IB keeps the draw slice by design.
+	if (buffer.role == IaBufferRole::VB) {
+		task->sourceOffset = buffer.viewOffset;
+		task->copyBytes = buffer.viewSize;
+	} else {
+		task->sourceOffset = buffer.resource.resourceOffset;
+		task->copyBytes = buffer.size;
+	}
 	if (task->sourceOffset + task->copyBytes > task->desc.Width)
 		task->copyBytes = task->desc.Width > task->sourceOffset ? task->desc.Width - task->sourceOffset : 0;
 	task->sourceState = buffer.resource.hasCurrentState ?

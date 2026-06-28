@@ -49,6 +49,133 @@ static bool DescriptorMatchesRangeType(
 	return true;
 }
 
+static const DX12DescriptorSummary *DescriptorForExpectedRange(
+	const DX12DescriptorSummary *descriptor, UINT rangeType)
+{
+	return DescriptorMatchesRangeType(descriptor, rangeType) ? descriptor : nullptr;
+}
+
+static const char *DescriptorKindForRangeType(UINT rangeType)
+{
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+		return "CBV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+		return "SRV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+		return "UAV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+		return "Sampler";
+	return "";
+}
+
+static const char *ExpectedBindingKind(const DX12FrameResourceBinding &binding)
+{
+	if (!binding.usageClass.empty())
+		return binding.usageClass.c_str();
+	if (binding.rootDescriptor) {
+		if (binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_CBV)
+			return "CBV";
+		if (binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_SRV)
+			return "SRV";
+		if (binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV)
+			return "UAV";
+		return "";
+	}
+	if (binding.hasDescriptor)
+		return binding.descriptor.kind.c_str();
+	if (binding.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+		return "CBV";
+	if (binding.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+		return "SRV";
+	if (binding.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+		return "UAV";
+	if (binding.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+		return "Sampler";
+	return "";
+}
+
+static bool IsBufferResourceSummary(const DX12ResourceSummary &resource)
+{
+	return resource.resource &&
+		resource.hasResourceDesc &&
+		resource.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+		resource.size != 0;
+}
+
+static void CollectHuntingUavStateResourceUsages(
+	std::vector<DX12FrameResourceBinding> *bindings,
+	const std::vector<BindingEvent> &events)
+{
+	if (!bindings || !DX12IsHuntingMode())
+		return;
+
+	std::vector<DX12ResourceSummary> resources;
+	DX12GetTrackedResourceSnapshot(&resources);
+	if (resources.empty())
+		return;
+
+	std::vector<const BindingEvent*> dispatches;
+	dispatches.reserve(events.size());
+	for (const BindingEvent &event : events) {
+		if (DX12BindingIsDispatchEvent(event))
+			dispatches.push_back(&event);
+	}
+	if (dispatches.empty())
+		return;
+
+	std::unordered_set<std::string> seen;
+	size_t candidates = 0;
+	size_t emitted = 0;
+	for (const DX12ResourceSummary &resource : resources) {
+		if (!IsBufferResourceSummary(resource) ||
+				!resource.hasCurrentState ||
+				!(resource.currentState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+			continue;
+		candidates++;
+
+		const BindingEvent *producerEvent = dispatches.back();
+		char key[96];
+		sprintf_s(key, "%p|%llu|%llu",
+			resource.resource,
+			static_cast<unsigned long long>(resource.gpuVirtualAddress),
+			static_cast<unsigned long long>(resource.size));
+		if (!seen.insert(key).second)
+			continue;
+
+		DX12FrameResourceBinding binding;
+		binding.eventSerial = producerEvent->serial;
+		binding.dispatchId = producerEvent->dispatchId;
+		binding.psoIndex = producerEvent->shaderInfo.psoIndex;
+		binding.shaderInfo = producerEvent->shaderInfo;
+		binding.bindSpace = "hunting_uav_state";
+		binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+		binding.shaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+		binding.shaderRegister = UINT_MAX;
+		binding.usageClass = "UAV";
+		binding.usageBegin = resource.gpuVirtualAddress;
+		binding.usageBytes = resource.size;
+		binding.gpuVirtualAddress = resource.gpuVirtualAddress;
+		binding.descriptor.kind = DescriptorKind::UAV;
+		binding.descriptor.resource = resource.resource;
+		binding.descriptor.resourceDesc = resource.resourceDesc;
+		binding.descriptor.hasResourceDesc = true;
+		binding.descriptor.resourceHeapType = resource.resourceHeapType;
+		binding.descriptor.hasResourceHeapType = resource.hasResourceHeapType;
+		binding.descriptor.gpuVirtualAddress = resource.gpuVirtualAddress;
+		binding.descriptor.resourceOffset = 0;
+		binding.descriptor.viewSize = resource.size;
+		binding.descriptor.currentState = resource.currentState;
+		binding.descriptor.hasCurrentState = resource.hasCurrentState;
+		binding.hasDescriptor = true;
+		bindings->push_back(std::move(binding));
+		emitted++;
+	}
+
+	DX12FrameAnalysisLogJsonFunc("HuntingUavStateResourceUsages",
+		"\"resources\":%zu,\"dispatches\":%zu,\"candidates\":%zu,\"emitted\":%zu",
+		resources.size(), dispatches.size(), candidates, emitted);
+}
+
 static void WriteDescriptorResourceRow(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
@@ -148,6 +275,29 @@ static const DX12DescriptorSummary *FindDescriptorForSlot(
 	return bySlot != lookup.bySlot.end() ? bySlot->second : nullptr;
 }
 
+static const DX12DescriptorSummary *FindDescriptorForEventSlot(
+	DX12DescriptorSummary *historyStorage,
+	const BindingEvent &event,
+	const DescriptorLookup &lookup, const DX12DescriptorHeapSummary *heap,
+	UINT64 descriptorIndex, SIZE_T cpuHandle, UINT rangeType,
+	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
+{
+	if (historyStorage && event.descriptorEpoch) {
+		if (historyLookups)
+			(*historyLookups)++;
+		const char *kind = DescriptorKindForRangeType(rangeType);
+		if (FindDescriptorSummaryByCpuHandleAtEpochAndKind(
+				cpuHandle, event.descriptorEpoch, kind, historyStorage) ||
+				FindDescriptorSummaryByCpuHandleAtEpoch(
+					cpuHandle, event.descriptorEpoch, historyStorage)) {
+			if (historyHits)
+				(*historyHits)++;
+			return historyStorage;
+		}
+	}
+	return FindDescriptorForSlot(lookup, heap, descriptorIndex, cpuHandle);
+}
+
 static UINT UnknownTableRangeType(UINT heapType)
 {
 	return heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ?
@@ -201,16 +351,20 @@ static bool WriteDescriptorTableEntry(
 {
 	if (!file || !heap)
 		return false;
-	if (!DescriptorMatchesRangeType(descriptor, rangeType))
-		return false;
+	const DX12DescriptorSummary *expectedDescriptor =
+		DescriptorForExpectedRange(descriptor, rangeType);
 	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
-	if (!descriptor && untrackedSkipped)
+	if (!expectedDescriptor && untrackedSkipped)
 		(*untrackedSkipped)++;
+	// A descriptor table range declares the shader-visible type. If the live
+	// heap slot has a different recorded kind, keep the expected slot as
+	// untracked instead of dropping it; otherwise Hunting cannot distinguish
+	// "no UAV bound" from "UAV metadata was lost before dump".
 	WriteDescriptorResourceRow(file, event, bindSpace, table.rootParameterIndex,
 		rangeIndex, rangeType, shaderRegister, registerSpace, descriptorOffset,
-		heap, descriptorIndex, gpuHandle, cpuHandle, descriptor);
+		heap, descriptorIndex, gpuHandle, cpuHandle, expectedDescriptor);
 	return true;
 }
 
@@ -226,18 +380,18 @@ static bool CollectDescriptorTableEntry(
 {
 	if (!bindings || !heap)
 		return false;
-	if (!DescriptorMatchesRangeType(descriptor, rangeType))
-		return false;
+	const DX12DescriptorSummary *expectedDescriptor =
+		DescriptorForExpectedRange(descriptor, rangeType);
 	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
-	if (!descriptor && untrackedSkipped)
+	if (!expectedDescriptor && untrackedSkipped)
 		(*untrackedSkipped)++;
 
 	DX12FrameResourceBinding binding;
 	if (!MakeTableBinding(&binding, event, bindSpace, table, rangeIndex, rangeType,
 			shaderVisibility, shaderRegister, registerSpace, descriptorOffset,
-			heap, descriptorIndex, gpuHandle, cpuHandle, descriptor))
+			heap, descriptorIndex, gpuHandle, cpuHandle, expectedDescriptor))
 		return false;
 	bindings->push_back(std::move(binding));
 	return true;
@@ -392,7 +546,8 @@ static void WriteFrameResourceBinding(
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptors,
-	std::unordered_set<std::string> *seen, size_t *untrackedSkipped)
+	std::unordered_set<std::string> *seen, size_t *untrackedSkipped,
+	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
 {
 	if (!file || !table.valid || !seen)
 		return;
@@ -419,8 +574,10 @@ static void WriteFrameResourceBinding(
 					break;
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
-				const DX12DescriptorSummary *descriptor =
-					FindDescriptorForSlot(descriptors, heap, descriptorIndex, cpuHandle);
+				DX12DescriptorSummary historyStorage;
+				const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+					&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
+					range.rangeType, historyLookups, historyHits);
 				if (WriteDescriptorTableEntry(file, event, bindSpace, table,
 						range.rangeIndex, range.rangeType, range.baseShaderRegister + offset,
 						range.registerSpace, range.effectiveOffset + offset,
@@ -440,8 +597,10 @@ static void WriteFrameResourceBinding(
 	const DX12DescriptorHeapSummary *heap = nullptr;
 	if (VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
 			&gpuHandle, &cpuHandle, &heap)) {
-		const DX12DescriptorSummary *descriptor =
-			FindDescriptorForSlot(descriptors, heap, descriptorIndex, cpuHandle);
+		DX12DescriptorSummary historyStorage;
+		const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+			&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
+			UnknownTableRangeType(heapType), historyLookups, historyHits);
 		// Without a root signature D3D12 only gives the table base handle, not a range length.
 		// Record that one provable descriptor instead of guessing through the heap.
 		WriteDescriptorTableEntry(file, event, bindSpace, table, UINT_MAX,
@@ -481,7 +640,8 @@ static void CollectFrameResourceBinding(
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptors,
-	std::unordered_set<std::string> *seen, size_t *untrackedSkipped)
+	std::unordered_set<std::string> *seen, size_t *untrackedSkipped,
+	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
 {
 	if (!bindings || !table.valid || !seen)
 		return;
@@ -508,8 +668,10 @@ static void CollectFrameResourceBinding(
 					break;
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
-				const DX12DescriptorSummary *descriptor =
-					FindDescriptorForSlot(descriptors, heap, descriptorIndex, cpuHandle);
+				DX12DescriptorSummary historyStorage;
+				const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+					&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
+					range.rangeType, historyLookups, historyHits);
 				if (CollectDescriptorTableEntry(bindings, event, bindSpace, table,
 						range.rangeIndex, range.rangeType, range.shaderVisibility,
 						range.baseShaderRegister + offset, range.registerSpace,
@@ -530,8 +692,10 @@ static void CollectFrameResourceBinding(
 	const DX12DescriptorHeapSummary *heap = nullptr;
 	if (VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
 			&gpuHandle, &cpuHandle, &heap)) {
-		const DX12DescriptorSummary *descriptor =
-			FindDescriptorForSlot(descriptors, heap, descriptorIndex, cpuHandle);
+		DX12DescriptorSummary historyStorage;
+		const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+			&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
+			UnknownTableRangeType(heapType), historyLookups, historyHits);
 		// Same design as file export: keep the table base binding when root metadata is absent,
 		// but do not fabricate descriptor ranges that D3D12 did not expose.
 		CollectDescriptorTableEntry(bindings, event, bindSpace, table, UINT_MAX,
@@ -574,6 +738,28 @@ static void CollectFrameRootDescriptorBinding(
 	binding.registerSpace = parameter ? parameter->registerSpace : 0;
 	binding.rootDescriptor = true;
 	binding.gpuVirtualAddress = rootDescriptor.address;
+	DX12BufferResourceSummary resource;
+	if (DX12ResolveBufferResourceByGpuVa(rootDescriptor.address, 1, &resource) &&
+			resource.resource && resource.hasResourceDesc) {
+		// Root descriptors carry only a GPU VA in D3D12, so project the resolved
+		// buffer into descriptor form here. This keeps compute UAV producers on
+		// the same event-resource path as descriptor tables, matching RenderDoc's
+		// resource-usage granularity without scanning resources in Mod mode.
+		binding.descriptor.kind = ExpectedBindingKind(binding);
+		binding.descriptor.resource = resource.resource;
+		binding.descriptor.resourceDesc = resource.resourceDesc;
+		binding.descriptor.hasResourceDesc = true;
+		binding.descriptor.resourceHeapType = resource.resourceHeapType;
+		binding.descriptor.hasResourceHeapType = resource.hasResourceHeapType;
+		binding.descriptor.gpuVirtualAddress = resource.gpuVirtualAddress;
+		binding.descriptor.resourceOffset = resource.resourceOffset;
+		const UINT64 availableBytes = resource.resourceDesc.Width > resource.resourceOffset ?
+			resource.resourceDesc.Width - resource.resourceOffset : 0;
+		binding.descriptor.viewSize = availableBytes;
+		binding.descriptor.currentState = resource.currentState;
+		binding.descriptor.hasCurrentState = resource.hasCurrentState;
+		binding.hasDescriptor = true;
+	}
 	bindings->push_back(std::move(binding));
 }
 
@@ -670,147 +856,30 @@ static void CollectEventResourceBindings(
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptorLookup,
 	std::unordered_set<std::string> *seen,
-	size_t *untrackedSkipped)
+	size_t *untrackedSkipped,
+	size_t *historyLookups = nullptr,
+	size_t *historyHits = nullptr)
 {
 	if (!bindings || !seen)
 		return;
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
 		CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
 			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			heaps, descriptorLookup, seen, untrackedSkipped);
+			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
 		CollectFrameResourceBinding(bindings, event, "graphics_sampler",
 			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			heaps, descriptorLookup, seen, untrackedSkipped);
+			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
 		CollectFrameResourceBinding(bindings, event, "compute_cbv_srv_uav",
 			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			heaps, descriptorLookup, seen, untrackedSkipped);
+			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
 		CollectFrameResourceBinding(bindings, event, "compute_sampler",
 			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			heaps, descriptorLookup, seen, untrackedSkipped);
+			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
 		CollectFrameRootDescriptorBinding(bindings, event, "graphics_root",
 			event.graphicsRootDescriptors[i], seen);
 		CollectFrameRootDescriptorBinding(bindings, event, "compute_root",
 			event.computeRootDescriptors[i], seen);
 	}
-}
-
-static const DX12DescriptorSummary *FindLiveDescriptorForSlot(
-	DX12DescriptorSummary *storage, SIZE_T cpuHandle)
-{
-	if (!storage)
-		return nullptr;
-	return DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, storage) ? storage : nullptr;
-}
-
-static void CollectLiveFrameResourceBinding(
-	std::vector<DX12FrameResourceBinding> *bindings,
-	const BindingEvent &event, const char *bindSpace,
-	const RootTableState &table, UINT heapType,
-	std::unordered_set<std::string> *seen, size_t *untrackedSkipped)
-{
-	if (!bindings || !table.valid || !seen)
-		return;
-
-	DX12RootSignatureSummary rootSignature;
-	const bool compute = bindSpace && !strncmp(bindSpace, "compute", 7);
-	const DX12RootParameterSummary *parameter = nullptr;
-	if (DX12BindingGetRootSignatureForEvent(event, compute, &rootSignature))
-		parameter = DX12BindingFindRootParameter(rootSignature, table.rootParameterIndex);
-
-	bool collectedRange = false;
-	if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
-		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-			if (!IsCompatibleRangeForSpace(range, bindSpace))
-				continue;
-			DX12DescriptorHeapSummary heap = {};
-			if (!DX12FindDescriptorHeapByGpuHandle(
-					table.baseDescriptor,
-					static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(
-						DX12BindingHeapTypeForDescriptorRange(range.rangeType)),
-					&heap) || heap.increment == 0)
-				continue;
-			const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-			const UINT count = DX12BindingDescriptorCountForRange(heap, tableBaseIndex, range);
-			for (UINT offset = 0; offset < count; ++offset) {
-				const UINT64 descriptorIndex = tableBaseIndex + range.effectiveOffset + offset;
-				if (descriptorIndex >= heap.numDescriptors)
-					break;
-				const UINT64 gpuHandle = heap.gpuStart + descriptorIndex * heap.increment;
-				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
-				DX12DescriptorSummary descriptorStorage;
-				const DX12DescriptorSummary *descriptor =
-					FindLiveDescriptorForSlot(&descriptorStorage, cpuHandle);
-				if (CollectDescriptorTableEntry(bindings, event, bindSpace, table,
-						range.rangeIndex, range.rangeType, range.shaderVisibility,
-						range.baseShaderRegister + offset, range.registerSpace,
-						range.effectiveOffset + offset, &heap, descriptorIndex,
-						gpuHandle, cpuHandle, descriptor, seen, untrackedSkipped))
-					collectedRange = true;
-			}
-		}
-	}
-
-	if (collectedRange)
-		return;
-
-	DX12DescriptorHeapSummary heap = {};
-	if (!DX12FindDescriptorHeapByGpuHandle(
-			table.baseDescriptor, static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(heapType), &heap) ||
-			heap.increment == 0)
-		return;
-	const UINT64 descriptorIndex = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-	if (descriptorIndex >= heap.numDescriptors)
-		return;
-	const UINT64 gpuHandle = heap.gpuStart + descriptorIndex * heap.increment;
-	const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
-	DX12DescriptorSummary descriptorStorage;
-	const DX12DescriptorSummary *descriptor =
-		FindLiveDescriptorForSlot(&descriptorStorage, cpuHandle);
-	// Record only the table base when root metadata is unavailable; D3D12 does not expose
-	// a descriptor-table length from the GPU handle alone.
-	CollectDescriptorTableEntry(bindings, event, bindSpace, table, UINT_MAX,
-		UnknownTableRangeType(heapType), D3D12_SHADER_VISIBILITY_ALL, UINT_MAX, 0, 0,
-		&heap, descriptorIndex, gpuHandle, cpuHandle, descriptor, seen, untrackedSkipped);
-}
-
-static void CollectLiveEventResourceBindings(
-	std::vector<DX12FrameResourceBinding> *bindings,
-	const BindingEvent &event,
-	std::unordered_set<std::string> *seen,
-	size_t *untrackedSkipped)
-{
-	if (!bindings || !seen)
-		return;
-	for (UINT i = 0; i < MaxRootParameters; ++i) {
-		CollectLiveFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
-			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			seen, untrackedSkipped);
-		CollectLiveFrameResourceBinding(bindings, event, "graphics_sampler",
-			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			seen, untrackedSkipped);
-		CollectLiveFrameResourceBinding(bindings, event, "compute_cbv_srv_uav",
-			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			seen, untrackedSkipped);
-		CollectLiveFrameResourceBinding(bindings, event, "compute_sampler",
-			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			seen, untrackedSkipped);
-		CollectFrameRootDescriptorBinding(bindings, event, "graphics_root",
-			event.graphicsRootDescriptors[i], seen);
-		CollectFrameRootDescriptorBinding(bindings, event, "compute_root",
-			event.computeRootDescriptors[i], seen);
-	}
-}
-
-void DX12BindingCaptureEventResourceBindings(
-	const BindingEvent &event, std::vector<DX12FrameResourceBinding> *bindings)
-{
-	if (!bindings)
-		return;
-
-	bindings->clear();
-	std::unordered_set<std::string> seen;
-	size_t untrackedSkipped = 0;
-	CollectLiveEventResourceBindings(bindings, event, &seen, &untrackedSkipped);
 }
 
 void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *bindings)
@@ -857,13 +926,21 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	size_t srvBindings = 0;
 	size_t uavBindings = 0;
 	size_t untrackedBindings = 0;
+	size_t untrackedCbvBindings = 0;
+	size_t untrackedSrvBindings = 0;
+	size_t untrackedUavBindings = 0;
 	size_t untrackedSkipped = 0;
 	size_t textureBindings = 0;
-	size_t snapshotBindings = 0;
-	size_t liveResolvedEvents = 0;
+	size_t rebuiltEventBindings = 0;
+	size_t rebuiltResolvedBindings = 0;
+	size_t descriptorHistoryLookups = 0;
+	size_t descriptorHistoryHits = 0;
+	size_t zeroDescriptorEpochEvents = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
 			continue;
+		if (event.descriptorEpoch == 0)
+			zeroDescriptorEpochEvents++;
 		if (DX12BindingIsDrawEvent(event))
 			drawEvents++;
 		if (DX12BindingIsDispatchEvent(event))
@@ -873,38 +950,48 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 			&rootRangeTables, &tableStartOnly, &unboundedRanges,
 			&unboundedDescriptors, &graphicsTablesWithoutRoots,
 			&computeTablesWithoutRoots, &descriptorTablesWithoutRanges);
-		if (!event.resourceBindings.empty()) {
-			snapshotBindings += event.resourceBindings.size();
-			for (const DX12FrameResourceBinding &binding : event.resourceBindings) {
-				if (binding.hasDescriptor)
-					liveResolvedEvents++;
-				bindings->push_back(binding);
-			}
-		} else {
-			CollectEventResourceBindings(
-				bindings, event, heaps, descriptorLookup, &seen, &untrackedSkipped);
+		const size_t before = bindings->size();
+		// Rebuild from the final descriptor metadata snapshot. Event recording only
+		// stores root table/root descriptor state; resolving resources here matches
+		// RenderDoc's event-granular model and avoids hot-path descriptor scans.
+		CollectEventResourceBindings(
+			bindings, event, heaps, descriptorLookup, &seen, &untrackedSkipped,
+			&descriptorHistoryLookups, &descriptorHistoryHits);
+		rebuiltEventBindings += bindings->size() - before;
+		for (size_t i = before; i < bindings->size(); ++i) {
+			if ((*bindings)[i].hasDescriptor)
+				rebuiltResolvedBindings++;
 		}
 	}
+	CollectHuntingUavStateResourceUsages(bindings, events);
 	for (const DX12FrameResourceBinding &binding : *bindings) {
+		const char *expectedKind = ExpectedBindingKind(binding);
 		if (!binding.hasDescriptor) {
 			untrackedBindings++;
+			if (!strcmp(expectedKind, "CBV"))
+				untrackedCbvBindings++;
+			else if (!strcmp(expectedKind, "SRV"))
+				untrackedSrvBindings++;
+			else if (!strcmp(expectedKind, "UAV"))
+				untrackedUavBindings++;
 			continue;
 		}
-		if (binding.descriptor.kind == "CBV")
+		if (!strcmp(expectedKind, "CBV"))
 			cbvBindings++;
-		else if (binding.descriptor.kind == "SRV")
+		else if (!strcmp(expectedKind, "SRV"))
 			srvBindings++;
-		else if (binding.descriptor.kind == "UAV")
+		else if (!strcmp(expectedKind, "UAV"))
 			uavBindings++;
-		else if (binding.descriptor.kind == "Sampler")
+		else if (!strcmp(expectedKind, "Sampler"))
 			samplerBindings++;
 		if (binding.descriptor.hasResourceDesc &&
 			IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension))
 			textureBindings++;
 	}
 	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu,\"snapshot_bindings\":%zu,\"snapshot_resolved\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu,\"untracked_skipped\":%zu",
-		bindings->size(), seen.size(), snapshotBindings, liveResolvedEvents,
+		"\"bindings\":%zu,\"unique\":%zu,\"rebuilt_bindings\":%zu,\"rebuilt_resolved\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"zero_descriptor_epoch_events\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu,\"untracked_cbv\":%zu,\"untracked_srv\":%zu,\"untracked_uav\":%zu,\"untracked_skipped\":%zu",
+		bindings->size(), seen.size(), rebuiltEventBindings, rebuiltResolvedBindings,
+		descriptorHistoryLookups, descriptorHistoryHits, zeroDescriptorEpochEvents,
 		drawEvents, dispatchEvents,
 		graphicsTables, computeTables,
 		graphicsTablesWithRoots, computeTablesWithRoots,
@@ -913,7 +1000,26 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		descriptorTablesWithoutRanges,
 		unboundedRanges, unboundedDescriptors,
 		cbvBindings, srvBindings, uavBindings, samplerBindings,
-		textureBindings, untrackedBindings, untrackedSkipped);
+		textureBindings, untrackedBindings,
+		untrackedCbvBindings, untrackedSrvBindings, untrackedUavBindings,
+		untrackedSkipped);
+	const char *historyStatus = "ok";
+	if (zeroDescriptorEpochEvents)
+		historyStatus = "zero_epoch";
+	else if (descriptorHistoryLookups && !descriptorHistoryHits)
+		historyStatus = "miss";
+	else if (untrackedUavBindings && !descriptorHistoryLookups)
+		historyStatus = "no_history_lookup";
+	else if (untrackedUavBindings)
+		historyStatus = "untracked_uav";
+	DX12FrameAnalysisLogJsonFunc("BindingResourcesHistoryHealth",
+		"\"status\":\"%s\",\"events\":%zu,\"zero_descriptor_epoch_events\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"untracked_uav\":%zu",
+		historyStatus,
+		drawEvents + dispatchEvents,
+		zeroDescriptorEpochEvents,
+		descriptorHistoryLookups,
+		descriptorHistoryHits,
+		untrackedUavBindings);
 }
 
 void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings)

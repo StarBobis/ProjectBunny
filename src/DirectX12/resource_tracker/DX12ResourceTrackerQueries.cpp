@@ -417,12 +417,25 @@ static void BuildResourceMetadataSnapshot(
 	size_t liveDescriptorCount = 0;
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
 		liveDescriptorCount += heap.liveSlots;
-	liveDescriptors.reserve(liveDescriptorCount);
+	liveDescriptors.reserve(liveDescriptorCount + gDescriptorByCpuHandle.size());
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
 			if (heap.occupied[slot])
 				liveDescriptors.push_back(&heap.slots[slot]);
 		}
+	}
+	for (const auto &entry : gDescriptorByCpuHandle) {
+		DescriptorSlotLocation ledgerLocation = {};
+		if (ResolveDescriptorSlotForCpuHandleLocked(
+				entry.first, nullptr, &ledgerLocation, nullptr) &&
+				ledgerLocation.heapIndex < gDescriptorHeaps.size()) {
+			const DescriptorHeapRecord &heap = gDescriptorHeaps[ledgerLocation.heapIndex];
+			if (ledgerLocation.slot < heap.occupied.size() &&
+					ledgerLocation.slot < heap.slots.size() &&
+					heap.occupied[ledgerLocation.slot])
+				continue;
+		}
+		liveDescriptors.push_back(&entry.second);
 	}
 
 	size_t descriptorStateKnown = 0;
@@ -577,19 +590,130 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
-		if (location.heapIndex >= gDescriptorHeaps.size()) {
-			ReleaseSRWLockShared(&gDescriptorLock);
-			return false;
+		if (location.heapIndex < gDescriptorHeaps.size()) {
+			const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+			if (location.slot < heap.occupied.size() &&
+					location.slot < heap.slots.size() &&
+					heap.occupied[location.slot]) {
+				FillDescriptorSummary(summary, heap.slots[location.slot], false);
+				ReleaseSRWLockShared(&gDescriptorLock);
+				return true;
+			}
 		}
-		const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-		if (location.slot >= heap.occupied.size() ||
-			location.slot >= heap.slots.size() ||
-			!heap.occupied[location.slot]) {
-			ReleaseSRWLockShared(&gDescriptorLock);
-			return false;
-		}
-		FillDescriptorSummary(summary, heap.slots[location.slot], false);
+	}
+
+	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	if (found != gDescriptorByCpuHandle.end()) {
+		FillDescriptorSummary(summary, found->second, false);
 		ReleaseSRWLockShared(&gDescriptorLock);
+		CompleteDescriptorSummaryResourceInfo(summary, false);
+		return true;
+	}
+
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return false;
+}
+
+bool FindDescriptorSummaryByCpuHandleAtEpoch(
+	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary)
+{
+	if (!cpuHandle || !epoch || !summary)
+		return false;
+
+	AcquireSRWLockShared(&gDescriptorLock);
+	DescriptorSlotLocation location = {};
+	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
+			location.heapIndex >= gDescriptorHeaps.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	if (location.slot >= heap.slotHistory.size() ||
+			location.slot >= heap.slotHistoryEpochs.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	const std::vector<DescriptorRecord> &history = heap.slotHistory[location.slot];
+	const std::vector<UINT64> &epochs = heap.slotHistoryEpochs[location.slot];
+	if (history.empty() || epochs.empty()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	size_t best = SIZE_MAX;
+	size_t lo = 0;
+	size_t hi = epochs.size();
+	while (lo < hi) {
+		const size_t mid = lo + (hi - lo) / 2;
+		if (epochs[mid] <= epoch) {
+			best = mid;
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	if (best == SIZE_MAX || best >= history.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	FillDescriptorSummary(summary, history[best], false);
+	ReleaseSRWLockShared(&gDescriptorLock);
+	CompleteDescriptorSummaryResourceInfo(summary, false);
+	return true;
+}
+
+bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
+	SIZE_T cpuHandle, UINT64 epoch, const char *kind, DX12DescriptorSummary *summary)
+{
+	if (!cpuHandle || !epoch || !kind || !kind[0] || !summary)
+		return false;
+
+	AcquireSRWLockShared(&gDescriptorLock);
+	DescriptorSlotLocation location = {};
+	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
+			location.heapIndex >= gDescriptorHeaps.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	if (location.slot >= heap.slotHistory.size() ||
+			location.slot >= heap.slotHistoryEpochs.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+	const std::vector<DescriptorRecord> &history = heap.slotHistory[location.slot];
+	const std::vector<UINT64> &epochs = heap.slotHistoryEpochs[location.slot];
+	if (history.empty() || epochs.empty()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+
+	size_t best = SIZE_MAX;
+	size_t lo = 0;
+	size_t hi = epochs.size();
+	while (lo < hi) {
+		const size_t mid = lo + (hi - lo) / 2;
+		if (epochs[mid] <= epoch) {
+			best = mid;
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	if (best == SIZE_MAX || best >= history.size()) {
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return false;
+	}
+
+	for (size_t i = best + 1; i > 0; --i) {
+		const DescriptorRecord &record = history[i - 1];
+		if (record.kind != kind)
+			continue;
+		// Root-signature ranges declare the descriptor type used by the shader.
+		// Walk the slot history to the latest matching type instead of treating
+		// a later different-kind write as loss of the SRV/UAV binding evidence.
+		FillDescriptorSummary(summary, record, false);
+		ReleaseSRWLockShared(&gDescriptorLock);
+		CompleteDescriptorSummaryResourceInfo(summary, false);
 		return true;
 	}
 

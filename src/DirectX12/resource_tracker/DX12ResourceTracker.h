@@ -185,6 +185,12 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
 bool DX12FindDescriptorSummaryByCpuHandleLight(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
+UINT64 CurrentDescriptorEpoch();
+bool FindDescriptorSummaryByCpuHandleAtEpoch(
+	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary);
+bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
+	SIZE_T cpuHandle, UINT64 epoch, const char *kind, DX12DescriptorSummary *summary);
+void DX12PrimeDescriptorHistoryForHunting();
 bool DX12FindDescriptorHeapByGpuHandle(
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);
