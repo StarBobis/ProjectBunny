@@ -414,7 +414,7 @@ static void BuildResourceMetadataSnapshot(
 	AcquireSRWLockShared(&gResourceLock);
 	AcquireSRWLockShared(&gDescriptorLock);
 	std::vector<const DescriptorRecord*> liveDescriptors;
-	size_t liveDescriptorCount = gLiveLegacyDescriptorCount;
+	size_t liveDescriptorCount = 0;
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
 		liveDescriptorCount += heap.liveSlots;
 	liveDescriptors.reserve(liveDescriptorCount);
@@ -423,10 +423,6 @@ static void BuildResourceMetadataSnapshot(
 			if (heap.occupied[slot])
 				liveDescriptors.push_back(&heap.slots[slot]);
 		}
-	}
-	for (UINT slot = 0; slot < gDescriptors.size() && slot < gDescriptorOccupied.size(); ++slot) {
-		if (gDescriptorOccupied[slot])
-			liveDescriptors.push_back(&gDescriptors[slot]);
 	}
 
 	size_t descriptorStateKnown = 0;
@@ -597,18 +593,8 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 		return true;
 	}
 
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
-	if (found == gDescriptorByCpuHandle.end() ||
-		found->second.heapIndex != SIZE_MAX ||
-		found->second.slot >= gDescriptors.size() ||
-		found->second.slot >= gDescriptorOccupied.size() ||
-		!gDescriptorOccupied[found->second.slot]) {
-		ReleaseSRWLockShared(&gDescriptorLock);
-		return false;
-	}
-	FillDescriptorSummary(summary, gDescriptors[found->second.slot], false);
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return true;
+	return false;
 }
 
 bool DX12FindDescriptorHeapByGpuHandle(

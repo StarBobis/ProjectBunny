@@ -16,14 +16,9 @@ SRWLOCK gResourceLock = SRWLOCK_INIT;
 SRWLOCK gDescriptorLock = SRWLOCK_INIT;
 std::vector<RootSignatureRecord> gRootSignatures;
 std::vector<DescriptorHeapRecord> gDescriptorHeaps;
-std::vector<DescriptorRecord> gDescriptors;
 std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
-std::unordered_map<SIZE_T, DescriptorSlotLocation> gDescriptorByCpuHandle;
-std::vector<uint8_t> gDescriptorOccupied;
-std::vector<size_t> gFreeDescriptorSlots;
-size_t gLiveLegacyDescriptorCount = 0;
 std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
@@ -123,25 +118,6 @@ static size_t DescriptorHeapSlotCapacityLocked()
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
 		capacity += heap.slots.size();
 	return capacity;
-}
-
-static bool LegacyDescriptorSlotOccupied(UINT slot)
-{
-	return slot < gDescriptorOccupied.size() && gDescriptorOccupied[slot] != 0;
-}
-
-static void ClearLegacyDescriptorSlotLocked(UINT slot)
-{
-	if (!LegacyDescriptorSlotOccupied(slot) || slot >= gDescriptors.size())
-		return;
-	DescriptorRecord &record = gDescriptors[slot];
-	gDescriptorByCpuHandle.erase(record.cpuHandle);
-	ReleaseDescriptorRecordResources(&record);
-	record = DescriptorRecord();
-	gDescriptorOccupied[slot] = 0;
-	gFreeDescriptorSlots.push_back(slot);
-	if (gLiveLegacyDescriptorCount > 0)
-		gLiveLegacyDescriptorCount--;
 }
 
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
@@ -452,18 +428,11 @@ void CleanupTrackedResources()
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps)
 		ClearDescriptorHeapLocked(&heap);
-	for (UINT slot = 0; slot < gDescriptors.size(); ++slot)
-		ClearLegacyDescriptorSlotLocked(slot);
 	gRootSignatures.clear();
 	gDescriptorHeaps.clear();
-	gDescriptors.clear();
-	gDescriptorOccupied.clear();
-	gFreeDescriptorSlots.clear();
-	gLiveLegacyDescriptorCount = 0;
 	gRootSignatureByPtr.clear();
 	gDescriptorHeapByPtr.clear();
 	gDescriptorHeapByCpuStart.clear();
-	gDescriptorByCpuHandle.clear();
 	gPsoRoots.clear();
 	gPsoRootByIndex.clear();
 	gResources.clear();
@@ -939,9 +908,8 @@ void LogResourceTrackerStatsLocked()
 	DX12LogDebugJsonFunc("DX12ResourceTrackerStats",
 		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
 		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
-		"\"legacyDescriptors\":%zu,\"legacyDescriptorSlots\":%zu,\"freeLegacyDescriptorSlots\":%zu,"
 		"\"descriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,"
-		"\"descriptorHeapRanges\":%zu,\"legacyDescriptorCpuIndex\":%zu,"
+		"\"descriptorHeapRanges\":%zu,"
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
 		"\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
@@ -950,13 +918,9 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gRootSignatureRecordsSeen),
 		gDescriptorHeaps.size(),
 		static_cast<unsigned long long>(gDescriptorHeapRecordsSeen),
-		gLiveLegacyDescriptorCount,
-		gDescriptors.size(),
-		gFreeDescriptorSlots.size(),
 		LiveDescriptorHeapSlotsLocked(),
 		DescriptorHeapSlotCapacityLocked(),
 		gDescriptorHeapByCpuStart.size(),
-		gDescriptorByCpuHandle.size(),
 		static_cast<unsigned long long>(gDescriptorRecordsSeen),
 		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
 		gLiveResourceCount,
@@ -1063,13 +1027,6 @@ bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
 		const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
 		const DescriptorRecord *slot = DescriptorHeapSlot(&heap, location.slot);
 		unchanged = slot && slot->valueId == valueId;
-	} else {
-		auto found = gDescriptorByCpuHandle.find(cpuHandle);
-		if (found != gDescriptorByCpuHandle.end() &&
-			found->second.heapIndex == SIZE_MAX &&
-			LegacyDescriptorSlotOccupied(found->second.slot) &&
-			found->second.slot < gDescriptors.size())
-			unchanged = gDescriptors[found->second.slot].valueId == valueId;
 	}
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return unchanged;
@@ -1123,33 +1080,7 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		return;
 	}
 
-	if (copied)
-		++gDescriptorCopyRecordsSeen;
-	else
-		++gDescriptorRecordsSeen;
-	// Legacy descriptors are kept only for CPU handles outside tracked heaps.
-	// If runtime stats keep legacyDescriptors at zero, this seam can be deleted.
-	auto legacy = gDescriptorByCpuHandle.find(record.cpuHandle);
-	if (legacy != gDescriptorByCpuHandle.end() &&
-		legacy->second.heapIndex == SIZE_MAX &&
-		legacy->second.slot < gDescriptors.size())
-		ClearLegacyDescriptorSlotLocked(legacy->second.slot);
-	size_t slot = 0;
-	if (!gFreeDescriptorSlots.empty()) {
-		slot = gFreeDescriptorSlots.back();
-		gFreeDescriptorSlots.pop_back();
-		gDescriptors[slot] = std::move(record);
-		gDescriptorOccupied[slot] = 1;
-	} else {
-		slot = gDescriptors.size();
-		gDescriptors.push_back(std::move(record));
-		gDescriptorOccupied.push_back(1);
-	}
-	gLiveLegacyDescriptorCount++;
-	DescriptorSlotLocation legacyLocation = {};
-	legacyLocation.heapIndex = SIZE_MAX;
-	legacyLocation.slot = static_cast<UINT>(slot);
-	gDescriptorByCpuHandle[gDescriptors[slot].cpuHandle] = legacyLocation;
+	ReleaseDescriptorRecordResources(&record);
 }
 
 void RecordDescriptor(DescriptorRecord &&record)
@@ -1203,18 +1134,6 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 	if (DescriptorSlotForHandleLocked(cpuHandle, &heapLocation))
 		return FindLatestDescriptorAtSlotLocked(heapLocation, record);
 
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
-	if (found == gDescriptorByCpuHandle.end())
-		return false;
-
-	const DescriptorSlotLocation &location = found->second;
-	if (location.heapIndex == SIZE_MAX) {
-		if (!LegacyDescriptorSlotOccupied(location.slot) ||
-			location.slot >= gDescriptors.size())
-			return false;
-		*record = CloneDescriptorRecord(gDescriptors[location.slot]);
-		return true;
-	}
 	return false;
 }
 

@@ -1631,13 +1631,14 @@ void DX12DumpFrameAnalysis()
 		DX12JsonAppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
 		DX12FrameAnalysisLogJsonFunc("FrameAnalysisSummary", "%s", fields + 1);
 	}
-	DX12FrameAnalysisDumpResult bindingTrace = TryDumpBindingTrace(dir);
 	DX12BeginFrameAnalysisMetadataCache();
+	DX12FrameAnalysisDumpResult bindingTrace;
 	DX12FrameAnalysisDumpResult resourceTable;
 	DX12FrameAnalysisDumpResult metadata;
 	DX12FrameAnalysisDumpResult resourceFiles;
 	bool psoSummaryOk = false;
 	{
+		bindingTrace = TryDumpBindingTrace(dir);
 		resourceTable = TryDumpCurrentFrameResourceTable(dir);
 		metadata = TryDumpResourceMetadata(dir);
 		psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
