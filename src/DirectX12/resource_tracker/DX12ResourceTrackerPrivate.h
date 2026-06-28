@@ -69,7 +69,9 @@ struct DescriptorHeapRecord
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
-	std::unordered_map<UINT, DescriptorRecord> slots;
+	std::vector<DescriptorRecord> slots;
+	std::vector<uint8_t> occupied;
+	size_t liveSlots = 0;
 };
 
 struct DescriptorSlotLocation
@@ -165,6 +167,7 @@ bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId);
 void LogResourceTrackerStatsLocked();
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap);
 void InvalidateResourceLocked(ID3D12Resource *resource);
+void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record);
 void RecordDescriptor(DescriptorRecord &&record);
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();

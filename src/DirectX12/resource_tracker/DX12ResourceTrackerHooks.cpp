@@ -259,6 +259,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 			record.cpuStart = descriptorHeap->GetCPUDescriptorHandleForHeapStart().ptr;
 			record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
 			record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
+			InitializeDescriptorHeapRecord(&record);
 			DescriptorHeapReleaseTracker *releaseTracker =
 				new DescriptorHeapReleaseTracker(descriptorHeap);
 			if (releaseTracker) {
@@ -272,10 +273,11 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 			++gDescriptorHeapRecordsSeen;
 			auto found = gDescriptorHeapByPtr.find(record.heap);
 			if (found != gDescriptorHeapByPtr.end()) {
-				DescriptorHeapRecord &old = gDescriptorHeaps[found->second];
-				for (const auto &slot : old.slots)
-					gDescriptorByCpuHandle.erase(slot.second.cpuHandle);
-				gDescriptorHeaps[found->second] = std::move(record);
+				const size_t heapIndex = found->second;
+				DescriptorHeapRecord &old = gDescriptorHeaps[heapIndex];
+				InvalidateDescriptorHeapLocked(old.heap);
+				gDescriptorHeapByPtr[record.heap] = heapIndex;
+				gDescriptorHeaps[heapIndex] = std::move(record);
 			} else {
 				gDescriptorHeapByPtr[record.heap] = gDescriptorHeaps.size();
 				gDescriptorHeaps.push_back(std::move(record));

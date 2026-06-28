@@ -416,8 +416,10 @@ static void BuildResourceMetadataSnapshot(
 	std::vector<const DescriptorRecord*> liveDescriptors;
 	liveDescriptors.reserve(gDescriptorByCpuHandle.size());
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
-		for (const auto &slot : heap.slots)
-			liveDescriptors.push_back(&slot.second);
+		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
+			if (heap.occupied[slot])
+				liveDescriptors.push_back(&heap.slots[slot]);
+		}
 	}
 	for (const DescriptorRecord &record : gDescriptors)
 		liveDescriptors.push_back(&record);
@@ -592,12 +594,13 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 		return false;
 	}
 	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-	auto slot = heap.slots.find(location.slot);
-	if (slot == heap.slots.end()) {
+	if (location.slot >= heap.occupied.size() ||
+		location.slot >= heap.slots.size() ||
+		!heap.occupied[location.slot]) {
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return false;
 	}
-	FillDescriptorSummary(summary, slot->second, false);
+	FillDescriptorSummary(summary, heap.slots[location.slot], false);
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return true;
 }
