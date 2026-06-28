@@ -6,7 +6,7 @@
 
 #include "DX12BindingTracker.h"
 #include "DX12ModRuntime.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "DX12State.h"
 

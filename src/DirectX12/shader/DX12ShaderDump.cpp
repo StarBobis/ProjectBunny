@@ -16,7 +16,7 @@
 
 #include "DX12BindingTracker.h"
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12ResourceDump.h"
 #include "DX12ResourceTracker.h"
 #include "DX12State.h"
@@ -836,8 +836,8 @@ static void WriteShaderAnalysisFile(
 
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12JsonAppendRawField(fields, sizeof(fields), "entries", std::to_string(analyses.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "entries", std::to_string(analyses.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("ShaderAnalysisWritten", "%s", fields + 1);
 	}
 }
@@ -931,7 +931,7 @@ static void WritePsoResourceSummaryFile(
 		return;
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
 		DX12FrameAnalysis::LogJsonFunc("PsoSummaryFileOpened", "%s", fields + 1);
 	}
 
@@ -1105,10 +1105,10 @@ static void WritePsoResourceSummaryFile(
 	fclose(file);
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12JsonAppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "roots", std::to_string(rootSignatures.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "roots", std::to_string(rootSignatures.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("PsoResourceSummaryWritten", "%s", fields + 1);
 	}
 }
@@ -1626,9 +1626,9 @@ void DX12DumpFrameAnalysis()
 		"\"shaders\":%zu,\"psos\":%zu", shaders.size(), psos.size());
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "dir", dir);
-		DX12JsonAppendRawField(fields, sizeof(fields), "shaders", std::to_string(shaders.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "dir", dir);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "shaders", std::to_string(shaders.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "psos", std::to_string(psos.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisSummary", "%s", fields + 1);
 	}
 	DX12BeginFrameAnalysisMetadataCache();
@@ -1842,3 +1842,4 @@ void DX12DumpCapturedFrameShaders()
 	}
 	CloseHandle(thread);
 }
+

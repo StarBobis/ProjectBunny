@@ -11,7 +11,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
 #include "DX12IaRegion.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12State.h"
 
@@ -790,10 +790,10 @@ static void WriteFlatFrameAnalysisFiles(
 		}
 		fclose(drawFile);
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", drawPath);
-		DX12JsonAppendRawField(fields, sizeof(fields), "draws", std::to_string(drawRows).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "dispatches", std::to_string(dispatchRows).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", drawPath);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "draws", std::to_string(drawRows).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "dispatches", std::to_string(dispatchRows).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("DrawCallCsvWritten", "%s", fields + 1);
 	}
 
@@ -848,8 +848,8 @@ static void WriteFlatFrameAnalysisFiles(
 		}
 		fclose(bufferFile);
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", bufferPath);
-		DX12JsonAppendRawField(fields, sizeof(fields), "rows", std::to_string(buffers.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", bufferPath);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "rows", std::to_string(buffers.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("BufferCsvWritten", "%s", fields + 1);
 	}
 
@@ -871,9 +871,9 @@ static void WriteFlatFrameAnalysisFiles(
 			buffers.size());
 		fclose(frameFile);
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", framePath);
-		DX12JsonAppendRawField(fields, sizeof(fields), "events", std::to_string(events.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", framePath);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "events", std::to_string(events.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisCsvWritten", "%s", fields + 1);
 	}
 }
@@ -937,3 +937,4 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 	result.skipped = static_cast<size_t>(droppedEvents);
 	return result;
 }
+

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 
 static void GetSummaryDirectory(const wchar_t *dir, wchar_t *path, size_t pathCount)
 {
@@ -93,8 +93,8 @@ DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 	if (!file) {
 		result.reason = "open_failed";
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendStringField(fields, sizeof(fields), "reason", result.reason);
 		DX12FrameAnalysis::LogJsonFunc("ResourceMetadataFailed", "%s", fields + 1);
 		return result;
 	}
@@ -214,13 +214,14 @@ DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 
 	fclose(file);
 	char fields[512] = "";
-	DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-	DX12JsonAppendRawField(fields, sizeof(fields), "roots", std::to_string(rootSignatures.size()).c_str());
-	DX12JsonAppendRawField(fields, sizeof(fields), "heaps", std::to_string(descriptorHeaps.size()).c_str());
-	DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
-	DX12JsonAppendRawField(fields, sizeof(fields), "psoRoots", std::to_string(psoRoots.size()).c_str());
+	DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+	DX12JsonUtils::AppendRawField(fields, sizeof(fields), "roots", std::to_string(rootSignatures.size()).c_str());
+	DX12JsonUtils::AppendRawField(fields, sizeof(fields), "heaps", std::to_string(descriptorHeaps.size()).c_str());
+	DX12JsonUtils::AppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
+	DX12JsonUtils::AppendRawField(fields, sizeof(fields), "psoRoots", std::to_string(psoRoots.size()).c_str());
 	DX12FrameAnalysis::LogJsonFunc("ResourceMetadataWritten", "%s", fields + 1);
 	result.ok = true;
 	result.written = 1;
 	return result;
 }
+

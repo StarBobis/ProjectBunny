@@ -4,7 +4,7 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Input.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
 #include "DX12State.h"

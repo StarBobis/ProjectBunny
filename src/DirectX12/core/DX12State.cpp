@@ -16,7 +16,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12CommandListRuntime.h"
 #include "DX12Overlay.h"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
@@ -480,9 +480,9 @@ void DX12Log(const char *fmt, ...)
 	va_end(args);
 
 	fields[0] = '\0';
-	DX12JsonAppendLogFieldsFromText(fields, sizeof(fields), message);
+	DX12JsonUtils::AppendLogFieldsFromText(fields, sizeof(fields), message);
 	char funcJson[16];
-	DX12JsonEscapeString(funcJson, sizeof(funcJson), "Log");
+	DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), "Log");
 	WriteJsonLogLine("Log", funcJson, fields[0] == ',' ? fields + 1 : fields, false);
 }
 
@@ -497,7 +497,7 @@ void DX12LogJsonFunc(const char *func, const char *fmt, ...)
 
 	char funcJson[512];
 	char extra[4096];
-	DX12JsonEscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
+	DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 	extra[0] = '\0';
 
 	if (fmt && fmt[0]) {
@@ -521,7 +521,7 @@ void DX12LogJsonFuncFlush(const char *func, const char *fmt, ...)
 
 	char funcJson[512];
 	char extra[4096];
-	DX12JsonEscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
+	DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 	extra[0] = '\0';
 
 	if (fmt && fmt[0]) {
@@ -544,7 +544,7 @@ void DX12LogDebugJsonFunc(const char *func, const char *fmt, ...)
 
 	char funcJson[512];
 	char extra[4096];
-	DX12JsonEscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
+	DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 	extra[0] = '\0';
 
 	if (fmt && fmt[0]) {
@@ -566,7 +566,7 @@ void DX12LogDebugJsonFuncFlush(const char *func, const char *fmt, ...)
 
 	char funcJson[512];
 	char extra[4096];
-	DX12JsonEscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
+	DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 	extra[0] = '\0';
 
 	if (fmt && fmt[0]) {
@@ -795,3 +795,4 @@ ID3D12CommandQueue *DX12AcquireCommandQueue()
 	ReleaseSRWLockShared(&gStateLock);
 	return queue;
 }
+

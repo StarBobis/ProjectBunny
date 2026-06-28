@@ -18,7 +18,7 @@
 #include "DX12State.h"
 #include "DX12CommandListRuntime.h"
 #include "DX12DeviceHooks.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "util.h"
 #include "IniDocument.h"

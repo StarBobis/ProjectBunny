@@ -9,9 +9,7 @@ add_library(DirectX12 SHARED
     core/DX12Runtime.cpp
     core/DX12State.cpp
     core/DX12Input.cpp
-    core/DX12Json.cpp
     core/DX12Overlay.cpp
-    core/DX12Profiling.cpp
 
     # UI
     ui/DX12NativeOverlay.cpp

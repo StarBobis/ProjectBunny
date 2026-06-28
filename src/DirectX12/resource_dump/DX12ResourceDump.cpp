@@ -15,7 +15,7 @@
 #include "DX12BindingTracker.h"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12ResourceDumpPrepare.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
@@ -1311,8 +1311,8 @@ static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<Dumpe
 	}
 	fclose(file);
 	char fields[512] = "";
-	DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-	DX12JsonAppendRawField(fields, sizeof(fields), "rows", std::to_string(rows.size()).c_str());
+	DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+	DX12JsonUtils::AppendRawField(fields, sizeof(fields), "rows", std::to_string(rows.size()).c_str());
 	DX12FrameAnalysis::LogJsonFunc("ResourceBindingsCsvWritten", "%s", fields + 1);
 }
 
@@ -2014,3 +2014,4 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	result.reason = failed == 0 ? "" : "resource_failures";
 	return result;
 }
+

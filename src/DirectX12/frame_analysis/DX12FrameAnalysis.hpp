@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <time.h>
 
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12FrameAnalysisTypes.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12State.h"
@@ -272,7 +272,7 @@ public:
 		va_end(args);
 
 		strcpy_s(fields, sizeof(fields), "\"func\":\"Event\"");
-		DX12JsonAppendLogFieldsFromText(fields, sizeof(fields), buffer);
+		DX12JsonUtils::AppendLogFieldsFromText(fields, sizeof(fields), buffer);
 		LogJsonFields(fields);
 	}
 
@@ -290,7 +290,7 @@ public:
 		va_end(args);
 
 		strcpy_s(fields, sizeof(fields), "\"func\":\"LogInfo\"");
-		DX12JsonAppendLogFieldsFromText(fields, sizeof(fields), buffer);
+		DX12JsonUtils::AppendLogFieldsFromText(fields, sizeof(fields), buffer);
 		LogJsonFields(fields);
 	}
 
@@ -302,7 +302,7 @@ public:
 		char funcJson[512];
 		char extra[4096];
 		char fields[4608];
-		DX12JsonEscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
+		DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 		extra[0] = '\0';
 
 		if (fmt && fmt[0]) {
@@ -324,3 +324,4 @@ public:
 		DX12FrameAnalysisState::Get().LogJsonFields(fields);
 	}
 };
+

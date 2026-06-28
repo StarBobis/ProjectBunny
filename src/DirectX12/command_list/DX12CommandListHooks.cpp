@@ -18,9 +18,9 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.h"
 #include "DX12IaReplacementExecutor.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12ModRuntime.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
@@ -289,8 +289,8 @@ static void LogDX12Call(const char *api, const void *object, const char *fmt = n
 
 	char apiJson[256];
 	char detailJson[2048];
-	DX12JsonEscapeString(apiJson, sizeof(apiJson), api ? api : "");
-	DX12JsonEscapeString(detailJson, sizeof(detailJson), detail);
+	DX12JsonUtils::EscapeString(apiJson, sizeof(apiJson), api ? api : "");
+	DX12JsonUtils::EscapeString(detailJson, sizeof(detailJson), detail);
 	DX12LogDebugJsonFunc("DX12HookCall",
 		"\"api\":%s,\"present\":%ld,\"this\":\"%p\",\"detail\":%s",
 		apiJson, DX12GetPresentCount(), object, detailJson);
@@ -1909,5 +1909,6 @@ void DX12HookCommandListCreation(IUnknown *device)
 		device4->Release();
 	}
 }
+
 
 

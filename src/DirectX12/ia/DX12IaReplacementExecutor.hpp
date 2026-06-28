@@ -5,7 +5,7 @@
 #include "DX12CommandListRuntime.h"
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 
 typedef void(STDMETHODCALLTYPE *DX12IaExecDrawInstanced)(
 	ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);

@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Json.h"
+#include "DX12Json.hpp"
 #include "DX12State.h"
 
 static bool InsertBindingSeen(
@@ -1115,14 +1115,14 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 	if (!file) {
 		result.reason = "open_failed";
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendStringField(fields, sizeof(fields), "reason", result.reason);
 		DX12FrameAnalysis::LogJsonFunc("CurrentFrameResourcesFailed", "%s", fields + 1);
 		return result;
 	}
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
 		DX12FrameAnalysis::LogJsonFunc("FrameResourceFileOpened", "%s", fields + 1);
 	}
 
@@ -1166,11 +1166,11 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 	fclose(file);
 	{
 		char fields[512] = "";
-		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12JsonAppendRawField(fields, sizeof(fields), "bindings", std::to_string(seen.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "untracked_skipped", std::to_string(untrackedSkipped).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "heaps", std::to_string(heaps.size()).c_str());
-		DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
+		DX12JsonUtils::AppendWStringField(fields, sizeof(fields), "path", path);
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "bindings", std::to_string(seen.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "untracked_skipped", std::to_string(untrackedSkipped).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "heaps", std::to_string(heaps.size()).c_str());
+		DX12JsonUtils::AppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 		DX12FrameAnalysis::LogJsonFunc("CurrentFrameResourcesWritten", "%s", fields + 1);
 	}
 	result.ok = true;
@@ -1194,3 +1194,4 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir
 	ReleaseSRWLockShared(&gEventsLock);
 	return WriteFrameResourceFile(dir, events);
 }
+

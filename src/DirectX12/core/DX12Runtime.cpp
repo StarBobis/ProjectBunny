@@ -2,7 +2,7 @@
 
 #include "DX12NativeOverlay.h"
 #include "DX12ModRuntime.h"
-#include "DX12Profiling.h"
+#include "DX12Profiling.hpp"
 #include "DX12State.h"
 #include "DXGIHooks.h"
 #include "MigotoConfig.h"
