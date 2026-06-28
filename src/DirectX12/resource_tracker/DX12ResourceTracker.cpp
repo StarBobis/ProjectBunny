@@ -108,6 +108,14 @@ static UINT64 HashDescriptorValue(const DescriptorRecord &record)
 	return hash ? hash : 1;
 }
 
+void PrepareDescriptorValueId(DescriptorRecord *record)
+{
+	if (!record)
+		return;
+	if (record->valueId == 0)
+		record->valueId = HashDescriptorValue(*record);
+}
+
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc)
 {
 	D3D12_RESOURCE_DESC out = {};
@@ -837,10 +845,32 @@ static UINT64 DescriptorValueIdAtSlotLocked(const DescriptorSlotLocation &locati
 	return slot == heap.slots.end() ? 0 : slot->second.valueId;
 }
 
+bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
+{
+	if (!cpuHandle || valueId == 0)
+		return false;
+
+	bool unchanged = false;
+	AcquireSRWLockShared(&gDescriptorLock);
+	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	if (found != gDescriptorByCpuHandle.end()) {
+		const DescriptorSlotLocation &location = found->second;
+		if (location.heapIndex == SIZE_MAX) {
+			if (location.slot < gDescriptors.size())
+				unchanged = gDescriptors[location.slot].valueId == valueId;
+		} else if (location.heapIndex < gDescriptorHeaps.size()) {
+			const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+			auto slot = heap.slots.find(location.slot);
+			unchanged = slot != heap.slots.end() && slot->second.valueId == valueId;
+		}
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return unchanged;
+}
+
 static void RecordDescriptorAtSlotLocked(
 	DescriptorRecord &&record, const DescriptorSlotLocation &location)
 {
-	++gDescriptorCopyRecordsSeen;
 	if (record.valueId == 0)
 		record.valueId = HashDescriptorValue(record);
 	DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
@@ -851,16 +881,13 @@ static void RecordDescriptorAtSlotLocked(
 			return;
 		gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
 	}
+	++gDescriptorCopyRecordsSeen;
 	auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
 	gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
 }
 
 static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied)
 {
-	if (copied)
-		++gDescriptorCopyRecordsSeen;
-	else
-		++gDescriptorRecordsSeen;
 	if (record.valueId == 0)
 		record.valueId = HashDescriptorValue(record);
 
@@ -874,11 +901,19 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 				return;
 			gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
 		}
+		if (copied)
+			++gDescriptorCopyRecordsSeen;
+		else
+			++gDescriptorRecordsSeen;
 		auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
 		gDescriptorByCpuHandle[inserted.first->second.cpuHandle] = location;
 		return;
 	}
 
+	if (copied)
+		++gDescriptorCopyRecordsSeen;
+	else
+		++gDescriptorRecordsSeen;
 	gDescriptors.push_back(std::move(record));
 	DescriptorSlotLocation legacy = {};
 	legacy.heapIndex = SIZE_MAX;

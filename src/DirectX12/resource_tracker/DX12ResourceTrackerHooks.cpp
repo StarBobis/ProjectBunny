@@ -277,7 +277,11 @@ static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
 		record.hasDesc = true;
 		record.gpuVirtualAddress = desc->BufferLocation;
 		record.viewSize = desc->SizeInBytes;
-		ResolveBufferByGpuVa(desc->BufferLocation, desc->SizeInBytes, &record);
+		PrepareDescriptorValueId(&record);
+		if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+			return;
+		if (ShouldTrackResourceMetadata())
+			ResolveBufferByGpuVa(desc->BufferLocation, desc->SizeInBytes, &record);
 		RecordDescriptor(std::move(record));
 	}
 }
@@ -307,6 +311,9 @@ static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
 		record.hasDesc = true;
 		FillSrvBufferView(&record);
 	}
+	PrepareDescriptorValueId(&record);
+	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+		return;
 	RecordDescriptor(std::move(record));
 }
 
@@ -343,6 +350,9 @@ static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
 		record.hasDesc = true;
 		FillUavBufferView(&record);
 	}
+	PrepareDescriptorValueId(&record);
+	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+		return;
 	RecordDescriptor(std::move(record));
 }
 
@@ -370,6 +380,9 @@ static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
 		record.rtv = *desc;
 		record.hasDesc = true;
 	}
+	PrepareDescriptorValueId(&record);
+	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+		return;
 	RecordDescriptor(std::move(record));
 }
 
@@ -397,6 +410,9 @@ static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
 		record.dsv = *desc;
 		record.hasDesc = true;
 	}
+	PrepareDescriptorValueId(&record);
+	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+		return;
 	RecordDescriptor(std::move(record));
 }
 
@@ -422,6 +438,9 @@ static void STDMETHODCALLTYPE HookedCreateSampler(
 		record.cpuHandle = destDescriptor.ptr;
 		record.sampler = *desc;
 		record.hasDesc = true;
+		PrepareDescriptorValueId(&record);
+		if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
+			return;
 		RecordDescriptor(std::move(record));
 	}
 }
