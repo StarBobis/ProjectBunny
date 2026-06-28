@@ -888,6 +888,24 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 	}
 	wchar_t shaderPart[96];
 	BuildShaderHashNamePart(binding->shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
+	char semanticSlot[32];
+	if (DX12DumpBuildSemanticSlot(*binding, semanticSlot, ARRAYSIZE(semanticSlot))) {
+		swprintf_s(fileName, fileNameCount,
+			L"%s-pso%llu%s-%S-%S-r%u-d%llu-%S_%p_o%llu_b%llu.%s",
+			eventPrefix,
+			static_cast<unsigned long long>(binding->psoIndex),
+			shaderPart,
+			DX12DumpShortBindSpace(binding->bindSpace),
+			semanticSlot,
+			binding->rootParameterIndex,
+			static_cast<unsigned long long>(binding->descriptorIndex),
+			DX12DumpShortDescriptorKind(binding->descriptor.kind),
+			binding->descriptor.resource,
+			static_cast<unsigned long long>(task.sourceOffset),
+			static_cast<unsigned long long>(task.copyBytes),
+			ext);
+		return;
+	}
 	swprintf_s(fileName, fileNameCount,
 		L"%s-pso%llu%s-%S-r%u-d%llu-%S_%p_o%llu_b%llu.%s",
 		eventPrefix,
@@ -1042,8 +1060,10 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 	char fileHash[16];
 	FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
 	const uint32_t huntHash = DescriptorHuntHash(binding, row.copyBytes);
+	char semanticSlot[32] = "-";
+	DX12DumpBuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
 	fprintf(file,
-		"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+		"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
 		static_cast<unsigned long long>(binding.eventSerial),
 		rowType,
 		static_cast<unsigned long long>(binding.psoIndex),
@@ -1063,6 +1083,8 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 		static_cast<unsigned long long>(row.copyBytes),
 		descriptor.structureByteStride,
 		descriptor.viewFormat,
+		binding.shaderVisibility,
+		semanticSlot,
 		row.status.c_str(),
 		row.note.c_str());
 }
@@ -1082,8 +1104,10 @@ static void WriteOutputResourceBindingCsvRow(FILE *file, const DumpedTaskRow &ro
 	char fileHash[16];
 	FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
 	const uint32_t huntHash = DescriptorHuntHash(binding, row.copyBytes);
+	char semanticSlot[32] = "-";
+	DX12DumpBuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
 	fprintf(file,
-		"%llu,output,%llu,%s,%s,output,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+		"%llu,output,%llu,%s,%s,output,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
 		static_cast<unsigned long long>(binding.eventSerial),
 		static_cast<unsigned long long>(binding.psoIndex),
 		cs,
@@ -1101,6 +1125,8 @@ static void WriteOutputResourceBindingCsvRow(FILE *file, const DumpedTaskRow &ro
 		static_cast<unsigned long long>(row.copyBytes),
 		descriptor.structureByteStride,
 		descriptor.viewFormat,
+		binding.shaderVisibility,
+		semanticSlot,
 		row.status.c_str(),
 		row.note.c_str());
 }
@@ -1119,7 +1145,7 @@ static void WriteIaResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
 	FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
 	const UINT64 eventId = buffer.dispatchId ? buffer.dispatchId : buffer.drawId;
 	fprintf(file,
-		"%llu,ia,%llu,%s,%s,ia,%u,0,%u,0,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%s,%s\n",
+		"%llu,ia,%llu,%s,%s,ia,%u,0,%u,0,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
 		static_cast<unsigned long long>(eventId),
 		static_cast<unsigned long long>(buffer.psoIndex),
 		cs,
@@ -1135,6 +1161,8 @@ static void WriteIaResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
 		static_cast<unsigned long long>(row.copyBytes),
 		buffer.stride,
 		buffer.format,
+		D3D12_SHADER_VISIBILITY_ALL,
+		"-",
 		row.status.c_str(),
 		row.note.c_str());
 }
@@ -1152,7 +1180,7 @@ static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<Dumpe
 	if (!file)
 		return;
 	fprintf(file,
-		"call_index,type,pso,cs,kind,bind,root,range,reg,space,resource,file,file_hash,hunt_hash,semantic_file,offset,size,stride,format,status,note\n");
+		"call_index,type,pso,cs,kind,bind,root,range,reg,space,resource,file,file_hash,hunt_hash,semantic_file,offset,size,stride,format,visibility,slot,status,note\n");
 	for (const DumpedTaskRow &row : rows) {
 		if (row.sourceKind == DumpTaskSource::Descriptor)
 			WriteDescriptorResourceBindingCsvRow(file, row);

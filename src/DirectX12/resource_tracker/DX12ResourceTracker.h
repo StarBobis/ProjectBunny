@@ -169,6 +169,8 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps);
 bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
+bool DX12FindDescriptorSummaryByCpuHandleLight(
+	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
 bool DX12FindDescriptorHeapByGpuHandle(
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);

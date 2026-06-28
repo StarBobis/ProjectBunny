@@ -556,6 +556,15 @@ static void BuildResourceMetadataSnapshot(
 bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary)
 {
+	if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, summary))
+		return false;
+	CompleteDescriptorSummaryResourceInfo(summary, false);
+	return true;
+}
+
+bool DX12FindDescriptorSummaryByCpuHandleLight(
+	SIZE_T cpuHandle, DX12DescriptorSummary *summary)
+{
 	if (!cpuHandle || !summary)
 		return false;
 
@@ -571,7 +580,7 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
 		}
-		FillDescriptorSummary(summary, gDescriptors[location.slot]);
+		FillDescriptorSummary(summary, gDescriptors[location.slot], false);
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return true;
 	}
@@ -585,7 +594,7 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return false;
 	}
-	FillDescriptorSummary(summary, slot->second);
+	FillDescriptorSummary(summary, slot->second, false);
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return true;
 }

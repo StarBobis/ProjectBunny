@@ -96,3 +96,64 @@ const char *DX12DumpShortDescriptorKind(const std::string &kind)
 		return "dsv";
 	return kind.empty() ? "res" : kind.c_str();
 }
+
+const char *DX12DumpShaderVisibilityPrefix(UINT shaderVisibility, const std::string &bindSpace)
+{
+	if (bindSpace.rfind("compute", 0) == 0)
+		return "cs";
+	switch (shaderVisibility) {
+	case D3D12_SHADER_VISIBILITY_VERTEX:
+		return "vs";
+	case D3D12_SHADER_VISIBILITY_HULL:
+		return "hs";
+	case D3D12_SHADER_VISIBILITY_DOMAIN:
+		return "ds";
+	case D3D12_SHADER_VISIBILITY_GEOMETRY:
+		return "gs";
+	case D3D12_SHADER_VISIBILITY_PIXEL:
+		return "ps";
+	case D3D12_SHADER_VISIBILITY_ALL:
+	default:
+		return "all";
+	}
+}
+
+char DX12DumpRegisterPrefix(UINT rangeType, const std::string &descriptorKind)
+{
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
+			rangeType == D3D12_ROOT_PARAMETER_TYPE_SRV)
+		return 't';
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV ||
+			rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV)
+		return 'u';
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV ||
+			rangeType == D3D12_ROOT_PARAMETER_TYPE_CBV)
+		return 'b';
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+		return 's';
+	if (descriptorKind == DescriptorKind::SRV || descriptorKind == DescriptorKind::SHADER_RESOURCE_VIEW)
+		return 't';
+	if (descriptorKind == DescriptorKind::UAV || descriptorKind == DescriptorKind::UNORDERED_ACCESS_VIEW)
+		return 'u';
+	if (descriptorKind == DescriptorKind::CBV || descriptorKind == DescriptorKind::CONSTANT_BUFFER_VIEW)
+		return 'b';
+	if (descriptorKind == DescriptorKind::Sampler)
+		return 's';
+	return '\0';
+}
+
+bool DX12DumpBuildSemanticSlot(
+	const DX12FrameResourceBinding &binding, char *text, size_t textCount)
+{
+	if (!text || textCount == 0)
+		return false;
+	text[0] = '\0';
+	if (binding.shaderRegister == UINT_MAX)
+		return false;
+	const char registerPrefix = DX12DumpRegisterPrefix(binding.rangeType, binding.descriptor.kind);
+	if (!registerPrefix)
+		return false;
+	const char *stage = DX12DumpShaderVisibilityPrefix(binding.shaderVisibility, binding.bindSpace);
+	sprintf_s(text, textCount, "%s-%c%u", stage, registerPrefix, binding.shaderRegister);
+	return true;
+}

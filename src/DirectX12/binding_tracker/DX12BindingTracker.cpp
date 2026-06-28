@@ -6,6 +6,7 @@
 
 #include "DX12CommandListRuntime.h"
 #include "DX12ResourceTracker.h"
+#include "DX12State.h"
 
 BindingShard gBindingShards[kBindingShardCount];
 SRWLOCK gEventsLock = SRWLOCK_INIT;
@@ -27,50 +28,69 @@ static const DX12RootParameterSummary *FindRootParameter(
 	const DX12RootSignatureSummary &rootSignature, UINT rootParameterIndex);
 static bool GetRootSignatureForEvent(
 	const BindingEvent &event, bool compute, DX12RootSignatureSummary *summary);
-static void StoreEventLocked(
-	const char *kind, ID3D12GraphicsCommandList *commandList,
+static bool BuildEvent(
+	BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList,
 	const CommandListBindingState &state)
+{
+	if (!event)
+		return false;
+	*event = BindingEvent();
+	event->kind = kind ? kind : "";
+	const bool isDrawKind = kind && (!strcmp(kind, "draw") || !strcmp(kind, "draw_indexed"));
+	const bool isDispatchKind = kind && !strcmp(kind, "dispatch");
+	event->drawId = isDrawKind ? state.drawSerial : 0;
+	event->dispatchId = isDispatchKind ? state.dispatchSerial : 0;
+	event->commandList = commandList;
+	event->pipelineState = state.pipelineState;
+	event->graphicsRootSignature = state.graphicsRootSignature;
+	event->computeRootSignature = state.computeRootSignature;
+	event->cbvSrvUavHeap = state.cbvSrvUavHeap;
+	event->samplerHeap = state.samplerHeap;
+	memcpy(event->graphicsTables, state.graphicsTables, sizeof(event->graphicsTables));
+	memcpy(event->computeTables, state.computeTables, sizeof(event->computeTables));
+	memcpy(event->graphicsRootDescriptors, state.graphicsRootDescriptors, sizeof(event->graphicsRootDescriptors));
+	memcpy(event->computeRootDescriptors, state.computeRootDescriptors, sizeof(event->computeRootDescriptors));
+	memcpy(event->graphicsRootConstants, state.graphicsRootConstants, sizeof(event->graphicsRootConstants));
+	memcpy(event->computeRootConstants, state.computeRootConstants, sizeof(event->computeRootConstants));
+	memcpy(event->vertexBuffers, state.vertexBuffers, sizeof(event->vertexBuffers));
+	memcpy(event->vertexBufferValid, state.vertexBufferValid, sizeof(event->vertexBufferValid));
+	event->indexBuffer = state.indexBuffer;
+	event->indexBufferValid = state.indexBufferValid;
+	event->primitiveTopology = state.primitiveTopology;
+	if (state.pipelineState) {
+		DX12GetPipelineStateShaderInfo(state.pipelineState, &event->shaderInfo);
+		ID3D12RootSignature *psoRootSignature = nullptr;
+		if (DX12GetPsoRootSignature(event->shaderInfo.psoIndex, &psoRootSignature)) {
+			if (!event->graphicsRootSignature)
+				event->graphicsRootSignature = psoRootSignature;
+			if (!event->computeRootSignature)
+				event->computeRootSignature = psoRootSignature;
+		}
+	}
+	if (DX12IsHuntingMode() && (isDrawKind || isDispatchKind))
+		DX12BindingCaptureEventResourceBindings(*event, &event->resourceBindings);
+	return true;
+}
+
+static void StoreEventLocked(const BindingEvent &event)
 {
 	if (gEvents.size() >= MaxTrackedEvents) {
 		gDroppedEvents++;
 		return;
 	}
+	BindingEvent stored = event;
+	stored.serial = ++gEventSerial;
+	gEvents.push_back(std::move(stored));
+}
 
+static void StoreEventLocked(
+	const char *kind, ID3D12GraphicsCommandList *commandList,
+	const CommandListBindingState &state)
+{
 	BindingEvent event;
-	event.serial = ++gEventSerial;
-	event.kind = kind ? kind : "";
-	const bool isDrawKind = kind && (!strcmp(kind, "draw") || !strcmp(kind, "draw_indexed"));
-	const bool isDispatchKind = kind && !strcmp(kind, "dispatch");
-	event.drawId = isDrawKind ? state.drawSerial : 0;
-	event.dispatchId = isDispatchKind ? state.dispatchSerial : 0;
-	event.commandList = commandList;
-	event.pipelineState = state.pipelineState;
-	event.graphicsRootSignature = state.graphicsRootSignature;
-	event.computeRootSignature = state.computeRootSignature;
-	event.cbvSrvUavHeap = state.cbvSrvUavHeap;
-	event.samplerHeap = state.samplerHeap;
-	memcpy(event.graphicsTables, state.graphicsTables, sizeof(event.graphicsTables));
-	memcpy(event.computeTables, state.computeTables, sizeof(event.computeTables));
-	memcpy(event.graphicsRootDescriptors, state.graphicsRootDescriptors, sizeof(event.graphicsRootDescriptors));
-	memcpy(event.computeRootDescriptors, state.computeRootDescriptors, sizeof(event.computeRootDescriptors));
-	memcpy(event.graphicsRootConstants, state.graphicsRootConstants, sizeof(event.graphicsRootConstants));
-	memcpy(event.computeRootConstants, state.computeRootConstants, sizeof(event.computeRootConstants));
-	memcpy(event.vertexBuffers, state.vertexBuffers, sizeof(event.vertexBuffers));
-	memcpy(event.vertexBufferValid, state.vertexBufferValid, sizeof(event.vertexBufferValid));
-	event.indexBuffer = state.indexBuffer;
-	event.indexBufferValid = state.indexBufferValid;
-	event.primitiveTopology = state.primitiveTopology;
-	if (state.pipelineState) {
-		DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
-		ID3D12RootSignature *psoRootSignature = nullptr;
-		if (DX12GetPsoRootSignature(event.shaderInfo.psoIndex, &psoRootSignature)) {
-			if (!event.graphicsRootSignature)
-				event.graphicsRootSignature = psoRootSignature;
-			if (!event.computeRootSignature)
-				event.computeRootSignature = psoRootSignature;
-		}
-	}
-	gEvents.push_back(event);
+	if (!BuildEvent(&event, kind, commandList, state))
+		return;
+	StoreEventLocked(event);
 }
 
 static void StoreOutputEventLocked(
@@ -940,16 +960,16 @@ void DX12BindingRecordDrawInstanced(
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
 
+	BindingEvent event;
+	if (!BuildEvent(&event, "draw", commandList, snapshot))
+		return;
+	event.vertexCountPerInstance = vertexCountPerInstance;
+	event.instanceCount = instanceCount;
+	event.startVertexLocation = startVertexLocation;
+	event.startInstanceLocation = startInstanceLocation;
+
 	AcquireSRWLockExclusive(&gEventsLock);
-	const size_t before = gEvents.size();
-	StoreEventLocked("draw", commandList, snapshot);
-	if (gEvents.size() > before) {
-		BindingEvent &event = gEvents.back();
-		event.vertexCountPerInstance = vertexCountPerInstance;
-		event.instanceCount = instanceCount;
-		event.startVertexLocation = startVertexLocation;
-		event.startInstanceLocation = startInstanceLocation;
-	}
+	StoreEventLocked(event);
 	StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
@@ -971,17 +991,17 @@ void DX12BindingRecordDrawIndexedInstanced(
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
 
+	BindingEvent event;
+	if (!BuildEvent(&event, "draw_indexed", commandList, snapshot))
+		return;
+	event.indexCountPerInstance = indexCountPerInstance;
+	event.instanceCount = instanceCount;
+	event.startIndexLocation = startIndexLocation;
+	event.baseVertexLocation = baseVertexLocation;
+	event.startInstanceLocation = startInstanceLocation;
+
 	AcquireSRWLockExclusive(&gEventsLock);
-	const size_t before = gEvents.size();
-	StoreEventLocked("draw_indexed", commandList, snapshot);
-	if (gEvents.size() > before) {
-		BindingEvent &event = gEvents.back();
-		event.indexCountPerInstance = indexCountPerInstance;
-		event.instanceCount = instanceCount;
-		event.startIndexLocation = startIndexLocation;
-		event.baseVertexLocation = baseVertexLocation;
-		event.startInstanceLocation = startInstanceLocation;
-	}
+	StoreEventLocked(event);
 	StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
@@ -1003,15 +1023,15 @@ void DX12BindingRecordDispatch(
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
 
+	BindingEvent event;
+	if (!BuildEvent(&event, "dispatch", commandList, snapshot))
+		return;
+	event.threadGroupCountX = threadGroupCountX;
+	event.threadGroupCountY = threadGroupCountY;
+	event.threadGroupCountZ = threadGroupCountZ;
+
 	AcquireSRWLockExclusive(&gEventsLock);
-	const size_t before = gEvents.size();
-	StoreEventLocked("dispatch", commandList, snapshot);
-	if (gEvents.size() > before) {
-		BindingEvent &event = gEvents.back();
-		event.threadGroupCountX = threadGroupCountX;
-		event.threadGroupCountY = threadGroupCountY;
-		event.threadGroupCountZ = threadGroupCountZ;
-	}
+	StoreEventLocked(event);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
 

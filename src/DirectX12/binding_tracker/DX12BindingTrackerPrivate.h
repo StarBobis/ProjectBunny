@@ -128,6 +128,7 @@ struct BindingEvent
 	UINT threadGroupCountX = 0;
 	UINT threadGroupCountY = 0;
 	UINT threadGroupCountZ = 0;
+	std::vector<DX12FrameResourceBinding> resourceBindings;
 };
 
 struct OutputBindingEvent
