@@ -63,3 +63,4 @@ void DX12FrameAnalysisLogEvent(const char *fmt, ...);
 void DX12FrameAnalysisLogInfo(const char *fmt, ...);
 void DX12FrameAnalysisLogJsonFunc(const char *func, const char *fmt, ...);
 void DX12FrameAnalysisLogJsonFields(const char *fields);
+ 
