@@ -466,9 +466,11 @@ static void BuildResourceMetadataSnapshot(
 			textureDescriptors++;
 	}
 	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotBegin",
-		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"heaps\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
+		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,"
+		"\"resources\":%zu,\"resourceSlots\":%zu,\"resourcesFromCreate\":%llu,"
+		"\"psoRoots\":%zu,\"heaps\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
 		gRootSignatures.size(), liveDescriptors.size(), descriptorStateKnown,
-		gResources.size(),
+		gLiveResourceCount, gResources.size(),
 		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
 		gPsoRoots.size(), gDescriptorHeaps.size(),
 		cbvDescriptors, srvDescriptors, uavDescriptors, rtvDescriptors, dsvDescriptors,
@@ -478,10 +480,10 @@ static void BuildResourceMetadataSnapshot(
 		psoRoots ? 1 : 0,
 		descriptorHeaps ? 1 : 0);
 	DX12LogJsonFunc("DX12MetadataSnapshot",
-		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"heaps\":%zu",
+		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"resourceSlots\":%zu,\"heaps\":%zu",
 		liveDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
 		rtvDescriptors, dsvDescriptors, textureDescriptors,
-		gResources.size(), gDescriptorHeaps.size());
+		gLiveResourceCount, gResources.size(), gDescriptorHeaps.size());
 
 	if (rootSignatures) {
 		rootSignatures->clear();
@@ -669,7 +671,7 @@ void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
 
 	resources->clear();
 	AcquireSRWLockShared(&gResourceLock);
-	resources->reserve(gResources.size());
+	resources->reserve(gLiveResourceCount);
 	for (const ResourceRecord &record : gResources) {
 		if (!record.resource)
 			continue;

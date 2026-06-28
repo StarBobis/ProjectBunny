@@ -116,6 +116,8 @@ extern std::unordered_map<SIZE_T, DescriptorSlotLocation> gDescriptorByCpuHandle
 extern std::vector<PsoRootRecord> gPsoRoots;
 extern std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 extern std::vector<ResourceRecord> gResources;
+extern std::vector<size_t> gFreeResourceSlots;
+extern size_t gLiveResourceCount;
 extern std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
 extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;

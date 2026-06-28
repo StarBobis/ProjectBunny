@@ -23,6 +23,8 @@ std::unordered_map<SIZE_T, DescriptorSlotLocation> gDescriptorByCpuHandle;
 std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
+std::vector<size_t> gFreeResourceSlots;
+size_t gLiveResourceCount = 0;
 std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
@@ -68,6 +70,8 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 
 	const size_t index = found->second;
 	ResourceRecord &record = gResources[index];
+	if (!record.resource)
+		return;
 	if (record.gpuVirtualAddress)
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
 	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
@@ -76,10 +80,10 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		else
 			++it;
 	}
-	record.resource = nullptr;
-	record.gpuVirtualAddress = 0;
-	record.size = 0;
-	record.hasCurrentState = false;
+	record = ResourceRecord();
+	gFreeResourceSlots.push_back(index);
+	if (gLiveResourceCount > 0)
+		gLiveResourceCount--;
 	gBufferResolveCache.clear();
 	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 }
@@ -311,13 +315,22 @@ void RecordResource(
 			gpuVaIndexChanged = true;
 		}
 	} else {
-		gResourceByPtr[resource] = gResources.size();
-		gResourceByPtr[canonical] = gResources.size();
+		size_t index = 0;
+		if (!gFreeResourceSlots.empty()) {
+			index = gFreeResourceSlots.back();
+			gFreeResourceSlots.pop_back();
+			gResources[index] = record;
+		} else {
+			index = gResources.size();
+			gResources.push_back(record);
+		}
+		gLiveResourceCount++;
+		gResourceByPtr[resource] = index;
+		gResourceByPtr[canonical] = index;
 		if (record.gpuVirtualAddress && record.size) {
-			gBufferResourceByGpuVa[record.gpuVirtualAddress] = gResources.size();
+			gBufferResourceByGpuVa[record.gpuVirtualAddress] = index;
 			gpuVaIndexChanged = true;
 		}
-		gResources.push_back(record);
 	}
 	if (gpuVaIndexChanged) {
 		// Descriptor creation resolves CBV/SRV/UAV GPU VAs constantly; keep
@@ -349,6 +362,8 @@ void CleanupTrackedResources()
 	gPsoRoots.clear();
 	gPsoRootByIndex.clear();
 	gResources.clear();
+	gFreeResourceSlots.clear();
+	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
 	gBufferResourceByGpuVa.clear();
 	gBufferResolveCache.clear();
@@ -820,7 +835,8 @@ void LogResourceTrackerStatsLocked()
 		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
 		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
 		"\"descriptors\":%zu,\"descriptorSlots\":%zu,\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
-		"\"resources\":%zu,\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
+		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
+		"\"resourcesFromCreate\":%llu,\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
 		present,
 		gRootSignatures.size(),
 		static_cast<unsigned long long>(gRootSignatureRecordsSeen),
@@ -830,7 +846,9 @@ void LogResourceTrackerStatsLocked()
 		gDescriptorByCpuHandle.size(),
 		static_cast<unsigned long long>(gDescriptorRecordsSeen),
 		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
+		gLiveResourceCount,
 		gResources.size(),
+		gFreeResourceSlots.size(),
 		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
 		gPsoRoots.size(),
 		static_cast<unsigned long long>(gPsoRootRecordsSeen));
