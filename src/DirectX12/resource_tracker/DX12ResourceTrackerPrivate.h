@@ -172,6 +172,9 @@ void LogResourceTrackerStatsLocked();
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap);
 void InvalidateResourceLocked(ID3D12Resource *resource);
 void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record);
+bool ResolveDescriptorSlotForCpuHandleLocked(
+	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
+	DescriptorSlotLocation *location, UINT *slotsAvailable);
 void RecordDescriptor(DescriptorRecord &&record);
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();

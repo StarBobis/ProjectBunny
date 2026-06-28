@@ -991,7 +991,7 @@ static bool DescriptorSlotFromHeapLocked(
 	return true;
 }
 
-static bool DescriptorSlotForHandleLocked(
+bool ResolveDescriptorSlotForCpuHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable)
 {
@@ -1019,14 +1019,14 @@ static bool DescriptorSlotForHandleLocked(
 
 static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocation *location)
 {
-	return DescriptorSlotForHandleLocked(cpuHandle, nullptr, location, nullptr);
+	return ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, location, nullptr);
 }
 
 static bool DescriptorSlotForHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DescriptorSlotLocation *location, UINT *slotsAvailable)
 {
-	return DescriptorSlotForHandleLocked(cpuHandle, &type, location, slotsAvailable);
+	return ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, &type, location, slotsAvailable);
 }
 
 static bool FindLatestDescriptorAtSlotLocked(
@@ -1127,6 +1127,8 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		++gDescriptorCopyRecordsSeen;
 	else
 		++gDescriptorRecordsSeen;
+	// Legacy descriptors are kept only for CPU handles outside tracked heaps.
+	// If runtime stats keep legacyDescriptors at zero, this seam can be deleted.
 	auto legacy = gDescriptorByCpuHandle.find(record.cpuHandle);
 	if (legacy != gDescriptorByCpuHandle.end() &&
 		legacy->second.heapIndex == SIZE_MAX &&

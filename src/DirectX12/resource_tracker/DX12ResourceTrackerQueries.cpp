@@ -315,32 +315,6 @@ static void FillDescriptorSummary(
 	}
 }
 
-static bool DescriptorSlotForCpuHandleQueryLocked(
-	SIZE_T cpuHandle, DescriptorSlotLocation *location)
-{
-	if (!cpuHandle || !location)
-		return false;
-	auto heapByStart = gDescriptorHeapByCpuStart.upper_bound(cpuHandle);
-	if (heapByStart == gDescriptorHeapByCpuStart.begin())
-		return false;
-	--heapByStart;
-	if (heapByStart->second >= gDescriptorHeaps.size())
-		return false;
-	const DescriptorHeapRecord &heap = gDescriptorHeaps[heapByStart->second];
-	if (!heap.cpuStart || !heap.increment || heap.desc.NumDescriptors == 0 ||
-		cpuHandle < heap.cpuStart)
-		return false;
-	const SIZE_T offset = cpuHandle - heap.cpuStart;
-	if (offset % heap.increment != 0)
-		return false;
-	const SIZE_T slot = offset / heap.increment;
-	if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
-		return false;
-	location->heapIndex = heapByStart->second;
-	location->slot = static_cast<UINT>(slot);
-	return true;
-}
-
 struct MetadataSnapshotCache
 {
 	bool enabled = false;
@@ -606,7 +580,7 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
-	if (DescriptorSlotForCpuHandleQueryLocked(cpuHandle, &location)) {
+	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
 		if (location.heapIndex >= gDescriptorHeaps.size()) {
 			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
