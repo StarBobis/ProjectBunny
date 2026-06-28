@@ -49,6 +49,8 @@ add_library(DirectX12 SHARED
     # Resource dump
     resource_dump/DX12ResourceDump.cpp
     resource_dump/DX12ResourceMetadataDump.cpp
+    resource_dump/DX12ResourceDumpPrepare.cpp
+    resource_dump/DX12ResourceDumpUtil.cpp
 
     # Command list hooks & runtime
     command_list/DX12CommandListHooks.cpp

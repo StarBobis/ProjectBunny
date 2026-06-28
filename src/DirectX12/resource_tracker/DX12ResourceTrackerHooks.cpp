@@ -143,6 +143,18 @@ static void LogResourceHookCallWhenTracking(const char *api, const void *object)
 	LogResourceHookCall(api, object);
 }
 
+static bool ShouldRecordCreatedResource(const D3D12_RESOURCE_DESC *desc)
+{
+	if (DX12IsHuntingMode())
+		return true;
+	if (!desc)
+		return ShouldTrackResourceCreationMetadata();
+	// Keep Mod mode light, but never lose buffer VA identity: a later Hunting
+	// dump needs this index to resolve IA vertex/index buffers created earlier.
+	return desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ||
+		ShouldTrackResourceCreationMetadata();
+}
+
 static void LogResourceOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
 {
 	if (!DX12ShouldLogHookCall(api))
@@ -549,7 +561,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(descToUse)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
@@ -574,7 +586,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
 			initialState, optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialState, optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
@@ -599,7 +611,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
 			optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
@@ -632,7 +644,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, protectedSession, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(descToUse)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
@@ -657,7 +669,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
 			optimizedClearValue, protectedSession, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, protectedSession, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
@@ -690,11 +702,12 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, protectedSession, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
+	const D3D12_RESOURCE_DESC *recordDesc = descToUse ? &desc0 : nullptr;
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
-			D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
-			RecordResource(d3dResource, descToUse ? &desc0 : nullptr, heapProperties, initialState);
+			RecordResource(d3dResource, recordDesc, heapProperties, initialState);
 			d3dResource->Release();
 		}
 	}
@@ -716,11 +729,12 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
 			initialState, optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialState, optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
+	const D3D12_RESOURCE_DESC *recordDesc = desc ? &desc0 : nullptr;
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
-			D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
-			RecordResource(d3dResource, desc ? &desc0 : nullptr, nullptr, initialState);
+			RecordResource(d3dResource, recordDesc, nullptr, initialState);
 			d3dResource->Release();
 		}
 	}
@@ -753,12 +767,12 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialLayout, optimizedClearValue, protectedSession, numCastableFormats,
 		castableFormats, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
+	const D3D12_RESOURCE_DESC *recordDesc = descToUse ? &desc0 : nullptr;
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
-			D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
-			RecordResource(d3dResource, descToUse ? &desc0 : nullptr, heapProperties,
-				ResourceStateFromLayout(initialLayout));
+			RecordResource(d3dResource, recordDesc, heapProperties, ResourceStateFromLayout(initialLayout));
 			d3dResource->Release();
 		}
 	}
@@ -783,12 +797,12 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialLayout, optimizedClearValue, numCastableFormats, castableFormats,
 		riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
+	const D3D12_RESOURCE_DESC *recordDesc = desc ? &desc0 : nullptr;
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
-			D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
-			RecordResource(d3dResource, desc ? &desc0 : nullptr, nullptr,
-				ResourceStateFromLayout(initialLayout));
+			RecordResource(d3dResource, recordDesc, nullptr, ResourceStateFromLayout(initialLayout));
 			d3dResource->Release();
 		}
 	}
@@ -813,7 +827,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
 	HRESULT hr = original(device, desc, initialLayout,
 		optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
 		riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldTrackResourceCreationMetadata()) {
+	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, ResourceStateFromLayout(initialLayout));

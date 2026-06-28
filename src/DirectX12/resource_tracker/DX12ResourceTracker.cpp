@@ -206,8 +206,8 @@ void RecordResource(
 	ResourceRecord record;
 	record.resource = resource;
 	record.desc = desc ? *desc : resource->GetDesc();
-	if (!ShouldTrackResourceMetadata() &&
-	    record.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+	const bool bufferResource = record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+	if (!ShouldTrackResourceMetadata() && !bufferResource)
 		return;
 	if (heapProperties) {
 		record.heapType = heapProperties->Type;
@@ -219,7 +219,7 @@ void RecordResource(
 
 	record.currentState = initialState;
 	record.hasCurrentState = true;
-	if (record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+	if (bufferResource) {
 		record.gpuVirtualAddress = resource->GetGPUVirtualAddress();
 		record.size = record.desc.Width;
 	}

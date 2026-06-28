@@ -75,12 +75,19 @@ static void StoreEventLocked(
 
 static void StoreOutputEventLocked(
 	const char *kind, ID3D12GraphicsCommandList *commandList,
-	const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle)
+	const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId)
 {
 	if (!cpuHandle)
 		return;
+	const UINT64 dispatchId = 0;
 	for (const OutputBindingEvent &existing : gOutputEvents) {
-		if (existing.cpuHandle == cpuHandle && existing.kind == (kind ? kind : ""))
+		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
+		if (existing.commandList == commandList &&
+			existing.cpuHandle == cpuHandle &&
+			existing.kind == (kind ? kind : "") &&
+			existing.slot == slot &&
+			sameResolvedDraw &&
+			existing.dispatchId == dispatchId)
 			return;
 	}
 	if (gOutputEvents.size() >= MaxTrackedOutputEvents) {
@@ -93,8 +100,8 @@ static void StoreOutputEventLocked(
 	event.kind = kind ? kind : "";
 	event.commandList = commandList;
 	event.pipelineState = state.pipelineState;
-	event.drawId = state.drawSerial;
-	event.dispatchId = state.dispatchSerial;
+	event.drawId = drawId;
+	event.dispatchId = dispatchId;
 	event.slot = slot;
 	event.cpuHandle = cpuHandle;
 	if (state.pipelineState)
@@ -107,10 +114,12 @@ static void StoreCurrentOutputTargetsLocked(
 {
 	for (UINT i = 0; i < MaxRenderTargetSlots; ++i) {
 		if (state.renderTargetValid[i])
-			StoreOutputEventLocked("RTV", commandList, state, i, state.renderTargets[i].ptr);
+			StoreOutputEventLocked("RTV", commandList, state, i,
+				state.renderTargets[i].ptr, state.drawSerial);
 	}
 	if (state.depthStencilValid)
-		StoreOutputEventLocked("DSV", commandList, state, 0, state.depthStencil.ptr);
+		StoreOutputEventLocked("DSV", commandList, state, 0,
+			state.depthStencil.ptr, state.drawSerial);
 }
 
 void DX12BindingRegisterCommandList(ID3D12GraphicsCommandList *commandList)
@@ -388,10 +397,11 @@ void DX12BindingRecordOutputTargets(
 			handle.ptr = renderTargetDescriptors[0].ptr +
 				static_cast<SIZE_T>(i) * heap.increment;
 		}
-		StoreOutputEventLocked("RTV", commandList, snapshot, i, handle.ptr);
+		StoreOutputEventLocked("RTV", commandList, snapshot, i, handle.ptr, 0);
 	}
 	if (depthStencilDescriptor)
-		StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilDescriptor->ptr);
+		StoreOutputEventLocked("DSV", commandList, snapshot, 0,
+			depthStencilDescriptor->ptr, 0);
 	ReleaseSRWLockExclusive(&gEventsLock);
 
 	AcquireSRWLockExclusive(&shard.lock);
@@ -447,7 +457,7 @@ void DX12BindingRecordRenderTargetClear(
 		return;
 
 	AcquireSRWLockExclusive(&gEventsLock);
-	StoreOutputEventLocked("RTV", commandList, snapshot, 0, renderTargetView.ptr);
+	StoreOutputEventLocked("RTV", commandList, snapshot, 0, renderTargetView.ptr, 0);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
 
@@ -471,7 +481,7 @@ void DX12BindingRecordDepthStencilClear(
 		return;
 
 	AcquireSRWLockExclusive(&gEventsLock);
-	StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilView.ptr);
+	StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilView.ptr, 0);
 	ReleaseSRWLockExclusive(&gEventsLock);
 }
 
