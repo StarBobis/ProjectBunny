@@ -14,22 +14,39 @@
 
 static bool InsertBindingSeen(
 	std::unordered_set<std::string> *seen, const BindingEvent &event,
-	const char *bindSpace, UINT rootParameterIndex, UINT rangeIndex,
+	const char *bindSpace, UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
 	ID3D12DescriptorHeap *heap, UINT64 descriptorIndex, bool rootDescriptor)
 {
 	if (!seen)
 		return false;
 
 	char key[320];
-	sprintf_s(key, "%llu|%s|%u|%u|%p|%llu|%u",
+	sprintf_s(key, "%llu|%s|%u|%u|%u|%p|%llu|%u",
 		static_cast<unsigned long long>(event.shaderInfo.psoIndex),
 		bindSpace ? bindSpace : "",
 		rootParameterIndex,
 		rangeIndex,
+		rangeType,
 		heap,
 		static_cast<unsigned long long>(descriptorIndex),
 		rootDescriptor ? 1 : 0);
 	return seen->insert(key).second;
+}
+
+static bool DescriptorMatchesRangeType(
+	const DX12DescriptorSummary *descriptor, UINT rangeType)
+{
+	if (!descriptor)
+		return true;
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+		return descriptor->kind == "CBV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+		return descriptor->kind == "SRV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
+		return descriptor->kind == "UAV";
+	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+		return descriptor->kind == "Sampler";
+	return true;
 }
 
 static void WriteDescriptorResourceRow(
@@ -184,8 +201,10 @@ static bool WriteDescriptorTableEntry(
 {
 	if (!file || !heap)
 		return false;
+	if (!DescriptorMatchesRangeType(descriptor, rangeType))
+		return false;
 	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
-			rangeIndex, heap->heap, descriptorIndex, false))
+			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
 	if (!descriptor && untrackedSkipped)
 		(*untrackedSkipped)++;
@@ -207,8 +226,10 @@ static bool CollectDescriptorTableEntry(
 {
 	if (!bindings || !heap)
 		return false;
+	if (!DescriptorMatchesRangeType(descriptor, rangeType))
+		return false;
 	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
-			rangeIndex, heap->heap, descriptorIndex, false))
+			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
 	if (!descriptor && untrackedSkipped)
 		(*untrackedSkipped)++;
@@ -444,7 +465,8 @@ static void WriteFrameRootDescriptor(
 		parameter = DX12BindingFindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
 
 	if (!InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
-			UINT_MAX, nullptr, rootDescriptor.address, true))
+			UINT_MAX, static_cast<UINT>(rootDescriptor.type),
+			nullptr, rootDescriptor.address, true))
 		return;
 
 	DX12BufferResourceSummary resource;
@@ -527,7 +549,8 @@ static void CollectFrameRootDescriptorBinding(
 	if (!bindings || !rootDescriptor.valid || !seen)
 		return;
 	if (!InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
-			UINT_MAX, nullptr, rootDescriptor.address, true))
+			UINT_MAX, static_cast<UINT>(rootDescriptor.type),
+			nullptr, rootDescriptor.address, true))
 		return;
 
 	DX12RootSignatureSummary rootSignature;
