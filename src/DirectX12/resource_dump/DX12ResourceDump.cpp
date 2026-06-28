@@ -646,6 +646,44 @@ static bool WriteDedupedResourceFile(
 	return true;
 }
 
+static bool LinkOrCopyFile(const wchar_t *sourcePath, const wchar_t *destPath,
+	const DumpTask &task, const char *reason)
+{
+	if (!sourcePath || !destPath)
+		return false;
+	if (GetFileAttributesW(destPath) != INVALID_FILE_ATTRIBUTES)
+		return true;
+	if (CreateHardLinkW(destPath, sourcePath, nullptr))
+		return true;
+	const DWORD hardLinkError = GetLastError();
+	if (CopyFileW(sourcePath, destPath, TRUE))
+		return true;
+	const DWORD copyError = GetLastError();
+	DX12FrameAnalysisLogJsonFunc("ResourceLinkSkipped",
+		"\"reason\":\"%s\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu,\"hardLinkError\":%lu,\"copyError\":%lu",
+		reason ? reason : "copy_failed",
+		DumpTaskSourceName(task.sourceKind),
+		task.source,
+		static_cast<unsigned long long>(task.copyBytes),
+		hardLinkError,
+		copyError);
+	return false;
+}
+
+static bool LinkTaskTextSidecar(const wchar_t *sourcePath, const wchar_t *destPath,
+	const DumpTask &task)
+{
+	if (task.isTexture)
+		return true;
+	wchar_t sourceTextPath[MAX_PATH];
+	wchar_t destTextPath[MAX_PATH];
+	BuildTextFileName(sourcePath, sourceTextPath, ARRAYSIZE(sourceTextPath));
+	BuildTextFileName(destPath, destTextPath, ARRAYSIZE(destTextPath));
+	if (GetFileAttributesW(sourceTextPath) == INVALID_FILE_ATTRIBUTES)
+		return true;
+	return LinkOrCopyFile(sourceTextPath, destTextPath, task, "sidecar_copy_failed");
+}
+
 static bool LinkTaskToDedupedFile(
 	const wchar_t *resourceDir, const DumpTask &task, const std::wstring &dedupePath)
 {
@@ -671,34 +709,12 @@ static bool LinkTaskToDedupedFile(
 			static_cast<unsigned long long>(task.copyBytes));
 		return false;
 	}
-	if (GetFileAttributesW(destPath) != INVALID_FILE_ATTRIBUTES)
-		return true;
-	if (CreateHardLinkW(destPath, sourcePath, nullptr))
-		return true;
-	const DWORD hardLinkError = GetLastError();
-	if (!CopyFileW(sourcePath, destPath, TRUE)) {
-		const DWORD copyError = GetLastError();
-		DX12FrameAnalysisLogJsonFunc("ResourceLinkSkipped",
-			"\"reason\":\"copy_failed\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu,\"hardLinkError\":%lu,\"copyError\":%lu",
-			DumpTaskSourceName(task.sourceKind),
-			task.source,
-			static_cast<unsigned long long>(task.copyBytes),
-			hardLinkError,
-			copyError);
+	if (!LinkOrCopyFile(sourcePath, destPath, task, "copy_failed"))
 		return false;
-	}
-
-	if (!task.isTexture) {
-		wchar_t sourceTextPath[MAX_PATH];
-		wchar_t destTextPath[MAX_PATH];
-		BuildTextFileName(sourcePath, sourceTextPath, ARRAYSIZE(sourceTextPath));
-		BuildTextFileName(destPath, destTextPath, ARRAYSIZE(destTextPath));
-		if (GetFileAttributesW(sourceTextPath) != INVALID_FILE_ATTRIBUTES &&
-			GetFileAttributesW(destTextPath) == INVALID_FILE_ATTRIBUTES)
-			CopyFileW(sourceTextPath, destTextPath, TRUE);
-	}
-
-	return true;
+	// The human-readable .buf.txt belongs to the dumped buffer as much as the
+	// binary .buf. Link it with the semantic resource name so dedupe never
+	// hides the text sidecar from FrameAnalysis users.
+	return LinkTaskTextSidecar(sourcePath, destPath, task);
 }
 
 static bool MapAndWriteTask(
