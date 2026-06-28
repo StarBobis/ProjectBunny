@@ -315,6 +315,32 @@ static void FillDescriptorSummary(
 	}
 }
 
+static bool DescriptorSlotForCpuHandleQueryLocked(
+	SIZE_T cpuHandle, DescriptorSlotLocation *location)
+{
+	if (!cpuHandle || !location)
+		return false;
+	auto heapByStart = gDescriptorHeapByCpuStart.upper_bound(cpuHandle);
+	if (heapByStart == gDescriptorHeapByCpuStart.begin())
+		return false;
+	--heapByStart;
+	if (heapByStart->second >= gDescriptorHeaps.size())
+		return false;
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[heapByStart->second];
+	if (!heap.cpuStart || !heap.increment || heap.desc.NumDescriptors == 0 ||
+		cpuHandle < heap.cpuStart)
+		return false;
+	const SIZE_T offset = cpuHandle - heap.cpuStart;
+	if (offset % heap.increment != 0)
+		return false;
+	const SIZE_T slot = offset / heap.increment;
+	if (slot >= heap.desc.NumDescriptors || slot > UINT_MAX)
+		return false;
+	location->heapIndex = heapByStart->second;
+	location->slot = static_cast<UINT>(slot);
+	return true;
+}
+
 struct MetadataSnapshotCache
 {
 	bool enabled = false;
@@ -414,15 +440,20 @@ static void BuildResourceMetadataSnapshot(
 	AcquireSRWLockShared(&gResourceLock);
 	AcquireSRWLockShared(&gDescriptorLock);
 	std::vector<const DescriptorRecord*> liveDescriptors;
-	liveDescriptors.reserve(gDescriptorByCpuHandle.size());
+	size_t liveDescriptorCount = gLiveLegacyDescriptorCount;
+	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
+		liveDescriptorCount += heap.liveSlots;
+	liveDescriptors.reserve(liveDescriptorCount);
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
 			if (heap.occupied[slot])
 				liveDescriptors.push_back(&heap.slots[slot]);
 		}
 	}
-	for (const DescriptorRecord &record : gDescriptors)
-		liveDescriptors.push_back(&record);
+	for (UINT slot = 0; slot < gDescriptors.size() && slot < gDescriptorOccupied.size(); ++slot) {
+		if (gDescriptorOccupied[slot])
+			liveDescriptors.push_back(&gDescriptors[slot]);
+	}
 
 	size_t descriptorStateKnown = 0;
 	size_t cbvDescriptors = 0;
@@ -574,33 +605,34 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 		return false;
 
 	AcquireSRWLockShared(&gDescriptorLock);
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
-	if (found == gDescriptorByCpuHandle.end()) {
-		ReleaseSRWLockShared(&gDescriptorLock);
-		return false;
-	}
-	const DescriptorSlotLocation &location = found->second;
-	if (location.heapIndex == SIZE_MAX) {
-		if (location.slot >= gDescriptors.size()) {
+	DescriptorSlotLocation location = {};
+	if (DescriptorSlotForCpuHandleQueryLocked(cpuHandle, &location)) {
+		if (location.heapIndex >= gDescriptorHeaps.size()) {
 			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
 		}
-		FillDescriptorSummary(summary, gDescriptors[location.slot], false);
+		const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+		if (location.slot >= heap.occupied.size() ||
+			location.slot >= heap.slots.size() ||
+			!heap.occupied[location.slot]) {
+			ReleaseSRWLockShared(&gDescriptorLock);
+			return false;
+		}
+		FillDescriptorSummary(summary, heap.slots[location.slot], false);
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return true;
 	}
-	if (location.heapIndex >= gDescriptorHeaps.size()) {
+
+	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	if (found == gDescriptorByCpuHandle.end() ||
+		found->second.heapIndex != SIZE_MAX ||
+		found->second.slot >= gDescriptors.size() ||
+		found->second.slot >= gDescriptorOccupied.size() ||
+		!gDescriptorOccupied[found->second.slot]) {
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return false;
 	}
-	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-	if (location.slot >= heap.occupied.size() ||
-		location.slot >= heap.slots.size() ||
-		!heap.occupied[location.slot]) {
-		ReleaseSRWLockShared(&gDescriptorLock);
-		return false;
-	}
-	FillDescriptorSummary(summary, heap.slots[location.slot], false);
+	FillDescriptorSummary(summary, gDescriptors[found->second.slot], false);
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return true;
 }

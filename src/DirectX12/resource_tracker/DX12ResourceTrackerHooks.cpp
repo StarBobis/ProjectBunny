@@ -277,9 +277,13 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 				DescriptorHeapRecord &old = gDescriptorHeaps[heapIndex];
 				InvalidateDescriptorHeapLocked(old.heap);
 				gDescriptorHeapByPtr[record.heap] = heapIndex;
+				if (record.cpuStart)
+					gDescriptorHeapByCpuStart[record.cpuStart] = heapIndex;
 				gDescriptorHeaps[heapIndex] = std::move(record);
 			} else {
 				gDescriptorHeapByPtr[record.heap] = gDescriptorHeaps.size();
+				if (record.cpuStart)
+					gDescriptorHeapByCpuStart[record.cpuStart] = gDescriptorHeaps.size();
 				gDescriptorHeaps.push_back(std::move(record));
 			}
 			LogResourceTrackerStatsLocked();
