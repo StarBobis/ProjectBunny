@@ -157,4 +157,5 @@ bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();
 bool ShouldTrackDescriptorCreationMetadata();
 bool ShouldTrackResourceMetadata();
+bool ShouldTrackResourceCreationMetadata();
 void RecordDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);

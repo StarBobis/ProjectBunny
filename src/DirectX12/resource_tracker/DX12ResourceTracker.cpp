@@ -936,17 +936,31 @@ bool ShouldTrackFullDescriptorMetadata()
 
 bool ShouldTrackComputeDescriptorMetadata()
 {
-	return true;
+	return DX12IsHuntingMode() ||
+		DX12ModNeedsShaderDescriptorTracking() ||
+		DX12ModNeedsPreSkinningUavProbe();
 }
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	return true;
+	// Mod mode should not maintain the descriptor universe unless a loaded
+	// TextureOverride actually needs descriptor-table data. Hunting keeps the
+	// old full-recording path for reliable Frame Dump.
+	return DX12IsHuntingMode() ||
+		DX12ModNeedsShaderDescriptorTracking() ||
+		DX12ModNeedsPreSkinningUavProbe();
 }
 
 bool ShouldTrackResourceMetadata()
 {
 	return DX12IsHuntingMode();
+}
+
+bool ShouldTrackResourceCreationMetadata()
+{
+	return DX12IsHuntingMode() ||
+		DX12ModNeedsPresentReplacement() ||
+		DX12ModNeedsPreSkinningUavProbe();
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)

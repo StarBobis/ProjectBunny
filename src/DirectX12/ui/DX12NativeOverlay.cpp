@@ -1,5 +1,6 @@
 #include "DX12NativeOverlay.h"
 
+#include <CommCtrl.h>
 #include <dwmapi.h>
 #include <stdint.h>
 #include <vector>
@@ -11,13 +12,16 @@
 #include "DX12UiActions.h"
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
-static constexpr UINT kOverlayClientWidth = 820;
-static constexpr UINT kOverlayClientHeight = 640;
+static constexpr UINT kOverlayClientWidth = 860;
+static constexpr UINT kOverlayClientHeight = 620;
 static constexpr int kOverlayGap = 8;
 static constexpr UINT_PTR kUiRefreshTimer = 1;
 static constexpr UINT kUiRefreshMs = 100;
 static constexpr DWORD kOverlayStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
 static constexpr DWORD kOverlayExStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+static constexpr COLORREF kWindowBg = RGB(245, 247, 250);
+static constexpr COLORREF kPanelBg = RGB(255, 255, 255);
+static constexpr COLORREF kTextColor = RGB(26, 31, 39);
 
 enum UiControlId
 {
@@ -34,6 +38,7 @@ enum UiControlId
 	ID_SHADER_DUMP,
 	ID_MOD_RELOAD,
 	ID_PROFILING,
+	ID_STATUS_BAR,
 };
 
 static SRWLOCK gUiLock = SRWLOCK_INIT;
@@ -44,6 +49,11 @@ static HWND gHuntToggleButton = nullptr;
 static HWND gProfilingButton = nullptr;
 static HWND gHashList = nullptr;
 static HWND gCategoryButtons[5] = {};
+static HWND gMainLabels[4] = {};
+static HFONT gUiFont = nullptr;
+static HFONT gTitleFont = nullptr;
+static HBRUSH gWindowBrush = nullptr;
+static HBRUSH gPanelBrush = nullptr;
 static std::vector<DX12HuntListItem> gListSnapshot;
 static HANDLE gUiThread = nullptr;
 static DWORD gUiThreadId = 0;
@@ -116,10 +126,13 @@ static bool GetOverlayWindowSize(int *width, int *height)
 static HWND AddControl(HWND parent, const wchar_t *className, const wchar_t *text,
 	DWORD style, int id, int x, int y, int width, int height)
 {
-	return CreateWindowExW(
+	HWND control = CreateWindowExW(
 		0, className, text, WS_CHILD | WS_VISIBLE | style,
 		x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
 		DX12GetModule(), nullptr);
+	if (control && gUiFont)
+		SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(gUiFont), TRUE);
+	return control;
 }
 
 static HWND AddButton(HWND parent, const wchar_t *text, int id, int x, int y, int width = 130)
@@ -130,6 +143,14 @@ static HWND AddButton(HWND parent, const wchar_t *text, int id, int x, int y, in
 static HWND AddLabel(HWND parent, const wchar_t *text, int x, int y, int width, int height = 22)
 {
 	return AddControl(parent, L"STATIC", text, SS_LEFT | SS_NOPREFIX, 0, x, y, width, height);
+}
+
+static HWND AddSectionLabel(HWND parent, const wchar_t *text, int x, int y, int width)
+{
+	HWND label = AddLabel(parent, text, x, y, width, 24);
+	if (label && gTitleFont)
+		SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(gTitleFont), TRUE);
+	return label;
 }
 
 static HWND AddListBox(HWND parent, int id, int x, int y, int width, int height)
@@ -208,7 +229,7 @@ static void UpdateStatusText()
 	DX12GetOverlayStatus(status, ARRAYSIZE(status));
 	if (!status[0])
 		wcsncpy_s(status, L"3DMigoto DX12 hook alive", _TRUNCATE);
-	SetWindowTextW(gStatusLabel, status);
+	SendMessageW(gStatusLabel, SB_SETTEXT, 0, reinterpret_cast<LPARAM>(status));
 	UpdateButtonText();
 	UpdateCategoryButtons();
 }
@@ -250,32 +271,86 @@ static void RunCommand(int id)
 	}
 }
 
+static void CreateUiResources(HWND hwnd)
+{
+	if (!gUiFont) {
+		gUiFont = CreateFontW(
+			-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+			DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+	}
+	if (!gTitleFont) {
+		gTitleFont = CreateFontW(
+			-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+			DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+	}
+	if (!gWindowBrush)
+		gWindowBrush = CreateSolidBrush(kWindowBg);
+	if (!gPanelBrush)
+		gPanelBrush = CreateSolidBrush(kPanelBg);
+	SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, reinterpret_cast<LONG_PTR>(gWindowBrush));
+}
+
+static HWND AddStatusBar(HWND parent)
+{
+	HWND status = CreateWindowExW(
+		0, STATUSCLASSNAMEW, L"",
+		WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+		0, 0, 0, 0, parent,
+		reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_BAR)),
+		DX12GetModule(), nullptr);
+	if (status && gUiFont) {
+		SendMessageW(status, WM_SETFONT, reinterpret_cast<WPARAM>(gUiFont), TRUE);
+		SendMessageW(status, SB_SETMINHEIGHT, 24, 0);
+		SendMessageW(status, WM_SIZE, 0, 0);
+	}
+	return status;
+}
+
+static void LayoutStatusBar(HWND hwnd)
+{
+	if (!gStatusLabel)
+		return;
+	SendMessageW(gStatusLabel, WM_SIZE, 0, 0);
+	RECT client = {};
+	if (!GetClientRect(hwnd, &client))
+		return;
+	int parts[] = { client.right - 180, -1 };
+	SendMessageW(gStatusLabel, SB_SETPARTS, ARRAYSIZE(parts), reinterpret_cast<LPARAM>(parts));
+	SendMessageW(gStatusLabel, SB_SETTEXT, 1, reinterpret_cast<LPARAM>(
+		DX12IsHuntingMode() ? L"Mode: Hunting" : L"Mode: Mod"));
+}
+
 static void BuildControls(HWND hwnd)
 {
-	gStatusLabel = AddLabel(hwnd, L"3DMigoto DX12 hook alive", 16, 14, 780, 40);
+	CreateUiResources(hwnd);
 
-	gHuntToggleButton = AddButton(hwnd, L"Enable Hunting", ID_HUNT_TOGGLE, 16, 62, 150);
+	gStatusLabel = AddStatusBar(hwnd);
 
-	AddLabel(hwnd, L"Category", 16, 112, 120);
-	gCategoryButtons[0] = AddButton(hwnd, L"> VS", ID_CATEGORY_VS, 16, 140, 88);
-	gCategoryButtons[1] = AddButton(hwnd, L"PS", ID_CATEGORY_PS, 16, 176, 88);
-	gCategoryButtons[2] = AddButton(hwnd, L"CS", ID_CATEGORY_CS, 16, 212, 88);
-	gCategoryButtons[3] = AddButton(hwnd, L"IB", ID_CATEGORY_IB, 16, 248, 88);
-	gCategoryButtons[4] = AddButton(hwnd, L"VB", ID_CATEGORY_VB, 16, 284, 88);
+	gMainLabels[0] = AddSectionLabel(hwnd, L"Mode", 16, 16, 160);
+	gHuntToggleButton = AddButton(hwnd, L"Enable Hunting", ID_HUNT_TOGGLE, 16, 48, 160);
+	gProfilingButton = AddButton(hwnd, L"Enable Profiling", ID_PROFILING, 188, 48, 160);
 
-	AddLabel(hwnd, L"Hashes", 124, 112, 420);
-	gHashList = AddListBox(hwnd, ID_HASH_LIST, 124, 140, 500, 360);
+	gMainLabels[1] = AddSectionLabel(hwnd, L"Categories", 16, 100, 160);
+	gCategoryButtons[0] = AddButton(hwnd, L"> VS", ID_CATEGORY_VS, 16, 132, 92);
+	gCategoryButtons[1] = AddButton(hwnd, L"PS", ID_CATEGORY_PS, 116, 132, 92);
+	gCategoryButtons[2] = AddButton(hwnd, L"CS", ID_CATEGORY_CS, 216, 132, 92);
+	gCategoryButtons[3] = AddButton(hwnd, L"IB", ID_CATEGORY_IB, 316, 132, 92);
+	gCategoryButtons[4] = AddButton(hwnd, L"VB", ID_CATEGORY_VB, 416, 132, 92);
 
-	AddLabel(hwnd, L"Actions", 644, 112, 140);
-	AddButton(hwnd, L"Clear Selection", ID_HUNT_RESET, 644, 140, 140);
-	AddButton(hwnd, L"Copy Hash", ID_HUNT_COPY, 644, 176, 140);
+	gMainLabels[2] = AddSectionLabel(hwnd, L"Hashes", 16, 184, 420);
+	gHashList = AddListBox(hwnd, ID_HASH_LIST, 16, 216, 560, 308);
 
-	AddButton(hwnd, L"Frame Analysis", ID_FRAME_ANALYSIS, 16, 532);
-	AddButton(hwnd, L"Shader Dump", ID_SHADER_DUMP, 156, 532);
-	AddButton(hwnd, L"Reload Mods", ID_MOD_RELOAD, 296, 532);
-	gProfilingButton = AddButton(hwnd, L"Enable Profiling", ID_PROFILING, 436, 532, 150);
+	gMainLabels[3] = AddSectionLabel(hwnd, L"Actions", 604, 184, 200);
+	AddButton(hwnd, L"Frame Dump", ID_FRAME_ANALYSIS, 604, 216, 180);
+	AddButton(hwnd, L"Shader Dump", ID_SHADER_DUMP, 604, 252, 180);
+	AddButton(hwnd, L"Reload Mods", ID_MOD_RELOAD, 604, 288, 180);
+	AddButton(hwnd, L"Copy Hash", ID_HUNT_COPY, 604, 344, 180);
+	AddButton(hwnd, L"Num+ Reset Hunting", ID_HUNT_RESET, 604, 380, 180);
 
 	UpdateStatusText();
+	LayoutStatusBar(hwnd);
 }
 
 static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -288,8 +363,12 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 	case WM_TIMER:
 		if (wparam == kUiRefreshTimer) {
 			UpdateStatusText();
+			LayoutStatusBar(hwnd);
 			FollowGameWindow();
 		}
+		return 0;
+	case WM_SIZE:
+		LayoutStatusBar(hwnd);
 		return 0;
 	case WM_COMMAND:
 		if (LOWORD(wparam) == ID_HASH_LIST && HIWORD(wparam) == LBN_SELCHANGE && !gUpdatingList) {
@@ -308,6 +387,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 		SetSharedOverlayWindow(nullptr);
 		PostQuitMessage(0);
 		return 0;
+	case WM_CTLCOLORSTATIC:
+		SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
+		SetBkColor(reinterpret_cast<HDC>(wparam), kWindowBg);
+		return reinterpret_cast<LRESULT>(gWindowBrush);
+	case WM_CTLCOLORLISTBOX:
+		SetTextColor(reinterpret_cast<HDC>(wparam), kTextColor);
+		SetBkColor(reinterpret_cast<HDC>(wparam), kPanelBg);
+		return reinterpret_cast<LRESULT>(gPanelBrush);
 	default:
 		return DefWindowProcW(hwnd, msg, wparam, lparam);
 	}
@@ -332,6 +419,11 @@ static bool RegisterOverlayWindowClass()
 
 static DWORD WINAPI UiThreadProc(void*)
 {
+	INITCOMMONCONTROLSEX commonControls = {};
+	commonControls.dwSize = sizeof(commonControls);
+	commonControls.dwICC = ICC_BAR_CLASSES | ICC_STANDARD_CLASSES;
+	InitCommonControlsEx(&commonControls);
+
 	if (!RegisterOverlayWindowClass()) {
 		InterlockedExchange(&gThreadStarted, 0);
 		return 0;
@@ -343,7 +435,7 @@ static DWORD WINAPI UiThreadProc(void*)
 	HWND hwnd = CreateWindowExW(
 		kOverlayExStyle,
 		kOverlayWindowClass,
-		L"3DMigoto DX12",
+		L"Hunting Window",
 		kOverlayStyle,
 		CW_USEDEFAULT, CW_USEDEFAULT, width, height,
 		nullptr, nullptr, DX12GetModule(), nullptr);
