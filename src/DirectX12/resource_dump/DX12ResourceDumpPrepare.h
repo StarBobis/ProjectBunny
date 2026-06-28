@@ -12,6 +12,7 @@ enum class DumpTaskSource
 	Descriptor,
 	InputAssembler,
 	Output,
+	Resource,
 };
 
 struct DumpTask
@@ -50,6 +51,9 @@ bool DX12DumpPrepareDescriptorTaskForCurrentMode(
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);
 bool DX12DumpPrepareHuntingMetadataTextureTask(
 	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);
+bool DX12DumpPrepareHuntingResourceTextureTask(
+	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes);
 bool DX12DumpPrepareIaBufferTaskForCurrentMode(
 	ID3D12Device *device, const DX12FrameIaBufferBinding &buffer, DumpTask *task,

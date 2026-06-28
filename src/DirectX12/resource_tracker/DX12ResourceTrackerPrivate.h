@@ -138,6 +138,12 @@ constexpr uint32_t MakeTrackerFourCC(char a, char b, char c, char d)
 		(static_cast<uint32_t>(static_cast<uint8_t>(c)) << 16) |
 		(static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24);
 }
+constexpr bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
+{
+	return dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ||
+		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+}
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc);
 D3D12_RESOURCE_STATES ResourceStateFromLayout(D3D12_BARRIER_LAYOUT layout);
 ID3D12Resource *CanonicalResource(ID3D12Resource *resource);

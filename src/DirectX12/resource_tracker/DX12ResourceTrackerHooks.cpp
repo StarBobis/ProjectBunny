@@ -149,9 +149,11 @@ static bool ShouldRecordCreatedResource(const D3D12_RESOURCE_DESC *desc)
 		return true;
 	if (!desc)
 		return ShouldTrackResourceCreationMetadata();
-	// Keep Mod mode light, but never lose buffer VA identity: a later Hunting
-	// dump needs this index to resolve IA vertex/index buffers created earlier.
+	// Resource creation is the cheap identity boundary exposed by D3D12.
+	// Record buffers for VA lookup and textures for later Hunting discovery;
+	// descriptor-table churn remains gated so Mod mode does not stall.
 	return desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ||
+		IsTextureResourceDimension(desc->Dimension) ||
 		ShouldTrackResourceCreationMetadata();
 }
 

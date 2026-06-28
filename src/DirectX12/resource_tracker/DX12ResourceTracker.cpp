@@ -240,7 +240,8 @@ void RecordResource(
 	record.resource = resource;
 	record.desc = desc ? *desc : resource->GetDesc();
 	const bool bufferResource = record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
-	if (!ShouldTrackResourceMetadata() && !bufferResource)
+	const bool textureResource = IsTextureResourceDimension(record.desc.Dimension);
+	if (!ShouldTrackResourceMetadata() && !bufferResource && !textureResource)
 		return;
 	if (heapProperties) {
 		record.heapType = heapProperties->Type;

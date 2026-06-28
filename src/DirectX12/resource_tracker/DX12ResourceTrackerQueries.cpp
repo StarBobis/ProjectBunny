@@ -660,3 +660,29 @@ bool DX12FindDescriptorHeapByCpuHandle(
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return false;
 }
+
+void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
+{
+	if (!resources)
+		return;
+
+	resources->clear();
+	AcquireSRWLockShared(&gResourceLock);
+	resources->reserve(gResources.size());
+	for (const ResourceRecord &record : gResources) {
+		DX12ResourceSummary summary;
+		summary.resource = record.resource;
+		summary.resourceDesc = record.desc;
+		summary.hasResourceDesc = true;
+		if (record.hasHeapType) {
+			summary.resourceHeapType = static_cast<UINT>(record.heapType);
+			summary.hasResourceHeapType = true;
+		}
+		summary.gpuVirtualAddress = record.gpuVirtualAddress;
+		summary.size = record.size;
+		summary.currentState = static_cast<UINT>(record.currentState);
+		summary.hasCurrentState = record.hasCurrentState;
+		resources->push_back(summary);
+	}
+	ReleaseSRWLockShared(&gResourceLock);
+}

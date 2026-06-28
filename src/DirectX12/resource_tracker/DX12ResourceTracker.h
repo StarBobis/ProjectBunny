@@ -137,6 +137,19 @@ struct DX12BufferResourceSummary
 	bool hasCurrentState = false;
 };
 
+struct DX12ResourceSummary
+{
+	ID3D12Resource *resource = nullptr;
+	D3D12_RESOURCE_DESC resourceDesc = {};
+	bool hasResourceDesc = false;
+	UINT resourceHeapType = 0;
+	bool hasResourceHeapType = false;
+	UINT64 gpuVirtualAddress = 0;
+	UINT64 size = 0;
+	UINT currentState = 0;
+	bool hasCurrentState = false;
+};
+
 void DX12HookResourceMetadata(ID3D12Device *device);
 void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
@@ -167,6 +180,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12DescriptorSummary> *descriptors,
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps);
+void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources);
 bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
 bool DX12FindDescriptorSummaryByCpuHandleLight(

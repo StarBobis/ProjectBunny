@@ -300,6 +300,35 @@ bool DX12DumpPrepareHuntingMetadataTextureTask(
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
+bool DX12DumpPrepareHuntingResourceTextureTask(
+	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
+{
+	if (!device || !task || !DX12IsHuntingMode())
+		return false;
+	if (!resource.resource || !resource.hasResourceDesc ||
+		!DX12DumpIsTextureResourceDimension(resource.resourceDesc.Dimension))
+		return false;
+
+	DX12DescriptorSummary descriptor;
+	descriptor.kind = DescriptorKind::SRV;
+	descriptor.resource = resource.resource;
+	descriptor.resourceDesc = resource.resourceDesc;
+	descriptor.hasResourceDesc = resource.hasResourceDesc;
+	descriptor.resourceHeapType = resource.resourceHeapType;
+	descriptor.hasResourceHeapType = resource.hasResourceHeapType;
+	descriptor.gpuVirtualAddress = resource.gpuVirtualAddress;
+	descriptor.viewSize = resource.size;
+	descriptor.currentState = resource.currentState;
+	descriptor.hasCurrentState = resource.hasCurrentState;
+
+	// Created resources may never have had a tracked descriptor. Use the same
+	// copy preparation path after projecting resource identity into a neutral
+	// SRV summary, keeping dump failures isolated per texture.
+	return DX12DumpPrepareHuntingMetadataTextureTask(
+		device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes);
+}
+
 static bool PrepareModDescriptorTask(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
