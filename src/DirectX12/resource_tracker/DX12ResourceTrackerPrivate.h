@@ -18,7 +18,8 @@
 #include "DX12Json.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12ShaderHunt.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12RuntimeState.hpp"
 #include "crc32c.h"
 
 struct RootSignatureRecord
@@ -183,4 +184,5 @@ bool ShouldTrackDescriptorCreationMetadata();
 bool ShouldTrackResourceMetadata();
 bool ShouldTrackResourceCreationMetadata();
 void RecordDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);
+
 

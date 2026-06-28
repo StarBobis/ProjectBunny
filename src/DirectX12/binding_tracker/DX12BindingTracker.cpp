@@ -6,7 +6,7 @@
 
 #include "DX12CommandListRuntime.h"
 #include "DX12ResourceTracker.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
 
 BindingShard gBindingShards[kBindingShardCount];
 SRWLOCK gEventsLock = SRWLOCK_INIT;
@@ -1206,3 +1206,4 @@ UINT64 DX12BindingGetComputeBindingSerial(ID3D12GraphicsCommandList *commandList
 	ReleaseSRWLockShared(&shard.lock);
 	return serial;
 }
+

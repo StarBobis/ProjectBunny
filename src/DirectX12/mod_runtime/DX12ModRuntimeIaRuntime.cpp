@@ -3,7 +3,7 @@ static void ReleaseLoadedResourcesLocked()
 	for (auto &item : gLoadedResources) {
 		DX12RetiredLoadedResource retired;
 		retired.resource = item.second;
-		retired.retirePresent = DX12GetPresentCount();
+		retired.retirePresent = DX12RuntimeState::GetPresentCount();
 		gRetiredLoadedResources.push_back(retired);
 		item.second = DX12LoadedResource();
 	}
@@ -18,7 +18,7 @@ static void MoveExpiredRetiredLoadedResourcesLocked(
 	expired->clear();
 	if (InterlockedCompareExchange(&gActiveLoadedResourceSnapshots, 0, 0) != 0)
 		return;
-	const LONG present = DX12GetPresentCount();
+	const LONG present = DX12RuntimeState::GetPresentCount();
 	auto it = gRetiredLoadedResources.begin();
 	while (it != gRetiredLoadedResources.end()) {
 		if (present - it->retirePresent < RetiredLoadedResourcePresentDelay) {
@@ -123,7 +123,7 @@ bool DX12ModPreparePresentReplacement(
 	if (!device)
 		return false;
 
-	const LONG present = DX12GetPresentCount();
+	const LONG present = DX12RuntimeState::GetPresentCount();
 	for (;;) {
 		const LONG observed = InterlockedCompareExchange(
 			&gPresentCommandListExecutedPresent, 0, 0);
@@ -525,7 +525,7 @@ static void LogIaResourceBindLimited(
 #if defined(_DEBUG)
 	const bool usingUav = resource.uavResource && iaResource == resource.uavResource;
 	const bool usingSrv = resource.srvResource && iaResource == resource.srvResource;
-	DX12LogDebugJsonFunc("DX12IaResourceBind",
+	DX12LogManager::DebugJsonFunc("DX12IaResourceBind",
 		"\"target\":\"%s\",\"slot\":%u,\"resource\":\"%S\",\"source\":\"%s\",\"bytes\":%llu,\"viewBytes\":%u,\"uavBytes\":%llu,\"stride\":%u,\"gpuVa\":\"0x%llx\"",
 		target ? target : "", slot, resource.name.c_str(),
 		usingUav ? "uav" : (usingSrv ? "srv" : "upload"),
@@ -721,3 +721,4 @@ static bool FindTargetTextureOverride(
 
 	return false;
 }
+

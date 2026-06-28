@@ -8,7 +8,7 @@
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
 
 #if defined(_DEBUG)
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
@@ -28,7 +28,7 @@ static void LogPreSkinDispatchProbeReason(
 	    !strcmp(reason, "cs_not_configured"))) {
 		return;
 	}
-	DX12LogDebugJsonFunc("DX12PreSkinDispatchProbe",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinDispatchProbe",
 		"\"reason\":\"%s\",\"cs\":\"%016llx\",\"bindingSerial\":%llu,\"uavs\":%zu",
 		reason ? reason : "unknown",
 		static_cast<unsigned long long>(computeShaderHash),
@@ -88,7 +88,7 @@ static void PreparePreSkinProbe(
 	DX12DispatchPreSkinProbe *probe)
 {
 	if (!probe || !DX12ModNeedsPreSkinningUavProbe()) {
-		DX12Log("PreparePreSkinProbe: exit needsProbe failed\n");
+		DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
 		return;
 	}
 
@@ -97,16 +97,16 @@ static void PreparePreSkinProbe(
 	    shaderInfo.hasCS)
 		probe->computeShaderHash = shaderInfo.cs;
 	if (!probe->computeShaderHash) {
-		DX12Log("PreparePreSkinProbe: exit no cs hash\n");
+		DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
 		LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
 		return;
 	}
 
-	DX12Log("PreparePreSkinProbe: cs=%016llx, checking ShouldProbe\n",
+	DX12LogManager::Text("PreparePreSkinProbe: cs=%016llx, checking ShouldProbe\n",
 		static_cast<unsigned long long>(probe->computeShaderHash));
 
 	if (!DX12ModShouldProbePreSkinningForCs(probe->computeShaderHash)) {
-		DX12Log("PreparePreSkinProbe: exit cs not configured\n");
+		DX12LogManager::Text("PreparePreSkinProbe: exit cs not configured\n");
 		LogPreSkinDispatchProbeReason(
 			"cs_not_configured", probe->computeShaderHash, 0, 0);
 		return;
@@ -114,17 +114,17 @@ static void PreparePreSkinProbe(
 
 	UINT64 computeBindingSerial =
 		DX12BindingGetComputeBindingSerial(commandList);
-	DX12Log("PreparePreSkinProbe: serial=%llu\n",
+	DX12LogManager::Text("PreparePreSkinProbe: serial=%llu\n",
 		static_cast<unsigned long long>(computeBindingSerial));
 	if (computeBindingSerial == 0) {
-		DX12Log("PreparePreSkinProbe: zero serial, using fallback\n");
+		DX12LogManager::Text("PreparePreSkinProbe: zero serial, using fallback\n");
 		computeBindingSerial = 1;
 	} else {
 		bool cachedMatch = false;
 		if (DX12ModHasCachedPreSkinningUavMatch(
 			    commandList, probe->computeShaderHash, computeBindingSerial, &cachedMatch) &&
 		    !cachedMatch) {
-			DX12Log("PreparePreSkinProbe: exit cached no match\n");
+			DX12LogManager::Text("PreparePreSkinProbe: exit cached no match\n");
 			return;
 		}
 	}
@@ -137,16 +137,16 @@ static void PreparePreSkinProbe(
 	probe->srvsFound = !probe->srvs.empty();
 	probe->cbvsFound = !probe->cbvs.empty();
 	probe->rootConstantsFound = !probe->rootConstants.empty();
-	DX12Log("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
+	DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 		probe->uavsFound ? 1 : 0, probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
 
 	if (!probe->srvsFound) {
-		DX12Log("PreparePreSkinProbe: warning no_compute_srvs\n");
+		DX12LogManager::Text("PreparePreSkinProbe: warning no_compute_srvs\n");
 	}
 
 	static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 	static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-	DX12Log("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
+	DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
 	probe->applied = DX12ModApplyPreSkinningUavReplacement(
 		commandList, probe->computeShaderHash,
 		probe->uavsFound ? probe->uavs : kEmptyComputeBindings,
@@ -178,7 +178,7 @@ static void FinishPreSkinProbe(
 		return;
 
 	DX12_DISPATCH_DEBUG_VERBOSE_LOG(
-		DX12LogDebugJsonFunc("DX12DispatchUavProbe",
+		DX12LogManager::DebugJsonFunc("DX12DispatchUavProbe",
 			"\"found\":%s,\"uavs\":%zu,\"srvs\":%zu,\"cbvs\":%zu,\"rootConstants\":%zu,\"preSkinApplied\":%s,\"handlingSkip\":%s,\"explicitDispatch\":%s,\"cs\":\"%016llx\",\"originalGroups\":\"%u,%u,%u\",\"groups\":\"%u,%u,%u\"",
 			probe.uavsFound ? "true" : "false", probe.uavs.size(),
 			probe.srvsFound ? probe.srvs.size() : 0,
@@ -225,7 +225,7 @@ void DX12DispatchHookFlowExecute(
 	DX12CommandListRuntimeState fallbackState = {};
 	const DX12CommandListRuntimeState *effectiveState = runtimeState;
 	if (!effectiveState) {
-		DX12Log("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
+		DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
 		fallbackState.pipelineState = DX12CommandListRuntimeGetPipelineState(commandList);
 		effectiveState = &fallbackState;
 	}
@@ -259,3 +259,5 @@ void DX12DispatchHookFlowExecute(
 		threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 		dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 }
+
+

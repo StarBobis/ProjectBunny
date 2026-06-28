@@ -10,7 +10,8 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Json.hpp"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12RuntimeState.hpp"
 
 static bool InsertBindingSeen(
 	std::unordered_set<std::string> *seen, const BindingEvent &event,
@@ -106,7 +107,7 @@ static void CollectHuntingUavStateResourceUsages(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const std::vector<BindingEvent> &events)
 {
-	if (!bindings || !DX12IsHuntingMode())
+	if (!bindings || !DX12RuntimeState::IsHuntingMode())
 		return;
 
 	std::vector<DX12ResourceSummary> resources;
@@ -1078,7 +1079,7 @@ void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bind
 		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
-	DX12LogJsonFunc("DX12OutputResourcesCollected",
+	DX12LogManager::JsonFunc("DX12OutputResourcesCollected",
 		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
@@ -1194,4 +1195,6 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir
 	ReleaseSRWLockShared(&gEventsLock);
 	return WriteFrameResourceFile(dir, events);
 }
+
+
 

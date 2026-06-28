@@ -29,7 +29,7 @@ bool DX12ModReplaceShaderBytecode(
 
 	std::vector<unsigned char> bytes;
 	if (!ReadFileBytes(path, &bytes)) {
-		DX12LogDebugJsonFunc("DX12ShaderOverrideMissingReplacement",
+		DX12LogManager::DebugJsonFunc("DX12ShaderOverrideMissingReplacement",
 			"\"section\":\"%S\",\"stage\":\"%s\",\"hash\":\"%016llx\",\"path\":\"%S\"",
 			section.c_str(), stage, static_cast<unsigned long long>(hash), path);
 		return false;
@@ -38,7 +38,7 @@ bool DX12ModReplaceShaderBytecode(
 	storage->swap(bytes);
 	replacement->pShaderBytecode = storage->data();
 	replacement->BytecodeLength = storage->size();
-	DX12LogDebugJsonFunc("DX12ShaderOverrideApplied",
+	DX12LogManager::DebugJsonFunc("DX12ShaderOverrideApplied",
 		"\"section\":\"%S\",\"stage\":\"%s\",\"hash\":\"%016llx\",\"path\":\"%S\",\"bytes\":%zu",
 		section.c_str(), stage, static_cast<unsigned long long>(hash), path, storage->size());
 	return true;
@@ -236,3 +236,4 @@ void DX12ModRecordComputeUavs(
 	}
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 }
+

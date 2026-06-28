@@ -14,7 +14,10 @@
 #include "DX12Profiling.hpp"
 #include "DX12ShaderHunt.h"
 #include "DX12ShaderDump.h"
-#include "DX12State.h"
+#include "DX12HotPathState.hpp"
+#include "DX12HookRegistry.hpp"
+#include "DX12LogManager.hpp"
+#include "DX12RuntimeState.hpp"
 #include "DX12UiActions.h"
 
 typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_SWAP_CHAIN)(
@@ -73,21 +76,21 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
 
 static void LogDXGIHookCall(const char *api, const void *object)
 {
-	if (!DX12ShouldLogHookCall(api))
+	if (!DX12LogManager::ShouldLogHookCall(api))
 		return;
-	DX12LogDebugJsonFunc("DX12HookCall",
+	DX12LogManager::DebugJsonFunc("DX12HookCall",
 		"\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\"",
-		api ? api : "", DX12GetPresentCount(), object);
+		api ? api : "", DX12RuntimeState::GetPresentCount(), object);
 }
 
 static void LogDXGIOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
 {
-	if (!DX12ShouldLogHookCall(api))
+	if (!DX12LogManager::ShouldLogHookCall(api))
 		return;
-	DX12LogDebugJsonFunc("DX12FallbackPath",
+	DX12LogManager::DebugJsonFunc("DX12FallbackPath",
 		"\"kind\":\"original_lookup\",\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\","
 		"\"slot\":%u,\"fallback\":\"%p\"",
-		api ? api : "", DX12GetPresentCount(), object, slot, fallback);
+		api ? api : "", DX12RuntimeState::GetPresentCount(), object, slot, fallback);
 }
 
 template <typename T>
@@ -97,7 +100,7 @@ static T GetDXGIOriginal(void *object, UINT slot, T fallback, const char *name)
 		void **vtable = *reinterpret_cast<void***>(object);
 		if (vtable) {
 			void *target = vtable[slot];
-			void *original = DX12GetOriginalFunction(target);
+			void *original = DX12HookRegistry::GetOriginalFunction(target);
 			if (original)
 				return reinterpret_cast<T>(original);
 		}
@@ -108,7 +111,7 @@ static T GetDXGIOriginal(void *object, UINT slot, T fallback, const char *name)
 		return fallback;
 	}
 
-	DX12LogJsonFunc(name ? name : "DXGI::Unknown",
+	DX12LogManager::JsonFunc(name ? name : "DXGI::Unknown",
 		"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
 		object, slot);
 	return nullptr;
@@ -134,11 +137,11 @@ static PFN_RESIZE_BUFFERS GetResizeBuffersOriginal(IDXGISwapChain *swapChain)
 
 static void LogPresentStage(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK)
 {
-	if (!DX12VerboseDiagnosticsEnabled())
+	if (!DX12LogManager::VerboseDiagnosticsEnabled())
 		return;
-	DX12LogDebugJsonFuncFlush("DX12PresentStage",
+	DX12LogManager::DebugJsonFuncFlush("DX12PresentStage",
 		"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-		api ? api : "", stage ? stage : "", DX12GetPresentCount(), swapChain, hr);
+		api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), swapChain, hr);
 }
 
 static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapChain, HRESULT presentHr)
@@ -149,16 +152,16 @@ static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapC
 	ID3D12Device *device = nullptr;
 	HRESULT queryHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
 	if (FAILED(queryHr) || !device) {
-		DX12LogDebugJsonFuncFlush("DX12DeviceRemoved",
+		DX12LogManager::DebugJsonFuncFlush("DX12DeviceRemoved",
 			"\"api\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"presentHr\":\"0x%lx\",\"queryHr\":\"0x%lx\"",
-			api ? api : "", DX12GetPresentCount(), swapChain, presentHr, queryHr);
+			api ? api : "", DX12RuntimeState::GetPresentCount(), swapChain, presentHr, queryHr);
 		return;
 	}
 
 	const HRESULT reason = device->GetDeviceRemovedReason();
-	DX12LogDebugJsonFuncFlush("DX12DeviceRemoved",
+	DX12LogManager::DebugJsonFuncFlush("DX12DeviceRemoved",
 		"\"api\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"presentHr\":\"0x%lx\",\"reason\":\"0x%lx\"",
-		api ? api : "", DX12GetPresentCount(), swapChain, presentHr, reason);
+		api ? api : "", DX12RuntimeState::GetPresentCount(), swapChain, presentHr, reason);
 	device->Release();
 }
 
@@ -171,7 +174,7 @@ static void ConsumeUiActionsForFrame()
 {
 	if (!DX12UiConsumeActions())
 		return;
-	DX12HotPathUpdate();
+	DX12HotPathState::Update();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 }
 
@@ -319,7 +322,7 @@ static HRESULT WINAPI HookedCreateDXGIFactory(REFIID riid, void **factory)
 {
 	LogDXGIHookCall("CreateDXGIFactory", nullptr);
 	HRESULT hr = gOrigCreateDXGIFactory(riid, factory);
-	DX12LogJsonFunc("CreateDXGIFactory",
+	DX12LogManager::JsonFunc("CreateDXGIFactory",
 		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
@@ -331,7 +334,7 @@ static HRESULT WINAPI HookedCreateDXGIFactory1(REFIID riid, void **factory)
 {
 	LogDXGIHookCall("CreateDXGIFactory1", nullptr);
 	HRESULT hr = gOrigCreateDXGIFactory1(riid, factory);
-	DX12LogJsonFunc("CreateDXGIFactory1",
+	DX12LogManager::JsonFunc("CreateDXGIFactory1",
 		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
@@ -343,7 +346,7 @@ static HRESULT WINAPI HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **f
 {
 	LogDXGIHookCall("CreateDXGIFactory2", nullptr);
 	HRESULT hr = gOrigCreateDXGIFactory2(flags, riid, factory);
-	DX12LogJsonFunc("CreateDXGIFactory2",
+	DX12LogManager::JsonFunc("CreateDXGIFactory2",
 		"\"flags\":\"0x%x\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		flags, &riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
@@ -358,7 +361,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
 	HookDeviceFromDXGIArgument(device);
 	auto original = GetCreateSwapChainOriginal(factory);
 	HRESULT hr = original ? original(factory, device, desc, swapChain) : DXGI_ERROR_INVALID_CALL;
-	DX12LogJsonFunc("IDXGIFactory::CreateSwapChain",
+	DX12LogManager::JsonFunc("IDXGIFactory::CreateSwapChain",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain && (!desc || !DX12NativeOverlayIsOverlayWindow(desc->OutputWindow)))
@@ -376,7 +379,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
 	HRESULT hr = original ?
 		original(factory, device, window, desc, fullscreenDesc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
-	DX12LogJsonFunc("IDXGIFactory2::CreateSwapChainForHwnd",
+	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForHwnd",
 		"\"device\":\"%p\",\"hwnd\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, window, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain && !DX12NativeOverlayIsOverlayWindow(window))
@@ -394,7 +397,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForCoreWindow(
 	HRESULT hr = original ?
 		original(factory, device, window, desc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
-	DX12LogJsonFunc("IDXGIFactory2::CreateSwapChainForCoreWindow",
+	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForCoreWindow",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain)
@@ -412,7 +415,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
 	HRESULT hr = original ?
 		original(factory, device, desc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
-	DX12LogJsonFunc("IDXGIFactory2::CreateSwapChainForComposition",
+	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForComposition",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain)
@@ -422,7 +425,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
 
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 {
-	if (DX12IsInternalReplay()) {
+	if (DX12InternalReplayState::IsActive()) {
 		PFN_PRESENT original = GetPresentOriginal(swapChain);
 		return original ? original(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
 	}
@@ -431,34 +434,34 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 
 	static volatile LONG firstPresentLog = 0;
 	if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
-		DX12LogJsonFuncFlush("DX12PresentFirst",
+		DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 			"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-			swapChain, syncInterval, flags, gDX12HotPathSkipAll);
+			swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
 
-	if (gDX12HotPathSkipAll) {
+	if (DX12HotPathState::Get().skipAll) {
 		PFN_PRESENT original = GetPresentOriginal(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		if (InterlockedCompareExchange(&firstPresentLog, 2, 1) == 1)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
 				swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags);
 		if (InterlockedCompareExchange(&firstPresentLog, 3, 2) == 2)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12IncrementPresentCount();
+		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
-		if (DX12GetPresentCount() > 2)
+		if (DX12RuntimeState::GetPresentCount() > 2)
 			RunPostPresentUi(swapChain);
 		if (InterlockedCompareExchange(&firstPresentLog, 4, 3) == 3)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12HotPathUpdate();
+		DX12HotPathState::Update();
 		if (InterlockedCompareExchange(&firstPresentLog, 5, 4) == 4)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		return hr;
@@ -468,10 +471,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	DX12_PROFILE_SCOPE(Present);
 
 	{
-		const LONG draws = InterlockedExchange(&gPerFrameTotalDraws, 0);
-		const LONG dispatches = InterlockedExchange(&gPerFrameTotalDispatches, 0);
-		if (DX12VerboseDiagnosticsEnabled()) {
-			DX12LogJsonFunc("DX12PerFrameCounters",
+		const LONG draws = DX12RuntimeState::TakeFrameDraws();
+		const LONG dispatches = DX12RuntimeState::TakeFrameDispatches();
+		if (DX12LogManager::VerboseDiagnosticsEnabled()) {
+			DX12LogManager::JsonFunc("DX12PerFrameCounters",
 				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
 		}
 	}
@@ -486,7 +489,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	HRESULT hr = original(swapChain, syncInterval, flags);
 	LogPresentStage("Present", "afterOriginal", swapChain, hr);
 	LogPresentDeviceRemovedReason("Present", swapChain, hr);
-	DX12IncrementPresentCount();
+	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 	RunPostPresentUi(swapChain);
@@ -494,18 +497,18 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
 	DX12ModBeginFrame();
 
-	DX12HotPathUpdate();
+	DX12HotPathState::Update();
 	LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
 		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
-			"\"present\":%ld", DX12GetPresentCount());
+			"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		DX12DumpFrameAnalysis();
 		DX12FrameAnalysis::End();
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
-		BeginFrameAnalysisCapture(DX12GetPresentCount());
+		BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
 		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
@@ -521,7 +524,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS *presentParameters)
 {
-	if (DX12IsInternalReplay()) {
+	if (DX12InternalReplayState::IsActive()) {
 		PFN_PRESENT1 original = GetPresent1Original(swapChain);
 		return original ? original(swapChain, syncInterval, flags, presentParameters) : DXGI_ERROR_INVALID_CALL;
 	}
@@ -530,34 +533,34 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 
 	static volatile LONG firstPresent1Log = 0;
 	if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
-		DX12LogJsonFuncFlush("DX12PresentFirst",
+		DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 			"\"api\":\"Present1\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-			swapChain, syncInterval, flags, gDX12HotPathSkipAll);
+			swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
 
-	if (gDX12HotPathSkipAll) {
+	if (DX12HotPathState::Get().skipAll) {
 		PFN_PRESENT1 original = GetPresent1Original(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		if (InterlockedCompareExchange(&firstPresent1Log, 2, 1) == 1)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
 				swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
 		if (InterlockedCompareExchange(&firstPresent1Log, 3, 2) == 2)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12IncrementPresentCount();
+		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
-		if (DX12GetPresentCount() > 2)
+		if (DX12RuntimeState::GetPresentCount() > 2)
 			RunPostPresentUi(swapChain);
 		if (InterlockedCompareExchange(&firstPresent1Log, 4, 3) == 3)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12HotPathUpdate();
+		DX12HotPathState::Update();
 		if (InterlockedCompareExchange(&firstPresent1Log, 5, 4) == 4)
-			DX12LogJsonFuncFlush("DX12PresentFirst",
+			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
 		return hr;
@@ -566,10 +569,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	LogDXGIHookCall("IDXGISwapChain1::Present1", swapChain);
 
 	{
-		const LONG draws = InterlockedExchange(&gPerFrameTotalDraws, 0);
-		const LONG dispatches = InterlockedExchange(&gPerFrameTotalDispatches, 0);
-		if (DX12VerboseDiagnosticsEnabled()) {
-			DX12LogJsonFunc("DX12PerFrameCounters",
+		const LONG draws = DX12RuntimeState::TakeFrameDraws();
+		const LONG dispatches = DX12RuntimeState::TakeFrameDispatches();
+		if (DX12LogManager::VerboseDiagnosticsEnabled()) {
+			DX12LogManager::JsonFunc("DX12PerFrameCounters",
 				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
 		}
 	}
@@ -584,7 +587,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
 	LogPresentStage("Present1", "afterOriginal", swapChain, hr);
 	LogPresentDeviceRemovedReason("Present1", swapChain, hr);
-	DX12IncrementPresentCount();
+	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 	RunPostPresentUi(swapChain);
@@ -592,18 +595,18 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
 	DX12ModBeginFrame();
 
-	DX12HotPathUpdate();
+	DX12HotPathState::Update();
 	LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
 		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
-			"\"present\":%ld", DX12GetPresentCount());
+			"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		DX12DumpFrameAnalysis();
 		DX12FrameAnalysis::End();
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
-		BeginFrameAnalysisCapture(DX12GetPresentCount());
+		BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
 		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
@@ -621,12 +624,12 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
 	DXGI_FORMAT newFormat, UINT swapChainFlags)
 {
 	LogDXGIHookCall("IDXGISwapChain::ResizeBuffers", swapChain);
-	if (!DX12IsInternalReplay())
+	if (!DX12InternalReplayState::IsActive())
 		DX12NativeOverlayInvalidate(swapChain);
 	auto original = GetResizeBuffersOriginal(swapChain);
 	HRESULT hr = original ? original(swapChain, bufferCount, width, height, newFormat, swapChainFlags) :
 		DXGI_ERROR_INVALID_CALL;
-	DX12LogJsonFunc("IDXGISwapChain::ResizeBuffers",
+	DX12LogManager::JsonFunc("IDXGISwapChain::ResizeBuffers",
 		"\"swapchain\":\"%p\",\"buffers\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"flags\":\"0x%x\",\"hr\":\"0x%lx\"",
 		swapChain, bufferCount, width, height, static_cast<UINT>(newFormat), swapChainFlags, hr);
 	return hr;
@@ -646,7 +649,7 @@ void DX12InstallDXGIHooks()
 	if (!dxgi) {
 		static volatile LONG deferredLogs = 0;
 		if (InterlockedIncrement(&deferredLogs) <= 4)
-			DX12Log("dxgi.dll is not loaded yet; DXGI hook deferred\n");
+			DX12LogManager::Text("dxgi.dll is not loaded yet; DXGI hook deferred\n");
 		AcquireSRWLockExclusive(&gDXGIHookLock);
 		gDXGIHookAttempted = false;
 		ReleaseSRWLockExclusive(&gDXGIHookLock);
@@ -661,3 +664,5 @@ void DX12InstallDXGIHooks()
 	DX12InstallExportHook(dxgi, "CreateDXGIFactory2",
 		reinterpret_cast<void**>(&gOrigCreateDXGIFactory2), HookedCreateDXGIFactory2);
 }
+
+

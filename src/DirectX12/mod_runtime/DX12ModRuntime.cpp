@@ -15,7 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12OverlayStatusState.hpp"
+#include "DX12RuntimeState.hpp"
 #include "DX12CommandListRuntime.h"
 #include "DX12DeviceHooks.h"
 #include "DX12Profiling.hpp"
@@ -659,7 +661,7 @@ static UINT64 MakePreSkinSrvProbeCacheKey(
 			key *= 1099511628211ull;
 		}
 	};
-	append(static_cast<UINT64>(DX12GetPresentCount()));
+	append(static_cast<UINT64>(DX12RuntimeState::GetPresentCount()));
 	append(static_cast<UINT64>(gPreSkinSrvCacheGeneration));
 	append(static_cast<UINT64>(srv.rootParameterIndex));
 	append(static_cast<UINT64>(srv.rangeIndex));
@@ -893,7 +895,7 @@ static void CleanupRetiredPreSkinObjectsLocked(
 {
 	if (!releaseBatch)
 		return;
-	const LONG present = DX12GetPresentCount();
+	const LONG present = DX12RuntimeState::GetPresentCount();
 	auto resourceIt = gRetiredPreSkinResources.begin();
 	while (resourceIt != gRetiredPreSkinResources.end()) {
 		if (present - resourceIt->retirePresent < PreSkinRetiredObjectPresentDelay) {
@@ -1021,7 +1023,7 @@ void DX12ModNotifyCommandListsSubmitted(
 		return;
 	}
 
-	const LONG retirePresent = DX12GetPresentCount();
+	const LONG retirePresent = DX12RuntimeState::GetPresentCount();
 
 	for (ID3D12Resource *resource : pending.resources) {
 		if (!resource)
@@ -1034,7 +1036,7 @@ void DX12ModNotifyCommandListsSubmitted(
 		gRetiredPreSkinDescriptorHeaps.push_back({ heap, retirePresent });
 	}
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
-	DX12LogDebugJsonFunc("DX12PreSkinRetireSubmit",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinRetireSubmit",
 		"\"present\":%ld,\"queue\":\"%p\",\"commandLists\":%u,\"resources\":%zu,\"descriptorHeaps\":%zu,\"delay\":%ld",
 		retirePresent, queue, numCommandLists,
 		pending.resources.size(), pending.descriptorHeaps.size(),
@@ -1145,7 +1147,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 		gPreSkinDescriptorRing.offset = requiredDescriptors;
 		gPreSkinDescriptorRing.increment =
 			device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		gPreSkinDescriptorRing.present = DX12GetPresentCount();
+		gPreSkinDescriptorRing.present = DX12RuntimeState::GetPresentCount();
 		*cpuBase = usedHeap->GetCPUDescriptorHandleForHeapStart();
 		*gpuBase = usedHeap->GetGPUDescriptorHandleForHeapStart();
 		*increment = gPreSkinDescriptorRing.increment;
@@ -1159,7 +1161,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 		if (usedHeap)
 			RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinDescriptorRing",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
 			"\"status\":\"created\",\"capacity\":%u,\"required\":%u",
 			capacityToCreate, requiredDescriptors);
 #endif
@@ -1182,3 +1184,5 @@ enum class DX12PsoKind
 #include "DX12ModRuntimeIaRuntime.cpp"
 #include "DX12ModRuntimeCommandLists.cpp"
 #include "DX12ModRuntimeShaderOverride.cpp"
+
+

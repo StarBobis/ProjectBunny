@@ -30,7 +30,7 @@ static volatile LONG gShaderOverridePsoCacheHitLogCount = 0;
 static bool AllowShaderOverrideHotPathLog(volatile LONG *counter)
 {
 #if defined(_DEBUG)
-	if (!DX12DiagnosticsLoggingEnabled())
+	if (!DX12LogManager::DiagnosticsLoggingEnabled())
 		return false;
 	return InterlockedIncrement(counter) <= ShaderOverrideHotPathLogLimit;
 #else
@@ -72,8 +72,8 @@ static void AppendShaderRegexForShaderLocked(
 			continue;
 		regexConfigs->push_back(MakeShaderOverrideFromRegex(regex, hash));
 #if defined(_DEBUG)
-		if (DX12DiagnosticsLoggingEnabled()) {
-			DX12LogDebugJsonFunc("DX12ShaderRegexMatch",
+		if (DX12LogManager::DiagnosticsLoggingEnabled()) {
+			DX12LogManager::DebugJsonFunc("DX12ShaderRegexMatch",
 				"\"section\":\"%S\",\"hash\":\"%016llx\",\"model\":\"%S\"",
 				regex.section.c_str(), static_cast<unsigned long long>(hash),
 				std::wstring(shaderModel.begin(), shaderModel.end()).c_str());
@@ -219,7 +219,7 @@ static bool TryFindCachedShaderOverridesForPsoLocked(
 		BuildShaderOverrideConfigPointers(&cached->second, dispatch, configs);
 #if defined(_DEBUG)
 		if (AllowShaderOverrideHotPathLog(&gShaderOverridePsoCacheHitLogCount)) {
-			DX12LogDebugJsonFunc("DX12ShaderOverridePsoMatchCache",
+			DX12LogManager::DebugJsonFunc("DX12ShaderOverridePsoMatchCache",
 				"\"status\":\"hit\",\"pso\":\"%p\",\"dispatch\":%s,\"matches\":%zu",
 				pipelineState, dispatch ? "true" : "false", configs->size());
 		}
@@ -569,7 +569,7 @@ static ID3D12PipelineState *CreateGraphicsReplacement(DX12StoredPso *record)
 	ID3D12PipelineState *replacement = nullptr;
 	HRESULT hr = DX12CreateGraphicsPipelineStateOriginal(
 		record->device, &desc, IID_PPV_ARGS(&replacement));
-	DX12LogDebugJsonFunc("DX12ReplacementPsoCreate",
+	DX12LogManager::DebugJsonFunc("DX12ReplacementPsoCreate",
 		"\"kind\":\"graphics\",\"hr\":\"0x%lx\",\"pso\":\"%p\"",
 		hr, replacement);
 	return SUCCEEDED(hr) ? replacement : nullptr;
@@ -587,7 +587,7 @@ static ID3D12PipelineState *CreateComputeReplacement(DX12StoredPso *record)
 	ID3D12PipelineState *replacement = nullptr;
 	HRESULT hr = DX12CreateComputePipelineStateOriginal(
 		record->device, &desc, IID_PPV_ARGS(&replacement));
-	DX12LogDebugJsonFunc("DX12ReplacementPsoCreate",
+	DX12LogManager::DebugJsonFunc("DX12ReplacementPsoCreate",
 		"\"kind\":\"compute\",\"hr\":\"0x%lx\",\"pso\":\"%p\"",
 		hr, replacement);
 	return SUCCEEDED(hr) ? replacement : nullptr;
@@ -693,3 +693,4 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	ReleaseSRWLockExclusive(&gModLock);
 	return newReplacement;
 }
+

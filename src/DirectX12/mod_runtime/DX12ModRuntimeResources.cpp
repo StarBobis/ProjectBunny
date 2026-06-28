@@ -59,7 +59,7 @@ static bool LoadResourceBytes(
 				if (path)
 					*path = fallbackPath;
 				const bool fallbackOk = ReadFileBytes(fallbackPath.c_str(), bytes);
-				DX12LogJsonFunc("DX12FallbackPath",
+				DX12LogManager::JsonFunc("DX12FallbackPath",
 					"\"kind\":\"resource_path_root\",\"api\":\"DX12ModRuntime::LoadResourceBytes\","
 					"\"section\":\"%S\",\"primary\":\"%S\",\"fallback\":\"%S\",\"success\":%s",
 					config.section.c_str(), resolvedPath.c_str(), fallbackPath.c_str(),
@@ -166,13 +166,13 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 		const bool result = StoreLoadedResourceResultLocked(
 			name, generation, &failedResource, &discardResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
 			config.section.c_str(), path.c_str());
-		DX12SetOverlayWarning(status);
+		DX12OverlayStatusState::SetWarning(status);
 		return result;
 	}
 
@@ -212,13 +212,13 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 		ID3D12Resource *discardResource = nullptr;
 		StoreLoadedResourceResultLocked(name, generation, &failedResource, &discardResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
 			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return false;
 	}
 
@@ -240,13 +240,13 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 		ID3D12Resource *discardResource = nullptr;
 		StoreLoadedResourceResultLocked(name, generation, &failedResource, &discardResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
 			config.section.c_str(), hr);
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return false;
 	}
 
@@ -265,7 +265,7 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 	if (discardResource)
 		discardResource->Release();
 	if (result) {
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
 			config.section.c_str(), name.c_str(), path.c_str(),
 			static_cast<unsigned long long>(byteWidth), loadedResource.stride,
@@ -300,13 +300,13 @@ static DX12LoadedResource *EnsureLoadedResourceLocked(
 		failedResource.name = name;
 		failedResource.path = path;
 		gLoadedResources[name] = failedResource;
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
 			config.section.c_str(), path.c_str());
-		DX12SetOverlayWarning(status);
+		DX12OverlayStatusState::SetWarning(status);
 		return nullptr;
 	}
 
@@ -343,13 +343,13 @@ static DX12LoadedResource *EnsureLoadedResourceLocked(
 		failedResource.name = name;
 		failedResource.path = path;
 		gLoadedResources[name] = failedResource;
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
 			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return nullptr;
 	}
 
@@ -368,13 +368,13 @@ static DX12LoadedResource *EnsureLoadedResourceLocked(
 		failedResource.name = name;
 		failedResource.path = path;
 		gLoadedResources[name] = failedResource;
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
 			config.section.c_str(), hr);
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return nullptr;
 	}
 
@@ -386,7 +386,7 @@ static DX12LoadedResource *EnsureLoadedResourceLocked(
 	loadedResource.name = name;
 	loadedResource.path = path;
 	auto inserted = gLoadedResources.emplace(name, loadedResource);
-	DX12LogJsonFunc("DX12ResourceLoad",
+	DX12LogManager::JsonFunc("DX12ResourceLoad",
 		"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
 		config.section.c_str(), name.c_str(), path.c_str(),
 		static_cast<unsigned long long>(byteWidth), loadedResource.stride,
@@ -432,13 +432,13 @@ static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 			inserted.first->second.resource && !inserted.first->second.failed ?
 			&inserted.first->second : nullptr;
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
 			config.section.c_str(), path.c_str());
-		DX12SetOverlayWarning(status);
+		DX12OverlayStatusState::SetWarning(status);
 		return result;
 	}
 
@@ -477,13 +477,13 @@ static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		AcquireSRWLockExclusive(&gModLock);
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
 			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return nullptr;
 	}
 
@@ -504,13 +504,13 @@ static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		AcquireSRWLockExclusive(&gModLock);
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
 			config.section.c_str(), hr);
 		wchar_t status[512];
 		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
 			config.section.c_str(), hr);
-		DX12SetOverlayError(status);
+		DX12OverlayStatusState::SetError(status);
 		return nullptr;
 	}
 
@@ -532,7 +532,7 @@ static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	ReleaseSRWLockExclusive(&gModLock);
 
 	if (inserted.second) {
-		DX12LogJsonFunc("DX12ResourceLoad",
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
 			"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
 			config.section.c_str(), name.c_str(), path.c_str(),
 			static_cast<unsigned long long>(byteWidth), loadedResource.stride,
@@ -589,7 +589,7 @@ static bool EnsureResourceUavLocked(
 	ID3D12DescriptorHeap *heap = nullptr;
 	HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
 	if (FAILED(hr) || !heap) {
-		DX12LogDebugJsonFunc("DX12PreSkinningUav",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningUav",
 			"\"status\":\"failed\",\"reason\":\"create_heap_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
 			hr, resource->name.c_str());
 		return false;
@@ -616,7 +616,7 @@ static bool EnsureResourceUavLocked(
 		&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		nullptr, IID_PPV_ARGS(&uavResource));
 	if (FAILED(hr) || !uavResource) {
-		DX12LogDebugJsonFunc("DX12PreSkinningUav",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningUav",
 			"\"status\":\"failed\",\"reason\":\"create_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\",\"bytes\":%llu",
 			hr, resource->name.c_str(), static_cast<unsigned long long>(uavByteWidth));
 		heap->Release();
@@ -641,7 +641,7 @@ static bool EnsureResourceUavLocked(
 	resource->uavStride = elementStride;
 	resource->uavInitialized = true;
 	resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	DX12LogDebugJsonFunc("DX12PreSkinningUav",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningUav",
 		"\"status\":\"created\",\"resource\":\"%S\",\"bytes\":%llu,\"uavBytes\":%llu,\"stride\":%u,\"elements\":%u",
 		resource->name.c_str(),
 		static_cast<unsigned long long>(resource->byteWidth),
@@ -686,7 +686,7 @@ static bool EnsureResourceSrvLocked(
 	ID3D12DescriptorHeap *heap = nullptr;
 	HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
 	if (FAILED(hr) || !heap) {
-		DX12LogDebugJsonFunc("DX12PreSkinningSrv",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningSrv",
 			"\"status\":\"failed\",\"reason\":\"create_heap_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
 			hr, resource->name.c_str());
 		return false;
@@ -714,7 +714,7 @@ static bool EnsureResourceSrvLocked(
 			nullptr, IID_PPV_ARGS(&srvBacking));
 		if (FAILED(hr) || !srvBacking) {
 			heap->Release();
-			DX12LogDebugJsonFunc("DX12PreSkinningSrv",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningSrv",
 				"\"status\":\"failed\",\"reason\":\"create_padded_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\",\"bytes\":%llu",
 				hr, resource->name.c_str(), static_cast<unsigned long long>(srvByteWidth));
 			return false;
@@ -741,7 +741,7 @@ static bool EnsureResourceSrvLocked(
 		if (FAILED(hr) || !src) {
 			srvBacking->Release();
 			heap->Release();
-			DX12LogDebugJsonFunc("DX12PreSkinningSrv",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningSrv",
 				"\"status\":\"failed\",\"reason\":\"copy_padded_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
 				hr, resource->name.c_str());
 			return false;
@@ -764,7 +764,7 @@ static bool EnsureResourceSrvLocked(
 	resource->srvHeap = heap;
 	resource->srvStride = elementStride;
 	resource->srvByteWidth = srvByteWidth;
-	DX12LogDebugJsonFunc("DX12PreSkinningSrv",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningSrv",
 		"\"status\":\"created\",\"resource\":\"%S\",\"bytes\":%llu,\"srvBytes\":%llu,\"stride\":%u,\"elements\":%u",
 		resource->name.c_str(),
 		static_cast<unsigned long long>(resource->byteWidth),
@@ -847,3 +847,4 @@ static bool ResourceMatchesVlrTarget(
 		return false;
 	return true;
 }
+

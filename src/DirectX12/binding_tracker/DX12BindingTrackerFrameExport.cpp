@@ -13,7 +13,7 @@
 #include "DX12IaRegion.hpp"
 #include "DX12Json.hpp"
 #include "DX12ResourceTracker.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
 
 
 void DX12GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos)
@@ -937,4 +937,5 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 	result.skipped = static_cast<size_t>(droppedEvents);
 	return result;
 }
+
 

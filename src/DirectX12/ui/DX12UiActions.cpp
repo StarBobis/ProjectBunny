@@ -7,7 +7,9 @@
 #include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12OverlayStatusState.hpp"
+#include "DX12RuntimeState.hpp"
 
 enum DX12UiActionBits : LONG
 {
@@ -57,19 +59,19 @@ void DX12UiRequestProfilingToggle() { RequestAction(DX12_UI_ACTION_PROFILING); }
 
 static void RunFrameAnalysisRequest()
 {
-	DX12LogJsonFunc("DX12UiAction", "\"action\":\"FrameAnalysisRequest\"");
-	if (!DX12IsHuntingMode()) {
-		DX12LogJsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"requires_hunting_mode\"");
-		DX12SetOverlayWarning(L"Enable Hunting before Frame Dump");
+	DX12LogManager::JsonFunc("DX12UiAction", "\"action\":\"FrameAnalysisRequest\"");
+	if (!DX12RuntimeState::IsHuntingMode()) {
+		DX12LogManager::JsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"requires_hunting_mode\"");
+		DX12OverlayStatusState::SetWarning(L"Enable Hunting before Frame Dump");
 		return;
 	}
 	if (DX12FrameAnalysis::Begin()) {
 		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisArmed", nullptr);
 		DX12FrameAnalysis::RequestCapture();
-		DX12SetOverlayStatus(L"Frame analysis armed");
+		DX12OverlayStatusState::SetStatus(L"Frame analysis armed");
 	} else {
-		DX12LogJsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"create_directory_failed\"");
-		DX12SetOverlayError(L"Frame analysis failed: cannot create directory");
+		DX12LogManager::JsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"create_directory_failed\"");
+		DX12OverlayStatusState::SetError(L"Frame analysis failed: cannot create directory");
 	}
 }
 
@@ -119,3 +121,5 @@ bool DX12UiConsumeActions()
 		DX12Profiling::Toggle();
 	return true;
 }
+
+

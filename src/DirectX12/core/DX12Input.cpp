@@ -3,23 +3,24 @@
 #include <Windows.h>
 
 #include "DX12ModRuntime.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12OverlayStatusState.hpp"
 
 static volatile LONG gReloadInProgress = 0;
 
 static DWORD WINAPI DX12ReloadThread(void*)
 {
 	const DWORD start = GetTickCount();
-	DX12LogJsonFunc("DX12ModRuntimeReload", "\"status\":\"thread_begin\"");
+	DX12LogManager::JsonFunc("DX12ModRuntimeReload", "\"status\":\"thread_begin\"");
 	const bool ok = DX12ModRuntimeReload();
 	const DWORD elapsed = GetTickCount() - start;
 	if (ok) {
 		wchar_t status[128];
 		swprintf_s(status, L"Reload Success TimeConsume: %.3f S",
 			static_cast<double>(elapsed) / 1000.0);
-		DX12SetOverlayStatusTemporary(status, 3000);
+		DX12OverlayStatusState::SetTemporary(status, 3000);
 	}
-	DX12LogJsonFunc("DX12ModRuntimeReload",
+	DX12LogManager::JsonFunc("DX12ModRuntimeReload",
 		"\"status\":\"thread_done\",\"result\":\"%s\",\"elapsedMs\":%lu",
 		ok ? "ok" : "failed", elapsed);
 	InterlockedExchange(&gReloadInProgress, 0);
@@ -29,12 +30,12 @@ static DWORD WINAPI DX12ReloadThread(void*)
 void DX12RequestModReload()
 {
 	if (InterlockedCompareExchange(&gReloadInProgress, 1, 0) != 0) {
-		DX12LogJsonFunc("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"already_running\"");
-		DX12SetOverlayWarning(L"Reload already running");
+		DX12LogManager::JsonFunc("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"already_running\"");
+		DX12OverlayStatusState::SetWarning(L"Reload already running");
 		return;
 	}
 
-	DX12SetOverlayStatus(L"Reload running");
+	DX12OverlayStatusState::SetStatus(L"Reload running");
 	HANDLE thread = CreateThread(nullptr, 0, DX12ReloadThread, nullptr, 0, nullptr);
 	if (thread) {
 		CloseHandle(thread);
@@ -42,7 +43,9 @@ void DX12RequestModReload()
 	}
 
 	InterlockedExchange(&gReloadInProgress, 0);
-	DX12LogJsonFunc("DX12ModRuntimeReload",
+	DX12LogManager::JsonFunc("DX12ModRuntimeReload",
 		"\"status\":\"failed\",\"reason\":\"create_thread\",\"error\":%lu", GetLastError());
-	DX12SetOverlayError(L"Reload failed: cannot start thread");
+	DX12OverlayStatusState::SetError(L"Reload failed: cannot start thread");
 }
+
+

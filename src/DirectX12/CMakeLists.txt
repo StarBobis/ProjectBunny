@@ -7,7 +7,6 @@ add_library(DirectX12 SHARED
 
     # Core
     core/DX12Runtime.cpp
-    core/DX12State.cpp
     core/DX12Input.cpp
     core/DX12Overlay.cpp
 

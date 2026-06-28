@@ -456,7 +456,7 @@ static void LogShaderOverrideCommandListLimited(
 	const DX12ModIaReplacement &replacement)
 {
 #if defined(_DEBUG)
-	if (!DX12DiagnosticsLoggingEnabled())
+	if (!DX12LogManager::DiagnosticsLoggingEnabled())
 		return;
 	static volatile LONG logCount = 0;
 	if (InterlockedIncrement(&logCount) > 512)
@@ -490,7 +490,7 @@ static void LogShaderOverrideCommandListLimited(
 			break;
 	}
 
-	DX12LogDebugJsonFunc("DX12ShaderOverrideCommandList",
+	DX12LogManager::DebugJsonFunc("DX12ShaderOverrideCommandList",
 		"\"phase\":\"%s\",\"matches\":%zu,\"skip\":%s,\"draws\":%zu,\"drawList\":\"%s\",\"sections\":\"%S\"",
 		phase ? phase : "", configs.size(), replacement.skip ? "true" : "false",
 		replacement.draws.size(), drawText, sections.c_str());
@@ -510,7 +510,7 @@ static void LogPreSkinningCandidatesLimited(const DX12IaHashState &iaState)
 	ReleaseSRWLockShared(&gPreSkinLock);
 
 	if (producers.empty()) {
-		DX12LogDebugJsonFunc("DX12PreSkinningCandidate",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningCandidate",
 			"\"status\":\"none\",\"recentUavs\":0,\"overlapCount\":0,\"vlrLike\":0,\"vbCount\":%zu",
 			iaState.vertexBuffers.size());
 		return;
@@ -549,7 +549,7 @@ static void LogPreSkinningCandidatesLimited(const DX12IaHashState &iaState)
 
 	if (hasBest && best.hasDescriptor) {
 		const DX12DescriptorSummary &d = best.descriptor;
-		DX12LogDebugJsonFunc("DX12PreSkinningCandidate",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningCandidate",
 			"\"status\":\"matched\",\"recentUavs\":%zu,\"overlapCount\":%zu,\"vlrLike\":%zu,\"vbSlot\":%u,\"vbHash\":\"%08x\",\"producerSerial\":%llu,\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"resource\":\"%p\",\"resourceWidth\":%llu,\"viewBytes\":%llu,\"viewOffset\":%llu,\"numElements\":%u,\"stride\":%u",
 			producers.size(), overlapping, vlrLike, bestBuffer.slot, bestBuffer.hash,
 			static_cast<unsigned long long>(best.serial),
@@ -562,10 +562,11 @@ static void LogPreSkinningCandidatesLimited(const DX12IaHashState &iaState)
 		return;
 	}
 
-	DX12LogDebugJsonFunc("DX12PreSkinningCandidate",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningCandidate",
 		"\"status\":\"none\",\"recentUavs\":%zu,\"overlapCount\":%zu,\"vlrLike\":%zu,\"vbCount\":%zu",
 		producers.size(), overlapping, vlrLike, iaState.vertexBuffers.size());
 #else
 	(void)iaState;
 #endif
 }
+

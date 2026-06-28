@@ -20,7 +20,9 @@
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12ResourceDumpUtil.h"
-#include "DX12State.h"
+#include "DX12CommandQueueState.hpp"
+#include "DX12LogManager.hpp"
+#include "DX12RuntimeState.hpp"
 
 
 struct DumpedTaskRow
@@ -1122,7 +1124,7 @@ static void BuildBindingDedupeKeyForCurrentMode(
 {
 	if (!key || keyCount == 0)
 		return;
-	if (DX12IsHuntingMode() &&
+	if (DX12RuntimeState::IsHuntingMode() &&
 		binding.descriptor.hasResourceDesc &&
 		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
 		// Hunting is a resource discovery pass. The descriptor slot and view
@@ -1140,7 +1142,7 @@ static void BuildOutputDedupeKeyForCurrentMode(
 {
 	if (!key || keyCount == 0)
 		return;
-	if (DX12IsHuntingMode() &&
+	if (DX12RuntimeState::IsHuntingMode() &&
 		binding.descriptor.hasResourceDesc &&
 		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
 		BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
@@ -1497,7 +1499,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 
 	const UINT64 frameReadbackBudget = FrameReadbackBudgetBytes();
 	UINT64 frameReadbackBytes = 0;
-	const char *dumpMode = DX12IsModMode() ? "Mod" : "Hunting";
+	const char *dumpMode = DX12RuntimeState::IsModMode() ? "Mod" : "Hunting";
 	DX12FrameAnalysis::LogJsonFunc("ResourceDump",
 		"\"mode\":\"%s\",\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"frameReadbackBudget\":%llu,\"unsafeCopy\":%u,\"gpuCopy\":%u,\"stateTracking\":1",
 		dumpMode,
@@ -1505,12 +1507,12 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		static_cast<unsigned long long>(frameReadbackBudget),
 		UnsafeResourceCopyEnabled() ? 1 : 0,
 		DX12DumpGpuResourceCopyEnabled() ? 1 : 0);
-	DX12LogJsonFunc("DX12ResourceDump",
+	DX12LogManager::JsonFunc("DX12ResourceDump",
 		"\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"frameReadbackBudget\":%llu",
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		static_cast<unsigned long long>(frameReadbackBudget));
 
-	ID3D12CommandQueue *queue = DX12AcquireCommandQueue();
+	ID3D12CommandQueue *queue = DX12CommandQueueState::Acquire();
 	ID3D12Device *device = nullptr;
 	if (!queue || FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
 		DX12FrameAnalysis::LogJsonFunc("ResourceDump",
@@ -1715,7 +1717,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		}
 	}
 
-	if (DX12IsHuntingMode()) {
+	if (DX12RuntimeState::IsHuntingMode()) {
 		std::vector<DX12DescriptorSummary> metadataDescriptors;
 		DX12GetResourceMetadataSnapshot(nullptr, &metadataDescriptors, nullptr, nullptr);
 		UINT64 metadataIndex = 0;
@@ -2014,4 +2016,6 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	result.reason = failed == 0 ? "" : "resource_failures";
 	return result;
 }
+
+
 

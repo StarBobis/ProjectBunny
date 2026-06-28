@@ -14,7 +14,10 @@
 #include "DX12IaRegion.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
-#include "DX12State.h"
+#include "DX12HotPathState.hpp"
+#include "DX12LogManager.hpp"
+#include "DX12OverlayStatusState.hpp"
+#include "DX12RuntimeModeState.hpp"
 #include "DXGIHooks.h"
 
 enum class HuntStage
@@ -268,7 +271,7 @@ static void AdvanceStage(StageSelection &stage, HuntCopyTarget target, int delta
 	count = stage.visited.size();
 	hash = SelectedHashLocked(stage);
 	ReleaseSRWLockExclusive(&gHuntLock);
-	DX12LogJsonFunc("DX12HuntSelect",
+	DX12LogManager::JsonFunc("DX12HuntSelect",
 		"\"target\":\"%s\",\"selected\":%zu,\"count\":%zu,\"hash\":\"%016llx\"",
 		target == HuntCopyTarget::VS ? "VS" :
 		target == HuntCopyTarget::PS ? "PS" :
@@ -324,7 +327,7 @@ static void AdvanceIa(IaSelection &selection, HuntCopyTarget target, int delta)
 	count = selection.visited.size();
 	hash = SelectedIaHashLocked(selection);
 	ReleaseSRWLockExclusive(&gHuntLock);
-	DX12LogJsonFunc("DX12HuntSelect",
+	DX12LogManager::JsonFunc("DX12HuntSelect",
 		"\"target\":\"%s\",\"selected\":%zu,\"count\":%zu,\"hash\":\"%08x\"",
 		target == HuntCopyTarget::IB ? "IB" :
 		target == HuntCopyTarget::VB ? "VB" : "",
@@ -711,33 +714,33 @@ void DX12HuntToggle()
 		gLastOverlayStatsFrame = gPresentFrames;
 		ReleaseSRWLockExclusive(&gHuntLock);
 		InterlockedExchange(&gHuntingActive, 1);
-		DX12SetRuntimeMode(DX12RuntimeMode::Hunting);
+		DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode::Hunting);
 	} else {
 		InterlockedExchange(&gHuntingActive, 0);
-		DX12SetRuntimeMode(DX12RuntimeMode::Mod);
+		DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode::Mod);
 	}
 
-	DX12LogJsonFunc("DX12HuntToggle",
+	DX12LogManager::JsonFunc("DX12HuntToggle",
 		"\"stage\":\"state\",\"enabled\":%s,\"oldIa\":%zu,\"oldIb\":%zu,\"oldVb\":%zu",
 		enabled ? "true" : "false", oldIa, oldIB, oldVB);
-	DX12HotPathUpdate();
-	DX12LogJsonFunc("DX12HuntToggle",
+	DX12HotPathState::Update();
+	DX12LogManager::JsonFunc("DX12HuntToggle",
 		"\"stage\":\"hotpath_update\",\"enabled\":%s",
 		enabled ? "true" : "false");
 	if (enabled) {
 		DX12PrimeDescriptorHistoryForHunting();
-		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"prime_descriptor_history\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"prime_descriptor_history\",\"enabled\":true");
 		DX12HuntRefreshOverlay();
-		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
 		DX12CommandListRuntimeBumpTrackingGeneration();
-		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"bump_generation\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"bump_generation\",\"enabled\":true");
 		DX12ShowOverlayWindow();
-		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"show_overlay\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"show_overlay\",\"enabled\":true");
 	} else {
 		DX12HideOverlayWindow();
-		DX12LogJsonFunc("DX12HuntToggle", "\"stage\":\"hide_overlay\",\"enabled\":false");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"hide_overlay\",\"enabled\":false");
 	}
-	DX12Log("DX12 hunting toggled %s\n", enabled ? "on" : "off");
+	DX12LogManager::Text("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 }
 
 void DX12HuntOnPresent()
@@ -762,7 +765,7 @@ void DX12HuntOnPresent()
 	ReleaseSRWLockExclusive(&gHuntLock);
 
 	if (shouldLog)
-		DX12LogJsonFunc("DX12HuntIaStats",
+		DX12LogManager::JsonFunc("DX12HuntIaStats",
 			"\"frame\":%llu,\"ib\":%zu,\"vb\":%zu",
 			static_cast<unsigned long long>(gPresentFrames), ibCount, vbCount);
 }
@@ -866,7 +869,7 @@ void DX12HuntCopySelectedHash()
 	ReleaseSRWLockShared(&gHuntLock);
 
 	if (!text[0] || wcspbrk(text, L"123456789abcdefABCDEF") == nullptr) {
-		DX12SetOverlayStatus(L"DX12 hunting: no selected hash to copy");
+		DX12OverlayStatusState::SetStatus(L"DX12 hunting: no selected hash to copy");
 		DX12HuntRefreshOverlay();
 		return;
 	}
@@ -876,7 +879,7 @@ void DX12HuntCopySelectedHash()
 		swprintf_s(status, L"Copied %ls hash %ls", CopyTargetName(target), text);
 	else
 		swprintf_s(status, L"Copy %ls hash failed", CopyTargetName(target));
-	DX12SetOverlayStatus(status);
+	DX12OverlayStatusState::SetStatus(status);
 	DX12HuntRefreshOverlay();
 }
 
@@ -894,7 +897,7 @@ void DX12HuntResetSelection()
 	gLastCopyTarget = HuntCopyTarget::None;
 	ReleaseSRWLockExclusive(&gHuntLock);
 
-	DX12SetOverlayStatus(L"DX12 hunting selection reset");
+	DX12OverlayStatusState::SetStatus(L"DX12 hunting selection reset");
 	DX12HuntRefreshOverlay();
 }
 
@@ -936,7 +939,7 @@ void DX12HuntRefreshOverlay()
 		static_cast<unsigned long long>(gIndirectCalls));
 	ReleaseSRWLockShared(&gHuntLock);
 
-	DX12SetOverlayStatus(status);
+	DX12OverlayStatusState::SetStatus(status);
 }
 
 static void FormatStageItem(
@@ -1155,3 +1158,5 @@ void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash)
 	if (selected)
 		DX12HuntRefreshOverlay();
 }
+
+

@@ -9,7 +9,10 @@
 #include "DX12ModRuntime.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
-#include "DX12State.h"
+#include "DX12CommandQueueState.hpp"
+#include "DX12HookRegistry.hpp"
+#include "DX12LogManager.hpp"
+#include "DX12RuntimeState.hpp"
 
 typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_GRAPHICS_PIPELINE_STATE)(
 	ID3D12Device*, const D3D12_GRAPHICS_PIPELINE_STATE_DESC*, REFIID, void**);
@@ -27,21 +30,21 @@ static PFN_DEVICE_FACTORY_CREATE_DEVICE gOrigDeviceFactoryCreateDevice = nullptr
 
 static void LogDeviceHookCall(const char *api, const void *object)
 {
-	if (!DX12ShouldLogHookCall(api))
+	if (!DX12LogManager::ShouldLogHookCall(api))
 		return;
-	DX12LogDebugJsonFunc("DX12HookCall",
+	DX12LogManager::DebugJsonFunc("DX12HookCall",
 		"\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\"",
-		api ? api : "", DX12GetPresentCount(), object);
+		api ? api : "", DX12RuntimeState::GetPresentCount(), object);
 }
 
 static void LogDeviceOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
 {
-	if (!DX12ShouldLogHookCall(api))
+	if (!DX12LogManager::ShouldLogHookCall(api))
 		return;
-	DX12LogDebugJsonFunc("DX12FallbackPath",
+	DX12LogManager::DebugJsonFunc("DX12FallbackPath",
 		"\"kind\":\"original_lookup\",\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\","
 		"\"slot\":%u,\"fallback\":\"%p\"",
-		api ? api : "", DX12GetPresentCount(), object, slot, fallback);
+		api ? api : "", DX12RuntimeState::GetPresentCount(), object, slot, fallback);
 }
 
 struct DX12GraphicsPsoReplacement
@@ -68,7 +71,7 @@ static T GetDeviceOriginal(void *object, UINT slot, T fallback, const char *name
 	if (object) {
 		void **vtable = *reinterpret_cast<void***>(object);
 		if (vtable) {
-			void *original = DX12GetOriginalFunction(vtable[slot]);
+			void *original = DX12HookRegistry::GetOriginalFunction(vtable[slot]);
 			if (original)
 				return reinterpret_cast<T>(original);
 		}
@@ -77,7 +80,7 @@ static T GetDeviceOriginal(void *object, UINT slot, T fallback, const char *name
 		LogDeviceOriginalFallback(name, object, slot, reinterpret_cast<const void*>(fallback));
 		return fallback;
 	}
-	DX12LogJsonFunc(name ? name : "ID3D12Device::Unknown",
+	DX12LogManager::JsonFunc(name ? name : "ID3D12Device::Unknown",
 		"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
 		object, slot);
 	return nullptr;
@@ -88,7 +91,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateGraphicsPipelineState(
 	REFIID riid, void **pipelineState)
 {
 	LogDeviceHookCall("ID3D12Device::CreateGraphicsPipelineState", device);
-	if (DX12IsInternalReplay())
+	if (DX12InternalReplayState::IsActive())
 		return DX12CreateGraphicsPipelineStateOriginal(device, desc, riid, pipelineState);
 	DX12GraphicsPsoReplacement replacement;
 	const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc = desc;
@@ -123,7 +126,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateComputePipelineState(
 	REFIID riid, void **pipelineState)
 {
 	LogDeviceHookCall("ID3D12Device::CreateComputePipelineState", device);
-	if (DX12IsInternalReplay())
+	if (DX12InternalReplayState::IsActive())
 		return DX12CreateComputePipelineStateOriginal(device, desc, riid, pipelineState);
 	DX12ComputePsoReplacement replacement;
 	const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc = desc;
@@ -173,7 +176,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePipelineState(
 	LogDeviceHookCall("ID3D12Device2::CreatePipelineState", device);
 	auto original = GetDeviceOriginal(
 		device, 47, gOrigCreatePipelineState, "ID3D12Device2::CreatePipelineState");
-	if (DX12IsInternalReplay())
+	if (DX12InternalReplayState::IsActive())
 		return original ? original(device, desc, riid, pipelineState) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, pipelineState) : E_FAIL;
 	if (SUCCEEDED(hr) && desc)
@@ -190,7 +193,7 @@ static HRESULT STDMETHODCALLTYPE HookedDeviceFactoryCreateDevice(
 	auto original = GetDeviceOriginal(
 		factory, 9, gOrigDeviceFactoryCreateDevice, "ID3D12DeviceFactory::CreateDevice");
 	HRESULT hr = original ? original(factory, adapter, featureLevel, riid, device) : E_FAIL;
-	DX12LogJsonFunc("ID3D12DeviceFactory::CreateDevice",
+	DX12LogManager::JsonFunc("ID3D12DeviceFactory::CreateDevice",
 		"\"adapter\":\"%p\",\"featureLevel\":\"0x%x\",\"hr\":\"0x%lx\",\"device\":\"%p\"",
 		adapter, featureLevel, hr, device ? *device : nullptr);
 	if (SUCCEEDED(hr) && device && *device)
@@ -220,7 +223,7 @@ void DX12HookDevice(IUnknown *device)
 	DX12InstallVTableHooks(baseDevice, deviceHooks);
 	DX12HookResourceMetadata(baseDevice);
 	DX12HookCommandListCreation(baseDevice);
-	DX12LogJsonFunc("DeviceHooksReady", "\"device\":\"%p\"", baseDevice);
+	DX12LogManager::JsonFunc("DeviceHooksReady", "\"device\":\"%p\"", baseDevice);
 
 	baseDevice->Release();
 
@@ -265,11 +268,11 @@ void DX12HookDeviceFromCommandQueue(IUnknown *commandQueue)
 	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
 		return;
 
-	DX12SetCommandQueue(queue);
+	DX12CommandQueueState::Set(queue);
 
 	ID3D12Device *device = nullptr;
 	HRESULT hr = queue->GetDevice(IID_PPV_ARGS(&device));
-	DX12LogJsonFunc("ID3D12CommandQueue::GetDevice",
+	DX12LogManager::JsonFunc("ID3D12CommandQueue::GetDevice",
 		"\"hr\":\"0x%lx\",\"device\":\"%p\"", hr, device);
 	DX12HookCommandQueue(queue);
 	if (SUCCEEDED(hr) && device) {
@@ -278,3 +281,5 @@ void DX12HookDeviceFromCommandQueue(IUnknown *commandQueue)
 	}
 	queue->Release();
 }
+
+

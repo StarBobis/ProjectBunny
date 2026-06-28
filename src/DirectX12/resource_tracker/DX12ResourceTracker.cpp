@@ -55,7 +55,7 @@ static bool DescriptorHeapIsShaderVisible(const DescriptorHeapRecord &heap)
 static bool ShouldStoreCreatedDescriptorInHeapSlot(const DescriptorHeapRecord &heap)
 {
 	return DescriptorHeapIsShaderVisible(heap) ||
-		DX12IsHuntingMode() ||
+		DX12RuntimeState::IsHuntingMode() ||
 		DX12FrameAnalysis::IsActive() ||
 		DX12FrameAnalysis::IsCaptureRequested() ||
 		DX12FrameAnalysis::IsCapturing();
@@ -122,7 +122,7 @@ static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot,
 {
 	if (!heap || slot >= heap->slotHistory.size() || slot >= heap->slotHistoryEpochs.size())
 		return;
-	if (!DX12IsHuntingMode() && !DX12FrameAnalysis::IsActive() &&
+	if (!DX12RuntimeState::IsHuntingMode() && !DX12FrameAnalysis::IsActive() &&
 			!DX12FrameAnalysis::IsCaptureRequested() && !DX12FrameAnalysis::IsCapturing())
 		return;
 	// Hunting needs RenderDoc-like event granularity: later descriptor heap
@@ -985,13 +985,13 @@ void FillUavBufferView(DescriptorRecord *record)
 
 void LogResourceTrackerStatsLocked()
 {
-	const LONG present = DX12GetPresentCount();
+	const LONG present = DX12RuntimeState::GetPresentCount();
 	const LONG last = InterlockedCompareExchange(&gLastResourceStatsPresent, 0, 0);
 	if (present < last + kResourceStatsLogInterval)
 		return;
 	if (InterlockedCompareExchange(&gLastResourceStatsPresent, present, last) != last)
 		return;
-	DX12LogDebugJsonFunc("DX12ResourceTrackerStats",
+	DX12LogManager::DebugJsonFunc("DX12ResourceTrackerStats",
 		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
 		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
 		"\"descriptorSlots\":%zu,\"shaderVisibleDescriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,\"descriptorHistoryEntries\":%zu,"
@@ -1197,7 +1197,7 @@ void RecordDescriptor(DescriptorRecord &&record)
 
 void DX12PrimeDescriptorHistoryForHunting()
 {
-	if (!DX12IsHuntingMode())
+	if (!DX12RuntimeState::IsHuntingMode())
 		return;
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
@@ -1219,7 +1219,7 @@ void DX12PrimeDescriptorHistoryForHunting()
 			primed++;
 		}
 	}
-	DX12LogJsonFunc("DX12DescriptorHistoryPrime",
+	DX12LogManager::JsonFunc("DX12DescriptorHistoryPrime",
 		"\"heaps\":%zu,\"occupied\":%zu,\"primed\":%zu,\"epoch\":%llu,\"historyEntries\":%zu",
 		gDescriptorHeaps.size(),
 		occupied,
@@ -1240,12 +1240,12 @@ UINT64 CurrentDescriptorEpoch()
 
 bool ShouldTrackFullDescriptorMetadata()
 {
-	return DX12IsHuntingMode();
+	return DX12RuntimeState::IsHuntingMode();
 }
 
 bool ShouldTrackComputeDescriptorMetadata()
 {
-	return DX12IsHuntingMode() ||
+	return DX12RuntimeState::IsHuntingMode() ||
 		DX12ModNeedsShaderDescriptorTracking() ||
 		DX12ModNeedsPreSkinningUavProbe();
 }
@@ -1260,12 +1260,12 @@ bool ShouldTrackDescriptorCreationMetadata()
 
 bool ShouldTrackResourceMetadata()
 {
-	return DX12IsHuntingMode();
+	return DX12RuntimeState::IsHuntingMode();
 }
 
 bool ShouldTrackResourceCreationMetadata()
 {
-	return DX12IsHuntingMode() ||
+	return DX12RuntimeState::IsHuntingMode() ||
 		DX12ModNeedsPresentReplacement() ||
 		DX12ModNeedsPreSkinningUavProbe();
 }
@@ -1476,3 +1476,4 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 	}
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
+

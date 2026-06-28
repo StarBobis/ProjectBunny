@@ -2,7 +2,7 @@
 
 #include "DX12ResourceDumpUtil.h"
 #include "DX12ResourceTracker.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
 
 D3D12_RESOURCE_STATES DX12DumpGuessDescriptorSourceState(const DX12FrameResourceBinding &binding)
 {
@@ -300,7 +300,7 @@ bool DX12DumpPrepareHuntingMetadataTextureTask(
 	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (!device || !task || !DX12IsHuntingMode())
+	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
 		return false;
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
 		!DX12DumpIsTextureResourceDimension(descriptor.resourceDesc.Dimension))
@@ -325,7 +325,7 @@ bool DX12DumpPrepareHuntingResourceTextureTask(
 	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (!device || !task || !DX12IsHuntingMode())
+	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
 		return false;
 	if (!resource.resource || !resource.hasResourceDesc ||
 		!DX12DumpIsTextureResourceDimension(resource.resourceDesc.Dimension))
@@ -382,10 +382,10 @@ bool DX12DumpPrepareDescriptorTaskForCurrentMode(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (DX12IsModMode())
+	if (DX12RuntimeState::IsModMode())
 		return PrepareModDescriptorTask(device, binding, task,
 			frameReadbackBytes, frameReadbackBudgetBytes);
-	if (DX12IsHuntingMode())
+	if (DX12RuntimeState::IsHuntingMode())
 		return PrepareHuntingDescriptorTask(device, binding, task,
 			frameReadbackBytes, frameReadbackBudgetBytes);
 	return false;
@@ -395,10 +395,10 @@ bool DX12DumpPrepareIaBufferTaskForCurrentMode(
 	ID3D12Device *device, const DX12FrameIaBufferBinding &buffer, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (DX12IsModMode())
+	if (DX12RuntimeState::IsModMode())
 		return PrepareModIaBufferTask(device, buffer, task,
 			frameReadbackBytes, frameReadbackBudgetBytes);
-	if (DX12IsHuntingMode())
+	if (DX12RuntimeState::IsHuntingMode())
 		return PrepareHuntingIaBufferTask(device, buffer, task,
 			frameReadbackBytes, frameReadbackBudgetBytes);
 	return false;
@@ -425,3 +425,5 @@ size_t DX12DumpCountCopiedTasks(const std::vector<DumpTask> &tasks)
 	}
 	return copied;
 }
+
+

@@ -458,7 +458,7 @@ static bool AdjustBufferResourceDescCommon(D3D12_RESOURCE_DESC *desc, const char
 #endif
 	desc->Width = match.overrideByteWidth;
 #if defined(_DEBUG)
-	DX12LogDebugJsonFunc("DX12VertexLimitRaiseResize",
+	DX12LogManager::DebugJsonFunc("DX12VertexLimitRaiseResize",
 		"\"source\":\"%s\",\"section\":\"%S\",\"oldWidth\":%llu,\"newWidth\":%llu,\"overrideByteStride\":%u,\"overrideVertexCount\":%u,\"flags\":%u",
 		source ? source : "", match.section.c_str(),
 		static_cast<unsigned long long>(oldWidth),
@@ -543,7 +543,7 @@ bool DX12ModAdjustUavDesc(
 #endif
 	desc->Buffer.NumElements = static_cast<UINT>(match.overrideNumElements);
 #if defined(_DEBUG)
-	DX12LogDebugJsonFunc("DX12VertexLimitRaiseUav",
+	DX12LogManager::DebugJsonFunc("DX12VertexLimitRaiseUav",
 		"\"source\":\"%s\",\"section\":\"%S\",\"oldNumElements\":%u,\"newNumElements\":%u,\"bytesPerElement\":%u,\"resourceWidth\":%llu",
 		source ? source : "", match.section.c_str(), oldNumElements,
 		desc->Buffer.NumElements, bytesPerElement,
@@ -1092,7 +1092,7 @@ bool DX12ModRuntimeLoad(
 	
 	SetBasePaths(configPath);
 	if (!Bunny::LoadMigotoIniWithIncludes(configPath, &iniLoad)) {
-		DX12LogJsonFunc("DX12ModRuntime",
+		DX12LogManager::JsonFunc("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",
 			configPath ? configPath : L"", iniLoad.document.Error().c_str());
 		if (statusMessage)
@@ -1260,7 +1260,7 @@ bool DX12ModRuntimeLoad(
 	ReleaseSRWLockExclusive(&gModLock);
 	ClearPreSkinRuntimeState();
 
-	DX12LogJsonFunc("DX12ModRuntime",
+	DX12LogManager::JsonFunc("DX12ModRuntime",
 		"\"status\":\"loaded\",\"path\":\"%S\",\"iniFiles\":%zu,\"errors\":%zu,\"warnings\":%zu,\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"safeMode\":%s,\"activeShaderOverrides\":%s,\"activeTextureOverrides\":%s,\"shaderTriggeredTextureOverrides\":%s,\"descriptorTextureOverrideTriggers\":%s,\"preSkinCandidates\":%s,\"preSkinProbeEnabled\":%s,\"presentRuntimeEffect\":%s,\"shaderFixes\":\"%S\",\"generation\":%llu",
 		configPath ? configPath : L"", iniLoad.loadedFiles.size(), iniLoad.errors.size(), iniLoad.warnings.size(),
 		loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount, loadedResourceCount, loadedCommandListCount,
@@ -1277,26 +1277,26 @@ bool DX12ModRuntimeLoad(
 	if (safeModeActive &&
 	    (loadedShaderOverrideCount || loadedShaderRegexCount ||
 	     loadedTextureOverrideCount || loadedPresentRuntimeEffect)) {
-		DX12LogJsonFunc("DX12ModRuntimeDisabled",
+		DX12LogManager::JsonFunc("DX12ModRuntimeDisabled",
 			"\"reason\":\"safe_mode\",\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"preSkinCandidates\":%s,\"presentRuntimeEffect\":%s",
 			loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount,
 			loadedPreSkinTextureOverrideCandidates ? "true" : "false",
 			loadedPresentRuntimeEffect ? "true" : "false");
 	}
 	for (const std::wstring &loadedFile : iniLoad.loadedFiles) {
-		DX12LogJsonFunc("DX12ModRuntimeIni",
+		DX12LogManager::JsonFunc("DX12ModRuntimeIni",
 			"\"status\":\"loaded\",\"path\":\"%S\"", loadedFile.c_str());
 	}
 	for (const std::wstring &error : iniLoad.errors) {
-		DX12LogJsonFunc("DX12ModRuntimeIni",
+		DX12LogManager::JsonFunc("DX12ModRuntimeIni",
 			"\"status\":\"error\",\"message\":\"%S\"", error.c_str());
 	}
 	for (const std::wstring &warning : iniLoad.warnings) {
-		DX12LogJsonFunc("DX12ModRuntimeIni",
+		DX12LogManager::JsonFunc("DX12ModRuntimeIni",
 			"\"status\":\"warning\",\"message\":\"%S\"", warning.c_str());
 	}
 	for (const DX12VertexLimitRaiseConfig &vlr : loadedVertexLimitRaiseConfigs) {
-		DX12LogJsonFunc("DX12VertexLimitRaiseConfig",
+		DX12LogManager::JsonFunc("DX12VertexLimitRaiseConfig",
 			"\"section\":\"%S\",\"overrideByteStride\":%u,\"overrideVertexCount\":%u,\"overrideByteWidth\":%llu,\"uavByteStride\":%u,\"overrideNumElements\":%llu",
 			vlr.section.c_str(), vlr.overrideByteStride, vlr.overrideVertexCount,
 			static_cast<unsigned long long>(vlr.overrideByteWidth),
@@ -1330,22 +1330,23 @@ bool DX12ModRuntimeReload()
 	configPath = gConfigPath;
 	ReleaseSRWLockShared(&gModLock);
 	if (configPath.empty()) {
-		DX12LogJsonFunc("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"empty_config_path\"");
+		DX12LogManager::JsonFunc("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"empty_config_path\"");
 		return false;
 	}
-	DX12LogJsonFunc("DX12ModRuntimeReload", "\"status\":\"begin\",\"path\":\"%S\"", configPath.c_str());
+	DX12LogManager::JsonFunc("DX12ModRuntimeReload", "\"status\":\"begin\",\"path\":\"%S\"", configPath.c_str());
 	std::wstring status;
 	bool hasWarnings = false;
 	bool hasErrors = false;
 	if (!DX12ModRuntimeLoad(configPath.c_str(), &status, &hasWarnings, &hasErrors)) {
-		DX12SetOverlayError(status.c_str());
+		DX12OverlayStatusState::SetError(status.c_str());
 		return false;
 	}
 	if (hasErrors)
-		DX12SetOverlayError(status.c_str());
+		DX12OverlayStatusState::SetError(status.c_str());
 	else if (hasWarnings)
-		DX12SetOverlayWarning(status.c_str());
+		DX12OverlayStatusState::SetWarning(status.c_str());
 	else
-		DX12SetOverlayStatus(status.c_str());
+		DX12OverlayStatusState::SetStatus(status.c_str());
 	return true;
 }
+

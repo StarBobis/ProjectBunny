@@ -8,7 +8,8 @@
 #include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
-#include "DX12State.h"
+#include "DX12OverlayStatusState.hpp"
+#include "DX12RuntimeState.hpp"
 #include "DX12UiActions.h"
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
@@ -83,7 +84,7 @@ static void SetSharedOverlayWindow(HWND hwnd)
 	AcquireSRWLockExclusive(&gUiLock);
 	gOverlayWindow = hwnd;
 	ReleaseSRWLockExclusive(&gUiLock);
-	DX12SetOverlayWindow(hwnd);
+	DX12OverlayStatusState::SetWindow(hwnd);
 }
 
 static bool GetGameWindowRect(HWND hwnd, RECT *rect)
@@ -129,7 +130,7 @@ static HWND AddControl(HWND parent, const wchar_t *className, const wchar_t *tex
 	HWND control = CreateWindowExW(
 		0, className, text, WS_CHILD | WS_VISIBLE | style,
 		x, y, width, height, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-		DX12GetModule(), nullptr);
+		DX12RuntimeState::GetModule(), nullptr);
 	if (control && gUiFont)
 		SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(gUiFont), TRUE);
 	return control;
@@ -226,7 +227,7 @@ static void UpdateStatusText()
 	if (!gStatusLabel)
 		return;
 	wchar_t status[1024] = {};
-	DX12GetOverlayStatus(status, ARRAYSIZE(status));
+	DX12OverlayStatusState::GetStatus(status, ARRAYSIZE(status));
 	if (!status[0])
 		wcsncpy_s(status, L"3DMigoto DX12 hook alive", _TRUNCATE);
 	SendMessageW(gStatusLabel, SB_SETTEXT, 0, reinterpret_cast<LPARAM>(status));
@@ -299,7 +300,7 @@ static HWND AddStatusBar(HWND parent)
 		WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 		0, 0, 0, 0, parent,
 		reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATUS_BAR)),
-		DX12GetModule(), nullptr);
+		DX12RuntimeState::GetModule(), nullptr);
 	if (status && gUiFont) {
 		SendMessageW(status, WM_SETFONT, reinterpret_cast<WPARAM>(gUiFont), TRUE);
 		SendMessageW(status, SB_SETMINHEIGHT, 24, 0);
@@ -319,7 +320,7 @@ static void LayoutStatusBar(HWND hwnd)
 	int parts[] = { client.right - 180, -1 };
 	SendMessageW(gStatusLabel, SB_SETPARTS, ARRAYSIZE(parts), reinterpret_cast<LPARAM>(parts));
 	SendMessageW(gStatusLabel, SB_SETTEXT, 1, reinterpret_cast<LPARAM>(
-		DX12IsHuntingMode() ? L"Mode: Hunting" : L"Mode: Mod"));
+		DX12RuntimeState::IsHuntingMode() ? L"Mode: Hunting" : L"Mode: Mod"));
 }
 
 static void BuildControls(HWND hwnd)
@@ -407,7 +408,7 @@ static bool RegisterOverlayWindowClass()
 	WNDCLASSEXW wc = {};
 	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = OverlayWndProc;
-	wc.hInstance = DX12GetModule();
+	wc.hInstance = DX12RuntimeState::GetModule();
 	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 	wc.lpszClassName = kOverlayWindowClass;
@@ -438,14 +439,14 @@ static DWORD WINAPI UiThreadProc(void*)
 		L"Hunting Window",
 		kOverlayStyle,
 		CW_USEDEFAULT, CW_USEDEFAULT, width, height,
-		nullptr, nullptr, DX12GetModule(), nullptr);
+		nullptr, nullptr, DX12RuntimeState::GetModule(), nullptr);
 	if (!hwnd) {
 		InterlockedExchange(&gThreadStarted, 0);
 		return 0;
 	}
 
 	SetSharedOverlayWindow(hwnd);
-	DX12LogJsonFunc("DX12NativeOverlay",
+	DX12LogManager::JsonFunc("DX12NativeOverlay",
 		"\"event\":\"thread_started\",\"hwnd\":\"%p\"", hwnd);
 	FollowGameWindow();
 
@@ -458,7 +459,7 @@ static DWORD WINAPI UiThreadProc(void*)
 
 	if (IsWindow(hwnd))
 		DestroyWindow(hwnd);
-	DX12LogJsonFunc("DX12NativeOverlay", "\"event\":\"thread_stopped\"");
+	DX12LogManager::JsonFunc("DX12NativeOverlay", "\"event\":\"thread_stopped\"");
 	InterlockedExchange(&gThreadStarted, 0);
 	return 0;
 }
@@ -472,7 +473,7 @@ static void EnsureUiThread()
 	if (!gUiThread) {
 		gUiThreadId = 0;
 		InterlockedExchange(&gThreadStarted, 0);
-		DX12LogJsonFunc("DX12NativeOverlay", "\"event\":\"thread_create_failed\"");
+		DX12LogManager::JsonFunc("DX12NativeOverlay", "\"event\":\"thread_create_failed\"");
 	}
 }
 
@@ -513,3 +514,5 @@ bool DX12NativeOverlayIsOverlayWindow(HWND hwnd)
 	ReleaseSRWLockShared(&gUiLock);
 	return result;
 }
+
+

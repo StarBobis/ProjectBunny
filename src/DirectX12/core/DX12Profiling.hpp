@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <wchar.h>
 
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
 
 class DX12Profiling
 {
@@ -353,7 +353,7 @@ inline void DX12Profiling::EndFrameState()
 
 	if (mode == Mode::SUMMARY) {
 		FlushFrameState();
-	} else if (DX12VerboseDiagnosticsEnabled()) {
+	} else if (DX12LogManager::VerboseDiagnosticsEnabled()) {
 		LogFrameStatsState();
 	}
 
@@ -366,8 +366,8 @@ inline void DX12Profiling::ToggleState()
 	if (mode == Mode::NONE) {
 		mode = Mode::SUMMARY;
 		InterlockedExchange(&collectCounters, 1);
-		DX12Log("DX12 profiling enabled (SUMMARY mode) - press F11 to toggle\n");
-		DX12LogJsonFunc("DX12Profiling", "\"status\":\"enabled\",\"mode\":\"SUMMARY\"");
+		DX12LogManager::Text("DX12 profiling enabled (SUMMARY mode) - press F11 to toggle\n");
+		DX12LogManager::JsonFunc("DX12Profiling", "\"status\":\"enabled\",\"mode\":\"SUMMARY\"");
 	} else {
 		if (mode == Mode::SUMMARY)
 			FlushFrameState();
@@ -375,8 +375,8 @@ inline void DX12Profiling::ToggleState()
 		InterlockedExchange(&collectCounters, 0);
 		if (!ShouldCollectCounters())
 			ResetFrame();
-		DX12Log("DX12 profiling disabled\n");
-		DX12LogJsonFunc("DX12Profiling", "\"status\":\"disabled\"");
+		DX12LogManager::Text("DX12 profiling disabled\n");
+		DX12LogManager::JsonFunc("DX12Profiling", "\"status\":\"disabled\"");
 	}
 }
 
@@ -466,7 +466,7 @@ inline void DX12Profiling::LogFrameStatsState()
 	LONG total = draws + Dispatch.calls + SetPipelineState.calls + bindings +
 		ResourceBarrier.calls;
 
-	DX12LogDebugJsonFunc("DX12FrameStats",
+	DX12LogManager::DebugJsonFunc("DX12FrameStats",
 		"\"present\":%ld,"
 		"\"draws\":%ld,\"dispatch\":%ld,\"setPSO\":%ld,\"bindings\":%ld,"
 		"\"rootTables\":%ld,\"rootCBV_SRV_UAV\":%ld,"
@@ -533,7 +533,7 @@ inline void DX12Profiling::FlushFrameState()
 	all.AccumulateFrom(bindings);
 	all.AccumulateFrom(ResourceBarrier);
 
-	DX12LogDebugJsonFunc("DX12ProfilingFrame",
+	DX12LogManager::DebugJsonFunc("DX12ProfilingFrame",
 		"\"present\":%ld,"
 		"\"drawInstanced\":%ld,\"drawIndexedInstanced\":%ld,\"drawTotal\":%ld,"
 		"\"dispatch\":%ld,"
@@ -604,3 +604,5 @@ inline void DX12Profiling::FlushFrameState()
 		FastForwardHits.calls,
 		all.calls > 0 ? (double)FastForwardHits.calls * 100.0 / (double)all.calls : 0.0);
 }
+
+

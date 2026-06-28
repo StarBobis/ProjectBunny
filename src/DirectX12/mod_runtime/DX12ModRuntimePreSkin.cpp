@@ -16,12 +16,12 @@ static void LogPreSkinSrvProbe(
 {
 #if defined(_DEBUG)
 	if (!binding) {
-		DX12LogDebugJsonFunc("DX12PreSkinSrvProbe",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinSrvProbe",
 			"\"status\":\"%s\"", status ? status : "");
 		return;
 	}
 
-	DX12LogDebugJsonFunc("DX12PreSkinSrvProbe",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinSrvProbe",
 		"\"status\":\"%s\",\"section\":\"%S\",\"root\":%u,\"range\":%u,\"tRegister\":%u,\"space\":%u,\"offset\":%u,\"rootDescriptor\":%s,\"hasDescriptor\":%s,\"kind\":\"%s\",\"viewDimension\":%u,\"resource\":\"%p\",\"gpuVa\":\"0x%llx\",\"viewBytes\":%llu,\"stride\":%u,\"srvRegister\":%u,\"hasMappedResource\":%s",
 		status ? status : "",
 		config ? config->section.c_str() : L"",
@@ -102,7 +102,7 @@ static void LogPreSkinCbvProbe(
 		}
 	}
 
-	DX12LogDebugJsonFunc("DX12PreSkinCbvProbe",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinCbvProbe",
 		"\"section\":\"%S\",\"root\":%u,\"range\":%u,\"bRegister\":%u,\"space\":%u,\"offset\":%u,\"rootDescriptor\":%s,\"hasDescriptor\":%s,\"resource\":\"%p\",\"gpuVa\":\"0x%llx\",\"resourceOffset\":%llu,\"viewBytes\":%llu,\"heapType\":%u,\"hasHeapType\":%s,\"mapped\":%s,\"mapHr\":\"0x%lx\",\"u32\":\"%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\",\"u64_0\":\"0x%016llx\",\"u64_1\":\"0x%016llx\",\"u64_2\":\"0x%016llx\",\"u64_3\":\"0x%016llx\"",
 		config.section.c_str(),
 		cbv.rootParameterIndex, cbv.rangeIndex,
@@ -152,7 +152,7 @@ static bool ReadPreSkinCbvBytesLocked(
 		return false;
 
 	const DX12PreSkinCbvReadCacheKey key = {
-		resource, sourceOffset, viewBytes, DX12GetPresentCount()
+		resource, sourceOffset, viewBytes, DX12RuntimeState::GetPresentCount()
 	};
 	auto cached = gPreSkinCbvReadCache.find(key);
 	if (cached != gPreSkinCbvReadCache.end()) {
@@ -217,7 +217,7 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	HRESULT hr = E_FAIL;
 	if (!ReadPreSkinCbvBytesLocked(cbv.descriptor.resource, sourceOffset, viewBytes, &bytes, &hr)) {
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinCbvPatch",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinCbvPatch",
 			"\"status\":\"skip_map_failed\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"hr\":\"0x%lx\"",
 			config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister, hr);
 #endif
@@ -245,7 +245,7 @@ static bool PatchPreSkinVertexCountCbvLocked(
 		if (bytes.size() >= sizeof(firstDword))
 			memcpy(&firstDword, bytes.data(), sizeof(firstDword));
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinCbvPatch",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinCbvPatch",
 			"\"status\":\"skip_count_mismatch\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"expected\":%u,\"new\":%u,\"bytes\":%u",
 			config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
 			firstDword, expectedOriginalVertexCount, overrideVertexCount, viewBytes);
@@ -310,7 +310,7 @@ static bool PatchPreSkinVertexCountCbvLocked(
 		if (offsetUsed >= sizeof(offsetText) - 1)
 			break;
 	}
-	DX12LogDebugJsonFunc("DX12PreSkinCbvPatch",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinCbvPatch",
 		"\"status\":\"patched\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u,\"offsets\":\"%s\",\"patches\":%zu",
 		config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
 		originalVertexCount, overrideVertexCount, viewBytes, offsetText, patchOffsets.size());
@@ -393,7 +393,7 @@ static bool FindPreSkinProducerByUavHashLocked(
 		DX12UavHashTextureOverrideMatch candidateMatch;
 		const bool matched = FindUavHashTextureOverrideLocked(hash, &candidateMatch);
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinUavHashCandidate",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinUavHashCandidate",
 			"\"hash\":\"%08x\",\"matched\":%s,\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"viewBytes\":%llu,\"stride\":%u,\"resource\":\"%p\"",
 			hash, matched ? "true" : "false",
 			it->rootParameterIndex, it->rangeIndex, it->shaderRegister,
@@ -561,7 +561,7 @@ static void LogPreSkinMatchCsProbeLimited(
 	AppendComputeBindingHashList(srvs, true, srvText, sizeof(srvText));
 	AppendComputeCbvList(cbvs, cbvText, sizeof(cbvText));
 	AppendComputeRootConstantsList(rootConstants, rootText, sizeof(rootText));
-	DX12LogJsonFunc("DX12PreSkinMatchCsProbe",
+	DX12LogManager::JsonFunc("DX12PreSkinMatchCsProbe",
 		"\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"uavBytes\":%llu,\"matchUavBytes\":%llu,\"inputMatched\":%s,\"uavs\":\"%s\",\"srvs\":\"%s\",\"cbvs\":\"%s\",\"rootConstants\":\"%s\"",
 		static_cast<unsigned long long>(csHash),
 		candidate.config.originalSection.empty() ? candidate.config.section.c_str() : candidate.config.originalSection.c_str(),
@@ -722,7 +722,7 @@ static void LogPreSkinSrvHashProbeLimited(
 	ReleaseSRWLockExclusive(&logLock);
 	if (!emit)
 		return;
-	DX12LogDebugJsonFunc("DX12PreSkinSrvHashProbe",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinSrvHashProbe",
 		"\"section\":\"%S\",\"status\":\"%s\",\"tRegister\":%u,\"expected\":\"%08x\",\"matched\":%s,\"descriptorHash\":\"%08x\",\"offset\":%llu,\"bytes\":%llu,\"stride\":%u,\"root\":%u,\"range\":%u,\"space\":%u,\"descriptorOffset\":%u,\"resource\":\"%p\"",
 		config.originalSection.empty() ? config.section.c_str() : config.originalSection.c_str(),
 		status ? status : "",
@@ -894,7 +894,7 @@ static void LogPreSkinMatchCsOutputProbeLimited(
 		return;
 	char uavText[768] = {};
 	AppendComputeBindingHashList(uavs, false, uavText, sizeof(uavText));
-	DX12LogDebugJsonFunc("DX12PreSkinMatchCsOutput",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinMatchCsOutput",
 		"\"status\":\"no_uav_output\",\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"uavs\":%zu,\"uavList\":\"%s\"",
 		static_cast<unsigned long long>(csHash),
 		match.config.originalSection.empty() ? match.config.section.c_str() : match.config.originalSection.c_str(),
@@ -1044,7 +1044,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		ReleaseSRWLockExclusive(&logLock);
 		if (!emit)
 			return;
-		DX12LogDebugJsonFunc("DX12PreSkinDescriptorPatch",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorPatch",
 			"\"stage\":\"%s\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%u,\"descriptors\":%u",
 			stage ? stage : "", section ? section :
 			(config.originalSection.empty() ? config.section.c_str() : config.originalSection.c_str()),
@@ -1119,7 +1119,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 #if defined(_DEBUG)
 		const LONG hitLogCount = InterlockedIncrement(&gPreSkinDescriptorAbortCacheHitLogCount);
 		if (hitLogCount <= 32) {
-			DX12LogDebugJsonFunc("DX12PreSkinningApply",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 				"\"status\":\"abort_cache_hit\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%u,\"descriptors\":%u,\"cbvs\":%zu",
 				section ? section : L"", triggerHash,
 				0u, 0u, cbvs.size());
@@ -1174,7 +1174,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		if (!canPatchCount) {
 			StorePreSkinDescriptorPatchAbort(abortCacheKey);
 #if defined(_DEBUG)
-			DX12LogDebugJsonFunc("DX12PreSkinningApply",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 				"\"status\":\"resized_count_unpatchable\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"old\":%u,\"new\":%u,\"cbvs\":%zu",
 				section ? section : L"", triggerHash,
 				originalVertexCount, overrideVertexCount, cbvs.size());
@@ -1316,7 +1316,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 
 	if (!patchedAnySrv) {
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinningApply",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 			"\"status\":\"skip_no_srv_patched\",\"section\":\"%S\",\"triggerHash\":\"%08x\"",
 			section ? section : L"", triggerHash);
 #endif
@@ -1346,7 +1346,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			temporaryResources.clear();
 			StorePreSkinDescriptorPatchAbort(abortCacheKey);
 #if defined(_DEBUG)
-			DX12LogDebugJsonFunc("DX12PreSkinningApply",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 				"\"status\":\"resized_count_unpatched\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"old\":%u,\"new\":%u,\"cbvs\":%zu",
 				section ? section : L"", triggerHash,
 				originalVertexCount, overrideVertexCount, cbvs.size());
@@ -1403,7 +1403,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 #if defined(_DEBUG)
-	DX12LogDebugJsonFunc("DX12PreSkinningApply",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 		"\"status\":\"srv_table_patched\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%zu,\"descriptors\":%u",
 		section ? section : L"", triggerHash, tables.size(), totalDescriptors);
 #endif
@@ -1517,7 +1517,7 @@ static bool ApplyPreSkinBindingPatchLocked(
 
 #if defined(_DEBUG)
 	if (!alreadyPatched) {
-		DX12LogDebugJsonFunc("DX12PreSkinningApply",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 			"\"status\":\"patched\",\"section\":\"%S\",\"resource\":\"%S\",\"triggerHash\":\"%08x\",\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"targetCpu\":\"0x%zx\",\"bytes\":%llu,\"stride\":%u,\"producerResource\":\"%p\",\"producerBytes\":%llu,\"producerStride\":%u",
 			section ? section : L"", replacement->name.c_str(), triggerHash,
 			binding.rootParameterIndex, binding.rangeIndex,
@@ -1596,7 +1596,7 @@ static bool ApplyPreSkinSrvInputPatchesLocked(
 		changed = true;
 
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12PreSkinningSrvPatch",
+		DX12LogManager::DebugJsonFunc("DX12PreSkinningSrvPatch",
 			"\"status\":\"patched\",\"resource\":\"%S\",\"csTRegister\":%u,\"tRegister\":%u,\"targetCpu\":\"0x%zx\",\"bytes\":%llu,\"srvBytes\":%llu,\"stride\":%u",
 			resource->name.c_str(), replacementBinding->replaceSlot, srv.shaderRegister,
 			srv.descriptor.cpuHandle,
@@ -1662,7 +1662,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	if (hashMatched) {
 		if (!hasExplicitDispatch) {
 #if defined(_DEBUG)
-			DX12LogDebugJsonFunc("DX12PreSkinningApply",
+			DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 				"\"status\":\"skip_missing_explicit_dispatch\",\"section\":\"%S\",\"handlingSkip\":%s",
 				hashMatch.config.section.c_str(),
 				hashMatch.config.handlingSkip ? "true" : "false");
@@ -1862,12 +1862,13 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	}
 
 #if defined(_DEBUG)
-	DX12LogDebugJsonFunc("DX12PreSkinningApply",
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 		"\"status\":\"post_dispatch\",\"section\":\"%S\",\"present\":%ld,\"root\":%u,\"bytes\":%llu,\"stride\":%u,\"restoredDescriptors\":%zu,\"restoredTables\":%zu",
 		state.activeConfig.section.c_str(),
-		DX12GetPresentCount(),
+		DX12RuntimeState::GetPresentCount(),
 		state.rootParameterIndex,
 		static_cast<unsigned long long>(state.byteWidth), state.stride,
 		restoredDescriptorCount, restoredTableCount);
 #endif
 }
+

@@ -19,7 +19,9 @@
 #include "DX12Json.hpp"
 #include "DX12ResourceDump.h"
 #include "DX12ResourceTracker.h"
-#include "DX12State.h"
+#include "DX12LogManager.hpp"
+#include "DX12OverlayStatusState.hpp"
+#include "DX12RuntimeState.hpp"
 
 struct ShaderRecord
 {
@@ -262,7 +264,7 @@ static bool GetShaderFixesDirectory(wchar_t *path, size_t pathCount)
 {
 	if (!path || pathCount == 0)
 		return false;
-	if (!GetModuleFileNameW(DX12GetModule(), path, static_cast<DWORD>(pathCount)))
+	if (!GetModuleFileNameW(DX12RuntimeState::GetModule(), path, static_cast<DWORD>(pathCount)))
 		return false;
 	PathRemoveFileSpecW(path);
 	PathAppendW(path, L"ShaderFixes");
@@ -351,7 +353,7 @@ static bool EnsureD3DDisassemble()
 	}
 
 	if (!gD3DCompiler) {
-		DX12Log("Failed to load d3dcompiler_47.dll for shader disassembly, error=%lu\n",
+		DX12LogManager::Text("Failed to load d3dcompiler_47.dll for shader disassembly, error=%lu\n",
 			GetLastError());
 		return false;
 	}
@@ -359,7 +361,7 @@ static bool EnsureD3DDisassemble()
 	gD3DDisassemble = reinterpret_cast<PFN_D3D_DISASSEMBLE>(
 		GetProcAddress(gD3DCompiler, "D3DDisassemble"));
 	if (!gD3DDisassemble) {
-		DX12Log("Failed to find D3DDisassemble in d3dcompiler_47.dll\n");
+		DX12LogManager::Text("Failed to find D3DDisassemble in d3dcompiler_47.dll\n");
 		return false;
 	}
 
@@ -381,7 +383,7 @@ static bool EnsureDXILDisassemble()
 	}
 
 	if (!gDXCompiler) {
-		DX12Log("Failed to load dxcompiler.dll for DXIL disassembly, error=%lu\n",
+		DX12LogManager::Text("Failed to load dxcompiler.dll for DXIL disassembly, error=%lu\n",
 			GetLastError());
 		return false;
 	}
@@ -389,13 +391,13 @@ static bool EnsureDXILDisassemble()
 	gDxcCreateInstance = reinterpret_cast<DxcCreateInstanceProc>(
 		GetProcAddress(gDXCompiler, "DxcCreateInstance"));
 	if (!gDxcCreateInstance) {
-		DX12Log("Failed to find DxcCreateInstance in dxcompiler.dll\n");
+		DX12LogManager::Text("Failed to find DxcCreateInstance in dxcompiler.dll\n");
 		return false;
 	}
 
 	HRESULT hr = gDxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&gDxcCompiler));
 	if (FAILED(hr) || !gDxcCompiler) {
-		DX12Log("Failed to create IDxcCompiler3 for DXIL disassembly hr=0x%lx\n", hr);
+		DX12LogManager::Text("Failed to create IDxcCompiler3 for DXIL disassembly hr=0x%lx\n", hr);
 		return false;
 	}
 
@@ -412,7 +414,7 @@ static bool WriteDXBCDisassemblyFile(const wchar_t *path, const ShaderRecord &re
 	HRESULT hr = gD3DDisassemble(
 		record.bytecode.data(), record.bytecode.size(), flags, nullptr, &disassembly);
 	if (FAILED(hr) || !disassembly) {
-		DX12Log("D3DDisassemble failed for %016llx-%s.bin hr=0x%lx\n",
+		DX12LogManager::Text("D3DDisassemble failed for %016llx-%s.bin hr=0x%lx\n",
 			static_cast<unsigned long long>(record.hash), record.stage.c_str(), hr);
 		return false;
 	}
@@ -442,7 +444,7 @@ static bool WriteDXILDisassemblyFile(const wchar_t *path, const ShaderRecord &re
 	IDxcResult *result = nullptr;
 	HRESULT hr = gDxcCompiler->Disassemble(&buffer, IID_PPV_ARGS(&result));
 	if (FAILED(hr) || !result) {
-		DX12Log("DXIL Disassemble failed for %016llx-%s.bin hr=0x%lx\n",
+		DX12LogManager::Text("DXIL Disassemble failed for %016llx-%s.bin hr=0x%lx\n",
 			static_cast<unsigned long long>(record.hash), record.stage.c_str(), hr);
 		return false;
 	}
@@ -450,7 +452,7 @@ static bool WriteDXILDisassemblyFile(const wchar_t *path, const ShaderRecord &re
 	HRESULT status = S_OK;
 	result->GetStatus(&status);
 	if (FAILED(status)) {
-		DX12Log("DXIL Disassemble status failed for %016llx-%s.bin status=0x%lx\n",
+		DX12LogManager::Text("DXIL Disassemble status failed for %016llx-%s.bin status=0x%lx\n",
 			static_cast<unsigned long long>(record.hash), record.stage.c_str(), status);
 		result->Release();
 		return false;
@@ -459,7 +461,7 @@ static bool WriteDXILDisassemblyFile(const wchar_t *path, const ShaderRecord &re
 	IDxcBlobUtf8 *disassembly = nullptr;
 	hr = result->GetOutput(DXC_OUT_DISASSEMBLY, IID_PPV_ARGS(&disassembly), nullptr);
 	if (FAILED(hr) || !disassembly) {
-		DX12Log("DXIL Disassemble output missing for %016llx-%s.bin hr=0x%lx\n",
+		DX12LogManager::Text("DXIL Disassemble output missing for %016llx-%s.bin hr=0x%lx\n",
 			static_cast<unsigned long long>(record.hash), record.stage.c_str(), hr);
 		result->Release();
 		return false;
@@ -1123,7 +1125,7 @@ static bool TryWritePsoResourceSummaryFile(
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		ok = false;
-		DX12Log("PSO resource summary skipped after exception=0x%lx\n",
+		DX12LogManager::Text("PSO resource summary skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
 	return ok;
@@ -1139,7 +1141,7 @@ static DX12FrameAnalysisDumpResult TryDumpBindingTrace(const wchar_t *dir)
 		result.ok = false;
 		result.failed = 1;
 		result.reason = "exception";
-		DX12Log("Binding trace skipped after exception=0x%lx\n", GetExceptionCode());
+		DX12LogManager::Text("Binding trace skipped after exception=0x%lx\n", GetExceptionCode());
 	}
 	return result;
 }
@@ -1154,7 +1156,7 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *d
 		result.ok = false;
 		result.failed = 1;
 		result.reason = "exception";
-		DX12Log("Current-frame resource files skipped after exception=0x%lx\n",
+		DX12LogManager::Text("Current-frame resource files skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
 	return result;
@@ -1170,7 +1172,7 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResourceTable(const wchar_
 		result.ok = false;
 		result.failed = 1;
 		result.reason = "exception";
-		DX12Log("Current-frame resource table skipped after exception=0x%lx\n",
+		DX12LogManager::Text("Current-frame resource table skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
 	return result;
@@ -1186,7 +1188,7 @@ static DX12FrameAnalysisDumpResult TryDumpResourceMetadata(const wchar_t *dir)
 		result.ok = false;
 		result.failed = 1;
 		result.reason = "exception";
-		DX12Log("Resource metadata skipped after exception=0x%lx\n",
+		DX12LogManager::Text("Resource metadata skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
 	return result;
@@ -1370,7 +1372,7 @@ void DX12RecordGraphicsPipelineState(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12SetOverlayStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 void DX12RecordComputePipelineState(
@@ -1402,7 +1404,7 @@ void DX12RecordComputePipelineState(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12SetOverlayStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 void DX12RecordPipelineStateStream(
@@ -1467,7 +1469,7 @@ void DX12RecordPipelineStateStream(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12SetOverlayStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 bool DX12GetPipelineStateShaderInfo(ID3D12PipelineState *pipelineState, DX12PsoShaderInfo *info)
@@ -1611,18 +1613,18 @@ void DX12DumpFrameAnalysis()
 {
 	wchar_t dir[MAX_PATH];
 	if (!GetDumpDirectory(dir, ARRAYSIZE(dir))) {
-		DX12Log("Failed to resolve DX12 frame analysis directory\n");
-		DX12SetOverlayStatus(L"F8 frame analysis failed: cannot create directory");
+		DX12LogManager::Text("Failed to resolve DX12 frame analysis directory\n");
+		DX12OverlayStatusState::SetStatus(L"F8 frame analysis failed: cannot create directory");
 		return;
 	}
 
-	DX12SetOverlayStatus(L"F8 frame analysis dumping");
+	DX12OverlayStatusState::SetStatus(L"F8 frame analysis dumping");
 
 	std::vector<ShaderRecord> shaders;
 	std::vector<PsoRecord> psos;
 	SnapshotShadersAndPsos(&shaders, &psos);
 
-	DX12LogJsonFunc("FrameAnalysisDumpBegin",
+	DX12LogManager::JsonFunc("FrameAnalysisDumpBegin",
 		"\"shaders\":%zu,\"psos\":%zu", shaders.size(), psos.size());
 	{
 		char fields[512] = "";
@@ -1646,8 +1648,8 @@ void DX12DumpFrameAnalysis()
 	}
 	DX12EndFrameAnalysisMetadataCache();
 
-	DX12SetOverlayStatus(L"F8 frame analysis complete");
-	DX12LogJsonFunc("FrameAnalysisDumpComplete",
+	DX12OverlayStatusState::SetStatus(L"F8 frame analysis complete");
+	DX12LogManager::JsonFunc("FrameAnalysisDumpComplete",
 		"\"shaders\":%zu,\"psos\":%zu,\"bindingTrace\":%u,\"resourceTable\":%u,\"metadata\":%u,\"psoSummary\":%u,\"resourceFiles\":%u,\"resourceFilesRan\":%u,\"resourceFilesCompletedWithoutFailures\":%u,\"bindingTraceWritten\":%zu,\"resourceTableWritten\":%zu,\"metadataWritten\":%zu,\"resourceFilesWritten\":%zu,\"resourceFilesSkipped\":%zu,\"resourceFilesFailed\":%zu",
 		shaders.size(), psos.size(),
 		bindingTrace.ok ? 1 : 0,
@@ -1687,13 +1689,13 @@ static void DX12DumpShaderRecords(
 {
 	wchar_t dir[MAX_PATH];
 	if (!GetShaderFixesDirectory(dir, ARRAYSIZE(dir))) {
-		DX12Log("Failed to resolve DX12 ShaderFixes directory\n");
-		DX12SetOverlayStatus(L"F9 shader dump failed: cannot create ShaderFixes");
+		DX12LogManager::Text("Failed to resolve DX12 ShaderFixes directory\n");
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: cannot create ShaderFixes");
 		return;
 	}
 
-	DX12SetOverlayStatus(L"F9 shader dump running");
-	DX12Log("F9 shader dump begin: dir=%S shaders=%zu psos=%zu mode=%S\n",
+	DX12OverlayStatusState::SetStatus(L"F9 shader dump running");
+	DX12LogManager::Text("F9 shader dump begin: dir=%S shaders=%zu psos=%zu mode=%S\n",
 		dir, shaders.size(), psos.size(), statusPrefix ? statusPrefix : L"frame");
 
 	UINT writtenShaders = 0;
@@ -1725,8 +1727,8 @@ static void DX12DumpShaderRecords(
 	swprintf_s(status, L"F9 %s complete: %u bin / %u asm, PSO summary %s",
 		statusPrefix ? statusPrefix : L"frame", writtenShaders, writtenDisassembly,
 		psoSummaryOk ? L"ok" : L"failed");
-	DX12SetOverlayStatus(status);
-	DX12Log("F9 shader dump complete: dir=%S shaders=%u/%zu skippedShaders=%u asm=%u/%zu skippedAsm=%u psos=%zu psoSummary=%u\n",
+	DX12OverlayStatusState::SetStatus(status);
+	DX12LogManager::Text("F9 shader dump complete: dir=%S shaders=%u/%zu skippedShaders=%u asm=%u/%zu skippedAsm=%u psos=%zu psoSummary=%u\n",
 		dir, writtenShaders, shaders.size(), skippedShaders,
 		writtenDisassembly, shaders.size(), skippedDisassembly, psos.size(),
 		psoSummaryOk ? 1 : 0);
@@ -1754,8 +1756,8 @@ static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
 			DX12DumpShaderRecords(args->shaders, args->psos, L"frame shaders");
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		DX12Log("F9 shader dump failed after exception=0x%lx\n", GetExceptionCode());
-		DX12SetOverlayStatus(L"F9 shader dump failed");
+		DX12LogManager::Text("F9 shader dump failed after exception=0x%lx\n", GetExceptionCode());
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed");
 	}
 	delete args;
 	InterlockedExchange(&gShaderDumpRunning, 0);
@@ -1765,13 +1767,13 @@ static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
 void DX12RequestShaderDump()
 {
 	if (DX12ShaderDumpIsBusy()) {
-		DX12Log("F9 shader dump ignored: already armed/running\n");
-		DX12SetOverlayStatus(L"F9 shader dump still running");
+		DX12LogManager::Text("F9 shader dump ignored: already armed/running\n");
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump still running");
 		return;
 	}
 
 	InterlockedExchange(&gShaderDumpCaptureRequested, 1);
-	DX12SetOverlayStatus(L"F9 armed: waiting for next frame");
+	DX12OverlayStatusState::SetStatus(L"F9 armed: waiting for next frame");
 }
 
 bool DX12ShaderDumpIsCaptureRequested()
@@ -1783,7 +1785,7 @@ void DX12ShaderDumpBeginCapture()
 {
 	if (InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 1) == 1) {
 		InterlockedExchange(&gShaderDumpCapturing, 1);
-		DX12SetOverlayStatus(L"F9 capturing next frame shaders");
+		DX12OverlayStatusState::SetStatus(L"F9 capturing next frame shaders");
 	}
 }
 
@@ -1809,7 +1811,7 @@ bool DX12ShaderDumpIsBusy()
 void DX12DumpCapturedFrameShaders()
 {
 	if (InterlockedCompareExchange(&gShaderDumpRunning, 1, 0) != 0) {
-		DX12SetOverlayStatus(L"F9 shader dump still running");
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump still running");
 		return;
 	}
 
@@ -1818,28 +1820,30 @@ void DX12DumpCapturedFrameShaders()
 	ShaderDumpThreadArgs *args = new (std::nothrow) ShaderDumpThreadArgs();
 	if (!args) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
-		DX12SetOverlayStatus(L"F9 shader dump failed: out of memory");
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: out of memory");
 		return;
 	}
 	SnapshotFrameShadersAndPsos(frameInfos, &args->shaders, &args->psos);
-	DX12Log("F9 captured frame shaders: framePsos=%zu shaders=%zu psos=%zu\n",
+	DX12LogManager::Text("F9 captured frame shaders: framePsos=%zu shaders=%zu psos=%zu\n",
 		frameInfos.size(), args->shaders.size(), args->psos.size());
 	if (args->shaders.empty() && args->psos.empty()) {
 		delete args;
 		InterlockedExchange(&gShaderDumpRunning, 0);
-		DX12SetOverlayStatus(L"F9 not ready: no frame shaders captured");
+		DX12OverlayStatusState::SetStatus(L"F9 not ready: no frame shaders captured");
 		return;
 	}
-	DX12SetOverlayStatus(L"F9 dumping captured frame shaders");
+	DX12OverlayStatusState::SetStatus(L"F9 dumping captured frame shaders");
 
 	HANDLE thread = CreateThread(nullptr, 0, DX12ShaderDumpThreadProc, args, 0, nullptr);
 	if (!thread) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
 		delete args;
-		DX12Log("F9 shader dump failed: CreateThread error=%lu\n", GetLastError());
-		DX12SetOverlayStatus(L"F9 shader dump failed: cannot start thread");
+		DX12LogManager::Text("F9 shader dump failed: CreateThread error=%lu\n", GetLastError());
+		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: cannot start thread");
 		return;
 	}
 	CloseHandle(thread);
 }
+
+
 

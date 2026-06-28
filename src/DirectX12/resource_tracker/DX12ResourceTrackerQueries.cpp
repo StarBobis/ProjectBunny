@@ -495,7 +495,7 @@ static void BuildResourceMetadataSnapshot(
 		descriptors ? 1 : 0,
 		psoRoots ? 1 : 0,
 		descriptorHeaps ? 1 : 0);
-	DX12LogJsonFunc("DX12MetadataSnapshot",
+	DX12LogManager::JsonFunc("DX12MetadataSnapshot",
 		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"resourceSlots\":%zu,\"heaps\":%zu",
 		liveDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
 		rtvDescriptors, dsvDescriptors, textureDescriptors,
@@ -810,3 +810,4 @@ void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
 	}
 	ReleaseSRWLockShared(&gResourceLock);
 }
+

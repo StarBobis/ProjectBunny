@@ -471,7 +471,7 @@ private:
 			return true;
 		}
 #if defined(_DEBUG)
-		DX12LogDebugJsonFunc("DX12CommandListCycleSuppressed",
+		DX12LogManager::DebugJsonFunc("DX12CommandListCycleSuppressed",
 			"\"section\":\"%S\",\"depth\":%zu", name.c_str(),
 			mCommandListStack.size());
 #endif
@@ -518,3 +518,4 @@ static bool RunNamedCommandList(
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
 	return executor.Changed();
 }
+
