@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12Json.h"
 #include "DX12ModRuntime.h"
 #include "DX12ShaderHunt.h"

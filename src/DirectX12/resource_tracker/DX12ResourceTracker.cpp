@@ -56,9 +56,9 @@ static bool ShouldStoreCreatedDescriptorInHeapSlot(const DescriptorHeapRecord &h
 {
 	return DescriptorHeapIsShaderVisible(heap) ||
 		DX12IsHuntingMode() ||
-		DX12FrameAnalysisIsActive() ||
-		DX12FrameAnalysisIsCaptureRequested() ||
-		DX12FrameAnalysisIsCapturing();
+		DX12FrameAnalysis::IsActive() ||
+		DX12FrameAnalysis::IsCaptureRequested() ||
+		DX12FrameAnalysis::IsCapturing();
 }
 
 static DescriptorRecord *DescriptorHeapSlot(DescriptorHeapRecord *heap, UINT slot)
@@ -122,8 +122,8 @@ static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot,
 {
 	if (!heap || slot >= heap->slotHistory.size() || slot >= heap->slotHistoryEpochs.size())
 		return;
-	if (!DX12IsHuntingMode() && !DX12FrameAnalysisIsActive() &&
-			!DX12FrameAnalysisIsCaptureRequested() && !DX12FrameAnalysisIsCapturing())
+	if (!DX12IsHuntingMode() && !DX12FrameAnalysis::IsActive() &&
+			!DX12FrameAnalysis::IsCaptureRequested() && !DX12FrameAnalysis::IsCapturing())
 		return;
 	// Hunting needs RenderDoc-like event granularity: later descriptor heap
 	// reuse must not rewrite what an earlier dispatch saw.

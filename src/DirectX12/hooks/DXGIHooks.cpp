@@ -7,7 +7,7 @@
 #include "DX12CommandListHooks.h"
 #include "DX12CommandListRuntime.h"
 #include "DX12DeviceHooks.h"
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.h"
 #include "DX12NativeOverlay.h"
 #include "DX12ModRuntime.h"
@@ -178,9 +178,9 @@ static void ConsumeUiActionsForFrame()
 static void BeginFrameAnalysisCapture(LONG present)
 {
 	DX12BindingBeginFrame();
-	DX12FrameAnalysisBeginCapture();
+	DX12FrameAnalysis::BeginCapture();
 	DX12CommandListRuntimeBumpTrackingGeneration();
-	DX12FrameAnalysisLogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
+	DX12FrameAnalysis::LogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
 }
 
 static void BeginShaderDumpCapture()
@@ -477,7 +477,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	}
 
 	DX12Profiling::BeginFrame();
-	const bool dumpFrame = DX12FrameAnalysisEndCapture();
+	const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 	const bool dumpShaders = DX12ShaderDumpEndCapture();
 	PFN_PRESENT original = GetPresentOriginal(swapChain);
 	if (!original)
@@ -498,17 +498,17 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
-		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
+		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());
 		DX12DumpFrameAnalysis();
-		DX12FrameAnalysisEnd();
+		DX12FrameAnalysis::End();
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
-	} else if (DX12FrameAnalysisIsCaptureRequested()) {
+	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
 		BeginFrameAnalysisCapture(DX12GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
 		BeginShaderDumpCapture();
-	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingBeginFrame();
 		LogPresentStage("Present", "afterBindingBeginFrame", swapChain, hr);
@@ -575,7 +575,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	}
 
 	DX12Profiling::BeginFrame();
-	const bool dumpFrame = DX12FrameAnalysisEndCapture();
+	const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 	const bool dumpShaders = DX12ShaderDumpEndCapture();
 	PFN_PRESENT1 original = GetPresent1Original(swapChain);
 	if (!original)
@@ -596,17 +596,17 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
-		DX12FrameAnalysisLogJsonFunc("FrameCaptureEnd",
+		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
 			"\"present\":%ld", DX12GetPresentCount());
 		DX12DumpFrameAnalysis();
-		DX12FrameAnalysisEnd();
+		DX12FrameAnalysis::End();
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
-	} else if (DX12FrameAnalysisIsCaptureRequested()) {
+	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
 		BeginFrameAnalysisCapture(DX12GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
 		BeginShaderDumpCapture();
-	} else if (DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingBeginFrame();
 		LogPresentStage("Present1", "afterBindingBeginFrame", swapChain, hr);

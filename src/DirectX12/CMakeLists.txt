@@ -34,13 +34,7 @@ add_library(DirectX12 SHARED
     binding_tracker/DX12BindingTrackerFrameExport.cpp
     binding_tracker/DX12BindingTrackerResourceExport.cpp
 
-    # Frame analysis
-    frame_analysis/DX12FrameAnalysis.cpp
-    frame_analysis/DX12FrameAnalysisManifest.cpp
-
     # Input Assembler (IA)
-    ia/DX12IaRegionHash.cpp
-    ia/DX12IaReplacementExecutor.cpp
 
     # Shader dump & hunt
     shader/DX12ShaderDump.cpp

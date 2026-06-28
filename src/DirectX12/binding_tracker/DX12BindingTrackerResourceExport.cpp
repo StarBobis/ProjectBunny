@@ -8,7 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12Json.h"
 #include "DX12State.h"
 
@@ -171,7 +171,7 @@ static void CollectHuntingUavStateResourceUsages(
 		emitted++;
 	}
 
-	DX12FrameAnalysisLogJsonFunc("HuntingUavStateResourceUsages",
+	DX12FrameAnalysis::LogJsonFunc("HuntingUavStateResourceUsages",
 		"\"resources\":%zu,\"dispatches\":%zu,\"candidates\":%zu,\"emitted\":%zu",
 		resources.size(), dispatches.size(), candidates, emitted);
 }
@@ -891,18 +891,18 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	AcquireSRWLockShared(&gEventsLock);
 	events = gEvents;
 	ReleaseSRWLockShared(&gEventsLock);
-	DX12FrameAnalysisLogJsonFunc("BindingResourcesSnapshot",
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
 		"\"events\":%zu", events.size());
 
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
 	DX12GetResourceMetadataSnapshot(nullptr, &descriptors, nullptr, &heaps);
-	DX12FrameAnalysisLogJsonFunc("BindingResourcesMetadataReady",
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesMetadataReady",
 		"\"descriptors\":%zu,\"heaps\":%zu",
 		descriptors.size(), heaps.size());
 	DescriptorLookup descriptorLookup;
 	BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
-	DX12FrameAnalysisLogJsonFunc("BindingResourcesLookupReady",
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesLookupReady",
 		"\"cpu_entries\":%zu,\"slot_entries\":%zu",
 		descriptorLookup.byCpuHandle.size(), descriptorLookup.bySlot.size());
 
@@ -988,7 +988,7 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 			IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension))
 			textureBindings++;
 	}
-	DX12FrameAnalysisLogJsonFunc("BindingResourcesCollected",
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesCollected",
 		"\"bindings\":%zu,\"unique\":%zu,\"rebuilt_bindings\":%zu,\"rebuilt_resolved\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"zero_descriptor_epoch_events\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu,\"untracked_cbv\":%zu,\"untracked_srv\":%zu,\"untracked_uav\":%zu,\"untracked_skipped\":%zu",
 		bindings->size(), seen.size(), rebuiltEventBindings, rebuiltResolvedBindings,
 		descriptorHistoryLookups, descriptorHistoryHits, zeroDescriptorEpochEvents,
@@ -1012,7 +1012,7 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		historyStatus = "no_history_lookup";
 	else if (untrackedUavBindings)
 		historyStatus = "untracked_uav";
-	DX12FrameAnalysisLogJsonFunc("BindingResourcesHistoryHealth",
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesHistoryHealth",
 		"\"status\":\"%s\",\"events\":%zu,\"zero_descriptor_epoch_events\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"untracked_uav\":%zu",
 		historyStatus,
 		drawEvents + dispatchEvents,
@@ -1074,7 +1074,7 @@ void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bind
 		bindings->push_back(std::move(binding));
 	}
 
-	DX12FrameAnalysisLogJsonFunc("OutputResourcesCollected",
+	DX12FrameAnalysis::LogJsonFunc("OutputResourcesCollected",
 		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
@@ -1097,13 +1097,13 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
 	DX12GetResourceMetadataSnapshot(nullptr, &descriptors, nullptr, &heaps);
-	DX12FrameAnalysisLogJsonFunc("FrameResourceFileMetadataReady",
+	DX12FrameAnalysis::LogJsonFunc("FrameResourceFileMetadataReady",
 		"\"events\":%zu,\"descriptors\":%zu,\"heaps\":%zu",
 		events.size(),
 		descriptors.size(), heaps.size());
 	DescriptorLookup descriptorLookup;
 	BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
-	DX12FrameAnalysisLogJsonFunc("FrameResourceFileLookupReady",
+	DX12FrameAnalysis::LogJsonFunc("FrameResourceFileLookupReady",
 		"\"cpu_entries\":%zu,\"slot_entries\":%zu",
 		descriptorLookup.byCpuHandle.size(), descriptorLookup.bySlot.size());
 
@@ -1117,13 +1117,13 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
 		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
-		DX12FrameAnalysisLogJsonFunc("CurrentFrameResourcesFailed", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("CurrentFrameResourcesFailed", "%s", fields + 1);
 		return result;
 	}
 	{
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
-		DX12FrameAnalysisLogJsonFunc("FrameResourceFileOpened", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("FrameResourceFileOpened", "%s", fields + 1);
 	}
 
 	fprintf(file, "DX12 Current Frame Resources\n");
@@ -1159,7 +1159,7 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 		}
 		eventRows++;
 	}
-	DX12FrameAnalysisLogJsonFunc("FrameResourceFileProcessed",
+	DX12FrameAnalysis::LogJsonFunc("FrameResourceFileProcessed",
 		"\"events\":%zu,\"bindings\":%zu,\"untracked_skipped\":%zu",
 		eventRows, seen.size(), untrackedSkipped);
 
@@ -1171,7 +1171,7 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 		DX12JsonAppendRawField(fields, sizeof(fields), "untracked_skipped", std::to_string(untrackedSkipped).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "heaps", std::to_string(heaps.size()).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
-		DX12FrameAnalysisLogJsonFunc("CurrentFrameResourcesWritten", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("CurrentFrameResourcesWritten", "%s", fields + 1);
 	}
 	result.ok = true;
 	result.written = seen.size();

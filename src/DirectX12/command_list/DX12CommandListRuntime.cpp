@@ -3,8 +3,8 @@
 #include <unordered_map>
 
 #include "DX12CommandListStateCapture.h"
-#include "DX12FrameAnalysis.h"
-#include "DX12IaRegionHash.h"
+#include "DX12FrameAnalysis.hpp"
+#include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
@@ -288,16 +288,11 @@ bool DX12CommandListRuntimeBuildIaHashState(
 		return false;
 	*state = DX12IaHashState();
 
-	DX12IaRegionDraw draw = {};
-	draw.indexed = indexed;
-	draw.vertexCount = vertexCount;
-	draw.indexCount = indexCount;
-	draw.firstVertex = firstVertex;
-	draw.firstIndex = firstIndex;
-	draw.baseVertex = baseVertex;
+	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
+		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
 	const uint32_t indexHash = ia.hasIndexBuffer && indexed ?
-		DX12HashIndexBufferRegion(ia.indexBuffer, draw) : 0;
+		DX12IaRegion::HashIndexBufferView(ia.indexBuffer, draw) : 0;
 	if (indexHash) {
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
@@ -308,7 +303,7 @@ bool DX12CommandListRuntimeBuildIaHashState(
 		if (!ia.hasVertexBuffer[slot])
 			continue;
 		const uint32_t vertexHash =
-			DX12HashVertexBufferRegion(slot, ia.vertexBuffers[slot], draw);
+			DX12IaRegion::HashVertexBufferView(slot, ia.vertexBuffers[slot], draw);
 		if (!vertexHash)
 			continue;
 		DX12IaBufferHash item;

@@ -13,8 +13,8 @@
 
 #include "crc32c.h"
 #include "DX12BindingTracker.h"
-#include "DX12FrameAnalysis.h"
-#include "DX12FrameAnalysisManifest.h"
+#include "DX12FrameAnalysis.hpp"
+#include "DX12FrameAnalysisManifest.hpp"
 #include "DX12Json.h"
 #include "DX12ResourceDumpPrepare.h"
 #include "DX12ResourceTracker.h"
@@ -78,7 +78,7 @@ static uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 		return crc32c_append(seed, static_cast<const uint8_t*>(data), size);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		DX12FrameAnalysisLogJsonFunc("Crc32cFailed",
+		DX12FrameAnalysis::LogJsonFunc("Crc32cFailed",
 			"\"exception\":\"0x%lx\",\"size\":%zu", GetExceptionCode(), size);
 		return 0;
 	}
@@ -677,7 +677,7 @@ static bool LinkOrCopyFile(const wchar_t *sourcePath, const wchar_t *destPath,
 	if (CopyFileW(sourcePath, destPath, TRUE))
 		return true;
 	const DWORD copyError = GetLastError();
-	DX12FrameAnalysisLogJsonFunc("ResourceLinkSkipped",
+	DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 		"\"reason\":\"%s\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu,\"hardLinkError\":%lu,\"copyError\":%lu",
 		reason ? reason : "copy_failed",
 		DumpTaskSourceName(task.sourceKind),
@@ -706,7 +706,7 @@ static bool LinkTaskToDedupedFile(
 	const wchar_t *resourceDir, const DumpTask &task, const std::wstring &dedupePath)
 {
 	if (!resourceDir || task.fileName.empty() || dedupePath.empty()) {
-		DX12FrameAnalysisLogJsonFunc("ResourceLinkSkipped",
+		DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 			"\"reason\":\"invalid_args\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu",
 			DumpTaskSourceName(task.sourceKind),
 			task.source,
@@ -720,7 +720,7 @@ static bool LinkTaskToDedupedFile(
 	swprintf_s(destPath, L"%s\\%s", resourceDir, task.fileName.c_str());
 
 	if (GetFileAttributesW(sourcePath) == INVALID_FILE_ATTRIBUTES) {
-		DX12FrameAnalysisLogJsonFunc("ResourceLinkSkipped",
+		DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 			"\"reason\":\"dedupe_source_missing\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu",
 			DumpTaskSourceName(task.sourceKind),
 			task.source,
@@ -750,7 +750,7 @@ static bool MapAndWriteTask(
 		ID3D12Resource *mapResource = task->directMap ? task->source : task->readback;
 		if (!mapResource) {
 			task->skipNote = task->directMap ? "missing_direct_resource" : "missing_readback";
-			DX12FrameAnalysisLogJsonFunc("ResourceMapWriteSkipped",
+			DX12FrameAnalysis::LogJsonFunc("ResourceMapWriteSkipped",
 				"\"reason\":\"%s\",\"sourceKind\":\"%s\",\"source\":\"%p\",\"readback\":\"%p\",\"direct\":%u,\"offset\":%llu,\"bytes\":%llu",
 				task->skipNote,
 				DumpTaskSourceName(task->sourceKind),
@@ -766,7 +766,7 @@ static bool MapAndWriteTask(
 			mapResource->Unmap(0, &emptyRange);
 		} else {
 			task->skipNote = "map_failed";
-			DX12FrameAnalysisLogJsonFunc("ResourceMapWriteSkipped",
+			DX12FrameAnalysis::LogJsonFunc("ResourceMapWriteSkipped",
 				"\"reason\":\"map_failed\",\"hr\":\"0x%lx\",\"sourceKind\":\"%s\",\"source\":\"%p\",\"readback\":\"%p\",\"direct\":%u,\"offset\":%llu,\"bytes\":%llu",
 				hr,
 				DumpTaskSourceName(task->sourceKind),
@@ -777,7 +777,7 @@ static bool MapAndWriteTask(
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		task->skipNote = "map_or_write_exception";
-		DX12FrameAnalysisLogJsonFunc("ResourceMapWriteSkipped",
+		DX12FrameAnalysis::LogJsonFunc("ResourceMapWriteSkipped",
 			"\"exception\":\"0x%lx\",\"source\":\"%p\",\"readback\":\"%p\",\"direct\":%u,\"offset\":%llu,\"bytes\":%llu",
 			GetExceptionCode(), task->source, task->readback, task->directMap ? 1 : 0,
 			static_cast<unsigned long long>(task->readbackOffset),
@@ -973,13 +973,13 @@ static void WriteIndexRow(
 	(void)semanticName;
 	(void)note;
 	if (task.sourceKind == DumpTaskSource::InputAssembler) {
-		DX12FrameAnalysisManifestWriteIaBinding(
+		DX12FrameAnalysisManifest::WriteIaBinding(
 			task.iaBuffer, desc, sourceOffset, copyBytes, sourceState,
 			hasCurrentState, filePath);
 		return;
 	}
 
-	DX12FrameAnalysisManifestWriteResourceBinding(
+	DX12FrameAnalysisManifest::WriteResourceBinding(
 		task.binding, desc, sourceOffset, copyBytes, sourceState,
 		hasCurrentState, filePath);
 }
@@ -1313,7 +1313,7 @@ static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<Dumpe
 	char fields[512] = "";
 	DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
 	DX12JsonAppendRawField(fields, sizeof(fields), "rows", std::to_string(rows.size()).c_str());
-	DX12FrameAnalysisLogJsonFunc("ResourceBindingsCsvWritten", "%s", fields + 1);
+	DX12FrameAnalysis::LogJsonFunc("ResourceBindingsCsvWritten", "%s", fields + 1);
 }
 
 static bool ExecuteCopyTask(
@@ -1327,7 +1327,7 @@ static bool ExecuteCopyTask(
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	HRESULT hr = device->GetDeviceRemovedReason();
 	if (FAILED(hr)) {
-		DX12FrameAnalysisLogJsonFunc("ResourceCopySkipped",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopySkipped",
 			"\"reason\":\"device_removed\",\"hr\":\"0x%lx\"", hr);
 		return false;
 	}
@@ -1336,7 +1336,7 @@ static bool ExecuteCopyTask(
 	if (SUCCEEDED(hr))
 		hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr, IID_PPV_ARGS(&commandList));
 	if (FAILED(hr) || !allocator || !commandList) {
-		DX12FrameAnalysisLogJsonFunc("ResourceCopySetupFailed",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopySetupFailed",
 			"\"hr\":\"0x%lx\",\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu",
 			hr, task->source, task->isTexture ? 1 : 0,
 			static_cast<unsigned long long>(task->sourceOffset),
@@ -1374,7 +1374,7 @@ static bool ExecuteCopyTask(
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		task->skipNote = "copy_record_exception";
-		DX12FrameAnalysisLogJsonFunc("ResourceCopyTaskFailed",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopyTaskFailed",
 			"\"exception\":\"0x%lx\",\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"note\":\"copy_record_exception\"",
 			GetExceptionCode(), task->source, task->isTexture ? 1 : 0,
 			static_cast<unsigned long long>(task->sourceOffset),
@@ -1388,7 +1388,7 @@ static bool ExecuteCopyTask(
 	hr = commandList->Close();
 	if (FAILED(hr)) {
 		task->skipNote = "copy_close_failed";
-		DX12FrameAnalysisLogJsonFunc("ResourceCopyTaskFailed",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopyTaskFailed",
 			"\"hr\":\"0x%lx\",\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"note\":\"copy_close_failed\"",
 			hr, task->source, task->isTexture ? 1 : 0,
 			static_cast<unsigned long long>(task->sourceOffset),
@@ -1406,7 +1406,7 @@ static bool ExecuteCopyTask(
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		task->skipNote = "copy_execute_exception";
-		DX12FrameAnalysisLogJsonFunc("ResourceCopyTaskFailed",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopyTaskFailed",
 			"\"exception\":\"0x%lx\",\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"note\":\"copy_execute_exception\"",
 			GetExceptionCode(), task->source, task->isTexture ? 1 : 0,
 			static_cast<unsigned long long>(task->sourceOffset),
@@ -1420,7 +1420,7 @@ static bool ExecuteCopyTask(
 	if (!ok) {
 		if (!task->skipNote)
 			task->skipNote = "copy_execute_failed";
-		DX12FrameAnalysisLogJsonFunc("ResourceCopyTaskFailed",
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopyTaskFailed",
 			"\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"note\":\"%s\"",
 			task->source, task->isTexture ? 1 : 0,
 			static_cast<unsigned long long>(task->sourceOffset),
@@ -1460,7 +1460,7 @@ static size_t ExecuteReadbackCopyTasks(
 
 	if (readbackOkOut)
 		*readbackOkOut = eligible == copied;
-	DX12FrameAnalysisLogJsonFunc("ResourceCopyResultDetail",
+	DX12FrameAnalysis::LogJsonFunc("ResourceCopyResultDetail",
 		"\"mode\":\"per_resource\",\"eligible\":%zu,\"copied\":%zu,\"failed\":%zu",
 		eligible, copied, eligible >= copied ? eligible - copied : 0);
 	return DX12DumpCountCopiedTasks(*tasks);
@@ -1485,7 +1485,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	wchar_t resourceDir[MAX_PATH];
 	wcsncpy_s(resourceDir, dir, _TRUNCATE);
 	if (!EnsureDirectory(resourceDir)) {
-		DX12FrameAnalysisLogJsonFunc("ResourceDump",
+		DX12FrameAnalysis::LogJsonFunc("ResourceDump",
 			"\"status\":\"failed\",\"reason\":\"resource_dir_create_failed\",\"error\":%lu",
 			GetLastError());
 		result.failed = 1;
@@ -1498,7 +1498,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	const UINT64 frameReadbackBudget = FrameReadbackBudgetBytes();
 	UINT64 frameReadbackBytes = 0;
 	const char *dumpMode = DX12IsModMode() ? "Mod" : "Hunting";
-	DX12FrameAnalysisLogJsonFunc("ResourceDump",
+	DX12FrameAnalysis::LogJsonFunc("ResourceDump",
 		"\"mode\":\"%s\",\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"frameReadbackBudget\":%llu,\"unsafeCopy\":%u,\"gpuCopy\":%u,\"stateTracking\":1",
 		dumpMode,
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
@@ -1513,7 +1513,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	ID3D12CommandQueue *queue = DX12AcquireCommandQueue();
 	ID3D12Device *device = nullptr;
 	if (!queue || FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
-		DX12FrameAnalysisLogJsonFunc("ResourceDump",
+		DX12FrameAnalysis::LogJsonFunc("ResourceDump",
 			"\"status\":\"failed\",\"reason\":\"missing_command_queue\"");
 		if (queue)
 			queue->Release();
@@ -1773,7 +1773,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 				skippedTasks.push_back(std::move(task));
 			}
 		}
-		DX12FrameAnalysisLogJsonFunc("HuntingMetadataTexturesQueued",
+		DX12FrameAnalysis::LogJsonFunc("HuntingMetadataTexturesQueued",
 			"\"descriptors\":%zu,\"candidates\":%u,\"tasks\":%zu,\"duplicates\":%u",
 			metadataDescriptors.size(), metadataTextureCandidates, tasks.size(), duplicates);
 
@@ -1829,7 +1829,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 				skippedTasks.push_back(std::move(task));
 			}
 		}
-		DX12FrameAnalysisLogJsonFunc("HuntingResourceTexturesQueued",
+		DX12FrameAnalysis::LogJsonFunc("HuntingResourceTexturesQueued",
 			"\"resources\":%zu,\"candidates\":%u,\"tasks\":%zu,\"duplicates\":%u,\"resourceDuplicates\":%u",
 			metadataResources.size(), resourceTextureCandidates, tasks.size(),
 			duplicates, resourceDuplicates);
@@ -1837,7 +1837,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 
 	bool readbackCopyOk = false;
 	const size_t copiedTasks = ExecuteReadbackCopyTasks(device, queue, &tasks, &readbackCopyOk);
-	DX12FrameAnalysisLogJsonFunc("ResourceCopyResult",
+	DX12FrameAnalysis::LogJsonFunc("ResourceCopyResult",
 		"\"gpuCopy\":%u,\"readbackOk\":%u,\"copied\":%zu,\"tasks\":%zu,\"duplicates\":%u",
 		DX12DumpGpuResourceCopyEnabled() ? 1 : 0,
 		readbackCopyOk ? 1 : 0, copiedTasks, tasks.size(), duplicates);
@@ -1885,7 +1885,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 		}
 
 		if (loggedFileDumps.insert(dedupePath).second) {
-			DX12FrameAnalysisManifestWriteFileDump(
+			DX12FrameAnalysisManifest::WriteFileDump(
 				dedupePath.c_str(), task.isTexture, task.copyBytes, "dumped", "");
 		}
 		WriteIndexRow(nullptr, "dumped", task, task.desc,
@@ -1999,7 +1999,7 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 	queue->Release();
 	WriteResourceBindingsCsv(dir, dumpedRows);
 
-	DX12FrameAnalysisLogJsonFunc("ResourceSummary",
+	DX12FrameAnalysis::LogJsonFunc("ResourceSummary",
 		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"metadata_texture_candidates\":%u,\"untracked_descriptor_slots\":%u,\"untracked_compute_uav_slots\":%u",
 		dumpedTextures, dumpedBuffers, linked, skipped, duplicates, failed,
 		static_cast<unsigned long long>(frameReadbackBytes),

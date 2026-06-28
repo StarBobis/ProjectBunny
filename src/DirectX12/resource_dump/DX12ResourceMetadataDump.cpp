@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12Json.h"
 
 static void GetSummaryDirectory(const wchar_t *dir, wchar_t *path, size_t pathCount)
@@ -95,7 +95,7 @@ DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", path);
 		DX12JsonAppendStringField(fields, sizeof(fields), "reason", result.reason);
-		DX12FrameAnalysisLogJsonFunc("ResourceMetadataFailed", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("ResourceMetadataFailed", "%s", fields + 1);
 		return result;
 	}
 
@@ -219,7 +219,7 @@ DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 	DX12JsonAppendRawField(fields, sizeof(fields), "heaps", std::to_string(descriptorHeaps.size()).c_str());
 	DX12JsonAppendRawField(fields, sizeof(fields), "descriptors", std::to_string(descriptors.size()).c_str());
 	DX12JsonAppendRawField(fields, sizeof(fields), "psoRoots", std::to_string(psoRoots.size()).c_str());
-	DX12FrameAnalysisLogJsonFunc("ResourceMetadataWritten", "%s", fields + 1);
+	DX12FrameAnalysis::LogJsonFunc("ResourceMetadataWritten", "%s", fields + 1);
 	result.ok = true;
 	result.written = 1;
 	return result;

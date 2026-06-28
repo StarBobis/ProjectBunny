@@ -3,7 +3,7 @@
 #include <d3d12.h>
 
 #include "DX12CommandListRuntime.h"
-#include "DX12IaReplacementExecutor.h"
+#include "DX12IaReplacementExecutor.hpp"
 
 void DX12DrawHookFlowExecute(
 	ID3D12GraphicsCommandList *commandList,

@@ -391,7 +391,7 @@ void DX12GetResourceMetadataSnapshot(
 		}
 		CopyCachedMetadataSnapshot(
 			cache, rootSignatures, descriptors, psoRoots, descriptorHeaps);
-		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCacheHit",
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCacheHit",
 			"\"roots\":%zu,\"descriptors\":%zu,\"psoRoots\":%zu,\"heaps\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
 			cache.rootSignatures.size(), cache.descriptors.size(),
 			cache.psoRoots.size(), cache.descriptorHeaps.size(),
@@ -481,7 +481,7 @@ static void BuildResourceMetadataSnapshot(
 			resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
 			textureDescriptors++;
 	}
-	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotBegin",
+	DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotBegin",
 		"\"roots\":%zu,\"descriptors\":%zu,\"descriptorStates\":%zu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"resourcesFromCreate\":%llu,"
 		"\"psoRoots\":%zu,\"heaps\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
@@ -517,7 +517,7 @@ static void BuildResourceMetadataSnapshot(
 			summary.parameters = record.parameters;
 			rootSignatures->push_back(summary);
 		}
-		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCopied",
 			"\"kind\":\"roots\",\"count\":%zu", rootSignatures->size());
 	}
 
@@ -529,7 +529,7 @@ static void BuildResourceMetadataSnapshot(
 			FillDescriptorSummary(&summary, *recordPtr, true, true);
 			descriptors->push_back(summary);
 		}
-		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCopied",
 			"\"kind\":\"descriptors\",\"count\":%zu", descriptors->size());
 	}
 
@@ -544,7 +544,7 @@ static void BuildResourceMetadataSnapshot(
 			summary.rootSignature = record.rootSignature;
 			psoRoots->push_back(summary);
 		}
-		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCopied",
 			"\"kind\":\"psoRoots\",\"count\":%zu", psoRoots->size());
 	}
 
@@ -563,13 +563,13 @@ static void BuildResourceMetadataSnapshot(
 			summary.increment = record.increment;
 			descriptorHeaps->push_back(summary);
 		}
-		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCopied",
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCopied",
 			"\"kind\":\"heaps\",\"count\":%zu", descriptorHeaps->size());
 	}
 
 	ReleaseSRWLockShared(&gDescriptorLock);
 	ReleaseSRWLockShared(&gResourceLock);
-	DX12FrameAnalysisLogJsonFunc("MetadataSnapshotComplete", nullptr);
+	DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotComplete", nullptr);
 }
 
 bool DX12FindDescriptorSummaryByCpuHandle(

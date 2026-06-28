@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysisTypes.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 

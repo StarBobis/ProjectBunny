@@ -2,7 +2,7 @@
 
 #include "DX12BindingTracker.h"
 #include "DX12CommandListRuntime.h"
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
@@ -10,14 +10,14 @@
 
 bool DX12CommandListCaptureShouldTrackBindings()
 {
-	return DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 		DX12ModNeedsPreSkinningUavProbe() ||
 		DX12ModNeedsShaderDescriptorTracking();
 }
 
 bool DX12CommandListCaptureShouldRecordBindingEvents()
 {
-	return DX12FrameAnalysisIsCapturing() || DX12ShaderDumpIsCapturingFrame();
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame();
 }
 
 bool DX12CommandListCaptureShouldTrackHuntIa()

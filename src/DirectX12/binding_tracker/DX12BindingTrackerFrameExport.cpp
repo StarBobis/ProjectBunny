@@ -8,9 +8,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
-#include "DX12FrameAnalysisManifest.h"
-#include "DX12IaRegionHash.h"
+#include "DX12FrameAnalysis.hpp"
+#include "DX12FrameAnalysisManifest.hpp"
+#include "DX12IaRegion.hpp"
 #include "DX12Json.h"
 #include "DX12ResourceTracker.h"
 #include "DX12State.h"
@@ -269,14 +269,13 @@ static std::string NextBufferId(const char *prefix, UINT *nextId)
 
 static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event)
 {
-	DX12IaRegionDraw draw = {};
-	draw.indexed = event.kind == "draw_indexed";
-	draw.vertexCount = event.vertexCountPerInstance;
-	draw.indexCount = event.indexCountPerInstance;
-	draw.firstVertex = event.startVertexLocation;
-	draw.firstIndex = event.startIndexLocation;
-	draw.baseVertex = event.baseVertexLocation;
-	return draw;
+	return DX12IaRegionDraw::FromDrawArguments(
+		event.kind == "draw_indexed",
+		event.vertexCountPerInstance,
+		event.indexCountPerInstance,
+		event.startVertexLocation,
+		event.startIndexLocation,
+		event.baseVertexLocation);
 }
 
 static bool IaRegionForEvent(
@@ -289,11 +288,11 @@ static bool IaRegionForEvent(
 	if (role && !strcmp(role, "IB")) {
 		if (!draw.indexed || !event.indexBufferValid)
 			return false;
-		return DX12GetIndexBufferRegion(event.indexBuffer, draw, region);
+		return region->SetFromIndexBufferView(event.indexBuffer, draw);
 	}
 	if (slot >= MaxVertexBufferSlots || !event.vertexBufferValid[slot])
 		return false;
-	return DX12GetVertexBufferRegion(slot, event.vertexBuffers[slot], draw, region);
+	return region->SetFromVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
 static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot)
@@ -301,10 +300,10 @@ static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role
 	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
 	if (role && !strcmp(role, "IB"))
 		return draw.indexed && event.indexBufferValid ?
-			DX12HashIndexBufferRegion(event.indexBuffer, draw) : 0;
+			DX12IaRegion::HashIndexBufferView(event.indexBuffer, draw) : 0;
 	if (slot >= MaxVertexBufferSlots || !event.vertexBufferValid[slot])
 		return 0;
-	return DX12HashVertexBufferRegion(slot, event.vertexBuffers[slot], draw);
+	return DX12IaRegion::HashVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
 static const FlatBufferRow *GetOrAddBufferRow(
@@ -703,7 +702,7 @@ void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers
 	for (const FlatBufferRow &row : rows)
 		buffers->push_back(FrameIaBufferFromFlatRow(row));
 
-	DX12FrameAnalysisLogJsonFunc("IaBufferStage",
+	DX12FrameAnalysis::LogJsonFunc("IaBufferStage",
 		"\"events\":%zu,\"buffers\":%zu",
 		events.size(), buffers->size());
 }
@@ -795,7 +794,7 @@ static void WriteFlatFrameAnalysisFiles(
 		DX12JsonAppendRawField(fields, sizeof(fields), "draws", std::to_string(drawRows).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "dispatches", std::to_string(dispatchRows).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
-		DX12FrameAnalysisLogJsonFunc("DrawCallCsvWritten", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("DrawCallCsvWritten", "%s", fields + 1);
 	}
 
 	wchar_t bufferPath[MAX_PATH];
@@ -851,7 +850,7 @@ static void WriteFlatFrameAnalysisFiles(
 		char fields[512] = "";
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", bufferPath);
 		DX12JsonAppendRawField(fields, sizeof(fields), "rows", std::to_string(buffers.size()).c_str());
-		DX12FrameAnalysisLogJsonFunc("BufferCsvWritten", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("BufferCsvWritten", "%s", fields + 1);
 	}
 
 	wchar_t framePath[MAX_PATH];
@@ -875,7 +874,7 @@ static void WriteFlatFrameAnalysisFiles(
 		DX12JsonAppendWStringField(fields, sizeof(fields), "path", framePath);
 		DX12JsonAppendRawField(fields, sizeof(fields), "events", std::to_string(events.size()).c_str());
 		DX12JsonAppendRawField(fields, sizeof(fields), "buffers", std::to_string(buffers.size()).c_str());
-		DX12FrameAnalysisLogJsonFunc("FrameAnalysisCsvWritten", "%s", fields + 1);
+		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisCsvWritten", "%s", fields + 1);
 	}
 }
 
@@ -895,13 +894,13 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 	droppedEvents = gDroppedEvents;
 	ReleaseSRWLockShared(&gEventsLock);
 
-	DX12FrameAnalysisLogJsonFunc("BindingTraceBegin",
+	DX12FrameAnalysis::LogJsonFunc("BindingTraceBegin",
 		"\"events\":%zu,\"dropped\":%llu,\"maxEvents\":%u",
 		events.size(), static_cast<unsigned long long>(droppedEvents),
 		MaxTrackedEvents);
 	for (const BindingEvent &event : events) {
 		if (DX12BindingIsDrawEvent(event) || DX12BindingIsDispatchEvent(event)) {
-			DX12FrameAnalysisManifestWriteCall(
+			DX12FrameAnalysisManifest::WriteCall(
 				event.kind.c_str(),
 				event.serial,
 				event.drawId,
@@ -928,7 +927,7 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 
 	}
 
-	DX12FrameAnalysisLogJsonFunc("BindingTraceEnd",
+	DX12FrameAnalysis::LogJsonFunc("BindingTraceEnd",
 		"\"events\":%zu,\"dropped\":%llu",
 		events.size(), static_cast<unsigned long long>(droppedEvents));
 

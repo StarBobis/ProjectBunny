@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysisTypes.hpp"
 
 struct DX12RootDescriptorRangeSummary
 {

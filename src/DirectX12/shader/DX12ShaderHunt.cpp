@@ -11,7 +11,7 @@
 
 #include "DX12Overlay.h"
 #include "DX12CommandListRuntime.h"
-#include "DX12IaRegionHash.h"
+#include "DX12IaRegion.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 #include "DX12State.h"
@@ -148,14 +148,14 @@ static uint32_t IaRegionHash(const HuntIaBuffer &buffer, const DX12IaRegionDraw 
 		view.BufferLocation = buffer.gpuVa;
 		view.SizeInBytes = buffer.size;
 		view.Format = static_cast<DXGI_FORMAT>(buffer.format);
-		return DX12HashIndexBufferRegion(view, draw);
+		return DX12IaRegion::HashIndexBufferView(view, draw);
 	}
 
 	D3D12_VERTEX_BUFFER_VIEW view = {};
 	view.BufferLocation = buffer.gpuVa;
 	view.SizeInBytes = buffer.size;
 	view.StrideInBytes = buffer.stride;
-	return DX12HashVertexBufferRegion(buffer.slot, view, draw);
+	return DX12IaRegion::HashVertexBufferView(buffer.slot, view, draw);
 }
 
 static void SyncIaSelectionPositionLocked(IaSelection &selection)
@@ -411,13 +411,8 @@ void DX12HuntRecordDraw(
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	DX12IaRegionDraw draw = {};
-	draw.indexed = indexed;
-	draw.vertexCount = vertexCount;
-	draw.indexCount = indexCount;
-	draw.firstVertex = firstVertex;
-	draw.firstIndex = firstIndex;
-	draw.baseVertex = baseVertex;
+	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
+		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
 	ID3D12PipelineState *pipelineState = nullptr;
 	HuntIaState iaState;
@@ -598,13 +593,8 @@ bool DX12HuntShouldSkipDraw(
 {
 	if (!commandList)
 		return false;
-	DX12IaRegionDraw draw = {};
-	draw.indexed = indexed;
-	draw.vertexCount = vertexCount;
-	draw.indexCount = indexCount;
-	draw.firstVertex = firstVertex;
-	draw.firstIndex = firstIndex;
-	draw.baseVertex = baseVertex;
+	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
+		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
 	bool enabled = false;
 	bool vsArmed = false;

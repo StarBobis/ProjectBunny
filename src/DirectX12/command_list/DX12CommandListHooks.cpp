@@ -15,9 +15,9 @@
 #include "DX12CommandListStateCapture.h"
 #include "DX12DispatchHookFlow.h"
 #include "DX12DrawHookFlow.h"
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.h"
-#include "DX12IaReplacementExecutor.h"
+#include "DX12IaReplacementExecutor.hpp"
 #include "DX12Json.h"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.h"
@@ -707,7 +707,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandQueue(
 		desc ? static_cast<int>(desc->Type) : -1,
 		desc ? static_cast<UINT>(desc->Flags) : 0);
 	HRESULT hr = gOrigCreateCommandQueue(device, desc, riid, commandQueue);
-	DX12FrameAnalysisLogJsonFunc("ID3D12Device::CreateCommandQueue",
+	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandQueue",
 		"\"hr\":\"0x%lx\",\"queue\":\"%p\"",
 		hr, commandQueue ? *commandQueue : nullptr);
 	if (SUCCEEDED(hr) && commandQueue && *commandQueue)
@@ -721,7 +721,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandAllocator(
 	LogDX12Call("ID3D12Device::CreateCommandAllocator", device, " type=%d",
 		static_cast<int>(type));
 	HRESULT hr = gOrigCreateCommandAllocator(device, type, riid, allocator);
-	DX12FrameAnalysisLogJsonFunc("ID3D12Device::CreateCommandAllocator",
+	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandAllocator",
 		"\"hr\":\"0x%lx\",\"allocator\":\"%p\"",
 		hr, allocator ? *allocator : nullptr);
 	return hr;
@@ -736,7 +736,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandList(
 		" nodeMask=%u type=%d allocator=%p initialPso=%p",
 		nodeMask, static_cast<int>(type), allocator, initialState);
 	HRESULT hr = gOrigCreateCommandList(device, nodeMask, type, allocator, initialState, riid, commandList);
-	DX12FrameAnalysisLogJsonFunc("ID3D12Device::CreateCommandList",
+	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandList",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
 	if (SUCCEEDED(hr) && commandList && *commandList) {
@@ -754,7 +754,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandList1(
 		" nodeMask=%u type=%d flags=0x%x",
 		nodeMask, static_cast<int>(type), static_cast<UINT>(flags));
 	HRESULT hr = gOrigCreateCommandList1(device, nodeMask, type, flags, riid, commandList);
-	DX12FrameAnalysisLogJsonFunc("ID3D12Device4::CreateCommandList1",
+	DX12FrameAnalysis::LogJsonFunc("ID3D12Device4::CreateCommandList1",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
 	if (SUCCEEDED(hr) && commandList && *commandList) {
@@ -1065,7 +1065,7 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 	if (DX12Profiling::ShouldCollectCounters() || DX12DrawHookFlowNeedsModWork())
 		InterlockedIncrement(&gPerFrameTotalDraws);
 
-	if (DX12IaReplacementIsExecutingInternalDraw()) {
+	if (DX12IaReplacementDrawScope::IsExecuting()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
 		if (original)
@@ -1112,11 +1112,8 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
 		GetCachedIaReplacementCallbacks(commandList);
-	DX12IaDrawInvocation draw = {};
-	draw.vertexCount = vertexCountPerInstance;
-	draw.instanceCount = instanceCount;
-	draw.firstVertex = startVertexLocation;
-	draw.firstInstance = startInstanceLocation;
+	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
+		vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
 	DX12DrawHookFlowExecute(commandList, draw, runtimeState, iaCallbacks);
 }
 
@@ -1137,7 +1134,7 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	if (DX12Profiling::ShouldCollectCounters() || DX12DrawHookFlowNeedsModWork())
 		InterlockedIncrement(&gPerFrameTotalDraws);
 
-	if (DX12IaReplacementIsExecutingInternalDraw()) {
+	if (DX12IaReplacementDrawScope::IsExecuting()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
@@ -1192,13 +1189,9 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
 		GetCachedIaReplacementCallbacks(commandList);
-	DX12IaDrawInvocation draw = {};
-	draw.indexed = true;
-	draw.indexCount = indexCountPerInstance;
-	draw.instanceCount = instanceCount;
-	draw.firstIndex = startIndexLocation;
-	draw.baseVertex = baseVertexLocation;
-	draw.firstInstance = startInstanceLocation;
+	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
+		indexCountPerInstance, instanceCount, startIndexLocation,
+		baseVertexLocation, startInstanceLocation);
 	DX12DrawHookFlowExecute(commandList, draw, runtimeState, iaCallbacks);
 }
 

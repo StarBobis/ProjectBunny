@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12CommandListRuntime.h"
 #include "DX12Overlay.h"
 #include "DX12Json.h"
@@ -128,9 +128,9 @@ void DX12HotPathUpdate()
 {
 	// Fast path: if already skipping all and no activity is present, avoid InterlockedExchange storm
 	if (gDX12HotPathSkipAll &&
-		!DX12FrameAnalysisIsActive() &&
-		!DX12FrameAnalysisIsCapturing() &&
-		!DX12FrameAnalysisIsCaptureRequested() &&
+		!DX12FrameAnalysis::IsActive() &&
+		!DX12FrameAnalysis::IsCapturing() &&
+		!DX12FrameAnalysis::IsCaptureRequested() &&
 		!DX12ShaderDumpIsCapturingFrame() &&
 		!DX12ShaderDumpIsCaptureRequested() &&
 		!DX12ShaderDumpIsBusy() &&

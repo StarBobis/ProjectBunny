@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 
-#include "DX12FrameAnalysis.h"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12Input.h"
 #include "DX12Profiling.h"
 #include "DX12ShaderDump.h"
@@ -63,9 +63,9 @@ static void RunFrameAnalysisRequest()
 		DX12SetOverlayWarning(L"Enable Hunting before Frame Dump");
 		return;
 	}
-	if (DX12FrameAnalysisBegin()) {
-		DX12FrameAnalysisLogJsonFunc("FrameAnalysisArmed", nullptr);
-		DX12FrameAnalysisRequestCapture();
+	if (DX12FrameAnalysis::Begin()) {
+		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisArmed", nullptr);
+		DX12FrameAnalysis::RequestCapture();
 		DX12SetOverlayStatus(L"Frame analysis armed");
 	} else {
 		DX12LogJsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"create_directory_failed\"");
