@@ -2,7 +2,7 @@
 
 #include <d3d12.h>
 
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12IaCommandSignatures.hpp"
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.h"
@@ -107,7 +107,7 @@ public:
 			return;
 
 		if (replacement.hasIndexBuffer && callbacks->setIndexBuffer) {
-			DX12CommandListRuntimeRememberIndexBuffer(commandList, &replacement.indexBuffer);
+			DX12CommandListRuntime::RememberIndexBuffer(commandList, &replacement.indexBuffer);
 			callbacks->setIndexBuffer(commandList, &replacement.indexBuffer);
 		}
 
@@ -132,7 +132,7 @@ public:
 				const UINT runCount = runEnd - runStart;
 				const D3D12_VERTEX_BUFFER_VIEW *views =
 					replacement.vertexBuffers.data() + runStart;
-				DX12CommandListRuntimeRememberVertexBuffers(commandList, slot, runCount, views);
+				DX12CommandListRuntime::RememberVertexBuffers(commandList, slot, runCount, views);
 				callbacks->setVertexBuffers(commandList, slot, runCount, views);
 				runStart = runEnd;
 			}
@@ -147,7 +147,7 @@ public:
 			return;
 
 		if (replacement.hasIndexBuffer && callbacks->setIndexBuffer) {
-			DX12CommandListRuntimeRememberIndexBuffer(commandList,
+			DX12CommandListRuntime::RememberIndexBuffer(commandList,
 				originalState.hasIndexBuffer ? &originalState.indexBuffer : nullptr);
 			callbacks->setIndexBuffer(commandList,
 				originalState.hasIndexBuffer ? &originalState.indexBuffer : nullptr);
@@ -160,7 +160,7 @@ public:
 			for (UINT i = 0; i < count && start + i < ARRAYSIZE(originalState.vertexBuffers); ++i)
 				restore[i] = originalState.hasVertexBuffer[start + i] ?
 					originalState.vertexBuffers[start + i] : D3D12_VERTEX_BUFFER_VIEW();
-			DX12CommandListRuntimeRememberVertexBuffers(commandList, start, count, restore);
+			DX12CommandListRuntime::RememberVertexBuffers(commandList, start, count, restore);
 			callbacks->setVertexBuffers(commandList, start, count, restore);
 		}
 	}
@@ -328,7 +328,7 @@ public:
 		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
-		if (DX12CommandListRuntimeBuildIaHashState(
+		if (DX12CommandListRuntime::BuildIaHashState(
 			runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
 			draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState)) {
 			DX12Profiling::RecordIaHashStateResult(true);
@@ -349,3 +349,4 @@ public:
 		return false;
 	}
 };
+

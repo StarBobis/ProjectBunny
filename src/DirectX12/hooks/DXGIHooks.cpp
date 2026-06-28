@@ -1,11 +1,11 @@
-﻿#include "DXGIHooks.h"
+#include "DXGIHooks.h"
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
 #include "DX12BindingTracker.hpp"
-#include "DX12CommandListHooks.h"
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListHooks.hpp"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12DeviceHooks.h"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.h"
@@ -175,14 +175,14 @@ static void ConsumeUiActionsForFrame()
 	if (!DX12UiConsumeActions())
 		return;
 	DX12HotPathState::Update();
-	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12CommandListRuntime::BumpTrackingGeneration();
 }
 
 static void BeginFrameAnalysisCapture(LONG present)
 {
 	DX12BindingTracker::BeginFrame();
 	DX12FrameAnalysis::BeginCapture();
-	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12CommandListRuntime::BumpTrackingGeneration();
 	DX12FrameAnalysis::LogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
 }
 
@@ -190,7 +190,7 @@ static void BeginShaderDumpCapture()
 {
 	DX12BindingTracker::BeginFrame();
 	DX12ShaderDumpBeginCapture();
-	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12CommandListRuntime::BumpTrackingGeneration();
 }
 
 static void HookSwapChain(IDXGISwapChain *swapChain)
@@ -225,7 +225,7 @@ void DX12ActivateHotPathHooks()
 	ReleaseSRWLockShared(&gKnownSwapChainLock);
 	if (swapChain)
 		HookSwapChain(swapChain);
-	DX12ActivateCommandQueueHotPathHooks();
+	DX12CommandListHooks::ActivateCommandQueueHotPathHooks();
 }
 
 static void HookDeviceFromDXGIArgument(IUnknown *device)
@@ -491,7 +491,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	LogPresentDeviceRemovedReason("Present", swapChain, hr);
 	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
-	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12CommandListRuntime::BumpTrackingGeneration();
 	RunPostPresentUi(swapChain);
 
 	LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
@@ -589,7 +589,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
-	DX12CommandListRuntimeBumpTrackingGeneration();
+	DX12CommandListRuntime::BumpTrackingGeneration();
 	RunPostPresentUi(swapChain);
 
 	LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
@@ -664,6 +664,7 @@ void DX12InstallDXGIHooks()
 	DX12InstallExportHook(dxgi, "CreateDXGIFactory2",
 		reinterpret_cast<void**>(&gOrigCreateDXGIFactory2), HookedCreateDXGIFactory2);
 }
+
 
 
 

@@ -1,5 +1,5 @@
-﻿#include "DX12BindingTracker.hpp"
-#include "DX12BindingTrackerPrivate.h"
+#include "DX12BindingTracker.hpp"
+#include "DX12BindingTrackerUtils.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,7 +14,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 
-static bool InsertBindingSeen(
+bool DX12BindingResourceExport::InsertBindingSeen(
 	std::unordered_set<std::string> *seen, const BindingEvent &event,
 	const char *bindSpace, UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
 	ID3D12DescriptorHeap *heap, UINT64 descriptorIndex, bool rootDescriptor)
@@ -35,7 +35,7 @@ static bool InsertBindingSeen(
 	return seen->insert(key).second;
 }
 
-static bool DescriptorMatchesRangeType(
+bool DX12BindingResourceExport::DescriptorMatchesRangeType(
 	const DX12DescriptorSummary *descriptor, UINT rangeType)
 {
 	if (!descriptor)
@@ -51,13 +51,13 @@ static bool DescriptorMatchesRangeType(
 	return true;
 }
 
-static const DX12DescriptorSummary *DescriptorForExpectedRange(
+const DX12DescriptorSummary *DX12BindingResourceExport::DescriptorForExpectedRange(
 	const DX12DescriptorSummary *descriptor, UINT rangeType)
 {
-	return DescriptorMatchesRangeType(descriptor, rangeType) ? descriptor : nullptr;
+	return DX12BindingResourceExport::DescriptorMatchesRangeType(descriptor, rangeType) ? descriptor : nullptr;
 }
 
-static const char *DescriptorKindForRangeType(UINT rangeType)
+const char *DX12BindingResourceExport::DescriptorKindForRangeType(UINT rangeType)
 {
 	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
 		return "CBV";
@@ -70,7 +70,7 @@ static const char *DescriptorKindForRangeType(UINT rangeType)
 	return "";
 }
 
-static const char *ExpectedBindingKind(const DX12FrameResourceBinding &binding)
+const char *DX12BindingResourceExport::ExpectedBindingKind(const DX12FrameResourceBinding &binding)
 {
 	if (!binding.usageClass.empty())
 		return binding.usageClass.c_str();
@@ -96,7 +96,7 @@ static const char *ExpectedBindingKind(const DX12FrameResourceBinding &binding)
 	return "";
 }
 
-static bool IsBufferResourceSummary(const DX12ResourceSummary &resource)
+bool DX12BindingResourceExport::IsBufferResourceSummary(const DX12ResourceSummary &resource)
 {
 	return resource.resource &&
 		resource.hasResourceDesc &&
@@ -104,7 +104,7 @@ static bool IsBufferResourceSummary(const DX12ResourceSummary &resource)
 		resource.size != 0;
 }
 
-static void CollectHuntingUavStateResourceUsages(
+void DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const std::vector<BindingEvent> &events)
 {
@@ -129,7 +129,7 @@ static void CollectHuntingUavStateResourceUsages(
 	size_t candidates = 0;
 	size_t emitted = 0;
 	for (const DX12ResourceSummary &resource : resources) {
-		if (!IsBufferResourceSummary(resource) ||
+		if (!DX12BindingResourceExport::IsBufferResourceSummary(resource) ||
 				!resource.hasCurrentState ||
 				!(resource.currentState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
 			continue;
@@ -178,48 +178,7 @@ static void CollectHuntingUavStateResourceUsages(
 		resources.size(), dispatches.size(), candidates, emitted);
 }
 
-static void WriteDescriptorResourceRow(
-	FILE *file, const BindingEvent &event, const char *bindSpace,
-	UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
-	UINT shaderRegister, UINT registerSpace, UINT descriptorOffset,
-	const DX12DescriptorHeapSummary *heap, UINT64 descriptorIndex,
-	UINT64 gpuHandle, SIZE_T cpuHandle,
-	const DX12DescriptorSummary *descriptor);
-
-class DescriptorSlotKey
-{
-public:
-	ID3D12DescriptorHeap *heap = nullptr;
-	UINT64 descriptorIndex = 0;
-
-	bool operator==(const DescriptorSlotKey &other) const
-	{
-		return heap == other.heap && descriptorIndex == other.descriptorIndex;
-	}
-};
-
-class DescriptorSlotKeyHash
-{
-public:
-	size_t operator()(const DescriptorSlotKey &key) const
-	{
-		uintptr_t heap = reinterpret_cast<uintptr_t>(key.heap);
-		uint64_t mixed = static_cast<uint64_t>(heap >> 4) ^ (key.descriptorIndex * 0x9e3779b97f4a7c15ull);
-		mixed ^= mixed >> 33;
-		mixed *= 0xff51afd7ed558ccdull;
-		mixed ^= mixed >> 33;
-		return static_cast<size_t>(mixed);
-	}
-};
-
-class DescriptorLookup
-{
-public:
-	std::unordered_map<SIZE_T, const DX12DescriptorSummary*> byCpuHandle;
-	std::unordered_map<DescriptorSlotKey, const DX12DescriptorSummary*, DescriptorSlotKeyHash> bySlot;
-};
-
-static bool DescriptorBelongsToHeap(
+bool DX12BindingResourceExport::DescriptorBelongsToHeap(
 	const DX12DescriptorSummary &descriptor, const DX12DescriptorHeapSummary &heap,
 	UINT64 *descriptorIndex)
 {
@@ -237,7 +196,7 @@ static bool DescriptorBelongsToHeap(
 	return true;
 }
 
-static void BuildDescriptorLookup(
+void DX12BindingResourceExport::BuildDescriptorLookup(
 	const std::vector<DX12DescriptorSummary> &descriptors,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	DescriptorLookup *lookup)
@@ -253,7 +212,7 @@ static void BuildDescriptorLookup(
 		lookup->byCpuHandle[descriptor.cpuHandle] = &descriptor;
 		for (const DX12DescriptorHeapSummary &heap : heaps) {
 			UINT64 descriptorIndex = 0;
-			if (!DescriptorBelongsToHeap(descriptor, heap, &descriptorIndex))
+			if (!DX12BindingResourceExport::DescriptorBelongsToHeap(descriptor, heap, &descriptorIndex))
 				continue;
 			DescriptorSlotKey key;
 			key.heap = heap.heap;
@@ -264,7 +223,7 @@ static void BuildDescriptorLookup(
 	}
 }
 
-static const DX12DescriptorSummary *FindDescriptorForSlot(
+const DX12DescriptorSummary *DX12BindingResourceExport::FindDescriptorForSlot(
 	const DescriptorLookup &lookup, const DX12DescriptorHeapSummary *heap,
 	UINT64 descriptorIndex, SIZE_T cpuHandle)
 {
@@ -280,17 +239,17 @@ static const DX12DescriptorSummary *FindDescriptorForSlot(
 	return bySlot != lookup.bySlot.end() ? bySlot->second : nullptr;
 }
 
-static const DX12DescriptorSummary *FindDescriptorForEventSlot(
+const DX12DescriptorSummary *DX12BindingResourceExport::FindDescriptorForEventSlot(
 	DX12DescriptorSummary *historyStorage,
 	const BindingEvent &event,
 	const DescriptorLookup &lookup, const DX12DescriptorHeapSummary *heap,
 	UINT64 descriptorIndex, SIZE_T cpuHandle, UINT rangeType,
-	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
+	size_t *historyLookups, size_t *historyHits)
 {
 	if (historyStorage && event.descriptorEpoch) {
 		if (historyLookups)
 			(*historyLookups)++;
-		const char *kind = DescriptorKindForRangeType(rangeType);
+		const char *kind = DX12BindingResourceExport::DescriptorKindForRangeType(rangeType);
 		if (FindDescriptorSummaryByCpuHandleAtEpochAndKind(
 				cpuHandle, event.descriptorEpoch, kind, historyStorage) ||
 				FindDescriptorSummaryByCpuHandleAtEpoch(
@@ -300,16 +259,16 @@ static const DX12DescriptorSummary *FindDescriptorForEventSlot(
 			return historyStorage;
 		}
 	}
-	return FindDescriptorForSlot(lookup, heap, descriptorIndex, cpuHandle);
+	return DX12BindingResourceExport::FindDescriptorForSlot(lookup, heap, descriptorIndex, cpuHandle);
 }
 
-static UINT UnknownTableRangeType(UINT heapType)
+UINT DX12BindingResourceExport::UnknownTableRangeType(UINT heapType)
 {
 	return heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ?
 		D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER : UINT_MAX;
 }
 
-static bool MakeTableBinding(
+bool DX12BindingResourceExport::MakeTableBinding(
 	DX12FrameResourceBinding *binding, const BindingEvent &event, const char *bindSpace,
 	const RootTableState &table, UINT rangeIndex, UINT rangeType,
 	UINT shaderVisibility, UINT shaderRegister, UINT registerSpace, UINT descriptorOffset,
@@ -345,7 +304,7 @@ static bool MakeTableBinding(
 	return true;
 }
 
-static bool WriteDescriptorTableEntry(
+bool DX12BindingResourceExport::WriteDescriptorTableEntry(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	const RootTableState &table, UINT rangeIndex, UINT rangeType,
 	UINT shaderRegister, UINT registerSpace, UINT descriptorOffset,
@@ -357,8 +316,8 @@ static bool WriteDescriptorTableEntry(
 	if (!file || !heap)
 		return false;
 	const DX12DescriptorSummary *expectedDescriptor =
-		DescriptorForExpectedRange(descriptor, rangeType);
-	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
+		DX12BindingResourceExport::DescriptorForExpectedRange(descriptor, rangeType);
+	if (!DX12BindingResourceExport::InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
 	if (!expectedDescriptor && untrackedSkipped)
@@ -367,13 +326,13 @@ static bool WriteDescriptorTableEntry(
 	// heap slot has a different recorded kind, keep the expected slot as
 	// untracked instead of dropping it; otherwise Hunting cannot distinguish
 	// "no UAV bound" from "UAV metadata was lost before dump".
-	WriteDescriptorResourceRow(file, event, bindSpace, table.rootParameterIndex,
+	DX12BindingResourceExport::WriteDescriptorResourceRow(file, event, bindSpace, table.rootParameterIndex,
 		rangeIndex, rangeType, shaderRegister, registerSpace, descriptorOffset,
 		heap, descriptorIndex, gpuHandle, cpuHandle, expectedDescriptor);
 	return true;
 }
 
-static bool CollectDescriptorTableEntry(
+bool DX12BindingResourceExport::CollectDescriptorTableEntry(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const BindingEvent &event, const char *bindSpace,
 	const RootTableState &table, UINT rangeIndex, UINT rangeType,
@@ -386,15 +345,15 @@ static bool CollectDescriptorTableEntry(
 	if (!bindings || !heap)
 		return false;
 	const DX12DescriptorSummary *expectedDescriptor =
-		DescriptorForExpectedRange(descriptor, rangeType);
-	if (!InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
+		DX12BindingResourceExport::DescriptorForExpectedRange(descriptor, rangeType);
+	if (!DX12BindingResourceExport::InsertBindingSeen(seen, event, bindSpace, table.rootParameterIndex,
 			rangeIndex, rangeType, heap->heap, descriptorIndex, false))
 		return false;
 	if (!expectedDescriptor && untrackedSkipped)
 		(*untrackedSkipped)++;
 
 	DX12FrameResourceBinding binding;
-	if (!MakeTableBinding(&binding, event, bindSpace, table, rangeIndex, rangeType,
+	if (!DX12BindingResourceExport::MakeTableBinding(&binding, event, bindSpace, table, rangeIndex, rangeType,
 			shaderVisibility, shaderRegister, registerSpace, descriptorOffset,
 			heap, descriptorIndex, gpuHandle, cpuHandle, expectedDescriptor))
 		return false;
@@ -402,7 +361,7 @@ static bool CollectDescriptorTableEntry(
 	return true;
 }
 
-static bool VisitTableStartOnly(
+bool DX12BindingResourceExport::VisitTableStartOnly(
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	UINT64 *descriptorIndex, UINT64 *gpuHandle, SIZE_T *cpuHandle,
@@ -421,7 +380,7 @@ static bool VisitTableStartOnly(
 	return true;
 }
 
-static void WriteDescriptorResourceRow(
+void DX12BindingResourceExport::WriteDescriptorResourceRow(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
 	UINT shaderRegister, UINT registerSpace, UINT descriptorOffset,
@@ -480,7 +439,7 @@ static void WriteDescriptorResourceRow(
 	}
 }
 
-static void WriteRootDescriptorResourceRow(
+void DX12BindingResourceExport::WriteRootDescriptorResourceRow(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	const RootDescriptorState &rootDescriptor,
 	const DX12RootParameterSummary *parameter,
@@ -530,7 +489,7 @@ static void WriteRootDescriptorResourceRow(
 }
 
 
-static bool IsCompatibleRangeForSpace(const DX12RootDescriptorRangeSummary &range, const char *bindSpace)
+bool DX12BindingResourceExport::IsCompatibleRangeForSpace(const DX12RootDescriptorRangeSummary &range, const char *bindSpace)
 {
 	if (!bindSpace)
 		return true;
@@ -538,7 +497,7 @@ static bool IsCompatibleRangeForSpace(const DX12RootDescriptorRangeSummary &rang
 	return samplerSpace == (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER);
 }
 
-static bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
+bool DX12BindingResourceExport::IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 {
 	return dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ||
 		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
@@ -546,13 +505,13 @@ static bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 }
 
 
-static void WriteFrameResourceBinding(
+void DX12BindingResourceExport::WriteFrameResourceBinding(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptors,
 	std::unordered_set<std::string> *seen, size_t *untrackedSkipped,
-	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
+	size_t *historyLookups, size_t *historyHits)
 {
 	if (!file || !table.valid || !seen)
 		return;
@@ -566,7 +525,7 @@ static void WriteFrameResourceBinding(
 	bool wroteRange = false;
 	if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-			if (!IsCompatibleRangeForSpace(range, bindSpace))
+			if (!DX12BindingResourceExport::IsCompatibleRangeForSpace(range, bindSpace))
 				continue;
 			const DX12DescriptorHeapSummary *heap = DX12BindingTrackerUtils::FindHeapForTableRange(heaps, table, &range, heapType);
 			if (!heap)
@@ -580,10 +539,10 @@ static void WriteFrameResourceBinding(
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
 				DX12DescriptorSummary historyStorage;
-				const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+				const DX12DescriptorSummary *descriptor = DX12BindingResourceExport::FindDescriptorForEventSlot(
 					&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
 					range.rangeType, historyLookups, historyHits);
-				if (WriteDescriptorTableEntry(file, event, bindSpace, table,
+				if (DX12BindingResourceExport::WriteDescriptorTableEntry(file, event, bindSpace, table,
 						range.rangeIndex, range.rangeType, range.baseShaderRegister + offset,
 						range.registerSpace, range.effectiveOffset + offset,
 						heap, descriptorIndex, gpuHandle, cpuHandle, descriptor,
@@ -600,21 +559,21 @@ static void WriteFrameResourceBinding(
 	UINT64 gpuHandle = 0;
 	SIZE_T cpuHandle = 0;
 	const DX12DescriptorHeapSummary *heap = nullptr;
-	if (VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
+	if (DX12BindingResourceExport::VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
 			&gpuHandle, &cpuHandle, &heap)) {
 		DX12DescriptorSummary historyStorage;
-		const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+		const DX12DescriptorSummary *descriptor = DX12BindingResourceExport::FindDescriptorForEventSlot(
 			&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
-			UnknownTableRangeType(heapType), historyLookups, historyHits);
+			DX12BindingResourceExport::UnknownTableRangeType(heapType), historyLookups, historyHits);
 		// Without a root signature D3D12 only gives the table base handle, not a range length.
 		// Record that one provable descriptor instead of guessing through the heap.
-		WriteDescriptorTableEntry(file, event, bindSpace, table, UINT_MAX,
-			UnknownTableRangeType(heapType), UINT_MAX, 0, 0, heap, descriptorIndex,
+		DX12BindingResourceExport::WriteDescriptorTableEntry(file, event, bindSpace, table, UINT_MAX,
+			DX12BindingResourceExport::UnknownTableRangeType(heapType), UINT_MAX, 0, 0, heap, descriptorIndex,
 			gpuHandle, cpuHandle, descriptor, seen, untrackedSkipped);
 	}
 }
 
-static void WriteFrameRootDescriptor(
+void DX12BindingResourceExport::WriteFrameRootDescriptor(
 	FILE *file, const BindingEvent &event, const char *bindSpace,
 	const RootDescriptorState &rootDescriptor,
 	std::unordered_set<std::string> *seen)
@@ -628,25 +587,25 @@ static void WriteFrameRootDescriptor(
 	if (DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature))
 		parameter = DX12BindingTrackerUtils::FindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
 
-	if (!InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
+	if (!DX12BindingResourceExport::InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
 			UINT_MAX, static_cast<UINT>(rootDescriptor.type),
 			nullptr, rootDescriptor.address, true))
 		return;
 
 	DX12BufferResourceSummary resource;
 	const bool resolved = DX12ResolveBufferResourceByGpuVa(rootDescriptor.address, 1, &resource);
-	WriteRootDescriptorResourceRow(file, event, bindSpace, rootDescriptor,
+	DX12BindingResourceExport::WriteRootDescriptorResourceRow(file, event, bindSpace, rootDescriptor,
 		parameter, resolved ? &resource : nullptr);
 }
 
-static void CollectFrameResourceBinding(
+void DX12BindingResourceExport::CollectFrameResourceBinding(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const BindingEvent &event, const char *bindSpace,
 	const RootTableState &table, UINT heapType,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptors,
 	std::unordered_set<std::string> *seen, size_t *untrackedSkipped,
-	size_t *historyLookups = nullptr, size_t *historyHits = nullptr)
+	size_t *historyLookups, size_t *historyHits)
 {
 	if (!bindings || !table.valid || !seen)
 		return;
@@ -660,7 +619,7 @@ static void CollectFrameResourceBinding(
 	bool collectedRange = false;
 	if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-			if (!IsCompatibleRangeForSpace(range, bindSpace))
+			if (!DX12BindingResourceExport::IsCompatibleRangeForSpace(range, bindSpace))
 				continue;
 			const DX12DescriptorHeapSummary *heap = DX12BindingTrackerUtils::FindHeapForTableRange(heaps, table, &range, heapType);
 			if (!heap)
@@ -674,10 +633,10 @@ static void CollectFrameResourceBinding(
 				const UINT64 gpuHandle = heap->gpuStart + descriptorIndex * heap->increment;
 				const SIZE_T cpuHandle = heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
 				DX12DescriptorSummary historyStorage;
-				const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+				const DX12DescriptorSummary *descriptor = DX12BindingResourceExport::FindDescriptorForEventSlot(
 					&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
 					range.rangeType, historyLookups, historyHits);
-				if (CollectDescriptorTableEntry(bindings, event, bindSpace, table,
+				if (DX12BindingResourceExport::CollectDescriptorTableEntry(bindings, event, bindSpace, table,
 						range.rangeIndex, range.rangeType, range.shaderVisibility,
 						range.baseShaderRegister + offset, range.registerSpace,
 						range.effectiveOffset + offset,
@@ -695,21 +654,21 @@ static void CollectFrameResourceBinding(
 	UINT64 gpuHandle = 0;
 	SIZE_T cpuHandle = 0;
 	const DX12DescriptorHeapSummary *heap = nullptr;
-	if (VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
+	if (DX12BindingResourceExport::VisitTableStartOnly(table, heapType, heaps, &descriptorIndex,
 			&gpuHandle, &cpuHandle, &heap)) {
 		DX12DescriptorSummary historyStorage;
-		const DX12DescriptorSummary *descriptor = FindDescriptorForEventSlot(
+		const DX12DescriptorSummary *descriptor = DX12BindingResourceExport::FindDescriptorForEventSlot(
 			&historyStorage, event, descriptors, heap, descriptorIndex, cpuHandle,
-			UnknownTableRangeType(heapType), historyLookups, historyHits);
+			DX12BindingResourceExport::UnknownTableRangeType(heapType), historyLookups, historyHits);
 		// Same design as file export: keep the table base binding when root metadata is absent,
 		// but do not fabricate descriptor ranges that D3D12 did not expose.
-		CollectDescriptorTableEntry(bindings, event, bindSpace, table, UINT_MAX,
-			UnknownTableRangeType(heapType), D3D12_SHADER_VISIBILITY_ALL, UINT_MAX, 0, 0,
+		DX12BindingResourceExport::CollectDescriptorTableEntry(bindings, event, bindSpace, table, UINT_MAX,
+			DX12BindingResourceExport::UnknownTableRangeType(heapType), D3D12_SHADER_VISIBILITY_ALL, UINT_MAX, 0, 0,
 			heap, descriptorIndex, gpuHandle, cpuHandle, descriptor, seen, untrackedSkipped);
 	}
 }
 
-static void CollectFrameRootDescriptorBinding(
+void DX12BindingResourceExport::CollectFrameRootDescriptorBinding(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const BindingEvent &event, const char *bindSpace,
 	const RootDescriptorState &rootDescriptor,
@@ -717,7 +676,7 @@ static void CollectFrameRootDescriptorBinding(
 {
 	if (!bindings || !rootDescriptor.valid || !seen)
 		return;
-	if (!InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
+	if (!DX12BindingResourceExport::InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
 			UINT_MAX, static_cast<UINT>(rootDescriptor.type),
 			nullptr, rootDescriptor.address, true))
 		return;
@@ -750,7 +709,7 @@ static void CollectFrameRootDescriptorBinding(
 		// buffer into descriptor form here. This keeps compute UAV producers on
 		// the same event-resource path as descriptor tables, matching RenderDoc's
 		// resource-usage granularity without scanning resources in Mod mode.
-		binding.descriptor.kind = ExpectedBindingKind(binding);
+		binding.descriptor.kind = DX12BindingResourceExport::ExpectedBindingKind(binding);
 		binding.descriptor.resource = resource.resource;
 		binding.descriptor.resourceDesc = resource.resourceDesc;
 		binding.descriptor.hasResourceDesc = true;
@@ -768,7 +727,7 @@ static void CollectFrameRootDescriptorBinding(
 	bindings->push_back(std::move(binding));
 }
 
-static void CountEventTables(
+void DX12BindingResourceExport::CountEventTables(
 	const BindingEvent &event,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	size_t *graphicsTables, size_t *computeTables,
@@ -855,34 +814,34 @@ static void CountEventTables(
 	}
 }
 
-static void CollectEventResourceBindings(
+void DX12BindingResourceExport::CollectEventResourceBindings(
 	std::vector<DX12FrameResourceBinding> *bindings,
 	const BindingEvent &event,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const DescriptorLookup &descriptorLookup,
 	std::unordered_set<std::string> *seen,
 	size_t *untrackedSkipped,
-	size_t *historyLookups = nullptr,
-	size_t *historyHits = nullptr)
+	size_t *historyLookups,
+	 size_t *historyHits)
 {
 	if (!bindings || !seen)
 		return;
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
-		CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
+		DX12BindingResourceExport::CollectFrameResourceBinding(bindings, event, "graphics_cbv_srv_uav",
 			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
-		CollectFrameResourceBinding(bindings, event, "graphics_sampler",
+		DX12BindingResourceExport::CollectFrameResourceBinding(bindings, event, "graphics_sampler",
 			event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
-		CollectFrameResourceBinding(bindings, event, "compute_cbv_srv_uav",
+		DX12BindingResourceExport::CollectFrameResourceBinding(bindings, event, "compute_cbv_srv_uav",
 			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
-		CollectFrameResourceBinding(bindings, event, "compute_sampler",
+		DX12BindingResourceExport::CollectFrameResourceBinding(bindings, event, "compute_sampler",
 			event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 			heaps, descriptorLookup, seen, untrackedSkipped, historyLookups, historyHits);
-		CollectFrameRootDescriptorBinding(bindings, event, "graphics_root",
+		DX12BindingResourceExport::CollectFrameRootDescriptorBinding(bindings, event, "graphics_root",
 			event.graphicsRootDescriptors[i], seen);
-		CollectFrameRootDescriptorBinding(bindings, event, "compute_root",
+		DX12BindingResourceExport::CollectFrameRootDescriptorBinding(bindings, event, "compute_root",
 			event.computeRootDescriptors[i], seen);
 	}
 }
@@ -906,7 +865,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 		"\"descriptors\":%zu,\"heaps\":%zu",
 		descriptors.size(), heaps.size());
 	DescriptorLookup descriptorLookup;
-	BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
+	DX12BindingResourceExport::BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesLookupReady",
 		"\"cpu_entries\":%zu,\"slot_entries\":%zu",
 		descriptorLookup.byCpuHandle.size(), descriptorLookup.bySlot.size());
@@ -950,7 +909,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 			drawEvents++;
 		if (DX12BindingTrackerUtils::IsDispatchEvent(event))
 			dispatchEvents++;
-		CountEventTables(event, heaps, &graphicsTables, &computeTables,
+		DX12BindingResourceExport::CountEventTables(event, heaps, &graphicsTables, &computeTables,
 			&graphicsTablesWithRoots, &computeTablesWithRoots,
 			&rootRangeTables, &tableStartOnly, &unboundedRanges,
 			&unboundedDescriptors, &graphicsTablesWithoutRoots,
@@ -959,7 +918,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 		// Rebuild from the final descriptor metadata snapshot. Event recording only
 		// stores root table/root descriptor state; resolving resources here matches
 		// RenderDoc's event-granular model and avoids hot-path descriptor scans.
-		CollectEventResourceBindings(
+		DX12BindingResourceExport::CollectEventResourceBindings(
 			bindings, event, heaps, descriptorLookup, &seen, &untrackedSkipped,
 			&descriptorHistoryLookups, &descriptorHistoryHits);
 		rebuiltEventBindings += bindings->size() - before;
@@ -968,9 +927,9 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 				rebuiltResolvedBindings++;
 		}
 	}
-	CollectHuntingUavStateResourceUsages(bindings, events);
+	DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(bindings, events);
 	for (const DX12FrameResourceBinding &binding : *bindings) {
-		const char *expectedKind = ExpectedBindingKind(binding);
+		const char *expectedKind = DX12BindingResourceExport::ExpectedBindingKind(binding);
 		if (!binding.hasDescriptor) {
 			untrackedBindings++;
 			if (!strcmp(expectedKind, "CBV"))
@@ -990,7 +949,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 		else if (!strcmp(expectedKind, "Sampler"))
 			samplerBindings++;
 		if (binding.descriptor.hasResourceDesc &&
-			IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension))
+			DX12BindingResourceExport::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension))
 			textureBindings++;
 	}
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesCollected",
@@ -1089,7 +1048,7 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 		static_cast<unsigned long long>(dropped));
 }
 
-static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
+DX12FrameAnalysisDumpResult DX12BindingResourceExport::WriteFrameResourceFile(
 	const wchar_t *dir, const std::vector<BindingEvent> &events)
 {
 	DX12FrameAnalysisDumpResult result;
@@ -1107,7 +1066,7 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 		events.size(),
 		descriptors.size(), heaps.size());
 	DescriptorLookup descriptorLookup;
-	BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
+	DX12BindingResourceExport::BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
 	DX12FrameAnalysis::LogJsonFunc("FrameResourceFileLookupReady",
 		"\"cpu_entries\":%zu,\"slot_entries\":%zu",
 		descriptorLookup.byCpuHandle.size(), descriptorLookup.bySlot.size());
@@ -1145,21 +1104,21 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 	size_t untrackedSkipped = 0;
 	for (const BindingEvent &event : events) {
 		for (UINT i = 0; i < MaxRootParameters; ++i) {
-			WriteFrameResourceBinding(file, event, "graphics_cbv_srv_uav",
+			DX12BindingResourceExport::WriteFrameResourceBinding(file, event, "graphics_cbv_srv_uav",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				heaps, descriptorLookup, &seen, &untrackedSkipped);
-			WriteFrameResourceBinding(file, event, "graphics_sampler",
+			DX12BindingResourceExport::WriteFrameResourceBinding(file, event, "graphics_sampler",
 				event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 				heaps, descriptorLookup, &seen, &untrackedSkipped);
-			WriteFrameResourceBinding(file, event, "compute_cbv_srv_uav",
+			DX12BindingResourceExport::WriteFrameResourceBinding(file, event, "compute_cbv_srv_uav",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 				heaps, descriptorLookup, &seen, &untrackedSkipped);
-			WriteFrameResourceBinding(file, event, "compute_sampler",
+			DX12BindingResourceExport::WriteFrameResourceBinding(file, event, "compute_sampler",
 				event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
 				heaps, descriptorLookup, &seen, &untrackedSkipped);
-			WriteFrameRootDescriptor(file, event, "graphics_root",
+			DX12BindingResourceExport::WriteFrameRootDescriptor(file, event, "graphics_root",
 				event.graphicsRootDescriptors[i], &seen);
-			WriteFrameRootDescriptor(file, event, "compute_root",
+			DX12BindingResourceExport::WriteFrameRootDescriptor(file, event, "compute_root",
 				event.computeRootDescriptors[i], &seen);
 		}
 		eventRows++;
@@ -1197,8 +1156,10 @@ DX12FrameAnalysisDumpResult DX12BindingResourceExport::DumpCurrentFrameResourceT
 	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	events = DX12BindingTrackerState::Events;
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	return WriteFrameResourceFile(dir, events);
+	return DX12BindingResourceExport::WriteFrameResourceFile(dir, events);
 }
+
+
 
 
 

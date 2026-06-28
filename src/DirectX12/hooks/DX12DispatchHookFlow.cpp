@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include "DX12DispatchHookFlow.h"
 
 #include <cstring>
@@ -226,7 +226,7 @@ void DX12DispatchHookFlowExecute(
 	const DX12CommandListRuntimeState *effectiveState = runtimeState;
 	if (!effectiveState) {
 		DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
-		fallbackState.pipelineState = DX12CommandListRuntimeGetPipelineState(commandList);
+		fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
 		effectiveState = &fallbackState;
 	}
 
@@ -259,6 +259,7 @@ void DX12DispatchHookFlowExecute(
 		threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 		dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 }
+
 
 
 

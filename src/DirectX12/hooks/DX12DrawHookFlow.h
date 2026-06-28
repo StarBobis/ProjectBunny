@@ -2,7 +2,7 @@
 
 #include <d3d12.h>
 
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12IaReplacementExecutor.hpp"
 
 void DX12DrawHookFlowExecute(
@@ -11,3 +11,4 @@ void DX12DrawHookFlowExecute(
 	const DX12CommandListRuntimeState *runtimeState,
 	const DX12IaReplacementExecutorCallbacks &callbacks);
 bool DX12DrawHookFlowNeedsModWork();
+

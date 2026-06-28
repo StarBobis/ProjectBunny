@@ -3,7 +3,7 @@
 #include <Windows.h>
 
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Input.h"
+#include "DX12Input.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
 #include "DX12ShaderHunt.h"
@@ -116,7 +116,7 @@ bool DX12UiConsumeActions()
 	if (actions & DX12_UI_ACTION_SHADER_DUMP)
 		DX12RequestShaderDump();
 	if (actions & DX12_UI_ACTION_MOD_RELOAD)
-		DX12RequestModReload();
+		DX12Input::RequestModReload();
 	if (actions & DX12_UI_ACTION_PROFILING)
 		DX12Profiling::Toggle();
 	return true;

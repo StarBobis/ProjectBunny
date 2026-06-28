@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <d3d12.h>
 #include <stdint.h>
@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
@@ -214,4 +214,5 @@ bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *sour
 bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *source);
 bool DX12ModAdjustUavDesc(
 	ID3D12Resource *resource, D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, const char *source);
+
 

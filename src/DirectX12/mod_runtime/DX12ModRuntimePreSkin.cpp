@@ -1,4 +1,4 @@
-﻿static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
+static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
 {
 	if (descriptor.viewSize)
 		return descriptor.viewSize;
@@ -1814,7 +1814,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		if (state.restoreSamplerHeap)
 			heaps[heapCount++] = state.restoreSamplerHeap;
 		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
-		DX12CommandListRuntimeSetDescriptorHeaps(
+		DX12CommandListRuntime::SetDescriptorHeaps(
 			commandList, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
 		DX12BindingTracker::SetDescriptorHeaps(commandList, heapCount, heapCount ? heaps : nullptr);
 		for (const auto &restore : state.tableRestores) {
@@ -1871,5 +1871,6 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		restoredDescriptorCount, restoredTableCount);
 #endif
 }
+
 
 

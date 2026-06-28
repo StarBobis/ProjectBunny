@@ -1,4 +1,6 @@
-﻿#include "DX12CommandListHooks.h"
+#include "DX12CommandListHooks.hpp"
+#include "DX12CommandListHookSignatures.hpp"
+#include "DX12CommandListHookState.hpp"
 
 #include <d3d12.h>
 #include <stdarg.h>
@@ -9,10 +11,10 @@
 #include <unordered_set>
 
 #include "DX12BindingTracker.hpp"
-#include "DX12CommandListCommandRecorder.h"
-#include "DX12CommandListLifecycle.h"
-#include "DX12CommandListRuntime.h"
-#include "DX12CommandListStateCapture.h"
+#include "DX12CommandListCommandRecorder.hpp"
+#include "DX12CommandListLifecycle.hpp"
+#include "DX12CommandListRuntime.hpp"
+#include "DX12CommandListStateCapture.hpp"
 #include "DX12DispatchHookFlow.h"
 #include "DX12DrawHookFlow.h"
 #include "DX12FrameAnalysis.hpp"
@@ -30,217 +32,166 @@
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMAND_QUEUE)(
-	ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMAND_ALLOCATOR)(
-	ID3D12Device*, D3D12_COMMAND_LIST_TYPE, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMAND_LIST)(
-	ID3D12Device*, UINT, D3D12_COMMAND_LIST_TYPE, ID3D12CommandAllocator*,
-	ID3D12PipelineState*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMAND_LIST1)(
-	ID3D12Device4*, UINT, D3D12_COMMAND_LIST_TYPE, D3D12_COMMAND_LIST_FLAGS, REFIID, void**);
+using PFN_CREATE_COMMAND_QUEUE = DX12CommandListHookSignatures::CreateCommandQueue;
+using PFN_CREATE_COMMAND_ALLOCATOR = DX12CommandListHookSignatures::CreateCommandAllocator;
+using PFN_CREATE_COMMAND_LIST = DX12CommandListHookSignatures::CreateCommandList;
+using PFN_CREATE_COMMAND_LIST1 = DX12CommandListHookSignatures::CreateCommandList1;
+using PFN_QUEUE_UPDATE_TILE_MAPPINGS = DX12CommandListHookSignatures::QueueUpdateTileMappings;
+using PFN_QUEUE_COPY_TILE_MAPPINGS = DX12CommandListHookSignatures::QueueCopyTileMappings;
+using PFN_QUEUE_EXECUTE_COMMAND_LISTS = DX12CommandListHookSignatures::QueueExecuteCommandLists;
+using PFN_QUEUE_SET_MARKER = DX12CommandListHookSignatures::QueueSetMarker;
+using PFN_QUEUE_BEGIN_EVENT = DX12CommandListHookSignatures::QueueBeginEvent;
+using PFN_QUEUE_END_EVENT = DX12CommandListHookSignatures::QueueEndEvent;
+using PFN_QUEUE_SIGNAL = DX12CommandListHookSignatures::QueueSignal;
+using PFN_QUEUE_WAIT = DX12CommandListHookSignatures::QueueWait;
+using PFN_QUEUE_GET_TIMESTAMP_FREQUENCY = DX12CommandListHookSignatures::QueueGetTimestampFrequency;
+using PFN_QUEUE_GET_CLOCK_CALIBRATION = DX12CommandListHookSignatures::QueueGetClockCalibration;
+using PFN_CLOSE_COMMAND_LIST = DX12CommandListHookSignatures::CloseCommandList;
+using PFN_RESET_COMMAND_LIST = DX12CommandListHookSignatures::ResetCommandList;
+using PFN_CLEAR_STATE = DX12CommandListHookSignatures::ClearState;
+using PFN_DRAW_INSTANCED = DX12CommandListHookSignatures::DrawInstanced;
+using PFN_DRAW_INDEXED_INSTANCED = DX12CommandListHookSignatures::DrawIndexedInstanced;
+using PFN_DISPATCH = DX12CommandListHookSignatures::Dispatch;
+using PFN_COPY_BUFFER_REGION = DX12CommandListHookSignatures::CopyBufferRegion;
+using PFN_COPY_TEXTURE_REGION = DX12CommandListHookSignatures::CopyTextureRegion;
+using PFN_COPY_RESOURCE = DX12CommandListHookSignatures::CopyResource;
+using PFN_COPY_TILES = DX12CommandListHookSignatures::CopyTiles;
+using PFN_RESOLVE_SUBRESOURCE = DX12CommandListHookSignatures::ResolveSubresource;
+using PFN_IA_SET_PRIMITIVE_TOPOLOGY = DX12CommandListHookSignatures::IaSetPrimitiveTopology;
+using PFN_RS_SET_VIEWPORTS = DX12CommandListHookSignatures::RsSetViewports;
+using PFN_RS_SET_SCISSOR_RECTS = DX12CommandListHookSignatures::RsSetScissorRects;
+using PFN_OM_SET_BLEND_FACTOR = DX12CommandListHookSignatures::OmSetBlendFactor;
+using PFN_OM_SET_STENCIL_REF = DX12CommandListHookSignatures::OmSetStencilRef;
+using PFN_SET_PIPELINE_STATE = DX12CommandListHookSignatures::SetPipelineState;
+using PFN_RESOURCE_BARRIER = DX12CommandListHookSignatures::ResourceBarrier;
+using PFN_EXECUTE_BUNDLE = DX12CommandListHookSignatures::ExecuteBundle;
+using PFN_SET_DESCRIPTOR_HEAPS = DX12CommandListHookSignatures::SetDescriptorHeaps;
+using PFN_SET_ROOT_SIGNATURE = DX12CommandListHookSignatures::SetRootSignature;
+using PFN_SET_ROOT_DESCRIPTOR_TABLE = DX12CommandListHookSignatures::SetRootDescriptorTable;
+using PFN_SET_ROOT_32BIT_CONSTANT = DX12CommandListHookSignatures::SetRoot32BitConstant;
+using PFN_SET_ROOT_32BIT_CONSTANTS = DX12CommandListHookSignatures::SetRoot32BitConstants;
+using PFN_SET_ROOT_GPU_VA = DX12CommandListHookSignatures::SetRootGpuVa;
+using PFN_IA_SET_INDEX_BUFFER = DX12CommandListHookSignatures::IaSetIndexBuffer;
+using PFN_IA_SET_VERTEX_BUFFERS = DX12CommandListHookSignatures::IaSetVertexBuffers;
+using PFN_SO_SET_TARGETS = DX12CommandListHookSignatures::SoSetTargets;
+using PFN_OM_SET_RENDER_TARGETS = DX12CommandListHookSignatures::OmSetRenderTargets;
+using PFN_CLEAR_DEPTH_STENCIL_VIEW = DX12CommandListHookSignatures::ClearDepthStencilView;
+using PFN_CLEAR_RENDER_TARGET_VIEW = DX12CommandListHookSignatures::ClearRenderTargetView;
+using PFN_CLEAR_UAV_UINT = DX12CommandListHookSignatures::ClearUavUint;
+using PFN_CLEAR_UAV_FLOAT = DX12CommandListHookSignatures::ClearUavFloat;
+using PFN_DISCARD_RESOURCE = DX12CommandListHookSignatures::DiscardResource;
+using PFN_BEGIN_QUERY = DX12CommandListHookSignatures::BeginQuery;
+using PFN_END_QUERY = DX12CommandListHookSignatures::EndQuery;
+using PFN_RESOLVE_QUERY_DATA = DX12CommandListHookSignatures::ResolveQueryData;
+using PFN_SET_PREDICATION = DX12CommandListHookSignatures::SetPredication;
+using PFN_COMMAND_LIST_SET_MARKER = DX12CommandListHookSignatures::CommandListSetMarker;
+using PFN_COMMAND_LIST_BEGIN_EVENT = DX12CommandListHookSignatures::CommandListBeginEvent;
+using PFN_COMMAND_LIST_END_EVENT = DX12CommandListHookSignatures::CommandListEndEvent;
+using PFN_EXECUTE_INDIRECT = DX12CommandListHookSignatures::ExecuteIndirect;
+DX12CommandListHookSignatures::CreateCommandQueue DX12CommandListHookState::OrigCreateCommandQueue = nullptr;
+DX12CommandListHookSignatures::CreateCommandAllocator DX12CommandListHookState::OrigCreateCommandAllocator = nullptr;
+DX12CommandListHookSignatures::CreateCommandList DX12CommandListHookState::OrigCreateCommandList = nullptr;
+DX12CommandListHookSignatures::CreateCommandList1 DX12CommandListHookState::OrigCreateCommandList1 = nullptr;
 
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_UPDATE_TILE_MAPPINGS)(
-	ID3D12CommandQueue*, ID3D12Resource*, UINT, const D3D12_TILED_RESOURCE_COORDINATE*,
-	const D3D12_TILE_REGION_SIZE*, ID3D12Heap*, UINT, const D3D12_TILE_RANGE_FLAGS*,
-	const UINT*, const UINT*, D3D12_TILE_MAPPING_FLAGS);
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_COPY_TILE_MAPPINGS)(
-	ID3D12CommandQueue*, ID3D12Resource*, const D3D12_TILED_RESOURCE_COORDINATE*,
-	ID3D12Resource*, const D3D12_TILED_RESOURCE_COORDINATE*, const D3D12_TILE_REGION_SIZE*,
-	D3D12_TILE_MAPPING_FLAGS);
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_EXECUTE_COMMAND_LISTS)(
-	ID3D12CommandQueue*, UINT, ID3D12CommandList *const*);
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_SET_MARKER)(
-	ID3D12CommandQueue*, UINT, const void*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_BEGIN_EVENT)(
-	ID3D12CommandQueue*, UINT, const void*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_QUEUE_END_EVENT)(ID3D12CommandQueue*);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_QUEUE_SIGNAL)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_QUEUE_WAIT)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_QUEUE_GET_TIMESTAMP_FREQUENCY)(ID3D12CommandQueue*, UINT64*);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_QUEUE_GET_CLOCK_CALIBRATION)(ID3D12CommandQueue*, UINT64*, UINT64*);
+DX12CommandListHookSignatures::QueueUpdateTileMappings DX12CommandListHookState::OrigQueueUpdateTileMappings = nullptr;
+DX12CommandListHookSignatures::QueueCopyTileMappings DX12CommandListHookState::OrigQueueCopyTileMappings = nullptr;
+DX12CommandListHookSignatures::QueueExecuteCommandLists DX12CommandListHookState::OrigQueueExecuteCommandLists = nullptr;
+DX12CommandListHookSignatures::QueueSetMarker DX12CommandListHookState::OrigQueueSetMarker = nullptr;
+DX12CommandListHookSignatures::QueueBeginEvent DX12CommandListHookState::OrigQueueBeginEvent = nullptr;
+DX12CommandListHookSignatures::QueueEndEvent DX12CommandListHookState::OrigQueueEndEvent = nullptr;
+DX12CommandListHookSignatures::QueueSignal DX12CommandListHookState::OrigQueueSignal = nullptr;
+DX12CommandListHookSignatures::QueueWait DX12CommandListHookState::OrigQueueWait = nullptr;
+DX12CommandListHookSignatures::QueueGetTimestampFrequency DX12CommandListHookState::OrigQueueGetTimestampFrequency = nullptr;
+DX12CommandListHookSignatures::QueueGetClockCalibration DX12CommandListHookState::OrigQueueGetClockCalibration = nullptr;
 
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CLOSE_COMMAND_LIST)(ID3D12GraphicsCommandList*);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_RESET_COMMAND_LIST)(
-	ID3D12GraphicsCommandList*, ID3D12CommandAllocator*, ID3D12PipelineState*);
-typedef void(STDMETHODCALLTYPE *PFN_CLEAR_STATE)(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
-typedef void(STDMETHODCALLTYPE *PFN_DRAW_INSTANCED)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_DRAW_INDEXED_INSTANCED)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT, INT, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_DISPATCH)(ID3D12GraphicsCommandList*, UINT, UINT, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_BUFFER_REGION)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, UINT64, ID3D12Resource*, UINT64, UINT64);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_TEXTURE_REGION)(
-	ID3D12GraphicsCommandList*, const D3D12_TEXTURE_COPY_LOCATION*, UINT, UINT, UINT,
-	const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_RESOURCE)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_TILES)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, const D3D12_TILED_RESOURCE_COORDINATE*,
-	const D3D12_TILE_REGION_SIZE*, ID3D12Resource*, UINT64, D3D12_TILE_COPY_FLAGS);
-typedef void(STDMETHODCALLTYPE *PFN_RESOLVE_SUBRESOURCE)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, UINT, ID3D12Resource*, UINT, DXGI_FORMAT);
-typedef void(STDMETHODCALLTYPE *PFN_IA_SET_PRIMITIVE_TOPOLOGY)(
-	ID3D12GraphicsCommandList*, D3D12_PRIMITIVE_TOPOLOGY);
-typedef void(STDMETHODCALLTYPE *PFN_RS_SET_VIEWPORTS)(
-	ID3D12GraphicsCommandList*, UINT, const D3D12_VIEWPORT*);
-typedef void(STDMETHODCALLTYPE *PFN_RS_SET_SCISSOR_RECTS)(
-	ID3D12GraphicsCommandList*, UINT, const D3D12_RECT*);
-typedef void(STDMETHODCALLTYPE *PFN_OM_SET_BLEND_FACTOR)(ID3D12GraphicsCommandList*, const FLOAT[4]);
-typedef void(STDMETHODCALLTYPE *PFN_OM_SET_STENCIL_REF)(ID3D12GraphicsCommandList*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_SET_PIPELINE_STATE)(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
-typedef void(STDMETHODCALLTYPE *PFN_RESOURCE_BARRIER)(
-	ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
-typedef void(STDMETHODCALLTYPE *PFN_EXECUTE_BUNDLE)(ID3D12GraphicsCommandList*, ID3D12GraphicsCommandList*);
-typedef void(STDMETHODCALLTYPE *PFN_SET_DESCRIPTOR_HEAPS)(
-	ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap *const*);
-typedef void(STDMETHODCALLTYPE *PFN_SET_ROOT_SIGNATURE)(
-	ID3D12GraphicsCommandList*, ID3D12RootSignature*);
-typedef void(STDMETHODCALLTYPE *PFN_SET_ROOT_DESCRIPTOR_TABLE)(
-	ID3D12GraphicsCommandList*, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_SET_ROOT_32BIT_CONSTANT)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_SET_ROOT_32BIT_CONSTANTS)(
-	ID3D12GraphicsCommandList*, UINT, UINT, const void*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_SET_ROOT_GPU_VA)(
-	ID3D12GraphicsCommandList*, UINT, D3D12_GPU_VIRTUAL_ADDRESS);
-typedef void(STDMETHODCALLTYPE *PFN_IA_SET_INDEX_BUFFER)(
-	ID3D12GraphicsCommandList*, const D3D12_INDEX_BUFFER_VIEW*);
-typedef void(STDMETHODCALLTYPE *PFN_IA_SET_VERTEX_BUFFERS)(
-	ID3D12GraphicsCommandList*, UINT, UINT, const D3D12_VERTEX_BUFFER_VIEW*);
-typedef void(STDMETHODCALLTYPE *PFN_SO_SET_TARGETS)(
-	ID3D12GraphicsCommandList*, UINT, UINT, const D3D12_STREAM_OUTPUT_BUFFER_VIEW*);
-typedef void(STDMETHODCALLTYPE *PFN_OM_SET_RENDER_TARGETS)(
-	ID3D12GraphicsCommandList*, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, BOOL,
-	const D3D12_CPU_DESCRIPTOR_HANDLE*);
-typedef void(STDMETHODCALLTYPE *PFN_CLEAR_DEPTH_STENCIL_VIEW)(
-	ID3D12GraphicsCommandList*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CLEAR_FLAGS, FLOAT, UINT8,
-	UINT, const D3D12_RECT*);
-typedef void(STDMETHODCALLTYPE *PFN_CLEAR_RENDER_TARGET_VIEW)(
-	ID3D12GraphicsCommandList*, D3D12_CPU_DESCRIPTOR_HANDLE, const FLOAT[4], UINT, const D3D12_RECT*);
-typedef void(STDMETHODCALLTYPE *PFN_CLEAR_UAV_UINT)(
-	ID3D12GraphicsCommandList*, D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
-	ID3D12Resource*, const UINT[4], UINT, const D3D12_RECT*);
-typedef void(STDMETHODCALLTYPE *PFN_CLEAR_UAV_FLOAT)(
-	ID3D12GraphicsCommandList*, D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
-	ID3D12Resource*, const FLOAT[4], UINT, const D3D12_RECT*);
-typedef void(STDMETHODCALLTYPE *PFN_DISCARD_RESOURCE)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, const D3D12_DISCARD_REGION*);
-typedef void(STDMETHODCALLTYPE *PFN_BEGIN_QUERY)(
-	ID3D12GraphicsCommandList*, ID3D12QueryHeap*, D3D12_QUERY_TYPE, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_END_QUERY)(
-	ID3D12GraphicsCommandList*, ID3D12QueryHeap*, D3D12_QUERY_TYPE, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_RESOLVE_QUERY_DATA)(
-	ID3D12GraphicsCommandList*, ID3D12QueryHeap*, D3D12_QUERY_TYPE, UINT, UINT,
-	ID3D12Resource*, UINT64);
-typedef void(STDMETHODCALLTYPE *PFN_SET_PREDICATION)(
-	ID3D12GraphicsCommandList*, ID3D12Resource*, UINT64, D3D12_PREDICATION_OP);
-typedef void(STDMETHODCALLTYPE *PFN_COMMAND_LIST_SET_MARKER)(
-	ID3D12GraphicsCommandList*, UINT, const void*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_COMMAND_LIST_BEGIN_EVENT)(
-	ID3D12GraphicsCommandList*, UINT, const void*, UINT);
-typedef void(STDMETHODCALLTYPE *PFN_COMMAND_LIST_END_EVENT)(ID3D12GraphicsCommandList*);
-typedef void(STDMETHODCALLTYPE *PFN_EXECUTE_INDIRECT)(
-	ID3D12GraphicsCommandList*, ID3D12CommandSignature*, UINT, ID3D12Resource*, UINT64,
-	ID3D12Resource*, UINT64);
+DX12CommandListHookSignatures::CloseCommandList DX12CommandListHookState::OrigCloseCommandList = nullptr;
+DX12CommandListHookSignatures::ResetCommandList DX12CommandListHookState::OrigResetCommandList = nullptr;
+DX12CommandListHookSignatures::ClearState DX12CommandListHookState::OrigClearState = nullptr;
+DX12CommandListHookSignatures::DrawInstanced DX12CommandListHookState::OrigDrawInstanced = nullptr;
+DX12CommandListHookSignatures::DrawIndexedInstanced DX12CommandListHookState::OrigDrawIndexedInstanced = nullptr;
+DX12CommandListHookSignatures::Dispatch DX12CommandListHookState::OrigDispatch = nullptr;
+DX12CommandListHookSignatures::CopyBufferRegion DX12CommandListHookState::OrigCopyBufferRegion = nullptr;
+DX12CommandListHookSignatures::CopyTextureRegion DX12CommandListHookState::OrigCopyTextureRegion = nullptr;
+DX12CommandListHookSignatures::CopyResource DX12CommandListHookState::OrigCopyResource = nullptr;
+DX12CommandListHookSignatures::CopyTiles DX12CommandListHookState::OrigCopyTiles = nullptr;
+DX12CommandListHookSignatures::ResolveSubresource DX12CommandListHookState::OrigResolveSubresource = nullptr;
+DX12CommandListHookSignatures::IaSetPrimitiveTopology DX12CommandListHookState::OrigIASetPrimitiveTopology = nullptr;
+DX12CommandListHookSignatures::RsSetViewports DX12CommandListHookState::OrigRSSetViewports = nullptr;
+DX12CommandListHookSignatures::RsSetScissorRects DX12CommandListHookState::OrigRSSetScissorRects = nullptr;
+DX12CommandListHookSignatures::OmSetBlendFactor DX12CommandListHookState::OrigOMSetBlendFactor = nullptr;
+DX12CommandListHookSignatures::OmSetStencilRef DX12CommandListHookState::OrigOMSetStencilRef = nullptr;
+DX12CommandListHookSignatures::SetPipelineState DX12CommandListHookState::OrigSetPipelineState = nullptr;
+DX12CommandListHookSignatures::ResourceBarrier DX12CommandListHookState::OrigResourceBarrier = nullptr;
+DX12CommandListHookSignatures::ExecuteBundle DX12CommandListHookState::OrigExecuteBundle = nullptr;
+DX12CommandListHookSignatures::SetDescriptorHeaps DX12CommandListHookState::OrigSetDescriptorHeaps = nullptr;
+DX12CommandListHookSignatures::SetRootSignature DX12CommandListHookState::OrigSetComputeRootSignature = nullptr;
+DX12CommandListHookSignatures::SetRootSignature DX12CommandListHookState::OrigSetGraphicsRootSignature = nullptr;
+DX12CommandListHookSignatures::SetRootDescriptorTable DX12CommandListHookState::OrigSetComputeRootDescriptorTable = nullptr;
+DX12CommandListHookSignatures::SetRootDescriptorTable DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable = nullptr;
+DX12CommandListHookSignatures::SetRoot32BitConstant DX12CommandListHookState::OrigSetComputeRoot32BitConstant = nullptr;
+DX12CommandListHookSignatures::SetRoot32BitConstant DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant = nullptr;
+DX12CommandListHookSignatures::SetRoot32BitConstants DX12CommandListHookState::OrigSetComputeRoot32BitConstants = nullptr;
+DX12CommandListHookSignatures::SetRoot32BitConstants DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetComputeRootConstantBufferView = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetComputeRootShaderResourceView = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView = nullptr;
+DX12CommandListHookSignatures::SetRootGpuVa DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView = nullptr;
+DX12CommandListHookSignatures::IaSetIndexBuffer DX12CommandListHookState::OrigIASetIndexBuffer = nullptr;
+DX12CommandListHookSignatures::IaSetVertexBuffers DX12CommandListHookState::OrigIASetVertexBuffers = nullptr;
+DX12CommandListHookSignatures::SoSetTargets DX12CommandListHookState::OrigSOSetTargets = nullptr;
+DX12CommandListHookSignatures::OmSetRenderTargets DX12CommandListHookState::OrigOMSetRenderTargets = nullptr;
+DX12CommandListHookSignatures::ClearDepthStencilView DX12CommandListHookState::OrigClearDepthStencilView = nullptr;
+DX12CommandListHookSignatures::ClearRenderTargetView DX12CommandListHookState::OrigClearRenderTargetView = nullptr;
+DX12CommandListHookSignatures::ClearUavUint DX12CommandListHookState::OrigClearUnorderedAccessViewUint = nullptr;
+DX12CommandListHookSignatures::ClearUavFloat DX12CommandListHookState::OrigClearUnorderedAccessViewFloat = nullptr;
+DX12CommandListHookSignatures::DiscardResource DX12CommandListHookState::OrigDiscardResource = nullptr;
+DX12CommandListHookSignatures::BeginQuery DX12CommandListHookState::OrigBeginQuery = nullptr;
+DX12CommandListHookSignatures::EndQuery DX12CommandListHookState::OrigEndQuery = nullptr;
+DX12CommandListHookSignatures::ResolveQueryData DX12CommandListHookState::OrigResolveQueryData = nullptr;
+DX12CommandListHookSignatures::SetPredication DX12CommandListHookState::OrigSetPredication = nullptr;
+DX12CommandListHookSignatures::CommandListSetMarker DX12CommandListHookState::OrigCommandListSetMarker = nullptr;
+DX12CommandListHookSignatures::CommandListBeginEvent DX12CommandListHookState::OrigCommandListBeginEvent = nullptr;
+DX12CommandListHookSignatures::CommandListEndEvent DX12CommandListHookState::OrigCommandListEndEvent = nullptr;
+DX12CommandListHookSignatures::ExecuteIndirect DX12CommandListHookState::OrigExecuteIndirect = nullptr;
 
-static PFN_CREATE_COMMAND_QUEUE gOrigCreateCommandQueue = nullptr;
-static PFN_CREATE_COMMAND_ALLOCATOR gOrigCreateCommandAllocator = nullptr;
-static PFN_CREATE_COMMAND_LIST gOrigCreateCommandList = nullptr;
-static PFN_CREATE_COMMAND_LIST1 gOrigCreateCommandList1 = nullptr;
+SRWLOCK DX12CommandListHookState::IaReplacementSummaryLock = SRWLOCK_INIT;
+LONG DX12CommandListHookState::IaReplacementSummaryPresent = -1;
+volatile LONG DX12CommandListHookState::IaReplacementSummaryDraws = 0;
+volatile LONG DX12CommandListHookState::IaReplacementSummaryIndexedDraws = 0;
+volatile LONG DX12CommandListHookState::IaReplacementSummaryDispatches = 0;
 
-static PFN_QUEUE_UPDATE_TILE_MAPPINGS gOrigQueueUpdateTileMappings = nullptr;
-static PFN_QUEUE_COPY_TILE_MAPPINGS gOrigQueueCopyTileMappings = nullptr;
-static PFN_QUEUE_EXECUTE_COMMAND_LISTS gOrigQueueExecuteCommandLists = nullptr;
-static PFN_QUEUE_SET_MARKER gOrigQueueSetMarker = nullptr;
-static PFN_QUEUE_BEGIN_EVENT gOrigQueueBeginEvent = nullptr;
-static PFN_QUEUE_END_EVENT gOrigQueueEndEvent = nullptr;
-static PFN_QUEUE_SIGNAL gOrigQueueSignal = nullptr;
-static PFN_QUEUE_WAIT gOrigQueueWait = nullptr;
-static PFN_QUEUE_GET_TIMESTAMP_FREQUENCY gOrigQueueGetTimestampFrequency = nullptr;
-static PFN_QUEUE_GET_CLOCK_CALIBRATION gOrigQueueGetClockCalibration = nullptr;
+SRWLOCK DX12CommandListHookState::HookedVTableLock = SRWLOCK_INIT;
+std::unordered_set<void*> DX12CommandListHookState::HookedCommandListVTables;
+SRWLOCK DX12CommandListHookState::RegisteredListLock = SRWLOCK_INIT;
+std::unordered_set<void*> DX12CommandListHookState::RegisteredCommandLists;
+SRWLOCK DX12CommandListHookState::KnownCommandQueueLock = SRWLOCK_INIT;
+IUnknown *DX12CommandListHookState::KnownCommandQueue = nullptr;
 
-static PFN_CLOSE_COMMAND_LIST gOrigCloseCommandList = nullptr;
-static PFN_RESET_COMMAND_LIST gOrigResetCommandList = nullptr;
-static PFN_CLEAR_STATE gOrigClearState = nullptr;
-static PFN_DRAW_INSTANCED gOrigDrawInstanced = nullptr;
-static PFN_DRAW_INDEXED_INSTANCED gOrigDrawIndexedInstanced = nullptr;
-static PFN_DISPATCH gOrigDispatch = nullptr;
-static PFN_COPY_BUFFER_REGION gOrigCopyBufferRegion = nullptr;
-static PFN_COPY_TEXTURE_REGION gOrigCopyTextureRegion = nullptr;
-static PFN_COPY_RESOURCE gOrigCopyResource = nullptr;
-static PFN_COPY_TILES gOrigCopyTiles = nullptr;
-static PFN_RESOLVE_SUBRESOURCE gOrigResolveSubresource = nullptr;
-static PFN_IA_SET_PRIMITIVE_TOPOLOGY gOrigIASetPrimitiveTopology = nullptr;
-static PFN_RS_SET_VIEWPORTS gOrigRSSetViewports = nullptr;
-static PFN_RS_SET_SCISSOR_RECTS gOrigRSSetScissorRects = nullptr;
-static PFN_OM_SET_BLEND_FACTOR gOrigOMSetBlendFactor = nullptr;
-static PFN_OM_SET_STENCIL_REF gOrigOMSetStencilRef = nullptr;
-static PFN_SET_PIPELINE_STATE gOrigSetPipelineState = nullptr;
-static PFN_RESOURCE_BARRIER gOrigResourceBarrier = nullptr;
-static PFN_EXECUTE_BUNDLE gOrigExecuteBundle = nullptr;
-static PFN_SET_DESCRIPTOR_HEAPS gOrigSetDescriptorHeaps = nullptr;
-static PFN_SET_ROOT_SIGNATURE gOrigSetComputeRootSignature = nullptr;
-static PFN_SET_ROOT_SIGNATURE gOrigSetGraphicsRootSignature = nullptr;
-static PFN_SET_ROOT_DESCRIPTOR_TABLE gOrigSetComputeRootDescriptorTable = nullptr;
-static PFN_SET_ROOT_DESCRIPTOR_TABLE gOrigSetGraphicsRootDescriptorTable = nullptr;
-static PFN_SET_ROOT_32BIT_CONSTANT gOrigSetComputeRoot32BitConstant = nullptr;
-static PFN_SET_ROOT_32BIT_CONSTANT gOrigSetGraphicsRoot32BitConstant = nullptr;
-static PFN_SET_ROOT_32BIT_CONSTANTS gOrigSetComputeRoot32BitConstants = nullptr;
-static PFN_SET_ROOT_32BIT_CONSTANTS gOrigSetGraphicsRoot32BitConstants = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetComputeRootConstantBufferView = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetGraphicsRootConstantBufferView = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetComputeRootShaderResourceView = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetGraphicsRootShaderResourceView = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetComputeRootUnorderedAccessView = nullptr;
-static PFN_SET_ROOT_GPU_VA gOrigSetGraphicsRootUnorderedAccessView = nullptr;
-static PFN_IA_SET_INDEX_BUFFER gOrigIASetIndexBuffer = nullptr;
-static PFN_IA_SET_VERTEX_BUFFERS gOrigIASetVertexBuffers = nullptr;
-static PFN_SO_SET_TARGETS gOrigSOSetTargets = nullptr;
-static PFN_OM_SET_RENDER_TARGETS gOrigOMSetRenderTargets = nullptr;
-static PFN_CLEAR_DEPTH_STENCIL_VIEW gOrigClearDepthStencilView = nullptr;
-static PFN_CLEAR_RENDER_TARGET_VIEW gOrigClearRenderTargetView = nullptr;
-static PFN_CLEAR_UAV_UINT gOrigClearUnorderedAccessViewUint = nullptr;
-static PFN_CLEAR_UAV_FLOAT gOrigClearUnorderedAccessViewFloat = nullptr;
-static PFN_DISCARD_RESOURCE gOrigDiscardResource = nullptr;
-static PFN_BEGIN_QUERY gOrigBeginQuery = nullptr;
-static PFN_END_QUERY gOrigEndQuery = nullptr;
-static PFN_RESOLVE_QUERY_DATA gOrigResolveQueryData = nullptr;
-static PFN_SET_PREDICATION gOrigSetPredication = nullptr;
-static PFN_COMMAND_LIST_SET_MARKER gOrigCommandListSetMarker = nullptr;
-static PFN_COMMAND_LIST_BEGIN_EVENT gOrigCommandListBeginEvent = nullptr;
-static PFN_COMMAND_LIST_END_EVENT gOrigCommandListEndEvent = nullptr;
-static PFN_EXECUTE_INDIRECT gOrigExecuteIndirect = nullptr;
-static SRWLOCK gIaReplacementSummaryLock = SRWLOCK_INIT;
-static LONG gIaReplacementSummaryPresent = -1;
-static volatile LONG gIaReplacementSummaryDraws = 0;
-static volatile LONG gIaReplacementSummaryIndexedDraws = 0;
-static volatile LONG gIaReplacementSummaryDispatches = 0;
-
-static SRWLOCK gHookedVTableLock = SRWLOCK_INIT;
-static std::unordered_set<void*> gHookedCommandListVTables;
-static SRWLOCK gRegisteredListLock = SRWLOCK_INIT;
-static std::unordered_set<void*> gRegisteredCommandLists;
-static SRWLOCK gKnownCommandQueueLock = SRWLOCK_INIT;
-static IUnknown *gKnownCommandQueue = nullptr;
-
+thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandListOriginals[64];
+thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandQueueOriginals[32];
+thread_local DX12VtableBaseCache DX12CommandListHookState::VtableBaseCache;
+thread_local DX12ThreadLocalIaCallbacksCache DX12CommandListHookState::IaCallbacksCache;
+class DX12CommandListHookUtils
+{
+public:
 static bool ShouldHookCommandListVTable(void *vtable)
 {
 	if (!vtable)
 		return false;
 
-	AcquireSRWLockShared(&gHookedVTableLock);
+	AcquireSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
 	const bool alreadyHooked =
-		gHookedCommandListVTables.find(vtable) != gHookedCommandListVTables.end();
-	ReleaseSRWLockShared(&gHookedVTableLock);
+		DX12CommandListHookState::HookedCommandListVTables.find(vtable) != DX12CommandListHookState::HookedCommandListVTables.end();
+	ReleaseSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
 	if (alreadyHooked)
 		return false;
 
 	bool shouldHook = false;
-	AcquireSRWLockExclusive(&gHookedVTableLock);
-	shouldHook = gHookedCommandListVTables.insert(vtable).second;
-	ReleaseSRWLockExclusive(&gHookedVTableLock);
+	AcquireSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
+	shouldHook = DX12CommandListHookState::HookedCommandListVTables.insert(vtable).second;
+	ReleaseSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
 	return shouldHook;
 }
 
@@ -249,17 +200,17 @@ static bool ShouldRegisterCommandListPointer(void *commandList)
 	if (!commandList)
 		return false;
 
-	AcquireSRWLockShared(&gRegisteredListLock);
+	AcquireSRWLockShared(&DX12CommandListHookState::RegisteredListLock);
 	const bool alreadyRegistered =
-		gRegisteredCommandLists.find(commandList) != gRegisteredCommandLists.end();
-	ReleaseSRWLockShared(&gRegisteredListLock);
+		DX12CommandListHookState::RegisteredCommandLists.find(commandList) != DX12CommandListHookState::RegisteredCommandLists.end();
+	ReleaseSRWLockShared(&DX12CommandListHookState::RegisteredListLock);
 	if (alreadyRegistered)
 		return false;
 
 	bool shouldRegister = false;
-	AcquireSRWLockExclusive(&gRegisteredListLock);
-	shouldRegister = gRegisteredCommandLists.insert(commandList).second;
-	ReleaseSRWLockExclusive(&gRegisteredListLock);
+	AcquireSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
+	shouldRegister = DX12CommandListHookState::RegisteredCommandLists.insert(commandList).second;
+	ReleaseSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
 	return shouldRegister;
 }
 
@@ -268,9 +219,9 @@ static void ForgetRegisteredCommandListPointer(void *commandList)
 	if (!commandList)
 		return;
 
-	AcquireSRWLockExclusive(&gRegisteredListLock);
-	gRegisteredCommandLists.erase(commandList);
-	ReleaseSRWLockExclusive(&gRegisteredListLock);
+	AcquireSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
+	DX12CommandListHookState::RegisteredCommandLists.erase(commandList);
+	ReleaseSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
 }
 
 static void LogDX12Call(const char *api, const void *object, const char *fmt = nullptr, ...)
@@ -315,23 +266,23 @@ static void FlushIaReplacementExecuteSummaryIfNeeded()
 	if (!kLogIaReplacementExecuteSummary)
 		return;
 	const LONG present = DX12RuntimeState::GetPresentCount();
-	if (gIaReplacementSummaryPresent == present)
+	if (DX12CommandListHookState::IaReplacementSummaryPresent == present)
 		return;
 
-	AcquireSRWLockExclusive(&gIaReplacementSummaryLock);
-	if (gIaReplacementSummaryPresent != present) {
-		const LONG previousPresent = gIaReplacementSummaryPresent;
-		const LONG draws = InterlockedExchange(&gIaReplacementSummaryDraws, 0);
-		const LONG indexedDraws = InterlockedExchange(&gIaReplacementSummaryIndexedDraws, 0);
-		const LONG dispatches = InterlockedExchange(&gIaReplacementSummaryDispatches, 0);
+	AcquireSRWLockExclusive(&DX12CommandListHookState::IaReplacementSummaryLock);
+	if (DX12CommandListHookState::IaReplacementSummaryPresent != present) {
+		const LONG previousPresent = DX12CommandListHookState::IaReplacementSummaryPresent;
+		const LONG draws = InterlockedExchange(&DX12CommandListHookState::IaReplacementSummaryDraws, 0);
+		const LONG indexedDraws = InterlockedExchange(&DX12CommandListHookState::IaReplacementSummaryIndexedDraws, 0);
+		const LONG dispatches = InterlockedExchange(&DX12CommandListHookState::IaReplacementSummaryDispatches, 0);
 		if (previousPresent >= 0 && (draws || dispatches)) {
 			DX12LogManager::DebugJsonFunc("DX12IaReplacementExecuteSummary",
 				"\"present\":%ld,\"draws\":%ld,\"indexedDraws\":%ld,\"dispatches\":%ld",
 				previousPresent, draws, indexedDraws, dispatches);
 		}
-		gIaReplacementSummaryPresent = present;
+		DX12CommandListHookState::IaReplacementSummaryPresent = present;
 	}
-	ReleaseSRWLockExclusive(&gIaReplacementSummaryLock);
+	ReleaseSRWLockExclusive(&DX12CommandListHookState::IaReplacementSummaryLock);
 #endif
 }
 
@@ -340,9 +291,9 @@ static void RecordIaReplacementDrawExecute(bool indexed)
 	DX12Profiling::RecordIaReplacementDraw(indexed);
 #if defined(_DEBUG)
 	FlushIaReplacementExecuteSummaryIfNeeded();
-	InterlockedIncrement(&gIaReplacementSummaryDraws);
+	InterlockedIncrement(&DX12CommandListHookState::IaReplacementSummaryDraws);
 	if (indexed)
-		InterlockedIncrement(&gIaReplacementSummaryIndexedDraws);
+		InterlockedIncrement(&DX12CommandListHookState::IaReplacementSummaryIndexedDraws);
 #endif
 }
 
@@ -351,7 +302,7 @@ static void RecordIaReplacementDispatchExecute()
 	DX12Profiling::RecordIaReplacementDispatch();
 #if defined(_DEBUG)
 	FlushIaReplacementExecuteSummaryIfNeeded();
-	InterlockedIncrement(&gIaReplacementSummaryDispatches);
+	InterlockedIncrement(&DX12CommandListHookState::IaReplacementSummaryDispatches);
 #endif
 }
 
@@ -382,15 +333,6 @@ static void FormatVertexBufferViews(
 	if (count > maxLogged && used < textCount)
 		sprintf_s(text + used, textCount - used, ";...");
 }
-
-struct ThreadLocalCommandListOriginal
-{
-	void *target = nullptr;
-	void *original = nullptr;
-};
-
-static thread_local ThreadLocalCommandListOriginal tCommandListOriginals[64];
-static thread_local ThreadLocalCommandListOriginal tCommandQueueOriginals[32];
 
 static void LogOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
 {
@@ -442,18 +384,18 @@ static T GetCommandQueueOriginal(ID3D12CommandQueue *queue, UINT slot, T fallbac
 			void *target = vtable[slot];
 
 			// Fast path: thread-local per-slot cache
-			if (slot < ARRAYSIZE(tCommandQueueOriginals) &&
-				tCommandQueueOriginals[slot].target == target &&
-				tCommandQueueOriginals[slot].original)
-				return reinterpret_cast<T>(tCommandQueueOriginals[slot].original);
+			if (slot < ARRAYSIZE(DX12CommandListHookState::CommandQueueOriginals) &&
+				DX12CommandListHookState::CommandQueueOriginals[slot].target == target &&
+				DX12CommandListHookState::CommandQueueOriginals[slot].original)
+				return reinterpret_cast<T>(DX12CommandListHookState::CommandQueueOriginals[slot].original);
 
 			// Medium path: per-vtable bulk cache
-			if (tVtableBaseCache.vtable == vtable && slot < 256 &&
-			    tVtableBaseCache.originals[slot]) {
-				void *original = tVtableBaseCache.originals[slot];
-				if (slot < ARRAYSIZE(tCommandQueueOriginals)) {
-					tCommandQueueOriginals[slot].target = target;
-					tCommandQueueOriginals[slot].original = original;
+			if (DX12CommandListHookState::VtableBaseCache.vtable == vtable && slot < 256 &&
+			    DX12CommandListHookState::VtableBaseCache.originals[slot]) {
+				void *original = DX12CommandListHookState::VtableBaseCache.originals[slot];
+				if (slot < ARRAYSIZE(DX12CommandListHookState::CommandQueueOriginals)) {
+					DX12CommandListHookState::CommandQueueOriginals[slot].target = target;
+					DX12CommandListHookState::CommandQueueOriginals[slot].original = original;
 				}
 				return reinterpret_cast<T>(original);
 			}
@@ -461,16 +403,16 @@ static T GetCommandQueueOriginal(ID3D12CommandQueue *queue, UINT slot, T fallbac
 			// Slow path: hash map lookup
 			void *original = DX12HookRegistry::GetOriginalFunction(target);
 			if (original) {
-				if (slot < ARRAYSIZE(tCommandQueueOriginals)) {
-					tCommandQueueOriginals[slot].target = target;
-					tCommandQueueOriginals[slot].original = original;
+				if (slot < ARRAYSIZE(DX12CommandListHookState::CommandQueueOriginals)) {
+					DX12CommandListHookState::CommandQueueOriginals[slot].target = target;
+					DX12CommandListHookState::CommandQueueOriginals[slot].original = original;
 				}
-				if (tVtableBaseCache.vtable == vtable && slot < 256) {
-					tVtableBaseCache.originals[slot] = original;
+				if (DX12CommandListHookState::VtableBaseCache.vtable == vtable && slot < 256) {
+					DX12CommandListHookState::VtableBaseCache.originals[slot] = original;
 				} else if (slot < 256) {
-					tVtableBaseCache.vtable = vtable;
-					tVtableBaseCache.originals = {};
-					tVtableBaseCache.originals[slot] = original;
+					DX12CommandListHookState::VtableBaseCache.vtable = vtable;
+					DX12CommandListHookState::VtableBaseCache.originals = {};
+					DX12CommandListHookState::VtableBaseCache.originals[slot] = original;
 				}
 			}
 			if (original)
@@ -552,14 +494,6 @@ static void LogCommandListStageEdge(
 		api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), commandList);
 }
 
-// Per-thread vtable-base cache: avoids repeated hash map lookups
-// for command lists sharing the same vtable.
-struct VtableBaseCache {
-	void *vtable = nullptr;
-	std::array<void*, 256> originals{};
-};
-static thread_local VtableBaseCache tVtableBaseCache;
-
 template <typename T>
 static T GetCommandListOriginal(
 	ID3D12GraphicsCommandList *commandList, UINT slot, T fallback, const char *name)
@@ -570,18 +504,18 @@ static T GetCommandListOriginal(
 			void *target = vtable[slot];
 
 			// Fast path: thread-local per-slot cache (same vtable target, same thread)
-			if (slot < ARRAYSIZE(tCommandListOriginals) &&
-				tCommandListOriginals[slot].target == target &&
-				tCommandListOriginals[slot].original)
-				return reinterpret_cast<T>(tCommandListOriginals[slot].original);
+			if (slot < ARRAYSIZE(DX12CommandListHookState::CommandListOriginals) &&
+				DX12CommandListHookState::CommandListOriginals[slot].target == target &&
+				DX12CommandListHookState::CommandListOriginals[slot].original)
+				return reinterpret_cast<T>(DX12CommandListHookState::CommandListOriginals[slot].original);
 
 			// Medium path: per-vtable bulk cache (different slot, same vtable)
-			if (tVtableBaseCache.vtable == vtable && slot < 256 &&
-			    tVtableBaseCache.originals[slot]) {
-				void *original = tVtableBaseCache.originals[slot];
-				if (slot < ARRAYSIZE(tCommandListOriginals)) {
-					tCommandListOriginals[slot].target = target;
-					tCommandListOriginals[slot].original = original;
+			if (DX12CommandListHookState::VtableBaseCache.vtable == vtable && slot < 256 &&
+			    DX12CommandListHookState::VtableBaseCache.originals[slot]) {
+				void *original = DX12CommandListHookState::VtableBaseCache.originals[slot];
+				if (slot < ARRAYSIZE(DX12CommandListHookState::CommandListOriginals)) {
+					DX12CommandListHookState::CommandListOriginals[slot].target = target;
+					DX12CommandListHookState::CommandListOriginals[slot].original = original;
 				}
 				return reinterpret_cast<T>(original);
 			}
@@ -590,16 +524,16 @@ static T GetCommandListOriginal(
 			void *original = DX12HookRegistry::GetOriginalFunction(target);
 			if (original) {
 				// Populate thread-local caches for future calls
-				if (slot < ARRAYSIZE(tCommandListOriginals)) {
-					tCommandListOriginals[slot].target = target;
-					tCommandListOriginals[slot].original = original;
+				if (slot < ARRAYSIZE(DX12CommandListHookState::CommandListOriginals)) {
+					DX12CommandListHookState::CommandListOriginals[slot].target = target;
+					DX12CommandListHookState::CommandListOriginals[slot].original = original;
 				}
-				if (tVtableBaseCache.vtable == vtable && slot < 256) {
-					tVtableBaseCache.originals[slot] = original;
+				if (DX12CommandListHookState::VtableBaseCache.vtable == vtable && slot < 256) {
+					DX12CommandListHookState::VtableBaseCache.originals[slot] = original;
 				} else if (slot < 256) {
-					tVtableBaseCache.vtable = vtable;
-					tVtableBaseCache.originals = {};
-					tVtableBaseCache.originals[slot] = original;
+					DX12CommandListHookState::VtableBaseCache.vtable = vtable;
+					DX12CommandListHookState::VtableBaseCache.originals = {};
+					DX12CommandListHookState::VtableBaseCache.originals[slot] = original;
 				}
 			}
 			if (original)
@@ -618,46 +552,53 @@ static T GetCommandListOriginal(
 	return nullptr;
 }
 
-#define DX12_CL_ORIG(commandList, slot, type, name) \
-	GetCommandListOriginal<type>(commandList, slot, gOrig##name, "ID3D12GraphicsCommandList::" #name)
+};
 
-#define DX12_QUEUE_ORIG(queue, slot, type, name) \
-	GetCommandQueueOriginal<type>(queue, slot, gOrigQueue##name, "ID3D12CommandQueue::" #name)
+#define DX12_CL_ORIG(commandList, slot, type, fallback, name) \
+	DX12CommandListHookUtils::GetCommandListOriginal<type>(commandList, slot, fallback, "ID3D12GraphicsCommandList::" name)
 
+#define DX12_QUEUE_ORIG(queue, slot, type, fallback, name) \
+	DX12CommandListHookUtils::GetCommandQueueOriginal<type>(queue, slot, fallback, "ID3D12CommandQueue::" name)
+
+
+
+#include "DX12CommandListComputeBindingHooks.hpp"
+
+class DX12CommandListHookCallbacks
+{
+public:
 static DX12IaReplacementExecutorCallbacks MakeIaReplacementCallbacks(
 	ID3D12GraphicsCommandList *commandList)
 {
 	DX12IaReplacementExecutorCallbacks callbacks;
 	callbacks.drawInstanced =
-		DX12_CL_ORIG(commandList, 12, DX12IaCommandSignatures::DrawInstanced, DrawInstanced);
+		DX12_CL_ORIG(commandList, 12, DX12IaCommandSignatures::DrawInstanced,
+			DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 	callbacks.drawIndexedInstanced =
-		DX12_CL_ORIG(commandList, 13, DX12IaCommandSignatures::DrawIndexedInstanced, DrawIndexedInstanced);
+		DX12_CL_ORIG(commandList, 13, DX12IaCommandSignatures::DrawIndexedInstanced,
+			DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 	callbacks.dispatch =
-		DX12_CL_ORIG(commandList, 14, DX12IaCommandSignatures::Dispatch, Dispatch);
+		DX12_CL_ORIG(commandList, 14, DX12IaCommandSignatures::Dispatch,
+			DX12CommandListHookState::OrigDispatch, "Dispatch");
 	callbacks.setIndexBuffer =
-		DX12_CL_ORIG(commandList, 43, DX12IaCommandSignatures::SetIndexBuffer, IASetIndexBuffer);
+		DX12_CL_ORIG(commandList, 43, DX12IaCommandSignatures::SetIndexBuffer,
+			DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
 	callbacks.setVertexBuffers =
-		DX12_CL_ORIG(commandList, 44, DX12IaCommandSignatures::SetVertexBuffers, IASetVertexBuffers);
-	callbacks.recordReplacementDraw = RecordIaReplacementDrawExecute;
-	callbacks.recordReplacementDispatch = RecordIaReplacementDispatchExecute;
+		DX12_CL_ORIG(commandList, 44, DX12IaCommandSignatures::SetVertexBuffers,
+			DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
+	callbacks.recordReplacementDraw = DX12CommandListHookUtils::RecordIaReplacementDrawExecute;
+	callbacks.recordReplacementDispatch = DX12CommandListHookUtils::RecordIaReplacementDispatchExecute;
 	return callbacks;
 }
-
-// Thread-local cache for IaReplacementCallbacks: avoids 6x vtable lookup per draw.
-struct ThreadLocalIaCallbacksCache {
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	DX12IaReplacementExecutorCallbacks callbacks;
-};
-static thread_local ThreadLocalIaCallbacksCache tIaCallbacksCache;
 
 static const DX12IaReplacementExecutorCallbacks &GetCachedIaReplacementCallbacks(
 	ID3D12GraphicsCommandList *commandList)
 {
-	if (tIaCallbacksCache.commandList == commandList)
-		return tIaCallbacksCache.callbacks;
-	tIaCallbacksCache.commandList = commandList;
-	tIaCallbacksCache.callbacks = MakeIaReplacementCallbacks(commandList);
-	return tIaCallbacksCache.callbacks;
+	if (DX12CommandListHookState::IaCallbacksCache.commandList == commandList)
+		return DX12CommandListHookState::IaCallbacksCache.callbacks;
+	DX12CommandListHookState::IaCallbacksCache.commandList = commandList;
+	DX12CommandListHookState::IaCallbacksCache.callbacks = DX12CommandListHookCallbacks::MakeIaReplacementCallbacks(commandList);
+	return DX12CommandListHookState::IaCallbacksCache.callbacks;
 }
 
 static void RegisterCommandListBase(
@@ -666,9 +607,9 @@ static void RegisterCommandListBase(
 	if (!baseList)
 		return;
 
-	DX12HookCommandList(baseList);
-	if (ShouldRegisterCommandListPointer(baseList))
-		DX12CommandListLifecycleRegister(baseList, initialState);
+	DX12CommandListHooks::HookCommandList(baseList);
+	if (DX12CommandListHookUtils::ShouldRegisterCommandListPointer(baseList))
+		DX12CommandListLifecycle::Register(baseList, initialState);
 }
 
 static void RegisterCommandList(IUnknown *commandList, ID3D12PipelineState *initialState)
@@ -678,7 +619,7 @@ static void RegisterCommandList(IUnknown *commandList, ID3D12PipelineState *init
 
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-		RegisterCommandListBase(baseList, initialState);
+		DX12CommandListHookCallbacks::RegisterCommandListBase(baseList, initialState);
 		baseList->Release();
 	}
 }
@@ -690,7 +631,7 @@ static void RegisterSubmittedCommandList(IUnknown *commandList)
 
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-		RegisterCommandListBase(baseList, nullptr);
+		DX12CommandListHookCallbacks::RegisterCommandListBase(baseList, nullptr);
 		DX12HuntPublishCommandList(baseList);
 		baseList->Release();
 	}
@@ -698,30 +639,30 @@ static void RegisterSubmittedCommandList(IUnknown *commandList)
 
 static void RegisterCommandQueue(IUnknown *commandQueue)
 {
-	DX12HookCommandQueue(commandQueue);
+	DX12CommandListHooks::HookCommandQueue(commandQueue);
 }
 
 static HRESULT STDMETHODCALLTYPE HookedCreateCommandQueue(
 	ID3D12Device *device, const D3D12_COMMAND_QUEUE_DESC *desc, REFIID riid, void **commandQueue)
 {
-	LogDX12Call("ID3D12Device::CreateCommandQueue", device, " type=%d flags=0x%x",
+	DX12CommandListHookUtils::LogDX12Call("ID3D12Device::CreateCommandQueue", device, " type=%d flags=0x%x",
 		desc ? static_cast<int>(desc->Type) : -1,
 		desc ? static_cast<UINT>(desc->Flags) : 0);
-	HRESULT hr = gOrigCreateCommandQueue(device, desc, riid, commandQueue);
+	HRESULT hr = DX12CommandListHookState::OrigCreateCommandQueue(device, desc, riid, commandQueue);
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandQueue",
 		"\"hr\":\"0x%lx\",\"queue\":\"%p\"",
 		hr, commandQueue ? *commandQueue : nullptr);
 	if (SUCCEEDED(hr) && commandQueue && *commandQueue)
-		RegisterCommandQueue(static_cast<IUnknown*>(*commandQueue));
+		DX12CommandListHookCallbacks::RegisterCommandQueue(static_cast<IUnknown*>(*commandQueue));
 	return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE HookedCreateCommandAllocator(
 	ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type, REFIID riid, void **allocator)
 {
-	LogDX12Call("ID3D12Device::CreateCommandAllocator", device, " type=%d",
+	DX12CommandListHookUtils::LogDX12Call("ID3D12Device::CreateCommandAllocator", device, " type=%d",
 		static_cast<int>(type));
-	HRESULT hr = gOrigCreateCommandAllocator(device, type, riid, allocator);
+	HRESULT hr = DX12CommandListHookState::OrigCreateCommandAllocator(device, type, riid, allocator);
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandAllocator",
 		"\"hr\":\"0x%lx\",\"allocator\":\"%p\"",
 		hr, allocator ? *allocator : nullptr);
@@ -733,16 +674,16 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandList(
 	ID3D12CommandAllocator *allocator, ID3D12PipelineState *initialState,
 	REFIID riid, void **commandList)
 {
-	LogDX12Call("ID3D12Device::CreateCommandList", device,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12Device::CreateCommandList", device,
 		" nodeMask=%u type=%d allocator=%p initialPso=%p",
 		nodeMask, static_cast<int>(type), allocator, initialState);
-	HRESULT hr = gOrigCreateCommandList(device, nodeMask, type, allocator, initialState, riid, commandList);
+	HRESULT hr = DX12CommandListHookState::OrigCreateCommandList(device, nodeMask, type, allocator, initialState, riid, commandList);
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandList",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
 	if (SUCCEEDED(hr) && commandList && *commandList) {
-		ForgetRegisteredCommandListPointer(*commandList);
-		RegisterCommandList(static_cast<IUnknown*>(*commandList), initialState);
+		DX12CommandListHookUtils::ForgetRegisteredCommandListPointer(*commandList);
+		DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), initialState);
 	}
 	return hr;
 }
@@ -751,16 +692,16 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommandList1(
 	ID3D12Device4 *device, UINT nodeMask, D3D12_COMMAND_LIST_TYPE type,
 	D3D12_COMMAND_LIST_FLAGS flags, REFIID riid, void **commandList)
 {
-	LogDX12Call("ID3D12Device4::CreateCommandList1", device,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12Device4::CreateCommandList1", device,
 		" nodeMask=%u type=%d flags=0x%x",
 		nodeMask, static_cast<int>(type), static_cast<UINT>(flags));
-	HRESULT hr = gOrigCreateCommandList1(device, nodeMask, type, flags, riid, commandList);
+	HRESULT hr = DX12CommandListHookState::OrigCreateCommandList1(device, nodeMask, type, flags, riid, commandList);
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device4::CreateCommandList1",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
 	if (SUCCEEDED(hr) && commandList && *commandList) {
-		ForgetRegisteredCommandListPointer(*commandList);
-		RegisterCommandList(static_cast<IUnknown*>(*commandList), nullptr);
+		DX12CommandListHookUtils::ForgetRegisteredCommandListPointer(*commandList);
+		DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), nullptr);
 	}
 	return hr;
 }
@@ -772,11 +713,11 @@ static void STDMETHODCALLTYPE HookedQueueUpdateTileMappings(
 	const D3D12_TILE_RANGE_FLAGS *rangeFlags, const UINT *heapRangeStartOffsets,
 	const UINT *rangeTileCounts, D3D12_TILE_MAPPING_FLAGS flags)
 {
-	LogDX12Call("ID3D12CommandQueue::UpdateTileMappings", queue,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::UpdateTileMappings", queue,
 		" resource=%p regions=%u heap=%p ranges=%u flags=0x%x",
 		resource, numResourceRegions, heap, numRanges, static_cast<UINT>(flags));
 	PFN_QUEUE_UPDATE_TILE_MAPPINGS original =
-		DX12_QUEUE_ORIG(queue, 8, PFN_QUEUE_UPDATE_TILE_MAPPINGS, UpdateTileMappings);
+		DX12_QUEUE_ORIG(queue, 8, PFN_QUEUE_UPDATE_TILE_MAPPINGS, DX12CommandListHookState::OrigQueueUpdateTileMappings, "UpdateTileMappings");
 	if (original)
 		original(queue, resource, numResourceRegions,
 			resourceRegionStartCoordinates, resourceRegionSizes, heap, numRanges,
@@ -789,10 +730,10 @@ static void STDMETHODCALLTYPE HookedQueueCopyTileMappings(
 	ID3D12Resource *srcResource, const D3D12_TILED_RESOURCE_COORDINATE *srcRegionStartCoordinate,
 	const D3D12_TILE_REGION_SIZE *regionSize, D3D12_TILE_MAPPING_FLAGS flags)
 {
-	LogDX12Call("ID3D12CommandQueue::CopyTileMappings", queue,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::CopyTileMappings", queue,
 		" dst=%p src=%p flags=0x%x", dstResource, srcResource, static_cast<UINT>(flags));
 	PFN_QUEUE_COPY_TILE_MAPPINGS original =
-		DX12_QUEUE_ORIG(queue, 9, PFN_QUEUE_COPY_TILE_MAPPINGS, CopyTileMappings);
+		DX12_QUEUE_ORIG(queue, 9, PFN_QUEUE_COPY_TILE_MAPPINGS, DX12CommandListHookState::OrigQueueCopyTileMappings, "CopyTileMappings");
 	if (original)
 		original(queue, dstResource, dstRegionStartCoordinate,
 			srcResource, srcRegionStartCoordinate, regionSize, flags);
@@ -810,7 +751,7 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
-			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
+			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, DX12CommandListHookState::OrigQueueExecuteCommandLists, "ExecuteCommandLists");
 		if (original) {
 			if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 				DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
@@ -824,30 +765,30 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 		}
 		if (DX12HuntIsEnabled()) {
 			for (UINT i = 0; commandLists && i < numCommandLists; ++i)
-				RegisterSubmittedCommandList(commandLists[i]);
+				DX12CommandListHookCallbacks::RegisterSubmittedCommandList(commandLists[i]);
 		}
 		return;
 	}
 
 	if (DX12InternalReplayState::IsActive()) {
 		PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
-			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
+			DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, DX12CommandListHookState::OrigQueueExecuteCommandLists, "ExecuteCommandLists");
 		if (original)
 			original(queue, numCommandLists, commandLists);
 		return;
 	}
 
 	DX12_PROFILE_SCOPE(ExecuteCommandLists);
-	LogDX12Call("ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
 	PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
-		DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, ExecuteCommandLists);
+		DX12_QUEUE_ORIG(queue, 10, PFN_QUEUE_EXECUTE_COMMAND_LISTS, DX12CommandListHookState::OrigQueueExecuteCommandLists, "ExecuteCommandLists");
 	if (original) {
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 #if defined(_DEBUG)
-		LogQueueStage("ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
+		DX12CommandListHookUtils::LogQueueStage("ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		ULONGLONG startTick = GetTickCount64();
 #endif
 		original(queue, numCommandLists, commandLists);
@@ -857,14 +798,14 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 				queue, numCommandLists);
 #if defined(_DEBUG)
 		ULONGLONG originalEndTick = GetTickCount64();
-		LogQueueStage("ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
+		DX12CommandListHookUtils::LogQueueStage("ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
 		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
 		for (UINT i = 0; commandLists && i < numCommandLists; ++i)
-			RegisterSubmittedCommandList(commandLists[i]);
+			DX12CommandListHookCallbacks::RegisterSubmittedCommandList(commandLists[i]);
 #if defined(_DEBUG)
-		LogQueueStage("ExecuteCommandLists", "afterNotify", queue, numCommandLists,
+		DX12CommandListHookUtils::LogQueueStage("ExecuteCommandLists", "afterNotify", queue, numCommandLists,
 			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);
 #endif
 	}
@@ -873,9 +814,9 @@ static void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
 static void STDMETHODCALLTYPE HookedQueueSetMarker(
 	ID3D12CommandQueue *queue, UINT metadata, const void *data, UINT size)
 {
-	LogDX12Call("ID3D12CommandQueue::SetMarker", queue, " metadata=%u size=%u", metadata, size);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::SetMarker", queue, " metadata=%u size=%u", metadata, size);
 	PFN_QUEUE_SET_MARKER original =
-		DX12_QUEUE_ORIG(queue, 11, PFN_QUEUE_SET_MARKER, SetMarker);
+		DX12_QUEUE_ORIG(queue, 11, PFN_QUEUE_SET_MARKER, DX12CommandListHookState::OrigQueueSetMarker, "SetMarker");
 	if (original)
 		original(queue, metadata, data, size);
 }
@@ -883,18 +824,18 @@ static void STDMETHODCALLTYPE HookedQueueSetMarker(
 static void STDMETHODCALLTYPE HookedQueueBeginEvent(
 	ID3D12CommandQueue *queue, UINT metadata, const void *data, UINT size)
 {
-	LogDX12Call("ID3D12CommandQueue::BeginEvent", queue, " metadata=%u size=%u", metadata, size);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::BeginEvent", queue, " metadata=%u size=%u", metadata, size);
 	PFN_QUEUE_BEGIN_EVENT original =
-		DX12_QUEUE_ORIG(queue, 12, PFN_QUEUE_BEGIN_EVENT, BeginEvent);
+		DX12_QUEUE_ORIG(queue, 12, PFN_QUEUE_BEGIN_EVENT, DX12CommandListHookState::OrigQueueBeginEvent, "BeginEvent");
 	if (original)
 		original(queue, metadata, data, size);
 }
 
 static void STDMETHODCALLTYPE HookedQueueEndEvent(ID3D12CommandQueue *queue)
 {
-	LogDX12Call("ID3D12CommandQueue::EndEvent", queue);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::EndEvent", queue);
 	PFN_QUEUE_END_EVENT original =
-		DX12_QUEUE_ORIG(queue, 13, PFN_QUEUE_END_EVENT, EndEvent);
+		DX12_QUEUE_ORIG(queue, 13, PFN_QUEUE_END_EVENT, DX12CommandListHookState::OrigQueueEndEvent, "EndEvent");
 	if (original)
 		original(queue);
 }
@@ -904,23 +845,23 @@ static HRESULT STDMETHODCALLTYPE HookedQueueSignal(
 {
 	if (DX12InternalReplayState::IsActive()) {
 		PFN_QUEUE_SIGNAL original =
-			DX12_QUEUE_ORIG(queue, 14, PFN_QUEUE_SIGNAL, Signal);
+			DX12_QUEUE_ORIG(queue, 14, PFN_QUEUE_SIGNAL, DX12CommandListHookState::OrigQueueSignal, "Signal");
 		return original ? original(queue, fence, value) : E_FAIL;
 	}
 
-	LogDX12Call("ID3D12CommandQueue::Signal", queue, " fence=%p value=%llu",
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::Signal", queue, " fence=%p value=%llu",
 		fence, static_cast<unsigned long long>(value));
 	PFN_QUEUE_SIGNAL original =
-		DX12_QUEUE_ORIG(queue, 14, PFN_QUEUE_SIGNAL, Signal);
+		DX12_QUEUE_ORIG(queue, 14, PFN_QUEUE_SIGNAL, DX12CommandListHookState::OrigQueueSignal, "Signal");
 	if (!original)
 		return E_FAIL;
 #if defined(_DEBUG)
-	LogQueueStage("Signal", "beforeOriginal", queue, 0, fence, value);
+	DX12CommandListHookUtils::LogQueueStage("Signal", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, fence, value);
 #if defined(_DEBUG)
-	LogQueueStage("Signal", "afterOriginal", queue, 0, fence, value, hr,
+	DX12CommandListHookUtils::LogQueueStage("Signal", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);
 #endif
 	return hr;
@@ -929,19 +870,19 @@ static HRESULT STDMETHODCALLTYPE HookedQueueSignal(
 static HRESULT STDMETHODCALLTYPE HookedQueueWait(
 	ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
 {
-	LogDX12Call("ID3D12CommandQueue::Wait", queue, " fence=%p value=%llu",
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::Wait", queue, " fence=%p value=%llu",
 		fence, static_cast<unsigned long long>(value));
 	PFN_QUEUE_WAIT original =
-		DX12_QUEUE_ORIG(queue, 15, PFN_QUEUE_WAIT, Wait);
+		DX12_QUEUE_ORIG(queue, 15, PFN_QUEUE_WAIT, DX12CommandListHookState::OrigQueueWait, "Wait");
 	if (!original)
 		return E_FAIL;
 #if defined(_DEBUG)
-	LogQueueStage("Wait", "beforeOriginal", queue, 0, fence, value);
+	DX12CommandListHookUtils::LogQueueStage("Wait", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, fence, value);
 #if defined(_DEBUG)
-	LogQueueStage("Wait", "afterOriginal", queue, 0, fence, value, hr,
+	DX12CommandListHookUtils::LogQueueStage("Wait", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);
 #endif
 	return hr;
@@ -950,18 +891,18 @@ static HRESULT STDMETHODCALLTYPE HookedQueueWait(
 static HRESULT STDMETHODCALLTYPE HookedQueueGetTimestampFrequency(
 	ID3D12CommandQueue *queue, UINT64 *frequency)
 {
-	LogDX12Call("ID3D12CommandQueue::GetTimestampFrequency", queue);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::GetTimestampFrequency", queue);
 	PFN_QUEUE_GET_TIMESTAMP_FREQUENCY original =
-		DX12_QUEUE_ORIG(queue, 16, PFN_QUEUE_GET_TIMESTAMP_FREQUENCY, GetTimestampFrequency);
+		DX12_QUEUE_ORIG(queue, 16, PFN_QUEUE_GET_TIMESTAMP_FREQUENCY, DX12CommandListHookState::OrigQueueGetTimestampFrequency, "GetTimestampFrequency");
 	if (!original)
 		return E_FAIL;
 #if defined(_DEBUG)
-	LogQueueStage("GetTimestampFrequency", "beforeOriginal", queue);
+	DX12CommandListHookUtils::LogQueueStage("GetTimestampFrequency", "beforeOriginal", queue);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, frequency);
 #if defined(_DEBUG)
-	LogQueueStage("GetTimestampFrequency", "afterOriginal", queue, 0, nullptr, 0, hr,
+	DX12CommandListHookUtils::LogQueueStage("GetTimestampFrequency", "afterOriginal", queue, 0, nullptr, 0, hr,
 		GetTickCount64() - startTick);
 #endif
 	return hr;
@@ -970,18 +911,18 @@ static HRESULT STDMETHODCALLTYPE HookedQueueGetTimestampFrequency(
 static HRESULT STDMETHODCALLTYPE HookedQueueGetClockCalibration(
 	ID3D12CommandQueue *queue, UINT64 *gpuTimestamp, UINT64 *cpuTimestamp)
 {
-	LogDX12Call("ID3D12CommandQueue::GetClockCalibration", queue);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12CommandQueue::GetClockCalibration", queue);
 	PFN_QUEUE_GET_CLOCK_CALIBRATION original =
-		DX12_QUEUE_ORIG(queue, 17, PFN_QUEUE_GET_CLOCK_CALIBRATION, GetClockCalibration);
+		DX12_QUEUE_ORIG(queue, 17, PFN_QUEUE_GET_CLOCK_CALIBRATION, DX12CommandListHookState::OrigQueueGetClockCalibration, "GetClockCalibration");
 	if (!original)
 		return E_FAIL;
 #if defined(_DEBUG)
-	LogQueueStage("GetClockCalibration", "beforeOriginal", queue);
+	DX12CommandListHookUtils::LogQueueStage("GetClockCalibration", "beforeOriginal", queue);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, gpuTimestamp, cpuTimestamp);
 #if defined(_DEBUG)
-	LogQueueStage("GetClockCalibration", "afterOriginal", queue, 0, nullptr, 0, hr,
+	DX12CommandListHookUtils::LogQueueStage("GetClockCalibration", "afterOriginal", queue, 0, nullptr, 0, hr,
 		GetTickCount64() - startTick);
 #endif
 	return hr;
@@ -989,8 +930,8 @@ static HRESULT STDMETHODCALLTYPE HookedQueueGetClockCalibration(
 
 static HRESULT STDMETHODCALLTYPE HookedCloseCommandList(ID3D12GraphicsCommandList *commandList)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::Close", commandList);
-	PFN_CLOSE_COMMAND_LIST original = DX12_CL_ORIG(commandList, 9, PFN_CLOSE_COMMAND_LIST, CloseCommandList);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::Close", commandList);
+	PFN_CLOSE_COMMAND_LIST original = DX12_CL_ORIG(commandList, 9, PFN_CLOSE_COMMAND_LIST, DX12CommandListHookState::OrigCloseCommandList, "CloseCommandList");
 	return original ? original(commandList) : E_FAIL;
 }
 
@@ -1000,39 +941,39 @@ static HRESULT STDMETHODCALLTYPE HookedResetCommandList(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_RESET_COMMAND_LIST original =
-			DX12_CL_ORIG(commandList, 10, PFN_RESET_COMMAND_LIST, ResetCommandList);
+			DX12_CL_ORIG(commandList, 10, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
 		return original ? original(commandList, allocator, initialState) : E_FAIL;
 	}
 	DX12_PROFILE_SCOPE(ResetCommandList);
-	LogDX12Call("ID3D12GraphicsCommandList::Reset", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::Reset", commandList,
 		" allocator=%p initialPso=%p", allocator, initialState);
-	PFN_RESET_COMMAND_LIST original = DX12_CL_ORIG(commandList, 10, PFN_RESET_COMMAND_LIST, ResetCommandList);
+	PFN_RESET_COMMAND_LIST original = DX12_CL_ORIG(commandList, 10, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
 #if defined(_DEBUG)
 	ULONGLONG startTick = GetTickCount64();
 	ULONGLONG stageTick = startTick;
-	LogCommandListStageEdge("Reset", "beforeOriginal", commandList);
+	DX12CommandListHookUtils::LogCommandListStageEdge("Reset", "beforeOriginal", commandList);
 	stageTick = GetTickCount64();
 #endif
 	HRESULT hr = original ? original(commandList, allocator, initialState) : E_FAIL;
 #if defined(_DEBUG)
-	LogCommandListStage("Reset", "afterOriginal", commandList, hr, GetTickCount64() - stageTick);
+	DX12CommandListHookUtils::LogCommandListStage("Reset", "afterOriginal", commandList, hr, GetTickCount64() - stageTick);
 #endif
 	if (SUCCEEDED(hr)) {
 #if defined(_DEBUG)
 		stageTick = GetTickCount64();
-		LogCommandListStageEdge("Reset", "beforeRuntime", commandList);
+		DX12CommandListHookUtils::LogCommandListStageEdge("Reset", "beforeRuntime", commandList);
 #endif
-		DX12CommandListRuntimeReset(commandList, initialState);
+		DX12CommandListRuntime::Reset(commandList, initialState);
 #if defined(_DEBUG)
-		LogCommandListStage("Reset", "afterRuntime", commandList, S_OK, GetTickCount64() - stageTick);
+		DX12CommandListHookUtils::LogCommandListStage("Reset", "afterRuntime", commandList, S_OK, GetTickCount64() - stageTick);
 		stageTick = GetTickCount64();
-		LogCommandListStageEdge("Reset", "beforeLifecycle", commandList);
+		DX12CommandListHookUtils::LogCommandListStageEdge("Reset", "beforeLifecycle", commandList);
 #endif
-		DX12CommandListLifecycleReset(commandList, initialState);
+		DX12CommandListLifecycle::Reset(commandList, initialState);
 #if defined(_DEBUG)
-		LogCommandListStage("Reset", "afterLifecycle", commandList, S_OK, GetTickCount64() - stageTick);
+		DX12CommandListHookUtils::LogCommandListStage("Reset", "afterLifecycle", commandList, S_OK, GetTickCount64() - stageTick);
 	}
-	LogCommandListStage("Reset", "end", commandList, hr, GetTickCount64() - startTick);
+	DX12CommandListHookUtils::LogCommandListStage("Reset", "end", commandList, hr, GetTickCount64() - startTick);
 #else
 	}
 #endif
@@ -1042,9 +983,9 @@ static HRESULT STDMETHODCALLTYPE HookedResetCommandList(
 static void STDMETHODCALLTYPE HookedClearState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ClearState", commandList, " pso=%p", pipelineState);
-	DX12CommandListLifecycleClearState(commandList, pipelineState);
-	PFN_CLEAR_STATE original = DX12_CL_ORIG(commandList, 11, PFN_CLEAR_STATE, ClearState);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ClearState", commandList, " pso=%p", pipelineState);
+	DX12CommandListLifecycle::ClearState(commandList, pipelineState);
+	PFN_CLEAR_STATE original = DX12_CL_ORIG(commandList, 11, PFN_CLEAR_STATE, DX12CommandListHookState::OrigClearState, "ClearState");
 	if (original)
 		original(commandList, pipelineState);
 }
@@ -1055,7 +996,7 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_DRAW_INSTANCED original =
-			DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
+			DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
 				startVertexLocation, startInstanceLocation);
@@ -1068,7 +1009,7 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 
 	if (DX12IaReplacementDrawScope::IsExecuting()) {
 		DX12_PROFILE_FAST_FORWARD();
-		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
+		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
 				startVertexLocation, startInstanceLocation);
@@ -1082,17 +1023,17 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 			return;
 		DX12HuntRecordDraw(
 			commandList, false, vertexCountPerInstance, 0, startVertexLocation, 0, 0);
-		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
+		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
 				startVertexLocation, startInstanceLocation);
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::DrawInstanced", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::DrawInstanced", commandList,
 		" vertices=%u instances=%u startVertex=%u startInstance=%u",
 		vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
 			startVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
@@ -1104,15 +1045,15 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 	}
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
-		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DrawInstanced);
+		PFN_DRAW_INSTANCED original = DX12_CL_ORIG(commandList, 12, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
 			original(commandList, vertexCountPerInstance, instanceCount,
 				startVertexLocation, startInstanceLocation);
 		return;
 	}
-	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
+	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntime::GetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
-		GetCachedIaReplacementCallbacks(commandList);
+		DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
 		vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
 	DX12DrawHookFlowExecute(commandList, draw, runtimeState, iaCallbacks);
@@ -1124,7 +1065,7 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_DRAW_INDEXED_INSTANCED original =
-			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
+			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
 			original(commandList, indexCountPerInstance, instanceCount,
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
@@ -1138,7 +1079,7 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	if (DX12IaReplacementDrawScope::IsExecuting()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_DRAW_INDEXED_INSTANCED original =
-			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
+			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
 			original(commandList, indexCountPerInstance, instanceCount,
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
@@ -1155,18 +1096,18 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 			commandList, true, 0, indexCountPerInstance, 0, startIndexLocation,
 			baseVertexLocation);
 		PFN_DRAW_INDEXED_INSTANCED original =
-			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
+			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
 			original(commandList, indexCountPerInstance, instanceCount,
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::DrawIndexedInstanced", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::DrawIndexedInstanced", commandList,
 		" indices=%u instances=%u startIndex=%u baseVertex=%d startInstance=%u",
 		indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation,
 		startInstanceLocation);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
 			startIndexLocation, baseVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
@@ -1181,15 +1122,15 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 	if (!DX12DrawHookFlowNeedsModWork()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_DRAW_INDEXED_INSTANCED original =
-			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DrawIndexedInstanced);
+			DX12_CL_ORIG(commandList, 13, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
 			original(commandList, indexCountPerInstance, instanceCount,
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
 		return;
 	}
-	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
+	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntime::GetStatePtr(commandList);
 	const DX12IaReplacementExecutorCallbacks &iaCallbacks =
-		GetCachedIaReplacementCallbacks(commandList);
+		DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 		indexCountPerInstance, instanceCount, startIndexLocation,
 		baseVertexLocation, startInstanceLocation);
@@ -1201,7 +1142,7 @@ static void STDMETHODCALLTYPE HookedDispatch(
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
 	if (DX12HotPathState::Get().skipAll) {
-		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
+		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 		if (original)
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
@@ -1212,7 +1153,7 @@ static void STDMETHODCALLTYPE HookedDispatch(
 		DX12RuntimeState::IncrementFrameDispatches();
 
 	if (DX12InternalReplayState::IsActive()) {
-		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
+		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 		if (original)
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
@@ -1224,22 +1165,22 @@ static void STDMETHODCALLTYPE HookedDispatch(
 		DX12HuntRecordDispatch(commandList);
 		if (DX12HuntShouldSkipDispatch(commandList))
 			return;
-		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
+		PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 		if (original)
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::Dispatch", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::Dispatch", commandList,
 		" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 	if (DX12HuntIsEnabled()) {
 		DX12HuntRecordDispatch(commandList);
 		if (DX12HuntShouldSkipDispatch(commandList))
 			return;
 	}
-	PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, Dispatch);
+	PFN_DISPATCH original = DX12_CL_ORIG(commandList, 14, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 	if (!DX12ModHasActiveShaderOverrides() && !DX12ModNeedsPreSkinningUavProbe()) {
 		DX12_PROFILE_FAST_FORWARD();
 		if (original)
@@ -1247,9 +1188,9 @@ static void STDMETHODCALLTYPE HookedDispatch(
 		return;
 	}
 	if (!DX12ModHasActiveShaderOverrides() && DX12ModNeedsPreSkinningUavProbe()) {
-		const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
+		const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntime::GetStatePtr(commandList);
 		ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState :
-			DX12CommandListRuntimeGetPipelineState(commandList);
+			DX12CommandListRuntime::GetPipelineState(commandList);
 		DX12PsoShaderInfo shaderInfo = {};
 		const bool hasConfiguredPreSkinCs =
 			pipelineState &&
@@ -1267,7 +1208,7 @@ static void STDMETHODCALLTYPE HookedDispatch(
 			runtimeState, original);
 		return;
 	}
-	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntimeGetStatePtr(commandList);
+	const DX12CommandListRuntimeState *runtimeState = DX12CommandListRuntime::GetStatePtr(commandList);
 	DX12DispatchHookFlowExecute(
 		commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 		runtimeState, original);
@@ -1277,28 +1218,28 @@ static void STDMETHODCALLTYPE HookedCopyBufferRegion(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstBuffer, UINT64 dstOffset,
 	ID3D12Resource *srcBuffer, UINT64 srcOffset, UINT64 numBytes)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::CopyBufferRegion", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::CopyBufferRegion", commandList,
 		" dst=%p dstOffset=%llu src=%p srcOffset=%llu bytes=%llu",
 		dstBuffer, static_cast<unsigned long long>(dstOffset), srcBuffer,
 		static_cast<unsigned long long>(srcOffset), static_cast<unsigned long long>(numBytes));
-	gOrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
+	DX12CommandListHookState::OrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
 }
 
 static void STDMETHODCALLTYPE HookedCopyTextureRegion(
 	ID3D12GraphicsCommandList *commandList, const D3D12_TEXTURE_COPY_LOCATION *dst,
 	UINT dstX, UINT dstY, UINT dstZ, const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::CopyTextureRegion", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::CopyTextureRegion", commandList,
 		" dst=%p dstXYZ=%u,%u,%u src=%p srcBox=%p", dst, dstX, dstY, dstZ, src, srcBox);
-	gOrigCopyTextureRegion(commandList, dst, dstX, dstY, dstZ, src, srcBox);
+	DX12CommandListHookState::OrigCopyTextureRegion(commandList, dst, dstX, dstY, dstZ, src, srcBox);
 }
 
 static void STDMETHODCALLTYPE HookedCopyResource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, ID3D12Resource *srcResource)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
 		" dst=%p src=%p", dstResource, srcResource);
-	gOrigCopyResource(commandList, dstResource, srcResource);
+	DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
 }
 
 static void STDMETHODCALLTYPE HookedCopyTiles(
@@ -1307,10 +1248,10 @@ static void STDMETHODCALLTYPE HookedCopyTiles(
 	const D3D12_TILE_REGION_SIZE *tileRegionSize, ID3D12Resource *buffer,
 	UINT64 bufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS flags)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::CopyTiles", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::CopyTiles", commandList,
 		" tiled=%p buffer=%p offset=%llu flags=0x%x", tiledResource, buffer,
 		static_cast<unsigned long long>(bufferStartOffsetInBytes), static_cast<UINT>(flags));
-	gOrigCopyTiles(commandList, tiledResource, tileRegionStartCoordinate,
+	DX12CommandListHookState::OrigCopyTiles(commandList, tiledResource, tileRegionStartCoordinate,
 		tileRegionSize, buffer, bufferStartOffsetInBytes, flags);
 }
 
@@ -1318,10 +1259,10 @@ static void STDMETHODCALLTYPE HookedResolveSubresource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, UINT dstSubresource,
 	ID3D12Resource *srcResource, UINT srcSubresource, DXGI_FORMAT format)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ResolveSubresource", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ResolveSubresource", commandList,
 		" dst=%p dstSub=%u src=%p srcSub=%u format=%u",
 		dstResource, dstSubresource, srcResource, srcSubresource, static_cast<UINT>(format));
-	gOrigResolveSubresource(commandList, dstResource, dstSubresource, srcResource, srcSubresource, format);
+	DX12CommandListHookState::OrigResolveSubresource(commandList, dstResource, dstSubresource, srcResource, srcSubresource, format);
 }
 
 static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
@@ -1329,7 +1270,7 @@ static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
-			DX12_CL_ORIG(commandList, 20, PFN_IA_SET_PRIMITIVE_TOPOLOGY, IASetPrimitiveTopology);
+			DX12_CL_ORIG(commandList, 20, PFN_IA_SET_PRIMITIVE_TOPOLOGY, DX12CommandListHookState::OrigIASetPrimitiveTopology, "IASetPrimitiveTopology");
 		if (original)
 			original(commandList, topology);
 		return;
@@ -1337,16 +1278,16 @@ static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
 	DX12_PROFILE_SCOPE(IASetPrimitiveTopology);
 
 	if (!DX12HotPathState::Get().skipBindings) {
-		LogDX12Call("ID3D12GraphicsCommandList::IASetPrimitiveTopology", commandList,
+		DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::IASetPrimitiveTopology", commandList,
 			" topology=%u", static_cast<UINT>(topology));
-		DX12CommandListCapturePrimitiveTopology(commandList, topology);
+		DX12CommandListStateCapture::PrimitiveTopology(commandList, topology);
 	} else {
 		if (DX12ModHasActiveShaderOverrides())
-			DX12CommandListRuntimeRememberPrimitiveTopology(commandList, topology);
+			DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
 	}
 
 	PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
-		DX12_CL_ORIG(commandList, 20, PFN_IA_SET_PRIMITIVE_TOPOLOGY, IASetPrimitiveTopology);
+		DX12_CL_ORIG(commandList, 20, PFN_IA_SET_PRIMITIVE_TOPOLOGY, DX12CommandListHookState::OrigIASetPrimitiveTopology, "IASetPrimitiveTopology");
 	if (original)
 		original(commandList, topology);
 }
@@ -1354,28 +1295,28 @@ static void STDMETHODCALLTYPE HookedIASetPrimitiveTopology(
 static void STDMETHODCALLTYPE HookedRSSetViewports(
 	ID3D12GraphicsCommandList *commandList, UINT count, const D3D12_VIEWPORT *viewports)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::RSSetViewports", commandList, " count=%u", count);
-	gOrigRSSetViewports(commandList, count, viewports);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::RSSetViewports", commandList, " count=%u", count);
+	DX12CommandListHookState::OrigRSSetViewports(commandList, count, viewports);
 }
 
 static void STDMETHODCALLTYPE HookedRSSetScissorRects(
 	ID3D12GraphicsCommandList *commandList, UINT count, const D3D12_RECT *rects)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::RSSetScissorRects", commandList, " count=%u", count);
-	gOrigRSSetScissorRects(commandList, count, rects);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::RSSetScissorRects", commandList, " count=%u", count);
+	DX12CommandListHookState::OrigRSSetScissorRects(commandList, count, rects);
 }
 
 static void STDMETHODCALLTYPE HookedOMSetBlendFactor(
 	ID3D12GraphicsCommandList *commandList, const FLOAT blendFactor[4])
 {
-	LogDX12Call("ID3D12GraphicsCommandList::OMSetBlendFactor", commandList);
-	gOrigOMSetBlendFactor(commandList, blendFactor);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::OMSetBlendFactor", commandList);
+	DX12CommandListHookState::OrigOMSetBlendFactor(commandList, blendFactor);
 }
 
 static void STDMETHODCALLTYPE HookedOMSetStencilRef(ID3D12GraphicsCommandList *commandList, UINT stencilRef)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::OMSetStencilRef", commandList, " stencilRef=%u", stencilRef);
-	gOrigOMSetStencilRef(commandList, stencilRef);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::OMSetStencilRef", commandList, " stencilRef=%u", stencilRef);
+	DX12CommandListHookState::OrigOMSetStencilRef(commandList, stencilRef);
 }
 
 static void STDMETHODCALLTYPE HookedSetPipelineState(
@@ -1383,7 +1324,7 @@ static void STDMETHODCALLTYPE HookedSetPipelineState(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_PIPELINE_STATE original =
-			DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, SetPipelineState);
+			DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, DX12CommandListHookState::OrigSetPipelineState, "SetPipelineState");
 		if (original)
 			original(commandList, pipelineState);
 		return;
@@ -1393,19 +1334,19 @@ static void STDMETHODCALLTYPE HookedSetPipelineState(
 	if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() &&
 	    !DX12ModHasActiveShaderOverrides()) {
 		DX12_PROFILE_FAST_FORWARD();
-		DX12CommandListRuntimeRememberPipelineState(commandList, pipelineState);
+		DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
 		DX12HuntSetPipelineState(commandList, pipelineState);
-		PFN_SET_PIPELINE_STATE original = DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, SetPipelineState);
+		PFN_SET_PIPELINE_STATE original = DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, DX12CommandListHookState::OrigSetPipelineState, "SetPipelineState");
 		if (original)
 			original(commandList, pipelineState);
 		return;
 	}
 
 	ID3D12PipelineState *activePipelineState =
-		DX12CommandListCapturePipelineState(commandList, pipelineState);
-	LogDX12Call("ID3D12GraphicsCommandList::SetPipelineState", commandList,
+		DX12CommandListStateCapture::PipelineState(commandList, pipelineState);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetPipelineState", commandList,
 		" pso=%p active=%p", pipelineState, activePipelineState);
-	PFN_SET_PIPELINE_STATE original = DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, SetPipelineState);
+	PFN_SET_PIPELINE_STATE original = DX12_CL_ORIG(commandList, 25, PFN_SET_PIPELINE_STATE, DX12CommandListHookState::OrigSetPipelineState, "SetPipelineState");
 	if (original)
 		original(commandList, activePipelineState);
 }
@@ -1416,14 +1357,14 @@ static void STDMETHODCALLTYPE HookedResourceBarrier(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_RESOURCE_BARRIER original =
-			DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, ResourceBarrier);
+			DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
 		if (original)
 			original(commandList, numBarriers, barriers);
 		return;
 	}
 	DX12_PROFILE_SCOPE(ResourceBarrier);
 	if (DX12InternalReplayState::IsActive()) {
-		PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, ResourceBarrier);
+		PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
 		if (original)
 			original(commandList, numBarriers, barriers);
 		return;
@@ -1431,15 +1372,15 @@ static void STDMETHODCALLTYPE HookedResourceBarrier(
 
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
-		PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, ResourceBarrier);
+		PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
 		if (original)
 			original(commandList, numBarriers, barriers);
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::ResourceBarrier", commandList, " count=%u", numBarriers);
-	DX12CommandListCommandRecordResourceBarrier(numBarriers, barriers);
-	PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, ResourceBarrier);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ResourceBarrier", commandList, " count=%u", numBarriers);
+	DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
+	PFN_RESOURCE_BARRIER original = DX12_CL_ORIG(commandList, 26, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
 	if (original)
 		original(commandList, numBarriers, barriers);
 }
@@ -1447,21 +1388,21 @@ static void STDMETHODCALLTYPE HookedResourceBarrier(
 static void STDMETHODCALLTYPE HookedExecuteBundle(
 	ID3D12GraphicsCommandList *commandList, ID3D12GraphicsCommandList *bundle)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ExecuteBundle", commandList, " bundle=%p", bundle);
-	DX12CommandListCommandRecordExecuteBundle(bundle, nullptr);
-	PFN_EXECUTE_BUNDLE original = DX12_CL_ORIG(commandList, 27, PFN_EXECUTE_BUNDLE, ExecuteBundle);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ExecuteBundle", commandList, " bundle=%p", bundle);
+	DX12CommandListCommandRecorder::RecordExecuteBundle(bundle, nullptr);
+	PFN_EXECUTE_BUNDLE original = DX12_CL_ORIG(commandList, 27, PFN_EXECUTE_BUNDLE, DX12CommandListHookState::OrigExecuteBundle, "ExecuteBundle");
 	if (original)
 		original(commandList, bundle);
 }
 
-#include "DX12CommandListComputeBindings.cpp"
+#include "DX12CommandListComputeBindingHooks.hpp"
 
 static void STDMETHODCALLTYPE HookedSetGraphicsRootUnorderedAccessView(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, SetGraphicsRootUnorderedAccessView);
+			DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -1471,18 +1412,18 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootUnorderedAccessView(
 	if (DX12HotPathState::Get().skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, SetGraphicsRootUnorderedAccessView);
+			DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
-	DX12CommandListCaptureGraphicsRootDescriptor(
+	DX12CommandListStateCapture::GraphicsRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, address);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, SetGraphicsRootUnorderedAccessView);
+		DX12_CL_ORIG(commandList, 42, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }
@@ -1492,7 +1433,7 @@ static void STDMETHODCALLTYPE HookedIASetIndexBuffer(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_IA_SET_INDEX_BUFFER original =
-			DX12_CL_ORIG(commandList, 43, PFN_IA_SET_INDEX_BUFFER, IASetIndexBuffer);
+			DX12_CL_ORIG(commandList, 43, PFN_IA_SET_INDEX_BUFFER, DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
 		if (original)
 			original(commandList, view);
 		return;
@@ -1500,12 +1441,12 @@ static void STDMETHODCALLTYPE HookedIASetIndexBuffer(
 	DX12_PROFILE_SCOPE(IASetIndexBuffer);
 
 	if (!DX12HotPathState::Get().skipBindings) {
-		LogDX12Call("ID3D12GraphicsCommandList::IASetIndexBuffer", commandList,
+		DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::IASetIndexBuffer", commandList,
 			" gpu=0x%llx size=%u format=%u",
 			view ? static_cast<unsigned long long>(view->BufferLocation) : 0ull,
 			view ? view->SizeInBytes : 0,
 			view ? static_cast<UINT>(view->Format) : 0);
-		DX12CommandListCaptureIndexBuffer(commandList, view);
+		DX12CommandListStateCapture::IndexBuffer(commandList, view);
 	} else {
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntIsEnabled()) {
@@ -1513,10 +1454,10 @@ static void STDMETHODCALLTYPE HookedIASetIndexBuffer(
 			DX12HuntSetIndexBuffer(commandList, view);
 		}
 		if (DX12ModHasActiveShaderOverrides())
-			DX12CommandListRuntimeRememberIndexBuffer(commandList, view);
+			DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
 	}
 
-	PFN_IA_SET_INDEX_BUFFER original = DX12_CL_ORIG(commandList, 43, PFN_IA_SET_INDEX_BUFFER, IASetIndexBuffer);
+	PFN_IA_SET_INDEX_BUFFER original = DX12_CL_ORIG(commandList, 43, PFN_IA_SET_INDEX_BUFFER, DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
 	if (original)
 		original(commandList, view);
 }
@@ -1527,7 +1468,7 @@ static void STDMETHODCALLTYPE HookedIASetVertexBuffers(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_IA_SET_VERTEX_BUFFERS original =
-			DX12_CL_ORIG(commandList, 44, PFN_IA_SET_VERTEX_BUFFERS, IASetVertexBuffers);
+			DX12_CL_ORIG(commandList, 44, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
 		if (original)
 			original(commandList, startSlot, count, views);
 		return;
@@ -1535,9 +1476,9 @@ static void STDMETHODCALLTYPE HookedIASetVertexBuffers(
 	DX12_PROFILE_SCOPE(IASetVertexBuffers);
 
 	if (!DX12HotPathState::Get().skipBindings) {
-		LogDX12Call("ID3D12GraphicsCommandList::IASetVertexBuffers", commandList,
+		DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::IASetVertexBuffers", commandList,
 			" start=%u count=%u", startSlot, count);
-		DX12CommandListCaptureVertexBuffers(commandList, startSlot, count, views);
+		DX12CommandListStateCapture::VertexBuffers(commandList, startSlot, count, views);
 	} else {
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntIsEnabled()) {
@@ -1545,11 +1486,11 @@ static void STDMETHODCALLTYPE HookedIASetVertexBuffers(
 			DX12HuntSetVertexBuffers(commandList, startSlot, count, views);
 		}
 		if (DX12ModHasActiveShaderOverrides())
-			DX12CommandListRuntimeRememberVertexBuffers(commandList, startSlot, count, views);
+			DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
 	}
 
 	PFN_IA_SET_VERTEX_BUFFERS original =
-		DX12_CL_ORIG(commandList, 44, PFN_IA_SET_VERTEX_BUFFERS, IASetVertexBuffers);
+		DX12_CL_ORIG(commandList, 44, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
 	if (original)
 		original(commandList, startSlot, count, views);
 }
@@ -1558,9 +1499,9 @@ static void STDMETHODCALLTYPE HookedSOSetTargets(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_STREAM_OUTPUT_BUFFER_VIEW *views)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::SOSetTargets", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SOSetTargets", commandList,
 		" start=%u count=%u", startSlot, count);
-	gOrigSOSetTargets(commandList, startSlot, count, views);
+	DX12CommandListHookState::OrigSOSetTargets(commandList, startSlot, count, views);
 }
 
 static void STDMETHODCALLTYPE HookedOMSetRenderTargets(
@@ -1568,13 +1509,13 @@ static void STDMETHODCALLTYPE HookedOMSetRenderTargets(
 	const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors,
 	BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::OMSetRenderTargets", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::OMSetRenderTargets", commandList,
 		" rtCount=%u singleRange=%u dsv=%p", numRenderTargetDescriptors,
 		singleHandleToDescriptorRange, depthStencilDescriptor);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordOutputTargets(commandList, numRenderTargetDescriptors,
 			renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
-	gOrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
+	DX12CommandListHookState::OrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
 		renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 }
 
@@ -1582,23 +1523,23 @@ static void STDMETHODCALLTYPE HookedClearDepthStencilView(
 	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView,
 	D3D12_CLEAR_FLAGS clearFlags, FLOAT depth, UINT8 stencil, UINT numRects, const D3D12_RECT *rects)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ClearDepthStencilView", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ClearDepthStencilView", commandList,
 		" dsv=0x%llx flags=0x%x rects=%u", static_cast<unsigned long long>(depthStencilView.ptr),
 		static_cast<UINT>(clearFlags), numRects);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordDepthStencilClear(commandList, depthStencilView);
-	gOrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
+	DX12CommandListHookState::OrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
 }
 
 static void STDMETHODCALLTYPE HookedClearRenderTargetView(
 	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView,
 	const FLOAT colorRGBA[4], UINT numRects, const D3D12_RECT *rects)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
 		" rtv=0x%llx rects=%u", static_cast<unsigned long long>(renderTargetView.ptr), numRects);
-	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RecordRenderTargetClear(commandList, renderTargetView);
-	gOrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
+	DX12CommandListHookState::OrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
 }
 
 static void STDMETHODCALLTYPE HookedClearUnorderedAccessViewUint(
@@ -1606,11 +1547,11 @@ static void STDMETHODCALLTYPE HookedClearUnorderedAccessViewUint(
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const UINT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
 		static_cast<unsigned long long>(viewGpuHandleInCurrentHeap.ptr),
 		static_cast<unsigned long long>(viewCpuHandle.ptr), numRects);
-	gOrigClearUnorderedAccessViewUint(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
+	DX12CommandListHookState::OrigClearUnorderedAccessViewUint(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
 		resource, values, numRects, rects);
 }
 
@@ -1619,46 +1560,46 @@ static void STDMETHODCALLTYPE HookedClearUnorderedAccessViewFloat(
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const FLOAT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
 		static_cast<unsigned long long>(viewGpuHandleInCurrentHeap.ptr),
 		static_cast<unsigned long long>(viewCpuHandle.ptr), numRects);
-	gOrigClearUnorderedAccessViewFloat(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
+	DX12CommandListHookState::OrigClearUnorderedAccessViewFloat(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
 		resource, values, numRects, rects);
 }
 
 static void STDMETHODCALLTYPE HookedDiscardResource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *resource, const D3D12_DISCARD_REGION *region)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::DiscardResource", commandList, " resource=%p region=%p", resource, region);
-	gOrigDiscardResource(commandList, resource, region);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::DiscardResource", commandList, " resource=%p region=%p", resource, region);
+	DX12CommandListHookState::OrigDiscardResource(commandList, resource, region);
 }
 
 static void STDMETHODCALLTYPE HookedBeginQuery(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type, UINT index)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::BeginQuery", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::BeginQuery", commandList,
 		" heap=%p type=%u index=%u", queryHeap, static_cast<UINT>(type), index);
-	gOrigBeginQuery(commandList, queryHeap, type, index);
+	DX12CommandListHookState::OrigBeginQuery(commandList, queryHeap, type, index);
 }
 
 static void STDMETHODCALLTYPE HookedEndQuery(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type, UINT index)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::EndQuery", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::EndQuery", commandList,
 		" heap=%p type=%u index=%u", queryHeap, static_cast<UINT>(type), index);
-	gOrigEndQuery(commandList, queryHeap, type, index);
+	DX12CommandListHookState::OrigEndQuery(commandList, queryHeap, type, index);
 }
 
 static void STDMETHODCALLTYPE HookedResolveQueryData(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type,
 	UINT startIndex, UINT numQueries, ID3D12Resource *destinationBuffer, UINT64 alignedDestinationBufferOffset)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::ResolveQueryData", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ResolveQueryData", commandList,
 		" heap=%p type=%u start=%u count=%u dst=%p offset=%llu",
 		queryHeap, static_cast<UINT>(type), startIndex, numQueries, destinationBuffer,
 		static_cast<unsigned long long>(alignedDestinationBufferOffset));
-	gOrigResolveQueryData(commandList, queryHeap, type, startIndex, numQueries,
+	DX12CommandListHookState::OrigResolveQueryData(commandList, queryHeap, type, startIndex, numQueries,
 		destinationBuffer, alignedDestinationBufferOffset);
 }
 
@@ -1666,30 +1607,30 @@ static void STDMETHODCALLTYPE HookedSetPredication(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *buffer,
 	UINT64 alignedBufferOffset, D3D12_PREDICATION_OP operation)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::SetPredication", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetPredication", commandList,
 		" buffer=%p offset=%llu op=%u", buffer,
 		static_cast<unsigned long long>(alignedBufferOffset), static_cast<UINT>(operation));
-	gOrigSetPredication(commandList, buffer, alignedBufferOffset, operation);
+	DX12CommandListHookState::OrigSetPredication(commandList, buffer, alignedBufferOffset, operation);
 }
 
 static void STDMETHODCALLTYPE HookedCommandListSetMarker(
 	ID3D12GraphicsCommandList *commandList, UINT metadata, const void *data, UINT size)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::SetMarker", commandList, " metadata=%u size=%u", metadata, size);
-	gOrigCommandListSetMarker(commandList, metadata, data, size);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetMarker", commandList, " metadata=%u size=%u", metadata, size);
+	DX12CommandListHookState::OrigCommandListSetMarker(commandList, metadata, data, size);
 }
 
 static void STDMETHODCALLTYPE HookedCommandListBeginEvent(
 	ID3D12GraphicsCommandList *commandList, UINT metadata, const void *data, UINT size)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::BeginEvent", commandList, " metadata=%u size=%u", metadata, size);
-	gOrigCommandListBeginEvent(commandList, metadata, data, size);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::BeginEvent", commandList, " metadata=%u size=%u", metadata, size);
+	DX12CommandListHookState::OrigCommandListBeginEvent(commandList, metadata, data, size);
 }
 
 static void STDMETHODCALLTYPE HookedCommandListEndEvent(ID3D12GraphicsCommandList *commandList)
 {
-	LogDX12Call("ID3D12GraphicsCommandList::EndEvent", commandList);
-	gOrigCommandListEndEvent(commandList);
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::EndEvent", commandList);
+	DX12CommandListHookState::OrigCommandListEndEvent(commandList);
 }
 
 static void STDMETHODCALLTYPE HookedExecuteIndirect(
@@ -1698,7 +1639,7 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 	ID3D12Resource *countBuffer, UINT64 countBufferOffset)
 {
 	PFN_EXECUTE_INDIRECT original =
-		DX12_CL_ORIG(commandList, 59, PFN_EXECUTE_INDIRECT, ExecuteIndirect);
+		DX12_CL_ORIG(commandList, 59, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
 	if (DX12HotPathState::Get().skipAll) {
 		if (original)
 			original(commandList, commandSignature, maxCommandCount, argumentBuffer,
@@ -1706,19 +1647,19 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 		return;
 	}
 
-	LogDX12Call("ID3D12GraphicsCommandList::ExecuteIndirect", commandList,
+	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::ExecuteIndirect", commandList,
 		" signature=%p max=%u args=%p argOffset=%llu count=%p countOffset=%llu",
 		commandSignature, maxCommandCount, argumentBuffer,
 		static_cast<unsigned long long>(argumentBufferOffset), countBuffer,
 		static_cast<unsigned long long>(countBufferOffset));
-	DX12CommandListCommandRecordExecuteIndirect(commandList);
+	DX12CommandListCommandRecorder::RecordExecuteIndirect(commandList);
 
 	// Pre-skin probe for games that dispatch compute shaders via ExecuteIndirect
 	// (e.g. ZZZ).  The individual Dispatch inside ExecuteIndirect is invisible
 	// to our Dispatch hook, so we intercept at the ExecuteIndirect level and
 	// apply binding patches if the current compute PSO has a pre-skin CS hash.
 	if (DX12ModNeedsPreSkinningUavProbe()) {
-		ID3D12PipelineState *pipelineState = DX12CommandListRuntimeGetPipelineState(commandList);
+		ID3D12PipelineState *pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
 		if (!pipelineState) {
 			DX12LogManager::Text("HookedExecuteIndirect: no PSO from runtime state\n");
 		} else {
@@ -1767,7 +1708,9 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 	DX12ModRestorePreSkinningUavReplacement(commandList);
 }
 
-void DX12HookCommandQueue(IUnknown *commandQueue)
+};
+
+void DX12CommandListHooks::HookCommandQueue(IUnknown *commandQueue)
 {
 	if (!commandQueue)
 		return;
@@ -1787,36 +1730,36 @@ void DX12HookCommandQueue(IUnknown *commandQueue)
 		return;
 	}
 
-	DX12RememberCommandQueueForHotPath(commandQueue);
+	DX12CommandListHooks::RememberCommandQueueForHotPath(commandQueue);
 	DX12CommandQueueState::Set(queue);
 	DX12VTableHook queueHooks[] = {
-		{10, reinterpret_cast<void**>(&gOrigQueueExecuteCommandLists),
-			HookedQueueExecuteCommandLists, "ID3D12CommandQueue::ExecuteCommandLists"},
+		{10, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueExecuteCommandLists),
+			DX12CommandListHookCallbacks::HookedQueueExecuteCommandLists, "ID3D12CommandQueue::ExecuteCommandLists"},
 	};
 	DX12InstallVTableHooks(queue, queueHooks);
 	queue->Release();
 }
 
-void DX12RememberCommandQueueForHotPath(IUnknown *commandQueue)
+void DX12CommandListHooks::RememberCommandQueueForHotPath(IUnknown *commandQueue)
 {
 	if (!commandQueue)
 		return;
-	AcquireSRWLockExclusive(&gKnownCommandQueueLock);
-	gKnownCommandQueue = commandQueue;
-	ReleaseSRWLockExclusive(&gKnownCommandQueueLock);
+	AcquireSRWLockExclusive(&DX12CommandListHookState::KnownCommandQueueLock);
+	DX12CommandListHookState::KnownCommandQueue = commandQueue;
+	ReleaseSRWLockExclusive(&DX12CommandListHookState::KnownCommandQueueLock);
 }
 
-void DX12ActivateCommandQueueHotPathHooks()
+void DX12CommandListHooks::ActivateCommandQueueHotPathHooks()
 {
 	IUnknown *queue = nullptr;
-	AcquireSRWLockShared(&gKnownCommandQueueLock);
-	queue = gKnownCommandQueue;
-	ReleaseSRWLockShared(&gKnownCommandQueueLock);
+	AcquireSRWLockShared(&DX12CommandListHookState::KnownCommandQueueLock);
+	queue = DX12CommandListHookState::KnownCommandQueue;
+	ReleaseSRWLockShared(&DX12CommandListHookState::KnownCommandQueueLock);
 	if (queue)
-		DX12HookCommandQueue(queue);
+		DX12CommandListHooks::HookCommandQueue(queue);
 }
 
-void DX12HookCommandList(IUnknown *commandList)
+void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 {
 	if (!commandList)
 		return;
@@ -1826,62 +1769,62 @@ void DX12HookCommandList(IUnknown *commandList)
 		return;
 
 	void *vtable = *reinterpret_cast<void**>(baseList);
-	if (!ShouldHookCommandListVTable(vtable)) {
+	if (!DX12CommandListHookUtils::ShouldHookCommandListVTable(vtable)) {
 		baseList->Release();
 		return;
 	}
 
 	DX12VTableHook commandListHooks[] = {
-		{10, reinterpret_cast<void**>(&gOrigResetCommandList),
-			HookedResetCommandList, "ID3D12GraphicsCommandList::Reset"},
-		{12, reinterpret_cast<void**>(&gOrigDrawInstanced),
-			HookedDrawInstanced, "ID3D12GraphicsCommandList::DrawInstanced"},
-		{13, reinterpret_cast<void**>(&gOrigDrawIndexedInstanced),
-			HookedDrawIndexedInstanced, "ID3D12GraphicsCommandList::DrawIndexedInstanced"},
-		{14, reinterpret_cast<void**>(&gOrigDispatch),
-			HookedDispatch, "ID3D12GraphicsCommandList::Dispatch"},
-		{20, reinterpret_cast<void**>(&gOrigIASetPrimitiveTopology),
-			HookedIASetPrimitiveTopology, "ID3D12GraphicsCommandList::IASetPrimitiveTopology"},
-		{25, reinterpret_cast<void**>(&gOrigSetPipelineState),
-			HookedSetPipelineState, "ID3D12GraphicsCommandList::SetPipelineState"},
-		{26, reinterpret_cast<void**>(&gOrigResourceBarrier),
-			HookedResourceBarrier, "ID3D12GraphicsCommandList::ResourceBarrier"},
-		{27, reinterpret_cast<void**>(&gOrigExecuteBundle),
-			HookedExecuteBundle, "ID3D12GraphicsCommandList::ExecuteBundle"},
-		{28, reinterpret_cast<void**>(&gOrigSetDescriptorHeaps),
-			HookedSetDescriptorHeaps, "ID3D12GraphicsCommandList::SetDescriptorHeaps"},
-		{29, reinterpret_cast<void**>(&gOrigSetComputeRootSignature),
-			HookedSetComputeRootSignature, "ID3D12GraphicsCommandList::SetComputeRootSignature"},
-		{30, reinterpret_cast<void**>(&gOrigSetGraphicsRootSignature),
-			HookedSetGraphicsRootSignature, "ID3D12GraphicsCommandList::SetGraphicsRootSignature"},
-		{31, reinterpret_cast<void**>(&gOrigSetComputeRootDescriptorTable),
-			HookedSetComputeRootDescriptorTable, "ID3D12GraphicsCommandList::SetComputeRootDescriptorTable"},
-		{32, reinterpret_cast<void**>(&gOrigSetGraphicsRootDescriptorTable),
-			HookedSetGraphicsRootDescriptorTable, "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable"},
-		{37, reinterpret_cast<void**>(&gOrigSetComputeRootConstantBufferView),
-			HookedSetComputeRootConstantBufferView, "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView"},
-		{38, reinterpret_cast<void**>(&gOrigSetGraphicsRootConstantBufferView),
-			HookedSetGraphicsRootConstantBufferView, "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView"},
-		{39, reinterpret_cast<void**>(&gOrigSetComputeRootShaderResourceView),
-			HookedSetComputeRootShaderResourceView, "ID3D12GraphicsCommandList::SetComputeRootShaderResourceView"},
-		{40, reinterpret_cast<void**>(&gOrigSetGraphicsRootShaderResourceView),
-			HookedSetGraphicsRootShaderResourceView, "ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView"},
-		{41, reinterpret_cast<void**>(&gOrigSetComputeRootUnorderedAccessView),
-			HookedSetComputeRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView"},
-		{42, reinterpret_cast<void**>(&gOrigSetGraphicsRootUnorderedAccessView),
-			HookedSetGraphicsRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView"},
-		{43, reinterpret_cast<void**>(&gOrigIASetIndexBuffer),
-			HookedIASetIndexBuffer, "ID3D12GraphicsCommandList::IASetIndexBuffer"},
-		{44, reinterpret_cast<void**>(&gOrigIASetVertexBuffers),
-			HookedIASetVertexBuffers, "ID3D12GraphicsCommandList::IASetVertexBuffers"},
-		{59, reinterpret_cast<void**>(&gOrigExecuteIndirect),
-			HookedExecuteIndirect, "ID3D12GraphicsCommandList::ExecuteIndirect"},
+		{10, reinterpret_cast<void**>(&DX12CommandListHookState::OrigResetCommandList),
+			DX12CommandListHookCallbacks::HookedResetCommandList, "ID3D12GraphicsCommandList::Reset"},
+		{12, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDrawInstanced),
+			DX12CommandListHookCallbacks::HookedDrawInstanced, "ID3D12GraphicsCommandList::DrawInstanced"},
+		{13, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDrawIndexedInstanced),
+			DX12CommandListHookCallbacks::HookedDrawIndexedInstanced, "ID3D12GraphicsCommandList::DrawIndexedInstanced"},
+		{14, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDispatch),
+			DX12CommandListHookCallbacks::HookedDispatch, "ID3D12GraphicsCommandList::Dispatch"},
+		{20, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetPrimitiveTopology),
+			DX12CommandListHookCallbacks::HookedIASetPrimitiveTopology, "ID3D12GraphicsCommandList::IASetPrimitiveTopology"},
+		{25, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetPipelineState),
+			DX12CommandListHookCallbacks::HookedSetPipelineState, "ID3D12GraphicsCommandList::SetPipelineState"},
+		{26, reinterpret_cast<void**>(&DX12CommandListHookState::OrigResourceBarrier),
+			DX12CommandListHookCallbacks::HookedResourceBarrier, "ID3D12GraphicsCommandList::ResourceBarrier"},
+		{27, reinterpret_cast<void**>(&DX12CommandListHookState::OrigExecuteBundle),
+			DX12CommandListHookCallbacks::HookedExecuteBundle, "ID3D12GraphicsCommandList::ExecuteBundle"},
+		{28, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetDescriptorHeaps),
+			DX12CommandListComputeBindingHooks::HookedSetDescriptorHeaps, "ID3D12GraphicsCommandList::SetDescriptorHeaps"},
+		{29, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootSignature),
+			DX12CommandListComputeBindingHooks::HookedSetComputeRootSignature, "ID3D12GraphicsCommandList::SetComputeRootSignature"},
+		{30, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootSignature),
+			DX12CommandListComputeBindingHooks::HookedSetGraphicsRootSignature, "ID3D12GraphicsCommandList::SetGraphicsRootSignature"},
+		{31, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootDescriptorTable),
+			DX12CommandListComputeBindingHooks::HookedSetComputeRootDescriptorTable, "ID3D12GraphicsCommandList::SetComputeRootDescriptorTable"},
+		{32, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable),
+			DX12CommandListComputeBindingHooks::HookedSetGraphicsRootDescriptorTable, "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable"},
+		{37, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootConstantBufferView),
+			DX12CommandListComputeBindingHooks::HookedSetComputeRootConstantBufferView, "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView"},
+		{38, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView),
+			DX12CommandListComputeBindingHooks::HookedSetGraphicsRootConstantBufferView, "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView"},
+		{39, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootShaderResourceView),
+			DX12CommandListComputeBindingHooks::HookedSetComputeRootShaderResourceView, "ID3D12GraphicsCommandList::SetComputeRootShaderResourceView"},
+		{40, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView),
+			DX12CommandListComputeBindingHooks::HookedSetGraphicsRootShaderResourceView, "ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView"},
+		{41, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView),
+			DX12CommandListComputeBindingHooks::HookedSetComputeRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView"},
+		{42, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView),
+			DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView"},
+		{43, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetIndexBuffer),
+			DX12CommandListHookCallbacks::HookedIASetIndexBuffer, "ID3D12GraphicsCommandList::IASetIndexBuffer"},
+		{44, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetVertexBuffers),
+			DX12CommandListHookCallbacks::HookedIASetVertexBuffers, "ID3D12GraphicsCommandList::IASetVertexBuffers"},
+		{59, reinterpret_cast<void**>(&DX12CommandListHookState::OrigExecuteIndirect),
+			DX12CommandListHookCallbacks::HookedExecuteIndirect, "ID3D12GraphicsCommandList::ExecuteIndirect"},
 	};
 	DX12InstallVTableHooks(baseList, commandListHooks);
 	baseList->Release();
 }
 
-void DX12HookCommandListCreation(IUnknown *device)
+void DX12CommandListHooks::HookCommandListCreation(IUnknown *device)
 {
 	if (!device)
 		return;
@@ -1889,12 +1832,12 @@ void DX12HookCommandListCreation(IUnknown *device)
 	ID3D12Device *baseDevice = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&baseDevice)))) {
 		DX12VTableHook deviceHooks[] = {
-			{8, reinterpret_cast<void**>(&gOrigCreateCommandQueue),
-				HookedCreateCommandQueue, "ID3D12Device::CreateCommandQueue"},
-			{9, reinterpret_cast<void**>(&gOrigCreateCommandAllocator),
-				HookedCreateCommandAllocator, "ID3D12Device::CreateCommandAllocator"},
-			{12, reinterpret_cast<void**>(&gOrigCreateCommandList),
-				HookedCreateCommandList, "ID3D12Device::CreateCommandList"},
+			{8, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandQueue),
+				DX12CommandListHookCallbacks::HookedCreateCommandQueue, "ID3D12Device::CreateCommandQueue"},
+			{9, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandAllocator),
+				DX12CommandListHookCallbacks::HookedCreateCommandAllocator, "ID3D12Device::CreateCommandAllocator"},
+			{12, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandList),
+				DX12CommandListHookCallbacks::HookedCreateCommandList, "ID3D12Device::CreateCommandList"},
 		};
 		DX12InstallVTableHooks(baseDevice, deviceHooks);
 		baseDevice->Release();
@@ -1903,13 +1846,18 @@ void DX12HookCommandListCreation(IUnknown *device)
 	ID3D12Device4 *device4 = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device4)))) {
 		DX12VTableHook device4Hooks[] = {
-			{52, reinterpret_cast<void**>(&gOrigCreateCommandList1),
-				HookedCreateCommandList1, "ID3D12Device4::CreateCommandList1"},
+			{52, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandList1),
+				DX12CommandListHookCallbacks::HookedCreateCommandList1, "ID3D12Device4::CreateCommandList1"},
 		};
 		DX12InstallVTableHooks(device4, device4Hooks);
 		device4->Release();
 	}
 }
+
+
+
+
+
 
 
 

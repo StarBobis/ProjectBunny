@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 
-#include "DX12Overlay.h"
+#include "DX12Overlay.hpp"
 
 class DX12OverlayStatusState
 {
@@ -47,7 +47,7 @@ public:
 
 	static void InvalidateStatus()
 	{
-		DX12RequestOverlayRepaint();
+		DX12Overlay::RequestRepaint();
 	}
 
 	static void SetStatus(const wchar_t *status)

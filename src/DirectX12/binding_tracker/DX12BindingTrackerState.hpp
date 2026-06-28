@@ -8,7 +8,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DX12BindingTracker.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
 

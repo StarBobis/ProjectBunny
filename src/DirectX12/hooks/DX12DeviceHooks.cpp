@@ -4,7 +4,7 @@
 
 #include <vector>
 
-#include "DX12CommandListHooks.h"
+#include "DX12CommandListHooks.hpp"
 #include "DX12HookManager.h"
 #include "DX12ModRuntime.h"
 #include "DX12ResourceTracker.h"
@@ -222,7 +222,7 @@ void DX12HookDevice(IUnknown *device)
 	};
 	DX12InstallVTableHooks(baseDevice, deviceHooks);
 	DX12HookResourceMetadata(baseDevice);
-	DX12HookCommandListCreation(baseDevice);
+	DX12CommandListHooks::HookCommandListCreation(baseDevice);
 	DX12LogManager::JsonFunc("DeviceHooksReady", "\"device\":\"%p\"", baseDevice);
 
 	baseDevice->Release();
@@ -274,12 +274,13 @@ void DX12HookDeviceFromCommandQueue(IUnknown *commandQueue)
 	HRESULT hr = queue->GetDevice(IID_PPV_ARGS(&device));
 	DX12LogManager::JsonFunc("ID3D12CommandQueue::GetDevice",
 		"\"hr\":\"0x%lx\",\"device\":\"%p\"", hr, device);
-	DX12HookCommandQueue(queue);
+	DX12CommandListHooks::HookCommandQueue(queue);
 	if (SUCCEEDED(hr) && device) {
 		DX12HookDevice(device);
 		device->Release();
 	}
 	queue->Release();
 }
+
 
 

@@ -3,7 +3,7 @@
 #include <Shlwapi.h>
 
 #include "DX12DeviceHooks.h"
-#include "DX12Runtime.h"
+#include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
 #include "DXGIHooks.h"
 #include "util_min.h"
@@ -204,12 +204,12 @@ static HMODULE LoadRealD3D12()
 
 void DX12Initialize(HINSTANCE module)
 {
-	BunnyDX12RuntimeInitialize(module, DX12LoadRealD3D12);
+	DX12Runtime::Initialize(module, DX12LoadRealD3D12);
 }
 
 void DX12Shutdown()
 {
-	BunnyDX12RuntimeShutdown();
+	DX12Runtime::Shutdown();
 	DX12UnloadRealD3D12();
 }
 

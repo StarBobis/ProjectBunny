@@ -2,12 +2,11 @@
 
 #include <Windows.h>
 
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12FrameAnalysisState.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 
-void DX12CommandListRuntimeBumpTrackingGeneration();
 bool DX12ShaderDumpIsCapturingFrame();
 bool DX12ShaderDumpIsCaptureRequested();
 bool DX12ShaderDumpIsBusy();
@@ -86,7 +85,7 @@ public:
 			// Command lists cache binding-capture decisions. Mode or capture-state
 			// changes must invalidate that cache, otherwise Hunting can keep using
 			// a Mod-era "do not track bindings" decision and lose SRV texture tables.
-			DX12CommandListRuntimeBumpTrackingGeneration();
+			DX12CommandListRuntime::BumpTrackingGeneration();
 			DX12LogManager::JsonFunc("DX12HotPathState",
 				"\"mode\":\"%s\",\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
 				huntingMode ? "Hunting" : "Mod",
@@ -100,3 +99,4 @@ public:
 			DX12HuntNeedsHotPath();
 	}
 };
+

@@ -9,8 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DX12Overlay.h"
-#include "DX12CommandListRuntime.h"
+#include "DX12Overlay.hpp"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12IaRegion.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12ShaderDump.h"
@@ -732,12 +732,12 @@ void DX12HuntToggle()
 		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"prime_descriptor_history\",\"enabled\":true");
 		DX12HuntRefreshOverlay();
 		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
-		DX12CommandListRuntimeBumpTrackingGeneration();
+		DX12CommandListRuntime::BumpTrackingGeneration();
 		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"bump_generation\",\"enabled\":true");
-		DX12ShowOverlayWindow();
+		DX12Overlay::Show();
 		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"show_overlay\",\"enabled\":true");
 	} else {
-		DX12HideOverlayWindow();
+		DX12Overlay::Hide();
 		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"hide_overlay\",\"enabled\":false");
 	}
 	DX12LogManager::Text("DX12 hunting toggled %s\n", enabled ? "on" : "off");
@@ -1158,5 +1158,6 @@ void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash)
 	if (selected)
 		DX12HuntRefreshOverlay();
 }
+
 
 

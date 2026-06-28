@@ -1,5 +1,5 @@
-﻿#include "DX12BindingTracker.hpp"
-#include "DX12BindingTrackerPrivate.h"
+#include "DX12BindingTracker.hpp"
+#include "DX12BindingTrackerUtils.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -35,7 +35,7 @@ void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShade
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 }
 
-static void WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info)
+void DX12BindingFrameExport::WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info)
 {
 	if (!file)
 		return;
@@ -52,7 +52,7 @@ static void WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info)
 		fprintf(file, "%016llx", static_cast<unsigned long long>(info.cs));
 }
 
-static void FormatOptionalHashText(bool hasHash, UINT64 hash, char *text, size_t textCount)
+void DX12BindingFrameExport::FormatOptionalHashText(bool hasHash, UINT64 hash, char *text, size_t textCount)
 {
 	if (!text || textCount == 0)
 		return;
@@ -62,7 +62,7 @@ static void FormatOptionalHashText(bool hasHash, UINT64 hash, char *text, size_t
 		sprintf_s(text, textCount, "-");
 }
 
-static void AppendShaderHashNamePart(
+void DX12BindingFrameExport::AppendShaderHashNamePart(
 	wchar_t *text, size_t textCount, const char *stage, bool hasHash, UINT64 hash)
 {
 	if (!text || textCount == 0 || !stage || !hasHash)
@@ -74,18 +74,18 @@ static void AppendShaderHashNamePart(
 		stage, static_cast<unsigned long long>(hash));
 }
 
-static void BuildShaderHashNamePart(
+void DX12BindingFrameExport::BuildShaderHashNamePart(
 	const DX12PsoShaderInfo &info, wchar_t *text, size_t textCount)
 {
 	if (!text || textCount == 0)
 		return;
 	text[0] = L'\0';
-	AppendShaderHashNamePart(text, textCount, "vs", info.hasVS, info.vs);
-	AppendShaderHashNamePart(text, textCount, "ps", info.hasPS, info.ps);
-	AppendShaderHashNamePart(text, textCount, "cs", info.hasCS, info.cs);
+	DX12BindingFrameExport::AppendShaderHashNamePart(text, textCount, "vs", info.hasVS, info.vs);
+	DX12BindingFrameExport::AppendShaderHashNamePart(text, textCount, "ps", info.hasPS, info.ps);
+	DX12BindingFrameExport::AppendShaderHashNamePart(text, textCount, "cs", info.hasCS, info.cs);
 }
 
-static void WriteRootTables(FILE *file, const RootTableState *tables)
+void DX12BindingFrameExport::WriteRootTables(FILE *file, const RootTableState *tables)
 {
 	bool first = true;
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
@@ -100,7 +100,7 @@ static void WriteRootTables(FILE *file, const RootTableState *tables)
 	}
 }
 
-static void WriteVertexBufferSlots(FILE *file, const BindingEvent &event)
+void DX12BindingFrameExport::WriteVertexBufferSlots(FILE *file, const BindingEvent &event)
 {
 	bool first = true;
 	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
@@ -118,7 +118,7 @@ static void WriteVertexBufferSlots(FILE *file, const BindingEvent &event)
 	}
 }
 
-static std::string ResourceRefsForEvent(
+std::string DX12BindingFrameExport::ResourceRefsForEvent(
 	const BindingEvent &event,
 	const std::vector<DX12DescriptorHeapSummary> &heaps,
 	const std::unordered_map<SIZE_T, const DX12DescriptorSummary*> &descriptorsByCpuHandle)
@@ -130,20 +130,16 @@ static std::string ResourceRefsForEvent(
 	const bool hasRootSignature =
 		DX12BindingTrackerUtils::GetRootSignatureForEvent(event, dispatch, &rootSignature);
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
-		struct TableRef {
-			const char *space;
-			const RootTableState &table;
-			UINT heapType;
-		};
-		const TableRef tables[] = { dispatch ?
-			TableRef{ "c", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV } :
-			TableRef{ "g", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV },
+		const DX12BindingTableRef tables[] = {
 			dispatch ?
-			TableRef{ "cs", event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER } :
-			TableRef{ "gs", event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER },
+				DX12BindingTableRef{ "c", &event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV } :
+				DX12BindingTableRef{ "g", &event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV },
+			dispatch ?
+				DX12BindingTableRef{ "cs", &event.computeTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER } :
+				DX12BindingTableRef{ "gs", &event.graphicsTables[i], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER },
 		};
-		for (const TableRef &entry : tables) {
-			if (!entry.table.valid)
+		for (const DX12BindingTableRef &entry : tables) {
+			if (!entry.table->valid)
 				continue;
 			const DX12RootParameterSummary *parameter =
 				hasRootSignature ? DX12BindingTrackerUtils::FindRootParameter(rootSignature, i) : nullptr;
@@ -154,10 +150,10 @@ static std::string ResourceRefsForEvent(
 				if (DX12BindingTrackerUtils::HeapTypeForDescriptorRange(range.rangeType) != entry.heapType)
 					continue;
 				const DX12DescriptorHeapSummary *heap =
-					DX12BindingTrackerUtils::FindHeapForTableRange(heaps, entry.table, &range, entry.heapType);
+					DX12BindingTrackerUtils::FindHeapForTableRange(heaps, *entry.table, &range, entry.heapType);
 				if (!heap)
 					continue;
-				const UINT64 tableBase = (entry.table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
+				const UINT64 tableBase = (entry.table->baseDescriptor.ptr - heap->gpuStart) / heap->increment;
 				const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBase, range);
 				for (UINT offset = 0; offset < count; ++offset) {
 					const UINT64 descriptorIndex = tableBase + range.effectiveOffset + offset;
@@ -170,7 +166,7 @@ static std::string ResourceRefsForEvent(
 					char key[160];
 					sprintf_s(key, "%s%u:%u:%u:%llu:%p",
 						entry.space,
-						entry.table.rootParameterIndex,
+						entry.table->rootParameterIndex,
 						range.rangeType,
 						range.baseShaderRegister + offset,
 						static_cast<unsigned long long>(descriptorIndex),
@@ -187,7 +183,7 @@ static std::string ResourceRefsForEvent(
 	return refs;
 }
 
-static const char *TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology)
+const char *DX12BindingFrameExport::TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	switch (topology) {
 	case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
@@ -205,55 +201,7 @@ static const char *TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology)
 	}
 }
 
-class FlatBufferRow
-{
-public:
-	std::string id;
-	std::string role;
-	std::string skinningClass;
-	UINT64 eventSerial = 0;
-	UINT64 drawId = 0;
-	UINT64 dispatchId = 0;
-	UINT64 psoIndex = 0;
-	DX12PsoShaderInfo shaderInfo = {};
-	UINT64 producerEventSerial = 0;
-	UINT64 producerDrawId = 0;
-	UINT64 producerDispatchId = 0;
-	UINT64 producerPsoIndex = 0;
-	DX12PsoShaderInfo producerShaderInfo = {};
-	std::string producerBindSpace;
-	UINT producerRootParameterIndex = 0;
-	UINT producerShaderRegister = UINT_MAX;
-	UINT64 gpuVa = 0;
-	UINT64 size = 0;
-	UINT64 viewGpuVa = 0;
-	UINT64 viewSize = 0;
-	UINT64 viewOffset = 0;
-	UINT stride = 0;
-	UINT slot = 0;
-	UINT format = 0;
-	uint32_t huntHash = 0;
-	bool resolved = false;
-	DX12BufferResourceSummary resource = {};
-};
-
-class BufferProducer
-{
-public:
-	UINT64 eventSerial = 0;
-	UINT64 drawId = 0;
-	UINT64 dispatchId = 0;
-	UINT64 psoIndex = 0;
-	DX12PsoShaderInfo shaderInfo = {};
-	std::string bindSpace;
-	UINT rootParameterIndex = 0;
-	UINT shaderRegister = UINT_MAX;
-	ID3D12Resource *resource = nullptr;
-	UINT64 begin = 0;
-	UINT64 end = 0;
-};
-
-static std::string MakeBufferKey(const char *role, uint32_t huntHash)
+std::string DX12BindingFrameExport::MakeBufferKey(const char *role, uint32_t huntHash)
 {
 	char key[128];
 	sprintf_s(key, "%s|%08x",
@@ -262,7 +210,7 @@ static std::string MakeBufferKey(const char *role, uint32_t huntHash)
 	return key;
 }
 
-static std::string NextBufferId(const char *prefix, UINT *nextId)
+std::string DX12BindingFrameExport::NextBufferId(const char *prefix, UINT *nextId)
 {
 	char id[32];
 	const UINT value = nextId ? ++(*nextId) : 0;
@@ -270,7 +218,7 @@ static std::string NextBufferId(const char *prefix, UINT *nextId)
 	return id;
 }
 
-static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event)
+DX12IaRegionDraw DX12BindingFrameExport::IaRegionDrawFromEvent(const BindingEvent &event)
 {
 	return DX12IaRegionDraw::FromDrawArguments(
 		event.kind == "draw_indexed",
@@ -281,13 +229,13 @@ static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event)
 		event.baseVertexLocation);
 }
 
-static bool IaRegionForEvent(
+bool DX12BindingFrameExport::IaRegionForEvent(
 	const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region)
 {
 	if (!region || !DX12BindingTrackerUtils::IsDrawEvent(event))
 		return false;
 	*region = DX12IaRegion();
-	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
+	DX12IaRegionDraw draw = DX12BindingFrameExport::IaRegionDrawFromEvent(event);
 	if (role && !strcmp(role, "IB")) {
 		if (!draw.indexed || !event.indexBufferValid)
 			return false;
@@ -298,9 +246,9 @@ static bool IaRegionForEvent(
 	return region->SetFromVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
-static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot)
+uint32_t DX12BindingFrameExport::IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot)
 {
-	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
+	DX12IaRegionDraw draw = DX12BindingFrameExport::IaRegionDrawFromEvent(event);
 	if (role && !strcmp(role, "IB"))
 		return draw.indexed && event.indexBufferValid ?
 			DX12IaRegion::HashIndexBufferView(event.indexBuffer, draw) : 0;
@@ -309,7 +257,7 @@ static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role
 	return DX12IaRegion::HashVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
-static const FlatBufferRow *GetOrAddBufferRow(
+const FlatBufferRow *DX12BindingFrameExport::GetOrAddBufferRow(
 	std::vector<FlatBufferRow> *rows, std::unordered_map<std::string, size_t> *rowByKey,
 	UINT *nextVbId, UINT *nextIbId, const BindingEvent &event, const char *role,
 	UINT slot)
@@ -318,7 +266,7 @@ static const FlatBufferRow *GetOrAddBufferRow(
 		return nullptr;
 
 	DX12IaRegion region = {};
-	if (!IaRegionForEvent(event, role, slot, &region))
+	if (!DX12BindingFrameExport::IaRegionForEvent(event, role, slot, &region))
 		return nullptr;
 	const bool ib = role && !strcmp(role, "IB");
 	const D3D12_VERTEX_BUFFER_VIEW &vb = event.vertexBuffers[slot];
@@ -330,16 +278,16 @@ static const FlatBufferRow *GetOrAddBufferRow(
 	const UINT64 dumpSize = ib ? region.size : viewSize;
 	DX12BufferResourceSummary resource;
 	const bool resolved = DX12ResolveBufferResourceByGpuVa(dumpGpuVa, dumpSize, &resource);
-	const uint32_t huntHash = IaRegionHashForEvent(event, role, slot);
+	const uint32_t huntHash = DX12BindingFrameExport::IaRegionHashForEvent(event, role, slot);
 	if (!huntHash)
 		return nullptr;
-	std::string key = MakeBufferKey(role, huntHash);
+	std::string key = DX12BindingFrameExport::MakeBufferKey(role, huntHash);
 	auto found = rowByKey->find(key);
 	if (found != rowByKey->end() && found->second < rows->size())
 		return &(*rows)[found->second];
 
 	FlatBufferRow row;
-	row.id = NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
+	row.id = DX12BindingFrameExport::NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
 		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
 	row.role = role ? role : "";
 	row.eventSerial = event.serial;
@@ -366,7 +314,7 @@ static const FlatBufferRow *GetOrAddBufferRow(
 	return &rows->back();
 }
 
-static std::string BufferIdsForEvent(
+std::string DX12BindingFrameExport::BufferIdsForEvent(
 	const BindingEvent &event, std::vector<FlatBufferRow> *rows,
 	std::unordered_map<std::string, size_t> *rowByKey, UINT *nextVbId, UINT *nextIbId)
 {
@@ -374,7 +322,7 @@ static std::string BufferIdsForEvent(
 	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 		if (!event.vertexBufferValid[slot])
 			continue;
-		const FlatBufferRow *row = GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
+		const FlatBufferRow *row = DX12BindingFrameExport::GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
 			event, "VB", slot);
 		if (!row)
 			continue;
@@ -387,7 +335,7 @@ static std::string BufferIdsForEvent(
 	return ids;
 }
 
-static std::string IndexBufferIdForEvent(
+std::string DX12BindingFrameExport::IndexBufferIdForEvent(
 	const BindingEvent &event, std::vector<FlatBufferRow> *rows,
 	std::unordered_map<std::string, size_t> *rowByKey, UINT *nextVbId, UINT *nextIbId)
 {
@@ -395,12 +343,12 @@ static std::string IndexBufferIdForEvent(
 		event.indexBuffer.SizeInBytes == 0)
 		return "";
 
-	const FlatBufferRow *row = GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
+	const FlatBufferRow *row = DX12BindingFrameExport::GetOrAddBufferRow(rows, rowByKey, nextVbId, nextIbId,
 		event, "IB", 0);
 	return row ? row->id : "";
 }
 
-static void CollectFlatBuffersForEvents(
+void DX12BindingFrameExport::CollectFlatBuffersForEvents(
 	const std::vector<BindingEvent> &events, std::vector<FlatBufferRow> *buffers)
 {
 	if (!buffers)
@@ -413,12 +361,12 @@ static void CollectFlatBuffersForEvents(
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingTrackerUtils::IsDrawEvent(event) && !DX12BindingTrackerUtils::IsDispatchEvent(event))
 			continue;
-		BufferIdsForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
-		IndexBufferIdForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
+		DX12BindingFrameExport::BufferIdsForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
+		DX12BindingFrameExport::IndexBufferIdForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
 	}
 }
 
-static void AddFrameIaBufferRow(
+void DX12BindingFrameExport::AddFrameIaBufferRow(
 	std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId,
 	const BindingEvent &event, const char *role, UINT slot)
 {
@@ -426,9 +374,9 @@ static void AddFrameIaBufferRow(
 		return;
 
 	DX12IaRegion region = {};
-	if (!IaRegionForEvent(event, role, slot, &region))
+	if (!DX12BindingFrameExport::IaRegionForEvent(event, role, slot, &region))
 		return;
-	const uint32_t huntHash = IaRegionHashForEvent(event, role, slot);
+	const uint32_t huntHash = DX12BindingFrameExport::IaRegionHashForEvent(event, role, slot);
 	if (!huntHash)
 		return;
 	const bool ib = role && !strcmp(role, "IB");
@@ -438,7 +386,7 @@ static void AddFrameIaBufferRow(
 	const UINT64 dumpGpuVa = ib ? region.gpuVa : viewGpuVa;
 	const UINT64 dumpSize = ib ? region.size : viewSize;
 	FlatBufferRow row;
-	row.id = NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
+	row.id = DX12BindingFrameExport::NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
 		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
 	row.role = role ? role : "";
 	row.eventSerial = event.serial;
@@ -459,7 +407,7 @@ static void AddFrameIaBufferRow(
 	rows->push_back(row);
 }
 
-static void CollectFrameIaBuffersForEvents(
+void DX12BindingFrameExport::CollectFrameIaBuffersForEvents(
 	const std::vector<BindingEvent> &events, std::vector<FlatBufferRow> *buffers)
 {
 	if (!buffers)
@@ -474,15 +422,15 @@ static void CollectFrameIaBuffersForEvents(
 		for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 			if (!event.vertexBufferValid[slot])
 				continue;
-			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "VB", slot);
+			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "VB", slot);
 		}
 		if (event.indexBufferValid) {
-			AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "IB", 0);
+			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "IB", 0);
 		}
 	}
 }
 
-static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSize)
+bool DX12BindingFrameExport::RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSize)
 {
 	if (aSize == 0 || bSize == 0)
 		return false;
@@ -493,7 +441,7 @@ static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSi
 	return aBegin < bEnd && bBegin < aEnd;
 }
 
-static bool BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding)
+bool DX12BindingFrameExport::BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding)
 {
 	if (!binding.usageClass.empty())
 		return binding.usageClass == "UAV" &&
@@ -514,7 +462,7 @@ static bool BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding)
 	return true;
 }
 
-static BufferProducer ProducerFromBinding(const DX12FrameResourceBinding &binding)
+BufferProducer DX12BindingFrameExport::ProducerFromBinding(const DX12FrameResourceBinding &binding)
 {
 	BufferProducer producer;
 	producer.eventSerial = binding.eventSerial;
@@ -560,7 +508,7 @@ static BufferProducer ProducerFromBinding(const DX12FrameResourceBinding &bindin
 	return producer;
 }
 
-static const BufferProducer *FindLatestProducerForBuffer(
+const BufferProducer *DX12BindingFrameExport::FindLatestProducerForBuffer(
 	const FlatBufferRow &row, const std::vector<BufferProducer> &producers)
 {
 	if (row.role != "VB" || !row.resolved || !row.resource.resource)
@@ -572,7 +520,7 @@ static const BufferProducer *FindLatestProducerForBuffer(
 			continue;
 		if (producer.resource != row.resource.resource)
 			continue;
-		if (!RangesOverlap(row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin))
+		if (!DX12BindingFrameExport::RangesOverlap(row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin))
 			continue;
 		if (!best || producer.eventSerial > best->eventSerial)
 			best = &producer;
@@ -580,7 +528,7 @@ static const BufferProducer *FindLatestProducerForBuffer(
 	return best;
 }
 
-static void ClassifyIaBufferSkinning(
+void DX12BindingFrameExport::ClassifyIaBufferSkinning(
 	std::vector<FlatBufferRow> *buffers,
 	const std::vector<DX12FrameResourceBinding> &resourceBindings)
 {
@@ -589,9 +537,9 @@ static void ClassifyIaBufferSkinning(
 
 	std::vector<BufferProducer> producers;
 	for (const DX12FrameResourceBinding &binding : resourceBindings) {
-		if (!BindingIsUavBufferProducer(binding))
+		if (!DX12BindingFrameExport::BindingIsUavBufferProducer(binding))
 			continue;
-		BufferProducer producer = ProducerFromBinding(binding);
+		BufferProducer producer = DX12BindingFrameExport::ProducerFromBinding(binding);
 		if (producer.begin == producer.end)
 			continue;
 		producers.push_back(std::move(producer));
@@ -603,7 +551,7 @@ static void ClassifyIaBufferSkinning(
 			continue;
 		}
 
-		const BufferProducer *producer = FindLatestProducerForBuffer(row, producers);
+		const BufferProducer *producer = DX12BindingFrameExport::FindLatestProducerForBuffer(row, producers);
 		if (producer) {
 			row.skinningClass = "gpu_preskinning";
 			row.producerEventSerial = producer->eventSerial;
@@ -622,7 +570,7 @@ static void ClassifyIaBufferSkinning(
 	}
 }
 
-static DX12FrameIaBufferBinding FrameIaBufferFromFlatRow(const FlatBufferRow &row)
+DX12FrameIaBufferBinding DX12BindingFrameExport::FrameIaBufferFromFlatRow(const FlatBufferRow &row)
 {
 	DX12FrameIaBufferBinding buffer;
 	buffer.bufferId = row.id;
@@ -666,7 +614,7 @@ void DX12BindingFrameExport::BuildIaBufferFileName(
 	const wchar_t eventKind = buffer.dispatchId ? L'c' : L'd';
 	const UINT64 eventId = buffer.dispatchId ? buffer.dispatchId : buffer.drawId;
 	wchar_t shaderPart[96];
-	BuildShaderHashNamePart(buffer.shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
+	DX12BindingFrameExport::BuildShaderHashNamePart(buffer.shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
 	swprintf_s(fileName, fileNameCount,
 		L"%c%06llu-pso%llu%s-ia_%S_slot%u_hash%08x_va%016llx_off%llu_size%llu_stride%u_fmt%u.buf",
 		eventKind,
@@ -695,28 +643,28 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBuf
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 
 	std::vector<FlatBufferRow> rows;
-	CollectFrameIaBuffersForEvents(events, &rows);
+	DX12BindingFrameExport::CollectFrameIaBuffersForEvents(events, &rows);
 	std::vector<DX12FrameResourceBinding> resourceBindings;
 	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
-	ClassifyIaBufferSkinning(&rows, resourceBindings);
+	DX12BindingFrameExport::ClassifyIaBufferSkinning(&rows, resourceBindings);
 
 	buffers->clear();
 	buffers->reserve(rows.size());
 	for (const FlatBufferRow &row : rows)
-		buffers->push_back(FrameIaBufferFromFlatRow(row));
+		buffers->push_back(DX12BindingFrameExport::FrameIaBufferFromFlatRow(row));
 
 	DX12FrameAnalysis::LogJsonFunc("IaBufferStage",
 		"\"events\":%zu,\"buffers\":%zu",
 		events.size(), buffers->size());
 }
 
-static void WriteOptionalHash(FILE *file, bool hasHash, UINT64 hash)
+void DX12BindingFrameExport::WriteOptionalHash(FILE *file, bool hasHash, UINT64 hash)
 {
 	if (hasHash)
 		fprintf(file, "%016llx", static_cast<unsigned long long>(hash));
 }
 
-static void WriteFlatFrameAnalysisFiles(
+void DX12BindingFrameExport::WriteFlatFrameAnalysisFiles(
 	const wchar_t *dir, const std::vector<BindingEvent> &events, UINT64 droppedEvents)
 {
 	if (!dir)
@@ -750,11 +698,11 @@ static void WriteFlatFrameAnalysisFiles(
 			if (!DX12BindingTrackerUtils::IsDrawEvent(event) && !DX12BindingTrackerUtils::IsDispatchEvent(event))
 				continue;
 
-			std::string vbSlots = BufferIdsForEvent(
+			std::string vbSlots = DX12BindingFrameExport::BufferIdsForEvent(
 				event, &buffers, &bufferByKey, &nextVbId, &nextIbId);
-			std::string ibResource = IndexBufferIdForEvent(
+			std::string ibResource = DX12BindingFrameExport::IndexBufferIdForEvent(
 				event, &buffers, &bufferByKey, &nextVbId, &nextIbId);
-			std::string resourceRefs = ResourceRefsForEvent(event, heaps, descriptorsByCpuHandle);
+			std::string resourceRefs = DX12BindingFrameExport::ResourceRefsForEvent(event, heaps, descriptorsByCpuHandle);
 
 			if (DX12BindingTrackerUtils::IsDrawEvent(event))
 				drawRows++;
@@ -769,14 +717,14 @@ static void WriteFlatFrameAnalysisFiles(
 				event.commandList,
 				event.pipelineState,
 				static_cast<unsigned long long>(event.shaderInfo.psoIndex));
-			WriteOptionalHash(drawFile, event.shaderInfo.hasVS, event.shaderInfo.vs);
+			DX12BindingFrameExport::WriteOptionalHash(drawFile, event.shaderInfo.hasVS, event.shaderInfo.vs);
 			fprintf(drawFile, ",");
-			WriteOptionalHash(drawFile, event.shaderInfo.hasPS, event.shaderInfo.ps);
+			DX12BindingFrameExport::WriteOptionalHash(drawFile, event.shaderInfo.hasPS, event.shaderInfo.ps);
 			fprintf(drawFile, ",");
-			WriteOptionalHash(drawFile, event.shaderInfo.hasCS, event.shaderInfo.cs);
+			DX12BindingFrameExport::WriteOptionalHash(drawFile, event.shaderInfo.hasCS, event.shaderInfo.cs);
 			fprintf(drawFile,
 				",%s,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%s,%s,%s\n",
-				TopologyName(event.primitiveTopology),
+				DX12BindingFrameExport::TopologyName(event.primitiveTopology),
 				event.vertexCountPerInstance,
 				event.indexCountPerInstance,
 				event.startVertexLocation,
@@ -806,7 +754,7 @@ static void WriteFlatFrameAnalysisFiles(
 	if (bufferFile) {
 		std::vector<DX12FrameResourceBinding> resourceBindings;
 		DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
-		ClassifyIaBufferSkinning(&buffers, resourceBindings);
+		DX12BindingFrameExport::ClassifyIaBufferSkinning(&buffers, resourceBindings);
 		fprintf(bufferFile,
 			"buffer_id,role,hunt_hash,resource,file,gpu_va,resource_gpu_va,offset,size,view_gpu_va,view_size,view_offset,stride,slot,format,"
 			"resolved,current_state,has_current_state,heap_type,resource_size,skin_source,"
@@ -814,7 +762,7 @@ static void WriteFlatFrameAnalysisFiles(
 			"producer_root,producer_reg\n");
 		for (const FlatBufferRow &row : buffers) {
 			UINT64 resourceSize = row.resource.hasResourceDesc ? row.resource.resourceDesc.Width : 0;
-			DX12FrameIaBufferBinding iaBuffer = FrameIaBufferFromFlatRow(row);
+			DX12FrameIaBufferBinding iaBuffer = DX12BindingFrameExport::FrameIaBufferFromFlatRow(row);
 			wchar_t fileName[MAX_PATH];
 			DX12BindingFrameExport::BuildIaBufferFileName(iaBuffer, fileName, ARRAYSIZE(fileName));
 			fprintf(bufferFile,
@@ -934,12 +882,13 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 		"\"events\":%zu,\"dropped\":%llu",
 		events.size(), static_cast<unsigned long long>(droppedEvents));
 
-	WriteFlatFrameAnalysisFiles(dir, events, droppedEvents);
+	DX12BindingFrameExport::WriteFlatFrameAnalysisFiles(dir, events, droppedEvents);
 	result.ok = true;
 	result.written = events.size();
 	result.skipped = static_cast<size_t>(droppedEvents);
 	return result;
 }
+
 
 
 

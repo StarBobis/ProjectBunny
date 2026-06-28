@@ -2,7 +2,7 @@
 
 #include <d3d12.h>
 
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 
 typedef void(STDMETHODCALLTYPE *DX12DispatchHookFlowDispatch)(
 	ID3D12GraphicsCommandList*, UINT, UINT, UINT);
@@ -14,3 +14,4 @@ void DX12DispatchHookFlowExecute(
 	UINT threadGroupCountZ,
 	const DX12CommandListRuntimeState *runtimeState,
 	DX12DispatchHookFlowDispatch originalDispatch);
+

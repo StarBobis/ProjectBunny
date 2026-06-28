@@ -18,3 +18,4 @@ void DX12DrawHookFlowExecute(
 		return;
 	DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 }
+

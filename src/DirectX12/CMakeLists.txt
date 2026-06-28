@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
@@ -6,9 +6,6 @@ add_library(DirectX12 SHARED
     D3D12Wrapper.cpp
 
     # Core
-    core/DX12Runtime.cpp
-    core/DX12Input.cpp
-    core/DX12Overlay.cpp
 
     # UI
     ui/DX12NativeOverlay.cpp
@@ -111,4 +108,5 @@ target_compile_definitions(DirectX12 PRIVATE
 
 set_target_msvc_options(DirectX12)
 set_target_common_definitions(DirectX12)
+
 

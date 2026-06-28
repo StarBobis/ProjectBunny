@@ -1,8 +1,6 @@
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 
-#include <unordered_map>
-
-#include "DX12CommandListStateCapture.h"
+#include "DX12CommandListStateCapture.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.h"
@@ -11,198 +9,173 @@
 #include "DX12ShaderHunt.h"
 
 
-namespace {
+DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
+volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
+thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
 
-constexpr size_t kRuntimeShardCount = 64;
-
-struct RuntimeShard {
-	SRWLOCK lock = SRWLOCK_INIT;
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState> states;
-};
-
-RuntimeShard gRuntimeShards[kRuntimeShardCount];
-
-static volatile UINT64 gTrackingGeneration = 1;
-
-inline RuntimeShard &ShardFor(ID3D12GraphicsCommandList *commandList)
+DX12CommandListRuntimeShard &DX12CommandListRuntime::ShardFor(ID3D12GraphicsCommandList *commandList)
 {
 	uintptr_t key = reinterpret_cast<uintptr_t>(commandList);
 	key ^= key >> 7;
 	key *= 0x9e3779b97f4a7c15ull;
-	return gRuntimeShards[(key >> 17) & (kRuntimeShardCount - 1)];
+	return Shards[(key >> 17) & (kRuntimeShardCount - 1)];
 }
 
-static void RefreshTrackingCache(DX12CommandListTrackingCache &cache)
+void DX12CommandListRuntime::RefreshTrackingCache(DX12CommandListTrackingCache &cache)
 {
-	cache.generation = gTrackingGeneration;
-	cache.trackBindings = DX12CommandListCaptureShouldTrackBindings();
-	cache.recordBindingEvents = DX12CommandListCaptureShouldRecordBindingEvents();
-	cache.trackHuntIa = DX12CommandListCaptureShouldTrackHuntIa();
-	cache.trackPsoState = DX12CommandListCaptureShouldTrackPsoState();
+	cache.generation = TrackingGenerationValue;
+	cache.trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+	cache.recordBindingEvents = DX12CommandListStateCapture::ShouldRecordBindingEvents();
+	cache.trackHuntIa = DX12CommandListStateCapture::ShouldTrackHuntIa();
+	cache.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
 }
 
-
-struct ThreadLocalRuntimeCache {
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	RuntimeShard *shard = nullptr;
-
-	UINT64 trackingGeneration = 0;
-	DX12CommandListTrackingCache tracking;
-
-	DX12CommandListRuntimeState *statePtr = nullptr;
-};
-
-static thread_local ThreadLocalRuntimeCache tls;
-
-static void TlsRefresh(RuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
 {
 	auto it = shard.states.find(commandList);
 	if (it == shard.states.end()) {
-		tls.commandList = nullptr;
-		tls.shard = nullptr;
-		tls.statePtr = nullptr;
-		tls.trackingGeneration = 0;
+		Tls.commandList = nullptr;
+		Tls.shard = nullptr;
+		Tls.statePtr = nullptr;
+		Tls.trackingGeneration = 0;
 		return;
 	}
 
-	tls.commandList = commandList;
-	tls.shard = &shard;
-	tls.statePtr = &it->second;
-	tls.trackingGeneration = gTrackingGeneration;
+	Tls.commandList = commandList;
+	Tls.shard = &shard;
+	Tls.statePtr = &it->second;
+	Tls.trackingGeneration = TrackingGenerationValue;
 
 	DX12CommandListTrackingCache &mapCache = it->second.trackingCache;
-	if (mapCache.generation != gTrackingGeneration)
-		RefreshTrackingCache(mapCache);
-	tls.tracking = mapCache;
+	if (mapCache.generation != TrackingGenerationValue)
+		DX12CommandListRuntime::RefreshTrackingCache(mapCache);
+	Tls.tracking = mapCache;
 }
 
-static void GetTrackingCacheFast(
+void DX12CommandListRuntime::GetTrackingCacheFast(
 	ID3D12GraphicsCommandList *commandList,
 	DX12CommandListTrackingCache &out)
 {
-	if (tls.commandList == commandList && tls.trackingGeneration == gTrackingGeneration) {
-		out = tls.tracking;
+	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
+		out = Tls.tracking;
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	TlsRefresh(shard, commandList);
+	DX12CommandListRuntime::TlsRefresh(shard, commandList);
 	ReleaseSRWLockShared(&shard.lock);
 
-	if (tls.commandList == commandList)
-		out = tls.tracking;
+	if (Tls.commandList == commandList)
+		out = Tls.tracking;
 }
 
-static DX12CommandListRuntimeState *GetStatePtrFast(
+DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 	ID3D12GraphicsCommandList *commandList)
 {
-	if (tls.commandList == commandList && tls.trackingGeneration == gTrackingGeneration)
-		return tls.statePtr;
+	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue)
+		return Tls.statePtr;
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	TlsRefresh(shard, commandList);
+	DX12CommandListRuntime::TlsRefresh(shard, commandList);
 	ReleaseSRWLockShared(&shard.lock);
 
-	if (tls.commandList == commandList)
-		return tls.statePtr;
+	if (Tls.commandList == commandList)
+		return Tls.statePtr;
 	return nullptr;
 }
 
-static void TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList)
 {
-	if (tls.commandList == commandList)
-		tls.commandList = nullptr;
+	if (Tls.commandList == commandList)
+		Tls.commandList = nullptr;
 }
 
-}
-
-
-UINT64 DX12CommandListRuntimeTrackingGeneration()
+UINT64 DX12CommandListRuntime::TrackingGeneration()
 {
-	return gTrackingGeneration;
+	return TrackingGenerationValue;
 }
 
-void DX12CommandListRuntimeBumpTrackingGeneration()
+void DX12CommandListRuntime::BumpTrackingGeneration()
 {
-	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&gTrackingGeneration));
+	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&TrackingGenerationValue));
 }
 
-void DX12CommandListRuntimeRegister(ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::Register(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return;
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states.try_emplace(commandList);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeReset(
+void DX12CommandListRuntime::Reset(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState)
 {
 	if (!commandList)
 		return;
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
 	DX12CommandListTrackingCache oldCache = state.trackingCache;
 	state = DX12CommandListRuntimeState();
 	state.pipelineState = initialState;
 	state.trackingCache = oldCache;
-	RefreshTrackingCache(state.trackingCache);
+	DX12CommandListRuntime::RefreshTrackingCache(state.trackingCache);
 	ReleaseSRWLockExclusive(&shard.lock);
 
-	TlsInvalidateIfMatch(commandList);
+	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
-void DX12CommandListRuntimeRememberPipelineState(
+void DX12CommandListRuntime::RememberPipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
 	if (!commandList)
 		return;
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states[commandList].pipelineState = pipelineState;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeResetIa(ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		fastState->ia = DX12ActiveIaState();
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
 	state.ia = DX12ActiveIaState();
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeRememberIndexBuffer(
+void DX12CommandListRuntime::RememberIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		fastState->ia.hasIndexBuffer = view != nullptr;
 		fastState->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12ActiveIaState &state = shard.states[commandList].ia;
 	state.hasIndexBuffer = view != nullptr;
@@ -210,14 +183,14 @@ void DX12CommandListRuntimeRememberIndexBuffer(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeRememberVertexBuffers(
+void DX12CommandListRuntime::RememberVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12ActiveIaState &state = fastState->ia;
 		for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(state.vertexBuffers); ++i) {
@@ -229,7 +202,7 @@ void DX12CommandListRuntimeRememberVertexBuffers(
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12ActiveIaState &state = shard.states[commandList].ia;
 	for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(state.vertexBuffers); ++i) {
@@ -241,37 +214,37 @@ void DX12CommandListRuntimeRememberVertexBuffers(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeRememberPrimitiveTopology(
+void DX12CommandListRuntime::RememberPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		fastState->ia.primitiveTopology = topology;
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states[commandList].ia.primitiveTopology = topology;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntimeBumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		InterlockedIncrement64(
 			reinterpret_cast<volatile LONG64*>(&state->computeBindingSerial));
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end())
@@ -280,7 +253,7 @@ void DX12CommandListRuntimeBumpComputeBindingSerial(ID3D12GraphicsCommandList *c
 	ReleaseSRWLockShared(&shard.lock);
 }
 
-bool DX12CommandListRuntimeBuildIaHashState(
+bool DX12CommandListRuntime::BuildIaHashState(
 	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
 	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
 {
@@ -316,17 +289,17 @@ bool DX12CommandListRuntimeBuildIaHashState(
 	return state->hasIndexBuffer || !state->vertexBuffers.empty();
 }
 
-ID3D12PipelineState *DX12CommandListRuntimeGetPipelineState(
+ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return nullptr;
 
-	DX12CommandListRuntimeState *state = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state)
 		return state->pipelineState;
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	ID3D12PipelineState *result =
@@ -335,14 +308,14 @@ ID3D12PipelineState *DX12CommandListRuntimeGetPipelineState(
 	return result;
 }
 
-DX12CommandListRuntimeState DX12CommandListRuntimeGetState(
+DX12CommandListRuntimeState DX12CommandListRuntime::GetState(
 	ID3D12GraphicsCommandList *commandList)
 {
 	DX12CommandListRuntimeState result;
 	if (!commandList)
 		return result;
 
-	const DX12CommandListRuntimeState *state = DX12CommandListRuntimeGetStatePtr(commandList);
+	const DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtr(commandList);
 	if (state) {
 		result = *state;
 		return result;
@@ -350,57 +323,57 @@ DX12CommandListRuntimeState DX12CommandListRuntimeGetState(
 	return result;
 }
 
-const DX12CommandListRuntimeState *DX12CommandListRuntimeGetStatePtr(
+const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return nullptr;
-	return GetStatePtrFast(commandList);
+	return DX12CommandListRuntime::GetStatePtrFast(commandList);
 }
 
 
-bool DX12CommandListRuntimeGetTrackBindings(ID3D12GraphicsCommandList *commandList)
+bool DX12CommandListRuntime::GetTrackBindings(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
-		return DX12CommandListCaptureShouldTrackBindings();
+		return DX12CommandListStateCapture::ShouldTrackBindings();
 
 	DX12CommandListTrackingCache cache;
-	GetTrackingCacheFast(commandList, cache);
+	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
 	return cache.trackBindings;
 }
 
-bool DX12CommandListRuntimeGetRecordBindingEvents(ID3D12GraphicsCommandList *commandList)
+bool DX12CommandListRuntime::GetRecordBindingEvents(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
-		return DX12CommandListCaptureShouldRecordBindingEvents();
+		return DX12CommandListStateCapture::ShouldRecordBindingEvents();
 
 	DX12CommandListTrackingCache cache;
-	GetTrackingCacheFast(commandList, cache);
+	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
 	return cache.recordBindingEvents;
 }
 
-bool DX12CommandListRuntimeGetTrackHuntIa(ID3D12GraphicsCommandList *commandList)
+bool DX12CommandListRuntime::GetTrackHuntIa(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
-		return DX12CommandListCaptureShouldTrackHuntIa();
+		return DX12CommandListStateCapture::ShouldTrackHuntIa();
 
 	DX12CommandListTrackingCache cache;
-	GetTrackingCacheFast(commandList, cache);
+	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
 	return cache.trackHuntIa;
 }
 
-bool DX12CommandListRuntimeGetTrackPsoState(ID3D12GraphicsCommandList *commandList)
+bool DX12CommandListRuntime::GetTrackPsoState(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
-		return DX12CommandListCaptureShouldTrackPsoState();
+		return DX12CommandListStateCapture::ShouldTrackPsoState();
 
 	DX12CommandListTrackingCache cache;
-	GetTrackingCacheFast(commandList, cache);
+	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
 	return cache.trackPsoState;
 }
 
 
-void DX12CommandListRuntimeSetDescriptorHeaps(
+void DX12CommandListRuntime::SetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
@@ -408,14 +381,14 @@ void DX12CommandListRuntimeSetDescriptorHeaps(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		state->cbvSrvUavHeap = cbvSrvUavHeap;
 		state->samplerHeap = samplerHeap;
 		return;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -425,7 +398,7 @@ void DX12CommandListRuntimeSetDescriptorHeaps(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-bool DX12CommandListRuntimeGetDescriptorHeaps(
+bool DX12CommandListRuntime::GetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap **cbvSrvUavHeap,
 	ID3D12DescriptorHeap **samplerHeap)
@@ -437,7 +410,7 @@ bool DX12CommandListRuntimeGetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
-	DX12CommandListRuntimeState *state = GetStatePtrFast(commandList);
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		if (cbvSrvUavHeap)
 			*cbvSrvUavHeap = state->cbvSrvUavHeap;
@@ -446,7 +419,7 @@ bool DX12CommandListRuntimeGetDescriptorHeaps(
 		return true;
 	}
 
-	RuntimeShard &shard = ShardFor(commandList);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	bool found = false;
@@ -460,3 +433,5 @@ bool DX12CommandListRuntimeGetDescriptorHeaps(
 	ReleaseSRWLockShared(&shard.lock);
 	return found;
 }
+
+

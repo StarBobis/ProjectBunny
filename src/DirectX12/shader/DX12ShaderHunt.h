@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include "DX12CommandListRuntime.h"
+#include "DX12CommandListRuntime.hpp"
 
 enum DX12HuntListCategory
 {
@@ -64,3 +64,4 @@ size_t DX12HuntGetListItems(
 	DX12HuntListCategory category, DX12HuntListItem *items, size_t itemCount);
 void DX12HuntSelectListItem(DX12HuntListCategory category, size_t index);
 void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash);
+
