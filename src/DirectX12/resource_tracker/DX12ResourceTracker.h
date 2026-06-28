@@ -58,6 +58,12 @@ struct DescriptorKind {
 	static constexpr std::string_view RTV = "RTV";
 	static constexpr std::string_view DSV = "DSV";
 	static constexpr std::string_view Sampler = "Sampler";
+	static constexpr UINT CBV_ID = 1;
+	static constexpr UINT SRV_ID = 2;
+	static constexpr UINT UAV_ID = 3;
+	static constexpr UINT RTV_ID = 4;
+	static constexpr UINT DSV_ID = 5;
+	static constexpr UINT Sampler_ID = 6;
 	// Long-form names set by CreateShaderResourceView etc.
 	static constexpr std::string_view CONSTANT_BUFFER_VIEW = "CONSTANT_BUFFER_VIEW";
 	static constexpr std::string_view SHADER_RESOURCE_VIEW = "SHADER_RESOURCE_VIEW";
@@ -169,4 +175,6 @@ bool DX12FindDescriptorHeapByGpuHandle(
 bool DX12FindDescriptorHeapByCpuHandle(
 	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);
+void DX12BeginFrameAnalysisMetadataCache();
+void DX12EndFrameAnalysisMetadataCache();
 DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir);

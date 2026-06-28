@@ -58,6 +58,11 @@ void DX12UiRequestProfilingToggle() { RequestAction(DX12_UI_ACTION_PROFILING); }
 static void RunFrameAnalysisRequest()
 {
 	DX12LogJsonFunc("DX12UiAction", "\"action\":\"FrameAnalysisRequest\"");
+	if (!DX12IsHuntingMode()) {
+		DX12LogJsonFunc("FrameAnalysisBeginFailed", "\"reason\":\"requires_hunting_mode\"");
+		DX12SetOverlayWarning(L"Enable Hunting before Frame Dump");
+		return;
+	}
 	if (DX12FrameAnalysisBegin()) {
 		DX12FrameAnalysisLogJsonFunc("FrameAnalysisArmed", nullptr);
 		DX12FrameAnalysisRequestCapture();

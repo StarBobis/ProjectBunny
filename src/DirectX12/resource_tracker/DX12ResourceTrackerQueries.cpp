@@ -230,24 +230,23 @@ static void CompleteDescriptorSummaryResourceInfo(
 {
 	if (!summary || !summary->resource)
 		return;
-	if (!summary->hasResourceDesc) {
-		summary->resourceDesc = summary->resource->GetDesc();
-		summary->hasResourceDesc = true;
-		if (summary->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-			summary->gpuVirtualAddress == 0)
-			summary->gpuVirtualAddress = summary->resource->GetGPUVirtualAddress();
-	}
 
 	if (!resourceLockHeld)
 		AcquireSRWLockShared(&gResourceLock);
-	ID3D12Resource *canonical = CanonicalResource(summary->resource);
-	auto found = gResourceByPtr.find(canonical);
+	auto found = gResourceByPtr.find(summary->resource);
 	if (found == gResourceByPtr.end() || found->second >= gResources.size()) {
 		if (!resourceLockHeld)
 			ReleaseSRWLockShared(&gResourceLock);
 		return;
 	}
 	const ResourceRecord &resource = gResources[found->second];
+	if (!summary->hasResourceDesc) {
+		summary->resourceDesc = resource.desc;
+		summary->hasResourceDesc = true;
+		if (summary->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+			summary->gpuVirtualAddress == 0)
+			summary->gpuVirtualAddress = resource.gpuVirtualAddress;
+	}
 	if (!summary->hasResourceHeapType && resource.hasHeapType) {
 		summary->resourceHeapType = static_cast<UINT>(resource.heapType);
 		summary->hasResourceHeapType = true;
@@ -284,9 +283,9 @@ static void FillDescriptorSummary(
 	if (completeResourceInfo)
 		CompleteDescriptorSummaryResourceInfo(summary, resourceLockHeld);
 
-	if (record.kind == "CBV") {
+	if (record.kindId == DescriptorKind::CBV_ID) {
 		summary->cbvSize = record.cbv.SizeInBytes;
-	} else if (record.kind == "SRV" && record.hasDesc) {
+	} else if (record.kindId == DescriptorKind::SRV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.srv.Format);
 		summary->viewDimension = static_cast<UINT>(record.srv.ViewDimension);
 		if (record.srv.ViewDimension == D3D12_SRV_DIMENSION_BUFFER) {
@@ -296,7 +295,7 @@ static void FillDescriptorSummary(
 			summary->bufferViewOffset = record.resourceOffset;
 			summary->bufferViewBytes = record.viewSize;
 		}
-	} else if (record.kind == "UAV" && record.hasDesc) {
+	} else if (record.kindId == DescriptorKind::UAV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.uav.Format);
 		summary->viewDimension = static_cast<UINT>(record.uav.ViewDimension);
 		if (record.uav.ViewDimension == D3D12_UAV_DIMENSION_BUFFER) {
@@ -306,13 +305,60 @@ static void FillDescriptorSummary(
 			summary->bufferViewOffset = record.resourceOffset;
 			summary->bufferViewBytes = record.viewSize;
 		}
-	} else if (record.kind == "RTV" && record.hasDesc) {
+	} else if (record.kindId == DescriptorKind::RTV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.rtv.Format);
 		summary->viewDimension = static_cast<UINT>(record.rtv.ViewDimension);
-	} else if (record.kind == "DSV" && record.hasDesc) {
+	} else if (record.kindId == DescriptorKind::DSV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.dsv.Format);
 		summary->viewDimension = static_cast<UINT>(record.dsv.ViewDimension);
 	}
+}
+
+struct MetadataSnapshotCache
+{
+	bool enabled = false;
+	bool populated = false;
+	bool building = false;
+	std::vector<DX12RootSignatureSummary> rootSignatures;
+	std::vector<DX12DescriptorSummary> descriptors;
+	std::vector<DX12PsoRootSummary> psoRoots;
+	std::vector<DX12DescriptorHeapSummary> descriptorHeaps;
+};
+
+static thread_local MetadataSnapshotCache tMetadataSnapshotCache;
+
+static void CopyCachedMetadataSnapshot(
+	const MetadataSnapshotCache &cache,
+	std::vector<DX12RootSignatureSummary> *rootSignatures,
+	std::vector<DX12DescriptorSummary> *descriptors,
+	std::vector<DX12PsoRootSummary> *psoRoots,
+	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
+{
+	if (rootSignatures)
+		*rootSignatures = cache.rootSignatures;
+	if (descriptors)
+		*descriptors = cache.descriptors;
+	if (psoRoots)
+		*psoRoots = cache.psoRoots;
+	if (descriptorHeaps)
+		*descriptorHeaps = cache.descriptorHeaps;
+}
+
+static void BuildResourceMetadataSnapshot(
+	std::vector<DX12RootSignatureSummary> *rootSignatures,
+	std::vector<DX12DescriptorSummary> *descriptors,
+	std::vector<DX12PsoRootSummary> *psoRoots,
+	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps);
+
+void DX12BeginFrameAnalysisMetadataCache()
+{
+	tMetadataSnapshotCache = MetadataSnapshotCache();
+	tMetadataSnapshotCache.enabled = true;
+}
+
+void DX12EndFrameAnalysisMetadataCache()
+{
+	tMetadataSnapshotCache = MetadataSnapshotCache();
 }
 
 void DX12GetResourceMetadataSnapshot(
@@ -324,6 +370,41 @@ void DX12GetResourceMetadataSnapshot(
 }
 
 void DX12GetResourceMetadataSnapshot(
+	std::vector<DX12RootSignatureSummary> *rootSignatures,
+	std::vector<DX12DescriptorSummary> *descriptors,
+	std::vector<DX12PsoRootSummary> *psoRoots,
+	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
+{
+	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
+	if (cache.enabled && !cache.building) {
+		if (!cache.populated) {
+			cache.building = true;
+			// FrameAnalysis has several exporters that all need the same
+			// descriptor inventory. Build it once per dump thread; per-export
+			// million-slot rescans were the dominant F8 stall.
+			BuildResourceMetadataSnapshot(
+				&cache.rootSignatures, &cache.descriptors,
+				&cache.psoRoots, &cache.descriptorHeaps);
+			cache.building = false;
+			cache.populated = true;
+		}
+		CopyCachedMetadataSnapshot(
+			cache, rootSignatures, descriptors, psoRoots, descriptorHeaps);
+		DX12FrameAnalysisLogJsonFunc("MetadataSnapshotCacheHit",
+			"\"roots\":%zu,\"descriptors\":%zu,\"psoRoots\":%zu,\"heaps\":%zu,\"wantRoots\":%u,\"wantDescriptors\":%u,\"wantPsoRoots\":%u,\"wantHeaps\":%u",
+			cache.rootSignatures.size(), cache.descriptors.size(),
+			cache.psoRoots.size(), cache.descriptorHeaps.size(),
+			rootSignatures ? 1 : 0,
+			descriptors ? 1 : 0,
+			psoRoots ? 1 : 0,
+			descriptorHeaps ? 1 : 0);
+		return;
+	}
+
+	BuildResourceMetadataSnapshot(rootSignatures, descriptors, psoRoots, descriptorHeaps);
+}
+
+static void BuildResourceMetadataSnapshot(
 	std::vector<DX12RootSignatureSummary> *rootSignatures,
 	std::vector<DX12DescriptorSummary> *descriptors,
 	std::vector<DX12PsoRootSummary> *psoRoots,
@@ -349,23 +430,35 @@ void DX12GetResourceMetadataSnapshot(
 	size_t textureDescriptors = 0;
 	for (const DescriptorRecord *recordPtr : liveDescriptors) {
 		const DescriptorRecord &record = *recordPtr;
-		if (record.hasCurrentState)
+		bool hasCurrentState = record.hasCurrentState;
+		if (!hasCurrentState && record.resource) {
+			auto foundResource = gResourceByPtr.find(record.resource);
+			if (foundResource != gResourceByPtr.end() &&
+				foundResource->second < gResources.size()) {
+				hasCurrentState = gResources[foundResource->second].hasCurrentState;
+			}
+		}
+		if (hasCurrentState)
 			descriptorStateKnown++;
 		D3D12_RESOURCE_DESC resourceDesc = record.resourceDesc;
 		bool hasResourceDesc = record.hasResourceDesc;
 		if (!hasResourceDesc && record.resource) {
-			resourceDesc = record.resource->GetDesc();
-			hasResourceDesc = true;
+			auto foundResource = gResourceByPtr.find(record.resource);
+			if (foundResource != gResourceByPtr.end() &&
+				foundResource->second < gResources.size()) {
+				resourceDesc = gResources[foundResource->second].desc;
+				hasResourceDesc = true;
+			}
 		}
-		if (record.kind == DescriptorKind::CBV)
+		if (record.kindId == DescriptorKind::CBV_ID)
 			cbvDescriptors++;
-		else if (record.kind == DescriptorKind::SRV)
+		else if (record.kindId == DescriptorKind::SRV_ID)
 			srvDescriptors++;
-		else if (record.kind == DescriptorKind::UAV)
+		else if (record.kindId == DescriptorKind::UAV_ID)
 			uavDescriptors++;
-		else if (record.kind == DescriptorKind::RTV)
+		else if (record.kindId == DescriptorKind::RTV_ID)
 			rtvDescriptors++;
-		else if (record.kind == DescriptorKind::DSV)
+		else if (record.kindId == DescriptorKind::DSV_ID)
 			dsvDescriptors++;
 		if (hasResourceDesc &&
 			resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)

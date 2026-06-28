@@ -271,7 +271,7 @@ static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
 		return;
 	if (desc) {
 		DescriptorRecord record;
-		record.kind = "CBV";
+		SetDescriptorKind(&record, DescriptorKind::CBV_ID);
 		record.cpuHandle = destDescriptor.ptr;
 		record.cbv = *desc;
 		record.hasDesc = true;
@@ -299,7 +299,7 @@ static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
 	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
-	record.kind = "SRV";
+	SetDescriptorKind(&record, DescriptorKind::SRV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	FillResourcePointerInfo(&record, resource);
 	if (desc) {
@@ -334,7 +334,7 @@ static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
 	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
-	record.kind = "UAV";
+	SetDescriptorKind(&record, DescriptorKind::UAV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	record.counterResource = counterResource;
 	FillResourcePointerInfo(&record, resource);
@@ -363,7 +363,7 @@ static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
 	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
-	record.kind = "RTV";
+	SetDescriptorKind(&record, DescriptorKind::RTV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	FillResourcePointerInfo(&record, resource);
 	if (desc) {
@@ -390,7 +390,7 @@ static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
 	if (!ShouldTrackDescriptorCreationMetadata())
 		return;
 	DescriptorRecord record;
-	record.kind = "DSV";
+	SetDescriptorKind(&record, DescriptorKind::DSV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	FillResourcePointerInfo(&record, resource);
 	if (desc) {
@@ -418,7 +418,7 @@ static void STDMETHODCALLTYPE HookedCreateSampler(
 		return;
 	if (desc) {
 		DescriptorRecord record;
-		record.kind = "Sampler";
+		SetDescriptorKind(&record, DescriptorKind::Sampler_ID);
 		record.cpuHandle = destDescriptor.ptr;
 		record.sampler = *desc;
 		record.hasDesc = true;

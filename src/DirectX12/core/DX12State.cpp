@@ -68,6 +68,7 @@ volatile LONG gDX12HotPathSkipAll = 1;
 volatile LONG gDX12HotPathSkipBindings = 1;
 volatile LONG gDX12HotPathSkipGraphicsBindings = 1;
 volatile LONG gDX12HotPathTrackResourceMetadata = 0;
+static volatile LONG gDX12RuntimeMode = static_cast<LONG>(DX12RuntimeMode::Mod);
 static thread_local UINT tDX12InternalReplayDepth = 0;
 
 #if defined(_DEBUG)
@@ -92,6 +93,36 @@ bool DX12IsInternalReplay()
 	return tDX12InternalReplayDepth != 0;
 }
 
+DX12RuntimeMode DX12GetRuntimeMode()
+{
+	const LONG mode = InterlockedCompareExchange(&gDX12RuntimeMode, 0, 0);
+	return mode == static_cast<LONG>(DX12RuntimeMode::Hunting) ?
+		DX12RuntimeMode::Hunting : DX12RuntimeMode::Mod;
+}
+
+void DX12SetRuntimeMode(DX12RuntimeMode mode)
+{
+	const LONG value = mode == DX12RuntimeMode::Hunting ?
+		static_cast<LONG>(DX12RuntimeMode::Hunting) :
+		static_cast<LONG>(DX12RuntimeMode::Mod);
+	const LONG old = InterlockedExchange(&gDX12RuntimeMode, value);
+	if (old != value) {
+		DX12LogJsonFunc("DX12RuntimeMode",
+			"\"mode\":\"%s\"",
+			mode == DX12RuntimeMode::Hunting ? "Hunting" : "Mod");
+	}
+}
+
+bool DX12IsModMode()
+{
+	return DX12GetRuntimeMode() == DX12RuntimeMode::Mod;
+}
+
+bool DX12IsHuntingMode()
+{
+	return DX12GetRuntimeMode() == DX12RuntimeMode::Hunting;
+}
+
 void DX12HotPathUpdate()
 {
 	// Fast path: if already skipping all and no activity is present, avoid InterlockedExchange storm
@@ -108,16 +139,14 @@ void DX12HotPathUpdate()
 		!DX12ModNeedsPreSkinningUavProbe())
 		return;
 
+	const bool huntingMode = DX12IsHuntingMode();
 	const bool needsHeavyTracking =
-		DX12FrameAnalysisIsActive() ||
-		DX12FrameAnalysisIsCapturing() ||
-		DX12FrameAnalysisIsCaptureRequested() ||
+		huntingMode ||
 		DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() ||
 		DX12ShaderDumpIsBusy();
 
 	const bool needsRecordWork =
-		DX12HuntNeedsHotPath() ||
+		huntingMode ||
 		DX12ModHasActiveShaderOverrides() ||
 		DX12ModNeedsPresentReplacement() ||
 		DX12ModNeedsPreSkinningUavProbe();
@@ -132,7 +161,7 @@ void DX12HotPathUpdate()
 	const LONG skipBindings = needsBindingState ? 0 : 1;
 	const LONG skipGraphicsBindings = needsGraphicsBindingState ? 0 : 1;
 	const LONG trackResourceMetadata =
-		(needsHeavyTracking || DX12ModNeedsPreSkinningUavProbe()) ? 1 : 0;
+		needsHeavyTracking ? 1 : 0;
 
 	InterlockedExchange(&gDX12HotPathSkipAll, skipAll);
 	InterlockedExchange(&gDX12HotPathSkipBindings, skipBindings);
@@ -146,7 +175,8 @@ void DX12HotPathUpdate()
 		(trackResourceMetadata ? 8 : 0);
 	if (InterlockedExchange(&gHotPathStateMask, mask) != mask) {
 		DX12LogJsonFunc("DX12HotPathState",
-			"\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
+			"\"mode\":\"%s\",\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
+			huntingMode ? "Hunting" : "Mod",
 			skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata);
 	}
 }

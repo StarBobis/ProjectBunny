@@ -85,24 +85,24 @@ static UINT64 HashDescriptorValue(const DescriptorRecord &record)
 			hash *= 1099511628211ull;
 		}
 	};
-	append(record.kind.data(), record.kind.size());
+	append(&record.kindId, sizeof(record.kindId));
 	append(&record.resource, sizeof(record.resource));
 	append(&record.counterResource, sizeof(record.counterResource));
 	append(&record.gpuVirtualAddress, sizeof(record.gpuVirtualAddress));
 	append(&record.resourceOffset, sizeof(record.resourceOffset));
 	append(&record.viewSize, sizeof(record.viewSize));
 	append(&record.hasDesc, sizeof(record.hasDesc));
-	if (record.kind == DescriptorKind::CBV) {
+	if (record.kindId == DescriptorKind::CBV_ID) {
 		append(&record.cbv, sizeof(record.cbv));
-	} else if (record.kind == DescriptorKind::SRV) {
+	} else if (record.kindId == DescriptorKind::SRV_ID) {
 		append(&record.srv, sizeof(record.srv));
-	} else if (record.kind == DescriptorKind::UAV) {
+	} else if (record.kindId == DescriptorKind::UAV_ID) {
 		append(&record.uav, sizeof(record.uav));
-	} else if (record.kind == DescriptorKind::RTV) {
+	} else if (record.kindId == DescriptorKind::RTV_ID) {
 		append(&record.rtv, sizeof(record.rtv));
-	} else if (record.kind == DescriptorKind::DSV) {
+	} else if (record.kindId == DescriptorKind::DSV_ID) {
 		append(&record.dsv, sizeof(record.dsv));
-	} else if (record.kind == DescriptorKind::Sampler) {
+	} else if (record.kindId == DescriptorKind::Sampler_ID) {
 		append(&record.sampler, sizeof(record.sampler));
 	}
 	return hash ? hash : 1;
@@ -154,6 +154,22 @@ D3D12_RESOURCE_STATES ResourceStateFromLayout(D3D12_BARRIER_LAYOUT layout)
 		return D3D12_RESOURCE_STATE_RESOLVE_DEST;
 	default:
 		return D3D12_RESOURCE_STATE_COMMON;
+	}
+}
+
+void SetDescriptorKind(DescriptorRecord *record, UINT kindId)
+{
+	if (!record)
+		return;
+	record->kindId = kindId;
+	switch (kindId) {
+	case DescriptorKind::CBV_ID: record->kind = "CBV"; break;
+	case DescriptorKind::SRV_ID: record->kind = "SRV"; break;
+	case DescriptorKind::UAV_ID: record->kind = "UAV"; break;
+	case DescriptorKind::RTV_ID: record->kind = "RTV"; break;
+	case DescriptorKind::DSV_ID: record->kind = "DSV"; break;
+	case DescriptorKind::Sampler_ID: record->kind = "Sampler"; break;
+	default: record->kind.clear(); break;
 	}
 }
 
@@ -739,29 +755,6 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gPsoRootRecordsSeen));
 }
 
-static void UpdateDescriptorResourceStateLocked(
-	ID3D12Resource *resource, D3D12_RESOURCE_STATES state, bool hasState)
-{
-	if (!resource)
-		return;
-
-	for (DescriptorRecord &descriptor : gDescriptors) {
-		if (descriptor.resource == resource) {
-			descriptor.currentState = state;
-			descriptor.hasCurrentState = hasState;
-		}
-	}
-	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
-		for (auto &slot : heap.slots) {
-			DescriptorRecord &descriptor = slot.second;
-			if (descriptor.resource == resource) {
-				descriptor.currentState = state;
-				descriptor.hasCurrentState = hasState;
-			}
-		}
-	}
-}
-
 static bool DescriptorSlotFromHeapLocked(
 	size_t heapIndex, SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable)
@@ -835,6 +828,15 @@ static bool FindLatestDescriptorAtSlotLocked(
 	return true;
 }
 
+static UINT64 DescriptorValueIdAtSlotLocked(const DescriptorSlotLocation &location)
+{
+	if (location.heapIndex >= gDescriptorHeaps.size())
+		return 0;
+	const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	auto slot = heap.slots.find(location.slot);
+	return slot == heap.slots.end() ? 0 : slot->second.valueId;
+}
+
 static void RecordDescriptorAtSlotLocked(
 	DescriptorRecord &&record, const DescriptorSlotLocation &location)
 {
@@ -894,8 +896,7 @@ void RecordDescriptor(DescriptorRecord &&record)
 
 bool ShouldTrackFullDescriptorMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathSkipBindings, 0, 0) == 0 ||
-		DX12HuntNeedsHotPath();
+	return DX12IsHuntingMode();
 }
 
 bool ShouldTrackComputeDescriptorMetadata()
@@ -910,7 +911,7 @@ bool ShouldTrackDescriptorCreationMetadata()
 
 bool ShouldTrackResourceMetadata()
 {
-	return InterlockedCompareExchange(&gDX12HotPathTrackResourceMetadata, 0, 0) != 0;
+	return DX12IsHuntingMode();
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)
@@ -986,6 +987,13 @@ void RecordDescriptorCopyRange(
 				if (srcInHeap) {
 					DescriptorSlotLocation currentSrc = srcLocation;
 					currentSrc.slot += i;
+					DescriptorSlotLocation currentDest = destLocation;
+					currentDest.slot += i;
+					const UINT64 srcValueId = DescriptorValueIdAtSlotLocked(currentSrc);
+					if (srcValueId && srcValueId == DescriptorValueIdAtSlotLocked(currentDest)) {
+						++gDescriptorCopyRecordsSeen;
+						continue;
+					}
 					found = FindLatestDescriptorAtSlotLocked(currentSrc, &copied);
 				} else {
 					const SIZE_T currentSrcHandle =
@@ -1046,7 +1054,6 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 		return;
 
 	AcquireSRWLockExclusive(&gResourceLock);
-	AcquireSRWLockExclusive(&gDescriptorLock);
 	bool resourceStateChanged = false;
 	for (UINT i = 0; i < numBarriers; ++i) {
 		const D3D12_RESOURCE_BARRIER &barrier = barriers[i];
@@ -1064,13 +1071,12 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
 			record.currentState = barrier.Transition.StateAfter;
 			record.hasCurrentState = true;
-			UpdateDescriptorResourceStateLocked(
-				record.resource, record.currentState, record.hasCurrentState);
 			resourceStateChanged = true;
 		} else {
+			// DX12 state is resource/subresource state, not descriptor state.
+			// Keep the hot path O(barriers); dump/query code joins descriptors
+			// with ResourceRecord when it needs a current state snapshot.
 			record.hasCurrentState = false;
-			UpdateDescriptorResourceStateLocked(
-				record.resource, record.currentState, record.hasCurrentState);
 			resourceStateChanged = true;
 		}
 	}
@@ -1078,6 +1084,5 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 		gBufferResolveCache.clear();
 		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 	}
-	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
 }

@@ -3,6 +3,12 @@
 #include <Windows.h>
 #include <d3d12.h>
 
+enum class DX12RuntimeMode : LONG
+{
+	Mod = 0,
+	Hunting = 1,
+};
+
 void DX12SetModule(HINSTANCE module);
 HINSTANCE DX12GetModule();
 
@@ -49,6 +55,11 @@ extern volatile LONG gDX12HotPathSkipAll;
 extern volatile LONG gDX12HotPathSkipBindings;
 extern volatile LONG gDX12HotPathSkipGraphicsBindings;
 extern volatile LONG gDX12HotPathTrackResourceMetadata;
+
+DX12RuntimeMode DX12GetRuntimeMode();
+void DX12SetRuntimeMode(DX12RuntimeMode mode);
+bool DX12IsModMode();
+bool DX12IsHuntingMode();
 
 // Per-vtable original function cache: maps vtable pointer → originals[256].
 // Populated during hook installation; read-only afterwards (no lock needed).

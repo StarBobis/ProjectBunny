@@ -721,8 +721,10 @@ void DX12HuntToggle()
 		gLastOverlayStatsFrame = gPresentFrames;
 		ReleaseSRWLockExclusive(&gHuntLock);
 		InterlockedExchange(&gHuntingActive, 1);
+		DX12SetRuntimeMode(DX12RuntimeMode::Hunting);
 	} else {
 		InterlockedExchange(&gHuntingActive, 0);
+		DX12SetRuntimeMode(DX12RuntimeMode::Mod);
 	}
 
 	DX12LogJsonFunc("DX12HuntToggle",

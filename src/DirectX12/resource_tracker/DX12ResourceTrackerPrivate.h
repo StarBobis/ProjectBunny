@@ -37,6 +37,7 @@ struct RootSignatureRecord
 struct DescriptorRecord
 {
 	std::string kind;
+	UINT kindId = 0;
 	UINT64 valueId = 0;
 	SIZE_T cpuHandle = 0;
 	ID3D12Resource *resource = nullptr;
@@ -144,6 +145,7 @@ void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_
 void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);
 void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
+void SetDescriptorKind(DescriptorRecord *record, UINT kindId);
 void FillSrvBufferView(DescriptorRecord *record);
 void FillUavBufferView(DescriptorRecord *record);
 void LogResourceTrackerStatsLocked();

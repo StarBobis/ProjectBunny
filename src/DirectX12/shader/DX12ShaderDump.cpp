@@ -1632,10 +1632,18 @@ void DX12DumpFrameAnalysis()
 		DX12FrameAnalysisLogJsonFunc("FrameAnalysisSummary", "%s", fields + 1);
 	}
 	DX12FrameAnalysisDumpResult bindingTrace = TryDumpBindingTrace(dir);
-	DX12FrameAnalysisDumpResult resourceTable = TryDumpCurrentFrameResourceTable(dir);
-	DX12FrameAnalysisDumpResult metadata = TryDumpResourceMetadata(dir);
-	bool psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
-	DX12FrameAnalysisDumpResult resourceFiles = TryDumpCurrentFrameResources(dir);
+	DX12BeginFrameAnalysisMetadataCache();
+	DX12FrameAnalysisDumpResult resourceTable;
+	DX12FrameAnalysisDumpResult metadata;
+	DX12FrameAnalysisDumpResult resourceFiles;
+	bool psoSummaryOk = false;
+	{
+		resourceTable = TryDumpCurrentFrameResourceTable(dir);
+		metadata = TryDumpResourceMetadata(dir);
+		psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
+		resourceFiles = TryDumpCurrentFrameResources(dir);
+	}
+	DX12EndFrameAnalysisMetadataCache();
 
 	DX12SetOverlayStatus(L"F8 frame analysis complete");
 	DX12LogJsonFunc("FrameAnalysisDumpComplete",
