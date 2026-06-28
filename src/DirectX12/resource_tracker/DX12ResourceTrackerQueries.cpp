@@ -100,7 +100,8 @@ bool DX12ResolveBufferResourceByGpuVa(
 			const ResourceRecord &resource = gResources[foundBuffer->second];
 			const UINT64 begin = resource.gpuVirtualAddress;
 			const UINT64 end = begin + resource.size;
-			if (resource.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+			if (resource.resource &&
+			    resource.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 			    begin != 0 && resource.size != 0 &&
 			    gpuVirtualAddress >= begin && requestedEnd <= end) {
 				summary->resource = resource.resource;
@@ -670,6 +671,8 @@ void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
 	AcquireSRWLockShared(&gResourceLock);
 	resources->reserve(gResources.size());
 	for (const ResourceRecord &record : gResources) {
+		if (!record.resource)
+			continue;
 		DX12ResourceSummary summary;
 		summary.resource = record.resource;
 		summary.resourceDesc = record.desc;

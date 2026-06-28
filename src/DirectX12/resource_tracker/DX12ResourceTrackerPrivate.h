@@ -162,6 +162,7 @@ void PrepareDescriptorValueId(DescriptorRecord *record);
 bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId);
 void LogResourceTrackerStatsLocked();
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap);
+void InvalidateResourceLocked(ID3D12Resource *resource);
 void RecordDescriptor(DescriptorRecord &&record);
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();

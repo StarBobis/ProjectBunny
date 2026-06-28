@@ -201,18 +201,31 @@ static bool FillDescriptorDumpTask(
 			task->skipNote = "multisampled_texture_not_supported";
 			return false;
 		}
+		D3D12_RESOURCE_DESC copyDesc = task->desc;
 		const UINT mipLevels = task->desc.MipLevels ? task->desc.MipLevels : 1;
 		const UINT depthOrArray = task->desc.DepthOrArraySize ? task->desc.DepthOrArraySize : 1;
-		const UINT subresourceCount =
+		UINT subresourceCount =
 			task->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ?
 			mipLevels : mipLevels * depthOrArray;
+		D3D12_FEATURE_DATA_FORMAT_INFO formatInfo = {};
+		formatInfo.Format = task->desc.Format;
+		if (SUCCEEDED(device->CheckFeatureSupport(
+				D3D12_FEATURE_FORMAT_INFO, &formatInfo, sizeof(formatInfo))) &&
+			formatInfo.PlaneCount > 1)
+			subresourceCount *= formatInfo.PlaneCount;
 		task->textureLayouts.resize(subresourceCount);
 		task->textureRows.resize(subresourceCount);
 		task->textureRowSizes.resize(subresourceCount);
-		// GetCopyableFootprints uses the full resource desc, so 1D/3D are valid here.
-		device->GetCopyableFootprints(&task->desc, 0, subresourceCount, 0,
+		// D3D12 copies planar formats as extra subresources; RenderDoc does
+		// the same PlaneCount expansion before GetCopyableFootprints. Skipping
+		// invalid footprints avoids recording command lists that fail at Close.
+		device->GetCopyableFootprints(&copyDesc, 0, subresourceCount, 0,
 			task->textureLayouts.data(), task->textureRows.data(),
 			task->textureRowSizes.data(), &task->copyBytes);
+		if (task->copyBytes == UINT64_MAX) {
+			task->skipNote = "copyable_footprints_failed";
+			return false;
+		}
 		task->isTexture = true;
 	} else if (task->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
 		task->sourceOffset = task->binding.descriptor.resourceOffset;

@@ -1099,8 +1099,10 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 	const DX12FrameResourceBinding &binding = row.binding;
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
 	const char *kind = BindingKindName(binding);
-	const char *rowType = binding.bindSpace == "hunting_metadata" ? "metadata" :
-		(binding.dispatchId ? "dispatch" : "draw");
+	const char *rowType =
+		binding.bindSpace == "hunting_resource" ? "resource" :
+		(binding.bindSpace == "hunting_metadata" ? "metadata" :
+		(binding.dispatchId ? "dispatch" : "draw"));
 	char cs[32] = "-";
 	if (binding.shaderInfo.hasCS)
 		sprintf_s(cs, sizeof(cs), "%016llx",
@@ -1779,6 +1781,10 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResources(const wchar_t *dir)
 			if (!task.dedupeKey.empty())
 				dedupeFailureReasonByKey[task.dedupeKey] =
 					task.skipNote ? task.skipNote : "resource_dump_failed";
+			AddDumpedTaskRow(&dumpedRows, "failed", task, task.desc,
+				task.sourceOffset, task.copyBytes, task.sourceState,
+				task.stateKnown, task.fileName.c_str(), L"",
+				task.skipNote ? task.skipNote : "resource_dump_failed");
 			continue;
 		}
 

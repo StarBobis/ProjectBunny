@@ -86,6 +86,8 @@ static PFN_CREATE_RESERVED_RESOURCE2 gOrigCreateReservedResource2 = nullptr;
 
 static const GUID DX12DescriptorHeapReleaseTrackerGuid =
 { 0x28c66065, 0x55b7, 0x46df, { 0x9e, 0x1e, 0x08, 0x52, 0x8d, 0x31, 0xcb, 0x1a } };
+static const GUID DX12ResourceReleaseTrackerGuid =
+{ 0xe1a4bb6a, 0xf6fc, 0x4a80, { 0x90, 0xa4, 0xf5, 0xb9, 0x13, 0x32, 0xf1, 0x5c } };
 
 class DescriptorHeapReleaseTracker : public IUnknown
 {
@@ -126,6 +128,57 @@ private:
 	volatile LONG mRef;
 	ID3D12DescriptorHeap *mHeap;
 };
+
+class ResourceReleaseTracker : public IUnknown
+{
+public:
+	explicit ResourceReleaseTracker(ID3D12Resource *resource) : mRef(1), mResource(resource) {}
+
+	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **object) override
+	{
+		if (!object)
+			return E_POINTER;
+		if (riid == IID_IUnknown) {
+			*object = static_cast<IUnknown*>(this);
+			AddRef();
+			return S_OK;
+		}
+		*object = nullptr;
+		return E_NOINTERFACE;
+	}
+
+	ULONG STDMETHODCALLTYPE AddRef() override
+	{
+		return static_cast<ULONG>(InterlockedIncrement(&mRef));
+	}
+
+	ULONG STDMETHODCALLTYPE Release() override
+	{
+		const LONG ref = InterlockedDecrement(&mRef);
+		if (ref == 0) {
+			AcquireSRWLockExclusive(&gResourceLock);
+			InvalidateResourceLocked(mResource);
+			ReleaseSRWLockExclusive(&gResourceLock);
+			delete this;
+		}
+		return static_cast<ULONG>(ref);
+	}
+
+private:
+	volatile LONG mRef;
+	ID3D12Resource *mResource;
+};
+
+static void AttachResourceReleaseTracker(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	ResourceReleaseTracker *releaseTracker = new ResourceReleaseTracker(resource);
+	if (!releaseTracker)
+		return;
+	resource->SetPrivateDataInterface(DX12ResourceReleaseTrackerGuid, releaseTracker);
+	releaseTracker->Release();
+}
 
 static void LogResourceHookCall(const char *api, const void *object)
 {
@@ -567,6 +620,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -592,6 +646,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -617,6 +672,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -650,6 +706,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -675,6 +732,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -710,6 +768,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, heapProperties, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -737,6 +796,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, nullptr, initialState);
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -775,6 +835,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, heapProperties, ResourceStateFromLayout(initialLayout));
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -805,6 +866,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, nullptr, ResourceStateFromLayout(initialLayout));
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -833,6 +895,7 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, ResourceStateFromLayout(initialLayout));
+			AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}

@@ -58,6 +58,32 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	gDescriptorHeapByPtr.erase(found);
 }
 
+void InvalidateResourceLocked(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	auto found = gResourceByPtr.find(resource);
+	if (found == gResourceByPtr.end() || found->second >= gResources.size())
+		return;
+
+	const size_t index = found->second;
+	ResourceRecord &record = gResources[index];
+	if (record.gpuVirtualAddress)
+		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
+	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
+		if (it->second == index)
+			it = gResourceByPtr.erase(it);
+		else
+			++it;
+	}
+	record.resource = nullptr;
+	record.gpuVirtualAddress = 0;
+	record.size = 0;
+	record.hasCurrentState = false;
+	gBufferResolveCache.clear();
+	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
 	LPCVOID, SIZE_T, REFIID, void**);
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_VERSIONED_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
@@ -278,11 +304,14 @@ void RecordResource(
 			gpuVaIndexChanged = true;
 		}
 		gResources[found->second] = record;
+		gResourceByPtr[resource] = found->second;
+		gResourceByPtr[canonical] = found->second;
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
 			gpuVaIndexChanged = true;
 		}
 	} else {
+		gResourceByPtr[resource] = gResources.size();
 		gResourceByPtr[canonical] = gResources.size();
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = gResources.size();
