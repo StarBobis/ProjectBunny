@@ -1,6 +1,6 @@
-#include "DX12CommandListStateCapture.h"
+﻿#include "DX12CommandListStateCapture.h"
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12CommandListRuntime.h"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ModRuntime.h"
@@ -67,7 +67,7 @@ void DX12CommandListCapturePrimitiveTopology(
 	if (DX12CommandListCaptureShouldTrackHuntIaCached(commandList))
 		DX12CommandListRuntimeRememberPrimitiveTopology(commandList, topology);
 	if (DX12CommandListCaptureShouldTrackBindingsCached(commandList))
-		DX12BindingSetPrimitiveTopology(commandList, topology);
+		DX12BindingTracker::SetPrimitiveTopology(commandList, topology);
 }
 
 ID3D12PipelineState *DX12CommandListCapturePipelineState(
@@ -83,9 +83,9 @@ ID3D12PipelineState *DX12CommandListCapturePipelineState(
 
 	const bool trackBindings = DX12CommandListCaptureShouldTrackBindingsCached(commandList);
 	if (trackBindings) {
-		DX12BindingSetPipelineState(commandList, activePipelineState);
+		DX12BindingTracker::SetPipelineState(commandList, activePipelineState);
 		if (trackBindings && DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-			DX12BindingRecordStateEvent(commandList, "set_pso");
+			DX12BindingTracker::RecordStateEvent(commandList, "set_pso");
 	}
 	if (DX12CommandListCaptureShouldTrackPsoStateCached(commandList))
 		DX12CommandListRuntimeRememberPipelineState(commandList, activePipelineState);
@@ -100,9 +100,9 @@ void DX12CommandListCaptureDescriptorHeaps(
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
 
-	const bool changed = DX12BindingSetDescriptorHeaps(commandList, count, heaps);
+	const bool changed = DX12BindingTracker::SetDescriptorHeaps(commandList, count, heaps);
 	if (changed && DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_heaps");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_heaps");
 }
 
 void DX12CommandListCaptureDescriptorHeaps(
@@ -113,9 +113,9 @@ void DX12CommandListCaptureDescriptorHeaps(
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
 
-	const bool changed = DX12BindingSetDescriptorHeaps(commandList, cbvSrvUavHeap, samplerHeap);
+	const bool changed = DX12BindingTracker::SetDescriptorHeaps(commandList, cbvSrvUavHeap, samplerHeap);
 	if (changed && DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_heaps");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_heaps");
 }
 
 void DX12CommandListCaptureComputeRootSignature(
@@ -123,9 +123,9 @@ void DX12CommandListCaptureComputeRootSignature(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetComputeRootSignature(commandList, rootSignature);
+	DX12BindingTracker::SetComputeRootSignature(commandList, rootSignature);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_compute_root_signature");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_root_signature");
 }
 
 void DX12CommandListCaptureGraphicsRootSignature(
@@ -133,9 +133,9 @@ void DX12CommandListCaptureGraphicsRootSignature(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetGraphicsRootSignature(commandList, rootSignature);
+	DX12BindingTracker::SetGraphicsRootSignature(commandList, rootSignature);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_graphics_root_signature");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_root_signature");
 }
 
 void DX12CommandListCaptureComputeRootDescriptorTable(
@@ -144,9 +144,9 @@ void DX12CommandListCaptureComputeRootDescriptorTable(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetComputeRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
+	DX12BindingTracker::SetComputeRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_compute_table");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_table");
 }
 
 void DX12CommandListCaptureGraphicsRootDescriptorTable(
@@ -155,9 +155,9 @@ void DX12CommandListCaptureGraphicsRootDescriptorTable(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetGraphicsRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
+	DX12BindingTracker::SetGraphicsRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_graphics_table");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_table");
 }
 
 void DX12CommandListCaptureComputeRoot32BitConstant(
@@ -165,9 +165,9 @@ void DX12CommandListCaptureComputeRoot32BitConstant(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetComputeRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
+	DX12BindingTracker::SetComputeRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_compute_root_constant");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_root_constant");
 }
 
 void DX12CommandListCaptureGraphicsRoot32BitConstant(
@@ -175,9 +175,9 @@ void DX12CommandListCaptureGraphicsRoot32BitConstant(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetGraphicsRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
+	DX12BindingTracker::SetGraphicsRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_graphics_root_constant");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_root_constant");
 }
 
 void DX12CommandListCaptureComputeRoot32BitConstants(
@@ -186,10 +186,10 @@ void DX12CommandListCaptureComputeRoot32BitConstants(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetComputeRoot32BitConstants(
+	DX12BindingTracker::SetComputeRoot32BitConstants(
 		commandList, rootParameterIndex, destOffset, num32BitValuesToSet, srcData);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_compute_root_constants");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_root_constants");
 }
 
 void DX12CommandListCaptureGraphicsRoot32BitConstants(
@@ -198,10 +198,10 @@ void DX12CommandListCaptureGraphicsRoot32BitConstants(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetGraphicsRoot32BitConstants(
+	DX12BindingTracker::SetGraphicsRoot32BitConstants(
 		commandList, rootParameterIndex, destOffset, num32BitValuesToSet, srcData);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, "set_graphics_root_constants");
+		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_root_constants");
 }
 
 void DX12CommandListCaptureComputeRootDescriptor(
@@ -210,9 +210,9 @@ void DX12CommandListCaptureComputeRootDescriptor(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetComputeRootDescriptor(commandList, rootParameterIndex, type, address);
+	DX12BindingTracker::SetComputeRootDescriptor(commandList, rootParameterIndex, type, address);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, type == D3D12_ROOT_PARAMETER_TYPE_CBV ?
+		DX12BindingTracker::RecordStateEvent(commandList, type == D3D12_ROOT_PARAMETER_TYPE_CBV ?
 			"set_compute_root_cbv" : type == D3D12_ROOT_PARAMETER_TYPE_SRV ?
 			"set_compute_root_srv" : "set_compute_root_uav");
 }
@@ -223,9 +223,9 @@ void DX12CommandListCaptureGraphicsRootDescriptor(
 {
 	if (!DX12CommandListCaptureShouldTrackBindingsCached(commandList))
 		return;
-	DX12BindingSetGraphicsRootDescriptor(commandList, rootParameterIndex, type, address);
+	DX12BindingTracker::SetGraphicsRootDescriptor(commandList, rootParameterIndex, type, address);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordStateEvent(commandList, type == D3D12_ROOT_PARAMETER_TYPE_CBV ?
+		DX12BindingTracker::RecordStateEvent(commandList, type == D3D12_ROOT_PARAMETER_TYPE_CBV ?
 			"set_graphics_root_cbv" : type == D3D12_ROOT_PARAMETER_TYPE_SRV ?
 			"set_graphics_root_srv" : "set_graphics_root_uav");
 }
@@ -234,7 +234,7 @@ void DX12CommandListCaptureIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (DX12CommandListCaptureShouldTrackBindingsCached(commandList))
-		DX12BindingSetIndexBuffer(commandList, view);
+		DX12BindingTracker::SetIndexBuffer(commandList, view);
 	if (DX12CommandListCaptureShouldTrackHuntIaCached(commandList))
 		DX12HuntSetIndexBuffer(commandList, view);
 	if (DX12ModHasActiveShaderOverrides())
@@ -246,9 +246,10 @@ void DX12CommandListCaptureVertexBuffers(
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (DX12CommandListCaptureShouldTrackBindingsCached(commandList))
-		DX12BindingSetVertexBuffers(commandList, startSlot, count, views);
+		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
 	if (DX12CommandListCaptureShouldTrackHuntIaCached(commandList))
 		DX12HuntSetVertexBuffers(commandList, startSlot, count, views);
 	if (DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntimeRememberVertexBuffers(commandList, startSlot, count, views);
 }
+

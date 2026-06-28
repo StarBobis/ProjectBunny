@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
@@ -38,10 +38,6 @@ add_library(DirectX12 SHARED
     shader/DX12ShaderHunt.cpp
 
     # Resource dump
-    resource_dump/DX12ResourceDump.cpp
-    resource_dump/DX12ResourceMetadataDump.cpp
-    resource_dump/DX12ResourceDumpPrepare.cpp
-    resource_dump/DX12ResourceDumpUtil.cpp
 
     # Command list hooks & runtime
     command_list/DX12CommandListHooks.cpp
@@ -53,6 +49,17 @@ add_library(DirectX12 SHARED
     # Mod runtime
     mod_runtime/DX12ModRuntime.cpp
 
+    # 3Dmigoto config/runtime model used only by DX12
+    migoto_core/IniDocument.cpp
+    migoto_core/MigotoCommandList.cpp
+    migoto_core/MigotoIniLoader.cpp
+    migoto_core/MigotoConfig.cpp
+    migoto_core/MigotoResource.cpp
+    migoto_core/MigotoShaderOverride.cpp
+    migoto_core/MigotoShaderRegex.cpp
+    migoto_core/MigotoTextureOverride.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
+
 )
 
 target_include_directories(DirectX12 PRIVATE
@@ -63,6 +70,7 @@ target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_analysis
     ${CMAKE_CURRENT_SOURCE_DIR}/hooks
     ${CMAKE_CURRENT_SOURCE_DIR}/ia
+    ${CMAKE_CURRENT_SOURCE_DIR}/migoto_core
     ${CMAKE_CURRENT_SOURCE_DIR}/mod_runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/resource_dump
     ${CMAKE_CURRENT_SOURCE_DIR}/resource_tracker
@@ -75,7 +83,6 @@ target_include_directories(DirectX12 PRIVATE
 )
 
 target_link_libraries(DirectX12 PRIVATE
-    BunnyCore
     Nektra::NktHookLib
     crc32c
     dxgi.lib
@@ -104,3 +111,4 @@ target_compile_definitions(DirectX12 PRIVATE
 
 set_target_msvc_options(DirectX12)
 set_target_common_definitions(DirectX12)
+

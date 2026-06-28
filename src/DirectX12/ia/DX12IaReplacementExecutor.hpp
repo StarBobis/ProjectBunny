@@ -3,20 +3,10 @@
 #include <d3d12.h>
 
 #include "DX12CommandListRuntime.h"
+#include "DX12IaCommandSignatures.hpp"
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.hpp"
-
-typedef void(STDMETHODCALLTYPE *DX12IaExecDrawInstanced)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);
-typedef void(STDMETHODCALLTYPE *DX12IaExecDrawIndexedInstanced)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT, INT, UINT);
-typedef void(STDMETHODCALLTYPE *DX12IaExecDispatch)(
-	ID3D12GraphicsCommandList*, UINT, UINT, UINT);
-typedef void(STDMETHODCALLTYPE *DX12IaExecSetIndexBuffer)(
-	ID3D12GraphicsCommandList*, const D3D12_INDEX_BUFFER_VIEW*);
-typedef void(STDMETHODCALLTYPE *DX12IaExecSetVertexBuffers)(
-	ID3D12GraphicsCommandList*, UINT, UINT, const D3D12_VERTEX_BUFFER_VIEW*);
 
 class DX12IaDrawInvocation
 {
@@ -61,11 +51,11 @@ public:
 class DX12IaReplacementExecutorCallbacks
 {
 public:
-	DX12IaExecDrawInstanced drawInstanced = nullptr;
-	DX12IaExecDrawIndexedInstanced drawIndexedInstanced = nullptr;
-	DX12IaExecDispatch dispatch = nullptr;
-	DX12IaExecSetIndexBuffer setIndexBuffer = nullptr;
-	DX12IaExecSetVertexBuffers setVertexBuffers = nullptr;
+	DX12IaCommandSignatures::DrawInstanced drawInstanced = nullptr;
+	DX12IaCommandSignatures::DrawIndexedInstanced drawIndexedInstanced = nullptr;
+	DX12IaCommandSignatures::Dispatch dispatch = nullptr;
+	DX12IaCommandSignatures::SetIndexBuffer setIndexBuffer = nullptr;
+	DX12IaCommandSignatures::SetVertexBuffers setVertexBuffers = nullptr;
 	void (*recordReplacementDraw)(bool indexed) = nullptr;
 	void (*recordReplacementDispatch)() = nullptr;
 };

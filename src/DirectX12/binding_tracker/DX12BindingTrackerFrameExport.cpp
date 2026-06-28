@@ -1,3 +1,4 @@
+﻿#include "DX12BindingTracker.hpp"
 #include "DX12BindingTrackerPrivate.h"
 
 #include <stdio.h>
@@ -16,22 +17,22 @@
 #include "DX12LogManager.hpp"
 
 
-void DX12GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos)
+void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos)
 {
 	if (!shaderInfos)
 		return;
 
 	shaderInfos->clear();
 	std::unordered_set<UINT64> seen;
-	AcquireSRWLockShared(&gEventsLock);
-	for (const BindingEvent &event : gEvents) {
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	for (const BindingEvent &event : DX12BindingTrackerState::Events) {
 		if (!event.shaderInfo.psoIndex)
 			continue;
 		if (!seen.insert(event.shaderInfo.psoIndex).second)
 			continue;
 		shaderInfos->push_back(event.shaderInfo);
 	}
-	ReleaseSRWLockShared(&gEventsLock);
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 }
 
 static void WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info)
@@ -125,9 +126,9 @@ static std::string ResourceRefsForEvent(
 	std::string refs;
 	std::unordered_set<std::string> seen;
 	DX12RootSignatureSummary rootSignature;
-	const bool dispatch = DX12BindingIsDispatchEvent(event);
+	const bool dispatch = DX12BindingTrackerUtils::IsDispatchEvent(event);
 	const bool hasRootSignature =
-		DX12BindingGetRootSignatureForEvent(event, dispatch, &rootSignature);
+		DX12BindingTrackerUtils::GetRootSignatureForEvent(event, dispatch, &rootSignature);
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
 		struct TableRef {
 			const char *space;
@@ -145,19 +146,19 @@ static std::string ResourceRefsForEvent(
 			if (!entry.table.valid)
 				continue;
 			const DX12RootParameterSummary *parameter =
-				hasRootSignature ? DX12BindingFindRootParameter(rootSignature, i) : nullptr;
+				hasRootSignature ? DX12BindingTrackerUtils::FindRootParameter(rootSignature, i) : nullptr;
 			if (!parameter ||
 					parameter->parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
 				continue;
 			for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-				if (DX12BindingHeapTypeForDescriptorRange(range.rangeType) != entry.heapType)
+				if (DX12BindingTrackerUtils::HeapTypeForDescriptorRange(range.rangeType) != entry.heapType)
 					continue;
 				const DX12DescriptorHeapSummary *heap =
-					DX12BindingFindHeapForTableRange(heaps, entry.table, &range, entry.heapType);
+					DX12BindingTrackerUtils::FindHeapForTableRange(heaps, entry.table, &range, entry.heapType);
 				if (!heap)
 					continue;
 				const UINT64 tableBase = (entry.table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-				const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBase, range);
+				const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBase, range);
 				for (UINT offset = 0; offset < count; ++offset) {
 					const UINT64 descriptorIndex = tableBase + range.effectiveOffset + offset;
 					if (descriptorIndex >= heap->numDescriptors)
@@ -165,7 +166,7 @@ static std::string ResourceRefsForEvent(
 					const SIZE_T cpuHandle =
 						heap->cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap->increment;
 					const DX12DescriptorSummary *descriptor =
-						DX12BindingFindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
+						DX12BindingTrackerUtils::FindDescriptorByCpuHandle(descriptorsByCpuHandle, cpuHandle);
 					char key[160];
 					sprintf_s(key, "%s%u:%u:%u:%llu:%p",
 						entry.space,
@@ -204,8 +205,9 @@ static const char *TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology)
 	}
 }
 
-struct FlatBufferRow
+class FlatBufferRow
 {
+public:
 	std::string id;
 	std::string role;
 	std::string skinningClass;
@@ -235,8 +237,9 @@ struct FlatBufferRow
 	DX12BufferResourceSummary resource = {};
 };
 
-struct BufferProducer
+class BufferProducer
 {
+public:
 	UINT64 eventSerial = 0;
 	UINT64 drawId = 0;
 	UINT64 dispatchId = 0;
@@ -281,7 +284,7 @@ static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event)
 static bool IaRegionForEvent(
 	const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region)
 {
-	if (!region || !DX12BindingIsDrawEvent(event))
+	if (!region || !DX12BindingTrackerUtils::IsDrawEvent(event))
 		return false;
 	*region = DX12IaRegion();
 	DX12IaRegionDraw draw = IaRegionDrawFromEvent(event);
@@ -408,7 +411,7 @@ static void CollectFlatBuffersForEvents(
 	UINT nextVbId = 0;
 	UINT nextIbId = 0;
 	for (const BindingEvent &event : events) {
-		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
+		if (!DX12BindingTrackerUtils::IsDrawEvent(event) && !DX12BindingTrackerUtils::IsDispatchEvent(event))
 			continue;
 		BufferIdsForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
 		IndexBufferIdForEvent(event, buffers, &bufferByKey, &nextVbId, &nextIbId);
@@ -466,7 +469,7 @@ static void CollectFrameIaBuffersForEvents(
 	UINT nextVbId = 0;
 	UINT nextIbId = 0;
 	for (const BindingEvent &event : events) {
-		if (!DX12BindingIsDrawEvent(event))
+		if (!DX12BindingTrackerUtils::IsDrawEvent(event))
 			continue;
 		for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 			if (!event.vertexBufferValid[slot])
@@ -652,7 +655,7 @@ static DX12FrameIaBufferBinding FrameIaBufferFromFlatRow(const FlatBufferRow &ro
 	return buffer;
 }
 
-void DX12BuildIaBufferFileName(
+void DX12BindingFrameExport::BuildIaBufferFileName(
 	const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount)
 {
 	if (!fileName || fileNameCount == 0)
@@ -681,20 +684,20 @@ void DX12BuildIaBufferFileName(
 		buffer.format);
 }
 
-void DX12GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
+void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
 {
 	if (!buffers)
 		return;
 
 	std::vector<BindingEvent> events;
-	AcquireSRWLockShared(&gEventsLock);
-	events = gEvents;
-	ReleaseSRWLockShared(&gEventsLock);
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	events = DX12BindingTrackerState::Events;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 
 	std::vector<FlatBufferRow> rows;
 	CollectFrameIaBuffersForEvents(events, &rows);
 	std::vector<DX12FrameResourceBinding> resourceBindings;
-	DX12GetCurrentFrameResourceBindings(&resourceBindings);
+	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
 	ClassifyIaBufferSkinning(&rows, resourceBindings);
 
 	buffers->clear();
@@ -723,7 +726,7 @@ static void WriteFlatFrameAnalysisFiles(
 	std::vector<DX12DescriptorHeapSummary> heaps;
 	DX12GetResourceMetadataSnapshot(nullptr, &descriptors, nullptr, &heaps);
 	std::unordered_map<SIZE_T, const DX12DescriptorSummary*> descriptorsByCpuHandle;
-	DX12BindingBuildDescriptorLookup(descriptors, &descriptorsByCpuHandle);
+	DX12BindingTrackerUtils::BuildDescriptorLookup(descriptors, &descriptorsByCpuHandle);
 
 	std::vector<FlatBufferRow> buffers;
 	std::unordered_map<std::string, size_t> bufferByKey;
@@ -733,7 +736,7 @@ static void WriteFlatFrameAnalysisFiles(
 	size_t dispatchRows = 0;
 
 	wchar_t summaryDir[MAX_PATH];
-	DX12BindingGetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
+	DX12BindingTrackerUtils::GetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
 
 	wchar_t drawPath[MAX_PATH];
 	swprintf_s(drawPath, L"%s\\DrawCallsDX12.csv", summaryDir);
@@ -744,7 +747,7 @@ static void WriteFlatFrameAnalysisFiles(
 			"vertex_count,index_count,start_vertex,start_index,base_vertex,instance_count,start_instance,"
 			"groups_x,groups_y,groups_z,vb_slots,ib_resource,resource_refs\n");
 		for (const BindingEvent &event : events) {
-			if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
+			if (!DX12BindingTrackerUtils::IsDrawEvent(event) && !DX12BindingTrackerUtils::IsDispatchEvent(event))
 				continue;
 
 			std::string vbSlots = BufferIdsForEvent(
@@ -753,7 +756,7 @@ static void WriteFlatFrameAnalysisFiles(
 				event, &buffers, &bufferByKey, &nextVbId, &nextIbId);
 			std::string resourceRefs = ResourceRefsForEvent(event, heaps, descriptorsByCpuHandle);
 
-			if (DX12BindingIsDrawEvent(event))
+			if (DX12BindingTrackerUtils::IsDrawEvent(event))
 				drawRows++;
 			else
 				dispatchRows++;
@@ -802,7 +805,7 @@ static void WriteFlatFrameAnalysisFiles(
 	FILE *bufferFile = _wfsopen(bufferPath, L"w", _SH_DENYNO);
 	if (bufferFile) {
 		std::vector<DX12FrameResourceBinding> resourceBindings;
-		DX12GetCurrentFrameResourceBindings(&resourceBindings);
+		DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
 		ClassifyIaBufferSkinning(&buffers, resourceBindings);
 		fprintf(bufferFile,
 			"buffer_id,role,hunt_hash,resource,file,gpu_va,resource_gpu_va,offset,size,view_gpu_va,view_size,view_offset,stride,slot,format,"
@@ -813,7 +816,7 @@ static void WriteFlatFrameAnalysisFiles(
 			UINT64 resourceSize = row.resource.hasResourceDesc ? row.resource.resourceDesc.Width : 0;
 			DX12FrameIaBufferBinding iaBuffer = FrameIaBufferFromFlatRow(row);
 			wchar_t fileName[MAX_PATH];
-			DX12BuildIaBufferFileName(iaBuffer, fileName, ARRAYSIZE(fileName));
+			DX12BindingFrameExport::BuildIaBufferFileName(iaBuffer, fileName, ARRAYSIZE(fileName));
 			fprintf(bufferFile,
 				"%s,%s,%08x,%p,%S,0x%llx,0x%llx,%llu,%llu,0x%llx,%llu,%llu,%u,%u,%u,%u,0x%x,%u,%u,%llu,%s,%s,%llu,%llu,%llu,%llu,%s,%u,%u\n",
 				row.id.c_str(),
@@ -878,7 +881,7 @@ static void WriteFlatFrameAnalysisFiles(
 	}
 }
 
-DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
+DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
 	if (!dir)
@@ -889,17 +892,17 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 
 	std::vector<BindingEvent> events;
 	UINT64 droppedEvents = 0;
-	AcquireSRWLockShared(&gEventsLock);
-	events = gEvents;
-	droppedEvents = gDroppedEvents;
-	ReleaseSRWLockShared(&gEventsLock);
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	events = DX12BindingTrackerState::Events;
+	droppedEvents = DX12BindingTrackerState::DroppedEvents;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 
 	DX12FrameAnalysis::LogJsonFunc("BindingTraceBegin",
 		"\"events\":%zu,\"dropped\":%llu,\"maxEvents\":%u",
 		events.size(), static_cast<unsigned long long>(droppedEvents),
 		MaxTrackedEvents);
 	for (const BindingEvent &event : events) {
-		if (DX12BindingIsDrawEvent(event) || DX12BindingIsDispatchEvent(event)) {
+		if (DX12BindingTrackerUtils::IsDrawEvent(event) || DX12BindingTrackerUtils::IsDispatchEvent(event)) {
 			DX12FrameAnalysisManifest::WriteCall(
 				event.kind.c_str(),
 				event.serial,
@@ -937,5 +940,10 @@ DX12FrameAnalysisDumpResult DX12DumpBindingTrace(const wchar_t *dir)
 	result.skipped = static_cast<size_t>(droppedEvents);
 	return result;
 }
+
+
+
+
+
 
 

@@ -1,10 +1,10 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include "DX12DispatchHookFlow.h"
 
 #include <cstring>
 #include <vector>
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12ModRuntime.h"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderDump.h"
@@ -113,7 +113,7 @@ static void PreparePreSkinProbe(
 	}
 
 	UINT64 computeBindingSerial =
-		DX12BindingGetComputeBindingSerial(commandList);
+		DX12BindingTracker::GetComputeBindingSerial(commandList);
 	DX12LogManager::Text("PreparePreSkinProbe: serial=%llu\n",
 		static_cast<unsigned long long>(computeBindingSerial));
 	if (computeBindingSerial == 0) {
@@ -133,7 +133,7 @@ static void PreparePreSkinProbe(
 	probe->shouldLog = true;
 #endif
 	if (!probe->uavsFound)
-		probe->uavsFound = DX12BindingGetCurrentComputeAll(commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
+		probe->uavsFound = DX12BindingTracker::GetCurrentComputeAll(commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
 	probe->srvsFound = !probe->srvs.empty();
 	probe->cbvsFound = !probe->cbvs.empty();
 	probe->rootConstantsFound = !probe->rootConstants.empty();
@@ -259,5 +259,6 @@ void DX12DispatchHookFlowExecute(
 		threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 		dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 }
+
 
 

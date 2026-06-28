@@ -1,4 +1,4 @@
-#include "DX12BindingTracker.h"
+﻿#include "DX12BindingTracker.hpp"
 #include "DX12BindingTrackerPrivate.h"
 
 #include <stdio.h>
@@ -8,16 +8,16 @@
 #include "DX12ResourceTracker.h"
 #include "DX12LogManager.hpp"
 
-BindingShard gBindingShards[kBindingShardCount];
-SRWLOCK gEventsLock = SRWLOCK_INIT;
-std::vector<BindingEvent> gEvents;
-std::vector<OutputBindingEvent> gOutputEvents;
-UINT64 gEventSerial = 0;
-UINT64 gOutputEventSerial = 0;
-volatile LONG64 gGlobalDrawSerial = 0;
-volatile LONG64 gGlobalDispatchSerial = 0;
-UINT64 gDroppedEvents = 0;
-UINT64 gDroppedOutputEvents = 0;
+BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];
+SRWLOCK DX12BindingTrackerState::EventsLock = SRWLOCK_INIT;
+std::vector<BindingEvent> DX12BindingTrackerState::Events;
+std::vector<OutputBindingEvent> DX12BindingTrackerState::OutputEvents;
+UINT64 DX12BindingTrackerState::EventSerial = 0;
+UINT64 DX12BindingTrackerState::OutputEventSerial = 0;
+volatile LONG64 DX12BindingTrackerState::GlobalDrawSerial = 0;
+volatile LONG64 DX12BindingTrackerState::GlobalDispatchSerial = 0;
+UINT64 DX12BindingTrackerState::DroppedEvents = 0;
+UINT64 DX12BindingTrackerState::DroppedOutputEvents = 0;
 
 static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
@@ -73,13 +73,13 @@ static bool BuildEvent(
 
 static void StoreEventLocked(const BindingEvent &event)
 {
-	if (gEvents.size() >= MaxTrackedEvents) {
-		gDroppedEvents++;
+	if (DX12BindingTrackerState::Events.size() >= MaxTrackedEvents) {
+		DX12BindingTrackerState::DroppedEvents++;
 		return;
 	}
 	BindingEvent stored = event;
-	stored.serial = ++gEventSerial;
-	gEvents.push_back(std::move(stored));
+	stored.serial = ++DX12BindingTrackerState::EventSerial;
+	DX12BindingTrackerState::Events.push_back(std::move(stored));
 }
 
 static void StoreEventLocked(
@@ -99,7 +99,7 @@ static void StoreOutputEventLocked(
 	if (!cpuHandle)
 		return;
 	const UINT64 dispatchId = 0;
-	for (const OutputBindingEvent &existing : gOutputEvents) {
+	for (const OutputBindingEvent &existing : DX12BindingTrackerState::OutputEvents) {
 		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
 		if (existing.commandList == commandList &&
 			existing.cpuHandle == cpuHandle &&
@@ -109,13 +109,13 @@ static void StoreOutputEventLocked(
 			existing.dispatchId == dispatchId)
 			return;
 	}
-	if (gOutputEvents.size() >= MaxTrackedOutputEvents) {
-		gDroppedOutputEvents++;
+	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
+		DX12BindingTrackerState::DroppedOutputEvents++;
 		return;
 	}
 
 	OutputBindingEvent event;
-	event.serial = ++gOutputEventSerial;
+	event.serial = ++DX12BindingTrackerState::OutputEventSerial;
 	event.kind = kind ? kind : "";
 	event.commandList = commandList;
 	event.pipelineState = state.pipelineState;
@@ -125,7 +125,7 @@ static void StoreOutputEventLocked(
 	event.cpuHandle = cpuHandle;
 	if (state.pipelineState)
 		DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
-	gOutputEvents.push_back(event);
+	DX12BindingTrackerState::OutputEvents.push_back(event);
 }
 
 static void StoreCurrentOutputTargetsLocked(
@@ -141,24 +141,24 @@ static void StoreCurrentOutputTargetsLocked(
 			state.depthStencil.ptr, state.drawSerial);
 }
 
-void DX12BindingRegisterCommandList(ID3D12GraphicsCommandList *commandList)
+void DX12BindingTracker::RegisterCommandList(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states.try_emplace(commandList);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingResetCommandList(
+void DX12BindingTracker::ResetCommandList(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state = CommandListBindingState();
@@ -171,37 +171,37 @@ void DX12BindingResetCommandList(
 	tlsComputeDescCache.cl = nullptr;
 }
 
-void DX12BindingSetPipelineState(
+void DX12BindingTracker::SetPipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states[commandList].pipelineState = pipelineState;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingSetGraphicsRootSignature(
+void DX12BindingTracker::SetGraphicsRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states[commandList].graphicsRootSignature = rootSignature;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingSetComputeRootSignature(
+void DX12BindingTracker::SetComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state.computeRootSignature = rootSignature;
@@ -209,14 +209,14 @@ void DX12BindingSetComputeRootSignature(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingRecordStateEvent(ID3D12GraphicsCommandList *commandList, const char *kind)
+void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList, const char *kind)
 {
 	if (!commandList)
 		return;
 
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -227,12 +227,12 @@ void DX12BindingRecordStateEvent(ID3D12GraphicsCommandList *commandList, const c
 	if (!found)
 		return;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreEventLocked(kind ? kind : "state", commandList, snapshot);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-bool DX12BindingSetDescriptorHeaps(
+bool DX12BindingTracker::SetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList, UINT count,
 	ID3D12DescriptorHeap *const *heaps)
 {
@@ -252,10 +252,10 @@ bool DX12BindingSetDescriptorHeaps(
 			samplerHeap = heap;
 	}
 
-	return DX12BindingSetDescriptorHeaps(commandList, cbvSrvUavHeap, samplerHeap);
+	return DX12BindingTracker::SetDescriptorHeaps(commandList, cbvSrvUavHeap, samplerHeap);
 }
 
-bool DX12BindingSetDescriptorHeaps(
+bool DX12BindingTracker::SetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
@@ -263,7 +263,7 @@ bool DX12BindingSetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	if (state.cbvSrvUavHeap == cbvSrvUavHeap &&
@@ -278,7 +278,7 @@ bool DX12BindingSetDescriptorHeaps(
 	return true;
 }
 
-void DX12BindingSetGraphicsRootDescriptorTable(
+void DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
@@ -288,7 +288,7 @@ void DX12BindingSetGraphicsRootDescriptorTable(
 		tlsGraphicsTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootTableState &table = shard.states[commandList].graphicsTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
@@ -303,7 +303,7 @@ void DX12BindingSetGraphicsRootDescriptorTable(
 	tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
 }
 
-void DX12BindingSetComputeRootDescriptorTable(
+void DX12BindingTracker::SetComputeRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
@@ -313,7 +313,7 @@ void DX12BindingSetComputeRootDescriptorTable(
 		tlsComputeTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootTableState &table = shard.states[commandList].computeTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
@@ -329,25 +329,25 @@ void DX12BindingSetComputeRootDescriptorTable(
 	tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
 }
 
-void DX12BindingSetPrimitiveTopology(
+void DX12BindingTracker::SetPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	shard.states[commandList].primitiveTopology = topology;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingSetIndexBuffer(
+void DX12BindingTracker::SetIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (!commandList)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	if (view) {
@@ -360,14 +360,14 @@ void DX12BindingSetIndexBuffer(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingSetVertexBuffers(
+void DX12BindingTracker::SetVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (!commandList || startSlot >= MaxVertexBufferSlots)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	for (UINT i = 0; i < count && startSlot + i < MaxVertexBufferSlots; ++i) {
@@ -383,7 +383,7 @@ void DX12BindingSetVertexBuffers(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingRecordOutputTargets(
+void DX12BindingTracker::RecordOutputTargets(
 	ID3D12GraphicsCommandList *commandList, UINT numRenderTargetDescriptors,
 	const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors,
 	BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor)
@@ -393,7 +393,7 @@ void DX12BindingRecordOutputTargets(
 
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -404,7 +404,7 @@ void DX12BindingRecordOutputTargets(
 	if (!found)
 		snapshot = CommandListBindingState();
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
 		if (singleHandleToDescriptorRange && i > 0) {
@@ -421,7 +421,7 @@ void DX12BindingRecordOutputTargets(
 	if (depthStencilDescriptor)
 		StoreOutputEventLocked("DSV", commandList, snapshot, 0,
 			depthStencilDescriptor->ptr, 0);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -456,7 +456,7 @@ void DX12BindingRecordOutputTargets(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingRecordRenderTargetClear(
+void DX12BindingTracker::RecordRenderTargetClear(
 	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView)
 {
 	if (!commandList || !renderTargetView.ptr)
@@ -464,7 +464,7 @@ void DX12BindingRecordRenderTargetClear(
 
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -475,12 +475,12 @@ void DX12BindingRecordRenderTargetClear(
 	if (!found)
 		return;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreOutputEventLocked("RTV", commandList, snapshot, 0, renderTargetView.ptr, 0);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-void DX12BindingRecordDepthStencilClear(
+void DX12BindingTracker::RecordDepthStencilClear(
 	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView)
 {
 	if (!commandList || !depthStencilView.ptr)
@@ -488,7 +488,7 @@ void DX12BindingRecordDepthStencilClear(
 
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -499,12 +499,12 @@ void DX12BindingRecordDepthStencilClear(
 	if (!found)
 		return;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreOutputEventLocked("DSV", commandList, snapshot, 0, depthStencilView.ptr, 0);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-bool DX12BindingGetCurrentIaState(
+bool DX12BindingTracker::GetCurrentIaState(
 	ID3D12GraphicsCommandList *commandList, DX12CurrentIaState *state)
 {
 	if (!commandList || !state)
@@ -514,7 +514,7 @@ bool DX12BindingGetCurrentIaState(
 	CommandListBindingState snapshot;
 	bool found = false;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -591,7 +591,7 @@ static bool GetCurrentDescriptors(
 	CommandListBindingState snapshot;
 	bool found = false;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -637,7 +637,7 @@ static bool GetCurrentDescriptors(
 						continue;
 					const UINT64 tableBaseIndex =
 						(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-					const UINT count = DX12BindingDescriptorCountForRange(heap, tableBaseIndex, range);
+					const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(heap, tableBaseIndex, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 descriptorIndex =
 							tableBaseIndex + range.effectiveOffset + offset;
@@ -720,7 +720,7 @@ static bool GetCurrentDescriptors(
 	return !uavs->empty();
 }
 
-bool DX12BindingGetCurrentComputeUavs(
+bool DX12BindingTracker::GetCurrentComputeUavs(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentComputeUavBinding> *uavs)
 {
@@ -729,7 +729,7 @@ bool DX12BindingGetCurrentComputeUavs(
 		D3D12_ROOT_PARAMETER_TYPE_UAV, uavs);
 }
 
-bool DX12BindingGetCurrentComputeSrvs(
+bool DX12BindingTracker::GetCurrentComputeSrvs(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentComputeUavBinding> *srvs)
 {
@@ -738,7 +738,7 @@ bool DX12BindingGetCurrentComputeSrvs(
 		D3D12_ROOT_PARAMETER_TYPE_SRV, srvs);
 }
 
-bool DX12BindingGetCurrentComputeCbvs(
+bool DX12BindingTracker::GetCurrentComputeCbvs(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentComputeUavBinding> *cbvs)
 {
@@ -747,7 +747,7 @@ bool DX12BindingGetCurrentComputeCbvs(
 		D3D12_ROOT_PARAMETER_TYPE_CBV, cbvs);
 }
 
-bool DX12BindingGetCurrentComputeAll(
+bool DX12BindingTracker::GetCurrentComputeAll(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentComputeUavBinding> *uavs,
 	std::vector<DX12CurrentComputeUavBinding> *srvs,
@@ -763,7 +763,7 @@ bool DX12BindingGetCurrentComputeAll(
 
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -808,7 +808,7 @@ bool DX12BindingGetCurrentComputeAll(
 					else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) { out = cbvs; kind = "CBV"; }
 					else { continue; }
 
-					const UINT count = DX12BindingDescriptorCountForRange(heap, tableBase, range);
+					const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(heap, tableBase, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 di = tableBase + range.effectiveOffset + offset;
 						if (di >= heap.numDescriptors) break;
@@ -902,7 +902,7 @@ bool DX12BindingGetCurrentComputeAll(
 		(cbvs && !cbvs->empty()) || (constants && !constants->empty());
 }
 
-bool DX12BindingGetCurrentShaderResourceBindings(
+bool DX12BindingTracker::GetCurrentShaderResourceBindings(
 	ID3D12GraphicsCommandList *commandList,
 	bool compute,
 	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
@@ -934,7 +934,7 @@ bool DX12BindingGetCurrentShaderResourceBindings(
 		rootDescriptorType, bindings);
 }
 
-bool DX12BindingGetCurrentDescriptorHeaps(
+bool DX12BindingTracker::GetCurrentDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12DescriptorHeap **cbvSrvUavHeap,
 	ID3D12DescriptorHeap **samplerHeap)
@@ -943,7 +943,7 @@ bool DX12BindingGetCurrentDescriptorHeaps(
 		commandList, cbvSrvUavHeap, samplerHeap);
 }
 
-void DX12BindingRecordDrawInstanced(
+void DX12BindingTracker::RecordDrawInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT vertexCountPerInstance,
 	UINT instanceCount, UINT startVertexLocation, UINT startInstanceLocation)
 {
@@ -951,8 +951,8 @@ void DX12BindingRecordDrawInstanced(
 		return;
 
 	CommandListBindingState snapshot;
-	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&gGlobalDrawSerial));
-	BindingShard &shard = BindingShardFor(commandList);
+	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state.drawSerial = drawSerial;
@@ -967,13 +967,13 @@ void DX12BindingRecordDrawInstanced(
 	event.startVertexLocation = startVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreEventLocked(event);
 	StoreCurrentOutputTargetsLocked(commandList, snapshot);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-void DX12BindingRecordDrawIndexedInstanced(
+void DX12BindingTracker::RecordDrawIndexedInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT indexCountPerInstance,
 	UINT instanceCount, UINT startIndexLocation, INT baseVertexLocation,
 	UINT startInstanceLocation)
@@ -982,8 +982,8 @@ void DX12BindingRecordDrawIndexedInstanced(
 		return;
 
 	CommandListBindingState snapshot;
-	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&gGlobalDrawSerial));
-	BindingShard &shard = BindingShardFor(commandList);
+	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state.drawSerial = drawSerial;
@@ -999,13 +999,13 @@ void DX12BindingRecordDrawIndexedInstanced(
 	event.baseVertexLocation = baseVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreEventLocked(event);
 	StoreCurrentOutputTargetsLocked(commandList, snapshot);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-void DX12BindingRecordDispatch(
+void DX12BindingTracker::RecordDispatch(
 	ID3D12GraphicsCommandList *commandList, UINT threadGroupCountX,
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
@@ -1014,8 +1014,8 @@ void DX12BindingRecordDispatch(
 
 	CommandListBindingState snapshot;
 	const UINT64 dispatchSerial =
-		static_cast<UINT64>(InterlockedIncrement64(&gGlobalDispatchSerial));
-	BindingShard &shard = BindingShardFor(commandList);
+		static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDispatchSerial));
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state.dispatchSerial = dispatchSerial;
@@ -1029,26 +1029,26 @@ void DX12BindingRecordDispatch(
 	event.threadGroupCountY = threadGroupCountY;
 	event.threadGroupCountZ = threadGroupCountZ;
 
-	AcquireSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	StoreEventLocked(event);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-void DX12BindingBeginFrame()
+void DX12BindingTracker::BeginFrame()
 {
-	AcquireSRWLockExclusive(&gEventsLock);
-	gEvents.clear();
-	gOutputEvents.clear();
-	gEventSerial = 0;
-	gOutputEventSerial = 0;
-	gDroppedEvents = 0;
-	gDroppedOutputEvents = 0;
-	InterlockedExchange64(&gGlobalDrawSerial, 0);
-	InterlockedExchange64(&gGlobalDispatchSerial, 0);
-	ReleaseSRWLockExclusive(&gEventsLock);
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	DX12BindingTrackerState::Events.clear();
+	DX12BindingTrackerState::OutputEvents.clear();
+	DX12BindingTrackerState::EventSerial = 0;
+	DX12BindingTrackerState::OutputEventSerial = 0;
+	DX12BindingTrackerState::DroppedEvents = 0;
+	DX12BindingTrackerState::DroppedOutputEvents = 0;
+	InterlockedExchange64(&DX12BindingTrackerState::GlobalDrawSerial, 0);
+	InterlockedExchange64(&DX12BindingTrackerState::GlobalDispatchSerial, 0);
+	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
-void DX12BindingSetGraphicsRootDescriptor(
+void DX12BindingTracker::SetGraphicsRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
@@ -1058,7 +1058,7 @@ void DX12BindingSetGraphicsRootDescriptor(
 		tlsGraphicsDescCache.address[rootParameterIndex] == address)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootDescriptorState &descriptor = shard.states[commandList].graphicsRootDescriptors[rootParameterIndex];
 	descriptor.valid = address != 0;
@@ -1070,7 +1070,7 @@ void DX12BindingSetGraphicsRootDescriptor(
 	tlsGraphicsDescCache.address[rootParameterIndex] = address;
 }
 
-void DX12BindingSetComputeRootDescriptor(
+void DX12BindingTracker::SetComputeRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
@@ -1080,7 +1080,7 @@ void DX12BindingSetComputeRootDescriptor(
 		tlsComputeDescCache.address[rootParameterIndex] == address)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootDescriptorState &descriptor = shard.states[commandList].computeRootDescriptors[rootParameterIndex];
 	descriptor.valid = address != 0;
@@ -1112,44 +1112,44 @@ static void SetRootConstantsLocked(
 	}
 }
 
-void DX12BindingSetGraphicsRoot32BitConstant(
+void DX12BindingTracker::SetGraphicsRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	UINT destOffset, UINT value)
 {
-	DX12BindingSetGraphicsRoot32BitConstants(
+	DX12BindingTracker::SetGraphicsRoot32BitConstants(
 		commandList, rootParameterIndex, destOffset, 1, &value);
 }
 
-void DX12BindingSetComputeRoot32BitConstant(
+void DX12BindingTracker::SetComputeRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	UINT destOffset, UINT value)
 {
-	DX12BindingSetComputeRoot32BitConstants(
+	DX12BindingTracker::SetComputeRoot32BitConstants(
 		commandList, rootParameterIndex, destOffset, 1, &value);
 }
 
-void DX12BindingSetGraphicsRoot32BitConstants(
+void DX12BindingTracker::SetGraphicsRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	UINT destOffset, UINT count, const void *values)
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootConstantsState &constants = shard.states[commandList].graphicsRootConstants[rootParameterIndex];
 	SetRootConstantsLocked(&constants, rootParameterIndex, destOffset, count, values);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingSetComputeRoot32BitConstants(
+void DX12BindingTracker::SetComputeRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	UINT destOffset, UINT count, const void *values)
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	RootConstantsState &constants = shard.states[commandList].computeRootConstants[rootParameterIndex];
 	SetRootConstantsLocked(&constants, rootParameterIndex, destOffset, count, values);
@@ -1157,7 +1157,7 @@ void DX12BindingSetComputeRoot32BitConstants(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-bool DX12BindingGetCurrentComputeRootConstants(
+bool DX12BindingTracker::GetCurrentComputeRootConstants(
 	ID3D12GraphicsCommandList *commandList,
 	std::vector<DX12CurrentRootConstants> *constants)
 {
@@ -1167,7 +1167,7 @@ bool DX12BindingGetCurrentComputeRootConstants(
 	constants->clear();
 	CommandListBindingState snapshot;
 	bool found = false;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
@@ -1192,13 +1192,13 @@ bool DX12BindingGetCurrentComputeRootConstants(
 	return !constants->empty();
 }
 
-UINT64 DX12BindingGetComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
+UINT64 DX12BindingTracker::GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
 		return 0;
 
 	UINT64 serial = 0;
-	BindingShard &shard = BindingShardFor(commandList);
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end())
@@ -1206,4 +1206,9 @@ UINT64 DX12BindingGetComputeBindingSerial(ID3D12GraphicsCommandList *commandList
 	ReleaseSRWLockShared(&shard.lock);
 	return serial;
 }
+
+
+
+
+
 

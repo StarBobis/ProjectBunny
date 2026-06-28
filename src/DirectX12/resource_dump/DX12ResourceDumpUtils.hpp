@@ -1,15 +1,23 @@
-#include "DX12ResourceDumpUtil.h"
+﻿#pragma once
 
+#include <d3d12.h>
+
+#include <string>
+
+#include "DX12BindingTracker.hpp"
 #include "DX12ResourceTracker.h"
 
-bool DX12DumpIsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
+class DX12ResourceDumpUtils
+{
+public:
+static bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 {
 	return dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ||
 		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
 		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 }
 
-bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
+static bool ShouldDumpBinding(const DX12FrameResourceBinding &binding)
 {
 	if (!binding.usageClass.empty()) {
 		if (!binding.hasDescriptor)
@@ -24,7 +32,7 @@ bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 		return binding.hasDescriptor &&
 			binding.descriptor.resource &&
 			binding.descriptor.hasResourceDesc &&
-			DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+			IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
 
 	const bool isDispatch = binding.dispatchId != 0;
 	const bool isDraw = binding.drawId != 0;
@@ -45,7 +53,7 @@ bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 		return binding.hasDescriptor &&
 			binding.descriptor.resource &&
 			binding.descriptor.hasResourceDesc &&
-			DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension) &&
+			IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension) &&
 			(binding.descriptor.kind == DescriptorKind::RTV ||
 			 binding.descriptor.kind == DescriptorKind::DSV);
 	if ((isDispatch && !isComputeSpace) || (!isDispatch && !isGraphicsSpace))
@@ -62,7 +70,7 @@ bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 	const bool isBufferResource =
 		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
 	const bool isTextureResource =
-		DX12DumpIsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+		IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
 	if (!isBufferResource && !isTextureResource)
 		return false;
 	if (isDispatch)
@@ -75,7 +83,7 @@ bool DX12DumpShouldDumpBinding(const DX12FrameResourceBinding &binding)
 		binding.descriptor.kind == DescriptorKind::UAV;
 }
 
-const char *DX12DumpShortBindSpace(const std::string &bindSpace)
+static const char *ShortBindSpace(const std::string &bindSpace)
 {
 	if (bindSpace == "graphics_cbv_srv_uav")
 		return "gfx";
@@ -92,7 +100,7 @@ const char *DX12DumpShortBindSpace(const std::string &bindSpace)
 	return bindSpace.empty() ? "unk" : bindSpace.c_str();
 }
 
-const char *DX12DumpShortDescriptorKind(const std::string &kind)
+static const char *ShortDescriptorKind(const std::string &kind)
 {
 	if (kind == DescriptorKind::CBV || kind == DescriptorKind::CONSTANT_BUFFER_VIEW)
 		return "cbv";
@@ -109,7 +117,7 @@ const char *DX12DumpShortDescriptorKind(const std::string &kind)
 	return kind.empty() ? "res" : kind.c_str();
 }
 
-const char *DX12DumpShaderVisibilityPrefix(UINT shaderVisibility, const std::string &bindSpace)
+static const char *ShaderVisibilityPrefix(UINT shaderVisibility, const std::string &bindSpace)
 {
 	if (bindSpace.rfind("compute", 0) == 0)
 		return "cs";
@@ -130,7 +138,7 @@ const char *DX12DumpShaderVisibilityPrefix(UINT shaderVisibility, const std::str
 	}
 }
 
-char DX12DumpRegisterPrefix(UINT rangeType, const std::string &descriptorKind)
+static char RegisterPrefix(UINT rangeType, const std::string &descriptorKind)
 {
 	if (rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
 			rangeType == D3D12_ROOT_PARAMETER_TYPE_SRV)
@@ -154,7 +162,7 @@ char DX12DumpRegisterPrefix(UINT rangeType, const std::string &descriptorKind)
 	return '\0';
 }
 
-bool DX12DumpBuildSemanticSlot(
+static bool BuildSemanticSlot(
 	const DX12FrameResourceBinding &binding, char *text, size_t textCount)
 {
 	if (!text || textCount == 0)
@@ -172,10 +180,13 @@ bool DX12DumpBuildSemanticSlot(
 	}
 	if (binding.shaderRegister == UINT_MAX)
 		return false;
-	const char registerPrefix = DX12DumpRegisterPrefix(binding.rangeType, binding.descriptor.kind);
+	const char registerPrefix = RegisterPrefix(binding.rangeType, binding.descriptor.kind);
 	if (!registerPrefix)
 		return false;
-	const char *stage = DX12DumpShaderVisibilityPrefix(binding.shaderVisibility, binding.bindSpace);
+	const char *stage = ShaderVisibilityPrefix(binding.shaderVisibility, binding.bindSpace);
 	sprintf_s(text, textCount, "%s-%c%u", stage, registerPrefix, binding.shaderRegister);
 	return true;
 }
+
+};
+

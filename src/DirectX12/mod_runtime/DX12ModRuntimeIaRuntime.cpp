@@ -1,4 +1,4 @@
-static void ReleaseLoadedResourcesLocked()
+﻿static void ReleaseLoadedResourcesLocked()
 {
 	for (auto &item : gLoadedResources) {
 		DX12RetiredLoadedResource retired;
@@ -420,7 +420,7 @@ static bool FindDescriptorTextureOverrides(
 
 	std::vector<DX12CurrentShaderResourceBinding> bindings;
 	const bool compute = TargetStageIsCompute(target.stage);
-	if (!DX12BindingGetCurrentShaderResourceBindings(
+	if (!DX12BindingTracker::GetCurrentShaderResourceBindings(
 		    commandList, compute, DescriptorRangeTypeForTarget(target.kind), &bindings))
 		return false;
 
@@ -721,4 +721,5 @@ static bool FindTargetTextureOverride(
 
 	return false;
 }
+
 

@@ -1,14 +1,20 @@
-#include "DX12ResourceTracker.h"
+﻿#pragma once
 
 #include <Shlwapi.h>
+#include <Windows.h>
 #include <stdio.h>
 
 #include <string>
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
+#include "DX12FrameAnalysisTypes.hpp"
 #include "DX12Json.hpp"
+#include "DX12ResourceTracker.h"
 
+class DX12ResourceMetadataDump
+{
+public:
 static void GetSummaryDirectory(const wchar_t *dir, wchar_t *path, size_t pathCount)
 {
 	if (!dir || !path || pathCount == 0)
@@ -69,7 +75,7 @@ static void WriteResourceDesc(FILE *file, const DX12DescriptorSummary &record)
 		static_cast<unsigned long long>(desc.SampleDesc.Count));
 }
 
-DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
+static DX12FrameAnalysisDumpResult Dump(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
 	if (!dir)
@@ -225,3 +231,5 @@ DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir)
 	return result;
 }
 
+
+};

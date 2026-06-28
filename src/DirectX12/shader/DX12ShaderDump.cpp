@@ -1,4 +1,4 @@
-#include "DX12ShaderDump.h"
+﻿#include "DX12ShaderDump.h"
 
 #include <d3dcompiler.h>
 #include <dxcapi.h>
@@ -14,10 +14,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Json.hpp"
-#include "DX12ResourceDump.h"
+#include "DX12ResourceDump.hpp"
+#include "DX12ResourceMetadataDump.hpp"
 #include "DX12ResourceTracker.h"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
@@ -1135,7 +1136,7 @@ static DX12FrameAnalysisDumpResult TryDumpBindingTrace(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
 	__try {
-		result = DX12DumpBindingTrace(dir);
+		result = DX12BindingFrameExport::DumpBindingTrace(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		result.ok = false;
@@ -1150,7 +1151,7 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *d
 {
 	DX12FrameAnalysisDumpResult result;
 	__try {
-		result = DX12DumpCurrentFrameResources(dir);
+		result = DX12ResourceDump::DumpCurrentFrameResources(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		result.ok = false;
@@ -1166,7 +1167,7 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResourceTable(const wchar_
 {
 	DX12FrameAnalysisDumpResult result;
 	__try {
-		result = DX12DumpCurrentFrameResourceTable(dir);
+		result = DX12BindingResourceExport::DumpCurrentFrameResourceTable(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		result.ok = false;
@@ -1182,7 +1183,7 @@ static DX12FrameAnalysisDumpResult TryDumpResourceMetadata(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
 	__try {
-		result = DX12DumpResourceMetadata(dir);
+		result = DX12ResourceMetadataDump::Dump(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		result.ok = false;
@@ -1816,7 +1817,7 @@ void DX12DumpCapturedFrameShaders()
 	}
 
 	std::vector<DX12PsoShaderInfo> frameInfos;
-	DX12GetCurrentFrameShaderInfos(&frameInfos);
+	DX12BindingFrameExport::GetCurrentFrameShaderInfos(&frameInfos);
 	ShaderDumpThreadArgs *args = new (std::nothrow) ShaderDumpThreadArgs();
 	if (!args) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
@@ -1844,6 +1845,9 @@ void DX12DumpCapturedFrameShaders()
 	}
 	CloseHandle(thread);
 }
+
+
+
 
 
 

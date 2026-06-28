@@ -1,3 +1,4 @@
+﻿#include "DX12BindingTracker.hpp"
 #include "DX12BindingTrackerPrivate.h"
 
 #include <stdio.h>
@@ -118,7 +119,7 @@ static void CollectHuntingUavStateResourceUsages(
 	std::vector<const BindingEvent*> dispatches;
 	dispatches.reserve(events.size());
 	for (const BindingEvent &event : events) {
-		if (DX12BindingIsDispatchEvent(event))
+		if (DX12BindingTrackerUtils::IsDispatchEvent(event))
 			dispatches.push_back(&event);
 	}
 	if (dispatches.empty())
@@ -185,8 +186,9 @@ static void WriteDescriptorResourceRow(
 	UINT64 gpuHandle, SIZE_T cpuHandle,
 	const DX12DescriptorSummary *descriptor);
 
-struct DescriptorSlotKey
+class DescriptorSlotKey
 {
+public:
 	ID3D12DescriptorHeap *heap = nullptr;
 	UINT64 descriptorIndex = 0;
 
@@ -196,8 +198,9 @@ struct DescriptorSlotKey
 	}
 };
 
-struct DescriptorSlotKeyHash
+class DescriptorSlotKeyHash
 {
+public:
 	size_t operator()(const DescriptorSlotKey &key) const
 	{
 		uintptr_t heap = reinterpret_cast<uintptr_t>(key.heap);
@@ -209,8 +212,9 @@ struct DescriptorSlotKeyHash
 	}
 };
 
-struct DescriptorLookup
+class DescriptorLookup
 {
+public:
 	std::unordered_map<SIZE_T, const DX12DescriptorSummary*> byCpuHandle;
 	std::unordered_map<DescriptorSlotKey, const DX12DescriptorSummary*, DescriptorSlotKeyHash> bySlot;
 };
@@ -406,7 +410,7 @@ static bool VisitTableStartOnly(
 {
 	if (!descriptorIndex || !gpuHandle || !cpuHandle || !heap)
 		return false;
-	*heap = DX12BindingFindHeapForGpuHandle(heaps, table, heapType);
+	*heap = DX12BindingTrackerUtils::FindHeapForGpuHandle(heaps, table, heapType);
 	if (!*heap || (*heap)->increment == 0)
 		return false;
 	*descriptorIndex = (table.baseDescriptor.ptr - (*heap)->gpuStart) / (*heap)->increment;
@@ -439,7 +443,7 @@ static void WriteDescriptorResourceRow(
 		registerSpace,
 		descriptorOffset,
 		heap->heap,
-		DX12BindingHeapTypeName(heap->type),
+		DX12BindingTrackerUtils::HeapTypeName(heap->type),
 		static_cast<unsigned long long>(descriptorIndex),
 		static_cast<unsigned long long>(gpuHandle),
 		static_cast<unsigned long long>(cpuHandle),
@@ -459,7 +463,7 @@ static void WriteDescriptorResourceRow(
 	if (descriptor->hasResourceDesc) {
 		const D3D12_RESOURCE_DESC &desc = descriptor->resourceDesc;
 		fprintf(file, "%s,%llu,%u,%u,%u,%u,0x%llx,0x%llx,%u\n",
-			DX12BindingResourceDimensionName(desc.Dimension),
+			DX12BindingTrackerUtils::ResourceDimensionName(desc.Dimension),
 			static_cast<unsigned long long>(desc.Width),
 			desc.Height,
 			desc.DepthOrArraySize,
@@ -515,7 +519,7 @@ static void WriteRootDescriptorResourceRow(
 	fprintf(file, "root_%u,%p,0,0,%s,%llu,%u,%u,%u,%u,0x%llx,0x%llx,0\n",
 		static_cast<UINT>(rootDescriptor.type),
 		resource->resource,
-		DX12BindingResourceDimensionName(desc.Dimension),
+		DX12BindingTrackerUtils::ResourceDimensionName(desc.Dimension),
 		static_cast<unsigned long long>(desc.Width),
 		desc.Height,
 		desc.DepthOrArraySize,
@@ -556,19 +560,19 @@ static void WriteFrameResourceBinding(
 	DX12RootSignatureSummary rootSignature;
 	const bool compute = bindSpace && !strncmp(bindSpace, "compute", 7);
 	const DX12RootParameterSummary *parameter = nullptr;
-	if (DX12BindingGetRootSignatureForEvent(event, compute, &rootSignature))
-		parameter = DX12BindingFindRootParameter(rootSignature, table.rootParameterIndex);
+	if (DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature))
+		parameter = DX12BindingTrackerUtils::FindRootParameter(rootSignature, table.rootParameterIndex);
 
 	bool wroteRange = false;
 	if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 			if (!IsCompatibleRangeForSpace(range, bindSpace))
 				continue;
-			const DX12DescriptorHeapSummary *heap = DX12BindingFindHeapForTableRange(heaps, table, &range, heapType);
+			const DX12DescriptorHeapSummary *heap = DX12BindingTrackerUtils::FindHeapForTableRange(heaps, table, &range, heapType);
 			if (!heap)
 				continue;
 			const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-			const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+			const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBaseIndex, range);
 			for (UINT offset = 0; offset < count; ++offset) {
 				const UINT64 descriptorIndex = tableBaseIndex + range.effectiveOffset + offset;
 				if (descriptorIndex >= heap->numDescriptors)
@@ -621,8 +625,8 @@ static void WriteFrameRootDescriptor(
 	DX12RootSignatureSummary rootSignature;
 	const bool compute = bindSpace && !strncmp(bindSpace, "compute", 7);
 	const DX12RootParameterSummary *parameter = nullptr;
-	if (DX12BindingGetRootSignatureForEvent(event, compute, &rootSignature))
-		parameter = DX12BindingFindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
+	if (DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature))
+		parameter = DX12BindingTrackerUtils::FindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
 
 	if (!InsertBindingSeen(seen, event, bindSpace, rootDescriptor.rootParameterIndex,
 			UINT_MAX, static_cast<UINT>(rootDescriptor.type),
@@ -650,19 +654,19 @@ static void CollectFrameResourceBinding(
 	DX12RootSignatureSummary rootSignature;
 	const bool compute = bindSpace && !strncmp(bindSpace, "compute", 7);
 	const DX12RootParameterSummary *parameter = nullptr;
-	if (DX12BindingGetRootSignatureForEvent(event, compute, &rootSignature))
-		parameter = DX12BindingFindRootParameter(rootSignature, table.rootParameterIndex);
+	if (DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature))
+		parameter = DX12BindingTrackerUtils::FindRootParameter(rootSignature, table.rootParameterIndex);
 
 	bool collectedRange = false;
 	if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 			if (!IsCompatibleRangeForSpace(range, bindSpace))
 				continue;
-			const DX12DescriptorHeapSummary *heap = DX12BindingFindHeapForTableRange(heaps, table, &range, heapType);
+			const DX12DescriptorHeapSummary *heap = DX12BindingTrackerUtils::FindHeapForTableRange(heaps, table, &range, heapType);
 			if (!heap)
 				continue;
 			const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap->gpuStart) / heap->increment;
-			const UINT count = DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+			const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBaseIndex, range);
 			for (UINT offset = 0; offset < count; ++offset) {
 				const UINT64 descriptorIndex = tableBaseIndex + range.effectiveOffset + offset;
 				if (descriptorIndex >= heap->numDescriptors)
@@ -721,8 +725,8 @@ static void CollectFrameRootDescriptorBinding(
 	DX12RootSignatureSummary rootSignature;
 	const bool compute = bindSpace && !strncmp(bindSpace, "compute", 7);
 	const DX12RootParameterSummary *parameter = nullptr;
-	if (DX12BindingGetRootSignatureForEvent(event, compute, &rootSignature))
-		parameter = DX12BindingFindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
+	if (DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature))
+		parameter = DX12BindingTrackerUtils::FindRootParameter(rootSignature, rootDescriptor.rootParameterIndex);
 
 	DX12FrameResourceBinding binding;
 	binding.eventSerial = event.serial;
@@ -783,19 +787,19 @@ static void CountEventTables(
 
 	DX12RootSignatureSummary graphicsRoot;
 	DX12RootSignatureSummary computeRoot;
-	const bool hasGraphicsRoot = DX12BindingGetRootSignatureForEvent(event, false, &graphicsRoot);
-	const bool hasComputeRoot = DX12BindingGetRootSignatureForEvent(event, true, &computeRoot);
+	const bool hasGraphicsRoot = DX12BindingTrackerUtils::GetRootSignatureForEvent(event, false, &graphicsRoot);
+	const bool hasComputeRoot = DX12BindingTrackerUtils::GetRootSignatureForEvent(event, true, &computeRoot);
 	for (UINT i = 0; i < MaxRootParameters; ++i) {
 		if (event.graphicsTables[i].valid) {
 			(*graphicsTables)++;
 			if (hasGraphicsRoot) {
 				(*graphicsTablesWithRoots)++;
 				const DX12RootParameterSummary *parameter =
-					DX12BindingFindRootParameter(graphicsRoot, i);
+					DX12BindingTrackerUtils::FindRootParameter(graphicsRoot, i);
 				if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 					(*rootRangeTables)++;
 					const DX12DescriptorHeapSummary *heap =
-						DX12BindingFindHeapForGpuHandle(heaps, event.graphicsTables[i],
+						DX12BindingTrackerUtils::FindHeapForGpuHandle(heaps, event.graphicsTables[i],
 							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					if (heap && heap->increment) {
 						const UINT64 tableBaseIndex =
@@ -805,7 +809,7 @@ static void CountEventTables(
 								continue;
 							(*unboundedRanges)++;
 							(*unboundedDescriptors) +=
-								DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+								DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBaseIndex, range);
 						}
 					}
 				} else {
@@ -822,11 +826,11 @@ static void CountEventTables(
 			if (hasComputeRoot) {
 				(*computeTablesWithRoots)++;
 				const DX12RootParameterSummary *parameter =
-					DX12BindingFindRootParameter(computeRoot, i);
+					DX12BindingTrackerUtils::FindRootParameter(computeRoot, i);
 				if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 					(*rootRangeTables)++;
 					const DX12DescriptorHeapSummary *heap =
-						DX12BindingFindHeapForGpuHandle(heaps, event.computeTables[i],
+						DX12BindingTrackerUtils::FindHeapForGpuHandle(heaps, event.computeTables[i],
 							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 					if (heap && heap->increment) {
 						const UINT64 tableBaseIndex =
@@ -836,7 +840,7 @@ static void CountEventTables(
 								continue;
 							(*unboundedRanges)++;
 							(*unboundedDescriptors) +=
-								DX12BindingDescriptorCountForRange(*heap, tableBaseIndex, range);
+								DX12BindingTrackerUtils::DescriptorCountForRange(*heap, tableBaseIndex, range);
 						}
 					}
 				} else {
@@ -883,15 +887,15 @@ static void CollectEventResourceBindings(
 	}
 }
 
-void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *bindings)
+void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *bindings)
 {
 	if (!bindings)
 		return;
 
 	std::vector<BindingEvent> events;
-	AcquireSRWLockShared(&gEventsLock);
-	events = gEvents;
-	ReleaseSRWLockShared(&gEventsLock);
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	events = DX12BindingTrackerState::Events;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
 		"\"events\":%zu", events.size());
 
@@ -938,13 +942,13 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 	size_t descriptorHistoryHits = 0;
 	size_t zeroDescriptorEpochEvents = 0;
 	for (const BindingEvent &event : events) {
-		if (!DX12BindingIsDrawEvent(event) && !DX12BindingIsDispatchEvent(event))
+		if (!DX12BindingTrackerUtils::IsDrawEvent(event) && !DX12BindingTrackerUtils::IsDispatchEvent(event))
 			continue;
 		if (event.descriptorEpoch == 0)
 			zeroDescriptorEpochEvents++;
-		if (DX12BindingIsDrawEvent(event))
+		if (DX12BindingTrackerUtils::IsDrawEvent(event))
 			drawEvents++;
-		if (DX12BindingIsDispatchEvent(event))
+		if (DX12BindingTrackerUtils::IsDispatchEvent(event))
 			dispatchEvents++;
 		CountEventTables(event, heaps, &graphicsTables, &computeTables,
 			&graphicsTablesWithRoots, &computeTablesWithRoots,
@@ -1023,16 +1027,16 @@ void DX12GetCurrentFrameResourceBindings(std::vector<DX12FrameResourceBinding> *
 		untrackedUavBindings);
 }
 
-void DX12GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings)
+void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12FrameOutputBinding> *bindings)
 {
 	if (!bindings)
 		return;
 
 	std::vector<OutputBindingEvent> events;
-	AcquireSRWLockShared(&gEventsLock);
-	events = gOutputEvents;
-	const UINT64 dropped = gDroppedOutputEvents;
-	ReleaseSRWLockShared(&gEventsLock);
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	events = DX12BindingTrackerState::OutputEvents;
+	const UINT64 dropped = DX12BindingTrackerState::DroppedOutputEvents;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 
 	std::unordered_set<std::string> seen;
 	bindings->clear();
@@ -1110,7 +1114,7 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 
 	wchar_t path[MAX_PATH];
 	wchar_t summaryDir[MAX_PATH];
-	DX12BindingGetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
+	DX12BindingTrackerUtils::GetSummaryDirectory(dir, summaryDir, ARRAYSIZE(summaryDir));
 	swprintf_s(path, L"%s\\CurrentFrameResourcesDX12.txt", summaryDir);
 	FILE *file = _wfsopen(path, L"w", _SH_DENYNO);
 	if (!file) {
@@ -1180,7 +1184,7 @@ static DX12FrameAnalysisDumpResult WriteFrameResourceFile(
 	return result;
 }
 
-DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir)
+DX12FrameAnalysisDumpResult DX12BindingResourceExport::DumpCurrentFrameResourceTable(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
 	if (!dir)
@@ -1190,11 +1194,16 @@ DX12FrameAnalysisDumpResult DX12DumpCurrentFrameResourceTable(const wchar_t *dir
 	}
 
 	std::vector<BindingEvent> events;
-	AcquireSRWLockShared(&gEventsLock);
-	events = gEvents;
-	ReleaseSRWLockShared(&gEventsLock);
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	events = DX12BindingTrackerState::Events;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	return WriteFrameResourceFile(dir, events);
 }
+
+
+
+
+
 
 
 

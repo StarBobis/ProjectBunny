@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 #include <d3d12.h>
@@ -199,4 +199,4 @@ bool DX12FindDescriptorHeapByCpuHandle(
 	DX12DescriptorHeapSummary *summary);
 void DX12BeginFrameAnalysisMetadataCache();
 void DX12EndFrameAnalysisMetadataCache();
-DX12FrameAnalysisDumpResult DX12DumpResourceMetadata(const wchar_t *dir);
+

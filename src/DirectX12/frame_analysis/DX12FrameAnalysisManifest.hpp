@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 #include <d3d12.h>
@@ -7,7 +7,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Json.hpp"
 #include "DX12ResourceTracker.h"
@@ -566,4 +566,5 @@ public:
 		DX12FrameAnalysis::LogJsonFields(buffer);
 	}
 };
+
 

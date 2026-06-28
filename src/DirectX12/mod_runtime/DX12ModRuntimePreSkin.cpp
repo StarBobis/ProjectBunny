@@ -1,4 +1,4 @@
-static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
+﻿static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
 {
 	if (descriptor.viewSize)
 		return descriptor.viewSize;
@@ -1356,7 +1356,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	ID3D12DescriptorHeap *restoreCbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *restoreSamplerHeap = nullptr;
-	DX12BindingGetCurrentDescriptorHeaps(
+	DX12BindingTracker::GetCurrentDescriptorHeaps(
 		commandList, &restoreCbvSrvUavHeap, &restoreSamplerHeap);
 	if (restoreCbvSrvUavHeap != tempHeap) {
 		ID3D12DescriptorHeap *heaps[2] = { tempHeap, restoreSamplerHeap };
@@ -1816,11 +1816,11 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
 		DX12CommandListRuntimeSetDescriptorHeaps(
 			commandList, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
-		DX12BindingSetDescriptorHeaps(commandList, heapCount, heapCount ? heaps : nullptr);
+		DX12BindingTracker::SetDescriptorHeaps(commandList, heapCount, heapCount ? heaps : nullptr);
 		for (const auto &restore : state.tableRestores) {
 			commandList->SetComputeRootDescriptorTable(
 				restore.rootParameterIndex, restore.originalTable);
-			DX12BindingSetComputeRootDescriptorTable(
+			DX12BindingTracker::SetComputeRootDescriptorTable(
 				commandList, restore.rootParameterIndex, restore.originalTable);
 		}
 		state.patchHeap = nullptr;
@@ -1871,4 +1871,5 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		restoredDescriptorCount, restoredTableCount);
 #endif
 }
+
 

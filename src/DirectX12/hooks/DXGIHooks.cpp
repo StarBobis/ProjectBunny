@@ -1,9 +1,9 @@
-#include "DXGIHooks.h"
+﻿#include "DXGIHooks.h"
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12CommandListHooks.h"
 #include "DX12CommandListRuntime.h"
 #include "DX12DeviceHooks.h"
@@ -180,7 +180,7 @@ static void ConsumeUiActionsForFrame()
 
 static void BeginFrameAnalysisCapture(LONG present)
 {
-	DX12BindingBeginFrame();
+	DX12BindingTracker::BeginFrame();
 	DX12FrameAnalysis::BeginCapture();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 	DX12FrameAnalysis::LogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
@@ -188,7 +188,7 @@ static void BeginFrameAnalysisCapture(LONG present)
 
 static void BeginShaderDumpCapture()
 {
-	DX12BindingBeginFrame();
+	DX12BindingTracker::BeginFrame();
 	DX12ShaderDumpBeginCapture();
 	DX12CommandListRuntimeBumpTrackingGeneration();
 }
@@ -513,7 +513,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
-		DX12BindingBeginFrame();
+		DX12BindingTracker::BeginFrame();
 		LogPresentStage("Present", "afterBindingBeginFrame", swapChain, hr);
 	}
 	DX12Profiling::EndFrame();
@@ -611,7 +611,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 		BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
-		DX12BindingBeginFrame();
+		DX12BindingTracker::BeginFrame();
 		LogPresentStage("Present1", "afterBindingBeginFrame", swapChain, hr);
 	}
 	DX12Profiling::EndFrame();
@@ -664,5 +664,6 @@ void DX12InstallDXGIHooks()
 	DX12InstallExportHook(dxgi, "CreateDXGIFactory2",
 		reinterpret_cast<void**>(&gOrigCreateDXGIFactory2), HookedCreateDXGIFactory2);
 }
+
 
 

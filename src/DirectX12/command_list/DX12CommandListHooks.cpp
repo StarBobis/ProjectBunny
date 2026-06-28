@@ -1,4 +1,4 @@
-#include "DX12CommandListHooks.h"
+﻿#include "DX12CommandListHooks.h"
 
 #include <d3d12.h>
 #include <stdarg.h>
@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "DX12BindingTracker.h"
+#include "DX12BindingTracker.hpp"
 #include "DX12CommandListCommandRecorder.h"
 #include "DX12CommandListLifecycle.h"
 #include "DX12CommandListRuntime.h"
@@ -629,15 +629,15 @@ static DX12IaReplacementExecutorCallbacks MakeIaReplacementCallbacks(
 {
 	DX12IaReplacementExecutorCallbacks callbacks;
 	callbacks.drawInstanced =
-		DX12_CL_ORIG(commandList, 12, DX12IaExecDrawInstanced, DrawInstanced);
+		DX12_CL_ORIG(commandList, 12, DX12IaCommandSignatures::DrawInstanced, DrawInstanced);
 	callbacks.drawIndexedInstanced =
-		DX12_CL_ORIG(commandList, 13, DX12IaExecDrawIndexedInstanced, DrawIndexedInstanced);
+		DX12_CL_ORIG(commandList, 13, DX12IaCommandSignatures::DrawIndexedInstanced, DrawIndexedInstanced);
 	callbacks.dispatch =
-		DX12_CL_ORIG(commandList, 14, DX12IaExecDispatch, Dispatch);
+		DX12_CL_ORIG(commandList, 14, DX12IaCommandSignatures::Dispatch, Dispatch);
 	callbacks.setIndexBuffer =
-		DX12_CL_ORIG(commandList, 43, DX12IaExecSetIndexBuffer, IASetIndexBuffer);
+		DX12_CL_ORIG(commandList, 43, DX12IaCommandSignatures::SetIndexBuffer, IASetIndexBuffer);
 	callbacks.setVertexBuffers =
-		DX12_CL_ORIG(commandList, 44, DX12IaExecSetVertexBuffers, IASetVertexBuffers);
+		DX12_CL_ORIG(commandList, 44, DX12IaCommandSignatures::SetVertexBuffers, IASetVertexBuffers);
 	callbacks.recordReplacementDraw = RecordIaReplacementDrawExecute;
 	callbacks.recordReplacementDispatch = RecordIaReplacementDispatchExecute;
 	return callbacks;
@@ -1093,7 +1093,7 @@ static void STDMETHODCALLTYPE HookedDrawInstanced(
 		" vertices=%u instances=%u startVertex=%u startInstance=%u",
 		vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
+		DX12BindingTracker::RecordDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
 			startVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
 		if (DX12HuntShouldSkipDraw(
@@ -1167,7 +1167,7 @@ static void STDMETHODCALLTYPE HookedDrawIndexedInstanced(
 		indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation,
 		startInstanceLocation);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
+		DX12BindingTracker::RecordDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
 			startIndexLocation, baseVertexLocation, startInstanceLocation);
 	if (DX12HuntIsEnabled()) {
 		if (DX12HuntShouldSkipDraw(
@@ -1233,7 +1233,7 @@ static void STDMETHODCALLTYPE HookedDispatch(
 	LogDX12Call("ID3D12GraphicsCommandList::Dispatch", commandList,
 		" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		DX12BindingTracker::RecordDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 	if (DX12HuntIsEnabled()) {
 		DX12HuntRecordDispatch(commandList);
 		if (DX12HuntShouldSkipDispatch(commandList))
@@ -1572,7 +1572,7 @@ static void STDMETHODCALLTYPE HookedOMSetRenderTargets(
 		" rtCount=%u singleRange=%u dsv=%p", numRenderTargetDescriptors,
 		singleHandleToDescriptorRange, depthStencilDescriptor);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordOutputTargets(commandList, numRenderTargetDescriptors,
+		DX12BindingTracker::RecordOutputTargets(commandList, numRenderTargetDescriptors,
 			renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 	gOrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
 		renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
@@ -1586,7 +1586,7 @@ static void STDMETHODCALLTYPE HookedClearDepthStencilView(
 		" dsv=0x%llx flags=0x%x rects=%u", static_cast<unsigned long long>(depthStencilView.ptr),
 		static_cast<UINT>(clearFlags), numRects);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordDepthStencilClear(commandList, depthStencilView);
+		DX12BindingTracker::RecordDepthStencilClear(commandList, depthStencilView);
 	gOrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
 }
 
@@ -1597,7 +1597,7 @@ static void STDMETHODCALLTYPE HookedClearRenderTargetView(
 	LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
 		" rtv=0x%llx rects=%u", static_cast<unsigned long long>(renderTargetView.ptr), numRects);
 	if (DX12CommandListCaptureShouldRecordBindingEventsCached(commandList))
-		DX12BindingRecordRenderTargetClear(commandList, renderTargetView);
+		DX12BindingTracker::RecordRenderTargetClear(commandList, renderTargetView);
 	gOrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
 }
 
@@ -1736,7 +1736,7 @@ static void STDMETHODCALLTYPE HookedExecuteIndirect(
 					DX12LogManager::Text("HookedExecuteIndirect: pre-skin CS match!\n");
 					std::vector<DX12CurrentComputeUavBinding> uavs, srvs, cbvs;
 					std::vector<DX12CurrentRootConstants> rootConstants;
-					if (DX12BindingGetCurrentComputeAll(commandList, &uavs, &srvs, &cbvs, &rootConstants)) {
+					if (DX12BindingTracker::GetCurrentComputeAll(commandList, &uavs, &srvs, &cbvs, &rootConstants)) {
 						DX12LogManager::Text("HookedExecuteIndirect: bindings found uavs=%zu srvs=%zu cbvs=%zu\n",
 							uavs.size(), srvs.size(), cbvs.size());
 						UINT originalVertexCount = 0, overrideVertexCount = 0;
@@ -1910,6 +1910,7 @@ void DX12HookCommandListCreation(IUnknown *device)
 		device4->Release();
 	}
 }
+
 
 
 
