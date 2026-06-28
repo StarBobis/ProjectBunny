@@ -41,7 +41,9 @@ struct DescriptorRecord
 	UINT64 valueId = 0;
 	SIZE_T cpuHandle = 0;
 	ID3D12Resource *resource = nullptr;
+	bool ownsResource = false;
 	ID3D12Resource *counterResource = nullptr;
+	bool ownsCounterResource = false;
 	D3D12_RESOURCE_DESC resourceDesc = {};
 	bool hasResourceDesc = false;
 	UINT resourceHeapType = 0;
@@ -144,6 +146,8 @@ void CleanupTrackedResources();
 void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_T blobLength);
 void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);
 void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource);
+void ReleaseDescriptorRecordResources(DescriptorRecord *record);
+DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void SetDescriptorKind(DescriptorRecord *record, UINT kindId);
 void FillSrvBufferView(DescriptorRecord *record);

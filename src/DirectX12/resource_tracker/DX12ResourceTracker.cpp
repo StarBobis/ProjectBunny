@@ -47,8 +47,10 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	if (found == gDescriptorHeapByPtr.end() || found->second >= gDescriptorHeaps.size())
 		return;
 	DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
-	for (const auto &slot : record.slots)
+	for (auto &slot : record.slots) {
+		ReleaseDescriptorRecordResources(&slot.second);
 		gDescriptorByCpuHandle.erase(slot.second.cpuHandle);
+	}
 	record.slots.clear();
 	record.cpuStart = 0;
 	record.gpuStart = 0;
@@ -106,6 +108,37 @@ static UINT64 HashDescriptorValue(const DescriptorRecord &record)
 		append(&record.sampler, sizeof(record.sampler));
 	}
 	return hash ? hash : 1;
+}
+
+void ReleaseDescriptorRecordResources(DescriptorRecord *record)
+{
+	if (!record)
+		return;
+	if (record->ownsResource && record->resource)
+		record->resource->Release();
+	if (record->ownsCounterResource && record->counterResource)
+		record->counterResource->Release();
+	record->resource = nullptr;
+	record->counterResource = nullptr;
+	record->ownsResource = false;
+	record->ownsCounterResource = false;
+}
+
+static void RetainDescriptorRecordResources(DescriptorRecord *record)
+{
+	if (!record)
+		return;
+	if (record->ownsResource && record->resource)
+		record->resource->AddRef();
+	if (record->ownsCounterResource && record->counterResource)
+		record->counterResource->AddRef();
+}
+
+DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record)
+{
+	DescriptorRecord clone = record;
+	RetainDescriptorRecordResources(&clone);
+	return clone;
 }
 
 void PrepareDescriptorValueId(DescriptorRecord *record)
@@ -271,6 +304,12 @@ void CleanupTrackedResources()
 {
 	AcquireSRWLockExclusive(&gResourceLock);
 	AcquireSRWLockExclusive(&gDescriptorLock);
+	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		for (auto &slot : heap.slots)
+			ReleaseDescriptorRecordResources(&slot.second);
+	}
+	for (DescriptorRecord &record : gDescriptors)
+		ReleaseDescriptorRecordResources(&record);
 	gRootSignatures.clear();
 	gDescriptorHeaps.clear();
 	gDescriptors.clear();
@@ -545,8 +584,12 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 
 	record->resource = resource;
 	if (ShouldTrackResourceMetadata()) {
+		record->resource->AddRef();
+		record->ownsResource = true;
 		// Full texture/resource metadata is only needed while dumping. The
-		// normal hot path keeps just enough identity for Mod matching.
+		// normal hot path keeps just enough identity for Mod matching. Hunting
+		// delays readback until FrameAnalysis, so descriptor resources need a
+		// COM reference or transient texture pointers can expire before copy.
 		FillResourceInfo(record, resource);
 	}
 }
@@ -832,7 +875,7 @@ static bool FindLatestDescriptorAtSlotLocked(
 	auto slot = heap.slots.find(location.slot);
 	if (slot == heap.slots.end())
 		return false;
-	*record = slot->second;
+	*record = CloneDescriptorRecord(slot->second);
 	return true;
 }
 
@@ -877,9 +920,12 @@ static void RecordDescriptorAtSlotLocked(
 	auto existing = heap.slots.find(location.slot);
 	if (existing != heap.slots.end()) {
 		if (existing->second.valueId == record.valueId &&
-			existing->second.cpuHandle == record.cpuHandle)
+			existing->second.cpuHandle == record.cpuHandle) {
+			ReleaseDescriptorRecordResources(&record);
 			return;
+		}
 		gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+		ReleaseDescriptorRecordResources(&existing->second);
 	}
 	++gDescriptorCopyRecordsSeen;
 	auto inserted = heap.slots.insert_or_assign(location.slot, std::move(record));
@@ -897,9 +943,12 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		auto existing = heap.slots.find(location.slot);
 		if (existing != heap.slots.end()) {
 			if (existing->second.valueId == record.valueId &&
-				existing->second.cpuHandle == record.cpuHandle)
+				existing->second.cpuHandle == record.cpuHandle) {
+				ReleaseDescriptorRecordResources(&record);
 				return;
+			}
 			gDescriptorByCpuHandle.erase(existing->second.cpuHandle);
+			ReleaseDescriptorRecordResources(&existing->second);
 		}
 		if (copied)
 			++gDescriptorCopyRecordsSeen;
@@ -914,11 +963,16 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		++gDescriptorCopyRecordsSeen;
 	else
 		++gDescriptorRecordsSeen;
+	auto legacy = gDescriptorByCpuHandle.find(record.cpuHandle);
+	if (legacy != gDescriptorByCpuHandle.end() &&
+		legacy->second.heapIndex == SIZE_MAX &&
+		legacy->second.slot < gDescriptors.size())
+		ReleaseDescriptorRecordResources(&gDescriptors[legacy->second.slot]);
 	gDescriptors.push_back(std::move(record));
-	DescriptorSlotLocation legacy = {};
-	legacy.heapIndex = SIZE_MAX;
-	legacy.slot = static_cast<UINT>(gDescriptors.size() - 1);
-	gDescriptorByCpuHandle[gDescriptors.back().cpuHandle] = legacy;
+	DescriptorSlotLocation legacyLocation = {};
+	legacyLocation.heapIndex = SIZE_MAX;
+	legacyLocation.slot = static_cast<UINT>(gDescriptors.size() - 1);
+	gDescriptorByCpuHandle[gDescriptors.back().cpuHandle] = legacyLocation;
 }
 
 void RecordDescriptor(DescriptorRecord &&record)
@@ -976,7 +1030,7 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 	if (location.heapIndex == SIZE_MAX) {
 		if (location.slot >= gDescriptors.size())
 			return false;
-		*record = gDescriptors[location.slot];
+		*record = CloneDescriptorRecord(gDescriptors[location.slot]);
 		return true;
 	}
 	if (location.heapIndex >= gDescriptorHeaps.size())
@@ -985,7 +1039,7 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 	auto slot = heap.slots.find(location.slot);
 	if (slot == heap.slots.end())
 		return false;
-	*record = slot->second;
+	*record = CloneDescriptorRecord(slot->second);
 	return true;
 }
 

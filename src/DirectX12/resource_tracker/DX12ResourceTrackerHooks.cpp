@@ -845,7 +845,7 @@ void DX12HookResourceMetadata(ID3D12Device *device)
 	if (!gCleanupRegistered) {
 		atexit(CleanupTrackedResources);
 		gCleanupRegistered = true;
-		DX12Log("Resource metadata tracking uses non-owning resource pointers\n");
+		DX12Log("Resource metadata tracking retains descriptor resources while Hunting\n");
 	}
 
 	DX12VTableHook deviceHooks[] = {
