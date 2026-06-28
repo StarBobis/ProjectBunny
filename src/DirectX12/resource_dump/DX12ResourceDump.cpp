@@ -850,6 +850,11 @@ static void AppendShaderHashNamePart(
 		stage, static_cast<unsigned long long>(hash));
 }
 
+static bool HasAnyShaderHash(const DX12PsoShaderInfo &info)
+{
+	return info.hasVS || info.hasPS || info.hasCS;
+}
+
 static void BuildShaderHashNamePart(
 	const DX12PsoShaderInfo &info, wchar_t *text, size_t textCount)
 {
@@ -887,7 +892,13 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 				eventPrefix, ARRAYSIZE(eventPrefix));
 	}
 	wchar_t shaderPart[96];
-	BuildShaderHashNamePart(binding->shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
+	// Metadata texture discovery is not tied to a draw/dispatch PSO. Keeping
+	// shader hashes out of those names avoids presenting missing context as a
+	// bogus slot, which showed up as debug-fill cccccccc in hunting dumps.
+	if (HasAnyShaderHash(binding->shaderInfo))
+		BuildShaderHashNamePart(binding->shaderInfo, shaderPart, ARRAYSIZE(shaderPart));
+	else
+		shaderPart[0] = L'\0';
 	char semanticSlot[32];
 	if (DX12DumpBuildSemanticSlot(*binding, semanticSlot, ARRAYSIZE(semanticSlot))) {
 		swprintf_s(fileName, fileNameCount,

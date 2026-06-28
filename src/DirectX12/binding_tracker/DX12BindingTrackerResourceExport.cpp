@@ -489,8 +489,9 @@ static void CollectFrameResourceBinding(
 				const DX12DescriptorSummary *descriptor =
 					FindDescriptorForSlot(descriptors, heap, descriptorIndex, cpuHandle);
 				if (CollectDescriptorTableEntry(bindings, event, bindSpace, table,
-						range.rangeIndex, range.rangeType, range.baseShaderRegister + offset,
-						range.shaderVisibility, range.registerSpace, range.effectiveOffset + offset,
+						range.rangeIndex, range.rangeType, range.shaderVisibility,
+						range.baseShaderRegister + offset, range.registerSpace,
+						range.effectiveOffset + offset,
 						heap, descriptorIndex, gpuHandle, cpuHandle, descriptor,
 						seen, untrackedSkipped))
 					collectedRange = true;

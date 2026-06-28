@@ -5,13 +5,13 @@
 
 struct DX12PsoShaderInfo
 {
-	UINT64 psoIndex;
-	bool hasVS;
-	bool hasPS;
-	bool hasCS;
-	UINT64 vs;
-	UINT64 ps;
-	UINT64 cs;
+	UINT64 psoIndex = 0;
+	bool hasVS = false;
+	bool hasPS = false;
+	bool hasCS = false;
+	UINT64 vs = 0;
+	UINT64 ps = 0;
+	UINT64 cs = 0;
 	std::string vsModel;
 	std::string psModel;
 	std::string csModel;

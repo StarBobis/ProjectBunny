@@ -72,6 +72,22 @@ static bool BuildEvent(
 	return true;
 }
 
+static void NormalizeCapturedResourceBinding(
+	DX12FrameResourceBinding *binding, const BindingEvent &event)
+{
+	if (!binding)
+		return;
+
+	// Captured descriptor-table rows are an event snapshot.  Keep their event
+	// identity in one place so later dump filters do not drop valid SRVs just
+	// because the binding row carried stale draw/dispatch metadata.
+	binding->eventSerial = event.serial;
+	binding->drawId = event.drawId;
+	binding->dispatchId = event.dispatchId;
+	binding->psoIndex = event.shaderInfo.psoIndex;
+	binding->shaderInfo = event.shaderInfo;
+}
+
 static void StoreEventLocked(const BindingEvent &event)
 {
 	if (gEvents.size() >= MaxTrackedEvents) {
@@ -80,6 +96,8 @@ static void StoreEventLocked(const BindingEvent &event)
 	}
 	BindingEvent stored = event;
 	stored.serial = ++gEventSerial;
+	for (DX12FrameResourceBinding &binding : stored.resourceBindings)
+		NormalizeCapturedResourceBinding(&binding, stored);
 	gEvents.push_back(std::move(stored));
 }
 
