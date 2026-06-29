@@ -10,6 +10,19 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 
+$cleanScript = Join-Path $root "clean_build_result.ps1"
+if (-not (Test-Path $cleanScript)) {
+    Write-Host "ERROR: Clean script not found: $cleanScript" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "===== Cleaning previous build results =====" -ForegroundColor Cyan
+& $cleanScript
+if (-not $?) {
+    Write-Host "FAILED: clean_build_result.ps1" -ForegroundColor Red
+    exit 1
+}
+
 $cmake = (Get-Command cmake -ErrorAction SilentlyContinue).Source
 if (-not $cmake) {
     $cmake = "C:\tools\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe"

@@ -13,7 +13,7 @@ This project is used to refactor and improve the original 3Dmigoto project.
 - DX11部分随 SpectrumQT的 XXMI-Libs-Package 版本 3Dmigoto 而更新.
 - 使用C++ 17标准，而不是C++14标准
 - 使用VSCode开发而不是Visual Studio开发
-- 
+
 
 # Development Environment
 
