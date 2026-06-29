@@ -37,20 +37,20 @@ public:
 
 namespace Bunny {
 
-class MigotoShaderRegexParserUtils
+class MigotoShaderRegexParserText
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
 static std::wstring ShaderRegexGroupName(const std::wstring &section)
 {
 	size_t namespaceEnd = 0;
-	if (IniDocumentUtils::ToLower(section).rfind(L"shaderregex\\", 0) == 0) {
+	if (IniDocumentText::ToLower(section).rfind(L"shaderregex\\", 0) == 0) {
 		size_t suffixStart = section.find_last_of(L'\\');
 		if (suffixStart != std::wstring::npos)
 			namespaceEnd = suffixStart + 1;
@@ -77,7 +77,7 @@ static void AppendShaderModels(
 		size_t space = value.find_first_of(L" \t\r\n", start);
 		std::wstring token = space == std::wstring::npos ?
 			value.substr(start) : value.substr(start, space - start);
-		token = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(token));
+		token = IniDocumentText::ToLower(IniDocumentText::Trim(token));
 		if (!token.empty()) {
 			std::string model;
 			model.reserve(token.size());
@@ -108,20 +108,20 @@ inline void MigotoShaderRegexParser::ParseSections(
 
 	shaderRegexes->clear();
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoShaderRegexParserUtils::StartsWithI(section.name, L"ShaderRegex"))
+		if (!MigotoShaderRegexParserText::StartsWithI(section.name, L"ShaderRegex"))
 			continue;
 
-		const std::wstring groupName = MigotoShaderRegexParserUtils::ShaderRegexGroupName(section.name);
+		const std::wstring groupName = MigotoShaderRegexParserText::ShaderRegexGroupName(section.name);
 		ShaderRegexConfig &config = (*shaderRegexes)[groupName];
 		if (config.section.empty()) {
 			config.section = groupName;
-			config.originalSection = section.originalName.empty() ? groupName : MigotoShaderRegexParserUtils::ShaderRegexGroupName(section.originalName);
+			config.originalSection = section.originalName.empty() ? groupName : MigotoShaderRegexParserText::ShaderRegexGroupName(section.originalName);
 			config.sourcePath = section.sourcePath;
 			config.sourceDir = section.sourceDir;
 			config.iniNamespace = section.iniNamespace;
 		}
 
-		if (!MigotoShaderRegexParserUtils::IsShaderRegexMainSection(section.name)) {
+		if (!MigotoShaderRegexParserText::IsShaderRegexMainSection(section.name)) {
 			config.hasPattern = true;
 			continue;
 		}
@@ -135,17 +135,17 @@ inline void MigotoShaderRegexParser::ParseSections(
 			if (!entry.hasEquals)
 				continue;
 
-			std::wstring key = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(entry.key));
-			std::wstring value = IniDocumentUtils::Trim(entry.value);
+			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
+			std::wstring value = IniDocumentText::Trim(entry.value);
 			if (key == L"shader_model") {
-				MigotoShaderRegexParserUtils::AppendShaderModels(value, &config.shaderModels);
+				MigotoShaderRegexParserText::AppendShaderModels(value, &config.shaderModels);
 				continue;
 			}
 			if (key == L"temps" || key == L"filter_index")
 				continue;
 
 			if (key == L"handling") {
-				std::wstring handling = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(value));
+				std::wstring handling = IniDocumentText::ToLower(IniDocumentText::Trim(value));
 				if (handling == L"skip") {
 					config.handlingSkip = true;
 					CommandListAction action;

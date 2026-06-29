@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include "DX12NativeOverlay.hpp"
+#include "DX12CommandListHookState.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12HotPathState.hpp"
@@ -49,7 +50,7 @@ public:
 		DX12Profiling::Init();
 		DX12LogManager::Text("\n*** 3DMigoto DX12 runtime initialized - frame analysis logging ready ***\n");
 
-		std::wstring configPath = Bunny::MigotoConfigUtils::FindDefaultConfigPath(module);
+		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
 		if (ConfigLoaded) {
 			DX12ModSetSafeMode(Config.Runtime().dx12SafeMode);
@@ -88,6 +89,8 @@ public:
 	{
 		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
 		DX12NativeOverlayShutdown();
+		DXGIHooks::Shutdown();
+		DX12CommandListHookState::ReleaseKnownCommandQueue();
 		DX12HookRegistry::UnhookAll();
 		DX12LogManager::Close();
 		LoadRealD3D12 = nullptr;

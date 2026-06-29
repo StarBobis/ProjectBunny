@@ -102,19 +102,19 @@ public:
 
 namespace Bunny {
 
-class MigotoCommandListParserUtils
+class MigotoCommandListParserText
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
 static bool EqualsI(const std::wstring &value, const wchar_t *text)
 {
-	return IniDocumentUtils::ToLower(value) == IniDocumentUtils::ToLower(text);
+	return IniDocumentText::ToLower(value) == IniDocumentText::ToLower(text);
 }
 
 static bool IsExplicitCommandListSection(const std::wstring &section)
@@ -200,14 +200,14 @@ inline bool MigotoCommandListParser::ParseTarget(const std::wstring &text, Comma
 		return false;
 	*target = CommandListTarget();
 
-	std::wstring value = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(text));
+	std::wstring value = IniDocumentText::ToLower(IniDocumentText::Trim(text));
 	if (value == L"ib") {
 		target->kind = CommandListTargetKind::IndexBuffer;
 		return true;
 	}
 
 	uint32_t slot = 0;
-	if (MigotoCommandListParserUtils::ParseVertexBufferTarget(value, &slot)) {
+	if (MigotoCommandListParserText::ParseVertexBufferTarget(value, &slot)) {
 		target->kind = CommandListTargetKind::VertexBuffer;
 		target->slot = slot;
 		return true;
@@ -215,23 +215,23 @@ inline bool MigotoCommandListParser::ParseTarget(const std::wstring &text, Comma
 
 	size_t prefixLength = 0;
 	CommandListShaderStage stage = CommandListShaderStage::Unknown;
-	if (MigotoCommandListParserUtils::ParseShaderStagePrefix(value, &prefixLength, &stage)) {
+	if (MigotoCommandListParserText::ParseShaderStagePrefix(value, &prefixLength, &stage)) {
 		if (value.rfind(L"cb", prefixLength) == prefixLength &&
-		    MigotoCommandListParserUtils::ParseTargetSlot(value, prefixLength + 2, &slot)) {
+		    MigotoCommandListParserText::ParseTargetSlot(value, prefixLength + 2, &slot)) {
 			target->kind = CommandListTargetKind::ConstantBuffer;
 			target->stage = stage;
 			target->slot = slot;
 			return true;
 		}
 		if (value.rfind(L"t", prefixLength) == prefixLength &&
-		    MigotoCommandListParserUtils::ParseTargetSlot(value, prefixLength + 1, &slot)) {
+		    MigotoCommandListParserText::ParseTargetSlot(value, prefixLength + 1, &slot)) {
 			target->kind = CommandListTargetKind::ShaderResource;
 			target->stage = stage;
 			target->slot = slot;
 			return true;
 		}
 		if (value.rfind(L"u", prefixLength) == prefixLength &&
-		    MigotoCommandListParserUtils::ParseTargetSlot(value, prefixLength + 1, &slot) &&
+		    MigotoCommandListParserText::ParseTargetSlot(value, prefixLength + 1, &slot) &&
 		    (stage == CommandListShaderStage::Pixel ||
 		     stage == CommandListShaderStage::Compute)) {
 			target->kind = CommandListTargetKind::UnorderedAccessView;
@@ -243,52 +243,52 @@ inline bool MigotoCommandListParser::ParseTarget(const std::wstring &text, Comma
 	return false;
 }
 
-inline void MigotoCommandListParserUtils::AppendRunList(const std::wstring &value, std::vector<std::wstring> *lists)
+inline void MigotoCommandListParserText::AppendRunList(const std::wstring &value, std::vector<std::wstring> *lists)
 {
 	if (!lists)
 		return;
-	std::wstring list = IniDocumentUtils::Trim(value);
+	std::wstring list = IniDocumentText::Trim(value);
 	if (!list.empty())
 		lists->push_back(list);
 }
 
-inline std::wstring MigotoCommandListParserUtils::ResolveCommandListReference(
+inline std::wstring MigotoCommandListParserText::ResolveCommandListReference(
 	const std::wstring &value, const std::wstring &iniNamespace)
 {
-	std::wstring ref = IniDocumentUtils::Trim(value);
+	std::wstring ref = IniDocumentText::Trim(value);
 	if (ref.empty())
 		return L"";
 
-	if (MigotoCommandListParserUtils::IsExplicitCommandListSection(ref))
-		return IniDocumentUtils::MakeNamespacedSectionName(ref, iniNamespace);
-	return IniDocumentUtils::ResolveNamespacedSectionReference(ref, L"CommandList", iniNamespace);
+	if (MigotoCommandListParserText::IsExplicitCommandListSection(ref))
+		return IniDocumentText::MakeNamespacedSectionName(ref, iniNamespace);
+	return IniDocumentText::ResolveNamespacedSectionReference(ref, L"CommandList", iniNamespace);
 }
 
-inline std::wstring MigotoCommandListParserUtils::ResolveResourceReference(
+inline std::wstring MigotoCommandListParserText::ResolveResourceReference(
 	const std::wstring &value, const std::wstring &iniNamespace)
 {
-	return IniDocumentUtils::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
+	return IniDocumentText::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
 }
 
-inline bool MigotoCommandListParserUtils::ParseUInt(const std::wstring &text, uint32_t *value)
+inline bool MigotoCommandListParserText::ParseUInt(const std::wstring &text, uint32_t *value)
 {
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.empty())
 		return false;
 
 	wchar_t *end = nullptr;
 	unsigned long parsed = std::wcstoul(trimmed.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 
 	*value = static_cast<uint32_t>(parsed);
 	return true;
 }
 
-inline bool MigotoCommandListParserUtils::ParseDrawArgs(
+inline bool MigotoCommandListParserText::ParseDrawArgs(
 	const std::wstring &value, uint32_t expectedArgs, CommandListAction *action)
 {
 	if (!action || expectedArgs > 5)
@@ -304,7 +304,7 @@ inline bool MigotoCommandListParserUtils::ParseDrawArgs(
 		if (count >= expectedArgs)
 			return false;
 		uint32_t parsed = 0;
-		if (!MigotoCommandListParserUtils::ParseUInt(token, &parsed))
+		if (!MigotoCommandListParserText::ParseUInt(token, &parsed))
 			return false;
 		action->args[count++] = parsed;
 		if (comma == std::wstring::npos)
@@ -335,32 +335,32 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 		return MigotoCommandListParser::ParseTarget(value, &action->target);
 	}
 
-	if (key == L"handling" && IniDocumentUtils::ToLower(value) == L"skip") {
+	if (key == L"handling" && IniDocumentText::ToLower(value) == L"skip") {
 		action->kind = CommandListActionKind::HandlingSkip;
 		return true;
 	}
 
 	if (key == L"draw") {
-		if (IniDocumentUtils::ToLower(value) == L"from_caller") {
+		if (IniDocumentText::ToLower(value) == L"from_caller") {
 			action->kind = CommandListActionKind::DrawFromCaller;
 			return true;
 		}
 		action->kind = CommandListActionKind::Draw;
-		return MigotoCommandListParserUtils::ParseDrawArgs(value, 2, action);
+		return MigotoCommandListParserText::ParseDrawArgs(value, 2, action);
 	}
 
 	if (key == L"drawindexed") {
-		if (IniDocumentUtils::ToLower(value) == L"from_caller") {
+		if (IniDocumentText::ToLower(value) == L"from_caller") {
 			action->kind = CommandListActionKind::DrawIndexedFromCaller;
 			return true;
 		}
 		action->kind = CommandListActionKind::DrawIndexed;
-		return MigotoCommandListParserUtils::ParseDrawArgs(value, 3, action);
+		return MigotoCommandListParserText::ParseDrawArgs(value, 3, action);
 	}
 
 	if (key == L"dispatch") {
 		action->kind = CommandListActionKind::Dispatch;
-		return MigotoCommandListParserUtils::ParseDrawArgs(value, 3, action);
+		return MigotoCommandListParserText::ParseDrawArgs(value, 3, action);
 	}
 
 	CommandListTarget target;
@@ -384,28 +384,28 @@ inline void MigotoCommandListParser::ParseLinksFromEntry(
 	if (!links)
 		return;
 
-	std::wstring lower = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(key));
+	std::wstring lower = IniDocumentText::ToLower(IniDocumentText::Trim(key));
 	if (lower == L"run") {
-		MigotoCommandListParserUtils::AppendRunList(value, &links->main);
+		MigotoCommandListParserText::AppendRunList(value, &links->main);
 		return;
 	}
 	if (lower == L"pre" || lower == L"pre run" || lower == L"prerun") {
-		MigotoCommandListParserUtils::AppendRunList(value, &links->pre);
+		MigotoCommandListParserText::AppendRunList(value, &links->pre);
 		return;
 	}
 	if (lower == L"post" || lower == L"post run" || lower == L"postrun") {
-		MigotoCommandListParserUtils::AppendRunList(value, &links->post);
+		MigotoCommandListParserText::AppendRunList(value, &links->post);
 		return;
 	}
 }
 
-inline void MigotoCommandListParserUtils::ResolveCommandListVector(
+inline void MigotoCommandListParserText::ResolveCommandListVector(
 	std::vector<std::wstring> *lists, const std::wstring &iniNamespace)
 {
 	if (!lists)
 		return;
 	for (std::wstring &list : *lists)
-		list = MigotoCommandListParserUtils::ResolveCommandListReference(list, iniNamespace);
+		list = MigotoCommandListParserText::ResolveCommandListReference(list, iniNamespace);
 }
 
 inline void MigotoCommandListParser::ResolveLinks(
@@ -413,9 +413,9 @@ inline void MigotoCommandListParser::ResolveLinks(
 {
 	if (!links)
 		return;
-	MigotoCommandListParserUtils::ResolveCommandListVector(&links->pre, iniNamespace);
-	MigotoCommandListParserUtils::ResolveCommandListVector(&links->main, iniNamespace);
-	MigotoCommandListParserUtils::ResolveCommandListVector(&links->post, iniNamespace);
+	MigotoCommandListParserText::ResolveCommandListVector(&links->pre, iniNamespace);
+	MigotoCommandListParserText::ResolveCommandListVector(&links->main, iniNamespace);
+	MigotoCommandListParserText::ResolveCommandListVector(&links->post, iniNamespace);
 }
 
 inline void MigotoCommandListParser::ResolveActionReferences(
@@ -425,10 +425,10 @@ inline void MigotoCommandListParser::ResolveActionReferences(
 		return;
 	action->iniNamespace = iniNamespace;
 	if (action->kind == CommandListActionKind::Run)
-		action->commandList = MigotoCommandListParserUtils::ResolveCommandListReference(action->commandList, iniNamespace);
+		action->commandList = MigotoCommandListParserText::ResolveCommandListReference(action->commandList, iniNamespace);
 	else if (action->kind == CommandListActionKind::SetIndexBuffer ||
 	         action->kind == CommandListActionKind::SetVertexBuffer)
-		action->resource = MigotoCommandListParserUtils::ResolveResourceReference(action->resource, iniNamespace);
+		action->resource = MigotoCommandListParserText::ResolveResourceReference(action->resource, iniNamespace);
 }
 
 inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, CommandListMap *commandLists)
@@ -438,7 +438,7 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 
 	commandLists->clear();
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoCommandListParserUtils::IsExplicitCommandListSection(section.name))
+		if (!MigotoCommandListParserText::IsExplicitCommandListSection(section.name))
 			continue;
 
 		CommandListConfig config;
@@ -452,8 +452,8 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 			if (!entry.hasEquals)
 				continue;
 
-			std::wstring key = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(entry.key));
-			std::wstring value = IniDocumentUtils::Trim(entry.value);
+			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
+			std::wstring value = IniDocumentText::Trim(entry.value);
 			CommandListAction action;
 			if (MigotoCommandListParser::ParseActionFromEntry(key, value, &action)) {
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);

@@ -9,7 +9,6 @@
 #include "DX12FrameAnalysisTypes.hpp"
 #include "types/DX12ResourceTypes.hpp"
 
-void DX12HookResourceMetadata(ID3D12Device *device);
 void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature);

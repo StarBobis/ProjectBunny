@@ -55,7 +55,7 @@ public:
 	std::wstring mError;
 };
 
-class IniDocumentUtils
+class IniDocumentText
 {
 public:
 	static std::wstring ToLower(std::wstring value);
@@ -80,14 +80,14 @@ public:
 
 namespace Bunny {
 
-inline std::wstring IniDocumentUtils::ToLower(std::wstring value)
+inline std::wstring IniDocumentText::ToLower(std::wstring value)
 {
 	std::transform(value.begin(), value.end(), value.begin(),
 		[](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
 	return value;
 }
 
-inline std::wstring IniDocumentUtils::Trim(const std::wstring &value)
+inline std::wstring IniDocumentText::Trim(const std::wstring &value)
 {
 	const wchar_t *spaces = L" \t\r\n";
 	size_t first = value.find_first_not_of(spaces);
@@ -97,12 +97,12 @@ inline std::wstring IniDocumentUtils::Trim(const std::wstring &value)
 	return value.substr(first, last - first + 1);
 }
 
-class IniDocumentParseUtils
+class IniDocumentParser
 {
 public:
 static bool IsCommentOrEmpty(const std::wstring &line)
 {
-	std::wstring trimmed = IniDocumentUtils::Trim(line);
+	std::wstring trimmed = IniDocumentText::Trim(line);
 	return trimmed.empty() || trimmed[0] == L';' || trimmed[0] == L'#';
 }
 
@@ -152,9 +152,9 @@ static const wchar_t *SectionPrefixFromList(
 		const SectionPrefixEntry &entry = entries[i];
 		std::wstring prefix = entry.prefix;
 		if (entry.isPrefix) {
-			if (IniDocumentUtils::ToLower(section).rfind(IniDocumentUtils::ToLower(prefix), 0) == 0)
+			if (IniDocumentText::ToLower(section).rfind(IniDocumentText::ToLower(prefix), 0) == 0)
 				return entry.prefix;
-		} else if (IniDocumentUtils::ToLower(section) == IniDocumentUtils::ToLower(prefix)) {
+		} else if (IniDocumentText::ToLower(section) == IniDocumentText::ToLower(prefix)) {
 			return entry.prefix;
 		}
 	}
@@ -162,25 +162,25 @@ static const wchar_t *SectionPrefixFromList(
 }
 };
 
-inline const wchar_t *IniDocumentUtils::MigotoSectionPrefix(const std::wstring &section)
+inline const wchar_t *IniDocumentText::MigotoSectionPrefix(const std::wstring &section)
 {
-	const wchar_t *prefix = IniDocumentParseUtils::SectionPrefixFromList(
-		section, IniDocumentParseUtils::kMigotoCommandListSections,
-		sizeof(IniDocumentParseUtils::kMigotoCommandListSections) / sizeof(IniDocumentParseUtils::kMigotoCommandListSections[0]));
+	const wchar_t *prefix = IniDocumentParser::SectionPrefixFromList(
+		section, IniDocumentParser::kMigotoCommandListSections,
+		sizeof(IniDocumentParser::kMigotoCommandListSections) / sizeof(IniDocumentParser::kMigotoCommandListSections[0]));
 	if (prefix)
 		return prefix;
-	return IniDocumentParseUtils::SectionPrefixFromList(
-		section, IniDocumentParseUtils::kMigotoRegularSections,
-		sizeof(IniDocumentParseUtils::kMigotoRegularSections) / sizeof(IniDocumentParseUtils::kMigotoRegularSections[0]));
+	return IniDocumentParser::SectionPrefixFromList(
+		section, IniDocumentParser::kMigotoRegularSections,
+		sizeof(IniDocumentParser::kMigotoRegularSections) / sizeof(IniDocumentParser::kMigotoRegularSections[0]));
 }
 
-inline std::wstring IniDocumentUtils::MakeNamespacedSectionName(
+inline std::wstring IniDocumentText::MakeNamespacedSectionName(
 	const std::wstring &section, const std::wstring &iniNamespace)
 {
 	if (iniNamespace.empty())
 		return section;
 
-	const wchar_t *prefix = IniDocumentUtils::MigotoSectionPrefix(section);
+	const wchar_t *prefix = IniDocumentText::MigotoSectionPrefix(section);
 	if (!prefix)
 		return section;
 
@@ -190,20 +190,20 @@ inline std::wstring IniDocumentUtils::MakeNamespacedSectionName(
 	return std::wstring(prefix) + L"\\" + iniNamespace + L"\\" + section.substr(prefixLength);
 }
 
-inline std::wstring IniDocumentUtils::ResolveNamespacedSectionReference(
+inline std::wstring IniDocumentText::ResolveNamespacedSectionReference(
 	const std::wstring &reference,
 	const std::wstring &prefix,
 	const std::wstring &iniNamespace)
 {
-	std::wstring ref = IniDocumentUtils::Trim(reference);
+	std::wstring ref = IniDocumentText::Trim(reference);
 	if (ref.empty())
 		return L"";
 
-	if (IniDocumentUtils::ToLower(ref).rfind(IniDocumentUtils::ToLower(prefix) + L"\\", 0) == 0)
+	if (IniDocumentText::ToLower(ref).rfind(IniDocumentText::ToLower(prefix) + L"\\", 0) == 0)
 		return ref;
-	if (IniDocumentUtils::ToLower(ref).rfind(IniDocumentUtils::ToLower(prefix), 0) == 0)
-		return IniDocumentUtils::MakeNamespacedSectionName(ref, iniNamespace);
-	return IniDocumentUtils::MakeNamespacedSectionName(prefix + ref, iniNamespace);
+	if (IniDocumentText::ToLower(ref).rfind(IniDocumentText::ToLower(prefix), 0) == 0)
+		return IniDocumentText::MakeNamespacedSectionName(ref, iniNamespace);
+	return IniDocumentText::MakeNamespacedSectionName(prefix + ref, iniNamespace);
 }
 
 inline bool IniDocument::LoadFromFile(const wchar_t *path)
@@ -288,14 +288,14 @@ inline bool IniDocument::AppendParse(
 		if (!line.empty() && line.back() == L'\r')
 			line.pop_back();
 
-		std::wstring trimmed = IniDocumentUtils::Trim(line);
-		if (IniDocumentParseUtils::IsCommentOrEmpty(trimmed))
+		std::wstring trimmed = IniDocumentText::Trim(line);
+		if (IniDocumentParser::IsCommentOrEmpty(trimmed))
 			continue;
 
 		if (trimmed.size() >= 2 && trimmed.front() == L'[' && trimmed.back() == L']') {
-			std::wstring originalName = IniDocumentUtils::Trim(trimmed.substr(1, trimmed.size() - 2));
-			std::wstring sectionName = IniDocumentUtils::MakeNamespacedSectionName(originalName, currentNamespace);
-			std::wstring sectionKey = IniDocumentUtils::ToLower(sectionName);
+			std::wstring originalName = IniDocumentText::Trim(trimmed.substr(1, trimmed.size() - 2));
+			std::wstring sectionName = IniDocumentText::MakeNamespacedSectionName(originalName, currentNamespace);
+			std::wstring sectionKey = IniDocumentText::ToLower(sectionName);
 			auto found = mSectionIndex.find(sectionKey);
 			if (found == mSectionIndex.end()) {
 				IniSection section;
@@ -316,8 +316,8 @@ inline bool IniDocument::AppendParse(
 		if (!current) {
 			size_t equals = line.find(L'=');
 			if (equals != std::wstring::npos) {
-				std::wstring key = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(line.substr(0, equals)));
-				std::wstring value = IniDocumentUtils::Trim(line.substr(equals + 1));
+				std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(line.substr(0, equals)));
+				std::wstring value = IniDocumentText::Trim(line.substr(equals + 1));
 				if (key == L"namespace") {
 					currentNamespace = value;
 					continue;
@@ -338,11 +338,11 @@ inline bool IniDocument::AppendParse(
 
 		size_t equals = line.find(L'=');
 		if (equals == std::wstring::npos) {
-			entry.key = IniDocumentUtils::Trim(line);
+			entry.key = IniDocumentText::Trim(line);
 			entry.hasEquals = false;
 		} else {
-			entry.key = IniDocumentUtils::Trim(line.substr(0, equals));
-			entry.value = IniDocumentUtils::Trim(line.substr(equals + 1));
+			entry.key = IniDocumentText::Trim(line.substr(0, equals));
+			entry.value = IniDocumentText::Trim(line.substr(equals + 1));
 			entry.hasEquals = true;
 		}
 		current->entries.push_back(entry);
@@ -355,7 +355,7 @@ inline const IniSection *IniDocument::FindSection(const wchar_t *section) const
 {
 	if (!section)
 		return nullptr;
-	auto found = mSectionIndex.find(IniDocumentUtils::ToLower(section));
+	auto found = mSectionIndex.find(IniDocumentText::ToLower(section));
 	if (found == mSectionIndex.end())
 		return nullptr;
 	return &mSections[found->second];
@@ -367,11 +367,11 @@ inline bool IniDocument::GetString(const wchar_t *section, const wchar_t *key, s
 	if (!iniSection || !key)
 		return false;
 
-	std::wstring keyLower = IniDocumentUtils::ToLower(key);
+	std::wstring keyLower = IniDocumentText::ToLower(key);
 	for (auto it = iniSection->entries.rbegin(); it != iniSection->entries.rend(); ++it) {
 		if (!it->hasEquals)
 			continue;
-		if (IniDocumentUtils::ToLower(it->key) == keyLower) {
+		if (IniDocumentText::ToLower(it->key) == keyLower) {
 			if (value)
 				*value = it->value;
 			return true;
@@ -385,7 +385,7 @@ inline bool IniDocument::GetBool(const wchar_t *section, const wchar_t *key, boo
 	std::wstring text;
 	if (!GetString(section, key, &text))
 		return false;
-	text = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(text));
+	text = IniDocumentText::ToLower(IniDocumentText::Trim(text));
 	bool parsed = text == L"1" || text == L"true" || text == L"yes" || text == L"on";
 	if (!parsed && !(text == L"0" || text == L"false" || text == L"no" || text == L"off"))
 		return false;
@@ -401,7 +401,7 @@ inline bool IniDocument::GetInt(const wchar_t *section, const wchar_t *key, int 
 		return false;
 	wchar_t *end = nullptr;
 	long parsed = std::wcstol(text.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 	if (value)
 		*value = static_cast<int>(parsed);

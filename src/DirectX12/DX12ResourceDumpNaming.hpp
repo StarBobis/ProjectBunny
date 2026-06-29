@@ -8,14 +8,14 @@
 #include <string>
 
 #include "DX12BindingTracker.hpp"
-#include "DX12ResourceDumpCoreUtils.hpp"
+#include "DX12ResourceDumpCore.hpp"
 #include "DX12ResourceDumpTypes.hpp"
-#include "utils/DX12ResourceDumpUtils.hpp"
+#include "DX12ResourceDumpPolicy.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12RuntimeState.hpp"
 #include "DX12ShaderDump.hpp"
 
-class DX12ResourceDumpNamingUtils
+class DX12ResourceDumpNaming
 {
 public:
 static const wchar_t *FileNameFromPath(const std::wstring &path)
@@ -41,14 +41,14 @@ static uint32_t DescriptorHuntHash(const DX12FrameResourceBinding &binding, UINT
 {
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
 	if (!binding.hasDescriptor) {
-		uint32_t hash = DX12ResourceDumpCoreUtils::MakeFourCC('D', 'S', 'L', 'T');
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.psoIndex, sizeof(binding.psoIndex));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.rootParameterIndex, sizeof(binding.rootParameterIndex));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.rangeIndex, sizeof(binding.rangeIndex));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.rangeType, sizeof(binding.rangeType));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.shaderRegister, sizeof(binding.shaderRegister));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.registerSpace, sizeof(binding.registerSpace));
-		hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &binding.descriptorIndex, sizeof(binding.descriptorIndex));
+		uint32_t hash = DX12ResourceDumpCore::MakeFourCC('D', 'S', 'L', 'T');
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.psoIndex, sizeof(binding.psoIndex));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.rootParameterIndex, sizeof(binding.rootParameterIndex));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.rangeIndex, sizeof(binding.rangeIndex));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.rangeType, sizeof(binding.rangeType));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.shaderRegister, sizeof(binding.shaderRegister));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.registerSpace, sizeof(binding.registerSpace));
+		hash = DX12ResourceDumpCore::HashBytes(hash, &binding.descriptorIndex, sizeof(binding.descriptorIndex));
 		return hash;
 	}
 	const UINT64 fallbackGpuVa = descriptor.gpuVirtualAddress ?
@@ -140,7 +140,7 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 		FormatMetadataPrefix(task.binding.descriptorIndex,
 			eventPrefix, ARRAYSIZE(eventPrefix));
 	} else if (task.sourceKind == DumpTaskSource::Output) {
-		outputBinding = DX12ResourceDumpCoreUtils::ResourceBindingFromOutputBinding(task.outputBinding);
+		outputBinding = DX12ResourceDumpCore::ResourceBindingFromOutputBinding(task.outputBinding);
 		binding = &outputBinding;
 		FormatEventPrefixWithSerial(
 			task.outputBinding.drawId, task.outputBinding.dispatchId,
@@ -162,17 +162,17 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 	else
 		shaderPart[0] = L'\0';
 	char semanticSlot[32];
-	if (DX12ResourceDumpUtils::BuildSemanticSlot(*binding, semanticSlot, ARRAYSIZE(semanticSlot))) {
+	if (DX12ResourceDumpPolicy::BuildSemanticSlot(*binding, semanticSlot, ARRAYSIZE(semanticSlot))) {
 		swprintf_s(fileName, fileNameCount,
 			L"%s-pso%llu%s-%S-%S-r%u-d%llu-%S_%p_o%llu_b%llu.%s",
 			eventPrefix,
 			static_cast<unsigned long long>(binding->psoIndex),
 			shaderPart,
-			DX12ResourceDumpUtils::ShortBindSpace(binding->bindSpace),
+			DX12ResourceDumpPolicy::ShortBindSpace(binding->bindSpace),
 			semanticSlot,
 			binding->rootParameterIndex,
 			static_cast<unsigned long long>(binding->descriptorIndex),
-			DX12ResourceDumpUtils::ShortDescriptorKind(binding->descriptor.kind),
+			DX12ResourceDumpPolicy::ShortDescriptorKind(binding->descriptor.kind),
 			binding->descriptor.resource,
 			static_cast<unsigned long long>(task.sourceOffset),
 			static_cast<unsigned long long>(task.copyBytes),
@@ -184,10 +184,10 @@ static void BuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNa
 		eventPrefix,
 		static_cast<unsigned long long>(binding->psoIndex),
 		shaderPart,
-		DX12ResourceDumpUtils::ShortBindSpace(binding->bindSpace),
+		DX12ResourceDumpPolicy::ShortBindSpace(binding->bindSpace),
 		binding->rootParameterIndex,
 		static_cast<unsigned long long>(binding->descriptorIndex),
-		DX12ResourceDumpUtils::ShortDescriptorKind(binding->descriptor.kind),
+		DX12ResourceDumpPolicy::ShortDescriptorKind(binding->descriptor.kind),
 		binding->descriptor.resource,
 		static_cast<unsigned long long>(task.sourceOffset),
 		static_cast<unsigned long long>(task.copyBytes),
@@ -244,11 +244,11 @@ static void BuildBindingDedupeKeyForCurrentMode(
 		return;
 	if (DX12RuntimeState::IsHuntingMode() &&
 		binding.descriptor.hasResourceDesc &&
-		DX12ResourceDumpUtils::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
+		DX12ResourceDumpPolicy::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
 		// Hunting is a resource discovery pass. The descriptor slot and view
 		// still describe where the texture was seen, but one ID3D12Resource must
 		// produce one readback, matching RenderDoc-style capture granularity.
-		DX12ResourceDumpNamingUtils::BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
+		DX12ResourceDumpNaming::BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
 		return;
 	}
 	BuildDescriptorDedupeKey(binding.descriptor, key, keyCount);
@@ -262,8 +262,8 @@ static void BuildOutputDedupeKeyForCurrentMode(
 		return;
 	if (DX12RuntimeState::IsHuntingMode() &&
 		binding.descriptor.hasResourceDesc &&
-		DX12ResourceDumpUtils::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
-		DX12ResourceDumpNamingUtils::BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
+		DX12ResourceDumpPolicy::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension)) {
+		DX12ResourceDumpNaming::BuildDescriptorResourceDedupeKey(binding.descriptor, key, keyCount);
 		return;
 	}
 	BuildOutputDedupeKey(output, binding, key, keyCount);

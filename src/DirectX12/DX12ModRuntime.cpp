@@ -33,7 +33,7 @@
 
 static DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
 {
-	std::wstring value = Bunny::IniDocumentUtils::ToLower(Bunny::IniDocumentUtils::Trim(format));
+	std::wstring value = Bunny::IniDocumentText::ToLower(Bunny::IniDocumentText::Trim(format));
 	if (value.empty())
 		return DXGI_FORMAT_UNKNOWN;
 	if (value.rfind(L"dxgi_format_", 0) == 0)

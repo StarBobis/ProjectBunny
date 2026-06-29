@@ -12,7 +12,7 @@
 #include "DX12ResourceDumpTypes.hpp"
 #include "DX12ResourceTracker.hpp"
 
-class DX12ResourceDumpCoreUtils
+class DX12ResourceDumpCore
 {
 public:
 static constexpr uint32_t MakeFourCC(char a, char b, char c, char d)
@@ -61,7 +61,7 @@ static uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 static void GetDedupedDirectory(const wchar_t *dir, wchar_t *path, size_t pathCount)
 {
 	swprintf_s(path, pathCount, L"%s\\deduped", dir);
-	DX12ResourceDumpCoreUtils::EnsureDirectory(path);
+	DX12ResourceDumpCore::EnsureDirectory(path);
 }
 
 static bool UnsafeResourceCopyEnabled() { return true; }
@@ -103,7 +103,7 @@ static const char *BindingKindName(const DX12FrameResourceBinding &binding)
 	if (!binding.descriptor.kind.empty())
 		return binding.descriptor.kind.c_str();
 	if (binding.rootDescriptor)
-		return DX12ResourceDumpCoreUtils::RootDescriptorKindName(binding.rangeType);
+		return DX12ResourceDumpCore::RootDescriptorKindName(binding.rangeType);
 	return DescriptorRangeKindName(binding.rangeType);
 }
 

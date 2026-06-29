@@ -7,6 +7,7 @@
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
+#include "utils/DX12IaBufferViewUtils.hpp"
 
 class DX12IaDrawInvocation
 {

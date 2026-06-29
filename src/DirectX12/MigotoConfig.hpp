@@ -52,7 +52,7 @@ public:
 	std::wstring mError;
 };
 
-class MigotoConfigUtils
+class MigotoConfigLocator
 {
 public:
 	static std::wstring FindDefaultConfigPath(HINSTANCE module);
@@ -64,7 +64,7 @@ public:
 
 namespace Bunny {
 
-class MigotoConfigReadUtils
+class MigotoConfigReader
 {
 public:
 static void ReadString(
@@ -113,30 +113,30 @@ inline bool MigotoConfig::Load(const wchar_t *path)
 
 inline void MigotoConfig::ReadLoaderConfig()
 {
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"target", &mLoader.target);
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"module", &mLoader.module);
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"entry_point", &mLoader.entryPoint);
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"launch", &mLoader.launch);
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"working_dir", &mLoader.workingDirectory);
-	MigotoConfigReadUtils::ReadString(mIni, L"Loader", L"working_directory", &mLoader.workingDirectory);
-	MigotoConfigReadUtils::ReadBool(mIni, L"Loader", L"check_version", &mLoader.checkVersion);
-	MigotoConfigReadUtils::ReadBool(mIni, L"Loader", L"require_admin", &mLoader.requireAdmin);
-	MigotoConfigReadUtils::ReadBool(mIni, L"Loader", L"wait_for_target", &mLoader.waitForTarget);
-	MigotoConfigReadUtils::ReadInt(mIni, L"Loader", L"hook_proc", &mLoader.hookProc);
-	MigotoConfigReadUtils::ReadInt(mIni, L"Loader", L"delay", &mLoader.delay);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"target", &mLoader.target);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"module", &mLoader.module);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"entry_point", &mLoader.entryPoint);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"launch", &mLoader.launch);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"working_dir", &mLoader.workingDirectory);
+	MigotoConfigReader::ReadString(mIni, L"Loader", L"working_directory", &mLoader.workingDirectory);
+	MigotoConfigReader::ReadBool(mIni, L"Loader", L"check_version", &mLoader.checkVersion);
+	MigotoConfigReader::ReadBool(mIni, L"Loader", L"require_admin", &mLoader.requireAdmin);
+	MigotoConfigReader::ReadBool(mIni, L"Loader", L"wait_for_target", &mLoader.waitForTarget);
+	MigotoConfigReader::ReadInt(mIni, L"Loader", L"hook_proc", &mLoader.hookProc);
+	MigotoConfigReader::ReadInt(mIni, L"Loader", L"delay", &mLoader.delay);
 }
 
 inline void MigotoConfig::ReadRuntimeConfig()
 {
-	MigotoConfigReadUtils::ReadBool(mIni, L"DX12", L"proxy_mode", &mRuntime.dx12ProxyMode);
-	MigotoConfigReadUtils::ReadBool(mIni, L"DX12", L"safe_mode", &mRuntime.dx12SafeMode);
-	MigotoConfigReadUtils::ReadBool(mIni, L"DX12", L"overlay", &mRuntime.enableOverlay);
-	MigotoConfigReadUtils::ReadBool(mIni, L"System", L"dx12_proxy_mode", &mRuntime.dx12ProxyMode);
-	MigotoConfigReadUtils::ReadBool(mIni, L"System", L"dx12_safe_mode", &mRuntime.dx12SafeMode);
-	MigotoConfigReadUtils::ReadBool(mIni, L"System", L"dx12_overlay", &mRuntime.enableOverlay);
+	MigotoConfigReader::ReadBool(mIni, L"DX12", L"proxy_mode", &mRuntime.dx12ProxyMode);
+	MigotoConfigReader::ReadBool(mIni, L"DX12", L"safe_mode", &mRuntime.dx12SafeMode);
+	MigotoConfigReader::ReadBool(mIni, L"DX12", L"overlay", &mRuntime.enableOverlay);
+	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_proxy_mode", &mRuntime.dx12ProxyMode);
+	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_safe_mode", &mRuntime.dx12SafeMode);
+	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_overlay", &mRuntime.enableOverlay);
 }
 
-inline std::wstring MigotoConfigUtils::FindDefaultConfigPath(HINSTANCE module)
+inline std::wstring MigotoConfigLocator::FindDefaultConfigPath(HINSTANCE module)
 {
 	wchar_t path[MAX_PATH] = {};
 	wchar_t cwdPath[MAX_PATH] = {};

@@ -39,13 +39,13 @@ public:
 
 namespace Bunny {
 
-class MigotoShaderOverrideParserUtils
+class MigotoShaderOverrideParserText
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
@@ -56,7 +56,7 @@ inline bool MigotoShaderOverrideParser::ParseHash(const std::wstring &text, uint
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.rfind(L"0x", 0) == 0 || trimmed.rfind(L"0X", 0) == 0)
 		trimmed = trimmed.substr(2);
 	if (trimmed.empty())
@@ -88,7 +88,7 @@ inline void MigotoShaderOverrideParser::ParseSections(
 
 	shaderOverrides->clear();
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoShaderOverrideParserUtils::StartsWithI(section.name, L"ShaderOverride"))
+		if (!MigotoShaderOverrideParserText::StartsWithI(section.name, L"ShaderOverride"))
 			continue;
 
 		ShaderOverrideConfig config;
@@ -100,7 +100,7 @@ inline void MigotoShaderOverrideParser::ParseSections(
 		bool hasHash = false;
 
 		for (const IniEntry &entry : section.entries) {
-			std::wstring key = IniDocumentUtils::ToLower(entry.key);
+			std::wstring key = IniDocumentText::ToLower(entry.key);
 			if (!entry.hasEquals)
 				continue;
 
@@ -114,7 +114,7 @@ inline void MigotoShaderOverrideParser::ParseSections(
 			}
 
 			if (key == L"handling") {
-				std::wstring value = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(entry.value));
+				std::wstring value = IniDocumentText::ToLower(IniDocumentText::Trim(entry.value));
 				if (value == L"skip") {
 					config.handlingSkip = true;
 					CommandListAction action;
@@ -127,7 +127,7 @@ inline void MigotoShaderOverrideParser::ParseSections(
 			}
 
 			CommandListAction action;
-			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentUtils::Trim(entry.value), &action)) {
+			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 				config.actions.push_back(action);
 				continue;

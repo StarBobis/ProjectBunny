@@ -113,6 +113,7 @@ public:
 	static std::unordered_set<void*> RegisteredCommandLists;
 	static SRWLOCK KnownCommandQueueLock;
 	static IUnknown *KnownCommandQueue;
+	static void ReleaseKnownCommandQueue();
 
 	static thread_local DX12ThreadLocalCommandListOriginal CommandListOriginals[64];
 	static thread_local DX12ThreadLocalCommandListOriginal CommandQueueOriginals[32];

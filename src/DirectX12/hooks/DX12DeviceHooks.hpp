@@ -7,10 +7,11 @@
 #include "DX12CommandQueueState.hpp"
 #include "DX12HookManager.hpp"
 #include "DX12LogManager.hpp"
-#include "DX12ResourceTracker.hpp"
+#include "DX12ResourceTrackerHooks.hpp"
 #include "hooks/DX12DeviceHookCallbacks.hpp"
 #include "hooks/DX12DeviceHookState.hpp"
 #include "hooks/DX12DeviceHooksForward.hpp"
+#include "types/DX12DeviceHookSlotTypes.hpp"
 
 inline HRESULT DX12DeviceHooks::CreateGraphicsPipelineStateOriginal(
 	ID3D12Device *device,
@@ -39,16 +40,16 @@ inline void DX12DeviceHooks::HookDevice(IUnknown *device)
 	if (FAILED(device->QueryInterface(IID_PPV_ARGS(&baseDevice))))
 		return;
 
-	constexpr UINT CreateGraphicsPipelineStateIndex = 10;
-	constexpr UINT CreateComputePipelineStateIndex = 11;
 	DX12VTableHook deviceHooks[] = {
-		{CreateGraphicsPipelineStateIndex, reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreateGraphicsPipelineState),
+		{DX12DeviceHookSlotTypes::ID3D12Device::CreateGraphicsPipelineState,
+			reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreateGraphicsPipelineState),
 			reinterpret_cast<void*>(DX12DeviceHookCallbacks::HookedCreateGraphicsPipelineState), "ID3D12Device::CreateGraphicsPipelineState"},
-		{CreateComputePipelineStateIndex, reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreateComputePipelineState),
+		{DX12DeviceHookSlotTypes::ID3D12Device::CreateComputePipelineState,
+			reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreateComputePipelineState),
 			reinterpret_cast<void*>(DX12DeviceHookCallbacks::HookedCreateComputePipelineState), "ID3D12Device::CreateComputePipelineState"},
 	};
 	DX12HookManager::InstallVTableHooks(baseDevice, deviceHooks);
-	DX12HookResourceMetadata(baseDevice);
+	DX12ResourceTrackerHooks::Install(baseDevice);
 	DX12CommandListHooks::HookCommandListCreation(baseDevice);
 	DX12LogManager::JsonFunc("DeviceHooksReady", "\"device\":\"%p\"", baseDevice);
 
@@ -56,9 +57,9 @@ inline void DX12DeviceHooks::HookDevice(IUnknown *device)
 
 	ID3D12Device2 *device2 = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device2)))) {
-		constexpr UINT CreatePipelineStateIndex = 47;
 		DX12VTableHook device2Hooks[] = {
-			{CreatePipelineStateIndex, reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreatePipelineState),
+			{DX12DeviceHookSlotTypes::ID3D12Device2::CreatePipelineState,
+				reinterpret_cast<void**>(&DX12DeviceHookState::OrigCreatePipelineState),
 				reinterpret_cast<void*>(DX12DeviceHookCallbacks::HookedCreatePipelineState), "ID3D12Device2::CreatePipelineState"},
 		};
 		DX12HookManager::InstallVTableHooks(device2, device2Hooks);
@@ -75,9 +76,9 @@ inline void DX12DeviceHooks::HookDeviceFactory(IUnknown *factory)
 	if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&deviceFactory))))
 		return;
 
-	constexpr UINT CreateDeviceIndex = 9;
 	DX12VTableHook factoryHooks[] = {
-		{CreateDeviceIndex, reinterpret_cast<void**>(&DX12DeviceHookState::OrigDeviceFactoryCreateDevice),
+		{DX12DeviceHookSlotTypes::ID3D12DeviceFactory::CreateDevice,
+			reinterpret_cast<void**>(&DX12DeviceHookState::OrigDeviceFactoryCreateDevice),
 			reinterpret_cast<void*>(DX12DeviceHookCallbacks::HookedDeviceFactoryCreateDevice), "ID3D12DeviceFactory::CreateDevice"},
 	};
 	DX12HookManager::InstallVTableHooks(deviceFactory, factoryHooks);

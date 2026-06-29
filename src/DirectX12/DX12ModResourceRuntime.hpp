@@ -25,7 +25,7 @@ static std::wstring ResolveResourcePathLocked(
 
 static bool ResourceConfigLooksLikeBuffer(const Bunny::ResourceConfig &config)
 {
-	std::wstring type = Bunny::IniDocumentUtils::ToLower(Bunny::IniDocumentUtils::Trim(config.type));
+	std::wstring type = Bunny::IniDocumentText::ToLower(Bunny::IniDocumentText::Trim(config.type));
 	if (type.empty())
 		return true;
 	return type == L"buffer" ||
@@ -73,7 +73,7 @@ static bool LoadResourceBytes(
 	if (config.data.empty())
 		return false;
 
-	std::wstring data = Bunny::IniDocumentUtils::Trim(config.data);
+	std::wstring data = Bunny::IniDocumentText::Trim(config.data);
 	if (data.rfind(L"0x", 0) == 0 || data.rfind(L"0X", 0) == 0)
 		data = data.substr(2);
 	data.erase(std::remove_if(data.begin(), data.end(), iswspace), data.end());

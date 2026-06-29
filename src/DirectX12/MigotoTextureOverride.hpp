@@ -93,13 +93,13 @@ public:
 
 namespace Bunny {
 
-class MigotoTextureOverrideParserUtils
+class MigotoTextureOverrideParserText
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
@@ -116,7 +116,7 @@ static bool ParseSrvIndexedKey(
 		return false;
 	if (suffixLength) {
 		std::wstring keySuffix = key.substr(key.size() - suffixLength);
-		if (IniDocumentUtils::ToLower(keySuffix) != IniDocumentUtils::ToLower(suffix))
+		if (IniDocumentText::ToLower(keySuffix) != IniDocumentText::ToLower(suffix))
 			return false;
 	}
 
@@ -154,7 +154,7 @@ inline bool MigotoTextureOverrideParser::ParseHash(const std::wstring &text, uin
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.rfind(L"0x", 0) == 0 || trimmed.rfind(L"0X", 0) == 0)
 		trimmed = trimmed.substr(2);
 	if (trimmed.empty() || trimmed.size() > 8)
@@ -178,74 +178,74 @@ inline bool MigotoTextureOverrideParser::ParseHash(const std::wstring &text, uin
 	return true;
 }
 
-inline bool MigotoTextureOverrideParserUtils::ParseInt(const std::wstring &text, int *value)
+inline bool MigotoTextureOverrideParserText::ParseInt(const std::wstring &text, int *value)
 {
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.empty())
 		return false;
 
 	wchar_t *end = nullptr;
 	long parsed = std::wcstol(trimmed.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 
 	*value = static_cast<int>(parsed);
 	return true;
 }
 
-inline bool MigotoTextureOverrideParserUtils::ParseUInt(const std::wstring &text, uint32_t *value)
+inline bool MigotoTextureOverrideParserText::ParseUInt(const std::wstring &text, uint32_t *value)
 {
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.empty())
 		return false;
 
 	wchar_t *end = nullptr;
 	unsigned long parsed = std::wcstoul(trimmed.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 
 	*value = static_cast<uint32_t>(parsed);
 	return true;
 }
 
-inline bool MigotoTextureOverrideParserUtils::ParseNumericMatch(const std::wstring &text, NumericMatch *match)
+inline bool MigotoTextureOverrideParserText::ParseNumericMatch(const std::wstring &text, NumericMatch *match)
 {
 	if (!match)
 		return false;
 
-	std::wstring value = IniDocumentUtils::Trim(text);
+	std::wstring value = IniDocumentText::Trim(text);
 	if (value.empty())
 		return false;
 
 	NumericMatchOp op = NumericMatchOp::Equal;
 	if (value.rfind(L"<=", 0) == 0) {
 		op = NumericMatchOp::LessEqual;
-		value = IniDocumentUtils::Trim(value.substr(2));
+		value = IniDocumentText::Trim(value.substr(2));
 	} else if (value.rfind(L">=", 0) == 0) {
 		op = NumericMatchOp::GreaterEqual;
-		value = IniDocumentUtils::Trim(value.substr(2));
+		value = IniDocumentText::Trim(value.substr(2));
 	} else if (value.rfind(L"!", 0) == 0) {
 		op = NumericMatchOp::NotEqual;
-		value = IniDocumentUtils::Trim(value.substr(1));
+		value = IniDocumentText::Trim(value.substr(1));
 	} else if (value.rfind(L"=", 0) == 0) {
 		op = NumericMatchOp::Equal;
-		value = IniDocumentUtils::Trim(value.substr(1));
+		value = IniDocumentText::Trim(value.substr(1));
 	} else if (value.rfind(L"<", 0) == 0) {
 		op = NumericMatchOp::Less;
-		value = IniDocumentUtils::Trim(value.substr(1));
+		value = IniDocumentText::Trim(value.substr(1));
 	} else if (value.rfind(L">", 0) == 0) {
 		op = NumericMatchOp::Greater;
-		value = IniDocumentUtils::Trim(value.substr(1));
+		value = IniDocumentText::Trim(value.substr(1));
 	}
 
 	uint32_t parsed = 0;
-	if (!MigotoTextureOverrideParserUtils::ParseUInt(value, &parsed))
+	if (!MigotoTextureOverrideParserText::ParseUInt(value, &parsed))
 		return false;
 
 	match->op = op;
@@ -254,25 +254,25 @@ inline bool MigotoTextureOverrideParserUtils::ParseNumericMatch(const std::wstri
 	return true;
 }
 
-inline bool MigotoTextureOverrideParserUtils::ParseUInt64(const std::wstring &text, uint64_t *value)
+inline bool MigotoTextureOverrideParserText::ParseUInt64(const std::wstring &text, uint64_t *value)
 {
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.empty())
 		return false;
 
 	wchar_t *end = nullptr;
 	unsigned long long parsed = std::wcstoull(trimmed.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 
 	*value = static_cast<uint64_t>(parsed);
 	return true;
 }
 
-inline bool MigotoTextureOverrideParserUtils::ParseVertexBufferKey(const std::wstring &key, uint32_t *slot)
+inline bool MigotoTextureOverrideParserText::ParseVertexBufferKey(const std::wstring &key, uint32_t *slot)
 {
 	if (!slot || key.size() < 3 || key[0] != L'v' || key[1] != L'b')
 		return false;
@@ -288,10 +288,10 @@ inline bool MigotoTextureOverrideParserUtils::ParseVertexBufferKey(const std::ws
 	return true;
 }
 
-inline std::wstring MigotoTextureOverrideParserUtils::ResolveResourceReference(
+inline std::wstring MigotoTextureOverrideParserText::ResolveResourceReference(
 	const std::wstring &value, const std::wstring &iniNamespace)
 {
-	return IniDocumentUtils::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
+	return IniDocumentText::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
 }
 
 inline void MigotoTextureOverrideParser::ParseSections(
@@ -302,7 +302,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 	textureOverrides->clear();
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoTextureOverrideParserUtils::StartsWithI(section.name, L"TextureOverride"))
+		if (!MigotoTextureOverrideParserText::StartsWithI(section.name, L"TextureOverride"))
 			continue;
 
 		TextureOverrideConfig config;
@@ -314,7 +314,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 		bool hasHash = false;
 
 		for (const IniEntry &entry : section.entries) {
-			std::wstring key = IniDocumentUtils::ToLower(entry.key);
+			std::wstring key = IniDocumentText::ToLower(entry.key);
 			if (!entry.hasEquals)
 				continue;
 
@@ -328,7 +328,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			if (key == L"handling") {
-				std::wstring value = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(entry.value));
+				std::wstring value = IniDocumentText::ToLower(IniDocumentText::Trim(entry.value));
 				if (value == L"skip") {
 					config.handlingSkip = true;
 					CommandListAction action;
@@ -342,9 +342,9 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			if (key == L"ib") {
 				config.indexBufferResource =
-					MigotoTextureOverrideParserUtils::ResolveResourceReference(entry.value, entry.iniNamespace);
+					MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
 				CommandListAction action;
-				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentUtils::Trim(entry.value), &action)) {
+				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
 					MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 					config.actions.push_back(action);
 				}
@@ -352,11 +352,11 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			uint32_t vbSlot = 0;
-			if (MigotoTextureOverrideParserUtils::ParseVertexBufferKey(key, &vbSlot)) {
+			if (MigotoTextureOverrideParserText::ParseVertexBufferKey(key, &vbSlot)) {
 				config.vertexBufferResources[vbSlot] =
-					MigotoTextureOverrideParserUtils::ResolveResourceReference(entry.value, entry.iniNamespace);
+					MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
 				CommandListAction action;
-				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentUtils::Trim(entry.value), &action)) {
+				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
 					MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 					config.actions.push_back(action);
 				}
@@ -364,44 +364,44 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			if (key == L"match_vertex_count") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchVertexCount))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchVertexCount))
 					config.hasMatchVertexCount = true;
 				continue;
 			}
 
 			if (key == L"match_index_count") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchIndexCount))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchIndexCount))
 					config.hasMatchIndexCount = true;
 				continue;
 			}
 
 			if (key == L"match_instance_count") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchInstanceCount))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchInstanceCount))
 					config.hasMatchInstanceCount = true;
 				continue;
 			}
 
 			if (key == L"match_first_vertex") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchFirstVertex))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchFirstVertex))
 					config.hasMatchFirstVertex = true;
 				continue;
 			}
 
 			if (key == L"match_first_index") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchFirstIndex))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchFirstIndex))
 					config.hasMatchFirstIndex = true;
 				continue;
 			}
 
 			if (key == L"match_first_instance") {
-				if (MigotoTextureOverrideParserUtils::ParseNumericMatch(entry.value, &config.matchFirstInstance))
+				if (MigotoTextureOverrideParserText::ParseNumericMatch(entry.value, &config.matchFirstInstance))
 					config.hasMatchFirstInstance = true;
 				continue;
 			}
 
 			if (key == L"match_priority") {
 				int value = 0;
-				if (MigotoTextureOverrideParserUtils::ParseInt(entry.value, &value)) {
+				if (MigotoTextureOverrideParserText::ParseInt(entry.value, &value)) {
 					config.matchPriority = value;
 					config.hasMatchPriority = true;
 				}
@@ -419,7 +419,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			if (key == L"match_uav_bytes") {
 				uint64_t value = 0;
-				if (MigotoTextureOverrideParserUtils::ParseUInt64(entry.value, &value)) {
+				if (MigotoTextureOverrideParserText::ParseUInt64(entry.value, &value)) {
 					config.matchUavBytes = value;
 					config.hasMatchUavBytes = true;
 				}
@@ -427,35 +427,35 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			uint32_t srvIndex = 0;
-			if (MigotoTextureOverrideParserUtils::ParseSrvIndexedKey(key, L"match_cs_t", L"_hash", &srvIndex)) {
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"match_cs_t", L"_hash", &srvIndex)) {
 				uint32_t value = 0;
 				if (MigotoTextureOverrideParser::ParseHash(entry.value, &value))
 					config.preSkinMatchCsSrvHashes[srvIndex] = value;
 				continue;
 			}
 
-			if (MigotoTextureOverrideParserUtils::ParseSrvIndexedKey(key, L"match_srv", L"_hash", &srvIndex)) {
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"match_srv", L"_hash", &srvIndex)) {
 				uint32_t value = 0;
 				if (MigotoTextureOverrideParser::ParseHash(entry.value, &value))
 					config.preSkinMatchCsSrvHashes[srvIndex] = value;
 				continue;
 			}
 
-			if (MigotoTextureOverrideParserUtils::ParseSrvIndexedKey(key, L"cs-t", L"", &srvIndex)) {
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"cs-t", L"", &srvIndex)) {
 				config.preSkinCsSrvResources[srvIndex] =
-					MigotoTextureOverrideParserUtils::ResolveResourceReference(IniDocumentUtils::Trim(entry.value), entry.iniNamespace);
+					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
 				continue;
 			}
 
-			if (MigotoTextureOverrideParserUtils::ParseSrvIndexedKey(key, L"srv", L"", &srvIndex)) {
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"srv", L"", &srvIndex)) {
 				config.preSkinCsSrvResources[srvIndex] =
-					MigotoTextureOverrideParserUtils::ResolveResourceReference(IniDocumentUtils::Trim(entry.value), entry.iniNamespace);
+					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
 				continue;
 			}
 
 			if (key == L"override_byte_stride") {
 				uint32_t value = 0;
-				if (MigotoTextureOverrideParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoTextureOverrideParserText::ParseUInt(entry.value, &value)) {
 					config.overrideByteStride = value;
 					config.hasVertexLimitRaise = true;
 				}
@@ -464,7 +464,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			if (key == L"override_vertex_count") {
 				uint32_t value = 0;
-				if (MigotoTextureOverrideParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoTextureOverrideParserText::ParseUInt(entry.value, &value)) {
 					config.overrideVertexCount = value;
 					config.hasVertexLimitRaise = true;
 				}
@@ -473,7 +473,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			if (key == L"uav_byte_stride") {
 				uint32_t value = 0;
-				if (MigotoTextureOverrideParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoTextureOverrideParserText::ParseUInt(entry.value, &value)) {
 					config.uavByteStride = value;
 					config.hasVertexLimitRaise = true;
 				}
@@ -481,7 +481,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			CommandListAction action;
-			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentUtils::Trim(entry.value), &action)) {
+			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 				config.actions.push_back(action);
 				continue;
@@ -509,7 +509,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			[](const TextureOverrideConfig &lhs, const TextureOverrideConfig &rhs) {
 				if (lhs.matchPriority != rhs.matchPriority)
 					return lhs.matchPriority > rhs.matchPriority;
-				return IniDocumentUtils::ToLower(lhs.section) < IniDocumentUtils::ToLower(rhs.section);
+				return IniDocumentText::ToLower(lhs.section) < IniDocumentText::ToLower(rhs.section);
 			});
 	}
 }

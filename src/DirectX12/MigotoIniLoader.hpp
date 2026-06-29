@@ -34,20 +34,20 @@ public:
 
 namespace Bunny {
 
-class MigotoIniLoaderUtils
+class MigotoIniLoaderPath
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
 static bool EndsWithI(const std::wstring &value, const wchar_t *suffix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerSuffix = IniDocumentUtils::ToLower(suffix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerSuffix = IniDocumentText::ToLower(suffix);
 	if (lower.size() < lowerSuffix.size())
 		return false;
 	return lower.compare(lower.size() - lowerSuffix.size(), lowerSuffix.size(), lowerSuffix) == 0;
@@ -83,8 +83,8 @@ static std::wstring CanonicalPath(const std::wstring &path)
 {
 	wchar_t full[MAX_PATH];
 	if (!GetFullPathNameW(path.c_str(), ARRAYSIZE(full), full, nullptr))
-		return IniDocumentUtils::ToLower(path);
-	return IniDocumentUtils::ToLower(full);
+		return IniDocumentText::ToLower(path);
+	return IniDocumentText::ToLower(full);
 }
 
 static bool IsDisabledName(const std::wstring &name)
@@ -98,8 +98,8 @@ static bool ShouldExcludeRecursive(const std::wstring &name, const std::vector<s
 		return true;
 
 	for (const std::wstring &pattern : patterns) {
-		std::wstring lowerName = IniDocumentUtils::ToLower(name);
-		std::wstring lowerPattern = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(pattern));
+		std::wstring lowerName = IniDocumentText::ToLower(name);
+		std::wstring lowerPattern = IniDocumentText::ToLower(IniDocumentText::Trim(pattern));
 		if (lowerPattern.empty())
 			continue;
 		if (lowerPattern == lowerName)
@@ -201,18 +201,18 @@ static void CollectIncludeEntries(
 	std::vector<std::wstring> *excludeRecursive)
 {
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoIniLoaderUtils::StartsWithI(section.name, L"Include"))
+		if (!MigotoIniLoaderPath::StartsWithI(section.name, L"Include"))
 			continue;
 		for (const IniEntry &entry : section.entries) {
 			if (!entry.hasEquals)
 				continue;
-			std::wstring key = IniDocumentUtils::ToLower(IniDocumentUtils::Trim(entry.key));
+			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
 			if (key == L"include")
-				includes->push_back(IniDocumentUtils::Trim(entry.value));
+				includes->push_back(IniDocumentText::Trim(entry.value));
 			else if (key == L"include_recursive")
-				recursiveIncludes->push_back(IniDocumentUtils::Trim(entry.value));
+				recursiveIncludes->push_back(IniDocumentText::Trim(entry.value));
 			else if (key == L"exclude_recursive")
-				excludeRecursive->push_back(IniDocumentUtils::Trim(entry.value));
+				excludeRecursive->push_back(IniDocumentText::Trim(entry.value));
 		}
 	}
 }
@@ -224,7 +224,7 @@ static void LoadDirectoryRecursive(
 	if (!state)
 		return;
 
-	std::wstring search = MigotoIniLoaderUtils::JoinPath(dir, L"*");
+	std::wstring search = MigotoIniLoaderPath::JoinPath(dir, L"*");
 	WIN32_FIND_DATAW findData = {};
 	HANDLE find = FindFirstFileW(search.c_str(), &findData);
 	if (find == INVALID_HANDLE_VALUE) {
@@ -238,27 +238,27 @@ static void LoadDirectoryRecursive(
 		std::wstring name = findData.cFileName;
 		if (name == L"." || name == L"..")
 			continue;
-		if (MigotoIniLoaderUtils::ShouldExcludeRecursive(name, excludeRecursive))
+		if (MigotoIniLoaderPath::ShouldExcludeRecursive(name, excludeRecursive))
 			continue;
 		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 			directories.push_back(name);
-		else if (MigotoIniLoaderUtils::EndsWithI(name, L".ini"))
+		else if (MigotoIniLoaderPath::EndsWithI(name, L".ini"))
 			iniFiles.push_back(name);
 	} while (FindNextFileW(find, &findData));
 	FindClose(find);
 
 	std::sort(iniFiles.begin(), iniFiles.end(),
-		[](const std::wstring &a, const std::wstring &b) { return IniDocumentUtils::ToLower(a) < IniDocumentUtils::ToLower(b); });
+		[](const std::wstring &a, const std::wstring &b) { return IniDocumentText::ToLower(a) < IniDocumentText::ToLower(b); });
 	std::sort(directories.begin(), directories.end(),
-		[](const std::wstring &a, const std::wstring &b) { return IniDocumentUtils::ToLower(a) < IniDocumentUtils::ToLower(b); });
+		[](const std::wstring &a, const std::wstring &b) { return IniDocumentText::ToLower(a) < IniDocumentText::ToLower(b); });
 
 	for (const std::wstring &file : iniFiles)
 	{
-		std::wstring filePath = MigotoIniLoaderUtils::JoinPath(dir, file);
-		MigotoIniLoaderUtils::LoadFileRecursive(filePath, MigotoIniLoaderUtils::MakeRelativeNamespace(state->rootDir, filePath), state);
+		std::wstring filePath = MigotoIniLoaderPath::JoinPath(dir, file);
+		MigotoIniLoaderPath::LoadFileRecursive(filePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, filePath), state);
 	}
 	for (const std::wstring &child : directories)
-		MigotoIniLoaderUtils::LoadDirectoryRecursive(MigotoIniLoaderUtils::JoinPath(dir, child), excludeRecursive, state);
+		MigotoIniLoaderPath::LoadDirectoryRecursive(MigotoIniLoaderPath::JoinPath(dir, child), excludeRecursive, state);
 }
 
 static void LoadFileRecursive(
@@ -267,20 +267,20 @@ static void LoadFileRecursive(
 	if (!state)
 		return;
 
-	std::wstring canonical = MigotoIniLoaderUtils::CanonicalPath(path);
+	std::wstring canonical = MigotoIniLoaderPath::CanonicalPath(path);
 	if (!state->seenFiles.insert(canonical).second) {
 		state->warnings.push_back(L"ini included multiple times: " + path);
 		return;
 	}
 
 	std::wstring text;
-	if (!MigotoIniLoaderUtils::ReadFileText(path, &text)) {
+	if (!MigotoIniLoaderPath::ReadFileText(path, &text)) {
 		state->errors.push_back(L"unable to load ini: " + path);
 		return;
 	}
 
 	state->loadedFiles.push_back(path);
-	std::wstring sourceDir = MigotoIniLoaderUtils::DirectoryOf(path);
+	std::wstring sourceDir = MigotoIniLoaderPath::DirectoryOf(path);
 	if (!state->document.AppendParse(text.c_str(), path, sourceDir, iniNamespace)) {
 		state->errors.push_back(
 			L"unable to parse ini: " + path + L" (" + state->document.Error() + L")");
@@ -292,16 +292,16 @@ static void LoadFileRecursive(
 	std::vector<std::wstring> excludeRecursive;
 	IniDocument localIni;
 	localIni.Parse(text.c_str());
-	MigotoIniLoaderUtils::CollectIncludeEntries(localIni, &includes, &recursiveIncludes, &excludeRecursive);
+	MigotoIniLoaderPath::CollectIncludeEntries(localIni, &includes, &recursiveIncludes, &excludeRecursive);
 
-	std::wstring includeBase = MigotoIniLoaderUtils::DirectoryOf(path);
+	std::wstring includeBase = MigotoIniLoaderPath::DirectoryOf(path);
 	for (const std::wstring &include : includes)
 	{
-		std::wstring includePath = MigotoIniLoaderUtils::JoinPath(includeBase, include);
-		MigotoIniLoaderUtils::LoadFileRecursive(includePath, MigotoIniLoaderUtils::MakeRelativeNamespace(state->rootDir, includePath), state);
+		std::wstring includePath = MigotoIniLoaderPath::JoinPath(includeBase, include);
+		MigotoIniLoaderPath::LoadFileRecursive(includePath, MigotoIniLoaderPath::MakeRelativeNamespace(state->rootDir, includePath), state);
 	}
 	for (const std::wstring &recursive : recursiveIncludes)
-		MigotoIniLoaderUtils::LoadDirectoryRecursive(MigotoIniLoaderUtils::JoinPath(includeBase, recursive), excludeRecursive, state);
+		MigotoIniLoaderPath::LoadDirectoryRecursive(MigotoIniLoaderPath::JoinPath(includeBase, recursive), excludeRecursive, state);
 }
 
 };
@@ -312,9 +312,9 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 		return false;
 
 	*result = MigotoIniLoadResult();
-	MigotoIniLoaderUtils::LoaderState state;
-	state.rootDir = MigotoIniLoaderUtils::DirectoryOf(rootPath);
-	MigotoIniLoaderUtils::LoadFileRecursive(rootPath, L"", &state);
+	MigotoIniLoaderPath::LoaderState state;
+	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
+	MigotoIniLoaderPath::LoadFileRecursive(rootPath, L"", &state);
 
 	result->loadedFiles = std::move(state.loadedFiles);
 	result->errors = std::move(state.errors);

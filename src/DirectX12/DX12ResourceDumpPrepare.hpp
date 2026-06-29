@@ -7,33 +7,14 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12ResourceDumpTypes.hpp"
-#include "utils/DX12ResourceDumpUtils.hpp"
+#include "DX12ResourceDumpPolicy.hpp"
 #include "DX12ResourceTracker.hpp"
+#include "DX12ResourceStateTracker.hpp"
 #include "DX12RuntimeState.hpp"
 
 class DX12ResourceDumpPrepare
 {
 public:
-static D3D12_RESOURCE_STATES GuessDescriptorSourceState(const DX12FrameResourceBinding &binding)
-{
-	if (binding.descriptor.kind == DescriptorKind::CBV)
-		return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-	if (binding.descriptor.kind == DescriptorKind::UAV)
-		return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	if (binding.descriptor.kind == DescriptorKind::RTV)
-		return D3D12_RESOURCE_STATE_RENDER_TARGET;
-	if (binding.descriptor.kind == DescriptorKind::DSV)
-		return D3D12_RESOURCE_STATE_DEPTH_WRITE;
-	return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-}
-
-static D3D12_RESOURCE_STATES GuessIaBufferSourceState(const DX12FrameIaBufferBinding &buffer)
-{
-	if (buffer.role == IaBufferRole::IB)
-		return D3D12_RESOURCE_STATE_INDEX_BUFFER;
-	return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-}
-
 static bool GpuResourceCopyEnabled() { return true; }
 
 static const char *RootDescriptorKindName(UINT rangeType)
@@ -49,36 +30,32 @@ static const char *RootDescriptorKindName(UINT rangeType)
 
 static bool ResourceNeedsBarrier(const DX12DescriptorSummary &descriptor)
 {
-	if (descriptor.hasResourceHeapType &&
-		(descriptor.resourceHeapType == D3D12_HEAP_TYPE_UPLOAD ||
-			descriptor.resourceHeapType == D3D12_HEAP_TYPE_READBACK))
+	if (DX12ResourceStateTracker::HeapTypeAllowsDirectCopy(
+			descriptor.resourceHeapType, descriptor.hasResourceHeapType))
 		return false;
 	return true;
 }
 
 static bool ResourceNeedsBarrier(const DX12BufferResourceSummary &resource)
 {
-	if (resource.hasResourceHeapType &&
-		(resource.resourceHeapType == D3D12_HEAP_TYPE_UPLOAD ||
-			resource.resourceHeapType == D3D12_HEAP_TYPE_READBACK))
+	if (DX12ResourceStateTracker::HeapTypeAllowsDirectCopy(
+			resource.resourceHeapType, resource.hasResourceHeapType))
 		return false;
 	return true;
 }
 
 static bool StateTrackingAllowsCopy(const DX12DescriptorSummary &descriptor)
 {
-	if (descriptor.hasResourceHeapType &&
-		(descriptor.resourceHeapType == D3D12_HEAP_TYPE_UPLOAD ||
-			descriptor.resourceHeapType == D3D12_HEAP_TYPE_READBACK))
+	if (DX12ResourceStateTracker::HeapTypeAllowsDirectCopy(
+			descriptor.resourceHeapType, descriptor.hasResourceHeapType))
 		return true;
 	return descriptor.hasCurrentState;
 }
 
 static bool StateTrackingAllowsCopy(const DX12BufferResourceSummary &resource)
 {
-	if (resource.hasResourceHeapType &&
-		(resource.resourceHeapType == D3D12_HEAP_TYPE_UPLOAD ||
-			resource.resourceHeapType == D3D12_HEAP_TYPE_READBACK))
+	if (DX12ResourceStateTracker::HeapTypeAllowsDirectCopy(
+			resource.resourceHeapType, resource.hasResourceHeapType))
 		return true;
 	return resource.hasCurrentState;
 }
@@ -163,7 +140,7 @@ static bool PrepareDirectMapTask(DumpTask *task)
 static bool FillDescriptorDumpTask(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task)
 {
-	if (!device || !task || !DX12ResourceDumpUtils::ShouldDumpBinding(binding))
+	if (!device || !task || !DX12ResourceDumpPolicy::ShouldDumpBinding(binding))
 		return false;
 
 	task->sourceKind = DumpTaskSource::Descriptor;
@@ -198,7 +175,7 @@ static bool FillDescriptorDumpTask(
 
 	task->sourceState = task->binding.descriptor.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(task->binding.descriptor.currentState) :
-		GuessDescriptorSourceState(task->binding);
+		DX12ResourceStateTracker::InferDescriptorSourceState(task->binding);
 	task->stateKnown = StateTrackingAllowsCopy(task->binding.descriptor);
 	task->needsBarrier = ResourceNeedsBarrier(task->binding.descriptor);
 	if (!task->stateKnown) {
@@ -206,7 +183,7 @@ static bool FillDescriptorDumpTask(
 		task->sourceState = D3D12_RESOURCE_STATE_COMMON;
 	}
 
-	if (DX12ResourceDumpUtils::IsTextureResourceDimension(task->desc.Dimension)) {
+	if (DX12ResourceDumpPolicy::IsTextureResourceDimension(task->desc.Dimension)) {
 		if (task->desc.SampleDesc.Count > 1) {
 			task->skipNote = "multisampled_texture_not_supported";
 			return false;
@@ -279,7 +256,7 @@ static bool FillIaDumpTask(const DX12FrameIaBufferBinding &buffer, DumpTask *tas
 		task->copyBytes = task->desc.Width > task->sourceOffset ? task->desc.Width - task->sourceOffset : 0;
 	task->sourceState = buffer.resource.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(buffer.resource.currentState) :
-		GuessIaBufferSourceState(buffer);
+		DX12ResourceStateTracker::InferIaBufferSourceState(buffer);
 	task->stateKnown = StateTrackingAllowsCopy(buffer.resource);
 	task->needsBarrier = ResourceNeedsBarrier(buffer.resource);
 	if (!task->stateKnown)
@@ -313,7 +290,7 @@ static bool PrepareHuntingMetadataTextureTask(
 	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
 		return false;
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
-		!DX12ResourceDumpUtils::IsTextureResourceDimension(descriptor.resourceDesc.Dimension))
+		!DX12ResourceDumpPolicy::IsTextureResourceDimension(descriptor.resourceDesc.Dimension))
 		return false;
 
 	DX12FrameResourceBinding binding;
@@ -338,7 +315,7 @@ static bool PrepareHuntingResourceTextureTask(
 	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
 		return false;
 	if (!resource.resource || !resource.hasResourceDesc ||
-		!DX12ResourceDumpUtils::IsTextureResourceDimension(resource.resourceDesc.Dimension))
+		!DX12ResourceDumpPolicy::IsTextureResourceDimension(resource.resourceDesc.Dimension))
 		return false;
 
 	DX12DescriptorSummary descriptor;

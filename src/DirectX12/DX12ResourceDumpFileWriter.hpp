@@ -10,7 +10,7 @@
 #include <string>
 
 #include "DX12FrameAnalysis.hpp"
-#include "DX12ResourceDumpCoreUtils.hpp"
+#include "DX12ResourceDumpCore.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 
 class DX12ResourceDumpFileWriter
@@ -208,7 +208,7 @@ static UINT64 TextureMipBytes(const D3D12_RESOURCE_DESC &desc, UINT mip)
 
 static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc)
 {
-	WriteU32(file, DX12ResourceDumpCoreUtils::MakeFourCC('D', 'D', 'S', ' '));
+	WriteU32(file, DX12ResourceDumpCore::MakeFourCC('D', 'D', 'S', ' '));
 	WriteU32(file, 124);
 	uint32_t flags = 0x00001007;
 	if (desc.MipLevels > 1)
@@ -228,7 +228,7 @@ static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc)
 
 	WriteU32(file, 32);
 	WriteU32(file, 0x00000004);
-	WriteU32(file, DX12ResourceDumpCoreUtils::MakeFourCC('D', 'X', '1', '0'));
+	WriteU32(file, DX12ResourceDumpCore::MakeFourCC('D', 'X', '1', '0'));
 	WriteU32(file, 0);
 	WriteU32(file, 0);
 	WriteU32(file, 0);
@@ -404,29 +404,29 @@ static bool WriteBufferTextFile(const wchar_t *path, const DumpTask &task, const
 static uint32_t HashDumpTaskData(const DumpTask &task, const void *mappedData)
 {
 	uint32_t hash = 0;
-	hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.desc, sizeof(task.desc));
-	hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.sourceOffset, sizeof(task.sourceOffset));
-	hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.copyBytes, sizeof(task.copyBytes));
-	hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.isTexture, sizeof(task.isTexture));
+	hash = DX12ResourceDumpCore::HashBytes(hash, &task.desc, sizeof(task.desc));
+	hash = DX12ResourceDumpCore::HashBytes(hash, &task.sourceOffset, sizeof(task.sourceOffset));
+	hash = DX12ResourceDumpCore::HashBytes(hash, &task.copyBytes, sizeof(task.copyBytes));
+	hash = DX12ResourceDumpCore::HashBytes(hash, &task.isTexture, sizeof(task.isTexture));
 
 	if (task.isTexture) {
 		const uint8_t *mapped = static_cast<const uint8_t*>(mappedData);
 		for (size_t subresource = 0; subresource < task.textureLayouts.size(); ++subresource) {
 			const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout = task.textureLayouts[subresource];
-			hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &layout.Footprint.RowPitch, sizeof(layout.Footprint.RowPitch));
-			hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.textureRows[subresource], sizeof(task.textureRows[subresource]));
-			hash = DX12ResourceDumpCoreUtils::HashBytes(hash, &task.textureRowSizes[subresource], sizeof(task.textureRowSizes[subresource]));
+			hash = DX12ResourceDumpCore::HashBytes(hash, &layout.Footprint.RowPitch, sizeof(layout.Footprint.RowPitch));
+			hash = DX12ResourceDumpCore::HashBytes(hash, &task.textureRows[subresource], sizeof(task.textureRows[subresource]));
+			hash = DX12ResourceDumpCore::HashBytes(hash, &task.textureRowSizes[subresource], sizeof(task.textureRowSizes[subresource]));
 			const uint8_t *base = mapped + layout.Offset;
 			for (UINT row = 0; row < task.textureRows[subresource]; ++row) {
 				const uint8_t *src = base + static_cast<size_t>(row) * layout.Footprint.RowPitch;
-				hash = DX12ResourceDumpCoreUtils::HashBytes(hash, src, static_cast<size_t>(task.textureRowSizes[subresource]));
+				hash = DX12ResourceDumpCore::HashBytes(hash, src, static_cast<size_t>(task.textureRowSizes[subresource]));
 			}
 		}
 		return hash;
 	}
 
 	const uint8_t *src = static_cast<const uint8_t*>(mappedData) + task.readbackOffset;
-	return DX12ResourceDumpCoreUtils::HashBytes(hash, src, static_cast<size_t>(task.copyBytes));
+	return DX12ResourceDumpCore::HashBytes(hash, src, static_cast<size_t>(task.copyBytes));
 }
 
 static void BuildDedupedRelativePath(const wchar_t *dedupeFileName, wchar_t *path, size_t pathCount)
@@ -497,7 +497,7 @@ static bool LinkOrCopyFile(const wchar_t *sourcePath, const wchar_t *destPath,
 	DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 		"\"reason\":\"%s\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu,\"hardLinkError\":%lu,\"copyError\":%lu",
 		reason ? reason : "copy_failed",
-		DX12ResourceDumpCoreUtils::DumpTaskSourceName(task.sourceKind),
+		DX12ResourceDumpCore::DumpTaskSourceName(task.sourceKind),
 		task.source,
 		static_cast<unsigned long long>(task.copyBytes),
 		hardLinkError,
@@ -525,7 +525,7 @@ static bool LinkTaskToDedupedFile(
 	if (!resourceDir || task.fileName.empty() || dedupePath.empty()) {
 		DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 			"\"reason\":\"invalid_args\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu",
-			DX12ResourceDumpCoreUtils::DumpTaskSourceName(task.sourceKind),
+			DX12ResourceDumpCore::DumpTaskSourceName(task.sourceKind),
 			task.source,
 			static_cast<unsigned long long>(task.copyBytes));
 		return false;
@@ -539,7 +539,7 @@ static bool LinkTaskToDedupedFile(
 	if (GetFileAttributesW(sourcePath) == INVALID_FILE_ATTRIBUTES) {
 		DX12FrameAnalysis::LogJsonFunc("ResourceLinkSkipped",
 			"\"reason\":\"dedupe_source_missing\",\"sourceKind\":\"%s\",\"resource\":\"%p\",\"bytes\":%llu",
-			DX12ResourceDumpCoreUtils::DumpTaskSourceName(task.sourceKind),
+			DX12ResourceDumpCore::DumpTaskSourceName(task.sourceKind),
 			task.source,
 			static_cast<unsigned long long>(task.copyBytes));
 		return false;
@@ -570,7 +570,7 @@ static bool MapAndWriteTask(
 			DX12FrameAnalysis::LogJsonFunc("ResourceMapWriteSkipped",
 				"\"reason\":\"%s\",\"sourceKind\":\"%s\",\"source\":\"%p\",\"readback\":\"%p\",\"direct\":%u,\"offset\":%llu,\"bytes\":%llu",
 				task->skipNote,
-				DX12ResourceDumpCoreUtils::DumpTaskSourceName(task->sourceKind),
+				DX12ResourceDumpCore::DumpTaskSourceName(task->sourceKind),
 				task->source, task->readback, task->directMap ? 1 : 0,
 				static_cast<unsigned long long>(task->readbackOffset),
 				static_cast<unsigned long long>(task->copyBytes));
@@ -586,7 +586,7 @@ static bool MapAndWriteTask(
 			DX12FrameAnalysis::LogJsonFunc("ResourceMapWriteSkipped",
 				"\"reason\":\"map_failed\",\"hr\":\"0x%lx\",\"sourceKind\":\"%s\",\"source\":\"%p\",\"readback\":\"%p\",\"direct\":%u,\"offset\":%llu,\"bytes\":%llu",
 				hr,
-				DX12ResourceDumpCoreUtils::DumpTaskSourceName(task->sourceKind),
+				DX12ResourceDumpCore::DumpTaskSourceName(task->sourceKind),
 				task->source, task->readback, task->directMap ? 1 : 0,
 				static_cast<unsigned long long>(task->readbackOffset),
 				static_cast<unsigned long long>(task->copyBytes));

@@ -8,10 +8,11 @@
 #include "DX12ShaderDump.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
-#include "helper/DX12DeviceHookHelper.hpp"
+#include "DX12OriginalFunctionRegistry.hpp"
 #include "hooks/DX12DeviceHookState.hpp"
 #include "hooks/DX12DeviceHookTypes.hpp"
 #include "hooks/DX12DeviceHooksForward.hpp"
+#include "types/DX12DeviceHookSlotTypes.hpp"
 
 class DX12DeviceHookCallbacks
 {
@@ -22,8 +23,9 @@ public:
 		REFIID riid,
 		void **pipelineState)
 	{
-		auto original = DX12DeviceHookHelper::GetOriginal(
-			device, 10, DX12DeviceHookState::OrigCreateGraphicsPipelineState,
+		auto original = DX12OriginalFunctionRegistry::Resolve(
+			device, DX12DeviceHookSlotTypes::ID3D12Device::CreateGraphicsPipelineState,
+			DX12DeviceHookState::OrigCreateGraphicsPipelineState,
 			"ID3D12Device::CreateGraphicsPipelineState");
 		return original ? original(device, desc, riid, pipelineState) : E_FAIL;
 	}
@@ -34,8 +36,9 @@ public:
 		REFIID riid,
 		void **pipelineState)
 	{
-		auto original = DX12DeviceHookHelper::GetOriginal(
-			device, 11, DX12DeviceHookState::OrigCreateComputePipelineState,
+		auto original = DX12OriginalFunctionRegistry::Resolve(
+			device, DX12DeviceHookSlotTypes::ID3D12Device::CreateComputePipelineState,
+			DX12DeviceHookState::OrigCreateComputePipelineState,
 			"ID3D12Device::CreateComputePipelineState");
 		return original ? original(device, desc, riid, pipelineState) : E_FAIL;
 	}
@@ -46,7 +49,7 @@ public:
 		REFIID riid,
 		void **pipelineState)
 	{
-		DX12DeviceHookHelper::LogHookCall("ID3D12Device::CreateGraphicsPipelineState", device);
+		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device::CreateGraphicsPipelineState", device);
 		if (DX12InternalReplayState::IsActive())
 			return CreateGraphicsPipelineStateOriginal(device, desc, riid, pipelineState);
 		DX12GraphicsPsoReplacement replacement;
@@ -82,7 +85,7 @@ public:
 		REFIID riid,
 		void **pipelineState)
 	{
-		DX12DeviceHookHelper::LogHookCall("ID3D12Device::CreateComputePipelineState", device);
+		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device::CreateComputePipelineState", device);
 		if (DX12InternalReplayState::IsActive())
 			return CreateComputePipelineStateOriginal(device, desc, riid, pipelineState);
 		DX12ComputePsoReplacement replacement;
@@ -113,9 +116,10 @@ public:
 		REFIID riid,
 		void **pipelineState)
 	{
-		DX12DeviceHookHelper::LogHookCall("ID3D12Device2::CreatePipelineState", device);
-		auto original = DX12DeviceHookHelper::GetOriginal(
-			device, 47, DX12DeviceHookState::OrigCreatePipelineState,
+		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device2::CreatePipelineState", device);
+		auto original = DX12OriginalFunctionRegistry::Resolve(
+			device, DX12DeviceHookSlotTypes::ID3D12Device2::CreatePipelineState,
+			DX12DeviceHookState::OrigCreatePipelineState,
 			"ID3D12Device2::CreatePipelineState");
 		if (DX12InternalReplayState::IsActive())
 			return original ? original(device, desc, riid, pipelineState) : E_FAIL;
@@ -133,9 +137,10 @@ public:
 		REFIID riid,
 		void **device)
 	{
-		DX12DeviceHookHelper::LogHookCall("ID3D12DeviceFactory::CreateDevice", factory);
-		auto original = DX12DeviceHookHelper::GetOriginal(
-			factory, 9, DX12DeviceHookState::OrigDeviceFactoryCreateDevice,
+		DX12OriginalFunctionRegistry::LogHookCall("ID3D12DeviceFactory::CreateDevice", factory);
+		auto original = DX12OriginalFunctionRegistry::Resolve(
+			factory, DX12DeviceHookSlotTypes::ID3D12DeviceFactory::CreateDevice,
+			DX12DeviceHookState::OrigDeviceFactoryCreateDevice,
 			"ID3D12DeviceFactory::CreateDevice");
 		HRESULT hr = original ? original(factory, adapter, featureLevel, riid, device) : E_FAIL;
 		DX12LogManager::JsonFunc("ID3D12DeviceFactory::CreateDevice",

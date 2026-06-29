@@ -42,13 +42,13 @@ public:
 
 namespace Bunny {
 
-class MigotoResourceParserUtils
+class MigotoResourceParserText
 {
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentUtils::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentUtils::ToLower(prefix);
+	std::wstring lower = IniDocumentText::ToLower(value);
+	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
 	return lower.rfind(lowerPrefix, 0) == 0;
 }
 
@@ -57,13 +57,13 @@ static bool ParseUInt(const std::wstring &text, uint32_t *value)
 	if (!value)
 		return false;
 
-	std::wstring trimmed = IniDocumentUtils::Trim(text);
+	std::wstring trimmed = IniDocumentText::Trim(text);
 	if (trimmed.empty())
 		return false;
 
 	wchar_t *end = nullptr;
 	unsigned long parsed = std::wcstoul(trimmed.c_str(), &end, 0);
-	if (!end || *IniDocumentUtils::Trim(end).c_str())
+	if (!end || *IniDocumentText::Trim(end).c_str())
 		return false;
 
 	*value = static_cast<uint32_t>(parsed);
@@ -79,7 +79,7 @@ inline void MigotoResourceParser::ParseSections(const IniDocument &ini, Resource
 
 	resources->clear();
 	for (const IniSection &section : ini.Sections()) {
-		if (!MigotoResourceParserUtils::StartsWithI(section.name, L"Resource"))
+		if (!MigotoResourceParserText::StartsWithI(section.name, L"Resource"))
 			continue;
 
 		ResourceConfig config;
@@ -94,30 +94,30 @@ inline void MigotoResourceParser::ParseSections(const IniDocument &ini, Resource
 			if (!entry.hasEquals)
 				continue;
 
-			std::wstring key = IniDocumentUtils::ToLower(entry.key);
+			std::wstring key = IniDocumentText::ToLower(entry.key);
 			if (key == L"type") {
-				config.type = IniDocumentUtils::Trim(entry.value);
+				config.type = IniDocumentText::Trim(entry.value);
 			} else if (key == L"filename" || key == L"file") {
-				config.filename = IniDocumentUtils::Trim(entry.value);
+				config.filename = IniDocumentText::Trim(entry.value);
 			} else if (key == L"format") {
-				config.format = IniDocumentUtils::Trim(entry.value);
+				config.format = IniDocumentText::Trim(entry.value);
 			} else if (key == L"data") {
-				config.data = IniDocumentUtils::Trim(entry.value);
+				config.data = IniDocumentText::Trim(entry.value);
 			} else if (key == L"stride") {
 				uint32_t value = 0;
-				if (MigotoResourceParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoResourceParserText::ParseUInt(entry.value, &value)) {
 					config.stride = value;
 					config.hasStride = true;
 				}
 			} else if (key == L"array" || key == L"array_size") {
 				uint32_t value = 0;
-				if (MigotoResourceParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoResourceParserText::ParseUInt(entry.value, &value)) {
 					config.arraySize = value;
 					config.hasArraySize = true;
 				}
 			} else if (key == L"byte_width" || key == L"width") {
 				uint32_t value = 0;
-				if (MigotoResourceParserUtils::ParseUInt(entry.value, &value)) {
+				if (MigotoResourceParserText::ParseUInt(entry.value, &value)) {
 					config.byteWidth = value;
 					config.hasByteWidth = true;
 				}

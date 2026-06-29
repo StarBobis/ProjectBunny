@@ -192,8 +192,8 @@ static void BuildDx12IaTextureOverrideIndex(
 					  const DX12IaTextureOverrideCandidate &right = (*iaTextureOverrides)[rhs];
 					  if (left.config.matchPriority != right.config.matchPriority)
 						  return left.config.matchPriority > right.config.matchPriority;
-					  const std::wstring leftSection = Bunny::IniDocumentUtils::ToLower(left.config.section);
-					  const std::wstring rightSection = Bunny::IniDocumentUtils::ToLower(right.config.section);
+					  const std::wstring leftSection = Bunny::IniDocumentText::ToLower(left.config.section);
+					  const std::wstring rightSection = Bunny::IniDocumentText::ToLower(right.config.section);
 					  if (leftSection != rightSection)
 						  return leftSection < rightSection;
 					  return left.order < right.order;

@@ -10,7 +10,7 @@
 #include "DX12ResourceTracker.hpp"
 #include "types/DX12ResourceTypes.hpp"
 
-class DX12BindingTrackerUtils
+class DX12BindingTrackerQuery
 {
 public:
 	static UINT DescriptorCountForRange(

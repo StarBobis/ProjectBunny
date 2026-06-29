@@ -1,5 +1,5 @@
 #include "DX12BindingTracker.hpp"
-#include "DX12BindingTrackerUtils.hpp"
+#include "DX12BindingTrackerQuery.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -596,13 +596,13 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	}
 
 	DX12RootSignatureSummary rootSignature;
-	const bool hasRootSignature = DX12BindingTrackerUtils::GetRootSignatureForEvent(event, compute, &rootSignature);
+	const bool hasRootSignature = DX12BindingTrackerQuery::GetRootSignatureForEvent(event, compute, &rootSignature);
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		const RootTableState &table = compute ?
 			snapshot.computeTables[root] : snapshot.graphicsTables[root];
 		if (table.valid) {
 			const DX12RootParameterSummary *parameter =
-				hasRootSignature ? DX12BindingTrackerUtils::FindRootParameter(rootSignature, root) : nullptr;
+				hasRootSignature ? DX12BindingTrackerQuery::FindRootParameter(rootSignature, root) : nullptr;
 			if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 				for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 					if (range.rangeType != rangeType)
@@ -614,7 +614,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 						continue;
 					const UINT64 tableBaseIndex =
 						(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-					const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(heap, tableBaseIndex, range);
+					const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBaseIndex, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 descriptorIndex =
 							tableBaseIndex + range.effectiveOffset + offset;
@@ -681,7 +681,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 			binding.rootParameterIndex = root;
 			if (hasRootSignature) {
 				const DX12RootParameterSummary *parameter =
-					DX12BindingTrackerUtils::FindRootParameter(rootSignature, root);
+					DX12BindingTrackerQuery::FindRootParameter(rootSignature, root);
 				if (parameter) {
 					binding.shaderVisibility = parameter->shaderVisibility;
 					binding.shaderRegister = parameter->shaderRegister;
@@ -764,13 +764,13 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	}
 
 	DX12RootSignatureSummary rootSignature;
-	const bool hasRootSignature = DX12BindingTrackerUtils::GetRootSignatureForEvent(event, true, &rootSignature);
+	const bool hasRootSignature = DX12BindingTrackerQuery::GetRootSignatureForEvent(event, true, &rootSignature);
 
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		const RootTableState &table = snapshot.computeTables[root];
 		if (table.valid) {
 			const DX12RootParameterSummary *parameter =
-				hasRootSignature ? DX12BindingTrackerUtils::FindRootParameter(rootSignature, root) : nullptr;
+				hasRootSignature ? DX12BindingTrackerQuery::FindRootParameter(rootSignature, root) : nullptr;
 			if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 				DX12DescriptorHeapSummary heap = {};
 				if (!DX12FindDescriptorHeapByGpuHandle(table.baseDescriptor,
@@ -785,7 +785,7 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 					else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) { out = cbvs; kind = "CBV"; }
 					else { continue; }
 
-					const UINT count = DX12BindingTrackerUtils::DescriptorCountForRange(heap, tableBase, range);
+					const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBase, range);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 di = tableBase + range.effectiveOffset + offset;
 						if (di >= heap.numDescriptors) break;
@@ -849,7 +849,7 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 				DX12CurrentComputeUavBinding b;
 				b.rootParameterIndex = root;
 				if (hasRootSignature) {
-					const DX12RootParameterSummary *p = DX12BindingTrackerUtils::FindRootParameter(rootSignature, root);
+					const DX12RootParameterSummary *p = DX12BindingTrackerQuery::FindRootParameter(rootSignature, root);
 					if (p) {
 						b.shaderVisibility = p->shaderVisibility;
 						b.shaderRegister = p->shaderRegister;

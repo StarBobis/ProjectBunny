@@ -11,11 +11,12 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
 #include "utils/DX12JsonUtils.hpp"
-#include "DX12ResourceDumpCoreUtils.hpp"
-#include "DX12ResourceDumpNamingUtils.hpp"
+#include "DX12ResourceDumpCore.hpp"
+#include "DX12ResourceDumpNaming.hpp"
 #include "DX12ResourceDumpPrepare.hpp"
+#include "DX12ResourceStateTracker.hpp"
 #include "DX12ResourceDumpTypes.hpp"
-#include "utils/DX12ResourceDumpUtils.hpp"
+#include "DX12ResourceDumpPolicy.hpp"
 
 class DX12ResourceDumpIndexWriter
 {
@@ -78,14 +79,14 @@ static void AddBindingRow(
 	task.sourceKind = DumpTaskSource::Descriptor;
 	task.binding = binding;
 	task.isTexture = binding.descriptor.hasResourceDesc &&
-		DX12ResourceDumpUtils::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+		DX12ResourceDumpPolicy::IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
 	const D3D12_RESOURCE_DESC desc = binding.descriptor.hasResourceDesc ?
 		binding.descriptor.resourceDesc : D3D12_RESOURCE_DESC();
 	const UINT64 sourceOffset = binding.usageBytes ? 0 : binding.descriptor.resourceOffset;
 	const UINT64 copyBytes = binding.usageBytes ? binding.usageBytes : binding.descriptor.viewSize;
 	const D3D12_RESOURCE_STATES sourceState = binding.descriptor.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(binding.descriptor.currentState) :
-		DX12ResourceDumpPrepare::GuessDescriptorSourceState(binding);
+		DX12ResourceStateTracker::InferDescriptorSourceState(binding);
 	DX12ResourceDumpIndexWriter::AddDumpedTaskRow(rows, status, task, desc, sourceOffset, copyBytes,
 		sourceState, binding.descriptor.hasCurrentState, semanticName, dedupePath, note);
 }
@@ -99,14 +100,14 @@ static void AddOutputBindingRow(
 	DumpTask task;
 	task.sourceKind = DumpTaskSource::Output;
 	task.outputBinding = output;
-	task.binding = DX12ResourceDumpCoreUtils::ResourceBindingFromOutputBinding(output);
+	task.binding = DX12ResourceDumpCore::ResourceBindingFromOutputBinding(output);
 	task.isTexture = output.descriptor.hasResourceDesc &&
-		DX12ResourceDumpUtils::IsTextureResourceDimension(output.descriptor.resourceDesc.Dimension);
+		DX12ResourceDumpPolicy::IsTextureResourceDimension(output.descriptor.resourceDesc.Dimension);
 	const D3D12_RESOURCE_DESC desc = output.descriptor.hasResourceDesc ?
 		output.descriptor.resourceDesc : D3D12_RESOURCE_DESC();
 	const D3D12_RESOURCE_STATES sourceState = output.descriptor.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(output.descriptor.currentState) :
-		DX12ResourceDumpPrepare::GuessDescriptorSourceState(task.binding);
+		DX12ResourceStateTracker::InferDescriptorSourceState(task.binding);
 	DX12ResourceDumpIndexWriter::AddDumpedTaskRow(rows, status, task, desc,
 		output.descriptor.resourceOffset, output.descriptor.viewSize,
 		sourceState, output.descriptor.hasCurrentState, semanticName, dedupePath, note);
@@ -120,7 +121,7 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 
 	const DX12FrameResourceBinding &binding = row.binding;
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
-	const char *kind = DX12ResourceDumpCoreUtils::BindingKindName(binding);
+	const char *kind = DX12ResourceDumpCore::BindingKindName(binding);
 	const char *rowType =
 		binding.bindSpace == "hunting_resource" ? "resource" :
 		(binding.bindSpace == "hunting_metadata" ? "metadata" :
@@ -130,10 +131,10 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 		sprintf_s(cs, sizeof(cs), "%016llx",
 			static_cast<unsigned long long>(binding.shaderInfo.cs));
 	char fileHash[16];
-	DX12ResourceDumpNamingUtils::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
-	const uint32_t huntHash = DX12ResourceDumpNamingUtils::DescriptorHuntHash(binding, row.copyBytes);
+	DX12ResourceDumpNaming::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+	const uint32_t huntHash = DX12ResourceDumpNaming::DescriptorHuntHash(binding, row.copyBytes);
 	char semanticSlot[32] = "-";
-	DX12ResourceDumpUtils::BuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
+	DX12ResourceDumpPolicy::BuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
 	fprintf(file,
 		"%llu,%s,%llu,%s,%s,%s,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
 		static_cast<unsigned long long>(binding.eventSerial),
@@ -147,10 +148,10 @@ static void WriteDescriptorResourceBindingCsvRow(FILE *file, const DumpedTaskRow
 		binding.shaderRegister,
 		binding.registerSpace,
 		descriptor.resource,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.dedupePath),
+		DX12ResourceDumpNaming::FileNameFromPath(row.dedupePath),
 		fileHash,
 		huntHash,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.semanticName),
+		DX12ResourceDumpNaming::FileNameFromPath(row.semanticName),
 		static_cast<unsigned long long>(row.sourceOffset),
 		static_cast<unsigned long long>(row.copyBytes),
 		descriptor.structureByteStride,
@@ -167,32 +168,32 @@ static void WriteOutputResourceBindingCsvRow(FILE *file, const DumpedTaskRow &ro
 		return;
 
 	const DX12FrameResourceBinding binding = row.binding.hasDescriptor ?
-		row.binding : DX12ResourceDumpCoreUtils::ResourceBindingFromOutputBinding(row.outputBinding);
+		row.binding : DX12ResourceDumpCore::ResourceBindingFromOutputBinding(row.outputBinding);
 	const DX12DescriptorSummary &descriptor = binding.descriptor;
 	char cs[32] = "-";
 	if (binding.shaderInfo.hasCS)
 		sprintf_s(cs, sizeof(cs), "%016llx",
 			static_cast<unsigned long long>(binding.shaderInfo.cs));
 	char fileHash[16];
-	DX12ResourceDumpNamingUtils::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
-	const uint32_t huntHash = DX12ResourceDumpNamingUtils::DescriptorHuntHash(binding, row.copyBytes);
+	DX12ResourceDumpNaming::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+	const uint32_t huntHash = DX12ResourceDumpNaming::DescriptorHuntHash(binding, row.copyBytes);
 	char semanticSlot[32] = "-";
-	DX12ResourceDumpUtils::BuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
+	DX12ResourceDumpPolicy::BuildSemanticSlot(binding, semanticSlot, ARRAYSIZE(semanticSlot));
 	fprintf(file,
 		"%llu,output,%llu,%s,%s,output,%u,%u,%u,%u,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
 		static_cast<unsigned long long>(binding.eventSerial),
 		static_cast<unsigned long long>(binding.psoIndex),
 		cs,
-		DX12ResourceDumpCoreUtils::BindingKindName(binding),
+		DX12ResourceDumpCore::BindingKindName(binding),
 		binding.rootParameterIndex,
 		binding.rangeIndex,
 		binding.shaderRegister,
 		binding.registerSpace,
 		descriptor.resource,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.dedupePath),
+		DX12ResourceDumpNaming::FileNameFromPath(row.dedupePath),
 		fileHash,
 		huntHash,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.semanticName),
+		DX12ResourceDumpNaming::FileNameFromPath(row.semanticName),
 		static_cast<unsigned long long>(row.sourceOffset),
 		static_cast<unsigned long long>(row.copyBytes),
 		descriptor.structureByteStride,
@@ -214,7 +215,7 @@ static void WriteIaResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
 		sprintf_s(cs, sizeof(cs), "%016llx",
 			static_cast<unsigned long long>(buffer.shaderInfo.cs));
 	char fileHash[16];
-	DX12ResourceDumpNamingUtils::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
+	DX12ResourceDumpNaming::FileHashFromPath(row.dedupePath, fileHash, ARRAYSIZE(fileHash));
 	const UINT64 eventId = buffer.dispatchId ? buffer.dispatchId : buffer.drawId;
 	fprintf(file,
 		"%llu,ia,%llu,%s,%s,ia,%u,0,%u,0,%p,%S,%s,%08x,%S,%llu,%llu,%u,%u,%u,%s,%s,%s\n",
@@ -225,10 +226,10 @@ static void WriteIaResourceBindingCsvRow(FILE *file, const DumpedTaskRow &row)
 		buffer.slot,
 		buffer.slot,
 		buffer.resource.resource,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.dedupePath),
+		DX12ResourceDumpNaming::FileNameFromPath(row.dedupePath),
 		fileHash,
 		buffer.huntHash,
-		DX12ResourceDumpNamingUtils::FileNameFromPath(row.semanticName),
+		DX12ResourceDumpNaming::FileNameFromPath(row.semanticName),
 		static_cast<unsigned long long>(row.sourceOffset),
 		static_cast<unsigned long long>(row.copyBytes),
 		buffer.stride,
@@ -245,7 +246,7 @@ static void WriteResourceBindingsCsv(const wchar_t *dir, const std::vector<Dumpe
 		return;
 	wchar_t summaryDir[MAX_PATH];
 	swprintf_s(summaryDir, L"%s\\summary", dir);
-	DX12ResourceDumpCoreUtils::EnsureDirectory(summaryDir);
+	DX12ResourceDumpCore::EnsureDirectory(summaryDir);
 	wchar_t path[MAX_PATH];
 	swprintf_s(path, L"%s\\ResourceBindingsDX12.csv", summaryDir);
 	FILE *file = _wfsopen(path, L"w", _SH_DENYNO);

@@ -1,14 +1,17 @@
-#include "D3D12Proxy.hpp"
+#include "D3D12ProxyRuntime.hpp"
 
 #include <Shlwapi.h>
 
+#include "D3D12ProxySignatures.hpp"
+#include "D3D12ProxyState.hpp"
 #include "DX12DeviceHooks.hpp"
 #include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
 #include "DXGIHooks.hpp"
+#include "helper/D3D12ProxyTargetHelper.hpp"
 #include "util_min.h"
 
-bool D3D12ProxyTargetUtils::VerifyIntendedTarget(HINSTANCE module)
+bool D3D12ProxyTargetHelper::VerifyIntendedTarget(HINSTANCE module)
 {
 	wchar_t ourPath[MAX_PATH], exePath[MAX_PATH];
 	wchar_t *ourBase = nullptr, *exeBase = nullptr;
@@ -74,7 +77,7 @@ bool D3D12ProxyTargetUtils::VerifyIntendedTarget(HINSTANCE module)
 	if (result) {
 		HMODULE handle = nullptr;
 		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-			reinterpret_cast<LPCWSTR>(D3D12ProxyTargetUtils::VerifyIntendedTarget), &handle);
+			reinterpret_cast<LPCWSTR>(D3D12ProxyTargetHelper::VerifyIntendedTarget), &handle);
 	}
 
 out_free:
@@ -392,7 +395,7 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 	switch (reason) {
 	case DLL_PROCESS_ATTACH:
 		DisableThreadLibraryCalls(module);
-		if (!D3D12ProxyTargetUtils::VerifyIntendedTarget(module))
+		if (!D3D12ProxyTargetHelper::VerifyIntendedTarget(module))
 			return FALSE;
 		D3D12ProxyRuntime::Initialize(module);
 		break;

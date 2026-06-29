@@ -105,7 +105,7 @@ static void BuildDx12ExplicitMatchCsResourceIndex(
 			for (const auto &item : config.preSkinCsSrvResources) {
 				if (item.second.empty())
 					continue;
-				(*resourceSections)[Bunny::IniDocumentUtils::ToLower(item.second)].push_back(config.section);
+				(*resourceSections)[Bunny::IniDocumentText::ToLower(item.second)].push_back(config.section);
 			}
 		}
 	}
@@ -147,7 +147,7 @@ static bool ResourceUsedByExplicitMatchCsLocked(const std::wstring &resourceName
 {
 	if (resourceName.empty())
 		return false;
-	return gExplicitMatchCsResourceSections.find(Bunny::IniDocumentUtils::ToLower(resourceName)) !=
+	return gExplicitMatchCsResourceSections.find(Bunny::IniDocumentText::ToLower(resourceName)) !=
 		gExplicitMatchCsResourceSections.end();
 }
 
@@ -158,7 +158,7 @@ static bool ResourceBlockedByInactiveExplicitMatchCsLocked(
 	if (resourceName.empty())
 		return false;
 
-	auto indexed = gExplicitMatchCsResourceSections.find(Bunny::IniDocumentUtils::ToLower(resourceName));
+	auto indexed = gExplicitMatchCsResourceSections.find(Bunny::IniDocumentText::ToLower(resourceName));
 	if (indexed == gExplicitMatchCsResourceSections.end())
 		return false;
 
@@ -182,7 +182,7 @@ static void BuildDx12VlrResourceCandidates(
 	for (const auto &item : resources) {
 		if (!ResourceConfigLooksLikeBuffer(item.second))
 			continue;
-		if (explicitMatchCsResourceSections.find(Bunny::IniDocumentUtils::ToLower(item.first)) !=
+		if (explicitMatchCsResourceSections.find(Bunny::IniDocumentText::ToLower(item.first)) !=
 		    explicitMatchCsResourceSections.end())
 			continue;
 		if (!seen.insert(item.first).second)

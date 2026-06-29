@@ -1,6 +1,6 @@
 #pragma once
 
-class DX12CommandListComputeBindingHooks
+class DX12CommandListComputeBindingHookCallbacks
 {
 public:
 static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
@@ -9,7 +9,7 @@ static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_DESCRIPTOR_HEAPS original =
-			DX12_CL_ORIG(commandList, 28, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
 		if (original)
 			original(commandList, count, heaps);
 		return;
@@ -17,7 +17,7 @@ static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
 	DX12_PROFILE_SCOPE(SetDescriptorHeaps);
 	if (DX12InternalReplayState::IsActive()) {
 		PFN_SET_DESCRIPTOR_HEAPS original =
-			DX12_CL_ORIG(commandList, 28, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
 		if (original)
 			original(commandList, count, heaps);
 		return;
@@ -41,17 +41,17 @@ static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
 	if (DX12HotPathState::Get().skipBindings && !DX12CommandListStateCapture::ShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_DESCRIPTOR_HEAPS original =
-			DX12_CL_ORIG(commandList, 28, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
 		if (original)
 			original(commandList, count, heaps);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetDescriptorHeaps", commandList, " count=%u", count);
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetDescriptorHeaps", commandList, " count=%u", count);
 	DX12CommandListStateCapture::DescriptorHeaps(commandList, cbvSrvUav, sampler);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_DESCRIPTOR_HEAPS original =
-		DX12_CL_ORIG(commandList, 28, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps, PFN_SET_DESCRIPTOR_HEAPS, DX12CommandListHookState::OrigSetDescriptorHeaps, "SetDescriptorHeaps");
 	if (original)
 		original(commandList, count, heaps);
 }
@@ -61,7 +61,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootSignature(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_SIGNATURE original =
-			DX12_CL_ORIG(commandList, 29, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
 		if (original)
 			original(commandList, rootSignature);
 		return;
@@ -71,18 +71,18 @@ static void STDMETHODCALLTYPE HookedSetComputeRootSignature(
 	if (DX12HotPathState::Get().skipBindings && !DX12CommandListStateCapture::ShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_SIGNATURE original =
-			DX12_CL_ORIG(commandList, 29, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
 		if (original)
 			original(commandList, rootSignature);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootSignature", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootSignature", commandList,
 		" rootSignature=%p", rootSignature);
 	DX12CommandListStateCapture::ComputeRootSignature(commandList, rootSignature);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_SIGNATURE original =
-		DX12_CL_ORIG(commandList, 29, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
 	if (original)
 		original(commandList, rootSignature);
 }
@@ -92,7 +92,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootSignature(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_SIGNATURE original =
-			DX12_CL_ORIG(commandList, 30, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
 		if (original)
 			original(commandList, rootSignature);
 		return;
@@ -102,17 +102,17 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootSignature(
 	if (DX12HotPathState::Get().skipGraphicsBindings && !DX12CommandListStateCapture::ShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_SIGNATURE original =
-			DX12_CL_ORIG(commandList, 30, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
 		if (original)
 			original(commandList, rootSignature);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootSignature", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootSignature", commandList,
 		" rootSignature=%p", rootSignature);
 	DX12CommandListStateCapture::GraphicsRootSignature(commandList, rootSignature);
 	PFN_SET_ROOT_SIGNATURE original =
-		DX12_CL_ORIG(commandList, 30, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
 	if (original)
 		original(commandList, rootSignature);
 }
@@ -123,7 +123,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootDescriptorTable(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-			DX12_CL_ORIG(commandList, 31, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
 		if (original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 		return;
@@ -131,7 +131,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootDescriptorTable(
 	DX12_PROFILE_SCOPE(SetComputeRootDescriptorTable);
 	if (DX12InternalReplayState::IsActive()) {
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-			DX12_CL_ORIG(commandList, 31, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
 		if (original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 		return;
@@ -140,20 +140,20 @@ static void STDMETHODCALLTYPE HookedSetComputeRootDescriptorTable(
 	if (DX12HotPathState::Get().skipBindings && !DX12CommandListStateCapture::ShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-			DX12_CL_ORIG(commandList, 31, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
 		if (original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootDescriptorTable", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootDescriptorTable", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex,
 		static_cast<unsigned long long>(baseDescriptor.ptr));
 	DX12CommandListStateCapture::ComputeRootDescriptorTable(
 		commandList, rootParameterIndex, baseDescriptor);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-		DX12_CL_ORIG(commandList, 31, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
 	if (original)
 		original(commandList, rootParameterIndex, baseDescriptor);
 }
@@ -164,7 +164,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootDescriptorTable(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-			DX12_CL_ORIG(commandList, 32, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
 		if (original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 		return;
@@ -174,19 +174,19 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootDescriptorTable(
 	if (DX12HotPathState::Get().skipGraphicsBindings && !DX12CommandListStateCapture::ShouldTrackBindings()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-			DX12_CL_ORIG(commandList, 32, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
 		if (original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex,
 		static_cast<unsigned long long>(baseDescriptor.ptr));
 	DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 		commandList, rootParameterIndex, baseDescriptor);
 	PFN_SET_ROOT_DESCRIPTOR_TABLE original =
-		DX12_CL_ORIG(commandList, 32, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
 	if (original)
 		original(commandList, rootParameterIndex, baseDescriptor);
 }
@@ -196,7 +196,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRoot32BitConstant(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_32BIT_CONSTANT original =
-			DX12_CL_ORIG(commandList, 33, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
 		if (original)
 			original(commandList, rootParameterIndex, srcData, destOffset);
 		return;
@@ -204,19 +204,19 @@ static void STDMETHODCALLTYPE HookedSetComputeRoot32BitConstant(
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_32BIT_CONSTANT original =
-			DX12_CL_ORIG(commandList, 33, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
 		if (original)
 			original(commandList, rootParameterIndex, srcData, destOffset);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRoot32BitConstant", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRoot32BitConstant", commandList,
 		" root=%u destOffset=%u", rootParameterIndex, destOffset);
 	DX12CommandListStateCapture::ComputeRoot32BitConstant(
 		commandList, rootParameterIndex, srcData, destOffset);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_32BIT_CONSTANT original =
-		DX12_CL_ORIG(commandList, 33, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetComputeRoot32BitConstant, "SetComputeRoot32BitConstant");
 	if (original)
 		original(commandList, rootParameterIndex, srcData, destOffset);
 }
@@ -226,7 +226,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRoot32BitConstant(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_32BIT_CONSTANT original =
-			DX12_CL_ORIG(commandList, 34, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
 		if (original)
 			original(commandList, rootParameterIndex, srcData, destOffset);
 		return;
@@ -234,18 +234,18 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRoot32BitConstant(
 	if (DX12HotPathState::Get().skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_32BIT_CONSTANT original =
-			DX12_CL_ORIG(commandList, 34, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
 		if (original)
 			original(commandList, rootParameterIndex, srcData, destOffset);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant", commandList,
 		" root=%u destOffset=%u", rootParameterIndex, destOffset);
 	DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 		commandList, rootParameterIndex, srcData, destOffset);
 	PFN_SET_ROOT_32BIT_CONSTANT original =
-		DX12_CL_ORIG(commandList, 34, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
 	if (original)
 		original(commandList, rootParameterIndex, srcData, destOffset);
 }
@@ -256,7 +256,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRoot32BitConstants(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_32BIT_CONSTANTS original =
-			DX12_CL_ORIG(commandList, 35, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
 		if (original)
 			original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 		return;
@@ -264,19 +264,19 @@ static void STDMETHODCALLTYPE HookedSetComputeRoot32BitConstants(
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_32BIT_CONSTANTS original =
-			DX12_CL_ORIG(commandList, 35, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
 		if (original)
 			original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRoot32BitConstants", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRoot32BitConstants", commandList,
 		" root=%u values=%u destOffset=%u", rootParameterIndex, num32BitValuesToSet, destOffset);
 	DX12CommandListStateCapture::ComputeRoot32BitConstants(
 		commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_32BIT_CONSTANTS original =
-		DX12_CL_ORIG(commandList, 35, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetComputeRoot32BitConstants, "SetComputeRoot32BitConstants");
 	if (original)
 		original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 }
@@ -287,7 +287,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRoot32BitConstants(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_32BIT_CONSTANTS original =
-			DX12_CL_ORIG(commandList, 36, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
 		if (original)
 			original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 		return;
@@ -295,18 +295,18 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRoot32BitConstants(
 	if (DX12HotPathState::Get().skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_32BIT_CONSTANTS original =
-			DX12_CL_ORIG(commandList, 36, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
 		if (original)
 			original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants", commandList,
 		" root=%u values=%u destOffset=%u", rootParameterIndex, num32BitValuesToSet, destOffset);
 	DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 		commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 	PFN_SET_ROOT_32BIT_CONSTANTS original =
-		DX12_CL_ORIG(commandList, 36, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
 	if (original)
 		original(commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 }
@@ -316,7 +316,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootConstantBufferView(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 37, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -326,19 +326,19 @@ static void STDMETHODCALLTYPE HookedSetComputeRootConstantBufferView(
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 37, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootConstantBufferView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
 	DX12CommandListStateCapture::ComputeRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, address);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 37, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootConstantBufferView, "SetComputeRootConstantBufferView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }
@@ -348,7 +348,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootConstantBufferView(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 38, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -358,18 +358,18 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootConstantBufferView(
 	if (DX12HotPathState::Get().skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 38, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
 	DX12CommandListStateCapture::GraphicsRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, address);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 38, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }
@@ -379,7 +379,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootShaderResourceView(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 39, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -389,19 +389,19 @@ static void STDMETHODCALLTYPE HookedSetComputeRootShaderResourceView(
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 39, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootShaderResourceView", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootShaderResourceView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
 	DX12CommandListStateCapture::ComputeRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, address);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 39, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootShaderResourceView, "SetComputeRootShaderResourceView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }
@@ -411,7 +411,7 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootShaderResourceView(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 40, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -421,18 +421,18 @@ static void STDMETHODCALLTYPE HookedSetGraphicsRootShaderResourceView(
 	if (DX12HotPathState::Get().skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 40, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
 	DX12CommandListStateCapture::GraphicsRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, address);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 40, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }
@@ -442,7 +442,7 @@ static void STDMETHODCALLTYPE HookedSetComputeRootUnorderedAccessView(
 {
 	if (DX12HotPathState::Get().skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 41, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
@@ -452,19 +452,19 @@ static void STDMETHODCALLTYPE HookedSetComputeRootUnorderedAccessView(
 	if (DX12HotPathState::Get().skipBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, 41, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
 		if (original)
 			original(commandList, rootParameterIndex, address);
 		return;
 	}
 
-	DX12CommandListHookUtils::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView", commandList,
+	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView", commandList,
 		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
 	DX12CommandListStateCapture::ComputeRootDescriptor(
 		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, address);
 	DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	PFN_SET_ROOT_GPU_VA original =
-		DX12_CL_ORIG(commandList, 41, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
+		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView, "SetComputeRootUnorderedAccessView");
 	if (original)
 		original(commandList, rootParameterIndex, address);
 }

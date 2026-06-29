@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
+#include "DX12ResourceStateTracker.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12ShaderHunt.hpp"
@@ -153,7 +154,6 @@ constexpr bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 		dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 }
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc);
-D3D12_RESOURCE_STATES ResourceStateFromLayout(D3D12_BARRIER_LAYOUT layout);
 ID3D12Resource *CanonicalResource(ID3D12Resource *resource);
 void RecordResource(ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc, const D3D12_HEAP_PROPERTIES *heapProperties, D3D12_RESOURCE_STATES initialState);
 void CleanupTrackedResources();

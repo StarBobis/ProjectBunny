@@ -1,0 +1,68 @@
+#pragma once
+
+#include <Windows.h>
+#include <d3d12.h>
+#include <dxgi.h>
+
+class DX12ResourceTrackerHookSignatures
+{
+public:
+	using CreateDescriptorHeap = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID, void**);
+	using CreateRootSignature = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
+	using CreateConstantBufferView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_CONSTANT_BUFFER_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateShaderResourceView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateUnorderedAccessView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, ID3D12Resource*, const D3D12_UNORDERED_ACCESS_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateRenderTargetView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_RENDER_TARGET_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateDepthStencilView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_DEPTH_STENCIL_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateSampler = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_SAMPLER_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CopyDescriptors = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*,
+		UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*, D3D12_DESCRIPTOR_HEAP_TYPE);
+	using CopyDescriptorsSimple = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
+		D3D12_DESCRIPTOR_HEAP_TYPE);
+	using CreateCommittedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		REFIID, void**);
+	using CreatePlacedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*,
+		D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateReservedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+		const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateCommittedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device4*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreateReservedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device4*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+		const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreateCommittedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device8*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC1*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreatePlacedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device8*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
+		D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateCommittedResource3 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC1*, D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, UINT32, const DXGI_FORMAT*, REFIID, void**);
+	using CreatePlacedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
+		D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*, UINT32, const DXGI_FORMAT*,
+		REFIID, void**);
+	using CreateReservedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, const D3D12_RESOURCE_DESC*, D3D12_BARRIER_LAYOUT,
+		const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, UINT32,
+		const DXGI_FORMAT*, REFIID, void**);
+};
