@@ -11,13 +11,15 @@
 bool DX12CommandListStateCapture::ShouldTrackBindings()
 {
 	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy() ||
 		DX12ModNeedsPreSkinningUavProbe() ||
 		DX12ModNeedsShaderDescriptorTracking();
 }
 
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()
 {
-	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame();
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackHuntIa()
@@ -28,7 +30,9 @@ bool DX12CommandListStateCapture::ShouldTrackHuntIa()
 bool DX12CommandListStateCapture::ShouldTrackPsoState()
 {
 	return DX12HuntIsEnabled() || DX12ModHasActiveShaderOverrides() ||
-		DX12ModNeedsPreSkinningUavProbe();
+		DX12ModNeedsPreSkinningUavProbe() ||
+		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsBusy();
 }
 
 

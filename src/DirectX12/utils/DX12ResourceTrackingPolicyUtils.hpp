@@ -45,7 +45,8 @@ public:
 	static bool NeedsFullDescriptorHistory()
 	{
 		return DX12RuntimeState::IsHuntingMode() ||
-			NeedsFrameDumpTracking();
+			NeedsFrameDumpTracking() ||
+			NeedsShaderDumpTracking();
 	}
 
 	static bool NeedsFullResourceMetadata()
@@ -55,7 +56,11 @@ public:
 
 	static bool NeedsLiveResourceIndex()
 	{
-		return true;
+		return NeedsFullResourceMetadata() ||
+			DX12ModHasActiveShaderOverrides() ||
+			DX12ModNeedsShaderDescriptorTracking() ||
+			DX12ModNeedsPreSkinningUavProbe() ||
+			DX12ModNeedsPresentReplacement();
 	}
 
 	static bool NeedsBufferResourceTracking()

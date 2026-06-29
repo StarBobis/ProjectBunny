@@ -57,6 +57,10 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
+		if (DX12HotPathState::Get().skipAll) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 
 		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
 		ID3D12DescriptorHeap *sampler = nullptr;
