@@ -116,6 +116,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 				}
 				summary->currentState = static_cast<UINT>(resource.currentState);
 				summary->hasCurrentState = resource.hasCurrentState;
+				summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
 				resolvedBegin = begin;
 				resolvedEnd = end;
 				resolved = true;
@@ -255,6 +256,11 @@ static void CompleteDescriptorSummaryResourceInfo(
 	if (!summary->hasCurrentState) {
 		summary->currentState = static_cast<UINT>(resource.currentState);
 		summary->hasCurrentState = resource.hasCurrentState;
+		summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+	} else if (!summary->stateTrackedByBarrier && resource.stateTrackedByBarrier) {
+		summary->currentState = static_cast<UINT>(resource.currentState);
+		summary->hasCurrentState = resource.hasCurrentState;
+		summary->stateTrackedByBarrier = true;
 	}
 	if (!resourceLockHeld)
 		ReleaseSRWLockShared(&gResourceLock);
@@ -280,6 +286,7 @@ static void FillDescriptorSummary(
 	summary->viewSize = record.viewSize;
 	summary->currentState = static_cast<UINT>(record.currentState);
 	summary->hasCurrentState = record.hasCurrentState;
+	summary->stateTrackedByBarrier = record.stateTrackedByBarrier;
 	summary->hasDesc = record.hasDesc;
 	if (completeResourceInfo)
 		CompleteDescriptorSummaryResourceInfo(summary, resourceLockHeld);
@@ -806,8 +813,53 @@ void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
 		summary.size = record.size;
 		summary.currentState = static_cast<UINT>(record.currentState);
 		summary.hasCurrentState = record.hasCurrentState;
+		summary.stateTrackedByBarrier = record.stateTrackedByBarrier;
 		resources->push_back(summary);
 	}
 	ReleaseSRWLockShared(&gResourceLock);
 }
 
+void DX12GetRetainedTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
+{
+	if (!resources)
+		return;
+
+	resources->clear();
+	AcquireSRWLockShared(&gResourceLock);
+	resources->reserve(gLiveResourceCount);
+	for (const ResourceRecord &record : gResources) {
+		if (!record.resource)
+			continue;
+		if (!DX12ResourceSnapshotUtils::TryAddRef(record.resource))
+			continue;
+		DX12ResourceSummary summary;
+		summary.resource = record.resource;
+		summary.resourceDesc = record.desc;
+		summary.hasResourceDesc = true;
+		if (record.hasHeapType) {
+			summary.resourceHeapType = static_cast<UINT>(record.heapType);
+			summary.hasResourceHeapType = true;
+		}
+		summary.gpuVirtualAddress = record.gpuVirtualAddress;
+		summary.size = record.size;
+		summary.currentState = static_cast<UINT>(record.currentState);
+		summary.hasCurrentState = record.hasCurrentState;
+		summary.stateTrackedByBarrier = record.stateTrackedByBarrier;
+		summary.retained = true;
+		resources->push_back(summary);
+	}
+	ReleaseSRWLockShared(&gResourceLock);
+}
+
+void DX12ReleaseTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
+{
+	if (!resources)
+		return;
+	for (DX12ResourceSummary &summary : *resources) {
+		if (summary.retained && summary.resource)
+			DX12ResourceSnapshotUtils::Release(summary.resource);
+		summary.resource = nullptr;
+		summary.retained = false;
+	}
+	resources->clear();
+}

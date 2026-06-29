@@ -67,7 +67,8 @@ bool DX12ResourceTrackerHookRuntime::ShouldRecordCreatedResource(const D3D12_RES
 	if (ShouldTrackResourceMetadata())
 		return true;
 	if (!desc)
-		return ShouldTrackResourceCreationMetadata();
+		return DX12ResourceTrackingPolicyUtils::NeedsLiveResourceIndex() ||
+			ShouldTrackResourceCreationMetadata();
 	if (desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
 		return DX12ResourceTrackingPolicyUtils::NeedsBufferResourceTracking();
 	if (IsTextureResourceDimension(desc->Dimension))

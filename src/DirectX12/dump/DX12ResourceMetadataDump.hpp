@@ -191,7 +191,7 @@ static DX12FrameAnalysisDumpResult Dump(const wchar_t *dir)
 
 	fprintf(file, "\nDescriptors\n");
 	fprintf(file,
-		"index,kind,cpu_handle,resource,counter_resource,resource_dimension,width,height,depth_or_array,mips,format,flags,gpu_va,sample_count,resource_offset,view_size,heap_type,current_state,has_current_state,has_view_desc,view_format,view_dimension,cbv_size,first_element,num_elements,stride,buffer_view_offset,buffer_view_bytes\n");
+		"index,kind,cpu_handle,resource,counter_resource,resource_dimension,width,height,depth_or_array,mips,format,flags,gpu_va,sample_count,resource_offset,view_size,heap_type,current_state,has_current_state,state_tracked_by_barrier,has_view_desc,view_format,view_dimension,cbv_size,first_element,num_elements,stride,buffer_view_offset,buffer_view_bytes\n");
 	for (size_t i = 0; i < descriptors.size(); ++i) {
 		const DX12DescriptorSummary &record = descriptors[i];
 		fprintf(file, "%zu,%s,0x%llx,%p,%p",
@@ -201,12 +201,13 @@ static DX12FrameAnalysisDumpResult Dump(const wchar_t *dir)
 			record.resource,
 			record.counterResource);
 		WriteResourceDesc(file, record);
-		fprintf(file, ",%llu,%llu,%u,0x%x,%u,%u,%u,%u,%u,%llu,%u,%u,%llu,%llu\n",
+		fprintf(file, ",%llu,%llu,%u,0x%x,%u,%u,%u,%u,%u,%u,%llu,%u,%u,%llu,%llu\n",
 			static_cast<unsigned long long>(record.resourceOffset),
 			static_cast<unsigned long long>(record.viewSize),
 			record.hasResourceHeapType ? record.resourceHeapType : 0,
 			record.currentState,
 			record.hasCurrentState ? 1 : 0,
+			record.stateTrackedByBarrier ? 1 : 0,
 			record.hasDesc ? 1 : 0,
 			record.viewFormat,
 			record.viewDimension,

@@ -11,6 +11,7 @@
 #include "DX12ResourceTracker.hpp"
 #include "DX12ResourceStateTracker.hpp"
 #include "DX12RuntimeState.hpp"
+#include "DX12ResourceDumpSafetyUtils.hpp"
 
 class DX12ResourceDumpPrepare
 {
@@ -329,6 +330,17 @@ static bool PrepareHuntingResourceTextureTask(
 	descriptor.viewSize = resource.size;
 	descriptor.currentState = resource.currentState;
 	descriptor.hasCurrentState = resource.hasCurrentState;
+	descriptor.stateTrackedByBarrier = resource.stateTrackedByBarrier;
+
+	if (!DX12ResourceDumpSafetyUtils::ResourceStateAllowsLiveDiscoveryCopy(resource)) {
+		task->sourceKind = DumpTaskSource::Resource;
+		task->binding.bindSpace = "hunting_resource";
+		task->binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		task->binding.descriptor = descriptor;
+		task->binding.hasDescriptor = true;
+		task->skipNote = DX12ResourceDumpSafetyUtils::LiveDiscoveryCopySkipReason(resource);
+		return false;
+	}
 
 	// Created resources may never have had a tracked descriptor. Use the same
 	// copy preparation path after projecting resource identity into a neutral
@@ -396,6 +408,8 @@ static void ReleaseTasks(std::vector<DumpTask> *tasks)
 	if (!tasks)
 		return;
 	for (DumpTask &task : *tasks) {
+		if (task.keepReadbackAlive)
+			continue;
 		if (task.readback) {
 			task.readback->Release();
 			task.readback = nullptr;

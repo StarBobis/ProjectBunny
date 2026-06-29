@@ -95,6 +95,7 @@ public:
 	UINT64 viewSize = 0;
 	UINT currentState = 0;
 	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
 	bool hasDesc = false;
 	UINT viewFormat = 0;
 	UINT viewDimension = 0;
@@ -141,6 +142,7 @@ public:
 	UINT64 viewSize = 0;
 	UINT currentState = 0;
 	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
 };
 
 class DX12ResourceSummary
@@ -155,4 +157,6 @@ public:
 	UINT64 size = 0;
 	UINT currentState = 0;
 	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
+	bool retained = false;
 };

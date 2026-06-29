@@ -39,6 +39,8 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps);
 void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources);
+void DX12GetRetainedTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources);
+void DX12ReleaseTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources);
 bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
 bool DX12FindDescriptorSummaryByCpuHandleLight(

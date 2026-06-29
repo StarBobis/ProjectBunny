@@ -26,7 +26,7 @@ add_library(DirectX12 SHARED
     # Input Assembler (IA)
 
     # Shader dump & hunt
-    DX12ShaderDump.cpp
+    dump/DX12ShaderDump.cpp
     DX12ShaderHunt.cpp
 
     # Resource dump
@@ -48,6 +48,7 @@ add_library(DirectX12 SHARED
 
 target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/dump
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty

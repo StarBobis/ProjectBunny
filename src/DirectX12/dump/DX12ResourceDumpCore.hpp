@@ -150,6 +150,7 @@ static DX12FrameResourceBinding ResourceBindingFromTrackedResource(
 	binding.descriptor.viewSize = resource.size;
 	binding.descriptor.currentState = resource.currentState;
 	binding.descriptor.hasCurrentState = resource.hasCurrentState;
+	binding.descriptor.stateTrackedByBarrier = resource.stateTrackedByBarrier;
 	binding.hasDescriptor = resource.resource != nullptr;
 	return binding;
 }

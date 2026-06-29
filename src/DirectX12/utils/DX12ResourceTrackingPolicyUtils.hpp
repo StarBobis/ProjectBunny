@@ -53,8 +53,15 @@ public:
 		return NeedsDumpOrHuntingTracking();
 	}
 
+	static bool NeedsLiveResourceIndex()
+	{
+		return true;
+	}
+
 	static bool NeedsBufferResourceTracking()
 	{
+		if (NeedsLiveResourceIndex())
+			return true;
 		return NeedsFullResourceMetadata() ||
 			DX12ModHasActiveShaderOverrides() ||
 			DX12ModNeedsShaderDescriptorTracking() ||
@@ -64,6 +71,8 @@ public:
 
 	static bool NeedsTextureResourceTracking()
 	{
+		if (NeedsLiveResourceIndex())
+			return true;
 		return NeedsFullResourceMetadata() ||
 			DX12ModNeedsPreSkinningUavProbe() ||
 			DX12ModNeedsPresentReplacement();

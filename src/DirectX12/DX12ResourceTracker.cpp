@@ -418,10 +418,7 @@ void RecordResource(
 	record.desc = desc ? *desc : resource->GetDesc();
 	const bool bufferResource = record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
 	const bool textureResource = IsTextureResourceDimension(record.desc.Dimension);
-	if (!ShouldTrackResourceMetadata() &&
-			((bufferResource && !DX12ResourceTrackingPolicyUtils::NeedsBufferResourceTracking()) ||
-			 (textureResource && !DX12ResourceTrackingPolicyUtils::NeedsTextureResourceTracking()) ||
-			 (!bufferResource && !textureResource)))
+	if (!bufferResource && !textureResource)
 		return;
 	if (heapProperties) {
 		record.heapType = heapProperties->Type;
@@ -764,6 +761,7 @@ void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource)
 		}
 		record->currentState = resourceRecord.currentState;
 		record->hasCurrentState = resourceRecord.hasCurrentState;
+		record->stateTrackedByBarrier = resourceRecord.stateTrackedByBarrier;
 	}
 	ReleaseSRWLockShared(&gResourceLock);
 }
@@ -830,6 +828,7 @@ bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 			}
 			record->currentState = resource.currentState;
 			record->hasCurrentState = resource.hasCurrentState;
+			record->stateTrackedByBarrier = resource.stateTrackedByBarrier;
 			resolved = true;
 		}
 	}
@@ -1455,12 +1454,14 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
 			record.currentState = barrier.Transition.StateAfter;
 			record.hasCurrentState = true;
+			record.stateTrackedByBarrier = true;
 			resourceStateChanged = true;
 		} else {
 			// DX12 state is resource/subresource state, not descriptor state.
 			// Keep the hot path O(barriers); dump/query code joins descriptors
 			// with ResourceRecord when it needs a current state snapshot.
 			record.hasCurrentState = false;
+			record.stateTrackedByBarrier = true;
 			resourceStateChanged = true;
 		}
 	}

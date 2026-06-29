@@ -2,16 +2,45 @@
 
 #include <Windows.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
+#include "DX12ResourceDumpCore.hpp"
 #include "DX12ResourceDumpPrepare.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 
 class DX12ResourceDumpGpuCopy
 {
 public:
+static DWORD CopyFenceTimeoutMs()
+{
+	return 2000;
+}
+
+static const char *WaitResultName(DWORD waitResult)
+{
+	switch (waitResult) {
+	case WAIT_OBJECT_0:
+		return "signaled";
+	case WAIT_TIMEOUT:
+		return "timeout";
+	case WAIT_FAILED:
+		return "wait_failed";
+	default:
+		return "unexpected_wait_result";
+	}
+}
+
+static bool DeviceRemoved(ID3D12Device *device, HRESULT *hrOut = nullptr)
+{
+	HRESULT hr = device ? device->GetDeviceRemovedReason() : E_POINTER;
+	if (hrOut)
+		*hrOut = hr;
+	return FAILED(hr);
+}
+
 static void WriteResourceBarrier(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *resource,
 	D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState)
@@ -28,7 +57,7 @@ static void WriteResourceBarrier(
 	commandList->ResourceBarrier(1, &barrier);
 }
 
-static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device)
+static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device, DWORD *waitResultOut = nullptr)
 {
 	ID3D12Fence *fence = nullptr;
 	HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
@@ -41,16 +70,37 @@ static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device)
 		return false;
 	}
 
+	DWORD waitResult = WAIT_OBJECT_0;
+	DWORD waitError = 0;
+	UINT64 completedValue = 0;
 	hr = queue->Signal(fence, 1);
 	if (SUCCEEDED(hr) && fence->GetCompletedValue() < 1) {
 		hr = fence->SetEventOnCompletion(1, eventHandle);
-		if (SUCCEEDED(hr))
-			WaitForSingleObject(eventHandle, 5000);
+		if (SUCCEEDED(hr)) {
+			waitResult = WaitForSingleObject(eventHandle, CopyFenceTimeoutMs());
+			if (waitResult == WAIT_FAILED)
+				waitError = GetLastError();
+		}
 	}
+	completedValue = fence->GetCompletedValue();
 
 	CloseHandle(eventHandle);
 	fence->Release();
-	return SUCCEEDED(hr);
+	if (waitResultOut)
+		*waitResultOut = waitResult;
+
+	const bool completed = completedValue != UINT64_MAX && completedValue >= 1;
+	const bool ok = SUCCEEDED(hr) && waitResult == WAIT_OBJECT_0 && completed;
+	if (!ok) {
+		HRESULT removedHr = S_OK;
+		DeviceRemoved(device, &removedHr);
+		DX12FrameAnalysis::LogJsonFunc("ResourceCopyFenceWaitFailed",
+			"\"hr\":\"0x%lx\",\"deviceHr\":\"0x%lx\",\"wait\":\"%s\",\"waitResult\":%lu,\"waitError\":%lu,\"completed\":%llu,\"timeoutMs\":%lu",
+			hr, removedHr, WaitResultName(waitResult), waitResult, waitError,
+			static_cast<unsigned long long>(completedValue),
+			CopyFenceTimeoutMs());
+	}
+	return ok;
 }
 
 
@@ -63,8 +113,9 @@ static bool ExecuteCopyTask(
 
 	ID3D12CommandAllocator *allocator = nullptr;
 	ID3D12GraphicsCommandList *commandList = nullptr;
-	HRESULT hr = device->GetDeviceRemovedReason();
-	if (FAILED(hr)) {
+	HRESULT hr = S_OK;
+	if (DX12ResourceDumpGpuCopy::DeviceRemoved(device, &hr)) {
+		task->skipNote = "device_removed";
 		DX12FrameAnalysis::LogJsonFunc("ResourceCopySkipped",
 			"\"reason\":\"device_removed\",\"hr\":\"0x%lx\"", hr);
 		return false;
@@ -138,9 +189,10 @@ static bool ExecuteCopyTask(
 	}
 	ID3D12CommandList *lists[] = { commandList };
 	bool ok = false;
+	DWORD waitResult = WAIT_FAILED;
 	__try {
 		queue->ExecuteCommandLists(1, lists);
-		ok = DX12ResourceDumpGpuCopy::WaitForFence(queue, device);
+		ok = DX12ResourceDumpGpuCopy::WaitForFence(queue, device, &waitResult);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		task->skipNote = "copy_execute_exception";
@@ -153,21 +205,48 @@ static bool ExecuteCopyTask(
 		ok = false;
 	}
 
-	commandList->Release();
-	allocator->Release();
 	if (!ok) {
-		if (!task->skipNote)
+		HRESULT removedHr = S_OK;
+		const bool deviceRemoved = DX12ResourceDumpGpuCopy::DeviceRemoved(device, &removedHr);
+		if (deviceRemoved)
+			task->skipNote = "device_removed";
+		else if (!task->skipNote && waitResult == WAIT_TIMEOUT)
+			task->skipNote = "copy_wait_timeout";
+		else if (!task->skipNote)
 			task->skipNote = "copy_execute_failed";
 		DX12FrameAnalysis::LogJsonFunc("ResourceCopyTaskFailed",
-			"\"source\":\"%p\",\"texture\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"note\":\"%s\"",
-			task->source, task->isTexture ? 1 : 0,
+			"\"source\":\"%p\",\"taskSource\":\"%s\",\"bind\":\"%s\",\"texture\":%u,\"width\":%llu,\"height\":%u,\"depthOrArray\":%u,\"mips\":%u,\"format\":%u,\"offset\":%llu,\"bytes\":%llu,\"state\":\"0x%x\",\"stateKnown\":%u,\"stateTrackedByBarrier\":%u,\"note\":\"%s\",\"deviceHr\":\"0x%lx\",\"wait\":\"%s\"",
+			task->source,
+			DX12ResourceDumpCore::DumpTaskSourceName(task->sourceKind),
+			task->binding.bindSpace.c_str(),
+			task->isTexture ? 1 : 0,
+			static_cast<unsigned long long>(task->desc.Width),
+			static_cast<UINT>(task->desc.Height),
+			static_cast<UINT>(task->desc.DepthOrArraySize),
+			static_cast<UINT>(task->desc.MipLevels),
+			static_cast<UINT>(task->desc.Format),
 			static_cast<unsigned long long>(task->sourceOffset),
 			static_cast<unsigned long long>(task->copyBytes),
 			static_cast<UINT>(task->sourceState),
-			task->skipNote ? task->skipNote : "copy_execute_failed");
+			task->stateKnown ? 1 : 0,
+			task->binding.descriptor.stateTrackedByBarrier ? 1 : 0,
+			task->skipNote ? task->skipNote : "copy_execute_failed",
+			removedHr,
+			WaitResultName(waitResult));
+		if (deviceRemoved) {
+			commandList->Release();
+			allocator->Release();
+		} else {
+			task->keepReadbackAlive = true;
+			DX12FrameAnalysis::LogJsonFunc("ResourceCopyObjectsRetained",
+				"\"reason\":\"gpu_work_not_completed\",\"source\":\"%p\",\"bytes\":%llu",
+				task->source, static_cast<unsigned long long>(task->copyBytes));
+		}
 		return false;
 	}
 
+	commandList->Release();
+	allocator->Release();
 	task->copied = true;
 	task->skipNote = nullptr;
 	return true;
@@ -189,8 +268,27 @@ static size_t ExecuteReadbackCopyTasks(
 		if (task.directMap || !task.ready || !task.readback)
 			continue;
 		eligible++;
-		if (DX12ResourceDumpGpuCopy::ExecuteCopyTask(device, queue, &task))
+		if (DX12ResourceDumpGpuCopy::ExecuteCopyTask(device, queue, &task)) {
 			copied++;
+			continue;
+		}
+
+		HRESULT removedHr = S_OK;
+		const bool deviceRemoved = DX12ResourceDumpGpuCopy::DeviceRemoved(device, &removedHr);
+		const bool timedOut = task.skipNote && !strcmp(task.skipNote, "copy_wait_timeout");
+		if (deviceRemoved || timedOut) {
+			const char *abortNote = deviceRemoved ?
+				"copy_aborted_device_removed" : "copy_aborted_wait_timeout";
+			for (size_t j = i + 1; j < tasks->size(); ++j) {
+				DumpTask &pending = (*tasks)[j];
+				if (!pending.directMap && pending.ready && pending.readback)
+					pending.skipNote = abortNote;
+			}
+			DX12FrameAnalysis::LogJsonFunc("ResourceCopyBatchAborted",
+				"\"reason\":\"%s\",\"deviceHr\":\"0x%lx\",\"copied\":%zu,\"eligibleSeen\":%zu,\"tasks\":%zu",
+				abortNote, removedHr, copied, eligible, tasks->size());
+			break;
+		}
 	}
 
 	if (eligible == 0)

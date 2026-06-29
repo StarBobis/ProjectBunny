@@ -56,6 +56,7 @@ struct DescriptorRecord
 	UINT64 viewSize = 0;
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
 	D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {};
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
 	D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
@@ -95,6 +96,35 @@ struct ResourceRecord
 	UINT64 size = 0;
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
+};
+
+class DX12ResourceSnapshotUtils
+{
+public:
+static bool TryAddRef(ID3D12Resource *resource)
+{
+	if (!resource)
+		return false;
+	__try {
+		resource->AddRef();
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+static void Release(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	__try {
+		resource->Release();
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+	}
+}
 };
 
 struct BufferResolveCacheEntry
