@@ -8,71 +8,46 @@ add_library(DirectX12 SHARED
     # Core
 
     # UI
-    ui/DX12NativeOverlay.cpp
-    ui/DX12UiActions.cpp
+    DX12NativeOverlay.cpp
 
     # Hooks infrastructure
-    hooks/DX12DeviceHooks.cpp
-    hooks/DX12DispatchHookFlow.cpp
-    hooks/DX12DrawHookFlow.cpp
-    hooks/DX12HookManager.cpp
-    hooks/DXGIHooks.cpp
+    DXGIHooks.cpp
 
     # Resource tracking
-    resource_tracker/DX12ResourceTracker.cpp
-    resource_tracker/DX12ResourceTrackerHooks.cpp
-    resource_tracker/DX12ResourceTrackerQueries.cpp
+    DX12ResourceTracker.cpp
+    DX12ResourceTrackerHooks.cpp
+    DX12ResourceTrackerQueries.cpp
 
     # Binding/descriptor tracking
-    binding_tracker/DX12BindingTracker.cpp
-    binding_tracker/DX12BindingTrackerFrameExport.cpp
-    binding_tracker/DX12BindingTrackerResourceExport.cpp
+    DX12BindingTracker.cpp
+    DX12BindingTrackerFrameExport.cpp
+    DX12BindingTrackerResourceExport.cpp
 
     # Input Assembler (IA)
 
     # Shader dump & hunt
-    shader/DX12ShaderDump.cpp
-    shader/DX12ShaderHunt.cpp
+    DX12ShaderDump.cpp
+    DX12ShaderHunt.cpp
 
     # Resource dump
 
     # Command list hooks & runtime
-    command_list/DX12CommandListHooks.cpp
-    command_list/DX12CommandListRuntime.cpp
-    command_list/DX12CommandListLifecycle.cpp
-    command_list/DX12CommandListCommandRecorder.cpp
-    command_list/DX12CommandListStateCapture.cpp
+    DX12CommandListHooks.cpp
+    DX12CommandListRuntime.cpp
+    DX12CommandListLifecycle.cpp
+    DX12CommandListCommandRecorder.cpp
+    DX12CommandListStateCapture.cpp
 
     # Mod runtime
-    mod_runtime/DX12ModRuntime.cpp
+    DX12ModRuntime.cpp
 
     # 3Dmigoto config/runtime model used only by DX12
-    migoto_core/IniDocument.cpp
-    migoto_core/MigotoCommandList.cpp
-    migoto_core/MigotoIniLoader.cpp
-    migoto_core/MigotoConfig.cpp
-    migoto_core/MigotoResource.cpp
-    migoto_core/MigotoShaderOverride.cpp
-    migoto_core/MigotoShaderRegex.cpp
-    migoto_core/MigotoTextureOverride.cpp
     ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
 
 )
 
 target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/binding_tracker
-    ${CMAKE_CURRENT_SOURCE_DIR}/command_list
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/frame_analysis
-    ${CMAKE_CURRENT_SOURCE_DIR}/hooks
-    ${CMAKE_CURRENT_SOURCE_DIR}/ia
-    ${CMAKE_CURRENT_SOURCE_DIR}/migoto_core
-    ${CMAKE_CURRENT_SOURCE_DIR}/mod_runtime
-    ${CMAKE_CURRENT_SOURCE_DIR}/resource_dump
-    ${CMAKE_CURRENT_SOURCE_DIR}/resource_tracker
-    ${CMAKE_CURRENT_SOURCE_DIR}/shader
-    ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty
