@@ -3,8 +3,8 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12CommandListStateCapture.hpp"
-#include "DX12ModRuntime.h"
-#include "DX12ShaderHunt.h"
+#include "DX12ModRuntime.hpp"
+#include "DX12ShaderHunt.hpp"
 
 void DX12CommandListLifecycle::Register(
 	ID3D12GraphicsCommandList *commandList,

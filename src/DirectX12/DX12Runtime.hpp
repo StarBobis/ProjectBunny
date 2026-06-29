@@ -2,15 +2,15 @@
 
 #include <Windows.h>
 
-#include "DX12NativeOverlay.h"
-#include "DX12ModRuntime.h"
+#include "DX12NativeOverlay.hpp"
+#include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12HookRegistry.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeState.hpp"
-#include "DXGIHooks.h"
+#include "DXGIHooks.hpp"
 #include "MigotoConfig.hpp"
 
 class DX12Runtime
@@ -30,7 +30,7 @@ public:
 			LoadRealD3D12();
 
 		for (int i = 0; i < 200; ++i) {
-			DX12InstallDXGIHooks();
+			DXGIHooks::Install();
 			Sleep(50);
 		}
 

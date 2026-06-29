@@ -1,4 +1,4 @@
-#include "DX12ResourceTrackerPrivate.h"
+#include "DX12ResourceTrackerPrivate.hpp"
 
 bool DX12GetRootSignatureSummary(
 	ID3D12RootSignature *rootSignature, DX12RootSignatureSummary *summary)

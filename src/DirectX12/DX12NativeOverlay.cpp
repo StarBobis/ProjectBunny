@@ -1,4 +1,4 @@
-#include "DX12NativeOverlay.h"
+#include "DX12NativeOverlay.hpp"
 
 #include <CommCtrl.h>
 #include <dwmapi.h>
@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "DX12Profiling.hpp"
-#include "DX12ShaderDump.h"
-#include "DX12ShaderHunt.h"
+#include "DX12ShaderDump.hpp"
+#include "DX12ShaderHunt.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeState.hpp"
 #include "DX12UiActions.hpp"

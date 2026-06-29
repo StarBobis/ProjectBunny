@@ -10,8 +10,8 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Json.hpp"
-#include "DX12ResourceTracker.h"
-#include "DX12ShaderDump.h"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
 
 class DX12FrameAnalysisManifestFormatUtils
 {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 
 #include <Shlwapi.h>
 #include <stdint.h>
@@ -16,8 +16,8 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12Json.hpp"
-#include "DX12ModRuntime.h"
-#include "DX12ShaderHunt.h"
+#include "DX12ModRuntime.hpp"
+#include "DX12ShaderHunt.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 #include "crc32c.h"

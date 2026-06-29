@@ -3,7 +3,7 @@
 # ============================================================
 add_library(DirectX12 SHARED
     # Entry point (root)
-    D3D12Wrapper.cpp
+    D3D12Proxy.cpp
 
     # Core
 

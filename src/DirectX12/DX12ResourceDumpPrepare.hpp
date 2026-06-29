@@ -8,7 +8,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 #include "DX12ResourceDumpUtils.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 #include "DX12RuntimeState.hpp"
 
 class DX12ResourceDumpPrepare

@@ -7,9 +7,9 @@
 
 #include "DX12CommandListHooks.hpp"
 #include "DX12HookManager.hpp"
-#include "DX12ModRuntime.h"
-#include "DX12ResourceTracker.h"
-#include "DX12ShaderDump.h"
+#include "DX12ModRuntime.hpp"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
 #include "DX12CommandQueueState.hpp"
 #include "DX12HookRegistry.hpp"
 #include "DX12LogManager.hpp"

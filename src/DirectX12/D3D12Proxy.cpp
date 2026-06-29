@@ -5,7 +5,7 @@
 #include "DX12DeviceHooks.hpp"
 #include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
-#include "DXGIHooks.h"
+#include "DXGIHooks.hpp"
 #include "util_min.h"
 
 bool D3D12ProxyTargetUtils::VerifyIntendedTarget(HINSTANCE module)
@@ -194,7 +194,7 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 	IUnknown *adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void **device)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12InstallDXGIHooks();
+	DXGIHooks::Install();
 	if (!D3D12ProxyState::OrigCreateDevice)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateDevice(adapter, minimumFeatureLevel, riid, device);

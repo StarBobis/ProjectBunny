@@ -5,7 +5,7 @@
 #include "DX12CommandListRuntime.hpp"
 #include "DX12IaCommandSignatures.hpp"
 #include "DX12IaRegion.hpp"
-#include "DX12ModRuntime.h"
+#include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 
 class DX12IaDrawInvocation

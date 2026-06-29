@@ -11,9 +11,9 @@
 #include "DX12ResourceDumpCoreUtils.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 #include "DX12ResourceDumpUtils.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 #include "DX12RuntimeState.hpp"
-#include "DX12ShaderDump.h"
+#include "DX12ShaderDump.hpp"
 
 class DX12ResourceDumpNamingUtils
 {

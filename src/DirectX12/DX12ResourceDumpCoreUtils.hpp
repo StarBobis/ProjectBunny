@@ -10,7 +10,7 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ResourceDumpTypes.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 
 class DX12ResourceDumpCoreUtils
 {

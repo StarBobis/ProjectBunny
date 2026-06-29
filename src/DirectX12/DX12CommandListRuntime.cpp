@@ -3,10 +3,10 @@
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12IaRegion.hpp"
-#include "DX12ModRuntime.h"
-#include "DX12ResourceTracker.h"
-#include "DX12ShaderDump.h"
-#include "DX12ShaderHunt.h"
+#include "DX12ModRuntime.hpp"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
+#include "DX12ShaderHunt.hpp"
 
 
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];

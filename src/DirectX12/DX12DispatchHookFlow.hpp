@@ -7,9 +7,9 @@
 
 #include "DX12BindingTracker.hpp"
 #include "DX12CommandListRuntime.hpp"
-#include "DX12ModRuntime.h"
+#include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
-#include "DX12ShaderDump.h"
+#include "DX12ShaderDump.hpp"
 #include "DX12LogManager.hpp"
 
 #if defined(_DEBUG)

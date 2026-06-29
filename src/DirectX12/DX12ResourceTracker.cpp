@@ -1,4 +1,4 @@
-#include "DX12ResourceTrackerPrivate.h"
+#include "DX12ResourceTrackerPrivate.hpp"
 
 uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 {

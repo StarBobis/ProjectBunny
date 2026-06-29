@@ -1,4 +1,4 @@
-#include "DX12ModRuntime.h"
+#include "DX12ModRuntime.hpp"
 
 #include <Shlwapi.h>
 #include <stdint.h>
@@ -21,7 +21,7 @@
 #include "DX12CommandListRuntime.hpp"
 #include "DX12DeviceHooks.hpp"
 #include "DX12Profiling.hpp"
-#include "DX12ShaderDump.h"
+#include "DX12ShaderDump.hpp"
 #include "util.h"
 #include "IniDocument.hpp"
 #include "MigotoCommandList.hpp"
@@ -1256,14 +1256,14 @@ enum class DX12PsoKind
 };
 
 
-#include "DX12ModRuntimeLoad.hpp"
-#include "DX12ModRuntimeResources.hpp"
-#include "DX12ModRuntimePreSkin.hpp"
+#include "DX12ModRuntimeLoader.hpp"
+#include "DX12ModResourceRuntime.hpp"
+#include "DX12PreSkinRuntime.hpp"
 #include "DX12ModRuntimeState.hpp"
-#include "DX12ModRuntimeIaMatch.hpp"
-#include "DX12ModRuntimeIaRuntime.hpp"
-#include "DX12ModRuntimeCommandLists.hpp"
-#include "DX12ModRuntimeShaderOverride.hpp"
+#include "DX12IaOverrideMatcher.hpp"
+#include "DX12IaResourceRuntime.hpp"
+#include "DX12CommandListRuntimeExecutor.hpp"
+#include "DX12ShaderOverrideRuntime.hpp"
 
 
 

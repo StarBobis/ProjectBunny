@@ -1,89 +1,97 @@
-#include "DX12ResourceTrackerPrivate.h"
+#include "DX12ResourceTrackerPrivate.hpp"
 
 #include <array>
 
 #include "DX12HookRegistry.hpp"
 #include "DX12HookManager.hpp"
 
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_DESCRIPTOR_HEAP)(
-	ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_ROOT_SIGNATURE)(
-	ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_CONSTANT_BUFFER_VIEW)(
-	ID3D12Device*, const D3D12_CONSTANT_BUFFER_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_SHADER_RESOURCE_VIEW)(
-	ID3D12Device*, ID3D12Resource*, const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_UNORDERED_ACCESS_VIEW)(
-	ID3D12Device*, ID3D12Resource*, ID3D12Resource*, const D3D12_UNORDERED_ACCESS_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_RENDER_TARGET_VIEW)(
-	ID3D12Device*, ID3D12Resource*, const D3D12_RENDER_TARGET_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_DEPTH_STENCIL_VIEW)(
-	ID3D12Device*, ID3D12Resource*, const D3D12_DEPTH_STENCIL_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_CREATE_SAMPLER)(
-	ID3D12Device*, const D3D12_SAMPLER_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_DESCRIPTORS)(
-	ID3D12Device*, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*,
-	UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*, D3D12_DESCRIPTOR_HEAP_TYPE);
-typedef void(STDMETHODCALLTYPE *PFN_COPY_DESCRIPTORS_SIMPLE)(
-	ID3D12Device*, UINT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
-	D3D12_DESCRIPTOR_HEAP_TYPE);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMITTED_RESOURCE)(
-	ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
-	const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
-	REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_PLACED_RESOURCE)(
-	ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*,
-	D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_RESERVED_RESOURCE)(
-	ID3D12Device*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
-	const D3D12_CLEAR_VALUE*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMITTED_RESOURCE1)(
-	ID3D12Device4*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
-	const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
-	ID3D12ProtectedResourceSession*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_RESERVED_RESOURCE1)(
-	ID3D12Device4*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
-	const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMITTED_RESOURCE2)(
-	ID3D12Device8*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
-	const D3D12_RESOURCE_DESC1*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
-	ID3D12ProtectedResourceSession*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_PLACED_RESOURCE1)(
-	ID3D12Device8*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
-	D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_COMMITTED_RESOURCE3)(
-	ID3D12Device10*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
-	const D3D12_RESOURCE_DESC1*, D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*,
-	ID3D12ProtectedResourceSession*, UINT32, const DXGI_FORMAT*, REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_PLACED_RESOURCE2)(
-	ID3D12Device10*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
-	D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*, UINT32, const DXGI_FORMAT*,
-	REFIID, void**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_RESERVED_RESOURCE2)(
-	ID3D12Device10*, const D3D12_RESOURCE_DESC*, D3D12_BARRIER_LAYOUT,
-	const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, UINT32,
-	const DXGI_FORMAT*, REFIID, void**);
+class DX12ResourceTrackerHookSignatures
+{
+public:
+	using CreateDescriptorHeap = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID, void**);
+	using CreateRootSignature = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
+	using CreateConstantBufferView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_CONSTANT_BUFFER_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateShaderResourceView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateUnorderedAccessView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, ID3D12Resource*, const D3D12_UNORDERED_ACCESS_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateRenderTargetView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_RENDER_TARGET_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateDepthStencilView = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Resource*, const D3D12_DEPTH_STENCIL_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CreateSampler = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_SAMPLER_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+	using CopyDescriptors = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*,
+		UINT, const D3D12_CPU_DESCRIPTOR_HANDLE*, const UINT*, D3D12_DESCRIPTOR_HEAP_TYPE);
+	using CopyDescriptorsSimple = void(STDMETHODCALLTYPE *)(
+		ID3D12Device*, UINT, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE,
+		D3D12_DESCRIPTOR_HEAP_TYPE);
+	using CreateCommittedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		REFIID, void**);
+	using CreatePlacedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*,
+		D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateReservedResource = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+		const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateCommittedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device4*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreateReservedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device4*, const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+		const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreateCommittedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device8*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC1*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, REFIID, void**);
+	using CreatePlacedResource1 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device8*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
+		D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+	using CreateCommittedResource3 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+		const D3D12_RESOURCE_DESC1*, D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*,
+		ID3D12ProtectedResourceSession*, UINT32, const DXGI_FORMAT*, REFIID, void**);
+	using CreatePlacedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC1*,
+		D3D12_BARRIER_LAYOUT, const D3D12_CLEAR_VALUE*, UINT32, const DXGI_FORMAT*,
+		REFIID, void**);
+	using CreateReservedResource2 = HRESULT(STDMETHODCALLTYPE *)(
+		ID3D12Device10*, const D3D12_RESOURCE_DESC*, D3D12_BARRIER_LAYOUT,
+		const D3D12_CLEAR_VALUE*, ID3D12ProtectedResourceSession*, UINT32,
+		const DXGI_FORMAT*, REFIID, void**);
+};
 
-static PFN_CREATE_DESCRIPTOR_HEAP gOrigCreateDescriptorHeap = nullptr;
-static PFN_CREATE_ROOT_SIGNATURE gOrigCreateRootSignature = nullptr;
-static PFN_CREATE_CONSTANT_BUFFER_VIEW gOrigCreateConstantBufferView = nullptr;
-static PFN_CREATE_SHADER_RESOURCE_VIEW gOrigCreateShaderResourceView = nullptr;
-static PFN_CREATE_UNORDERED_ACCESS_VIEW gOrigCreateUnorderedAccessView = nullptr;
-static PFN_CREATE_RENDER_TARGET_VIEW gOrigCreateRenderTargetView = nullptr;
-static PFN_CREATE_DEPTH_STENCIL_VIEW gOrigCreateDepthStencilView = nullptr;
-static PFN_CREATE_SAMPLER gOrigCreateSampler = nullptr;
-static PFN_COPY_DESCRIPTORS gOrigCopyDescriptors = nullptr;
-static PFN_COPY_DESCRIPTORS_SIMPLE gOrigCopyDescriptorsSimple = nullptr;
-static PFN_CREATE_COMMITTED_RESOURCE gOrigCreateCommittedResource = nullptr;
-static PFN_CREATE_PLACED_RESOURCE gOrigCreatePlacedResource = nullptr;
-static PFN_CREATE_RESERVED_RESOURCE gOrigCreateReservedResource = nullptr;
-static PFN_CREATE_COMMITTED_RESOURCE1 gOrigCreateCommittedResource1 = nullptr;
-static PFN_CREATE_RESERVED_RESOURCE1 gOrigCreateReservedResource1 = nullptr;
-static PFN_CREATE_COMMITTED_RESOURCE2 gOrigCreateCommittedResource2 = nullptr;
-static PFN_CREATE_PLACED_RESOURCE1 gOrigCreatePlacedResource1 = nullptr;
-static PFN_CREATE_COMMITTED_RESOURCE3 gOrigCreateCommittedResource3 = nullptr;
-static PFN_CREATE_PLACED_RESOURCE2 gOrigCreatePlacedResource2 = nullptr;
-static PFN_CREATE_RESERVED_RESOURCE2 gOrigCreateReservedResource2 = nullptr;
+class DX12ResourceTrackerHookState
+{
+public:
+	inline static DX12ResourceTrackerHookSignatures::CreateDescriptorHeap OrigCreateDescriptorHeap = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateRootSignature OrigCreateRootSignature = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateConstantBufferView OrigCreateConstantBufferView = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateShaderResourceView OrigCreateShaderResourceView = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateUnorderedAccessView OrigCreateUnorderedAccessView = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateRenderTargetView OrigCreateRenderTargetView = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateDepthStencilView OrigCreateDepthStencilView = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateSampler OrigCreateSampler = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CopyDescriptors OrigCopyDescriptors = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CopyDescriptorsSimple OrigCopyDescriptorsSimple = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateCommittedResource OrigCreateCommittedResource = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreatePlacedResource OrigCreatePlacedResource = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateReservedResource OrigCreateReservedResource = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateCommittedResource1 OrigCreateCommittedResource1 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateReservedResource1 OrigCreateReservedResource1 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateCommittedResource2 OrigCreateCommittedResource2 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreatePlacedResource1 OrigCreatePlacedResource1 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateCommittedResource3 OrigCreateCommittedResource3 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreatePlacedResource2 OrigCreatePlacedResource2 = nullptr;
+	inline static DX12ResourceTrackerHookSignatures::CreateReservedResource2 OrigCreateReservedResource2 = nullptr;
+};
 
 static const GUID DX12DescriptorHeapReleaseTrackerGuid =
 { 0x28c66065, 0x55b7, 0x46df, { 0x9e, 0x1e, 0x08, 0x52, 0x8d, 0x31, 0xcb, 0x1a } };
@@ -125,7 +133,6 @@ public:
 		return static_cast<ULONG>(ref);
 	}
 
-private:
 	volatile LONG mRef;
 	ID3D12DescriptorHeap *mHeap;
 };
@@ -165,11 +172,97 @@ public:
 		return static_cast<ULONG>(ref);
 	}
 
-private:
 	volatile LONG mRef;
 	ID3D12Resource *mResource;
 };
 
+class DX12ResourceTrackerHookCallbacks
+{
+public:
+	static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
+		ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc, REFIID riid, void **heap);
+	static HRESULT STDMETHODCALLTYPE HookedCreateRootSignature(
+		ID3D12Device *device, UINT nodeMask, const void *blob, SIZE_T blobLength,
+		REFIID riid, void **rootSignature);
+	static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
+		ID3D12Device *device, const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
+		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
+		ID3D12Device *device, ID3D12Resource *resource,
+		const D3D12_SHADER_RESOURCE_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
+		ID3D12Device *device, ID3D12Resource *resource, ID3D12Resource *counterResource,
+		const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
+		ID3D12Device *device, ID3D12Resource *resource,
+		const D3D12_RENDER_TARGET_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
+		ID3D12Device *device, ID3D12Resource *resource,
+		const D3D12_DEPTH_STENCIL_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCreateSampler(
+		ID3D12Device *device, const D3D12_SAMPLER_DESC *desc,
+		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
+	static void STDMETHODCALLTYPE HookedCopyDescriptors(
+		ID3D12Device *device, UINT numDestDescriptorRanges,
+		const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
+		const UINT *destDescriptorRangeSizes, UINT numSrcDescriptorRanges,
+		const D3D12_CPU_DESCRIPTOR_HANDLE *srcDescriptorRangeStarts,
+		const UINT *srcDescriptorRangeSizes, D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType);
+	static void STDMETHODCALLTYPE HookedCopyDescriptorsSimple(
+		ID3D12Device *device, UINT numDescriptors, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
+		D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart, D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType);
+	static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
+		ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC *desc,
+		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
+		ID3D12Device *device, ID3D12Heap *heap, UINT64 heapOffset,
+		const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES initialState,
+		const D3D12_CLEAR_VALUE *optimizedClearValue, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
+		ID3D12Device *device, const D3D12_RESOURCE_DESC *desc,
+		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
+		ID3D12Device4 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC *desc,
+		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
+		ID3D12Device4 *device, const D3D12_RESOURCE_DESC *desc,
+		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
+		ID3D12Device8 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC1 *desc,
+		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
+		ID3D12Device8 *device, ID3D12Heap *heap, UINT64 heapOffset,
+		const D3D12_RESOURCE_DESC1 *desc, D3D12_RESOURCE_STATES initialState,
+		const D3D12_CLEAR_VALUE *optimizedClearValue, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
+		ID3D12Device10 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC1 *desc,
+		D3D12_BARRIER_LAYOUT initialLayout, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		ID3D12ProtectedResourceSession *protectedSession, UINT32 numCastableFormats,
+		const DXGI_FORMAT *castableFormats, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
+		ID3D12Device10 *device, ID3D12Heap *heap, UINT64 heapOffset,
+		const D3D12_RESOURCE_DESC1 *desc, D3D12_BARRIER_LAYOUT initialLayout,
+		const D3D12_CLEAR_VALUE *optimizedClearValue, UINT32 numCastableFormats,
+		const DXGI_FORMAT *castableFormats, REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
+		ID3D12Device10 *device, const D3D12_RESOURCE_DESC *desc,
+		D3D12_BARRIER_LAYOUT initialLayout, const D3D12_CLEAR_VALUE *optimizedClearValue,
+		ID3D12ProtectedResourceSession *protectedSession, UINT32 numCastableFormats,
+		const DXGI_FORMAT *castableFormats, REFIID riid, void **resource);
+};
+
+class DX12ResourceTrackerHookUtils
+{
+public:
 static void AttachResourceReleaseTracker(ID3D12Resource *resource)
 {
 	if (!resource)
@@ -194,7 +287,7 @@ static void LogResourceHookCallWhenTracking(const char *api, const void *object)
 {
 	if (DX12HotPathState::Get().skipAll && !ShouldTrackResourceMetadata())
 		return;
-	LogResourceHookCall(api, object);
+	DX12ResourceTrackerHookUtils::LogResourceHookCall(api, object);
 }
 
 static bool ShouldRecordCreatedResource(const D3D12_RESOURCE_DESC *desc)
@@ -241,13 +334,14 @@ static T GetDeviceOriginal(void *device, UINT slot, T fallback, const char *name
 		device, slot);
 	return nullptr;
 }
+};
 
-static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDescriptorHeap(
 	ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc, REFIID riid, void **heap)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateDescriptorHeap", device);
-	auto original = GetDeviceOriginal(
-		device, 14, gOrigCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateDescriptorHeap", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 14, DX12ResourceTrackerHookState::OrigCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap");
 	if (DX12InternalReplayState::IsActive())
 		return original ? original(device, desc, riid, heap) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
@@ -294,13 +388,13 @@ static HRESULT STDMETHODCALLTYPE HookedCreateDescriptorHeap(
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateRootSignature(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateRootSignature(
 	ID3D12Device *device, UINT nodeMask, const void *blob, SIZE_T blobLength,
 	REFIID riid, void **rootSignature)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateRootSignature", device);
-	auto original = GetDeviceOriginal(
-		device, 16, gOrigCreateRootSignature, "ID3D12Device::CreateRootSignature");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateRootSignature", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 16, DX12ResourceTrackerHookState::OrigCreateRootSignature, "ID3D12Device::CreateRootSignature");
 	if (DX12InternalReplayState::IsActive())
 		return original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
 	HRESULT hr = original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
@@ -327,13 +421,13 @@ static HRESULT STDMETHODCALLTYPE HookedCreateRootSignature(
 	return hr;
 }
 
-static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateConstantBufferView(
 	ID3D12Device *device, const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateConstantBufferView", device);
-	auto original = GetDeviceOriginal(
-		device, 17, gOrigCreateConstantBufferView, "ID3D12Device::CreateConstantBufferView");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateConstantBufferView", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 17, DX12ResourceTrackerHookState::OrigCreateConstantBufferView, "ID3D12Device::CreateConstantBufferView");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -360,13 +454,13 @@ static void STDMETHODCALLTYPE HookedCreateConstantBufferView(
 	}
 }
 
-static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateShaderResourceView(
 	ID3D12Device *device, ID3D12Resource *resource,
 	const D3D12_SHADER_RESOURCE_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateShaderResourceView", device);
-	auto original = GetDeviceOriginal(
-		device, 18, gOrigCreateShaderResourceView, "ID3D12Device::CreateShaderResourceView");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateShaderResourceView", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 18, DX12ResourceTrackerHookState::OrigCreateShaderResourceView, "ID3D12Device::CreateShaderResourceView");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -391,13 +485,13 @@ static void STDMETHODCALLTYPE HookedCreateShaderResourceView(
 	RecordDescriptor(std::move(record));
 }
 
-static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAccessView(
 	ID3D12Device *device, ID3D12Resource *resource, ID3D12Resource *counterResource,
 	const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateUnorderedAccessView", device);
-	auto original = GetDeviceOriginal(
-		device, 19, gOrigCreateUnorderedAccessView, "ID3D12Device::CreateUnorderedAccessView");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateUnorderedAccessView", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 19, DX12ResourceTrackerHookState::OrigCreateUnorderedAccessView, "ID3D12Device::CreateUnorderedAccessView");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -430,13 +524,13 @@ static void STDMETHODCALLTYPE HookedCreateUnorderedAccessView(
 	RecordDescriptor(std::move(record));
 }
 
-static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateRenderTargetView(
 	ID3D12Device *device, ID3D12Resource *resource,
 	const D3D12_RENDER_TARGET_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateRenderTargetView", device);
-	auto original = GetDeviceOriginal(
-		device, 20, gOrigCreateRenderTargetView, "ID3D12Device::CreateRenderTargetView");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateRenderTargetView", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 20, DX12ResourceTrackerHookState::OrigCreateRenderTargetView, "ID3D12Device::CreateRenderTargetView");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -460,13 +554,13 @@ static void STDMETHODCALLTYPE HookedCreateRenderTargetView(
 	RecordDescriptor(std::move(record));
 }
 
-static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDepthStencilView(
 	ID3D12Device *device, ID3D12Resource *resource,
 	const D3D12_DEPTH_STENCIL_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateDepthStencilView", device);
-	auto original = GetDeviceOriginal(
-		device, 21, gOrigCreateDepthStencilView, "ID3D12Device::CreateDepthStencilView");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateDepthStencilView", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 21, DX12ResourceTrackerHookState::OrigCreateDepthStencilView, "ID3D12Device::CreateDepthStencilView");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -490,13 +584,13 @@ static void STDMETHODCALLTYPE HookedCreateDepthStencilView(
 	RecordDescriptor(std::move(record));
 }
 
-static void STDMETHODCALLTYPE HookedCreateSampler(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateSampler(
 	ID3D12Device *device, const D3D12_SAMPLER_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateSampler", device);
-	auto original = GetDeviceOriginal(
-		device, 22, gOrigCreateSampler, "ID3D12Device::CreateSampler");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateSampler", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 22, DX12ResourceTrackerHookState::OrigCreateSampler, "ID3D12Device::CreateSampler");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -519,16 +613,16 @@ static void STDMETHODCALLTYPE HookedCreateSampler(
 	}
 }
 
-static void STDMETHODCALLTYPE HookedCopyDescriptors(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors(
 	ID3D12Device *device, UINT numDestDescriptorRanges,
 	const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
 	const UINT *destDescriptorRangeSizes, UINT numSrcDescriptorRanges,
 	const D3D12_CPU_DESCRIPTOR_HANDLE *srcDescriptorRangeStarts,
 	const UINT *srcDescriptorRangeSizes, D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CopyDescriptors", device);
-	auto original = GetDeviceOriginal(
-		device, 23, gOrigCopyDescriptors, "ID3D12Device::CopyDescriptors");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CopyDescriptors", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 23, DX12ResourceTrackerHookState::OrigCopyDescriptors, "ID3D12Device::CopyDescriptors");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -578,13 +672,13 @@ static void STDMETHODCALLTYPE HookedCopyDescriptors(
 	}
 }
 
-static void STDMETHODCALLTYPE HookedCopyDescriptorsSimple(
+void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSimple(
 	ID3D12Device *device, UINT numDescriptors, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart, D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CopyDescriptorsSimple", device);
-	auto original = GetDeviceOriginal(
-		device, 24, gOrigCopyDescriptorsSimple, "ID3D12Device::CopyDescriptorsSimple");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CopyDescriptorsSimple", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 24, DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple, "ID3D12Device::CopyDescriptorsSimple");
 	if (!original)
 		return;
 	if (DX12InternalReplayState::IsActive()) {
@@ -600,15 +694,15 @@ static void STDMETHODCALLTYPE HookedCopyDescriptorsSimple(
 		srcDescriptorRangeStart, numDescriptors);
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource(
 	ID3D12Device *device, const D3D12_HEAP_PROPERTIES *heapProperties,
 	D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC *desc,
 	D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateCommittedResource", device);
-	auto original = GetDeviceOriginal(
-		device, 27, gOrigCreateCommittedResource, "ID3D12Device::CreateCommittedResource");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateCommittedResource", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 27, DX12ResourceTrackerHookState::OrigCreateCommittedResource, "ID3D12Device::CreateCommittedResource");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -623,25 +717,25 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(descToUse)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(descToUse)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource(
 	ID3D12Device *device, ID3D12Heap *heap, UINT64 heapOffset,
 	const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES initialState,
 	const D3D12_CLEAR_VALUE *optimizedClearValue, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreatePlacedResource", device);
-	auto original = GetDeviceOriginal(
-		device, 29, gOrigCreatePlacedResource, "ID3D12Device::CreatePlacedResource");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreatePlacedResource", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 29, DX12ResourceTrackerHookState::OrigCreatePlacedResource, "ID3D12Device::CreatePlacedResource");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -649,25 +743,25 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource(
 			initialState, optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, heap, heapOffset, desc,
 		initialState, optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource(
 	ID3D12Device *device, const D3D12_RESOURCE_DESC *desc,
 	D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device::CreateReservedResource", device);
-	auto original = GetDeviceOriginal(
-		device, 30, gOrigCreateReservedResource, "ID3D12Device::CreateReservedResource");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device::CreateReservedResource", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 30, DX12ResourceTrackerHookState::OrigCreateReservedResource, "ID3D12Device::CreateReservedResource");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -675,26 +769,26 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource(
 			optimizedClearValue, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource1(
 	ID3D12Device4 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
 	D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC *desc,
 	D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device4::CreateCommittedResource1", device);
-	auto original = GetDeviceOriginal(
-		device, 53, gOrigCreateCommittedResource1, "ID3D12Device4::CreateCommittedResource1");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device4::CreateCommittedResource1", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 53, DX12ResourceTrackerHookState::OrigCreateCommittedResource1, "ID3D12Device4::CreateCommittedResource1");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -709,25 +803,25 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
 	}
 	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
 		initialState, optimizedClearValue, protectedSession, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(descToUse)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(descToUse)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, descToUse, heapProperties, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource1(
 	ID3D12Device4 *device, const D3D12_RESOURCE_DESC *desc,
 	D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device4::CreateReservedResource1", device);
-	auto original = GetDeviceOriginal(
-		device, 55, gOrigCreateReservedResource1, "ID3D12Device4::CreateReservedResource1");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device4::CreateReservedResource1", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 55, DX12ResourceTrackerHookState::OrigCreateReservedResource1, "ID3D12Device4::CreateReservedResource1");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -735,26 +829,26 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource1(
 			optimizedClearValue, protectedSession, riid, resource);
 	HRESULT hr = original(device, desc, initialState,
 		optimizedClearValue, protectedSession, riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource2(
 	ID3D12Device8 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
 	D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC1 *desc,
 	D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	ID3D12ProtectedResourceSession *protectedSession, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device8::CreateCommittedResource2", device);
-	auto original = GetDeviceOriginal(
-		device, 69, gOrigCreateCommittedResource2, "ID3D12Device8::CreateCommittedResource2");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device8::CreateCommittedResource2", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 69, DX12ResourceTrackerHookState::OrigCreateCommittedResource2, "ID3D12Device8::CreateCommittedResource2");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -771,25 +865,25 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource2(
 		initialState, optimizedClearValue, protectedSession, riid, resource);
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
 	const D3D12_RESOURCE_DESC *recordDesc = descToUse ? &desc0 : nullptr;
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, heapProperties, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource1(
 	ID3D12Device8 *device, ID3D12Heap *heap, UINT64 heapOffset,
 	const D3D12_RESOURCE_DESC1 *desc, D3D12_RESOURCE_STATES initialState,
 	const D3D12_CLEAR_VALUE *optimizedClearValue, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device8::CreatePlacedResource1", device);
-	auto original = GetDeviceOriginal(
-		device, 70, gOrigCreatePlacedResource1, "ID3D12Device8::CreatePlacedResource1");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device8::CreatePlacedResource1", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 70, DX12ResourceTrackerHookState::OrigCreatePlacedResource1, "ID3D12Device8::CreatePlacedResource1");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -799,27 +893,27 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource1(
 		initialState, optimizedClearValue, riid, resource);
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
 	const D3D12_RESOURCE_DESC *recordDesc = desc ? &desc0 : nullptr;
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, nullptr, initialState);
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource3(
 	ID3D12Device10 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
 	D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC1 *desc,
 	D3D12_BARRIER_LAYOUT initialLayout, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	ID3D12ProtectedResourceSession *protectedSession, UINT32 numCastableFormats,
 	const DXGI_FORMAT *castableFormats, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device10::CreateCommittedResource3", device);
-	auto original = GetDeviceOriginal(
-		device, 76, gOrigCreateCommittedResource3, "ID3D12Device10::CreateCommittedResource3");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device10::CreateCommittedResource3", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 76, DX12ResourceTrackerHookState::OrigCreateCommittedResource3, "ID3D12Device10::CreateCommittedResource3");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -838,26 +932,26 @@ static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource3(
 		castableFormats, riid, resource);
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(descToUse);
 	const D3D12_RESOURCE_DESC *recordDesc = descToUse ? &desc0 : nullptr;
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, heapProperties, ResourceStateFromLayout(initialLayout));
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource2(
 	ID3D12Device10 *device, ID3D12Heap *heap, UINT64 heapOffset,
 	const D3D12_RESOURCE_DESC1 *desc, D3D12_BARRIER_LAYOUT initialLayout,
 	const D3D12_CLEAR_VALUE *optimizedClearValue, UINT32 numCastableFormats,
 	const DXGI_FORMAT *castableFormats, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device10::CreatePlacedResource2", device);
-	auto original = GetDeviceOriginal(
-		device, 77, gOrigCreatePlacedResource2, "ID3D12Device10::CreatePlacedResource2");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device10::CreatePlacedResource2", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 77, DX12ResourceTrackerHookState::OrigCreatePlacedResource2, "ID3D12Device10::CreatePlacedResource2");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -869,26 +963,26 @@ static HRESULT STDMETHODCALLTYPE HookedCreatePlacedResource2(
 		riid, resource);
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
 	const D3D12_RESOURCE_DESC *recordDesc = desc ? &desc0 : nullptr;
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(recordDesc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(recordDesc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, recordDesc, nullptr, ResourceStateFromLayout(initialLayout));
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource2(
 	ID3D12Device10 *device, const D3D12_RESOURCE_DESC *desc,
 	D3D12_BARRIER_LAYOUT initialLayout, const D3D12_CLEAR_VALUE *optimizedClearValue,
 	ID3D12ProtectedResourceSession *protectedSession, UINT32 numCastableFormats,
 	const DXGI_FORMAT *castableFormats, REFIID riid, void **resource)
 {
-	LogResourceHookCallWhenTracking("ID3D12Device10::CreateReservedResource2", device);
-	auto original = GetDeviceOriginal(
-		device, 78, gOrigCreateReservedResource2, "ID3D12Device10::CreateReservedResource2");
+	DX12ResourceTrackerHookUtils::LogResourceHookCallWhenTracking("ID3D12Device10::CreateReservedResource2", device);
+	auto original = DX12ResourceTrackerHookUtils::GetDeviceOriginal(
+		device, 78, DX12ResourceTrackerHookState::OrigCreateReservedResource2, "ID3D12Device10::CreateReservedResource2");
 	if (!original)
 		return E_FAIL;
 	if (DX12InternalReplayState::IsActive())
@@ -898,11 +992,11 @@ static HRESULT STDMETHODCALLTYPE HookedCreateReservedResource2(
 	HRESULT hr = original(device, desc, initialLayout,
 		optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
 		riid, resource);
-	if (SUCCEEDED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) {
+	if (SUCCEEDED(hr) && resource && *resource && DX12ResourceTrackerHookUtils::ShouldRecordCreatedResource(desc)) {
 		ID3D12Resource *d3dResource = nullptr;
 		if (SUCCEEDED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource)))) {
 			RecordResource(d3dResource, desc, nullptr, ResourceStateFromLayout(initialLayout));
-			AttachResourceReleaseTracker(d3dResource);
+			DX12ResourceTrackerHookUtils::AttachResourceReleaseTracker(d3dResource);
 			d3dResource->Release();
 		}
 	}
@@ -921,42 +1015,42 @@ void DX12HookResourceMetadata(ID3D12Device *device)
 	}
 
 	DX12VTableHook deviceHooks[] = {
-		{14, reinterpret_cast<void**>(&gOrigCreateDescriptorHeap),
-			HookedCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap"},
-		{16, reinterpret_cast<void**>(&gOrigCreateRootSignature),
-			HookedCreateRootSignature, "ID3D12Device::CreateRootSignature"},
-		{17, reinterpret_cast<void**>(&gOrigCreateConstantBufferView),
-			HookedCreateConstantBufferView, "ID3D12Device::CreateConstantBufferView"},
-		{18, reinterpret_cast<void**>(&gOrigCreateShaderResourceView),
-			HookedCreateShaderResourceView, "ID3D12Device::CreateShaderResourceView"},
-		{19, reinterpret_cast<void**>(&gOrigCreateUnorderedAccessView),
-			HookedCreateUnorderedAccessView, "ID3D12Device::CreateUnorderedAccessView"},
-		{20, reinterpret_cast<void**>(&gOrigCreateRenderTargetView),
-			HookedCreateRenderTargetView, "ID3D12Device::CreateRenderTargetView"},
-		{21, reinterpret_cast<void**>(&gOrigCreateDepthStencilView),
-			HookedCreateDepthStencilView, "ID3D12Device::CreateDepthStencilView"},
-		{22, reinterpret_cast<void**>(&gOrigCreateSampler),
-			HookedCreateSampler, "ID3D12Device::CreateSampler"},
-		{23, reinterpret_cast<void**>(&gOrigCopyDescriptors),
-			HookedCopyDescriptors, "ID3D12Device::CopyDescriptors"},
-		{24, reinterpret_cast<void**>(&gOrigCopyDescriptorsSimple),
-			HookedCopyDescriptorsSimple, "ID3D12Device::CopyDescriptorsSimple"},
-		{27, reinterpret_cast<void**>(&gOrigCreateCommittedResource),
-			HookedCreateCommittedResource, "ID3D12Device::CreateCommittedResource"},
-		{29, reinterpret_cast<void**>(&gOrigCreatePlacedResource),
-			HookedCreatePlacedResource, "ID3D12Device::CreatePlacedResource"},
-		{30, reinterpret_cast<void**>(&gOrigCreateReservedResource),
-			HookedCreateReservedResource, "ID3D12Device::CreateReservedResource"},
+		{14, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateDescriptorHeap),
+			DX12ResourceTrackerHookCallbacks::HookedCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap"},
+		{16, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateRootSignature),
+			DX12ResourceTrackerHookCallbacks::HookedCreateRootSignature, "ID3D12Device::CreateRootSignature"},
+		{17, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateConstantBufferView),
+			DX12ResourceTrackerHookCallbacks::HookedCreateConstantBufferView, "ID3D12Device::CreateConstantBufferView"},
+		{18, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateShaderResourceView),
+			DX12ResourceTrackerHookCallbacks::HookedCreateShaderResourceView, "ID3D12Device::CreateShaderResourceView"},
+		{19, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateUnorderedAccessView),
+			DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAccessView, "ID3D12Device::CreateUnorderedAccessView"},
+		{20, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateRenderTargetView),
+			DX12ResourceTrackerHookCallbacks::HookedCreateRenderTargetView, "ID3D12Device::CreateRenderTargetView"},
+		{21, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateDepthStencilView),
+			DX12ResourceTrackerHookCallbacks::HookedCreateDepthStencilView, "ID3D12Device::CreateDepthStencilView"},
+		{22, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateSampler),
+			DX12ResourceTrackerHookCallbacks::HookedCreateSampler, "ID3D12Device::CreateSampler"},
+		{23, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCopyDescriptors),
+			DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors, "ID3D12Device::CopyDescriptors"},
+		{24, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple),
+			DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSimple, "ID3D12Device::CopyDescriptorsSimple"},
+		{27, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource),
+			DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource, "ID3D12Device::CreateCommittedResource"},
+		{29, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource),
+			DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource, "ID3D12Device::CreatePlacedResource"},
+		{30, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource),
+			DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource, "ID3D12Device::CreateReservedResource"},
 	};
 	DX12HookManager::InstallVTableHooks(device, deviceHooks);
 
 	ID3D12Device4 *device4 = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device4)))) {
 		DX12VTableHook device4Hooks[] = {
-			{53, reinterpret_cast<void**>(&gOrigCreateCommittedResource1),
-				HookedCreateCommittedResource1, "ID3D12Device4::CreateCommittedResource1"},
-			{55, reinterpret_cast<void**>(&gOrigCreateReservedResource1),
-				HookedCreateReservedResource1, "ID3D12Device4::CreateReservedResource1"},
+			{53, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource1),
+				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource1, "ID3D12Device4::CreateCommittedResource1"},
+			{55, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource1),
+				DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource1, "ID3D12Device4::CreateReservedResource1"},
 		};
 		DX12HookManager::InstallVTableHooks(device4, device4Hooks);
 		device4->Release();
@@ -965,10 +1059,10 @@ void DX12HookResourceMetadata(ID3D12Device *device)
 	ID3D12Device8 *device8 = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device8)))) {
 		DX12VTableHook device8Hooks[] = {
-			{69, reinterpret_cast<void**>(&gOrigCreateCommittedResource2),
-				HookedCreateCommittedResource2, "ID3D12Device8::CreateCommittedResource2"},
-			{70, reinterpret_cast<void**>(&gOrigCreatePlacedResource1),
-				HookedCreatePlacedResource1, "ID3D12Device8::CreatePlacedResource1"},
+			{69, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource2),
+				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource2, "ID3D12Device8::CreateCommittedResource2"},
+			{70, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource1),
+				DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource1, "ID3D12Device8::CreatePlacedResource1"},
 		};
 		DX12HookManager::InstallVTableHooks(device8, device8Hooks);
 		device8->Release();
@@ -977,12 +1071,12 @@ void DX12HookResourceMetadata(ID3D12Device *device)
 	ID3D12Device10 *device10 = nullptr;
 	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device10)))) {
 		DX12VTableHook device10Hooks[] = {
-			{76, reinterpret_cast<void**>(&gOrigCreateCommittedResource3),
-				HookedCreateCommittedResource3, "ID3D12Device10::CreateCommittedResource3"},
-			{77, reinterpret_cast<void**>(&gOrigCreatePlacedResource2),
-				HookedCreatePlacedResource2, "ID3D12Device10::CreatePlacedResource2"},
-			{78, reinterpret_cast<void**>(&gOrigCreateReservedResource2),
-				HookedCreateReservedResource2, "ID3D12Device10::CreateReservedResource2"},
+			{76, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource3),
+				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource3, "ID3D12Device10::CreateCommittedResource3"},
+			{77, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource2),
+				DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource2, "ID3D12Device10::CreatePlacedResource2"},
+			{78, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource2),
+				DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource2, "ID3D12Device10::CreateReservedResource2"},
 		};
 		DX12HookManager::InstallVTableHooks(device10, device10Hooks);
 		device10->Release();

@@ -1,4 +1,4 @@
-#include "DX12ShaderHunt.h"
+#include "DX12ShaderHunt.hpp"
 
 #include <Windows.h>
 
@@ -12,13 +12,13 @@
 #include "DX12Overlay.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12IaRegion.hpp"
-#include "DX12ResourceTracker.h"
-#include "DX12ShaderDump.h"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeModeState.hpp"
-#include "DXGIHooks.h"
+#include "DXGIHooks.hpp"
 
 enum class HuntStage
 {

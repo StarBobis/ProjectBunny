@@ -5,7 +5,7 @@
 #include <string>
 
 #include "DX12BindingTracker.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 
 class DX12ResourceDumpUtils
 {

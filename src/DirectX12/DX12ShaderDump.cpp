@@ -1,4 +1,4 @@
-#include "DX12ShaderDump.h"
+#include "DX12ShaderDump.hpp"
 
 #include <d3dcompiler.h>
 #include <dxcapi.h>
@@ -19,7 +19,7 @@
 #include "DX12Json.hpp"
 #include "DX12ResourceDump.hpp"
 #include "DX12ResourceMetadataDump.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeState.hpp"

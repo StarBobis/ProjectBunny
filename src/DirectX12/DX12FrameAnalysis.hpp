@@ -7,7 +7,7 @@
 
 #include "DX12FrameAnalysisState.hpp"
 #include "DX12Json.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 #include "DX12HotPathState.hpp"
 
 class DX12FrameAnalysis

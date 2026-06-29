@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "DX12CommandListRuntime.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
 
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];

@@ -8,8 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DX12ResourceTracker.h"
-#include "DX12ShaderDump.h"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
 
 
 constexpr UINT MaxRootParameters = 64;

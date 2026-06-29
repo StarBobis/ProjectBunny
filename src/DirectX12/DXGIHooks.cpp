@@ -1,4 +1,4 @@
-#include "DXGIHooks.h"
+#include "DXGIHooks.hpp"
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -9,133 +9,168 @@
 #include "DX12DeviceHooks.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.hpp"
-#include "DX12NativeOverlay.h"
-#include "DX12ModRuntime.h"
+#include "DX12NativeOverlay.hpp"
+#include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
-#include "DX12ShaderHunt.h"
-#include "DX12ShaderDump.h"
+#include "DX12ShaderHunt.hpp"
+#include "DX12ShaderDump.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12HookRegistry.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 #include "DX12UiActions.hpp"
 
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_SWAP_CHAIN)(
-	IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_SWAP_CHAIN_FOR_HWND)(
-	IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
-	const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_SWAP_CHAIN_FOR_CORE_WINDOW)(
-	IDXGIFactory2*, IUnknown*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*,
-	IDXGIOutput*, IDXGISwapChain1**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_CREATE_SWAP_CHAIN_FOR_COMPOSITION)(
-	IDXGIFactory2*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*, IDXGIOutput*, IDXGISwapChain1**);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_PRESENT)(IDXGISwapChain*, UINT, UINT);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_PRESENT1)(
-	IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
-typedef HRESULT(STDMETHODCALLTYPE *PFN_RESIZE_BUFFERS)(
-	IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
-typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY)(REFIID, void**);
-typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY2)(UINT, REFIID, void**);
-
-static bool gDXGIHookAttempted = false;
-static SRWLOCK gDXGIHookLock = SRWLOCK_INIT;
-static PFN_CREATE_SWAP_CHAIN gOrigCreateSwapChain = nullptr;
-static PFN_CREATE_SWAP_CHAIN_FOR_HWND gOrigCreateSwapChainForHwnd = nullptr;
-static PFN_CREATE_SWAP_CHAIN_FOR_CORE_WINDOW gOrigCreateSwapChainForCoreWindow = nullptr;
-static PFN_CREATE_SWAP_CHAIN_FOR_COMPOSITION gOrigCreateSwapChainForComposition = nullptr;
-static PFN_PRESENT gOrigPresent = nullptr;
-static PFN_PRESENT1 gOrigPresent1 = nullptr;
-static PFN_RESIZE_BUFFERS gOrigResizeBuffers = nullptr;
-static PFN_CREATE_DXGI_FACTORY gOrigCreateDXGIFactory = nullptr;
-static PFN_CREATE_DXGI_FACTORY gOrigCreateDXGIFactory1 = nullptr;
-static PFN_CREATE_DXGI_FACTORY2 gOrigCreateDXGIFactory2 = nullptr;
-static SRWLOCK gKnownSwapChainLock = SRWLOCK_INIT;
-static IDXGISwapChain *gKnownSwapChain = nullptr;
-
-static HRESULT WINAPI HookedCreateDXGIFactory(REFIID riid, void **factory);
-static HRESULT WINAPI HookedCreateDXGIFactory1(REFIID riid, void **factory);
-static HRESULT WINAPI HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **factory);
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
-	IDXGIFactory *factory, IUnknown *device, DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **swapChain);
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
-	IDXGIFactory2 *factory, IUnknown *device, HWND window, const DXGI_SWAP_CHAIN_DESC1 *desc,
-	const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreenDesc, IDXGIOutput *output, IDXGISwapChain1 **swapChain);
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForCoreWindow(
-	IDXGIFactory2 *factory, IUnknown *device, IUnknown *window, const DXGI_SWAP_CHAIN_DESC1 *desc,
-	IDXGIOutput *output, IDXGISwapChain1 **swapChain);
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
-	IDXGIFactory2 *factory, IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
-	IDXGIOutput *output, IDXGISwapChain1 **swapChain);
-static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags);
-static HRESULT STDMETHODCALLTYPE HookedPresent1(
-	IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS *presentParameters);
-static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
-	IDXGISwapChain *swapChain, UINT bufferCount, UINT width, UINT height,
-	DXGI_FORMAT newFormat, UINT swapChainFlags);
-
-static void LogDXGIHookCall(const char *api, const void *object)
+class DXGIHookSignatures
 {
-	if (!DX12LogManager::ShouldLogHookCall(api))
-		return;
-	DX12LogManager::DebugJsonFunc("DX12HookCall",
-		"\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\"",
-		api ? api : "", DX12RuntimeState::GetPresentCount(), object);
-}
+public:
+	using CreateSwapChain = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+	using CreateSwapChainForHwnd = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+		const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1**);
+	using CreateSwapChainForCoreWindow = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGIFactory2*, IUnknown*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*,
+		IDXGIOutput*, IDXGISwapChain1**);
+	using CreateSwapChainForComposition = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGIFactory2*, IUnknown*, const DXGI_SWAP_CHAIN_DESC1*, IDXGIOutput*, IDXGISwapChain1**);
+	using Present = HRESULT(STDMETHODCALLTYPE *)(IDXGISwapChain*, UINT, UINT);
+	using Present1 = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+	using ResizeBuffers = HRESULT(STDMETHODCALLTYPE *)(
+		IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+	using CreateDXGIFactory = HRESULT(WINAPI *)(REFIID, void**);
+	using CreateDXGIFactory2 = HRESULT(WINAPI *)(UINT, REFIID, void**);
+};
 
-static void LogDXGIOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
+class DXGIHookState
 {
-	if (!DX12LogManager::ShouldLogHookCall(api))
-		return;
-	DX12LogManager::DebugJsonFunc("DX12FallbackPath",
-		"\"kind\":\"original_lookup\",\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\","
-		"\"slot\":%u,\"fallback\":\"%p\"",
-		api ? api : "", DX12RuntimeState::GetPresentCount(), object, slot, fallback);
-}
+public:
+	inline static bool HookAttempted = false;
+	inline static SRWLOCK HookLock = SRWLOCK_INIT;
+	inline static DXGIHookSignatures::CreateSwapChain OrigCreateSwapChain = nullptr;
+	inline static DXGIHookSignatures::CreateSwapChainForHwnd OrigCreateSwapChainForHwnd = nullptr;
+	inline static DXGIHookSignatures::CreateSwapChainForCoreWindow OrigCreateSwapChainForCoreWindow = nullptr;
+	inline static DXGIHookSignatures::CreateSwapChainForComposition OrigCreateSwapChainForComposition = nullptr;
+	inline static DXGIHookSignatures::Present OrigPresent = nullptr;
+	inline static DXGIHookSignatures::Present1 OrigPresent1 = nullptr;
+	inline static DXGIHookSignatures::ResizeBuffers OrigResizeBuffers = nullptr;
+	inline static DXGIHookSignatures::CreateDXGIFactory OrigCreateDXGIFactory = nullptr;
+	inline static DXGIHookSignatures::CreateDXGIFactory OrigCreateDXGIFactory1 = nullptr;
+	inline static DXGIHookSignatures::CreateDXGIFactory2 OrigCreateDXGIFactory2 = nullptr;
+	inline static SRWLOCK KnownSwapChainLock = SRWLOCK_INIT;
+	inline static IDXGISwapChain *KnownSwapChain = nullptr;
+};
 
-template <typename T>
-static T GetDXGIOriginal(void *object, UINT slot, T fallback, const char *name)
+class DXGIHookCallbacks
 {
-	if (object) {
-		void **vtable = *reinterpret_cast<void***>(object);
-		if (vtable) {
-			void *target = vtable[slot];
-			void *original = DX12HookRegistry::GetOriginalFunction(target);
-			if (original)
-				return reinterpret_cast<T>(original);
+public:
+	static HRESULT WINAPI HookedCreateDXGIFactory(REFIID riid, void **factory);
+	static HRESULT WINAPI HookedCreateDXGIFactory1(REFIID riid, void **factory);
+	static HRESULT WINAPI HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **factory);
+	static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
+		IDXGIFactory *factory, IUnknown *device, DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **swapChain);
+	static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
+		IDXGIFactory2 *factory, IUnknown *device, HWND window, const DXGI_SWAP_CHAIN_DESC1 *desc,
+		const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreenDesc, IDXGIOutput *output, IDXGISwapChain1 **swapChain);
+	static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForCoreWindow(
+		IDXGIFactory2 *factory, IUnknown *device, IUnknown *window, const DXGI_SWAP_CHAIN_DESC1 *desc,
+		IDXGIOutput *output, IDXGISwapChain1 **swapChain);
+	static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
+		IDXGIFactory2 *factory, IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
+		IDXGIOutput *output, IDXGISwapChain1 **swapChain);
+	static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags);
+	static HRESULT STDMETHODCALLTYPE HookedPresent1(
+		IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS *presentParameters);
+	static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
+		IDXGISwapChain *swapChain, UINT bufferCount, UINT width, UINT height,
+		DXGI_FORMAT newFormat, UINT swapChainFlags);
+};
+
+class DXGIHookUtils
+{
+public:
+	static void LogHookCall(const char *api, const void *object)
+	{
+		if (!DX12LogManager::ShouldLogHookCall(api))
+			return;
+		DX12LogManager::DebugJsonFunc("DX12HookCall",
+			"\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\"",
+			api ? api : "", DX12RuntimeState::GetPresentCount(), object);
+	}
+
+	static void LogOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
+	{
+		if (!DX12LogManager::ShouldLogHookCall(api))
+			return;
+		DX12LogManager::DebugJsonFunc("DX12FallbackPath",
+			"\"kind\":\"original_lookup\",\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\","
+			"\"slot\":%u,\"fallback\":\"%p\"",
+			api ? api : "", DX12RuntimeState::GetPresentCount(), object, slot, fallback);
+	}
+
+	template <typename T>
+	static T GetOriginal(void *object, UINT slot, T fallback, const char *name)
+	{
+		if (object) {
+			void **vtable = *reinterpret_cast<void***>(object);
+			if (vtable) {
+				void *target = vtable[slot];
+				void *original = DX12HookRegistry::GetOriginalFunction(target);
+				if (original)
+					return reinterpret_cast<T>(original);
+			}
 		}
+
+		if (fallback) {
+			LogOriginalFallback(name, object, slot, reinterpret_cast<const void*>(fallback));
+			return fallback;
+		}
+
+		DX12LogManager::JsonFunc(name ? name : "DXGI::Unknown",
+			"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
+			object, slot);
+		return nullptr;
 	}
 
-	if (fallback) {
-		LogDXGIOriginalFallback(name, object, slot, reinterpret_cast<const void*>(fallback));
-		return fallback;
-	}
+	static DXGIHookSignatures::Present GetPresentOriginal(IDXGISwapChain *swapChain);
+	static DXGIHookSignatures::Present1 GetPresent1Original(IDXGISwapChain1 *swapChain);
+	static DXGIHookSignatures::ResizeBuffers GetResizeBuffersOriginal(IDXGISwapChain *swapChain);
+	static void LogPresentStage(
+		const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK);
+	static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapChain, HRESULT presentHr);
+	static void RunPostPresentUi(IDXGISwapChain *swapChain);
+	static void ConsumeUiActionsForFrame();
+	static void BeginFrameAnalysisCapture(LONG present);
+	static void BeginShaderDumpCapture();
+	static void HookSwapChain(IDXGISwapChain *swapChain);
+	static void HookDeviceFromDXGIArgument(IUnknown *device);
+	static void HookFactory(IUnknown *factory);
+	static DXGIHookSignatures::CreateSwapChain GetCreateSwapChainOriginal(IDXGIFactory *factory);
+	static DXGIHookSignatures::CreateSwapChainForHwnd GetCreateSwapChainForHwndOriginal(IDXGIFactory2 *factory);
+	static DXGIHookSignatures::CreateSwapChainForCoreWindow GetCreateSwapChainForCoreWindowOriginal(IDXGIFactory2 *factory);
+	static DXGIHookSignatures::CreateSwapChainForComposition GetCreateSwapChainForCompositionOriginal(IDXGIFactory2 *factory);
+	static void HookDXGIFactoryVTables(HMODULE dxgi);
+};
 
-	DX12LogManager::JsonFunc(name ? name : "DXGI::Unknown",
-		"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
-		object, slot);
-	return nullptr;
-}
-
-static PFN_PRESENT GetPresentOriginal(IDXGISwapChain *swapChain)
+DXGIHookSignatures::Present DXGIHookUtils::GetPresentOriginal(IDXGISwapChain *swapChain)
 {
-	return GetDXGIOriginal<PFN_PRESENT>(
-		swapChain, 8, gOrigPresent, "IDXGISwapChain::Present");
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::Present>(
+		swapChain, 8, DXGIHookState::OrigPresent, "IDXGISwapChain::Present");
 }
 
-static PFN_PRESENT1 GetPresent1Original(IDXGISwapChain1 *swapChain)
+DXGIHookSignatures::Present1 DXGIHookUtils::GetPresent1Original(IDXGISwapChain1 *swapChain)
 {
-	return GetDXGIOriginal<PFN_PRESENT1>(
-		swapChain, 22, gOrigPresent1, "IDXGISwapChain1::Present1");
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::Present1>(
+		swapChain, 22, DXGIHookState::OrigPresent1, "IDXGISwapChain1::Present1");
 }
 
-static PFN_RESIZE_BUFFERS GetResizeBuffersOriginal(IDXGISwapChain *swapChain)
+DXGIHookSignatures::ResizeBuffers DXGIHookUtils::GetResizeBuffersOriginal(IDXGISwapChain *swapChain)
 {
-	return GetDXGIOriginal<PFN_RESIZE_BUFFERS>(
-		swapChain, 13, gOrigResizeBuffers, "IDXGISwapChain::ResizeBuffers");
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::ResizeBuffers>(
+		swapChain, 13, DXGIHookState::OrigResizeBuffers, "IDXGISwapChain::ResizeBuffers");
 }
 
-static void LogPresentStage(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK)
+void DXGIHookUtils::LogPresentStage(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr)
 {
 	if (!DX12LogManager::VerboseDiagnosticsEnabled())
 		return;
@@ -144,7 +179,7 @@ static void LogPresentStage(const char *api, const char *stage, IDXGISwapChain *
 		api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), swapChain, hr);
 }
 
-static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapChain, HRESULT presentHr)
+void DXGIHookUtils::LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapChain, HRESULT presentHr)
 {
 	if (SUCCEEDED(presentHr) || !swapChain)
 		return;
@@ -165,12 +200,12 @@ static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapC
 	device->Release();
 }
 
-static void RunPostPresentUi(IDXGISwapChain *swapChain)
+void DXGIHookUtils::RunPostPresentUi(IDXGISwapChain *swapChain)
 {
 	DX12NativeOverlayRender(swapChain);
 }
 
-static void ConsumeUiActionsForFrame()
+void DXGIHookUtils::ConsumeUiActionsForFrame()
 {
 	if (!DX12UiActions::Consume())
 		return;
@@ -178,7 +213,7 @@ static void ConsumeUiActionsForFrame()
 	DX12CommandListRuntime::BumpTrackingGeneration();
 }
 
-static void BeginFrameAnalysisCapture(LONG present)
+void DXGIHookUtils::BeginFrameAnalysisCapture(LONG present)
 {
 	DX12BindingTracker::BeginFrame();
 	DX12FrameAnalysis::BeginCapture();
@@ -186,55 +221,55 @@ static void BeginFrameAnalysisCapture(LONG present)
 	DX12FrameAnalysis::LogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
 }
 
-static void BeginShaderDumpCapture()
+void DXGIHookUtils::BeginShaderDumpCapture()
 {
 	DX12BindingTracker::BeginFrame();
 	DX12ShaderDumpBeginCapture();
 	DX12CommandListRuntime::BumpTrackingGeneration();
 }
 
-static void HookSwapChain(IDXGISwapChain *swapChain)
+void DXGIHookUtils::HookSwapChain(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
 		return;
-	AcquireSRWLockExclusive(&gKnownSwapChainLock);
-	gKnownSwapChain = swapChain;
-	ReleaseSRWLockExclusive(&gKnownSwapChainLock);
+	AcquireSRWLockExclusive(&DXGIHookState::KnownSwapChainLock);
+	DXGIHookState::KnownSwapChain = swapChain;
+	ReleaseSRWLockExclusive(&DXGIHookState::KnownSwapChainLock);
 
 	DX12VTableHook swapChainHooks[] = {
-		{8, reinterpret_cast<void**>(&gOrigPresent), HookedPresent, "IDXGISwapChain::Present"},
-		{13, reinterpret_cast<void**>(&gOrigResizeBuffers), HookedResizeBuffers, "IDXGISwapChain::ResizeBuffers"},
+		{8, reinterpret_cast<void**>(&DXGIHookState::OrigPresent), DXGIHookCallbacks::HookedPresent, "IDXGISwapChain::Present"},
+		{13, reinterpret_cast<void**>(&DXGIHookState::OrigResizeBuffers), DXGIHookCallbacks::HookedResizeBuffers, "IDXGISwapChain::ResizeBuffers"},
 	};
 	DX12HookManager::InstallVTableHooks(swapChain, swapChainHooks);
 
 	IDXGISwapChain1 *swapChain1 = nullptr;
 	if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain1)))) {
 		DX12VTableHook swapChain1Hooks[] = {
-			{22, reinterpret_cast<void**>(&gOrigPresent1), HookedPresent1, "IDXGISwapChain1::Present1"},
+			{22, reinterpret_cast<void**>(&DXGIHookState::OrigPresent1), DXGIHookCallbacks::HookedPresent1, "IDXGISwapChain1::Present1"},
 		};
 		DX12HookManager::InstallVTableHooks(swapChain1, swapChain1Hooks);
 		swapChain1->Release();
 	}
 }
 
-void DX12ActivateHotPathHooks()
+void DXGIHooks::ActivateHotPathHooks()
 {
 	IDXGISwapChain *swapChain = nullptr;
-	AcquireSRWLockShared(&gKnownSwapChainLock);
-	swapChain = gKnownSwapChain;
-	ReleaseSRWLockShared(&gKnownSwapChainLock);
+	AcquireSRWLockShared(&DXGIHookState::KnownSwapChainLock);
+	swapChain = DXGIHookState::KnownSwapChain;
+	ReleaseSRWLockShared(&DXGIHookState::KnownSwapChainLock);
 	if (swapChain)
-		HookSwapChain(swapChain);
+		DXGIHookUtils::HookSwapChain(swapChain);
 	DX12CommandListHooks::ActivateCommandQueueHotPathHooks();
 }
 
-static void HookDeviceFromDXGIArgument(IUnknown *device)
+void DXGIHookUtils::HookDeviceFromDXGIArgument(IUnknown *device)
 {
 	DX12DeviceHooks::HookDevice(device);
 	DX12DeviceHooks::HookDeviceFromCommandQueue(device);
 }
 
-static void HookFactory(IUnknown *factory)
+void DXGIHookUtils::HookFactory(IUnknown *factory)
 {
 	if (!factory)
 		return;
@@ -242,7 +277,7 @@ static void HookFactory(IUnknown *factory)
 	IDXGIFactory *factory0 = nullptr;
 	if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory0)))) {
 		DX12VTableHook factoryHooks[] = {
-			{10, reinterpret_cast<void**>(&gOrigCreateSwapChain), HookedCreateSwapChain,
+			{10, reinterpret_cast<void**>(&DXGIHookState::OrigCreateSwapChain), DXGIHookCallbacks::HookedCreateSwapChain,
 				"IDXGIFactory::CreateSwapChain"},
 		};
 		DX12HookManager::InstallVTableHooks(factory0, factoryHooks);
@@ -252,130 +287,130 @@ static void HookFactory(IUnknown *factory)
 	IDXGIFactory2 *factory2 = nullptr;
 	if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory2)))) {
 		DX12VTableHook factory2Hooks[] = {
-			{15, reinterpret_cast<void**>(&gOrigCreateSwapChainForHwnd),
-				HookedCreateSwapChainForHwnd, "IDXGIFactory2::CreateSwapChainForHwnd"},
-			{16, reinterpret_cast<void**>(&gOrigCreateSwapChainForCoreWindow),
-				HookedCreateSwapChainForCoreWindow, "IDXGIFactory2::CreateSwapChainForCoreWindow"},
-			{24, reinterpret_cast<void**>(&gOrigCreateSwapChainForComposition),
-				HookedCreateSwapChainForComposition, "IDXGIFactory2::CreateSwapChainForComposition"},
+			{15, reinterpret_cast<void**>(&DXGIHookState::OrigCreateSwapChainForHwnd),
+				DXGIHookCallbacks::HookedCreateSwapChainForHwnd, "IDXGIFactory2::CreateSwapChainForHwnd"},
+			{16, reinterpret_cast<void**>(&DXGIHookState::OrigCreateSwapChainForCoreWindow),
+				DXGIHookCallbacks::HookedCreateSwapChainForCoreWindow, "IDXGIFactory2::CreateSwapChainForCoreWindow"},
+			{24, reinterpret_cast<void**>(&DXGIHookState::OrigCreateSwapChainForComposition),
+				DXGIHookCallbacks::HookedCreateSwapChainForComposition, "IDXGIFactory2::CreateSwapChainForComposition"},
 		};
 		DX12HookManager::InstallVTableHooks(factory2, factory2Hooks);
 		factory2->Release();
 	}
 }
 
-static PFN_CREATE_SWAP_CHAIN GetCreateSwapChainOriginal(IDXGIFactory *factory)
+DXGIHookSignatures::CreateSwapChain DXGIHookUtils::GetCreateSwapChainOriginal(IDXGIFactory *factory)
 {
-	return GetDXGIOriginal<PFN_CREATE_SWAP_CHAIN>(
-		factory, 10, gOrigCreateSwapChain, "IDXGIFactory::CreateSwapChain");
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::CreateSwapChain>(
+		factory, 10, DXGIHookState::OrigCreateSwapChain, "IDXGIFactory::CreateSwapChain");
 }
 
-static PFN_CREATE_SWAP_CHAIN_FOR_HWND GetCreateSwapChainForHwndOriginal(IDXGIFactory2 *factory)
+DXGIHookSignatures::CreateSwapChainForHwnd DXGIHookUtils::GetCreateSwapChainForHwndOriginal(IDXGIFactory2 *factory)
 {
-	return GetDXGIOriginal<PFN_CREATE_SWAP_CHAIN_FOR_HWND>(
-		factory, 15, gOrigCreateSwapChainForHwnd, "IDXGIFactory2::CreateSwapChainForHwnd");
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::CreateSwapChainForHwnd>(
+		factory, 15, DXGIHookState::OrigCreateSwapChainForHwnd, "IDXGIFactory2::CreateSwapChainForHwnd");
 }
 
-static PFN_CREATE_SWAP_CHAIN_FOR_CORE_WINDOW GetCreateSwapChainForCoreWindowOriginal(IDXGIFactory2 *factory)
+DXGIHookSignatures::CreateSwapChainForCoreWindow DXGIHookUtils::GetCreateSwapChainForCoreWindowOriginal(IDXGIFactory2 *factory)
 {
-	return GetDXGIOriginal<PFN_CREATE_SWAP_CHAIN_FOR_CORE_WINDOW>(
-		factory, 16, gOrigCreateSwapChainForCoreWindow,
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::CreateSwapChainForCoreWindow>(
+		factory, 16, DXGIHookState::OrigCreateSwapChainForCoreWindow,
 		"IDXGIFactory2::CreateSwapChainForCoreWindow");
 }
 
-static PFN_CREATE_SWAP_CHAIN_FOR_COMPOSITION GetCreateSwapChainForCompositionOriginal(IDXGIFactory2 *factory)
+DXGIHookSignatures::CreateSwapChainForComposition DXGIHookUtils::GetCreateSwapChainForCompositionOriginal(IDXGIFactory2 *factory)
 {
-	return GetDXGIOriginal<PFN_CREATE_SWAP_CHAIN_FOR_COMPOSITION>(
-		factory, 24, gOrigCreateSwapChainForComposition,
+	return DXGIHookUtils::GetOriginal<DXGIHookSignatures::CreateSwapChainForComposition>(
+		factory, 24, DXGIHookState::OrigCreateSwapChainForComposition,
 		"IDXGIFactory2::CreateSwapChainForComposition");
 }
 
-static void HookDXGIFactoryVTables(HMODULE dxgi)
+void DXGIHookUtils::HookDXGIFactoryVTables(HMODULE dxgi)
 {
-	auto createFactory = reinterpret_cast<PFN_CREATE_DXGI_FACTORY>(
+	auto createFactory = reinterpret_cast<DXGIHookSignatures::CreateDXGIFactory>(
 		GetProcAddress(dxgi, "CreateDXGIFactory"));
-	auto createFactory1 = reinterpret_cast<PFN_CREATE_DXGI_FACTORY>(
+	auto createFactory1 = reinterpret_cast<DXGIHookSignatures::CreateDXGIFactory>(
 		GetProcAddress(dxgi, "CreateDXGIFactory1"));
-	auto createFactory2 = reinterpret_cast<PFN_CREATE_DXGI_FACTORY2>(
+	auto createFactory2 = reinterpret_cast<DXGIHookSignatures::CreateDXGIFactory2>(
 		GetProcAddress(dxgi, "CreateDXGIFactory2"));
 
 	IDXGIFactory *factory = nullptr;
 	if (createFactory1 && SUCCEEDED(createFactory1(IID_PPV_ARGS(&factory)))) {
-		HookFactory(factory);
+		DXGIHookUtils::HookFactory(factory);
 		factory->Release();
 		return;
 	}
 
 	if (createFactory && SUCCEEDED(createFactory(IID_PPV_ARGS(&factory)))) {
-		HookFactory(factory);
+		DXGIHookUtils::HookFactory(factory);
 		factory->Release();
 	}
 
 	IDXGIFactory2 *factory2 = nullptr;
 	if (createFactory2 && SUCCEEDED(createFactory2(0, IID_PPV_ARGS(&factory2)))) {
-		HookFactory(factory2);
+		DXGIHookUtils::HookFactory(factory2);
 		factory2->Release();
 	}
 }
 
-static HRESULT WINAPI HookedCreateDXGIFactory(REFIID riid, void **factory)
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **factory)
 {
-	LogDXGIHookCall("CreateDXGIFactory", nullptr);
-	HRESULT hr = gOrigCreateDXGIFactory(riid, factory);
+	DXGIHookUtils::LogHookCall("CreateDXGIFactory", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory(riid, factory);
 	DX12LogManager::JsonFunc("CreateDXGIFactory",
 		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
-		HookFactory(static_cast<IUnknown*>(*factory));
+		DXGIHookUtils::HookFactory(static_cast<IUnknown*>(*factory));
 	return hr;
 }
 
-static HRESULT WINAPI HookedCreateDXGIFactory1(REFIID riid, void **factory)
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory1(REFIID riid, void **factory)
 {
-	LogDXGIHookCall("CreateDXGIFactory1", nullptr);
-	HRESULT hr = gOrigCreateDXGIFactory1(riid, factory);
+	DXGIHookUtils::LogHookCall("CreateDXGIFactory1", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory1(riid, factory);
 	DX12LogManager::JsonFunc("CreateDXGIFactory1",
 		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
-		HookFactory(static_cast<IUnknown*>(*factory));
+		DXGIHookUtils::HookFactory(static_cast<IUnknown*>(*factory));
 	return hr;
 }
 
-static HRESULT WINAPI HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **factory)
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **factory)
 {
-	LogDXGIHookCall("CreateDXGIFactory2", nullptr);
-	HRESULT hr = gOrigCreateDXGIFactory2(flags, riid, factory);
+	DXGIHookUtils::LogHookCall("CreateDXGIFactory2", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory2(flags, riid, factory);
 	DX12LogManager::JsonFunc("CreateDXGIFactory2",
 		"\"flags\":\"0x%x\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
 		flags, &riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr) && factory)
-		HookFactory(static_cast<IUnknown*>(*factory));
+		DXGIHookUtils::HookFactory(static_cast<IUnknown*>(*factory));
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChain(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChain(
 	IDXGIFactory *factory, IUnknown *device, DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **swapChain)
 {
-	LogDXGIHookCall("IDXGIFactory::CreateSwapChain", factory);
-	HookDeviceFromDXGIArgument(device);
-	auto original = GetCreateSwapChainOriginal(factory);
+	DXGIHookUtils::LogHookCall("IDXGIFactory::CreateSwapChain", factory);
+	DXGIHookUtils::HookDeviceFromDXGIArgument(device);
+	auto original = DXGIHookUtils::GetCreateSwapChainOriginal(factory);
 	HRESULT hr = original ? original(factory, device, desc, swapChain) : DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("IDXGIFactory::CreateSwapChain",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain && (!desc || !DX12NativeOverlayIsOverlayWindow(desc->OutputWindow)))
-		HookSwapChain(*swapChain);
+		DXGIHookUtils::HookSwapChain(*swapChain);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForHwnd(
 	IDXGIFactory2 *factory, IUnknown *device, HWND window, const DXGI_SWAP_CHAIN_DESC1 *desc,
 	const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreenDesc, IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
-	LogDXGIHookCall("IDXGIFactory2::CreateSwapChainForHwnd", factory);
-	HookDeviceFromDXGIArgument(device);
-	auto original = GetCreateSwapChainForHwndOriginal(factory);
+	DXGIHookUtils::LogHookCall("IDXGIFactory2::CreateSwapChainForHwnd", factory);
+	DXGIHookUtils::HookDeviceFromDXGIArgument(device);
+	auto original = DXGIHookUtils::GetCreateSwapChainForHwndOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, window, desc, fullscreenDesc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
@@ -383,17 +418,17 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(
 		"\"device\":\"%p\",\"hwnd\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, window, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain && !DX12NativeOverlayIsOverlayWindow(window))
-		HookSwapChain(*swapChain);
+		DXGIHookUtils::HookSwapChain(*swapChain);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForCoreWindow(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForCoreWindow(
 	IDXGIFactory2 *factory, IUnknown *device, IUnknown *window, const DXGI_SWAP_CHAIN_DESC1 *desc,
 	IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
-	LogDXGIHookCall("IDXGIFactory2::CreateSwapChainForCoreWindow", factory);
-	HookDeviceFromDXGIArgument(device);
-	auto original = GetCreateSwapChainForCoreWindowOriginal(factory);
+	DXGIHookUtils::LogHookCall("IDXGIFactory2::CreateSwapChainForCoreWindow", factory);
+	DXGIHookUtils::HookDeviceFromDXGIArgument(device);
+	auto original = DXGIHookUtils::GetCreateSwapChainForCoreWindowOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, window, desc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
@@ -401,17 +436,17 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForCoreWindow(
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain)
-		HookSwapChain(*swapChain);
+		DXGIHookUtils::HookSwapChain(*swapChain);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForComposition(
 	IDXGIFactory2 *factory, IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
 	IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
-	LogDXGIHookCall("IDXGIFactory2::CreateSwapChainForComposition", factory);
-	HookDeviceFromDXGIArgument(device);
-	auto original = GetCreateSwapChainForCompositionOriginal(factory);
+	DXGIHookUtils::LogHookCall("IDXGIFactory2::CreateSwapChainForComposition", factory);
+	DXGIHookUtils::HookDeviceFromDXGIArgument(device);
+	auto original = DXGIHookUtils::GetCreateSwapChainForCompositionOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, desc, output, swapChain) :
 		DXGI_ERROR_INVALID_CALL;
@@ -419,18 +454,18 @@ static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForComposition(
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
 	if (SUCCEEDED(hr) && swapChain)
-		HookSwapChain(*swapChain);
+		DXGIHookUtils::HookSwapChain(*swapChain);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedPresent(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 {
 	if (DX12InternalReplayState::IsActive()) {
-		PFN_PRESENT original = GetPresentOriginal(swapChain);
+		DXGIHookSignatures::Present original = DXGIHookUtils::GetPresentOriginal(swapChain);
 		return original ? original(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
 	}
 
-	ConsumeUiActionsForFrame();
+	DXGIHookUtils::ConsumeUiActionsForFrame();
 
 	static volatile LONG firstPresentLog = 0;
 	if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
@@ -439,7 +474,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 			swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
 
 	if (DX12HotPathState::Get().skipAll) {
-		PFN_PRESENT original = GetPresentOriginal(swapChain);
+		DXGIHookSignatures::Present original = DXGIHookUtils::GetPresentOriginal(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		if (InterlockedCompareExchange(&firstPresentLog, 2, 1) == 1)
@@ -454,7 +489,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
 		if (DX12RuntimeState::GetPresentCount() > 2)
-			RunPostPresentUi(swapChain);
+			DXGIHookUtils::RunPostPresentUi(swapChain);
 		if (InterlockedCompareExchange(&firstPresentLog, 4, 3) == 3)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -467,7 +502,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 		return hr;
 	}
 
-	LogDXGIHookCall("IDXGISwapChain::Present", swapChain);
+	DXGIHookUtils::LogHookCall("IDXGISwapChain::Present", swapChain);
 	DX12_PROFILE_SCOPE(Present);
 
 	{
@@ -482,23 +517,23 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	DX12Profiling::BeginFrame();
 	const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 	const bool dumpShaders = DX12ShaderDumpEndCapture();
-	PFN_PRESENT original = GetPresentOriginal(swapChain);
+	DXGIHookSignatures::Present original = DXGIHookUtils::GetPresentOriginal(swapChain);
 	if (!original)
 		return DXGI_ERROR_INVALID_CALL;
-	LogPresentStage("Present", "beforeOriginal", swapChain);
+	DXGIHookUtils::LogPresentStage("Present", "beforeOriginal", swapChain);
 	HRESULT hr = original(swapChain, syncInterval, flags);
-	LogPresentStage("Present", "afterOriginal", swapChain, hr);
-	LogPresentDeviceRemovedReason("Present", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present", "afterOriginal", swapChain, hr);
+	DXGIHookUtils::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
 	DX12CommandListRuntime::BumpTrackingGeneration();
-	RunPostPresentUi(swapChain);
+	DXGIHookUtils::RunPostPresentUi(swapChain);
 
-	LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
 	DX12ModBeginFrame();
 
 	DX12HotPathState::Update();
-	LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
 		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
@@ -508,28 +543,28 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain *swapChain, UINT s
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
-		BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
+		DXGIHookUtils::BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
-		BeginShaderDumpCapture();
+		DXGIHookUtils::BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingTracker::BeginFrame();
-		LogPresentStage("Present", "afterBindingBeginFrame", swapChain, hr);
+		DXGIHookUtils::LogPresentStage("Present", "afterBindingBeginFrame", swapChain, hr);
 	}
 	DX12Profiling::EndFrame();
-	LogPresentStage("Present", "end", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present", "end", swapChain, hr);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedPresent1(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedPresent1(
 	IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS *presentParameters)
 {
 	if (DX12InternalReplayState::IsActive()) {
-		PFN_PRESENT1 original = GetPresent1Original(swapChain);
+		DXGIHookSignatures::Present1 original = DXGIHookUtils::GetPresent1Original(swapChain);
 		return original ? original(swapChain, syncInterval, flags, presentParameters) : DXGI_ERROR_INVALID_CALL;
 	}
 
-	ConsumeUiActionsForFrame();
+	DXGIHookUtils::ConsumeUiActionsForFrame();
 
 	static volatile LONG firstPresent1Log = 0;
 	if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
@@ -538,7 +573,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 			swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
 
 	if (DX12HotPathState::Get().skipAll) {
-		PFN_PRESENT1 original = GetPresent1Original(swapChain);
+		DXGIHookSignatures::Present1 original = DXGIHookUtils::GetPresent1Original(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		if (InterlockedCompareExchange(&firstPresent1Log, 2, 1) == 1)
@@ -553,7 +588,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
 		if (DX12RuntimeState::GetPresentCount() > 2)
-			RunPostPresentUi(swapChain);
+			DXGIHookUtils::RunPostPresentUi(swapChain);
 		if (InterlockedCompareExchange(&firstPresent1Log, 4, 3) == 3)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -566,7 +601,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 		return hr;
 	}
 
-	LogDXGIHookCall("IDXGISwapChain1::Present1", swapChain);
+	DXGIHookUtils::LogHookCall("IDXGISwapChain1::Present1", swapChain);
 
 	{
 		const LONG draws = DX12RuntimeState::TakeFrameDraws();
@@ -580,23 +615,23 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	DX12Profiling::BeginFrame();
 	const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 	const bool dumpShaders = DX12ShaderDumpEndCapture();
-	PFN_PRESENT1 original = GetPresent1Original(swapChain);
+	DXGIHookSignatures::Present1 original = DXGIHookUtils::GetPresent1Original(swapChain);
 	if (!original)
 		return DXGI_ERROR_INVALID_CALL;
-	LogPresentStage("Present1", "beforeOriginal", swapChain);
+	DXGIHookUtils::LogPresentStage("Present1", "beforeOriginal", swapChain);
 	HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
-	LogPresentStage("Present1", "afterOriginal", swapChain, hr);
-	LogPresentDeviceRemovedReason("Present1", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present1", "afterOriginal", swapChain, hr);
+	DXGIHookUtils::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 	DX12RuntimeState::IncrementPresentCount();
 	DX12HuntOnPresent();
 	DX12CommandListRuntime::BumpTrackingGeneration();
-	RunPostPresentUi(swapChain);
+	DXGIHookUtils::RunPostPresentUi(swapChain);
 
-	LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
 	DX12ModBeginFrame();
 
 	DX12HotPathState::Update();
-	LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
 
 	if (dumpFrame) {
 		DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
@@ -606,27 +641,27 @@ static HRESULT STDMETHODCALLTYPE HookedPresent1(
 	} else if (dumpShaders) {
 		DX12DumpCapturedFrameShaders();
 	} else if (DX12FrameAnalysis::IsCaptureRequested()) {
-		BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
+		DXGIHookUtils::BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 	} else if (DX12ShaderDumpIsCaptureRequested()) {
-		BeginShaderDumpCapture();
+		DXGIHookUtils::BeginShaderDumpCapture();
 	} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 	           DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingTracker::BeginFrame();
-		LogPresentStage("Present1", "afterBindingBeginFrame", swapChain, hr);
+		DXGIHookUtils::LogPresentStage("Present1", "afterBindingBeginFrame", swapChain, hr);
 	}
 	DX12Profiling::EndFrame();
-	LogPresentStage("Present1", "end", swapChain, hr);
+	DXGIHookUtils::LogPresentStage("Present1", "end", swapChain, hr);
 	return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
+HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedResizeBuffers(
 	IDXGISwapChain *swapChain, UINT bufferCount, UINT width, UINT height,
 	DXGI_FORMAT newFormat, UINT swapChainFlags)
 {
-	LogDXGIHookCall("IDXGISwapChain::ResizeBuffers", swapChain);
+	DXGIHookUtils::LogHookCall("IDXGISwapChain::ResizeBuffers", swapChain);
 	if (!DX12InternalReplayState::IsActive())
 		DX12NativeOverlayInvalidate(swapChain);
-	auto original = GetResizeBuffersOriginal(swapChain);
+	auto original = DXGIHookUtils::GetResizeBuffersOriginal(swapChain);
 	HRESULT hr = original ? original(swapChain, bufferCount, width, height, newFormat, swapChainFlags) :
 		DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("IDXGISwapChain::ResizeBuffers",
@@ -635,34 +670,34 @@ static HRESULT STDMETHODCALLTYPE HookedResizeBuffers(
 	return hr;
 }
 
-void DX12InstallDXGIHooks()
+void DXGIHooks::Install()
 {
-	AcquireSRWLockExclusive(&gDXGIHookLock);
-	if (gDXGIHookAttempted) {
-		ReleaseSRWLockExclusive(&gDXGIHookLock);
+	AcquireSRWLockExclusive(&DXGIHookState::HookLock);
+	if (DXGIHookState::HookAttempted) {
+		ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
 		return;
 	}
-	gDXGIHookAttempted = true;
-	ReleaseSRWLockExclusive(&gDXGIHookLock);
+	DXGIHookState::HookAttempted = true;
+	ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
 
 	HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
 	if (!dxgi) {
 		static volatile LONG deferredLogs = 0;
 		if (InterlockedIncrement(&deferredLogs) <= 4)
 			DX12LogManager::Text("dxgi.dll is not loaded yet; DXGI hook deferred\n");
-		AcquireSRWLockExclusive(&gDXGIHookLock);
-		gDXGIHookAttempted = false;
-		ReleaseSRWLockExclusive(&gDXGIHookLock);
+		AcquireSRWLockExclusive(&DXGIHookState::HookLock);
+		DXGIHookState::HookAttempted = false;
+		ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
 		return;
 	}
 
-	HookDXGIFactoryVTables(dxgi);
+	DXGIHookUtils::HookDXGIFactoryVTables(dxgi);
 	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory",
-		reinterpret_cast<void**>(&gOrigCreateDXGIFactory), HookedCreateDXGIFactory);
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory), DXGIHookCallbacks::HookedCreateDXGIFactory);
 	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory1",
-		reinterpret_cast<void**>(&gOrigCreateDXGIFactory1), HookedCreateDXGIFactory1);
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory1), DXGIHookCallbacks::HookedCreateDXGIFactory1);
 	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory2",
-		reinterpret_cast<void**>(&gOrigCreateDXGIFactory2), HookedCreateDXGIFactory2);
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory2), DXGIHookCallbacks::HookedCreateDXGIFactory2);
 }
 
 

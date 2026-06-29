@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "DX12BindingTrackerState.hpp"
-#include "DX12ResourceTracker.h"
+#include "DX12ResourceTracker.hpp"
 
 class DX12BindingTrackerUtils
 {

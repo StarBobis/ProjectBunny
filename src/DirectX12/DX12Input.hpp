@@ -2,7 +2,7 @@
 
 #include <Windows.h>
 
-#include "DX12ModRuntime.h"
+#include "DX12ModRuntime.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 
