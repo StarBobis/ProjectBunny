@@ -44,11 +44,17 @@ public:
 
 		if (DX12HotPathState::Get().skipAll) {
 			if (original) {
+				DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsHeartbeat",
+					"\"stage\":\"BeforeOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
+					DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 				original(queue, numCommandLists, commandLists);
+				DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsHeartbeat",
+					"\"stage\":\"AfterOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
+					DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -56,6 +62,9 @@ public:
 			}
 			if (DX12HuntIsEnabled())
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
+			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsHeartbeat",
+				"\"stage\":\"ReturnSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
+				DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
 			return;
 		}
 

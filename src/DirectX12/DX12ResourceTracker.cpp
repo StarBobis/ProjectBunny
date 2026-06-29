@@ -1,5 +1,7 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
+#include "DX12ResourceCollectQueue.hpp"
+
 uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 {
 	if (!data || size == 0)
@@ -492,6 +494,7 @@ void RecordResource(
 
 void CleanupTrackedResources()
 {
+	DX12ResourceCollectQueue::Stop();
 	AcquireSRWLockExclusive(&gResourceLock);
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps)

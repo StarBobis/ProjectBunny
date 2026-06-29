@@ -69,6 +69,24 @@ public:
 		const D3D12_RESOURCE_DESC *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
 		D3D12_RESOURCE_STATES initialState);
+	static void LogResourceCreateStage(
+		const char *api,
+		const char *stage,
+		ID3D12Device *device,
+		HRESULT hr,
+		const D3D12_RESOURCE_DESC *desc,
+		const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_RESOURCE_STATES initialState,
+		void **resource);
+	static void LogResourceCreateStage1(
+		const char *api,
+		const char *stage,
+		ID3D12Device *device,
+		HRESULT hr,
+		const D3D12_RESOURCE_DESC1 *desc,
+		const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_RESOURCE_STATES initialState,
+		void **resource);
 	static void RecordCreatedResource1(
 		HRESULT hr,
 		void **resource,

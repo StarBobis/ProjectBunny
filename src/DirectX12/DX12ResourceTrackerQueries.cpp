@@ -1,5 +1,7 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
+#include "DX12ResourceCollectQueue.hpp"
+
 bool DX12GetRootSignatureSummary(
 	ID3D12RootSignature *rootSignature, DX12RootSignatureSummary *summary)
 {
@@ -383,6 +385,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
+	DX12ResourceCollectQueue::DrainForSnapshot("MetadataSnapshot");
 	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
 	if (cache.enabled && !cache.building) {
 		if (!cache.populated) {
@@ -795,6 +798,7 @@ void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)
 	if (!resources)
 		return;
 
+	DX12ResourceCollectQueue::DrainForSnapshot("TrackedResourceSnapshot");
 	resources->clear();
 	AcquireSRWLockShared(&gResourceLock);
 	resources->reserve(gLiveResourceCount);
@@ -824,6 +828,7 @@ void DX12GetRetainedTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *re
 	if (!resources)
 		return;
 
+	DX12ResourceCollectQueue::DrainForSnapshot("RetainedTrackedResourceSnapshot");
 	resources->clear();
 	AcquireSRWLockShared(&gResourceLock);
 	resources->reserve(gLiveResourceCount);
