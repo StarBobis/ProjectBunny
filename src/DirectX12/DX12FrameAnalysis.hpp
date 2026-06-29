@@ -6,7 +6,7 @@
 #include <stdarg.h>
 
 #include "DX12FrameAnalysisState.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12HotPathState.hpp"
 

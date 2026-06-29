@@ -11,7 +11,8 @@
 #include <string>
 #include <vector>
 
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
+#include "utils/DX12LogUtils.hpp"
 #include "DX12RuntimeState.hpp"
 
 class DX12LogManager
@@ -250,18 +251,6 @@ public:
 #endif
 	}
 
-	static void MakeLogTime(char *buffer, size_t bufferSize)
-	{
-		if (!buffer || !bufferSize)
-			return;
-		SYSTEMTIME localTime;
-		GetLocalTime(&localTime);
-		snprintf(buffer, bufferSize,
-			"\"%02u:%02u:%02u.%03u\"",
-			localTime.wHour, localTime.wMinute, localTime.wSecond,
-			localTime.wMilliseconds);
-	}
-
 	static void EnqueueJsonLogLine(const char *line)
 	{
 		if (!line || !line[0])
@@ -286,7 +275,7 @@ public:
 			return;
 
 		char timeJson[64] = {};
-		MakeLogTime(timeJson, sizeof(timeJson));
+		DX12LogUtils::MakeLogTime(timeJson, sizeof(timeJson));
 		const bool isHookCall = func && strcmp(func, "DX12HookCall") == 0;
 		char line[8192];
 		if (extra && extra[0]) {

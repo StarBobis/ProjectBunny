@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "DX12ResourceTracker.hpp"
-#include "DX12ShaderDump.hpp"
+#include "types/DX12PsoTypes.hpp"
+#include "types/DX12ResourceTypes.hpp"
 
 class DX12FrameResourceBinding
 {

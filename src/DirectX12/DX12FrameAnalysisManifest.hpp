@@ -9,7 +9,7 @@
 
 #include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
 

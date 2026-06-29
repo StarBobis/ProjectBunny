@@ -8,8 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DX12ResourceTracker.hpp"
-#include "DX12ShaderDump.hpp"
+#include "types/DX12PsoTypes.hpp"
 
 
 constexpr UINT MaxRootParameters = 64;
@@ -175,7 +174,6 @@ public:
 		return Shards[(key >> 17) & (kBindingShardCount - 1)];
 	}
 };
-
 
 
 

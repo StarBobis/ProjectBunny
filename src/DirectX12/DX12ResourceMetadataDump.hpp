@@ -9,7 +9,7 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisTypes.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 
 class DX12ResourceMetadataDump

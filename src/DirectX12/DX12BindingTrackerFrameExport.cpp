@@ -12,7 +12,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
 #include "DX12IaRegion.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
 

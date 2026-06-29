@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "DX12FrameAnalysis.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12ShaderHunt.hpp"
 #include "DX12LogManager.hpp"

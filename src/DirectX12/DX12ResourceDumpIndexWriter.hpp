@@ -10,12 +10,12 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceDumpCoreUtils.hpp"
 #include "DX12ResourceDumpNamingUtils.hpp"
 #include "DX12ResourceDumpPrepare.hpp"
 #include "DX12ResourceDumpTypes.hpp"
-#include "DX12ResourceDumpUtils.hpp"
+#include "utils/DX12ResourceDumpUtils.hpp"
 
 class DX12ResourceDumpIndexWriter
 {

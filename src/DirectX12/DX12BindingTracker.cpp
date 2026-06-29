@@ -6,6 +6,7 @@
 
 #include "DX12CommandListRuntime.hpp"
 #include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
 #include "DX12LogManager.hpp"
 
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];

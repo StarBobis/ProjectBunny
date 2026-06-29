@@ -20,7 +20,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12HookManager.hpp"
 #include "DX12IaReplacementExecutor.hpp"
-#include "DX12Json.hpp"
+#include "utils/DX12JsonUtils.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12ResourceTracker.hpp"

@@ -8,6 +8,7 @@
 
 #include "DX12BindingTrackerState.hpp"
 #include "DX12ResourceTracker.hpp"
+#include "types/DX12ResourceTypes.hpp"
 
 class DX12BindingTrackerUtils
 {
