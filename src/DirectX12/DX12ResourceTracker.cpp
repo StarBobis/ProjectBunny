@@ -54,11 +54,9 @@ static bool DescriptorHeapIsShaderVisible(const DescriptorHeapRecord &heap)
 
 static bool ShouldStoreCreatedDescriptorInHeapSlot(const DescriptorHeapRecord &heap)
 {
-	return DescriptorHeapIsShaderVisible(heap) ||
-		DX12RuntimeState::IsHuntingMode() ||
-		DX12FrameAnalysis::IsActive() ||
-		DX12FrameAnalysis::IsCaptureRequested() ||
-		DX12FrameAnalysis::IsCapturing();
+	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() &&
+		(DescriptorHeapIsShaderVisible(heap) ||
+		 DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory());
 }
 
 static DescriptorRecord *DescriptorHeapSlot(DescriptorHeapRecord *heap, UINT slot)
@@ -108,22 +106,43 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
-	// D3D12 descriptor handles are heap-start plus descriptor-size strides;
-	// mirroring that as a per-heap array avoids hot-path hashing while keeping
-	// the same granularity as CopyDescriptors and descriptor creation APIs.
+	record->liveSlots = 0;
+}
+
+bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
+{
+	if (!record || record->desc.NumDescriptors == 0)
+		return false;
+	if (!record->slots.empty())
+		return record->slots.size() == record->desc.NumDescriptors;
+	// Allocate descriptor slots only after a real tracking need appears. Games
+	// can create million-entry heaps during normal Mod mode; keeping only heap
+	// boundaries until Mod/Dump needs the slots avoids turning capacity into CPU
+	// work and memory pressure.
 	record->slots.resize(record->desc.NumDescriptors);
 	record->occupied.assign(record->desc.NumDescriptors, 0);
-	record->slotHistory.resize(record->desc.NumDescriptors);
-	record->slotHistoryEpochs.resize(record->desc.NumDescriptors);
 	record->liveSlots = 0;
+	return true;
+}
+
+static bool EnsureDescriptorHeapHistoryLocked(DescriptorHeapRecord *record)
+{
+	if (!record || record->desc.NumDescriptors == 0)
+		return false;
+	if (record->slotHistory.empty())
+		record->slotHistory.resize(record->desc.NumDescriptors);
+	if (record->slotHistoryEpochs.empty())
+		record->slotHistoryEpochs.resize(record->desc.NumDescriptors);
+	return record->slotHistory.size() == record->desc.NumDescriptors &&
+		record->slotHistoryEpochs.size() == record->desc.NumDescriptors;
 }
 
 static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot, const DescriptorRecord &record)
 {
-	if (!heap || slot >= heap->slotHistory.size() || slot >= heap->slotHistoryEpochs.size())
+	if (!DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory())
 		return;
-	if (!DX12RuntimeState::IsHuntingMode() && !DX12FrameAnalysis::IsActive() &&
-			!DX12FrameAnalysis::IsCaptureRequested() && !DX12FrameAnalysis::IsCapturing())
+	if (!heap || !EnsureDescriptorHeapHistoryLocked(heap) ||
+			slot >= heap->slotHistory.size() || slot >= heap->slotHistoryEpochs.size())
 		return;
 	// Hunting needs RenderDoc-like event granularity: later descriptor heap
 	// reuse must not rewrite what an earlier dispatch saw.
@@ -135,8 +154,10 @@ static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot,
 static void StoreDescriptorAtHeapSlotLocked(
 	DescriptorHeapRecord *heap, UINT slot, DescriptorRecord &&record)
 {
-	if (!heap || slot >= heap->slots.size())
+	if (!heap || !EnsureDescriptorHeapStorageLocked(heap) || slot >= heap->slots.size()) {
+		ReleaseDescriptorRecordResources(&record);
 		return;
+	}
 	const bool wasOccupied = DescriptorHeapSlotOccupied(*heap, slot);
 	AppendDescriptorHistoryLocked(heap, slot, record);
 	heap->slots[slot] = std::move(record);
@@ -397,7 +418,10 @@ void RecordResource(
 	record.desc = desc ? *desc : resource->GetDesc();
 	const bool bufferResource = record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
 	const bool textureResource = IsTextureResourceDimension(record.desc.Dimension);
-	if (!ShouldTrackResourceMetadata() && !bufferResource && !textureResource)
+	if (!ShouldTrackResourceMetadata() &&
+			((bufferResource && !DX12ResourceTrackingPolicyUtils::NeedsBufferResourceTracking()) ||
+			 (textureResource && !DX12ResourceTrackingPolicyUtils::NeedsTextureResourceTracking()) ||
+			 (!bufferResource && !textureResource)))
 		return;
 	if (heapProperties) {
 		record.heapType = heapProperties->Type;
@@ -1102,6 +1126,10 @@ static void RecordDescriptorAtSlotLocked(
 	if (record.valueId == 0)
 		record.valueId = HashDescriptorValue(record);
 	DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+	if (!EnsureDescriptorHeapStorageLocked(&heap)) {
+		ReleaseDescriptorRecordResources(&record);
+		return;
+	}
 	DescriptorRecord *existing = DescriptorHeapSlot(&heap, location.slot);
 	if (existing) {
 		if (existing->valueId == record.valueId &&
@@ -1209,34 +1237,27 @@ UINT64 CurrentDescriptorEpoch()
 
 bool ShouldTrackFullDescriptorMetadata()
 {
-	return DX12RuntimeState::IsHuntingMode();
+	return DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
 }
 
 bool ShouldTrackComputeDescriptorMetadata()
 {
-	return DX12RuntimeState::IsHuntingMode() ||
-		DX12ModNeedsShaderDescriptorTracking() ||
-		DX12ModNeedsPreSkinningUavProbe();
+	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking();
 }
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	// Descriptor creation is the only lossless point for buffer SRV/UAV view
-	// metadata. Keep a light CPU descriptor ledger always; expensive binding
-	// walks and resource readbacks remain gated by Hunting/Mod needs.
-	return true;
+	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking();
 }
 
 bool ShouldTrackResourceMetadata()
 {
-	return DX12RuntimeState::IsHuntingMode();
+	return DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata();
 }
 
 bool ShouldTrackResourceCreationMetadata()
 {
-	return DX12RuntimeState::IsHuntingMode() ||
-		DX12ModNeedsPresentReplacement() ||
-		DX12ModNeedsPreSkinningUavProbe();
+	return DX12ResourceTrackingPolicyUtils::NeedsAnyResourceCreationTracking();
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)
@@ -1276,6 +1297,10 @@ static bool CopyDescriptorSlotToSlotLocked(
 	}
 
 	DescriptorHeapRecord &destHeap = gDescriptorHeaps[destLocation.heapIndex];
+	if (!EnsureDescriptorHeapStorageLocked(&destHeap)) {
+		ReleaseDescriptorRecordResources(&ledgerSource);
+		return false;
+	}
 	DescriptorRecord *existing = DescriptorHeapSlot(&destHeap, destLocation.slot);
 	if (existing && existing->valueId == source->valueId &&
 		existing->cpuHandle == destCpuHandle) {

@@ -16,6 +16,7 @@
 
 #include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
+#include "DX12HotPathState.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceDump.hpp"
 #include "DX12ResourceMetadataDump.hpp"
@@ -1762,6 +1763,7 @@ static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
 	}
 	delete args;
 	InterlockedExchange(&gShaderDumpRunning, 0);
+	DX12HotPathState::Update();
 	return 0;
 }
 
@@ -1774,6 +1776,7 @@ void DX12RequestShaderDump()
 	}
 
 	InterlockedExchange(&gShaderDumpCaptureRequested, 1);
+	DX12HotPathState::Update();
 	DX12OverlayStatusState::SetStatus(L"F9 armed: waiting for next frame");
 }
 
@@ -1786,14 +1789,17 @@ void DX12ShaderDumpBeginCapture()
 {
 	if (InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 1) == 1) {
 		InterlockedExchange(&gShaderDumpCapturing, 1);
+		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 capturing next frame shaders");
 	}
 }
 
 bool DX12ShaderDumpEndCapture()
 {
-	if (InterlockedCompareExchange(&gShaderDumpCapturing, 0, 1) == 1)
+	if (InterlockedCompareExchange(&gShaderDumpCapturing, 0, 1) == 1) {
+		DX12HotPathState::Update();
 		return true;
+	}
 	return false;
 }
 
@@ -1815,12 +1821,14 @@ void DX12DumpCapturedFrameShaders()
 		DX12OverlayStatusState::SetStatus(L"F9 shader dump still running");
 		return;
 	}
+	DX12HotPathState::Update();
 
 	std::vector<DX12PsoShaderInfo> frameInfos;
 	DX12BindingFrameExport::GetCurrentFrameShaderInfos(&frameInfos);
 	ShaderDumpThreadArgs *args = new (std::nothrow) ShaderDumpThreadArgs();
 	if (!args) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: out of memory");
 		return;
 	}
@@ -1830,6 +1838,7 @@ void DX12DumpCapturedFrameShaders()
 	if (args->shaders.empty() && args->psos.empty()) {
 		delete args;
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 not ready: no frame shaders captured");
 		return;
 	}
@@ -1838,6 +1847,7 @@ void DX12DumpCapturedFrameShaders()
 	HANDLE thread = CreateThread(nullptr, 0, DX12ShaderDumpThreadProc, args, 0, nullptr);
 	if (!thread) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12HotPathState::Update();
 		delete args;
 		DX12LogManager::Text("F9 shader dump failed: CreateThread error=%lu\n", GetLastError());
 		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: cannot start thread");

@@ -64,16 +64,15 @@ const D3D12_RESOURCE_DESC1 *DX12ResourceTrackerHookRuntime::PrepareResourceDesc1
 
 bool DX12ResourceTrackerHookRuntime::ShouldRecordCreatedResource(const D3D12_RESOURCE_DESC *desc)
 {
-	if (DX12RuntimeState::IsHuntingMode())
+	if (ShouldTrackResourceMetadata())
 		return true;
 	if (!desc)
 		return ShouldTrackResourceCreationMetadata();
-	// Resource creation is the cheap identity boundary exposed by D3D12.
-	// Record buffers for VA lookup and textures for later Hunting discovery;
-	// descriptor-table churn remains gated so Mod mode does not stall.
-	return desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ||
-		IsTextureResourceDimension(desc->Dimension) ||
-		ShouldTrackResourceCreationMetadata();
+	if (desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+		return DX12ResourceTrackingPolicyUtils::NeedsBufferResourceTracking();
+	if (IsTextureResourceDimension(desc->Dimension))
+		return DX12ResourceTrackingPolicyUtils::NeedsTextureResourceTracking();
+	return false;
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
