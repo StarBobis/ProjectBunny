@@ -3,7 +3,7 @@
 #include <Windows.h>
 #include <d3d12.h>
 
-#include "DX12IaReplacementExecutor.hpp"
+#include "types/DX12IaReplacementExecutorCallbacks.hpp"
 
 class DX12CommandListHookCallbacks
 {

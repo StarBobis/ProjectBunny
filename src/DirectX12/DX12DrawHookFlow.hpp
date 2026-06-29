@@ -2,8 +2,19 @@
 
 #include <d3d12.h>
 
+#include "DX12BindingTracker.hpp"
+#include "DX12CommandListFlowDiagnostics.hpp"
 #include "DX12CommandListRuntime.hpp"
+#include "DX12CommandListStateCapture.hpp"
+#include "DX12HotPathState.hpp"
+#include "DX12IaReplacementDrawScope.hpp"
+#include "DX12IaReplacementDrawExecutor.hpp"
 #include "DX12IaReplacementExecutor.hpp"
+#include "DX12Profiling.hpp"
+#include "DX12RuntimeState.hpp"
+#include "DX12ShaderHunt.hpp"
+#include "types/DX12IaDrawInvocation.hpp"
+#include "types/DX12IaReplacementExecutorCallbacks.hpp"
 
 class DX12DrawHookFlow
 {
@@ -11,6 +22,59 @@ public:
 	static bool NeedsModWork()
 	{
 		return DX12ModNeedsPresentReplacement() || DX12ModHasActiveShaderOverrides();
+	}
+
+	static bool TryExecuteSkipAll(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!DX12HotPathState::Get().skipAll)
+			return false;
+		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+		return true;
+	}
+
+	static void ExecuteHook(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (DX12Profiling::ShouldCollectCounters() || NeedsModWork())
+			DX12RuntimeState::IncrementFrameDraws();
+
+		if (DX12IaReplacementDrawScope::IsExecuting()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			return;
+		}
+
+		if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() && !NeedsModWork()) {
+			DX12_PROFILE_FAST_FORWARD();
+			if (ShouldSkipHuntDraw(commandList, draw))
+				return;
+			RecordHuntDraw(commandList, draw);
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			return;
+		}
+
+		LogDrawCall(commandList, draw);
+		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+			RecordBindingDraw(commandList, draw);
+		if (DX12HuntIsEnabled()) {
+			if (ShouldSkipHuntDraw(commandList, draw))
+				return;
+			RecordHuntDraw(commandList, draw);
+		}
+		if (!NeedsModWork()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			return;
+		}
+
+		const DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtr(commandList);
+		Execute(commandList, draw, runtimeState, callbacks);
 	}
 
 	static void Execute(
@@ -25,5 +89,64 @@ public:
 		    DX12IaReplacementExecutor::HandleDrawOverrides(commandList, draw, *runtimeState, callbacks))
 			return;
 		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+	}
+
+	static bool ShouldSkipHuntDraw(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw)
+	{
+		return DX12HuntShouldSkipDraw(
+			commandList, draw.indexed,
+			draw.indexed ? 0 : draw.vertexCount,
+			draw.indexed ? draw.indexCount : 0,
+			draw.indexed ? 0 : draw.firstVertex,
+			draw.indexed ? draw.firstIndex : 0,
+			draw.indexed ? draw.baseVertex : 0);
+	}
+
+	static void RecordHuntDraw(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw)
+	{
+		DX12HuntRecordDraw(
+			commandList, draw.indexed,
+			draw.indexed ? 0 : draw.vertexCount,
+			draw.indexed ? draw.indexCount : 0,
+			draw.indexed ? 0 : draw.firstVertex,
+			draw.indexed ? draw.firstIndex : 0,
+			draw.indexed ? draw.baseVertex : 0);
+	}
+
+	static void RecordBindingDraw(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw)
+	{
+		if (draw.indexed) {
+			DX12BindingTracker::RecordDrawIndexedInstanced(
+				commandList, draw.indexCount, draw.instanceCount,
+				draw.firstIndex, draw.baseVertex, draw.firstInstance);
+			return;
+		}
+		DX12BindingTracker::RecordDrawInstanced(
+			commandList, draw.vertexCount, draw.instanceCount,
+			draw.firstVertex, draw.firstInstance);
+	}
+
+	static void LogDrawCall(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw)
+	{
+		if (draw.indexed) {
+			DX12CommandListFlowDiagnostics::LogDX12Call(
+				"ID3D12GraphicsCommandList::DrawIndexedInstanced", commandList,
+				" indices=%u instances=%u startIndex=%u baseVertex=%d startInstance=%u",
+				draw.indexCount, draw.instanceCount, draw.firstIndex,
+				draw.baseVertex, draw.firstInstance);
+			return;
+		}
+		DX12CommandListFlowDiagnostics::LogDX12Call(
+			"ID3D12GraphicsCommandList::DrawInstanced", commandList,
+			" vertices=%u instances=%u startVertex=%u startInstance=%u",
+			draw.vertexCount, draw.instanceCount, draw.firstVertex, draw.firstInstance);
 	}
 };

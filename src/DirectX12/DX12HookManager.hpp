@@ -5,15 +5,7 @@
 
 #include "DX12HookRegistry.hpp"
 #include "DX12LogManager.hpp"
-
-class DX12VTableHook
-{
-public:
-	UINT slot;
-	void **original;
-	void *hook;
-	const char *name;
-};
+#include "types/DX12HookTypes.hpp"
 
 class DX12HookManager
 {

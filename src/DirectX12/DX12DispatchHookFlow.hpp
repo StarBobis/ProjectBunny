@@ -6,10 +6,15 @@
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
+#include "DX12CommandListFlowDiagnostics.hpp"
 #include "DX12CommandListRuntime.hpp"
+#include "DX12CommandListStateCapture.hpp"
+#include "DX12HotPathState.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
+#include "DX12RuntimeState.hpp"
 #include "DX12ShaderDump.hpp"
+#include "DX12ShaderHunt.hpp"
 #include "DX12LogManager.hpp"
 
 #if defined(_DEBUG)
@@ -59,6 +64,90 @@ class DX12DispatchHookFlow
 {
 public:
 	inline static thread_local bool InDispatchHookFlow = false;
+
+	static bool NeedsDispatchWork()
+	{
+		return DX12ModHasActiveShaderOverrides() || DX12ModNeedsPreSkinningUavProbe();
+	}
+
+	static bool TryExecuteSkipAll(
+		ID3D12GraphicsCommandList *commandList,
+		UINT threadGroupCountX,
+		UINT threadGroupCountY,
+		UINT threadGroupCountZ,
+		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+	{
+		if (!DX12HotPathState::Get().skipAll)
+			return false;
+		if (originalDispatch)
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		return true;
+	}
+
+	static void ExecuteHook(
+		ID3D12GraphicsCommandList *commandList,
+		UINT threadGroupCountX,
+		UINT threadGroupCountY,
+		UINT threadGroupCountZ,
+		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+	{
+		if (!originalDispatch)
+			return;
+
+		if (DX12Profiling::ShouldCollectCounters() || NeedsDispatchWork())
+			DX12RuntimeState::IncrementFrameDispatches();
+
+		if (DX12InternalReplayState::IsActive()) {
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
+
+		if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() && !NeedsDispatchWork()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12HuntRecordDispatch(commandList);
+			if (DX12HuntShouldSkipDispatch(commandList))
+				return;
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
+
+		DX12CommandListFlowDiagnostics::LogDX12Call(
+			"ID3D12GraphicsCommandList::Dispatch", commandList,
+			" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+			DX12BindingTracker::RecordDispatch(
+				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		if (DX12HuntIsEnabled()) {
+			DX12HuntRecordDispatch(commandList);
+			if (DX12HuntShouldSkipDispatch(commandList))
+				return;
+		}
+		if (!NeedsDispatchWork()) {
+			DX12_PROFILE_FAST_FORWARD();
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
+
+		if (!DX12ModHasActiveShaderOverrides() && DX12ModNeedsPreSkinningUavProbe()) {
+			const DX12CommandListRuntimeState *runtimeState =
+				DX12CommandListRuntime::GetStatePtr(commandList);
+			if (!HasConfiguredPreSkinCs(commandList, runtimeState)) {
+				DX12_PROFILE_FAST_FORWARD();
+				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+				return;
+			}
+			Execute(
+				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
+				runtimeState, originalDispatch);
+			return;
+		}
+
+		const DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtr(commandList);
+		Execute(
+			commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
+			runtimeState, originalDispatch);
+	}
 
 	static void Execute(
 		ID3D12GraphicsCommandList *commandList,
@@ -118,6 +207,19 @@ public:
 			commandList,
 			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
+	}
+
+	static bool HasConfiguredPreSkinCs(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12CommandListRuntimeState *runtimeState)
+	{
+		ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState :
+			DX12CommandListRuntime::GetPipelineState(commandList);
+		DX12PsoShaderInfo shaderInfo = {};
+		return pipelineState &&
+			DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) &&
+			shaderInfo.hasCS &&
+			DX12ModShouldTrackPreSkinBindingsForCs(shaderInfo.cs);
 	}
 
 	static DX12DispatchPreSkinProbe &ScratchProbe()

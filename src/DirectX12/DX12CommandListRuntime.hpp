@@ -2,76 +2,13 @@
 
 #include <Windows.h>
 #include <d3d12.h>
-#include <stdint.h>
 
-#include <unordered_map>
-#include <vector>
-
-class DX12ActiveIaState
-{
-public:
-	bool hasIndexBuffer = false;
-	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
-	bool hasVertexBuffer[32] = {};
-	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
-	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-};
-
-class DX12IaBufferHash
-{
-public:
-	UINT slot = 0;
-	uint32_t hash = 0;
-	D3D12_VERTEX_BUFFER_VIEW vertexView = {};
-};
-
-class DX12IaHashState
-{
-public:
-	bool hasIndexBuffer = false;
-	uint32_t indexHash = 0;
-	D3D12_INDEX_BUFFER_VIEW indexView = {};
-	std::vector<DX12IaBufferHash> vertexBuffers;
-};
-
-class DX12CommandListTrackingCache
-{
-public:
-	UINT64 generation = 0;
-	bool trackBindings = false;
-	bool recordBindingEvents = false;
-	bool trackHuntIa = false;
-	bool trackPsoState = false;
-};
-
-class DX12CommandListRuntimeState
-{
-public:
-	ID3D12PipelineState *pipelineState = nullptr;
-	volatile UINT64 computeBindingSerial = 0;
-	DX12ActiveIaState ia;
-	DX12CommandListTrackingCache trackingCache;
-
-	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
-	ID3D12DescriptorHeap *samplerHeap = nullptr;
-};
-
-class DX12CommandListRuntimeShard
-{
-public:
-	SRWLOCK lock = SRWLOCK_INIT;
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState> states;
-};
-
-class DX12CommandListRuntimeTlsCache
-{
-public:
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	DX12CommandListRuntimeShard *shard = nullptr;
-	UINT64 trackingGeneration = 0;
-	DX12CommandListTrackingCache tracking;
-	DX12CommandListRuntimeState *statePtr = nullptr;
-};
+#include "DX12ActiveIaState.hpp"
+#include "DX12CommandListRuntimeShard.hpp"
+#include "DX12CommandListRuntimeState.hpp"
+#include "DX12CommandListRuntimeTlsCache.hpp"
+#include "DX12CommandListTrackingCache.hpp"
+#include "DX12IaHashState.hpp"
 
 class DX12CommandListRuntime
 {

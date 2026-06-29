@@ -164,14 +164,21 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChain(
 	IDXGIFactory *factory, IUnknown *device, DXGI_SWAP_CHAIN_DESC *desc, IDXGISwapChain **swapChain)
 {
 	DXGIHookDiagnostics::LogHookCall("IDXGIFactory::CreateSwapChain", factory);
-	DXGIHooks::HookDeviceFromDXGIArgument(device);
+	const bool overlayWindow = desc && DX12NativeOverlayIsOverlayWindow(desc->OutputWindow);
+	DX12LogManager::JsonFunc("DXGISwapChainCreateLifetime",
+		"\"api\":\"CreateSwapChain\",\"stage\":\"beforeOriginal\",\"device\":\"%p\",\"overlay\":%s",
+		device, overlayWindow ? "true" : "false");
+	if (!overlayWindow)
+		DXGIHookState::ReleaseKnownSwapChain();
 	auto original = DXGIHookRegistry::GetCreateSwapChainOriginal(factory);
 	HRESULT hr = original ? original(factory, device, desc, swapChain) : DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("IDXGIFactory::CreateSwapChain",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain && (!desc || !DX12NativeOverlayIsOverlayWindow(desc->OutputWindow)))
+	if (SUCCEEDED(hr) && swapChain && !overlayWindow) {
+		DXGIHooks::HookDeviceFromDXGIArgument(device);
 		DXGIHooks::HookSwapChain(*swapChain);
+	}
 	return hr;
 }
 
@@ -180,7 +187,12 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForHwnd(
 	const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreenDesc, IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
 	DXGIHookDiagnostics::LogHookCall("IDXGIFactory2::CreateSwapChainForHwnd", factory);
-	DXGIHooks::HookDeviceFromDXGIArgument(device);
+	const bool overlayWindow = DX12NativeOverlayIsOverlayWindow(window);
+	DX12LogManager::JsonFunc("DXGISwapChainCreateLifetime",
+		"\"api\":\"CreateSwapChainForHwnd\",\"stage\":\"beforeOriginal\",\"device\":\"%p\",\"hwnd\":\"%p\",\"overlay\":%s",
+		device, window, overlayWindow ? "true" : "false");
+	if (!overlayWindow)
+		DXGIHookState::ReleaseKnownSwapChain();
 	auto original = DXGIHookRegistry::GetCreateSwapChainForHwndOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, window, desc, fullscreenDesc, output, swapChain) :
@@ -188,8 +200,10 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForHwnd(
 	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForHwnd",
 		"\"device\":\"%p\",\"hwnd\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, window, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain && !DX12NativeOverlayIsOverlayWindow(window))
+	if (SUCCEEDED(hr) && swapChain && !overlayWindow) {
+		DXGIHooks::HookDeviceFromDXGIArgument(device);
 		DXGIHooks::HookSwapChain(*swapChain);
+	}
 	return hr;
 }
 
@@ -198,7 +212,10 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForCoreWindow(
 	IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
 	DXGIHookDiagnostics::LogHookCall("IDXGIFactory2::CreateSwapChainForCoreWindow", factory);
-	DXGIHooks::HookDeviceFromDXGIArgument(device);
+	DX12LogManager::JsonFunc("DXGISwapChainCreateLifetime",
+		"\"api\":\"CreateSwapChainForCoreWindow\",\"stage\":\"beforeOriginal\",\"device\":\"%p\"",
+		device);
+	DXGIHookState::ReleaseKnownSwapChain();
 	auto original = DXGIHookRegistry::GetCreateSwapChainForCoreWindowOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, window, desc, output, swapChain) :
@@ -206,8 +223,10 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForCoreWindow(
 	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForCoreWindow",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain)
+	if (SUCCEEDED(hr) && swapChain) {
+		DXGIHooks::HookDeviceFromDXGIArgument(device);
 		DXGIHooks::HookSwapChain(*swapChain);
+	}
 	return hr;
 }
 
@@ -216,7 +235,10 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForComposition
 	IDXGIOutput *output, IDXGISwapChain1 **swapChain)
 {
 	DXGIHookDiagnostics::LogHookCall("IDXGIFactory2::CreateSwapChainForComposition", factory);
-	DXGIHooks::HookDeviceFromDXGIArgument(device);
+	DX12LogManager::JsonFunc("DXGISwapChainCreateLifetime",
+		"\"api\":\"CreateSwapChainForComposition\",\"stage\":\"beforeOriginal\",\"device\":\"%p\"",
+		device);
+	DXGIHookState::ReleaseKnownSwapChain();
 	auto original = DXGIHookRegistry::GetCreateSwapChainForCompositionOriginal(factory);
 	HRESULT hr = original ?
 		original(factory, device, desc, output, swapChain) :
@@ -224,8 +246,10 @@ HRESULT STDMETHODCALLTYPE DXGIHookCallbacks::HookedCreateSwapChainForComposition
 	DX12LogManager::JsonFunc("IDXGIFactory2::CreateSwapChainForComposition",
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
 		device, hr, swapChain ? *swapChain : nullptr);
-	if (SUCCEEDED(hr) && swapChain)
+	if (SUCCEEDED(hr) && swapChain) {
+		DXGIHooks::HookDeviceFromDXGIArgument(device);
 		DXGIHooks::HookSwapChain(*swapChain);
+	}
 	return hr;
 }
 

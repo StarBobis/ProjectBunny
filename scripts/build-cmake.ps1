@@ -252,8 +252,15 @@ if ($Platform -eq 'x64') {
                 }
             }
 
-            Copy-Item $dx12Dll "$dx12TestDir\d3d12.dll" -Force
-            Write-Host "  Copied DX12 DLL: $dx12TestDir\d3d12.dll" -ForegroundColor Gray
+            $dx12TargetDll = "$dx12TestDir\d3d12.dll"
+            try {
+                Copy-Item $dx12Dll $dx12TargetDll -Force -ErrorAction Stop
+                Write-Host "  Copied DX12 DLL: $dx12TargetDll" -ForegroundColor Gray
+            } catch {
+                Write-Host "  Failed to copy DX12 DLL: $dx12TargetDll" -ForegroundColor Red
+                Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+                throw
+            }
         }
     } elseif (($copyToTargetDirectory -or $extraCopyTargets.Count -gt 0) -and -not (Test-Path $dx12Dll)) {
         Write-Host "  Skipped DX12 DLL copy: DLL not found: $dx12Dll" -ForegroundColor Yellow

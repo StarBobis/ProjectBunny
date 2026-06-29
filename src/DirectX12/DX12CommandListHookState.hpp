@@ -3,32 +3,12 @@
 #include <Windows.h>
 #include <d3d12.h>
 
-#include <array>
 #include <unordered_set>
 
 #include "DX12CommandListHookSignatures.hpp"
-#include "DX12IaReplacementExecutor.hpp"
-
-class DX12ThreadLocalCommandListOriginal
-{
-public:
-	void *target = nullptr;
-	void *original = nullptr;
-};
-
-class DX12VtableBaseCache
-{
-public:
-	void *vtable = nullptr;
-	std::array<void*, 256> originals{};
-};
-
-class DX12ThreadLocalIaCallbacksCache
-{
-public:
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	DX12IaReplacementExecutorCallbacks callbacks;
-};
+#include "types/DX12ThreadLocalCommandListOriginal.hpp"
+#include "types/DX12ThreadLocalIaCallbacksCache.hpp"
+#include "types/DX12VtableBaseCache.hpp"
 
 class DX12CommandListHookState
 {
