@@ -142,6 +142,9 @@ public:
 	static void RecordDispatch(ID3D12GraphicsCommandList *commandList, UINT threadGroupCountX, UINT threadGroupCountY, UINT threadGroupCountZ);
 	static void BeginFrame();
 
+	static void ReleaseRetainedIaResources(CommandListBindingState *state);
+	static void RetainEventIaResources(BindingEvent *event);
+	static void ReleaseEventIaResources(BindingEvent *event);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);

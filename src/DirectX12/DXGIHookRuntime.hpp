@@ -4,6 +4,7 @@
 #include <dxgi1_4.h>
 
 #include "DX12BindingTracker.hpp"
+#include "DX12CaptureLedger.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12HotPathState.hpp"
@@ -38,6 +39,7 @@ public:
 	{
 		DX12BindingTracker::BeginFrame();
 		DX12FrameAnalysis::BeginCapture();
+		DX12CaptureLedger::BeginCapture(static_cast<UINT64>(present));
 		DX12CommandListRuntime::BumpTrackingGeneration();
 		DX12FrameAnalysis::LogJsonFunc("FrameCaptureBegin", "\"present\":%ld", present);
 	}
@@ -64,7 +66,9 @@ public:
 		if (dumpFrame) {
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
+			DX12CaptureLedger::EndCapture();
 			DX12DumpFrameAnalysis();
+			DX12CaptureLedger::Clear();
 			DX12FrameAnalysis::End();
 		} else if (dumpShaders) {
 			DX12DumpCapturedFrameShaders();
@@ -72,8 +76,7 @@ public:
 			BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 		} else if (DX12ShaderDumpIsCaptureRequested()) {
 			BeginShaderDumpCapture();
-		} else if (DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-		           DX12ModNeedsPreSkinningUavProbe()) {
+		} else if (DX12ShaderDumpIsCapturingFrame() || DX12ModNeedsPreSkinningUavProbe()) {
 			DX12BindingTracker::BeginFrame();
 			DXGIHookDiagnostics::LogPresentStage(api, "afterBindingBeginFrame", swapChain, hr);
 		}
@@ -202,6 +205,9 @@ public:
 
 		DX12Profiling::BeginFrame();
 		const bool dumpFrame = DX12FrameAnalysis::EndCapture();
+		if (DX12FrameAnalysis::IsCapturing())
+			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
+				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
 		DXGIHookSignatures::Present original = DXGIHookRegistry::GetPresentOriginal(swapChain);
 		if (!original)
@@ -253,6 +259,9 @@ public:
 
 		DX12Profiling::BeginFrame();
 		const bool dumpFrame = DX12FrameAnalysis::EndCapture();
+		if (DX12FrameAnalysis::IsCapturing())
+			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
+				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
 		DXGIHookSignatures::Present1 original = DXGIHookRegistry::GetPresent1Original(swapChain);
 		if (!original)

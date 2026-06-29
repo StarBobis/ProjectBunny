@@ -18,6 +18,7 @@ public:
 	bool captureRequested = false;
 	bool capturing = false;
 	bool dumpPending = false;
+	UINT captureFramesRemaining = 0;
 	volatile LONG activeFast = 0;
 	volatile LONG captureRequestedFast = 0;
 	volatile LONG capturingFast = 0;
@@ -73,6 +74,7 @@ public:
 		captureRequested = false;
 		capturing = false;
 		dumpPending = false;
+		captureFramesRemaining = 0;
 		InterlockedExchange(&activeFast, 1);
 		InterlockedExchange(&captureRequestedFast, 0);
 		InterlockedExchange(&capturingFast, 0);
@@ -89,6 +91,7 @@ public:
 		captureRequested = false;
 		capturing = false;
 		dumpPending = false;
+		captureFramesRemaining = 0;
 		InterlockedExchange(&activeFast, 0);
 		InterlockedExchange(&captureRequestedFast, 0);
 		InterlockedExchange(&capturingFast, 0);
@@ -114,6 +117,7 @@ public:
 			capturing = true;
 			InterlockedExchange(&captureRequestedFast, 0);
 			InterlockedExchange(&capturingFast, 1);
+			captureFramesRemaining = 3;
 		}
 		ReleaseSRWLockExclusive(&lock);
 	}
@@ -122,8 +126,14 @@ public:
 	{
 		AcquireSRWLockExclusive(&lock);
 		if (active && capturing) {
+			if (captureFramesRemaining > 1) {
+				captureFramesRemaining--;
+				ReleaseSRWLockExclusive(&lock);
+				return false;
+			}
 			capturing = false;
 			dumpPending = true;
+			captureFramesRemaining = 0;
 			InterlockedExchange(&capturingFast, 0);
 			ReleaseSRWLockExclusive(&lock);
 			return true;

@@ -69,10 +69,11 @@ bool DX12ResolveBufferResourceByGpuVa(
 		localCache.generation = generation;
 	}
 	for (const BufferResolveCacheEntry &entry : localCache.entries) {
-		if (entry.begin && gpuVirtualAddress >= entry.begin && requestedEnd <= entry.end) {
+		if (entry.begin && gpuVirtualAddress >= entry.begin && gpuVirtualAddress < entry.end) {
 			*summary = entry.summary;
 			summary->resourceOffset = gpuVirtualAddress - entry.begin;
-			summary->viewSize = size;
+			const UINT64 available = entry.end - gpuVirtualAddress;
+			summary->viewSize = size < available ? size : available;
 			return true;
 		}
 	}
@@ -85,10 +86,11 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (cached != gBufferResolveCache.begin()) {
 		--cached;
 		if (gpuVirtualAddress >= cached->second.begin &&
-		    requestedEnd <= cached->second.end) {
+		    gpuVirtualAddress < cached->second.end) {
 			*summary = cached->second.summary;
 			summary->resourceOffset = gpuVirtualAddress - cached->second.begin;
-			summary->viewSize = size;
+			const UINT64 available = cached->second.end - gpuVirtualAddress;
+			summary->viewSize = size < available ? size : available;
 			localCache.entries[localCache.next++ % 8] = cached->second;
 			ReleaseSRWLockShared(&gResourceLock);
 			return true;
@@ -101,17 +103,21 @@ bool DX12ResolveBufferResourceByGpuVa(
 		if (foundBuffer->second < gResources.size()) {
 			const ResourceRecord &resource = gResources[foundBuffer->second];
 			const UINT64 begin = resource.gpuVirtualAddress;
-			const UINT64 end = begin + resource.size;
+			const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+				resource.gpuVirtualAddressRealEnd : begin + resource.size;
+			const UINT64 oobEnd = resource.gpuVirtualAddressOobEnd ?
+				resource.gpuVirtualAddressOobEnd : realEnd;
 			if (resource.resource &&
 			    resource.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 			    begin != 0 && resource.size != 0 &&
-			    gpuVirtualAddress >= begin && requestedEnd <= end) {
+			    gpuVirtualAddress >= begin && gpuVirtualAddress < realEnd) {
 				summary->resource = resource.resource;
 				summary->resourceDesc = resource.desc;
 				summary->hasResourceDesc = true;
 				summary->gpuVirtualAddress = resource.gpuVirtualAddress;
 				summary->resourceOffset = gpuVirtualAddress - begin;
-				summary->viewSize = size;
+				const UINT64 available = realEnd - gpuVirtualAddress;
+				summary->viewSize = size < available ? size : available;
 				if (resource.hasHeapType) {
 					summary->resourceHeapType = static_cast<UINT>(resource.heapType);
 					summary->hasResourceHeapType = true;
@@ -120,8 +126,19 @@ bool DX12ResolveBufferResourceByGpuVa(
 				summary->hasCurrentState = resource.hasCurrentState;
 				summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
 				resolvedBegin = begin;
-				resolvedEnd = end;
+				resolvedEnd = realEnd;
 				resolved = true;
+				if (requestedEnd > realEnd || gpuVirtualAddress >= realEnd) {
+					DX12FrameAnalysis::LogJsonFunc("BufferResolveClampedToRealRange",
+						"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"resource\":\"%p\",\"begin\":\"0x%llX\",\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"viewSize\":%llu",
+						static_cast<unsigned long long>(gpuVirtualAddress),
+						static_cast<unsigned long long>(size),
+						resource.resource,
+						static_cast<unsigned long long>(begin),
+						static_cast<unsigned long long>(realEnd),
+						static_cast<unsigned long long>(oobEnd),
+						static_cast<unsigned long long>(summary->viewSize));
+				}
 			}
 		}
 	}
@@ -142,6 +159,107 @@ bool DX12ResolveBufferResourceByGpuVa(
 	}
 	return resolved;
 }
+
+static bool FillBufferSummaryFromRecordLocked(
+	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary)
+{
+	if (!summary || gpuVirtualAddress == 0 || size == 0)
+		return false;
+
+	*summary = DX12BufferResourceSummary();
+	const UINT64 requestedEnd = gpuVirtualAddress + size;
+	if (requestedEnd < gpuVirtualAddress)
+		return false;
+
+	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	if (foundBuffer == gBufferResourceByGpuVa.begin())
+		return false;
+	--foundBuffer;
+	if (foundBuffer->second >= gResources.size())
+		return false;
+
+	const ResourceRecord &resource = gResources[foundBuffer->second];
+	const UINT64 begin = resource.gpuVirtualAddress;
+	const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+		resource.gpuVirtualAddressRealEnd : begin + resource.size;
+	const UINT64 oobEnd = resource.gpuVirtualAddressOobEnd ?
+		resource.gpuVirtualAddressOobEnd : realEnd;
+	if (!resource.resource ||
+		resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+		begin == 0 || resource.size == 0 ||
+		gpuVirtualAddress < begin || gpuVirtualAddress >= realEnd)
+		return false;
+
+	summary->resource = resource.resource;
+	summary->resourceDesc = resource.desc;
+	summary->hasResourceDesc = true;
+	summary->gpuVirtualAddress = resource.gpuVirtualAddress;
+	summary->resourceOffset = gpuVirtualAddress - begin;
+	const UINT64 available = realEnd - gpuVirtualAddress;
+	summary->viewSize = size < available ? size : available;
+	if (resource.hasHeapType) {
+		summary->resourceHeapType = static_cast<UINT>(resource.heapType);
+		summary->hasResourceHeapType = true;
+	}
+	summary->currentState = static_cast<UINT>(resource.currentState);
+	summary->hasCurrentState = resource.hasCurrentState;
+	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+	return true;
+}
+
+class DX12BufferResolveDiagnosticsUtils
+{
+public:
+static const char *ReasonLocked(UINT64 gpuVirtualAddress, UINT64 size,
+	UINT64 *nearestBegin, UINT64 *nearestEnd, UINT64 *nearestResource)
+{
+	if (nearestBegin)
+		*nearestBegin = 0;
+	if (nearestEnd)
+		*nearestEnd = 0;
+	if (nearestResource)
+		*nearestResource = 0;
+	if (gpuVirtualAddress == 0)
+		return "zero_gpu_va";
+
+	const UINT64 requestedEnd = gpuVirtualAddress + size;
+	if (requestedEnd < gpuVirtualAddress)
+		return "range_overflow";
+
+	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	if (foundBuffer == gBufferResourceByGpuVa.begin())
+		return "no_lower_buffer";
+	--foundBuffer;
+	if (foundBuffer->second >= gResources.size())
+		return "index_invalid";
+
+	const ResourceRecord &resource = gResources[foundBuffer->second];
+	const UINT64 begin = resource.gpuVirtualAddress;
+	const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+		resource.gpuVirtualAddressRealEnd : begin + resource.size;
+	const UINT64 end = resource.gpuVirtualAddressOobEnd ?
+		resource.gpuVirtualAddressOobEnd : realEnd;
+	if (nearestBegin)
+		*nearestBegin = begin;
+	if (nearestEnd)
+		*nearestEnd = end;
+	if (nearestResource)
+		*nearestResource = reinterpret_cast<UINT64>(resource.resource);
+	if (!resource.resource)
+		return "resource_null";
+	if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		return "not_buffer";
+	if (begin == 0 || resource.size == 0)
+		return "empty_range";
+	if (gpuVirtualAddress < begin)
+		return "before_range";
+	if (requestedEnd > realEnd && gpuVirtualAddress < end)
+		return "after_real_range_oob_candidate";
+	if (requestedEnd > end)
+		return "after_range";
+	return "unknown";
+}
+};
 
 uint32_t DX12HashBufferResourceView(
 	const DX12BufferResourceSummary *summary, UINT64 fallbackGpuVirtualAddress,
@@ -268,6 +386,47 @@ static void CompleteDescriptorSummaryResourceInfo(
 		ReleaseSRWLockShared(&gResourceLock);
 }
 
+static bool CompleteDescriptorSummaryBufferGpuVaInfo(
+	DX12DescriptorSummary *summary, UINT64 gpuVirtualAddress, UINT64 size,
+	bool resourceLockHeld)
+{
+	if (!summary || summary->resource || gpuVirtualAddress == 0 || size == 0)
+		return false;
+
+	DX12BufferResourceSummary resource;
+	const bool resolved = resourceLockHeld ?
+		FillBufferSummaryFromRecordLocked(gpuVirtualAddress, size, &resource) :
+		DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &resource);
+	if (!resolved || !resource.resource || !resource.hasResourceDesc) {
+		// CBV sizes are often aligned or stale relative to the currently tracked
+		// resource extent. Resolve by address first, then clamp the view to the
+		// known buffer range so hunting metadata can still dump the bytes that
+		// actually exist.
+		const bool addressResolved = resourceLockHeld ?
+			FillBufferSummaryFromRecordLocked(gpuVirtualAddress, 1, &resource) :
+			DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, 1, &resource);
+		if (!addressResolved || !resource.resource || !resource.hasResourceDesc)
+			return false;
+		if (resource.resourceDesc.Width > resource.resourceOffset) {
+			const UINT64 available = resource.resourceDesc.Width - resource.resourceOffset;
+			resource.viewSize = size < available ? size : available;
+		}
+	}
+
+	summary->resource = resource.resource;
+	summary->resourceDesc = resource.resourceDesc;
+	summary->hasResourceDesc = resource.hasResourceDesc;
+	summary->resourceHeapType = resource.resourceHeapType;
+	summary->hasResourceHeapType = resource.hasResourceHeapType;
+	summary->gpuVirtualAddress = gpuVirtualAddress;
+	summary->resourceOffset = resource.resourceOffset;
+	summary->viewSize = resource.viewSize ? resource.viewSize : size;
+	summary->currentState = resource.currentState;
+	summary->hasCurrentState = resource.hasCurrentState;
+	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+	return true;
+}
+
 static void FillDescriptorSummary(
 	DX12DescriptorSummary *summary, const DescriptorRecord &record,
 	bool completeResourceInfo = true, bool resourceLockHeld = false)
@@ -295,6 +454,18 @@ static void FillDescriptorSummary(
 
 	if (record.kindId == DescriptorKind::CBV_ID) {
 		summary->cbvSize = record.cbv.SizeInBytes;
+		summary->bufferViewOffset = summary->resourceOffset;
+		summary->bufferViewBytes = summary->viewSize ? summary->viewSize : record.cbv.SizeInBytes;
+		const UINT64 cbvGpuVa = record.cbv.BufferLocation ?
+			record.cbv.BufferLocation : record.gpuVirtualAddress;
+		const UINT64 cbvBytes = record.cbv.SizeInBytes ?
+			record.cbv.SizeInBytes : record.viewSize;
+		if (!summary->resource && cbvGpuVa && cbvBytes) {
+			CompleteDescriptorSummaryBufferGpuVaInfo(
+				summary, cbvGpuVa, cbvBytes, resourceLockHeld);
+			summary->bufferViewOffset = summary->resourceOffset;
+			summary->bufferViewBytes = summary->viewSize;
+		}
 	} else if (record.kindId == DescriptorKind::SRV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.srv.Format);
 		summary->viewDimension = static_cast<UINT>(record.srv.ViewDimension);
@@ -534,13 +705,79 @@ static void BuildResourceMetadataSnapshot(
 	if (descriptors) {
 		descriptors->clear();
 		descriptors->reserve(liveDescriptors.size());
+		size_t copiedBufferDescriptors = 0;
+		size_t copiedCbvBufferDescriptors = 0;
+		size_t copiedSrvBufferDescriptors = 0;
+		size_t copiedUavBufferDescriptors = 0;
+		size_t copiedCbvUnresolvedGpuVaDescriptors = 0;
+		size_t copiedCbvMissingGpuVaDescriptors = 0;
+		size_t copiedCbvMissingSizeDescriptors = 0;
+		size_t cbvResolvedByAddressOnly = 0;
+		size_t cbvAfterRangeMisses = 0;
+		size_t cbvNoLowerBufferMisses = 0;
+		size_t cbvOtherResolveMisses = 0;
+		size_t cbvResolveSamples = 0;
 		for (const DescriptorRecord *recordPtr : liveDescriptors) {
 			DX12DescriptorSummary summary;
 			FillDescriptorSummary(&summary, *recordPtr, true, true);
+			if (summary.hasResourceDesc &&
+				summary.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+				copiedBufferDescriptors++;
+				if (summary.kind == DescriptorKind::CBV) {
+					copiedCbvBufferDescriptors++;
+					if (recordPtr->cbv.SizeInBytes && summary.viewSize &&
+						summary.viewSize < recordPtr->cbv.SizeInBytes)
+						cbvResolvedByAddressOnly++;
+				}
+				else if (summary.kind == DescriptorKind::SRV)
+					copiedSrvBufferDescriptors++;
+				else if (summary.kind == DescriptorKind::UAV)
+					copiedUavBufferDescriptors++;
+			} else if (summary.kind == DescriptorKind::CBV &&
+					summary.gpuVirtualAddress && !summary.resource) {
+				copiedCbvUnresolvedGpuVaDescriptors++;
+				UINT64 nearestBegin = 0;
+				UINT64 nearestEnd = 0;
+				UINT64 nearestResource = 0;
+				const UINT64 cbvSize = summary.cbvSize ? summary.cbvSize : summary.viewSize;
+				const char *reason = DX12BufferResolveDiagnosticsUtils::ReasonLocked(
+					summary.gpuVirtualAddress, cbvSize ? cbvSize : 1,
+					&nearestBegin, &nearestEnd, &nearestResource);
+				if (!strcmp(reason, "after_range"))
+					cbvAfterRangeMisses++;
+				else if (!strcmp(reason, "no_lower_buffer"))
+					cbvNoLowerBufferMisses++;
+				else
+					cbvOtherResolveMisses++;
+				if (cbvResolveSamples < 16) {
+					DX12FrameAnalysis::LogJsonFunc("CBVResolveMissSample",
+						"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"reason\":\"%s\",\"nearestBegin\":\"0x%llX\",\"nearestEnd\":\"0x%llX\",\"nearestResource\":\"0x%llX\",\"bufferIndexSize\":%zu,\"resourceSlots\":%zu",
+						static_cast<unsigned long long>(summary.gpuVirtualAddress),
+						static_cast<unsigned long long>(cbvSize),
+						reason,
+						static_cast<unsigned long long>(nearestBegin),
+						static_cast<unsigned long long>(nearestEnd),
+						static_cast<unsigned long long>(nearestResource),
+						gBufferResourceByGpuVa.size(), gResources.size());
+					cbvResolveSamples++;
+				}
+			} else if (summary.kind == DescriptorKind::CBV && !summary.gpuVirtualAddress) {
+				copiedCbvMissingGpuVaDescriptors++;
+			} else if (summary.kind == DescriptorKind::CBV && !summary.viewSize && !summary.cbvSize) {
+				copiedCbvMissingSizeDescriptors++;
+			}
 			descriptors->push_back(summary);
 		}
 		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotCopied",
 			"\"kind\":\"descriptors\",\"count\":%zu", descriptors->size());
+		DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotDescriptorResources",
+			"\"descriptors\":%zu,\"buffer\":%zu,\"cbvBuffer\":%zu,\"srvBuffer\":%zu,\"uavBuffer\":%zu,\"cbvUnresolvedGpuVa\":%zu,\"cbvMissingGpuVa\":%zu,\"cbvMissingSize\":%zu,\"cbvResolvedByAddressOnly\":%zu,\"cbvAfterRangeMisses\":%zu,\"cbvNoLowerBufferMisses\":%zu,\"cbvOtherResolveMisses\":%zu,\"bufferIndexSize\":%zu",
+			descriptors->size(), copiedBufferDescriptors,
+			copiedCbvBufferDescriptors, copiedSrvBufferDescriptors,
+			copiedUavBufferDescriptors, copiedCbvUnresolvedGpuVaDescriptors,
+			copiedCbvMissingGpuVaDescriptors, copiedCbvMissingSizeDescriptors,
+			cbvResolvedByAddressOnly, cbvAfterRangeMisses, cbvNoLowerBufferMisses,
+			cbvOtherResolveMisses, gBufferResourceByGpuVa.size());
 	}
 
 	if (psoRoots) {
@@ -867,4 +1104,14 @@ void DX12ReleaseTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resour
 		summary.retained = false;
 	}
 	resources->clear();
+}
+
+bool DX12RetainResource(ID3D12Resource *resource)
+{
+	return DX12ResourceSnapshotUtils::TryAddRef(resource);
+}
+
+void DX12ReleaseRetainedResource(ID3D12Resource *resource)
+{
+	DX12ResourceSnapshotUtils::Release(resource);
 }

@@ -68,7 +68,9 @@ public:
 		void **resource,
 		const D3D12_RESOURCE_DESC *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_RESOURCE_STATES initialState);
+	static PlacedResourceInfo MakePlacedResourceInfo(ID3D12Heap *heap, UINT64 heapOffset);
 	static void LogResourceCreateStage(
 		const char *api,
 		const char *stage,
@@ -92,17 +94,20 @@ public:
 		void **resource,
 		const D3D12_RESOURCE_DESC1 *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_RESOURCE_STATES initialState);
 	static void RecordCreatedResourceWithLayout(
 		HRESULT hr,
 		void **resource,
 		const D3D12_RESOURCE_DESC *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_BARRIER_LAYOUT initialLayout);
 	static void RecordCreatedResource1WithLayout(
 		HRESULT hr,
 		void **resource,
 		const D3D12_RESOURCE_DESC1 *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_BARRIER_LAYOUT initialLayout);
 };

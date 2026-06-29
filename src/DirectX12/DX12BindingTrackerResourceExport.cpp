@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "DX12CaptureLedger.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12LogManager.hpp"
@@ -851,12 +852,18 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	if (!bindings)
 		return;
 
-	std::vector<BindingEvent> events;
+	DX12CaptureLedgerSnapshot snapshot;
+	DX12CaptureLedger::GetSnapshot(&snapshot);
+	DX12CaptureLedger::LogSnapshotHealth("BindingResourcesLedgerSnapshot", snapshot);
+	std::vector<BindingEvent> events = snapshot.events;
 	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	events = DX12BindingTrackerState::Events;
+	const size_t frameEvents = DX12BindingTrackerState::Events.size();
+	if (events.empty())
+		events = DX12BindingTrackerState::Events;
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
-		"\"events\":%zu", events.size());
+		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu",
+		events.size(), frameEvents, snapshot.events.size());
 
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
@@ -991,11 +998,21 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	if (!bindings)
 		return;
 
-	std::vector<OutputBindingEvent> events;
+	DX12CaptureLedgerSnapshot snapshot;
+	DX12CaptureLedger::GetSnapshot(&snapshot);
+	std::vector<OutputBindingEvent> events = snapshot.outputEvents;
+	UINT64 dropped = snapshot.droppedOutputEvents;
 	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	events = DX12BindingTrackerState::OutputEvents;
-	const UINT64 dropped = DX12BindingTrackerState::DroppedOutputEvents;
+	const size_t frameOutputEvents = DX12BindingTrackerState::OutputEvents.size();
+	if (events.empty()) {
+		events = DX12BindingTrackerState::OutputEvents;
+		dropped = DX12BindingTrackerState::DroppedOutputEvents;
+	}
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	DX12FrameAnalysis::LogJsonFunc("OutputResourcesLedgerSnapshot",
+		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu,\"dropped\":%llu",
+		events.size(), frameOutputEvents, snapshot.outputEvents.size(),
+		static_cast<unsigned long long>(dropped));
 
 	std::unordered_set<std::string> seen;
 	bindings->clear();
@@ -1152,9 +1169,13 @@ DX12FrameAnalysisDumpResult DX12BindingResourceExport::DumpCurrentFrameResourceT
 		return result;
 	}
 
-	std::vector<BindingEvent> events;
+	DX12CaptureLedgerSnapshot snapshot;
+	DX12CaptureLedger::GetSnapshot(&snapshot);
+	DX12CaptureLedger::LogSnapshotHealth("FrameResourceTableLedgerSnapshot", snapshot);
+	std::vector<BindingEvent> events = snapshot.events;
 	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	events = DX12BindingTrackerState::Events;
+	if (events.empty())
+		events = DX12BindingTrackerState::Events;
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	return DX12BindingResourceExport::WriteFrameResourceFile(dir, events);
 }

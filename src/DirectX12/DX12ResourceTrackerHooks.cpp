@@ -8,7 +8,6 @@
 #include "DX12ResourceTrackerHookRuntime.hpp"
 #include "DX12ResourceTrackerHooks.hpp"
 #include "DX12ResourceTrackerHookState.hpp"
-#include "DX12ResourceTrackerReleaseTrackers.hpp"
 #include "DX12ResourceStateTracker.hpp"
 #include "types/DX12ResourceTrackerPrivateDataGuids.hpp"
 #include "types/DX12ResourceTrackerHookSlotTypes.hpp"
@@ -20,13 +19,7 @@ bool DX12ResourceTrackerHookRuntime::IsInternalReplayActive()
 
 void DX12ResourceTrackerHookRuntime::AttachResourceReleaseTracker(ID3D12Resource *resource)
 {
-	if (!resource)
-		return;
-	DX12ResourceReleaseTracker *releaseTracker = new DX12ResourceReleaseTracker(resource);
-	if (!releaseTracker)
-		return;
-	resource->SetPrivateDataInterface(DX12ResourceTrackerPrivateDataGuids::ResourceReleaseTracker, releaseTracker);
-	releaseTracker->Release();
+	(void)resource;
 }
 
 const D3D12_UNORDERED_ACCESS_VIEW_DESC *DX12ResourceTrackerHookRuntime::PrepareUavDesc(
@@ -143,13 +136,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
 	record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
 	InitializeDescriptorHeapRecord(&record);
-	DX12DescriptorHeapReleaseTracker *releaseTracker =
-		new DX12DescriptorHeapReleaseTracker(descriptorHeap);
-	if (releaseTracker) {
-		descriptorHeap->SetPrivateDataInterface(
-			DX12ResourceTrackerPrivateDataGuids::DescriptorHeapReleaseTracker, releaseTracker);
-		releaseTracker->Release();
-	}
 	descriptorHeap->Release();
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
@@ -179,24 +165,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 	if (FAILED(hr) || !blob || !blobLength || !rootSignature || !*rootSignature)
 		return;
 
-	RootSignatureRecord record;
-	record.rootSignature = static_cast<ID3D12RootSignature*>(*rootSignature);
-	record.hash = Fnv1a64(blob, blobLength);
-	record.size = blobLength;
-	record.nodeMask = nodeMask;
-	ParseRootSignatureBlob(&record, blob, blobLength);
-
-	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gRootSignatureRecordsSeen;
-	auto found = gRootSignatureByPtr.find(record.rootSignature);
-	if (found != gRootSignatureByPtr.end()) {
-		gRootSignatures[found->second] = std::move(record);
-	} else {
-		gRootSignatureByPtr[record.rootSignature] = gRootSignatures.size();
-		gRootSignatures.push_back(std::move(record));
-	}
-	LogResourceTrackerStatsLocked();
-	ReleaseSRWLockExclusive(&gDescriptorLock);
+	DX12ResourceCollectQueue::EnqueueRootSignature(
+		static_cast<ID3D12RootSignature*>(*rootSignature),
+		nodeMask,
+		blob,
+		blobLength,
+		"CreateRootSignature");
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
@@ -387,14 +361,19 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 	void **resource,
 	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
 	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
-		"\"stage\":\"Enter\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"hasDesc\":%u,\"dimension\":%u,\"hasHeap\":%u,\"initialState\":%u",
+		"\"stage\":\"Enter\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"hasDesc\":%u,\"dimension\":%u,\"hasHeap\":%u,\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu,\"initialState\":%u",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), hr, resource,
 		(resource && *resource) ? *resource : nullptr,
 		desc ? 1 : 0, desc ? static_cast<UINT>(desc->Dimension) : 0,
-		heapProperties ? 1 : 0, static_cast<UINT>(initialState));
+		heapProperties ? 1 : 0,
+		(placedInfo && placedInfo->hasPlacedHeap) ? 1 : 0,
+		static_cast<unsigned long long>(placedInfo ? placedInfo->heapOffset : 0),
+		static_cast<unsigned long long>(placedInfo ? placedInfo->heapSize : 0),
+		static_cast<UINT>(initialState));
 	if (FAILED(hr) || !resource || !*resource || !ShouldRecordCreatedResource(desc))
 	{
 		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
@@ -404,31 +383,21 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 			(!FAILED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) ? 1 : 0);
 		return;
 	}
-	ID3D12Resource *d3dResource = nullptr;
 	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
-		"\"stage\":\"QueryInterfaceBegin\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\"",
+		"\"stage\":\"RecordRawResource\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\"",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), *resource);
-	if (FAILED(static_cast<IUnknown*>(*resource)->QueryInterface(IID_PPV_ARGS(&d3dResource))))
-	{
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
-			"\"stage\":\"QueryInterfaceFailed\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\"",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), *resource);
-		return;
-	}
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
-		"\"stage\":\"QueryInterfaceEnd\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\",\"d3dResource\":\"%p\"",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), *resource, d3dResource);
+	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
 	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
 		"\"stage\":\"EnqueueBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
-	if (!DX12ResourceCollectQueue::Enqueue(d3dResource, desc, heapProperties, initialState)) {
+	if (!DX12ResourceCollectQueue::Enqueue(d3dResource, desc, heapProperties, placedInfo, initialState)) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 			"\"event\":\"FallbackInlineRecord\",\"resource\":\"%p\"",
 			d3dResource);
 		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
 			"\"stage\":\"FallbackInlineBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
-		RecordResource(d3dResource, desc, heapProperties, initialState);
+		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
 		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
 			"\"stage\":\"FallbackAttachTrackerBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
@@ -442,12 +411,20 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	}
 	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
-		"\"stage\":\"ReleaseQueryInterfaceBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
-	d3dResource->Release();
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
 		"\"stage\":\"Return\",\"present\":%ld,\"threadId\":%lu",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId());
+}
+
+PlacedResourceInfo DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(
+	ID3D12Heap *heap, UINT64 heapOffset)
+{
+	PlacedResourceInfo info;
+	if (!heap)
+		return info;
+	info.hasPlacedHeap = true;
+	info.heapOffset = heapOffset;
+	info.heapSize = 0;
+	return info;
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
@@ -455,10 +432,11 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
 	void **resource,
 	const D3D12_RESOURCE_DESC1 *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
-	RecordCreatedResource(hr, resource, desc ? &desc0 : nullptr, heapProperties, initialState);
+	RecordCreatedResource(hr, resource, desc ? &desc0 : nullptr, heapProperties, placedInfo, initialState);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
@@ -466,9 +444,10 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
 	void **resource,
 	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_BARRIER_LAYOUT initialLayout)
 {
-	RecordCreatedResource(hr, resource, desc, heapProperties,
+	RecordCreatedResource(hr, resource, desc, heapProperties, placedInfo,
 		DX12ResourceStateTracker::FromBarrierLayout(initialLayout));
 }
 
@@ -477,10 +456,11 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
 	void **resource,
 	const D3D12_RESOURCE_DESC1 *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_BARRIER_LAYOUT initialLayout)
 {
 	D3D12_RESOURCE_DESC desc0 = ResourceDescFromDesc1(desc);
-	RecordCreatedResourceWithLayout(hr, resource, desc ? &desc0 : nullptr, heapProperties, initialLayout);
+	RecordCreatedResourceWithLayout(hr, resource, desc ? &desc0 : nullptr, heapProperties, placedInfo, initialLayout);
 }
 
 HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDescriptorHeap(
@@ -686,7 +666,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, initialState);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, nullptr, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
@@ -714,7 +694,9 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, initialState);
+	const PlacedResourceInfo placedInfo =
+		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, &placedInfo, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
@@ -742,7 +724,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, initialState);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, nullptr, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
@@ -774,7 +756,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, initialState);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, nullptr, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
@@ -802,7 +784,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, initialState);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, nullptr, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
@@ -834,7 +816,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, descToUse, heapProperties, initialState);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, descToUse, heapProperties, nullptr, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
@@ -862,7 +844,9 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, desc, nullptr, initialState);
+	const PlacedResourceInfo placedInfo =
+		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
+	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, desc, nullptr, &placedInfo, initialState);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
@@ -898,7 +882,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 		"ID3D12Device10::CreateCommittedResource3", "OriginalEnd", device, hr,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
 	DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
-		hr, resource, descToUse, heapProperties, initialLayout);
+		hr, resource, descToUse, heapProperties, nullptr, initialLayout);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreateCommittedResource3", "HookReturn", device, hr,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
@@ -929,8 +913,10 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "OriginalEnd", device, hr,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
+	const PlacedResourceInfo placedInfo =
+		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
 	DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
-		hr, resource, desc, nullptr, initialLayout);
+		hr, resource, desc, nullptr, &placedInfo, initialLayout);
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "HookReturn", device, hr,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
@@ -956,7 +942,7 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 		optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
 		riid, resource);
 	DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
-		hr, resource, desc, nullptr, initialLayout);
+		hr, resource, desc, nullptr, nullptr, initialLayout);
 	return hr;
 }
 
@@ -969,7 +955,7 @@ void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 		atexit(CleanupTrackedResources);
 		gCleanupRegistered = true;
 		DX12ResourceCollectQueue::Start();
-		DX12LogManager::Text("Resource metadata tracking retains descriptor resources while Hunting\n");
+		DX12LogManager::Text("DX12 persistent resource and descriptor tracking enabled\n");
 	}
 
 	DX12VTableHook deviceHooks[] = {

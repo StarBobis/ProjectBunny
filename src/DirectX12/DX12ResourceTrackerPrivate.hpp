@@ -94,9 +94,21 @@ struct ResourceRecord
 	bool hasHeapType = false;
 	UINT64 gpuVirtualAddress = 0;
 	UINT64 size = 0;
+	UINT64 gpuVirtualAddressRealEnd = 0;
+	UINT64 gpuVirtualAddressOobEnd = 0;
+	UINT64 placedHeapOffset = 0;
+	UINT64 placedHeapSize = 0;
+	bool hasPlacedHeapRange = false;
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;
 	bool stateTrackedByBarrier = false;
+};
+
+struct PlacedResourceInfo
+{
+	bool hasPlacedHeap = false;
+	UINT64 heapOffset = 0;
+	UINT64 heapSize = 0;
 };
 
 class DX12ResourceSnapshotUtils
@@ -186,7 +198,12 @@ constexpr bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
 }
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc);
 ID3D12Resource *CanonicalResource(ID3D12Resource *resource);
-void RecordResource(ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc, const D3D12_HEAP_PROPERTIES *heapProperties, D3D12_RESOURCE_STATES initialState);
+void RecordResource(
+	ID3D12Resource *resource,
+	const D3D12_RESOURCE_DESC *desc,
+	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
+	D3D12_RESOURCE_STATES initialState);
 void CleanupTrackedResources();
 void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_T blobLength);
 void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);

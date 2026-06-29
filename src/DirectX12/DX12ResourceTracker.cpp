@@ -408,8 +408,10 @@ ID3D12Resource *CanonicalResource(ID3D12Resource *resource)
 }
 
 void RecordResource(
-	ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc,
+	ID3D12Resource *resource,
+	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
 	if (!resource)
@@ -435,20 +437,33 @@ void RecordResource(
 	if (bufferResource) {
 		record.gpuVirtualAddress = resource->GetGPUVirtualAddress();
 		record.size = record.desc.Width;
+		record.gpuVirtualAddressRealEnd = record.gpuVirtualAddress + record.size;
+		record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
+		if (placedInfo && placedInfo->hasPlacedHeap) {
+			record.hasPlacedHeapRange = true;
+			record.placedHeapOffset = placedInfo->heapOffset;
+			record.placedHeapSize = placedInfo->heapSize;
+			if (placedInfo->heapSize > placedInfo->heapOffset)
+				record.gpuVirtualAddressOobEnd =
+					record.gpuVirtualAddress + (placedInfo->heapSize - placedInfo->heapOffset);
+			if (record.gpuVirtualAddressOobEnd < record.gpuVirtualAddressRealEnd)
+				record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
+		}
+		DX12LogManager::JsonFunc("DX12BufferAddressRangeAdded",
+			"\"resource\":\"%p\",\"gpuVa\":\"0x%llX\",\"size\":%llu,\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu",
+			resource,
+			static_cast<unsigned long long>(record.gpuVirtualAddress),
+			static_cast<unsigned long long>(record.size),
+			static_cast<unsigned long long>(record.gpuVirtualAddressRealEnd),
+			static_cast<unsigned long long>(record.gpuVirtualAddressOobEnd),
+			record.hasPlacedHeapRange ? 1 : 0,
+			static_cast<unsigned long long>(record.placedHeapOffset),
+			static_cast<unsigned long long>(record.placedHeapSize));
 	}
 
-	AcquireSRWLockExclusive(&gResourceLock);
 	ID3D12Resource *canonical = resource;
+	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
-	if (found == gResourceByPtr.end()) {
-		// COM identity canonicalization is only needed for uncommon duplicate
-		// wrappers. Avoid paying QueryInterface on every transient resource.
-		ID3D12Resource *identity = CanonicalResource(resource);
-		if (identity != resource) {
-			canonical = identity;
-			found = gResourceByPtr.find(canonical);
-		}
-	}
 	bool gpuVaIndexChanged = false;
 	if (found != gResourceByPtr.end()) {
 		ResourceRecord &existing = gResources[found->second];
@@ -748,16 +763,14 @@ void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource)
 		return;
 
 	record->resource = resource;
-	record->resourceDesc = resource->GetDesc();
-	record->hasResourceDesc = true;
-	if (record->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-		record->gpuVirtualAddress = resource->GetGPUVirtualAddress();
-
-	ID3D12Resource *canonical = CanonicalResource(resource);
 	AcquireSRWLockShared(&gResourceLock);
-	auto found = gResourceByPtr.find(canonical);
+	auto found = gResourceByPtr.find(resource);
 	if (found != gResourceByPtr.end() && found->second < gResources.size()) {
 		const ResourceRecord &resourceRecord = gResources[found->second];
+		record->resourceDesc = resourceRecord.desc;
+		record->hasResourceDesc = true;
+		if (resourceRecord.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+			record->gpuVirtualAddress = resourceRecord.gpuVirtualAddress;
 		if (resourceRecord.hasHeapType) {
 			record->resourceHeapType = static_cast<UINT>(resourceRecord.heapType);
 			record->hasResourceHeapType = true;
@@ -776,12 +789,6 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 
 	record->resource = resource;
 	if (ShouldTrackResourceMetadata()) {
-		record->resource->AddRef();
-		record->ownsResource = true;
-		// Full texture/resource metadata is only needed while dumping. The
-		// normal hot path keeps just enough identity for Mod matching. Hunting
-		// delays readback until FrameAnalysis, so descriptor resources need a
-		// COM reference or transient texture pointers can expire before copy.
 		FillResourceInfo(record, resource);
 	} else {
 		const D3D12_RESOURCE_DESC desc = resource->GetDesc();
@@ -810,16 +817,20 @@ bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 		if (foundBuffer->second < gResources.size()) {
 			const ResourceRecord &resource = gResources[foundBuffer->second];
 			const UINT64 begin = resource.gpuVirtualAddress;
-			const UINT64 end = begin + resource.size;
+			const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+				resource.gpuVirtualAddressRealEnd : begin + resource.size;
+			const UINT64 oobEnd = resource.gpuVirtualAddressOobEnd ?
+				resource.gpuVirtualAddressOobEnd : realEnd;
 			if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
 				begin == 0 || resource.size == 0 ||
-				gpuVa < begin || requestedEnd > end) {
+				gpuVa < begin || gpuVa >= realEnd) {
 				ReleaseSRWLockShared(&gResourceLock);
 				return false;
 			}
 			record->resource = resource.resource;
 			record->resourceOffset = gpuVa - begin;
-			record->viewSize = size;
+			const UINT64 available = realEnd - gpuVa;
+			record->viewSize = (available && size > available) ? available : size;
 			record->gpuVirtualAddress = gpuVa;
 			if (ShouldTrackResourceMetadata()) {
 				record->resourceDesc = resource.desc;
@@ -1447,8 +1458,7 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			!barrier.Transition.pResource)
 			continue;
 
-		ID3D12Resource *canonical = CanonicalResource(barrier.Transition.pResource);
-		auto found = gResourceByPtr.find(canonical);
+		auto found = gResourceByPtr.find(barrier.Transition.pResource);
 		if (found == gResourceByPtr.end() || found->second >= gResources.size())
 			continue;
 

@@ -32,7 +32,16 @@ public:
 				resource.resourceHeapType, resource.hasResourceHeapType))
 			return true;
 
-		return resource.hasCurrentState && resource.stateTrackedByBarrier;
+		return resource.hasCurrentState;
+	}
+
+	static bool DescriptorStateAllowsLiveDiscoveryCopy(const DX12DescriptorSummary &descriptor)
+	{
+		if (HeapTypeAllowsSafeDiscoveryCopy(
+				descriptor.resourceHeapType, descriptor.hasResourceHeapType))
+			return true;
+
+		return descriptor.hasCurrentState;
 	}
 
 	static const char *LiveDiscoveryCopySkipReason(const DX12ResourceSummary &resource)
@@ -44,13 +53,21 @@ public:
 		return "resource_discovery_copy_unsafe";
 	}
 
+	static const char *LiveDiscoveryCopySkipReason(const DX12DescriptorSummary &descriptor)
+	{
+		if (!descriptor.hasCurrentState)
+			return "descriptor_state_unknown";
+		if (!descriptor.stateTrackedByBarrier)
+			return "descriptor_state_create_only";
+		return "descriptor_discovery_copy_unsafe";
+	}
+
 	static bool ResourceDiscoveryBudgetAllows(
 		UINT queuedTasks, UINT64 queuedBytes, UINT64 nextBytes)
 	{
-		if (queuedTasks >= HuntingResourceCopyTaskBudget())
-			return false;
-		if (queuedBytes > HuntingResourceCopyBudgetBytes())
-			return false;
-		return nextBytes <= HuntingResourceCopyBudgetBytes() - queuedBytes;
+		(void)queuedTasks;
+		(void)queuedBytes;
+		(void)nextBytes;
+		return true;
 	}
 };

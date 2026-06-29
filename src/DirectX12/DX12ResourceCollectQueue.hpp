@@ -18,7 +18,8 @@ enum class DX12ResourceCollectTaskKind
 	Resource,
 	Descriptor,
 	DescriptorCopyRange,
-	ResourceBarrier
+	ResourceBarrier,
+	RootSignature
 };
 
 class DX12ResourceCollectTask
@@ -30,6 +31,8 @@ public:
 	bool hasDesc = false;
 	D3D12_HEAP_PROPERTIES heapProperties = {};
 	bool hasHeapProperties = false;
+	PlacedResourceInfo placedInfo = {};
+	bool hasPlacedInfo = false;
 	D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
 	DescriptorRecord descriptor = {};
 	const char *source = nullptr;
@@ -39,6 +42,9 @@ public:
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptorSrcStart = {};
 	UINT descriptorCount = 0;
 	std::vector<D3D12_RESOURCE_BARRIER> barriers;
+	ID3D12RootSignature *rootSignature = nullptr;
+	std::vector<uint8_t> rootSignatureBlob;
+	UINT rootSignatureNodeMask = 0;
 	uint64_t sequence = 0;
 	DWORD enqueueThreadId = 0;
 };
@@ -67,6 +73,7 @@ public:
 		ID3D12Resource *resource,
 		const D3D12_RESOURCE_DESC *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_RESOURCE_STATES initialState);
 	static bool EnqueueDescriptor(DescriptorRecord &&record, const char *source);
 	static bool EnqueueDescriptorCopyRange(
@@ -80,6 +87,12 @@ public:
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers,
 		const char *source);
+	static bool EnqueueRootSignature(
+		ID3D12RootSignature *rootSignature,
+		UINT nodeMask,
+		const void *blob,
+		SIZE_T blobLength,
+		const char *source);
 	static void DrainForSnapshot(const char *reason);
 	static size_t PendingCount();
 
@@ -89,6 +102,7 @@ public:
 		ID3D12Resource *resource,
 		const D3D12_RESOURCE_DESC *desc,
 		const D3D12_HEAP_PROPERTIES *heapProperties,
+		const PlacedResourceInfo *placedInfo,
 		D3D12_RESOURCE_STATES initialState);
 	bool EnqueueDescriptorTask(DescriptorRecord &&record, const char *source);
 	bool EnqueueDescriptorCopyRangeTask(
@@ -102,6 +116,12 @@ public:
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers,
 		const char *source);
+	bool EnqueueRootSignatureTask(
+		ID3D12RootSignature *rootSignature,
+		UINT nodeMask,
+		const void *blob,
+		SIZE_T blobLength,
+		const char *source);
 	void WorkerLoop();
 	void DrainPendingOnCaller(const char *reason);
 	void ProcessTask(DX12ResourceCollectTask *task, const char *source);
@@ -109,11 +129,13 @@ public:
 	void ProcessDescriptorTask(DX12ResourceCollectTask *task, const char *source);
 	void ProcessDescriptorCopyRangeTask(DX12ResourceCollectTask *task, const char *source);
 	void ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source);
+	void ProcessRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
 	bool TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
 	void ReleaseBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
 	void ReleaseTaskResource(DX12ResourceCollectTask *task);
 	void ReleaseTaskDevice(DX12ResourceCollectTask *task);
 	void ReleaseTaskDescriptor(DX12ResourceCollectTask *task);
+	void ReleaseTaskRootSignature(DX12ResourceCollectTask *task);
 	void UpdateMaxDepth(size_t depth);
 	void LogStats(const char *event, uint64_t sequence, size_t depth);
 };

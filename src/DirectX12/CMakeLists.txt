@@ -20,6 +20,7 @@ add_library(DirectX12 SHARED
     DX12ResourceTrackerQueries.cpp
 
     # Binding/descriptor tracking
+    DX12CaptureLedger.cpp
     DX12BindingTracker.cpp
     DX12BindingTrackerFrameExport.cpp
     DX12BindingTrackerResourceExport.cpp

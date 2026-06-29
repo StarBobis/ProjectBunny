@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "DX12CaptureLedger.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
@@ -24,6 +25,59 @@ static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
 static thread_local BindingTlsDescriptorCache tlsGraphicsDescCache;
 static thread_local BindingTlsDescriptorCache tlsComputeDescCache;
+
+void DX12BindingTracker::ReleaseRetainedIaResources(CommandListBindingState *state)
+{
+	if (!state)
+		return;
+	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
+		if (state->vertexBufferResolved[slot] && state->vertexBufferResources[slot].resource) {
+			DX12ReleaseRetainedResource(state->vertexBufferResources[slot].resource);
+			state->vertexBufferResources[slot] = {};
+			state->vertexBufferResolved[slot] = false;
+		}
+	}
+	if (state->indexBufferResolved && state->indexBufferResource.resource) {
+		DX12ReleaseRetainedResource(state->indexBufferResource.resource);
+		state->indexBufferResource = {};
+		state->indexBufferResolved = false;
+	}
+}
+
+void DX12BindingTracker::RetainEventIaResources(BindingEvent *event)
+{
+	if (!event)
+		return;
+	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
+		if (!event->vertexBufferResolved[slot] || !event->vertexBufferResources[slot].resource)
+			continue;
+		if (!DX12RetainResource(event->vertexBufferResources[slot].resource)) {
+			event->vertexBufferResources[slot] = {};
+			event->vertexBufferResolved[slot] = false;
+		}
+	}
+	if (event->indexBufferResolved && event->indexBufferResource.resource &&
+		!DX12RetainResource(event->indexBufferResource.resource)) {
+		event->indexBufferResource = {};
+		event->indexBufferResolved = false;
+	}
+}
+
+void DX12BindingTracker::ReleaseEventIaResources(BindingEvent *event)
+{
+	if (!event)
+		return;
+	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
+		if (event->vertexBufferResolved[slot] && event->vertexBufferResources[slot].resource)
+			DX12ReleaseRetainedResource(event->vertexBufferResources[slot].resource);
+		event->vertexBufferResources[slot] = {};
+		event->vertexBufferResolved[slot] = false;
+	}
+	if (event->indexBufferResolved && event->indexBufferResource.resource)
+		DX12ReleaseRetainedResource(event->indexBufferResource.resource);
+	event->indexBufferResource = {};
+	event->indexBufferResolved = false;
+}
 
 bool DX12BindingTracker::BuildEvent(
 	BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList,
@@ -52,8 +106,12 @@ bool DX12BindingTracker::BuildEvent(
 	memcpy(event->computeRootConstants, state.computeRootConstants, sizeof(event->computeRootConstants));
 	memcpy(event->vertexBuffers, state.vertexBuffers, sizeof(event->vertexBuffers));
 	memcpy(event->vertexBufferValid, state.vertexBufferValid, sizeof(event->vertexBufferValid));
+	memcpy(event->vertexBufferResources, state.vertexBufferResources, sizeof(event->vertexBufferResources));
+	memcpy(event->vertexBufferResolved, state.vertexBufferResolved, sizeof(event->vertexBufferResolved));
 	event->indexBuffer = state.indexBuffer;
 	event->indexBufferValid = state.indexBufferValid;
+	event->indexBufferResource = state.indexBufferResource;
+	event->indexBufferResolved = state.indexBufferResolved;
 	event->primitiveTopology = state.primitiveTopology;
 	if (state.pipelineState) {
 		DX12GetPipelineStateShaderInfo(state.pipelineState, &event->shaderInfo);
@@ -70,12 +128,15 @@ bool DX12BindingTracker::BuildEvent(
 
 void DX12BindingTracker::StoreEventLocked(const BindingEvent &event)
 {
+	BindingEvent stored = event;
+	DX12BindingTracker::RetainEventIaResources(&stored);
+	stored.serial = ++DX12BindingTrackerState::EventSerial;
+	DX12CaptureLedger::RecordEvent(stored);
 	if (DX12BindingTrackerState::Events.size() >= MaxTrackedEvents) {
 		DX12BindingTrackerState::DroppedEvents++;
+		DX12BindingTracker::ReleaseEventIaResources(&stored);
 		return;
 	}
-	BindingEvent stored = event;
-	stored.serial = ++DX12BindingTrackerState::EventSerial;
 	DX12BindingTrackerState::Events.push_back(std::move(stored));
 }
 
@@ -106,11 +167,6 @@ void DX12BindingTracker::StoreOutputEventLocked(
 			existing.dispatchId == dispatchId)
 			return;
 	}
-	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
-		DX12BindingTrackerState::DroppedOutputEvents++;
-		return;
-	}
-
 	OutputBindingEvent event;
 	event.serial = ++DX12BindingTrackerState::OutputEventSerial;
 	event.kind = kind ? kind : "";
@@ -122,6 +178,11 @@ void DX12BindingTracker::StoreOutputEventLocked(
 	event.cpuHandle = cpuHandle;
 	if (state.pipelineState)
 		DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
+	DX12CaptureLedger::RecordOutputEvent(event);
+	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
+		DX12BindingTrackerState::DroppedOutputEvents++;
+		return;
+	}
 	DX12BindingTrackerState::OutputEvents.push_back(event);
 }
 
@@ -158,6 +219,7 @@ void DX12BindingTracker::ResetCommandList(
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
+	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	state = CommandListBindingState();
 	state.pipelineState = initialState;
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -347,12 +409,28 @@ void DX12BindingTracker::SetIndexBuffer(
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
+	if (state.indexBufferResolved && state.indexBufferResource.resource) {
+		DX12ReleaseRetainedResource(state.indexBufferResource.resource);
+		state.indexBufferResource = {};
+		state.indexBufferResolved = false;
+	}
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
+		state.indexBufferResource = {};
+		state.indexBufferResolved = view->BufferLocation != 0 && view->SizeInBytes != 0 &&
+			DX12ResolveBufferResourceByGpuVa(
+				view->BufferLocation, view->SizeInBytes, &state.indexBufferResource);
+		if (state.indexBufferResolved && state.indexBufferResource.resource &&
+			!DX12RetainResource(state.indexBufferResource.resource)) {
+			state.indexBufferResource = {};
+			state.indexBufferResolved = false;
+		}
 	} else {
 		state.indexBuffer = {};
 		state.indexBufferValid = false;
+		state.indexBufferResource = {};
+		state.indexBufferResolved = false;
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
@@ -369,12 +447,29 @@ void DX12BindingTracker::SetVertexBuffers(
 	CommandListBindingState &state = shard.states[commandList];
 	for (UINT i = 0; i < count && startSlot + i < MaxVertexBufferSlots; ++i) {
 		const UINT slot = startSlot + i;
+		if (state.vertexBufferResolved[slot] && state.vertexBufferResources[slot].resource) {
+			DX12ReleaseRetainedResource(state.vertexBufferResources[slot].resource);
+			state.vertexBufferResources[slot] = {};
+			state.vertexBufferResolved[slot] = false;
+		}
 		if (views) {
 			state.vertexBuffers[slot] = views[i];
 			state.vertexBufferValid[slot] = views[i].BufferLocation != 0 && views[i].SizeInBytes != 0;
+			state.vertexBufferResources[slot] = {};
+			state.vertexBufferResolved[slot] = state.vertexBufferValid[slot] &&
+				DX12ResolveBufferResourceByGpuVa(
+					views[i].BufferLocation, views[i].SizeInBytes,
+					&state.vertexBufferResources[slot]);
+			if (state.vertexBufferResolved[slot] && state.vertexBufferResources[slot].resource &&
+				!DX12RetainResource(state.vertexBufferResources[slot].resource)) {
+				state.vertexBufferResources[slot] = {};
+				state.vertexBufferResolved[slot] = false;
+			}
 		} else {
 			state.vertexBuffers[slot] = {};
 			state.vertexBufferValid[slot] = false;
+			state.vertexBufferResources[slot] = {};
+			state.vertexBufferResolved[slot] = false;
 		}
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -533,8 +628,11 @@ bool DX12BindingTracker::GetCurrentIaState(
 		buffer.size = view.SizeInBytes;
 		buffer.stride = view.StrideInBytes;
 		buffer.slot = slot;
-		buffer.resolved = DX12ResolveBufferResourceByGpuVa(
-			buffer.gpuVa, buffer.size, &buffer.resource);
+		buffer.resolved = snapshot.vertexBufferResolved[slot];
+		buffer.resource = snapshot.vertexBufferResources[slot];
+		if (!buffer.resolved)
+			buffer.resolved = DX12ResolveBufferResourceByGpuVa(
+				buffer.gpuVa, buffer.size, &buffer.resource);
 		state->vertexBuffers.push_back(buffer);
 	}
 
@@ -545,8 +643,11 @@ bool DX12BindingTracker::GetCurrentIaState(
 		state->indexBuffer.gpuVa = snapshot.indexBuffer.BufferLocation;
 		state->indexBuffer.size = snapshot.indexBuffer.SizeInBytes;
 		state->indexBuffer.format = static_cast<UINT>(snapshot.indexBuffer.Format);
-		state->indexBuffer.resolved = DX12ResolveBufferResourceByGpuVa(
-			state->indexBuffer.gpuVa, state->indexBuffer.size, &state->indexBuffer.resource);
+		state->indexBuffer.resolved = snapshot.indexBufferResolved;
+		state->indexBuffer.resource = snapshot.indexBufferResource;
+		if (!state->indexBuffer.resolved)
+			state->indexBuffer.resolved = DX12ResolveBufferResourceByGpuVa(
+				state->indexBuffer.gpuVa, state->indexBuffer.size, &state->indexBuffer.resource);
 	}
 
 	return true;
@@ -1014,6 +1115,8 @@ void DX12BindingTracker::RecordDispatch(
 void DX12BindingTracker::BeginFrame()
 {
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	for (BindingEvent &event : DX12BindingTrackerState::Events)
+		DX12BindingTracker::ReleaseEventIaResources(&event);
 	DX12BindingTrackerState::Events.clear();
 	DX12BindingTrackerState::OutputEvents.clear();
 	DX12BindingTrackerState::EventSerial = 0;

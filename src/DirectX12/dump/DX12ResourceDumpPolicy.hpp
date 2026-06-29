@@ -28,11 +28,46 @@ public:
 		}
 
 		if (binding.bindSpace == "hunting_metadata" ||
-			binding.bindSpace == "hunting_resource")
-			return binding.hasDescriptor &&
+			binding.bindSpace == "hunting_resource") {
+			if (binding.bindSpace == "hunting_resource") {
+				const bool isBufferResource =
+					binding.hasDescriptor &&
+					binding.descriptor.resource &&
+					binding.descriptor.hasResourceDesc &&
+					binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+				const bool isTextureResource =
+					binding.hasDescriptor &&
+					binding.descriptor.resource &&
+					binding.descriptor.hasResourceDesc &&
+					IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+				return binding.hasDescriptor &&
+					binding.descriptor.resource &&
+					binding.descriptor.hasResourceDesc &&
+					(isBufferResource || isTextureResource);
+			}
+			const bool isBufferResource =
+				binding.hasDescriptor &&
+				binding.descriptor.resource &&
+				binding.descriptor.hasResourceDesc &&
+				binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+			const bool isTextureResource =
+				binding.hasDescriptor &&
 				binding.descriptor.resource &&
 				binding.descriptor.hasResourceDesc &&
 				IsTextureResourceDimension(binding.descriptor.resourceDesc.Dimension);
+			return binding.hasDescriptor &&
+				binding.descriptor.resource &&
+				binding.descriptor.hasResourceDesc &&
+				((isTextureResource && (
+					binding.descriptor.kind == DescriptorKind::SRV ||
+					binding.descriptor.kind == DescriptorKind::UAV ||
+					binding.descriptor.kind == DescriptorKind::RTV ||
+					binding.descriptor.kind == DescriptorKind::DSV)) ||
+				 (isBufferResource && (
+					binding.descriptor.kind == DescriptorKind::CBV ||
+					binding.descriptor.kind == DescriptorKind::SRV ||
+					binding.descriptor.kind == DescriptorKind::UAV)));
+		}
 
 		const bool isDispatch = binding.dispatchId != 0;
 		const bool isDraw = binding.drawId != 0;

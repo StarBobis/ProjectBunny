@@ -26,9 +26,10 @@ bool DX12ResourceCollectQueue::Enqueue(
 	ID3D12Resource *resource,
 	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
-	return Get().EnqueueTask(resource, desc, heapProperties, initialState);
+	return Get().EnqueueTask(resource, desc, heapProperties, placedInfo, initialState);
 }
 
 bool DX12ResourceCollectQueue::EnqueueDescriptor(DescriptorRecord &&record, const char *source)
@@ -53,6 +54,16 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 	const char *source)
 {
 	return Get().EnqueueResourceBarrierTask(numBarriers, barriers, source);
+}
+
+bool DX12ResourceCollectQueue::EnqueueRootSignature(
+	ID3D12RootSignature *rootSignature,
+	UINT nodeMask,
+	const void *blob,
+	SIZE_T blobLength,
+	const char *source)
+{
+	return Get().EnqueueRootSignatureTask(rootSignature, nodeMask, blob, blobLength, source);
 }
 
 void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
@@ -116,6 +127,7 @@ bool DX12ResourceCollectQueue::EnqueueTask(
 	ID3D12Resource *resource,
 	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
 	if (!resource)
@@ -132,17 +144,12 @@ bool DX12ResourceCollectQueue::EnqueueTask(
 	task.hasHeapProperties = heapProperties != nullptr;
 	if (heapProperties)
 		task.heapProperties = *heapProperties;
+	task.hasPlacedInfo = placedInfo && placedInfo->hasPlacedHeap;
+	if (placedInfo)
+		task.placedInfo = *placedInfo;
 	task.initialState = initialState;
 	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
 	task.enqueueThreadId = GetCurrentThreadId();
-
-	if (!DX12ResourceSnapshotUtils::TryAddRef(resource)) {
-		addRefFailed.fetch_add(1, std::memory_order_relaxed);
-		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-			"\"event\":\"EnqueueAddRefFailed\",\"seq\":%llu,\"resource\":\"%p\"",
-			static_cast<unsigned long long>(task.sequence), resource);
-		return false;
-	}
 
 	size_t depth = 0;
 	{
@@ -264,6 +271,51 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarrierTask(
 	return true;
 }
 
+bool DX12ResourceCollectQueue::EnqueueRootSignatureTask(
+	ID3D12RootSignature *rootSignature,
+	UINT nodeMask,
+	const void *blob,
+	SIZE_T blobLength,
+	const char *source)
+{
+	if (!rootSignature || !blob || blobLength == 0)
+		return false;
+
+	StartWorker();
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::RootSignature;
+	task.rootSignature = rootSignature;
+	task.rootSignature->AddRef();
+	task.rootSignatureNodeMask = nodeMask;
+	task.rootSignatureBlob.assign(
+		static_cast<const uint8_t*>(blob),
+		static_cast<const uint8_t*>(blob) + blobLength);
+	task.source = source;
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	task.enqueueThreadId = GetCurrentThreadId();
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		tasks.push_back(std::move(task));
+		depth = tasks.size();
+	}
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("EnqueueRootSignature", task.sequence, depth);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"EnqueueRootSignatureDetail\",\"seq\":%llu,\"source\":\"%s\",\"rootSignature\":\"%p\",\"blobSize\":%zu,\"nodeMask\":%u,\"enqueueThreadId\":%lu",
+		static_cast<unsigned long long>(task.sequence),
+		source ? source : "",
+		rootSignature,
+		blobLength,
+		nodeMask,
+		task.enqueueThreadId);
+	wake.notify_one();
+	return true;
+}
+
 void DX12ResourceCollectQueue::WorkerLoop()
 {
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
@@ -339,6 +391,9 @@ void DX12ResourceCollectQueue::ProcessTask(DX12ResourceCollectTask *task, const 
 	case DX12ResourceCollectTaskKind::ResourceBarrier:
 		ProcessResourceBarrierTask(task, source);
 		return;
+	case DX12ResourceCollectTaskKind::RootSignature:
+		ProcessRootSignatureTask(task, source);
+		return;
 	default:
 		return;
 	}
@@ -351,12 +406,15 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 
 	const auto begin = std::chrono::steady_clock::now();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessResourceBegin\",\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"hasDesc\":%u,\"hasHeap\":%u,\"initialState\":%u,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		"\"event\":\"ProcessResourceBegin\",\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"hasDesc\":%u,\"hasHeap\":%u,\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu,\"initialState\":%u,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
 		source ? source : "",
 		static_cast<unsigned long long>(task->sequence),
 		task->resource,
 		task->hasDesc ? 1 : 0,
 		task->hasHeapProperties ? 1 : 0,
+		task->hasPlacedInfo ? 1 : 0,
+		static_cast<unsigned long long>(task->placedInfo.heapOffset),
+		static_cast<unsigned long long>(task->placedInfo.heapSize),
 		static_cast<UINT>(task->initialState),
 		task->enqueueThreadId,
 		GetCurrentThreadId());
@@ -365,6 +423,7 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 		task->resource,
 		task->hasDesc ? &task->desc : nullptr,
 		task->hasHeapProperties ? &task->heapProperties : nullptr,
+		task->hasPlacedInfo ? &task->placedInfo : nullptr,
 		task->initialState);
 	DX12ResourceTrackerHookRuntime::AttachResourceReleaseTracker(task->resource);
 
@@ -378,7 +437,7 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 		task->resource,
 		static_cast<long long>(elapsedUs),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
-	ReleaseTaskResource(task);
+	task->resource = nullptr;
 }
 
 void DX12ResourceCollectQueue::ProcessDescriptorTask(DX12ResourceCollectTask *task, const char *source)
@@ -504,6 +563,60 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 	task->barriers.clear();
 }
 
+void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask *task, const char *source)
+{
+	if (!task || !task->rootSignature || task->rootSignatureBlob.empty())
+		return;
+
+	const auto begin = std::chrono::steady_clock::now();
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"ProcessRootSignatureBegin\",\"source\":\"%s\",\"rootSource\":\"%s\",\"seq\":%llu,\"rootSignature\":\"%p\",\"blobSize\":%zu,\"nodeMask\":%u,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		source ? source : "",
+		task->source ? task->source : "",
+		static_cast<unsigned long long>(task->sequence),
+		task->rootSignature,
+		task->rootSignatureBlob.size(),
+		task->rootSignatureNodeMask,
+		task->enqueueThreadId,
+		GetCurrentThreadId());
+
+	RootSignatureRecord record;
+	record.rootSignature = task->rootSignature;
+	record.hash = Fnv1a64(task->rootSignatureBlob.data(), task->rootSignatureBlob.size());
+	record.size = task->rootSignatureBlob.size();
+	record.nodeMask = task->rootSignatureNodeMask;
+	ParseRootSignatureBlob(&record, task->rootSignatureBlob.data(), task->rootSignatureBlob.size());
+	const bool parsed = record.parsed;
+	const size_t parameterCount = record.parameters.size();
+
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	++gRootSignatureRecordsSeen;
+	auto found = gRootSignatureByPtr.find(record.rootSignature);
+	if (found != gRootSignatureByPtr.end()) {
+		gRootSignatures[found->second] = std::move(record);
+	} else {
+		gRootSignatureByPtr[record.rootSignature] = gRootSignatures.size();
+		gRootSignatures.push_back(std::move(record));
+	}
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+
+	const auto end = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	completed.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"ProcessRootSignatureComplete\",\"source\":\"%s\",\"rootSource\":\"%s\",\"seq\":%llu,\"rootSignature\":\"%p\",\"parsed\":%u,\"parameterCount\":%zu,\"elapsedUs\":%lld,\"completed\":%llu",
+		source ? source : "",
+		task->source ? task->source : "",
+		static_cast<unsigned long long>(task->sequence),
+		task->rootSignature,
+		parsed ? 1 : 0,
+		parameterCount,
+		static_cast<long long>(elapsedUs),
+		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
+	ReleaseTaskRootSignature(task);
+}
+
 bool DX12ResourceCollectQueue::TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier)
 {
 	if (!barrier)
@@ -589,6 +702,17 @@ void DX12ResourceCollectQueue::ReleaseTaskDescriptor(DX12ResourceCollectTask *ta
 	if (!task)
 		return;
 	ReleaseDescriptorRecordResources(&task->descriptor);
+}
+
+void DX12ResourceCollectQueue::ReleaseTaskRootSignature(DX12ResourceCollectTask *task)
+{
+	if (!task)
+		return;
+	if (task->rootSignature) {
+		task->rootSignature->Release();
+		task->rootSignature = nullptr;
+	}
+	task->rootSignatureBlob.clear();
 }
 
 void DX12ResourceCollectQueue::UpdateMaxDepth(size_t depth)

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "types/DX12PsoTypes.hpp"
+#include "types/DX12ResourceTypes.hpp"
 
 
 constexpr UINT MaxRootParameters = 64;
@@ -62,8 +63,12 @@ public:
 	RootConstantsState computeRootConstants[MaxRootParameters] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[MaxVertexBufferSlots] = {};
 	bool vertexBufferValid[MaxVertexBufferSlots] = {};
+	DX12BufferResourceSummary vertexBufferResources[MaxVertexBufferSlots] = {};
+	bool vertexBufferResolved[MaxVertexBufferSlots] = {};
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
 	bool indexBufferValid = false;
+	DX12BufferResourceSummary indexBufferResource = {};
+	bool indexBufferResolved = false;
 	D3D12_CPU_DESCRIPTOR_HANDLE renderTargets[MaxRenderTargetSlots] = {};
 	bool renderTargetValid[MaxRenderTargetSlots] = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE depthStencil = {};
@@ -96,8 +101,12 @@ public:
 	RootConstantsState computeRootConstants[MaxRootParameters] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[MaxVertexBufferSlots] = {};
 	bool vertexBufferValid[MaxVertexBufferSlots] = {};
+	DX12BufferResourceSummary vertexBufferResources[MaxVertexBufferSlots] = {};
+	bool vertexBufferResolved[MaxVertexBufferSlots] = {};
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
 	bool indexBufferValid = false;
+	DX12BufferResourceSummary indexBufferResource = {};
+	bool indexBufferResolved = false;
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT vertexCountPerInstance = 0;
 	UINT indexCountPerInstance = 0;

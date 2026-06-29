@@ -10,6 +10,7 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ResourceDumpTypes.hpp"
+#include "DX12ResourceDumpSafetyUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 
 class DX12ResourceDumpCore
@@ -65,7 +66,10 @@ static void GetDedupedDirectory(const wchar_t *dir, wchar_t *path, size_t pathCo
 }
 
 static bool UnsafeResourceCopyEnabled() { return true; }
-static UINT64 FrameReadbackBudgetBytes() { return 0; }
+static UINT64 FrameReadbackBudgetBytes()
+{
+	return 0;
+}
 
 static UINT64 AlignUp(UINT64 value, UINT64 alignment)
 {

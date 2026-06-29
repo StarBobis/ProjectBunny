@@ -29,6 +29,15 @@ static const char *RootDescriptorKindName(UINT rangeType)
 	return "";
 }
 
+static UINT DescriptorRangeTypeFromKind(const std::string &kind)
+{
+	if (kind == DescriptorKind::CBV || kind == DescriptorKind::CONSTANT_BUFFER_VIEW)
+		return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+	if (kind == DescriptorKind::UAV || kind == DescriptorKind::UNORDERED_ACCESS_VIEW)
+		return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+	return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+}
+
 static bool ResourceNeedsBarrier(const DX12DescriptorSummary &descriptor)
 {
 	if (DX12ResourceStateTracker::HeapTypeAllowsDirectCopy(
@@ -309,14 +318,38 @@ static bool PrepareHuntingMetadataTextureTask(
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
-static bool PrepareHuntingResourceTextureTask(
+static bool PrepareHuntingMetadataBufferTask(
+	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
+{
+	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
+		return false;
+	if (!descriptor.resource || !descriptor.hasResourceDesc ||
+		descriptor.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		return false;
+
+	DX12FrameResourceBinding binding;
+	binding.bindSpace = "hunting_metadata";
+	binding.rangeType = DescriptorRangeTypeFromKind(descriptor.kind);
+	binding.descriptor = descriptor;
+	binding.hasDescriptor = true;
+	if (binding.descriptor.kind.empty())
+		binding.descriptor.kind = DescriptorKind::SRV;
+
+	if (!FillDescriptorDumpTask(device, binding, task))
+		return false;
+	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
+}
+
+static bool PrepareHuntingResourceTask(
 	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
 	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
 		return false;
 	if (!resource.resource || !resource.hasResourceDesc ||
-		!DX12ResourceDumpPolicy::IsTextureResourceDimension(resource.resourceDesc.Dimension))
+		(resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER &&
+		 !DX12ResourceDumpPolicy::IsTextureResourceDimension(resource.resourceDesc.Dimension)))
 		return false;
 
 	DX12DescriptorSummary descriptor;
@@ -342,11 +375,22 @@ static bool PrepareHuntingResourceTextureTask(
 		return false;
 	}
 
-	// Created resources may never have had a tracked descriptor. Use the same
-	// copy preparation path after projecting resource identity into a neutral
-	// SRV summary, keeping dump failures isolated per texture.
+	// Created resources may never have had a tracked descriptor. Project them
+	// into a neutral SRV summary so persistent textures and buffers are dumped
+	// from the live resource inventory, independent of current-frame bindings.
+	if (resource.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+		return PrepareHuntingMetadataBufferTask(
+			device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes);
 	return PrepareHuntingMetadataTextureTask(
 		device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes);
+}
+
+static bool PrepareHuntingResourceTextureTask(
+	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
+	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
+{
+	return PrepareHuntingResourceTask(
+		device, resource, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
 static bool PrepareModDescriptorTask(
