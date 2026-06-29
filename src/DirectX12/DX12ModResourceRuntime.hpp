@@ -108,6 +108,118 @@ static ID3D12Device *AcquireModDevice(ID3D12GraphicsCommandList *commandList)
 	return nullptr;
 }
 
+static void BuildLoadedBufferResource(
+	ID3D12Device *device,
+	const std::wstring &name,
+	const Bunny::ResourceConfig &config,
+	const std::wstring &baseDir,
+	DX12ResidentResourceBuildResult *result)
+{
+	if (!result)
+		return;
+	result->name = name;
+	result->resource.name = name;
+	if (!device || name.empty()) {
+		result->resource.failed = true;
+		return;
+	}
+
+	std::vector<unsigned char> bytes;
+	std::wstring path;
+	if (!LoadResourceBytes(config, baseDir, &bytes, &path)) {
+		result->resource.failed = true;
+		result->resource.path = path;
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
+			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
+			config.section.c_str(), path.c_str());
+		wchar_t status[512];
+		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
+			config.section.c_str(), path.c_str());
+		DX12OverlayStatusState::SetWarning(status);
+		return;
+	}
+
+	UINT64 byteWidth = config.hasByteWidth ? config.byteWidth : bytes.size();
+	if (byteWidth < bytes.size())
+		byteWidth = bytes.size();
+	if (byteWidth == 0) {
+		result->resource.failed = true;
+		result->resource.path = path;
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
+			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"empty_resource\",\"path\":\"%S\"",
+			config.section.c_str(), path.c_str());
+		return;
+	}
+
+	D3D12_HEAP_PROPERTIES heap = {};
+	heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+	heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+	heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+	heap.CreationNodeMask = 1;
+	heap.VisibleNodeMask = 1;
+
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	desc.Width = byteWidth;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_UNKNOWN;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	ID3D12Resource *resource = nullptr;
+	HRESULT hr = device->CreateCommittedResource(
+		&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+		nullptr, IID_PPV_ARGS(&resource));
+	if (FAILED(hr) || !resource) {
+		result->resource.failed = true;
+		result->resource.path = path;
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
+			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
+			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
+		wchar_t status[512];
+		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
+			config.section.c_str(), hr);
+		DX12OverlayStatusState::SetError(status);
+		return;
+	}
+
+	void *mapped = nullptr;
+	D3D12_RANGE readRange = {};
+	hr = resource->Map(0, &readRange, &mapped);
+	if (SUCCEEDED(hr) && mapped) {
+		memcpy(mapped, bytes.data(), bytes.size());
+		if (byteWidth > bytes.size())
+			memset(static_cast<unsigned char*>(mapped) + bytes.size(), 0, byteWidth - bytes.size());
+		resource->Unmap(0, nullptr);
+	} else {
+		resource->Release();
+		result->resource.failed = true;
+		result->resource.path = path;
+		DX12LogManager::JsonFunc("DX12ResourceLoad",
+			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
+			config.section.c_str(), hr);
+		wchar_t status[512];
+		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
+			config.section.c_str(), hr);
+		DX12OverlayStatusState::SetError(status);
+		return;
+	}
+
+	result->resource.resource = resource;
+	result->resource.byteWidth = byteWidth;
+	result->resource.stride = config.hasStride ? config.stride : 0;
+	result->resource.format = ParseDx12ResourceFormat(config.format);
+	result->resource.path = path;
+	result->available = true;
+	DX12LogManager::JsonFunc("DX12ResourceLoad",
+		"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
+		config.section.c_str(), name.c_str(), path.c_str(),
+		static_cast<unsigned long long>(byteWidth), result->resource.stride,
+		static_cast<UINT>(result->resource.format));
+}
+
 static bool StoreLoadedResourceResultLocked(
 	const std::wstring &name, UINT64 generation, DX12LoadedResource *loadedResource,
 	ID3D12Resource **discardResource)
@@ -154,124 +266,18 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 	generation = gReloadGeneration;
 	ReleaseSRWLockExclusive(&gModLock);
 
-	std::vector<unsigned char> bytes;
-	std::wstring path;
-	if (!LoadResourceBytes(config, baseDir, &bytes, &path)) {
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
-		ID3D12Resource *discardResource = nullptr;
-		const bool result = StoreLoadedResourceResultLocked(
-			name, generation, &failedResource, &discardResource);
-		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::JsonFunc("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
-			config.section.c_str(), path.c_str());
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
-			config.section.c_str(), path.c_str());
-		DX12OverlayStatusState::SetWarning(status);
-		return result;
-	}
+	DX12ResidentResourceBuildResult result;
+	result.generation = generation;
+	BuildLoadedBufferResource(device, name, config, baseDir, &result);
 
-	UINT64 byteWidth = config.hasByteWidth ? config.byteWidth : bytes.size();
-	if (byteWidth < bytes.size())
-		byteWidth = bytes.size();
-	if (byteWidth == 0)
-		return false;
-
-	D3D12_HEAP_PROPERTIES heap = {};
-	heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-	heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-	heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-	heap.CreationNodeMask = 1;
-	heap.VisibleNodeMask = 1;
-
-	D3D12_RESOURCE_DESC desc = {};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = byteWidth;
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_UNKNOWN;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	ID3D12Resource *resource = nullptr;
-	HRESULT hr = device->CreateCommittedResource(
-		&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr, IID_PPV_ARGS(&resource));
-	if (FAILED(hr) || !resource) {
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
-		ID3D12Resource *discardResource = nullptr;
-		StoreLoadedResourceResultLocked(name, generation, &failedResource, &discardResource);
-		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::JsonFunc("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
-			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
-			config.section.c_str(), hr);
-		DX12OverlayStatusState::SetError(status);
-		return false;
-	}
-
-	void *mapped = nullptr;
-	D3D12_RANGE readRange = {};
-	hr = resource->Map(0, &readRange, &mapped);
-	if (SUCCEEDED(hr) && mapped) {
-		memcpy(mapped, bytes.data(), bytes.size());
-		if (byteWidth > bytes.size())
-			memset(static_cast<unsigned char*>(mapped) + bytes.size(), 0, byteWidth - bytes.size());
-		resource->Unmap(0, nullptr);
-	} else {
-		resource->Release();
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
-		ID3D12Resource *discardResource = nullptr;
-		StoreLoadedResourceResultLocked(name, generation, &failedResource, &discardResource);
-		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::JsonFunc("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
-			config.section.c_str(), hr);
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
-			config.section.c_str(), hr);
-		DX12OverlayStatusState::SetError(status);
-		return false;
-	}
-
-	DX12LoadedResource loadedResource;
-	loadedResource.resource = resource;
-	loadedResource.byteWidth = byteWidth;
-	loadedResource.stride = config.hasStride ? config.stride : 0;
-	loadedResource.format = ParseDx12ResourceFormat(config.format);
-	loadedResource.name = name;
-	loadedResource.path = path;
 	AcquireSRWLockExclusive(&gModLock);
 	ID3D12Resource *discardResource = nullptr;
-	const bool result = StoreLoadedResourceResultLocked(
-		name, generation, &loadedResource, &discardResource);
+	const bool available = StoreLoadedResourceResultLocked(
+		name, generation, &result.resource, &discardResource);
 	ReleaseSRWLockExclusive(&gModLock);
 	if (discardResource)
 		discardResource->Release();
-	if (result) {
-		DX12LogManager::JsonFunc("DX12ResourceLoad",
-			"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
-			config.section.c_str(), name.c_str(), path.c_str(),
-			static_cast<unsigned long long>(byteWidth), loadedResource.stride,
-			static_cast<UINT>(loadedResource.format));
-	}
-	return result;
+	return available;
 }
 
 static DX12LoadedResource *EnsureLoadedResourceLocked(

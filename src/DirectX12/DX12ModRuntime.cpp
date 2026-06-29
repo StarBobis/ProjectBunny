@@ -790,7 +790,6 @@ public:
 };
 
 static std::unordered_map<std::wstring, DX12LoadedResource> gLoadedResources;
-
 class DX12RetiredLoadedResource
 
 {
@@ -802,6 +801,15 @@ public:
 static std::vector<DX12RetiredLoadedResource> gRetiredLoadedResources;
 static constexpr LONG RetiredLoadedResourcePresentDelay = 8;
 static volatile LONG gActiveLoadedResourceSnapshots = 0;
+
+class DX12ResidentResourceBuildResult
+{
+public:
+	std::wstring name;
+	UINT64 generation = 0;
+	DX12LoadedResource resource;
+	bool available = false;
+};
 
 class DX12PreSkinReplacementState
 
