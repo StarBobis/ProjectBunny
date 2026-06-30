@@ -337,24 +337,78 @@ BufferProducer DX12BindingFrameExport::ProducerFromBinding(const DX12FrameResour
 	return producer;
 }
 
+bool DX12BindingFrameExport::IsHuntingUavStateProducer(const BufferProducer &producer)
+{
+	return producer.bindSpace == "hunting_uav_state";
+}
+
+bool DX12BindingFrameExport::ProducerMatchesBuffer(
+	const FlatBufferRow &row, const BufferProducer &producer)
+{
+	if (row.role != "VB" || !row.resolved || !row.resource.resource)
+		return false;
+	if (producer.resource != row.resource.resource)
+		return false;
+	return DX12BindingFrameExport::RangesOverlap(
+		row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin);
+}
+
+bool DX12BindingFrameExport::ProducerIsPreferredForIaBuffer(
+	const BufferProducer &candidate, const BufferProducer *best)
+{
+	if (!best)
+		return true;
+
+	const bool candidateFallback = DX12BindingFrameExport::IsHuntingUavStateProducer(candidate);
+	const bool bestFallback = DX12BindingFrameExport::IsHuntingUavStateProducer(*best);
+	if (candidateFallback != bestFallback)
+		return !candidateFallback;
+
+	if (candidate.eventSerial != best->eventSerial)
+		return candidate.eventSerial > best->eventSerial;
+
+	const bool candidateCompute = candidate.bindSpace == "compute_cbv_srv_uav";
+	const bool bestCompute = best->bindSpace == "compute_cbv_srv_uav";
+	if (candidateCompute != bestCompute)
+		return candidateCompute;
+
+	if (candidate.shaderRegister != UINT_MAX && best->shaderRegister == UINT_MAX)
+		return true;
+	if (candidate.shaderRegister == UINT_MAX && best->shaderRegister != UINT_MAX)
+		return false;
+
+	return false;
+}
+
 const BufferProducer *DX12BindingFrameExport::FindLatestProducerForBuffer(
 	const FlatBufferRow &row, const std::vector<BufferProducer> &producers)
 {
-	if (row.role != "VB" || !row.resolved || !row.resource.resource)
-		return nullptr;
-
 	const BufferProducer *best = nullptr;
 	for (const BufferProducer &producer : producers) {
 		if (producer.eventSerial >= row.eventSerial)
 			continue;
-		if (producer.resource != row.resource.resource)
+		if (DX12BindingFrameExport::IsHuntingUavStateProducer(producer))
 			continue;
-		if (!DX12BindingFrameExport::RangesOverlap(row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin))
+		if (!DX12BindingFrameExport::ProducerMatchesBuffer(row, producer))
 			continue;
-		if (!best || producer.eventSerial > best->eventSerial ||
-				(producer.eventSerial == best->eventSerial &&
-				 producer.bindSpace == "compute_cbv_srv_uav" &&
-				 best->bindSpace != "compute_cbv_srv_uav"))
+		if (DX12BindingFrameExport::ProducerIsPreferredForIaBuffer(producer, best))
+			best = &producer;
+	}
+	return best;
+}
+
+const BufferProducer *DX12BindingFrameExport::FindLatestHuntingUavStateProducerForBuffer(
+	const FlatBufferRow &row, const std::vector<BufferProducer> &producers)
+{
+	const BufferProducer *best = nullptr;
+	for (const BufferProducer &producer : producers) {
+		if (producer.eventSerial >= row.eventSerial)
+			continue;
+		if (!DX12BindingFrameExport::IsHuntingUavStateProducer(producer))
+			continue;
+		if (!DX12BindingFrameExport::ProducerMatchesBuffer(row, producer))
+			continue;
+		if (DX12BindingFrameExport::ProducerIsPreferredForIaBuffer(producer, best))
 			best = &producer;
 	}
 	return best;
@@ -368,22 +422,49 @@ void DX12BindingFrameExport::ClassifyIaBufferSkinning(
 		return;
 
 	std::vector<BufferProducer> producers;
+	size_t computeProducerCount = 0;
+	size_t huntingProducerCount = 0;
+	size_t otherProducerCount = 0;
 	for (const DX12FrameResourceBinding &binding : resourceBindings) {
 		if (!DX12BindingFrameExport::BindingIsUavBufferProducer(binding))
 			continue;
 		BufferProducer producer = DX12BindingFrameExport::ProducerFromBinding(binding);
 		if (producer.begin == producer.end)
 			continue;
+		if (DX12BindingFrameExport::IsHuntingUavStateProducer(producer))
+			huntingProducerCount++;
+		else if (producer.bindSpace == "compute_cbv_srv_uav")
+			computeProducerCount++;
+		else
+			otherProducerCount++;
 		producers.push_back(std::move(producer));
 	}
 
+	size_t vbRows = 0;
+	size_t ibRows = 0;
+	size_t gpuPreskinRows = 0;
+	size_t cpuPreskinRows = 0;
+	size_t unknownRows = 0;
+	size_t notApplicableRows = 0;
+	size_t realProducerRows = 0;
+	size_t huntingFallbackRows = 0;
+	size_t huntingFallbackAvailableButIgnored = 0;
 	for (FlatBufferRow &row : *buffers) {
 		if (row.role != "VB") {
 			row.skinningClass = "not_applicable";
+			notApplicableRows++;
+			ibRows++;
 			continue;
 		}
+		vbRows++;
 
 		const BufferProducer *producer = DX12BindingFrameExport::FindLatestProducerForBuffer(row, producers);
+		const BufferProducer *huntingProducer =
+			DX12BindingFrameExport::FindLatestHuntingUavStateProducerForBuffer(row, producers);
+		if (producer && huntingProducer)
+			huntingFallbackAvailableButIgnored++;
+		if (!producer)
+			producer = huntingProducer;
 		if (producer) {
 			row.skinningClass = "gpu_preskinning";
 			row.producerEventSerial = producer->eventSerial;
@@ -394,12 +475,36 @@ void DX12BindingFrameExport::ClassifyIaBufferSkinning(
 			row.producerBindSpace = producer->bindSpace;
 			row.producerRootParameterIndex = producer->rootParameterIndex;
 			row.producerShaderRegister = producer->shaderRegister;
+			gpuPreskinRows++;
+			if (DX12BindingFrameExport::IsHuntingUavStateProducer(*producer))
+				huntingFallbackRows++;
+			else
+				realProducerRows++;
 		} else if (row.resolved) {
 			row.skinningClass = "cpu_preskinning";
+			cpuPreskinRows++;
 		} else {
 			row.skinningClass = "unknown";
+			unknownRows++;
 		}
 	}
+
+	DX12FrameAnalysis::LogJsonFunc("IaBufferSkinningClassification",
+		"\"buffers\":%zu,\"vb\":%zu,\"ib\":%zu,\"producers\":%zu,\"compute_producers\":%zu,\"hunting_uav_state_producers\":%zu,\"other_producers\":%zu,\"gpu_preskinning\":%zu,\"gpu_preskinning_real_producer\":%zu,\"gpu_preskinning_hunting_fallback\":%zu,\"hunting_fallback_available_but_ignored\":%zu,\"cpu_preskinning\":%zu,\"unknown\":%zu,\"not_applicable\":%zu",
+		buffers->size(),
+		vbRows,
+		ibRows,
+		producers.size(),
+		computeProducerCount,
+		huntingProducerCount,
+		otherProducerCount,
+		gpuPreskinRows,
+		realProducerRows,
+		huntingFallbackRows,
+		huntingFallbackAvailableButIgnored,
+		cpuPreskinRows,
+		unknownRows,
+		notApplicableRows);
 }
 
 DX12FrameIaBufferBinding DX12BindingFrameExport::FrameIaBufferFromFlatRow(const FlatBufferRow &row)

@@ -181,7 +181,11 @@ public:
 	static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSize);
 	static bool BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding);
 	static BufferProducer ProducerFromBinding(const DX12FrameResourceBinding &binding);
+	static bool IsHuntingUavStateProducer(const BufferProducer &producer);
+	static bool ProducerMatchesBuffer(const FlatBufferRow &row, const BufferProducer &producer);
+	static bool ProducerIsPreferredForIaBuffer(const BufferProducer &candidate, const BufferProducer *best);
 	static const BufferProducer *FindLatestProducerForBuffer(const FlatBufferRow &row, const std::vector<BufferProducer> &producers);
+	static const BufferProducer *FindLatestHuntingUavStateProducerForBuffer(const FlatBufferRow &row, const std::vector<BufferProducer> &producers);
 	static void ClassifyIaBufferSkinning(std::vector<FlatBufferRow> *buffers, const std::vector<DX12FrameResourceBinding> &resourceBindings);
 	static DX12FrameIaBufferBinding FrameIaBufferFromFlatRow(const FlatBufferRow &row);
 };
