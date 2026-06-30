@@ -86,6 +86,28 @@ struct DescriptorSlotLocation
 	UINT slot = 0;
 };
 
+class DX12DescriptorSlotArrayUtils
+{
+public:
+static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
+{
+	if (!dest)
+		return;
+	*dest = src;
+	dest->cpuHandle = destCpuHandle;
+	// Descriptor heap slots mirror descriptor values. Ownership stays with the
+	// CPU descriptor ledger/resource tracker, so slot copies do not multiply
+	// COM references.
+	dest->ownsResource = false;
+	dest->ownsCounterResource = false;
+}
+
+static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
+{
+	return dest.valueId == src.valueId && dest.cpuHandle == destCpuHandle;
+}
+};
+
 struct ResourceRecord
 {
 	ID3D12Resource *resource = nullptr;

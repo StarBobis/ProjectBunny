@@ -2,6 +2,12 @@
 
 #include "DX12LogManager.hpp"
 
+DX12DescriptorCollectPipeline &DX12DescriptorCollectPipeline::Get()
+{
+	static DX12DescriptorCollectPipeline pipeline;
+	return pipeline;
+}
+
 void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *source)
 {
 	DX12LogManager::DebugJsonFunc("DX12DescriptorCollectPipeline",
@@ -52,3 +58,67 @@ void DX12DescriptorCollectPipeline::Stop()
 		GetCurrentThreadId());
 }
 
+void DX12DescriptorCollectPipeline::StartWorker()
+{
+}
+
+void DX12DescriptorCollectPipeline::StopWorker()
+{
+}
+
+bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&record, const char *source)
+{
+	RecordDescriptor(std::move(record), source);
+	return true;
+}
+
+bool DX12DescriptorCollectPipeline::EnqueueCopyRangeTask(
+	ID3D12Device *device,
+	D3D12_DESCRIPTOR_HEAP_TYPE type,
+	D3D12_CPU_DESCRIPTOR_HANDLE destStart,
+	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
+	UINT count,
+	const char *source)
+{
+	RecordDescriptorCopyRange(device, type, destStart, srcStart, count, source);
+	return true;
+}
+
+size_t DX12DescriptorCollectPipeline::PendingCount()
+{
+	return 0;
+}
+
+void DX12DescriptorCollectPipeline::WorkerLoop()
+{
+}
+
+void DX12DescriptorCollectPipeline::DrainPendingOnCaller(const char *reason)
+{
+	DrainForSnapshot(reason);
+}
+
+void DX12DescriptorCollectPipeline::ProcessTask(DX12DescriptorCollectTask *task, const char *source)
+{
+	if (!task)
+		return;
+	if (task->kind == DX12DescriptorCollectTaskKind::Descriptor)
+		RecordDescriptor(std::move(task->descriptor), source);
+	else if (task->kind == DX12DescriptorCollectTaskKind::CopyRange)
+		RecordDescriptorCopyRange(task->device, task->type, task->destStart, task->srcStart, task->count, source);
+}
+
+void DX12DescriptorCollectPipeline::ReleaseTask(DX12DescriptorCollectTask *task)
+{
+	if (!task)
+		return;
+	ReleaseDescriptorRecordResources(&task->descriptor);
+}
+
+void DX12DescriptorCollectPipeline::UpdateMaxDepth(size_t)
+{
+}
+
+void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
+{
+}

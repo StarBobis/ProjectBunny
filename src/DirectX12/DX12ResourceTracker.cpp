@@ -163,7 +163,11 @@ static void StoreDescriptorAtHeapSlotLocked(
 	}
 	const bool wasOccupied = DescriptorHeapSlotOccupied(*heap, slot);
 	AppendDescriptorHistoryLocked(heap, slot, record);
-	heap->slots[slot] = std::move(record);
+	DescriptorRecord slotRecord;
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&slotRecord, record, record.cpuHandle);
+	heap->slots[slot] = std::move(slotRecord);
+	ReleaseDescriptorRecordResources(&record);
 	heap->occupied[slot] = 1;
 	if (!wasOccupied)
 		heap->liveSlots++;
@@ -1316,24 +1320,27 @@ static bool CopyDescriptorSlotToSlotLocked(
 		ReleaseDescriptorRecordResources(&ledgerSource);
 		return false;
 	}
+	if (destLocation.slot >= destHeap.slots.size()) {
+		ReleaseDescriptorRecordResources(&ledgerSource);
+		return false;
+	}
 	DescriptorRecord *existing = DescriptorHeapSlot(&destHeap, destLocation.slot);
-	if (existing && existing->valueId == source->valueId &&
-		existing->cpuHandle == destCpuHandle) {
+	if (existing && DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
+			*existing, *source, destCpuHandle)) {
 		ReleaseDescriptorRecordResources(&ledgerSource);
 		++gDescriptorCopyRecordsSeen;
 		return true;
 	}
-
-	DescriptorRecord copied = CloneDescriptorRecord(*source);
-	copied.cpuHandle = destCpuHandle;
-	if (destLocation.slot >= destHeap.slots.size()) {
-		ReleaseDescriptorRecordResources(&copied);
-		ReleaseDescriptorRecordResources(&ledgerSource);
-		return false;
-	}
 	if (existing)
 		ClearDescriptorHeapSlotLocked(&destHeap, destLocation.slot);
-	StoreDescriptorAtHeapSlotLocked(&destHeap, destLocation.slot, std::move(copied));
+	DescriptorRecord historyRecord;
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&historyRecord, *source, destCpuHandle);
+	AppendDescriptorHistoryLocked(&destHeap, destLocation.slot, historyRecord);
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&destHeap.slots[destLocation.slot], *source, destCpuHandle);
+	destHeap.occupied[destLocation.slot] = 1;
+	destHeap.liveSlots++;
 	ReleaseDescriptorRecordResources(&ledgerSource);
 	++gDescriptorCopyRecordsSeen;
 	return true;
