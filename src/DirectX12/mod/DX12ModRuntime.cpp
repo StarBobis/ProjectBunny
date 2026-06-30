@@ -530,6 +530,46 @@ static void StoreActivePreSkinTextureOverrideLocked(
 	}
 	BumpPreSkinActiveGeneration();
 }
+
+bool DX12ModFindActivePreSkinProducerForOutput(
+	ID3D12Resource *outputResource, UINT64 outputByteWidth, UINT outputStride,
+	DX12ModPreSkinProducerSummary *summary)
+{
+	if (summary)
+		*summary = DX12ModPreSkinProducerSummary();
+	if (!outputResource || !summary)
+		return false;
+
+	bool found = false;
+	AcquireSRWLockShared(&gPreSkinLock);
+	for (const auto &item : gActivePreSkinTextureOverrides) {
+		const DX12ActivePreSkinTextureOverride &active = item.second;
+		if (active.outputResource != outputResource)
+			continue;
+		if (outputByteWidth && active.outputByteWidth &&
+		    outputByteWidth != active.outputByteWidth)
+			continue;
+		if (outputStride && active.outputStride &&
+		    outputStride != active.outputStride)
+			continue;
+		summary->rootParameterIndex = active.producer.rootParameterIndex;
+		summary->rangeIndex = active.producer.rangeIndex;
+		summary->shaderRegister = active.producer.shaderRegister;
+		summary->registerSpace = active.producer.registerSpace;
+		summary->descriptorOffset = active.producer.descriptorOffset;
+		summary->rootDescriptor = active.producer.rootDescriptor;
+		summary->gpuVirtualAddress = active.producer.gpuVirtualAddress;
+		summary->descriptor = active.producer.descriptor;
+		summary->hasDescriptor = active.producer.hasDescriptor;
+		summary->outputByteWidth = active.outputByteWidth;
+		summary->outputStride = active.outputStride;
+		found = true;
+		break;
+	}
+	ReleaseSRWLockShared(&gPreSkinLock);
+	return found;
+}
+
 static std::map<std::wstring, LONG> gPreSkinSectionAppliedPresent;
 
 class DX12PreSkinCbvReadCacheKey

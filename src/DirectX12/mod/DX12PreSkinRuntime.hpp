@@ -1514,6 +1514,14 @@ static bool ApplyPreSkinBindingPatchLocked(
 	state.byteWidth = replacement->byteWidth;
 	state.stride = replacement->stride;
 	state.producerSerial = gComputeUavSerial + 1;
+	state.hasActiveTextureOverride =
+		state.resource && state.byteWidth && state.stride &&
+		producer.hasDescriptor && section && section[0];
+	if (state.hasActiveTextureOverride) {
+		state.activeConfig.section = section;
+		state.activeProducer = producer;
+		state.resource->AddRef();
+	}
 	if (descriptorRestores)
 		state.descriptorRestores.swap(*descriptorRestores);
 	AcquireSRWLockExclusive(&gPreSkinLock);

@@ -47,6 +47,26 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
 	bool matched);
+
+class DX12ModPreSkinProducerSummary
+{
+public:
+	UINT rootParameterIndex = 0;
+	UINT rangeIndex = UINT_MAX;
+	UINT shaderRegister = UINT_MAX;
+	UINT registerSpace = 0;
+	UINT descriptorOffset = 0;
+	bool rootDescriptor = false;
+	UINT64 gpuVirtualAddress = 0;
+	DX12DescriptorSummary descriptor;
+	bool hasDescriptor = false;
+	UINT64 outputByteWidth = 0;
+	UINT outputStride = 0;
+};
+bool DX12ModFindActivePreSkinProducerForOutput(
+	ID3D12Resource *outputResource, UINT64 outputByteWidth, UINT outputStride,
+	DX12ModPreSkinProducerSummary *summary);
+
 class DX12ModIaReplacement
 {
 public:

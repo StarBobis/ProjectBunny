@@ -199,6 +199,7 @@ public:
 	static const char *ExpectedBindingKind(const DX12FrameResourceBinding &binding);
 	static bool IsBufferResourceSummary(const DX12ResourceSummary &resource);
 	static void CollectHuntingUavStateResourceUsages(std::vector<DX12FrameResourceBinding> *bindings, const std::vector<BindingEvent> &events);
+	static void CollectActivePreSkinProducerBindings(std::vector<DX12FrameResourceBinding> *bindings);
 	static bool DescriptorBelongsToHeap(const DX12DescriptorSummary &descriptor, const DX12DescriptorHeapSummary &heap, UINT64 *descriptorIndex);
 	static void BuildDescriptorLookup(const std::vector<DX12DescriptorSummary> &descriptors, const std::vector<DX12DescriptorHeapSummary> &heaps, DescriptorLookup *lookup);
 	static const DX12DescriptorSummary *FindDescriptorForSlot(const DescriptorLookup &lookup, const DX12DescriptorHeapSummary *heap, UINT64 descriptorIndex, SIZE_T cpuHandle);

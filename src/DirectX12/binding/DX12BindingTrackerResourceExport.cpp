@@ -13,6 +13,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12LogManager.hpp"
+#include "DX12ModRuntime.hpp"
 #include "DX12RuntimeState.hpp"
 
 bool DX12BindingResourceExport::InsertBindingSeen(
@@ -180,6 +181,88 @@ void DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(
 	DX12FrameAnalysis::LogJsonFunc("HuntingUavStateResourceUsages",
 		"\"resources\":%zu,\"dispatches\":%zu,\"candidates\":%zu,\"emitted\":%zu",
 		resources.size(), dispatches.size(), candidates, emitted);
+}
+
+void DX12BindingResourceExport::CollectActivePreSkinProducerBindings(
+	std::vector<DX12FrameResourceBinding> *bindings)
+{
+	if (!bindings)
+		return;
+
+	size_t candidates = 0;
+	size_t emitted = 0;
+	std::unordered_set<std::string> seen;
+	const size_t initialCount = bindings->size();
+	for (size_t i = 0; i < initialCount; ++i) {
+		const DX12FrameResourceBinding &source = (*bindings)[i];
+		if (source.bindSpace != "hunting_uav_state" ||
+		    source.descriptor.kind != DescriptorKind::UAV ||
+		    !source.hasDescriptor ||
+		    !source.descriptor.resource ||
+		    !source.descriptor.hasResourceDesc ||
+		    source.descriptor.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+			continue;
+		candidates++;
+
+		DX12ModPreSkinProducerSummary producer = {};
+		if (!DX12ModFindActivePreSkinProducerForOutput(
+				source.descriptor.resource, source.descriptor.viewSize, 0, &producer))
+			continue;
+		if (!producer.hasDescriptor ||
+		    producer.descriptor.kind != DescriptorKind::UAV ||
+		    producer.shaderRegister == UINT_MAX)
+			continue;
+
+		char key[128];
+		sprintf_s(key, "%llu|%p|%u|%u|%u|%u",
+			static_cast<unsigned long long>(source.eventSerial),
+			source.descriptor.resource,
+			producer.rootParameterIndex,
+			producer.rangeIndex,
+			producer.shaderRegister,
+			producer.registerSpace);
+		if (!seen.insert(key).second)
+			continue;
+
+		DX12FrameResourceBinding binding = source;
+		binding.bindSpace = "compute_cbv_srv_uav";
+		binding.rootParameterIndex = producer.rootParameterIndex;
+		binding.rangeIndex = producer.rangeIndex;
+		binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+		binding.shaderRegister = producer.shaderRegister;
+		binding.registerSpace = producer.registerSpace;
+		binding.descriptorOffset = producer.descriptorOffset;
+		binding.rootDescriptor = producer.rootDescriptor;
+		binding.gpuVirtualAddress = producer.gpuVirtualAddress;
+		binding.usageClass.clear();
+		binding.usageBegin = 0;
+		binding.usageBytes = 0;
+		binding.descriptor.structureByteStride =
+			producer.outputStride ? producer.outputStride :
+			(source.descriptor.structureByteStride ?
+			 source.descriptor.structureByteStride :
+			 producer.descriptor.structureByteStride);
+		if (!binding.descriptor.structureByteStride && producer.descriptor.numElements)
+			binding.descriptor.structureByteStride =
+				static_cast<UINT>(source.descriptor.viewSize / producer.descriptor.numElements);
+		binding.descriptor.numElements =
+			binding.descriptor.structureByteStride ?
+			static_cast<UINT>(source.descriptor.viewSize / binding.descriptor.structureByteStride) :
+			source.descriptor.numElements;
+		binding.descriptor.bufferViewOffset = 0;
+		binding.descriptor.bufferViewBytes = source.descriptor.viewSize;
+		binding.descriptor.viewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		binding.descriptor.viewSize = source.descriptor.viewSize;
+		binding.descriptor.resourceOffset = source.descriptor.resourceOffset;
+		binding.descriptor.gpuVirtualAddress = source.descriptor.gpuVirtualAddress;
+		binding.hasDescriptor = true;
+		bindings->push_back(std::move(binding));
+		emitted++;
+	}
+
+	DX12FrameAnalysis::LogJsonFunc("ActivePreSkinProducerBindings",
+		"\"candidates\":%zu,\"emitted\":%zu",
+		candidates, emitted);
 }
 
 bool DX12BindingResourceExport::DescriptorBelongsToHeap(
@@ -708,6 +791,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 		}
 	}
 	DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(bindings, events);
+	DX12BindingResourceExport::CollectActivePreSkinProducerBindings(bindings);
 	for (const DX12FrameResourceBinding &binding : *bindings) {
 		const char *expectedKind = DX12BindingResourceExport::ExpectedBindingKind(binding);
 		if (!binding.hasDescriptor) {

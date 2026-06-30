@@ -351,7 +351,10 @@ const BufferProducer *DX12BindingFrameExport::FindLatestProducerForBuffer(
 			continue;
 		if (!DX12BindingFrameExport::RangesOverlap(row.viewGpuVa, row.viewSize, producer.begin, producer.end - producer.begin))
 			continue;
-		if (!best || producer.eventSerial > best->eventSerial)
+		if (!best || producer.eventSerial > best->eventSerial ||
+				(producer.eventSerial == best->eventSerial &&
+				 producer.bindSpace == "compute_cbv_srv_uav" &&
+				 best->bindSpace != "compute_cbv_srv_uav"))
 			best = &producer;
 	}
 	return best;
