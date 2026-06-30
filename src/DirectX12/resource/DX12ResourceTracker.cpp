@@ -41,6 +41,9 @@ UINT64 gRootSignatureRecordsSeen = 0;
 UINT64 gPsoRootRecordsSeen = 0;
 UINT64 gDescriptorEpoch = 0;
 LONG gLastResourceStatsPresent = -1;
+static UINT64 gDescriptorCopySpanFastPathCalls = 0;
+static UINT64 gDescriptorCopySpanFastPathSlots = 0;
+static UINT64 gDescriptorCopySpanFallbackCalls = 0;
 static constexpr LONG kResourceStatsLogInterval = 300;
 
 void LogResourceTrackerStatsLocked();
@@ -1009,6 +1012,7 @@ void LogResourceTrackerStatsLocked()
 		"\"descriptorSlots\":%zu,\"shaderVisibleDescriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,\"descriptorHistoryEntries\":%zu,"
 		"\"descriptorHeapRanges\":%zu,"
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
+		"\"descriptorCopySpanFastPathCalls\":%llu,\"descriptorCopySpanFastPathSlots\":%llu,\"descriptorCopySpanFallbackCalls\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
 		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
 		"\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
@@ -1024,6 +1028,9 @@ void LogResourceTrackerStatsLocked()
 		gDescriptorHeapByCpuStart.size(),
 		static_cast<unsigned long long>(gDescriptorRecordsSeen),
 		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
+		static_cast<unsigned long long>(gDescriptorCopySpanFastPathCalls),
+		static_cast<unsigned long long>(gDescriptorCopySpanFastPathSlots),
+		static_cast<unsigned long long>(gDescriptorCopySpanFallbackCalls),
 		gLiveResourceCount,
 		gResources.size(),
 		gFreeResourceSlots.size(),
@@ -1371,6 +1378,94 @@ static void StoreSlotValueLocked(
 	++gDescriptorCopyRecordsSeen;
 }
 
+static bool SourceHeapSpanReadyLocked(
+	const DescriptorHeapRecord &srcHeap,
+	UINT srcSlot,
+	UINT count)
+{
+	if (count == 0)
+		return false;
+	if (srcSlot >= srcHeap.slots.size() || srcSlot >= srcHeap.occupied.size())
+		return false;
+	if (count > srcHeap.slots.size() - srcSlot ||
+			count > srcHeap.occupied.size() - srcSlot)
+		return false;
+	for (UINT i = 0; i < count; ++i) {
+		if (!DescriptorHeapSlotOccupied(srcHeap, srcSlot + i))
+			return false;
+	}
+	return true;
+}
+
+static void CopySlotSpanValueLocked(
+	DescriptorHeapRecord *destHeap,
+	UINT destSlot,
+	SIZE_T destCpuHandle,
+	const DescriptorRecord &source)
+{
+	if (!destHeap || destSlot >= destHeap->slots.size() ||
+			destSlot >= destHeap->occupied.size())
+		return;
+
+	const bool wasOccupied = DescriptorHeapSlotOccupied(*destHeap, destSlot);
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&destHeap->slots[destSlot], source, destCpuHandle);
+	destHeap->occupied[destSlot] = 1;
+	if (!wasOccupied)
+		destHeap->liveSlots++;
+}
+
+static bool TryCopyHeapSlotSpanLocked(
+	const DescriptorHeapRecord &srcHeap,
+	DescriptorHeapRecord *destHeap,
+	UINT srcSlot,
+	UINT destSlot,
+	SIZE_T destHandle,
+	UINT count,
+	UINT increment)
+{
+	if (!destHeap || count == 0 || increment == 0)
+		return false;
+	if (DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory())
+		return false;
+	if (destSlot >= destHeap->slots.size() ||
+			destSlot >= destHeap->occupied.size() ||
+			count > destHeap->slots.size() - destSlot ||
+			count > destHeap->occupied.size() - destSlot)
+		return false;
+	if (!SourceHeapSpanReadyLocked(srcHeap, srcSlot, count))
+		return false;
+
+	const bool sameHeap = &srcHeap == destHeap;
+	const UINT64 srcBegin = srcSlot;
+	const UINT64 srcEnd = srcBegin + count;
+	const UINT64 destBegin = destSlot;
+	const UINT64 destEnd = destBegin + count;
+	const bool overlap = sameHeap && srcBegin < destEnd && destBegin < srcEnd;
+	std::vector<DescriptorRecord> sourceSnapshot;
+	if (overlap) {
+		sourceSnapshot.resize(count);
+		for (UINT i = 0; i < count; ++i) {
+			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+				&sourceSnapshot[i], srcHeap.slots[srcSlot + i],
+				srcHeap.slots[srcSlot + i].cpuHandle);
+		}
+	}
+
+	for (UINT i = 0; i < count; ++i) {
+		const DescriptorRecord &source = sourceSnapshot.empty() ?
+			srcHeap.slots[srcSlot + i] : sourceSnapshot[i];
+		const SIZE_T currentDestHandle =
+			destHandle + static_cast<SIZE_T>(i) * increment;
+		CopySlotSpanValueLocked(destHeap, destSlot + i, currentDestHandle, source);
+	}
+
+	gDescriptorCopyRecordsSeen += count;
+	gDescriptorCopySpanFastPathCalls++;
+	gDescriptorCopySpanFastPathSlots += count;
+	return true;
+}
+
 static bool CopyHeapRangeLocked(
 	const DescriptorSlotLocation &srcLocation,
 	const DescriptorSlotLocation &destLocation,
@@ -1394,6 +1489,11 @@ static bool CopyHeapRangeLocked(
 	const UINT maxDestCount = destSlotsAvailable < count ?
 		static_cast<UINT>(destSlotsAvailable) : count;
 	const bool appendHistory = DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
+	if (!appendHistory && TryCopyHeapSlotSpanLocked(
+			srcHeap, &destHeap, srcLocation.slot, destLocation.slot,
+			destHandle, maxDestCount, increment))
+		return true;
+	gDescriptorCopySpanFallbackCalls++;
 	const bool overlap = RangesOverlap(srcLocation, destLocation, maxDestCount);
 	std::vector<DescriptorRecord> sourceSnapshot;
 	std::vector<uint8_t> sourceValid;
