@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <d3d12.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <vector>
@@ -47,6 +48,10 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
 bool DX12FindDescriptorSummaryByCpuHandleLight(
 	SIZE_T cpuHandle, DX12DescriptorSummary *summary);
+void DX12FindDescriptorSummariesByCpuHandle(
+	const SIZE_T *cpuHandles, size_t count,
+	DX12DescriptorSummary *summaries, uint8_t *found,
+	bool completeResourceInfo = true);
 UINT64 CurrentDescriptorEpoch();
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary);

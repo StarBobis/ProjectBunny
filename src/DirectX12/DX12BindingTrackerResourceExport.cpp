@@ -1020,6 +1020,10 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	size_t rtv = 0;
 	size_t dsv = 0;
 	size_t untracked = 0;
+	std::vector<OutputBindingEvent> uniqueEvents;
+	std::vector<SIZE_T> cpuHandles;
+	uniqueEvents.reserve(events.size());
+	cpuHandles.reserve(events.size());
 	for (const OutputBindingEvent &event : events) {
 		if (!event.cpuHandle)
 			continue;
@@ -1034,7 +1038,18 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 				(event.drawId || event.dispatchId) ? 0 : event.serial));
 		if (!seen.insert(key).second)
 			continue;
+		uniqueEvents.push_back(event);
+		cpuHandles.push_back(event.cpuHandle);
+	}
 
+	std::vector<DX12DescriptorSummary> descriptorSummaries(uniqueEvents.size());
+	std::vector<uint8_t> descriptorFound(uniqueEvents.size());
+	DX12FindDescriptorSummariesByCpuHandle(
+		cpuHandles.data(), cpuHandles.size(),
+		descriptorSummaries.data(), descriptorFound.data(), true);
+
+	for (size_t i = 0; i < uniqueEvents.size(); ++i) {
+		const OutputBindingEvent &event = uniqueEvents[i];
 		DX12FrameOutputBinding binding;
 		binding.kind = event.kind;
 		binding.eventSerial = event.serial;
@@ -1044,8 +1059,9 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 		binding.shaderInfo = event.shaderInfo;
 		binding.slot = event.slot;
 		binding.cpuHandle = event.cpuHandle;
-		binding.hasDescriptor = DX12FindDescriptorSummaryByCpuHandle(
-			event.cpuHandle, &binding.descriptor);
+		binding.hasDescriptor = descriptorFound[i] != 0;
+		if (binding.hasDescriptor)
+			binding.descriptor = descriptorSummaries[i];
 		if (binding.kind == "RTV")
 			rtv++;
 		else if (binding.kind == "DSV")

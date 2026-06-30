@@ -716,6 +716,10 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 					const UINT64 tableBaseIndex =
 						(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 					const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBaseIndex, range);
+					std::vector<SIZE_T> cpuHandles;
+					std::vector<DX12DescriptorSummary> descriptors;
+					std::vector<uint8_t> found;
+					cpuHandles.reserve(count);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 descriptorIndex =
 							tableBaseIndex + range.effectiveOffset + offset;
@@ -723,10 +727,18 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 							break;
 						const SIZE_T cpuHandle =
 							heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
-						DX12DescriptorSummary descriptor = {};
-						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &descriptor) ||
-							descriptor.kind != descriptorKind)
+						cpuHandles.push_back(cpuHandle);
+					}
+					descriptors.resize(cpuHandles.size());
+					found.resize(cpuHandles.size());
+					DX12FindDescriptorSummariesByCpuHandle(
+						cpuHandles.data(), cpuHandles.size(),
+						descriptors.data(), found.data(), true);
+					for (UINT offset = 0; offset < cpuHandles.size(); ++offset) {
+						if (!found[offset] || descriptors[offset].kind != descriptorKind)
 							continue;
+						const UINT64 descriptorIndex =
+							tableBaseIndex + range.effectiveOffset + offset;
 						DX12CurrentComputeUavBinding binding;
 						binding.rootParameterIndex = root;
 						binding.rangeIndex = range.rangeIndex;
@@ -741,7 +753,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 						binding.tableGpuStart.ptr =
 							heap.gpuStart + tableBaseIndex * heap.increment;
 						binding.tableHeap = heap.heap;
-						binding.descriptor = descriptor;
+						binding.descriptor = descriptors[offset];
 						binding.hasDescriptor = true;
 						uavs->push_back(std::move(binding));
 					}
@@ -887,13 +899,25 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 					else { continue; }
 
 					const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBase, range);
+					std::vector<SIZE_T> cpuHandles;
+					std::vector<DX12DescriptorSummary> descriptors;
+					std::vector<uint8_t> found;
+					cpuHandles.reserve(count);
 					for (UINT offset = 0; offset < count; ++offset) {
 						const UINT64 di = tableBase + range.effectiveOffset + offset;
 						if (di >= heap.numDescriptors) break;
 						const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-						DX12DescriptorSummary desc = {};
-						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc) || desc.kind != kind)
+						cpuHandles.push_back(cpuHandle);
+					}
+					descriptors.resize(cpuHandles.size());
+					found.resize(cpuHandles.size());
+					DX12FindDescriptorSummariesByCpuHandle(
+						cpuHandles.data(), cpuHandles.size(),
+						descriptors.data(), found.data(), true);
+					for (UINT offset = 0; offset < cpuHandles.size(); ++offset) {
+						if (!found[offset] || descriptors[offset].kind != kind)
 							continue;
+						const UINT64 di = tableBase + range.effectiveOffset + offset;
 						DX12CurrentComputeUavBinding b;
 						b.rootParameterIndex = root;
 						b.rangeIndex = range.rangeIndex;
@@ -906,7 +930,7 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 						b.tableCpuStart = heap.cpuStart + static_cast<SIZE_T>(tableBase) * heap.increment;
 						b.tableGpuStart.ptr = heap.gpuStart + tableBase * heap.increment;
 						b.tableHeap = heap.heap;
-						b.descriptor = desc;
+						b.descriptor = descriptors[offset];
 						b.hasDescriptor = true;
 						out->push_back(std::move(b));
 					}

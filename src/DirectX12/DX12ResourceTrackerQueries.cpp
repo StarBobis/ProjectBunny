@@ -434,7 +434,8 @@ static bool CompleteDescriptorSummaryBufferGpuVaInfo(
 
 static void FillDescriptorSummary(
 	DX12DescriptorSummary *summary, const DescriptorRecord &record,
-	bool completeResourceInfo = true, bool resourceLockHeld = false)
+	bool completeResourceInfo = true, bool resourceLockHeld = false,
+	bool completeBufferGpuVaInfo = true)
 {
 	if (!summary)
 		return;
@@ -465,7 +466,7 @@ static void FillDescriptorSummary(
 			record.cbv.BufferLocation : record.gpuVirtualAddress;
 		const UINT64 cbvBytes = record.cbv.SizeInBytes ?
 			record.cbv.SizeInBytes : record.viewSize;
-		if (!summary->resource && cbvGpuVa && cbvBytes) {
+		if (completeBufferGpuVaInfo && !summary->resource && cbvGpuVa && cbvBytes) {
 			CompleteDescriptorSummaryBufferGpuVaInfo(
 				summary, cbvGpuVa, cbvBytes, resourceLockHeld);
 			summary->bufferViewOffset = summary->resourceOffset;
@@ -831,6 +832,15 @@ bool DX12FindDescriptorSummaryByCpuHandle(
 	if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, summary))
 		return false;
 	CompleteDescriptorSummaryResourceInfo(summary, false);
+	if (summary->kind == DescriptorKind::CBV && !summary->resource) {
+		const UINT64 cbvGpuVa = summary->gpuVirtualAddress;
+		const UINT64 cbvBytes = summary->cbvSize ? summary->cbvSize : summary->viewSize;
+		if (cbvGpuVa && cbvBytes) {
+			CompleteDescriptorSummaryBufferGpuVaInfo(summary, cbvGpuVa, cbvBytes, false);
+			summary->bufferViewOffset = summary->resourceOffset;
+			summary->bufferViewBytes = summary->viewSize;
+		}
+	}
 	return true;
 }
 
@@ -866,6 +876,83 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return false;
+}
+
+class DX12DescriptorQueryBatchUtils
+{
+public:
+static bool FillLightSummaryLocked(SIZE_T cpuHandle, DX12DescriptorSummary *summary)
+{
+	if (!cpuHandle || !summary)
+		return false;
+
+	DescriptorSlotLocation location = {};
+	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
+		if (location.heapIndex < gDescriptorHeaps.size()) {
+			const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
+			if (location.slot < heap.occupied.size() &&
+					location.slot < heap.slots.size() &&
+					heap.occupied[location.slot]) {
+				FillDescriptorSummary(summary, heap.slots[location.slot], false, false, false);
+				return true;
+			}
+		}
+	}
+
+	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	if (found != gDescriptorByCpuHandle.end()) {
+		FillDescriptorSummary(summary, found->second, false, false, false);
+		return true;
+	}
+
+	return false;
+}
+
+static void CompleteResourceInfoForFoundSummaries(
+	DX12DescriptorSummary *summaries, const uint8_t *found, size_t count)
+{
+	if (!summaries || !found || count == 0)
+		return;
+
+	AcquireSRWLockShared(&gResourceLock);
+	for (size_t i = 0; i < count; ++i) {
+		if (!found[i])
+			continue;
+		CompleteDescriptorSummaryResourceInfo(&summaries[i], true);
+		const bool isCbv = summaries[i].kind == DescriptorKind::CBV;
+		const UINT64 cbvGpuVa = summaries[i].gpuVirtualAddress;
+		const UINT64 cbvBytes = summaries[i].cbvSize ? summaries[i].cbvSize : summaries[i].viewSize;
+		if (isCbv && !summaries[i].resource && cbvGpuVa && cbvBytes) {
+			CompleteDescriptorSummaryBufferGpuVaInfo(&summaries[i], cbvGpuVa, cbvBytes, true);
+			summaries[i].bufferViewOffset = summaries[i].resourceOffset;
+			summaries[i].bufferViewBytes = summaries[i].viewSize;
+		}
+	}
+	ReleaseSRWLockShared(&gResourceLock);
+}
+};
+
+void DX12FindDescriptorSummariesByCpuHandle(
+	const SIZE_T *cpuHandles, size_t count,
+	DX12DescriptorSummary *summaries, uint8_t *found,
+	bool completeResourceInfo)
+{
+	if (!cpuHandles || !summaries || !found || count == 0)
+		return;
+
+	memset(found, 0, count * sizeof(uint8_t));
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorSummariesBatch");
+	AcquireSRWLockShared(&gDescriptorLock);
+	for (size_t i = 0; i < count; ++i) {
+		summaries[i] = DX12DescriptorSummary();
+		if (DX12DescriptorQueryBatchUtils::FillLightSummaryLocked(cpuHandles[i], &summaries[i]))
+			found[i] = 1;
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+
+	if (completeResourceInfo)
+		DX12DescriptorQueryBatchUtils::CompleteResourceInfoForFoundSummaries(
+			summaries, found, count);
 }
 
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
