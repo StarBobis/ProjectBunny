@@ -80,7 +80,7 @@ void DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 	D3D12_RESOURCE_STATES initialState,
 	void **resource)
 {
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateStage",
+	DX12LogManager::JsonFunc("DX12ResourceCreateStage",
 		"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"threadId\":%lu,"
 		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\","
 		"\"hasDesc\":%u,\"dimension\":%u,\"width\":%llu,\"height\":%u,\"format\":%u,\"flags\":\"0x%llx\","
@@ -364,7 +364,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 		"\"stage\":\"Enter\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"hasDesc\":%u,\"dimension\":%u,\"hasHeap\":%u,\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu,\"initialState\":%u",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), hr, resource,
 		(resource && *resource) ? *resource : nullptr,
@@ -374,43 +374,44 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 		static_cast<unsigned long long>(placedInfo ? placedInfo->heapOffset : 0),
 		static_cast<unsigned long long>(placedInfo ? placedInfo->heapSize : 0),
 		static_cast<UINT>(initialState));
-	if (FAILED(hr) || !resource || !*resource || !ShouldRecordCreatedResource(desc))
+	const bool shouldTrack = !FAILED(hr) && resource && *resource && ShouldRecordCreatedResource(desc);
+	if (!shouldTrack)
 	{
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 			"\"stage\":\"Skip\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"shouldTrack\":%u",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), hr, resource,
 			(resource && *resource) ? *resource : nullptr,
-			(!FAILED(hr) && resource && *resource && ShouldRecordCreatedResource(desc)) ? 1 : 0);
+			shouldTrack ? 1 : 0);
 		return;
 	}
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 		"\"stage\":\"RecordRawResource\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\"",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), *resource);
 	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 		"\"stage\":\"EnqueueBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	if (!DX12ResourceCollectQueue::Enqueue(d3dResource, desc, heapProperties, placedInfo, initialState)) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 			"\"event\":\"FallbackInlineRecord\",\"resource\":\"%p\"",
 			d3dResource);
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 			"\"stage\":\"FallbackInlineBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 			"\"stage\":\"FallbackAttachTrackerBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 		AttachResourceReleaseTracker(d3dResource);
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 			"\"stage\":\"FallbackInlineEnd\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	} else {
-		DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 			"\"stage\":\"EnqueueEnd\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	}
-	DX12LogManager::JsonFuncFlush("DX12ResourceCreateRecord",
+	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
 		"\"stage\":\"Return\",\"present\":%ld,\"threadId\":%lu",
 		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId());
 }
