@@ -62,6 +62,10 @@ public:
 	std::atomic<uint64_t> dropped{0};
 	std::atomic<uint64_t> addRefFailed{0};
 	std::atomic<uint64_t> maxDepth{0};
+	std::atomic<uint64_t> resourceTasksCompleted{0};
+	std::atomic<uint64_t> resourceTasksElapsedUs{0};
+	std::atomic<uint64_t> resourceTasksMaxElapsedUs{0};
+	std::atomic<uint64_t> resourceTaskStatsSerial{0};
 
 	static DX12ResourceCollectQueue &Get();
 	static void Start();
@@ -129,4 +133,5 @@ public:
 	void ReleaseTaskPsoRootSignature(DX12ResourceCollectTask *task);
 	void UpdateMaxDepth(size_t depth);
 	void LogStats(const char *event, uint64_t sequence, size_t depth);
+	void RecordResourceTaskStats(DX12ResourceCollectTask *task, const char *source, int64_t elapsedUs);
 };

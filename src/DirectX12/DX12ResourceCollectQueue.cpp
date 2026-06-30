@@ -6,6 +6,9 @@
 #include "DX12ResourceTrackerHookRuntime.hpp"
 #include "DX12ResourceTrackerPrivate.hpp"
 
+static constexpr uint64_t kResourceQueueStatsInterval = 4096;
+static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
+
 DX12ResourceCollectQueue &DX12ResourceCollectQueue::Get()
 {
 	static DX12ResourceCollectQueue queue;
@@ -153,7 +156,7 @@ bool DX12ResourceCollectQueue::EnqueueTask(
 	}
 	enqueued.fetch_add(1, std::memory_order_relaxed);
 	UpdateMaxDepth(depth);
-	LogStats("Enqueue", task.sequence, depth);
+	LogStats("EnqueueResource", task.sequence, depth);
 	wake.notify_one();
 	return true;
 }
@@ -320,7 +323,8 @@ void DX12ResourceCollectQueue::WorkerLoop()
 			depthAfterPop = tasks.size();
 		}
 		dequeued.fetch_add(1, std::memory_order_relaxed);
-		LogStats("Dequeue", task.sequence, depthAfterPop);
+		if (depthAfterPop > 0)
+			LogStats("DequeueNonEmpty", task.sequence, depthAfterPop);
 		ProcessTask(&task, "Worker");
 	}
 
@@ -344,11 +348,8 @@ void DX12ResourceCollectQueue::DrainPendingOnCaller(const char *reason)
 			depthAfterPop = tasks.size();
 		}
 		dequeued.fetch_add(1, std::memory_order_relaxed);
-		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-			"\"event\":\"DrainPop\",\"reason\":\"%s\",\"seq\":%llu,\"pending\":%zu",
-			reason ? reason : "",
-			static_cast<unsigned long long>(task.sequence),
-			depthAfterPop);
+		if (depthAfterPop > 0)
+			LogStats(reason ? reason : "Drain", task.sequence, depthAfterPop);
 		ProcessTask(&task, reason ? reason : "Drain");
 	}
 }
@@ -382,20 +383,6 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 		return;
 
 	const auto begin = std::chrono::steady_clock::now();
-	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessResourceBegin\",\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"hasDesc\":%u,\"hasHeap\":%u,\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu,\"initialState\":%u,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
-		source ? source : "",
-		static_cast<unsigned long long>(task->sequence),
-		task->resource,
-		task->hasDesc ? 1 : 0,
-		task->hasHeapProperties ? 1 : 0,
-		task->hasPlacedInfo ? 1 : 0,
-		static_cast<unsigned long long>(task->placedInfo.heapOffset),
-		static_cast<unsigned long long>(task->placedInfo.heapSize),
-		static_cast<UINT>(task->initialState),
-		task->enqueueThreadId,
-		GetCurrentThreadId());
-
 	RecordResource(
 		task->resource,
 		task->hasDesc ? &task->desc : nullptr,
@@ -407,13 +394,7 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	completed.fetch_add(1, std::memory_order_relaxed);
-	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessResourceComplete\",\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"elapsedUs\":%lld,\"completed\":%llu",
-		source ? source : "",
-		static_cast<unsigned long long>(task->sequence),
-		task->resource,
-		static_cast<long long>(elapsedUs),
-		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
+	RecordResourceTaskStats(task, source, static_cast<int64_t>(elapsedUs));
 	task->resource = nullptr;
 }
 
@@ -652,11 +633,56 @@ void DX12ResourceCollectQueue::UpdateMaxDepth(size_t depth)
 
 void DX12ResourceCollectQueue::LogStats(const char *event, uint64_t sequence, size_t depth)
 {
+	const uint64_t serial = resourceTaskStatsSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (sequence != 0 && depth < 1024 && serial % kResourceQueueStatsInterval != 0)
+		return;
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"%s\",\"seq\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu",
 		event ? event : "",
 		static_cast<unsigned long long>(sequence),
 		depth,
+		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)));
+}
+
+void DX12ResourceCollectQueue::RecordResourceTaskStats(
+	DX12ResourceCollectTask *task, const char *source, int64_t elapsedUs)
+{
+	const uint64_t count = resourceTasksCompleted.fetch_add(1, std::memory_order_relaxed) + 1;
+	resourceTasksElapsedUs.fetch_add(elapsedUs > 0 ? static_cast<uint64_t>(elapsedUs) : 0,
+		std::memory_order_relaxed);
+	uint64_t currentMax = resourceTasksMaxElapsedUs.load(std::memory_order_relaxed);
+	while (elapsedUs > 0 && static_cast<uint64_t>(elapsedUs) > currentMax &&
+		!resourceTasksMaxElapsedUs.compare_exchange_weak(
+			currentMax, static_cast<uint64_t>(elapsedUs), std::memory_order_relaxed)) {
+	}
+
+	if (elapsedUs >= kResourceQueueSlowTaskUs) {
+		DX12LogManager::JsonFunc("DX12ResourceCollectQueueSlowResource",
+			"\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"elapsedUs\":%lld,\"completed\":%llu,\"pending\":%zu",
+			source ? source : "",
+			static_cast<unsigned long long>(task ? task->sequence : 0),
+			task ? task->resource : nullptr,
+			static_cast<long long>(elapsedUs),
+			static_cast<unsigned long long>(count),
+			PendingCount());
+		return;
+	}
+
+	if (count % kResourceQueueStatsInterval != 0)
+		return;
+
+	const uint64_t totalUs = resourceTasksElapsedUs.load(std::memory_order_relaxed);
+	const uint64_t maxUs = resourceTasksMaxElapsedUs.load(std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueueStats",
+		"\"resourceCompleted\":%llu,\"resourceElapsedUs\":%llu,\"resourceAvgUs\":%llu,\"resourceMaxUs\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu",
+		static_cast<unsigned long long>(count),
+		static_cast<unsigned long long>(totalUs),
+		static_cast<unsigned long long>(count ? totalUs / count : 0),
+		static_cast<unsigned long long>(maxUs),
+		PendingCount(),
 		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),

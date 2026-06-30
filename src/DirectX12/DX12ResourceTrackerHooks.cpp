@@ -13,6 +13,90 @@
 #include "types/DX12ResourceTrackerPrivateDataGuids.hpp"
 #include "types/DX12ResourceTrackerHookSlotTypes.hpp"
 
+class DX12ResourceCreateLogUtils
+{
+public:
+	inline static volatile LONG64 StageCalls = 0;
+	inline static volatile LONG64 RecordCalls = 0;
+	inline static volatile LONG64 RecordTracked = 0;
+	inline static volatile LONG64 RecordSkipped = 0;
+	static constexpr LONG64 StatsInterval = 4096;
+
+	static bool ShouldLogSample(LONG64 value)
+	{
+		return value <= 8 || (value % StatsInterval) == 0;
+	}
+
+	static void LogStage(
+		const char *api,
+		const char *stage,
+		ID3D12Device *device,
+		HRESULT hr,
+		const D3D12_RESOURCE_DESC *desc,
+		const D3D12_HEAP_PROPERTIES *heapProperties,
+		D3D12_RESOURCE_STATES initialState,
+		void **resource)
+	{
+		const LONG64 calls = InterlockedIncrement64(&StageCalls);
+		if (SUCCEEDED(hr) && !ShouldLogSample(calls))
+			return;
+		DX12LogManager::JsonFunc("DX12ResourceCreateStage",
+			"\"api\":\"%s\",\"stage\":\"%s\",\"stageCalls\":%lld,\"present\":%ld,\"threadId\":%lu,"
+			"\"device\":\"%p\",\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\","
+			"\"hasDesc\":%u,\"dimension\":%u,\"width\":%llu,\"height\":%u,\"format\":%u,\"flags\":\"0x%llx\","
+			"\"hasHeap\":%u,\"heapType\":%u,\"initialState\":%u,\"skipAll\":%ld",
+			api ? api : "",
+			stage ? stage : "",
+			static_cast<long long>(calls),
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId(),
+			device,
+			hr,
+			resource,
+			(resource && *resource) ? *resource : nullptr,
+			desc ? 1 : 0,
+			desc ? static_cast<UINT>(desc->Dimension) : 0,
+			desc ? static_cast<unsigned long long>(desc->Width) : 0,
+			desc ? desc->Height : 0,
+			desc ? static_cast<UINT>(desc->Format) : 0,
+			desc ? static_cast<unsigned long long>(desc->Flags) : 0,
+			heapProperties ? 1 : 0,
+			heapProperties ? static_cast<UINT>(heapProperties->Type) : 0,
+			static_cast<UINT>(initialState),
+			DX12HotPathState::Get().skipAll);
+	}
+
+	static void LogRecordStats(const char *stage, HRESULT hr, void **resource, bool shouldTrack)
+	{
+		const LONG64 calls = InterlockedIncrement64(&RecordCalls);
+		if (shouldTrack)
+			InterlockedIncrement64(&RecordTracked);
+		else
+			InterlockedIncrement64(&RecordSkipped);
+		if (SUCCEEDED(hr) && shouldTrack && !ShouldLogSample(calls))
+			return;
+		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
+			"\"stage\":\"%s\",\"recordCalls\":%lld,\"tracked\":%lld,\"skipped\":%lld,\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"shouldTrack\":%u",
+			stage ? stage : "",
+			static_cast<long long>(calls),
+			static_cast<long long>(InterlockedCompareExchange64(&RecordTracked, 0, 0)),
+			static_cast<long long>(InterlockedCompareExchange64(&RecordSkipped, 0, 0)),
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId(),
+			hr,
+			resource,
+			(resource && *resource) ? *resource : nullptr,
+			shouldTrack ? 1 : 0);
+	}
+
+	static void LogFallback(ID3D12Resource *resource)
+	{
+		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+			"\"event\":\"FallbackInlineRecord\",\"resource\":\"%p\"",
+			resource);
+	}
+};
+
 bool DX12ResourceTrackerHookRuntime::IsInternalReplayActive()
 {
 	return DX12InternalReplayState::IsActive();
@@ -81,29 +165,8 @@ void DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 	D3D12_RESOURCE_STATES initialState,
 	void **resource)
 {
-	DX12LogManager::JsonFunc("DX12ResourceCreateStage",
-		"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"threadId\":%lu,"
-		"\"device\":\"%p\",\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\","
-		"\"hasDesc\":%u,\"dimension\":%u,\"width\":%llu,\"height\":%u,\"format\":%u,\"flags\":\"0x%llx\","
-		"\"hasHeap\":%u,\"heapType\":%u,\"initialState\":%u,\"skipAll\":%ld",
-		api ? api : "",
-		stage ? stage : "",
-		DX12RuntimeState::GetPresentCount(),
-		GetCurrentThreadId(),
-		device,
-		hr,
-		resource,
-		(resource && *resource) ? *resource : nullptr,
-		desc ? 1 : 0,
-		desc ? static_cast<UINT>(desc->Dimension) : 0,
-		desc ? static_cast<unsigned long long>(desc->Width) : 0,
-		desc ? desc->Height : 0,
-		desc ? static_cast<UINT>(desc->Format) : 0,
-		desc ? static_cast<unsigned long long>(desc->Flags) : 0,
-		heapProperties ? 1 : 0,
-		heapProperties ? static_cast<UINT>(heapProperties->Type) : 0,
-		static_cast<UINT>(initialState),
-		DX12HotPathState::Get().skipAll);
+	DX12ResourceCreateLogUtils::LogStage(
+		api, stage, device, hr, desc, heapProperties, initialState, resource);
 }
 
 void DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
@@ -367,56 +430,18 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
-	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-		"\"stage\":\"Enter\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"hasDesc\":%u,\"dimension\":%u,\"hasHeap\":%u,\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu,\"initialState\":%u",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), hr, resource,
-		(resource && *resource) ? *resource : nullptr,
-		desc ? 1 : 0, desc ? static_cast<UINT>(desc->Dimension) : 0,
-		heapProperties ? 1 : 0,
-		(placedInfo && placedInfo->hasPlacedHeap) ? 1 : 0,
-		static_cast<unsigned long long>(placedInfo ? placedInfo->heapOffset : 0),
-		static_cast<unsigned long long>(placedInfo ? placedInfo->heapSize : 0),
-		static_cast<UINT>(initialState));
 	const bool shouldTrack = !FAILED(hr) && resource && *resource && ShouldRecordCreatedResource(desc);
+	DX12ResourceCreateLogUtils::LogRecordStats("Record", hr, resource, shouldTrack);
 	if (!shouldTrack)
 	{
-		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"Skip\",\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"shouldTrack\":%u",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), hr, resource,
-			(resource && *resource) ? *resource : nullptr,
-			shouldTrack ? 1 : 0);
 		return;
 	}
-	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-		"\"stage\":\"RecordRawResource\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\"",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), *resource);
 	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
-	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-		"\"stage\":\"EnqueueBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	if (!DX12ResourceCollectQueue::Enqueue(d3dResource, desc, heapProperties, placedInfo, initialState)) {
-		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-			"\"event\":\"FallbackInlineRecord\",\"resource\":\"%p\"",
-			d3dResource);
-		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"FallbackInlineBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
+		DX12ResourceCreateLogUtils::LogFallback(d3dResource);
 		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
-		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"FallbackAttachTrackerBegin\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 		AttachResourceReleaseTracker(d3dResource);
-		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"FallbackInlineEnd\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
-	} else {
-		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"EnqueueEnd\",\"present\":%ld,\"threadId\":%lu,\"d3dResource\":\"%p\"",
-			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), d3dResource);
 	}
-	DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-		"\"stage\":\"Return\",\"present\":%ld,\"threadId\":%lu",
-		DX12RuntimeState::GetPresentCount(), GetCurrentThreadId());
 }
 
 PlacedResourceInfo DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(
