@@ -27,14 +27,12 @@ public:
 	{
 		DX12FrameAnalysisState::Get().RequestCapture();
 		DX12HotPathState::Update();
-		DX12PrimeDescriptorHistoryForHunting();
 	}
 
 	static void BeginCapture()
 	{
 		DX12FrameAnalysisState::Get().BeginCapture();
 		DX12HotPathState::Update();
-		DX12PrimeDescriptorHistoryForHunting();
 	}
 
 	static bool EndCapture()

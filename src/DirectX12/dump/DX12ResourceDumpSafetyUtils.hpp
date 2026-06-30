@@ -10,12 +10,47 @@ class DX12ResourceDumpSafetyUtils
 public:
 	static UINT64 HuntingResourceCopyBudgetBytes()
 	{
-		return 384ull * 1024ull * 1024ull;
+		return 128ull * 1024ull * 1024ull;
 	}
 
 	static UINT HuntingResourceCopyTaskBudget()
 	{
 		return 1024;
+	}
+
+	static UINT64 MetadataTextureCopyBudgetBytes()
+	{
+		return 192ull * 1024ull * 1024ull;
+	}
+
+	static UINT MetadataTextureCopyTaskBudget()
+	{
+		return 512;
+	}
+
+	static UINT64 MetadataSrvUavBufferCopyBudgetBytes()
+	{
+		return 128ull * 1024ull * 1024ull;
+	}
+
+	static UINT MetadataSrvUavBufferCopyTaskBudget()
+	{
+		return 1024;
+	}
+
+	static UINT64 MetadataCbvBufferCopyBudgetBytes()
+	{
+		return 64ull * 1024ull * 1024ull;
+	}
+
+	static UINT MetadataCbvBufferCopyTaskBudget()
+	{
+		return 512;
+	}
+
+	static bool EnableTrackedResourceInventoryDiscovery()
+	{
+		return false;
 	}
 
 	static bool HeapTypeAllowsSafeDiscoveryCopy(UINT heapType, bool hasHeapType)
@@ -65,9 +100,21 @@ public:
 	static bool ResourceDiscoveryBudgetAllows(
 		UINT queuedTasks, UINT64 queuedBytes, UINT64 nextBytes)
 	{
-		(void)queuedTasks;
-		(void)queuedBytes;
-		(void)nextBytes;
+		return DiscoveryBudgetAllows(
+			queuedTasks, queuedBytes, nextBytes,
+			HuntingResourceCopyTaskBudget(),
+			HuntingResourceCopyBudgetBytes());
+	}
+
+	static bool DiscoveryBudgetAllows(
+		UINT queuedTasks, UINT64 queuedBytes, UINT64 nextBytes,
+		UINT taskBudget, UINT64 byteBudget)
+	{
+		if (taskBudget > 0 && queuedTasks >= taskBudget)
+			return false;
+		if (byteBudget > 0 &&
+			(queuedBytes > byteBudget || nextBytes > byteBudget - queuedBytes))
+			return false;
 		return true;
 	}
 };

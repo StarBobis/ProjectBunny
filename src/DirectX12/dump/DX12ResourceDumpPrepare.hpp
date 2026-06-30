@@ -127,6 +127,20 @@ static bool CreateReadbackForTask(
 	return true;
 }
 
+static bool RetainTaskSource(DumpTask *task)
+{
+	if (!task || !task->source)
+		return false;
+	if (task->sourceRetained)
+		return true;
+	if (!DX12RetainResource(task->source)) {
+		task->skipNote = "source_retain_failed";
+		return false;
+	}
+	task->sourceRetained = true;
+	return true;
+}
+
 static bool PrepareDirectMapTask(DumpTask *task)
 {
 	if (!task || !task->source)
@@ -281,6 +295,8 @@ static bool PrepareHuntingDescriptorTask(
 {
 	if (!FillDescriptorDumpTask(device, binding, task))
 		return false;
+	if (!RetainTaskSource(task))
+		return false;
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
@@ -290,6 +306,8 @@ static bool PrepareHuntingIaBufferTask(
 {
 	if (!device || !FillIaDumpTask(buffer, task))
 		return false;
+	if (!RetainTaskSource(task))
+		return false;
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
@@ -297,7 +315,7 @@ static bool PrepareHuntingMetadataTextureTask(
 	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
+	if (!device || !task)
 		return false;
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
 		!DX12ResourceDumpPolicy::IsTextureResourceDimension(descriptor.resourceDesc.Dimension))
@@ -313,6 +331,8 @@ static bool PrepareHuntingMetadataTextureTask(
 
 	if (!FillDescriptorDumpTask(device, binding, task))
 		return false;
+	if (!RetainTaskSource(task))
+		return false;
 	// Hunting is resource-discovery oriented: metadata texture descriptors must
 	// not depend on a draw event using the descriptor table in the captured frame.
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
@@ -322,7 +342,7 @@ static bool PrepareHuntingMetadataBufferTask(
 	ID3D12Device *device, const DX12DescriptorSummary &descriptor, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
+	if (!device || !task)
 		return false;
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
 		descriptor.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
@@ -338,6 +358,8 @@ static bool PrepareHuntingMetadataBufferTask(
 
 	if (!FillDescriptorDumpTask(device, binding, task))
 		return false;
+	if (!RetainTaskSource(task))
+		return false;
 	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
@@ -345,7 +367,7 @@ static bool PrepareHuntingResourceTask(
 	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
-	if (!device || !task || !DX12RuntimeState::IsHuntingMode())
+	if (!device || !task)
 		return false;
 	if (!resource.resource || !resource.hasResourceDesc ||
 		(resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER &&
@@ -399,6 +421,8 @@ static bool PrepareModDescriptorTask(
 {
 	if (!FillDescriptorDumpTask(device, binding, task))
 		return false;
+	if (!RetainTaskSource(task))
+		return false;
 	if (GpuResourceCopyEnabled())
 		return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 	if (ResourceIsCpuVisible(task->binding.descriptor))
@@ -412,6 +436,8 @@ static bool PrepareModIaBufferTask(
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
 {
 	if (!device || !FillIaDumpTask(buffer, task))
+		return false;
+	if (!RetainTaskSource(task))
 		return false;
 	if (GpuResourceCopyEnabled())
 		return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
@@ -447,18 +473,28 @@ static bool PrepareIaBufferTaskForCurrentMode(
 	return false;
 }
 
+static void ReleaseTask(DumpTask *task)
+{
+	if (!task)
+		return;
+	if (task->keepReadbackAlive)
+		return;
+	if (task->sourceRetained && task->source) {
+		DX12ReleaseRetainedResource(task->source);
+		task->sourceRetained = false;
+	}
+	if (task->readback) {
+		task->readback->Release();
+		task->readback = nullptr;
+	}
+}
+
 static void ReleaseTasks(std::vector<DumpTask> *tasks)
 {
 	if (!tasks)
 		return;
-	for (DumpTask &task : *tasks) {
-		if (task.keepReadbackAlive)
-			continue;
-		if (task.readback) {
-			task.readback->Release();
-			task.readback = nullptr;
-		}
-	}
+	for (DumpTask &task : *tasks)
+		ReleaseTask(&task);
 }
 
 static size_t CountCopiedTasks(const std::vector<DumpTask> &tasks)

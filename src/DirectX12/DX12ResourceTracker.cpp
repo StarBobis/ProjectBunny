@@ -1268,7 +1268,7 @@ bool ShouldTrackComputeDescriptorMetadata()
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking();
+	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorCreationTracking();
 }
 
 bool ShouldTrackResourceMetadata()

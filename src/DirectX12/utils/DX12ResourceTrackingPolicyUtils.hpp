@@ -42,6 +42,11 @@ public:
 			DX12ModNeedsShaderDescriptorTracking();
 	}
 
+	static bool NeedsDescriptorCreationTracking()
+	{
+		return true;
+	}
+
 	static bool NeedsFullDescriptorHistory()
 	{
 		return NeedsFrameDumpTracking();
@@ -49,34 +54,22 @@ public:
 
 	static bool NeedsFullResourceMetadata()
 	{
-		return NeedsDumpOrHuntingTracking() ||
-			DX12ModNeedsPresentReplacement() ||
-			DX12ModNeedsPreSkinningUavProbe() ||
-			DX12ModNeedsShaderDescriptorTracking();
+		return true;
 	}
 
 	static bool NeedsLiveResourceIndex()
 	{
-		return NeedsDumpOrHuntingTracking() ||
-			DX12ModNeedsPresentReplacement() ||
-			DX12ModNeedsPreSkinningUavProbe() ||
-			DX12ModNeedsShaderDescriptorTracking();
+		return true;
 	}
 
 	static bool NeedsBufferResourceTracking()
 	{
-		return NeedsDumpOrHuntingTracking() ||
-			DX12ModNeedsPresentReplacement() ||
-			DX12ModNeedsPreSkinningUavProbe() ||
-			DX12ModNeedsShaderDescriptorTracking();
+		return true;
 	}
 
 	static bool NeedsTextureResourceTracking()
 	{
-		return NeedsDumpOrHuntingTracking() ||
-			DX12ModNeedsPresentReplacement() ||
-			DX12ModNeedsPreSkinningUavProbe() ||
-			DX12ModNeedsShaderDescriptorTracking();
+		return true;
 	}
 
 	static bool NeedsAnyResourceCreationTracking()

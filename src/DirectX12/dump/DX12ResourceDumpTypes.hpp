@@ -41,6 +41,7 @@ public:
 	bool stateKnown = false;
 	bool directMap = false;
 	bool keepReadbackAlive = false;
+	bool sourceRetained = false;
 	std::wstring fileName;
 	std::string dedupeKey;
 	const char *skipNote = nullptr;

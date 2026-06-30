@@ -1642,10 +1642,8 @@ void DX12DumpFrameAnalysis()
 	DX12FrameAnalysisDumpResult resourceFiles;
 	bool psoSummaryOk = false;
 	{
-		bindingTrace = TryDumpBindingTrace(dir);
-		resourceTable = TryDumpCurrentFrameResourceTable(dir);
-		metadata = TryDumpResourceMetadata(dir);
-		psoSummaryOk = TryWritePsoResourceSummaryFile(dir, shaders, psos);
+		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisSummarySkipped",
+			"\"bindingTrace\":1,\"resourceTable\":1,\"resourceMetadata\":1,\"psoResourceSummary\":1");
 		resourceFiles = TryDumpCurrentFrameResources(dir);
 	}
 	DX12EndFrameAnalysisMetadataCache();
