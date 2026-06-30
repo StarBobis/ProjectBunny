@@ -28,14 +28,6 @@ public:
 		const UINT64 boundedCount = min(declaredCount, static_cast<UINT64>(MaxDescriptorsPerRangeDump));
 		return boundedCount > UINT_MAX ? UINT_MAX : static_cast<UINT>(boundedCount);
 	}
-	static void GetSummaryDirectory(const wchar_t *dir, wchar_t *path, size_t pathCount)
-	{
-		if (!dir || !path || pathCount == 0)
-			return;
-		swprintf_s(path, pathCount, L"%s\\summary", dir);
-		CreateDirectoryW(path, nullptr);
-	}
-
 	static const char *HeapTypeName(UINT type)
 	{
 		switch (type)

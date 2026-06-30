@@ -387,8 +387,8 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			// Hunting metadata is a resource-discovery pass. Deduplicate at
 			// resource granularity so descriptor-table churn cannot explode into
 			// tens of thousands of duplicate readbacks. Buffers also use
-			// resource granularity here; detailed descriptor views remain in
-			// ResourceMetadataDX12.txt, while Dump files must finish quickly.
+			// resource granularity here; detailed descriptor counts stay in
+			// log.jsonl while Dump files finish quickly.
 			DX12ResourceDumpNaming::BuildDescriptorResourceDedupeKey(descriptor, key, ARRAYSIZE(key));
 			auto canonicalIt = canonicalTaskByKey.find(key);
 			if (canonicalIt != canonicalTaskByKey.end()) {

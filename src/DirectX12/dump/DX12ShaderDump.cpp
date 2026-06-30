@@ -19,7 +19,6 @@
 #include "DX12HotPathState.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceDump.hpp"
-#include "DX12ResourceMetadataDump.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
@@ -1133,21 +1132,6 @@ static bool TryWritePsoResourceSummaryFile(
 	return ok;
 }
 
-static DX12FrameAnalysisDumpResult TryDumpBindingTrace(const wchar_t *dir)
-{
-	DX12FrameAnalysisDumpResult result;
-	__try {
-		result = DX12BindingFrameExport::DumpBindingTrace(dir);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		result.ok = false;
-		result.failed = 1;
-		result.reason = "exception";
-		DX12LogManager::Text("Binding trace skipped after exception=0x%lx\n", GetExceptionCode());
-	}
-	return result;
-}
-
 static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
@@ -1159,38 +1143,6 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *d
 		result.failed = 1;
 		result.reason = "exception";
 		DX12LogManager::Text("Current-frame resource files skipped after exception=0x%lx\n",
-			GetExceptionCode());
-	}
-	return result;
-}
-
-static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResourceTable(const wchar_t *dir)
-{
-	DX12FrameAnalysisDumpResult result;
-	__try {
-		result = DX12BindingResourceExport::DumpCurrentFrameResourceTable(dir);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		result.ok = false;
-		result.failed = 1;
-		result.reason = "exception";
-		DX12LogManager::Text("Current-frame resource table skipped after exception=0x%lx\n",
-			GetExceptionCode());
-	}
-	return result;
-}
-
-static DX12FrameAnalysisDumpResult TryDumpResourceMetadata(const wchar_t *dir)
-{
-	DX12FrameAnalysisDumpResult result;
-	__try {
-		result = DX12ResourceMetadataDump::Dump(dir);
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		result.ok = false;
-		result.failed = 1;
-		result.reason = "exception";
-		DX12LogManager::Text("Resource metadata skipped after exception=0x%lx\n",
 			GetExceptionCode());
 	}
 	return result;

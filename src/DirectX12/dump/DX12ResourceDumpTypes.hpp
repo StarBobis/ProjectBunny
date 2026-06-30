@@ -47,22 +47,3 @@ public:
 	const char *skipNote = nullptr;
 };
 
-class DumpedTaskRow
-{
-public:
-	DumpTaskSource sourceKind = DumpTaskSource::Descriptor;
-	DX12FrameResourceBinding binding;
-	DX12FrameIaBufferBinding iaBuffer;
-	DX12FrameOutputBinding outputBinding;
-	D3D12_RESOURCE_DESC desc = {};
-	UINT64 sourceOffset = 0;
-	UINT64 copyBytes = 0;
-	D3D12_RESOURCE_STATES sourceState = D3D12_RESOURCE_STATE_COMMON;
-	bool stateKnown = false;
-	bool isTexture = false;
-	std::wstring semanticName;
-	std::wstring dedupePath;
-	std::string status;
-	std::string note;
-};
-
