@@ -61,4 +61,26 @@ public:
 	void ReleaseTask(DX12DescriptorCollectTask *task);
 	void UpdateMaxDepth(size_t depth);
 	void LogStats(const char *event, uint64_t sequence, size_t depth);
+
+	DX12DescriptorCollectTask pendingCopy = {};
+	bool hasPendingCopy = false;
+	uint64_t descriptorWrites = 0;
+	uint64_t copyRangeCalls = 0;
+	uint64_t copyRangeMerged = 0;
+	uint64_t copiedDescriptors = 0;
+	uint64_t flushedCopyRanges = 0;
+	uint64_t drainCalls = 0;
+	uint64_t maxMergedCount = 0;
+	SRWLOCK lock = SRWLOCK_INIT;
+
+	void FlushPendingCopyRange(const char *reason);
+	bool TryMergePendingCopyRange(
+		ID3D12Device *device,
+		D3D12_DESCRIPTOR_HEAP_TYPE type,
+		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
+		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
+		UINT count,
+		const char *source);
+	void RecordDescriptorWriteStats(const DescriptorRecord &record);
+	void MaybeLogInlineStats(const char *reason);
 };
