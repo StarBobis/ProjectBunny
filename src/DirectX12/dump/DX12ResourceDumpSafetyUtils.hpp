@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../types/DX12ResourceTypes.hpp"
+#include "DX12ResourceTypes.hpp"
 
 class DX12ResourceDumpSafetyUtils
 {

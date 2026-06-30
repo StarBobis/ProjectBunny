@@ -31,7 +31,7 @@ static void WriteIndexRow(
 
 	DX12FrameAnalysisManifest::WriteResourceBinding(
 		task.binding, desc, sourceOffset, copyBytes, sourceState,
-		hasCurrentState, filePath);
+		hasCurrentState, filePath, status, note);
 }
 
 

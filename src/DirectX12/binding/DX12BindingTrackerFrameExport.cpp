@@ -463,6 +463,15 @@ void DX12BindingFrameExport::BuildIaBufferFileName(
 
 void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
 {
+	std::vector<DX12FrameResourceBinding> resourceBindings;
+	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
+	DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(buffers, resourceBindings);
+}
+
+void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
+	std::vector<DX12FrameIaBufferBinding> *buffers,
+	const std::vector<DX12FrameResourceBinding> &resourceBindings)
+{
 	if (!buffers)
 		return;
 
@@ -478,8 +487,6 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBuf
 
 	std::vector<FlatBufferRow> rows;
 	DX12BindingFrameExport::CollectFrameIaBuffersForEvents(events, &rows);
-	std::vector<DX12FrameResourceBinding> resourceBindings;
-	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
 	DX12BindingFrameExport::ClassifyIaBufferSkinning(&rows, resourceBindings);
 
 	buffers->clear();
@@ -488,8 +495,8 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBuf
 		buffers->push_back(DX12BindingFrameExport::FrameIaBufferFromFlatRow(row));
 
 	DX12FrameAnalysis::LogJsonFunc("IaBufferStage",
-		"\"events\":%zu,\"buffers\":%zu",
-		events.size(), buffers->size());
+		"\"events\":%zu,\"buffers\":%zu,\"resource_bindings\":%zu,\"reused_resource_bindings\":1",
+		events.size(), buffers->size(), resourceBindings.size());
 }
 
 DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar_t *dir)

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../DX12FrameAnalysisState.hpp"
-#include "../DX12RuntimeState.hpp"
+#include "DX12FrameAnalysisState.hpp"
+#include "DX12RuntimeState.hpp"
 
 bool DX12ModHasActiveShaderOverrides();
 bool DX12ModNeedsPresentReplacement();

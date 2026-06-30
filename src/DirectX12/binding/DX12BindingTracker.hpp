@@ -159,6 +159,9 @@ class DX12BindingFrameExport
 public:
 	static void GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos);
 	static void GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers);
+	static void GetCurrentFrameIaBuffersWithResourceBindings(
+		std::vector<DX12FrameIaBufferBinding> *buffers,
+		const std::vector<DX12FrameResourceBinding> &resourceBindings);
 	static void BuildIaBufferFileName(const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount);
 	static DX12FrameAnalysisDumpResult DumpBindingTrace(const wchar_t *dir);
 

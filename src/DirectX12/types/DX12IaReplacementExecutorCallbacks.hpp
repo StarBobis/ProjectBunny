@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../DX12IaCommandSignatures.hpp"
+#include "DX12IaCommandSignatures.hpp"
 
 class DX12IaReplacementExecutorCallbacks
 {

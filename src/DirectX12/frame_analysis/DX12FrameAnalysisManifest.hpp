@@ -49,7 +49,7 @@ public:
 		sprintf_s(cmdlistJson, sizeof(cmdlistJson), "\"%p\"", commandList);
 		sprintf_s(psoJson, sizeof(psoJson), "\"%p\"", pipelineState);
 
-		char buffer[2048];
+		char buffer[3072];
 		if (dispatchId) {
 			sprintf_s(buffer, sizeof(buffer),
 				"\"func\":%s,"
@@ -284,7 +284,7 @@ public:
 		const DX12FrameResourceBinding &binding,
 		const D3D12_RESOURCE_DESC &desc, UINT64 sourceOffset, UINT64 copyBytes,
 		D3D12_RESOURCE_STATES sourceState, bool hasCurrentState,
-		const wchar_t *filePath)
+		const wchar_t *filePath, const char *status = "", const char *note = "")
 	{
 		DX12PsoShaderSummary shaders;
 		const bool hasShaders = DX12GetPsoShaderSummary(binding.psoIndex, &shaders);
@@ -313,7 +313,7 @@ public:
 		sprintf_s(huntHash, sizeof(huntHash), "%08x", viewHash);
 
 		char vsJson[64], psJson[64], csJson[64];
-		char bindJson[64], kindJson[32], dimJson[32], fmtNameJson[64];
+		char bindJson[64], kindJson[32], dimJson[32], fmtNameJson[64], statusJson[64], noteJson[128];
 		char hashJson[32], huntHashJson[32], fileHashJson[32], fileJson[512], resourceJson[32];
 		const char *kind = descriptor.kind.empty() && binding.rootDescriptor ?
 			DX12FrameAnalysisManifestFormatUtils::RootDescriptorKindName(binding.rangeType) :
@@ -327,6 +327,8 @@ public:
 			DX12FrameAnalysisManifestFormatUtils::ResourceDimensionName(desc.Dimension));
 		DX12JsonUtils::EscapeString(fmtNameJson, sizeof(fmtNameJson),
 			DX12FrameAnalysisManifestFormatUtils::DxgiFormatName(static_cast<UINT>(desc.Format)));
+		DX12JsonUtils::EscapeString(statusJson, sizeof(statusJson), status);
+		DX12JsonUtils::EscapeString(noteJson, sizeof(noteJson), note);
 		DX12JsonUtils::EscapeString(hashJson, sizeof(hashJson), hash);
 		DX12JsonUtils::EscapeString(huntHashJson, sizeof(huntHashJson), huntHash);
 		DX12JsonUtils::EscapeString(fileHashJson, sizeof(fileHashJson), fileHash);
@@ -338,6 +340,8 @@ public:
 		sprintf_s(buffer, sizeof(buffer),
 			"\"func\":\"BindResource\","
 			"\"call_index\":%llu,"
+			"\"draw_id\":%llu,"
+			"\"dispatch_id\":%llu,"
 			"\"pso\":%llu,"
 			"\"vs\":%s,"
 			"\"ps\":%s,"
@@ -367,10 +371,14 @@ public:
 			"\"state\":\"0x%x\","
 			"\"state_known\":%s,"
 			"\"file\":%s,"
+			"\"status\":%s,"
+			"\"note\":%s,"
 			"\"hash\":%s,"
 			"\"hunt_hash\":%s,"
 			"\"file_hash\":%s",
 			static_cast<unsigned long long>(binding.eventSerial),
+			static_cast<unsigned long long>(binding.drawId),
+			static_cast<unsigned long long>(binding.dispatchId),
 			static_cast<unsigned long long>(binding.psoIndex),
 			vsJson,
 			psJson,
@@ -400,6 +408,8 @@ public:
 			static_cast<UINT>(sourceState),
 			hasCurrentState ? "true" : "false",
 			fileJson,
+			statusJson,
+			noteJson,
 			hashJson,
 			huntHashJson,
 			fileHashJson);

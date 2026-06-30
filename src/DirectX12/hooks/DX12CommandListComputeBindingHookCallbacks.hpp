@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../DX12CommandListComputeBindingFlow.hpp"
+#include "DX12CommandListComputeBindingFlow.hpp"
 
 class DX12CommandListComputeBindingHookCallbacks
 {

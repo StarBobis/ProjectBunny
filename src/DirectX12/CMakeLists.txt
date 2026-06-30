@@ -2,47 +2,41 @@
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
-    # Entry point (root)
-    D3D12Proxy.cpp
-
-    # Core
-
-    # UI
-    DX12NativeOverlay.cpp
-
-    # Hooks infrastructure
-    DXGIHooks.cpp
+    # Proxy entry point
+    proxy/D3D12Proxy.cpp
 
     # Resource tracking
-    DX12DescriptorCollectPipeline.cpp
-    DX12ResourceCollectQueue.cpp
-    DX12ResourceTracker.cpp
-    DX12ResourceTrackerHooks.cpp
-    DX12ResourceTrackerQueries.cpp
+    descriptor/DX12DescriptorCollectPipeline.cpp
+    resource/DX12ResourceCollectQueue.cpp
+    resource/DX12ResourceTracker.cpp
+    resource/DX12ResourceTrackerHooks.cpp
+    resource/DX12ResourceTrackerQueries.cpp
 
     # Binding/descriptor tracking
-    DX12CaptureLedger.cpp
-    DX12BindingTracker.cpp
-    DX12BindingTrackerFrameExport.cpp
-    DX12BindingTrackerResourceExport.cpp
+    binding/DX12CaptureLedger.cpp
+    binding/DX12BindingTracker.cpp
+    binding/DX12BindingTrackerFrameExport.cpp
+    binding/DX12BindingTrackerResourceExport.cpp
 
-    # Input Assembler (IA)
+    # Command list hooks & runtime
+    command/DX12CommandListHooks.cpp
+    command/DX12CommandListRuntime.cpp
+    command/DX12CommandListLifecycle.cpp
+    command/DX12CommandListCommandRecorder.cpp
+    command/DX12CommandListStateCapture.cpp
+
+    # DXGI/Present hooks
+    dxgi/DXGIHooks.cpp
+
+    # UI
+    overlay/DX12NativeOverlay.cpp
 
     # Shader dump & hunt
     dump/DX12ShaderDump.cpp
-    DX12ShaderHunt.cpp
-
-    # Resource dump
-
-    # Command list hooks & runtime
-    DX12CommandListHooks.cpp
-    DX12CommandListRuntime.cpp
-    DX12CommandListLifecycle.cpp
-    DX12CommandListCommandRecorder.cpp
-    DX12CommandListStateCapture.cpp
+    shader/DX12ShaderHunt.cpp
 
     # Mod runtime
-    DX12ModRuntime.cpp
+    mod/DX12ModRuntime.cpp
 
     # 3Dmigoto config/runtime model used only by DX12
     ${CMAKE_SOURCE_DIR}/src/common/ini_parser_lite.cpp
@@ -51,7 +45,24 @@ add_library(DirectX12 SHARED
 
 target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/binding
+    ${CMAKE_CURRENT_SOURCE_DIR}/command
+    ${CMAKE_CURRENT_SOURCE_DIR}/descriptor
     ${CMAKE_CURRENT_SOURCE_DIR}/dump
+    ${CMAKE_CURRENT_SOURCE_DIR}/dxgi
+    ${CMAKE_CURRENT_SOURCE_DIR}/frame_analysis
+    ${CMAKE_CURRENT_SOURCE_DIR}/helper
+    ${CMAKE_CURRENT_SOURCE_DIR}/hooks
+    ${CMAKE_CURRENT_SOURCE_DIR}/ia
+    ${CMAKE_CURRENT_SOURCE_DIR}/mod
+    ${CMAKE_CURRENT_SOURCE_DIR}/overlay
+    ${CMAKE_CURRENT_SOURCE_DIR}/proxy
+    ${CMAKE_CURRENT_SOURCE_DIR}/queue_cpu
+    ${CMAKE_CURRENT_SOURCE_DIR}/resource
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    ${CMAKE_CURRENT_SOURCE_DIR}/shader
+    ${CMAKE_CURRENT_SOURCE_DIR}/types
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty
@@ -71,7 +82,7 @@ target_link_libraries(DirectX12 PRIVATE
 )
 
 target_sources(DirectX12 PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/d3d12Wrapper.def
+    ${CMAKE_CURRENT_SOURCE_DIR}/proxy/d3d12Wrapper.def
 )
 
 set_target_properties(DirectX12 PROPERTIES

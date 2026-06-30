@@ -43,6 +43,26 @@ static bool IsDiscoveryDuplicateTask(const DumpTask &task)
 		task.binding.bindSpace == "hunting_resource";
 }
 
+static bool IsComputeCbvSrvUavBinding(const DX12FrameResourceBinding &binding)
+{
+	return binding.bindSpace == "compute_cbv_srv_uav";
+}
+
+static bool IsComputeCbvSrvUavBufferBinding(const DX12FrameResourceBinding &binding)
+{
+	if (!DX12ResourceDump::IsComputeCbvSrvUavBinding(binding))
+		return false;
+	return binding.hasDescriptor &&
+		binding.descriptor.hasResourceDesc &&
+		binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
+}
+
+static bool IsComputeCbvSrvUavBufferTask(const DumpTask &task)
+{
+	return task.sourceKind == DumpTaskSource::Descriptor &&
+		DX12ResourceDump::IsComputeCbvSrvUavBufferBinding(task.binding);
+}
+
 static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
@@ -53,9 +73,11 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	}
 
 	std::vector<DX12FrameResourceBinding> bindings;
+	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&bindings);
 	std::vector<DX12FrameIaBufferBinding> iaBuffers;
-	DX12BindingFrameExport::GetCurrentFrameIaBuffers(&iaBuffers);
+	DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(&iaBuffers, bindings);
 	std::vector<DX12FrameOutputBinding> outputBindings;
+	DX12BindingResourceExport::GetCurrentFrameOutputBindings(&outputBindings);
 
 	wchar_t resourceDir[MAX_PATH];
 	wcsncpy_s(resourceDir, dir, _TRUNCATE);
@@ -142,8 +164,28 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	UINT resourceTasksQueued = 0;
 	UINT untrackedDescriptorSlots = 0;
 	UINT untrackedComputeUavSlots = 0;
+	UINT computeBindingCandidates = 0;
+	UINT computeBufferBindingCandidates = 0;
+	UINT computeBindingResolved = 0;
+	UINT computeCbvBufferCandidates = 0;
+	UINT computeSrvBufferCandidates = 0;
+	UINT computeUavBufferCandidates = 0;
 
 	for (const DX12FrameResourceBinding &binding : bindings) {
+		if (DX12ResourceDump::IsComputeCbvSrvUavBinding(binding)) {
+			computeBindingCandidates++;
+			if (binding.hasDescriptor)
+				computeBindingResolved++;
+			if (DX12ResourceDump::IsComputeCbvSrvUavBufferBinding(binding)) {
+				computeBufferBindingCandidates++;
+				if (binding.descriptor.kind == DescriptorKind::CBV)
+					computeCbvBufferCandidates++;
+				else if (binding.descriptor.kind == DescriptorKind::SRV)
+					computeSrvBufferCandidates++;
+				else if (binding.descriptor.kind == DescriptorKind::UAV)
+					computeUavBufferCandidates++;
+			}
+		}
 		if (!DX12ResourceDumpPolicy::ShouldDumpBinding(binding)) {
 			if (!binding.hasDescriptor && !binding.rootDescriptor &&
 					(binding.bindSpace == "compute_cbv_srv_uav" ||
@@ -223,6 +265,16 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			skippedTasks.push_back(std::move(task));
 		}
 	}
+	DX12FrameAnalysis::LogJsonFunc("ResourceDumpComputeBindingsCollected",
+		"\"bindings\":%u,\"resolved\":%u,\"buffer_bindings\":%u,\"cbv_buffers\":%u,\"srv_buffers\":%u,\"uav_buffers\":%u,\"queued_so_far\":%u,\"untracked_compute_uav\":%u",
+		computeBindingCandidates,
+		computeBindingResolved,
+		computeBufferBindingCandidates,
+		computeCbvBufferCandidates,
+		computeSrvBufferCandidates,
+		computeUavBufferCandidates,
+		bindingTasksQueued,
+		untrackedComputeUavSlots);
 
 	for (const DX12FrameIaBufferBinding &buffer : iaBuffers) {
 		char key[128];
@@ -661,6 +713,10 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	UINT copiedTasks = 0;
 	UINT copyFailedTasks = 0;
 	UINT directMapTasks = 0;
+	UINT computeBindingFilesDumped = 0;
+	UINT computeBindingFilesLinked = 0;
+	UINT computeBindingFilesSkipped = 0;
+	UINT computeBindingFilesFailed = 0;
 	bool readbackCopyOk = true;
 	bool copyBatchAborted = false;
 	std::unordered_map<std::string, std::wstring> dedupePathByKey;
@@ -705,6 +761,12 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			dumpedBuffers++;
 		else
 			failed++;
+		if (DX12ResourceDump::IsComputeCbvSrvUavBufferTask(task)) {
+			if (ok)
+				computeBindingFilesDumped++;
+			else
+				computeBindingFilesFailed++;
+		}
 
 		if (!ok) {
 			if (!task.dedupeKey.empty())
@@ -747,6 +809,8 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		}
 
 		linked++;
+		if (DX12ResourceDump::IsComputeCbvSrvUavBufferTask(task))
+			computeBindingFilesLinked++;
 		DX12ResourceDumpIndexWriter::WriteIndexRow(nullptr, "linked", task, task.desc,
 			task.sourceOffset, task.copyBytes, task.sourceState, task.stateKnown,
 			task.fileName.c_str(), dedupeIt->second.c_str(), "already_dumped");
@@ -754,6 +818,8 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 
 	for (const DumpTask &task : skippedTasks) {
 		skipped++;
+		if (DX12ResourceDump::IsComputeCbvSrvUavBufferTask(task))
+			computeBindingFilesSkipped++;
 		if (task.sourceKind == DumpTaskSource::Descriptor) {
 			DX12ResourceDumpIndexWriter::WriteIndexRow(nullptr, "skipped", task, task.binding.descriptor.resourceDesc,
 				task.binding.descriptor.resourceOffset, task.binding.descriptor.viewSize,
@@ -793,13 +859,25 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	device->Release();
 	queue->Release();
 
+	DX12FrameAnalysis::LogJsonFunc("ResourceDumpComputeBindingFiles",
+		"\"buffer_bindings\":%u,\"dumped\":%u,\"linked\":%u,\"skipped\":%u,\"failed\":%u,\"file_rows\":%u",
+		computeBufferBindingCandidates,
+		computeBindingFilesDumped,
+		computeBindingFilesLinked,
+		computeBindingFilesSkipped,
+		computeBindingFilesFailed,
+		computeBindingFilesDumped + computeBindingFilesLinked);
 	DX12FrameAnalysis::LogJsonFunc("ResourceSummary",
-		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"metadata_texture_candidates\":%u,\"metadata_buffer_candidates\":%u,\"metadata_cbv_buffer_candidates\":%u,\"metadata_srv_buffer_candidates\":%u,\"metadata_uav_buffer_candidates\":%u,\"metadata_prepare_failed\":%u,\"metadata_buffer_copies_queued\":%u,\"metadata_buffer_copy_bytes_queued\":%llu,\"metadata_buffer_copy_budget_skipped\":%u,\"metadata_missing_resource\":%u,\"metadata_missing_resource_desc\":%u,\"metadata_unsupported_kind_or_dimension\":%u,\"untracked_descriptor_slots\":%u,\"untracked_compute_uav_slots\":%u,\"skipped_discovery_duplicate_aliases\":%u,\"skipped_aborted_duplicate_aliases\":%u",
+		"\"textures\":%u,\"buffers\":%u,\"linked\":%u,\"skipped\":%u,\"duplicates\":%u,\"failed\":%u,\"readbackBytes\":%llu,\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"candidate_cbv\":%u,\"candidate_srv\":%u,\"candidate_uav\":%u,\"candidate_rtv\":%u,\"candidate_dsv\":%u,\"candidate_textures\":%u,\"compute_bindings\":%u,\"compute_buffer_bindings\":%u,\"compute_cbv_buffer_bindings\":%u,\"compute_srv_buffer_bindings\":%u,\"compute_uav_buffer_bindings\":%u,\"compute_binding_file_rows\":%u,\"metadata_texture_candidates\":%u,\"metadata_buffer_candidates\":%u,\"metadata_cbv_buffer_candidates\":%u,\"metadata_srv_buffer_candidates\":%u,\"metadata_uav_buffer_candidates\":%u,\"metadata_prepare_failed\":%u,\"metadata_buffer_copies_queued\":%u,\"metadata_buffer_copy_bytes_queued\":%llu,\"metadata_buffer_copy_budget_skipped\":%u,\"metadata_missing_resource\":%u,\"metadata_missing_resource_desc\":%u,\"metadata_unsupported_kind_or_dimension\":%u,\"untracked_descriptor_slots\":%u,\"untracked_compute_uav_slots\":%u,\"skipped_discovery_duplicate_aliases\":%u,\"skipped_aborted_duplicate_aliases\":%u",
 		dumpedTextures, dumpedBuffers, linked, skipped, duplicates, failed,
 		static_cast<unsigned long long>(frameReadbackBytes),
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		candidateCbv, candidateSrv, candidateUav, candidateRtv, candidateDsv,
-		candidateTextures, metadataTextureCandidates, metadataBufferCandidates,
+		candidateTextures,
+		computeBindingCandidates, computeBufferBindingCandidates,
+		computeCbvBufferCandidates, computeSrvBufferCandidates,
+		computeUavBufferCandidates, computeBindingFilesDumped + computeBindingFilesLinked,
+		metadataTextureCandidates, metadataBufferCandidates,
 		metadataCbvBufferCandidates, metadataSrvBufferCandidates,
 		metadataUavBufferCandidates, metadataPrepareFailed,
 		metadataBufferCopiesQueued,
