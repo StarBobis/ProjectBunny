@@ -42,7 +42,7 @@ public:
 
 	static bool NeedsFullDescriptorHistory()
 	{
-		return true;
+		return NeedsFrameDumpTracking();
 	}
 
 	static bool NeedsFullResourceMetadata()
