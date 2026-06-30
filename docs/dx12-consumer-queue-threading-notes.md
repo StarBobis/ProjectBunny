@@ -1,5 +1,10 @@
 # DX12 Consumer Queue Threading Notes
 
+## 2026-07-01
+
+- IA binding residency rule: `IASetVertexBuffers` / `IASetIndexBuffer` caller-thread hooks should not eagerly resolve GPUVA to tracked resources or take extra COM retains when the runtime only needs current Mod/pre-skin state and is not recording frame binding events. In that mode, keep only the lightweight `D3D12_*_BUFFER_VIEW` snapshot in `CommandListBindingState` and defer `DX12ResolveBufferResourceByGpuVa()` to actual IA queries/export paths. Eager resolve/retain is still required while F8/ShaderDump/frame binding events are being recorded, because queued `BindingEvent` objects must keep the referenced resources alive across later command-list mutations and frame boundaries.
+- Binding event snapshot rule: once `SetPipelineState` has already refreshed and cached `pipelineShaderInfo` inside `CommandListBindingState`, do not call `RefreshPipelineShaderInfo()` again in `RecordStateEvent`, `RecordDraw*`, `RecordDispatch`, `RecordOutputTargets`, or clear-event wrappers before enqueue. Repeating the PSO-to-shader-info lookup on every event enqueue only burns caller-thread CPU and does not improve event correctness, because `BuildEvent()` already consumes the cached info and still has a fallback lookup if the cache is absent.
+
 ## 2026-06-30
 
 - Do not move DXGI `Present`, command queue execution, or command-list mutation into the consumer queue. These APIs carry caller-thread ordering, window-message, or command-list instance ownership assumptions.

@@ -148,6 +148,12 @@ public:
 	static void RetainEventIaResources(BindingEvent *event);
 	static void ReleaseEventIaResources(BindingEvent *event);
 	static void RefreshPipelineShaderInfo(CommandListBindingState *state);
+	static bool ShouldEagerResolveIaResources(ID3D12GraphicsCommandList *commandList);
+	static void ReleaseResolvedIaResource(
+		DX12BufferResourceSummary *summary, bool *resolved);
+	static void ResolveAndRetainIaResource(
+		UINT64 gpuVirtualAddress, UINT64 size,
+		DX12BufferResourceSummary *summary, bool *resolved);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 descriptorEpoch);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreEventLocked(const BindingEvent &event);

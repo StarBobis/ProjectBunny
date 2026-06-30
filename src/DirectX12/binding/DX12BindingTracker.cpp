@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "DX12CaptureLedger.hpp"
+#include "DX12CommandListStateCapture.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
@@ -116,6 +117,44 @@ void DX12BindingTracker::RefreshPipelineShaderInfo(CommandListBindingState *stat
 
 	if (DX12GetPipelineStateShaderInfo(state->pipelineState, &state->pipelineShaderInfo))
 		state->pipelineShaderInfoValid = true;
+}
+
+bool DX12BindingTracker::ShouldEagerResolveIaResources(
+	ID3D12GraphicsCommandList *commandList)
+{
+	return DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList);
+}
+
+void DX12BindingTracker::ReleaseResolvedIaResource(
+	DX12BufferResourceSummary *summary, bool *resolved)
+{
+	if (!summary || !resolved)
+		return;
+	if (*resolved && summary->resource)
+		DX12ReleaseRetainedResource(summary->resource);
+	*summary = {};
+	*resolved = false;
+}
+
+void DX12BindingTracker::ResolveAndRetainIaResource(
+	UINT64 gpuVirtualAddress, UINT64 size,
+	DX12BufferResourceSummary *summary, bool *resolved)
+{
+	if (!summary || !resolved) {
+		return;
+	}
+
+	*summary = {};
+	*resolved = false;
+	if (!gpuVirtualAddress || !size)
+		return;
+	if (!DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, summary))
+		return;
+	if (summary->resource && !DX12RetainResource(summary->resource)) {
+		*summary = {};
+		return;
+	}
+	*resolved = true;
 }
 
 bool DX12BindingTracker::BuildEvent(
@@ -350,7 +389,6 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		return;
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	if (DX12BindingCollectQueue::EnqueueStateEvent(
 			commandList,
@@ -484,28 +522,23 @@ void DX12BindingTracker::SetIndexBuffer(
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
-	if (state.indexBufferResolved && state.indexBufferResource.resource) {
-		DX12ReleaseRetainedResource(state.indexBufferResource.resource);
-		state.indexBufferResource = {};
-		state.indexBufferResolved = false;
-	}
+	DX12BindingTracker::ReleaseResolvedIaResource(
+		&state.indexBufferResource, &state.indexBufferResolved);
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
-		state.indexBufferResource = {};
-		state.indexBufferResolved = view->BufferLocation != 0 && view->SizeInBytes != 0 &&
-			DX12ResolveBufferResourceByGpuVa(
-				view->BufferLocation, view->SizeInBytes, &state.indexBufferResource);
-		if (state.indexBufferResolved && state.indexBufferResource.resource &&
-			!DX12RetainResource(state.indexBufferResource.resource)) {
-			state.indexBufferResource = {};
-			state.indexBufferResolved = false;
+		if (DX12BindingTracker::ShouldEagerResolveIaResources(commandList)) {
+			DX12BindingTracker::ResolveAndRetainIaResource(
+				view->BufferLocation,
+				view->SizeInBytes,
+				&state.indexBufferResource,
+				&state.indexBufferResolved);
 		}
 	} else {
 		state.indexBuffer = {};
 		state.indexBufferValid = false;
-		state.indexBufferResource = {};
-		state.indexBufferResolved = false;
+		DX12BindingTracker::ReleaseResolvedIaResource(
+			&state.indexBufferResource, &state.indexBufferResolved);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
@@ -522,29 +555,25 @@ void DX12BindingTracker::SetVertexBuffers(
 	CommandListBindingState &state = shard.states[commandList];
 	for (UINT i = 0; i < count && startSlot + i < MaxVertexBufferSlots; ++i) {
 		const UINT slot = startSlot + i;
-		if (state.vertexBufferResolved[slot] && state.vertexBufferResources[slot].resource) {
-			DX12ReleaseRetainedResource(state.vertexBufferResources[slot].resource);
-			state.vertexBufferResources[slot] = {};
-			state.vertexBufferResolved[slot] = false;
-		}
+		DX12BindingTracker::ReleaseResolvedIaResource(
+			&state.vertexBufferResources[slot],
+			&state.vertexBufferResolved[slot]);
 		if (views) {
 			state.vertexBuffers[slot] = views[i];
 			state.vertexBufferValid[slot] = views[i].BufferLocation != 0 && views[i].SizeInBytes != 0;
-			state.vertexBufferResources[slot] = {};
-			state.vertexBufferResolved[slot] = state.vertexBufferValid[slot] &&
-				DX12ResolveBufferResourceByGpuVa(
-					views[i].BufferLocation, views[i].SizeInBytes,
-					&state.vertexBufferResources[slot]);
-			if (state.vertexBufferResolved[slot] && state.vertexBufferResources[slot].resource &&
-				!DX12RetainResource(state.vertexBufferResources[slot].resource)) {
-				state.vertexBufferResources[slot] = {};
-				state.vertexBufferResolved[slot] = false;
+			if (DX12BindingTracker::ShouldEagerResolveIaResources(commandList)) {
+				DX12BindingTracker::ResolveAndRetainIaResource(
+					views[i].BufferLocation,
+					views[i].SizeInBytes,
+					&state.vertexBufferResources[slot],
+					&state.vertexBufferResolved[slot]);
 			}
 		} else {
 			state.vertexBuffers[slot] = {};
 			state.vertexBufferValid[slot] = false;
-			state.vertexBufferResources[slot] = {};
-			state.vertexBufferResolved[slot] = false;
+			DX12BindingTracker::ReleaseResolvedIaResource(
+				&state.vertexBufferResources[slot],
+				&state.vertexBufferResolved[slot]);
 		}
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -570,7 +599,6 @@ void DX12BindingTracker::RecordOutputTargets(
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		snapshot = CommandListBindingState();
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
 		if (singleHandleToDescriptorRange && i > 0) {
@@ -648,7 +676,6 @@ void DX12BindingTracker::RecordRenderTargetClear(
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		return;
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	if (DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "RTV", 0, renderTargetView.ptr, 0))
 		return;
 
@@ -675,7 +702,6 @@ void DX12BindingTracker::RecordDepthStencilClear(
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		return;
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	if (DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "DSV", 0, depthStencilView.ptr, 0))
 		return;
 
@@ -1154,7 +1180,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 	state.drawSerial = drawSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	if (DX12BindingCollectQueue::EnqueueDrawEvent(
 			commandList,
@@ -1201,7 +1226,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	state.drawSerial = drawSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	if (DX12BindingCollectQueue::EnqueueDrawEvent(
 			commandList,
@@ -1249,7 +1273,6 @@ void DX12BindingTracker::RecordDispatch(
 	state.dispatchSerial = dispatchSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	if (DX12BindingCollectQueue::EnqueueDispatchEvent(
 			commandList,
