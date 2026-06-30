@@ -148,7 +148,14 @@ public:
 	static void RetainEventIaResources(BindingEvent *event);
 	static void ReleaseEventIaResources(BindingEvent *event);
 	static void RefreshPipelineShaderInfo(CommandListBindingState *state);
+	static void InvalidatePipelineShaderInfo(CommandListBindingState *state);
 	static bool ShouldEagerResolveIaResources(ID3D12GraphicsCommandList *commandList);
+	static void BumpBindingQuerySerial(CommandListBindingState *state);
+	static bool ResolvePipelineShaderInfoOnDemand(CommandListBindingState *state);
+	static bool SnapshotBindingState(
+		ID3D12GraphicsCommandList *commandList,
+		CommandListBindingState *snapshot,
+		UINT64 *bindingQuerySerial = nullptr);
 	static void ReleaseResolvedIaResource(
 		DX12BufferResourceSummary *summary, bool *resolved);
 	static void ResolveAndRetainIaResource(

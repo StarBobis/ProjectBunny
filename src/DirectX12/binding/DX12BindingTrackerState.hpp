@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "DX12BindingTrackerTypes.hpp"
 #include "types/DX12PsoTypes.hpp"
 #include "types/DX12ResourceTypes.hpp"
 
@@ -57,6 +58,7 @@ public:
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
 	UINT64 computeBindingSerial = 0;
+	UINT64 bindingQuerySerial = 1;
 	RootTableState graphicsTables[MaxRootParameters] = {};
 	RootTableState computeTables[MaxRootParameters] = {};
 	RootDescriptorState graphicsRootDescriptors[MaxRootParameters] = {};
@@ -159,6 +161,29 @@ class BindingTlsDescriptorCache
 public:
 	ID3D12GraphicsCommandList *cl = nullptr;
 	UINT64 address[MaxRootParameters] = {};
+};
+
+class BindingTlsDescriptorQueryCache
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	bool compute = false;
+	UINT rangeType = UINT_MAX;
+	UINT64 bindingQuerySerial = 0;
+	UINT64 descriptorEpoch = 0;
+	std::vector<DX12CurrentComputeUavBinding> bindings;
+};
+
+class BindingTlsComputeAllQueryCache
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 bindingQuerySerial = 0;
+	UINT64 descriptorEpoch = 0;
+	std::vector<DX12CurrentComputeUavBinding> uavs;
+	std::vector<DX12CurrentComputeUavBinding> srvs;
+	std::vector<DX12CurrentComputeUavBinding> cbvs;
+	std::vector<DX12CurrentRootConstants> constants;
 };
 
 
