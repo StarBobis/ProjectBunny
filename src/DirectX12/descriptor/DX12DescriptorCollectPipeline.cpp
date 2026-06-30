@@ -6,6 +6,7 @@
 
 static constexpr uint64_t kDescriptorInlineStatsInterval = 65536;
 static constexpr size_t kDescriptorWorkerBatchTarget = 64;
+static constexpr size_t kDescriptorPendingWriteBudget = 16384;
 static constexpr auto kDescriptorWorkerCoalesceWindow = std::chrono::milliseconds(1);
 
 DX12DescriptorCollectPipeline &DX12DescriptorCollectPipeline::Get()
@@ -122,11 +123,11 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&rec
 	if (ShouldTrackFullDescriptorMetadata())
 		return false;
 
-	StartWorker();
 	if (!RetainDescriptorResourcesForAsync(&record))
 		return false;
 
-	std::lock_guard<std::mutex> lock(mutex);
+	bool shouldFlush = false;
+	std::unique_lock<std::mutex> lock(mutex);
 	RecordDescriptorWriteStats(record);
 	auto found = pendingDescriptorWrites.find(record.cpuHandle);
 	if (found != pendingDescriptorWrites.end()) {
@@ -143,7 +144,10 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&rec
 		!maxPendingDescriptorWrites.compare_exchange_weak(
 			currentMax, pending, std::memory_order_relaxed)) {
 	}
-	wake.notify_one();
+	shouldFlush = pendingDescriptorWrites.size() >= kDescriptorPendingWriteBudget;
+	lock.unlock();
+	if (shouldFlush)
+		FlushPendingDescriptorWrites("PendingWriteBudget");
 	return true;
 }
 
@@ -334,6 +338,7 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 			}
 		}
 		ApplyDescriptorBatch(&batch, reason ? reason : "FlushPendingDescriptorWrites");
+		completedBatches.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 

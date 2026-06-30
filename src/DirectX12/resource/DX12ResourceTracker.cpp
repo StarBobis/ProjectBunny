@@ -1250,6 +1250,36 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 	records->clear();
 }
 
+void DX12RecordRootSignatureImmediate(
+	ID3D12RootSignature *rootSignature,
+	UINT nodeMask,
+	const void *blob,
+	SIZE_T blobLength)
+{
+	if (!rootSignature || !blob || blobLength == 0)
+		return;
+
+	RootSignatureRecord record;
+	record.rootSignature = rootSignature;
+	record.hash = Fnv1a64(blob, blobLength);
+	record.size = blobLength;
+	record.nodeMask = nodeMask;
+	ParseRootSignatureBlob(&record, blob, blobLength);
+
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	++gRootSignatureRecordsSeen;
+	auto found = gRootSignatureByPtr.find(record.rootSignature);
+	if (found != gRootSignatureByPtr.end()) {
+		gRootSignatures[found->second] = std::move(record);
+	}
+	else {
+		gRootSignatureByPtr[record.rootSignature] = gRootSignatures.size();
+		gRootSignatures.push_back(std::move(record));
+	}
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+}
+
 void DX12PrimeDescriptorHistoryForHunting()
 {
 	if (!DX12RuntimeState::IsHuntingMode())
@@ -1651,12 +1681,8 @@ void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature)
 {
-	if (DX12ResourceCollectQueue::EnqueuePsoRootSignature(
-			psoIndex, kind, pipelineState, rootSignature, "DX12RecordPsoRootSignature"))
-		return;
-
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"PsoRootSignatureEnqueueFallback\",\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"threadId\":%lu",
+		"\"event\":\"PsoRootSignatureImmediate\",\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"threadId\":%lu",
 		static_cast<unsigned long long>(psoIndex),
 		kind ? kind : "",
 		pipelineState,

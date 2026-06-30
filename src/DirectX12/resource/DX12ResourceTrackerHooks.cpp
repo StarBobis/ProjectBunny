@@ -229,12 +229,11 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 	if (FAILED(hr) || !blob || !blobLength || !rootSignature || !*rootSignature)
 		return;
 
-	DX12ResourceCollectQueue::EnqueueRootSignature(
+	DX12RecordRootSignatureImmediate(
 		static_cast<ID3D12RootSignature*>(*rootSignature),
 		nodeMask,
 		blob,
-		blobLength,
-		"CreateRootSignature");
+		blobLength);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(

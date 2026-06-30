@@ -54,7 +54,7 @@ public:
 
 	static bool NeedsFullResourceMetadata()
 	{
-		return true;
+		return NeedsDumpOrHuntingTracking();
 	}
 
 	static bool NeedsLiveResourceIndex()
