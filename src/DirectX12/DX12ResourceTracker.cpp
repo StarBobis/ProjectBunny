@@ -1168,15 +1168,15 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 {
 	if (record.valueId == 0)
 		record.valueId = HashDescriptorValue(record);
-	// D3D12 descriptor creation writes a CPU descriptor first; the game may
-	// later copy it into a shader-visible heap. Keep that CPU ledger so
-	// CopyDescriptors can preserve RenderDoc-like slot granularity.
-	StoreCpuDescriptorRecordLocked(record);
 
 	DescriptorSlotLocation location = {};
 	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {
 		DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-		if (!copied && !ShouldStoreCreatedDescriptorInHeapSlot(heap)) {
+		const bool storeInHeapSlot = copied || ShouldStoreCreatedDescriptorInHeapSlot(heap);
+		if (!storeInHeapSlot) {
+			// Non shader-visible/staging heap descriptors can become CopyDescriptors
+			// sources later, so keep them in the CPU ledger as the fallback source.
+			StoreCpuDescriptorRecordLocked(record);
 			++gDescriptorRecordsSeen;
 			ReleaseDescriptorRecordResources(&record);
 			return;
@@ -1200,6 +1200,8 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		return;
 	}
 
+	// Heap-external CPU descriptors are only discoverable through the ledger.
+	StoreCpuDescriptorRecordLocked(record);
 	ReleaseDescriptorRecordResources(&record);
 }
 
