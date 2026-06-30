@@ -37,9 +37,13 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		return;
 
 	DX12DescriptorCollectPipeline &pipeline = Get();
-	pipeline.FlushPendingDescriptorWrites("RecordDescriptorCopyRange");
 
 	std::unique_lock<std::mutex> lock(pipeline.mutex);
+	while (pipeline.activeDescriptorBatches != 0) {
+		pipeline.idle.wait(lock, [&pipeline]() {
+			return pipeline.activeDescriptorBatches == 0;
+		});
+	}
 	pipeline.copyRangeCalls++;
 	pipeline.copiedDescriptors += count;
 	if (!pipeline.TryMergePendingCopyRange(device, type, destStart, srcStart, count, source)) {
@@ -47,8 +51,28 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		pipeline.pendingCopy = DX12DescriptorCollectTask();
 		pipeline.hasPendingCopy = false;
 		pipeline.flushedCopyRanges++;
+		uint64_t sourceWrites = 0;
+		uint64_t discardedWrites = 0;
+		DX12DescriptorCollectBatch dependencyBatch;
+		pipeline.CollectPendingDescriptorWritesForCopySourcesLocked(
+			flushTask,
+			&dependencyBatch,
+			&sourceWrites);
+		pipeline.DiscardPendingDescriptorWritesForCopyDestLocked(
+			flushTask,
+			&discardedWrites);
 		pipeline.TryMergePendingCopyRange(device, type, destStart, srcStart, count, source);
 		lock.unlock();
+		if (!dependencyBatch.descriptors.empty())
+			pipeline.ApplyDescriptorBatch(&dependencyBatch, "CopyRangeSourceDependency");
+		if (sourceWrites || discardedWrites) {
+			DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineCopyDependency",
+				"\"reason\":\"%s\",\"sourceWrites\":%llu,\"discardedWrites\":%llu,\"count\":%u",
+				source ? source : "",
+				static_cast<unsigned long long>(sourceWrites),
+				static_cast<unsigned long long>(discardedWrites),
+				flushTask.count);
+		}
 		::RecordDescriptorCopyRange(
 			flushTask.device, flushTask.type, flushTask.destStart, flushTask.srcStart, flushTask.count);
 		pipeline.MaybeLogInlineStats(source ? source : "RecordCopyRange");
@@ -56,6 +80,15 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 	}
 	lock.unlock();
 	pipeline.MaybeLogInlineStats(source ? source : "RecordCopyRange");
+}
+
+void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	const char *reason)
+{
+	DX12DescriptorCollectPipeline &pipeline = Get();
+	pipeline.EnsureDescriptorWritesVisible(cpuHandles, count, reason ? reason : "EnsureDescriptorHandlesVisible");
 }
 
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *reason)
@@ -123,6 +156,7 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&rec
 	if (ShouldTrackFullDescriptorMetadata())
 		return false;
 
+	StartWorker();
 	if (!RetainDescriptorResourcesForAsync(&record))
 		return false;
 
@@ -146,6 +180,7 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&rec
 	}
 	shouldFlush = pendingDescriptorWrites.size() >= kDescriptorPendingWriteBudget;
 	lock.unlock();
+	wake.notify_one();
 	if (shouldFlush)
 		FlushPendingDescriptorWrites("PendingWriteBudget");
 	return true;
@@ -302,7 +337,15 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 void DX12DescriptorCollectPipeline::FlushPendingCopyRange(const char *reason)
 {
 	DX12DescriptorCollectTask task;
+	DX12DescriptorCollectBatch dependencyBatch;
+	uint64_t sourceWrites = 0;
+	uint64_t discardedWrites = 0;
 	std::unique_lock<std::mutex> lock(mutex);
+	while (activeDescriptorBatches != 0) {
+		idle.wait(lock, [this]() {
+			return activeDescriptorBatches == 0;
+		});
+	}
 	if (!hasPendingCopy) {
 		lock.unlock();
 		return;
@@ -311,9 +354,25 @@ void DX12DescriptorCollectPipeline::FlushPendingCopyRange(const char *reason)
 	pendingCopy = DX12DescriptorCollectTask();
 	hasPendingCopy = false;
 	flushedCopyRanges++;
+	CollectPendingDescriptorWritesForCopySourcesLocked(
+		task,
+		&dependencyBatch,
+		&sourceWrites);
+	DiscardPendingDescriptorWritesForCopyDestLocked(
+		task,
+		&discardedWrites);
 	lock.unlock();
+	if (!dependencyBatch.descriptors.empty())
+		ApplyDescriptorBatch(&dependencyBatch, "CopyRangeSourceDependency");
+	if (sourceWrites || discardedWrites) {
+		DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineCopyDependency",
+			"\"reason\":\"%s\",\"sourceWrites\":%llu,\"discardedWrites\":%llu,\"count\":%u",
+			reason ? reason : "",
+			static_cast<unsigned long long>(sourceWrites),
+			static_cast<unsigned long long>(discardedWrites),
+			task.count);
+	}
 	::RecordDescriptorCopyRange(task.device, task.type, task.destStart, task.srcStart, task.count);
-	(void)reason;
 }
 
 void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *reason)
@@ -389,6 +448,200 @@ bool DX12DescriptorCollectPipeline::TryMergePendingCopyRange(
 	if (pendingCopy.count > maxMergedCount)
 		maxMergedCount = pendingCopy.count;
 	return true;
+}
+
+bool DX12DescriptorCollectPipeline::DescriptorHandleInCopyRange(
+	const DX12DescriptorCollectTask &task,
+	SIZE_T cpuHandle,
+	bool destinationRangeOnly)
+{
+	if (!task.device || task.count == 0 || cpuHandle == 0)
+		return false;
+	const UINT increment = task.device->GetDescriptorHandleIncrementSize(task.type);
+	if (increment == 0)
+		return false;
+	const SIZE_T destBegin = task.destStart.ptr;
+	const SIZE_T destEnd = destBegin + static_cast<SIZE_T>(task.count) * increment;
+	if (cpuHandle >= destBegin && cpuHandle < destEnd &&
+		((cpuHandle - destBegin) % increment) == 0)
+		return true;
+	if (destinationRangeOnly)
+		return false;
+	const SIZE_T srcBegin = task.srcStart.ptr;
+	const SIZE_T srcEnd = srcBegin + static_cast<SIZE_T>(task.count) * increment;
+	return cpuHandle >= srcBegin && cpuHandle < srcEnd &&
+		((cpuHandle - srcBegin) % increment) == 0;
+}
+
+bool DX12DescriptorCollectPipeline::PendingCopyTouchesHandles(
+	const SIZE_T *cpuHandles,
+	size_t count)
+{
+	if (!cpuHandles || count == 0 || !hasPendingCopy)
+		return false;
+	for (size_t i = 0; i < count; ++i) {
+		if (DescriptorHandleInCopyRange(pendingCopy, cpuHandles[i], false))
+			return true;
+	}
+	return false;
+}
+
+void DX12DescriptorCollectPipeline::CollectPendingDescriptorWritesForHandlesLocked(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	DX12DescriptorCollectBatch *batch)
+{
+	if (!cpuHandles || count == 0 || !batch)
+		return;
+	for (size_t i = 0; i < count; ++i) {
+		const SIZE_T cpuHandle = cpuHandles[i];
+		if (cpuHandle == 0)
+			continue;
+		auto found = pendingDescriptorWrites.find(cpuHandle);
+		if (found == pendingDescriptorWrites.end())
+			continue;
+		batch->descriptors.push_back(std::move(found->second));
+		pendingDescriptorWrites.erase(found);
+	}
+	if (!batch->descriptors.empty()) {
+		batch->sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+		batch->enqueueThreadId = GetCurrentThreadId();
+		descriptorWriteBatches++;
+		enqueuedBatches.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+void DX12DescriptorCollectPipeline::CollectPendingDescriptorWritesForCopySourcesLocked(
+	const DX12DescriptorCollectTask &task,
+	DX12DescriptorCollectBatch *batch,
+	uint64_t *sourceWrites)
+{
+	if (!batch || !task.device || task.count == 0)
+		return;
+	const UINT increment = task.device->GetDescriptorHandleIncrementSize(task.type);
+	if (increment == 0)
+		return;
+	for (UINT i = 0; i < task.count; ++i) {
+		const SIZE_T srcHandle =
+			task.srcStart.ptr + static_cast<SIZE_T>(i) * increment;
+		auto found = pendingDescriptorWrites.find(srcHandle);
+		if (found == pendingDescriptorWrites.end())
+			continue;
+		batch->descriptors.push_back(std::move(found->second));
+		pendingDescriptorWrites.erase(found);
+		if (sourceWrites)
+			++(*sourceWrites);
+	}
+	if (!batch->descriptors.empty()) {
+		batch->sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+		batch->enqueueThreadId = GetCurrentThreadId();
+		descriptorWriteBatches++;
+		enqueuedBatches.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+void DX12DescriptorCollectPipeline::DiscardPendingDescriptorWritesForCopyDestLocked(
+	const DX12DescriptorCollectTask &task,
+	uint64_t *discardedWrites)
+{
+	if (!task.device || task.count == 0)
+		return;
+	const UINT increment = task.device->GetDescriptorHandleIncrementSize(task.type);
+	if (increment == 0)
+		return;
+	for (UINT i = 0; i < task.count; ++i) {
+		const SIZE_T destHandle =
+			task.destStart.ptr + static_cast<SIZE_T>(i) * increment;
+		auto found = pendingDescriptorWrites.find(destHandle);
+		if (found == pendingDescriptorWrites.end())
+			continue;
+		ReleaseDescriptorRecordResources(&found->second);
+		pendingDescriptorWrites.erase(found);
+		if (discardedWrites)
+			++(*discardedWrites);
+	}
+}
+
+void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	const char *reason)
+{
+	if (!cpuHandles || count == 0)
+		return;
+	for (;;) {
+		DX12DescriptorCollectBatch batch;
+		DX12DescriptorCollectTask copyTask;
+		bool flushCopy = false;
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			CollectPendingDescriptorWritesForHandlesLocked(cpuHandles, count, &batch);
+			if (hasPendingCopy && activeDescriptorBatches != 0) {
+				idle.wait(lock, [this]() {
+					return activeDescriptorBatches == 0;
+				});
+				lock.unlock();
+				continue;
+			}
+			if (PendingCopyTouchesHandles(cpuHandles, count)) {
+				copyTask = pendingCopy;
+				pendingCopy = DX12DescriptorCollectTask();
+				hasPendingCopy = false;
+				flushedCopyRanges++;
+				flushCopy = true;
+			}
+			if (batch.descriptors.empty() && !flushCopy && activeDescriptorBatches == 0) {
+				lock.unlock();
+				return;
+			}
+			if (batch.descriptors.empty() && !flushCopy) {
+				idle.wait(lock, [this]() {
+					return activeDescriptorBatches == 0;
+				});
+				lock.unlock();
+				continue;
+			}
+			lock.unlock();
+		}
+		if (!batch.descriptors.empty())
+			ApplyDescriptorBatch(&batch, reason ? reason : "EnsureDescriptorWritesVisible");
+		if (flushCopy) {
+			FlushCopyTaskWithDependencies(&copyTask, reason ? reason : "EnsureDescriptorWritesVisible");
+		}
+		completedBatches.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+void DX12DescriptorCollectPipeline::FlushCopyTaskWithDependencies(
+	DX12DescriptorCollectTask *task,
+	const char *reason)
+{
+	if (!task || !task->device || task->count == 0)
+		return;
+	DX12DescriptorCollectBatch dependencyBatch;
+	uint64_t sourceWrites = 0;
+	uint64_t discardedWrites = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		CollectPendingDescriptorWritesForCopySourcesLocked(
+			*task,
+			&dependencyBatch,
+			&sourceWrites);
+		DiscardPendingDescriptorWritesForCopyDestLocked(
+			*task,
+			&discardedWrites);
+	}
+	if (!dependencyBatch.descriptors.empty())
+		ApplyDescriptorBatch(&dependencyBatch, "CopyRangeSourceDependency");
+	if (sourceWrites || discardedWrites) {
+		DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineCopyDependency",
+			"\"reason\":\"%s\",\"sourceWrites\":%llu,\"discardedWrites\":%llu,\"count\":%u",
+			reason ? reason : "",
+			static_cast<unsigned long long>(sourceWrites),
+			static_cast<unsigned long long>(discardedWrites),
+			task->count);
+	}
+	::RecordDescriptorCopyRange(task->device, task->type, task->destStart, task->srcStart, task->count);
 }
 
 bool DX12DescriptorCollectPipeline::RetainDescriptorResourcesForAsync(DescriptorRecord *record)

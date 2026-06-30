@@ -56,6 +56,10 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
 		UINT count,
 		const char *source);
+	static void EnsureDescriptorHandlesVisible(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		const char *reason);
 	static void DrainForSnapshot(const char *reason);
 	static void Stop();
 
@@ -76,6 +80,31 @@ public:
 	void ReleaseTask(DX12DescriptorCollectTask *task);
 	void UpdateMaxDepth(size_t depth);
 	void LogStats(const char *event, uint64_t sequence, size_t depth);
+	void FlushCopyTaskWithDependencies(
+		DX12DescriptorCollectTask *task,
+		const char *reason);
+	void EnsureDescriptorWritesVisible(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		const char *reason);
+	bool PendingCopyTouchesHandles(
+		const SIZE_T *cpuHandles,
+		size_t count);
+	bool DescriptorHandleInCopyRange(
+		const DX12DescriptorCollectTask &task,
+		SIZE_T cpuHandle,
+		bool destinationRangeOnly);
+	void CollectPendingDescriptorWritesForHandlesLocked(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		DX12DescriptorCollectBatch *batch);
+	void CollectPendingDescriptorWritesForCopySourcesLocked(
+		const DX12DescriptorCollectTask &task,
+		DX12DescriptorCollectBatch *batch,
+		uint64_t *sourceWrites);
+	void DiscardPendingDescriptorWritesForCopyDestLocked(
+		const DX12DescriptorCollectTask &task,
+		uint64_t *discardedWrites);
 
 	std::mutex mutex;
 	std::condition_variable wake;

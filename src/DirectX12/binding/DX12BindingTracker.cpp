@@ -1175,12 +1175,12 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	UINT64 bindingQuerySerial = 0;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
 		return false;
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
 	if (tlsDescriptorQueryCache.commandList == commandList &&
 		tlsDescriptorQueryCache.compute == compute &&
 		tlsDescriptorQueryCache.rangeType == static_cast<UINT>(rangeType) &&
 		tlsDescriptorQueryCache.bindingQuerySerial == bindingQuerySerial &&
-		tlsDescriptorQueryCache.descriptorEpoch == descriptorEpoch) {
+		tlsDescriptorQueryCache.descriptorQuerySerial == descriptorQuerySerial) {
 		*uavs = tlsDescriptorQueryCache.bindings;
 		return !uavs->empty();
 	}
@@ -1191,7 +1191,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	tlsDescriptorQueryCache.compute = compute;
 	tlsDescriptorQueryCache.rangeType = static_cast<UINT>(rangeType);
 	tlsDescriptorQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsDescriptorQueryCache.descriptorEpoch = descriptorEpoch;
+	tlsDescriptorQueryCache.descriptorQuerySerial = descriptorQuerySerial;
 	tlsDescriptorQueryCache.bindings = *uavs;
 	return foundAny;
 }
@@ -1241,10 +1241,10 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	UINT64 bindingQuerySerial = 0;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
 		return false;
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
 	if (tlsComputeAllQueryCache.commandList == commandList &&
 		tlsComputeAllQueryCache.bindingQuerySerial == bindingQuerySerial &&
-		tlsComputeAllQueryCache.descriptorEpoch == descriptorEpoch) {
+		tlsComputeAllQueryCache.descriptorQuerySerial == descriptorQuerySerial) {
 		if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
 		if (srvs) *srvs = tlsComputeAllQueryCache.srvs;
 		if (cbvs) *cbvs = tlsComputeAllQueryCache.cbvs;
@@ -1261,7 +1261,7 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
 	tlsComputeAllQueryCache.commandList = commandList;
 	tlsComputeAllQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsComputeAllQueryCache.descriptorEpoch = descriptorEpoch;
+	tlsComputeAllQueryCache.descriptorQuerySerial = descriptorQuerySerial;
 	tlsComputeAllQueryCache.uavs = cachedUavs;
 	tlsComputeAllQueryCache.srvs = cachedSrvs;
 	tlsComputeAllQueryCache.cbvs = cachedCbvs;

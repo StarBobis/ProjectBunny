@@ -33,6 +33,7 @@ std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 std::atomic<UINT64> gBufferResolveGeneration{1};
+std::atomic<UINT64> gDescriptorQuerySerial{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
 UINT64 gDescriptorRecordsSeen = 0;
@@ -247,6 +248,7 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	record.increment = 0;
 	gDescriptorHeapByCpuStart.erase(cpuStart);
 	gDescriptorHeapByPtr.erase(found);
+	BumpDescriptorQuerySerial();
 }
 
 void InvalidateResourceLocked(ID3D12Resource *resource)
@@ -1228,6 +1230,7 @@ void RecordDescriptor(DescriptorRecord &&record)
 {
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	RecordDescriptorInCacheLocked(std::move(record), false);
+	BumpDescriptorQuerySerial();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
@@ -1245,6 +1248,7 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 		RecordDescriptorInCacheLocked(std::move(apply), false);
 		ReleaseDescriptorRecordResources(&queued);
 	}
+	BumpDescriptorQuerySerial();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	records->clear();
@@ -1323,6 +1327,11 @@ UINT64 CurrentDescriptorEpoch()
 	return epoch;
 }
 
+UINT64 CurrentDescriptorQuerySerial()
+{
+	return gDescriptorQuerySerial.load(std::memory_order_acquire);
+}
+
 bool ShouldTrackFullDescriptorMetadata()
 {
 	return DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
@@ -1336,6 +1345,20 @@ bool ShouldTrackComputeDescriptorMetadata()
 bool ShouldTrackDescriptorCreationMetadata()
 {
 	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorCreationTracking();
+}
+
+void BumpDescriptorQuerySerial()
+{
+	UINT64 current = gDescriptorQuerySerial.load(std::memory_order_relaxed);
+	for (;;) {
+		UINT64 next = current == UINT64_MAX ? 1 : current + 1;
+		if (gDescriptorQuerySerial.compare_exchange_weak(
+				current,
+				next,
+				std::memory_order_release,
+				std::memory_order_relaxed))
+			return;
+	}
 }
 
 bool ShouldTrackResourceMetadata()
@@ -1673,6 +1696,7 @@ void RecordDescriptorCopyRange(
 		}
 		processed += chunk;
 	}
+	BumpDescriptorQuerySerial();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }

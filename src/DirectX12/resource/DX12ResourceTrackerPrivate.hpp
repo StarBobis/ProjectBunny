@@ -193,6 +193,7 @@ extern std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
 extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 extern std::atomic<UINT64> gBufferResolveGeneration;
+extern std::atomic<UINT64> gDescriptorQuerySerial;
 extern bool gCleanupRegistered;
 extern UINT64 gResourcesRecordedFromCreate;
 extern UINT64 gDescriptorRecordsSeen;
@@ -261,6 +262,7 @@ bool ShouldTrackComputeDescriptorMetadata();
 bool ShouldTrackDescriptorCreationMetadata();
 bool ShouldTrackResourceMetadata();
 bool ShouldTrackResourceCreationMetadata();
+void BumpDescriptorQuerySerial();
 void RecordDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);
 void DX12RecordPsoRootSignatureImmediate(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,

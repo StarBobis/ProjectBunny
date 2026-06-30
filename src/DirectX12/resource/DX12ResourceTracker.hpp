@@ -53,6 +53,7 @@ void DX12FindDescriptorSummariesByCpuHandle(
 	DX12DescriptorSummary *summaries, uint8_t *found,
 	bool completeResourceInfo = true);
 UINT64 CurrentDescriptorEpoch();
+UINT64 CurrentDescriptorQuerySerial();
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary);
 bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
