@@ -1298,53 +1298,146 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 	return false;
 }
 
-static bool CopyDescriptorSlotToSlotLocked(
-	const DescriptorSlotLocation &srcLocation,
-	const DescriptorSlotLocation &destLocation, SIZE_T srcCpuHandle,
-	SIZE_T destCpuHandle)
+class DX12DescriptorCopyRangeUtils
 {
-	if (srcLocation.heapIndex >= gDescriptorHeaps.size() ||
-		destLocation.heapIndex >= gDescriptorHeaps.size())
+public:
+static bool RangesOverlap(
+	const DescriptorSlotLocation &srcLocation,
+	const DescriptorSlotLocation &destLocation,
+	UINT count)
+{
+	if (srcLocation.heapIndex != destLocation.heapIndex || count == 0)
 		return false;
-	const DescriptorHeapRecord &srcHeap = gDescriptorHeaps[srcLocation.heapIndex];
-	const DescriptorRecord *source = DescriptorHeapSlot(&srcHeap, srcLocation.slot);
-	DescriptorRecord ledgerSource;
-	if (!source) {
-		if (!FindLatestDescriptorLocked(srcCpuHandle, &ledgerSource))
-			return false;
-		source = &ledgerSource;
-	}
+	const UINT64 srcBegin = srcLocation.slot;
+	const UINT64 srcEnd = srcBegin + count;
+	const UINT64 destBegin = destLocation.slot;
+	const UINT64 destEnd = destBegin + count;
+	return srcBegin < destEnd && destBegin < srcEnd;
+}
 
-	DescriptorHeapRecord &destHeap = gDescriptorHeaps[destLocation.heapIndex];
-	if (!EnsureDescriptorHeapStorageLocked(&destHeap)) {
-		ReleaseDescriptorRecordResources(&ledgerSource);
+static bool GetSourceRecordLocked(
+	const DescriptorHeapRecord &srcHeap,
+	const DescriptorSlotLocation &srcLocation,
+	SIZE_T srcCpuHandle,
+	DescriptorRecord *storage,
+	const DescriptorRecord **source)
+{
+	if (!storage || !source)
 		return false;
-	}
-	if (destLocation.slot >= destHeap.slots.size()) {
-		ReleaseDescriptorRecordResources(&ledgerSource);
-		return false;
-	}
-	DescriptorRecord *existing = DescriptorHeapSlot(&destHeap, destLocation.slot);
-	if (existing && DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
-			*existing, *source, destCpuHandle)) {
-		ReleaseDescriptorRecordResources(&ledgerSource);
-		++gDescriptorCopyRecordsSeen;
+	*source = DescriptorHeapSlot(&srcHeap, srcLocation.slot);
+	if (*source)
 		return true;
-	}
-	if (existing)
-		ClearDescriptorHeapSlotLocked(&destHeap, destLocation.slot);
-	DescriptorRecord historyRecord;
-	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-		&historyRecord, *source, destCpuHandle);
-	AppendDescriptorHistoryLocked(&destHeap, destLocation.slot, historyRecord);
-	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-		&destHeap.slots[destLocation.slot], *source, destCpuHandle);
-	destHeap.occupied[destLocation.slot] = 1;
-	destHeap.liveSlots++;
-	ReleaseDescriptorRecordResources(&ledgerSource);
-	++gDescriptorCopyRecordsSeen;
+	if (!FindLatestDescriptorLocked(srcCpuHandle, storage))
+		return false;
+	*source = storage;
 	return true;
 }
+
+static void StoreSlotValueLocked(
+	DescriptorHeapRecord *destHeap,
+	UINT destSlot,
+	SIZE_T destCpuHandle,
+	const DescriptorRecord &source,
+	bool appendHistory)
+{
+	if (!destHeap || destSlot >= destHeap->slots.size())
+		return;
+
+	DescriptorRecord *existing = DescriptorHeapSlot(destHeap, destSlot);
+	if (existing && DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
+			*existing, source, destCpuHandle)) {
+		++gDescriptorCopyRecordsSeen;
+		return;
+	}
+
+	if (existing)
+		ClearDescriptorHeapSlotLocked(destHeap, destSlot);
+
+	if (appendHistory) {
+		DescriptorRecord historyRecord;
+		DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+			&historyRecord, source, destCpuHandle);
+		AppendDescriptorHistoryLocked(destHeap, destSlot, historyRecord);
+	}
+
+	const bool wasOccupied = DescriptorHeapSlotOccupied(*destHeap, destSlot);
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&destHeap->slots[destSlot], source, destCpuHandle);
+	destHeap->occupied[destSlot] = 1;
+	if (!wasOccupied)
+		destHeap->liveSlots++;
+	++gDescriptorCopyRecordsSeen;
+}
+
+static bool CopyHeapRangeLocked(
+	const DescriptorSlotLocation &srcLocation,
+	const DescriptorSlotLocation &destLocation,
+	SIZE_T srcHandle,
+	SIZE_T destHandle,
+	UINT count,
+	UINT increment)
+{
+	if (count == 0 || increment == 0 ||
+			srcLocation.heapIndex >= gDescriptorHeaps.size() ||
+			destLocation.heapIndex >= gDescriptorHeaps.size())
+		return false;
+
+	const DescriptorHeapRecord &srcHeap = gDescriptorHeaps[srcLocation.heapIndex];
+	DescriptorHeapRecord &destHeap = gDescriptorHeaps[destLocation.heapIndex];
+	if (!EnsureDescriptorHeapStorageLocked(&destHeap) ||
+			destLocation.slot >= destHeap.slots.size())
+		return false;
+
+	const size_t destSlotsAvailable = destHeap.slots.size() - destLocation.slot;
+	const UINT maxDestCount = destSlotsAvailable < count ?
+		static_cast<UINT>(destSlotsAvailable) : count;
+	const bool appendHistory = DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
+	const bool overlap = RangesOverlap(srcLocation, destLocation, maxDestCount);
+	std::vector<DescriptorRecord> sourceSnapshot;
+	std::vector<uint8_t> sourceValid;
+	if (overlap) {
+		sourceSnapshot.resize(maxDestCount);
+		sourceValid.assign(maxDestCount, 0);
+		for (UINT i = 0; i < maxDestCount; ++i) {
+			DescriptorSlotLocation currentSrc = srcLocation;
+			currentSrc.slot += i;
+			DescriptorRecord ledgerSource;
+			const DescriptorRecord *source = nullptr;
+			const SIZE_T currentSrcHandle = srcHandle + static_cast<SIZE_T>(i) * increment;
+			if (!GetSourceRecordLocked(srcHeap, currentSrc, currentSrcHandle, &ledgerSource, &source)) {
+				ReleaseDescriptorRecordResources(&ledgerSource);
+				continue;
+			}
+			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+				&sourceSnapshot[i], *source, currentSrcHandle);
+			sourceValid[i] = 1;
+			ReleaseDescriptorRecordResources(&ledgerSource);
+		}
+	}
+
+	for (UINT i = 0; i < maxDestCount; ++i) {
+		const SIZE_T currentSrcHandle = srcHandle + static_cast<SIZE_T>(i) * increment;
+		const SIZE_T currentDestHandle = destHandle + static_cast<SIZE_T>(i) * increment;
+		const DescriptorRecord *source = nullptr;
+		DescriptorRecord ledgerSource;
+		if (overlap) {
+			if (!sourceValid[i])
+				continue;
+			source = &sourceSnapshot[i];
+		} else {
+			DescriptorSlotLocation currentSrc = srcLocation;
+			currentSrc.slot += i;
+			if (!GetSourceRecordLocked(srcHeap, currentSrc, currentSrcHandle, &ledgerSource, &source)) {
+				ReleaseDescriptorRecordResources(&ledgerSource);
+				continue;
+			}
+		}
+		StoreSlotValueLocked(&destHeap, destLocation.slot + i, currentDestHandle, *source, appendHistory);
+		ReleaseDescriptorRecordResources(&ledgerSource);
+	}
+	return true;
+}
+};
 
 static void RecordDescriptorLocked(DescriptorRecord &&record)
 {
@@ -1387,18 +1480,8 @@ void RecordDescriptorCopyRange(
 		// that model in the tracker by locating each contiguous source/dest
 		// heap span once instead of rescanning all heaps for every descriptor.
 		if (srcInHeap && destInHeap) {
-			for (UINT i = 0; i < chunk; ++i) {
-				DescriptorSlotLocation currentSrc = srcLocation;
-				currentSrc.slot += i;
-				DescriptorSlotLocation currentDest = destLocation;
-				currentDest.slot += i;
-				const SIZE_T currentSrcHandle =
-					srcHandle + static_cast<SIZE_T>(i) * increment;
-				const SIZE_T currentDestHandle =
-					destHandle + static_cast<SIZE_T>(i) * increment;
-				CopyDescriptorSlotToSlotLocked(
-					currentSrc, currentDest, currentSrcHandle, currentDestHandle);
-			}
+			DX12DescriptorCopyRangeUtils::CopyHeapRangeLocked(
+				srcLocation, destLocation, srcHandle, destHandle, chunk, increment);
 		} else if (destInHeap) {
 			for (UINT i = 0; i < chunk; ++i) {
 				DescriptorRecord copied;
