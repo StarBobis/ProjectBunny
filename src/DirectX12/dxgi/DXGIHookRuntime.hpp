@@ -87,18 +87,18 @@ public:
 		DXGIHookSignatures::Present original = DXGIHookRegistry::GetPresentOriginal(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"EnterSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, syncInterval, flags);
 		if (InterlockedCompareExchange(firstPresentLog, 2, 1) == 1)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
 				swapChain);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"BeforeOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"AfterOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 3, 2) == 2)
@@ -109,18 +109,18 @@ public:
 		DX12HuntOnPresent();
 		if (DX12RuntimeState::GetPresentCount() > 2)
 			RunPostPresentUi(swapChain);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"AfterUiSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 4, 3) == 3)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"BeforeHotPathUpdateSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		DX12HotPathState::Update();
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present\",\"stage\":\"ReturnSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 5, 4) == 4)
@@ -137,18 +137,18 @@ public:
 		DXGIHookSignatures::Present1 original = DXGIHookRegistry::GetPresent1Original(swapChain);
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"EnterSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, syncInterval, flags);
 		if (InterlockedCompareExchange(firstPresentLog, 2, 1) == 1)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
 				swapChain);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"BeforeOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain);
 		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"AfterOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 3, 2) == 2)
@@ -159,18 +159,18 @@ public:
 		DX12HuntOnPresent();
 		if (DX12RuntimeState::GetPresentCount() > 2)
 			RunPostPresentUi(swapChain);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"AfterUiSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 4, 3) == 3)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 				swapChain, hr);
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"BeforeHotPathUpdateSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		DX12HotPathState::Update();
-		DX12LogManager::JsonFuncFlush("DX12PresentHeartbeat",
+		DX12LogManager::JsonFunc("DX12PresentHeartbeat",
 			"\"api\":\"Present1\",\"stage\":\"ReturnSkip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
 			DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), swapChain, hr);
 		if (InterlockedCompareExchange(firstPresentLog, 5, 4) == 4)

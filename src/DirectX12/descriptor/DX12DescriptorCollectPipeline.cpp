@@ -2,7 +2,11 @@
 
 #include "DX12LogManager.hpp"
 
+#include <chrono>
+
 static constexpr uint64_t kDescriptorInlineStatsInterval = 65536;
+static constexpr size_t kDescriptorWorkerBatchTarget = 64;
+static constexpr auto kDescriptorWorkerCoalesceWindow = std::chrono::milliseconds(1);
 
 DX12DescriptorCollectPipeline &DX12DescriptorCollectPipeline::Get()
 {
@@ -175,6 +179,18 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 				return stopRequested.load(std::memory_order_acquire) ||
 					!pendingDescriptorWrites.empty();
 			});
+			if (pendingDescriptorWrites.empty()) {
+				if (stopRequested.load(std::memory_order_acquire))
+					break;
+				continue;
+			}
+			if (!stopRequested.load(std::memory_order_acquire) &&
+					pendingDescriptorWrites.size() < kDescriptorWorkerBatchTarget) {
+				wake.wait_for(lock, kDescriptorWorkerCoalesceWindow, [this]() {
+					return stopRequested.load(std::memory_order_acquire) ||
+						pendingDescriptorWrites.size() >= kDescriptorWorkerBatchTarget;
+				});
+			}
 			if (pendingDescriptorWrites.empty()) {
 				if (stopRequested.load(std::memory_order_acquire))
 					break;

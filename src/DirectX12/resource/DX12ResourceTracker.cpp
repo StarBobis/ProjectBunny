@@ -811,6 +811,16 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 	}
 }
 
+void CaptureDescriptorResourcePointer(DescriptorRecord *record, ID3D12Resource *resource)
+{
+	if (!record || !resource)
+		return;
+	// Descriptor creation already captures the descriptor value itself. Keep
+	// only the resource identity on the caller thread and defer resource-desc /
+	// state completion to query or dump time.
+	record->resource = resource;
+}
+
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 {
 	if (!record || gpuVa == 0)

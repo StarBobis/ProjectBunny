@@ -481,6 +481,15 @@ static void FillDescriptorSummary(
 			summary->structureByteStride = record.srv.Buffer.StructureByteStride;
 			summary->bufferViewOffset = record.resourceOffset;
 			summary->bufferViewBytes = record.viewSize;
+			if (summary->bufferViewBytes == 0 &&
+					summary->hasResourceDesc &&
+					summary->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					summary->resourceDesc.Width > summary->bufferViewOffset) {
+				summary->bufferViewBytes =
+					summary->resourceDesc.Width - summary->bufferViewOffset;
+				if (summary->viewSize == 0)
+					summary->viewSize = summary->bufferViewBytes;
+			}
 		}
 	} else if (record.kindId == DescriptorKind::UAV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.uav.Format);
@@ -491,6 +500,15 @@ static void FillDescriptorSummary(
 			summary->structureByteStride = record.uav.Buffer.StructureByteStride;
 			summary->bufferViewOffset = record.resourceOffset;
 			summary->bufferViewBytes = record.viewSize;
+			if (summary->bufferViewBytes == 0 &&
+					summary->hasResourceDesc &&
+					summary->resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					summary->resourceDesc.Width > summary->bufferViewOffset) {
+				summary->bufferViewBytes =
+					summary->resourceDesc.Width - summary->bufferViewOffset;
+				if (summary->viewSize == 0)
+					summary->viewSize = summary->bufferViewBytes;
+			}
 		}
 	} else if (record.kindId == DescriptorKind::RTV_ID && record.hasDesc) {
 		summary->viewFormat = static_cast<UINT>(record.rtv.Format);

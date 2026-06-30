@@ -230,6 +230,7 @@ void CleanupTrackedResources();
 void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_T blobLength);
 void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource);
 void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource);
+void CaptureDescriptorResourcePointer(DescriptorRecord *record, ID3D12Resource *resource);
 void ReleaseDescriptorRecordResources(DescriptorRecord *record);
 DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record);
 void StoreCpuDescriptorRecordLocked(const DescriptorRecord &record);

@@ -253,8 +253,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
 	PrepareDescriptorValueId(&record);
 	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
 		return;
-	if (ShouldTrackResourceMetadata())
-		ResolveBufferByGpuVa(desc->BufferLocation, desc->SizeInBytes, &record);
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateConstantBufferView");
 }
 
@@ -268,7 +266,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::SRV_ID);
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourcePointerInfo(&record, resource);
+	CaptureDescriptorResourcePointer(&record, resource);
 	if (desc) {
 		record.srv = *desc;
 		record.hasDesc = true;
@@ -292,7 +290,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 	SetDescriptorKind(&record, DescriptorKind::UAV_ID);
 	record.cpuHandle = destDescriptor.ptr;
 	record.counterResource = counterResource;
-	FillResourcePointerInfo(&record, resource);
+	CaptureDescriptorResourcePointer(&record, resource);
 	if (desc) {
 		record.uav = *desc;
 		record.hasDesc = true;
@@ -314,7 +312,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::RTV_ID);
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourcePointerInfo(&record, resource);
+	CaptureDescriptorResourcePointer(&record, resource);
 	if (desc) {
 		record.rtv = *desc;
 		record.hasDesc = true;
@@ -335,7 +333,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::DSV_ID);
 	record.cpuHandle = destDescriptor.ptr;
-	FillResourcePointerInfo(&record, resource);
+	CaptureDescriptorResourcePointer(&record, resource);
 	if (desc) {
 		record.dsv = *desc;
 		record.hasDesc = true;
