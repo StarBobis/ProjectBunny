@@ -14,6 +14,7 @@ add_library(DirectX12 SHARED
 
     # Binding/descriptor tracking
     binding/DX12CaptureLedger.cpp
+    binding/DX12BindingCollectQueue.cpp
     binding/DX12BindingTracker.cpp
     binding/DX12BindingTrackerFrameExport.cpp
     binding/DX12BindingTrackerResourceExport.cpp

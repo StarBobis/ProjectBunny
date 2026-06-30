@@ -141,10 +141,14 @@ public:
 	static void RecordDrawIndexedInstanced(ID3D12GraphicsCommandList *commandList, UINT indexCountPerInstance, UINT instanceCount, UINT startIndexLocation, INT baseVertexLocation, UINT startInstanceLocation);
 	static void RecordDispatch(ID3D12GraphicsCommandList *commandList, UINT threadGroupCountX, UINT threadGroupCountY, UINT threadGroupCountZ);
 	static void BeginFrame();
+	static void DrainPendingEvents(const char *reason);
 
 	static void ReleaseRetainedIaResources(CommandListBindingState *state);
+	static void RetainStateIaResourcesForAsync(CommandListBindingState *state);
 	static void RetainEventIaResources(BindingEvent *event);
 	static void ReleaseEventIaResources(BindingEvent *event);
+	static void RefreshPipelineShaderInfo(CommandListBindingState *state);
+	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 descriptorEpoch);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);

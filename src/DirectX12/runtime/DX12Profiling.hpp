@@ -81,6 +81,13 @@ public:
 	Counter AllBindings;
 	Counter AllCommands;
 	Counter FastForwardHits;
+	volatile LONG64 BindingQueueTaskUs = 0;
+	volatile LONG64 BindingQueueDrainUs = 0;
+	volatile LONG64 BindingQueueMaxTaskUs = 0;
+	volatile LONG64 BindingQueueMaxDrainUs = 0;
+	volatile LONG BindingQueueTasks = 0;
+	volatile LONG BindingQueueDrains = 0;
+	volatile LONG BindingQueueMaxPending = 0;
 
 	Mode mode = Mode::NONE;
 	volatile LONG collectCounters = 0;
@@ -113,6 +120,8 @@ public:
 	static void FlushFrame();
 	static const wchar_t *OverlayText();
 	static void RecordFastForwardHit();
+	static void RecordBindingQueueTaskUs(LONG64 elapsedUs);
+	static void RecordBindingQueueDrainUs(LONG64 elapsedUs, LONG pending);
 
 	void InitState();
 	void BeginFrameState();
@@ -333,6 +342,39 @@ inline void DX12Profiling::RecordFastForwardHit()
 	Get().FastForwardHits.IncrementCalls();
 }
 
+inline void DX12Profiling::RecordBindingQueueTaskUs(LONG64 elapsedUs)
+{
+	if (!ShouldCollectCounters() || elapsedUs <= 0)
+		return;
+	DX12Profiling &profiling = Get();
+	InterlockedIncrement(&profiling.BindingQueueTasks);
+	InterlockedAdd64(&profiling.BindingQueueTaskUs, elapsedUs);
+	LONG64 currentMax = profiling.BindingQueueMaxTaskUs;
+	while (elapsedUs > currentMax &&
+		InterlockedCompareExchange64(&profiling.BindingQueueMaxTaskUs, elapsedUs, currentMax) != currentMax) {
+		currentMax = profiling.BindingQueueMaxTaskUs;
+	}
+}
+
+inline void DX12Profiling::RecordBindingQueueDrainUs(LONG64 elapsedUs, LONG pending)
+{
+	if (!ShouldCollectCounters() || elapsedUs <= 0)
+		return;
+	DX12Profiling &profiling = Get();
+	InterlockedIncrement(&profiling.BindingQueueDrains);
+	InterlockedAdd64(&profiling.BindingQueueDrainUs, elapsedUs);
+	LONG64 currentMaxUs = profiling.BindingQueueMaxDrainUs;
+	while (elapsedUs > currentMaxUs &&
+		InterlockedCompareExchange64(&profiling.BindingQueueMaxDrainUs, elapsedUs, currentMaxUs) != currentMaxUs) {
+		currentMaxUs = profiling.BindingQueueMaxDrainUs;
+	}
+	LONG currentMaxPending = profiling.BindingQueueMaxPending;
+	while (pending > currentMaxPending &&
+		InterlockedCompareExchange(&profiling.BindingQueueMaxPending, pending, currentMaxPending) != currentMaxPending) {
+		currentMaxPending = profiling.BindingQueueMaxPending;
+	}
+}
+
 inline void DX12Profiling::InitState()
 {
 	QueryPerformanceFrequency(&perfFrequency);
@@ -429,6 +471,13 @@ inline void DX12Profiling::ResetFrame()
 	PreSkinUavHits.Reset();
 	PreSkinApplied.Reset();
 	PreSkinDispatchResized.Reset();
+	InterlockedExchange64(&BindingQueueTaskUs, 0);
+	InterlockedExchange64(&BindingQueueDrainUs, 0);
+	InterlockedExchange64(&BindingQueueMaxTaskUs, 0);
+	InterlockedExchange64(&BindingQueueMaxDrainUs, 0);
+	InterlockedExchange(&BindingQueueTasks, 0);
+	InterlockedExchange(&BindingQueueDrains, 0);
+	InterlockedExchange(&BindingQueueMaxPending, 0);
 }
 
 inline double DX12Profiling::TicksToUs(LONG64 ticks) const
@@ -545,10 +594,13 @@ inline void DX12Profiling::FlushFrameState()
 		"\"iaSetIndexBuffer\":%ld,\"iaSetVertexBuffers\":%ld,\"iaSetPrimitiveTopology\":%ld,"
 		"\"bindingsTotal\":%ld,"
 		"\"resourceBarrier\":%ld,"
-		"\"executeCommandLists\":%ld,\"resetCommandList\":%ld,\"present\":%ld,"
+		"\"executeCommandLists\":%ld,\"resetCommandList\":%ld,\"presentCalls\":%ld,"
 		"\"commandsTotal\":%ld,"
 		"\"fastForwardHits\":%ld,"
-		"\"cpuUs_total\":%.1f,\"cpuUs_draws\":%.1f,\"cpuUs_bindings\":%.1f,\"cpuUs_dispatch\":%.1f",
+		"\"cpuUs_total\":%.1f,\"cpuUs_draws\":%.1f,\"cpuUs_bindings\":%.1f,\"cpuUs_dispatch\":%.1f,"
+		"\"bindingQueueTasks\":%ld,\"bindingQueueTaskUs\":%.1f,\"bindingQueueMaxTaskUs\":%.1f,"
+		"\"bindingQueueDrains\":%ld,\"bindingQueueDrainUs\":%.1f,\"bindingQueueMaxDrainUs\":%.1f,"
+		"\"bindingQueueMaxPending\":%ld",
 		present,
 		DrawInstanced.calls, DrawIndexedInstanced.calls, draws.calls,
 		Dispatch.calls,
@@ -568,9 +620,21 @@ inline void DX12Profiling::FlushFrameState()
 		TicksToUs(all.cpuTicks),
 		TicksToUs(draws.cpuTicks),
 		TicksToUs(bindings.cpuTicks),
-		TicksToUs(Dispatch.cpuTicks));
+		TicksToUs(Dispatch.cpuTicks),
+		BindingQueueTasks,
+		static_cast<double>(BindingQueueTaskUs),
+		static_cast<double>(BindingQueueMaxTaskUs),
+		BindingQueueDrains,
+		static_cast<double>(BindingQueueDrainUs),
+		static_cast<double>(BindingQueueMaxDrainUs),
+		BindingQueueMaxPending);
 
-	wchar_t buf[256];
+	wchar_t drawsBuf[32];
+	wchar_t dispatchBuf[32];
+	wchar_t setPsoBuf[32];
+	wchar_t bindingsBuf[32];
+	wchar_t queueTaskBuf[32];
+	wchar_t queueDrainBuf[32];
 	overlayText[0] = L'\0';
 	swprintf_s(overlayText, L"DX12 Profiling Frame %ld\n"
 		L"  Draws: %ld (I %ld + II %ld)  %s\n"
@@ -581,16 +645,17 @@ inline void DX12Profiling::FlushFrameState()
 		L"    IB:%ld VB:%ld Topo:%ld\n"
 		L"  Barriers: %ld\n"
 		L"  ExecCL:%ld Reset:%ld Present:%ld\n"
+		L"  BindingQueue: tasks=%ld %s drains=%ld %s maxPending=%ld\n"
 		L"  Total: %ld  FF:%ld(%.0f%%)",
 		present,
 		draws.calls, DrawInstanced.calls, DrawIndexedInstanced.calls,
-		FormatUs(TicksToUs(draws.cpuTicks), buf, 256),
+		FormatUs(TicksToUs(draws.cpuTicks), drawsBuf, ARRAYSIZE(drawsBuf)),
 		Dispatch.calls,
-		FormatUs(TicksToUs(Dispatch.cpuTicks), buf, 256),
+		FormatUs(TicksToUs(Dispatch.cpuTicks), dispatchBuf, ARRAYSIZE(dispatchBuf)),
 		SetPipelineState.calls,
-		FormatUs(TicksToUs(SetPipelineState.cpuTicks), buf, 256),
+		FormatUs(TicksToUs(SetPipelineState.cpuTicks), setPsoBuf, ARRAYSIZE(setPsoBuf)),
 		bindings.calls,
-		FormatUs(TicksToUs(bindings.cpuTicks), buf, 256),
+		FormatUs(TicksToUs(bindings.cpuTicks), bindingsBuf, ARRAYSIZE(bindingsBuf)),
 		SetDescriptorHeaps.calls,
 		SetComputeRootSignature.calls + SetGraphicsRootSignature.calls,
 		SetComputeRootDescriptorTable.calls + SetGraphicsRootDescriptorTable.calls,
@@ -600,6 +665,11 @@ inline void DX12Profiling::FlushFrameState()
 		IASetIndexBuffer.calls, IASetVertexBuffers.calls, IASetPrimitiveTopology.calls,
 		ResourceBarrier.calls,
 		ExecuteCommandLists.calls, ResetCommandList.calls, Present.calls,
+		BindingQueueTasks,
+		FormatUs(static_cast<double>(BindingQueueTaskUs), queueTaskBuf, ARRAYSIZE(queueTaskBuf)),
+		BindingQueueDrains,
+		FormatUs(static_cast<double>(BindingQueueDrainUs), queueDrainBuf, ARRAYSIZE(queueDrainBuf)),
+		BindingQueueMaxPending,
 		all.calls,
 		FastForwardHits.calls,
 		all.calls > 0 ? (double)FastForwardHits.calls * 100.0 / (double)all.calls : 0.0);

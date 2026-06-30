@@ -50,6 +50,8 @@ class CommandListBindingState
 {
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
+	DX12PsoShaderInfo pipelineShaderInfo = {};
+	bool pipelineShaderInfoValid = false;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
 	ID3D12RootSignature *computeRootSignature = nullptr;
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;

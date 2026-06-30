@@ -708,6 +708,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	if (!bindings)
 		return;
 
+	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameResourceBindings");
 	DX12CaptureLedgerSnapshot snapshot;
 	DX12CaptureLedger::GetSnapshot(&snapshot);
 	DX12CaptureLedger::LogSnapshotHealth("BindingResourcesLedgerSnapshot", snapshot);
@@ -855,6 +856,7 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	if (!bindings)
 		return;
 
+	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameOutputBindings");
 	DX12CaptureLedgerSnapshot snapshot;
 	DX12CaptureLedger::GetSnapshot(&snapshot);
 	std::vector<OutputBindingEvent> events = snapshot.outputEvents;

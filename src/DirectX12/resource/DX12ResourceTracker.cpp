@@ -1,5 +1,6 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
+#include "DX12BindingCollectQueue.hpp"
 #include "DX12DescriptorCollectPipeline.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 
@@ -517,6 +518,7 @@ void RecordResource(
 
 void CleanupTrackedResources()
 {
+	DX12BindingCollectQueue::Stop();
 	DX12ResourceCollectQueue::Stop();
 	DX12DescriptorCollectPipeline::Stop();
 	AcquireSRWLockExclusive(&gResourceLock);

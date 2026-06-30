@@ -23,6 +23,7 @@ void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShade
 	if (!shaderInfos)
 		return;
 
+	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameShaderInfos");
 	shaderInfos->clear();
 	DX12CaptureLedgerSnapshot snapshot;
 	DX12CaptureLedger::GetSnapshot(&snapshot);
@@ -571,6 +572,7 @@ void DX12BindingFrameExport::BuildIaBufferFileName(
 
 void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
 {
+	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameIaBuffers");
 	std::vector<DX12FrameResourceBinding> resourceBindings;
 	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
 	DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(buffers, resourceBindings);
@@ -583,6 +585,7 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
 	if (!buffers)
 		return;
 
+	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameIaBuffersWithResourceBindings");
 	DX12CaptureLedgerSnapshot snapshot;
 	DX12CaptureLedger::GetSnapshot(&snapshot);
 	std::vector<BindingEvent> events = snapshot.events;
@@ -616,6 +619,7 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 		return result;
 	}
 
+	DX12BindingTracker::DrainPendingEvents("DumpBindingTrace");
 	DX12CaptureLedgerSnapshot snapshot;
 	DX12CaptureLedger::GetSnapshot(&snapshot);
 	DX12CaptureLedger::LogSnapshotHealth("BindingTraceLedgerSnapshot", snapshot);

@@ -1,5 +1,6 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12BindingTrackerQuery.hpp"
+#include "DX12BindingCollectQueue.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +26,11 @@ static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
 static thread_local BindingTlsDescriptorCache tlsGraphicsDescCache;
 static thread_local BindingTlsDescriptorCache tlsComputeDescCache;
+
+void DX12BindingTracker::DrainPendingEvents(const char *reason)
+{
+	DX12BindingCollectQueue::DrainForSnapshot(reason ? reason : "BindingTracker");
+}
 
 void DX12BindingTracker::ReleaseRetainedIaResources(CommandListBindingState *state)
 {
@@ -79,9 +85,45 @@ void DX12BindingTracker::ReleaseEventIaResources(BindingEvent *event)
 	event->indexBufferResolved = false;
 }
 
+void DX12BindingTracker::RetainStateIaResourcesForAsync(CommandListBindingState *state)
+{
+	if (!state)
+		return;
+	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
+		if (!state->vertexBufferResolved[slot] || !state->vertexBufferResources[slot].resource)
+			continue;
+		if (!DX12RetainResource(state->vertexBufferResources[slot].resource)) {
+			state->vertexBufferResources[slot] = {};
+			state->vertexBufferResolved[slot] = false;
+		}
+	}
+	if (state->indexBufferResolved && state->indexBufferResource.resource &&
+		!DX12RetainResource(state->indexBufferResource.resource)) {
+		state->indexBufferResource = {};
+		state->indexBufferResolved = false;
+	}
+}
+
+void DX12BindingTracker::RefreshPipelineShaderInfo(CommandListBindingState *state)
+{
+	if (!state)
+		return;
+
+	state->pipelineShaderInfo = {};
+	state->pipelineShaderInfoValid = false;
+	if (!state->pipelineState)
+		return;
+
+	if (DX12GetPipelineStateShaderInfo(state->pipelineState, &state->pipelineShaderInfo))
+		state->pipelineShaderInfoValid = true;
+}
+
 bool DX12BindingTracker::BuildEvent(
-	BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList,
-	const CommandListBindingState &state)
+	BindingEvent *event,
+	const char *kind,
+	ID3D12GraphicsCommandList *commandList,
+	const CommandListBindingState &state,
+	UINT64 descriptorEpoch)
 {
 	if (!event)
 		return false;
@@ -91,7 +133,7 @@ bool DX12BindingTracker::BuildEvent(
 	const bool isDispatchKind = kind && !strcmp(kind, "dispatch");
 	event->drawId = isDrawKind ? state.drawSerial : 0;
 	event->dispatchId = isDispatchKind ? state.dispatchSerial : 0;
-	event->descriptorEpoch = CurrentDescriptorEpoch();
+	event->descriptorEpoch = descriptorEpoch;
 	event->commandList = commandList;
 	event->pipelineState = state.pipelineState;
 	event->graphicsRootSignature = state.graphicsRootSignature;
@@ -114,7 +156,11 @@ bool DX12BindingTracker::BuildEvent(
 	event->indexBufferResolved = state.indexBufferResolved;
 	event->primitiveTopology = state.primitiveTopology;
 	if (state.pipelineState) {
-		DX12GetPipelineStateShaderInfo(state.pipelineState, &event->shaderInfo);
+		if (state.pipelineShaderInfoValid) {
+			event->shaderInfo = state.pipelineShaderInfo;
+		} else {
+			DX12GetPipelineStateShaderInfo(state.pipelineState, &event->shaderInfo);
+		}
 		ID3D12RootSignature *psoRootSignature = nullptr;
 		if (DX12GetPsoRootSignature(event->shaderInfo.psoIndex, &psoRootSignature)) {
 			if (!event->graphicsRootSignature)
@@ -124,6 +170,18 @@ bool DX12BindingTracker::BuildEvent(
 		}
 	}
 	return true;
+}
+
+bool DX12BindingTracker::BuildEvent(
+	BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList,
+	const CommandListBindingState &state)
+{
+	return DX12BindingTracker::BuildEvent(
+		event,
+		kind,
+		commandList,
+		state,
+		CurrentDescriptorEpoch());
 }
 
 void DX12BindingTracker::StoreEventLocked(const BindingEvent &event)
@@ -176,8 +234,12 @@ void DX12BindingTracker::StoreOutputEventLocked(
 	event.dispatchId = dispatchId;
 	event.slot = slot;
 	event.cpuHandle = cpuHandle;
-	if (state.pipelineState)
-		DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
+	if (state.pipelineState) {
+		if (state.pipelineShaderInfoValid)
+			event.shaderInfo = state.pipelineShaderInfo;
+		else
+			DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
+	}
 	DX12CaptureLedger::RecordOutputEvent(event);
 	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
 		DX12BindingTrackerState::DroppedOutputEvents++;
@@ -222,6 +284,7 @@ void DX12BindingTracker::ResetCommandList(
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	state = CommandListBindingState();
 	state.pipelineState = initialState;
+	DX12BindingTracker::RefreshPipelineShaderInfo(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	tlsGraphicsTableCache.cl = nullptr;
@@ -238,7 +301,9 @@ void DX12BindingTracker::SetPipelineState(
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.states[commandList].pipelineState = pipelineState;
+	CommandListBindingState &state = shard.states[commandList];
+	state.pipelineState = pipelineState;
+	DX12BindingTracker::RefreshPipelineShaderInfo(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -285,9 +350,19 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		return;
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	if (DX12BindingCollectQueue::EnqueueStateEvent(
+			commandList,
+			snapshot,
+			kind ? kind : "state",
+			descriptorEpoch))
+		return;
 
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
-	DX12BindingTracker::StoreEventLocked(kind ? kind : "state", commandList, snapshot);
+	BindingEvent event;
+	if (DX12BindingTracker::BuildEvent(&event, kind ? kind : "state", commandList, snapshot, descriptorEpoch))
+		DX12BindingTracker::StoreEventLocked(event);
 	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
@@ -495,8 +570,7 @@ void DX12BindingTracker::RecordOutputTargets(
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		snapshot = CommandListBindingState();
-
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
 	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
 		if (singleHandleToDescriptorRange && i > 0) {
@@ -508,12 +582,20 @@ void DX12BindingTracker::RecordOutputTargets(
 			handle.ptr = renderTargetDescriptors[0].ptr +
 				static_cast<SIZE_T>(i) * heap.increment;
 		}
+		if (DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "RTV", i, handle.ptr, 0))
+			continue;
+		AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		DX12BindingTracker::StoreOutputEventLocked("RTV", commandList, snapshot, i, handle.ptr, 0);
+		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	}
-	if (depthStencilDescriptor)
+	if (depthStencilDescriptor &&
+		!DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "DSV", 0,
+			depthStencilDescriptor->ptr, 0)) {
+		AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		DX12BindingTracker::StoreOutputEventLocked("DSV", commandList, snapshot, 0,
 			depthStencilDescriptor->ptr, 0);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	}
 
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -566,6 +648,9 @@ void DX12BindingTracker::RecordRenderTargetClear(
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
 		return;
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	if (DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "RTV", 0, renderTargetView.ptr, 0))
+		return;
 
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreOutputEventLocked("RTV", commandList, snapshot, 0, renderTargetView.ptr, 0);
@@ -589,6 +674,9 @@ void DX12BindingTracker::RecordDepthStencilClear(
 	}
 	ReleaseSRWLockShared(&shard.lock);
 	if (!found)
+		return;
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	if (DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "DSV", 0, depthStencilView.ptr, 0))
 		return;
 
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
@@ -686,7 +774,10 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	event.graphicsRootSignature = snapshot.graphicsRootSignature;
 	event.computeRootSignature = snapshot.computeRootSignature;
 	if (snapshot.pipelineState) {
-		DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event.shaderInfo);
+		if (snapshot.pipelineShaderInfoValid)
+			event.shaderInfo = snapshot.pipelineShaderInfo;
+		else
+			DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event.shaderInfo);
 		ID3D12RootSignature *psoRootSignature = nullptr;
 		if (DX12GetPsoRootSignature(event.shaderInfo.psoIndex, &psoRootSignature)) {
 			if (compute && !event.computeRootSignature)
@@ -868,7 +959,10 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	event.graphicsRootSignature = snapshot.graphicsRootSignature;
 	event.computeRootSignature = snapshot.computeRootSignature;
 	if (snapshot.pipelineState) {
-		DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event.shaderInfo);
+		if (snapshot.pipelineShaderInfoValid)
+			event.shaderInfo = snapshot.pipelineShaderInfo;
+		else
+			DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event.shaderInfo);
 		ID3D12RootSignature *psoRootSignature = nullptr;
 		if (DX12GetPsoRootSignature(event.shaderInfo.psoIndex, &psoRootSignature)) {
 			if (!event.computeRootSignature)
@@ -1060,16 +1154,32 @@ void DX12BindingTracker::RecordDrawInstanced(
 	state.drawSerial = drawSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-
-	BindingEvent event;
-	if (!DX12BindingTracker::BuildEvent(&event, "draw", commandList, snapshot))
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	if (DX12BindingCollectQueue::EnqueueDrawEvent(
+			commandList,
+			snapshot,
+			"draw",
+			descriptorEpoch,
+			vertexCountPerInstance,
+			0,
+			instanceCount,
+			startVertexLocation,
+			0,
+			0,
+			startInstanceLocation))
 		return;
+
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	BindingEvent event;
+	if (!DX12BindingTracker::BuildEvent(&event, "draw", commandList, snapshot, descriptorEpoch)) {
+		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+		return;
+	}
 	event.vertexCountPerInstance = vertexCountPerInstance;
 	event.instanceCount = instanceCount;
 	event.startVertexLocation = startVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
-
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
@@ -1091,17 +1201,33 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	state.drawSerial = drawSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-
-	BindingEvent event;
-	if (!DX12BindingTracker::BuildEvent(&event, "draw_indexed", commandList, snapshot))
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	if (DX12BindingCollectQueue::EnqueueDrawEvent(
+			commandList,
+			snapshot,
+			"draw_indexed",
+			descriptorEpoch,
+			0,
+			indexCountPerInstance,
+			instanceCount,
+			0,
+			startIndexLocation,
+			baseVertexLocation,
+			startInstanceLocation))
 		return;
+
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	BindingEvent event;
+	if (!DX12BindingTracker::BuildEvent(&event, "draw_indexed", commandList, snapshot, descriptorEpoch)) {
+		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+		return;
+	}
 	event.indexCountPerInstance = indexCountPerInstance;
 	event.instanceCount = instanceCount;
 	event.startIndexLocation = startIndexLocation;
 	event.baseVertexLocation = baseVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
-
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot);
 	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
@@ -1123,21 +1249,33 @@ void DX12BindingTracker::RecordDispatch(
 	state.dispatchSerial = dispatchSerial;
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);
-
-	BindingEvent event;
-	if (!DX12BindingTracker::BuildEvent(&event, "dispatch", commandList, snapshot))
+	DX12BindingTracker::RefreshPipelineShaderInfo(&snapshot);
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	if (DX12BindingCollectQueue::EnqueueDispatchEvent(
+			commandList,
+			snapshot,
+			descriptorEpoch,
+			threadGroupCountX,
+			threadGroupCountY,
+			threadGroupCountZ))
 		return;
+
+	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+	BindingEvent event;
+	if (!DX12BindingTracker::BuildEvent(&event, "dispatch", commandList, snapshot, descriptorEpoch)) {
+		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
+		return;
+	}
 	event.threadGroupCountX = threadGroupCountX;
 	event.threadGroupCountY = threadGroupCountY;
 	event.threadGroupCountZ = threadGroupCountZ;
-
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
 	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::BeginFrame()
 {
+	DX12BindingCollectQueue::BeginFrameDrain();
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	for (BindingEvent &event : DX12BindingTrackerState::Events)
 		DX12BindingTracker::ReleaseEventIaResources(&event);
