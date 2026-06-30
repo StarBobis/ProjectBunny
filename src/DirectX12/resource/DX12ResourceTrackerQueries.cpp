@@ -10,25 +10,25 @@ bool DX12GetRootSignatureSummary(
 		return false;
 
 	DX12ResourceCollectQueue::DrainForSnapshot("RootSignatureSummary");
-	DX12DescriptorCollectPipeline::DrainForSnapshot("RootSignatureSummary");
 	AcquireSRWLockShared(&gDescriptorLock);
-	for (const RootSignatureRecord &record : gRootSignatures) {
-		if (record.rootSignature != rootSignature)
-			continue;
-		summary->rootSignature = record.rootSignature;
-		summary->hash = record.hash;
-		summary->size = record.size;
-		summary->nodeMask = record.nodeMask;
-		summary->version = record.version;
-		summary->flags = record.flags;
-		summary->staticSamplerCount = record.staticSamplerCount;
-		summary->parsed = record.parsed;
-		summary->parameters = record.parameters;
+	auto found = gRootSignatureByPtr.find(rootSignature);
+	if (found == gRootSignatureByPtr.end() ||
+		found->second >= gRootSignatures.size()) {
 		ReleaseSRWLockShared(&gDescriptorLock);
-		return true;
+		return false;
 	}
+	const RootSignatureRecord &record = gRootSignatures[found->second];
+	summary->rootSignature = record.rootSignature;
+	summary->hash = record.hash;
+	summary->size = record.size;
+	summary->nodeMask = record.nodeMask;
+	summary->version = record.version;
+	summary->flags = record.flags;
+	summary->staticSamplerCount = record.staticSamplerCount;
+	summary->parsed = record.parsed;
+	summary->parameters = record.parameters;
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return false;
+	return true;
 }
 
 bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignature)
@@ -38,17 +38,17 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 
 	*rootSignature = nullptr;
 	DX12ResourceCollectQueue::DrainForSnapshot("PsoRootSignatureQuery");
-	DX12DescriptorCollectPipeline::DrainForSnapshot("PsoRootSignatureQuery");
 	AcquireSRWLockShared(&gDescriptorLock);
-	for (auto it = gPsoRoots.rbegin(); it != gPsoRoots.rend(); ++it) {
-		if (it->psoIndex != psoIndex || !it->rootSignature)
-			continue;
-		*rootSignature = it->rootSignature;
+	auto found = gPsoRootByIndex.find(psoIndex);
+	if (found == gPsoRootByIndex.end() ||
+		found->second >= gPsoRoots.size() ||
+		!gPsoRoots[found->second].rootSignature) {
 		ReleaseSRWLockShared(&gDescriptorLock);
-		return true;
+		return false;
 	}
+	*rootSignature = gPsoRoots[found->second].rootSignature;
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return false;
+	return true;
 }
 bool DX12ResolveBufferResourceByGpuVa(
 	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary)
@@ -877,7 +877,7 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 			if (location.slot < heap.occupied.size() &&
 					location.slot < heap.slots.size() &&
 					heap.occupied[location.slot]) {
-				FillDescriptorSummary(summary, heap.slots[location.slot], false);
+				FillDescriptorSummary(summary, heap.slots[location.slot], false, false, false);
 				ReleaseSRWLockShared(&gDescriptorLock);
 				return true;
 			}
@@ -886,9 +886,8 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 
 	auto found = gDescriptorByCpuHandle.find(cpuHandle);
 	if (found != gDescriptorByCpuHandle.end()) {
-		FillDescriptorSummary(summary, found->second, false);
+		FillDescriptorSummary(summary, found->second, false, false, false);
 		ReleaseSRWLockShared(&gDescriptorLock);
-		CompleteDescriptorSummaryResourceInfo(summary, false);
 		return true;
 	}
 

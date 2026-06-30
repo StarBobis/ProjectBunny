@@ -33,6 +33,38 @@ static thread_local BindingTlsComputeAllQueryCache tlsComputeAllQueryCache;
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
+	static bool EnsureQueryRootSignature(
+		const CommandListBindingState &snapshot,
+		bool compute,
+		BindingEvent *event)
+	{
+		if (!event)
+			return false;
+
+		ID3D12RootSignature *rootSignature = compute ?
+			event->computeRootSignature : event->graphicsRootSignature;
+		if (rootSignature)
+			return true;
+		if (!snapshot.pipelineState)
+			return false;
+
+		if (event->shaderInfo.psoIndex == 0)
+			DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event->shaderInfo);
+		if (event->shaderInfo.psoIndex == 0)
+			return false;
+
+		ID3D12RootSignature *psoRootSignature = nullptr;
+		if (!DX12GetPsoRootSignature(event->shaderInfo.psoIndex, &psoRootSignature) ||
+			!psoRootSignature)
+			return false;
+
+		if (compute)
+			event->computeRootSignature = psoRootSignature;
+		else
+			event->graphicsRootSignature = psoRootSignature;
+		return true;
+	}
+
 	static void BuildEventForQuery(
 		const CommandListBindingState &snapshot,
 		bool compute,
@@ -45,17 +77,8 @@ public:
 		event->graphicsRootSignature = snapshot.graphicsRootSignature;
 		event->computeRootSignature = snapshot.computeRootSignature;
 		event->shaderInfo = snapshot.pipelineShaderInfo;
-		if (!snapshot.pipelineState)
-			return;
-		if (event->shaderInfo.psoIndex == 0)
-			DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &event->shaderInfo);
-		ID3D12RootSignature *psoRootSignature = nullptr;
-		if (DX12GetPsoRootSignature(event->shaderInfo.psoIndex, &psoRootSignature)) {
-			if (compute && !event->computeRootSignature)
-				event->computeRootSignature = psoRootSignature;
-			if (!compute && !event->graphicsRootSignature)
-				event->graphicsRootSignature = psoRootSignature;
-		}
+		DX12BindingTrackerQueryCacheUtils::EnsureQueryRootSignature(
+			snapshot, compute, event);
 	}
 
 	static bool CollectDescriptorBindings(
@@ -76,6 +99,8 @@ public:
 		const bool hasRootSignature =
 			DX12BindingTrackerQuery::GetRootSignatureForEvent(
 				event, compute, &rootSignature);
+		const bool completeDescriptorResourceInfo =
+			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
 			const RootTableState &table = compute ?
 				snapshot.computeTables[root] : snapshot.graphicsTables[root];
@@ -112,7 +137,8 @@ public:
 						found.resize(cpuHandles.size());
 						DX12FindDescriptorSummariesByCpuHandle(
 							cpuHandles.data(), cpuHandles.size(),
-							descriptors.data(), found.data(), true);
+							descriptors.data(), found.data(),
+							completeDescriptorResourceInfo);
 						for (UINT offset = 0; offset < cpuHandles.size(); ++offset) {
 							if (!found[offset] || descriptors[offset].kind != descriptorKind)
 								continue;
@@ -145,8 +171,10 @@ public:
 						const SIZE_T cpuHandle =
 							heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
 						DX12DescriptorSummary descriptor = {};
-						if (DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &descriptor) &&
-							descriptor.kind == descriptorKind) {
+						const bool foundDescriptor = completeDescriptorResourceInfo ?
+							DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &descriptor) :
+							DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &descriptor);
+						if (foundDescriptor && descriptor.kind == descriptorKind) {
 							DX12CurrentComputeUavBinding binding;
 							binding.rootParameterIndex = root;
 							binding.shaderVisibility = parameter ?
@@ -219,9 +247,14 @@ public:
 					for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 						std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
 						const char *kind = nullptr;
+						bool completeDescriptorResourceInfo = false;
 						if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && uavs) { out = uavs; kind = "UAV"; }
 						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && srvs) { out = srvs; kind = "SRV"; }
-						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) { out = cbvs; kind = "CBV"; }
+						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) {
+							out = cbvs;
+							kind = "CBV";
+							completeDescriptorResourceInfo = true;
+						}
 						else { continue; }
 
 						const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBase, range);
@@ -239,7 +272,8 @@ public:
 						found.resize(cpuHandles.size());
 						DX12FindDescriptorSummariesByCpuHandle(
 							cpuHandles.data(), cpuHandles.size(),
-							descriptors.data(), found.data(), true);
+							descriptors.data(), found.data(),
+							completeDescriptorResourceInfo);
 						for (UINT offset = 0; offset < cpuHandles.size(); ++offset) {
 							if (!found[offset] || descriptors[offset].kind != kind)
 								continue;
@@ -268,13 +302,20 @@ public:
 					const UINT64 di = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 					const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 					DX12DescriptorSummary desc = {};
-					if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
+					if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &desc))
 						continue;
 					std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
+					bool completeDescriptorResourceInfo = false;
 					if (desc.kind == "UAV" && uavs) out = uavs;
 					else if (desc.kind == "SRV" && srvs) out = srvs;
-					else if (desc.kind == "CBV" && cbvs) out = cbvs;
+					else if (desc.kind == "CBV" && cbvs) {
+						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
+							continue;
+						out = cbvs;
+						completeDescriptorResourceInfo = true;
+					}
 					if (!out) continue;
+					(void)completeDescriptorResourceInfo;
 					DX12CurrentComputeUavBinding binding;
 					binding.rootParameterIndex = root;
 					binding.shaderVisibility = parameter ? parameter->shaderVisibility : D3D12_SHADER_VISIBILITY_ALL;
@@ -1144,7 +1185,6 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		return !uavs->empty();
 	}
 
-	DX12BindingTracker::ResolvePipelineShaderInfoOnDemand(&snapshot);
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindings(
 		snapshot, compute, rangeType, descriptorKind, rootDescriptorType, uavs);
 	tlsDescriptorQueryCache.commandList = commandList;
@@ -1213,7 +1253,6 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 			(cbvs && !cbvs->empty()) || (constants && !constants->empty());
 	}
 
-	DX12BindingTracker::ResolvePipelineShaderInfoOnDemand(&snapshot);
 	std::vector<DX12CurrentComputeUavBinding> cachedUavs;
 	std::vector<DX12CurrentComputeUavBinding> cachedSrvs;
 	std::vector<DX12CurrentComputeUavBinding> cachedCbvs;

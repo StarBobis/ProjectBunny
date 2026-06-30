@@ -251,8 +251,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
 	record.gpuVirtualAddress = desc->BufferLocation;
 	record.viewSize = desc->SizeInBytes;
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateConstantBufferView");
 }
 
@@ -273,8 +271,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 		FillSrvBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateShaderResourceView");
 }
 
@@ -297,8 +293,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 		FillUavBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateUnorderedAccessView");
 }
 
@@ -318,8 +312,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(
 		record.hasDesc = true;
 	}
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateRenderTargetView");
 }
 
@@ -339,8 +331,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(
 		record.hasDesc = true;
 	}
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateDepthStencilView");
 }
 
@@ -356,8 +346,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 	record.sampler = *desc;
 	record.hasDesc = true;
 	PrepareDescriptorValueId(&record);
-	if (DescriptorValueUnchanged(record.cpuHandle, record.valueId))
-		return;
 	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateSampler");
 }
 
