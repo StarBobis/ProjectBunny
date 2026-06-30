@@ -1220,6 +1220,24 @@ void RecordDescriptor(DescriptorRecord &&record)
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 
+void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
+{
+	if (!records || records->empty())
+		return;
+
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	for (DescriptorRecord &queued : *records) {
+		DescriptorRecord apply = queued;
+		apply.ownsResource = false;
+		apply.ownsCounterResource = false;
+		RecordDescriptorInCacheLocked(std::move(apply), false);
+		ReleaseDescriptorRecordResources(&queued);
+	}
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+	records->clear();
+}
+
 void DX12PrimeDescriptorHistoryForHunting()
 {
 	if (!DX12RuntimeState::IsHuntingMode())

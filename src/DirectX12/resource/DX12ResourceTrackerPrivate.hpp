@@ -248,6 +248,7 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable);
 void RecordDescriptor(DescriptorRecord &&record);
+void RecordDescriptorBatch(std::vector<DescriptorRecord> *records);
 void DX12PrimeDescriptorHistoryForHunting();
 bool ShouldTrackFullDescriptorMetadata();
 bool ShouldTrackComputeDescriptorMetadata();
