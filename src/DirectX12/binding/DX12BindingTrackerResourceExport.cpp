@@ -24,7 +24,10 @@ bool DX12BindingResourceExport::InsertBindingSeen(
 		return false;
 
 	char key[320];
-	sprintf_s(key, "%llu|%s|%u|%u|%u|%p|%llu|%u",
+	sprintf_s(key, "%llu|%llu|%llu|%llu|%s|%u|%u|%u|%p|%llu|%u",
+		static_cast<unsigned long long>(event.serial),
+		static_cast<unsigned long long>(event.drawId),
+		static_cast<unsigned long long>(event.dispatchId),
 		static_cast<unsigned long long>(event.shaderInfo.psoIndex),
 		bindSpace ? bindSpace : "",
 		rootParameterIndex,

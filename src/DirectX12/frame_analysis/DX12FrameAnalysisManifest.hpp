@@ -28,7 +28,6 @@ public:
 		D3D12_GPU_VIRTUAL_ADDRESS indexBufferGpuVa, UINT indexBufferSize,
 		DXGI_FORMAT indexBufferFormat)
 	{
-		(void)drawId;
 		char vs[32], ps[32], cs[32];
 		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
 			shaderInfo.vs, shaderInfo.hasVS, vs, ARRAYSIZE(vs));
@@ -53,6 +52,7 @@ public:
 		if (dispatchId) {
 			sprintf_s(buffer, sizeof(buffer),
 				"\"func\":%s,"
+				"\"type\":\"call.dispatch\","
 				"\"call_index\":%llu,"
 				"\"cmdlist\":%s,"
 				"\"pipeline_state\":%s,"
@@ -73,10 +73,13 @@ public:
 		} else {
 			sprintf_s(buffer, sizeof(buffer),
 				"\"func\":%s,"
+				"\"type\":\"call.draw\","
 				"\"call_index\":%llu,"
+				"\"draw_id\":%llu,"
 				"\"cmdlist\":%s,"
 				"\"pipeline_state\":%s,"
 				"\"pso\":%llu,"
+				"\"cs\":%s,"
 				"\"vs\":%s,"
 				"\"ps\":%s,"
 				"\"topology\":%s,"
@@ -92,9 +95,11 @@ public:
 				"\"ib_fmt\":%u",
 				functionJson,
 				static_cast<unsigned long long>(eventSerial),
+				static_cast<unsigned long long>(drawId),
 				cmdlistJson,
 				psoJson,
 				static_cast<unsigned long long>(shaderInfo.psoIndex),
+				csJson,
 				vsJson,
 				psJson,
 				topologyJson,
@@ -177,6 +182,14 @@ public:
 		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
 			buffer.producerShaderInfo.cs, buffer.producerShaderInfo.hasCS,
 			producerCs, ARRAYSIZE(producerCs));
+		if (!buffer.producerShaderInfo.hasCS && buffer.producerPsoIndex) {
+			DX12PsoShaderSummary producerSummary = {};
+			if (DX12GetPsoShaderSummary(buffer.producerPsoIndex, &producerSummary)) {
+				DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+					producerSummary.cs, producerSummary.hasCS,
+					producerCs, ARRAYSIZE(producerCs));
+			}
+		}
 		DX12FrameAnalysisManifestFormatUtils::FormatFileHash(
 			filePath, fileHash, ARRAYSIZE(fileHash));
 		sprintf_s(huntHash, sizeof(huntHash), "%08x", buffer.huntHash);

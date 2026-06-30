@@ -1132,6 +1132,26 @@ static bool TryWritePsoResourceSummaryFile(
 	return ok;
 }
 
+static DX12FrameAnalysisDumpResult TryDumpBindingTrace(const wchar_t *dir)
+{
+	DX12FrameAnalysisDumpResult result;
+	__try {
+		result = DX12BindingFrameExport::DumpBindingTrace(dir);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		const DWORD exceptionCode = GetExceptionCode();
+		result.ok = false;
+		result.failed = 1;
+		result.reason = "exception";
+		DX12FrameAnalysis::LogJsonFunc("BindingTraceException",
+			"\"exception\":\"0x%lx\",\"reason\":\"binding_trace_calls\"",
+			exceptionCode);
+		DX12LogManager::Text("Binding trace skipped after exception=0x%lx\n",
+			exceptionCode);
+	}
+	return result;
+}
+
 static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *dir)
 {
 	DX12FrameAnalysisDumpResult result;
@@ -1599,7 +1619,8 @@ void DX12DumpFrameAnalysis()
 	bool psoSummaryOk = false;
 	{
 		DX12FrameAnalysis::LogJsonFunc("FrameAnalysisSummarySkipped",
-			"\"bindingTrace\":1,\"resourceTable\":1,\"resourceMetadata\":1,\"psoResourceSummary\":1");
+			"\"bindingTrace\":0,\"resourceTable\":1,\"resourceMetadata\":1,\"psoResourceSummary\":1");
+		bindingTrace = TryDumpBindingTrace(dir);
 		resourceFiles = TryDumpCurrentFrameResources(dir);
 	}
 	DX12EndFrameAnalysisMetadataCache();
