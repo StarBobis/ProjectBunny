@@ -1139,11 +1139,15 @@ static DX12FrameAnalysisDumpResult TryDumpCurrentFrameResources(const wchar_t *d
 		result = DX12ResourceDump::DumpCurrentFrameResources(dir);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
+		const DWORD exceptionCode = GetExceptionCode();
 		result.ok = false;
 		result.failed = 1;
 		result.reason = "exception";
+		DX12FrameAnalysis::LogJsonFunc("ResourceDumpException",
+			"\"exception\":\"0x%lx\",\"reason\":\"current_frame_resource_files\"",
+			exceptionCode);
 		DX12LogManager::Text("Current-frame resource files skipped after exception=0x%lx\n",
-			GetExceptionCode());
+			exceptionCode);
 	}
 	return result;
 }

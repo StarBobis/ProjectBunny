@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../types/DX12ResourceTypes.hpp"
@@ -8,6 +9,13 @@
 class DX12ResourceDumpSafetyUtils
 {
 public:
+	static bool IsTextureResourceDimension(D3D12_RESOURCE_DIMENSION dimension)
+	{
+		return dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ||
+			dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+			dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+	}
+
 	static UINT64 HuntingResourceCopyBudgetBytes()
 	{
 		return 128ull * 1024ull * 1024ull;
@@ -48,9 +56,72 @@ public:
 		return 512;
 	}
 
+	static size_t FrameResourceDumpTaskBudget()
+	{
+		return 2048;
+	}
+
+	static UINT64 MaxSingleReadbackBytes()
+	{
+		return 256ull * 1024ull * 1024ull;
+	}
+
+	static UINT MaxTextureSubresourcesForDump()
+	{
+		return 4096;
+	}
+
 	static bool EnableTrackedResourceInventoryDiscovery()
 	{
 		return false;
+	}
+
+	static bool FrameResourceDumpTaskBudgetReached(size_t queuedTasks)
+	{
+		const size_t budget = FrameResourceDumpTaskBudget();
+		return budget > 0 && queuedTasks >= budget;
+	}
+
+	static bool TextureSubresourceCountForDump(
+		const D3D12_RESOURCE_DESC &desc, UINT *subresourceCount)
+	{
+		if (!subresourceCount)
+			return false;
+		*subresourceCount = 0;
+		if (!IsTextureResourceDimension(desc.Dimension))
+			return false;
+		if (desc.Width == 0 || desc.Height == 0 || desc.DepthOrArraySize == 0)
+			return false;
+		if (desc.SampleDesc.Count == 0 || desc.SampleDesc.Count > 64)
+			return false;
+		const UINT mipLevels = desc.MipLevels ? desc.MipLevels : 1;
+		if (mipLevels > 32)
+			return false;
+		const UINT64 arrayOrDepth = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ?
+			1 : desc.DepthOrArraySize;
+		const UINT64 count = static_cast<UINT64>(mipLevels) * arrayOrDepth;
+		if (count == 0 || count > MaxTextureSubresourcesForDump())
+			return false;
+		*subresourceCount = static_cast<UINT>(count);
+		return true;
+	}
+
+	static bool ResourceDescLooksDumpable(const D3D12_RESOURCE_DESC &desc)
+	{
+		if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+			return desc.Width > 0;
+		if (IsTextureResourceDimension(desc.Dimension)) {
+			UINT subresources = 0;
+			return TextureSubresourceCountForDump(desc, &subresources);
+		}
+		return false;
+	}
+
+	static bool DescriptorResourceDescLooksDumpable(const DX12DescriptorSummary &descriptor)
+	{
+		return descriptor.resource &&
+			descriptor.hasResourceDesc &&
+			ResourceDescLooksDumpable(descriptor.resourceDesc);
 	}
 
 	static bool HeapTypeAllowsSafeDiscoveryCopy(UINT heapType, bool hasHeapType)

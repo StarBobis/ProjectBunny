@@ -5,7 +5,10 @@
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
+#include "DX12FrameAnalysis.hpp"
 #include "DX12LogManager.hpp"
+#include "DX12ResourceDumpCore.hpp"
+#include "DX12ResourceDumpNaming.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 #include "DX12ResourceDumpPolicy.hpp"
 #include "DX12ResourceTracker.hpp"
@@ -93,6 +96,10 @@ static bool CreateReadbackForTask(
 
 	if (task->copyBytes == 0) {
 		task->skipNote = "copy_size_zero";
+		return false;
+	}
+	if (task->copyBytes > DX12ResourceDumpSafetyUtils::MaxSingleReadbackBytes()) {
+		task->skipNote = "single_readback_too_large";
 		return false;
 	}
 	if (frameReadbackBytes && frameReadbackBudgetBytes > 0 &&
@@ -197,6 +204,15 @@ static bool FillDescriptorDumpTask(
 		task->desc = binding.descriptor.resourceDesc;
 	}
 
+	if (!task->source) {
+		task->skipNote = "missing_resource_pointer";
+		return false;
+	}
+	if (!DX12ResourceDumpSafetyUtils::ResourceDescLooksDumpable(task->desc)) {
+		task->skipNote = "invalid_resource_desc";
+		return false;
+	}
+
 	task->sourceState = task->binding.descriptor.hasCurrentState ?
 		static_cast<D3D12_RESOURCE_STATES>(task->binding.descriptor.currentState) :
 		DX12ResourceStateTracker::InferDescriptorSourceState(task->binding);
@@ -213,28 +229,53 @@ static bool FillDescriptorDumpTask(
 			return false;
 		}
 		D3D12_RESOURCE_DESC copyDesc = task->desc;
-		const UINT mipLevels = task->desc.MipLevels ? task->desc.MipLevels : 1;
-		const UINT depthOrArray = task->desc.DepthOrArraySize ? task->desc.DepthOrArraySize : 1;
-		UINT subresourceCount =
-			task->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ?
-			mipLevels : mipLevels * depthOrArray;
+		UINT subresourceCount = 0;
+		if (!DX12ResourceDumpSafetyUtils::TextureSubresourceCountForDump(
+				task->desc, &subresourceCount)) {
+			task->skipNote = "invalid_texture_subresources";
+			return false;
+		}
 		D3D12_FEATURE_DATA_FORMAT_INFO formatInfo = {};
 		formatInfo.Format = task->desc.Format;
-		if (SUCCEEDED(device->CheckFeatureSupport(
-				D3D12_FEATURE_FORMAT_INFO, &formatInfo, sizeof(formatInfo))) &&
-			formatInfo.PlaneCount > 1)
-			subresourceCount *= formatInfo.PlaneCount;
+		__try {
+			if (SUCCEEDED(device->CheckFeatureSupport(
+					D3D12_FEATURE_FORMAT_INFO, &formatInfo, sizeof(formatInfo))) &&
+				formatInfo.PlaneCount > 1) {
+				const UINT64 planeSubresources =
+					static_cast<UINT64>(subresourceCount) * formatInfo.PlaneCount;
+				if (planeSubresources == 0 ||
+						planeSubresources > DX12ResourceDumpSafetyUtils::MaxTextureSubresourcesForDump()) {
+					task->skipNote = "too_many_texture_subresources";
+					return false;
+				}
+				subresourceCount = static_cast<UINT>(planeSubresources);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			task->skipNote = "format_info_exception";
+			return false;
+		}
 		task->textureLayouts.resize(subresourceCount);
 		task->textureRows.resize(subresourceCount);
 		task->textureRowSizes.resize(subresourceCount);
 		// D3D12 copies planar formats as extra subresources; RenderDoc does
 		// the same PlaneCount expansion before GetCopyableFootprints. Skipping
 		// invalid footprints avoids recording command lists that fail at Close.
-		device->GetCopyableFootprints(&copyDesc, 0, subresourceCount, 0,
-			task->textureLayouts.data(), task->textureRows.data(),
-			task->textureRowSizes.data(), &task->copyBytes);
+		__try {
+			device->GetCopyableFootprints(&copyDesc, 0, subresourceCount, 0,
+				task->textureLayouts.data(), task->textureRows.data(),
+				task->textureRowSizes.data(), &task->copyBytes);
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			task->skipNote = "copyable_footprints_exception";
+			return false;
+		}
 		if (task->copyBytes == UINT64_MAX) {
 			task->skipNote = "copyable_footprints_failed";
+			return false;
+		}
+		if (task->copyBytes > DX12ResourceDumpSafetyUtils::MaxSingleReadbackBytes()) {
+			task->skipNote = "single_readback_too_large";
 			return false;
 		}
 		task->isTexture = true;
@@ -320,6 +361,10 @@ static bool PrepareHuntingMetadataTextureTask(
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
 		!DX12ResourceDumpPolicy::IsTextureResourceDimension(descriptor.resourceDesc.Dimension))
 		return false;
+	if (!DX12ResourceDumpSafetyUtils::DescriptorResourceDescLooksDumpable(descriptor)) {
+		task->skipNote = "invalid_metadata_texture_desc";
+		return false;
+	}
 
 	DX12FrameResourceBinding binding;
 	binding.bindSpace = "hunting_metadata";
@@ -347,6 +392,10 @@ static bool PrepareHuntingMetadataBufferTask(
 	if (!descriptor.resource || !descriptor.hasResourceDesc ||
 		descriptor.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
 		return false;
+	if (!DX12ResourceDumpSafetyUtils::DescriptorResourceDescLooksDumpable(descriptor)) {
+		task->skipNote = "invalid_metadata_buffer_desc";
+		return false;
+	}
 
 	DX12FrameResourceBinding binding;
 	binding.bindSpace = "hunting_metadata";
@@ -509,5 +558,72 @@ static size_t CountCopiedTasks(const std::vector<DumpTask> &tasks)
 
 
 
+};
+
+class DX12ResourceDumpPrepareGuardUtils
+{
+public:
+static bool TryPrepareHuntingMetadataTask(
+	ID3D12Device *device, const DX12DescriptorSummary &descriptor, bool isTexture,
+	DumpTask *task, UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes,
+	UINT64 descriptorIndex)
+{
+	if (!task)
+		return false;
+	bool prepared = false;
+	__try {
+		prepared = isTexture ?
+			DX12ResourceDumpPrepare::PrepareHuntingMetadataTextureTask(
+				device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes) :
+			DX12ResourceDumpPrepare::PrepareHuntingMetadataBufferTask(
+				device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		DX12ResourceDumpPrepare::ReleaseTask(task);
+		task->ready = false;
+		task->copied = false;
+		task->readback = nullptr;
+		task->sourceRetained = false;
+		task->skipNote = isTexture ?
+			"metadata_texture_prepare_exception" :
+			"metadata_buffer_prepare_exception";
+		DX12FrameAnalysis::LogJsonFunc("ResourcePrepareTaskFailed",
+			"\"exception\":\"0x%lx\",\"stage\":\"metadata_prepare\",\"descriptorIndex\":%llu,\"kind\":\"%s\",\"resource\":\"%p\",\"dimension\":%u,\"width\":%llu,\"height\":%u,\"format\":%u,\"note\":\"%s\"",
+			GetExceptionCode(),
+			static_cast<unsigned long long>(descriptorIndex),
+			descriptor.kind.c_str(),
+			descriptor.resource,
+			descriptor.hasResourceDesc ? static_cast<UINT>(descriptor.resourceDesc.Dimension) : 0,
+			descriptor.hasResourceDesc ? static_cast<unsigned long long>(descriptor.resourceDesc.Width) : 0,
+			descriptor.hasResourceDesc ? static_cast<UINT>(descriptor.resourceDesc.Height) : 0,
+			descriptor.hasResourceDesc ? static_cast<UINT>(descriptor.resourceDesc.Format) : 0,
+			task->skipNote);
+		prepared = false;
+	}
+	return prepared;
+}
+
+static bool TryBuildFileName(const DumpTask &task, wchar_t *fileName, size_t fileNameCount)
+{
+	if (!fileName || fileNameCount == 0)
+		return false;
+	fileName[0] = L'\0';
+	bool ok = false;
+	__try {
+		DX12ResourceDumpNaming::BuildFileName(task, fileName, fileNameCount);
+		ok = fileName[0] != L'\0';
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		DX12FrameAnalysis::LogJsonFunc("ResourceDumpFileNameFailed",
+			"\"exception\":\"0x%lx\",\"taskSource\":\"%s\",\"source\":\"%p\",\"texture\":%u,\"bytes\":%llu",
+			GetExceptionCode(),
+			DX12ResourceDumpCore::DumpTaskSourceName(task.sourceKind),
+			task.source,
+			task.isTexture ? 1 : 0,
+			static_cast<unsigned long long>(task.copyBytes));
+		ok = false;
+	}
+	return ok;
+}
 };
 
