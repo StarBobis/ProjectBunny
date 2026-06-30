@@ -66,6 +66,16 @@ bool DX12ResourceCollectQueue::EnqueueRootSignature(
 	return Get().EnqueueRootSignatureTask(rootSignature, nodeMask, blob, blobLength, source);
 }
 
+bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
+	UINT64 psoIndex,
+	const char *kind,
+	ID3D12PipelineState *pipelineState,
+	ID3D12RootSignature *rootSignature,
+	const char *source)
+{
+	return Get().EnqueuePsoRootSignatureTask(psoIndex, kind, pipelineState, rootSignature, source);
+}
+
 void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
 {
 	Get().DrainPendingOnCaller(reason);
@@ -316,6 +326,54 @@ bool DX12ResourceCollectQueue::EnqueueRootSignatureTask(
 	return true;
 }
 
+bool DX12ResourceCollectQueue::EnqueuePsoRootSignatureTask(
+	UINT64 psoIndex,
+	const char *kind,
+	ID3D12PipelineState *pipelineState,
+	ID3D12RootSignature *rootSignature,
+	const char *source)
+{
+	if (!psoIndex)
+		return false;
+
+	StartWorker();
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::PsoRootSignature;
+	task.psoIndex = psoIndex;
+	task.psoKind = kind ? kind : "";
+	task.pipelineState = pipelineState;
+	if (task.pipelineState)
+		task.pipelineState->AddRef();
+	task.rootSignature = rootSignature;
+	if (task.rootSignature)
+		task.rootSignature->AddRef();
+	task.source = source;
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	task.enqueueThreadId = GetCurrentThreadId();
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		tasks.push_back(std::move(task));
+		depth = tasks.size();
+	}
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("EnqueuePsoRootSignature", task.sequence, depth);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"EnqueuePsoRootSignatureDetail\",\"seq\":%llu,\"source\":\"%s\",\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"enqueueThreadId\":%lu",
+		static_cast<unsigned long long>(task.sequence),
+		source ? source : "",
+		static_cast<unsigned long long>(psoIndex),
+		kind ? kind : "",
+		pipelineState,
+		rootSignature,
+		task.enqueueThreadId);
+	wake.notify_one();
+	return true;
+}
+
 void DX12ResourceCollectQueue::WorkerLoop()
 {
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
@@ -393,6 +451,9 @@ void DX12ResourceCollectQueue::ProcessTask(DX12ResourceCollectTask *task, const 
 		return;
 	case DX12ResourceCollectTaskKind::RootSignature:
 		ProcessRootSignatureTask(task, source);
+		return;
+	case DX12ResourceCollectTaskKind::PsoRootSignature:
+		ProcessPsoRootSignatureTask(task, source);
 		return;
 	default:
 		return;
@@ -617,6 +678,44 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 	ReleaseTaskRootSignature(task);
 }
 
+void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTask *task, const char *source)
+{
+	if (!task || !task->psoIndex)
+		return;
+
+	const auto begin = std::chrono::steady_clock::now();
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"ProcessPsoRootSignatureBegin\",\"source\":\"%s\",\"psoSource\":\"%s\",\"seq\":%llu,\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		source ? source : "",
+		task->source ? task->source : "",
+		static_cast<unsigned long long>(task->sequence),
+		static_cast<unsigned long long>(task->psoIndex),
+		task->psoKind.c_str(),
+		task->pipelineState,
+		task->rootSignature,
+		task->enqueueThreadId,
+		GetCurrentThreadId());
+
+	DX12RecordPsoRootSignatureImmediate(
+		task->psoIndex,
+		task->psoKind.c_str(),
+		task->pipelineState,
+		task->rootSignature);
+
+	const auto end = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	completed.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"ProcessPsoRootSignatureComplete\",\"source\":\"%s\",\"psoSource\":\"%s\",\"seq\":%llu,\"pso\":%llu,\"elapsedUs\":%lld,\"completed\":%llu",
+		source ? source : "",
+		task->source ? task->source : "",
+		static_cast<unsigned long long>(task->sequence),
+		static_cast<unsigned long long>(task->psoIndex),
+		static_cast<long long>(elapsedUs),
+		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
+	ReleaseTaskPsoRootSignature(task);
+}
+
 bool DX12ResourceCollectQueue::TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier)
 {
 	if (!barrier)
@@ -713,6 +812,21 @@ void DX12ResourceCollectQueue::ReleaseTaskRootSignature(DX12ResourceCollectTask 
 		task->rootSignature = nullptr;
 	}
 	task->rootSignatureBlob.clear();
+}
+
+void DX12ResourceCollectQueue::ReleaseTaskPsoRootSignature(DX12ResourceCollectTask *task)
+{
+	if (!task)
+		return;
+	if (task->pipelineState) {
+		task->pipelineState->Release();
+		task->pipelineState = nullptr;
+	}
+	if (task->rootSignature) {
+		task->rootSignature->Release();
+		task->rootSignature = nullptr;
+	}
+	task->psoKind.clear();
 }
 
 void DX12ResourceCollectQueue::UpdateMaxDepth(size_t depth)

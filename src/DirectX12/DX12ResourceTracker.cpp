@@ -1427,6 +1427,24 @@ void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature)
 {
+	if (DX12ResourceCollectQueue::EnqueuePsoRootSignature(
+			psoIndex, kind, pipelineState, rootSignature, "DX12RecordPsoRootSignature"))
+		return;
+
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"\"event\":\"PsoRootSignatureEnqueueFallback\",\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"threadId\":%lu",
+		static_cast<unsigned long long>(psoIndex),
+		kind ? kind : "",
+		pipelineState,
+		rootSignature,
+		GetCurrentThreadId());
+	DX12RecordPsoRootSignatureImmediate(psoIndex, kind, pipelineState, rootSignature);
+}
+
+void DX12RecordPsoRootSignatureImmediate(
+	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
+	ID3D12RootSignature *rootSignature)
+{
 	PsoRootRecord record;
 	record.psoIndex = psoIndex;
 	record.kind = kind ? kind : "";

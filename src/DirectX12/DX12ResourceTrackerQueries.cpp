@@ -8,6 +8,7 @@ bool DX12GetRootSignatureSummary(
 	if (!rootSignature || !summary)
 		return false;
 
+	DX12ResourceCollectQueue::DrainForSnapshot("RootSignatureSummary");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (const RootSignatureRecord &record : gRootSignatures) {
 		if (record.rootSignature != rootSignature)
@@ -34,6 +35,7 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 		return false;
 
 	*rootSignature = nullptr;
+	DX12ResourceCollectQueue::DrainForSnapshot("PsoRootSignatureQuery");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (auto it = gPsoRoots.rbegin(); it != gPsoRoots.rend(); ++it) {
 		if (it->psoIndex != psoIndex || !it->rootSignature)

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,7 +20,8 @@ enum class DX12ResourceCollectTaskKind
 	Descriptor,
 	DescriptorCopyRange,
 	ResourceBarrier,
-	RootSignature
+	RootSignature,
+	PsoRootSignature
 };
 
 class DX12ResourceCollectTask
@@ -45,6 +47,9 @@ public:
 	ID3D12RootSignature *rootSignature = nullptr;
 	std::vector<uint8_t> rootSignatureBlob;
 	UINT rootSignatureNodeMask = 0;
+	UINT64 psoIndex = 0;
+	std::string psoKind;
+	ID3D12PipelineState *pipelineState = nullptr;
 	uint64_t sequence = 0;
 	DWORD enqueueThreadId = 0;
 };
@@ -93,6 +98,12 @@ public:
 		const void *blob,
 		SIZE_T blobLength,
 		const char *source);
+	static bool EnqueuePsoRootSignature(
+		UINT64 psoIndex,
+		const char *kind,
+		ID3D12PipelineState *pipelineState,
+		ID3D12RootSignature *rootSignature,
+		const char *source);
 	static void DrainForSnapshot(const char *reason);
 	static size_t PendingCount();
 
@@ -122,6 +133,12 @@ public:
 		const void *blob,
 		SIZE_T blobLength,
 		const char *source);
+	bool EnqueuePsoRootSignatureTask(
+		UINT64 psoIndex,
+		const char *kind,
+		ID3D12PipelineState *pipelineState,
+		ID3D12RootSignature *rootSignature,
+		const char *source);
 	void WorkerLoop();
 	void DrainPendingOnCaller(const char *reason);
 	void ProcessTask(DX12ResourceCollectTask *task, const char *source);
@@ -130,12 +147,14 @@ public:
 	void ProcessDescriptorCopyRangeTask(DX12ResourceCollectTask *task, const char *source);
 	void ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source);
 	void ProcessRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
+	void ProcessPsoRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
 	bool TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
 	void ReleaseBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
 	void ReleaseTaskResource(DX12ResourceCollectTask *task);
 	void ReleaseTaskDevice(DX12ResourceCollectTask *task);
 	void ReleaseTaskDescriptor(DX12ResourceCollectTask *task);
 	void ReleaseTaskRootSignature(DX12ResourceCollectTask *task);
+	void ReleaseTaskPsoRootSignature(DX12ResourceCollectTask *task);
 	void UpdateMaxDepth(size_t depth);
 	void LogStats(const char *event, uint64_t sequence, size_t depth);
 };
