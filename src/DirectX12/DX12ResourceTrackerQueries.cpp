@@ -1,5 +1,6 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
+#include "DX12DescriptorCollectPipeline.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 
 bool DX12GetRootSignatureSummary(
@@ -9,6 +10,7 @@ bool DX12GetRootSignatureSummary(
 		return false;
 
 	DX12ResourceCollectQueue::DrainForSnapshot("RootSignatureSummary");
+	DX12DescriptorCollectPipeline::DrainForSnapshot("RootSignatureSummary");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (const RootSignatureRecord &record : gRootSignatures) {
 		if (record.rootSignature != rootSignature)
@@ -36,6 +38,7 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 
 	*rootSignature = nullptr;
 	DX12ResourceCollectQueue::DrainForSnapshot("PsoRootSignatureQuery");
+	DX12DescriptorCollectPipeline::DrainForSnapshot("PsoRootSignatureQuery");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (auto it = gPsoRoots.rbegin(); it != gPsoRoots.rend(); ++it) {
 		if (it->psoIndex != psoIndex || !it->rootSignature)
@@ -559,6 +562,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
 	DX12ResourceCollectQueue::DrainForSnapshot("MetadataSnapshot");
+	DX12DescriptorCollectPipeline::DrainForSnapshot("MetadataSnapshot");
 	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
 	if (cache.enabled && !cache.building) {
 		if (!cache.populated) {
@@ -836,6 +840,7 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 	if (!cpuHandle || !summary)
 		return false;
 
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorSummaryLight");
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
@@ -869,6 +874,7 @@ bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	if (!cpuHandle || !epoch || !summary)
 		return false;
 
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorSummaryAtEpoch");
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
@@ -916,6 +922,7 @@ bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
 	if (!cpuHandle || !epoch || !kind || !kind[0] || !summary)
 		return false;
 
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorSummaryAtEpochAndKind");
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
@@ -977,6 +984,7 @@ bool DX12FindDescriptorHeapByGpuHandle(
 	if (!gpuHandle.ptr || !summary)
 		return false;
 
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorHeapByGpuHandle");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
 		if (record.desc.Type != type || record.gpuStart == 0 || record.increment == 0)
@@ -1008,6 +1016,7 @@ bool DX12FindDescriptorHeapByCpuHandle(
 	if (!cpuHandle.ptr || !summary)
 		return false;
 
+	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorHeapByCpuHandle");
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
 		if (record.desc.Type != type || record.cpuStart == 0 || record.increment == 0)

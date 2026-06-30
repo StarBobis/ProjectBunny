@@ -14,6 +14,7 @@ add_library(DirectX12 SHARED
     DXGIHooks.cpp
 
     # Resource tracking
+    DX12DescriptorCollectPipeline.cpp
     DX12ResourceCollectQueue.cpp
     DX12ResourceTracker.cpp
     DX12ResourceTrackerHooks.cpp
