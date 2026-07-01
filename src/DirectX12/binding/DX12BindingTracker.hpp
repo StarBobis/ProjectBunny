@@ -103,6 +103,32 @@ public:
 	std::unordered_map<DescriptorSlotKey, const DX12DescriptorSummary*, DescriptorSlotKeyHash> bySlot;
 };
 
+class DX12FrameEventSource
+{
+public:
+	const std::vector<BindingEvent> *events = nullptr;
+	const std::vector<OutputBindingEvent> *outputEvents = nullptr;
+	std::vector<BindingEvent> fallbackEvents;
+	std::vector<OutputBindingEvent> fallbackOutputEvents;
+	std::vector<BindingEvent> combinedEvents;
+	std::vector<OutputBindingEvent> combinedOutputEvents;
+	UINT64 droppedEvents = 0;
+	UINT64 droppedOutputEvents = 0;
+	bool usingLedger = false;
+
+	const std::vector<BindingEvent> &GetEvents() const
+	{
+		static const std::vector<BindingEvent> emptyEvents;
+		return events ? *events : emptyEvents;
+	}
+
+	const std::vector<OutputBindingEvent> &GetOutputEvents() const
+	{
+		static const std::vector<OutputBindingEvent> emptyEvents;
+		return outputEvents ? *outputEvents : emptyEvents;
+	}
+};
+
 class DX12BindingTracker
 {
 public:
@@ -166,6 +192,7 @@ public:
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreOutputEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId);
+	static bool PopulateFrameEventSource(DX12FrameEventSource *source);
 	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static bool GetCurrentDescriptors(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, const char *descriptorKind, D3D12_ROOT_PARAMETER_TYPE rootDescriptorType, std::vector<DX12CurrentComputeUavBinding> *uavs);
 	static void SetRootConstantsLocked(RootConstantsState *constants, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);

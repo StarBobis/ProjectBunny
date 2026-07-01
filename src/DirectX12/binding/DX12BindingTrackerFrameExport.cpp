@@ -25,18 +25,11 @@ void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShade
 
 	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameShaderInfos");
 	shaderInfos->clear();
-	DX12CaptureLedgerSnapshot snapshot;
-	DX12CaptureLedger::GetSnapshot(&snapshot);
-	const std::vector<BindingEvent> *sourceEvents = &snapshot.events;
-	std::vector<BindingEvent> frameEvents;
-	if (sourceEvents->empty()) {
-		AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-		frameEvents = DX12BindingTrackerState::Events;
-		ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
-		sourceEvents = &frameEvents;
-	}
+	DX12FrameEventSource source;
+	DX12BindingTracker::PopulateFrameEventSource(&source);
+	const std::vector<BindingEvent> &sourceEvents = source.GetEvents();
 	std::unordered_set<UINT64> seen;
-	for (const BindingEvent &event : *sourceEvents) {
+	for (const BindingEvent &event : sourceEvents) {
 		if (!event.shaderInfo.psoIndex)
 			continue;
 		if (!seen.insert(event.shaderInfo.psoIndex).second)
@@ -586,18 +579,11 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
 		return;
 
 	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameIaBuffersWithResourceBindings");
-	DX12CaptureLedgerSnapshot snapshot;
-	DX12CaptureLedger::GetSnapshot(&snapshot);
-	std::vector<BindingEvent> events = snapshot.events;
-	if (events.empty()) {
-		AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-		events = DX12BindingTrackerState::Events;
-		ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	}
-	DX12CaptureLedger::LogSnapshotHealth("IaBufferLedgerSnapshot", snapshot);
+	DX12FrameEventSource source;
+	DX12BindingTracker::PopulateFrameEventSource(&source);
 
 	std::vector<FlatBufferRow> rows;
-	DX12BindingFrameExport::CollectFrameIaBuffersForEvents(events, &rows);
+	DX12BindingFrameExport::CollectFrameIaBuffersForEvents(source.GetEvents(), &rows);
 	DX12BindingFrameExport::ClassifyIaBufferSkinning(&rows, resourceBindings);
 
 	buffers->clear();
@@ -607,7 +593,7 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
 
 	DX12FrameAnalysis::LogJsonFunc("IaBufferStage",
 		"\"events\":%zu,\"buffers\":%zu,\"resource_bindings\":%zu,\"reused_resource_bindings\":1",
-		events.size(), buffers->size(), resourceBindings.size());
+		source.GetEvents().size(), buffers->size(), resourceBindings.size());
 }
 
 DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar_t *dir)
@@ -620,22 +606,15 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 	}
 
 	DX12BindingTracker::DrainPendingEvents("DumpBindingTrace");
-	DX12CaptureLedgerSnapshot snapshot;
-	DX12CaptureLedger::GetSnapshot(&snapshot);
-	DX12CaptureLedger::LogSnapshotHealth("BindingTraceLedgerSnapshot", snapshot);
-	std::vector<BindingEvent> events = snapshot.events;
-	UINT64 droppedEvents = snapshot.droppedEvents;
-	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	const size_t frameEvents = DX12BindingTrackerState::Events.size();
-	if (events.empty()) {
-		events = DX12BindingTrackerState::Events;
-		droppedEvents = DX12BindingTrackerState::DroppedEvents;
-	}
-	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	DX12FrameEventSource source;
+	DX12BindingTracker::PopulateFrameEventSource(&source);
+	const std::vector<BindingEvent> &events = source.GetEvents();
+	const UINT64 droppedEvents = source.droppedEvents;
 
 	DX12FrameAnalysis::LogJsonFunc("BindingTraceBegin",
 		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu,\"dropped\":%llu,\"maxEvents\":%u",
-		events.size(), frameEvents, snapshot.events.size(),
+		events.size(), source.fallbackEvents.size(),
+		source.usingLedger ? events.size() - source.fallbackEvents.size() : 0,
 		static_cast<unsigned long long>(droppedEvents),
 		MaxTrackedEvents);
 	for (const BindingEvent &event : events) {

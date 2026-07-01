@@ -650,7 +650,10 @@ void DX12BindingTracker::StoreEventLocked(const BindingEvent &event)
 	BindingEvent stored = event;
 	DX12BindingTracker::RetainEventIaResources(&stored);
 	stored.serial = ++DX12BindingTrackerState::EventSerial;
-	DX12CaptureLedger::RecordEvent(stored);
+	const DX12CaptureLedgerRecordResult ledgerResult =
+		DX12CaptureLedger::RecordEvent(&stored);
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored)
+		return;
 	if (DX12BindingTrackerState::Events.size() >= MaxTrackedEvents) {
 		DX12BindingTrackerState::DroppedEvents++;
 		DX12BindingTracker::ReleaseEventIaResources(&stored);
@@ -676,16 +679,6 @@ void DX12BindingTracker::StoreOutputEventLocked(
 	if (!cpuHandle)
 		return;
 	const UINT64 dispatchId = 0;
-	for (const OutputBindingEvent &existing : DX12BindingTrackerState::OutputEvents) {
-		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
-		if (existing.commandList == commandList &&
-			existing.cpuHandle == cpuHandle &&
-			existing.kind == (kind ? kind : "") &&
-			existing.slot == slot &&
-			sameResolvedDraw &&
-			existing.dispatchId == dispatchId)
-			return;
-	}
 	OutputBindingEvent event;
 	event.serial = ++DX12BindingTrackerState::OutputEventSerial;
 	event.kind = kind ? kind : "";
@@ -701,12 +694,93 @@ void DX12BindingTracker::StoreOutputEventLocked(
 		else
 			DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
 	}
-	DX12CaptureLedger::RecordOutputEvent(event);
+	const bool ledgerActive = DX12CaptureLedger::IsActive();
+	if (ledgerActive && DX12CaptureLedger::HasOutputEvent(event))
+		return;
+	for (const OutputBindingEvent &existing : DX12BindingTrackerState::OutputEvents) {
+		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
+		if (existing.commandList == commandList &&
+			existing.cpuHandle == cpuHandle &&
+			existing.kind == event.kind &&
+			existing.slot == slot &&
+			sameResolvedDraw &&
+			existing.dispatchId == dispatchId)
+			return;
+	}
+	const DX12CaptureLedgerRecordResult ledgerResult =
+		DX12CaptureLedger::RecordOutputEvent(&event);
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored)
+		return;
 	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
 		DX12BindingTrackerState::DroppedOutputEvents++;
 		return;
 	}
-	DX12BindingTrackerState::OutputEvents.push_back(event);
+	DX12BindingTrackerState::OutputEvents.push_back(std::move(event));
+}
+
+bool DX12BindingTracker::PopulateFrameEventSource(DX12FrameEventSource *source)
+{
+	if (!source)
+		return false;
+
+	*source = DX12FrameEventSource();
+
+	DX12CaptureLedgerView ledgerView;
+	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	source->fallbackEvents = DX12BindingTrackerState::Events;
+	source->fallbackOutputEvents = DX12BindingTrackerState::OutputEvents;
+	const UINT64 fallbackDroppedEvents = DX12BindingTrackerState::DroppedEvents;
+	const UINT64 fallbackDroppedOutputEvents = DX12BindingTrackerState::DroppedOutputEvents;
+	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
+
+	if (DX12CaptureLedger::TryGetView(&ledgerView)) {
+		source->droppedEvents = ledgerView.droppedEvents + fallbackDroppedEvents;
+		source->droppedOutputEvents =
+			ledgerView.droppedOutputEvents + fallbackDroppedOutputEvents;
+		source->usingLedger = true;
+		if (!source->fallbackEvents.empty()) {
+			source->combinedEvents.reserve(
+				(ledgerView.events ? ledgerView.events->size() : 0) +
+				source->fallbackEvents.size());
+			if (ledgerView.events)
+				source->combinedEvents.insert(
+					source->combinedEvents.end(),
+					ledgerView.events->begin(),
+					ledgerView.events->end());
+			source->combinedEvents.insert(
+				source->combinedEvents.end(),
+				source->fallbackEvents.begin(),
+				source->fallbackEvents.end());
+			source->events = &source->combinedEvents;
+		} else {
+			source->events = ledgerView.events;
+		}
+		if (!source->fallbackOutputEvents.empty()) {
+			source->combinedOutputEvents.reserve(
+				(ledgerView.outputEvents ? ledgerView.outputEvents->size() : 0) +
+				source->fallbackOutputEvents.size());
+			if (ledgerView.outputEvents)
+				source->combinedOutputEvents.insert(
+					source->combinedOutputEvents.end(),
+					ledgerView.outputEvents->begin(),
+					ledgerView.outputEvents->end());
+			source->combinedOutputEvents.insert(
+				source->combinedOutputEvents.end(),
+				source->fallbackOutputEvents.begin(),
+				source->fallbackOutputEvents.end());
+			source->outputEvents = &source->combinedOutputEvents;
+		} else {
+			source->outputEvents = ledgerView.outputEvents;
+		}
+		return true;
+	}
+
+	source->events = &source->fallbackEvents;
+	source->outputEvents = &source->fallbackOutputEvents;
+	source->droppedEvents = fallbackDroppedEvents;
+	source->droppedOutputEvents = fallbackDroppedOutputEvents;
+	return !source->fallbackEvents.empty() || !source->fallbackOutputEvents.empty() ||
+		source->droppedEvents != 0 || source->droppedOutputEvents != 0;
 }
 
 void DX12BindingTracker::StoreCurrentOutputTargetsLocked(

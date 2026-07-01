@@ -709,18 +709,14 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 		return;
 
 	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameResourceBindings");
-	DX12CaptureLedgerSnapshot snapshot;
-	DX12CaptureLedger::GetSnapshot(&snapshot);
-	DX12CaptureLedger::LogSnapshotHealth("BindingResourcesLedgerSnapshot", snapshot);
-	std::vector<BindingEvent> events = snapshot.events;
-	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	const size_t frameEvents = DX12BindingTrackerState::Events.size();
-	if (events.empty())
-		events = DX12BindingTrackerState::Events;
-	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	DX12FrameEventSource source;
+	DX12BindingTracker::PopulateFrameEventSource(&source);
+	const std::vector<BindingEvent> &events = source.GetEvents();
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
 		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu",
-		events.size(), frameEvents, snapshot.events.size());
+		events.size(),
+		source.fallbackEvents.size(),
+		source.usingLedger ? events.size() - source.fallbackEvents.size() : 0);
 
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
@@ -857,20 +853,14 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 		return;
 
 	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameOutputBindings");
-	DX12CaptureLedgerSnapshot snapshot;
-	DX12CaptureLedger::GetSnapshot(&snapshot);
-	std::vector<OutputBindingEvent> events = snapshot.outputEvents;
-	UINT64 dropped = snapshot.droppedOutputEvents;
-	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	const size_t frameOutputEvents = DX12BindingTrackerState::OutputEvents.size();
-	if (events.empty()) {
-		events = DX12BindingTrackerState::OutputEvents;
-		dropped = DX12BindingTrackerState::DroppedOutputEvents;
-	}
-	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
+	DX12FrameEventSource source;
+	DX12BindingTracker::PopulateFrameEventSource(&source);
+	const std::vector<OutputBindingEvent> &events = source.GetOutputEvents();
+	const UINT64 dropped = source.droppedOutputEvents;
 	DX12FrameAnalysis::LogJsonFunc("OutputResourcesLedgerSnapshot",
 		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu,\"dropped\":%llu",
-		events.size(), frameOutputEvents, snapshot.outputEvents.size(),
+		events.size(), source.fallbackOutputEvents.size(),
+		source.usingLedger ? events.size() - source.fallbackOutputEvents.size() : 0,
 		static_cast<unsigned long long>(dropped));
 
 	std::unordered_set<std::string> seen;

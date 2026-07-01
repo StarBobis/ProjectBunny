@@ -66,6 +66,7 @@ public:
 		if (dumpFrame) {
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureEnd",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
+			DX12BindingTracker::DrainPendingEvents("FrameCaptureEnd");
 			DX12CaptureLedger::EndCapture();
 			DX12DumpFrameAnalysis();
 			DX12CaptureLedger::Clear();
