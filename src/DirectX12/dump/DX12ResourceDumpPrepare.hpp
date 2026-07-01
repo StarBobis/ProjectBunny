@@ -19,8 +19,6 @@
 class DX12ResourceDumpPrepare
 {
 public:
-static bool GpuResourceCopyEnabled() { return true; }
-
 static const char *RootDescriptorKindName(UINT rangeType)
 {
 	if (rangeType == D3D12_ROOT_PARAMETER_TYPE_CBV)
@@ -456,14 +454,6 @@ static bool PrepareHuntingResourceTask(
 		device, descriptor, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
-static bool PrepareHuntingResourceTextureTask(
-	ID3D12Device *device, const DX12ResourceSummary &resource, DumpTask *task,
-	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
-{
-	return PrepareHuntingResourceTask(
-		device, resource, task, frameReadbackBytes, frameReadbackBudgetBytes);
-}
-
 static bool PrepareModDescriptorTask(
 	ID3D12Device *device, const DX12FrameResourceBinding &binding, DumpTask *task,
 	UINT64 *frameReadbackBytes, UINT64 frameReadbackBudgetBytes)
@@ -472,12 +462,7 @@ static bool PrepareModDescriptorTask(
 		return false;
 	if (!RetainTaskSource(task))
 		return false;
-	if (GpuResourceCopyEnabled())
-		return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
-	if (ResourceIsCpuVisible(task->binding.descriptor))
-		return PrepareDirectMapTask(task);
-	task->skipNote = "gpu_copy_disabled";
-	return false;
+	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
 static bool PrepareModIaBufferTask(
@@ -488,12 +473,7 @@ static bool PrepareModIaBufferTask(
 		return false;
 	if (!RetainTaskSource(task))
 		return false;
-	if (GpuResourceCopyEnabled())
-		return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
-	if (ResourceIsCpuVisible(task->iaBuffer.resource))
-		return PrepareDirectMapTask(task);
-	task->skipNote = "gpu_copy_disabled";
-	return false;
+	return CreateReadbackForTask(device, task, frameReadbackBytes, frameReadbackBudgetBytes);
 }
 
 static bool PrepareDescriptorTaskForCurrentMode(

@@ -541,12 +541,6 @@ bool DX12BindingTracker::SnapshotBindingState(
 	return found;
 }
 
-bool DX12BindingTracker::ShouldEagerResolveIaResources(
-	ID3D12GraphicsCommandList *commandList)
-{
-	return DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList);
-}
-
 void DX12BindingTracker::ReleaseResolvedIaResource(
 	DX12BufferResourceSummary *summary, bool *resolved)
 {
@@ -819,7 +813,7 @@ void DX12BindingTracker::ResetCommandList(
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	state = CommandListBindingState();
 	state.pipelineState = initialState;
-	if (DX12BindingTracker::ShouldEagerResolveIaResources(commandList))
+	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
 		DX12BindingTracker::RefreshPipelineShaderInfo(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -1049,7 +1043,7 @@ void DX12BindingTracker::SetIndexBuffer(
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
-		if (DX12BindingTracker::ShouldEagerResolveIaResources(commandList)) {
+		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList)) {
 			DX12BindingTracker::ResolveAndRetainIaResource(
 				view->BufferLocation,
 				view->SizeInBytes,
@@ -1084,7 +1078,7 @@ void DX12BindingTracker::SetVertexBuffers(
 		if (views) {
 			state.vertexBuffers[slot] = views[i];
 			state.vertexBufferValid[slot] = views[i].BufferLocation != 0 && views[i].SizeInBytes != 0;
-			if (DX12BindingTracker::ShouldEagerResolveIaResources(commandList)) {
+			if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList)) {
 				DX12BindingTracker::ResolveAndRetainIaResource(
 					views[i].BufferLocation,
 					views[i].SizeInBytes,

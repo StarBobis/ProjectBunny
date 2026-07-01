@@ -64,8 +64,6 @@ static void GetDedupedDirectory(const wchar_t *dir, wchar_t *path, size_t pathCo
 	swprintf_s(path, pathCount, L"%s\\deduped", dir);
 	DX12ResourceDumpCore::EnsureDirectory(path);
 }
-
-static bool UnsafeResourceCopyEnabled() { return true; }
 static UINT64 FrameReadbackBudgetBytes()
 {
 	return 0;

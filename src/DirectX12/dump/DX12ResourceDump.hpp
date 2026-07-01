@@ -100,8 +100,8 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		dumpMode,
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		static_cast<unsigned long long>(frameReadbackBudget),
-		DX12ResourceDumpCore::UnsafeResourceCopyEnabled() ? 1 : 0,
-		DX12ResourceDumpPrepare::GpuResourceCopyEnabled() ? 1 : 0);
+		1,
+		1);
 	DX12LogManager::JsonFunc("DX12ResourceDump",
 		"\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"frameReadbackBudget\":%llu",
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
@@ -786,7 +786,7 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 
 	DX12FrameAnalysis::LogJsonFunc("ResourceCopyResult",
 		"\"gpuCopy\":%u,\"readbackOk\":%u,\"copied\":%u,\"copyFailed\":%u,\"directMap\":%u,\"tasks\":%zu,\"duplicates\":%u,\"streamedWrite\":1",
-		DX12ResourceDumpPrepare::GpuResourceCopyEnabled() ? 1 : 0,
+		1,
 		readbackCopyOk ? 1 : 0, copiedTasks, copyFailedTasks, directMapTasks,
 		tasks.size(), duplicates);
 

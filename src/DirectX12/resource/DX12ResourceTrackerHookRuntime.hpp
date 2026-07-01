@@ -5,8 +5,6 @@
 class DX12ResourceTrackerHookRuntime
 {
 public:
-	static bool IsInternalReplayActive();
-	static void AttachResourceReleaseTracker(ID3D12Resource *resource);
 	static const D3D12_UNORDERED_ACCESS_VIEW_DESC *PrepareUavDesc(
 		ID3D12Resource *resource,
 		const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc,

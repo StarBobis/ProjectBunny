@@ -389,7 +389,6 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 		task->hasHeapProperties ? &task->heapProperties : nullptr,
 		task->hasPlacedInfo ? &task->placedInfo : nullptr,
 		task->initialState);
-	DX12ResourceTrackerHookRuntime::AttachResourceReleaseTracker(task->resource);
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();

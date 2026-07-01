@@ -175,7 +175,6 @@ public:
 	static void ReleaseEventIaResources(BindingEvent *event);
 	static void RefreshPipelineShaderInfo(CommandListBindingState *state);
 	static void InvalidatePipelineShaderInfo(CommandListBindingState *state);
-	static bool ShouldEagerResolveIaResources(ID3D12GraphicsCommandList *commandList);
 	static void BumpBindingQuerySerial(CommandListBindingState *state);
 	static bool ResolvePipelineShaderInfoOnDemand(CommandListBindingState *state);
 	static bool SnapshotBindingState(

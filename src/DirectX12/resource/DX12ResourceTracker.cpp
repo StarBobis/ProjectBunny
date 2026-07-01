@@ -1387,11 +1387,6 @@ bool ShouldTrackComputeDescriptorMetadata()
 	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking();
 }
 
-bool ShouldTrackDescriptorCreationMetadata()
-{
-	return true;
-}
-
 void BumpDescriptorQuerySerial()
 {
 	UINT64 current = gDescriptorQuerySerial.load(std::memory_order_relaxed);
@@ -1409,11 +1404,6 @@ void BumpDescriptorQuerySerial()
 bool ShouldTrackResourceMetadata()
 {
 	return DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata();
-}
-
-bool ShouldTrackResourceCreationMetadata()
-{
-	return true;
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)
