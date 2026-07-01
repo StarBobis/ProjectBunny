@@ -829,7 +829,7 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 		return;
 
 	record->resource = resource;
-	if (ShouldTrackResourceMetadata()) {
+	if (DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata()) {
 		FillResourceInfo(record, resource);
 	} else {
 		const D3D12_RESOURCE_DESC desc = resource->GetDesc();
@@ -883,7 +883,7 @@ bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record)
 			const UINT64 available = realEnd - gpuVa;
 			record->viewSize = (available && size > available) ? available : size;
 			record->gpuVirtualAddress = gpuVa;
-			if (ShouldTrackResourceMetadata()) {
+			if (DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata()) {
 				record->resourceDesc = resource.desc;
 				record->hasResourceDesc = true;
 			}
@@ -1377,16 +1377,6 @@ UINT64 DX12GetDescriptorHeapVersion(ID3D12DescriptorHeap *heap)
 	return version;
 }
 
-bool ShouldTrackFullDescriptorMetadata()
-{
-	return DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
-}
-
-bool ShouldTrackComputeDescriptorMetadata()
-{
-	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking();
-}
-
 void BumpDescriptorQuerySerial()
 {
 	UINT64 current = gDescriptorQuerySerial.load(std::memory_order_relaxed);
@@ -1399,11 +1389,6 @@ void BumpDescriptorQuerySerial()
 				std::memory_order_relaxed))
 			return;
 	}
-}
-
-bool ShouldTrackResourceMetadata()
-{
-	return DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata();
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)

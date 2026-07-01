@@ -9,18 +9,11 @@ static constexpr size_t kDescriptorWorkerBatchTarget = 64;
 static constexpr size_t kDescriptorPendingWriteBudget = 16384;
 static const std::chrono::milliseconds kDescriptorWorkerCoalesceWindow(1);
 
-DX12DescriptorCollectPipeline &DX12DescriptorCollectPipeline::Get()
-{
-	static DX12DescriptorCollectPipeline pipeline;
-	return pipeline;
-}
-
 void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *source)
 {
-	DX12DescriptorCollectPipeline &pipeline = Get();
-	if (!pipeline.EnqueueDescriptorTask(&record, source))
+	if (!EnqueueDescriptorTask(&record, source))
 		::RecordDescriptor(std::move(record));
-	pipeline.MaybeLogInlineStats(source ? source : "RecordDescriptor");
+	MaybeLogInlineStats(source ? source : "RecordDescriptor");
 }
 
 void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
@@ -34,18 +27,17 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 	if (!device || count == 0)
 		return;
 
-	DX12DescriptorCollectPipeline &pipeline = Get();
-	pipeline.StartWorker();
+	Start();
 
-	std::unique_lock<std::mutex> lock(pipeline.mutex);
-	pipeline.copyRangeCalls++;
-	pipeline.copiedDescriptors += count;
-	if (!pipeline.pendingDescriptorWrites.empty()) {
+	std::unique_lock<std::mutex> lock(mutex);
+	copyRangeCalls++;
+	copiedDescriptors += count;
+	if (!pendingDescriptorWrites.empty()) {
 		DX12DescriptorCollectBatch batch;
-		if (pipeline.TryStealDescriptorBatchLocked(&batch))
-			pipeline.QueueDescriptorBatchLocked(&batch);
+		if (TryStealDescriptorBatchLocked(&batch))
+			QueueDescriptorBatchLocked(&batch);
 	}
-	if (!pipeline.TryMergeQueuedCopyTaskLocked(
+	if (!TryMergeQueuedCopyTaskLocked(
 			device, type, destStart, srcStart, count, GetCurrentThreadId())) {
 		DX12DescriptorCollectTask task;
 		task.kind = DX12DescriptorCollectTaskKind::CopyRange;
@@ -55,16 +47,16 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		task.srcStart = srcStart;
 		task.count = count;
 		task.source = source ? source : "";
-		task.sequence = pipeline.nextSequence.fetch_add(1, std::memory_order_relaxed);
+		task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
 		task.enqueueThreadId = GetCurrentThreadId();
-		pipeline.queuedTasks.push_back(std::move(task));
-		pipeline.enqueuedBatches.fetch_add(1, std::memory_order_relaxed);
-		if (count > pipeline.maxMergedCount)
-			pipeline.maxMergedCount = count;
+		queuedTasks.push_back(std::move(task));
+		enqueuedBatches.fetch_add(1, std::memory_order_relaxed);
+		if (count > maxMergedCount)
+			maxMergedCount = count;
 	}
 	lock.unlock();
-	pipeline.wake.notify_one();
-	pipeline.MaybeLogInlineStats(source ? source : "RecordCopyRange");
+	wake.notify_one();
+	MaybeLogInlineStats(source ? source : "RecordCopyRange");
 }
 
 void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
@@ -72,44 +64,23 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
 	size_t count,
 	const char *reason)
 {
-	DX12DescriptorCollectPipeline &pipeline = Get();
-	pipeline.EnsureDescriptorWritesVisible(cpuHandles, count, reason ? reason : "EnsureDescriptorHandlesVisible");
+	EnsureDescriptorWritesVisible(
+		cpuHandles, count, reason ? reason : "EnsureDescriptorHandlesVisible");
 }
 
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *reason)
 {
-	DX12DescriptorCollectPipeline &pipeline = Get();
 	{
-		std::lock_guard<std::mutex> lock(pipeline.mutex);
-		pipeline.drainCalls++;
+		std::lock_guard<std::mutex> lock(mutex);
+		drainCalls++;
 	}
-	pipeline.FlushPendingDescriptorWrites(reason ? reason : "DrainForSnapshot");
-	pipeline.MaybeLogInlineStats(reason ? reason : "DrainForSnapshot");
+	FlushPendingDescriptorWrites(reason ? reason : "DrainForSnapshot");
+	MaybeLogInlineStats(reason ? reason : "DrainForSnapshot");
 }
 
 void DX12DescriptorCollectPipeline::Stop()
 {
-	DX12DescriptorCollectPipeline &pipeline = Get();
-	pipeline.FlushPendingDescriptorWrites("Stop");
-	pipeline.StopWorker();
-	pipeline.LogStats("StopInline", 0, 0);
-}
-
-void DX12DescriptorCollectPipeline::StartWorker()
-{
-	bool expected = false;
-	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-		return;
-
-	stopRequested.store(false, std::memory_order_release);
-	worker = std::thread([this]() { WorkerLoop(); });
-	DX12LogManager::JsonFunc("DX12DescriptorCollectPipeline",
-		"\"event\":\"Start\",\"thread\":\"%p\"",
-		worker.native_handle());
-}
-
-void DX12DescriptorCollectPipeline::StopWorker()
-{
+	FlushPendingDescriptorWrites("Stop");
 	if (!started.load(std::memory_order_acquire))
 		return;
 
@@ -123,16 +94,30 @@ void DX12DescriptorCollectPipeline::StopWorker()
 	DX12LogManager::JsonFunc("DX12DescriptorCollectPipeline",
 		"\"event\":\"Stopped\",\"pendingDescriptorWrites\":%zu,\"activeQueuedTasks\":%llu,\"queuedTasks\":%zu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu",
 		PendingCount(),
-		static_cast<unsigned long long>([this]() -> uint64_t {
+		static_cast<unsigned long long>([]() -> uint64_t {
 			std::lock_guard<std::mutex> lock(mutex);
 			return activeQueuedTasks;
 		}()),
-		static_cast<size_t>([this]() -> size_t {
+		static_cast<size_t>([]() -> size_t {
 			std::lock_guard<std::mutex> lock(mutex);
 			return queuedTasks.size();
 		}()),
 		static_cast<unsigned long long>(enqueuedBatches.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(completedBatches.load(std::memory_order_relaxed)));
+	LogStats("StopInline", 0, 0);
+}
+
+void DX12DescriptorCollectPipeline::Start()
+{
+	bool expected = false;
+	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+		return;
+
+	stopRequested.store(false, std::memory_order_release);
+	worker = std::thread([]() { WorkerLoop(); });
+	DX12LogManager::JsonFunc("DX12DescriptorCollectPipeline",
+		"\"event\":\"Start\",\"thread\":\"%p\"",
+		worker.native_handle());
 }
 
 bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *record, const char *source)
@@ -140,10 +125,10 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *reco
 	(void)source;
 	if (!record || !record->cpuHandle)
 		return false;
-	if (ShouldTrackFullDescriptorMetadata())
+	if (DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory())
 		return false;
 
-	StartWorker();
+	Start();
 	if (!RetainDescriptorResourcesForAsync(record))
 		return false;
 
@@ -175,18 +160,6 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *reco
 	return true;
 }
 
-bool DX12DescriptorCollectPipeline::EnqueueCopyRangeTask(
-	ID3D12Device *device,
-	D3D12_DESCRIPTOR_HEAP_TYPE type,
-	D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-	UINT count,
-	const char *source)
-{
-	RecordDescriptorCopyRange(device, type, destStart, srcStart, count, source);
-	return true;
-}
-
 size_t DX12DescriptorCollectPipeline::PendingCount()
 {
 	std::lock_guard<std::mutex> lock(mutex);
@@ -204,7 +177,7 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 		DX12DescriptorCollectTask task;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
-			wake.wait(lock, [this]() {
+			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) ||
 					!pendingDescriptorWrites.empty() ||
 					!queuedTasks.empty();
@@ -212,7 +185,7 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 			if (queuedTasks.empty() && !pendingDescriptorWrites.empty() &&
 					!stopRequested.load(std::memory_order_acquire) &&
 					pendingDescriptorWrites.size() < kDescriptorWorkerBatchTarget) {
-				wake.wait_for(lock, kDescriptorWorkerCoalesceWindow, [this]() {
+				wake.wait_for(lock, kDescriptorWorkerCoalesceWindow, []() {
 					return stopRequested.load(std::memory_order_acquire) ||
 						!queuedTasks.empty() ||
 						pendingDescriptorWrites.size() >= kDescriptorWorkerBatchTarget;
@@ -251,11 +224,6 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 		GetCurrentThreadId(), PendingCount());
 }
 
-void DX12DescriptorCollectPipeline::DrainPendingOnCaller(const char *reason)
-{
-	DrainForSnapshot(reason);
-}
-
 void DX12DescriptorCollectPipeline::ProcessTask(DX12DescriptorCollectTask *task, const char *source)
 {
 	(void)source;
@@ -279,10 +247,6 @@ void DX12DescriptorCollectPipeline::ReleaseTask(DX12DescriptorCollectTask *task)
 	for (DescriptorRecord &record : task->descriptors)
 		ReleaseDescriptorRecordResources(&record);
 	task->descriptors.clear();
-}
-
-void DX12DescriptorCollectPipeline::UpdateMaxDepth(size_t)
-{
 }
 
 void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
@@ -337,7 +301,7 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *reason)
 {
 	(void)reason;
-	StartWorker();
+	Start();
 	std::unique_lock<std::mutex> lock(mutex);
 	if (!pendingDescriptorWrites.empty()) {
 		DX12DescriptorCollectBatch batch;
@@ -345,7 +309,7 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 			QueueDescriptorBatchLocked(&batch);
 	}
 	wake.notify_one();
-	idle.wait(lock, [this]() {
+	idle.wait(lock, []() {
 		return pendingDescriptorWrites.empty() &&
 			queuedTasks.empty() &&
 			activeQueuedTasks == 0;

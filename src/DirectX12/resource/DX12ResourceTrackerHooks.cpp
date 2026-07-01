@@ -135,7 +135,7 @@ bool DX12ResourceTrackerHookRuntime::ShouldRecordCreatedResource(const D3D12_RES
 {
 	// Resource creation is always a baseline fact. Only the heavier full-metadata
 	// path is conditional; otherwise keep the always-needed dumpable resource set.
-	if (ShouldTrackResourceMetadata())
+	if (DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata())
 		return true;
 	if (!desc)
 		return true;
@@ -338,7 +338,8 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	const UINT *srcDescriptorRangeSizes,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	if (!ShouldTrackComputeDescriptorMetadata() || !destDescriptorRangeStarts || !srcDescriptorRangeStarts)
+	if (!DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() ||
+			!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
 		return;
 
 	UINT destRange = 0;
@@ -381,7 +382,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	if (ShouldTrackComputeDescriptorMetadata())
+	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking())
 		DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 			device, descriptorHeapsType, destDescriptorRangeStart,
 			srcDescriptorRangeStart, numDescriptors, "CopyDescriptorsSimple");

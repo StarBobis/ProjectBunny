@@ -9,86 +9,20 @@
 static constexpr uint64_t kResourceQueueStatsInterval = 4096;
 static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
 
-DX12ResourceCollectQueue &DX12ResourceCollectQueue::Get()
-{
-	static DX12ResourceCollectQueue queue;
-	return queue;
-}
-
 void DX12ResourceCollectQueue::Start()
-{
-	Get().StartWorker();
-}
-
-void DX12ResourceCollectQueue::Stop()
-{
-	Get().StopWorker();
-}
-
-bool DX12ResourceCollectQueue::Enqueue(
-	ID3D12Resource *resource,
-	const D3D12_RESOURCE_DESC *desc,
-	const D3D12_HEAP_PROPERTIES *heapProperties,
-	const PlacedResourceInfo *placedInfo,
-	D3D12_RESOURCE_STATES initialState)
-{
-	return Get().EnqueueTask(resource, desc, heapProperties, placedInfo, initialState);
-}
-
-bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
-	UINT numBarriers,
-	const D3D12_RESOURCE_BARRIER *barriers,
-	const char *source)
-{
-	return Get().EnqueueResourceBarrierTask(numBarriers, barriers, source);
-}
-
-bool DX12ResourceCollectQueue::EnqueueRootSignature(
-	ID3D12RootSignature *rootSignature,
-	UINT nodeMask,
-	const void *blob,
-	SIZE_T blobLength,
-	const char *source)
-{
-	return Get().EnqueueRootSignatureTask(rootSignature, nodeMask, blob, blobLength, source);
-}
-
-bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
-	UINT64 psoIndex,
-	const char *kind,
-	ID3D12PipelineState *pipelineState,
-	ID3D12RootSignature *rootSignature,
-	const char *source)
-{
-	return Get().EnqueuePsoRootSignatureTask(psoIndex, kind, pipelineState, rootSignature, source);
-}
-
-void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
-{
-	Get().DrainPendingOnCaller(reason);
-}
-
-size_t DX12ResourceCollectQueue::PendingCount()
-{
-	DX12ResourceCollectQueue &queue = Get();
-	std::lock_guard<std::mutex> lock(queue.mutex);
-	return queue.tasks.size();
-}
-
-void DX12ResourceCollectQueue::StartWorker()
 {
 	bool expected = false;
 	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
 		return;
 
 	stopRequested.store(false, std::memory_order_release);
-	worker = std::thread([this]() { WorkerLoop(); });
+	worker = std::thread([]() { WorkerLoop(); });
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"Start\",\"thread\":\"%p\"",
 		worker.native_handle());
 }
 
-void DX12ResourceCollectQueue::StopWorker()
+void DX12ResourceCollectQueue::Stop()
 {
 	if (!started.load(std::memory_order_acquire))
 		return;
@@ -120,7 +54,7 @@ void DX12ResourceCollectQueue::StopWorker()
 		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)));
 }
 
-bool DX12ResourceCollectQueue::EnqueueTask(
+bool DX12ResourceCollectQueue::Enqueue(
 	ID3D12Resource *resource,
 	const D3D12_RESOURCE_DESC *desc,
 	const D3D12_HEAP_PROPERTIES *heapProperties,
@@ -130,7 +64,7 @@ bool DX12ResourceCollectQueue::EnqueueTask(
 	if (!resource)
 		return false;
 
-	StartWorker();
+	Start();
 
 	DX12ResourceCollectTask task;
 	task.kind = DX12ResourceCollectTaskKind::Resource;
@@ -161,7 +95,7 @@ bool DX12ResourceCollectQueue::EnqueueTask(
 	return true;
 }
 
-bool DX12ResourceCollectQueue::EnqueueResourceBarrierTask(
+bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 	UINT numBarriers,
 	const D3D12_RESOURCE_BARRIER *barriers,
 	const char *source)
@@ -169,7 +103,7 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarrierTask(
 	if (!barriers || numBarriers == 0)
 		return false;
 
-	StartWorker();
+	Start();
 
 	DX12ResourceCollectTask task;
 	task.kind = DX12ResourceCollectTaskKind::ResourceBarrier;
@@ -206,7 +140,7 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarrierTask(
 	return true;
 }
 
-bool DX12ResourceCollectQueue::EnqueueRootSignatureTask(
+bool DX12ResourceCollectQueue::EnqueueRootSignature(
 	ID3D12RootSignature *rootSignature,
 	UINT nodeMask,
 	const void *blob,
@@ -216,7 +150,7 @@ bool DX12ResourceCollectQueue::EnqueueRootSignatureTask(
 	if (!rootSignature || !blob || blobLength == 0)
 		return false;
 
-	StartWorker();
+	Start();
 
 	DX12ResourceCollectTask task;
 	task.kind = DX12ResourceCollectTaskKind::RootSignature;
@@ -251,7 +185,7 @@ bool DX12ResourceCollectQueue::EnqueueRootSignatureTask(
 	return true;
 }
 
-bool DX12ResourceCollectQueue::EnqueuePsoRootSignatureTask(
+bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
 	UINT64 psoIndex,
 	const char *kind,
 	ID3D12PipelineState *pipelineState,
@@ -261,7 +195,7 @@ bool DX12ResourceCollectQueue::EnqueuePsoRootSignatureTask(
 	if (!psoIndex)
 		return false;
 
-	StartWorker();
+	Start();
 
 	DX12ResourceCollectTask task;
 	task.kind = DX12ResourceCollectTaskKind::PsoRootSignature;
@@ -299,6 +233,17 @@ bool DX12ResourceCollectQueue::EnqueuePsoRootSignatureTask(
 	return true;
 }
 
+void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
+{
+	DrainPending(reason);
+}
+
+size_t DX12ResourceCollectQueue::PendingCount()
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	return tasks.size();
+}
+
 void DX12ResourceCollectQueue::WorkerLoop()
 {
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
@@ -310,7 +255,7 @@ void DX12ResourceCollectQueue::WorkerLoop()
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
-			wake.wait(lock, [this]() {
+			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
 			});
 			if (tasks.empty()) {
@@ -328,13 +273,13 @@ void DX12ResourceCollectQueue::WorkerLoop()
 		ProcessTask(&task, "Worker");
 	}
 
-	DrainPendingOnCaller("WorkerStop");
+	DrainPending("WorkerStop");
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"WorkerExit\",\"threadId\":%lu,\"pending\":%zu",
 		GetCurrentThreadId(), PendingCount());
 }
 
-void DX12ResourceCollectQueue::DrainPendingOnCaller(const char *reason)
+void DX12ResourceCollectQueue::DrainPending(const char *reason)
 {
 	for (;;) {
 		DX12ResourceCollectTask task;
@@ -586,14 +531,6 @@ void DX12ResourceCollectQueue::ReleaseBarrierResources(D3D12_RESOURCE_BARRIER *b
 	default:
 		break;
 	}
-}
-
-void DX12ResourceCollectQueue::ReleaseTaskResource(DX12ResourceCollectTask *task)
-{
-	if (!task || !task->resource)
-		return;
-	DX12ResourceSnapshotUtils::Release(task->resource);
-	task->resource = nullptr;
 }
 
 void DX12ResourceCollectQueue::ReleaseTaskRootSignature(DX12ResourceCollectTask *task)

@@ -10,30 +10,54 @@ static constexpr uint64_t kBindingQueueStatsInterval = 4096;
 static constexpr int64_t kBindingQueueSlowTaskUs = 1000;
 static constexpr int64_t kBindingQueueSlowDrainUs = 1000;
 
-DX12BindingCollectQueue &DX12BindingCollectQueue::Get()
-{
-	static DX12BindingCollectQueue queue;
-	return queue;
-}
-
 void DX12BindingCollectQueue::Start()
 {
-	Get().StartWorker();
+	bool expected = false;
+	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+		return;
+
+	stopRequested.store(false, std::memory_order_release);
+	worker = std::thread([]() { WorkerLoop(); });
+	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
+		"\"event\":\"Start\",\"thread\":\"%p\"",
+		worker.native_handle());
 }
 
 void DX12BindingCollectQueue::Stop()
 {
-	Get().StopWorker();
+	if (!started.load(std::memory_order_acquire))
+		return;
+
+	WaitForIdle("StopBegin");
+	stopRequested.store(true, std::memory_order_release);
+	wake.notify_all();
+	idle.notify_all();
+	if (worker.joinable())
+		worker.join();
+	started.store(false, std::memory_order_release);
+
+	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
+		"\"event\":\"Stopped\",\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
+		PendingCount(),
+		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(drainCalls.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(drainWaitUs.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(drainMaxUs.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(taskElapsedUs.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(taskMaxUs.load(std::memory_order_relaxed)));
 }
 
 void DX12BindingCollectQueue::DrainForSnapshot(const char *reason)
 {
-	Get().WaitForIdle(reason ? reason : "Snapshot");
+	WaitForIdle(reason ? reason : "Snapshot");
 }
 
 void DX12BindingCollectQueue::BeginFrameDrain()
 {
-	Get().WaitForIdle("BeginFrame");
+	WaitForIdle("BeginFrame");
 }
 
 bool DX12BindingCollectQueue::EnqueueStateEvent(
@@ -48,7 +72,7 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	task.state = state;
 	task.descriptorEpoch = descriptorEpoch;
 	task.eventKind = kind;
-	return Get().EnqueueTask(std::move(task));
+	return EnqueueTask(std::move(task));
 }
 
 bool DX12BindingCollectQueue::EnqueueDrawEvent(
@@ -78,7 +102,7 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	task.baseVertexLocation = baseVertexLocation;
 	task.startInstanceLocation = startInstanceLocation;
 	task.drawId = state.drawSerial;
-	return Get().EnqueueTask(std::move(task));
+	return EnqueueTask(std::move(task));
 }
 
 bool DX12BindingCollectQueue::EnqueueDispatchEvent(
@@ -98,7 +122,7 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	task.threadGroupCountX = threadGroupCountX;
 	task.threadGroupCountY = threadGroupCountY;
 	task.threadGroupCountZ = threadGroupCountZ;
-	return Get().EnqueueTask(std::move(task));
+	return EnqueueTask(std::move(task));
 }
 
 bool DX12BindingCollectQueue::EnqueueOutputEvent(
@@ -117,54 +141,13 @@ bool DX12BindingCollectQueue::EnqueueOutputEvent(
 	task.slot = slot;
 	task.cpuHandle = cpuHandle;
 	task.drawId = drawId;
-	return Get().EnqueueTask(std::move(task));
+	return EnqueueTask(std::move(task));
 }
 
 size_t DX12BindingCollectQueue::PendingCount()
 {
-	DX12BindingCollectQueue &queue = Get();
-	std::lock_guard<std::mutex> lock(queue.mutex);
-	return queue.tasks.size() + static_cast<size_t>(queue.activeTasks);
-}
-
-void DX12BindingCollectQueue::StartWorker()
-{
-	bool expected = false;
-	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-		return;
-
-	stopRequested.store(false, std::memory_order_release);
-	worker = std::thread([this]() { WorkerLoop(); });
-	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"Start\",\"thread\":\"%p\"",
-		worker.native_handle());
-}
-
-void DX12BindingCollectQueue::StopWorker()
-{
-	if (!started.load(std::memory_order_acquire))
-		return;
-
-	WaitForIdle("StopBegin");
-	stopRequested.store(true, std::memory_order_release);
-	wake.notify_all();
-	idle.notify_all();
-	if (worker.joinable())
-		worker.join();
-	started.store(false, std::memory_order_release);
-
-	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"Stopped\",\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
-		PendingCount(),
-		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainCalls.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainWaitUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainMaxUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(taskElapsedUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(taskMaxUs.load(std::memory_order_relaxed)));
+	std::lock_guard<std::mutex> lock(mutex);
+	return tasks.size() + static_cast<size_t>(activeTasks);
 }
 
 bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
@@ -172,7 +155,7 @@ bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
 	if (!task.commandList)
 		return false;
 
-	StartWorker();
+	Start();
 	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
 	task.enqueueThreadId = GetCurrentThreadId();
 	if (task.kind != DX12BindingCollectTaskKind::OutputEvent)
@@ -203,7 +186,7 @@ void DX12BindingCollectQueue::WorkerLoop()
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
-			wake.wait(lock, [this]() {
+			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
 			});
 			if (tasks.empty()) {
@@ -235,11 +218,6 @@ void DX12BindingCollectQueue::WorkerLoop()
 		GetCurrentThreadId(), PendingCount());
 }
 
-void DX12BindingCollectQueue::DrainPendingOnCaller(const char *reason)
-{
-	WaitForIdle(reason ? reason : "Drain");
-}
-
 void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 {
 	const auto begin = std::chrono::steady_clock::now();
@@ -249,7 +227,7 @@ void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 		pendingSnapshot = tasks.size() + static_cast<size_t>(activeTasks);
 		UpdateMaxPendingAtDrain(pendingSnapshot);
 		if (pendingSnapshot != 0) {
-			idle.wait(lock, [this]() {
+			idle.wait(lock, []() {
 				return tasks.empty() && activeTasks == 0;
 			});
 		}

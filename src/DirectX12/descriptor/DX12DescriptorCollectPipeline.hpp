@@ -47,7 +47,29 @@ public:
 class DX12DescriptorCollectPipeline
 {
 public:
-	static DX12DescriptorCollectPipeline &Get();
+	inline static std::mutex mutex;
+	inline static std::condition_variable wake;
+	inline static std::condition_variable idle;
+	inline static std::thread worker;
+	inline static std::atomic<bool> started = false;
+	inline static std::atomic<bool> stopRequested = false;
+	inline static std::atomic<uint64_t> nextSequence = 1;
+	inline static std::atomic<uint64_t> enqueuedBatches = 0;
+	inline static std::atomic<uint64_t> completedBatches = 0;
+	inline static std::atomic<uint64_t> maxPendingDescriptorWrites = 0;
+	inline static std::deque<DX12DescriptorCollectTask> queuedTasks;
+	inline static std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
+	inline static uint64_t activeQueuedTasks = 0;
+	inline static uint64_t descriptorWrites = 0;
+	inline static uint64_t descriptorWriteBatches = 0;
+	inline static uint64_t descriptorWriteQueued = 0;
+	inline static uint64_t descriptorWriteReplaced = 0;
+	inline static uint64_t copyRangeCalls = 0;
+	inline static uint64_t copyRangeMerged = 0;
+	inline static uint64_t copiedDescriptors = 0;
+	inline static uint64_t drainCalls = 0;
+	inline static uint64_t maxMergedCount = 0;
+
 	static void RecordDescriptor(DescriptorRecord &&record, const char *source);
 	static void RecordDescriptorCopyRange(
 		ID3D12Device *device,
@@ -63,62 +85,28 @@ public:
 	static void DrainForSnapshot(const char *reason);
 	static void Stop();
 
-	void StartWorker();
-	void StopWorker();
-	bool EnqueueDescriptorTask(DescriptorRecord *record, const char *source);
-	bool EnqueueCopyRangeTask(
-		ID3D12Device *device,
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		UINT count,
-		const char *source);
-	size_t PendingCount();
-	void WorkerLoop();
-	void DrainPendingOnCaller(const char *reason);
-	void ProcessTask(DX12DescriptorCollectTask *task, const char *source);
-	void ReleaseTask(DX12DescriptorCollectTask *task);
-	void UpdateMaxDepth(size_t depth);
-	void LogStats(const char *event, uint64_t sequence, size_t depth);
-	void EnsureDescriptorWritesVisible(
+	static void Start();
+	static size_t PendingCount();
+	static void WorkerLoop();
+	static bool EnqueueDescriptorTask(DescriptorRecord *record, const char *source);
+	static void ProcessTask(DX12DescriptorCollectTask *task, const char *source);
+	static void ReleaseTask(DX12DescriptorCollectTask *task);
+	static void LogStats(const char *event, uint64_t sequence, size_t depth);
+	static void EnsureDescriptorWritesVisible(
 		const SIZE_T *cpuHandles,
 		size_t count,
 		const char *reason);
-	bool TryMergeQueuedCopyTaskLocked(
+	static bool TryMergeQueuedCopyTaskLocked(
 		ID3D12Device *device,
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
 		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
 		UINT count,
 		DWORD enqueueThreadId);
-	bool QueueDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
-
-	std::mutex mutex;
-	std::condition_variable wake;
-	std::condition_variable idle;
-	std::thread worker;
-	std::atomic<bool> started{false};
-	std::atomic<bool> stopRequested{false};
-	std::atomic<uint64_t> nextSequence{1};
-	std::atomic<uint64_t> enqueuedBatches{0};
-	std::atomic<uint64_t> completedBatches{0};
-	std::atomic<uint64_t> maxPendingDescriptorWrites{0};
-	std::deque<DX12DescriptorCollectTask> queuedTasks;
-	std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
-	uint64_t activeQueuedTasks = 0;
-	uint64_t descriptorWrites = 0;
-	uint64_t descriptorWriteBatches = 0;
-	uint64_t descriptorWriteQueued = 0;
-	uint64_t descriptorWriteReplaced = 0;
-	uint64_t copyRangeCalls = 0;
-	uint64_t copyRangeMerged = 0;
-	uint64_t copiedDescriptors = 0;
-	uint64_t drainCalls = 0;
-	uint64_t maxMergedCount = 0;
-
-	void FlushPendingDescriptorWrites(const char *reason);
-	bool RetainDescriptorResourcesForAsync(DescriptorRecord *record);
-	bool TryStealDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
-	void RecordDescriptorWriteStats(const DescriptorRecord &record);
-	void MaybeLogInlineStats(const char *reason);
+	static bool QueueDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
+	static void FlushPendingDescriptorWrites(const char *reason);
+	static bool RetainDescriptorResourcesForAsync(DescriptorRecord *record);
+	static bool TryStealDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
+	static void RecordDescriptorWriteStats(const DescriptorRecord &record);
+	static void MaybeLogInlineStats(const char *reason);
 };

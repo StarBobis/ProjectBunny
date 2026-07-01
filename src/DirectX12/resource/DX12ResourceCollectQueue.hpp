@@ -49,25 +49,24 @@ public:
 class DX12ResourceCollectQueue
 {
 public:
-	std::mutex mutex;
-	std::condition_variable wake;
-	std::deque<DX12ResourceCollectTask> tasks;
-	std::thread worker;
-	std::atomic<bool> started{false};
-	std::atomic<bool> stopRequested{false};
-	std::atomic<uint64_t> nextSequence{1};
-	std::atomic<uint64_t> enqueued{0};
-	std::atomic<uint64_t> dequeued{0};
-	std::atomic<uint64_t> completed{0};
-	std::atomic<uint64_t> dropped{0};
-	std::atomic<uint64_t> addRefFailed{0};
-	std::atomic<uint64_t> maxDepth{0};
-	std::atomic<uint64_t> resourceTasksCompleted{0};
-	std::atomic<uint64_t> resourceTasksElapsedUs{0};
-	std::atomic<uint64_t> resourceTasksMaxElapsedUs{0};
-	std::atomic<uint64_t> resourceTaskStatsSerial{0};
+	inline static std::mutex mutex;
+	inline static std::condition_variable wake;
+	inline static std::deque<DX12ResourceCollectTask> tasks;
+	inline static std::thread worker;
+	inline static std::atomic<bool> started = false;
+	inline static std::atomic<bool> stopRequested = false;
+	inline static std::atomic<uint64_t> nextSequence = 1;
+	inline static std::atomic<uint64_t> enqueued = 0;
+	inline static std::atomic<uint64_t> dequeued = 0;
+	inline static std::atomic<uint64_t> completed = 0;
+	inline static std::atomic<uint64_t> dropped = 0;
+	inline static std::atomic<uint64_t> addRefFailed = 0;
+	inline static std::atomic<uint64_t> maxDepth = 0;
+	inline static std::atomic<uint64_t> resourceTasksCompleted = 0;
+	inline static std::atomic<uint64_t> resourceTasksElapsedUs = 0;
+	inline static std::atomic<uint64_t> resourceTasksMaxElapsedUs = 0;
+	inline static std::atomic<uint64_t> resourceTaskStatsSerial = 0;
 
-	static DX12ResourceCollectQueue &Get();
 	static void Start();
 	static void Stop();
 	static bool Enqueue(
@@ -95,43 +94,18 @@ public:
 	static void DrainForSnapshot(const char *reason);
 	static size_t PendingCount();
 
-	void StartWorker();
-	void StopWorker();
-	bool EnqueueTask(
-		ID3D12Resource *resource,
-		const D3D12_RESOURCE_DESC *desc,
-		const D3D12_HEAP_PROPERTIES *heapProperties,
-		const PlacedResourceInfo *placedInfo,
-		D3D12_RESOURCE_STATES initialState);
-	bool EnqueueResourceBarrierTask(
-		UINT numBarriers,
-		const D3D12_RESOURCE_BARRIER *barriers,
-		const char *source);
-	bool EnqueueRootSignatureTask(
-		ID3D12RootSignature *rootSignature,
-		UINT nodeMask,
-		const void *blob,
-		SIZE_T blobLength,
-		const char *source);
-	bool EnqueuePsoRootSignatureTask(
-		UINT64 psoIndex,
-		const char *kind,
-		ID3D12PipelineState *pipelineState,
-		ID3D12RootSignature *rootSignature,
-		const char *source);
-	void WorkerLoop();
-	void DrainPendingOnCaller(const char *reason);
-	void ProcessTask(DX12ResourceCollectTask *task, const char *source);
-	void ProcessResourceTask(DX12ResourceCollectTask *task, const char *source);
-	void ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source);
-	void ProcessRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
-	void ProcessPsoRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
-	bool TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
-	void ReleaseBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
-	void ReleaseTaskResource(DX12ResourceCollectTask *task);
-	void ReleaseTaskRootSignature(DX12ResourceCollectTask *task);
-	void ReleaseTaskPsoRootSignature(DX12ResourceCollectTask *task);
-	void UpdateMaxDepth(size_t depth);
-	void LogStats(const char *event, uint64_t sequence, size_t depth);
-	void RecordResourceTaskStats(DX12ResourceCollectTask *task, const char *source, int64_t elapsedUs);
+	static void WorkerLoop();
+	static void DrainPending(const char *reason);
+	static void ProcessTask(DX12ResourceCollectTask *task, const char *source);
+	static void ProcessResourceTask(DX12ResourceCollectTask *task, const char *source);
+	static void ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source);
+	static void ProcessRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
+	static void ProcessPsoRootSignatureTask(DX12ResourceCollectTask *task, const char *source);
+	static bool TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
+	static void ReleaseBarrierResources(D3D12_RESOURCE_BARRIER *barrier);
+	static void ReleaseTaskRootSignature(DX12ResourceCollectTask *task);
+	static void ReleaseTaskPsoRootSignature(DX12ResourceCollectTask *task);
+	static void UpdateMaxDepth(size_t depth);
+	static void LogStats(const char *event, uint64_t sequence, size_t depth);
+	static void RecordResourceTaskStats(DX12ResourceCollectTask *task, const char *source, int64_t elapsedUs);
 };

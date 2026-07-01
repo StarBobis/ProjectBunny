@@ -317,9 +317,6 @@ void DX12RecordRootSignatureImmediate(
 	const void *blob,
 	SIZE_T blobLength);
 void DX12PrimeDescriptorHistoryForHunting();
-bool ShouldTrackFullDescriptorMetadata();
-bool ShouldTrackComputeDescriptorMetadata();
-bool ShouldTrackResourceMetadata();
 void BumpDescriptorQuerySerial();
 void RecordDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);
 void DX12RecordPsoRootSignatureImmediate(
