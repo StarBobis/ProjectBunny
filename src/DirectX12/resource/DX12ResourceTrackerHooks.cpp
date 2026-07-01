@@ -63,7 +63,7 @@ public:
 			heapProperties ? 1 : 0,
 			heapProperties ? static_cast<UINT>(heapProperties->Type) : 0,
 			static_cast<UINT>(initialState),
-			DX12HotPathState::Get().skipAll);
+			DX12HotPathState::skipAll);
 	}
 
 	static void LogRecordStats(const char *stage, HRESULT hr, void **resource, bool shouldTrack)

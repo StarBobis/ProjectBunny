@@ -15,49 +15,49 @@ class DX12FrameAnalysis
 public:
 	static bool Begin()
 	{
-		return DX12FrameAnalysisState::Get().Begin();
+		return DX12FrameAnalysisState::Begin();
 	}
 
 	static void End()
 	{
-		DX12FrameAnalysisState::Get().End();
+		DX12FrameAnalysisState::End();
 	}
 
 	static void RequestCapture()
 	{
-		DX12FrameAnalysisState::Get().RequestCapture();
+		DX12FrameAnalysisState::RequestCapture();
 		DX12HotPathState::Update();
 	}
 
 	static void BeginCapture()
 	{
-		DX12FrameAnalysisState::Get().BeginCapture();
+		DX12FrameAnalysisState::BeginCapture();
 		DX12HotPathState::Update();
 	}
 
 	static bool EndCapture()
 	{
-		return DX12FrameAnalysisState::Get().EndCapture();
+		return DX12FrameAnalysisState::EndCapture();
 	}
 
 	static bool IsActive()
 	{
-		return DX12FrameAnalysisState::Get().IsActive();
+		return DX12FrameAnalysisState::IsActive();
 	}
 
 	static bool IsCaptureRequested()
 	{
-		return DX12FrameAnalysisState::Get().IsCaptureRequested();
+		return DX12FrameAnalysisState::IsCaptureRequested();
 	}
 
 	static bool IsCapturing()
 	{
-		return DX12FrameAnalysisState::Get().IsCapturing();
+		return DX12FrameAnalysisState::IsCapturing();
 	}
 
 	static bool GetPath(wchar_t *path, size_t pathCount)
 	{
-		return DX12FrameAnalysisState::Get().GetPath(path, pathCount);
+		return DX12FrameAnalysisState::GetPath(path, pathCount);
 	}
 
 	static void LogEvent(const char *fmt, ...)
@@ -123,7 +123,7 @@ public:
 
 	static void LogJsonFields(const char *fields)
 	{
-		DX12FrameAnalysisState::Get().LogJsonFields(fields);
+		DX12FrameAnalysisState::LogJsonFields(fields);
 	}
 };
 

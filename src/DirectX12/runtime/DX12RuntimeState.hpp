@@ -11,41 +11,35 @@ enum class DX12RuntimeMode : LONG
 class DX12RuntimeState
 {
 public:
-	HINSTANCE module = nullptr;
-	volatile LONG presentCount = 0;
-	volatile LONG runtimeMode = static_cast<LONG>(DX12RuntimeMode::Mod);
-	volatile LONG perFrameTotalDraws = 0;
-	volatile LONG perFrameTotalDispatches = 0;
-
-	static DX12RuntimeState &Get()
-	{
-		static DX12RuntimeState state;
-		return state;
-	}
+	inline static HINSTANCE module = nullptr;
+	inline static volatile LONG presentCount = 0;
+	inline static volatile LONG runtimeMode = static_cast<LONG>(DX12RuntimeMode::Mod);
+	inline static volatile LONG perFrameTotalDraws = 0;
+	inline static volatile LONG perFrameTotalDispatches = 0;
 
 	static void SetModule(HINSTANCE module)
 	{
-		Get().module = module;
+		DX12RuntimeState::module = module;
 	}
 
 	static HINSTANCE GetModule()
 	{
-		return Get().module;
+		return module;
 	}
 
 	static LONG IncrementPresentCount()
 	{
-		return InterlockedIncrement(&Get().presentCount);
+		return InterlockedIncrement(&presentCount);
 	}
 
 	static LONG GetPresentCount()
 	{
-		return InterlockedCompareExchange(&Get().presentCount, 0, 0);
+		return InterlockedCompareExchange(&presentCount, 0, 0);
 	}
 
 	static DX12RuntimeMode GetRuntimeMode()
 	{
-		const LONG mode = InterlockedCompareExchange(&Get().runtimeMode, 0, 0);
+		const LONG mode = InterlockedCompareExchange(&runtimeMode, 0, 0);
 		return mode == static_cast<LONG>(DX12RuntimeMode::Hunting) ?
 			DX12RuntimeMode::Hunting : DX12RuntimeMode::Mod;
 	}
@@ -64,22 +58,22 @@ public:
 
 	static void IncrementFrameDraws()
 	{
-		InterlockedIncrement(&Get().perFrameTotalDraws);
+		InterlockedIncrement(&perFrameTotalDraws);
 	}
 
 	static void IncrementFrameDispatches()
 	{
-		InterlockedIncrement(&Get().perFrameTotalDispatches);
+		InterlockedIncrement(&perFrameTotalDispatches);
 	}
 
 	static LONG TakeFrameDraws()
 	{
-		return InterlockedExchange(&Get().perFrameTotalDraws, 0);
+		return InterlockedExchange(&perFrameTotalDraws, 0);
 	}
 
 	static LONG TakeFrameDispatches()
 	{
-		return InterlockedExchange(&Get().perFrameTotalDispatches, 0);
+		return InterlockedExchange(&perFrameTotalDispatches, 0);
 	}
 };
 

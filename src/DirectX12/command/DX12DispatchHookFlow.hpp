@@ -77,7 +77,7 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch)
 	{
-		if (!DX12HotPathState::Get().skipAll)
+		if (!DX12HotPathState::skipAll)
 			return false;
 		if (originalDispatch)
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
@@ -102,7 +102,7 @@ public:
 			return;
 		}
 
-		if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() && !NeedsDispatchWork()) {
+		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() && !NeedsDispatchWork()) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList))

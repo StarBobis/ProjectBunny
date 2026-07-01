@@ -16,9 +16,9 @@ class DX12ResourceTrackingPolicyUtils
 public:
 	static bool NeedsFrameDumpTracking()
 	{
-		return DX12FrameAnalysisState::Get().IsActive() ||
-			DX12FrameAnalysisState::Get().IsCaptureRequested() ||
-			DX12FrameAnalysisState::Get().IsCapturing();
+		return DX12FrameAnalysisState::IsActive() ||
+			DX12FrameAnalysisState::IsCaptureRequested() ||
+			DX12FrameAnalysisState::IsCapturing();
 	}
 
 	static bool NeedsShaderDumpTracking()

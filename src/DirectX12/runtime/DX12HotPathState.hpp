@@ -20,25 +20,18 @@ bool DX12ModNeedsShaderDescriptorTracking();
 class DX12HotPathState
 {
 public:
-	volatile LONG skipAll = 1;
-	volatile LONG skipBindings = 1;
-	volatile LONG skipGraphicsBindings = 1;
-	volatile LONG trackResourceMetadata = 0;
-	volatile LONG stateMask = -1;
-
-	static DX12HotPathState &Get()
-	{
-		static DX12HotPathState state;
-		return state;
-	}
+	inline static volatile LONG skipAll = 1;
+	inline static volatile LONG skipBindings = 1;
+	inline static volatile LONG skipGraphicsBindings = 1;
+	inline static volatile LONG trackResourceMetadata = 0;
+	inline static volatile LONG stateMask = -1;
 
 	static void Update()
 	{
-		DX12HotPathState &state = Get();
-		if (state.skipAll &&
-			!DX12FrameAnalysisState::Get().IsActive() &&
-			!DX12FrameAnalysisState::Get().IsCapturing() &&
-			!DX12FrameAnalysisState::Get().IsCaptureRequested() &&
+		if (skipAll &&
+			!DX12FrameAnalysisState::IsActive() &&
+			!DX12FrameAnalysisState::IsCapturing() &&
+			!DX12FrameAnalysisState::IsCaptureRequested() &&
 			!DX12ShaderDumpIsCapturingFrame() &&
 			!DX12ShaderDumpIsCaptureRequested() &&
 			!DX12ShaderDumpIsBusy() &&
@@ -71,17 +64,17 @@ public:
 		const LONG skipGraphicsBindings = needsGraphicsBindingState ? 0 : 1;
 		const LONG trackResourceMetadata = needsHeavyTracking ? 1 : 0;
 
-		InterlockedExchange(&state.skipAll, skipAll);
-		InterlockedExchange(&state.skipBindings, skipBindings);
-		InterlockedExchange(&state.skipGraphicsBindings, skipGraphicsBindings);
-		InterlockedExchange(&state.trackResourceMetadata, trackResourceMetadata);
+		InterlockedExchange(&DX12HotPathState::skipAll, skipAll);
+		InterlockedExchange(&DX12HotPathState::skipBindings, skipBindings);
+		InterlockedExchange(&DX12HotPathState::skipGraphicsBindings, skipGraphicsBindings);
+		InterlockedExchange(&DX12HotPathState::trackResourceMetadata, trackResourceMetadata);
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |
 			(skipBindings ? 2 : 0) |
 			(skipGraphicsBindings ? 4 : 0) |
 			(trackResourceMetadata ? 8 : 0);
-		if (InterlockedExchange(&state.stateMask, mask) != mask) {
+		if (InterlockedExchange(&stateMask, mask) != mask) {
 			// Command lists cache binding-capture decisions. Mode or capture-state
 			// changes must invalidate that cache, otherwise Hunting can keep using
 			// a Mod-era "do not track bindings" decision and lose SRV texture tables.
@@ -95,7 +88,7 @@ public:
 
 	static bool HooksNeeded()
 	{
-		return InterlockedCompareExchange(&Get().skipAll, 0, 0) == 0 ||
+		return InterlockedCompareExchange(&skipAll, 0, 0) == 0 ||
 			DX12HuntNeedsHotPath();
 	}
 };

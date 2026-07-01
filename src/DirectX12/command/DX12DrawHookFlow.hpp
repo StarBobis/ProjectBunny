@@ -29,7 +29,7 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		if (!DX12HotPathState::Get().skipAll)
+		if (!DX12HotPathState::skipAll)
 			return false;
 		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 		return true;
@@ -49,7 +49,7 @@ public:
 			return;
 		}
 
-		if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() && !NeedsModWork()) {
+		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() && !NeedsModWork()) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (ShouldSkipHuntDraw(commandList, draw))
 				return;

@@ -199,9 +199,9 @@ public:
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
-		if (DX12HotPathState::Get().skipAll)
+		if (DX12HotPathState::skipAll)
 			return PresentSkipPath(swapChain, syncInterval, flags, &firstPresentLog);
 
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
@@ -254,9 +254,9 @@ public:
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
 			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::Get().skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
-		if (DX12HotPathState::Get().skipAll)
+		if (DX12HotPathState::skipAll)
 			return Present1SkipPath(swapChain, syncInterval, flags, presentParameters, &firstPresent1Log);
 
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain1::Present1", swapChain);

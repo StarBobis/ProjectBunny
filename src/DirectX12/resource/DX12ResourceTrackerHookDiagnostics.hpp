@@ -21,7 +21,7 @@ public:
 
 	static void LogResourceHookCallWhenTracking(const char *api, const void *object)
 	{
-		if (DX12HotPathState::Get().skipAll &&
+		if (DX12HotPathState::skipAll &&
 				!DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata())
 			return;
 		LogResourceHookCall(api, object);

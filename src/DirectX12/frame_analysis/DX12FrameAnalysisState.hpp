@@ -13,36 +13,20 @@
 class DX12FrameAnalysisState
 {
 public:
-	SRWLOCK lock;
-	bool active = false;
-	bool captureRequested = false;
-	bool capturing = false;
-	bool dumpPending = false;
-	UINT captureFramesRemaining = 0;
-	volatile LONG activeFast = 0;
-	volatile LONG captureRequestedFast = 0;
-	volatile LONG capturingFast = 0;
-	wchar_t path[MAX_PATH] = {};
-	FILE *log = nullptr;
-	unsigned long long lineNo = 0;
+	inline static SRWLOCK lock = SRWLOCK_INIT;
+	inline static bool active = false;
+	inline static bool captureRequested = false;
+	inline static bool capturing = false;
+	inline static bool dumpPending = false;
+	inline static UINT captureFramesRemaining = 0;
+	inline static volatile LONG activeFast = 0;
+	inline static volatile LONG captureRequestedFast = 0;
+	inline static volatile LONG capturingFast = 0;
+	inline static wchar_t path[MAX_PATH] = {};
+	inline static FILE *log = nullptr;
+	inline static unsigned long long lineNo = 0;
 
-	DX12FrameAnalysisState()
-	{
-		InitializeSRWLock(&lock);
-	}
-
-	~DX12FrameAnalysisState()
-	{
-		CloseLogLocked();
-	}
-
-	static DX12FrameAnalysisState &Get()
-	{
-		static DX12FrameAnalysisState state;
-		return state;
-	}
-
-	bool Begin()
+	static bool Begin()
 	{
 		wchar_t modulePath[MAX_PATH];
 		wchar_t subdir[MAX_PATH];
@@ -84,7 +68,7 @@ public:
 		return true;
 	}
 
-	void End()
+	static void End()
 	{
 		AcquireSRWLockExclusive(&lock);
 		active = false;
@@ -99,7 +83,7 @@ public:
 		ReleaseSRWLockExclusive(&lock);
 	}
 
-	void RequestCapture()
+	static void RequestCapture()
 	{
 		AcquireSRWLockExclusive(&lock);
 		if (active && !capturing && !dumpPending) {
@@ -109,7 +93,7 @@ public:
 		ReleaseSRWLockExclusive(&lock);
 	}
 
-	void BeginCapture()
+	static void BeginCapture()
 	{
 		AcquireSRWLockExclusive(&lock);
 		if (active && captureRequested && !capturing && !dumpPending) {
@@ -122,7 +106,7 @@ public:
 		ReleaseSRWLockExclusive(&lock);
 	}
 
-	bool EndCapture()
+	static bool EndCapture()
 	{
 		AcquireSRWLockExclusive(&lock);
 		if (active && capturing) {
@@ -142,22 +126,22 @@ public:
 		return false;
 	}
 
-	bool IsActive()
+	static bool IsActive()
 	{
 		return InterlockedCompareExchange(&activeFast, 0, 0) != 0;
 	}
 
-	bool IsCaptureRequested()
+	static bool IsCaptureRequested()
 	{
 		return InterlockedCompareExchange(&captureRequestedFast, 0, 0) != 0;
 	}
 
-	bool IsCapturing()
+	static bool IsCapturing()
 	{
 		return InterlockedCompareExchange(&capturingFast, 0, 0) != 0;
 	}
 
-	bool GetPath(wchar_t *outPath, size_t pathCount)
+	static bool GetPath(wchar_t *outPath, size_t pathCount)
 	{
 		if (!outPath || pathCount == 0)
 			return false;
@@ -170,7 +154,7 @@ public:
 		return ok;
 	}
 
-	bool OpenLogLocked()
+	static bool OpenLogLocked()
 	{
 		wchar_t filename[MAX_PATH];
 
@@ -192,7 +176,7 @@ public:
 		return true;
 	}
 
-	void CloseLogLocked()
+	static void CloseLogLocked()
 	{
 		if (log) {
 			fclose(log);
@@ -200,7 +184,7 @@ public:
 		}
 	}
 
-	void LogJsonFields(const char *fields)
+	static void LogJsonFields(const char *fields)
 	{
 		AcquireSRWLockExclusive(&lock);
 		if (!active || !OpenLogLocked()) {

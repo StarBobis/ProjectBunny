@@ -17,7 +17,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12PipelineState *pipelineState)
 	{
-		if (DX12HotPathState::Get().skipBindings && DX12HuntIsEnabled() &&
+		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() &&
 		    !DX12ModHasActiveShaderOverrides()) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
@@ -40,7 +40,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return false;
-		if (DX12HotPathState::Get().skipBindings) {
+		if (DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
 			return false;
 		}
@@ -56,7 +56,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
-		if (!DX12HotPathState::Get().skipBindings) {
+		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetPrimitiveTopology", commandList,
 				" topology=%u", static_cast<UINT>(topology));
@@ -72,7 +72,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const D3D12_INDEX_BUFFER_VIEW *view)
 	{
-		if (!DX12HotPathState::Get().skipBindings) {
+		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetIndexBuffer", commandList,
 				" gpu=0x%llx size=%u format=%u",
@@ -98,7 +98,7 @@ public:
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views)
 	{
-		if (!DX12HotPathState::Get().skipBindings) {
+		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetVertexBuffers", commandList,
 				" start=%u count=%u", startSlot, count);

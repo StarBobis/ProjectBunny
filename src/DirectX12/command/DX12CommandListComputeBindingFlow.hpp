@@ -13,13 +13,13 @@ class DX12CommandListComputeBindingFlow
 public:
 	static bool ShouldSkipComputeTrackedCapture()
 	{
-		return DX12HotPathState::Get().skipBindings &&
+		return DX12HotPathState::skipBindings &&
 			!DX12CommandListStateCapture::ShouldTrackBindings();
 	}
 
 	static bool ShouldSkipGraphicsTrackedCapture()
 	{
-		return DX12HotPathState::Get().skipGraphicsBindings &&
+		return DX12HotPathState::skipGraphicsBindings &&
 			!DX12CommandListStateCapture::ShouldTrackBindings();
 	}
 
@@ -57,7 +57,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		if (DX12HotPathState::Get().skipAll) {
+		if (DX12HotPathState::skipAll) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
 		}
@@ -136,7 +136,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		if (graphics ? DX12HotPathState::Get().skipGraphicsBindings : DX12HotPathState::Get().skipBindings) {
+		if (graphics ? DX12HotPathState::skipGraphicsBindings : DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
 		}
@@ -163,7 +163,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		if (graphics ? DX12HotPathState::Get().skipGraphicsBindings : DX12HotPathState::Get().skipBindings) {
+		if (graphics ? DX12HotPathState::skipGraphicsBindings : DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
 		}
@@ -191,7 +191,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
-		if (graphics ? DX12HotPathState::Get().skipGraphicsBindings : DX12HotPathState::Get().skipBindings) {
+		if (graphics ? DX12HotPathState::skipGraphicsBindings : DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
 		}

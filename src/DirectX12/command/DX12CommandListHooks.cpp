@@ -506,7 +506,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 	ID3D12GraphicsCommandList *commandList, ID3D12CommandAllocator *allocator,
 	ID3D12PipelineState *initialState)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_RESET_COMMAND_LIST original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
 		return original ? original(commandList, allocator, initialState) : E_FAIL;
@@ -561,7 +561,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT vertexCountPerInstance, UINT instanceCount,
 	UINT startVertexLocation, UINT startInstanceLocation)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_DRAW_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
@@ -581,7 +581,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT indexCountPerInstance, UINT instanceCount,
 	UINT startIndexLocation, INT baseVertexLocation, UINT startInstanceLocation)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
@@ -603,7 +603,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
 	PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		if (original)
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
@@ -667,7 +667,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveSubresource(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology, PFN_IA_SET_PRIMITIVE_TOPOLOGY, DX12CommandListHookState::OrigIASetPrimitiveTopology, "IASetPrimitiveTopology");
 		if (original)
@@ -713,7 +713,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetStencilRef(ID3D1
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetPipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_SET_PIPELINE_STATE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState, PFN_SET_PIPELINE_STATE, DX12CommandListHookState::OrigSetPipelineState, "SetPipelineState");
 		if (original)
@@ -733,7 +733,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResourceBarrier(
 	ID3D12GraphicsCommandList *commandList, UINT numBarriers,
 	const D3D12_RESOURCE_BARRIER *barriers)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_RESOURCE_BARRIER original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
 		if (original)
@@ -760,7 +760,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteBundle(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorderedAccessView(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
 		if (original)
@@ -769,7 +769,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorde
 	}
 	DX12_PROFILE_SCOPE(SetGraphicsRootUnorderedAccessView);
 
-	if (DX12HotPathState::Get().skipGraphicsBindings) {
+	if (DX12HotPathState::skipGraphicsBindings) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
@@ -791,7 +791,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorde
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_INDEX_BUFFER original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer, PFN_IA_SET_INDEX_BUFFER, DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
 		if (original)
@@ -810,7 +810,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_VERTEX_BUFFERS original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
 		if (original)
@@ -971,7 +971,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 {
 	PFN_EXECUTE_INDIRECT original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
-	if (DX12HotPathState::Get().skipAll) {
+	if (DX12HotPathState::skipAll) {
 		if (original)
 			original(commandList, commandSignature, maxCommandCount, argumentBuffer,
 				argumentBufferOffset, countBuffer, countBufferOffset);

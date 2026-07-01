@@ -69,10 +69,10 @@ public:
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"enter\",\"queue\":\"%p\",\"count\":%u,\"skipAll\":%ld,\"internalReplay\":%s",
-				queue, numCommandLists, DX12HotPathState::Get().skipAll,
+				queue, numCommandLists, DX12HotPathState::skipAll,
 				DX12InternalReplayState::IsActive() ? "true" : "false");
 
-		if (DX12HotPathState::Get().skipAll) {
+		if (DX12HotPathState::skipAll) {
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "BeforeOriginalSkip");
