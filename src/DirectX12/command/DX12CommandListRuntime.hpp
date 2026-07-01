@@ -8,6 +8,7 @@
 #include "DX12CommandListRuntimeState.hpp"
 #include "DX12CommandListRuntimeTlsCache.hpp"
 #include "DX12CommandListTrackingCache.hpp"
+#include "DX12CommandListTrackingState.hpp"
 #include "DX12IaHashState.hpp"
 
 class DX12CommandListRuntime
@@ -25,6 +26,7 @@ public:
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
+	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
 	static DX12CommandListRuntimeState *GetStatePtrFast(ID3D12GraphicsCommandList *commandList);
 	static void TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList);
 
@@ -42,9 +44,5 @@ public:
 	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);
 	static void SetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static bool GetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
-	static bool GetTrackBindings(ID3D12GraphicsCommandList *commandList);
-	static bool GetRecordBindingEvents(ID3D12GraphicsCommandList *commandList);
-	static bool GetTrackHuntIa(ID3D12GraphicsCommandList *commandList);
-	static bool GetTrackPsoState(ID3D12GraphicsCommandList *commandList);
 };
 

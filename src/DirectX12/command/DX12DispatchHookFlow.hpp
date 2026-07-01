@@ -65,11 +65,6 @@ class DX12DispatchHookFlow
 public:
 	inline static thread_local bool InDispatchHookFlow = false;
 
-	static bool NeedsDispatchWork()
-	{
-		return DX12ModHasActiveShaderOverrides() || DX12ModNeedsPreSkinningUavProbe();
-	}
-
 	static bool TryExecuteSkipAll(
 		ID3D12GraphicsCommandList *commandList,
 		UINT threadGroupCountX,
@@ -94,7 +89,13 @@ public:
 		if (!originalDispatch)
 			return;
 
-		if (DX12Profiling::ShouldCollectCounters() || NeedsDispatchWork())
+		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
+		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
+		const bool needsDispatchWork = hasShaderOverrides || needsPreSkinProbe;
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
+		if (DX12Profiling::ShouldCollectCounters() || needsDispatchWork)
 			DX12RuntimeState::IncrementFrameDispatches();
 
 		if (DX12InternalReplayState::IsActive()) {
@@ -102,7 +103,7 @@ public:
 			return;
 		}
 
-		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() && !NeedsDispatchWork()) {
+		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList))
@@ -114,21 +115,21 @@ public:
 		DX12CommandListFlowDiagnostics::LogDX12Call(
 			"ID3D12GraphicsCommandList::Dispatch", commandList,
 			" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+		if (tracking.recordBindingEvents)
 			DX12BindingTracker::RecordDispatch(
 				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-		if (DX12HuntIsEnabled()) {
+		if (huntEnabled) {
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList))
 				return;
 		}
-		if (!NeedsDispatchWork()) {
+		if (!needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
 
-		if (!DX12ModHasActiveShaderOverrides() && DX12ModNeedsPreSkinningUavProbe()) {
+		if (!hasShaderOverrides && needsPreSkinProbe) {
 			const DX12CommandListRuntimeState *runtimeState =
 				DX12CommandListRuntime::GetStatePtr(commandList);
 			if (!HasConfiguredPreSkinCs(commandList, runtimeState)) {
@@ -159,11 +160,13 @@ public:
 	{
 		if (!originalDispatch)
 			return;
+		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
+		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
 		if (InDispatchHookFlow) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		if (runtimeState && DX12ModHasActiveShaderOverrides() &&
+		if (runtimeState && hasShaderOverrides &&
 		    DX12ModShouldSkipPipelineState(runtimeState->pipelineState, true))
 			return;
 
@@ -179,7 +182,7 @@ public:
 			effectiveState = &fallbackState;
 		}
 
-		if (!DX12ModNeedsPreSkinningUavProbe() || !effectiveState) {
+		if (!needsPreSkinProbe || !effectiveState) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}

@@ -14,7 +14,9 @@ void DX12CommandListLifecycle::Register(
 		return;
 
 	DX12CommandListRuntime::Register(commandList);
-	if (DX12CommandListStateCapture::ShouldTrackBindingsCached(commandList) ||
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.trackBindings ||
 	    DX12ModNeedsPreSkinningUavProbe()) {
 		DX12BindingTracker::RegisterCommandList(commandList);
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
@@ -28,15 +30,16 @@ void DX12CommandListLifecycle::Reset(
 	if (!commandList)
 		return;
 
-	if (DX12CommandListStateCapture::ShouldTrackBindingsCached(commandList) ||
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.trackBindings ||
 	    DX12ModNeedsPreSkinningUavProbe())
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
-	if (DX12CommandListStateCapture::ShouldTrackPsoStateCached(commandList))
+	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, initialState);
 	if (DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::ResetIa(commandList);
-	if (DX12CommandListStateCapture::ShouldTrackPsoStateCached(commandList) ||
-	    DX12CommandListStateCapture::ShouldTrackHuntIaCached(commandList))
+	if (tracking.trackPsoState || tracking.trackHuntIa)
 		DX12HuntResetCommandList(commandList, initialState);
 }
 
@@ -47,13 +50,15 @@ void DX12CommandListLifecycle::ClearState(
 	if (!commandList)
 		return;
 
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "clear_state");
 	if (DX12ModNeedsPreSkinningUavProbe())
 		DX12BindingTracker::ResetCommandList(commandList, pipelineState);
-	if (DX12CommandListStateCapture::ShouldTrackPsoStateCached(commandList))
+	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
-	if (DX12CommandListStateCapture::ShouldTrackHuntIaCached(commandList))
+	if (tracking.trackHuntIa)
 		DX12CommandListRuntime::ResetIa(commandList);
 	if (DX12HuntIsEnabled())
 		DX12HuntResetCommandList(commandList, pipelineState);

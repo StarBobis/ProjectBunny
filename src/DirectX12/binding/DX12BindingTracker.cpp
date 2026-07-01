@@ -807,13 +807,15 @@ void DX12BindingTracker::ResetCommandList(
 	if (!commandList)
 		return;
 
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	state = CommandListBindingState();
 	state.pipelineState = initialState;
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RefreshPipelineShaderInfo(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -831,13 +833,15 @@ void DX12BindingTracker::SetPipelineState(
 	if (!commandList)
 		return;
 
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	state.pipelineState = pipelineState;
 	DX12BindingTracker::InvalidatePipelineShaderInfo(&state);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RefreshPipelineShaderInfo(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
@@ -1035,6 +1039,8 @@ void DX12BindingTracker::SetIndexBuffer(
 	if (!commandList)
 		return;
 
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -1043,7 +1049,7 @@ void DX12BindingTracker::SetIndexBuffer(
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
-		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList)) {
+		if (tracking.recordBindingEvents) {
 			DX12BindingTracker::ResolveAndRetainIaResource(
 				view->BufferLocation,
 				view->SizeInBytes,
@@ -1067,6 +1073,8 @@ void DX12BindingTracker::SetVertexBuffers(
 	if (!commandList || startSlot >= MaxVertexBufferSlots)
 		return;
 
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -1078,7 +1086,7 @@ void DX12BindingTracker::SetVertexBuffers(
 		if (views) {
 			state.vertexBuffers[slot] = views[i];
 			state.vertexBufferValid[slot] = views[i].BufferLocation != 0 && views[i].SizeInBytes != 0;
-			if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList)) {
+			if (tracking.recordBindingEvents) {
 				DX12BindingTracker::ResolveAndRetainIaResource(
 					views[i].BufferLocation,
 					views[i].SizeInBytes,

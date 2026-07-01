@@ -2,12 +2,10 @@
 
 #include <Windows.h>
 
-class DX12CommandListTrackingCache
+#include "DX12CommandListTrackingState.hpp"
+
+class DX12CommandListTrackingCache : public DX12CommandListTrackingState
 {
 public:
 	UINT64 generation = 0;
-	bool trackBindings = false;
-	bool recordBindingEvents = false;
-	bool trackHuntIa = false;
-	bool trackPsoState = false;
 };

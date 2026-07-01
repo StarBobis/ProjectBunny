@@ -19,11 +19,6 @@
 class DX12DrawHookFlow
 {
 public:
-	static bool NeedsModWork()
-	{
-		return DX12ModNeedsPresentReplacement() || DX12ModHasActiveShaderOverrides();
-	}
-
 	static bool TryExecuteSkipAll(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
@@ -40,7 +35,12 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		if (DX12Profiling::ShouldCollectCounters() || NeedsModWork())
+		const bool needsModWork =
+			DX12ModNeedsPresentReplacement() || DX12ModHasActiveShaderOverrides();
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
+		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 
 		if (DX12IaReplacementDrawScope::IsExecuting()) {
@@ -49,7 +49,7 @@ public:
 			return;
 		}
 
-		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() && !NeedsModWork()) {
+		if (DX12HotPathState::skipBindings && huntEnabled && !needsModWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (ShouldSkipHuntDraw(commandList, draw))
 				return;
@@ -59,14 +59,14 @@ public:
 		}
 
 		LogDrawCall(commandList, draw);
-		if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+		if (tracking.recordBindingEvents)
 			RecordBindingDraw(commandList, draw);
-		if (DX12HuntIsEnabled()) {
+		if (huntEnabled) {
 			if (ShouldSkipHuntDraw(commandList, draw))
 				return;
 			RecordHuntDraw(commandList, draw);
 		}
-		if (!NeedsModWork()) {
+		if (!needsModWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 			return;

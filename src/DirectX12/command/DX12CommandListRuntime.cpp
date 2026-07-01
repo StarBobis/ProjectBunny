@@ -56,6 +56,7 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	ID3D12GraphicsCommandList *commandList,
 	DX12CommandListTrackingCache &out)
 {
+	out = DX12CommandListTrackingCache();
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
 		out = Tls.tracking;
 		return;
@@ -68,6 +69,26 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 
 	if (Tls.commandList == commandList)
 		out = Tls.tracking;
+}
+
+DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
+	ID3D12GraphicsCommandList *commandList)
+{
+	DX12CommandListTrackingCache cache;
+	if (!commandList) {
+		DX12CommandListRuntime::RefreshTrackingCache(cache);
+	} else {
+		DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
+		if (cache.generation == 0)
+			DX12CommandListRuntime::RefreshTrackingCache(cache);
+	}
+
+	DX12CommandListTrackingState state;
+	state.trackBindings = cache.trackBindings;
+	state.recordBindingEvents = cache.recordBindingEvents;
+	state.trackHuntIa = cache.trackHuntIa;
+	state.trackPsoState = cache.trackPsoState;
+	return state;
 }
 
 DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
@@ -137,6 +158,12 @@ void DX12CommandListRuntime::RememberPipelineState(
 {
 	if (!commandList)
 		return;
+
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (fastState) {
+		fastState->pipelineState = pipelineState;
+		return;
+	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
@@ -329,47 +356,6 @@ const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
 	if (!commandList)
 		return nullptr;
 	return DX12CommandListRuntime::GetStatePtrFast(commandList);
-}
-
-
-bool DX12CommandListRuntime::GetTrackBindings(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return DX12CommandListStateCapture::ShouldTrackBindings();
-
-	DX12CommandListTrackingCache cache;
-	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
-	return cache.trackBindings;
-}
-
-bool DX12CommandListRuntime::GetRecordBindingEvents(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return DX12CommandListStateCapture::ShouldRecordBindingEvents();
-
-	DX12CommandListTrackingCache cache;
-	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
-	return cache.recordBindingEvents;
-}
-
-bool DX12CommandListRuntime::GetTrackHuntIa(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return DX12CommandListStateCapture::ShouldTrackHuntIa();
-
-	DX12CommandListTrackingCache cache;
-	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
-	return cache.trackHuntIa;
-}
-
-bool DX12CommandListRuntime::GetTrackPsoState(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return DX12CommandListStateCapture::ShouldTrackPsoState();
-
-	DX12CommandListTrackingCache cache;
-	DX12CommandListRuntime::GetTrackingCacheFast(commandList, cache);
-	return cache.trackPsoState;
 }
 
 

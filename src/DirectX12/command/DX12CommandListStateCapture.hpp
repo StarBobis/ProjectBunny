@@ -2,6 +2,8 @@
 
 #include <d3d12.h>
 
+#include "DX12CommandListTrackingState.hpp"
+
 class DX12CommandListStateCapture
 {
 public:
@@ -9,11 +11,8 @@ public:
 	static bool ShouldRecordBindingEvents();
 	static bool ShouldTrackHuntIa();
 	static bool ShouldTrackPsoState();
-
-	static bool ShouldTrackBindingsCached(ID3D12GraphicsCommandList *commandList);
-	static bool ShouldRecordBindingEventsCached(ID3D12GraphicsCommandList *commandList);
-	static bool ShouldTrackHuntIaCached(ID3D12GraphicsCommandList *commandList);
-	static bool ShouldTrackPsoStateCached(ID3D12GraphicsCommandList *commandList);
+	static DX12CommandListTrackingState MakeTrackingState();
+	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
 
 	static void PrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static ID3D12PipelineState *PipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);

@@ -843,7 +843,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetRenderTargets(
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::OMSetRenderTargets", commandList,
 		" rtCount=%u singleRange=%u dsv=%p", numRenderTargetDescriptors,
 		singleHandleToDescriptorRange, depthStencilDescriptor);
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordOutputTargets(commandList, numRenderTargetDescriptors,
 			renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 	DX12CommandListHookState::OrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
@@ -857,7 +859,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearDepthStencilView
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearDepthStencilView", commandList,
 		" dsv=0x%llx flags=0x%x rects=%u", static_cast<unsigned long long>(depthStencilView.ptr),
 		static_cast<UINT>(clearFlags), numRects);
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordDepthStencilClear(commandList, depthStencilView);
 	DX12CommandListHookState::OrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
 }
@@ -868,7 +872,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearRenderTargetView
 {
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
 		" rtv=0x%llx rects=%u", static_cast<unsigned long long>(renderTargetView.ptr), numRects);
-	if (DX12CommandListStateCapture::ShouldRecordBindingEventsCached(commandList))
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordRenderTargetClear(commandList, renderTargetView);
 	DX12CommandListHookState::OrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
 }
