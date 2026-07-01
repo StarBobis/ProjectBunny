@@ -90,6 +90,14 @@ UINT64 DX12CaptureLedger::CurrentCaptureSessionId()
 	return captureSessionId;
 }
 
+UINT64 DX12CaptureLedger::LastCaptureSessionId()
+{
+	AcquireSRWLockShared(&Lock);
+	const UINT64 captureSessionId = CaptureSessionId;
+	ReleaseSRWLockShared(&Lock);
+	return captureSessionId;
+}
+
 bool DX12CaptureLedger::IsSessionCurrent(UINT64 captureSessionId)
 {
 	if (captureSessionId == 0)

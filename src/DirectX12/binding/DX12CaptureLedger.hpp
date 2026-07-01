@@ -50,6 +50,7 @@ public:
 	static void Clear();
 	static bool IsActive();
 	static UINT64 CurrentCaptureSessionId();
+	static UINT64 LastCaptureSessionId();
 	static bool IsSessionCurrent(UINT64 captureSessionId);
 	static DX12CaptureLedgerRecordResult RecordEvent(BindingEvent *event);
 	static DX12CaptureLedgerRecordResult TryStoreOutputEvent(OutputBindingEvent *event);

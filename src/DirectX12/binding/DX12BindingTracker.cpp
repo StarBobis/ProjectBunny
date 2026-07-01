@@ -417,13 +417,16 @@ bool DX12BindingTracker::PopulateActiveEventSource(
 		return false;
 
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (captureSessionId == 0) {
+	const UINT64 effectiveCaptureSessionId = captureSessionId != 0 ?
+		captureSessionId :
+		DX12CaptureLedger::LastCaptureSessionId();
+	if (effectiveCaptureSessionId == 0) {
 		*source = DX12FrameEventSource();
 		return false;
 	}
 	return DX12BindingTracker::PopulateCaptureEventSource(
 		source,
-		captureSessionId,
+		effectiveCaptureSessionId,
 		reason ? reason : "PopulateActiveEventSource");
 }
 
