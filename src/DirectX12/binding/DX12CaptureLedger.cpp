@@ -90,7 +90,7 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event
 	return DX12CaptureLedgerRecordResult::Stored;
 }
 
-DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordOutputEvent(OutputBindingEvent *event)
+DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindingEvent *event)
 {
 	if (!event)
 		return DX12CaptureLedgerRecordResult::NotActive;
@@ -104,6 +104,19 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordOutputEvent(OutputBinding
 		DroppedOutputEvents++;
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::Full;
+	}
+	for (const OutputBindingEvent &existing : OutputEvents) {
+		const bool sameResolvedDraw =
+			event->drawId != 0 && existing.drawId == event->drawId;
+		if (existing.commandList == event->commandList &&
+			existing.cpuHandle == event->cpuHandle &&
+			existing.kind == event->kind &&
+			existing.slot == event->slot &&
+			sameResolvedDraw &&
+			existing.dispatchId == event->dispatchId) {
+			ReleaseSRWLockExclusive(&Lock);
+			return DX12CaptureLedgerRecordResult::Duplicate;
+		}
 	}
 	OutputEvents.push_back(std::move(*event));
 	ReleaseSRWLockExclusive(&Lock);
@@ -122,44 +135,6 @@ void DX12CaptureLedger::GetSnapshot(DX12CaptureLedgerSnapshot *snapshot)
 	snapshot->beginPresent = BeginPresent;
 	snapshot->ledgerEpoch = LedgerEpoch;
 	ReleaseSRWLockShared(&Lock);
-}
-
-bool DX12CaptureLedger::TryGetView(DX12CaptureLedgerView *view)
-{
-	if (!view)
-		return false;
-
-	AcquireSRWLockShared(&Lock);
-	view->events = &Events;
-	view->outputEvents = &OutputEvents;
-	view->droppedEvents = DroppedEvents;
-	view->droppedOutputEvents = DroppedOutputEvents;
-	view->beginPresent = BeginPresent;
-	view->ledgerEpoch = LedgerEpoch;
-	const bool hasContent =
-		!Events.empty() || !OutputEvents.empty() ||
-		DroppedEvents != 0 || DroppedOutputEvents != 0;
-	ReleaseSRWLockShared(&Lock);
-	return hasContent;
-}
-
-bool DX12CaptureLedger::HasOutputEvent(const OutputBindingEvent &event)
-{
-	AcquireSRWLockShared(&Lock);
-	for (const OutputBindingEvent &existing : OutputEvents) {
-		const bool sameResolvedDraw = event.drawId != 0 && existing.drawId == event.drawId;
-		if (existing.commandList == event.commandList &&
-			existing.cpuHandle == event.cpuHandle &&
-			existing.kind == event.kind &&
-			existing.slot == event.slot &&
-			sameResolvedDraw &&
-			existing.dispatchId == event.dispatchId) {
-			ReleaseSRWLockShared(&Lock);
-			return true;
-		}
-	}
-	ReleaseSRWLockShared(&Lock);
-	return false;
 }
 
 void DX12CaptureLedger::ReleaseEventsLocked()
@@ -185,27 +160,4 @@ void DX12CaptureLedger::LogSnapshotHealth(const char *stage, const DX12CaptureLe
 		snapshot.events.size(), draws, dispatches, snapshot.outputEvents.size(),
 		static_cast<unsigned long long>(snapshot.droppedEvents),
 		static_cast<unsigned long long>(snapshot.droppedOutputEvents));
-}
-
-void DX12CaptureLedger::LogViewHealth(const char *stage, const DX12CaptureLedgerView &view)
-{
-	size_t eventCount = view.events ? view.events->size() : 0;
-	size_t outputCount = view.outputEvents ? view.outputEvents->size() : 0;
-	size_t draws = 0;
-	size_t dispatches = 0;
-	if (view.events) {
-		for (const BindingEvent &event : *view.events) {
-			if (event.kind == "draw" || event.kind == "draw_indexed")
-				draws++;
-			else if (event.kind == "dispatch")
-				dispatches++;
-		}
-	}
-	DX12FrameAnalysis::LogJsonFunc(stage ? stage : "CaptureLedgerView",
-		"\"epoch\":%llu,\"begin_present\":%llu,\"events\":%zu,\"draws\":%zu,\"dispatches\":%zu,\"outputs\":%zu,\"dropped_events\":%llu,\"dropped_outputs\":%llu",
-		static_cast<unsigned long long>(view.ledgerEpoch),
-		static_cast<unsigned long long>(view.beginPresent),
-		eventCount, draws, dispatches, outputCount,
-		static_cast<unsigned long long>(view.droppedEvents),
-		static_cast<unsigned long long>(view.droppedOutputEvents));
 }

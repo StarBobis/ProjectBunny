@@ -20,22 +20,12 @@ public:
 	UINT64 ledgerEpoch = 0;
 };
 
-class DX12CaptureLedgerView
-{
-public:
-	const std::vector<BindingEvent> *events = nullptr;
-	const std::vector<OutputBindingEvent> *outputEvents = nullptr;
-	UINT64 droppedEvents = 0;
-	UINT64 droppedOutputEvents = 0;
-	UINT64 beginPresent = 0;
-	UINT64 ledgerEpoch = 0;
-};
-
 enum class DX12CaptureLedgerRecordResult
 {
 	NotActive = 0,
 	Stored = 1,
 	Full = 2,
+	Duplicate = 3,
 };
 
 class DX12CaptureLedger
@@ -55,11 +45,8 @@ public:
 	static void Clear();
 	static bool IsActive();
 	static DX12CaptureLedgerRecordResult RecordEvent(BindingEvent *event);
-	static DX12CaptureLedgerRecordResult RecordOutputEvent(OutputBindingEvent *event);
+	static DX12CaptureLedgerRecordResult TryStoreOutputEvent(OutputBindingEvent *event);
 	static void GetSnapshot(DX12CaptureLedgerSnapshot *snapshot);
-	static bool TryGetView(DX12CaptureLedgerView *view);
-	static bool HasOutputEvent(const OutputBindingEvent &event);
 	static void ReleaseEventsLocked();
 	static void LogSnapshotHealth(const char *stage, const DX12CaptureLedgerSnapshot &snapshot);
-	static void LogViewHealth(const char *stage, const DX12CaptureLedgerView &view);
 };

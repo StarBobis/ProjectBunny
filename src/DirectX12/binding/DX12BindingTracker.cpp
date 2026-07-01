@@ -688,9 +688,6 @@ void DX12BindingTracker::StoreOutputEventLocked(
 		else
 			DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
 	}
-	const bool ledgerActive = DX12CaptureLedger::IsActive();
-	if (ledgerActive && DX12CaptureLedger::HasOutputEvent(event))
-		return;
 	for (const OutputBindingEvent &existing : DX12BindingTrackerState::OutputEvents) {
 		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
 		if (existing.commandList == commandList &&
@@ -702,8 +699,9 @@ void DX12BindingTracker::StoreOutputEventLocked(
 			return;
 	}
 	const DX12CaptureLedgerRecordResult ledgerResult =
-		DX12CaptureLedger::RecordOutputEvent(&event);
-	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored)
+		DX12CaptureLedger::TryStoreOutputEvent(&event);
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
+		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate)
 		return;
 	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
 		DX12BindingTrackerState::DroppedOutputEvents++;
@@ -719,7 +717,7 @@ bool DX12BindingTracker::PopulateFrameEventSource(DX12FrameEventSource *source)
 
 	*source = DX12FrameEventSource();
 
-	DX12CaptureLedgerView ledgerView;
+	DX12CaptureLedgerSnapshot ledgerSnapshot;
 	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
 	source->fallbackEvents = DX12BindingTrackerState::Events;
 	source->fallbackOutputEvents = DX12BindingTrackerState::OutputEvents;
@@ -727,44 +725,50 @@ bool DX12BindingTracker::PopulateFrameEventSource(DX12FrameEventSource *source)
 	const UINT64 fallbackDroppedOutputEvents = DX12BindingTrackerState::DroppedOutputEvents;
 	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
 
-	if (DX12CaptureLedger::TryGetView(&ledgerView)) {
-		source->droppedEvents = ledgerView.droppedEvents + fallbackDroppedEvents;
+	DX12CaptureLedger::GetSnapshot(&ledgerSnapshot);
+	const bool ledgerHasContent =
+		!ledgerSnapshot.events.empty() ||
+		!ledgerSnapshot.outputEvents.empty() ||
+		ledgerSnapshot.droppedEvents != 0 ||
+		ledgerSnapshot.droppedOutputEvents != 0;
+	if (ledgerHasContent) {
+		source->droppedEvents = ledgerSnapshot.droppedEvents + fallbackDroppedEvents;
 		source->droppedOutputEvents =
-			ledgerView.droppedOutputEvents + fallbackDroppedOutputEvents;
+			ledgerSnapshot.droppedOutputEvents + fallbackDroppedOutputEvents;
 		source->usingLedger = true;
 		if (!source->fallbackEvents.empty()) {
 			source->combinedEvents.reserve(
-				(ledgerView.events ? ledgerView.events->size() : 0) +
+				ledgerSnapshot.events.size() +
 				source->fallbackEvents.size());
-			if (ledgerView.events)
-				source->combinedEvents.insert(
-					source->combinedEvents.end(),
-					ledgerView.events->begin(),
-					ledgerView.events->end());
+			source->combinedEvents.insert(
+				source->combinedEvents.end(),
+				ledgerSnapshot.events.begin(),
+				ledgerSnapshot.events.end());
 			source->combinedEvents.insert(
 				source->combinedEvents.end(),
 				source->fallbackEvents.begin(),
 				source->fallbackEvents.end());
 			source->events = &source->combinedEvents;
 		} else {
-			source->events = ledgerView.events;
+			source->combinedEvents = std::move(ledgerSnapshot.events);
+			source->events = &source->combinedEvents;
 		}
 		if (!source->fallbackOutputEvents.empty()) {
 			source->combinedOutputEvents.reserve(
-				(ledgerView.outputEvents ? ledgerView.outputEvents->size() : 0) +
+				ledgerSnapshot.outputEvents.size() +
 				source->fallbackOutputEvents.size());
-			if (ledgerView.outputEvents)
-				source->combinedOutputEvents.insert(
-					source->combinedOutputEvents.end(),
-					ledgerView.outputEvents->begin(),
-					ledgerView.outputEvents->end());
+			source->combinedOutputEvents.insert(
+				source->combinedOutputEvents.end(),
+				ledgerSnapshot.outputEvents.begin(),
+				ledgerSnapshot.outputEvents.end());
 			source->combinedOutputEvents.insert(
 				source->combinedOutputEvents.end(),
 				source->fallbackOutputEvents.begin(),
 				source->fallbackOutputEvents.end());
 			source->outputEvents = &source->combinedOutputEvents;
 		} else {
-			source->outputEvents = ledgerView.outputEvents;
+			source->combinedOutputEvents = std::move(ledgerSnapshot.outputEvents);
+			source->outputEvents = &source->combinedOutputEvents;
 		}
 		return true;
 	}
