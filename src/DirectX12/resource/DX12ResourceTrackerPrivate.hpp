@@ -263,6 +263,17 @@ extern UINT64 gRootSignatureRecordsSeen;
 extern UINT64 gPsoRootRecordsSeen;
 extern UINT64 gDescriptorEpoch;
 extern LONG gLastResourceStatsPresent;
+extern UINT64 gBufferResolveCacheInvalidations;
+extern UINT64 gBufferResolveCacheInvalidationEntries;
+extern UINT64 gBufferResolveTlsHits;
+extern UINT64 gBufferResolveGlobalHits;
+extern UINT64 gBufferResolveBackwardScanHits;
+extern UINT64 gBufferResolveMisses;
+extern UINT64 gBufferResolveGenerationResets;
+extern UINT64 gResourceExclusiveLockSlowCount;
+extern UINT64 gResourceExclusiveLockSlowMaxUs;
+extern UINT64 gDescriptorExclusiveLockSlowCount;
+extern UINT64 gDescriptorExclusiveLockSlowMaxUs;
 
 uint32_t HashBytes(uint32_t seed, const void *data, size_t size);
 UINT64 Fnv1a64(const void *data, size_t size);

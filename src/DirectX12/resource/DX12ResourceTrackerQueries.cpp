@@ -149,9 +149,11 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (localCache.generation != generation) {
 		localCache = LocalBufferResolveCache();
 		localCache.generation = generation;
+		gBufferResolveGenerationResets++;
 	}
 	for (const BufferResolveCacheEntry &entry : localCache.entries) {
 		if (entry.begin && gpuVirtualAddress >= entry.begin && gpuVirtualAddress < entry.end) {
+			gBufferResolveTlsHits++;
 			*summary = entry.summary;
 			summary->resourceOffset = gpuVirtualAddress - entry.begin;
 			const UINT64 available = entry.end - gpuVirtualAddress;
@@ -170,6 +172,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 		--cached;
 		if (gpuVirtualAddress >= cached->second.begin &&
 		    gpuVirtualAddress < cached->second.end) {
+			gBufferResolveGlobalHits++;
 			*summary = cached->second.summary;
 			summary->resourceOffset = gpuVirtualAddress - cached->second.begin;
 			const UINT64 available = cached->second.end - gpuVirtualAddress;
@@ -196,6 +199,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (resolved) {
+		gBufferResolveBackwardScanHits++;
 		BufferResolveCacheEntry entry;
 		entry.begin = resolvedBegin;
 		entry.end = resolvedEnd;
@@ -217,6 +221,9 @@ bool DX12ResolveBufferResourceByGpuVa(
 				backwardProbes,
 				summary->resource);
 		}
+	}
+	else {
+		gBufferResolveMisses++;
 	}
 	return resolved;
 }

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cwctype>
 #include <map>
 #include <set>
@@ -1236,6 +1237,14 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
 			if (usedHeap)
 				RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
+#if defined(_DEBUG)
+			DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
+				"\"status\":\"reuse\",\"required\":%u,\"capacity\":%u,\"offset\":%u,\"present\":%ld",
+				requiredDescriptors,
+				gPreSkinDescriptorRing.capacity,
+				gPreSkinDescriptorRing.offset,
+				DX12RuntimeState::GetPresentCount());
+#endif
 			return true;
 		}
 		capacityToCreate = (std::max)(
@@ -1247,7 +1256,11 @@ static bool EnsurePreSkinDescriptorRingLocked(
 		heapDesc.NumDescriptors = capacityToCreate;
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		ID3D12DescriptorHeap *newHeap = nullptr;
+		const auto createBegin = std::chrono::steady_clock::now();
 		HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&newHeap));
+		const auto createEnd = std::chrono::steady_clock::now();
+		const auto createElapsedUs =
+			std::chrono::duration_cast<std::chrono::microseconds>(createEnd - createBegin).count();
 		if (FAILED(hr) || !newHeap)
 			return false;
 
@@ -1259,6 +1272,14 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			gPreSkinDescriptorRing.offset + requiredDescriptors > gPreSkinDescriptorRing.capacity;
 		if (!stillNeedsNewHeap) {
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
+#if defined(_DEBUG)
+			DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
+				"\"status\":\"create_raced\",\"required\":%u,\"capacity\":%u,\"elapsedUs\":%lld,\"present\":%ld",
+				requiredDescriptors,
+				capacityToCreate,
+				static_cast<long long>(createElapsedUs),
+				DX12RuntimeState::GetPresentCount());
+#endif
 			newHeap->Release();
 			continue;
 		}
@@ -1290,8 +1311,10 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
-			"\"status\":\"created\",\"capacity\":%u,\"required\":%u",
-			capacityToCreate, requiredDescriptors);
+			"\"status\":\"created\",\"capacity\":%u,\"required\":%u,\"elapsedUs\":%lld,\"present\":%ld",
+			capacityToCreate, requiredDescriptors,
+			static_cast<long long>(createElapsedUs),
+			DX12RuntimeState::GetPresentCount());
 #endif
 		return true;
 	}

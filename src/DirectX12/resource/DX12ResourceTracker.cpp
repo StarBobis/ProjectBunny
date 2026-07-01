@@ -47,6 +47,17 @@ static UINT64 gDescriptorCopySpanFastPathCalls = 0;
 static UINT64 gDescriptorCopySpanFastPathSlots = 0;
 static UINT64 gDescriptorCopySpanFallbackCalls = 0;
 static constexpr LONG kResourceStatsLogInterval = 300;
+UINT64 gBufferResolveCacheInvalidations = 0;
+UINT64 gBufferResolveCacheInvalidationEntries = 0;
+UINT64 gBufferResolveTlsHits = 0;
+UINT64 gBufferResolveGlobalHits = 0;
+UINT64 gBufferResolveBackwardScanHits = 0;
+UINT64 gBufferResolveMisses = 0;
+UINT64 gBufferResolveGenerationResets = 0;
+UINT64 gResourceExclusiveLockSlowCount = 0;
+UINT64 gResourceExclusiveLockSlowMaxUs = 0;
+UINT64 gDescriptorExclusiveLockSlowCount = 0;
+UINT64 gDescriptorExclusiveLockSlowMaxUs = 0;
 
 class DX12BufferAddressRangeLogUtils
 {
@@ -514,6 +525,7 @@ void RecordResource(
 	}
 
 	ID3D12Resource *canonical = resource;
+	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
 	bool gpuVaIndexChanged = false;
@@ -551,12 +563,37 @@ void RecordResource(
 	if (gpuVaIndexChanged) {
 		// Descriptor creation resolves CBV/SRV/UAV GPU VAs constantly; keep
 		// its cache warm unless the buffer VA index actually changed.
+		const size_t cacheEntriesBeforeClear = gBufferResolveCache.size();
 		gBufferResolveCache.clear();
 		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+		gBufferResolveCacheInvalidations++;
+		gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
+		DX12LogManager::DebugJsonFunc("BufferResolveCacheInvalidated",
+			"\"reason\":\"resource_record_update\",\"present\":%ld,\"threadId\":%lu,\"cacheEntriesBeforeClear\":%zu,\"generation\":%llu,\"resource\":\"%p\",\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId(),
+			cacheEntriesBeforeClear,
+			static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
+			resource,
+			gBufferResourceByGpuVa.size(),
+			gLiveResourceCount);
 	}
 	gResourcesRecordedFromCreate++;
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gResourceExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gResourceExclusiveLockSlowMaxUs)
+			gResourceExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+		DX12LogManager::DebugJsonFunc("DX12ResourceLockSlow",
+			"\"source\":\"RecordResource\",\"elapsedUs\":%lld,\"resource\":\"%p\",\"present\":%ld,\"threadId\":%lu",
+			static_cast<long long>(elapsedUs),
+			resource,
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId());
+	}
 }
 
 void CleanupTrackedResources()
@@ -581,8 +618,12 @@ void CleanupTrackedResources()
 	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
 	gBufferResourceByGpuVa.clear();
+	const size_t cacheEntriesBeforeClear = gBufferResolveCache.size();
 	gBufferResolveCache.clear();
 	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+	gBufferResolveCacheInvalidations++;
+	gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
+	gBufferResolveGenerationResets++;
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
@@ -1068,6 +1109,9 @@ void LogResourceTrackerStatsLocked()
 		"\"descriptorHeapRanges\":%zu,"
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"descriptorCopySpanFastPathCalls\":%llu,\"descriptorCopySpanFastPathSlots\":%llu,\"descriptorCopySpanFallbackCalls\":%llu,"
+		"\"bufferResolveCacheEntries\":%zu,\"bufferResolveGeneration\":%llu,"
+		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
+		"\"resourceExclusiveLockSlowCount\":%llu,\"resourceExclusiveLockSlowMaxUs\":%llu,\"descriptorExclusiveLockSlowCount\":%llu,\"descriptorExclusiveLockSlowMaxUs\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
 		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
 		"\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
@@ -1086,6 +1130,19 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gDescriptorCopySpanFastPathCalls),
 		static_cast<unsigned long long>(gDescriptorCopySpanFastPathSlots),
 		static_cast<unsigned long long>(gDescriptorCopySpanFallbackCalls),
+		gBufferResolveCache.size(),
+		static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(gBufferResolveCacheInvalidations),
+		static_cast<unsigned long long>(gBufferResolveCacheInvalidationEntries),
+		static_cast<unsigned long long>(gBufferResolveTlsHits),
+		static_cast<unsigned long long>(gBufferResolveGlobalHits),
+		static_cast<unsigned long long>(gBufferResolveBackwardScanHits),
+		static_cast<unsigned long long>(gBufferResolveMisses),
+		static_cast<unsigned long long>(gBufferResolveGenerationResets),
+		static_cast<unsigned long long>(gResourceExclusiveLockSlowCount),
+		static_cast<unsigned long long>(gResourceExclusiveLockSlowMaxUs),
+		static_cast<unsigned long long>(gDescriptorExclusiveLockSlowCount),
+		static_cast<unsigned long long>(gDescriptorExclusiveLockSlowMaxUs),
 		gLiveResourceCount,
 		gResources.size(),
 		gFreeResourceSlots.size(),
@@ -1267,11 +1324,24 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 
 void RecordDescriptor(DescriptorRecord &&record)
 {
+	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	RecordDescriptorInCacheLocked(std::move(record), false);
 	BumpDescriptorQuerySerial();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gDescriptorExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
+			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+		DX12LogManager::DebugJsonFunc("DX12DescriptorLockSlow",
+			"\"source\":\"RecordDescriptor\",\"elapsedUs\":%lld,\"present\":%ld,\"threadId\":%lu",
+			static_cast<long long>(elapsedUs),
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId());
+	}
 }
 
 void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
@@ -1279,6 +1349,8 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 	if (!records || records->empty())
 		return;
 
+	const size_t recordCount = records->size();
+	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorRecord &queued : *records) {
 		DescriptorRecord apply = queued;
@@ -1291,6 +1363,19 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	records->clear();
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gDescriptorExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
+			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+		DX12LogManager::DebugJsonFunc("DX12DescriptorLockSlow",
+			"\"source\":\"RecordDescriptorBatch\",\"elapsedUs\":%lld,\"records\":%zu,\"present\":%ld,\"threadId\":%lu",
+			static_cast<long long>(elapsedUs),
+			recordCount,
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId());
+	}
 }
 
 void DX12RecordRootSignatureImmediate(
