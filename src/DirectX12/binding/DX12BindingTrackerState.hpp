@@ -196,15 +196,8 @@ class DX12BindingTrackerState
 {
 public:
 	static BindingShard Shards[kBindingShardCount];
-	static SRWLOCK EventsLock;
-	static std::vector<BindingEvent> Events;
-	static std::vector<OutputBindingEvent> OutputEvents;
-	static UINT64 EventSerial;
-	static UINT64 OutputEventSerial;
 	static volatile LONG64 GlobalDrawSerial;
 	static volatile LONG64 GlobalDispatchSerial;
-	static UINT64 DroppedEvents;
-	static UINT64 DroppedOutputEvents;
 
 	static BindingShard &ShardFor(ID3D12GraphicsCommandList *commandList)
 	{

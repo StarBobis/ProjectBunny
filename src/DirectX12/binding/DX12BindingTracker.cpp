@@ -14,15 +14,8 @@
 #include "DX12LogManager.hpp"
 
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];
-SRWLOCK DX12BindingTrackerState::EventsLock = SRWLOCK_INIT;
-std::vector<BindingEvent> DX12BindingTrackerState::Events;
-std::vector<OutputBindingEvent> DX12BindingTrackerState::OutputEvents;
-UINT64 DX12BindingTrackerState::EventSerial = 0;
-UINT64 DX12BindingTrackerState::OutputEventSerial = 0;
 volatile LONG64 DX12BindingTrackerState::GlobalDrawSerial = 0;
 volatile LONG64 DX12BindingTrackerState::GlobalDispatchSerial = 0;
-UINT64 DX12BindingTrackerState::DroppedEvents = 0;
-UINT64 DX12BindingTrackerState::DroppedOutputEvents = 0;
 
 static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
@@ -416,6 +409,24 @@ UINT64 DX12BindingTracker::CaptureFenceSequence()
 	return DX12BindingCollectQueue::LastSubmittedSequence();
 }
 
+bool DX12BindingTracker::PopulateActiveEventSource(
+	DX12FrameEventSource *source,
+	const char *reason)
+{
+	if (!source)
+		return false;
+
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0) {
+		*source = DX12FrameEventSource();
+		return false;
+	}
+	return DX12BindingTracker::PopulateCaptureEventSource(
+		source,
+		captureSessionId,
+		reason ? reason : "PopulateActiveEventSource");
+}
+
 bool DX12BindingTracker::PopulateCaptureEventSource(
 	DX12FrameEventSource *source,
 	UINT64 captureSessionId,
@@ -423,8 +434,10 @@ bool DX12BindingTracker::PopulateCaptureEventSource(
 {
 	if (!source)
 		return false;
-	if (captureSessionId == 0)
-		return DX12BindingTracker::PopulateFrameEventSource(source);
+	if (captureSessionId == 0) {
+		*source = DX12FrameEventSource();
+		return false;
+	}
 
 	const UINT64 targetSequence = DX12BindingTracker::CaptureFenceSequence();
 	DX12BindingCollectQueue::WaitForSubmittedSequence(
@@ -445,18 +458,17 @@ bool DX12BindingTracker::PopulateCaptureEventSource(
 	}
 
 	source->captureSessionId = ledgerSnapshot.captureSessionId;
-	source->combinedEvents = std::move(ledgerSnapshot.events);
-	source->combinedOutputEvents = std::move(ledgerSnapshot.outputEvents);
-	source->events = &source->combinedEvents;
-	source->outputEvents = &source->combinedOutputEvents;
+	source->ownedEvents = std::move(ledgerSnapshot.events);
+	source->ownedOutputEvents = std::move(ledgerSnapshot.outputEvents);
+	source->events = &source->ownedEvents;
+	source->outputEvents = &source->ownedOutputEvents;
 	source->droppedEvents = ledgerSnapshot.droppedEvents;
 	source->droppedOutputEvents = ledgerSnapshot.droppedOutputEvents;
-	source->usingLedger = true;
 
 	DX12CaptureLedger::LogSnapshotHealth(
 		reason ? reason : "PopulateCaptureEventSource",
 		ledgerSnapshot);
-	return !source->combinedEvents.empty() || !source->combinedOutputEvents.empty() ||
+	return !source->ownedEvents.empty() || !source->ownedOutputEvents.empty() ||
 		source->droppedEvents != 0 || source->droppedOutputEvents != 0;
 }
 
@@ -701,17 +713,14 @@ void DX12BindingTracker::StoreEventLocked(const BindingEvent &event)
 {
 	BindingEvent stored = event;
 	DX12BindingTracker::RetainEventIaResources(&stored);
-	stored.serial = ++DX12BindingTrackerState::EventSerial;
+	stored.serial = 0;
 	const DX12CaptureLedgerRecordResult ledgerResult =
 		DX12CaptureLedger::RecordEvent(&stored);
-	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored)
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
+		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate ||
+		ledgerResult == DX12CaptureLedgerRecordResult::InactiveSession)
 		return;
-	if (DX12BindingTrackerState::Events.size() >= MaxTrackedEvents) {
-		DX12BindingTrackerState::DroppedEvents++;
-		DX12BindingTracker::ReleaseEventIaResources(&stored);
-		return;
-	}
-	DX12BindingTrackerState::Events.push_back(std::move(stored));
+	DX12BindingTracker::ReleaseEventIaResources(&stored);
 }
 
 void DX12BindingTracker::StoreEventLocked(
@@ -732,7 +741,7 @@ void DX12BindingTracker::StoreOutputEventLocked(
 		return;
 	const UINT64 dispatchId = 0;
 	OutputBindingEvent event;
-	event.serial = ++DX12BindingTrackerState::OutputEventSerial;
+	event.serial = 0;
 	event.captureSessionId = captureSessionId;
 	event.kind = kind ? kind : "";
 	event.commandList = commandList;
@@ -747,98 +756,11 @@ void DX12BindingTracker::StoreOutputEventLocked(
 		else
 			DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
 	}
-	for (const OutputBindingEvent &existing : DX12BindingTrackerState::OutputEvents) {
-		const bool sameResolvedDraw = drawId != 0 && existing.drawId == drawId;
-		if (existing.commandList == commandList &&
-			existing.cpuHandle == cpuHandle &&
-			existing.kind == event.kind &&
-			existing.slot == slot &&
-			sameResolvedDraw &&
-			existing.dispatchId == dispatchId)
-			return;
-	}
-	const DX12CaptureLedgerRecordResult ledgerResult =
-		DX12CaptureLedger::TryStoreOutputEvent(&event);
+	const DX12CaptureLedgerRecordResult ledgerResult = DX12CaptureLedger::TryStoreOutputEvent(&event);
 	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
-		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate)
+		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate ||
+		ledgerResult == DX12CaptureLedgerRecordResult::InactiveSession)
 		return;
-	if (DX12BindingTrackerState::OutputEvents.size() >= MaxTrackedOutputEvents) {
-		DX12BindingTrackerState::DroppedOutputEvents++;
-		return;
-	}
-	DX12BindingTrackerState::OutputEvents.push_back(std::move(event));
-}
-
-bool DX12BindingTracker::PopulateFrameEventSource(DX12FrameEventSource *source)
-{
-	if (!source)
-		return false;
-
-	*source = DX12FrameEventSource();
-
-	DX12CaptureLedgerSnapshot ledgerSnapshot;
-	AcquireSRWLockShared(&DX12BindingTrackerState::EventsLock);
-	source->fallbackEvents = DX12BindingTrackerState::Events;
-	source->fallbackOutputEvents = DX12BindingTrackerState::OutputEvents;
-	const UINT64 fallbackDroppedEvents = DX12BindingTrackerState::DroppedEvents;
-	const UINT64 fallbackDroppedOutputEvents = DX12BindingTrackerState::DroppedOutputEvents;
-	ReleaseSRWLockShared(&DX12BindingTrackerState::EventsLock);
-
-	DX12CaptureLedger::GetSnapshot(&ledgerSnapshot);
-	const bool ledgerHasContent =
-		!ledgerSnapshot.events.empty() ||
-		!ledgerSnapshot.outputEvents.empty() ||
-		ledgerSnapshot.droppedEvents != 0 ||
-		ledgerSnapshot.droppedOutputEvents != 0;
-	if (ledgerHasContent) {
-		source->captureSessionId = ledgerSnapshot.captureSessionId;
-		source->droppedEvents = ledgerSnapshot.droppedEvents + fallbackDroppedEvents;
-		source->droppedOutputEvents =
-			ledgerSnapshot.droppedOutputEvents + fallbackDroppedOutputEvents;
-		source->usingLedger = true;
-		if (!source->fallbackEvents.empty()) {
-			source->combinedEvents.reserve(
-				ledgerSnapshot.events.size() +
-				source->fallbackEvents.size());
-			source->combinedEvents.insert(
-				source->combinedEvents.end(),
-				ledgerSnapshot.events.begin(),
-				ledgerSnapshot.events.end());
-			source->combinedEvents.insert(
-				source->combinedEvents.end(),
-				source->fallbackEvents.begin(),
-				source->fallbackEvents.end());
-			source->events = &source->combinedEvents;
-		} else {
-			source->combinedEvents = std::move(ledgerSnapshot.events);
-			source->events = &source->combinedEvents;
-		}
-		if (!source->fallbackOutputEvents.empty()) {
-			source->combinedOutputEvents.reserve(
-				ledgerSnapshot.outputEvents.size() +
-				source->fallbackOutputEvents.size());
-			source->combinedOutputEvents.insert(
-				source->combinedOutputEvents.end(),
-				ledgerSnapshot.outputEvents.begin(),
-				ledgerSnapshot.outputEvents.end());
-			source->combinedOutputEvents.insert(
-				source->combinedOutputEvents.end(),
-				source->fallbackOutputEvents.begin(),
-				source->fallbackOutputEvents.end());
-			source->outputEvents = &source->combinedOutputEvents;
-		} else {
-			source->combinedOutputEvents = std::move(ledgerSnapshot.outputEvents);
-			source->outputEvents = &source->combinedOutputEvents;
-		}
-		return true;
-	}
-
-	source->events = &source->fallbackEvents;
-	source->outputEvents = &source->fallbackOutputEvents;
-	source->droppedEvents = fallbackDroppedEvents;
-	source->droppedOutputEvents = fallbackDroppedOutputEvents;
-	return !source->fallbackEvents.empty() || !source->fallbackOutputEvents.empty() ||
-		source->droppedEvents != 0 || source->droppedOutputEvents != 0;
 }
 
 void DX12BindingTracker::StoreCurrentOutputTargetsLocked(
@@ -959,7 +881,6 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 			captureSessionId))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	BindingEvent event;
 	if (DX12BindingTracker::BuildEvent(
 			&event,
@@ -969,7 +890,6 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 			descriptorEpoch,
 			captureSessionId))
 		DX12BindingTracker::StoreEventLocked(event);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 bool DX12BindingTracker::SetDescriptorHeaps(
@@ -1220,7 +1140,6 @@ void DX12BindingTracker::RecordOutputTargets(
 				0,
 				captureSessionId))
 			continue;
-		AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		DX12BindingTracker::StoreOutputEventLocked(
 			"RTV",
 			commandList,
@@ -1229,15 +1148,12 @@ void DX12BindingTracker::RecordOutputTargets(
 			handle.ptr,
 			0,
 			captureSessionId);
-		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	}
 	if (depthStencilDescriptor &&
 		!DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "DSV", 0,
 			depthStencilDescriptor->ptr, 0, captureSessionId)) {
-		AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		DX12BindingTracker::StoreOutputEventLocked("DSV", commandList, snapshot, 0,
 			depthStencilDescriptor->ptr, 0, captureSessionId);
-		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	}
 
 	AcquireSRWLockExclusive(&shard.lock);
@@ -1302,7 +1218,6 @@ void DX12BindingTracker::RecordRenderTargetClear(
 			captureSessionId))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreOutputEventLocked(
 		"RTV",
 		commandList,
@@ -1311,7 +1226,6 @@ void DX12BindingTracker::RecordRenderTargetClear(
 		renderTargetView.ptr,
 		0,
 		captureSessionId);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::RecordDepthStencilClear(
@@ -1343,7 +1257,6 @@ void DX12BindingTracker::RecordDepthStencilClear(
 			captureSessionId))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreOutputEventLocked(
 		"DSV",
 		commandList,
@@ -1352,7 +1265,6 @@ void DX12BindingTracker::RecordDepthStencilClear(
 		depthStencilView.ptr,
 		0,
 		captureSessionId);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 bool DX12BindingTracker::GetCurrentIaState(
@@ -1597,7 +1509,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 			startInstanceLocation))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
@@ -1606,7 +1517,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 			snapshot,
 			descriptorEpoch,
 			captureSessionId)) {
-		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		return;
 	}
 	event.vertexCountPerInstance = vertexCountPerInstance;
@@ -1615,7 +1525,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 	event.startInstanceLocation = startInstanceLocation;
 	DX12BindingTracker::StoreEventLocked(event);
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot, captureSessionId);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::RecordDrawIndexedInstanced(
@@ -1651,7 +1560,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 			startInstanceLocation))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
@@ -1660,7 +1568,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 			snapshot,
 			descriptorEpoch,
 			captureSessionId)) {
-		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		return;
 	}
 	event.indexCountPerInstance = indexCountPerInstance;
@@ -1670,7 +1577,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	event.startInstanceLocation = startInstanceLocation;
 	DX12BindingTracker::StoreEventLocked(event);
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot, captureSessionId);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::RecordDispatch(
@@ -1701,7 +1607,6 @@ void DX12BindingTracker::RecordDispatch(
 			threadGroupCountZ))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
@@ -1710,30 +1615,18 @@ void DX12BindingTracker::RecordDispatch(
 			snapshot,
 			descriptorEpoch,
 			captureSessionId)) {
-		ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 		return;
 	}
 	event.threadGroupCountX = threadGroupCountX;
 	event.threadGroupCountY = threadGroupCountY;
 	event.threadGroupCountZ = threadGroupCountZ;
 	DX12BindingTracker::StoreEventLocked(event);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::BeginFrame()
 {
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
-	for (BindingEvent &event : DX12BindingTrackerState::Events)
-		DX12BindingTracker::ReleaseEventIaResources(&event);
-	DX12BindingTrackerState::Events.clear();
-	DX12BindingTrackerState::OutputEvents.clear();
-	DX12BindingTrackerState::EventSerial = 0;
-	DX12BindingTrackerState::OutputEventSerial = 0;
-	DX12BindingTrackerState::DroppedEvents = 0;
-	DX12BindingTrackerState::DroppedOutputEvents = 0;
 	InterlockedExchange64(&DX12BindingTrackerState::GlobalDrawSerial, 0);
 	InterlockedExchange64(&DX12BindingTrackerState::GlobalDispatchSerial, 0);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingTracker::SetGraphicsRootDescriptor(

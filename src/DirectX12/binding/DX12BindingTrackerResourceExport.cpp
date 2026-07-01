@@ -21,15 +21,13 @@ static bool PopulatePreferredResourceEventSource(DX12FrameEventSource *source, c
 	if (!source)
 		return false;
 
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingTracker::PopulateCaptureEventSource(
+	if (DX12BindingTracker::PopulateActiveEventSource(
 			source,
-			captureSessionId,
 			reason ? reason : "PopulatePreferredResourceEventSource"))
 		return true;
 
-	DX12BindingTracker::DrainPendingEvents(reason ? reason : "PopulatePreferredResourceEventSourceFallback");
-	return DX12BindingTracker::PopulateFrameEventSource(source);
+	*source = DX12FrameEventSource();
+	return false;
 }
 
 bool DX12BindingResourceExport::InsertBindingSeen(
@@ -728,10 +726,9 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	PopulatePreferredResourceEventSource(&source, "GetCurrentFrameResourceBindings");
 	const std::vector<BindingEvent> &events = source.GetEvents();
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
-		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu",
+		"\"events\":%zu,\"capture_session_id\":%llu",
 		events.size(),
-		source.fallbackEvents.size(),
-		source.usingLedger ? events.size() - source.fallbackEvents.size() : 0);
+		static_cast<unsigned long long>(source.captureSessionId));
 
 	std::vector<DX12DescriptorSummary> descriptors;
 	std::vector<DX12DescriptorHeapSummary> heaps;
@@ -872,9 +869,9 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	const std::vector<OutputBindingEvent> &events = source.GetOutputEvents();
 	const UINT64 dropped = source.droppedOutputEvents;
 	DX12FrameAnalysis::LogJsonFunc("OutputResourcesLedgerSnapshot",
-		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu,\"dropped\":%llu",
-		events.size(), source.fallbackOutputEvents.size(),
-		source.usingLedger ? events.size() - source.fallbackOutputEvents.size() : 0,
+		"\"events\":%zu,\"capture_session_id\":%llu,\"dropped\":%llu",
+		events.size(),
+		static_cast<unsigned long long>(source.captureSessionId),
 		static_cast<unsigned long long>(dropped));
 
 	std::unordered_set<std::string> seen;

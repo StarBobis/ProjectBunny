@@ -27,6 +27,7 @@ enum class DX12CaptureLedgerRecordResult
 	Stored = 1,
 	Full = 2,
 	Duplicate = 3,
+	InactiveSession = 4,
 };
 
 class DX12CaptureLedger
@@ -37,6 +38,8 @@ public:
 	static UINT64 BeginPresent;
 	static UINT64 LedgerEpoch;
 	static UINT64 CaptureSessionId;
+	static UINT64 EventSerial;
+	static UINT64 OutputEventSerial;
 	static UINT64 DroppedEvents;
 	static UINT64 DroppedOutputEvents;
 	static std::vector<BindingEvent> Events;
@@ -47,6 +50,7 @@ public:
 	static void Clear();
 	static bool IsActive();
 	static UINT64 CurrentCaptureSessionId();
+	static bool IsSessionCurrent(UINT64 captureSessionId);
 	static DX12CaptureLedgerRecordResult RecordEvent(BindingEvent *event);
 	static DX12CaptureLedgerRecordResult TryStoreOutputEvent(OutputBindingEvent *event);
 	static void GetSnapshot(DX12CaptureLedgerSnapshot *snapshot);

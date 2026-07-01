@@ -22,15 +22,13 @@ static bool PopulatePreferredFrameEventSource(DX12FrameEventSource *source, cons
 	if (!source)
 		return false;
 
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingTracker::PopulateCaptureEventSource(
+	if (DX12BindingTracker::PopulateActiveEventSource(
 			source,
-			captureSessionId,
 			reason ? reason : "PopulatePreferredFrameEventSource"))
 		return true;
 
-	DX12BindingTracker::DrainPendingEvents(reason ? reason : "PopulatePreferredFrameEventSourceFallback");
-	return DX12BindingTracker::PopulateFrameEventSource(source);
+	*source = DX12FrameEventSource();
+	return false;
 }
 
 
@@ -720,9 +718,9 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 	const UINT64 droppedEvents = source.droppedEvents;
 
 	DX12FrameAnalysis::LogJsonFunc("BindingTraceBegin",
-		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu,\"dropped\":%llu,\"maxEvents\":%u",
-		events.size(), source.fallbackEvents.size(),
-		source.usingLedger ? events.size() - source.fallbackEvents.size() : 0,
+		"\"events\":%zu,\"capture_session_id\":%llu,\"dropped\":%llu,\"maxEvents\":%u",
+		events.size(),
+		static_cast<unsigned long long>(source.captureSessionId),
 		static_cast<unsigned long long>(droppedEvents),
 		MaxTrackedEvents);
 	for (const BindingEvent &event : events) {

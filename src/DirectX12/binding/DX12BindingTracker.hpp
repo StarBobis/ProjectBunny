@@ -114,14 +114,11 @@ class DX12FrameEventSource
 public:
 	const std::vector<BindingEvent> *events = nullptr;
 	const std::vector<OutputBindingEvent> *outputEvents = nullptr;
-	std::vector<BindingEvent> fallbackEvents;
-	std::vector<OutputBindingEvent> fallbackOutputEvents;
-	std::vector<BindingEvent> combinedEvents;
-	std::vector<OutputBindingEvent> combinedOutputEvents;
+	std::vector<BindingEvent> ownedEvents;
+	std::vector<OutputBindingEvent> ownedOutputEvents;
 	UINT64 droppedEvents = 0;
 	UINT64 droppedOutputEvents = 0;
 	UINT64 captureSessionId = 0;
-	bool usingLedger = false;
 
 	const std::vector<BindingEvent> &GetEvents() const
 	{
@@ -178,6 +175,7 @@ public:
 	static UINT64 CurrentCaptureSessionId();
 	static UINT64 CaptureFenceSequence();
 	static bool PopulateCaptureEventSource(DX12FrameEventSource *source, UINT64 captureSessionId, const char *reason);
+	static bool PopulateActiveEventSource(DX12FrameEventSource *source, const char *reason);
 
 	static void ReleaseRetainedIaResources(CommandListBindingState *state);
 	static void RetainStateIaResourcesForAsync(CommandListBindingState *state);
@@ -201,7 +199,6 @@ public:
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreOutputEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId, UINT64 captureSessionId = 0);
-	static bool PopulateFrameEventSource(DX12FrameEventSource *source);
 	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId = 0);
 	static bool GetCurrentDescriptors(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, const char *descriptorKind, D3D12_ROOT_PARAMETER_TYPE rootDescriptorType, std::vector<DX12CurrentComputeUavBinding> *uavs);
 	static void SetRootConstantsLocked(RootConstantsState *constants, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);

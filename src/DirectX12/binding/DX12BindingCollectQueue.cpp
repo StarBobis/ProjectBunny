@@ -353,9 +353,7 @@ void DX12BindingCollectQueue::ProcessStateEventTask(DX12BindingCollectTask *task
 			task->captureSessionId))
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task, const char *source)
@@ -381,10 +379,8 @@ void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task,
 	event.baseVertexLocation = task->baseVertexLocation;
 	event.startInstanceLocation = task->startInstanceLocation;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(task->commandList, task->state);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *task, const char *source)
@@ -406,9 +402,7 @@ void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *t
 	event.threadGroupCountY = task->threadGroupCountY;
 	event.threadGroupCountZ = task->threadGroupCountZ;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreEventLocked(event);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *task, const char *source)
@@ -417,7 +411,6 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 	if (!task || !task->cpuHandle)
 		return;
 
-	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 	DX12BindingTracker::StoreOutputEventLocked(
 		task->eventKind ? task->eventKind : "",
 		task->commandList,
@@ -426,7 +419,6 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 		task->cpuHandle,
 		task->drawId,
 		task->captureSessionId);
-	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
 void DX12BindingCollectQueue::UpdateMaxDepth(size_t depth)

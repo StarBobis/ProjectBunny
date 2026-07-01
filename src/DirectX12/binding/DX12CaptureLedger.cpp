@@ -8,6 +8,8 @@ bool DX12CaptureLedger::Active = false;
 UINT64 DX12CaptureLedger::BeginPresent = 0;
 UINT64 DX12CaptureLedger::LedgerEpoch = 0;
 UINT64 DX12CaptureLedger::CaptureSessionId = 0;
+UINT64 DX12CaptureLedger::EventSerial = 0;
+UINT64 DX12CaptureLedger::OutputEventSerial = 0;
 UINT64 DX12CaptureLedger::DroppedEvents = 0;
 UINT64 DX12CaptureLedger::DroppedOutputEvents = 0;
 std::vector<BindingEvent> DX12CaptureLedger::Events;
@@ -21,6 +23,8 @@ void DX12CaptureLedger::BeginCapture(UINT64 present)
 	OutputEvents.clear();
 	DroppedEvents = 0;
 	DroppedOutputEvents = 0;
+	EventSerial = 0;
+	OutputEventSerial = 0;
 	BeginPresent = present;
 	++LedgerEpoch;
 	++CaptureSessionId;
@@ -64,6 +68,8 @@ void DX12CaptureLedger::Clear()
 	OutputEvents.clear();
 	DroppedEvents = 0;
 	DroppedOutputEvents = 0;
+	EventSerial = 0;
+	OutputEventSerial = 0;
 	Active = false;
 	ReleaseSRWLockExclusive(&Lock);
 }
@@ -84,6 +90,16 @@ UINT64 DX12CaptureLedger::CurrentCaptureSessionId()
 	return captureSessionId;
 }
 
+bool DX12CaptureLedger::IsSessionCurrent(UINT64 captureSessionId)
+{
+	if (captureSessionId == 0)
+		return false;
+	AcquireSRWLockShared(&Lock);
+	const bool current = Active && CaptureSessionId == captureSessionId;
+	ReleaseSRWLockShared(&Lock);
+	return current;
+}
+
 DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event)
 {
 	if (!event)
@@ -96,13 +112,14 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event
 	}
 	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
 		ReleaseSRWLockExclusive(&Lock);
-		return DX12CaptureLedgerRecordResult::NotActive;
+		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
 	if (Events.size() >= MaxCaptureLedgerEvents) {
 		DroppedEvents++;
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::Full;
 	}
+	event->serial = ++EventSerial;
 	Events.push_back(std::move(*event));
 	ReleaseSRWLockExclusive(&Lock);
 	return DX12CaptureLedgerRecordResult::Stored;
@@ -120,13 +137,14 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindi
 	}
 	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
 		ReleaseSRWLockExclusive(&Lock);
-		return DX12CaptureLedgerRecordResult::NotActive;
+		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
 	if (OutputEvents.size() >= MaxCaptureLedgerOutputEvents) {
 		DroppedOutputEvents++;
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::Full;
 	}
+	event->serial = ++OutputEventSerial;
 	for (const OutputBindingEvent &existing : OutputEvents) {
 		const bool sameResolvedDraw =
 			event->drawId != 0 && existing.drawId == event->drawId;
