@@ -46,9 +46,15 @@ public:
 	UINT64 viewGpuVa = 0;
 	UINT64 viewSize = 0;
 	UINT64 viewOffset = 0;
+	UINT64 drawGpuVa = 0;
+	UINT64 drawSize = 0;
+	UINT64 drawOffset = 0;
 	UINT stride = 0;
 	UINT slot = 0;
 	UINT format = 0;
+	UINT drawStartIndex = 0;
+	UINT drawIndexCount = 0;
+	INT drawBaseVertex = 0;
 	uint32_t huntHash = 0;
 	bool resolved = false;
 	DX12BufferResourceSummary resource = {};
@@ -219,6 +225,16 @@ public:
 	static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event);
 	static bool IaRegionForEvent(const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region);
 	static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot);
+	static bool ProjectResolvedIaResourceToView(
+		UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
+		const DX12BufferResourceSummary &resolvedDrawResource,
+		DX12BufferResourceSummary *viewResource);
+	static bool ResolveIaBufferResourceSummary(
+		UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
+		const DX12BufferResourceSummary &existingResource, bool existingResolved,
+		DX12BufferResourceSummary *resource);
+	static bool ResolveIaBufferResourceSummary(
+		const DX12FrameIaBufferBinding &buffer, DX12BufferResourceSummary *resource);
 	static void AddFrameIaBufferRow(std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId, const BindingEvent &event, const char *role, UINT slot);
 	static void CollectFrameIaBuffersForEvents(const std::vector<BindingEvent> &events, std::vector<FlatBufferRow> *buffers);
 	static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSize);

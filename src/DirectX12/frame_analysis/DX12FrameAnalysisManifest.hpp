@@ -219,7 +219,7 @@ public:
 			DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath));
 		sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", buffer.resource.resource);
 
-		char buffer2[2048];
+		char buffer2[3072];
 		const bool ib = buffer.role == "IB";
 		sprintf_s(buffer2, sizeof(buffer2),
 			"\"func\":\"BindIA\","
@@ -235,14 +235,22 @@ public:
 			"\"gpu\":\"0x%llx\","
 			"\"offset\":%llu,"
 			"\"bytes\":%llu,"
+			"\"file_offset\":%llu,"
+			"\"file_bytes\":%llu,"
 			"\"view_gpu\":\"0x%llx\","
 			"\"view_offset\":%llu,"
 			"\"view_bytes\":%llu,"
+			"\"draw_gpu\":\"0x%llx\","
+			"\"draw_offset\":%llu,"
+			"\"draw_bytes\":%llu,"
 			"\"dump_scope\":\"%s\","
 			"\"dump_is_draw_slice\":%s,"
 			"\"stride\":%u,"
 			"\"fmt\":%u,"
 			"\"fmt_name\":%s,"
+			"\"start_index\":%u,"
+			"\"index_count\":%u,"
+			"\"base_vertex\":%d,"
 			"\"state\":\"0x%x\","
 			"\"state_known\":%s,"
 			"\"skin_source\":%s,"
@@ -266,16 +274,24 @@ public:
 			resourceJson,
 			dimJson,
 			static_cast<unsigned long long>(buffer.gpuVa),
+			static_cast<unsigned long long>(buffer.viewOffset),
+			static_cast<unsigned long long>(buffer.viewSize),
 			static_cast<unsigned long long>(sourceOffset),
 			static_cast<unsigned long long>(copyBytes),
 			static_cast<unsigned long long>(buffer.viewGpuVa),
 			static_cast<unsigned long long>(buffer.viewOffset),
 			static_cast<unsigned long long>(buffer.viewSize),
-			ib ? "draw_slice" : "full_view",
-			ib ? "true" : "false",
+			static_cast<unsigned long long>(buffer.drawGpuVa ? buffer.drawGpuVa : buffer.viewGpuVa),
+			static_cast<unsigned long long>(buffer.drawOffset),
+			static_cast<unsigned long long>(buffer.drawSize ? buffer.drawSize : copyBytes),
+			"full_view",
+			"false",
 			buffer.stride,
 			buffer.format,
 			fmtNameJson,
+			buffer.drawStartIndex,
+			buffer.drawIndexCount,
+			buffer.drawBaseVertex,
 			static_cast<UINT>(sourceState),
 			hasCurrentState ? "true" : "false",
 			skinSourceJson,

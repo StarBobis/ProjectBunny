@@ -277,14 +277,26 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		untrackedComputeUavSlots);
 
 	for (const DX12FrameIaBufferBinding &buffer : iaBuffers) {
+		DX12BufferResourceSummary iaResource = {};
+		const bool iaResolved =
+			DX12BindingFrameExport::ResolveIaBufferResourceSummary(buffer, &iaResource);
 		char key[128];
-		sprintf_s(key, "ia|%p|%llu|%llu|%08x|%u|%u",
-			buffer.resource.resource,
-			static_cast<unsigned long long>(buffer.resource.resourceOffset),
-			static_cast<unsigned long long>(buffer.size),
-			buffer.huntHash,
-			buffer.stride,
-			buffer.format);
+		if (iaResolved && iaResource.resource) {
+			sprintf_s(key, "ia|%S|%p|%llu|%llu|%u|%u",
+				buffer.role.c_str(),
+				iaResource.resource,
+				static_cast<unsigned long long>(iaResource.resourceOffset),
+				static_cast<unsigned long long>(buffer.viewSize),
+				buffer.stride,
+				buffer.format);
+		} else {
+			sprintf_s(key, "ia|%S|0x%llx|%llu|%u|%u",
+				buffer.role.c_str(),
+				static_cast<unsigned long long>(buffer.viewGpuVa),
+				static_cast<unsigned long long>(buffer.viewSize),
+				buffer.stride,
+				buffer.format);
+		}
 		auto canonicalIt = canonicalTaskByKey.find(key);
 		if (canonicalIt != canonicalTaskByKey.end()) {
 			DumpTask duplicate;
@@ -318,6 +330,18 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			task.iaBuffer = buffer;
 			if (task.skipNote == nullptr)
 				task.skipNote = buffer.resolved ? "unsupported_or_no_resource_pointer" : "unresolved_gpu_va";
+			DX12FrameAnalysis::LogJsonFunc("IaBindingPrepareSkipped",
+				"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"resolved\":%u,\"note\":\"%s\"",
+				static_cast<unsigned long long>(buffer.eventSerial),
+				buffer.role.c_str(),
+				static_cast<unsigned long long>(buffer.viewGpuVa),
+				static_cast<unsigned long long>(buffer.viewSize),
+				static_cast<unsigned long long>(buffer.drawGpuVa),
+				static_cast<unsigned long long>(buffer.drawSize),
+				buffer.format,
+				buffer.stride,
+				iaResolved ? 1 : 0,
+				task.skipNote);
 			skippedTasks.push_back(std::move(task));
 		}
 	}
@@ -829,6 +853,17 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 				task.binding.descriptor.hasCurrentState, L"", L"",
 				task.skipNote ? task.skipNote : "skipped");
 		} else if (task.sourceKind == DumpTaskSource::InputAssembler) {
+			DX12FrameAnalysis::LogJsonFunc("IaBindingSkipped",
+				"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"note\":\"%s\"",
+				static_cast<unsigned long long>(task.iaBuffer.eventSerial),
+				task.iaBuffer.role.c_str(),
+				static_cast<unsigned long long>(task.iaBuffer.viewGpuVa),
+				static_cast<unsigned long long>(task.iaBuffer.viewSize),
+				static_cast<unsigned long long>(task.iaBuffer.drawGpuVa),
+				static_cast<unsigned long long>(task.iaBuffer.drawSize),
+				task.iaBuffer.format,
+				task.iaBuffer.stride,
+				task.skipNote ? task.skipNote : "skipped");
 			continue;
 		} else if (task.sourceKind == DumpTaskSource::Output) {
 			DX12ResourceDumpIndexWriter::WriteIndexRow(nullptr, "skipped", task, task.binding.descriptor.resourceDesc,

@@ -186,6 +186,85 @@ uint32_t DX12BindingFrameExport::IaRegionHashForEvent(const BindingEvent &event,
 	return DX12IaRegion::HashVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
+bool DX12BindingFrameExport::ProjectResolvedIaResourceToView(
+	UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
+	const DX12BufferResourceSummary &resolvedDrawResource,
+	DX12BufferResourceSummary *viewResource)
+{
+	if (!viewResource || !resolvedDrawResource.resource ||
+		!resolvedDrawResource.hasResourceDesc || !viewGpuVa || !viewSize)
+		return false;
+	if (resolvedDrawResource.gpuVirtualAddress == 0)
+		return false;
+	if (viewGpuVa < resolvedDrawResource.gpuVirtualAddress)
+		return false;
+
+	*viewResource = resolvedDrawResource;
+	const UINT64 viewOffset = viewGpuVa - resolvedDrawResource.gpuVirtualAddress;
+	if (viewOffset >= resolvedDrawResource.resourceDesc.Width)
+		return false;
+
+	UINT64 availableBytes = resolvedDrawResource.resourceDesc.Width - viewOffset;
+	UINT64 projectedViewBytes = viewSize < availableBytes ? viewSize : availableBytes;
+	if (!projectedViewBytes)
+		return false;
+
+	viewResource->resourceOffset = viewOffset;
+	viewResource->viewSize = projectedViewBytes;
+	if (drawGpuVa && drawSize &&
+		drawGpuVa >= viewGpuVa &&
+		drawGpuVa - viewGpuVa <= projectedViewBytes) {
+		const UINT64 drawOffsetWithinView = drawGpuVa - viewGpuVa;
+		const UINT64 drawAvailableBytes = projectedViewBytes - drawOffsetWithinView;
+		if (drawAvailableBytes < drawSize) {
+			viewResource->viewSize = drawOffsetWithinView + drawAvailableBytes;
+		}
+	}
+	return true;
+}
+
+bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
+	UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
+	const DX12BufferResourceSummary &existingResource, bool existingResolved,
+	DX12BufferResourceSummary *resource)
+{
+	if (!resource || !viewGpuVa || !viewSize)
+		return false;
+
+	*resource = DX12BufferResourceSummary();
+	if (existingResolved &&
+		DX12BindingFrameExport::ProjectResolvedIaResourceToView(
+			viewGpuVa, viewSize, drawGpuVa, drawSize, existingResource, resource))
+		return true;
+
+	if (DX12ResolveBufferResourceByGpuVa(viewGpuVa, viewSize, resource))
+		return true;
+
+	if (drawGpuVa && drawSize) {
+		DX12BufferResourceSummary drawResource = {};
+		if (DX12ResolveBufferResourceByGpuVa(drawGpuVa, drawSize, &drawResource) &&
+			DX12BindingFrameExport::ProjectResolvedIaResourceToView(
+				viewGpuVa, viewSize, drawGpuVa, drawSize, drawResource, resource)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
+	const DX12FrameIaBufferBinding &buffer, DX12BufferResourceSummary *resource)
+{
+	return DX12BindingFrameExport::ResolveIaBufferResourceSummary(
+		buffer.viewGpuVa,
+		buffer.viewSize,
+		buffer.drawGpuVa ? buffer.drawGpuVa : buffer.gpuVa,
+		buffer.drawSize ? buffer.drawSize : buffer.size,
+		buffer.resource,
+		buffer.resolved,
+		resource);
+}
+
 void DX12BindingFrameExport::AddFrameIaBufferRow(
 	std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId,
 	const BindingEvent &event, const char *role, UINT slot)
@@ -203,8 +282,8 @@ void DX12BindingFrameExport::AddFrameIaBufferRow(
 	const D3D12_VERTEX_BUFFER_VIEW &vb = event.vertexBuffers[slot];
 	const UINT64 viewGpuVa = ib ? event.indexBuffer.BufferLocation : vb.BufferLocation;
 	const UINT64 viewSize = ib ? event.indexBuffer.SizeInBytes : vb.SizeInBytes;
-	const UINT64 dumpGpuVa = ib ? region.gpuVa : viewGpuVa;
-	const UINT64 dumpSize = ib ? region.size : viewSize;
+	const UINT64 drawGpuVa = ib ? region.gpuVa : viewGpuVa;
+	const UINT64 drawSize = ib ? region.size : viewSize;
 	FlatBufferRow row;
 	row.id = DX12BindingFrameExport::NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
 		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
@@ -214,18 +293,29 @@ void DX12BindingFrameExport::AddFrameIaBufferRow(
 	row.dispatchId = event.dispatchId;
 	row.psoIndex = event.shaderInfo.psoIndex;
 	row.shaderInfo = event.shaderInfo;
-	row.gpuVa = dumpGpuVa;
-	row.size = dumpSize;
+	row.gpuVa = viewGpuVa;
+	row.size = viewSize;
 	row.viewGpuVa = viewGpuVa;
 	row.viewSize = viewSize;
+	row.drawGpuVa = drawGpuVa;
+	row.drawSize = drawSize;
+	row.drawOffset = region.viewOffset;
 	row.stride = ib ? 0 : vb.StrideInBytes;
 	row.slot = slot;
 	row.format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
+	row.drawStartIndex = event.startIndexLocation;
+	row.drawIndexCount = event.indexCountPerInstance;
+	row.drawBaseVertex = event.baseVertexLocation;
 	row.resource = ib ? event.indexBufferResource : event.vertexBufferResources[slot];
-	row.resolved = ib ? event.indexBufferResolved : event.vertexBufferResolved[slot];
-	if (!row.resolved)
-		row.resolved = DX12ResolveBufferResourceByGpuVa(dumpGpuVa, dumpSize, &row.resource);
-	row.viewOffset = row.resolved ? row.resource.resourceOffset : region.viewOffset;
+	row.resolved = DX12BindingFrameExport::ResolveIaBufferResourceSummary(
+		viewGpuVa,
+		viewSize,
+		drawGpuVa,
+		drawSize,
+		row.resource,
+		ib ? event.indexBufferResolved : event.vertexBufferResolved[slot],
+		&row.resource);
+	row.viewOffset = row.resolved ? row.resource.resourceOffset : 0;
 	row.huntHash = huntHash;
 	rows->push_back(row);
 }
@@ -525,9 +615,15 @@ DX12FrameIaBufferBinding DX12BindingFrameExport::FrameIaBufferFromFlatRow(const 
 	buffer.viewGpuVa = row.viewGpuVa;
 	buffer.viewSize = row.viewSize;
 	buffer.viewOffset = row.viewOffset;
+	buffer.drawGpuVa = row.drawGpuVa;
+	buffer.drawSize = row.drawSize;
+	buffer.drawOffset = row.drawOffset;
 	buffer.stride = row.stride;
 	buffer.slot = row.slot;
 	buffer.format = row.format;
+	buffer.drawStartIndex = row.drawStartIndex;
+	buffer.drawIndexCount = row.drawIndexCount;
+	buffer.drawBaseVertex = row.drawBaseVertex;
 	buffer.huntHash = row.huntHash;
 	buffer.resolved = row.resolved;
 	buffer.resource = row.resource;

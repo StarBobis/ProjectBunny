@@ -66,9 +66,15 @@ public:
 	UINT64 viewGpuVa = 0;
 	UINT64 viewSize = 0;
 	UINT64 viewOffset = 0;
+	UINT64 drawGpuVa = 0;
+	UINT64 drawSize = 0;
+	UINT64 drawOffset = 0;
 	UINT stride = 0;
 	UINT slot = 0;
 	UINT format = 0;
+	UINT drawStartIndex = 0;
+	UINT drawIndexCount = 0;
+	INT drawBaseVertex = 0;
 	uint32_t huntHash = 0;
 	bool resolved = false;
 	DX12BufferResourceSummary resource;

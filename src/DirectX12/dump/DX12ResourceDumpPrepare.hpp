@@ -293,37 +293,47 @@ static bool FillDescriptorDumpTask(
 
 static bool FillIaDumpTask(const DX12FrameIaBufferBinding &buffer, DumpTask *task)
 {
-	if (!task || !buffer.resolved || !buffer.resource.resource ||
-		!buffer.resource.hasResourceDesc)
+	if (!task)
 		return false;
+
+	DX12BufferResourceSummary resource = buffer.resource;
+	bool resolved = buffer.resolved;
+	if (!resolved || !resource.resource || !resource.hasResourceDesc) {
+		resolved = DX12BindingFrameExport::ResolveIaBufferResourceSummary(
+			buffer, &resource);
+	}
+	if (!resolved || !resource.resource || !resource.hasResourceDesc) {
+		task->skipNote = "unresolved_gpu_va";
+		return false;
+	}
 
 	task->sourceKind = DumpTaskSource::InputAssembler;
 	task->iaBuffer = buffer;
-	task->source = buffer.resource.resource;
-	task->desc = buffer.resource.resourceDesc;
+	task->iaBuffer.resource = resource;
+	task->iaBuffer.resolved = true;
+	task->source = resource.resource;
+	task->desc = resource.resourceDesc;
 	if (task->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) {
 		task->skipNote = "unsupported_dimension";
 		return false;
 	}
-	// IA VB files must represent the full buffer view, not the draw-trimmed
-	// vertex byte count, or indexed mesh reconstruction can reference vertices
-	// that were never dumped. IB keeps the draw slice by design.
-	if (buffer.role == IaBufferRole::VB) {
-		task->sourceOffset = buffer.viewOffset;
-		task->copyBytes = buffer.viewSize;
-	} else {
-		task->sourceOffset = buffer.resource.resourceOffset;
-		task->copyBytes = buffer.size;
-	}
+	// IA dumps now use full view granularity for both VB and IB. Draw-specific
+	// slicing stays in log.jsonl so the same .buf can serve multiple draws.
+	task->sourceOffset = task->iaBuffer.resource.resourceOffset;
+	task->copyBytes = buffer.viewSize;
 	if (task->sourceOffset + task->copyBytes > task->desc.Width)
 		task->copyBytes = task->desc.Width > task->sourceOffset ? task->desc.Width - task->sourceOffset : 0;
-	task->sourceState = buffer.resource.hasCurrentState ?
-		static_cast<D3D12_RESOURCE_STATES>(buffer.resource.currentState) :
-		DX12ResourceStateTracker::InferIaBufferSourceState(buffer);
-	task->stateKnown = StateTrackingAllowsCopy(buffer.resource);
-	task->needsBarrier = ResourceNeedsBarrier(buffer.resource);
+	task->sourceState = task->iaBuffer.resource.hasCurrentState ?
+		static_cast<D3D12_RESOURCE_STATES>(task->iaBuffer.resource.currentState) :
+		DX12ResourceStateTracker::InferIaBufferSourceState(task->iaBuffer);
+	task->stateKnown = StateTrackingAllowsCopy(task->iaBuffer.resource);
+	task->needsBarrier = ResourceNeedsBarrier(task->iaBuffer.resource);
 	if (!task->stateKnown)
 		task->sourceState = D3D12_RESOURCE_STATE_COMMON;
+	if (task->copyBytes == 0) {
+		task->skipNote = "copy_size_zero";
+		return false;
+	}
 	task->isTexture = false;
 	return true;
 }
