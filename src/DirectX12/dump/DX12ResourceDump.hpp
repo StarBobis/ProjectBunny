@@ -162,6 +162,10 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	UINT metadataTextureTasksQueued = 0;
 	UINT metadataBufferTasksQueued = 0;
 	UINT resourceTasksQueued = 0;
+	UINT iaCandidates = 0;
+	UINT iaResolvedCandidates = 0;
+	UINT iaDuplicateAliases = 0;
+	UINT iaKeyBuildFailures = 0;
 	UINT untrackedDescriptorSlots = 0;
 	UINT untrackedComputeUavSlots = 0;
 	UINT computeBindingCandidates = 0;
@@ -277,25 +281,35 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		untrackedComputeUavSlots);
 
 	for (const DX12FrameIaBufferBinding &buffer : iaBuffers) {
+		iaCandidates++;
 		DX12BufferResourceSummary iaResource = {};
 		const bool iaResolved =
 			DX12BindingFrameExport::ResolveIaBufferResourceSummary(buffer, &iaResource);
+		if (iaResolved)
+			iaResolvedCandidates++;
 		char key[128];
-		if (iaResolved && iaResource.resource) {
-			sprintf_s(key, "ia|%S|%p|%llu|%llu|%u|%u",
-				buffer.role.c_str(),
-				iaResource.resource,
-				static_cast<unsigned long long>(iaResource.resourceOffset),
-				static_cast<unsigned long long>(buffer.viewSize),
-				buffer.stride,
-				buffer.format);
-		} else {
-			sprintf_s(key, "ia|%S|0x%llx|%llu|%u|%u",
+		const bool keyBuilt = DX12ResourceDumpNaming::BuildIaBufferDedupeKey(
+			buffer, &iaResource, iaResolved, key, ARRAYSIZE(key));
+		if (!keyBuilt) {
+			iaKeyBuildFailures++;
+			DumpTask skipped;
+			skipped.sourceKind = DumpTaskSource::InputAssembler;
+			skipped.iaBuffer = buffer;
+			skipped.skipNote = "ia_dedupe_key_build_failed";
+			DX12FrameAnalysis::LogJsonFunc("IaBindingPrepareSkipped",
+				"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"resolved\":%u,\"note\":\"%s\"",
+				static_cast<unsigned long long>(buffer.eventSerial),
 				buffer.role.c_str(),
 				static_cast<unsigned long long>(buffer.viewGpuVa),
 				static_cast<unsigned long long>(buffer.viewSize),
+				static_cast<unsigned long long>(buffer.drawGpuVa),
+				static_cast<unsigned long long>(buffer.drawSize),
+				buffer.format,
 				buffer.stride,
-				buffer.format);
+				iaResolved ? 1 : 0,
+				skipped.skipNote);
+			skippedTasks.push_back(std::move(skipped));
+			continue;
 		}
 		auto canonicalIt = canonicalTaskByKey.find(key);
 		if (canonicalIt != canonicalTaskByKey.end()) {
@@ -313,6 +327,7 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			duplicate.skipNote = "already_dumped";
 			duplicateTasks.push_back(std::move(duplicate));
 			duplicates++;
+			iaDuplicateAliases++;
 			continue;
 		}
 
@@ -345,6 +360,14 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			skippedTasks.push_back(std::move(task));
 		}
 	}
+	DX12FrameAnalysis::LogJsonFunc("IaBindingsCollected",
+		"\"candidates\":%u,\"resolved\":%u,\"queued\":%u,\"duplicate_aliases\":%u,\"key_failures\":%u,\"skipped_so_far\":%zu",
+		iaCandidates,
+		iaResolvedCandidates,
+		iaTasksQueued,
+		iaDuplicateAliases,
+		iaKeyBuildFailures,
+		skippedTasks.size());
 
 	for (const DX12FrameOutputBinding &output : outputBindings) {
 		DX12FrameResourceBinding binding = DX12ResourceDumpCore::ResourceBindingFromOutputBinding(output);
@@ -826,7 +849,29 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			if (copyBatchAborted) {
 				skipped++;
 				skippedAbortedDuplicateAliases++;
+				if (task.sourceKind == DumpTaskSource::InputAssembler) {
+					DX12FrameAnalysis::LogJsonFunc("IaBindingAliasSkipped",
+						"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"dedupe_key\":\"%s\",\"note\":\"copy_batch_aborted\"",
+						static_cast<unsigned long long>(task.iaBuffer.eventSerial),
+						task.iaBuffer.role.c_str(),
+						static_cast<unsigned long long>(task.iaBuffer.viewGpuVa),
+						static_cast<unsigned long long>(task.iaBuffer.viewSize),
+						static_cast<unsigned long long>(task.iaBuffer.drawGpuVa),
+						static_cast<unsigned long long>(task.iaBuffer.drawSize),
+						task.dedupeKey.c_str());
+				}
 				continue;
+			}
+			if (task.sourceKind == DumpTaskSource::InputAssembler) {
+				DX12FrameAnalysis::LogJsonFunc("IaBindingAliasMissingCanonicalDump",
+					"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"dedupe_key\":\"%s\",\"note\":\"canonical_dedupe_path_missing\"",
+					static_cast<unsigned long long>(task.iaBuffer.eventSerial),
+					task.iaBuffer.role.c_str(),
+					static_cast<unsigned long long>(task.iaBuffer.viewGpuVa),
+					static_cast<unsigned long long>(task.iaBuffer.viewSize),
+					static_cast<unsigned long long>(task.iaBuffer.drawGpuVa),
+					static_cast<unsigned long long>(task.iaBuffer.drawSize),
+					task.dedupeKey.c_str());
 			}
 			failed++;
 			continue;

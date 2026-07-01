@@ -280,6 +280,45 @@ static void BuildResourceDedupeKey(
 		resource.hasResourceDesc ? static_cast<UINT>(resource.resourceDesc.Dimension) : 0);
 }
 
+static const char *IaRoleName(const DX12FrameIaBufferBinding &buffer)
+{
+	if (!buffer.role.empty())
+		return buffer.role.c_str();
+	return "UNKNOWN";
+}
+
+static bool BuildIaBufferDedupeKey(
+	const DX12FrameIaBufferBinding &buffer,
+	const DX12BufferResourceSummary *resolvedResource,
+	bool resolved,
+	char *key, size_t keyCount)
+{
+	if (!key || keyCount == 0)
+		return false;
+
+	key[0] = '\0';
+	const char *role = DX12ResourceDumpNaming::IaRoleName(buffer);
+	int written = 0;
+	if (resolved && resolvedResource && resolvedResource->resource) {
+		written = sprintf_s(key, keyCount, "ia|%s|%p|%llu|%llu|%u|%u",
+			role,
+			resolvedResource->resource,
+			static_cast<unsigned long long>(resolvedResource->resourceOffset),
+			static_cast<unsigned long long>(buffer.viewSize),
+			buffer.stride,
+			buffer.format);
+	} else {
+		written = sprintf_s(key, keyCount, "ia|%s|0x%llx|%llu|%u|%u",
+			role,
+			static_cast<unsigned long long>(buffer.viewGpuVa),
+			static_cast<unsigned long long>(buffer.viewSize),
+			buffer.stride,
+			buffer.format);
+	}
+
+	return written > 0 && key[0] != '\0';
+}
+
 
 };
 
