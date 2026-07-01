@@ -27,6 +27,7 @@ class DX12ResourceCollectTask
 public:
 	DX12ResourceCollectTaskKind kind = DX12ResourceCollectTaskKind::Resource;
 	ID3D12Resource *resource = nullptr;
+	bool retainedResource = false;
 	D3D12_RESOURCE_DESC desc = {};
 	bool hasDesc = false;
 	D3D12_HEAP_PROPERTIES heapProperties = {};

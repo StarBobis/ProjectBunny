@@ -69,6 +69,7 @@ bool DX12ResourceCollectQueue::Enqueue(
 	DX12ResourceCollectTask task;
 	task.kind = DX12ResourceCollectTaskKind::Resource;
 	task.resource = resource;
+	task.retainedResource = DX12ResourceSnapshotUtils::TryAddRef(resource);
 	task.hasDesc = desc != nullptr;
 	if (desc)
 		task.desc = *desc;
@@ -81,6 +82,14 @@ bool DX12ResourceCollectQueue::Enqueue(
 	task.initialState = initialState;
 	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
 	task.enqueueThreadId = GetCurrentThreadId();
+	if (!task.retainedResource) {
+		addRefFailed.fetch_add(1, std::memory_order_relaxed);
+		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+			"\"event\":\"EnqueueResourceAddRefFailed\",\"seq\":%llu,\"resource\":\"%p\",\"threadId\":%lu",
+			static_cast<unsigned long long>(task.sequence),
+			resource,
+			task.enqueueThreadId);
+	}
 
 	size_t depth = 0;
 	{
@@ -339,7 +348,10 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	completed.fetch_add(1, std::memory_order_relaxed);
 	RecordResourceTaskStats(task, source, static_cast<int64_t>(elapsedUs));
+	if (task->retainedResource)
+		DX12ResourceSnapshotUtils::Release(task->resource);
 	task->resource = nullptr;
+	task->retainedResource = false;
 }
 
 void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source)
