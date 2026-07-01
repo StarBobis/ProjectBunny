@@ -33,6 +33,8 @@ public:
 	UINT count = 0;
 	std::string source;
 	uint64_t sequence = 0;
+	SIZE_T trackedCpuHandleStart = 0;
+	SIZE_T trackedCpuHandleEnd = 0;
 	DWORD enqueueThreadId = 0;
 };
 
@@ -56,9 +58,12 @@ public:
 	inline static std::atomic<uint64_t> nextSequence = 1;
 	inline static std::atomic<uint64_t> enqueuedBatches = 0;
 	inline static std::atomic<uint64_t> completedBatches = 0;
+	inline static std::atomic<uint64_t> completedSequence = 0;
 	inline static std::atomic<uint64_t> maxPendingDescriptorWrites = 0;
 	inline static std::deque<DX12DescriptorCollectTask> queuedTasks;
 	inline static std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
+	inline static std::unordered_map<SIZE_T, uint64_t> pendingDescriptorSequences;
+	inline static std::unordered_map<SIZE_T, uint64_t> visibleDescriptorSequences;
 	inline static uint64_t activeQueuedTasks = 0;
 	inline static uint64_t descriptorWrites = 0;
 	inline static uint64_t descriptorWriteBatches = 0;
@@ -96,6 +101,11 @@ public:
 		const SIZE_T *cpuHandles,
 		size_t count,
 		const char *reason);
+	static uint64_t RequiredSequenceForHandlesLocked(
+		const SIZE_T *cpuHandles,
+		size_t count);
+	static uint64_t RequiredSequenceForTaskLocked(const DX12DescriptorCollectTask &task);
+	static void WaitForSequence(uint64_t targetSequence, const char *reason);
 	static bool TryMergeQueuedCopyTaskLocked(
 		ID3D12Device *device,
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
