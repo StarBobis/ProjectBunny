@@ -118,6 +118,7 @@ public:
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
+	UINT64 version = 0;
 };
 
 class DX12PsoRootSummary

@@ -170,7 +170,8 @@ public:
 	bool compute = false;
 	UINT rangeType = UINT_MAX;
 	UINT64 bindingQuerySerial = 0;
-	UINT64 descriptorQuerySerial = 0;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	UINT64 cbvSrvUavHeapVersion = 0;
 	std::vector<DX12CurrentComputeUavBinding> bindings;
 };
 
@@ -179,7 +180,8 @@ class BindingTlsComputeAllQueryCache
 public:
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	UINT64 bindingQuerySerial = 0;
-	UINT64 descriptorQuerySerial = 0;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	UINT64 cbvSrvUavHeapVersion = 0;
 	std::vector<DX12CurrentComputeUavBinding> uavs;
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;

@@ -950,6 +950,71 @@ static void CompleteResourceInfoForFoundSummaries(
 }
 };
 
+class DX12DescriptorHeapQueryUtils
+{
+public:
+static bool TryFillByPtrLocked(
+	ID3D12DescriptorHeap *heap,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (!heap || !summary)
+		return false;
+	std::unordered_map<ID3D12DescriptorHeap*, size_t>::const_iterator found =
+		gDescriptorHeapByPtr.find(heap);
+	if (found == gDescriptorHeapByPtr.end() ||
+		found->second >= gDescriptorHeaps.size()) {
+		return false;
+	}
+	const DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
+	if (record.heap != heap)
+		return false;
+	DX12DescriptorHeapStateUtils::FillSummary(record, summary);
+	return true;
+}
+
+static bool TryFillByGpuHandleLocked(
+	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle,
+	D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (!gpuHandle.ptr || !summary)
+		return false;
+	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
+		if (record.desc.Type != type || record.gpuStart == 0 || record.increment == 0)
+			continue;
+		const UINT64 begin = record.gpuStart;
+		const UINT64 end = begin +
+			static_cast<UINT64>(record.desc.NumDescriptors) * record.increment;
+		if (gpuHandle.ptr < begin || gpuHandle.ptr >= end)
+			continue;
+		DX12DescriptorHeapStateUtils::FillSummary(record, summary);
+		return true;
+	}
+	return false;
+}
+
+static bool TryFillByCpuHandleLocked(
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+	D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (!cpuHandle.ptr || !summary)
+		return false;
+	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
+		if (record.desc.Type != type || record.cpuStart == 0 || record.increment == 0)
+			continue;
+		const SIZE_T begin = record.cpuStart;
+		const SIZE_T end = begin +
+			static_cast<SIZE_T>(record.desc.NumDescriptors) * record.increment;
+		if (cpuHandle.ptr < begin || cpuHandle.ptr >= end)
+			continue;
+		DX12DescriptorHeapStateUtils::FillSummary(record, summary);
+		return true;
+	}
+	return false;
+}
+};
+
 void DX12FindDescriptorSummariesByCpuHandle(
 	const SIZE_T *cpuHandles, size_t count,
 	DX12DescriptorSummary *summaries, uint8_t *found,
@@ -1098,29 +1163,24 @@ bool DX12FindDescriptorHeapByGpuHandle(
 	if (!gpuHandle.ptr || !summary)
 		return false;
 
-	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorHeapByGpuHandle");
 	AcquireSRWLockShared(&gDescriptorLock);
-	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
-		if (record.desc.Type != type || record.gpuStart == 0 || record.increment == 0)
-			continue;
-		const UINT64 begin = record.gpuStart;
-		const UINT64 end = begin +
-			static_cast<UINT64>(record.desc.NumDescriptors) * record.increment;
-		if (gpuHandle.ptr < begin || gpuHandle.ptr >= end)
-			continue;
-		summary->heap = record.heap;
-		summary->type = static_cast<UINT>(record.desc.Type);
-		summary->numDescriptors = record.desc.NumDescriptors;
-		summary->flags = static_cast<UINT>(record.desc.Flags);
-		summary->nodeMask = record.desc.NodeMask;
-		summary->cpuStart = record.cpuStart;
-		summary->gpuStart = record.gpuStart;
-		summary->increment = record.increment;
-		ReleaseSRWLockShared(&gDescriptorLock);
-		return true;
-	}
+	const bool found = DX12DescriptorHeapQueryUtils::TryFillByGpuHandleLocked(
+		gpuHandle, type, summary);
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return false;
+	return found;
+}
+
+bool DX12FindDescriptorHeapByPtr(
+	ID3D12DescriptorHeap *heap, DX12DescriptorHeapSummary *summary)
+{
+	if (!heap || !summary)
+		return false;
+
+	AcquireSRWLockShared(&gDescriptorLock);
+	const bool found = DX12DescriptorHeapQueryUtils::TryFillByPtrLocked(
+		heap, summary);
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return found;
 }
 
 bool DX12FindDescriptorHeapByCpuHandle(
@@ -1130,29 +1190,11 @@ bool DX12FindDescriptorHeapByCpuHandle(
 	if (!cpuHandle.ptr || !summary)
 		return false;
 
-	DX12DescriptorCollectPipeline::DrainForSnapshot("FindDescriptorHeapByCpuHandle");
 	AcquireSRWLockShared(&gDescriptorLock);
-	for (const DescriptorHeapRecord &record : gDescriptorHeaps) {
-		if (record.desc.Type != type || record.cpuStart == 0 || record.increment == 0)
-			continue;
-		const SIZE_T begin = record.cpuStart;
-		const SIZE_T end = begin +
-			static_cast<SIZE_T>(record.desc.NumDescriptors) * record.increment;
-		if (cpuHandle.ptr < begin || cpuHandle.ptr >= end)
-			continue;
-		summary->heap = record.heap;
-		summary->type = static_cast<UINT>(record.desc.Type);
-		summary->numDescriptors = record.desc.NumDescriptors;
-		summary->flags = static_cast<UINT>(record.desc.Flags);
-		summary->nodeMask = record.desc.NodeMask;
-		summary->cpuStart = record.cpuStart;
-		summary->gpuStart = record.gpuStart;
-		summary->increment = record.increment;
-		ReleaseSRWLockShared(&gDescriptorLock);
-		return true;
-	}
+	const bool found = DX12DescriptorHeapQueryUtils::TryFillByCpuHandleLocked(
+		cpuHandle, type, summary);
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return false;
+	return found;
 }
 
 void DX12GetTrackedResourceSnapshot(std::vector<DX12ResourceSummary> *resources)

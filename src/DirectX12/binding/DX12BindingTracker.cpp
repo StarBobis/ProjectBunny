@@ -33,6 +33,37 @@ static thread_local BindingTlsComputeAllQueryCache tlsComputeAllQueryCache;
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
+	static bool TryGetBoundCbvSrvUavHeap(
+		const CommandListBindingState &snapshot,
+		DX12DescriptorHeapSummary *heap)
+	{
+		if (!heap || !snapshot.cbvSrvUavHeap)
+			return false;
+		if (!DX12FindDescriptorHeapByPtr(snapshot.cbvSrvUavHeap, heap))
+			return false;
+		return heap->type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+			heap->increment != 0;
+	}
+
+	static bool ResolveTableHeap(
+		const CommandListBindingState &snapshot,
+		const RootTableState &table,
+		DX12DescriptorHeapSummary *heap)
+	{
+		if (!heap || !table.valid)
+			return false;
+		DX12DescriptorHeapSummary boundHeap = {};
+		if (DX12BindingTrackerQueryCacheUtils::TryGetBoundCbvSrvUavHeap(
+				snapshot, &boundHeap) &&
+			DX12BindingTrackerQuery::TableMatchesHeap(table, boundHeap)) {
+			*heap = boundHeap;
+			return true;
+		}
+		return DX12FindDescriptorHeapByGpuHandle(
+			table.baseDescriptor, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, heap) &&
+			heap->increment != 0;
+	}
+
 	static bool EnsureQueryRootSignature(
 		const CommandListBindingState &snapshot,
 		bool compute,
@@ -107,14 +138,13 @@ public:
 			if (table.valid) {
 				const DX12RootParameterSummary *parameter =
 					hasRootSignature ? DX12BindingTrackerQuery::FindRootParameter(rootSignature, root) : nullptr;
-				if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
+						if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 					for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 						if (range.rangeType != rangeType)
 							continue;
 						DX12DescriptorHeapSummary heap = {};
-						if (!DX12FindDescriptorHeapByGpuHandle(
-							table.baseDescriptor, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) ||
-							heap.increment == 0)
+						if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+								snapshot, table, &heap))
 							continue;
 						const UINT64 tableBaseIndex =
 							(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
@@ -163,9 +193,8 @@ public:
 					}
 				} else {
 					DX12DescriptorHeapSummary heap = {};
-					if (DX12FindDescriptorHeapByGpuHandle(
-						table.baseDescriptor, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) &&
-						heap.increment) {
+					if (DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+							snapshot, table, &heap)) {
 						const UINT64 descriptorIndex =
 							(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 						const SIZE_T cpuHandle =
@@ -240,8 +269,8 @@ public:
 					hasRootSignature ? DX12BindingTrackerQuery::FindRootParameter(rootSignature, root) : nullptr;
 				if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 					DX12DescriptorHeapSummary heap = {};
-					if (!DX12FindDescriptorHeapByGpuHandle(table.baseDescriptor,
-						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) || heap.increment == 0)
+					if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+							snapshot, table, &heap))
 						continue;
 					const UINT64 tableBase = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 					for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
@@ -296,8 +325,8 @@ public:
 					}
 				} else {
 					DX12DescriptorHeapSummary heap = {};
-					if (!DX12FindDescriptorHeapByGpuHandle(table.baseDescriptor,
-						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap) || !heap.increment)
+					if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+							snapshot, table, &heap))
 						continue;
 					const UINT64 di = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 					const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
@@ -836,11 +865,30 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
+	size_t invalidatedGraphicsTables = 0;
+	size_t invalidatedComputeTables = 0;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		if (state.graphicsTables[root].valid)
+			invalidatedGraphicsTables++;
+		if (state.computeTables[root].valid)
+			invalidatedComputeTables++;
+		state.graphicsTables[root] = RootTableState();
+		state.computeTables[root] = RootTableState();
+	}
 	state.cbvSrvUavHeap = cbvSrvUavHeap;
 	state.samplerHeap = samplerHeap;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
+	tlsGraphicsTableCache.cl = nullptr;
+	tlsComputeTableCache.cl = nullptr;
+	DX12LogManager::DebugJsonFunc("DX12BindingDescriptorHeapsChanged",
+		"\"commandList\":\"%p\",\"cbvSrvUavHeap\":\"%p\",\"samplerHeap\":\"%p\",\"invalidatedGraphicsTables\":%zu,\"invalidatedComputeTables\":%zu",
+		commandList,
+		cbvSrvUavHeap,
+		samplerHeap,
+		invalidatedGraphicsTables,
+		invalidatedComputeTables);
 	return true;
 }
 
@@ -1175,12 +1223,15 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	UINT64 bindingQuerySerial = 0;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
 		return false;
-	const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
+	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
+		snapshot.cbvSrvUavHeap);
 	if (tlsDescriptorQueryCache.commandList == commandList &&
 		tlsDescriptorQueryCache.compute == compute &&
 		tlsDescriptorQueryCache.rangeType == static_cast<UINT>(rangeType) &&
 		tlsDescriptorQueryCache.bindingQuerySerial == bindingQuerySerial &&
-		tlsDescriptorQueryCache.descriptorQuerySerial == descriptorQuerySerial) {
+		tlsDescriptorQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
+		tlsDescriptorQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
 		*uavs = tlsDescriptorQueryCache.bindings;
 		return !uavs->empty();
 	}
@@ -1191,7 +1242,8 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	tlsDescriptorQueryCache.compute = compute;
 	tlsDescriptorQueryCache.rangeType = static_cast<UINT>(rangeType);
 	tlsDescriptorQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsDescriptorQueryCache.descriptorQuerySerial = descriptorQuerySerial;
+	tlsDescriptorQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+	tlsDescriptorQueryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
 	tlsDescriptorQueryCache.bindings = *uavs;
 	return foundAny;
 }
@@ -1241,10 +1293,13 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	UINT64 bindingQuerySerial = 0;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
 		return false;
-	const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
+	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
+		snapshot.cbvSrvUavHeap);
 	if (tlsComputeAllQueryCache.commandList == commandList &&
 		tlsComputeAllQueryCache.bindingQuerySerial == bindingQuerySerial &&
-		tlsComputeAllQueryCache.descriptorQuerySerial == descriptorQuerySerial) {
+		tlsComputeAllQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
+		tlsComputeAllQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
 		if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
 		if (srvs) *srvs = tlsComputeAllQueryCache.srvs;
 		if (cbvs) *cbvs = tlsComputeAllQueryCache.cbvs;
@@ -1261,7 +1316,8 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
 	tlsComputeAllQueryCache.commandList = commandList;
 	tlsComputeAllQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsComputeAllQueryCache.descriptorQuerySerial = descriptorQuerySerial;
+	tlsComputeAllQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+	tlsComputeAllQueryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
 	tlsComputeAllQueryCache.uavs = cachedUavs;
 	tlsComputeAllQueryCache.srvs = cachedSrvs;
 	tlsComputeAllQueryCache.cbvs = cachedCbvs;

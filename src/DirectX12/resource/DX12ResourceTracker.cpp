@@ -115,6 +115,7 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
 	record->liveSlots = 0;
+	DX12DescriptorHeapStateUtils::ResetVersion(record);
 }
 
 bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
@@ -176,6 +177,7 @@ static void StoreDescriptorAtHeapSlotLocked(
 	heap->occupied[slot] = 1;
 	if (!wasOccupied)
 		heap->liveSlots++;
+	DX12DescriptorHeapStateUtils::BumpVersion(heap);
 }
 
 static size_t LiveDescriptorHeapSlotsLocked()
@@ -246,6 +248,7 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	record.cpuStart = 0;
 	record.gpuStart = 0;
 	record.increment = 0;
+	DX12DescriptorHeapStateUtils::ResetVersion(&record);
 	gDescriptorHeapByCpuStart.erase(cpuStart);
 	gDescriptorHeapByPtr.erase(found);
 	BumpDescriptorQuerySerial();
@@ -1332,6 +1335,25 @@ UINT64 CurrentDescriptorQuerySerial()
 	return gDescriptorQuerySerial.load(std::memory_order_acquire);
 }
 
+UINT64 DX12GetDescriptorHeapVersion(ID3D12DescriptorHeap *heap)
+{
+	if (!heap)
+		return 0;
+
+	UINT64 version = 0;
+	AcquireSRWLockShared(&gDescriptorLock);
+	std::unordered_map<ID3D12DescriptorHeap*, size_t>::const_iterator found =
+		gDescriptorHeapByPtr.find(heap);
+	if (found != gDescriptorHeapByPtr.end() &&
+		found->second < gDescriptorHeaps.size()) {
+		const DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
+		if (record.heap == heap)
+			version = record.version;
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return version;
+}
+
 bool ShouldTrackFullDescriptorMetadata()
 {
 	return DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
@@ -1459,6 +1481,7 @@ static void StoreSlotValueLocked(
 	if (!wasOccupied)
 		destHeap->liveSlots++;
 	++gDescriptorCopyRecordsSeen;
+	DX12DescriptorHeapStateUtils::BumpVersion(destHeap);
 }
 
 static bool SourceHeapSpanReadyLocked(
@@ -1496,6 +1519,7 @@ static void CopySlotSpanValueLocked(
 	destHeap->occupied[destSlot] = 1;
 	if (!wasOccupied)
 		destHeap->liveSlots++;
+	DX12DescriptorHeapStateUtils::BumpVersion(destHeap);
 }
 
 static bool TryCopyHeapSlotSpanLocked(

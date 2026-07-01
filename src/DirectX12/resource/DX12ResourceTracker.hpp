@@ -54,11 +54,14 @@ void DX12FindDescriptorSummariesByCpuHandle(
 	bool completeResourceInfo = true);
 UINT64 CurrentDescriptorEpoch();
 UINT64 CurrentDescriptorQuerySerial();
+UINT64 DX12GetDescriptorHeapVersion(ID3D12DescriptorHeap *heap);
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary);
 bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
 	SIZE_T cpuHandle, UINT64 epoch, const char *kind, DX12DescriptorSummary *summary);
 void DX12PrimeDescriptorHistoryForHunting();
+bool DX12FindDescriptorHeapByPtr(
+	ID3D12DescriptorHeap *heap, DX12DescriptorHeapSummary *summary);
 bool DX12FindDescriptorHeapByGpuHandle(
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE type,
 	DX12DescriptorHeapSummary *summary);

@@ -73,11 +73,45 @@ struct DescriptorHeapRecord
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
+	UINT64 version = 1;
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	size_t liveSlots = 0;
+};
+
+class DX12DescriptorHeapStateUtils
+{
+public:
+static void ResetVersion(DescriptorHeapRecord *record)
+{
+	if (!record)
+		return;
+	record->version = 1;
+}
+
+static void BumpVersion(DescriptorHeapRecord *record)
+{
+	if (!record)
+		return;
+	record->version = record->version == UINT64_MAX ? 1 : record->version + 1;
+}
+
+static void FillSummary(const DescriptorHeapRecord &record, DX12DescriptorHeapSummary *summary)
+{
+	if (!summary)
+		return;
+	summary->heap = record.heap;
+	summary->type = static_cast<UINT>(record.desc.Type);
+	summary->numDescriptors = record.desc.NumDescriptors;
+	summary->flags = static_cast<UINT>(record.desc.Flags);
+	summary->nodeMask = record.desc.NodeMask;
+	summary->cpuStart = record.cpuStart;
+	summary->gpuStart = record.gpuStart;
+	summary->increment = record.increment;
+	summary->version = record.version;
+}
 };
 
 struct DescriptorSlotLocation
