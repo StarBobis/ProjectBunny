@@ -25,6 +25,7 @@ class DX12BindingCollectTask
 public:
 	DX12BindingCollectTaskKind kind = DX12BindingCollectTaskKind::StateEvent;
 	UINT64 sequence = 0;
+	UINT64 captureSessionId = 0;
 	DWORD enqueueThreadId = 0;
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	CommandListBindingState state = {};
@@ -59,6 +60,7 @@ public:
 	inline static std::atomic<uint64_t> enqueued = 0;
 	inline static std::atomic<uint64_t> dequeued = 0;
 	inline static std::atomic<uint64_t> completed = 0;
+	inline static std::atomic<uint64_t> completedSequence = 0;
 	inline static std::atomic<uint64_t> maxDepth = 0;
 	inline static std::atomic<uint64_t> maxPendingAtDrain = 0;
 	inline static std::atomic<uint64_t> drainCalls = 0;
@@ -76,12 +78,14 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const CommandListBindingState &state,
 		const char *kind,
-		UINT64 descriptorEpoch);
+		UINT64 descriptorEpoch,
+		UINT64 captureSessionId);
 	static bool EnqueueDrawEvent(
 		ID3D12GraphicsCommandList *commandList,
 		const CommandListBindingState &state,
 		const char *kind,
 		UINT64 descriptorEpoch,
+		UINT64 captureSessionId,
 		UINT vertexCountPerInstance,
 		UINT indexCountPerInstance,
 		UINT instanceCount,
@@ -93,6 +97,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const CommandListBindingState &state,
 		UINT64 descriptorEpoch,
+		UINT64 captureSessionId,
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ);
@@ -102,12 +107,15 @@ public:
 		const char *kind,
 		UINT slot,
 		SIZE_T cpuHandle,
-		UINT64 drawId);
+		UINT64 drawId,
+		UINT64 captureSessionId);
 	static size_t PendingCount();
+	static UINT64 LastSubmittedSequence();
 
 	static bool EnqueueTask(DX12BindingCollectTask &&task);
 	static void WorkerLoop();
 	static void WaitForIdle(const char *reason);
+	static void WaitForSubmittedSequence(UINT64 targetSequence, const char *reason);
 	static void ProcessTask(DX12BindingCollectTask *task, const char *source);
 	static void ProcessStateEventTask(DX12BindingCollectTask *task, const char *source);
 	static void ProcessDrawEventTask(DX12BindingCollectTask *task, const char *source);

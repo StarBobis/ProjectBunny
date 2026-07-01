@@ -86,6 +86,7 @@ class BindingEvent
 {
 public:
 	UINT64 serial = 0;
+	UINT64 captureSessionId = 0;
 	std::string kind;
 	UINT64 drawId = 0;
 	UINT64 dispatchId = 0;
@@ -128,6 +129,7 @@ class OutputBindingEvent
 {
 public:
 	UINT64 serial = 0;
+	UINT64 captureSessionId = 0;
 	std::string kind;
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	ID3D12PipelineState *pipelineState = nullptr;

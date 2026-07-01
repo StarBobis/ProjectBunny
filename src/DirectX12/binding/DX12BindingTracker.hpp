@@ -120,6 +120,7 @@ public:
 	std::vector<OutputBindingEvent> combinedOutputEvents;
 	UINT64 droppedEvents = 0;
 	UINT64 droppedOutputEvents = 0;
+	UINT64 captureSessionId = 0;
 	bool usingLedger = false;
 
 	const std::vector<BindingEvent> &GetEvents() const
@@ -174,6 +175,9 @@ public:
 	static void RecordDispatch(ID3D12GraphicsCommandList *commandList, UINT threadGroupCountX, UINT threadGroupCountY, UINT threadGroupCountZ);
 	static void BeginFrame();
 	static void DrainPendingEvents(const char *reason);
+	static UINT64 CurrentCaptureSessionId();
+	static UINT64 CaptureFenceSequence();
+	static bool PopulateCaptureEventSource(DX12FrameEventSource *source, UINT64 captureSessionId, const char *reason);
 
 	static void ReleaseRetainedIaResources(CommandListBindingState *state);
 	static void RetainStateIaResourcesForAsync(CommandListBindingState *state);
@@ -192,13 +196,13 @@ public:
 	static void ResolveAndRetainIaResource(
 		UINT64 gpuVirtualAddress, UINT64 size,
 		DX12BufferResourceSummary *summary, bool *resolved);
-	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 descriptorEpoch);
+	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 descriptorEpoch, UINT64 captureSessionId = 0);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
-	static void StoreOutputEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId);
+	static void StoreOutputEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId, UINT64 captureSessionId = 0);
 	static bool PopulateFrameEventSource(DX12FrameEventSource *source);
-	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
+	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId = 0);
 	static bool GetCurrentDescriptors(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, const char *descriptorKind, D3D12_ROOT_PARAMETER_TYPE rootDescriptorType, std::vector<DX12CurrentComputeUavBinding> *uavs);
 	static void SetRootConstantsLocked(RootConstantsState *constants, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 };

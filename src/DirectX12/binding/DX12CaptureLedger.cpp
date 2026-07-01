@@ -7,6 +7,7 @@ SRWLOCK DX12CaptureLedger::Lock = SRWLOCK_INIT;
 bool DX12CaptureLedger::Active = false;
 UINT64 DX12CaptureLedger::BeginPresent = 0;
 UINT64 DX12CaptureLedger::LedgerEpoch = 0;
+UINT64 DX12CaptureLedger::CaptureSessionId = 0;
 UINT64 DX12CaptureLedger::DroppedEvents = 0;
 UINT64 DX12CaptureLedger::DroppedOutputEvents = 0;
 std::vector<BindingEvent> DX12CaptureLedger::Events;
@@ -22,14 +23,17 @@ void DX12CaptureLedger::BeginCapture(UINT64 present)
 	DroppedOutputEvents = 0;
 	BeginPresent = present;
 	++LedgerEpoch;
+	++CaptureSessionId;
 	Active = true;
 	const UINT64 epoch = LedgerEpoch;
+	const UINT64 captureSessionId = CaptureSessionId;
 	ReleaseSRWLockExclusive(&Lock);
 
 	DX12FrameAnalysis::LogJsonFunc("CaptureLedgerBegin",
-		"\"present\":%llu,\"epoch\":%llu",
+		"\"present\":%llu,\"epoch\":%llu,\"captureSessionId\":%llu",
 		static_cast<unsigned long long>(present),
-		static_cast<unsigned long long>(epoch));
+		static_cast<unsigned long long>(epoch),
+		static_cast<unsigned long long>(captureSessionId));
 }
 
 void DX12CaptureLedger::EndCapture()
@@ -41,11 +45,13 @@ void DX12CaptureLedger::EndCapture()
 	const UINT64 droppedEvents = DroppedEvents;
 	const UINT64 droppedOutputs = DroppedOutputEvents;
 	const UINT64 epoch = LedgerEpoch;
+	const UINT64 captureSessionId = CaptureSessionId;
 	ReleaseSRWLockExclusive(&Lock);
 
 	DX12FrameAnalysis::LogJsonFunc("CaptureLedgerEnd",
-		"\"epoch\":%llu,\"events\":%zu,\"outputs\":%zu,\"dropped_events\":%llu,\"dropped_outputs\":%llu",
+		"\"epoch\":%llu,\"captureSessionId\":%llu,\"events\":%zu,\"outputs\":%zu,\"dropped_events\":%llu,\"dropped_outputs\":%llu",
 		static_cast<unsigned long long>(epoch), events, outputs,
+		static_cast<unsigned long long>(captureSessionId),
 		static_cast<unsigned long long>(droppedEvents),
 		static_cast<unsigned long long>(droppedOutputs));
 }
@@ -70,6 +76,14 @@ bool DX12CaptureLedger::IsActive()
 	return active;
 }
 
+UINT64 DX12CaptureLedger::CurrentCaptureSessionId()
+{
+	AcquireSRWLockShared(&Lock);
+	const UINT64 captureSessionId = Active ? CaptureSessionId : 0;
+	ReleaseSRWLockShared(&Lock);
+	return captureSessionId;
+}
+
 DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event)
 {
 	if (!event)
@@ -77,6 +91,10 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event
 
 	AcquireSRWLockExclusive(&Lock);
 	if (!Active) {
+		ReleaseSRWLockExclusive(&Lock);
+		return DX12CaptureLedgerRecordResult::NotActive;
+	}
+	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::NotActive;
 	}
@@ -97,6 +115,10 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindi
 
 	AcquireSRWLockExclusive(&Lock);
 	if (!Active) {
+		ReleaseSRWLockExclusive(&Lock);
+		return DX12CaptureLedgerRecordResult::NotActive;
+	}
+	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::NotActive;
 	}
@@ -134,6 +156,7 @@ void DX12CaptureLedger::GetSnapshot(DX12CaptureLedgerSnapshot *snapshot)
 	snapshot->droppedOutputEvents = DroppedOutputEvents;
 	snapshot->beginPresent = BeginPresent;
 	snapshot->ledgerEpoch = LedgerEpoch;
+	snapshot->captureSessionId = CaptureSessionId;
 	ReleaseSRWLockShared(&Lock);
 }
 
@@ -154,8 +177,9 @@ void DX12CaptureLedger::LogSnapshotHealth(const char *stage, const DX12CaptureLe
 			dispatches++;
 	}
 	DX12FrameAnalysis::LogJsonFunc(stage ? stage : "CaptureLedgerSnapshot",
-		"\"epoch\":%llu,\"begin_present\":%llu,\"events\":%zu,\"draws\":%zu,\"dispatches\":%zu,\"outputs\":%zu,\"dropped_events\":%llu,\"dropped_outputs\":%llu",
+		"\"epoch\":%llu,\"captureSessionId\":%llu,\"begin_present\":%llu,\"events\":%zu,\"draws\":%zu,\"dispatches\":%zu,\"outputs\":%zu,\"dropped_events\":%llu,\"dropped_outputs\":%llu",
 		static_cast<unsigned long long>(snapshot.ledgerEpoch),
+		static_cast<unsigned long long>(snapshot.captureSessionId),
 		static_cast<unsigned long long>(snapshot.beginPresent),
 		snapshot.events.size(), draws, dispatches, snapshot.outputEvents.size(),
 		static_cast<unsigned long long>(snapshot.droppedEvents),

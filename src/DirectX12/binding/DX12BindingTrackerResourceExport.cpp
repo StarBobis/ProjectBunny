@@ -16,6 +16,22 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12RuntimeState.hpp"
 
+static bool PopulatePreferredResourceEventSource(DX12FrameEventSource *source, const char *reason)
+{
+	if (!source)
+		return false;
+
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (DX12BindingTracker::PopulateCaptureEventSource(
+			source,
+			captureSessionId,
+			reason ? reason : "PopulatePreferredResourceEventSource"))
+		return true;
+
+	DX12BindingTracker::DrainPendingEvents(reason ? reason : "PopulatePreferredResourceEventSourceFallback");
+	return DX12BindingTracker::PopulateFrameEventSource(source);
+}
+
 bool DX12BindingResourceExport::InsertBindingSeen(
 	std::unordered_set<std::string> *seen, const BindingEvent &event,
 	const char *bindSpace, UINT rootParameterIndex, UINT rangeIndex, UINT rangeType,
@@ -708,9 +724,8 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	if (!bindings)
 		return;
 
-	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameResourceBindings");
 	DX12FrameEventSource source;
-	DX12BindingTracker::PopulateFrameEventSource(&source);
+	PopulatePreferredResourceEventSource(&source, "GetCurrentFrameResourceBindings");
 	const std::vector<BindingEvent> &events = source.GetEvents();
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
 		"\"events\":%zu,\"frame_events\":%zu,\"ledger_events\":%zu",
@@ -852,9 +867,8 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	if (!bindings)
 		return;
 
-	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameOutputBindings");
 	DX12FrameEventSource source;
-	DX12BindingTracker::PopulateFrameEventSource(&source);
+	PopulatePreferredResourceEventSource(&source, "GetCurrentFrameOutputBindings");
 	const std::vector<OutputBindingEvent> &events = source.GetOutputEvents();
 	const UINT64 dropped = source.droppedOutputEvents;
 	DX12FrameAnalysis::LogJsonFunc("OutputResourcesLedgerSnapshot",

@@ -17,16 +17,31 @@
 #include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
 
+static bool PopulatePreferredFrameEventSource(DX12FrameEventSource *source, const char *reason)
+{
+	if (!source)
+		return false;
+
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (DX12BindingTracker::PopulateCaptureEventSource(
+			source,
+			captureSessionId,
+			reason ? reason : "PopulatePreferredFrameEventSource"))
+		return true;
+
+	DX12BindingTracker::DrainPendingEvents(reason ? reason : "PopulatePreferredFrameEventSourceFallback");
+	return DX12BindingTracker::PopulateFrameEventSource(source);
+}
+
 
 void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos)
 {
 	if (!shaderInfos)
 		return;
 
-	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameShaderInfos");
 	shaderInfos->clear();
 	DX12FrameEventSource source;
-	DX12BindingTracker::PopulateFrameEventSource(&source);
+	PopulatePreferredFrameEventSource(&source, "GetCurrentFrameShaderInfos");
 	const std::vector<BindingEvent> &sourceEvents = source.GetEvents();
 	std::unordered_set<UINT64> seen;
 	for (const BindingEvent &event : sourceEvents) {
@@ -661,7 +676,6 @@ void DX12BindingFrameExport::BuildIaBufferFileName(
 
 void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
 {
-	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameIaBuffers");
 	std::vector<DX12FrameResourceBinding> resourceBindings;
 	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
 	DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(buffers, resourceBindings);
@@ -674,9 +688,8 @@ void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
 	if (!buffers)
 		return;
 
-	DX12BindingTracker::DrainPendingEvents("GetCurrentFrameIaBuffersWithResourceBindings");
 	DX12FrameEventSource source;
-	DX12BindingTracker::PopulateFrameEventSource(&source);
+	PopulatePreferredFrameEventSource(&source, "GetCurrentFrameIaBuffersWithResourceBindings");
 
 	std::vector<FlatBufferRow> rows;
 	DX12BindingFrameExport::CollectFrameIaBuffersForEvents(source.GetEvents(), &rows);
@@ -701,9 +714,8 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 		return result;
 	}
 
-	DX12BindingTracker::DrainPendingEvents("DumpBindingTrace");
 	DX12FrameEventSource source;
-	DX12BindingTracker::PopulateFrameEventSource(&source);
+	PopulatePreferredFrameEventSource(&source, "DumpBindingTrace");
 	const std::vector<BindingEvent> &events = source.GetEvents();
 	const UINT64 droppedEvents = source.droppedEvents;
 

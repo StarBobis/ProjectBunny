@@ -76,6 +76,7 @@ public:
 	static void BeginShaderDumpCapture()
 	{
 		DX12BindingTracker::BeginFrame();
+		DX12CaptureLedger::BeginCapture(static_cast<UINT64>(DX12RuntimeState::GetPresentCount()));
 		DX12ShaderDumpBeginCapture();
 		DX12CommandListRuntime::BumpTrackingGeneration();
 	}
@@ -101,7 +102,10 @@ public:
 			DX12CaptureLedger::Clear();
 			DX12FrameAnalysis::End();
 		} else if (dumpShaders) {
+			DX12BindingTracker::DrainPendingEvents("ShaderDumpEnd");
+			DX12CaptureLedger::EndCapture();
 			DX12DumpCapturedFrameShaders();
+			DX12CaptureLedger::Clear();
 		} else if (DX12FrameAnalysis::IsCaptureRequested()) {
 			BeginFrameAnalysisCapture(DX12RuntimeState::GetPresentCount());
 		} else if (DX12ShaderDumpIsCaptureRequested()) {

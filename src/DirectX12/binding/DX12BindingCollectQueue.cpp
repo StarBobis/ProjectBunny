@@ -64,13 +64,15 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	ID3D12GraphicsCommandList *commandList,
 	const CommandListBindingState &state,
 	const char *kind,
-	UINT64 descriptorEpoch)
+	UINT64 descriptorEpoch,
+	UINT64 captureSessionId)
 {
 	DX12BindingCollectTask task;
 	task.kind = DX12BindingCollectTaskKind::StateEvent;
 	task.commandList = commandList;
 	task.state = state;
 	task.descriptorEpoch = descriptorEpoch;
+	task.captureSessionId = captureSessionId;
 	task.eventKind = kind;
 	return EnqueueTask(std::move(task));
 }
@@ -80,6 +82,7 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	const CommandListBindingState &state,
 	const char *kind,
 	UINT64 descriptorEpoch,
+	UINT64 captureSessionId,
 	UINT vertexCountPerInstance,
 	UINT indexCountPerInstance,
 	UINT instanceCount,
@@ -93,6 +96,7 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	task.commandList = commandList;
 	task.state = state;
 	task.descriptorEpoch = descriptorEpoch;
+	task.captureSessionId = captureSessionId;
 	task.eventKind = kind;
 	task.vertexCountPerInstance = vertexCountPerInstance;
 	task.indexCountPerInstance = indexCountPerInstance;
@@ -109,6 +113,7 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	ID3D12GraphicsCommandList *commandList,
 	const CommandListBindingState &state,
 	UINT64 descriptorEpoch,
+	UINT64 captureSessionId,
 	UINT threadGroupCountX,
 	UINT threadGroupCountY,
 	UINT threadGroupCountZ)
@@ -118,6 +123,7 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	task.commandList = commandList;
 	task.state = state;
 	task.descriptorEpoch = descriptorEpoch;
+	task.captureSessionId = captureSessionId;
 	task.eventKind = "dispatch";
 	task.threadGroupCountX = threadGroupCountX;
 	task.threadGroupCountY = threadGroupCountY;
@@ -131,12 +137,14 @@ bool DX12BindingCollectQueue::EnqueueOutputEvent(
 	const char *kind,
 	UINT slot,
 	SIZE_T cpuHandle,
-	UINT64 drawId)
+	UINT64 drawId,
+	UINT64 captureSessionId)
 {
 	DX12BindingCollectTask task;
 	task.kind = DX12BindingCollectTaskKind::OutputEvent;
 	task.commandList = commandList;
 	task.state = state;
+	task.captureSessionId = captureSessionId;
 	task.eventKind = kind;
 	task.slot = slot;
 	task.cpuHandle = cpuHandle;
@@ -148,6 +156,14 @@ size_t DX12BindingCollectQueue::PendingCount()
 {
 	std::lock_guard<std::mutex> lock(mutex);
 	return tasks.size() + static_cast<size_t>(activeTasks);
+}
+
+UINT64 DX12BindingCollectQueue::LastSubmittedSequence()
+{
+	const uint64_t next = nextSequence.load(std::memory_order_acquire);
+	if (next == 0)
+		return 0;
+	return next - 1;
 }
 
 bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
@@ -209,6 +225,7 @@ void DX12BindingCollectQueue::WorkerLoop()
 				activeTasks--;
 		}
 		completed.fetch_add(1, std::memory_order_relaxed);
+		completedSequence.store(task.sequence, std::memory_order_release);
 		idle.notify_all();
 	}
 
@@ -246,6 +263,40 @@ void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 	}
 }
 
+void DX12BindingCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, const char *reason)
+{
+	if (targetSequence == 0)
+		return;
+
+	const auto begin = std::chrono::steady_clock::now();
+	size_t pendingSnapshot = 0;
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		pendingSnapshot = tasks.size() + static_cast<size_t>(activeTasks);
+		UpdateMaxPendingAtDrain(pendingSnapshot);
+		if (completedSequence.load(std::memory_order_acquire) < targetSequence) {
+			idle.wait(lock, [targetSequence]() {
+				return completedSequence.load(std::memory_order_acquire) >= targetSequence ||
+					(tasks.empty() && activeTasks == 0);
+			});
+		}
+	}
+	const auto end = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	drainCalls.fetch_add(1, std::memory_order_relaxed);
+	RecordDrainWaitStats(elapsedUs);
+	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
+	if (elapsedUs >= kBindingQueueSlowDrainUs) {
+		DX12LogManager::JsonFunc("DX12BindingCollectQueueDrain",
+			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedSequence\":%llu,\"pending\":%zu,\"elapsedUs\":%lld",
+			reason ? reason : "",
+			static_cast<unsigned long long>(targetSequence),
+			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)),
+			pendingSnapshot,
+			static_cast<long long>(elapsedUs));
+	}
+}
+
 void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const char *source)
 {
 	if (!task)
@@ -276,9 +327,10 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 		DX12BindingTracker::ReleaseRetainedIaResources(&task->state);
 	if (elapsedUs >= kBindingQueueSlowTaskUs) {
 		DX12LogManager::JsonFunc("DX12BindingCollectQueueSlowTask",
-			"\"source\":\"%s\",\"seq\":%llu,\"kind\":%u,\"elapsedUs\":%lld,\"pending\":%zu",
+			"\"source\":\"%s\",\"seq\":%llu,\"captureSessionId\":%llu,\"kind\":%u,\"elapsedUs\":%lld,\"pending\":%zu",
 			source ? source : "",
 			static_cast<unsigned long long>(task->sequence),
+			static_cast<unsigned long long>(task->captureSessionId),
 			static_cast<unsigned>(task->kind),
 			static_cast<long long>(elapsedUs),
 			PendingCount());
@@ -297,7 +349,8 @@ void DX12BindingCollectQueue::ProcessStateEventTask(DX12BindingCollectTask *task
 			task->eventKind ? task->eventKind : "state",
 			task->commandList,
 			task->state,
-			task->descriptorEpoch))
+			task->descriptorEpoch,
+			task->captureSessionId))
 		return;
 
 	AcquireSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
@@ -317,7 +370,8 @@ void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task,
 			task->eventKind ? task->eventKind : "draw",
 			task->commandList,
 			task->state,
-			task->descriptorEpoch))
+			task->descriptorEpoch,
+			task->captureSessionId))
 		return;
 	event.vertexCountPerInstance = task->vertexCountPerInstance;
 	event.indexCountPerInstance = task->indexCountPerInstance;
@@ -345,7 +399,8 @@ void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *t
 			task->eventKind ? task->eventKind : "dispatch",
 			task->commandList,
 			task->state,
-			task->descriptorEpoch))
+			task->descriptorEpoch,
+			task->captureSessionId))
 		return;
 	event.threadGroupCountX = task->threadGroupCountX;
 	event.threadGroupCountY = task->threadGroupCountY;
@@ -369,7 +424,8 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 		task->state,
 		task->slot,
 		task->cpuHandle,
-		task->drawId);
+		task->drawId,
+		task->captureSessionId);
 	ReleaseSRWLockExclusive(&DX12BindingTrackerState::EventsLock);
 }
 
@@ -419,13 +475,14 @@ void DX12BindingCollectQueue::LogStats(const char *event, uint64_t sequence, siz
 		return;
 
 	DX12LogManager::JsonFunc("DX12BindingCollectQueueStats",
-		"\"event\":\"%s\",\"seq\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu,\"maxPendingAtDrain\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
+		"\"event\":\"%s\",\"seq\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"completedSequence\":%llu,\"maxDepth\":%llu,\"maxPendingAtDrain\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
 		event ? event : "",
 		static_cast<unsigned long long>(sequence),
 		depth,
 		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),
+		static_cast<unsigned long long>(completedSequence.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(maxPendingAtDrain.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(drainCalls.load(std::memory_order_relaxed)),
