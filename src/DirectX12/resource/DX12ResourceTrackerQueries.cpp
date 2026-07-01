@@ -325,6 +325,17 @@ static const char *ReasonLocked(UINT64 gpuVirtualAddress, UINT64 size,
 }
 };
 
+const char *DX12DiagnoseBufferResolveByGpuVa(
+	UINT64 gpuVirtualAddress, UINT64 size,
+	UINT64 *nearestBegin, UINT64 *nearestEnd, UINT64 *nearestResource)
+{
+	AcquireSRWLockShared(&gResourceLock);
+	const char *reason = DX12BufferResolveDiagnosticsUtils::ReasonLocked(
+		gpuVirtualAddress, size, nearestBegin, nearestEnd, nearestResource);
+	ReleaseSRWLockShared(&gResourceLock);
+	return reason;
+}
+
 uint32_t DX12HashBufferResourceView(
 	const DX12BufferResourceSummary *summary, UINT64 fallbackGpuVirtualAddress,
 	UINT64 fallbackSize)

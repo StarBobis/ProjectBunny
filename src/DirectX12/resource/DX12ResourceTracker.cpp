@@ -498,6 +498,19 @@ void RecordResource(
 				record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
 		}
 		DX12BufferAddressRangeLogUtils::Record(resource, record);
+		if (record.gpuVirtualAddress >= 0x10a4000000ull &&
+			record.gpuVirtualAddress <= 0x10aaffffffull &&
+			record.size >= 65536ull) {
+			DX12FrameAnalysis::LogJsonFunc("TrackedBufferResourceRecorded",
+				"\"resource\":\"%p\",\"gpuVa\":\"0x%llX\",\"size\":%llu,\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"heapType\":%u,\"hasPlacedHeap\":%u",
+				resource,
+				static_cast<unsigned long long>(record.gpuVirtualAddress),
+				static_cast<unsigned long long>(record.size),
+				static_cast<unsigned long long>(record.gpuVirtualAddressRealEnd),
+				static_cast<unsigned long long>(record.gpuVirtualAddressOobEnd),
+				record.hasHeapType ? static_cast<UINT>(record.heapType) : UINT_MAX,
+				record.hasPlacedHeapRange ? 1 : 0);
+		}
 	}
 
 	ID3D12Resource *canonical = resource;

@@ -345,18 +345,48 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 			task.iaBuffer = buffer;
 			if (task.skipNote == nullptr)
 				task.skipNote = buffer.resolved ? "unsupported_or_no_resource_pointer" : "unresolved_gpu_va";
-			DX12FrameAnalysis::LogJsonFunc("IaBindingPrepareSkipped",
-				"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"resolved\":%u,\"note\":\"%s\"",
-				static_cast<unsigned long long>(buffer.eventSerial),
-				buffer.role.c_str(),
-				static_cast<unsigned long long>(buffer.viewGpuVa),
-				static_cast<unsigned long long>(buffer.viewSize),
-				static_cast<unsigned long long>(buffer.drawGpuVa),
-				static_cast<unsigned long long>(buffer.drawSize),
-				buffer.format,
-				buffer.stride,
-				iaResolved ? 1 : 0,
-				task.skipNote);
+			if (task.skipNote && !strcmp(task.skipNote, "unresolved_gpu_va")) {
+				UINT64 nearestBegin = 0;
+				UINT64 nearestEnd = 0;
+				UINT64 nearestResource = 0;
+				const UINT64 diagnoseSize = buffer.viewSize ? buffer.viewSize :
+					(buffer.drawSize ? buffer.drawSize : 1);
+				const char *reason = DX12DiagnoseBufferResolveByGpuVa(
+					buffer.viewGpuVa,
+					diagnoseSize,
+					&nearestBegin,
+					&nearestEnd,
+					&nearestResource);
+				DX12FrameAnalysis::LogJsonFunc("IaBindingPrepareSkipped",
+					"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"resolved\":%u,\"reason\":\"%s\",\"nearest_begin\":\"0x%llx\",\"nearest_end\":\"0x%llx\",\"nearest_resource\":\"0x%llx\",\"note\":\"%s\"",
+					static_cast<unsigned long long>(buffer.eventSerial),
+					buffer.role.c_str(),
+					static_cast<unsigned long long>(buffer.viewGpuVa),
+					static_cast<unsigned long long>(buffer.viewSize),
+					static_cast<unsigned long long>(buffer.drawGpuVa),
+					static_cast<unsigned long long>(buffer.drawSize),
+					buffer.format,
+					buffer.stride,
+					iaResolved ? 1 : 0,
+					reason ? reason : "",
+					static_cast<unsigned long long>(nearestBegin),
+					static_cast<unsigned long long>(nearestEnd),
+					static_cast<unsigned long long>(nearestResource),
+					task.skipNote);
+			} else {
+				DX12FrameAnalysis::LogJsonFunc("IaBindingPrepareSkipped",
+					"\"call_index\":%llu,\"role\":\"%s\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"fmt\":%u,\"stride\":%u,\"resolved\":%u,\"note\":\"%s\"",
+					static_cast<unsigned long long>(buffer.eventSerial),
+					buffer.role.c_str(),
+					static_cast<unsigned long long>(buffer.viewGpuVa),
+					static_cast<unsigned long long>(buffer.viewSize),
+					static_cast<unsigned long long>(buffer.drawGpuVa),
+					static_cast<unsigned long long>(buffer.drawSize),
+					buffer.format,
+					buffer.stride,
+					iaResolved ? 1 : 0,
+					task.skipNote);
+			}
 			skippedTasks.push_back(std::move(task));
 		}
 	}
