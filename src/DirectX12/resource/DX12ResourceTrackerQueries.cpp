@@ -48,6 +48,85 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return true;
 }
+
+class DX12BufferResolveRangeUtils
+{
+public:
+static bool TryResolveSummaryFromResourceRecord(
+	UINT64 gpuVirtualAddress, UINT64 size,
+	const ResourceRecord &resource,
+	DX12BufferResourceSummary *summary,
+	UINT64 *resolvedBegin,
+	UINT64 *resolvedEnd)
+{
+	if (!summary)
+		return false;
+	if (!resource.resource ||
+		resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+		resource.gpuVirtualAddress == 0 ||
+		resource.size == 0)
+		return false;
+
+	const UINT64 begin = resource.gpuVirtualAddress;
+	const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+		resource.gpuVirtualAddressRealEnd : begin + resource.size;
+	if (gpuVirtualAddress < begin || gpuVirtualAddress >= realEnd)
+		return false;
+
+	summary->resource = resource.resource;
+	summary->resourceDesc = resource.desc;
+	summary->hasResourceDesc = true;
+	summary->gpuVirtualAddress = resource.gpuVirtualAddress;
+	summary->resourceOffset = gpuVirtualAddress - begin;
+	const UINT64 available = realEnd - gpuVirtualAddress;
+	summary->viewSize = size < available ? size : available;
+	if (resource.hasHeapType) {
+		summary->resourceHeapType = static_cast<UINT>(resource.heapType);
+		summary->hasResourceHeapType = true;
+	}
+	summary->currentState = static_cast<UINT>(resource.currentState);
+	summary->hasCurrentState = resource.hasCurrentState;
+	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+	if (resolvedBegin)
+		*resolvedBegin = begin;
+	if (resolvedEnd)
+		*resolvedEnd = realEnd;
+	return true;
+}
+
+template <typename IteratorT>
+static bool SearchBackwardForCoveringBuffer(
+	IteratorT current,
+	IteratorT beginIt,
+	UINT64 gpuVirtualAddress,
+	UINT64 size,
+	DX12BufferResourceSummary *summary,
+	UINT64 *resolvedBegin,
+	UINT64 *resolvedEnd,
+	UINT *probes)
+{
+	if (!summary)
+		return false;
+
+	for (IteratorT it = current;;) {
+		if (probes)
+			(*probes)++;
+		if (it->second < gResources.size()) {
+			const ResourceRecord &resource = gResources[it->second];
+			if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
+					gpuVirtualAddress, size, resource, summary, resolvedBegin, resolvedEnd))
+				return true;
+		}
+
+		if (it == beginIt)
+			break;
+		--it;
+	}
+
+	return false;
+}
+};
+
 bool DX12ResolveBufferResourceByGpuVa(
 	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary)
 {
@@ -84,6 +163,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	bool resolved = false;
 	UINT64 resolvedBegin = 0;
 	UINT64 resolvedEnd = 0;
+	UINT backwardProbes = 0;
 	AcquireSRWLockShared(&gResourceLock);
 	auto cached = gBufferResolveCache.upper_bound(gpuVirtualAddress);
 	if (cached != gBufferResolveCache.begin()) {
@@ -103,47 +183,15 @@ bool DX12ResolveBufferResourceByGpuVa(
 	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
 	if (foundBuffer != gBufferResourceByGpuVa.begin()) {
 		--foundBuffer;
-		if (foundBuffer->second < gResources.size()) {
-			const ResourceRecord &resource = gResources[foundBuffer->second];
-			const UINT64 begin = resource.gpuVirtualAddress;
-			const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
-				resource.gpuVirtualAddressRealEnd : begin + resource.size;
-			const UINT64 oobEnd = resource.gpuVirtualAddressOobEnd ?
-				resource.gpuVirtualAddressOobEnd : realEnd;
-			if (resource.resource &&
-			    resource.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-			    begin != 0 && resource.size != 0 &&
-			    gpuVirtualAddress >= begin && gpuVirtualAddress < realEnd) {
-				summary->resource = resource.resource;
-				summary->resourceDesc = resource.desc;
-				summary->hasResourceDesc = true;
-				summary->gpuVirtualAddress = resource.gpuVirtualAddress;
-				summary->resourceOffset = gpuVirtualAddress - begin;
-				const UINT64 available = realEnd - gpuVirtualAddress;
-				summary->viewSize = size < available ? size : available;
-				if (resource.hasHeapType) {
-					summary->resourceHeapType = static_cast<UINT>(resource.heapType);
-					summary->hasResourceHeapType = true;
-				}
-				summary->currentState = static_cast<UINT>(resource.currentState);
-				summary->hasCurrentState = resource.hasCurrentState;
-				summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
-				resolvedBegin = begin;
-				resolvedEnd = realEnd;
-				resolved = true;
-				if (requestedEnd > realEnd || gpuVirtualAddress >= realEnd) {
-					DX12FrameAnalysis::LogJsonFunc("BufferResolveClampedToRealRange",
-						"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"resource\":\"%p\",\"begin\":\"0x%llX\",\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"viewSize\":%llu",
-						static_cast<unsigned long long>(gpuVirtualAddress),
-						static_cast<unsigned long long>(size),
-						resource.resource,
-						static_cast<unsigned long long>(begin),
-						static_cast<unsigned long long>(realEnd),
-						static_cast<unsigned long long>(oobEnd),
-						static_cast<unsigned long long>(summary->viewSize));
-				}
-			}
-		}
+		resolved = DX12BufferResolveRangeUtils::SearchBackwardForCoveringBuffer(
+			foundBuffer,
+			gBufferResourceByGpuVa.begin(),
+			gpuVirtualAddress,
+			size,
+			summary,
+			&resolvedBegin,
+			&resolvedEnd,
+			&backwardProbes);
 	}
 	ReleaseSRWLockShared(&gResourceLock);
 
@@ -159,6 +207,16 @@ bool DX12ResolveBufferResourceByGpuVa(
 		if (gBufferResolveGeneration.load(std::memory_order_relaxed) == generation)
 			gBufferResolveCache[entry.begin] = entry;
 		ReleaseSRWLockExclusive(&gResourceLock);
+		if (backwardProbes > 1) {
+			DX12FrameAnalysis::LogJsonFunc("BufferResolveBackwardScanHit",
+				"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"probes\":%u,\"resource\":\"%p\"",
+				static_cast<unsigned long long>(gpuVirtualAddress),
+				static_cast<unsigned long long>(size),
+				static_cast<unsigned long long>(resolvedBegin),
+				static_cast<unsigned long long>(resolvedEnd),
+				backwardProbes,
+				summary->resource);
+		}
 	}
 	return resolved;
 }
@@ -178,36 +236,15 @@ static bool FillBufferSummaryFromRecordLocked(
 	if (foundBuffer == gBufferResourceByGpuVa.begin())
 		return false;
 	--foundBuffer;
-	if (foundBuffer->second >= gResources.size())
-		return false;
-
-	const ResourceRecord &resource = gResources[foundBuffer->second];
-	const UINT64 begin = resource.gpuVirtualAddress;
-	const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
-		resource.gpuVirtualAddressRealEnd : begin + resource.size;
-	const UINT64 oobEnd = resource.gpuVirtualAddressOobEnd ?
-		resource.gpuVirtualAddressOobEnd : realEnd;
-	if (!resource.resource ||
-		resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-		begin == 0 || resource.size == 0 ||
-		gpuVirtualAddress < begin || gpuVirtualAddress >= realEnd)
-		return false;
-
-	summary->resource = resource.resource;
-	summary->resourceDesc = resource.desc;
-	summary->hasResourceDesc = true;
-	summary->gpuVirtualAddress = resource.gpuVirtualAddress;
-	summary->resourceOffset = gpuVirtualAddress - begin;
-	const UINT64 available = realEnd - gpuVirtualAddress;
-	summary->viewSize = size < available ? size : available;
-	if (resource.hasHeapType) {
-		summary->resourceHeapType = static_cast<UINT>(resource.heapType);
-		summary->hasResourceHeapType = true;
-	}
-	summary->currentState = static_cast<UINT>(resource.currentState);
-	summary->hasCurrentState = resource.hasCurrentState;
-	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
-	return true;
+	return DX12BufferResolveRangeUtils::SearchBackwardForCoveringBuffer(
+		foundBuffer,
+		gBufferResourceByGpuVa.begin(),
+		gpuVirtualAddress,
+		size,
+		summary,
+		nullptr,
+		nullptr,
+		nullptr);
 }
 
 class DX12BufferResolveDiagnosticsUtils
@@ -232,34 +269,58 @@ static const char *ReasonLocked(UINT64 gpuVirtualAddress, UINT64 size,
 	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
 	if (foundBuffer == gBufferResourceByGpuVa.begin())
 		return "no_lower_buffer";
-	--foundBuffer;
-	if (foundBuffer->second >= gResources.size())
-		return "index_invalid";
+	for (--foundBuffer;; --foundBuffer) {
+		if (foundBuffer->second >= gResources.size()) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "index_invalid";
+			continue;
+		}
 
-	const ResourceRecord &resource = gResources[foundBuffer->second];
-	const UINT64 begin = resource.gpuVirtualAddress;
-	const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
-		resource.gpuVirtualAddressRealEnd : begin + resource.size;
-	const UINT64 end = resource.gpuVirtualAddressOobEnd ?
-		resource.gpuVirtualAddressOobEnd : realEnd;
-	if (nearestBegin)
-		*nearestBegin = begin;
-	if (nearestEnd)
-		*nearestEnd = end;
-	if (nearestResource)
-		*nearestResource = reinterpret_cast<UINT64>(resource.resource);
-	if (!resource.resource)
-		return "resource_null";
-	if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-		return "not_buffer";
-	if (begin == 0 || resource.size == 0)
-		return "empty_range";
-	if (gpuVirtualAddress < begin)
-		return "before_range";
-	if (requestedEnd > realEnd && gpuVirtualAddress < end)
-		return "after_real_range_oob_candidate";
-	if (requestedEnd > end)
-		return "after_range";
+		const ResourceRecord &resource = gResources[foundBuffer->second];
+		const UINT64 begin = resource.gpuVirtualAddress;
+		const UINT64 realEnd = resource.gpuVirtualAddressRealEnd ?
+			resource.gpuVirtualAddressRealEnd : begin + resource.size;
+		const UINT64 end = resource.gpuVirtualAddressOobEnd ?
+			resource.gpuVirtualAddressOobEnd : realEnd;
+		if (nearestBegin)
+			*nearestBegin = begin;
+		if (nearestEnd)
+			*nearestEnd = end;
+		if (nearestResource)
+			*nearestResource = reinterpret_cast<UINT64>(resource.resource);
+		if (!resource.resource) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "resource_null";
+			continue;
+		}
+		if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "not_buffer";
+			continue;
+		}
+		if (begin == 0 || resource.size == 0) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "empty_range";
+			continue;
+		}
+		if (gpuVirtualAddress < begin) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "before_range";
+			continue;
+		}
+		if (gpuVirtualAddress < realEnd) {
+			if (requestedEnd > realEnd && gpuVirtualAddress < end)
+				return "after_real_range_oob_candidate";
+			return "unknown_covering_buffer_found";
+		}
+		if (requestedEnd > end) {
+			if (foundBuffer == gBufferResourceByGpuVa.begin())
+				return "after_range";
+			continue;
+		}
+		if (foundBuffer == gBufferResourceByGpuVa.begin())
+			return "unknown";
+	}
 	return "unknown";
 }
 };
