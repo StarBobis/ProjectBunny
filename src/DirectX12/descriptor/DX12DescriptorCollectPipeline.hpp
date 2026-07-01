@@ -65,7 +65,7 @@ public:
 
 	void StartWorker();
 	void StopWorker();
-	bool EnqueueDescriptorTask(DescriptorRecord &&record, const char *source);
+	bool EnqueueDescriptorTask(DescriptorRecord *record, const char *source);
 	bool EnqueueCopyRangeTask(
 		ID3D12Device *device,
 		D3D12_DESCRIPTOR_HEAP_TYPE type,

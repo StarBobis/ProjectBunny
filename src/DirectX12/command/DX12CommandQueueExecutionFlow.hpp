@@ -15,6 +15,36 @@
 class DX12CommandQueueExecutionFlow
 {
 public:
+	class DX12ExecuteSkipLogUtils
+	{
+	public:
+		inline static volatile LONG64 SkipCalls = 0;
+		inline static volatile LONG64 SkipCommandLists = 0;
+		inline static volatile LONG LastPresentLogged = -1;
+		static constexpr LONG PresentInterval = 120;
+
+		static void Record(ID3D12CommandQueue *queue, UINT numCommandLists, const char *stage)
+		{
+			InterlockedIncrement64(&SkipCalls);
+			InterlockedAdd64(&SkipCommandLists, static_cast<LONG64>(numCommandLists));
+			const LONG present = DX12RuntimeState::GetPresentCount();
+			const LONG last = InterlockedCompareExchange(&LastPresentLogged, 0, 0);
+			const bool shouldLog = last < 0 || present >= last + PresentInterval;
+			if (!shouldLog)
+				return;
+			if (InterlockedCompareExchange(&LastPresentLogged, present, last) != last)
+				return;
+			DX12LogManager::JsonFunc("DX12ExecuteCommandListsHeartbeat",
+				"\"stage\":\"%s\",\"mode\":\"aggregate_skip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"calls\":%lld,\"commandLists\":%lld",
+				stage ? stage : "",
+				present,
+				GetCurrentThreadId(),
+				queue,
+				static_cast<long long>(InterlockedCompareExchange64(&SkipCalls, 0, 0)),
+				static_cast<long long>(InterlockedCompareExchange64(&SkipCommandLists, 0, 0)));
+		}
+	};
+
 	using RegisterSubmittedCommandListFn = void (*)(IUnknown*);
 
 	static void RegisterSubmittedCommandLists(
@@ -44,17 +74,15 @@ public:
 
 		if (DX12HotPathState::Get().skipAll) {
 			if (original) {
-				DX12LogManager::JsonFunc("DX12ExecuteCommandListsHeartbeat",
-					"\"stage\":\"BeforeOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
-					DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
+				DX12ExecuteSkipLogUtils::Record(
+					queue, numCommandLists, "BeforeOriginalSkip");
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 				original(queue, numCommandLists, commandLists);
-				DX12LogManager::JsonFunc("DX12ExecuteCommandListsHeartbeat",
-					"\"stage\":\"AfterOriginalSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
-					DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
+				DX12ExecuteSkipLogUtils::Record(
+					queue, numCommandLists, "AfterOriginalSkip");
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -62,9 +90,7 @@ public:
 			}
 			if (DX12HuntIsEnabled())
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
-			DX12LogManager::JsonFunc("DX12ExecuteCommandListsHeartbeat",
-				"\"stage\":\"ReturnSkip\",\"present\":%ld,\"threadId\":%lu,\"queue\":\"%p\",\"count\":%u",
-				DX12RuntimeState::GetPresentCount(), GetCurrentThreadId(), queue, numCommandLists);
+			DX12ExecuteSkipLogUtils::Record(queue, numCommandLists, "ReturnSkip");
 			return;
 		}
 

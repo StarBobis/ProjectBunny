@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <map>
@@ -37,7 +38,38 @@ struct RootSignatureRecord
 	std::vector<DX12RootParameterSummary> parameters;
 };
 
-struct DescriptorRecord
+class DX12DescriptorViewPayload
+{
+public:
+	union
+	{
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+		D3D12_RENDER_TARGET_VIEW_DESC rtv;
+		D3D12_DEPTH_STENCIL_VIEW_DESC dsv;
+		D3D12_SAMPLER_DESC sampler;
+	};
+
+	DX12DescriptorViewPayload()
+	{
+		memset(this, 0, sizeof(*this));
+	}
+
+	DX12DescriptorViewPayload(const DX12DescriptorViewPayload &other)
+	{
+		memcpy(this, &other, sizeof(*this));
+	}
+
+	DX12DescriptorViewPayload &operator=(const DX12DescriptorViewPayload &other)
+	{
+		if (this != &other)
+			memcpy(this, &other, sizeof(*this));
+		return *this;
+	}
+};
+
+struct DescriptorRecord : public DX12DescriptorViewPayload
 {
 	std::string kind;
 	UINT kindId = 0;
@@ -57,12 +89,6 @@ struct DescriptorRecord
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;
 	bool stateTrackedByBarrier = false;
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {};
-	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-	D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-	D3D12_RENDER_TARGET_VIEW_DESC rtv = {};
-	D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
-	D3D12_SAMPLER_DESC sampler = {};
 	bool hasDesc = false;
 };
 
@@ -268,7 +294,7 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 void CaptureDescriptorResourcePointer(DescriptorRecord *record, ID3D12Resource *resource);
 void ReleaseDescriptorRecordResources(DescriptorRecord *record);
 DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record);
-void StoreCpuDescriptorRecordLocked(const DescriptorRecord &record);
+void StoreCpuDescriptorRecordLocked(DescriptorRecord &&record);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void SetDescriptorKind(DescriptorRecord *record, UINT kindId);
 void FillSrvBufferView(DescriptorRecord *record);

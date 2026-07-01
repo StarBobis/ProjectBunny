@@ -8,6 +8,7 @@ static constexpr uint64_t kDescriptorInlineStatsInterval = 65536;
 static constexpr size_t kDescriptorWorkerBatchTarget = 64;
 static constexpr size_t kDescriptorPendingWriteBudget = 16384;
 static constexpr auto kDescriptorWorkerCoalesceWindow = std::chrono::milliseconds(1);
+static constexpr uint64_t kDescriptorBatchStatsInterval = 1024;
 
 DX12DescriptorCollectPipeline &DX12DescriptorCollectPipeline::Get()
 {
@@ -19,8 +20,7 @@ void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, 
 {
 	DX12DescriptorCollectPipeline &pipeline = Get();
 	pipeline.FlushPendingCopyRange("RecordDescriptor");
-	DescriptorRecord asyncRecord = record;
-	if (!pipeline.EnqueueDescriptorTask(std::move(asyncRecord), source))
+	if (!pipeline.EnqueueDescriptorTask(&record, source))
 		::RecordDescriptor(std::move(record));
 	pipeline.MaybeLogInlineStats(source ? source : "RecordDescriptor");
 }
@@ -148,28 +148,28 @@ void DX12DescriptorCollectPipeline::StopWorker()
 		static_cast<unsigned long long>(completedBatches.load(std::memory_order_relaxed)));
 }
 
-bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord &&record, const char *source)
+bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *record, const char *source)
 {
 	(void)source;
-	if (!record.cpuHandle)
+	if (!record || !record->cpuHandle)
 		return false;
 	if (ShouldTrackFullDescriptorMetadata())
 		return false;
 
 	StartWorker();
-	if (!RetainDescriptorResourcesForAsync(&record))
+	if (!RetainDescriptorResourcesForAsync(record))
 		return false;
 
 	bool shouldFlush = false;
 	std::unique_lock<std::mutex> lock(mutex);
-	RecordDescriptorWriteStats(record);
-	auto found = pendingDescriptorWrites.find(record.cpuHandle);
+	RecordDescriptorWriteStats(*record);
+	auto found = pendingDescriptorWrites.find(record->cpuHandle);
 	if (found != pendingDescriptorWrites.end()) {
 		ReleaseDescriptorRecordResources(&found->second);
-		found->second = std::move(record);
+		found->second = std::move(*record);
 		descriptorWriteReplaced++;
 	} else {
-		pendingDescriptorWrites.emplace(record.cpuHandle, std::move(record));
+		pendingDescriptorWrites.emplace(record->cpuHandle, std::move(*record));
 	}
 	descriptorWriteQueued++;
 	const uint64_t pending = static_cast<uint64_t>(pendingDescriptorWrites.size());
@@ -704,13 +704,17 @@ void DX12DescriptorCollectPipeline::ApplyDescriptorBatch(
 		activeSnapshot = activeDescriptorBatches;
 	}
 	::RecordDescriptorBatch(&batch->descriptors);
-	DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineBatch",
-		"\"source\":\"%s\",\"seq\":%llu,\"count\":%zu,\"pending\":%zu,\"active\":%llu",
-		source ? source : "",
-		static_cast<unsigned long long>(batch->sequence),
-		count,
-		PendingCount(),
-		static_cast<unsigned long long>(activeSnapshot));
+	if ((batch->sequence <= 8) ||
+		((batch->sequence % kDescriptorBatchStatsInterval) == 0) ||
+		count >= kDescriptorPendingWriteBudget) {
+		DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineBatch",
+			"\"source\":\"%s\",\"seq\":%llu,\"count\":%zu,\"pending\":%zu,\"active\":%llu",
+			source ? source : "",
+			static_cast<unsigned long long>(batch->sequence),
+			count,
+			PendingCount(),
+			static_cast<unsigned long long>(activeSnapshot));
+	}
 	ReleaseDescriptorBatch(batch);
 }
 

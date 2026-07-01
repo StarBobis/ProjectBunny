@@ -48,6 +48,40 @@ static UINT64 gDescriptorCopySpanFastPathSlots = 0;
 static UINT64 gDescriptorCopySpanFallbackCalls = 0;
 static constexpr LONG kResourceStatsLogInterval = 300;
 
+class DX12BufferAddressRangeLogUtils
+{
+public:
+	inline static volatile LONG64 AddedCalls = 0;
+	inline static volatile LONG64 AddedBytes = 0;
+	inline static volatile LONG LastPresentLogged = -1;
+	static constexpr LONG PresentInterval = 300;
+
+	static void Record(ID3D12Resource *resource, const ResourceRecord &record)
+	{
+		InterlockedIncrement64(&AddedCalls);
+		InterlockedAdd64(&AddedBytes, static_cast<LONG64>(record.size));
+		const LONG present = DX12RuntimeState::GetPresentCount();
+		const LONG last = InterlockedCompareExchange(&LastPresentLogged, 0, 0);
+		const bool shouldLog = last < 0 || present >= last + PresentInterval;
+		if (!shouldLog)
+			return;
+		if (InterlockedCompareExchange(&LastPresentLogged, present, last) != last)
+			return;
+		DX12LogManager::JsonFunc("DX12BufferAddressRangeAdded",
+			"\"mode\":\"aggregate\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\",\"gpuVa\":\"0x%llX\",\"size\":%llu,\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"calls\":%lld,\"bytes\":%lld,\"hasPlacedHeap\":%u",
+			present,
+			GetCurrentThreadId(),
+			resource,
+			static_cast<unsigned long long>(record.gpuVirtualAddress),
+			static_cast<unsigned long long>(record.size),
+			static_cast<unsigned long long>(record.gpuVirtualAddressRealEnd),
+			static_cast<unsigned long long>(record.gpuVirtualAddressOobEnd),
+			static_cast<long long>(InterlockedCompareExchange64(&AddedCalls, 0, 0)),
+			static_cast<long long>(InterlockedCompareExchange64(&AddedBytes, 0, 0)),
+			record.hasPlacedHeapRange ? 1 : 0);
+	}
+};
+
 void LogResourceTrackerStatsLocked();
 
 static bool DescriptorHeapSlotOccupied(const DescriptorHeapRecord &heap, UINT slot)
@@ -223,14 +257,14 @@ static void ClearCpuDescriptorLedgerLocked()
 	gDescriptorByCpuHandle.clear();
 }
 
-void StoreCpuDescriptorRecordLocked(const DescriptorRecord &record)
+void StoreCpuDescriptorRecordLocked(DescriptorRecord &&record)
 {
 	if (!record.cpuHandle)
 		return;
 	auto found = gDescriptorByCpuHandle.find(record.cpuHandle);
 	if (found != gDescriptorByCpuHandle.end())
 		ReleaseDescriptorRecordResources(&found->second);
-	gDescriptorByCpuHandle[record.cpuHandle] = CloneDescriptorRecord(record);
+	gDescriptorByCpuHandle[record.cpuHandle] = std::move(record);
 }
 
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
@@ -463,16 +497,7 @@ void RecordResource(
 			if (record.gpuVirtualAddressOobEnd < record.gpuVirtualAddressRealEnd)
 				record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
 		}
-		DX12LogManager::JsonFunc("DX12BufferAddressRangeAdded",
-			"\"resource\":\"%p\",\"gpuVa\":\"0x%llX\",\"size\":%llu,\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"hasPlacedHeap\":%u,\"heapOffset\":%llu,\"heapSize\":%llu",
-			resource,
-			static_cast<unsigned long long>(record.gpuVirtualAddress),
-			static_cast<unsigned long long>(record.size),
-			static_cast<unsigned long long>(record.gpuVirtualAddressRealEnd),
-			static_cast<unsigned long long>(record.gpuVirtualAddressOobEnd),
-			record.hasPlacedHeapRange ? 1 : 0,
-			static_cast<unsigned long long>(record.placedHeapOffset),
-			static_cast<unsigned long long>(record.placedHeapSize));
+		DX12BufferAddressRangeLogUtils::Record(resource, record);
 	}
 
 	ID3D12Resource *canonical = resource;
@@ -1200,9 +1225,8 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 		if (!storeInHeapSlot) {
 			// Non shader-visible/staging heap descriptors can become CopyDescriptors
 			// sources later, so keep them in the CPU ledger as the fallback source.
-			StoreCpuDescriptorRecordLocked(record);
+			StoreCpuDescriptorRecordLocked(std::move(record));
 			++gDescriptorRecordsSeen;
-			ReleaseDescriptorRecordResources(&record);
 			return;
 		}
 		DescriptorRecord *existing = DescriptorHeapSlot(&heap, location.slot);
@@ -1225,8 +1249,7 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 	}
 
 	// Heap-external CPU descriptors are only discoverable through the ledger.
-	StoreCpuDescriptorRecordLocked(record);
-	ReleaseDescriptorRecordResources(&record);
+	StoreCpuDescriptorRecordLocked(std::move(record));
 }
 
 void RecordDescriptor(DescriptorRecord &&record)
