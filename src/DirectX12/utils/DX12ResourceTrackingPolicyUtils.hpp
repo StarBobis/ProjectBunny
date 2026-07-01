@@ -42,11 +42,6 @@ public:
 			DX12ModNeedsShaderDescriptorTracking();
 	}
 
-	static bool NeedsDescriptorCreationTracking()
-	{
-		return true;
-	}
-
 	static bool NeedsFullDescriptorHistory()
 	{
 		return NeedsFrameDumpTracking();
@@ -55,27 +50,5 @@ public:
 	static bool NeedsFullResourceMetadata()
 	{
 		return NeedsDumpOrHuntingTracking();
-	}
-
-	static bool NeedsLiveResourceIndex()
-	{
-		return true;
-	}
-
-	static bool NeedsBufferResourceTracking()
-	{
-		return true;
-	}
-
-	static bool NeedsTextureResourceTracking()
-	{
-		return true;
-	}
-
-	static bool NeedsAnyResourceCreationTracking()
-	{
-		return NeedsLiveResourceIndex() ||
-			NeedsBufferResourceTracking() ||
-			NeedsTextureResourceTracking();
 	}
 };

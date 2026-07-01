@@ -1389,7 +1389,7 @@ bool ShouldTrackComputeDescriptorMetadata()
 
 bool ShouldTrackDescriptorCreationMetadata()
 {
-	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorCreationTracking();
+	return true;
 }
 
 void BumpDescriptorQuerySerial()
@@ -1413,7 +1413,7 @@ bool ShouldTrackResourceMetadata()
 
 bool ShouldTrackResourceCreationMetadata()
 {
-	return DX12ResourceTrackingPolicyUtils::NeedsAnyResourceCreationTracking();
+	return true;
 }
 
 static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *record)
