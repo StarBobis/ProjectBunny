@@ -24,12 +24,7 @@ struct DX12HuntListItem
 };
 
 void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
-void DX12HuntSetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
-void DX12HuntSetIndexBuffer(
-	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
-void DX12HuntSetVertexBuffers(
-	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
-	const D3D12_VERTEX_BUFFER_VIEW *views);
+void DX12HuntObservePipelineState(ID3D12PipelineState *pipelineState);
 void DX12HuntRecordDraw(
 	ID3D12GraphicsCommandList *commandList, bool indexed,
 	UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex,

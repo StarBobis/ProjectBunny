@@ -21,7 +21,7 @@ public:
 		    !DX12ModHasActiveShaderOverrides()) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
-			DX12HuntSetPipelineState(commandList, pipelineState);
+			DX12HuntObservePipelineState(pipelineState);
 			return pipelineState;
 		}
 
@@ -64,6 +64,8 @@ public:
 			return;
 		}
 
+		if (DX12HuntIsEnabled())
+			DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
 		if (DX12ModHasActiveShaderOverrides())
 			DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
 	}
@@ -86,7 +88,7 @@ public:
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntIsEnabled()) {
 			DX12Profiling::RecordIaHuntIaUpdate();
-			DX12HuntSetIndexBuffer(commandList, view);
+			DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
 		}
 		if (DX12ModHasActiveShaderOverrides())
 			DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
@@ -109,7 +111,7 @@ public:
 		DX12_PROFILE_FAST_FORWARD();
 		if (DX12HuntIsEnabled()) {
 			DX12Profiling::RecordIaHuntIaUpdate();
-			DX12HuntSetVertexBuffers(commandList, startSlot, count, views);
+			DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
 		}
 		if (DX12ModHasActiveShaderOverrides())
 			DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);

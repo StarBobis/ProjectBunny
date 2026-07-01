@@ -37,7 +37,7 @@ void DX12CommandListLifecycle::Reset(
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
 	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, initialState);
-	if (DX12ModHasActiveShaderOverrides())
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::ResetIa(commandList);
 	if (tracking.trackPsoState || tracking.trackHuntIa)
 		DX12HuntResetCommandList(commandList, initialState);

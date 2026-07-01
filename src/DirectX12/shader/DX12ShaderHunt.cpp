@@ -88,8 +88,6 @@ struct HuntCommandListVisits
 
 static SRWLOCK gHuntLock = SRWLOCK_INIT;
 static volatile LONG gHuntingActive = 0;
-static std::unordered_map<ID3D12GraphicsCommandList*, ID3D12PipelineState*> gCommandListPso;
-static std::unordered_map<ID3D12GraphicsCommandList*, HuntIaState> gCommandListIa;
 static std::unordered_map<ID3D12GraphicsCommandList*, HuntCommandListVisits> gCommandListVisits;
 static StageSelection gVS;
 static StageSelection gPS;
@@ -335,23 +333,31 @@ static void AdvanceIa(IaSelection &selection, HuntCopyTarget target, int delta)
 	DX12HuntRefreshOverlay();
 }
 
-static ID3D12PipelineState *GetCurrentPipelineStateLocked(ID3D12GraphicsCommandList *commandList)
+static HuntIaState BuildHuntIaState(const DX12ActiveIaState &ia)
 {
-	auto it = gCommandListPso.find(commandList);
-	if (it == gCommandListPso.end())
-		return nullptr;
-	return it->second;
-}
-
-static bool CopyIaStateLocked(ID3D12GraphicsCommandList *commandList, HuntIaState *state)
-{
-	if (!state)
-		return false;
-	auto it = gCommandListIa.find(commandList);
-	if (it == gCommandListIa.end())
-		return false;
-	*state = it->second;
-	return true;
+	HuntIaState state;
+	if (ia.hasIndexBuffer && ia.indexBuffer.BufferLocation && ia.indexBuffer.SizeInBytes) {
+		state.indexBuffer = MakeIaView(
+			"IB", 0, ia.indexBuffer.BufferLocation, ia.indexBuffer.SizeInBytes,
+			0, static_cast<UINT>(ia.indexBuffer.Format));
+	}
+	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+		if (!ia.hasVertexBuffer[slot])
+			continue;
+		const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
+		HuntIaBuffer buffer;
+		buffer.role = "VB";
+		buffer.slot = slot;
+		if (view.BufferLocation && view.SizeInBytes) {
+			buffer = MakeIaView(
+				"VB", slot, view.BufferLocation, view.SizeInBytes,
+				view.StrideInBytes, 0);
+		}
+		if (state.vertexBuffers.size() <= slot)
+			state.vertexBuffers.resize(slot + 1);
+		state.vertexBuffers[slot] = buffer;
+	}
+	return state;
 }
 
 static bool PsoShouldSkip(ID3D12PipelineState *pipelineState, bool dispatch, UINT64 vs, UINT64 ps, UINT64 cs)
@@ -372,20 +378,19 @@ void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
+	(void)pipelineState;
 	AcquireSRWLockExclusive(&gHuntLock);
 	if (!DX12HuntIsEnabled()) {
 		ReleaseSRWLockExclusive(&gHuntLock);
 		return;
 	}
-	gCommandListPso[commandList] = pipelineState;
-	gCommandListIa.erase(commandList);
 	gCommandListVisits.erase(commandList);
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
 
-void DX12HuntSetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
+void DX12HuntObservePipelineState(ID3D12PipelineState *pipelineState)
 {
-	if (!DX12HuntIsEnabled() || !commandList)
+	if (!DX12HuntIsEnabled())
 		return;
 
 	AcquireSRWLockExclusive(&gHuntLock);
@@ -393,7 +398,6 @@ void DX12HuntSetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 		ReleaseSRWLockExclusive(&gHuntLock);
 		return;
 	}
-	gCommandListPso[commandList] = pipelineState;
 	gPipelineStateBinds++;
 	ReleaseSRWLockExclusive(&gHuntLock);
 
@@ -417,13 +421,12 @@ void DX12HuntRecordDraw(
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
-	ID3D12PipelineState *pipelineState = nullptr;
-	HuntIaState iaState;
-	bool hasIaState = false;
-	AcquireSRWLockShared(&gHuntLock);
-	pipelineState = GetCurrentPipelineStateLocked(commandList);
-	hasIaState = CopyIaStateLocked(commandList, &iaState);
-	ReleaseSRWLockShared(&gHuntLock);
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtr(commandList);
+	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
+	const HuntIaState iaState = runtimeState ?
+		BuildHuntIaState(runtimeState->ia) : HuntIaState();
+	const bool hasIaState = runtimeState != nullptr;
 
 	DX12PsoShaderInfo info = {};
 	const bool hasInfo = pipelineState &&
@@ -491,10 +494,9 @@ void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList)
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	ID3D12PipelineState *pipelineState = nullptr;
-	AcquireSRWLockShared(&gHuntLock);
-	pipelineState = GetCurrentPipelineStateLocked(commandList);
-	ReleaseSRWLockShared(&gHuntLock);
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtr(commandList);
+	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	DX12PsoShaderInfo info = {};
 	const bool hasInfo = pipelineState &&
 		DX12GetPipelineStateShaderInfo(pipelineState, &info);
@@ -514,10 +516,9 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	ID3D12PipelineState *pipelineState = nullptr;
-	AcquireSRWLockShared(&gHuntLock);
-	pipelineState = GetCurrentPipelineStateLocked(commandList);
-	ReleaseSRWLockShared(&gHuntLock);
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtr(commandList);
+	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	DX12PsoShaderInfo info = {};
 	const bool hasInfo = pipelineState &&
 		DX12GetPipelineStateShaderInfo(pipelineState, &info);
@@ -534,57 +535,6 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 			if (info.hasCS)
 				visits.cs.insert(info.cs);
 		}
-	}
-	ReleaseSRWLockExclusive(&gHuntLock);
-}
-
-void DX12HuntSetIndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
-{
-	if (!DX12HuntIsEnabled() || !commandList)
-		return;
-
-	AcquireSRWLockExclusive(&gHuntLock);
-	if (!DX12HuntIsEnabled()) {
-		ReleaseSRWLockExclusive(&gHuntLock);
-		return;
-	}
-	HuntIaState &state = gCommandListIa[commandList];
-	state.indexBuffer = HuntIaBuffer();
-	if (view && view->BufferLocation && view->SizeInBytes) {
-		state.indexBuffer = MakeIaView(
-			"IB", 0, view->BufferLocation, view->SizeInBytes,
-			0, static_cast<UINT>(view->Format));
-	}
-	ReleaseSRWLockExclusive(&gHuntLock);
-}
-
-void DX12HuntSetVertexBuffers(
-	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
-	const D3D12_VERTEX_BUFFER_VIEW *views)
-{
-	if (!DX12HuntIsEnabled() || !commandList)
-		return;
-
-	AcquireSRWLockExclusive(&gHuntLock);
-	if (!DX12HuntIsEnabled()) {
-		ReleaseSRWLockExclusive(&gHuntLock);
-		return;
-	}
-	HuntIaState &state = gCommandListIa[commandList];
-	const UINT endSlot = startSlot + count;
-	if (state.vertexBuffers.size() < endSlot)
-		state.vertexBuffers.resize(endSlot);
-	for (UINT i = 0; i < count; ++i) {
-		const UINT slot = startSlot + i;
-		HuntIaBuffer buffer;
-		buffer.role = "VB";
-		buffer.slot = slot;
-		if (views && views[i].BufferLocation && views[i].SizeInBytes) {
-			buffer = MakeIaView(
-				"VB", slot, views[i].BufferLocation, views[i].SizeInBytes,
-				views[i].StrideInBytes, 0);
-		}
-		state.vertexBuffers[slot] = buffer;
 	}
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
@@ -608,9 +558,6 @@ bool DX12HuntShouldSkipDraw(
 	UINT64 selectedPS = 0;
 	uint32_t selectedIB = 0;
 	uint32_t selectedVB = 0;
-	ID3D12PipelineState *pipelineState = nullptr;
-	HuntIaState iaState;
-	bool hasIaState = false;
 	AcquireSRWLockShared(&gHuntLock);
 	enabled = DX12HuntIsEnabled();
 	if (enabled) {
@@ -622,13 +569,17 @@ bool DX12HuntShouldSkipDraw(
 		selectedPS = SelectedHashLocked(gPS);
 		selectedIB = SelectedIaHashLocked(gIB);
 		selectedVB = SelectedIaHashLocked(gVB);
-		pipelineState = GetCurrentPipelineStateLocked(commandList);
-		hasIaState = CopyIaStateLocked(commandList, &iaState);
 	}
 	ReleaseSRWLockShared(&gHuntLock);
 	if (!enabled)
 		return false;
 
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtr(commandList);
+	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
+	const HuntIaState iaState = runtimeState ?
+		BuildHuntIaState(runtimeState->ia) : HuntIaState();
+	const bool hasIaState = runtimeState != nullptr;
 	if ((vsArmed || psArmed) && PsoShouldSkip(
 			pipelineState, false,
 			vsArmed ? selectedVS : 0,
@@ -657,15 +608,16 @@ bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList)
 	bool enabled = false;
 	bool csArmed = false;
 	UINT64 selectedCS = 0;
-	ID3D12PipelineState *pipelineState = nullptr;
 	AcquireSRWLockShared(&gHuntLock);
 	enabled = DX12HuntIsEnabled();
 	if (enabled) {
 		csArmed = gCS.armed;
 		selectedCS = SelectedHashLocked(gCS);
-		pipelineState = GetCurrentPipelineStateLocked(commandList);
 	}
 	ReleaseSRWLockShared(&gHuntLock);
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtr(commandList);
+	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	return enabled && csArmed && selectedCS &&
 		PsoShouldSkip(pipelineState, true, 0, 0, selectedCS);
 }
@@ -695,11 +647,9 @@ void DX12HuntToggle()
 
 	if (enabled) {
 		AcquireSRWLockExclusive(&gHuntLock);
-		oldIa = gCommandListIa.size();
+		oldIa = gCommandListVisits.size();
 		oldIB = gIB.visited.size();
 		oldVB = gVB.visited.size();
-		gCommandListPso.clear();
-		gCommandListIa.clear();
 		gCommandListVisits.clear();
 		gVS = StageSelection();
 		gPS = StageSelection();

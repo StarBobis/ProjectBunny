@@ -86,7 +86,7 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, activePipelineState);
 	if (tracking.trackHuntIa)
-		DX12HuntSetPipelineState(commandList, activePipelineState);
+		DX12HuntObservePipelineState(activePipelineState);
 	return activePipelineState;
 }
 
@@ -257,9 +257,7 @@ void DX12CommandListStateCapture::IndexBuffer(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings)
 		DX12BindingTracker::SetIndexBuffer(commandList, view);
-	if (tracking.trackHuntIa)
-		DX12HuntSetIndexBuffer(commandList, view);
-	if (DX12ModHasActiveShaderOverrides())
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
 }
 
@@ -271,9 +269,7 @@ void DX12CommandListStateCapture::VertexBuffers(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings)
 		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
-	if (tracking.trackHuntIa)
-		DX12HuntSetVertexBuffers(commandList, startSlot, count, views);
-	if (DX12ModHasActiveShaderOverrides())
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
 }
 
