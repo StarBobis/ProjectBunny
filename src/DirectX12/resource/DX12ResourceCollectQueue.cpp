@@ -8,6 +8,7 @@
 
 static constexpr uint64_t kResourceQueueStatsInterval = 4096;
 static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
+static constexpr int64_t kResourceQueueSlowDrainUs = 1000;
 
 void DX12ResourceCollectQueue::Start()
 {
@@ -37,8 +38,10 @@ void DX12ResourceCollectQueue::Stop()
 		static_cast<unsigned long long>(addRefFailed.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)));
 
+	WaitForIdle("StopBegin");
 	stopRequested.store(true, std::memory_order_release);
 	wake.notify_all();
+	idle.notify_all();
 	if (worker.joinable())
 		worker.join();
 	started.store(false, std::memory_order_release);
@@ -244,13 +247,21 @@ bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
 
 void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
 {
-	DrainPending(reason);
+	WaitForSubmittedSequence(LastSubmittedSequence(), reason ? reason : "Snapshot");
 }
 
 size_t DX12ResourceCollectQueue::PendingCount()
 {
 	std::lock_guard<std::mutex> lock(mutex);
-	return tasks.size();
+	return tasks.size() + static_cast<size_t>(activeTasks);
+}
+
+UINT64 DX12ResourceCollectQueue::LastSubmittedSequence()
+{
+	const uint64_t next = nextSequence.load(std::memory_order_acquire);
+	if (next == 0)
+		return 0;
+	return next - 1;
 }
 
 void DX12ResourceCollectQueue::WorkerLoop()
@@ -272,17 +283,28 @@ void DX12ResourceCollectQueue::WorkerLoop()
 					break;
 				continue;
 			}
-			task = tasks.front();
+			task = std::move(tasks.front());
 			tasks.pop_front();
-			depthAfterPop = tasks.size();
+			activeTasks++;
+			depthAfterPop = tasks.size() + static_cast<size_t>(activeTasks);
 		}
 		dequeued.fetch_add(1, std::memory_order_relaxed);
 		if (depthAfterPop > 0)
 			LogStats("DequeueNonEmpty", task.sequence, depthAfterPop);
 		ProcessTask(&task, "Worker");
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			if (activeTasks > 0)
+				activeTasks--;
+		}
+		completed.fetch_add(1, std::memory_order_relaxed);
+		completedSequence.store(task.sequence, std::memory_order_release);
+		idle.notify_all();
 	}
 
+	WaitForIdle("WorkerStopDrain");
 	DrainPending("WorkerStop");
+	idle.notify_all();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"WorkerExit\",\"threadId\":%lu,\"pending\":%zu",
 		GetCurrentThreadId(), PendingCount());
@@ -299,12 +321,69 @@ void DX12ResourceCollectQueue::DrainPending(const char *reason)
 				break;
 			task = tasks.front();
 			tasks.pop_front();
-			depthAfterPop = tasks.size();
+			depthAfterPop = tasks.size() + static_cast<size_t>(activeTasks);
 		}
 		dequeued.fetch_add(1, std::memory_order_relaxed);
 		if (depthAfterPop > 0)
 			LogStats(reason ? reason : "Drain", task.sequence, depthAfterPop);
 		ProcessTask(&task, reason ? reason : "Drain");
+		completed.fetch_add(1, std::memory_order_relaxed);
+		completedSequence.store(task.sequence, std::memory_order_release);
+		idle.notify_all();
+	}
+}
+
+void DX12ResourceCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, const char *reason)
+{
+	if (targetSequence == 0)
+		return;
+
+	const auto begin = std::chrono::steady_clock::now();
+	size_t pendingSnapshot = 0;
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		pendingSnapshot = tasks.size() + static_cast<size_t>(activeTasks);
+		if (completedSequence.load(std::memory_order_acquire) < targetSequence) {
+			idle.wait(lock, [targetSequence]() {
+				return completedSequence.load(std::memory_order_acquire) >= targetSequence ||
+					(tasks.empty() && activeTasks == 0);
+			});
+		}
+	}
+	const auto end = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	if (elapsedUs >= kResourceQueueSlowDrainUs) {
+		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
+			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedSequence\":%llu,\"pending\":%zu,\"elapsedUs\":%lld",
+			reason ? reason : "",
+			static_cast<unsigned long long>(targetSequence),
+			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)),
+			pendingSnapshot,
+			static_cast<long long>(elapsedUs));
+	}
+}
+
+void DX12ResourceCollectQueue::WaitForIdle(const char *reason)
+{
+	const auto begin = std::chrono::steady_clock::now();
+	size_t pendingSnapshot = 0;
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		pendingSnapshot = tasks.size() + static_cast<size_t>(activeTasks);
+		if (pendingSnapshot != 0) {
+			idle.wait(lock, []() {
+				return tasks.empty() && activeTasks == 0;
+			});
+		}
+	}
+	const auto end = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	if (elapsedUs >= kResourceQueueSlowDrainUs) {
+		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
+			"\"reason\":\"%s\",\"mode\":\"idle\",\"pending\":%zu,\"elapsedUs\":%lld",
+			reason ? reason : "",
+			pendingSnapshot,
+			static_cast<long long>(elapsedUs));
 	}
 }
 
@@ -346,7 +425,6 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	completed.fetch_add(1, std::memory_order_relaxed);
 	RecordResourceTaskStats(task, source, static_cast<int64_t>(elapsedUs));
 	if (task->retainedResource)
 		DX12ResourceSnapshotUtils::Release(task->resource);
@@ -373,7 +451,6 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	completed.fetch_add(1, std::memory_order_relaxed);
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"ProcessResourceBarrierComplete\",\"source\":\"%s\",\"barrierSource\":\"%s\",\"seq\":%llu,\"count\":%zu,\"elapsedUs\":%lld,\"completed\":%llu",
 		source ? source : "",
@@ -429,7 +506,6 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	completed.fetch_add(1, std::memory_order_relaxed);
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"ProcessRootSignatureComplete\",\"source\":\"%s\",\"rootSource\":\"%s\",\"seq\":%llu,\"rootSignature\":\"%p\",\"parsed\":%u,\"parameterCount\":%zu,\"elapsedUs\":%lld,\"completed\":%llu",
 		source ? source : "",
@@ -469,7 +545,6 @@ void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTa
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	completed.fetch_add(1, std::memory_order_relaxed);
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"ProcessPsoRootSignatureComplete\",\"source\":\"%s\",\"psoSource\":\"%s\",\"seq\":%llu,\"pso\":%llu,\"elapsedUs\":%lld,\"completed\":%llu",
 		source ? source : "",

@@ -486,6 +486,20 @@ ID3D12Resource *CanonicalResource(ID3D12Resource *resource)
 	return resource;
 }
 
+static size_t *FindTrackedResourceIndexLocked(ID3D12Resource *resource)
+{
+	if (!resource)
+		return nullptr;
+
+	ID3D12Resource *canonical = CanonicalResource(resource);
+	auto found = gResourceByPtr.find(canonical);
+	if (found == gResourceByPtr.end())
+		found = gResourceByPtr.find(resource);
+	if (found == gResourceByPtr.end())
+		return nullptr;
+	return &found->second;
+}
+
 void RecordResource(
 	ID3D12Resource *resource,
 	const D3D12_RESOURCE_DESC *desc,
@@ -544,7 +558,7 @@ void RecordResource(
 		}
 	}
 
-	ID3D12Resource *canonical = resource;
+	ID3D12Resource *canonical = CanonicalResource(resource);
 	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
@@ -879,9 +893,9 @@ void FillResourceInfo(DescriptorRecord *record, ID3D12Resource *resource)
 
 	record->resource = resource;
 	AcquireSRWLockShared(&gResourceLock);
-	auto found = gResourceByPtr.find(resource);
-	if (found != gResourceByPtr.end() && found->second < gResources.size()) {
-		const ResourceRecord &resourceRecord = gResources[found->second];
+	size_t *index = FindTrackedResourceIndexLocked(resource);
+	if (index && *index < gResources.size()) {
+		const ResourceRecord &resourceRecord = gResources[*index];
 		record->resourceDesc = resourceRecord.desc;
 		record->hasResourceDesc = true;
 		if (resourceRecord.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
@@ -1890,11 +1904,11 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			!barrier.Transition.pResource)
 			continue;
 
-		auto found = gResourceByPtr.find(barrier.Transition.pResource);
-		if (found == gResourceByPtr.end() || found->second >= gResources.size())
+		size_t *index = FindTrackedResourceIndexLocked(barrier.Transition.pResource);
+		if (!index || *index >= gResources.size())
 			continue;
 
-		ResourceRecord &record = gResources[found->second];
+		ResourceRecord &record = gResources[*index];
 		if (barrier.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
 			record.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
 			record.currentState = barrier.Transition.StateAfter;

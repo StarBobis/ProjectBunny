@@ -52,6 +52,7 @@ class DX12ResourceCollectQueue
 public:
 	inline static std::mutex mutex;
 	inline static std::condition_variable wake;
+	inline static std::condition_variable idle;
 	inline static std::deque<DX12ResourceCollectTask> tasks;
 	inline static std::thread worker;
 	inline static std::atomic<bool> started = false;
@@ -60,6 +61,7 @@ public:
 	inline static std::atomic<uint64_t> enqueued = 0;
 	inline static std::atomic<uint64_t> dequeued = 0;
 	inline static std::atomic<uint64_t> completed = 0;
+	inline static std::atomic<uint64_t> completedSequence = 0;
 	inline static std::atomic<uint64_t> dropped = 0;
 	inline static std::atomic<uint64_t> addRefFailed = 0;
 	inline static std::atomic<uint64_t> maxDepth = 0;
@@ -67,6 +69,7 @@ public:
 	inline static std::atomic<uint64_t> resourceTasksElapsedUs = 0;
 	inline static std::atomic<uint64_t> resourceTasksMaxElapsedUs = 0;
 	inline static std::atomic<uint64_t> resourceTaskStatsSerial = 0;
+	inline static uint64_t activeTasks = 0;
 
 	static void Start();
 	static void Stop();
@@ -94,9 +97,12 @@ public:
 		const char *source);
 	static void DrainForSnapshot(const char *reason);
 	static size_t PendingCount();
+	static UINT64 LastSubmittedSequence();
 
 	static void WorkerLoop();
 	static void DrainPending(const char *reason);
+	static void WaitForSubmittedSequence(UINT64 targetSequence, const char *reason);
+	static void WaitForIdle(const char *reason);
 	static void ProcessTask(DX12ResourceCollectTask *task, const char *source);
 	static void ProcessResourceTask(DX12ResourceCollectTask *task, const char *source);
 	static void ProcessResourceBarrierTask(DX12ResourceCollectTask *task, const char *source);
