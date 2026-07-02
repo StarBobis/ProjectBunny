@@ -268,6 +268,7 @@ extern UINT64 gBufferResolveCacheInvalidationEntries;
 extern UINT64 gBufferResolveTlsHits;
 extern UINT64 gBufferResolveGlobalHits;
 extern UINT64 gBufferResolveBackwardScanHits;
+extern UINT64 gBufferResolveFallbackScanHits;
 extern UINT64 gBufferResolveMisses;
 extern UINT64 gBufferResolveGenerationResets;
 extern UINT64 gResourceExclusiveLockSlowCount;

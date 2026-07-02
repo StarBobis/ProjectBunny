@@ -53,6 +53,7 @@ UINT64 gBufferResolveTlsHits = 0;
 UINT64 gBufferResolveGlobalHits = 0;
 UINT64 gBufferResolveBackwardScanHits = 0;
 UINT64 gBufferResolveMisses = 0;
+UINT64 gBufferResolveFallbackScanHits = 0;
 UINT64 gBufferResolveGenerationResets = 0;
 UINT64 gResourceExclusiveLockSlowCount = 0;
 UINT64 gResourceExclusiveLockSlowMaxUs = 0;
@@ -532,6 +533,16 @@ void RecordResource(
 		record.size = record.desc.Width;
 		record.gpuVirtualAddressRealEnd = record.gpuVirtualAddress + record.size;
 		record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
+		if (record.gpuVirtualAddress == 0 && record.size > 0) {
+			DX12FrameAnalysis::LogJsonFunc("TrackedBufferResourceZeroGpuVa",
+				"\"resource\":\"%p\",\"size\":%llu,\"heapType\":%u,\"hasHeapType\":%u,\"dimension\":%u,\"format\":%u",
+				resource,
+				static_cast<unsigned long long>(record.size),
+				record.hasHeapType ? static_cast<UINT>(record.heapType) : UINT_MAX,
+				record.hasHeapType ? 1 : 0,
+				static_cast<UINT>(record.desc.Dimension),
+				static_cast<UINT>(record.desc.Format));
+		}
 		if (placedInfo && placedInfo->hasPlacedHeap) {
 			record.hasPlacedHeapRange = true;
 			record.placedHeapOffset = placedInfo->heapOffset;
@@ -1144,7 +1155,7 @@ void LogResourceTrackerStatsLocked()
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"descriptorCopySpanFastPathCalls\":%llu,\"descriptorCopySpanFastPathSlots\":%llu,\"descriptorCopySpanFallbackCalls\":%llu,"
 		"\"bufferResolveCacheEntries\":%zu,\"bufferResolveGeneration\":%llu,"
-		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
+		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveFallbackScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
 		"\"resourceExclusiveLockSlowCount\":%llu,\"resourceExclusiveLockSlowMaxUs\":%llu,\"descriptorExclusiveLockSlowCount\":%llu,\"descriptorExclusiveLockSlowMaxUs\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
 		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
@@ -1171,6 +1182,7 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gBufferResolveTlsHits),
 		static_cast<unsigned long long>(gBufferResolveGlobalHits),
 		static_cast<unsigned long long>(gBufferResolveBackwardScanHits),
+		static_cast<unsigned long long>(gBufferResolveFallbackScanHits),
 		static_cast<unsigned long long>(gBufferResolveMisses),
 		static_cast<unsigned long long>(gBufferResolveGenerationResets),
 		static_cast<unsigned long long>(gResourceExclusiveLockSlowCount),
