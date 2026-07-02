@@ -303,7 +303,10 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 {
 	if (!resource)
 		return;
-	auto found = gResourceByPtr.find(resource);
+	ID3D12Resource *canonical = CanonicalResource(resource);
+	auto found = gResourceByPtr.find(canonical);
+	if (found == gResourceByPtr.end())
+		found = gResourceByPtr.find(resource);
 	if (found == gResourceByPtr.end() || found->second >= gResources.size())
 		return;
 
@@ -311,6 +314,16 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	ResourceRecord &record = gResources[index];
 	if (!record.resource)
 		return;
+	if (record.resource != resource && record.resource != canonical) {
+		DX12LogManager::DebugJsonFunc("DX12ResourceInvalidateSkipped",
+			"\"reason\":\"resource_mismatch\",\"resource\":\"%p\",\"canonical\":\"%p\",\"recordResource\":\"%p\",\"index\":%zu",
+			resource,
+			canonical,
+			record.resource,
+			index);
+		return;
+	}
+	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
 	if (record.gpuVirtualAddress)
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
 	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
@@ -323,6 +336,13 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)
 		gLiveResourceCount--;
+	DX12LogManager::DebugJsonFunc("DX12ResourceInvalidated",
+		"\"resource\":\"%p\",\"canonical\":\"%p\",\"index\":%zu,\"gpuVa\":\"0x%llx\",\"liveResources\":%zu",
+		resource,
+		canonical,
+		index,
+		static_cast<unsigned long long>(invalidatedGpuVa),
+		gLiveResourceCount);
 	gBufferResolveCache.clear();
 	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 }

@@ -234,6 +234,12 @@ public:
 		UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
 		const DX12BufferResourceSummary &existingResource, bool existingResolved,
 		DX12BufferResourceSummary *resource);
+	static bool ResolveIaBufferResourceSummaryFromCombinedRange(
+		UINT64 viewGpuVa,
+		UINT64 viewSize,
+		UINT64 drawGpuVa,
+		UINT64 drawSize,
+		DX12BufferResourceSummary *resource);
 	static bool ResolveIaBufferResourceSummary(
 		const DX12FrameIaBufferBinding &buffer, DX12BufferResourceSummary *resource);
 	static void AddFrameIaBufferRow(std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId, const BindingEvent &event, const char *role, UINT slot);

@@ -258,11 +258,82 @@ bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
 		if (DX12ResolveBufferResourceByGpuVa(drawGpuVa, drawSize, &drawResource) &&
 			DX12BindingFrameExport::ProjectResolvedIaResourceToView(
 				viewGpuVa, viewSize, drawGpuVa, drawSize, drawResource, resource)) {
+#if defined(_DEBUG)
+			DX12FrameAnalysis::LogJsonFunc("IaBufferResolveFallback",
+				"\"mode\":\"draw_range\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"resource\":\"%p\"",
+				static_cast<unsigned long long>(viewGpuVa),
+				static_cast<unsigned long long>(viewSize),
+				static_cast<unsigned long long>(drawGpuVa),
+				static_cast<unsigned long long>(drawSize),
+				resource->resource);
+#endif
 			return true;
 		}
 	}
 
+	if (DX12BindingFrameExport::ResolveIaBufferResourceSummaryFromCombinedRange(
+			viewGpuVa,
+			viewSize,
+			drawGpuVa,
+			drawSize,
+			resource)) {
+#if defined(_DEBUG)
+		DX12FrameAnalysis::LogJsonFunc("IaBufferResolveFallback",
+			"\"mode\":\"combined_range\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"resource\":\"%p\"",
+			static_cast<unsigned long long>(viewGpuVa),
+			static_cast<unsigned long long>(viewSize),
+			static_cast<unsigned long long>(drawGpuVa),
+			static_cast<unsigned long long>(drawSize),
+			resource->resource);
+#endif
+		return true;
+	}
+
 	return false;
+}
+
+bool DX12BindingFrameExport::ResolveIaBufferResourceSummaryFromCombinedRange(
+	UINT64 viewGpuVa,
+	UINT64 viewSize,
+	UINT64 drawGpuVa,
+	UINT64 drawSize,
+	DX12BufferResourceSummary *resource)
+{
+	if (!resource || !viewGpuVa || !viewSize)
+		return false;
+
+	UINT64 combinedBegin = viewGpuVa;
+	UINT64 combinedEnd = viewGpuVa + viewSize;
+	if (combinedEnd < combinedBegin)
+		return false;
+
+	if (drawGpuVa && drawSize) {
+		const UINT64 drawEnd = drawGpuVa + drawSize;
+		if (drawEnd >= drawGpuVa) {
+			if (drawGpuVa < combinedBegin)
+				combinedBegin = drawGpuVa;
+			if (drawEnd > combinedEnd)
+				combinedEnd = drawEnd;
+		}
+	}
+
+	if (combinedEnd <= combinedBegin)
+		return false;
+
+	DX12BufferResourceSummary combinedResource = {};
+	if (!DX12ResolveBufferResourceByGpuVa(
+			combinedBegin,
+			combinedEnd - combinedBegin,
+			&combinedResource))
+		return false;
+
+	return DX12BindingFrameExport::ProjectResolvedIaResourceToView(
+		viewGpuVa,
+		viewSize,
+		drawGpuVa,
+		drawSize,
+		combinedResource,
+		resource);
 }
 
 bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
