@@ -289,7 +289,13 @@ static void BuildTextFileName(const std::wstring &fileName, wchar_t *textName, s
 	textName[0] = L'\0';
 	if (fileName.empty())
 		return;
-	wcsncpy_s(textName, textNameCount, fileName.c_str(), _TRUNCATE);
+	const wchar_t *dot = wcsrchr(fileName.c_str(), L'.');
+	if (dot) {
+		const size_t prefixLength = static_cast<size_t>(dot - fileName.c_str());
+		wcsncpy_s(textName, textNameCount, fileName.c_str(), prefixLength);
+	} else {
+		wcsncpy_s(textName, textNameCount, fileName.c_str(), _TRUNCATE);
+	}
 	wcscat_s(textName, textNameCount, L".txt");
 }
 
@@ -450,8 +456,7 @@ static bool WriteDedupedResourceFile(
 	const wchar_t *ext = task.isTexture ? L"dds" : L"buf";
 	const uint32_t hash = HashDumpTaskData(task, mappedData);
 	wchar_t dedupeFileName[MAX_PATH];
-	swprintf_s(dedupeFileName, L"%08x-%s.%s",
-		hash, task.isTexture ? L"texture" : L"buffer", ext);
+	swprintf_s(dedupeFileName, L"%08x.%s", hash, ext);
 	wchar_t dedupePath[MAX_PATH];
 	swprintf_s(dedupePath, L"%s\\%s", dedupeDir, dedupeFileName);
 	if (dedupePathOut) {

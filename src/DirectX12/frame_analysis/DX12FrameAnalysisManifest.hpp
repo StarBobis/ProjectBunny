@@ -125,8 +125,18 @@ public:
 		char hash[16];
 		wchar_t textPath[MAX_PATH];
 		DX12FrameAnalysisManifestFormatUtils::FormatFileHash(filePath, hash, ARRAYSIZE(hash));
-		DX12FrameAnalysisManifestFormatUtils::FormatDedupedTextName(
-			filePath, textPath, ARRAYSIZE(textPath));
+		textPath[0] = L'\0';
+		if (!isTexture) {
+			const wchar_t *name = DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath);
+			const wchar_t *dot = name ? wcsrchr(name, L'.') : nullptr;
+			if (dot) {
+				const size_t prefixLength = static_cast<size_t>(dot - name);
+				wcsncpy_s(textPath, ARRAYSIZE(textPath), name, prefixLength);
+			} else if (name) {
+				wcsncpy_s(textPath, ARRAYSIZE(textPath), name, _TRUNCATE);
+			}
+			wcscat_s(textPath, ARRAYSIZE(textPath), L".txt");
+		}
 
 		char statusJson[64], kindJson[16], hashJson[32], noteJson[128];
 		char fileJson[512], textJson[512];
