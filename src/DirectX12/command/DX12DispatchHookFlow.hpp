@@ -3,6 +3,7 @@
 #include <d3d12.h>
 
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
@@ -177,7 +178,9 @@ public:
 		DX12CommandListRuntimeState fallbackState = {};
 		const DX12CommandListRuntimeState *effectiveState = runtimeState;
 		if (!effectiveState) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
+#endif
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
 			effectiveState = &fallbackState;
 		}
@@ -212,17 +215,41 @@ public:
 			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 	}
 
+	// 缓存 PSO 指针 → CS Hash，避免每 Dispatch 的共享锁 + map 查找
+	static uint64_t GetCachedCsHash(ID3D12PipelineState *pipelineState)
+	{
+		if (!pipelineState)
+			return 0;
+		static std::unordered_map<ID3D12PipelineState*, uint64_t> cache;
+		static volatile LONG cacheGen = 0;
+		static UINT64 lastReloadGen = 0;
+		UINT64 reloadGen = DX12ModGetReloadGeneration();
+		if (reloadGen != lastReloadGen) {
+			cache.clear();
+			lastReloadGen = reloadGen;
+		}
+		auto it = cache.find(pipelineState);
+		if (it != cache.end())
+			return it->second;
+		DX12PsoShaderInfo shaderInfo = {};
+		if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) || !shaderInfo.hasCS)
+			return 0;
+		cache[pipelineState] = shaderInfo.cs;
+		if (cache.size() > 512)
+			cache.clear();
+		return shaderInfo.cs;
+	}
+
 	static bool HasConfiguredPreSkinCs(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12CommandListRuntimeState *runtimeState)
 	{
 		ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState :
 			DX12CommandListRuntime::GetPipelineState(commandList);
-		DX12PsoShaderInfo shaderInfo = {};
-		return pipelineState &&
-			DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) &&
-			shaderInfo.hasCS &&
-			DX12ModShouldTrackPreSkinBindingsForCs(shaderInfo.cs);
+		if (!pipelineState)
+			return false;
+		uint64_t csHash = GetCachedCsHash(pipelineState);
+		return csHash != 0 && DX12ModShouldTrackPreSkinBindingsForCs(csHash);
 	}
 
 	static DX12DispatchPreSkinProbe &ScratchProbe()
@@ -278,25 +305,30 @@ public:
 		DX12DispatchPreSkinProbe *probe)
 	{
 		if (!probe || !DX12ModNeedsPreSkinningUavProbe()) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
+#endif
 			return;
 		}
 
-		DX12PsoShaderInfo shaderInfo = {};
-		if (DX12GetPipelineStateShaderInfo(runtimeState.pipelineState, &shaderInfo) &&
-		    shaderInfo.hasCS)
-			probe->computeShaderHash = shaderInfo.cs;
+		probe->computeShaderHash = GetCachedCsHash(runtimeState.pipelineState);
 		if (!probe->computeShaderHash) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
+#endif
 			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
 			return;
 		}
 
+#if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: cs=%016llx, checking ShouldProbe\n",
 			static_cast<unsigned long long>(probe->computeShaderHash));
+#endif
 
 		if (!DX12ModShouldProbePreSkinningForCs(probe->computeShaderHash)) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit cs not configured\n");
+#endif
 			LogPreSkinDispatchProbeReason(
 				"cs_not_configured", probe->computeShaderHash, 0, 0);
 			return;
@@ -304,17 +336,23 @@ public:
 
 		UINT64 computeBindingSerial =
 			DX12BindingTracker::GetComputeBindingSerial(commandList);
+#if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: serial=%llu\n",
 			static_cast<unsigned long long>(computeBindingSerial));
+#endif
 		if (computeBindingSerial == 0) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: zero serial, using fallback\n");
+#endif
 			computeBindingSerial = 1;
 		} else {
 			bool cachedMatch = false;
 			if (DX12ModHasCachedPreSkinningUavMatch(
 				    commandList, probe->computeShaderHash, computeBindingSerial, &cachedMatch) &&
 			    !cachedMatch) {
+#if defined(_DEBUG)
 				DX12LogManager::Text("PreparePreSkinProbe: exit cached no match\n");
+#endif
 				return;
 			}
 		}
@@ -327,16 +365,20 @@ public:
 		probe->srvsFound = !probe->srvs.empty();
 		probe->cbvsFound = !probe->cbvs.empty();
 		probe->rootConstantsFound = !probe->rootConstants.empty();
+#if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 			probe->uavsFound ? 1 : 0, probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
 
 		if (!probe->srvsFound) {
 			DX12LogManager::Text("PreparePreSkinProbe: warning no_compute_srvs\n");
 		}
+#endif
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
+#if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
+#endif
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
 			probe->uavsFound ? probe->uavs : kEmptyComputeBindings,
