@@ -12,6 +12,125 @@
 #include "DX12ResourceStateTracker.hpp"
 #include "types/DX12ResourceTrackerPrivateDataGuids.hpp"
 #include "types/DX12ResourceTrackerHookSlotTypes.hpp"
+#include "types/DX12ResourceHookSlotTypes.hpp"
+
+// ── Buffer Content Capture via Map/Unmap hooks ───────────────────────
+// Like DX11: capture UPLOAD buffer data at Unmap time so Tier 1
+// (content CRC32) hashing works.  Maps are tracked per-thread.
+struct DX12ResourceMapTracking
+{
+	ID3D12Resource *resource = nullptr;
+	void *data = nullptr;
+	UINT subresource = 0;
+};
+
+static thread_local DX12ResourceMapTracking gActiveMap;
+
+// Hooked Map — records the mapped pointer for later content capture
+static HRESULT STDMETHODCALLTYPE HookedResourceMap(
+	ID3D12Resource *resource,
+	UINT Subresource,
+	const D3D12_RANGE *pReadRange,
+	void **ppData)
+{
+	// Call original first to get the mapped pointer
+	using MapFn = HRESULT(STDMETHODCALLTYPE *)(ID3D12Resource*, UINT, const D3D12_RANGE*, void**);
+	MapFn original = reinterpret_cast<MapFn>(DX12ResourceTrackerHookState::ResourceOriginals.Map);
+	if (!original)
+		return E_FAIL;
+
+	HRESULT hr = original(resource, Subresource, pReadRange, ppData);
+	if (SUCCEEDED(hr) && ppData && *ppData) {
+		// Safety: only track UPLOAD/READBACK buffers (our hook may fire
+		// on other resource types if the driver shares vtables).
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		D3D12_HEAP_FLAGS heapFlags = {};
+		if (SUCCEEDED(resource->GetHeapProperties(&heapProps, &heapFlags)) &&
+		    (heapProps.Type == D3D12_HEAP_TYPE_UPLOAD ||
+		     heapProps.Type == D3D12_HEAP_TYPE_READBACK)) {
+			gActiveMap.resource = resource;
+			gActiveMap.data = *ppData;
+			gActiveMap.subresource = Subresource;
+		}
+	}
+	return hr;
+}
+
+// Hooked Unmap — captures buffer content before unmapping
+static void STDMETHODCALLTYPE HookedResourceUnmap(
+	ID3D12Resource *resource,
+	UINT Subresource,
+	const D3D12_RANGE *pWrittenRange)
+{
+	// Capture content if this resource was previously mapped AND tracked
+	if (gActiveMap.resource == resource &&
+	    gActiveMap.subresource == Subresource &&
+	    gActiveMap.data) {
+		// Determine written size:
+		// D3D12_RANGE: Begin=0, End=0 means entire subresource
+		// D3D12_RANGE: nullptr means nothing written (unlikely for uploads)
+		size_t dataSize = 0;
+		if (pWrittenRange) {
+			dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
+		}
+		if (dataSize == 0) {
+			// Game wrote entire resource — resolve size from resource desc
+			D3D12_RESOURCE_DESC desc = resource->GetDesc();
+			dataSize = static_cast<size_t>(desc.Width);
+		}
+		if (dataSize > 0) {
+			const uint8_t *capturePtr =
+				static_cast<const uint8_t*>(gActiveMap.data);
+			if (pWrittenRange && pWrittenRange->Begin > 0)
+				capturePtr += pWrittenRange->Begin;
+			DX12CacheBufferContent(resource, capturePtr, dataSize);
+		}
+		gActiveMap = DX12ResourceMapTracking();
+	}
+
+	// Call original Unmap
+	using UnmapFn = void(STDMETHODCALLTYPE *)(ID3D12Resource*, UINT, const D3D12_RANGE*);
+	UnmapFn original = reinterpret_cast<UnmapFn>(DX12ResourceTrackerHookState::ResourceOriginals.Unmap);
+	if (original)
+		original(resource, Subresource, pWrittenRange);
+}
+
+// ── Resource VTable Hook Installation ─────────────────────────────────
+void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+
+	D3D12_RESOURCE_DESC desc = resource->GetDesc();
+	if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		return;
+
+	// Only hook UPLOAD/READBACK buffers (CPU-accessible)
+	D3D12_HEAP_PROPERTIES heapProps = {};
+	D3D12_HEAP_FLAGS heapFlags = {};
+	HRESULT hr = resource->GetHeapProperties(&heapProps, &heapFlags);
+	if (FAILED(hr))
+		return;
+	if (heapProps.Type != D3D12_HEAP_TYPE_UPLOAD &&
+	    heapProps.Type != D3D12_HEAP_TYPE_READBACK)
+		return;
+
+	// Install Map/Unmap hooks on this resource (one-shot)
+	DX12VTableHook hooks[] = {
+		{DX12ResourceHookSlotTypes::ID3D12Resource::Map,
+			reinterpret_cast<void**>(&DX12ResourceTrackerHookState::ResourceOriginals.Map),
+			reinterpret_cast<void*>(HookedResourceMap), "ID3D12Resource::Map"},
+		{DX12ResourceHookSlotTypes::ID3D12Resource::Unmap,
+			reinterpret_cast<void**>(&DX12ResourceTrackerHookState::ResourceOriginals.Unmap),
+			reinterpret_cast<void*>(HookedResourceUnmap), "ID3D12Resource::Unmap"},
+	};
+	DX12HookManager::InstallVTableHooks(resource, hooks, ARRAYSIZE(hooks));
+
+	DX12LogManager::DebugJsonFunc("DX12BufferContentHook",
+		"\"stage\":\"installed\",\"resource\":\"0x%p\",\"bytes\":%llu,\"heapType\":%u",
+		resource, static_cast<unsigned long long>(desc.Width),
+		static_cast<UINT>(heapProps.Type));
+}
 
 class DX12ResourceCreateLogUtils
 {
@@ -407,6 +526,10 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 		DX12ResourceCreateLogUtils::LogFallback(d3dResource);
 		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
 	}
+	// ── Install Map/Unmap hooks for buffer content capture ──────────
+	// Covers ALL creation paths (CreateCommittedResource, CreatePlacedResource,
+	// CreateReservedResource, and all _1/_2/_3 variants).
+	InstallMapUnmapHooks(d3dResource);
 }
 
 PlacedResourceInfo DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(

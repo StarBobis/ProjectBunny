@@ -108,4 +108,6 @@ public:
 		const D3D12_HEAP_PROPERTIES *heapProperties,
 		const PlacedResourceInfo *placedInfo,
 		D3D12_BARRIER_LAYOUT initialLayout);
+
+	static void InstallMapUnmapHooks(ID3D12Resource *resource);
 };

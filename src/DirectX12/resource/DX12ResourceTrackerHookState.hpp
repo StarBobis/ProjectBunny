@@ -25,4 +25,10 @@ public:
 	inline static DX12ResourceTrackerHookSignatures::CreateCommittedResource3 OrigCreateCommittedResource3 = nullptr;
 	inline static DX12ResourceTrackerHookSignatures::CreatePlacedResource2 OrigCreatePlacedResource2 = nullptr;
 	inline static DX12ResourceTrackerHookSignatures::CreateReservedResource2 OrigCreateReservedResource2 = nullptr;
+
+	// Per-resource Map/Unmap originals for buffer content capture
+	struct {
+		void *Map = nullptr;
+		void *Unmap = nullptr;
+	} inline static ResourceOriginals;
 };

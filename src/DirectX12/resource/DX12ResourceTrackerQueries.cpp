@@ -443,17 +443,9 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 		static_cast<const uint8_t*>(data) + dataSize);
 	entry.dataSize = dataSize;
 
-	// Resolve GPU VA once to get the base address for this resource
-	DX12BufferResourceSummary summary = {};
-	entry.gpuVaBase = 0;
-	{
-		UINT64 dummySize = dataSize;
-		if (DX12ResolveBufferResourceByGpuVa(
-			resource->GetGPUVirtualAddress(), dummySize, &summary))
-		{
-			entry.gpuVaBase = summary.gpuVirtualAddress;
-		}
-	}
+	// Get the GPU VA base directly (available immediately after creation,
+	// unlike GPU VA resolution which may not be ready if tracking is async).
+	entry.gpuVaBase = resource->GetGPUVirtualAddress();
 
 	AcquireSRWLockExclusive(&gBufferContentLock);
 	gBufferContentByResource[resource] = std::move(entry);
@@ -547,13 +539,28 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &tag, sizeof(tag));
 
 	if (resolved && summary.hasResourceDesc) {
-		// Stable: resource identity + sub-region offset/size
-		D3D12_RESOURCE_DESC desc = summary.resourceDesc;
-		desc.Alignment = 0;
-		hash = HashBytes(hash, &desc, sizeof(desc));
-		if (summary.hasResourceHeapType)
-			hash = HashBytes(hash, &summary.resourceHeapType,
-				sizeof(summary.resourceHeapType));
+		// ── Stable: hash each RESOURCE_DESC field individually ────────
+		// Hashing the raw struct (HashBytes(&desc, sizeof(desc))) is
+		// unstable because D3D12_RESOURCE_DESC contains uninitialized
+		// padding bytes (offset 4-7 between Dimension and Alignment,
+		// and tail padding at offset 52-55).  Field-by-field hashing
+		// eliminates this source of cross-session hash drift.
+		const D3D12_RESOURCE_DESC &desc = summary.resourceDesc;
+		hash = HashBytes(hash, &desc.Dimension, sizeof(desc.Dimension));
+		hash = HashBytes(hash, &desc.Width, sizeof(desc.Width));
+		hash = HashBytes(hash, &desc.Height, sizeof(desc.Height));
+		hash = HashBytes(hash, &desc.DepthOrArraySize, sizeof(desc.DepthOrArraySize));
+		hash = HashBytes(hash, &desc.MipLevels, sizeof(desc.MipLevels));
+		hash = HashBytes(hash, &desc.Format, sizeof(desc.Format));
+		hash = HashBytes(hash, &desc.SampleDesc.Count, sizeof(desc.SampleDesc.Count));
+		hash = HashBytes(hash, &desc.SampleDesc.Quality, sizeof(desc.SampleDesc.Quality));
+		hash = HashBytes(hash, &desc.Layout, sizeof(desc.Layout));
+		hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
+		// Always include heap type (even 0) — conditional inclusion
+		// (hasResourceHeapType) would make the hash differ between
+		// sessions where tracking happened vs. didn't.
+		hash = HashBytes(hash, &summary.resourceHeapType,
+			sizeof(summary.resourceHeapType));
 		hash = HashBytes(hash, &summary.resourceOffset,
 			sizeof(summary.resourceOffset));
 		hash = HashBytes(hash, &summary.viewSize,
