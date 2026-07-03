@@ -8,6 +8,7 @@ class DX12CommandListStateCapture
 {
 public:
 	static bool ShouldTrackBindings();
+	static bool ShouldTrackIaBindings();
 	static bool ShouldRecordBindingEvents();
 	static bool ShouldTrackHuntIa();
 	static bool ShouldTrackPsoState();

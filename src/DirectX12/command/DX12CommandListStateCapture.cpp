@@ -16,6 +16,12 @@ bool DX12CommandListStateCapture::ShouldTrackBindings()
 		DX12ModNeedsShaderDescriptorTracking();
 }
 
+bool DX12CommandListStateCapture::ShouldTrackIaBindings()
+{
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+}
+
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()
 {
 	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
@@ -39,6 +45,7 @@ DX12CommandListTrackingState DX12CommandListStateCapture::MakeTrackingState()
 {
 	DX12CommandListTrackingState state;
 	state.trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+	state.trackIaBindings = DX12CommandListStateCapture::ShouldTrackIaBindings();
 	state.recordBindingEvents = DX12CommandListStateCapture::ShouldRecordBindingEvents();
 	state.trackHuntIa = DX12CommandListStateCapture::ShouldTrackHuntIa();
 	state.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
@@ -61,7 +68,7 @@ void DX12CommandListStateCapture::PrimitiveTopology(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackHuntIa)
 		DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
-	if (tracking.trackBindings)
+	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetPrimitiveTopology(commandList, topology);
 }
 
@@ -255,7 +262,7 @@ void DX12CommandListStateCapture::IndexBuffer(
 {
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackBindings)
+	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetIndexBuffer(commandList, view);
 	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
@@ -267,7 +274,7 @@ void DX12CommandListStateCapture::VertexBuffers(
 {
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackBindings)
+	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
 	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
 		DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);

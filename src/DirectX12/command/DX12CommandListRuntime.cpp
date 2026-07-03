@@ -25,6 +25,7 @@ void DX12CommandListRuntime::RefreshTrackingCache(DX12CommandListTrackingCache &
 {
 	cache.generation = TrackingGenerationValue;
 	cache.trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+	cache.trackIaBindings = DX12CommandListStateCapture::ShouldTrackIaBindings();
 	cache.recordBindingEvents = DX12CommandListStateCapture::ShouldRecordBindingEvents();
 	cache.trackHuntIa = DX12CommandListStateCapture::ShouldTrackHuntIa();
 	cache.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
@@ -85,6 +86,7 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 
 	DX12CommandListTrackingState state;
 	state.trackBindings = cache.trackBindings;
+	state.trackIaBindings = cache.trackIaBindings;
 	state.recordBindingEvents = cache.recordBindingEvents;
 	state.trackHuntIa = cache.trackHuntIa;
 	state.trackPsoState = cache.trackPsoState;
