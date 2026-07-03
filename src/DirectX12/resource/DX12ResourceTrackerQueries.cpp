@@ -418,22 +418,173 @@ uint32_t DX12HashBufferView(
 	return hash;
 }
 
+// ── Buffer Content Cache ──────────────────────────────────────────────
+// Like DX11: cache the actual buffer bytes so IA hashes are based on
+// CONTENT (CRC32 of data), not GPU virtual address.
+// Keyed by GPU VA base of the resource so sub-regions resolve correctly.
+
+struct CachedBufferContent
+{
+	std::vector<uint8_t> data;
+	UINT64 gpuVaBase = 0;
+	UINT64 dataSize = 0;
+};
+
+static std::unordered_map<ID3D12Resource*, CachedBufferContent> gBufferContentByResource;
+static SRWLOCK gBufferContentLock = SRWLOCK_INIT;
+
+bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize)
+{
+	if (!resource || !data || !dataSize)
+		return false;
+
+	CachedBufferContent entry;
+	entry.data.assign(static_cast<const uint8_t*>(data),
+		static_cast<const uint8_t*>(data) + dataSize);
+	entry.dataSize = dataSize;
+
+	// Resolve GPU VA once to get the base address for this resource
+	DX12BufferResourceSummary summary = {};
+	entry.gpuVaBase = 0;
+	{
+		UINT64 dummySize = dataSize;
+		if (DX12ResolveBufferResourceByGpuVa(
+			resource->GetGPUVirtualAddress(), dummySize, &summary))
+		{
+			entry.gpuVaBase = summary.gpuVirtualAddress;
+		}
+	}
+
+	AcquireSRWLockExclusive(&gBufferContentLock);
+	gBufferContentByResource[resource] = std::move(entry);
+	ReleaseSRWLockExclusive(&gBufferContentLock);
+
+#if defined(_DEBUG)
+	DX12LogManager::DebugJsonFunc("DX12BufferContentCache",
+		"\"stage\":\"stored\",\"resource\":\"0x%p\",\"bytes\":%zu,\"gpuVaBase\":\"0x%llx\"",
+		resource, dataSize, static_cast<unsigned long long>(entry.gpuVaBase));
+#endif
+	return true;
+}
+
+bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
+	const uint8_t **outData, size_t *outDataSize)
+{
+	if (!outData || !outDataSize || !gpuVirtualAddress || !size)
+		return false;
+	*outData = nullptr;
+	*outDataSize = 0;
+
+	// Resolve GPU VA to find the owning resource
+	DX12BufferResourceSummary summary = {};
+	if (!DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary))
+		return false;
+	if (!summary.resource)
+		return false;
+
+	AcquireSRWLockShared(&gBufferContentLock);
+	auto it = gBufferContentByResource.find(summary.resource);
+	if (it == gBufferContentByResource.end()) {
+		ReleaseSRWLockShared(&gBufferContentLock);
+		return false;
+	}
+
+	const CachedBufferContent &cached = it->second;
+	const UINT64 offset = gpuVirtualAddress - cached.gpuVaBase;
+	if (offset + size > cached.dataSize) {
+		ReleaseSRWLockShared(&gBufferContentLock);
+		return false;
+	}
+
+	*outData = cached.data.data() + offset;
+	*outDataSize = static_cast<size_t>(size);
+	ReleaseSRWLockShared(&gBufferContentLock);
+	return true;
+}
+
+// ── IA Buffer Hash (Content-Based, like DX11) ──────────────────────────
+// Priority:
+//   1. Content cache hit → CRC32 of actual buffer bytes (stable, like DX11)
+//   2. Resource resolved  → hash on RESOURCE_DESC + offset + viewSize (stable)
+//   3. Fallback           → hash on size + stride + format + slot (NO GPU VA!)
+
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
 {
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
-	DX12BufferResourceSummary summary = {};
-	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary);
-	if (!resolved)
-		return DX12HashBufferView(nullptr, gpuVirtualAddress, size, stride, format, slot);
+	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
+	const uint8_t *contentData = nullptr;
+	size_t contentSize = 0;
+	if (DX12TryGetBufferContent(gpuVirtualAddress, size, &contentData, &contentSize))
+	{
+		uint32_t hash = 0;
+		const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'C');
+		hash = HashBytes(hash, &tag, sizeof(tag));
+		hash = crc32c_append(hash, contentData, contentSize);
+		hash = HashBytes(hash, &stride, sizeof(stride));
+		hash = HashBytes(hash, &format, sizeof(format));
+		hash = HashBytes(hash, &slot, sizeof(slot));
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
+			"\"stage\":\"content_crc32\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
+			"\"stride\":%u,\"format\":%u,\"slot\":%u,\"hash\":\"%08x\"",
+			static_cast<unsigned long long>(gpuVirtualAddress),
+			static_cast<unsigned long long>(size),
+			stride, format, slot, hash);
+#endif
+		return hash;
+	}
 
-	uint32_t hash = DX12HashBufferResourceView(&summary, gpuVirtualAddress, size);
+	// ── Tier 2/3: Metadata-based hash (NO GPU VA) ──────────────────
+	DX12BufferResourceSummary summary = {};
+	const bool resolved = DX12ResolveBufferResourceByGpuVa(
+		gpuVirtualAddress, size, &summary);
+
+	uint32_t hash = 0;
 	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'A');
 	hash = HashBytes(hash, &tag, sizeof(tag));
-	hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
-	hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
+
+	if (resolved && summary.hasResourceDesc) {
+		// Stable: resource identity + sub-region offset/size
+		D3D12_RESOURCE_DESC desc = summary.resourceDesc;
+		desc.Alignment = 0;
+		hash = HashBytes(hash, &desc, sizeof(desc));
+		if (summary.hasResourceHeapType)
+			hash = HashBytes(hash, &summary.resourceHeapType,
+				sizeof(summary.resourceHeapType));
+		hash = HashBytes(hash, &summary.resourceOffset,
+			sizeof(summary.resourceOffset));
+		hash = HashBytes(hash, &summary.viewSize,
+			sizeof(summary.viewSize));
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
+			"\"stage\":\"resolved\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
+			"\"offset\":%llu,\"viewSize\":%llu,\"stride\":%u,\"format\":%u,"
+			"\"slot\":%u,\"hash\":\"%08x\"",
+			static_cast<unsigned long long>(gpuVirtualAddress),
+			static_cast<unsigned long long>(size),
+			static_cast<unsigned long long>(summary.resourceOffset),
+			static_cast<unsigned long long>(summary.viewSize),
+			stride, format, slot, hash);
+#endif
+	} else {
+		// Fallback: buffer properties only, NO GPU VA
+		// Two different buffers with same size+stride+format+slot
+		// would collide, but in practice each mesh has unique sizes.
+		hash = HashBytes(hash, &size, sizeof(size));
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
+			"\"stage\":\"fallback_no_gpuva\",\"gpuVa\":\"0x%llx\","
+			"\"size\":%llu,\"stride\":%u,\"format\":%u,\"slot\":%u,"
+			"\"hash\":\"%08x\"",
+			static_cast<unsigned long long>(gpuVirtualAddress),
+			static_cast<unsigned long long>(size),
+			stride, format, slot, hash);
+#endif
+	}
+
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));

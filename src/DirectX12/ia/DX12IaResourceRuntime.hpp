@@ -225,34 +225,63 @@ static bool FindIaTextureOverridesCachedLocked(
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance, preSkinGeneration);
-	if (TryFindCachedIaTextureOverrideLocked(key, configs))
+	if (TryFindCachedIaTextureOverrideLocked(key, configs)) {
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaOverrideLookup",
+			"\"stage\":\"cache_hit\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\",\"found\":%s",
+			indexBuffer ? "ib" : "vb", vertexSlot, hash,
+			(configs && !configs->empty()) ? "true" : "false");
+#endif
 		return configs && !configs->empty();
+	}
 
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverrideCandidatesLocked(hash, indexBuffer, vertexSlot);
 	if (!candidateIndexes || candidateIndexes->empty()) {
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaOverrideLookup",
+			"\"stage\":\"no_candidates\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\"",
+			indexBuffer ? "ib" : "vb", vertexSlot, hash);
+#endif
 		StoreIaTextureOverrideLookupCacheLocked(key, std::vector<size_t>());
 		return false;
 	}
 
 	std::vector<size_t> matchedIndexes;
+	size_t filteredByMatchCs = 0;
+	size_t filteredByIaBinding = 0;
+	size_t filteredByDrawContext = 0;
 	for (size_t index : *candidateIndexes) {
 		if (index >= gIaTextureOverrides.size())
 			continue;
 		const DX12IaTextureOverrideCandidate &candidate = gIaTextureOverrides[index];
 		const Bunny::TextureOverrideConfig &config = candidate.config;
-		if (!TextureOverrideMatchCsSatisfied(config, activePreSkinSections))
+		if (!TextureOverrideMatchCsSatisfied(config, activePreSkinSections)) {
+			filteredByMatchCs++;
 			continue;
-		if (!TextureOverrideMatchesIaBinding(config, indexBuffer, vertexSlot))
+		}
+		if (!TextureOverrideMatchesIaBinding(config, indexBuffer, vertexSlot)) {
+			filteredByIaBinding++;
 			continue;
+		}
 		if (!TextureOverrideMatchesDrawContext(
 			config, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance))
+			firstVertex, firstIndex, firstInstance)) {
+			filteredByDrawContext++;
 			continue;
+		}
 		matchedIndexes.push_back(index);
 		if (configs)
 			configs->push_back(config);
 	}
+
+#if defined(_DEBUG)
+	DX12LogManager::DebugJsonFunc("DX12IaOverrideLookup",
+		"\"stage\":\"candidates_filtered\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\",\"candidates\":%zu,\"matched\":%zu,\"filteredByMatchCs\":%zu,\"filteredByIaBinding\":%zu,\"filteredByDrawContext\":%zu",
+		indexBuffer ? "ib" : "vb", vertexSlot, hash,
+		candidateIndexes->size(), matchedIndexes.size(),
+		filteredByMatchCs, filteredByIaBinding, filteredByDrawContext);
+#endif
 
 	StoreIaTextureOverrideLookupCacheLocked(key, matchedIndexes);
 	return !matchedIndexes.empty();
@@ -699,22 +728,47 @@ static bool FindTargetTextureOverride(
 	if (configs)
 		configs->clear();
 	if (target.kind == Bunny::CommandListTargetKind::IndexBuffer) {
-		if (!iaState.hasIndexBuffer || !iaState.indexHash)
+		if (!iaState.hasIndexBuffer || !iaState.indexHash) {
+#if defined(_DEBUG)
+			DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
+				"\"target\":\"ib\",\"result\":\"no_ib\",\"hash\":\"%08x\"", iaState.indexHash);
+#endif
 			return false;
-		return FindIaTextureOverridesCached(
+		}
+		bool found = FindIaTextureOverridesCached(
 			target, iaState.indexHash,
 			vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, 0, true, 0, configs);
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
+			"\"target\":\"ib\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
+			iaState.indexHash, found ? "true" : "false",
+			configs ? configs->size() : 0);
+#endif
+		return found;
 	}
 
 	if (target.kind == Bunny::CommandListTargetKind::VertexBuffer) {
 		const DX12IaBufferHash *slot = FindIaVertexSlot(iaState, target.slot);
+#if defined(_DEBUG)
+		if (!slot || !slot->hash) {
+			DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
+				"\"target\":\"vb%u\",\"result\":\"no_slot\"", target.slot);
+		}
+#endif
 		if (!slot || !slot->hash)
 			return false;
-		return FindIaTextureOverridesCached(
+		bool found = FindIaTextureOverridesCached(
 			target, slot->hash,
 			vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, 0, false, target.slot, configs);
+#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
+			"\"target\":\"vb%u\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
+			target.slot, slot->hash, found ? "true" : "false",
+			configs ? configs->size() : 0);
+#endif
+		return found;
 	}
 
 	if (target.kind == Bunny::CommandListTargetKind::ConstantBuffer ||
