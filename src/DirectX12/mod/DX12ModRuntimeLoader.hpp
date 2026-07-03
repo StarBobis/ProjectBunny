@@ -1111,6 +1111,11 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
+
+	DX12LogManager::DebugJsonFunc("DX12ModRuntimeLoadParse",
+		"\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu",
+		shaderOverrides.size(), shaderRegexes.size(), textureOverrides.size(), resources.size(), commandLists.size());
+
 	std::vector<DX12VertexLimitRaiseConfig> vertexLimitRaiseConfigs =
 		CollectVertexLimitRaiseConfigs(textureOverrides);
 	bool hasPreSkinTextureOverrideCandidates =
@@ -1124,6 +1129,13 @@ bool DX12ModRuntimeLoad(
 		 ShaderRegexesHaveTextureOverrideTrigger(shaderRegexes, commandLists));
 	bool hasExecutableShaderRegexes =
 		ShaderRegexesHaveExecutableNoPatternGroup(shaderRegexes);
+
+	DX12LogManager::DebugJsonFunc("DX12ModRuntimeLoadFlags",
+		"\"hasShaderTriggeredTextureOverrides\":%s,\"hasExecutableShaderRegexes\":%s,\"hasPreSkinCandidates\":%s",
+		hasShaderTriggeredTextureOverrides ? "true" : "false",
+		hasExecutableShaderRegexes ? "true" : "false",
+		hasPreSkinTextureOverrideCandidates ? "true" : "false");
+
 	bool hasShaderDescriptorTextureOverrideTriggers =
 		hasShaderTriggeredTextureOverrides &&
 		(ShaderOverridesHaveDescriptorTextureOverrideTrigger(shaderOverrides, commandLists) ||
