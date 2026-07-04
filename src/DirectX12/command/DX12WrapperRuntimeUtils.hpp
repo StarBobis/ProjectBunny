@@ -653,12 +653,19 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
-		static const DX12IaReplacementExecutorCallbacks directCallbacks = MakeDirectIaReplacementCallbacks();
-		const DX12IaReplacementExecutorCallbacks &iaCallbacks = directCallbacks;
+		// Use pre-hook original as callback to bypass vtable hook.
+		// Falls back to DirectDrawInstanced (hooked vtable) only if original is null.
+		DX12IaReplacementExecutorCallbacks callbacks;
+		callbacks.drawInstanced = original ? reinterpret_cast<DX12IaCommandSignatures::DrawInstanced>(original) : DirectDrawInstanced;
+		callbacks.drawIndexedInstanced = DirectDrawIndexedInstanced;
+		callbacks.dispatch = DirectDispatch;
+		callbacks.setIndexBuffer = DirectSetIndexBuffer;
+		callbacks.setVertexBuffers = DirectSetVertexBuffers;
+		callbacks.recordReplacementDraw = DX12CommandListHookDiagnostics::RecordIaReplacementDrawExecute;
+		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
 			vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
-		(void)original;
-		DX12DrawHookFlow::ExecuteHook(commandList, draw, iaCallbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, draw, callbacks);
 	}
 
 	static void DrawIndexedInstanced(
@@ -670,12 +677,17 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawIndexedInstanced original)
 	{
-		static const DX12IaReplacementExecutorCallbacks directCallbacks = MakeDirectIaReplacementCallbacks();
-		const DX12IaReplacementExecutorCallbacks &iaCallbacks = directCallbacks;
+		DX12IaReplacementExecutorCallbacks callbacks;
+		callbacks.drawInstanced = DirectDrawInstanced;
+		callbacks.drawIndexedInstanced = original ? reinterpret_cast<DX12IaCommandSignatures::DrawIndexedInstanced>(original) : DirectDrawIndexedInstanced;
+		callbacks.dispatch = DirectDispatch;
+		callbacks.setIndexBuffer = DirectSetIndexBuffer;
+		callbacks.setVertexBuffers = DirectSetVertexBuffers;
+		callbacks.recordReplacementDraw = DX12CommandListHookDiagnostics::RecordIaReplacementDrawExecute;
+		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 			indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
-		(void)original;
-		DX12DrawHookFlow::ExecuteHook(commandList, draw, iaCallbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, draw, callbacks);
 	}
 
 	static void Dispatch(

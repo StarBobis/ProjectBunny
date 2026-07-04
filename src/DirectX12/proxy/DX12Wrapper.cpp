@@ -6,8 +6,11 @@
 
 #include <d3d12sdklayers.h>
 
+#include "DX12CommandListHookRegistry.hpp"
+#include "DX12CommandListHookSlotTypes.hpp"
 #include "DX12CommandListHookState.hpp"
 #include "DX12DeviceHookTypes.hpp"
+#include "DX12HotPathState.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12WrapperRuntimeUtils.hpp"
 #include "DX12ModRuntime.hpp"
@@ -4760,10 +4763,48 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12GraphicsCommandList8*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12GraphicsCommandList9*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12GraphicsCommandList10*>(this));
-				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"graphics_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
-					this, commandList);
-			}
+
+			// Resolve pre-hook original function pointers to bypass vtable hooks.
+			// Eliminates double interception: wrapper callbacks call originals
+			// directly instead of going through hooked vtable -> second hook cycle.
+			mOrigDrawInstanced = ResolveOriginalDrawInstanced();
+			mOrigDrawIndexedInstanced = ResolveOriginalDrawIndexedInstanced();
+			mOrigDispatch = ResolveOriginalDispatch();
+
+			DX12LogManager::JsonFunc("DX12Wrapper",
+				"\"kind\":\"graphics_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+				this, commandList);
+		}
+
+		DX12CommandListHookSignatures::DrawInstanced ResolveOriginalDrawInstanced()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::DrawInstanced>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced,
+				DX12CommandListHookState::OrigDrawInstanced,
+				"DrawInstanced");
+		}
+
+		DX12CommandListHookSignatures::DrawIndexedInstanced ResolveOriginalDrawIndexedInstanced()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::DrawIndexedInstanced>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced,
+				DX12CommandListHookState::OrigDrawIndexedInstanced,
+				"DrawIndexedInstanced");
+		}
+
+		DX12CommandListHookSignatures::Dispatch ResolveOriginalDispatch()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::Dispatch>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch,
+				DX12CommandListHookState::OrigDispatch,
+				"Dispatch");
+		}
 
 			HRESULT QueryCommandList1(ID3D12GraphicsCommandList1 **commandList)
 			{
@@ -4935,38 +4976,53 @@ namespace DX12Wrapper
 				UINT VertexCountPerInstance, UINT InstanceCount,
 				UINT StartVertexLocation, UINT StartInstanceLocation) override
 			{
-				DX12WrapperRuntimeUtils::DrawInstanced(
-					mCommandList,
-					VertexCountPerInstance,
-					InstanceCount,
-					StartVertexLocation,
-					StartInstanceLocation,
-					mOrigDrawInstanced);
+			// Fast-path: skipAll + resolved original -> call driver directly, bypass hook entirely
+			if (DX12HotPathState::skipAll && mOrigDrawInstanced) {
+				mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
+					StartVertexLocation, StartInstanceLocation);
+				return;
 			}
+			DX12WrapperRuntimeUtils::DrawInstanced(
+				mCommandList,
+				VertexCountPerInstance,
+				InstanceCount,
+				StartVertexLocation,
+				StartInstanceLocation,
+				mOrigDrawInstanced);
+		}
 
-			void STDMETHODCALLTYPE DrawIndexedInstanced(
-				UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation,
-				INT BaseVertexLocation, UINT StartInstanceLocation) override
-			{
-				DX12WrapperRuntimeUtils::DrawIndexedInstanced(
-					mCommandList,
-					IndexCountPerInstance,
-					InstanceCount,
-					StartIndexLocation,
-					BaseVertexLocation,
-					StartInstanceLocation,
-					mOrigDrawIndexedInstanced);
+		void STDMETHODCALLTYPE DrawIndexedInstanced(
+			UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation,
+			INT BaseVertexLocation, UINT StartInstanceLocation) override
+		{
+			if (DX12HotPathState::skipAll && mOrigDrawIndexedInstanced) {
+				mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
+					StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
+				return;
 			}
+			DX12WrapperRuntimeUtils::DrawIndexedInstanced(
+				mCommandList,
+				IndexCountPerInstance,
+				InstanceCount,
+				StartIndexLocation,
+				BaseVertexLocation,
+				StartInstanceLocation,
+				mOrigDrawIndexedInstanced);
+		}
 
-			void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
-			{
-				DX12WrapperRuntimeUtils::Dispatch(
-					mCommandList,
-					ThreadGroupCountX,
-					ThreadGroupCountY,
-					ThreadGroupCountZ,
-					mOrigDispatch);
+		void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
+		{
+			if (DX12HotPathState::skipAll && mOrigDispatch) {
+				mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+				return;
 			}
+			DX12WrapperRuntimeUtils::Dispatch(
+				mCommandList,
+				ThreadGroupCountX,
+				ThreadGroupCountY,
+				ThreadGroupCountZ,
+				mOrigDispatch);
+		}
 
 			void STDMETHODCALLTYPE CopyBufferRegion(
 				ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer,
