@@ -380,7 +380,11 @@ inline void DX12Profiling::InitState()
 {
 	QueryPerformanceFrequency(&perfFrequency);
 	InterlockedExchange(&collectCounters, 1);
+#if defined(_DEBUG)
+	InterlockedExchange(&collectTiming, 1);
+#else
 	InterlockedExchange(&collectTiming, 0);
+#endif
 }
 
 inline void DX12Profiling::BeginFrameState()

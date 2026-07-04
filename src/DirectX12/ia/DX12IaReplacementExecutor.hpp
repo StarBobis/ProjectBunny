@@ -116,11 +116,24 @@ public:
 		if (!DX12ModHasActiveShaderOverrides())
 			return false;
 
-		// PSO 级提前退出：若该 PSO 已缓存且无匹配 shader override 配置，
-		// 则跳过后续 IA hash 计算，直接返回。
-		if (runtimeState.pipelineState &&
-		    !DX12ModHasShaderOverridesForPso(runtimeState.pipelineState))
-			return false;
+		// PSO 级提前退出：利用 runtimeState 缓存的 PSO 标志，避免每 draw 获取 gModLock。
+		// 缓存在 tracking generation 变化时自动失效（通过 generation 比对）。
+		if (runtimeState.pipelineState) {
+			const LONG gen = static_cast<LONG>(DX12CommandListRuntime::TrackingGeneration());
+			const LONG cachedGen = InterlockedCompareExchange(
+				const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), 0, 0);
+			if (cachedGen == gen) {
+				if (!runtimeState.psoHasShaderOverrides)
+					return false;
+			} else {
+				const bool hasOverrides = DX12ModHasShaderOverridesForPso(runtimeState.pipelineState);
+				InterlockedExchange(
+					const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), gen);
+				const_cast<DX12CommandListRuntimeState&>(runtimeState).psoHasShaderOverrides = hasOverrides;
+				if (!hasOverrides)
+					return false;
+			}
+		}
 
 		DX12Profiling::RecordIaDrawOverrideCheck();
 		DX12ModIaReplacement iaReplacement;

@@ -506,46 +506,94 @@ uint32_t DX12HashIaBufferView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
-	// ── TLS 缓存: 同一 IA buffer 只 hash 一次 ─────────────────────
-	// DX11 对齐: 使用 unordered_map 替代固定数组，消除 thrashing。
-	// Key = composite UINT64 编码 (gpuVa, size)，避免 hash 碰撞。
-	// 每帧 buffer resolve generation 变化时整体清空。
-	struct IaHashKey {
+	// ── DX11 对齐: 双级 TLS 缓存 ──────────────────────────────────
+	// L1: gpuVa-based key — 快速捕捉时间局部性（同一 gpuVa 重复出现）
+	// L2: resource-based key — 稳定捕捉 buffer 级复用（同一 buffer 不同 offset）
+	//     对齐 DX11 的 (ID3D11Buffer*, offset, size) 模式。
+	// 帧级失效：present count 变化时清空。
+
+	// -- L1 key (gpuVa-based) --
+	struct IaHashKeyL1 {
 		UINT64 gpuVa; UINT64 sz; UINT str; UINT fmt; UINT sl;
-		bool operator==(const IaHashKey &o) const {
+		bool operator==(const IaHashKeyL1 &o) const {
 			return gpuVa == o.gpuVa && sz == o.sz && str == o.str && fmt == o.fmt && sl == o.sl;
 		}
 	};
-	struct IaHashKeyHasher {
-		size_t operator()(const IaHashKey &k) const {
+	struct IaHashKeyL1Hasher {
+		size_t operator()(const IaHashKeyL1 &k) const {
 			return static_cast<size_t>(k.gpuVa ^ (k.gpuVa >> 32) ^ k.sz ^ (k.sz >> 32) ^
 				(static_cast<UINT64>(k.str) << 20) ^ (static_cast<UINT64>(k.fmt) << 28) ^
 				(static_cast<UINT64>(k.sl) << 36));
 		}
 	};
-	static thread_local std::unordered_map<IaHashKey, uint32_t, IaHashKeyHasher> s_cache;
-	static thread_local UINT64 s_cacheGen = 0;
-	UINT64 gen = gBufferResolveGeneration.load(std::memory_order_relaxed);
-	if (s_cacheGen != gen) { s_cache.clear(); s_cacheGen = gen; }
 
-	IaHashKey cacheKey = { gpuVirtualAddress, size, stride, format, slot };
-	auto it = s_cache.find(cacheKey);
-	if (it != s_cache.end())
-		return it->second;
+	// -- L2 key (resource-based, aligns with DX11) --
+	struct IaHashKeyL2 {
+		void *resource; UINT64 offset; UINT64 viewSz; UINT str; UINT fmt; UINT sl;
+		bool operator==(const IaHashKeyL2 &o) const {
+			return resource == o.resource && offset == o.offset && viewSz == o.viewSz &&
+				str == o.str && fmt == o.fmt && sl == o.sl;
+		}
+	};
+	struct IaHashKeyL2Hasher {
+		size_t operator()(const IaHashKeyL2 &k) const {
+			UINT64 h = reinterpret_cast<UINT64>(k.resource);
+			return static_cast<size_t>(h ^ (h >> 32) ^ k.offset ^ (k.offset >> 32) ^
+				k.viewSz ^ (k.viewSz >> 32) ^
+				(static_cast<UINT64>(k.str) << 20) ^ (static_cast<UINT64>(k.fmt) << 28) ^
+				(static_cast<UINT64>(k.sl) << 36));
+		}
+	};
+
+	static thread_local std::unordered_map<IaHashKeyL1, uint32_t, IaHashKeyL1Hasher> s_cacheL1;
+	static thread_local std::unordered_map<IaHashKeyL2, uint32_t, IaHashKeyL2Hasher> s_cacheL2;
+	static thread_local LONG s_cachePresent = -1;
+	LONG present = DX12RuntimeState::GetPresentCount();
+	if (s_cachePresent != present) { s_cacheL1.clear(); s_cacheL2.clear(); s_cachePresent = present; }
+
+	// -- L1 lookup (gpuVa-based, fastest) --
+	IaHashKeyL1 keyL1 = { gpuVirtualAddress, size, stride, format, slot };
+	auto itL1 = s_cacheL1.find(keyL1);
+	if (itL1 != s_cacheL1.end())
+		return itL1->second;
+
+	// -- L2 lookup (resource-based, stable across draws) --
+	// 对齐 DX11: 用 (resource, offset, viewSize) 替代 gpuVa
+	DX12BufferResourceSummary summary = {};
+	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary);
+	if (resolved && summary.resource) {
+		IaHashKeyL2 keyL2 = { summary.resource,
+			summary.resourceOffset, summary.viewSize,
+			stride, format, slot };
+		auto itL2 = s_cacheL2.find(keyL2);
+		if (itL2 != s_cacheL2.end()) {
+			// L2 命中 → 提升到 L1（下次相同 gpuVa 直接命中）
+			s_cacheL1[keyL1] = itL2->second;
+			return itL2->second;
+		}
+	}
+
+	// -- 两级缓存都 miss → 计算 hash --
+	uint32_t hash = 0;
 
 	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
 	const uint8_t *contentData = nullptr;
 	size_t contentSize = 0;
 	if (DX12TryGetBufferContent(gpuVirtualAddress, size, &contentData, &contentSize))
 	{
-		uint32_t hash = 0;
 		const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'C');
 		hash = HashBytes(hash, &tag, sizeof(tag));
 		hash = crc32c_append(hash, contentData, contentSize);
 		hash = HashBytes(hash, &stride, sizeof(stride));
 		hash = HashBytes(hash, &format, sizeof(format));
 		hash = HashBytes(hash, &slot, sizeof(slot));
-		s_cache[cacheKey] = hash;
+		s_cacheL1[keyL1] = hash;
+		if (resolved && summary.resource) {
+			IaHashKeyL2 keyL2 = { summary.resource,
+				summary.resourceOffset, summary.viewSize,
+				stride, format, slot };
+			s_cacheL2[keyL2] = hash;
+		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
 			"\"stage\":\"content_crc32\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
@@ -557,22 +605,11 @@ uint32_t DX12HashIaBufferView(
 		return hash;
 	}
 
-	// ── Tier 2/3: Metadata-based hash (NO GPU VA) ──────────────────
-	DX12BufferResourceSummary summary = {};
-	const bool resolved = DX12ResolveBufferResourceByGpuVa(
-		gpuVirtualAddress, size, &summary);
-
-	uint32_t hash = 0;
+	// ── Tier 2/3: Metadata-based hash ───────────────────────────────
 	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'A');
 	hash = HashBytes(hash, &tag, sizeof(tag));
 
 	if (resolved && summary.hasResourceDesc) {
-		// ── Stable: hash each RESOURCE_DESC field individually ────────
-		// Hashing the raw struct (HashBytes(&desc, sizeof(desc))) is
-		// unstable because D3D12_RESOURCE_DESC contains uninitialized
-		// padding bytes (offset 4-7 between Dimension and Alignment,
-		// and tail padding at offset 52-55).  Field-by-field hashing
-		// eliminates this source of cross-session hash drift.
 		const D3D12_RESOURCE_DESC &desc = summary.resourceDesc;
 		hash = HashBytes(hash, &desc.Dimension, sizeof(desc.Dimension));
 		hash = HashBytes(hash, &desc.Width, sizeof(desc.Width));
@@ -584,15 +621,9 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &desc.SampleDesc.Quality, sizeof(desc.SampleDesc.Quality));
 		hash = HashBytes(hash, &desc.Layout, sizeof(desc.Layout));
 		hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
-		// Always include heap type (even 0) �?conditional inclusion
-		// (hasResourceHeapType) would make the hash differ between
-		// sessions where tracking happened vs. didn't.
-		hash = HashBytes(hash, &summary.resourceHeapType,
-			sizeof(summary.resourceHeapType));
-		hash = HashBytes(hash, &summary.resourceOffset,
-			sizeof(summary.resourceOffset));
-		hash = HashBytes(hash, &summary.viewSize,
-			sizeof(summary.viewSize));
+		hash = HashBytes(hash, &summary.resourceHeapType, sizeof(summary.resourceHeapType));
+		hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
+		hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
 			"\"stage\":\"resolved\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
@@ -605,9 +636,6 @@ uint32_t DX12HashIaBufferView(
 			stride, format, slot, hash);
 #endif
 	} else {
-		// Fallback: buffer properties only, NO GPU VA
-		// Two different buffers with same size+stride+format+slot
-		// would collide, but in practice each mesh has unique sizes.
 		hash = HashBytes(hash, &size, sizeof(size));
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
@@ -623,7 +651,15 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));
-	s_cache[cacheKey] = hash;
+
+	// 写入双级缓存
+	s_cacheL1[keyL1] = hash;
+	if (resolved && summary.resource) {
+		IaHashKeyL2 keyL2 = { summary.resource,
+			summary.resourceOffset, summary.viewSize,
+			stride, format, slot };
+		s_cacheL2[keyL2] = hash;
+	}
 	return hash;
 }
 
