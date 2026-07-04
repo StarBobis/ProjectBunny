@@ -99,7 +99,8 @@ public:
 		acc.qpcSum.QuadPart += ticks;
 		InterlockedIncrement(&acc.callCount);
 		LONG us = static_cast<LONG>((ticks * 1000000) / tlsFreq.QuadPart);
-		LONG oldMax = InterlockedCompareExchange(&acc.maxUs, 0, 0);
+		// volatile 读替代 CAS 读 — 此值仅用于日志统计，无需原子性
+		LONG oldMax = acc.maxUs;
 		while (us > oldMax)
 			oldMax = InterlockedCompareExchange(&acc.maxUs, us, oldMax);
 	}

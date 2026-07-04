@@ -68,7 +68,6 @@ public:
 			"ID3D12GraphicsCommandList::SetDescriptorHeaps", commandList,
 			" count=%u", count);
 		DX12CommandListStateCapture::DescriptorHeaps(commandList, cbvSrvUav, sampler);
-		DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 	}
 
 	static void CaptureRootSignature(
@@ -94,8 +93,9 @@ public:
 			DX12CommandListStateCapture::GraphicsRootSignature(commandList, rootSignature);
 		} else {
 			DX12CommandListStateCapture::ComputeRootSignature(commandList, rootSignature);
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		}
+		// ComputeBindingSerial 在 dispatch 时统一 bump（见 DispatchHookFlow::ExecuteHook），
+		// 此处不再 per-call bump，减少 ~500 InterlockedIncrement/帧。
 	}
 
 	static void CaptureRootDescriptorTable(
@@ -127,7 +127,6 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRootDescriptorTable(
 				commandList, rootParameterIndex, baseDescriptor);
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		}
 	}
 
@@ -156,7 +155,6 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRoot32BitConstant(
 				commandList, rootParameterIndex, srcData, destOffset);
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		}
 	}
 
@@ -187,7 +185,6 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRoot32BitConstants(
 				commandList, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		}
 	}
 
@@ -216,7 +213,6 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRootDescriptor(
 				commandList, rootParameterIndex, type, address);
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		}
 	}
 };

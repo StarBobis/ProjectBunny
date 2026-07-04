@@ -175,6 +175,9 @@ public:
 	{
 		if (!originalDispatch)
 			return;
+		// 统一 bump compute binding serial：每 dispatch 一次，替代之前
+		// 每个 binding call 的 InterlockedIncrement（~500 次/帧 → ~33 次/帧）
+		DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
 		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
 		if (InDispatchHookFlow) {

@@ -291,6 +291,8 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	if (!state)
 		return false;
 	*state = DX12IaHashState();
+	// 预分配避免 push_back 触发的多次 heap 分配（277 次/帧 → 0）
+	state->vertexBuffers.reserve(8);
 
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
