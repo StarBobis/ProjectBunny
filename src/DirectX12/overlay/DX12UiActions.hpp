@@ -102,8 +102,7 @@ public:
 			DX12RequestShaderDump();
 		if (HasAction(actions, DX12UiActionBits::ModReload))
 			DX12Input::RequestModReload();
-		if (HasAction(actions, DX12UiActionBits::Profiling))
-			DX12Profiling::Toggle();
+		// Profiling 常驻开启，不再通过按键切换
 		return true;
 	}
 

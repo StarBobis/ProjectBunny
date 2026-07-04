@@ -323,17 +323,30 @@ public:
 			return;
 		}
 
-#if defined(_DEBUG)
-		DX12LogManager::Text("PreparePreSkinProbe: cs=%016llx, checking ShouldProbe\n",
-			static_cast<unsigned long long>(probe->computeShaderHash));
-#endif
-
 		if (!DX12ModShouldProbePreSkinningForCs(probe->computeShaderHash)) {
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit cs not configured\n");
 #endif
 			LogPreSkinDispatchProbeReason(
 				"cs_not_configured", probe->computeShaderHash, 0, 0);
+			return;
+		}
+
+		// 帧级缓存：本帧此 CS 已成功替换过 → 后续 dispatch 直接走原始路径
+		static thread_local std::unordered_set<uint64_t> s_frameProbedCsHashes;
+		static thread_local LONG s_frameProbePresent = -1;
+		LONG present = DX12RuntimeState::GetPresentCount();
+		if (s_frameProbePresent != present) {
+			s_frameProbedCsHashes.clear();
+			s_frameProbePresent = present;
+		}
+		if (s_frameProbedCsHashes.find(probe->computeShaderHash) != s_frameProbedCsHashes.end()) {
+			QueryPerformanceCounter(&t1);
+			QueryPerformanceFrequency(&freq);
+			DX12LogManager::JsonFunc("DX12Perf",
+				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"frame_skip\",\"us\":%lld",
+				static_cast<unsigned long long>(probe->computeShaderHash),
+				static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
 			return;
 		}
 
@@ -404,6 +417,10 @@ public:
 		DX12ModStoreCachedPreSkinningUavMatch(
 			commandList, probe->computeShaderHash, computeBindingSerial,
 			probe->applied, &probe->dispatchOverride);
+
+		// 本帧此 CS 已处理，后续 dispatch 跳过
+		if (probe->applied)
+			s_frameProbedCsHashes.insert(probe->computeShaderHash);
 
 		QueryPerformanceCounter(&t1);
 		QueryPerformanceFrequency(&freq);

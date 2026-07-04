@@ -83,6 +83,17 @@ void DX12ModBeginFrame()
 	LARGE_INTEGER t0, t1;
 	QueryPerformanceCounter(&t0);
 
+	// 帧间隔: Present 到 Present 的真实耗时
+	static LARGE_INTEGER s_lastFrameTime = {};
+	static bool s_hasLastFrame = false;
+	LARGE_INTEGER freq;
+	QueryPerformanceFrequency(&freq);
+	LONG64 frameIntervalUs = 0;
+	if (s_hasLastFrame)
+		frameIntervalUs = (t0.QuadPart - s_lastFrameTime.QuadPart) * 1000000 / freq.QuadPart;
+	s_lastFrameTime = t0;
+	s_hasLastFrame = true;
+
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;
 	AcquireSRWLockExclusive(&gPreSkinLock);
@@ -114,11 +125,12 @@ void DX12ModBeginFrame()
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
 
 	QueryPerformanceCounter(&t1);
-	LARGE_INTEGER freq;
-	QueryPerformanceFrequency(&freq);
 	DX12LogManager::JsonFunc("DX12Perf",
-		"\"scope\":\"ModBeginFrame\",\"us\":%lld",
-		static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
+		"\"scope\":\"ModBeginFrame\",\"us\":%lld,\"frameIntervalUs\":%lld,\"frameDraws\":%ld,\"frameDispatches\":%ld",
+		static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart),
+		static_cast<long long>(frameIntervalUs),
+		DX12RuntimeState::TakeFrameDraws(),
+		DX12RuntimeState::TakeFrameDispatches());
 }
 
 bool DX12ModPreparePresentReplacement(

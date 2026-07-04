@@ -89,7 +89,7 @@ public:
 	volatile LONG BindingQueueDrains = 0;
 	volatile LONG BindingQueueMaxPending = 0;
 
-	Mode mode = Mode::NONE;
+	Mode mode = Mode::SUMMARY;
 	volatile LONG collectCounters = 0;
 	volatile LONG framePresentCount = 0;
 	LARGE_INTEGER frameStartTime = {};
@@ -378,7 +378,7 @@ inline void DX12Profiling::RecordBindingQueueDrainUs(LONG64 elapsedUs, LONG pend
 inline void DX12Profiling::InitState()
 {
 	QueryPerformanceFrequency(&perfFrequency);
-	InterlockedExchange(&collectCounters, 0);
+	InterlockedExchange(&collectCounters, 1);
 }
 
 inline void DX12Profiling::BeginFrameState()
