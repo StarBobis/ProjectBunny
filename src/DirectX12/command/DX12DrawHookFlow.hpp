@@ -35,19 +35,13 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		const bool needsModWork =
-			DX12ModNeedsPresentReplacement() || DX12ModHasActiveShaderOverrides();
-		const bool huntEnabled = DX12HuntIsEnabled();
+		// 使用单一 flags word 替代 9 个独立状态检查
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
+		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
+		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 
-		// 快速路径: 无 draw 级 Mod 工作、无 Hunt、无 Frame Analysis、无 Shader Dump
-		// → 直接执行原始 draw。PreSkin-only 模式下跳过全部 hook 开销。
-		if (!needsModWork && !huntEnabled &&
-		    !DX12FrameAnalysisState::IsActive() &&
-		    !DX12FrameAnalysisState::IsCapturing() &&
-		    !DX12FrameAnalysisState::IsCaptureRequested() &&
-		    !DX12ShaderDumpIsCapturingFrame() &&
-		    !DX12ShaderDumpIsCaptureRequested() &&
-		    !DX12ShaderDumpIsBusy()) {
+		// 快速路径: 无 draw 级工作 → 直接执行原始 draw
+		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 			return;

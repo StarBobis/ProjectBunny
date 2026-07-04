@@ -10,6 +10,7 @@
 bool DX12ShaderDumpIsCapturingFrame();
 bool DX12ShaderDumpIsCaptureRequested();
 bool DX12ShaderDumpIsBusy();
+bool DX12HuntIsEnabled();
 bool DX12HuntNeedsHotPath();
 bool DX12ModHasActiveShaderOverrides();
 bool DX12ModNeedsPresentReplacement();
@@ -25,6 +26,42 @@ public:
 	inline static volatile LONG skipGraphicsBindings = 1;
 	inline static volatile LONG trackResourceMetadata = 0;
 	inline static volatile LONG stateMask = -1;
+
+	// ── 单一 flags word：替代 9 个独立函数调用，一条 if 判断全部 ──
+	// 在 Update() 和 RebuildHookWorkFlags() 中更新，
+	// ExecuteCommandLists 入口处也会刷新确保帧级别一致性。
+	inline static volatile UINT64 HookWorkFlags = 0;
+
+	// bit 定义
+	static constexpr UINT64 FLAG_NEEDS_MOD_WORK          = 1ull << 0;
+	static constexpr UINT64 FLAG_HUNT_ENABLED            = 1ull << 1;
+	static constexpr UINT64 FLAG_FRAME_ANALYSIS_ACTIVE   = 1ull << 2;
+	static constexpr UINT64 FLAG_SHADER_DUMP_ACTIVE      = 1ull << 3;
+	static constexpr UINT64 FLAG_PRE_SKIN_PROBE          = 1ull << 4;
+
+	// 汇总 mask：一条 if 即可判断是否有 draw / dispatch 级 hook 工作
+	static constexpr UINT64 MASK_DRAW_WORK =
+		FLAG_NEEDS_MOD_WORK | FLAG_HUNT_ENABLED |
+		FLAG_FRAME_ANALYSIS_ACTIVE | FLAG_SHADER_DUMP_ACTIVE;
+	static constexpr UINT64 MASK_DISPATCH_WORK =
+		MASK_DRAW_WORK | FLAG_PRE_SKIN_PROBE;
+
+	static void RebuildHookWorkFlags()
+	{
+		UINT64 flags = 0;
+		if (DX12ModHasActiveShaderOverrides() || DX12ModNeedsPresentReplacement())
+			flags |= FLAG_NEEDS_MOD_WORK;
+		if (DX12HuntIsEnabled())
+			flags |= FLAG_HUNT_ENABLED;
+		if (DX12FrameAnalysisState::IsActive() || DX12FrameAnalysisState::IsCapturing() || DX12FrameAnalysisState::IsCaptureRequested())
+			flags |= FLAG_FRAME_ANALYSIS_ACTIVE;
+		if (DX12ShaderDumpIsCapturingFrame() || DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy())
+			flags |= FLAG_SHADER_DUMP_ACTIVE;
+		if (DX12ModNeedsPreSkinningUavProbe())
+			flags |= FLAG_PRE_SKIN_PROBE;
+
+		InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&HookWorkFlags), static_cast<LONG64>(flags));
+	}
 
 	static void Update()
 	{
@@ -87,6 +124,9 @@ public:
 				huntingMode ? "Hunting" : "Mod",
 				skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata);
 		}
+
+		// 同步更新 flags word：一条 if 替代 9 个函数调用
+		RebuildHookWorkFlags();
 	}
 
 	static bool HooksNeeded()

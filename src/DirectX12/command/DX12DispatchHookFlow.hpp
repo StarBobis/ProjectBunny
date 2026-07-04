@@ -90,10 +90,11 @@ public:
 		if (!originalDispatch)
 			return;
 
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
-		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
+		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		const bool needsDispatchWork = hasShaderOverrides || needsPreSkinProbe;
-		const bool huntEnabled = DX12HuntIsEnabled();
+		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList);
 		if (DX12Profiling::ShouldCollectCounters() || needsDispatchWork)

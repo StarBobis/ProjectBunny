@@ -72,6 +72,9 @@ public:
 				queue, numCommandLists, DX12HotPathState::skipAll,
 				DX12InternalReplayState::IsActive() ? "true" : "false");
 
+		// 每帧刷新 flags word：确保 draw/dispatch 热路径使用最新状态
+		DX12HotPathState::RebuildHookWorkFlags();
+
 		if (DX12HotPathState::skipAll) {
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(

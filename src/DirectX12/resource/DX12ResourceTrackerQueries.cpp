@@ -142,7 +142,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	{
 		UINT64 generation = 0;
 		size_t next = 0;
-		BufferResolveCacheEntry entries[8] = {};
+		BufferResolveCacheEntry entries[256] = {};
 	};
 	static thread_local LocalBufferResolveCache localCache;
 	const UINT64 generation = gBufferResolveGeneration.load(std::memory_order_relaxed);
@@ -496,9 +496,9 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 
 // ── IA Buffer Hash (Content-Based, like DX11) ──────────────────────────
 // Priority:
-//   1. Content cache hit → CRC32 of actual buffer bytes (stable, like DX11)
-//   2. Resource resolved  → hash on RESOURCE_DESC + offset + viewSize (stable)
-//   3. Fallback           → hash on size + stride + format + slot (NO GPU VA!)
+//   1. Content cache hit �?CRC32 of actual buffer bytes (stable, like DX11)
+//   2. Resource resolved  �?hash on RESOURCE_DESC + offset + viewSize (stable)
+//   3. Fallback           �?hash on size + stride + format + slot (NO GPU VA!)
 
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
@@ -506,15 +506,15 @@ uint32_t DX12HashIaBufferView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
-	// ── TLS 缓存: 同一 IA buffer 只 hash 一次 ─────────────────────
+	// ── TLS 缓存: 同一 IA buffer �?hash 一�?─────────────────────
 	struct IaHashCacheEntry { UINT64 gpuVa; UINT64 sz; UINT str; UINT fmt; UINT sl; uint32_t hash; };
-	static thread_local IaHashCacheEntry s_cache[64] = {};
+	static thread_local IaHashCacheEntry s_cache[256] = {};
 	static thread_local UINT64 s_cacheGen = 0;
 	UINT64 gen = gBufferResolveGeneration.load(std::memory_order_relaxed);
 	if (s_cacheGen != gen) { memset(s_cache, 0, sizeof(s_cache)); s_cacheGen = gen; }
-	UINT bucket = static_cast<UINT>((gpuVirtualAddress >> 6) & 63);
+	UINT bucket = static_cast<UINT>((gpuVirtualAddress >> 6) & 255);
 	for (UINT i = 0; i < 4; ++i) {
-		IaHashCacheEntry &e = s_cache[(bucket + i) & 63];
+		IaHashCacheEntry &e = s_cache[(bucket + i) & 255];
 		if (e.gpuVa == gpuVirtualAddress && e.sz == size && e.str == stride && e.fmt == format && e.sl == slot)
 			return e.hash;
 	}
@@ -531,7 +531,7 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &stride, sizeof(stride));
 		hash = HashBytes(hash, &format, sizeof(format));
 		hash = HashBytes(hash, &slot, sizeof(slot));
-		IaHashCacheEntry &ce = s_cache[bucket & 63];
+		IaHashCacheEntry &ce = s_cache[bucket & 255];
 		ce.gpuVa = gpuVirtualAddress; ce.sz = size; ce.str = stride; ce.fmt = format; ce.sl = slot; ce.hash = hash;
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
@@ -571,7 +571,7 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &desc.SampleDesc.Quality, sizeof(desc.SampleDesc.Quality));
 		hash = HashBytes(hash, &desc.Layout, sizeof(desc.Layout));
 		hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
-		// Always include heap type (even 0) — conditional inclusion
+		// Always include heap type (even 0) �?conditional inclusion
 		// (hasResourceHeapType) would make the hash differ between
 		// sessions where tracking happened vs. didn't.
 		hash = HashBytes(hash, &summary.resourceHeapType,
@@ -610,7 +610,7 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));
-	IaHashCacheEntry &ce2 = s_cache[bucket & 63];
+	IaHashCacheEntry &ce2 = s_cache[bucket & 255];
 	ce2.gpuVa = gpuVirtualAddress; ce2.sz = size; ce2.str = stride; ce2.fmt = format; ce2.sl = slot; ce2.hash = hash;
 	return hash;
 }
