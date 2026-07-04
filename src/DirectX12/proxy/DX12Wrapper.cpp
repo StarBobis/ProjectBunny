@@ -5020,7 +5020,7 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) override
 			{
-				mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
+				DX12WrapperRuntimeUtils::IASetPrimitiveTopology(mCommandList, PrimitiveTopology);
 			}
 
 			void STDMETHODCALLTYPE RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) override
@@ -5068,29 +5068,33 @@ namespace DX12Wrapper
 						unwrapped[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
 					activeHeaps = unwrapped.data();
 				}
-				mCommandList->SetDescriptorHeaps(NumDescriptorHeaps, activeHeaps);
+				DX12WrapperRuntimeUtils::SetDescriptorHeaps(mCommandList, NumDescriptorHeaps, activeHeaps);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootSignature(ID3D12RootSignature *pRootSignature) override
 			{
-				mCommandList->SetComputeRootSignature(DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+				DX12WrapperRuntimeUtils::SetComputeRootSignature(mCommandList,
+					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootSignature(ID3D12RootSignature *pRootSignature) override
 			{
-				mCommandList->SetGraphicsRootSignature(DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+				DX12WrapperRuntimeUtils::SetGraphicsRootSignature(mCommandList,
+					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootDescriptorTable(
 				UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 			{
-				mCommandList->SetComputeRootDescriptorTable(RootParameterIndex, BaseDescriptor);
+				DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
+					mCommandList, RootParameterIndex, BaseDescriptor);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootDescriptorTable(
 				UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 			{
-				mCommandList->SetGraphicsRootDescriptorTable(RootParameterIndex, BaseDescriptor);
+				DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
+					mCommandList, RootParameterIndex, BaseDescriptor);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRoot32BitConstant(
@@ -5121,32 +5125,38 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetComputeRootConstantBufferView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetGraphicsRootConstantBufferView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetComputeRootShaderResourceView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetGraphicsRootShaderResourceView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetComputeRootUnorderedAccessView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
-				mCommandList->SetGraphicsRootUnorderedAccessView(RootParameterIndex, BufferLocation);
+				DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
+					mCommandList, RootParameterIndex, BufferLocation);
 			}
 
 			void STDMETHODCALLTYPE IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) override
@@ -6392,6 +6402,8 @@ namespace DX12Wrapper
 					return static_cast<ID3D12Device1*>(this);
 				if (IsEqualIID(riid, __uuidof(ID3D12Device)))
 					return static_cast<ID3D12Device*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
 				return nullptr;
 			}
 
@@ -6401,7 +6413,7 @@ namespace DX12Wrapper
 					return E_POINTER;
 				*ppvObject = nullptr;
 
-				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsD3D12DeviceIid(riid)) {
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsD3D12DeviceIid(riid) || IsEqualIID(riid, __uuidof(ID3D12Object))) {
 					if (!IsEqualIID(riid, __uuidof(IUnknown)) && !DoesObjectSupportIid(mDevice, riid))
 						return E_NOINTERFACE;
 					*ppvObject = GetDeviceWrapperInterface(riid);

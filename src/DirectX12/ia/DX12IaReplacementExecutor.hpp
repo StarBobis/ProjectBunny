@@ -12,6 +12,12 @@
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 
+// Legacy stub — referenced by compiled code but definition was never provided
+inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
+{
+	return false;
+}
+
 class DX12IaReplacementExecutor
 {
 public:

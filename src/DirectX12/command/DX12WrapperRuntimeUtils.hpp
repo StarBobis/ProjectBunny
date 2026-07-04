@@ -15,6 +15,9 @@
 #include "DX12DrawHookFlow.hpp"
 #include "DX12ExecuteIndirectRuntime.hpp"
 #include "DX12CommandListStateFlow.hpp"
+#include "DX12CommandListComputeBindingFlow.hpp"
+#include "DX12CommandListStateCapture.hpp"
+#include "DX12Profiling.hpp"
 #include "dxgi/DXGIHookRuntime.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 
@@ -808,5 +811,165 @@ public:
 			original(commandList, startSlot, count, views);
 		else
 			commandList->IASetVertexBuffers(startSlot, count, views);
+	}
+
+	static bool ShouldSkipComputeBinding()
+	{
+		return DX12HotPathState::skipAll && !DX12ModNeedsPreSkinningBindingTracking();
+	}
+
+	static void SetDescriptorHeaps(
+		ID3D12GraphicsCommandList *commandList,
+		UINT count,
+		ID3D12DescriptorHeap *const *heaps)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetDescriptorHeaps);
+			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(commandList, count, heaps);
+		}
+		commandList->SetDescriptorHeaps(count, heaps);
+	}
+
+	static void SetComputeRootSignature(
+		ID3D12GraphicsCommandList *commandList,
+		ID3D12RootSignature *rootSignature)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetComputeRootSignature);
+			DX12CommandListComputeBindingFlow::CaptureRootSignature(commandList, rootSignature, false);
+		}
+		commandList->SetComputeRootSignature(rootSignature);
+	}
+
+	static void SetGraphicsRootSignature(
+		ID3D12GraphicsCommandList *commandList,
+		ID3D12RootSignature *rootSignature)
+	{
+		if (DX12HotPathState::skipAll)
+			commandList->SetGraphicsRootSignature(rootSignature);
+		else {
+			DX12_PROFILE_SCOPE(SetGraphicsRootSignature);
+			DX12CommandListComputeBindingFlow::CaptureRootSignature(commandList, rootSignature, true);
+			commandList->SetGraphicsRootSignature(rootSignature);
+		}
+	}
+
+	static void SetComputeRootDescriptorTable(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetComputeRootDescriptorTable);
+			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+				commandList, rootParameterIndex, baseDescriptor, false);
+		}
+		commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
+	}
+
+	static void SetGraphicsRootDescriptorTable(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+	{
+		if (DX12HotPathState::skipAll)
+			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
+		else {
+			DX12_PROFILE_SCOPE(SetGraphicsRootDescriptorTable);
+			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+				commandList, rootParameterIndex, baseDescriptor, true);
+			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
+		}
+	}
+
+	static void SetComputeRootConstantBufferView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetComputeRootConstantBufferView);
+			DX12CommandListStateCapture::ComputeRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+		}
+		commandList->SetComputeRootConstantBufferView(rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootConstantBufferView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!DX12HotPathState::skipAll) {
+			DX12_PROFILE_SCOPE(SetGraphicsRootConstantBufferView);
+			DX12CommandListStateCapture::GraphicsRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+		}
+		commandList->SetGraphicsRootConstantBufferView(rootParameterIndex, bufferLocation);
+	}
+
+	static void SetComputeRootShaderResourceView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetComputeRootShaderResourceView);
+			DX12CommandListStateCapture::ComputeRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+		}
+		commandList->SetComputeRootShaderResourceView(rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootShaderResourceView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!DX12HotPathState::skipAll) {
+			DX12_PROFILE_SCOPE(SetGraphicsRootShaderResourceView);
+			DX12CommandListStateCapture::GraphicsRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+		}
+		commandList->SetGraphicsRootShaderResourceView(rootParameterIndex, bufferLocation);
+	}
+
+	static void SetComputeRootUnorderedAccessView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!ShouldSkipComputeBinding()) {
+			DX12_PROFILE_SCOPE(SetComputeRootUnorderedAccessView);
+			DX12CommandListStateCapture::ComputeRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+		}
+		commandList->SetComputeRootUnorderedAccessView(rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootUnorderedAccessView(
+		ID3D12GraphicsCommandList *commandList,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
+		if (!DX12HotPathState::skipAll) {
+			DX12_PROFILE_SCOPE(SetGraphicsRootUnorderedAccessView);
+			DX12CommandListStateCapture::GraphicsRootDescriptor(
+				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+		}
+		commandList->SetGraphicsRootUnorderedAccessView(rootParameterIndex, bufferLocation);
+	}
+
+	static void IASetPrimitiveTopology(
+		ID3D12GraphicsCommandList *commandList,
+		D3D12_PRIMITIVE_TOPOLOGY topology)
+	{
+		if (DX12HotPathState::skipAll)
+			commandList->IASetPrimitiveTopology(topology);
+		else {
+			DX12_PROFILE_SCOPE(IASetPrimitiveTopology);
+			DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, topology);
+			commandList->IASetPrimitiveTopology(topology);
+		}
 	}
 };
