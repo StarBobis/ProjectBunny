@@ -218,6 +218,8 @@ extern "C" HRESULT WINAPI D3D12GetDebugInterface(REFIID riid, void **debug)
 	HRESULT hr = D3D12ProxyState::OrigGetDebugInterface(riid, debug);
 	DX12LogManager::JsonFunc("D3D12GetDebugInterface",
 		"\"hr\":\"0x%lx\",\"debug\":\"%p\"", hr, debug ? *debug : nullptr);
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapD3D12DebugInterfaceResult(riid, debug);
 	return hr;
 }
 
@@ -303,8 +305,8 @@ extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **
 	DX12LogManager::JsonFunc("D3D12GetInterface",
 		"\"clsid\":\"%p\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"object\":\"%p\"",
 		&clsid, &riid, hr, object ? *object : nullptr);
-	if (SUCCEEDED(hr))
-		DX12Wrapper::WrapD3D12DeviceFactoryResult(riid, object);
+	if (SUCCEEDED(hr) && !DX12Wrapper::WrapD3D12DeviceFactoryResult(riid, object))
+		DX12Wrapper::WrapD3D12AuxiliaryResult(riid, object);
 	return hr;
 }
 

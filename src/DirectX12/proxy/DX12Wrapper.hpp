@@ -22,6 +22,8 @@ namespace DX12Wrapper
 	bool WrapD3D12StateObjectResult(REFIID riid, void **stateObject);
 	bool WrapD3D12PipelineLibraryResult(REFIID riid, void **library);
 	bool WrapD3D12ShaderCacheSessionResult(REFIID riid, void **session);
+	bool WrapD3D12DebugInterfaceResult(REFIID riid, void **object);
+	bool WrapD3D12AuxiliaryResult(REFIID riid, void **object);
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object);
 	bool WrapDXGIFactoryResult(REFIID riid, void **factory);
 	bool WrapDXGISwapChainResult(REFIID riid, void **swapChain);
