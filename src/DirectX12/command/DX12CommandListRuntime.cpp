@@ -249,6 +249,11 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
+		// PSO 变更 → 失效替换缓存
+		if (fastState->pipelineState != pipelineState) {
+			fastState->cachedReplacementPsoKey = nullptr;
+			fastState->cachedReplacementPso = nullptr;
+		}
 		fastState->pipelineState = pipelineState;
 		return;
 	}

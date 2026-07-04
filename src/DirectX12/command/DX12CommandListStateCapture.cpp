@@ -84,10 +84,23 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 {
 	ID3D12PipelineState *activePipelineState = pipelineState;
 	if (DX12ModHasActiveShaderOverrides()) {
-		ID3D12PipelineState *replacement =
-			DX12ModGetReplacementPipelineState(pipelineState);
-		if (replacement)
-			activePipelineState = replacement;
+		// 对齐 DX11 创建期替换：PSO 替换结果缓存在 RuntimeState 中。
+		// 首次查 gPsoRecords（一次锁），后续 O(1) 直接读缓存。
+		DX12CommandListRuntimeState *state =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if (state && state->cachedReplacementPsoKey == pipelineState) {
+			if (state->cachedReplacementPso)
+				activePipelineState = state->cachedReplacementPso;
+		} else {
+			ID3D12PipelineState *replacement =
+				DX12ModGetReplacementPipelineState(pipelineState);
+			if (state) {
+				state->cachedReplacementPsoKey = pipelineState;
+				state->cachedReplacementPso = replacement;
+			}
+			if (replacement)
+				activePipelineState = replacement;
+		}
 	}
 
 	const DX12CommandListTrackingState tracking =

@@ -20,4 +20,9 @@ public:
 	// generation 与 HotPathState 同步，避免每 draw 都获取 gModLock 查询。
 	volatile LONG psoHasOverridesGeneration = -1;
 	bool psoHasShaderOverrides = true;
+
+	// PSO 替换缓存：对齐 DX11 的"创建期替换"模式。
+	// 首次看到 PSO 时查 gPsoRecords（一次锁），后续直接读缓存（零锁）。
+	ID3D12PipelineState *cachedReplacementPsoKey = nullptr;
+	ID3D12PipelineState *cachedReplacementPso = nullptr;
 };

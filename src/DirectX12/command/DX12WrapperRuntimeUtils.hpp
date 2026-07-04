@@ -328,12 +328,20 @@ public:
 		const char *stage,
 		ID3D12GraphicsCommandList *commandList)
 	{
+#if defined(_DEBUG)
+		if (!DX12LogManager::ShouldLogHookCall(method))
+			return;
 		DX12LogManager::JsonFunc("DX12GraphicsCommandListWrapper",
 			"\"method\":\"%s\",\"stage\":\"%s\",\"commandList\":\"%p\",\"threadId\":%lu",
 			method ? method : "",
 			stage ? stage : "",
 			commandList,
 			GetCurrentThreadId());
+#else
+		(void)method;
+		(void)stage;
+		(void)commandList;
+#endif
 	}
 
 	static void STDMETHODCALLTYPE DirectQueueExecuteCommandLists(
