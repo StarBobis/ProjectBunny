@@ -110,6 +110,7 @@ void DX12ModBeginFrame()
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvPositiveCache.clear();
+	DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 	AcquireSRWLockExclusive(&gModLock);

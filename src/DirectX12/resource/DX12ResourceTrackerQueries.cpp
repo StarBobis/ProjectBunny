@@ -507,21 +507,31 @@ uint32_t DX12HashIaBufferView(
 		return 0;
 
 	// ── TLS 缓存: 同一 IA buffer 只 hash 一次 ─────────────────────
-	// DX11 风格: Key = (gpuVa, size, stride, format, slot)
-	// 4096 条目 (原 256) 避免大场景下缓存 thrashing。
-	// 每帧 buffer resolve generation 变化时整体失效。
-	struct IaHashCacheEntry { UINT64 gpuVa; UINT64 sz; UINT str; UINT fmt; UINT sl; uint32_t hash; };
-	static thread_local IaHashCacheEntry s_cache[4096] = {};
+	// DX11 对齐: 使用 unordered_map 替代固定数组，消除 thrashing。
+	// Key = composite UINT64 编码 (gpuVa, size)，避免 hash 碰撞。
+	// 每帧 buffer resolve generation 变化时整体清空。
+	struct IaHashKey {
+		UINT64 gpuVa; UINT64 sz; UINT str; UINT fmt; UINT sl;
+		bool operator==(const IaHashKey &o) const {
+			return gpuVa == o.gpuVa && sz == o.sz && str == o.str && fmt == o.fmt && sl == o.sl;
+		}
+	};
+	struct IaHashKeyHasher {
+		size_t operator()(const IaHashKey &k) const {
+			return static_cast<size_t>(k.gpuVa ^ (k.gpuVa >> 32) ^ k.sz ^ (k.sz >> 32) ^
+				(static_cast<UINT64>(k.str) << 20) ^ (static_cast<UINT64>(k.fmt) << 28) ^
+				(static_cast<UINT64>(k.sl) << 36));
+		}
+	};
+	static thread_local std::unordered_map<IaHashKey, uint32_t, IaHashKeyHasher> s_cache;
 	static thread_local UINT64 s_cacheGen = 0;
-	static constexpr UINT kCacheMask = 4095;
 	UINT64 gen = gBufferResolveGeneration.load(std::memory_order_relaxed);
-	if (s_cacheGen != gen) { memset(s_cache, 0, sizeof(s_cache)); s_cacheGen = gen; }
-	UINT bucket = static_cast<UINT>(((gpuVirtualAddress >> 6) ^ (gpuVirtualAddress >> 18) ^ size) & kCacheMask);
-	for (UINT i = 0; i < 8; ++i) {
-		IaHashCacheEntry &e = s_cache[(bucket + i) & kCacheMask];
-		if (e.gpuVa == gpuVirtualAddress && e.sz == size && e.str == stride && e.fmt == format && e.sl == slot)
-			return e.hash;
-	}
+	if (s_cacheGen != gen) { s_cache.clear(); s_cacheGen = gen; }
+
+	IaHashKey cacheKey = { gpuVirtualAddress, size, stride, format, slot };
+	auto it = s_cache.find(cacheKey);
+	if (it != s_cache.end())
+		return it->second;
 
 	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
 	const uint8_t *contentData = nullptr;
@@ -535,10 +545,7 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &stride, sizeof(stride));
 		hash = HashBytes(hash, &format, sizeof(format));
 		hash = HashBytes(hash, &slot, sizeof(slot));
-		for (UINT j = 0; j < 8; ++j) {
-			IaHashCacheEntry &ce = s_cache[(bucket + j) & kCacheMask];
-			if (!ce.gpuVa) { ce.gpuVa = gpuVirtualAddress; ce.sz = size; ce.str = stride; ce.fmt = format; ce.sl = slot; ce.hash = hash; break; }
-		}
+		s_cache[cacheKey] = hash;
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
 			"\"stage\":\"content_crc32\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
@@ -616,10 +623,7 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));
-	for (UINT j = 0; j < 8; ++j) {
-		IaHashCacheEntry &ce2 = s_cache[(bucket + j) & kCacheMask];
-		if (!ce2.gpuVa) { ce2.gpuVa = gpuVirtualAddress; ce2.sz = size; ce2.str = stride; ce2.fmt = format; ce2.sl = slot; ce2.hash = hash; break; }
-	}
+	s_cache[cacheKey] = hash;
 	return hash;
 }
 

@@ -1333,6 +1333,7 @@ enum class DX12PsoKind
 };
 
 
+#include "DX12IaReplacementExecutor.hpp"
 #include "DX12ModRuntimeLoader.hpp"
 #include "DX12ModResourceRuntime.hpp"
 #include "DX12PreSkinRuntime.hpp"
