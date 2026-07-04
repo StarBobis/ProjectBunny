@@ -232,13 +232,14 @@ public:
 			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 	}
 
-	// 缓存 PSO 指针 → CS Hash，避免每 Dispatch 的共享锁 + map 查找
+	// 对齐 DX11 mCurrentComputeShader：CS hash 已嵌入 RuntimeState。
+	// RememberPipelineState 在 PSO 首次设置时计算一次，此处仅回退到外部缓存。
 	static uint64_t GetCachedCsHash(ID3D12PipelineState *pipelineState)
 	{
 		if (!pipelineState)
 			return 0;
+		// 回退缓存：仅当 RuntimeState 未嵌入时使用（非 wrapper 模式）
 		static std::unordered_map<ID3D12PipelineState*, uint64_t> cache;
-		static volatile LONG cacheGen = 0;
 		static UINT64 lastReloadGen = 0;
 		UINT64 reloadGen = DX12ModGetReloadGeneration();
 		if (reloadGen != lastReloadGen) {
@@ -265,7 +266,8 @@ public:
 			DX12CommandListRuntime::GetPipelineState(commandList);
 		if (!pipelineState)
 			return false;
-		uint64_t csHash = GetCachedCsHash(pipelineState);
+		uint64_t csHash = (runtimeState && runtimeState->cachedCsHashValid) ?
+			runtimeState->cachedCsHash : GetCachedCsHash(pipelineState);
 		return csHash != 0 && DX12ModShouldTrackPreSkinBindingsForCs(csHash);
 	}
 
@@ -331,7 +333,9 @@ public:
 		LARGE_INTEGER t0, t1, freq;
 		QueryPerformanceCounter(&t0);
 
-		probe->computeShaderHash = GetCachedCsHash(runtimeState.pipelineState);
+		// 对齐 DX11：CS hash 从 RuntimeState 直接读取（RememberPipelineState 时已预计算）
+	probe->computeShaderHash = runtimeState.cachedCsHashValid ?
+		runtimeState.cachedCsHash : GetCachedCsHash(runtimeState.pipelineState);
 		if (!probe->computeShaderHash) {
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");

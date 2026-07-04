@@ -249,12 +249,21 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		// PSO 变更 → 失效替换缓存
+		// PSO 变更 → 失效 PSO 相关缓存
 		if (fastState->pipelineState != pipelineState) {
 			fastState->cachedReplacementPsoKey = nullptr;
 			fastState->cachedReplacementPso = nullptr;
+			fastState->cachedCsHashValid = false;
 		}
 		fastState->pipelineState = pipelineState;
+		// 对齐 DX11 mCurrentComputeShader：PSO 首次设置时计算 CS hash，后续 O(1) 读取
+		if (!fastState->cachedCsHashValid && pipelineState) {
+			DX12PsoShaderInfo shaderInfo = {};
+			if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) && shaderInfo.hasCS) {
+				fastState->cachedCsHash = shaderInfo.cs;
+				fastState->cachedCsHashValid = true;
+			}
+		}
 		return;
 	}
 

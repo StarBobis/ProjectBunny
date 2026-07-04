@@ -25,4 +25,9 @@ public:
 	// 首次看到 PSO 时查 gPsoRecords（一次锁），后续直接读缓存（零锁）。
 	ID3D12PipelineState *cachedReplacementPsoKey = nullptr;
 	ID3D12PipelineState *cachedReplacementPso = nullptr;
+
+	// CS Hash 缓存：对齐 DX11 的 mCurrentComputeShader 直接成员模式。
+	// 在 RememberPipelineState 时计算一次，dispatch 时 O(1) 读取。
+	uint64_t cachedCsHash = 0;
+	bool cachedCsHashValid = false;
 };
