@@ -23,9 +23,42 @@ class DX12IaReplacementExecutor
 {
 public:
 	// PSO+IA 组合级负缓存：记录 (PSO, indexHash, vertexHashes[]) 无匹配结果。
-	// per-frame 生命周期，在 DX12ModBeginFrame 中清空。
+	// 跨帧持久，仅在 mod 重载时清空。
 	inline static std::unordered_set<UINT64> s_psoIaNegativeCache;
 	inline static SRWLOCK s_psoIaNegativeCacheLock = SRWLOCK_INIT;
+
+	// 廉价指纹缓存：用 (PSO, IB/VB GpuVa, draw args) 替代内容 hash 作为 key。
+	// 指纹计算只需读取指针+整数运算（~0.3us），vs BuildIaHash 的 ~35us。
+	// 指纹命中 → 映射到 full PsoIaNegKey → 检查 PsoIaNegCache → 跳过 hash。
+	inline static std::unordered_map<UINT64, UINT64> s_cheapToFullKeyMap;
+	inline static SRWLOCK s_cheapToFullKeyMapLock = SRWLOCK_INIT;
+
+	static UINT64 MakeCheapIaFingerprint(
+		ID3D12PipelineState *pipelineState,
+		const DX12ActiveIaState &ia,
+		bool indexed, UINT vertexCount, UINT indexCount,
+		UINT firstVertex, UINT firstIndex, INT baseVertex, UINT instanceCount)
+	{
+		UINT64 key = reinterpret_cast<UINT64>(pipelineState);
+		key ^= (static_cast<UINT64>(indexed) << 63) |
+		       (static_cast<UINT64>(vertexCount) << 32) | static_cast<UINT64>(indexCount);
+		key ^= (static_cast<UINT64>(firstVertex) << 32) | static_cast<UINT64>(firstIndex);
+		key ^= (static_cast<UINT64>(static_cast<UINT32>(baseVertex)) << 32) |
+		       static_cast<UINT64>(instanceCount);
+		if (ia.hasIndexBuffer && indexed)
+			key ^= ia.indexBuffer.BufferLocation ^ (ia.indexBuffer.BufferLocation >> 29);
+		UINT vbMixed = 0;
+		for (UINT slot = 0; slot < 32 && vbMixed < 4; ++slot) {
+			if (!ia.hasVertexBuffer[slot])
+				continue;
+			UINT64 vb = ia.vertexBuffers[slot].BufferLocation;
+			key ^= (vb << (vbMixed * 13)) ^ (vb >> (53 - vbMixed * 7));
+			++vbMixed;
+		}
+		key ^= key >> 33;
+		key *= 0xff51afd7ed558ccdull;
+		return key;
+	}
 
 	static UINT64 MakePsoIaNegativeKey(
 		ID3D12PipelineState *pipelineState, const DX12IaHashState &iaState)
@@ -61,6 +94,9 @@ public:
 		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
 		s_psoIaNegativeCache.clear();
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
+		AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
+		s_cheapToFullKeyMap.clear();
+		ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
 	}
 
 	static bool ExecutePresent(
@@ -160,6 +196,38 @@ public:
 		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
+		// ── 廉价指纹缓存：用 (PSO, GpuVa, draw args) 替代内容 hash ──
+		// 指纹计算只需指针读取+整数运算（~0.3us vs BuildIaHash 的 ~35us）。
+		// 命中时直接跳过 BuildIaHash 链条。
+		{
+			const UINT64 cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
+				runtimeState.pipelineState, runtimeState.ia,
+				draw.indexed, draw.vertexCount, draw.indexCount,
+				draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+
+			{
+				UINT64 mappedFullKey = 0;
+				bool cheapHit = false;
+				AcquireSRWLockShared(&s_cheapToFullKeyMapLock);
+				auto it = s_cheapToFullKeyMap.find(cheapKey);
+				if (it != s_cheapToFullKeyMap.end()) {
+					mappedFullKey = it->second;
+					cheapHit = true;
+				}
+				ReleaseSRWLockShared(&s_cheapToFullKeyMapLock);
+
+				if (cheapHit) {
+					// 找到廉价映射 → 直接用 full key 检查 PsoIaNegCache
+					if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(mappedFullKey)) {
+						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+						return false;
+					}
+					// cheap key 命中但 full key 不在 neg cache → 可能是碰撞或 stale
+					// 继续走完整路径
+				}
+			}
+		}
+
 		DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
 		if (DX12CommandListRuntime::BuildIaHashState(
 			runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
@@ -167,13 +235,21 @@ public:
 			DX12_HOTPATH_TIME_END(DrawBuildIaHash);
 			DX12Profiling::RecordIaHashStateResult(true);
 
-			// PSO+IA 组合级负缓存：同一 PSO + 同一 IA hash 组合上次已确认无匹配
-			// → 跳过 DX12ModPrepareShaderOverrideReplacement 的完整流程。
-			// Key 不含 draw 参数 → 命中率远高于 ShaderOverrideNegativeCache。
+			// PSO+IA 组合级负缓存
 			DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
 			const UINT64 psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 				runtimeState.pipelineState, iaState);
 			if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey)) {
+				// 负缓存命中 → 存储廉价指纹映射，后续同样组合直接跳过 BuildIaHash
+				const UINT64 cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
+					runtimeState.pipelineState, runtimeState.ia,
+					draw.indexed, draw.vertexCount, draw.indexCount,
+					draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+				AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
+				if (s_cheapToFullKeyMap.size() > 4096)
+					s_cheapToFullKeyMap.clear();
+				s_cheapToFullKeyMap[cheapKey] = psoIaNegKey;
+				ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
 				DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
