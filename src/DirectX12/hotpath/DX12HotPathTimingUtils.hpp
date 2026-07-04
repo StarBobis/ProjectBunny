@@ -38,6 +38,9 @@ public:
 		BarrierCapture,         // ResourceBarrier state capture
 		SetPipelineStateTotal,  // SetPipelineState wrapper path
 		DescriptorHeapsTotal,   // SetDescriptorHeaps wrapper path
+		RootDescTableTotal,     // SetGraphicsRootDescriptorTable + SetComputeRootDescriptorTable
+		RootSignatureTotal,     // SetGraphicsRootSignature + SetComputeRootSignature
+		IaSetTopologyTotal,     // IASetPrimitiveTopology wrapper path
 
 		STAGE_COUNT
 	};
@@ -49,6 +52,7 @@ public:
 			"PsoIaNegCache", "ModPrepareOverride", "ApplyAndExecute",
 			"DispatchHook", "ResourceBarrier", "BarrierUnwrap", "BarrierCapture",
 			"SetPipelineState", "DescriptorHeaps",
+			"RootDescTable", "RootSignature", "IaSetTopology",
 		};
 		return (id < STAGE_COUNT) ? names[id] : "?";
 	}

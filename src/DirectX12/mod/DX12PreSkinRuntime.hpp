@@ -152,8 +152,16 @@ static bool ReadPreSkinCbvBytesLocked(
 		return false;
 
 	const DX12PreSkinCbvReadCacheKey key = {
-		resource, sourceOffset, viewBytes, DX12RuntimeState::GetPresentCount()
+		resource, sourceOffset, viewBytes
 	};
+	// 检查 mod 重载 generation：跨帧缓存只在 mod 未重载时有效
+	{
+		UINT64 reloadGen = DX12ModGetReloadGeneration();
+		if (gPreSkinCbvReadCacheReloadGen != reloadGen) {
+			gPreSkinCbvReadCache.clear();
+			gPreSkinCbvReadCacheReloadGen = reloadGen;
+		}
+	}
 	auto cached = gPreSkinCbvReadCache.find(key);
 	if (cached != gPreSkinCbvReadCache.end()) {
 		if (hrOut)
@@ -255,6 +263,51 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	for (UINT offset : patchOffsets)
 		memcpy(bytes.data() + offset, &overrideVertexCount, sizeof(overrideVertexCount));
 
+	// ── 跨帧 Patched CBV Buffer 缓存 ─────────────────────────────
+	// UPLOAD buffer + CBV descriptor 在 mod 重载前稳定。
+	// 缓存命中 → Map/Write/Unmap（CPU-only），跳过 CreateCommittedResource。
+	{
+		DX12PreSkinCbvPatchCacheKey patchKey;
+		patchKey.resource = cbv.descriptor.resource;
+		patchKey.sourceOffset = sourceOffset;
+		patchKey.viewBytes = viewBytes;
+		patchKey.overrideVertexCount = overrideVertexCount;
+
+		UINT64 reloadGen = DX12ModGetReloadGeneration();
+		if (gPreSkinCbvPatchCacheGeneration != reloadGen) {
+			gPreSkinCbvPatchCache.clear();
+			gPreSkinCbvPatchCacheGeneration = reloadGen;
+		}
+
+		auto cached = gPreSkinCbvPatchCache.find(patchKey);
+		if (cached != gPreSkinCbvPatchCache.end() &&
+		    cached->second.patchedResource && cached->second.cbvCpu.ptr &&
+		    cached->second.generation == reloadGen) {
+			void *mapped = nullptr;
+			D3D12_RANGE readRange = {};
+			hr = cached->second.patchedResource->Map(0, &readRange, &mapped);
+			if (SUCCEEDED(hr) && mapped) {
+				memcpy(mapped, bytes.data(), viewBytes);
+				cached->second.patchedResource->Unmap(0, nullptr);
+				device->CopyDescriptorsSimple(1, dst, cached->second.cbvCpu,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				temporaryResources->push_back(cached->second.patchedResource);
+				cached->second.patchedResource->AddRef();
+				if (originalVertexCountOut)
+					*originalVertexCountOut = originalVertexCount;
+				if (overrideVertexCountOut)
+					*overrideVertexCountOut = overrideVertexCount;
+#if defined(_DEBUG)
+				DX12LogManager::DebugJsonFunc("DX12PreSkinCbvPatch",
+					"\"status\":\"patched_cache_hit\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u",
+					config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
+					originalVertexCount, overrideVertexCount, viewBytes);
+#endif
+				return true;
+			}
+		}
+	}
+
 	D3D12_HEAP_PROPERTIES heapProps = {};
 	heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
 	heapProps.CreationNodeMask = 1;
@@ -291,6 +344,35 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	cbvDesc.BufferLocation = patchedResource->GetGPUVirtualAddress();
 	cbvDesc.SizeInBytes = viewBytes;
 	device->CreateConstantBufferView(&cbvDesc, dst);
+
+	// ── 存储到跨帧缓存 ───────────────────────────────────────────
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC patchHeapDesc = {};
+		patchHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		patchHeapDesc.NumDescriptors = 1;
+		patchHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		ID3D12DescriptorHeap *patchHeap = nullptr;
+		HRESULT heapHr = device->CreateDescriptorHeap(&patchHeapDesc, IID_PPV_ARGS(&patchHeap));
+		if (SUCCEEDED(heapHr) && patchHeap) {
+			D3D12_CPU_DESCRIPTOR_HANDLE cachedCpu = patchHeap->GetCPUDescriptorHandleForHeapStart();
+			device->CreateConstantBufferView(&cbvDesc, cachedCpu);
+			DX12PreSkinCbvPatchCacheEntry entry;
+			entry.patchedResource = patchedResource;
+			entry.cbvCpu = cachedCpu;
+			entry.generation = DX12ModGetReloadGeneration();
+			patchedResource->AddRef();
+
+			DX12PreSkinCbvPatchCacheKey patchKey;
+			patchKey.resource = cbv.descriptor.resource;
+			patchKey.sourceOffset = sourceOffset;
+			patchKey.viewBytes = viewBytes;
+			patchKey.overrideVertexCount = overrideVertexCount;
+			if (gPreSkinCbvPatchCache.size() > 64)
+				gPreSkinCbvPatchCache.clear();
+			gPreSkinCbvPatchCache[patchKey] = entry;
+		}
+	}
+
 	temporaryResources->push_back(patchedResource);
 	if (originalVertexCountOut)
 		*originalVertexCountOut = originalVertexCount;

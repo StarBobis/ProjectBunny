@@ -587,7 +587,6 @@ public:
 	ID3D12Resource *resource = nullptr;
 	UINT64 offset = 0;
 	UINT size = 0;
-	LONG present = -1;
 
 	bool operator<(const DX12PreSkinCbvReadCacheKey &rhs) const
 	{
@@ -595,9 +594,7 @@ public:
 			return resource < rhs.resource;
 		if (offset != rhs.offset)
 			return offset < rhs.offset;
-		if (size != rhs.size)
-			return size < rhs.size;
-		return present < rhs.present;
+		return size < rhs.size;
 	}
 };
 
@@ -635,6 +632,39 @@ public:
 };
 
 static std::map<DX12PreSkinCbvReadCacheKey, DX12PreSkinCbvReadCacheValue> gPreSkinCbvReadCache;
+static UINT64 gPreSkinCbvReadCacheReloadGen = 0;
+
+// ── 跨帧 Patched CBV Buffer 缓存 ──────────────────────────────────
+// 消除 PatchPreSkinVertexCountCbvLocked 中每帧首次的 CreateCommittedResource。
+// 同一 (CBV resource, offset, size, overrideVertexCount) 复用 UPLOAD buffer 和 CBV descriptor。
+class DX12PreSkinCbvPatchCacheKey
+{
+public:
+	ID3D12Resource *resource = nullptr;
+	UINT64 sourceOffset = 0;
+	UINT viewBytes = 0;
+	UINT overrideVertexCount = 0;
+
+	bool operator<(const DX12PreSkinCbvPatchCacheKey &rhs) const
+	{
+		if (resource != rhs.resource) return resource < rhs.resource;
+		if (sourceOffset != rhs.sourceOffset) return sourceOffset < rhs.sourceOffset;
+		if (viewBytes != rhs.viewBytes) return viewBytes < rhs.viewBytes;
+		return overrideVertexCount < rhs.overrideVertexCount;
+	}
+};
+
+class DX12PreSkinCbvPatchCacheEntry
+{
+public:
+	ID3D12Resource *patchedResource = nullptr;       // UPLOAD heap buffer, reused
+	D3D12_CPU_DESCRIPTOR_HANDLE cbvCpu = {};         // CBV descriptor pointing to patchedResource
+	UINT64 generation = 0;                            // mod reload generation when created
+};
+
+static std::map<DX12PreSkinCbvPatchCacheKey, DX12PreSkinCbvPatchCacheEntry> gPreSkinCbvPatchCache;
+static UINT64 gPreSkinCbvPatchCacheGeneration = 0;
+
 static std::set<UINT64> gPreSkinSrvNegativeCache;
 static std::set<UINT64> gPreSkinSrvStableNegativeCache;
 static std::set<UINT64> gPreSkinDescriptorPatchAbortCache;

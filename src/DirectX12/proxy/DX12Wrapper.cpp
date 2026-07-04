@@ -5154,7 +5154,9 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) override
 			{
+				DX12_HOTPATH_TIME_BEGIN(IaSetTopologyTotal);
 				DX12WrapperRuntimeUtils::IASetPrimitiveTopology(mCommandList, PrimitiveTopology);
+				DX12_HOTPATH_TIME_END(IaSetTopologyTotal);
 			}
 
 			void STDMETHODCALLTYPE RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) override
@@ -5221,28 +5223,36 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetComputeRootSignature(ID3D12RootSignature *pRootSignature) override
 			{
+				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootSignature(mCommandList,
 					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootSignature(ID3D12RootSignature *pRootSignature) override
 			{
+				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootSignature(mCommandList,
 					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootDescriptorTable(
 				UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 			{
+				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
 					mCommandList, RootParameterIndex, BaseDescriptor);
+				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootDescriptorTable(
 				UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 			{
+				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
 					mCommandList, RootParameterIndex, BaseDescriptor);
+				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRoot32BitConstant(
