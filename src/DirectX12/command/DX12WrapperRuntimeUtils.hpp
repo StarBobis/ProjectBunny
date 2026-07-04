@@ -97,6 +97,107 @@ public:
 		return reinterpret_cast<ID3D12StateObject*>(DX12Wrapper::Unwrap(stateObject));
 	}
 
+	static const D3D12_GRAPHICS_PIPELINE_STATE_DESC *UnwrapGraphicsPipelineStateDesc(
+		const D3D12_GRAPHICS_PIPELINE_STATE_DESC *source,
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC *storage)
+	{
+		if (!source || !storage)
+			return source;
+		*storage = *source;
+		storage->pRootSignature = UnwrapRootSignature(source->pRootSignature);
+		return storage;
+	}
+
+	static const D3D12_COMPUTE_PIPELINE_STATE_DESC *UnwrapComputePipelineStateDesc(
+		const D3D12_COMPUTE_PIPELINE_STATE_DESC *source,
+		D3D12_COMPUTE_PIPELINE_STATE_DESC *storage)
+	{
+		if (!source || !storage)
+			return source;
+		*storage = *source;
+		storage->pRootSignature = UnwrapRootSignature(source->pRootSignature);
+		return storage;
+	}
+
+	static void UnwrapStateObjectDesc(
+		const D3D12_STATE_OBJECT_DESC *source,
+		D3D12_STATE_OBJECT_DESC *descStorage,
+		std::vector<D3D12_STATE_SUBOBJECT> *subobjectStorage,
+		std::vector<D3D12_GLOBAL_ROOT_SIGNATURE> *globalRootSignatureStorage,
+		std::vector<D3D12_LOCAL_ROOT_SIGNATURE> *localRootSignatureStorage,
+		std::vector<D3D12_EXISTING_COLLECTION_DESC> *existingCollectionStorage,
+		std::vector<D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION> *associationStorage,
+		const D3D12_STATE_OBJECT_DESC **result)
+	{
+		if (!result)
+			return;
+		*result = source;
+		if (!source || !descStorage || !subobjectStorage || !globalRootSignatureStorage ||
+			!localRootSignatureStorage || !existingCollectionStorage || !associationStorage ||
+			!source->pSubobjects || !source->NumSubobjects)
+			return;
+
+		*descStorage = *source;
+		subobjectStorage->assign(source->pSubobjects, source->pSubobjects + source->NumSubobjects);
+		globalRootSignatureStorage->clear();
+		localRootSignatureStorage->clear();
+		existingCollectionStorage->clear();
+		associationStorage->clear();
+		globalRootSignatureStorage->resize(source->NumSubobjects);
+		localRootSignatureStorage->resize(source->NumSubobjects);
+		existingCollectionStorage->resize(source->NumSubobjects);
+		associationStorage->resize(source->NumSubobjects);
+
+		for (UINT i = 0; i < source->NumSubobjects; ++i) {
+			const D3D12_STATE_SUBOBJECT *sourceSubobject = &source->pSubobjects[i];
+			D3D12_STATE_SUBOBJECT *activeSubobject = &(*subobjectStorage)[i];
+			activeSubobject->pDesc = sourceSubobject->pDesc;
+
+			if (!sourceSubobject->pDesc)
+				continue;
+
+			switch (sourceSubobject->Type) {
+			case D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE:
+				(*globalRootSignatureStorage)[i] =
+					*reinterpret_cast<const D3D12_GLOBAL_ROOT_SIGNATURE*>(sourceSubobject->pDesc);
+				(*globalRootSignatureStorage)[i].pGlobalRootSignature =
+					UnwrapRootSignature((*globalRootSignatureStorage)[i].pGlobalRootSignature);
+				activeSubobject->pDesc = &(*globalRootSignatureStorage)[i];
+				break;
+			case D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE:
+				(*localRootSignatureStorage)[i] =
+					*reinterpret_cast<const D3D12_LOCAL_ROOT_SIGNATURE*>(sourceSubobject->pDesc);
+				(*localRootSignatureStorage)[i].pLocalRootSignature =
+					UnwrapRootSignature((*localRootSignatureStorage)[i].pLocalRootSignature);
+				activeSubobject->pDesc = &(*localRootSignatureStorage)[i];
+				break;
+			case D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION:
+				(*existingCollectionStorage)[i] =
+					*reinterpret_cast<const D3D12_EXISTING_COLLECTION_DESC*>(sourceSubobject->pDesc);
+				(*existingCollectionStorage)[i].pExistingCollection =
+					UnwrapStateObject((*existingCollectionStorage)[i].pExistingCollection);
+				activeSubobject->pDesc = &(*existingCollectionStorage)[i];
+				break;
+			case D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION:
+				(*associationStorage)[i] =
+					*reinterpret_cast<const D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION*>(sourceSubobject->pDesc);
+				for (UINT associatedIndex = 0; associatedIndex < source->NumSubobjects; ++associatedIndex) {
+					if ((*associationStorage)[i].pSubobjectToAssociate == &source->pSubobjects[associatedIndex]) {
+						(*associationStorage)[i].pSubobjectToAssociate = &(*subobjectStorage)[associatedIndex];
+						break;
+					}
+				}
+				activeSubobject->pDesc = &(*associationStorage)[i];
+				break;
+			default:
+				break;
+			}
+		}
+
+		descStorage->pSubobjects = subobjectStorage->data();
+		*result = descStorage;
+	}
+
 	static void UnwrapResourceArray(
 		ID3D12Resource *const *source,
 		UINT count,

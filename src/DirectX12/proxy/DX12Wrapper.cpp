@@ -130,6 +130,47 @@ namespace DX12Wrapper
 			return IsD3D12PageableIid(riid) || IsEqualIID(riid, __uuidof(ID3D12CommandSignature));
 		}
 
+		bool IsD3D12LifetimeTrackerWrapperIid(REFIID riid)
+		{
+			return IsD3D12DeviceChildIid(riid) || IsEqualIID(riid, __uuidof(ID3D12LifetimeTracker));
+		}
+
+		bool IsD3D12ProtectedResourceSessionWrapperIid(REFIID riid)
+		{
+			return
+				IsD3D12DeviceChildIid(riid) ||
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedSession)) ||
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession)) ||
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession1));
+		}
+
+		bool IsD3D12MetaCommandWrapperIid(REFIID riid)
+		{
+			return IsD3D12PageableIid(riid) || IsEqualIID(riid, __uuidof(ID3D12MetaCommand));
+		}
+
+		bool IsD3D12StateObjectWrapperIid(REFIID riid)
+		{
+			return
+				IsD3D12PageableIid(riid) ||
+				IsEqualIID(riid, __uuidof(ID3D12StateObject)) ||
+				IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties)) ||
+				IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties1));
+		}
+
+		bool IsD3D12PipelineLibraryWrapperIid(REFIID riid)
+		{
+			return
+				IsD3D12DeviceChildIid(riid) ||
+				IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary)) ||
+				IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary1));
+		}
+
+		bool IsD3D12ShaderCacheSessionWrapperIid(REFIID riid)
+		{
+			return IsD3D12DeviceChildIid(riid) || IsEqualIID(riid, __uuidof(ID3D12ShaderCacheSession));
+		}
+
 		bool IsD3D12DeviceFactoryIid(REFIID riid)
 		{
 			return IsEqualIID(riid, __uuidof(ID3D12DeviceFactory));
@@ -181,6 +222,44 @@ namespace DX12Wrapper
 		bool IsD3D12CommandSignatureIid(REFIID riid)
 		{
 			return IsEqualIID(riid, __uuidof(ID3D12CommandSignature));
+		}
+
+		bool IsD3D12LifetimeTrackerIid(REFIID riid)
+		{
+			return IsEqualIID(riid, __uuidof(ID3D12LifetimeTracker));
+		}
+
+		bool IsD3D12ProtectedResourceSessionIid(REFIID riid)
+		{
+			return
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedSession)) ||
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession)) ||
+				IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession1));
+		}
+
+		bool IsD3D12MetaCommandIid(REFIID riid)
+		{
+			return IsEqualIID(riid, __uuidof(ID3D12MetaCommand));
+		}
+
+		bool IsD3D12StateObjectIid(REFIID riid)
+		{
+			return
+				IsEqualIID(riid, __uuidof(ID3D12StateObject)) ||
+				IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties)) ||
+				IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties1));
+		}
+
+		bool IsD3D12PipelineLibraryIid(REFIID riid)
+		{
+			return
+				IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary)) ||
+				IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary1));
+		}
+
+		bool IsD3D12ShaderCacheSessionIid(REFIID riid)
+		{
+			return IsEqualIID(riid, __uuidof(ID3D12ShaderCacheSession));
 		}
 
 		bool IsD3D12GraphicsCommandListIid(REFIID riid)
@@ -1911,6 +1990,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = resource1->GetProtectedResourceSession(riid, ppProtectedSession);
+				if (SUCCEEDED(hr) && ppProtectedSession && *ppProtectedSession)
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppProtectedSession);
 				resource1->Release();
 				return hr;
 			}
@@ -2388,6 +2469,747 @@ namespace DX12Wrapper
 		public:
 			std::atomic<long> mRefCount{1};
 			ID3D12CommandSignature *mCommandSignature = nullptr;
+		};
+
+		class LifetimeTrackerWrapper final : public ID3D12LifetimeTracker, public WrapperBase
+		{
+		public:
+			explicit LifetimeTrackerWrapper(ID3D12LifetimeTracker *tracker)
+				: WrapperBase(tracker)
+			{
+				mTracker = tracker;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12LifetimeTracker*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"lifetime_tracker\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, tracker);
+			}
+
+			void *GetLifetimeTrackerWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID3D12LifetimeTracker)))
+					return static_cast<ID3D12LifetimeTracker*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mTracker, riid, IsD3D12LifetimeTrackerWrapperIid)) {
+					*ppvObject = GetLifetimeTrackerWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mTracker->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mTracker->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mTracker->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mTracker->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mTracker->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mTracker->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			HRESULT STDMETHODCALLTYPE DestroyOwnedObject(ID3D12DeviceChild *pObject) override
+			{
+				return mTracker->DestroyOwnedObject(
+					reinterpret_cast<ID3D12DeviceChild*>(DX12Wrapper::Unwrap(pObject)));
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12LifetimeTracker *mTracker = nullptr;
+		};
+
+		class ProtectedResourceSessionWrapper final : public ID3D12ProtectedResourceSession1, public WrapperBase
+		{
+		public:
+			explicit ProtectedResourceSessionWrapper(ID3D12ProtectedResourceSession *session)
+				: WrapperBase(session)
+			{
+				mSession = session;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12ProtectedSession*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession1*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"protected_resource_session\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, session);
+			}
+
+			HRESULT QuerySession1(ID3D12ProtectedResourceSession1 **session)
+			{
+				return mSession->QueryInterface(IID_PPV_ARGS(session));
+			}
+
+			void *GetProtectedResourceSessionWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession1)))
+					return static_cast<ID3D12ProtectedResourceSession1*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12ProtectedResourceSession)))
+					return static_cast<ID3D12ProtectedResourceSession*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12ProtectedSession)))
+					return static_cast<ID3D12ProtectedSession*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mSession, riid, IsD3D12ProtectedResourceSessionWrapperIid)) {
+					*ppvObject = GetProtectedResourceSessionWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mSession->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mSession->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mSession->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mSession->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mSession->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mSession->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetStatusFence(REFIID riid, void **ppFence) override
+			{
+				HRESULT hr = mSession->GetStatusFence(riid, ppFence);
+				if (SUCCEEDED(hr) && ppFence && *ppFence)
+					DX12Wrapper::WrapD3D12FenceResult(riid, ppFence);
+				return hr;
+			}
+
+			D3D12_PROTECTED_SESSION_STATUS STDMETHODCALLTYPE GetSessionStatus() override
+			{
+				return mSession->GetSessionStatus();
+			}
+
+			D3D12_PROTECTED_RESOURCE_SESSION_DESC STDMETHODCALLTYPE GetDesc() override
+			{
+				return mSession->GetDesc();
+			}
+
+			D3D12_PROTECTED_RESOURCE_SESSION_DESC1 STDMETHODCALLTYPE GetDesc1() override
+			{
+				ID3D12ProtectedResourceSession1 *session1 = nullptr;
+				if (FAILED(QuerySession1(&session1)))
+					return D3D12_PROTECTED_RESOURCE_SESSION_DESC1();
+				D3D12_PROTECTED_RESOURCE_SESSION_DESC1 desc = session1->GetDesc1();
+				session1->Release();
+				return desc;
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12ProtectedResourceSession *mSession = nullptr;
+		};
+
+		class MetaCommandWrapper final : public ID3D12MetaCommand, public WrapperBase
+		{
+		public:
+			explicit MetaCommandWrapper(ID3D12MetaCommand *metaCommand)
+				: WrapperBase(metaCommand)
+			{
+				mMetaCommand = metaCommand;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12MetaCommand*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"meta_command\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, metaCommand);
+			}
+
+			void *GetMetaCommandWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID3D12MetaCommand)))
+					return static_cast<ID3D12MetaCommand*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Pageable)))
+					return static_cast<ID3D12Pageable*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mMetaCommand, riid, IsD3D12MetaCommandWrapperIid)) {
+					*ppvObject = GetMetaCommandWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mMetaCommand->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mMetaCommand->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mMetaCommand->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mMetaCommand->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mMetaCommand->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mMetaCommand->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			UINT64 STDMETHODCALLTYPE GetRequiredParameterResourceSize(
+				D3D12_META_COMMAND_PARAMETER_STAGE Stage, UINT ParameterIndex) override
+			{
+				return mMetaCommand->GetRequiredParameterResourceSize(Stage, ParameterIndex);
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12MetaCommand *mMetaCommand = nullptr;
+		};
+
+		class StateObjectWrapper final :
+			public ID3D12StateObject,
+			public ID3D12StateObjectProperties1,
+			public WrapperBase
+		{
+		public:
+			explicit StateObjectWrapper(ID3D12StateObject *stateObject)
+				: WrapperBase(stateObject)
+			{
+				mStateObject = stateObject;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(static_cast<ID3D12StateObject*>(this)));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(static_cast<ID3D12StateObject*>(this)));
+				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(static_cast<ID3D12StateObject*>(this)));
+				RegisterWrapperPointer(static_cast<ID3D12StateObject*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties1*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"state_object\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, stateObject);
+			}
+
+			HRESULT QueryProperties(ID3D12StateObjectProperties **properties)
+			{
+				return mStateObject->QueryInterface(IID_PPV_ARGS(properties));
+			}
+
+			HRESULT QueryProperties1(ID3D12StateObjectProperties1 **properties)
+			{
+				return mStateObject->QueryInterface(IID_PPV_ARGS(properties));
+			}
+
+			void *GetStateObjectWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID3D12StateObject)))
+					return static_cast<ID3D12StateObject*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties1)))
+					return static_cast<ID3D12StateObjectProperties1*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12StateObjectProperties)))
+					return static_cast<ID3D12StateObjectProperties*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Pageable)))
+					return static_cast<ID3D12Pageable*>(static_cast<ID3D12StateObject*>(this));
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(static_cast<ID3D12StateObject*>(this));
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(static_cast<ID3D12StateObject*>(this));
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mStateObject, riid, IsD3D12StateObjectWrapperIid)) {
+					*ppvObject = GetStateObjectWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mStateObject->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mStateObject->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mStateObject->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mStateObject->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mStateObject->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mStateObject->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			void *STDMETHODCALLTYPE GetShaderIdentifier(LPCWSTR pExportName) override
+			{
+				ID3D12StateObjectProperties *properties = nullptr;
+				if (FAILED(QueryProperties(&properties)))
+					return nullptr;
+				void *identifier = properties->GetShaderIdentifier(pExportName);
+				properties->Release();
+				return identifier;
+			}
+
+			UINT64 STDMETHODCALLTYPE GetShaderStackSize(LPCWSTR pExportName) override
+			{
+				ID3D12StateObjectProperties *properties = nullptr;
+				if (FAILED(QueryProperties(&properties)))
+					return 0;
+				UINT64 size = properties->GetShaderStackSize(pExportName);
+				properties->Release();
+				return size;
+			}
+
+			UINT64 STDMETHODCALLTYPE GetPipelineStackSize() override
+			{
+				ID3D12StateObjectProperties *properties = nullptr;
+				if (FAILED(QueryProperties(&properties)))
+					return 0;
+				UINT64 size = properties->GetPipelineStackSize();
+				properties->Release();
+				return size;
+			}
+
+			void STDMETHODCALLTYPE SetPipelineStackSize(UINT64 PipelineStackSizeInBytes) override
+			{
+				ID3D12StateObjectProperties *properties = nullptr;
+				if (SUCCEEDED(QueryProperties(&properties))) {
+					properties->SetPipelineStackSize(PipelineStackSizeInBytes);
+					properties->Release();
+				}
+			}
+
+			D3D12_PROGRAM_IDENTIFIER STDMETHODCALLTYPE GetProgramIdentifier(LPCWSTR pProgramName) override
+			{
+				ID3D12StateObjectProperties1 *properties = nullptr;
+				if (FAILED(QueryProperties1(&properties)))
+					return D3D12_PROGRAM_IDENTIFIER();
+				D3D12_PROGRAM_IDENTIFIER identifier = properties->GetProgramIdentifier(pProgramName);
+				properties->Release();
+				return identifier;
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12StateObject *mStateObject = nullptr;
+		};
+
+		class PipelineLibraryWrapper final : public ID3D12PipelineLibrary1, public WrapperBase
+		{
+		public:
+			explicit PipelineLibraryWrapper(ID3D12PipelineLibrary *library)
+				: WrapperBase(library)
+			{
+				mLibrary = library;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary1*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"pipeline_library\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, library);
+			}
+
+			HRESULT QueryLibrary1(ID3D12PipelineLibrary1 **library)
+			{
+				return mLibrary->QueryInterface(IID_PPV_ARGS(library));
+			}
+
+			void *GetPipelineLibraryWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary1)))
+					return static_cast<ID3D12PipelineLibrary1*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12PipelineLibrary)))
+					return static_cast<ID3D12PipelineLibrary*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mLibrary, riid, IsD3D12PipelineLibraryWrapperIid)) {
+					*ppvObject = GetPipelineLibraryWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mLibrary->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mLibrary->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mLibrary->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mLibrary->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mLibrary->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mLibrary->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			HRESULT STDMETHODCALLTYPE StorePipeline(LPCWSTR pName, ID3D12PipelineState *pPipeline) override
+			{
+				return mLibrary->StorePipeline(
+					pName, DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipeline));
+			}
+
+			HRESULT STDMETHODCALLTYPE LoadGraphicsPipeline(
+				LPCWSTR pName, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc,
+				REFIID riid, void **ppPipelineState) override
+			{
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC descStorage = {};
+				const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc =
+					DX12WrapperRuntimeUtils::UnwrapGraphicsPipelineStateDesc(pDesc, &descStorage);
+				HRESULT hr = mLibrary->LoadGraphicsPipeline(pName, activeDesc, riid, ppPipelineState);
+				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
+					DX12Wrapper::WrapD3D12PipelineStateResult(riid, ppPipelineState);
+				return hr;
+			}
+
+			HRESULT STDMETHODCALLTYPE LoadComputePipeline(
+				LPCWSTR pName, const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc,
+				REFIID riid, void **ppPipelineState) override
+			{
+				D3D12_COMPUTE_PIPELINE_STATE_DESC descStorage = {};
+				const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc =
+					DX12WrapperRuntimeUtils::UnwrapComputePipelineStateDesc(pDesc, &descStorage);
+				HRESULT hr = mLibrary->LoadComputePipeline(pName, activeDesc, riid, ppPipelineState);
+				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
+					DX12Wrapper::WrapD3D12PipelineStateResult(riid, ppPipelineState);
+				return hr;
+			}
+
+			SIZE_T STDMETHODCALLTYPE GetSerializedSize() override
+			{
+				return mLibrary->GetSerializedSize();
+			}
+
+			HRESULT STDMETHODCALLTYPE Serialize(void *pData, SIZE_T DataSizeInBytes) override
+			{
+				return mLibrary->Serialize(pData, DataSizeInBytes);
+			}
+
+			HRESULT STDMETHODCALLTYPE LoadPipeline(
+				LPCWSTR pName, const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc,
+				REFIID riid, void **ppPipelineState) override
+			{
+				ID3D12PipelineLibrary1 *library1 = nullptr;
+				HRESULT hr = QueryLibrary1(&library1);
+				if (FAILED(hr))
+					return hr;
+				hr = library1->LoadPipeline(pName, pDesc, riid, ppPipelineState);
+				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
+					DX12Wrapper::WrapD3D12PipelineStateResult(riid, ppPipelineState);
+				library1->Release();
+				return hr;
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12PipelineLibrary *mLibrary = nullptr;
+		};
+
+		class ShaderCacheSessionWrapper final : public ID3D12ShaderCacheSession, public WrapperBase
+		{
+		public:
+			explicit ShaderCacheSessionWrapper(ID3D12ShaderCacheSession *session)
+				: WrapperBase(session)
+			{
+				mSession = session;
+				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
+				RegisterWrapperPointer(static_cast<ID3D12ShaderCacheSession*>(this));
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"\"kind\":\"shader_cache_session\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					this, session);
+			}
+
+			void *GetShaderCacheSessionWrapperInterface(REFIID riid)
+			{
+				if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(ID3D12ShaderCacheSession)))
+					return static_cast<ID3D12ShaderCacheSession*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12DeviceChild)))
+					return static_cast<ID3D12DeviceChild*>(this);
+				if (IsEqualIID(riid, __uuidof(ID3D12Object)))
+					return static_cast<ID3D12Object*>(this);
+				return nullptr;
+			}
+
+			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override
+			{
+				if (!ppvObject)
+					return E_POINTER;
+				*ppvObject = nullptr;
+				if (IsEqualIID(riid, __uuidof(IUnknown)) ||
+					IsSupportedWrapperIid(mSession, riid, IsD3D12ShaderCacheSessionWrapperIid)) {
+					*ppvObject = GetShaderCacheSessionWrapperInterface(riid);
+					if (*ppvObject) {
+						AddRef();
+						return S_OK;
+					}
+				}
+				return mSession->QueryInterface(riid, ppvObject);
+			}
+
+			ULONG STDMETHODCALLTYPE AddRef() override
+			{
+				return static_cast<ULONG>(++mRefCount);
+			}
+
+			ULONG STDMETHODCALLTYPE Release() override
+			{
+				const ULONG ref = static_cast<ULONG>(--mRefCount);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
+			{
+				return mSession->GetPrivateData(guid, pDataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
+			{
+				return mSession->SetPrivateData(guid, DataSize, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
+			{
+				return mSession->SetPrivateDataInterface(guid, pData);
+			}
+
+			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
+			{
+				return mSession->SetName(Name);
+			}
+
+			HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void **ppvDevice) override
+			{
+				HRESULT hr = mSession->GetDevice(riid, ppvDevice);
+				if (SUCCEEDED(hr))
+					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvDevice);
+				return hr;
+			}
+
+			HRESULT STDMETHODCALLTYPE FindValue(
+				const void *pKey, UINT KeySize, void *pValue, UINT *pValueSize) override
+			{
+				return mSession->FindValue(pKey, KeySize, pValue, pValueSize);
+			}
+
+			HRESULT STDMETHODCALLTYPE StoreValue(
+				const void *pKey, UINT KeySize, const void *pValue, UINT ValueSize) override
+			{
+				return mSession->StoreValue(pKey, KeySize, pValue, ValueSize);
+			}
+
+			void STDMETHODCALLTYPE SetDeleteOnDestroy() override
+			{
+				mSession->SetDeleteOnDestroy();
+			}
+
+			D3D12_SHADER_CACHE_SESSION_DESC STDMETHODCALLTYPE GetDesc() override
+			{
+				return mSession->GetDesc();
+			}
+
+		public:
+			std::atomic<long> mRefCount{1};
+			ID3D12ShaderCacheSession *mSession = nullptr;
 		};
 
 		class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, public WrapperBase
@@ -3662,6 +4484,253 @@ namespace DX12Wrapper
 				originalObject->Release();
 				return true;
 			}
+
+			static bool TryWrapLifetimeTracker(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12LifetimeTrackerIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12LifetimeTracker *tracker = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&tracker))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(tracker);
+				if (existing) {
+					LifetimeTrackerWrapper *wrapper = dynamic_cast<LifetimeTrackerWrapper*>(existing);
+					if (!wrapper) {
+						tracker->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetLifetimeTrackerWrapperInterface(riid);
+					if (!wrapperInterface) {
+						tracker->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					tracker->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				LifetimeTrackerWrapper *wrapper = new LifetimeTrackerWrapper(tracker);
+				void *wrapperInterface = wrapper->GetLifetimeTrackerWrapperInterface(riid);
+				if (!wrapperInterface) {
+					tracker->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				tracker->Release();
+				originalObject->Release();
+				return true;
+			}
+
+			static bool TryWrapProtectedResourceSession(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12ProtectedResourceSessionIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12ProtectedResourceSession *session = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&session))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(session);
+				if (existing) {
+					ProtectedResourceSessionWrapper *wrapper =
+						dynamic_cast<ProtectedResourceSessionWrapper*>(existing);
+					if (!wrapper) {
+						session->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetProtectedResourceSessionWrapperInterface(riid);
+					if (!wrapperInterface) {
+						session->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					session->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				ProtectedResourceSessionWrapper *wrapper = new ProtectedResourceSessionWrapper(session);
+				void *wrapperInterface = wrapper->GetProtectedResourceSessionWrapperInterface(riid);
+				if (!wrapperInterface) {
+					session->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				session->Release();
+				originalObject->Release();
+				return true;
+			}
+
+			static bool TryWrapMetaCommand(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12MetaCommandIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12MetaCommand *metaCommand = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&metaCommand))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(metaCommand);
+				if (existing) {
+					MetaCommandWrapper *wrapper = dynamic_cast<MetaCommandWrapper*>(existing);
+					if (!wrapper) {
+						metaCommand->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetMetaCommandWrapperInterface(riid);
+					if (!wrapperInterface) {
+						metaCommand->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					metaCommand->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				MetaCommandWrapper *wrapper = new MetaCommandWrapper(metaCommand);
+				void *wrapperInterface = wrapper->GetMetaCommandWrapperInterface(riid);
+				if (!wrapperInterface) {
+					metaCommand->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				metaCommand->Release();
+				originalObject->Release();
+				return true;
+			}
+
+			static bool TryWrapStateObject(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12StateObjectIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12StateObject *stateObject = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&stateObject))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(stateObject);
+				if (existing) {
+					StateObjectWrapper *wrapper = dynamic_cast<StateObjectWrapper*>(existing);
+					if (!wrapper) {
+						stateObject->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetStateObjectWrapperInterface(riid);
+					if (!wrapperInterface) {
+						stateObject->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					stateObject->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				StateObjectWrapper *wrapper = new StateObjectWrapper(stateObject);
+				void *wrapperInterface = wrapper->GetStateObjectWrapperInterface(riid);
+				if (!wrapperInterface) {
+					stateObject->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				stateObject->Release();
+				originalObject->Release();
+				return true;
+			}
+
+			static bool TryWrapPipelineLibrary(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12PipelineLibraryIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12PipelineLibrary *library = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&library))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(library);
+				if (existing) {
+					PipelineLibraryWrapper *wrapper = dynamic_cast<PipelineLibraryWrapper*>(existing);
+					if (!wrapper) {
+						library->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetPipelineLibraryWrapperInterface(riid);
+					if (!wrapperInterface) {
+						library->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					library->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				PipelineLibraryWrapper *wrapper = new PipelineLibraryWrapper(library);
+				void *wrapperInterface = wrapper->GetPipelineLibraryWrapperInterface(riid);
+				if (!wrapperInterface) {
+					library->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				library->Release();
+				originalObject->Release();
+				return true;
+			}
+
+			static bool TryWrapShaderCacheSession(REFIID riid, void **object)
+			{
+				if (!object || !*object || !IsD3D12ShaderCacheSessionIid(riid))
+					return false;
+
+				IUnknown *originalObject = static_cast<IUnknown*>(*object);
+				ID3D12ShaderCacheSession *session = nullptr;
+				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&session))))
+					return false;
+
+				WrapperBase *existing = WrapperBase::FindByIdentity(session);
+				if (existing) {
+					ShaderCacheSessionWrapper *wrapper = dynamic_cast<ShaderCacheSessionWrapper*>(existing);
+					if (!wrapper) {
+						session->Release();
+						return false;
+					}
+					void *wrapperInterface = wrapper->GetShaderCacheSessionWrapperInterface(riid);
+					if (!wrapperInterface) {
+						session->Release();
+						return false;
+					}
+					*object = wrapperInterface;
+					reinterpret_cast<IUnknown*>(*object)->AddRef();
+					session->Release();
+					originalObject->Release();
+					return true;
+				}
+
+				ShaderCacheSessionWrapper *wrapper = new ShaderCacheSessionWrapper(session);
+				void *wrapperInterface = wrapper->GetShaderCacheSessionWrapperInterface(riid);
+				if (!wrapperInterface) {
+					session->Release();
+					return false;
+				}
+				*object = wrapperInterface;
+				session->Release();
+				originalObject->Release();
+				return true;
+			}
 		};
 
 		class D3D12DeviceWrapper final : public ID3D12Device14, public WrapperBase
@@ -3889,6 +4958,9 @@ namespace DX12Wrapper
 				const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc = pDesc;
 				if (pDesc) {
 					replacement.desc = *pDesc;
+					replacement.desc.pRootSignature =
+						DX12WrapperRuntimeUtils::UnwrapRootSignature(pDesc->pRootSignature);
+					activeDesc = &replacement.desc;
 					if (DX12ModReplaceShaderBytecode("vs", pDesc->VS, &replacement.vs, &replacement.vsBytes)) {
 						replacement.desc.VS = replacement.vs;
 						replacement.changed = true;
@@ -3897,8 +4969,6 @@ namespace DX12Wrapper
 						replacement.desc.PS = replacement.ps;
 						replacement.changed = true;
 					}
-					if (replacement.changed)
-						activeDesc = &replacement.desc;
 				}
 
 				HRESULT hr = mDevice->CreateGraphicsPipelineState(activeDesc, riid, ppPipelineState);
@@ -3908,7 +4978,7 @@ namespace DX12Wrapper
 					ID3D12PipelineState *created =
 						ppPipelineState ? static_cast<ID3D12PipelineState*>(*ppPipelineState) : nullptr;
 					if (pDesc)
-						DX12ModRecordGraphicsPipelineState(mDevice, created, pDesc);
+						DX12ModRecordGraphicsPipelineState(mDevice, created, activeDesc);
 					DX12RecordGraphicsPipelineState(created, activeDesc);
 				}
 				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
@@ -3926,10 +4996,12 @@ namespace DX12Wrapper
 				const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc = pDesc;
 				if (pDesc) {
 					replacement.desc = *pDesc;
+					replacement.desc.pRootSignature =
+						DX12WrapperRuntimeUtils::UnwrapRootSignature(pDesc->pRootSignature);
+					activeDesc = &replacement.desc;
 					if (DX12ModReplaceShaderBytecode("cs", pDesc->CS, &replacement.cs, &replacement.csBytes)) {
 						replacement.desc.CS = replacement.cs;
 						replacement.changed = true;
-						activeDesc = &replacement.desc;
 					}
 				}
 
@@ -3940,7 +5012,7 @@ namespace DX12Wrapper
 					ID3D12PipelineState *created =
 						ppPipelineState ? static_cast<ID3D12PipelineState*>(*ppPipelineState) : nullptr;
 					if (pDesc)
-						DX12ModRecordComputePipelineState(mDevice, created, pDesc);
+						DX12ModRecordComputePipelineState(mDevice, created, activeDesc);
 					DX12RecordComputePipelineState(created, activeDesc);
 				}
 				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
@@ -4291,6 +5363,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = device1->CreatePipelineLibrary(pLibraryBlob, BlobLength, riid, ppPipelineLibrary);
+				if (SUCCEEDED(hr) && ppPipelineLibrary && *ppPipelineLibrary)
+					DeviceWrapper::TryWrapPipelineLibrary(riid, ppPipelineLibrary);
 				device1->Release();
 				return hr;
 			}
@@ -4441,6 +5515,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = device4->CreateProtectedResourceSession(pDesc, riid, ppSession);
+				if (SUCCEEDED(hr) && ppSession && *ppSession)
+					DeviceWrapper::TryWrapProtectedResourceSession(riid, ppSession);
 				device4->Release();
 				return hr;
 			}
@@ -4534,6 +5610,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = device5->CreateLifetimeTracker(pOwner, riid, ppvTracker);
+				if (SUCCEEDED(hr) && ppvTracker && *ppvTracker)
+					DeviceWrapper::TryWrapLifetimeTracker(riid, ppvTracker);
 				device5->Release();
 				return hr;
 			}
@@ -4586,6 +5664,8 @@ namespace DX12Wrapper
 				hr = device5->CreateMetaCommand(
 					CommandId, NodeMask, pCreationParametersData,
 					CreationParametersDataSizeInBytes, riid, ppMetaCommand);
+				if (SUCCEEDED(hr) && ppMetaCommand && *ppMetaCommand)
+					DeviceWrapper::TryWrapMetaCommand(riid, ppMetaCommand);
 				device5->Release();
 				return hr;
 			}
@@ -4597,7 +5677,25 @@ namespace DX12Wrapper
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
 					return hr;
-				hr = device5->CreateStateObject(pDesc, riid, ppStateObject);
+				D3D12_STATE_OBJECT_DESC descStorage = {};
+				std::vector<D3D12_STATE_SUBOBJECT> subobjectStorage;
+				std::vector<D3D12_GLOBAL_ROOT_SIGNATURE> globalRootSignatureStorage;
+				std::vector<D3D12_LOCAL_ROOT_SIGNATURE> localRootSignatureStorage;
+				std::vector<D3D12_EXISTING_COLLECTION_DESC> existingCollectionStorage;
+				std::vector<D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION> associationStorage;
+				const D3D12_STATE_OBJECT_DESC *activeDesc = pDesc;
+				DX12WrapperRuntimeUtils::UnwrapStateObjectDesc(
+					pDesc,
+					&descStorage,
+					&subobjectStorage,
+					&globalRootSignatureStorage,
+					&localRootSignatureStorage,
+					&existingCollectionStorage,
+					&associationStorage,
+					&activeDesc);
+				hr = device5->CreateStateObject(activeDesc, riid, ppStateObject);
+				if (SUCCEEDED(hr) && ppStateObject && *ppStateObject)
+					DeviceWrapper::TryWrapStateObject(riid, ppStateObject);
 				device5->Release();
 				return hr;
 			}
@@ -4650,7 +5748,29 @@ namespace DX12Wrapper
 				HRESULT hr = QueryDevice7(&device7);
 				if (FAILED(hr))
 					return hr;
-				hr = device7->AddToStateObject(pAddition, pStateObjectToGrowFrom, riid, ppNewStateObject);
+				D3D12_STATE_OBJECT_DESC descStorage = {};
+				std::vector<D3D12_STATE_SUBOBJECT> subobjectStorage;
+				std::vector<D3D12_GLOBAL_ROOT_SIGNATURE> globalRootSignatureStorage;
+				std::vector<D3D12_LOCAL_ROOT_SIGNATURE> localRootSignatureStorage;
+				std::vector<D3D12_EXISTING_COLLECTION_DESC> existingCollectionStorage;
+				std::vector<D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION> associationStorage;
+				const D3D12_STATE_OBJECT_DESC *activeAddition = pAddition;
+				DX12WrapperRuntimeUtils::UnwrapStateObjectDesc(
+					pAddition,
+					&descStorage,
+					&subobjectStorage,
+					&globalRootSignatureStorage,
+					&localRootSignatureStorage,
+					&existingCollectionStorage,
+					&associationStorage,
+					&activeAddition);
+				hr = device7->AddToStateObject(
+					activeAddition,
+					DX12WrapperRuntimeUtils::UnwrapStateObject(pStateObjectToGrowFrom),
+					riid,
+					ppNewStateObject);
+				if (SUCCEEDED(hr) && ppNewStateObject && *ppNewStateObject)
+					DeviceWrapper::TryWrapStateObject(riid, ppNewStateObject);
 				device7->Release();
 				return hr;
 			}
@@ -4664,6 +5784,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = device7->CreateProtectedResourceSession1(pDesc, riid, ppSession);
+				if (SUCCEEDED(hr) && ppSession && *ppSession)
+					DeviceWrapper::TryWrapProtectedResourceSession(riid, ppSession);
 				device7->Release();
 				return hr;
 			}
@@ -4770,6 +5892,8 @@ namespace DX12Wrapper
 				if (FAILED(hr))
 					return hr;
 				hr = device9->CreateShaderCacheSession(pDesc, riid, ppvSession);
+				if (SUCCEEDED(hr) && ppvSession && *ppvSession)
+					DeviceWrapper::TryWrapShaderCacheSession(riid, ppvSession);
 				device9->Release();
 				return hr;
 			}
@@ -4986,6 +6110,18 @@ namespace DX12Wrapper
 				return true;
 			if (DeviceWrapper::TryWrapCommandSignature(__uuidof(ID3D12CommandSignature), device))
 				return true;
+			if (DeviceWrapper::TryWrapLifetimeTracker(__uuidof(ID3D12LifetimeTracker), device))
+				return true;
+			if (DeviceWrapper::TryWrapProtectedResourceSession(__uuidof(ID3D12ProtectedResourceSession), device))
+				return true;
+			if (DeviceWrapper::TryWrapMetaCommand(__uuidof(ID3D12MetaCommand), device))
+				return true;
+			if (DeviceWrapper::TryWrapStateObject(__uuidof(ID3D12StateObject), device))
+				return true;
+			if (DeviceWrapper::TryWrapPipelineLibrary(__uuidof(ID3D12PipelineLibrary), device))
+				return true;
+			if (DeviceWrapper::TryWrapShaderCacheSession(__uuidof(ID3D12ShaderCacheSession), device))
+				return true;
 			if (DeviceWrapper::TryWrapCommandQueue(__uuidof(ID3D12CommandQueue), device))
 				return true;
 			if (DeviceWrapper::TryWrapGraphicsCommandList(__uuidof(ID3D12GraphicsCommandList), device))
@@ -5017,6 +6153,24 @@ namespace DX12Wrapper
 			return true;
 
 		if (DeviceWrapper::TryWrapCommandSignature(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapLifetimeTracker(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapProtectedResourceSession(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapMetaCommand(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapStateObject(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapPipelineLibrary(riid, device))
+			return true;
+
+		if (DeviceWrapper::TryWrapShaderCacheSession(riid, device))
 			return true;
 
 		if (DeviceWrapper::TryWrapCommandQueue(riid, device))
@@ -5110,6 +6264,36 @@ namespace DX12Wrapper
 	bool WrapD3D12CommandSignatureResult(REFIID riid, void **commandSignature)
 	{
 		return DeviceWrapper::TryWrapCommandSignature(riid, commandSignature);
+	}
+
+	bool WrapD3D12LifetimeTrackerResult(REFIID riid, void **tracker)
+	{
+		return DeviceWrapper::TryWrapLifetimeTracker(riid, tracker);
+	}
+
+	bool WrapD3D12ProtectedResourceSessionResult(REFIID riid, void **session)
+	{
+		return DeviceWrapper::TryWrapProtectedResourceSession(riid, session);
+	}
+
+	bool WrapD3D12MetaCommandResult(REFIID riid, void **metaCommand)
+	{
+		return DeviceWrapper::TryWrapMetaCommand(riid, metaCommand);
+	}
+
+	bool WrapD3D12StateObjectResult(REFIID riid, void **stateObject)
+	{
+		return DeviceWrapper::TryWrapStateObject(riid, stateObject);
+	}
+
+	bool WrapD3D12PipelineLibraryResult(REFIID riid, void **library)
+	{
+		return DeviceWrapper::TryWrapPipelineLibrary(riid, library);
+	}
+
+	bool WrapD3D12ShaderCacheSessionResult(REFIID riid, void **session)
+	{
+		return DeviceWrapper::TryWrapShaderCacheSession(riid, session);
 	}
 
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object)
