@@ -70,6 +70,20 @@ public:
 		DX12CommandListStateCapture::DescriptorHeaps(commandList, cbvSrvUav, sampler);
 	}
 
+	static void UpdateComputeBindingHash(
+		ID3D12GraphicsCommandList *commandList, uint64_t hashComponent)
+	{
+		if (!hashComponent)
+			return;
+		DX12CommandListRuntimeState *state =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if (!state)
+			return;
+		state->computeBindingHash ^= hashComponent;
+		state->computeBindingHash ^= state->computeBindingHash >> 33;
+		state->computeBindingHash *= 0xff51afd7ed558ccdull;
+	}
+
 	static void CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature,
@@ -94,9 +108,9 @@ public:
 			DX12CommandListStateCapture::GraphicsRootSignature(commandList, rootSignature);
 		} else {
 			DX12CommandListStateCapture::ComputeRootSignature(commandList, rootSignature);
+			UpdateComputeBindingHash(commandList,
+				reinterpret_cast<uint64_t>(rootSignature));
 		}
-		// ComputeBindingSerial 在 dispatch 时统一 bump（见 DispatchHookFlow::ExecuteHook），
-		// 此处不再 per-call bump，减少 ~500 InterlockedIncrement/帧。
 	}
 
 	static void CaptureRootDescriptorTable(
@@ -129,6 +143,9 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRootDescriptorTable(
 				commandList, rootParameterIndex, baseDescriptor);
+			uint64_t component = (static_cast<uint64_t>(rootParameterIndex) << 32) |
+				(baseDescriptor.ptr & 0xFFFFFFFF);
+			UpdateComputeBindingHash(commandList, component);
 		}
 	}
 

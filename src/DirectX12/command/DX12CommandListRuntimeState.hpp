@@ -30,4 +30,8 @@ public:
 	// 在 RememberPipelineState 时计算一次，dispatch 时 O(1) 读取。
 	uint64_t cachedCsHash = 0;
 	bool cachedCsHashValid = false;
+
+	// Compute binding 指纹：增量更新，dispatch 时用作探针缓存 key。
+	// 替代 computeBindingSerial（每次 dispatch 递增导致缓存永不命中）。
+	uint64_t computeBindingHash = 0;
 };

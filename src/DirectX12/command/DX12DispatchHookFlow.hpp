@@ -371,40 +371,33 @@ public:
 			return;
 		}
 
-		UINT64 computeBindingSerial =
-			DX12BindingTracker::GetComputeBindingSerial(commandList);
+		// 用 computeBindingHash（绑定指纹）替代 serial 做缓存 key。
+		// 绑定不变 → hash 不变 → 跨帧跨 dispatch 命中，无需每帧冷启动。
+		UINT64 bindingHash = runtimeState.computeBindingHash;
+		if (bindingHash == 0)
+			bindingHash = 1; // fallback：无绑定信息时使用固定值
+
+		// 缓存命中 → 跳过完整探测
+		DX12PreSkinProbeCacheEntry cacheEntry;
+		if (DX12ModGetCachedPreSkinProbeResult(
+			    commandList, probe->computeShaderHash, bindingHash, &cacheEntry)) {
+			probe->computeBindingSerial = bindingHash;
+			probe->applied = cacheEntry.applied;
+			probe->dispatchOverride = cacheEntry.dispatchOverride;
 #if defined(_DEBUG)
-		DX12LogManager::Text("PreparePreSkinProbe: serial=%llu\n",
-			static_cast<unsigned long long>(computeBindingSerial));
+			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d bindingHash=%llu\n",
+				probe->applied ? 1 : 0, static_cast<unsigned long long>(bindingHash));
 #endif
-		if (computeBindingSerial == 0) {
-#if defined(_DEBUG)
-			DX12LogManager::Text("PreparePreSkinProbe: zero serial, using fallback\n");
-#endif
-			computeBindingSerial = 1;
-		} else {
-			// 缓存命中（匹配或未匹配）→ 跳过完整探测，直接复用结果
-			DX12PreSkinProbeCacheEntry cacheEntry;
-			if (DX12ModGetCachedPreSkinProbeResult(
-				    commandList, probe->computeShaderHash, computeBindingSerial, &cacheEntry)) {
-				probe->computeBindingSerial = computeBindingSerial;
-				probe->applied = cacheEntry.applied;
-				probe->dispatchOverride = cacheEntry.dispatchOverride;
-#if defined(_DEBUG)
-				DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d\n",
-					probe->applied ? 1 : 0);
-#endif
-				QueryPerformanceCounter(&t1);
-				QueryPerformanceFrequency(&freq);
-				DX12LogManager::JsonFunc("DX12Perf",
-					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"hit\",\"us\":%lld",
-					static_cast<unsigned long long>(probe->computeShaderHash),
-					probe->applied ? "true" : "false",
-					static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
-				return;
-			}
+			QueryPerformanceCounter(&t1);
+			QueryPerformanceFrequency(&freq);
+			DX12LogManager::JsonFunc("DX12Perf",
+				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"hit\",\"us\":%lld",
+				static_cast<unsigned long long>(probe->computeShaderHash),
+				probe->applied ? "true" : "false",
+				static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
+			return;
 		}
-		probe->computeBindingSerial = computeBindingSerial;
+		probe->computeBindingSerial = bindingHash;
 #if defined(_DEBUG)
 		probe->shouldLog = true;
 #endif
@@ -436,7 +429,7 @@ public:
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
 		DX12ModStoreCachedPreSkinningUavMatch(
-			commandList, probe->computeShaderHash, computeBindingSerial,
+			commandList, probe->computeShaderHash, bindingHash,
 			probe->applied, &probe->dispatchOverride);
 
 		// 本帧此 CS 已处理，后续 dispatch 跳过
