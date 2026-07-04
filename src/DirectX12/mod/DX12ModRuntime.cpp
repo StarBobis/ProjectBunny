@@ -253,6 +253,7 @@ public:
 	UINT64 computeBindingSerial = 0;
 	bool valid = false;
 	bool matched = false;
+	DX12PreSkinDispatchOverride dispatchOverride;
 };
 static std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
 static volatile LONG gDx12SafeMode = 0;

@@ -80,6 +80,9 @@ static bool TextureOverrideMatchCsSatisfied(
 
 void DX12ModBeginFrame()
 {
+	LARGE_INTEGER t0, t1;
+	QueryPerformanceCounter(&t0);
+
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;
 	AcquireSRWLockExclusive(&gPreSkinLock);
@@ -109,6 +112,13 @@ void DX12ModBeginFrame()
 	for (DX12RetiredLoadedResource &resource : expired)
 		ReleaseLoadedResourceObjects(&resource.resource);
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
+
+	QueryPerformanceCounter(&t1);
+	LARGE_INTEGER freq;
+	QueryPerformanceFrequency(&freq);
+	DX12LogManager::JsonFunc("DX12Perf",
+		"\"scope\":\"ModBeginFrame\",\"us\":%lld",
+		static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
 }
 
 bool DX12ModPreparePresentReplacement(

@@ -37,6 +37,7 @@ bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash);
 bool DX12ModPreSkinningUavProducerMayMatch(
 	uint64_t computeShaderHash,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs);
+class DX12PreSkinDispatchOverride;
 bool DX12ModHasCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
@@ -46,7 +47,8 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
-	bool matched);
+	bool matched,
+	const DX12PreSkinDispatchOverride *dispatchOverride = nullptr);
 
 class DX12ModPreSkinProducerSummary
 {
@@ -217,6 +219,17 @@ public:
 	UINT groupsY = 0;
 	UINT groupsZ = 0;
 };
+class DX12PreSkinProbeCacheEntry
+{
+public:
+	bool applied = false;
+	DX12PreSkinDispatchOverride dispatchOverride;
+};
+bool DX12ModGetCachedPreSkinProbeResult(
+	ID3D12GraphicsCommandList *commandList,
+	uint64_t computeShaderHash,
+	UINT64 computeBindingSerial,
+	DX12PreSkinProbeCacheEntry *result);
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,

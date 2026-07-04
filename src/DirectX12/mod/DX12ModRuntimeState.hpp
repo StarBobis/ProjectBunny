@@ -183,28 +183,56 @@ static void UpdatePreSkinningUavMatchCacheLocked(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
-	bool matched)
+	bool matched,
+	const DX12PreSkinDispatchOverride *dispatchOverride)
 {
 	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[commandList];
 	entry.computeShaderHash = computeShaderHash;
 	entry.computeBindingSerial = computeBindingSerial;
 	entry.valid = true;
 	entry.matched = matched;
+	if (dispatchOverride)
+		entry.dispatchOverride = *dispatchOverride;
 }
 
 void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
-	bool matched)
+	bool matched,
+	const DX12PreSkinDispatchOverride *dispatchOverride)
 {
 	if (!commandList || !computeShaderHash || computeBindingSerial == 0)
 		return;
 
 	AcquireSRWLockExclusive(&gModLock);
 	UpdatePreSkinningUavMatchCacheLocked(
-		commandList, computeShaderHash, computeBindingSerial, matched);
+		commandList, computeShaderHash, computeBindingSerial, matched, dispatchOverride);
 	ReleaseSRWLockExclusive(&gModLock);
+}
+
+bool DX12ModGetCachedPreSkinProbeResult(
+	ID3D12GraphicsCommandList *commandList,
+	uint64_t computeShaderHash,
+	UINT64 computeBindingSerial,
+	DX12PreSkinProbeCacheEntry *result)
+{
+	if (!result || !commandList || !computeShaderHash || computeBindingSerial == 0)
+		return false;
+
+	AcquireSRWLockShared(&gModLock);
+	auto cached = gPreSkinUavMatchCache.find(commandList);
+	if (cached != gPreSkinUavMatchCache.end() &&
+	    cached->second.valid &&
+	    cached->second.computeShaderHash == computeShaderHash &&
+	    cached->second.computeBindingSerial == computeBindingSerial) {
+		result->applied = cached->second.matched;
+		result->dispatchOverride = cached->second.dispatchOverride;
+		ReleaseSRWLockShared(&gModLock);
+		return true;
+	}
+	ReleaseSRWLockShared(&gModLock);
+	return false;
 }
 
 void DX12ModRecordComputeUavs(

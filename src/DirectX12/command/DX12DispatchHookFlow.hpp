@@ -311,6 +311,9 @@ public:
 			return;
 		}
 
+		LARGE_INTEGER t0, t1, freq;
+		QueryPerformanceCounter(&t0);
+
 		probe->computeShaderHash = GetCachedCsHash(runtimeState.pipelineState);
 		if (!probe->computeShaderHash) {
 #if defined(_DEBUG)
@@ -346,13 +349,24 @@ public:
 #endif
 			computeBindingSerial = 1;
 		} else {
-			bool cachedMatch = false;
-			if (DX12ModHasCachedPreSkinningUavMatch(
-				    commandList, probe->computeShaderHash, computeBindingSerial, &cachedMatch) &&
-			    !cachedMatch) {
+			// 缓存命中（匹配或未匹配）→ 跳过完整探测，直接复用结果
+			DX12PreSkinProbeCacheEntry cacheEntry;
+			if (DX12ModGetCachedPreSkinProbeResult(
+				    commandList, probe->computeShaderHash, computeBindingSerial, &cacheEntry)) {
+				probe->computeBindingSerial = computeBindingSerial;
+				probe->applied = cacheEntry.applied;
+				probe->dispatchOverride = cacheEntry.dispatchOverride;
 #if defined(_DEBUG)
-				DX12LogManager::Text("PreparePreSkinProbe: exit cached no match\n");
+				DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d\n",
+					probe->applied ? 1 : 0);
 #endif
+				QueryPerformanceCounter(&t1);
+				QueryPerformanceFrequency(&freq);
+				DX12LogManager::JsonFunc("DX12Perf",
+					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"hit\",\"us\":%lld",
+					static_cast<unsigned long long>(probe->computeShaderHash),
+					probe->applied ? "true" : "false",
+					static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
 				return;
 			}
 		}
@@ -389,7 +403,15 @@ public:
 			&probe->dispatchOverride);
 		DX12ModStoreCachedPreSkinningUavMatch(
 			commandList, probe->computeShaderHash, computeBindingSerial,
-			probe->applied);
+			probe->applied, &probe->dispatchOverride);
+
+		QueryPerformanceCounter(&t1);
+		QueryPerformanceFrequency(&freq);
+		DX12LogManager::JsonFunc("DX12Perf",
+			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"us\":%lld",
+			static_cast<unsigned long long>(probe->computeShaderHash),
+			probe->applied ? "true" : "false",
+			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
 	}
 
 	static void FinishPreSkinProbe(
