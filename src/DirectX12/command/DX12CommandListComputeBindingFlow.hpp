@@ -55,9 +55,10 @@ public:
 		ResolveDescriptorHeaps(count, heaps, &cbvSrvUav, &sampler);
 		DX12CommandListRuntime::SetDescriptorHeaps(commandList, cbvSrvUav, sampler);
 
-		const bool trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
 		const bool skipTrackedCapture =
-			DX12HotPathState::skipBindings && !trackBindings;
+			DX12HotPathState::skipBindings && !tracking.trackBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -75,10 +76,11 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
-		const bool trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
 		const bool skipTrackedCapture = graphics ?
-			(DX12HotPathState::skipGraphicsBindings && !trackBindings) :
-			(DX12HotPathState::skipBindings && !trackBindings);
+			(DX12HotPathState::skipGraphicsBindings && !tracking.trackBindings) :
+			(DX12HotPathState::skipBindings && !tracking.trackBindings);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -104,10 +106,11 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		const bool trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
 		const bool skipTrackedCapture = graphics ?
-			(DX12HotPathState::skipGraphicsBindings && !trackBindings) :
-			(DX12HotPathState::skipBindings && !trackBindings);
+			(DX12HotPathState::skipGraphicsBindings && !tracking.trackBindings) :
+			(DX12HotPathState::skipBindings && !tracking.trackBindings);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
