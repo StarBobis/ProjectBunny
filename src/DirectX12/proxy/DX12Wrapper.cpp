@@ -4770,6 +4770,11 @@ namespace DX12Wrapper
 			mOrigDrawInstanced = ResolveOriginalDrawInstanced();
 			mOrigDrawIndexedInstanced = ResolveOriginalDrawIndexedInstanced();
 			mOrigDispatch = ResolveOriginalDispatch();
+			mOrigSetPipelineState = ResolveOriginalSetPipelineState();
+			mOrigResourceBarrier = ResolveOriginalResourceBarrier();
+			mOrigIASetIndexBuffer = ResolveOriginalIASetIndexBuffer();
+			mOrigIASetVertexBuffers = ResolveOriginalIASetVertexBuffers();
+			mOrigExecuteIndirect = ResolveOriginalExecuteIndirect();
 
 			DX12LogManager::JsonFunc("DX12Wrapper",
 				"\"kind\":\"graphics_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
@@ -4804,6 +4809,56 @@ namespace DX12Wrapper
 				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch,
 				DX12CommandListHookState::OrigDispatch,
 				"Dispatch");
+		}
+
+		DX12CommandListHookSignatures::SetPipelineState ResolveOriginalSetPipelineState()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetPipelineState>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState,
+				DX12CommandListHookState::OrigSetPipelineState,
+				"SetPipelineState");
+		}
+
+		DX12CommandListHookSignatures::ResourceBarrier ResolveOriginalResourceBarrier()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::ResourceBarrier>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
+				DX12CommandListHookState::OrigResourceBarrier,
+				"ResourceBarrier");
+		}
+
+		DX12CommandListHookSignatures::IaSetIndexBuffer ResolveOriginalIASetIndexBuffer()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::IaSetIndexBuffer>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer,
+				DX12CommandListHookState::OrigIASetIndexBuffer,
+				"IASetIndexBuffer");
+		}
+
+		DX12CommandListHookSignatures::IaSetVertexBuffers ResolveOriginalIASetVertexBuffers()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::IaSetVertexBuffers>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers,
+				DX12CommandListHookState::OrigIASetVertexBuffers,
+				"IASetVertexBuffers");
+		}
+
+		DX12CommandListHookSignatures::ExecuteIndirect ResolveOriginalExecuteIndirect()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::ExecuteIndirect>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect,
+				DX12CommandListHookState::OrigExecuteIndirect,
+				"ExecuteIndirect");
 		}
 
 			HRESULT QueryCommandList1(ID3D12GraphicsCommandList1 **commandList)
@@ -5101,11 +5156,19 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetPipelineState(ID3D12PipelineState *pPipelineState) override
 			{
+				if (DX12HotPathState::skipAll && mOrigSetPipelineState) {
+					mOrigSetPipelineState(mCommandList, pPipelineState);
+					return;
+				}
 				DX12WrapperRuntimeUtils::SetPipelineState(mCommandList, pPipelineState, mOrigSetPipelineState);
 			}
 
 			void STDMETHODCALLTYPE ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER *pBarriers) override
 			{
+				if (DX12HotPathState::skipAll && mOrigResourceBarrier) {
+					mOrigResourceBarrier(mCommandList, NumBarriers, pBarriers);
+					return;
+				}
 				DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, NumBarriers, pBarriers, mOrigResourceBarrier);
 			}
 
@@ -5116,13 +5179,19 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetDescriptorHeaps(UINT NumDescriptorHeaps, ID3D12DescriptorHeap *const *ppDescriptorHeaps) override
 			{
-				std::vector<ID3D12DescriptorHeap*> unwrapped;
+				// Stack buffer for common case (≤4 heaps). Avoids per-call heap allocation.
+				ID3D12DescriptorHeap *stackUnwrapped[4];
 				ID3D12DescriptorHeap *const *activeHeaps = ppDescriptorHeaps;
+				std::vector<ID3D12DescriptorHeap*> heapUnwrapped;
 				if (ppDescriptorHeaps && NumDescriptorHeaps) {
-					unwrapped.resize(NumDescriptorHeaps);
+					ID3D12DescriptorHeap **dest = stackUnwrapped;
+					if (NumDescriptorHeaps > 4) {
+						heapUnwrapped.resize(NumDescriptorHeaps);
+						dest = heapUnwrapped.data();
+					}
 					for (UINT i = 0; i < NumDescriptorHeaps; ++i)
-						unwrapped[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
-					activeHeaps = unwrapped.data();
+						dest[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
+					activeHeaps = dest;
 				}
 				DX12WrapperRuntimeUtils::SetDescriptorHeaps(mCommandList, NumDescriptorHeaps, activeHeaps);
 			}
@@ -5217,11 +5286,19 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) override
 			{
+				if (DX12HotPathState::skipAll && mOrigIASetIndexBuffer) {
+					mOrigIASetIndexBuffer(mCommandList, pView);
+					return;
+				}
 				DX12WrapperRuntimeUtils::IASetIndexBuffer(mCommandList, pView, mOrigIASetIndexBuffer);
 			}
 
 			void STDMETHODCALLTYPE IASetVertexBuffers(UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW *pViews) override
 			{
+				if (DX12HotPathState::skipAll && mOrigIASetVertexBuffers) {
+					mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
+					return;
+				}
 				DX12WrapperRuntimeUtils::IASetVertexBuffers(
 					mCommandList, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
 			}
