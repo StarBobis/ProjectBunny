@@ -1411,11 +1411,19 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
-	// 不用 bindingQuerySerial 做 key——serial 每 dispatch 变化导致缓存必 miss。
-	// bindings 不变 → heap/version 相同 → 跨 dispatch 命中。
+	// 用 computeTables 内容 hash 做 key——bindings 不变 → hash 不变 → 跨 dispatch 命中。
+	// heap 指针每 SetDescriptorHeaps 变化，不能用作 key。
+	UINT64 tableHash = 0;
+	for (UINT r = 0; r < MaxRootParameters; ++r) {
+		const RootTableState &t = snapshot.computeTables[r];
+		if (!t.valid) continue;
+		tableHash ^= static_cast<UINT64>(r);
+		tableHash ^= t.baseDescriptor.ptr;
+		tableHash ^= tableHash >> 33;
+		tableHash *= 0xff51afd7ed558ccdull;
+	}
 	if (tlsComputeAllQueryCache.commandList == commandList &&
-		tlsComputeAllQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
-		tlsComputeAllQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
+		tlsComputeAllQueryCache.computeTableHash == tableHash) {
 		if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
 		if (srvs) *srvs = tlsComputeAllQueryCache.srvs;
 		if (cbvs) *cbvs = tlsComputeAllQueryCache.cbvs;
@@ -1433,9 +1441,7 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
 	DX12_HOTPATH_TIME_END(BindCollect);
 	tlsComputeAllQueryCache.commandList = commandList;
-	tlsComputeAllQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsComputeAllQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
-	tlsComputeAllQueryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
+	tlsComputeAllQueryCache.computeTableHash = tableHash;
 	tlsComputeAllQueryCache.uavs = cachedUavs;
 	tlsComputeAllQueryCache.srvs = cachedSrvs;
 	tlsComputeAllQueryCache.cbvs = cachedCbvs;
