@@ -72,7 +72,11 @@ public:
 
 	static ID3D12PipelineState *UnwrapPipelineState(ID3D12PipelineState *pipelineState)
 	{
-		return reinterpret_cast<ID3D12PipelineState*>(DX12Wrapper::Unwrap(pipelineState));
+		DX12_HOTPATH_TIME_BEGIN(UnwrapObjTotal);
+		ID3D12PipelineState *result =
+			reinterpret_cast<ID3D12PipelineState*>(DX12Wrapper::Unwrap(pipelineState));
+		DX12_HOTPATH_TIME_END(UnwrapObjTotal);
+		return result;
 	}
 
 	static ID3D12ProtectedResourceSession *UnwrapProtectedResourceSession(

@@ -41,6 +41,9 @@ public:
 		RootDescTableTotal,     // SetGraphicsRootDescriptorTable + SetComputeRootDescriptorTable
 		RootSignatureTotal,     // SetGraphicsRootSignature + SetComputeRootSignature
 		IaSetTopologyTotal,     // IASetPrimitiveTopology wrapper path
+		UnwrapObjTotal,         // UnwrapPipelineState / UnwrapResource (gIdentityMap lookup)
+		StatePtrLookupTotal,    // GetStatePtrFast (gDirectStateMap lookup)
+		PsoCacheLookupTotal,    // PSO replacement cache check (RuntimeState read)
 
 		STAGE_COUNT
 	};
@@ -53,6 +56,7 @@ public:
 			"DispatchHook", "ResourceBarrier", "BarrierUnwrap", "BarrierCapture",
 			"SetPipelineState", "DescriptorHeaps",
 			"RootDescTable", "RootSignature", "IaSetTopology",
+			"UnwrapObj", "StatePtrLookup", "PsoCacheLookup",
 		};
 		return (id < STAGE_COUNT) ? names[id] : "?";
 	}

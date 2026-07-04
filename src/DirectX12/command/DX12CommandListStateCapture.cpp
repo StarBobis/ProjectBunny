@@ -6,6 +6,7 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 
 bool DX12CommandListStateCapture::ShouldTrackBindings()
@@ -86,12 +87,18 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	if (DX12ModHasActiveShaderOverrides()) {
 		// 对齐 DX11 创建期替换：PSO 替换结果缓存在 RuntimeState 中。
 		// 首次查 gPsoRecords（一次锁），后续 O(1) 直接读缓存。
+		DX12_HOTPATH_TIME_BEGIN(PsoCacheLookupTotal);
 		DX12CommandListRuntimeState *state =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		if (state && state->cachedReplacementPsoKey == pipelineState) {
-			if (state->cachedReplacementPso)
+			if (state->cachedReplacementPso) {
 				activePipelineState = state->cachedReplacementPso;
+				DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
+			} else {
+				DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
+			}
 		} else {
+			DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
 			ID3D12PipelineState *replacement =
 				DX12ModGetReplacementPipelineState(pipelineState);
 			if (state) {
