@@ -77,8 +77,9 @@ public:
 	{
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList);
+		// graphics 只看 skipGraphicsBindings（PreSkin 只需 compute bindings）
 		const bool skipTrackedCapture = graphics ?
-			(DX12HotPathState::skipGraphicsBindings && !tracking.trackBindings) :
+			DX12HotPathState::skipGraphicsBindings :
 			(DX12HotPathState::skipBindings && !tracking.trackBindings);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -108,8 +109,9 @@ public:
 			return;
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList);
+		// graphics 只看 skipGraphicsBindings（PreSkin 只需 compute bindings）
 		const bool skipTrackedCapture = graphics ?
-			(DX12HotPathState::skipGraphicsBindings && !tracking.trackBindings) :
+			DX12HotPathState::skipGraphicsBindings :
 			(DX12HotPathState::skipBindings && !tracking.trackBindings);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
