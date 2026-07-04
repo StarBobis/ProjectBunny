@@ -107,9 +107,12 @@ void DX12ModBeginFrame()
 		InterlockedExchange(&gPreSkinBindingIdleFrames, 0);
 	}
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
-	gPreSkinCbvReadCache.clear();
-	gPreSkinSrvNegativeCache.clear();
-	gPreSkinSrvPositiveCache.clear();
+	// gPreSkinCbvReadCache / gPreSkinSrv*Cache 跨帧持久：mod 配置不变则缓存有效。
+	// 仅在 mod 重载时通过 DX12ModRuntimeLoader 清空。
+	// 原每帧清空导致 SRV descriptor 和 CBV 每帧重创建 → 13.3ms 浪费。
+	// gPreSkinCbvReadCache.clear();
+	// gPreSkinSrvNegativeCache.clear();
+	// gPreSkinSrvPositiveCache.clear();
 	// PsoIaNegativeCache 跨帧持久：mod 配置不变则匹配结果不变。
 	// 仅在 mod 重载时通过 DX12ModRuntimeLoader 清空。
 	// DX12IaReplacementExecutor::ClearPsoIaNegativeCache();

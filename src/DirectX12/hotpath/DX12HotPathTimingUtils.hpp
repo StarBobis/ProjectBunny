@@ -48,6 +48,7 @@ public:
 		PreSkinMatch,            // FindProducer matching (UAV hash lookup)
 		PreSkinApply,            // ApplyPreSkinDescriptorTablePatchLocked
 		ExecuteCLTotal,          // ExecuteCommandLists wrapper path
+		PresentTotal,            // Present wrapper (excl. PresentWait)
 		PreSkinLoadResource,     // EnsureLoadedResourceForPreSkin + EnsureResourceSrvLocked
 		PreSkinRingAlloc,        // EnsurePreSkinDescriptorRingLocked (CreateDescriptorHeap)
 		PreSkinCopyPatch,        // CopyDescriptorsSimple + SRV patch + CBV patch
@@ -66,7 +67,7 @@ public:
 			"RootDescTable", "RootSignature", "IaSetTopology",
 			"UnwrapObj", "StatePtrLookup", "PsoCacheLookup",
 			"PreSkinQuery", "PreSkinMatch", "PreSkinApply",
-			"ExecuteCL",
+			"ExecuteCL", "Present",
 			"PreSkinLoad", "PreSkinRing", "PreSkinCopy", "PreSkinBind",
 		};
 		return (id < STAGE_COUNT) ? names[id] : "?";

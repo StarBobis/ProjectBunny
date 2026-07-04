@@ -497,6 +497,7 @@ public:
 			return skipHr;
 		}
 
+		DX12_HOTPATH_TIME_BEGIN(PresentTotal);
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
 		DX12_PROFILE_SCOPE(Present);
 		DXGIHookRuntime::LogAndResetPerFrameCounters();
@@ -528,6 +529,7 @@ public:
 		DX12HotPathState::Update();
 		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
 		DX12Profiling::EndFrame();
+		DX12_HOTPATH_TIME_END(PresentTotal);
 		DX12_HOTPATH_LOG_AND_RESET();
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperEnd", swapChain, hr);
 		return hr;
