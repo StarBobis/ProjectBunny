@@ -237,7 +237,6 @@ void DX12CommandListHookCallbacks::RegisterCommandListBase(
 	if (!baseList)
 		return;
 
-	DX12CommandListHooks::HookCommandList(baseList);
 	if (DX12CommandListHookRegistry::ShouldRegisterCommandListPointer(baseList))
 		DX12CommandListLifecycle::Register(baseList, initialState);
 }
@@ -1005,36 +1004,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 
 void DX12CommandListHooks::HookCommandQueue(IUnknown *commandQueue)
 {
-	if (!commandQueue)
-		return;
-
-	ID3D12CommandQueue *queue = nullptr;
-	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
-		return;
-
-	D3D12_COMMAND_QUEUE_DESC desc = queue->GetDesc();
-	if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-		static volatile LONG nonDirectLogs = 0;
-		if (InterlockedIncrement(&nonDirectLogs) <= 8)
-			DX12LogManager::JsonFunc("DX12CommandQueueState",
-				"\"event\":\"ignore_non_direct_hotpath\",\"queue\":\"%p\",\"type\":%d",
-				queue, static_cast<int>(desc.Type));
-		queue->Release();
-		return;
-	}
-
-	DX12CommandListHooks::RememberCommandQueueForHotPath(commandQueue);
-	DX12CommandQueueState::Set(queue);
-	DX12VTableHook queueHooks[] = {
-		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::ExecuteCommandLists, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueExecuteCommandLists),
-			DX12CommandListHookCallbacks::HookedQueueExecuteCommandLists, "ID3D12CommandQueue::ExecuteCommandLists"},
-		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::Signal, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueSignal),
-			DX12CommandListHookCallbacks::HookedQueueSignal, "ID3D12CommandQueue::Signal"},
-		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::Wait, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueWait),
-			DX12CommandListHookCallbacks::HookedQueueWait, "ID3D12CommandQueue::Wait"},
-	};
-	DX12HookManager::InstallVTableHooks(queue, queueHooks);
-	queue->Release();
+	(void)commandQueue;
 }
 
 void DX12CommandListHooks::RememberCommandQueueForHotPath(IUnknown *commandQueue)
@@ -1067,99 +1037,12 @@ void DX12CommandListHooks::ActivateCommandQueueHotPathHooks()
 
 void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 {
-	if (!commandList)
-		return;
-
-	ID3D12GraphicsCommandList *baseList = nullptr;
-	if (FAILED(commandList->QueryInterface(IID_PPV_ARGS(&baseList))))
-		return;
-
-	void *vtable = *reinterpret_cast<void**>(baseList);
-	if (!DX12CommandListHookRegistry::ShouldHookCommandListVTable(vtable)) {
-		baseList->Release();
-		return;
-	}
-
-	DX12VTableHook commandListHooks[] = {
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Close, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCloseCommandList),
-			DX12CommandListHookCallbacks::HookedCloseCommandList, "ID3D12GraphicsCommandList::Close"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, reinterpret_cast<void**>(&DX12CommandListHookState::OrigResetCommandList),
-			DX12CommandListHookCallbacks::HookedResetCommandList, "ID3D12GraphicsCommandList::Reset"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDrawInstanced),
-			DX12CommandListHookCallbacks::HookedDrawInstanced, "ID3D12GraphicsCommandList::DrawInstanced"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDrawIndexedInstanced),
-			DX12CommandListHookCallbacks::HookedDrawIndexedInstanced, "ID3D12GraphicsCommandList::DrawIndexedInstanced"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDispatch),
-			DX12CommandListHookCallbacks::HookedDispatch, "ID3D12GraphicsCommandList::Dispatch"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetPrimitiveTopology),
-			DX12CommandListHookCallbacks::HookedIASetPrimitiveTopology, "ID3D12GraphicsCommandList::IASetPrimitiveTopology"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetPipelineState),
-			DX12CommandListHookCallbacks::HookedSetPipelineState, "ID3D12GraphicsCommandList::SetPipelineState"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier, reinterpret_cast<void**>(&DX12CommandListHookState::OrigResourceBarrier),
-			DX12CommandListHookCallbacks::HookedResourceBarrier, "ID3D12GraphicsCommandList::ResourceBarrier"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteBundle, reinterpret_cast<void**>(&DX12CommandListHookState::OrigExecuteBundle),
-			DX12CommandListHookCallbacks::HookedExecuteBundle, "ID3D12GraphicsCommandList::ExecuteBundle"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetDescriptorHeaps),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetDescriptorHeaps, "ID3D12GraphicsCommandList::SetDescriptorHeaps"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootSignature),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetComputeRootSignature, "ID3D12GraphicsCommandList::SetComputeRootSignature"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootSignature),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetGraphicsRootSignature, "ID3D12GraphicsCommandList::SetGraphicsRootSignature"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootDescriptorTable),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetComputeRootDescriptorTable, "ID3D12GraphicsCommandList::SetComputeRootDescriptorTable"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetGraphicsRootDescriptorTable, "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootConstantBufferView),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetComputeRootConstantBufferView, "ID3D12GraphicsCommandList::SetComputeRootConstantBufferView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetGraphicsRootConstantBufferView, "ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootShaderResourceView),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetComputeRootShaderResourceView, "ID3D12GraphicsCommandList::SetComputeRootShaderResourceView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetGraphicsRootShaderResourceView, "ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView),
-			DX12CommandListComputeBindingHookCallbacks::HookedSetComputeRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, reinterpret_cast<void**>(&DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView),
-			DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorderedAccessView, "ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetIndexBuffer),
-			DX12CommandListHookCallbacks::HookedIASetIndexBuffer, "ID3D12GraphicsCommandList::IASetIndexBuffer"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, reinterpret_cast<void**>(&DX12CommandListHookState::OrigIASetVertexBuffers),
-			DX12CommandListHookCallbacks::HookedIASetVertexBuffers, "ID3D12GraphicsCommandList::IASetVertexBuffers"},
-		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, reinterpret_cast<void**>(&DX12CommandListHookState::OrigExecuteIndirect),
-			DX12CommandListHookCallbacks::HookedExecuteIndirect, "ID3D12GraphicsCommandList::ExecuteIndirect"},
-	};
-	DX12HookManager::InstallVTableHooks(baseList, commandListHooks);
-	baseList->Release();
+	(void)commandList;
 }
 
 void DX12CommandListHooks::HookCommandListCreation(IUnknown *device)
 {
-	if (!device)
-		return;
-
-	ID3D12Device *baseDevice = nullptr;
-	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&baseDevice)))) {
-		DX12VTableHook deviceHooks[] = {
-			{DX12CommandListHookSlotTypes::ID3D12Device::CreateCommandQueue, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandQueue),
-				DX12CommandListHookCallbacks::HookedCreateCommandQueue, "ID3D12Device::CreateCommandQueue"},
-			{DX12CommandListHookSlotTypes::ID3D12Device::CreateCommandAllocator, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandAllocator),
-				DX12CommandListHookCallbacks::HookedCreateCommandAllocator, "ID3D12Device::CreateCommandAllocator"},
-			{DX12CommandListHookSlotTypes::ID3D12Device::CreateCommandList, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandList),
-				DX12CommandListHookCallbacks::HookedCreateCommandList, "ID3D12Device::CreateCommandList"},
-		};
-		DX12HookManager::InstallVTableHooks(baseDevice, deviceHooks);
-		baseDevice->Release();
-	}
-
-	ID3D12Device4 *device4 = nullptr;
-	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device4)))) {
-		DX12VTableHook device4Hooks[] = {
-			{DX12CommandListHookSlotTypes::ID3D12Device4::CreateCommandList1, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCreateCommandList1),
-				DX12CommandListHookCallbacks::HookedCreateCommandList1, "ID3D12Device4::CreateCommandList1"},
-		};
-		DX12HookManager::InstallVTableHooks(device4, device4Hooks);
-		device4->Release();
-	}
+	(void)device;
 }
 
 

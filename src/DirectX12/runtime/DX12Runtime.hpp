@@ -11,6 +11,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeState.hpp"
+#include "DX12ResourceTrackerHooks.hpp"
 #include "DXGIHooks.hpp"
 #include "MigotoConfig.hpp"
 
@@ -74,6 +75,9 @@ public:
 				configPath.c_str(), Config.Error().c_str());
 		}
 		DX12HotPathState::Update();
+
+		// Start persistent resource/descriptor tracking queue (wrapper mode)
+		DX12ResourceTrackerHooks::Install(nullptr);
 
 		// CreateThread requires a DWORD WINAPI thread entry. Keep the entry
 		// as a class method so runtime startup state stays in one module.

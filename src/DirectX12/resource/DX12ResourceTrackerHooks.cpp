@@ -1104,83 +1104,12 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 
 void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 {
-	if (!device)
-		return;
+	(void)device;
 
 	if (!gCleanupRegistered) {
 		atexit(CleanupTrackedResources);
 		gCleanupRegistered = true;
 		DX12ResourceCollectQueue::Start();
-		DX12LogManager::Text("DX12 persistent resource and descriptor tracking enabled\n");
-	}
-
-	DX12VTableHook deviceHooks[] = {
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateDescriptorHeap, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateDescriptorHeap),
-			DX12ResourceTrackerHookCallbacks::HookedCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateRootSignature, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateRootSignature),
-			DX12ResourceTrackerHookCallbacks::HookedCreateRootSignature, "ID3D12Device::CreateRootSignature"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateConstantBufferView, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateConstantBufferView),
-			DX12ResourceTrackerHookCallbacks::HookedCreateConstantBufferView, "ID3D12Device::CreateConstantBufferView"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateShaderResourceView, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateShaderResourceView),
-			DX12ResourceTrackerHookCallbacks::HookedCreateShaderResourceView, "ID3D12Device::CreateShaderResourceView"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateUnorderedAccessView, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateUnorderedAccessView),
-			DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAccessView, "ID3D12Device::CreateUnorderedAccessView"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateRenderTargetView, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateRenderTargetView),
-			DX12ResourceTrackerHookCallbacks::HookedCreateRenderTargetView, "ID3D12Device::CreateRenderTargetView"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateDepthStencilView, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateDepthStencilView),
-			DX12ResourceTrackerHookCallbacks::HookedCreateDepthStencilView, "ID3D12Device::CreateDepthStencilView"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateSampler, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateSampler),
-			DX12ResourceTrackerHookCallbacks::HookedCreateSampler, "ID3D12Device::CreateSampler"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CopyDescriptors, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCopyDescriptors),
-			DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors, "ID3D12Device::CopyDescriptors"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CopyDescriptorsSimple, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple),
-			DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSimple, "ID3D12Device::CopyDescriptorsSimple"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateCommittedResource, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource),
-			DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource, "ID3D12Device::CreateCommittedResource"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreatePlacedResource, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource),
-			DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource, "ID3D12Device::CreatePlacedResource"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateReservedResource, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource),
-			DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource, "ID3D12Device::CreateReservedResource"},
-		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateFence, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateFence),
-			DX12ResourceTrackerHookCallbacks::HookedCreateFence, "ID3D12Device::CreateFence"},
-	};
-	DX12HookManager::InstallVTableHooks(device, deviceHooks);
-
-	ID3D12Device4 *device4 = nullptr;
-	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device4)))) {
-		DX12VTableHook device4Hooks[] = {
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device4::CreateCommittedResource1, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource1),
-				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource1, "ID3D12Device4::CreateCommittedResource1"},
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device4::CreateReservedResource1, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource1),
-				DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource1, "ID3D12Device4::CreateReservedResource1"},
-		};
-		DX12HookManager::InstallVTableHooks(device4, device4Hooks);
-		device4->Release();
-	}
-
-	ID3D12Device8 *device8 = nullptr;
-	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device8)))) {
-		DX12VTableHook device8Hooks[] = {
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device8::CreateCommittedResource2, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource2),
-				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource2, "ID3D12Device8::CreateCommittedResource2"},
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device8::CreatePlacedResource1, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource1),
-				DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource1, "ID3D12Device8::CreatePlacedResource1"},
-		};
-		DX12HookManager::InstallVTableHooks(device8, device8Hooks);
-		device8->Release();
-	}
-
-	ID3D12Device10 *device10 = nullptr;
-	if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device10)))) {
-		DX12VTableHook device10Hooks[] = {
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device10::CreateCommittedResource3, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateCommittedResource3),
-				DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource3, "ID3D12Device10::CreateCommittedResource3"},
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device10::CreatePlacedResource2, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreatePlacedResource2),
-				DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource2, "ID3D12Device10::CreatePlacedResource2"},
-			{DX12ResourceTrackerHookSlotTypes::ID3D12Device10::CreateReservedResource2, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource2),
-				DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource2, "ID3D12Device10::CreateReservedResource2"},
-		};
-		DX12HookManager::InstallVTableHooks(device10, device10Hooks);
-		device10->Release();
+		DX12LogManager::Text("DX12 persistent resource and descriptor tracking enabled (wrapper mode)\n");
 	}
 }
