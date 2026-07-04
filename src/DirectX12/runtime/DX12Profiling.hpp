@@ -91,6 +91,7 @@ public:
 
 	Mode mode = Mode::SUMMARY;
 	volatile LONG collectCounters = 0;
+	volatile LONG collectTiming = 0;
 	volatile LONG framePresentCount = 0;
 	LARGE_INTEGER frameStartTime = {};
 	LARGE_INTEGER perfFrequency = {};
@@ -174,7 +175,7 @@ inline DX12Profiling::ScopedTimer::ScopedTimer(Counter &counter) :
 	}
 	counter.IncrementCalls();
 	start.QuadPart = 0;
-	if (DX12Profiling::Get().mode == DX12Profiling::Mode::SUMMARY)
+	if (DX12Profiling::Get().collectTiming)
 		QueryPerformanceCounter(&start);
 }
 
@@ -379,6 +380,7 @@ inline void DX12Profiling::InitState()
 {
 	QueryPerformanceFrequency(&perfFrequency);
 	InterlockedExchange(&collectCounters, 1);
+	InterlockedExchange(&collectTiming, 0);
 }
 
 inline void DX12Profiling::BeginFrameState()

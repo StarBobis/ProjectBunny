@@ -223,7 +223,14 @@ public:
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		DXGIHookDiagnostics::LogPresentStage("Present", "beforeOriginal", swapChain);
+		LARGE_INTEGER tPresent0, tPresent1, freq;
+		QueryPerformanceCounter(&tPresent0);
 		HRESULT hr = original(swapChain, syncInterval, flags);
+		QueryPerformanceCounter(&tPresent1);
+		QueryPerformanceFrequency(&freq);
+		DX12LogManager::JsonFunc("DX12Perf",
+			"\"scope\":\"PresentWait\",\"us\":%lld",
+			static_cast<long long>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
 		DXGIHookDiagnostics::LogPresentStage("Present", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 		DX12RuntimeState::IncrementPresentCount();
@@ -277,7 +284,14 @@ public:
 		if (!original)
 			return DXGI_ERROR_INVALID_CALL;
 		DXGIHookDiagnostics::LogPresentStage("Present1", "beforeOriginal", swapChain);
+		LARGE_INTEGER tPresent0, tPresent1, freq;
+		QueryPerformanceCounter(&tPresent0);
 		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
+		QueryPerformanceCounter(&tPresent1);
+		QueryPerformanceFrequency(&freq);
+		LONG64 presentUs = (tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart;
+		DX12LogManager::JsonFunc("DX12Perf",
+			"\"scope\":\"PresentWait\",\"us\":%lld", static_cast<long long>(presentUs));
 		DXGIHookDiagnostics::LogPresentStage("Present1", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 		DX12RuntimeState::IncrementPresentCount();

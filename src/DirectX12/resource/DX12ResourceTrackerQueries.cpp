@@ -506,6 +506,19 @@ uint32_t DX12HashIaBufferView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
+	// ── TLS 缓存: 同一 IA buffer 只 hash 一次 ─────────────────────
+	struct IaHashCacheEntry { UINT64 gpuVa; UINT64 sz; UINT str; UINT fmt; UINT sl; uint32_t hash; };
+	static thread_local IaHashCacheEntry s_cache[64] = {};
+	static thread_local UINT64 s_cacheGen = 0;
+	UINT64 gen = gBufferResolveGeneration.load(std::memory_order_relaxed);
+	if (s_cacheGen != gen) { memset(s_cache, 0, sizeof(s_cache)); s_cacheGen = gen; }
+	UINT bucket = static_cast<UINT>((gpuVirtualAddress >> 6) & 63);
+	for (UINT i = 0; i < 4; ++i) {
+		IaHashCacheEntry &e = s_cache[(bucket + i) & 63];
+		if (e.gpuVa == gpuVirtualAddress && e.sz == size && e.str == stride && e.fmt == format && e.sl == slot)
+			return e.hash;
+	}
+
 	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
 	const uint8_t *contentData = nullptr;
 	size_t contentSize = 0;
@@ -518,6 +531,8 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &stride, sizeof(stride));
 		hash = HashBytes(hash, &format, sizeof(format));
 		hash = HashBytes(hash, &slot, sizeof(slot));
+		IaHashCacheEntry &ce = s_cache[bucket & 63];
+		ce.gpuVa = gpuVirtualAddress; ce.sz = size; ce.str = stride; ce.fmt = format; ce.sl = slot; ce.hash = hash;
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
 			"\"stage\":\"content_crc32\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
@@ -595,6 +610,8 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &stride, sizeof(stride));
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));
+	IaHashCacheEntry &ce2 = s_cache[bucket & 63];
+	ce2.gpuVa = gpuVirtualAddress; ce2.sz = size; ce2.str = stride; ce2.fmt = format; ce2.sl = slot; ce2.hash = hash;
 	return hash;
 }
 
