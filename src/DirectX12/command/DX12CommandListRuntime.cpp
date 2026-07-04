@@ -183,6 +183,8 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		fastState->ia = DX12ActiveIaState();
+		fastState->iaStateVersion++;
+		fastState->iaHashCache.valid = false;
 		return;
 	}
 
@@ -190,6 +192,8 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
 	state.ia = DX12ActiveIaState();
+	state.iaStateVersion++;
+	state.iaHashCache.valid = false;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -203,6 +207,8 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	if (fastState) {
 		fastState->ia.hasIndexBuffer = view != nullptr;
 		fastState->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+		fastState->iaStateVersion++;
+		fastState->iaHashCache.valid = false;
 		return;
 	}
 
@@ -211,6 +217,8 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	DX12ActiveIaState &state = shard.states[commandList].ia;
 	state.hasIndexBuffer = view != nullptr;
 	state.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	shard.states[commandList].iaStateVersion++;
+	shard.states[commandList].iaHashCache.valid = false;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -230,6 +238,8 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			state.hasVertexBuffer[slot] = view != nullptr;
 			state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
 		}
+		fastState->iaStateVersion++;
+		fastState->iaHashCache.valid = false;
 		return;
 	}
 
@@ -242,6 +252,8 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 		state.hasVertexBuffer[slot] = view != nullptr;
 		state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
 	}
+	shard.states[commandList].iaStateVersion++;
+	shard.states[commandList].iaHashCache.valid = false;
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 

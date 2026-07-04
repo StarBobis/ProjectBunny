@@ -161,10 +161,48 @@ public:
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
 		DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
-		if (DX12CommandListRuntime::BuildIaHashState(
-			runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
-			draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState)) {
-			DX12_HOTPATH_TIME_END(DrawBuildIaHash);
+
+		// ── IA hash state 增量缓存 ──
+		// 同一 command list 连续 draw 同一 mesh（VB/IB + draw args 不变）时
+		// 直接复用上次 hash 结果，完全跳过 BuildIaHashState → HashVertexBufferView 链。
+		// iaStateVersion 在 RememberIndexBuffer/RememberVertexBuffers 中递增。
+		DX12CommandListRuntimeState &mutableState =
+			const_cast<DX12CommandListRuntimeState&>(runtimeState);
+		DX12CommandListRuntimeState::IaHashCacheEntry &cache = mutableState.iaHashCache;
+		const UINT64 currentIaVersion = mutableState.iaStateVersion;
+
+		bool cacheHit = false;
+		if (cache.valid &&
+		    cache.indexed == draw.indexed &&
+		    cache.vertexCount == draw.vertexCount &&
+		    cache.indexCount == draw.indexCount &&
+		    cache.firstVertex == draw.firstVertex &&
+		    cache.firstIndex == draw.firstIndex &&
+		    cache.baseVertex == draw.baseVertex &&
+		    cache.instanceCount == draw.instanceCount) {
+			iaState = cache.hashState;
+			cacheHit = true;
+		}
+
+		if (!cacheHit) {
+			if (DX12CommandListRuntime::BuildIaHashState(
+				runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
+				draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState)) {
+				// 缓存本次结果
+				cache.indexed = draw.indexed;
+				cache.vertexCount = draw.vertexCount;
+				cache.indexCount = draw.indexCount;
+				cache.firstVertex = draw.firstVertex;
+				cache.firstIndex = draw.firstIndex;
+				cache.baseVertex = draw.baseVertex;
+				cache.instanceCount = draw.instanceCount;
+				cache.hashState = iaState;
+				cache.valid = true;
+			}
+		}
+		DX12_HOTPATH_TIME_END(DrawBuildIaHash);
+
+		if (iaState.hasIndexBuffer || !iaState.vertexBuffers.empty()) {
 			DX12Profiling::RecordIaHashStateResult(true);
 
 			// PSO+IA 组合级负缓存：同一 PSO + 同一 IA hash 组合上次已确认无匹配
@@ -203,7 +241,6 @@ public:
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
-		DX12_HOTPATH_TIME_END(DrawBuildIaHash);
 
 		DX12Profiling::RecordIaHashStateResult(false);
 		if (DX12ModShouldSkipPipelineState(runtimeState.pipelineState, false)) {

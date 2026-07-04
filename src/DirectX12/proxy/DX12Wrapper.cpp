@@ -4767,6 +4767,29 @@ namespace DX12Wrapper
 			// Resolve pre-hook original function pointers to bypass vtable hooks.
 			// Eliminates double interception: wrapper callbacks call originals
 			// directly instead of going through hooked vtable -> second hook cycle.
+			// 批量预解析热点 vtable slot，一次性填充二级缓存。
+			// 首次调用触发全局 registry 查找，同一 vtable 后续 slot 全部命中缓存。
+			// 消除 8 次独立 GetCommandListOriginal 的重复 vtable walk + map 查找。
+			{
+				static const UINT kHotSlots[] = {
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect,
+				};
+				DX12OriginalFunctionRegistry::BulkResolveVtableSlots(
+					static_cast<void*>(commandList),
+					kHotSlots,
+					ARRAYSIZE(kHotSlots),
+					DX12CommandListHookState::CommandListOriginals,
+					ARRAYSIZE(DX12CommandListHookState::CommandListOriginals),
+					&DX12CommandListHookState::VtableBaseCache);
+			}
+
 			mOrigDrawInstanced = ResolveOriginalDrawInstanced();
 			mOrigDrawIndexedInstanced = ResolveOriginalDrawIndexedInstanced();
 			mOrigDispatch = ResolveOriginalDispatch();
