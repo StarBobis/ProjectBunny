@@ -11,6 +11,7 @@
 #include "DX12Profiling.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 // Legacy stub — referenced by compiled code but definition was never provided
 inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
@@ -122,24 +123,34 @@ public:
 		if (!DX12ModHasActiveShaderOverrides())
 			return false;
 
+		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
+
 		// PSO 级提前退出：利用 runtimeState 缓存的 PSO 标志，避免每 draw 获取 gModLock。
 		// 缓存在 tracking generation 变化时自动失效（通过 generation 比对）。
+		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
 		if (runtimeState.pipelineState) {
 			const LONG gen = static_cast<LONG>(DX12CommandListRuntime::TrackingGeneration());
 			const LONG cachedGen = InterlockedCompareExchange(
 				const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), 0, 0);
 			if (cachedGen == gen) {
-				if (!runtimeState.psoHasShaderOverrides)
+				if (!runtimeState.psoHasShaderOverrides) {
+					DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
+				}
 			} else {
 				const bool hasOverrides = DX12ModHasShaderOverridesForPso(runtimeState.pipelineState);
 				InterlockedExchange(
 					const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), gen);
 				const_cast<DX12CommandListRuntimeState&>(runtimeState).psoHasShaderOverrides = hasOverrides;
-				if (!hasOverrides)
+				if (!hasOverrides) {
+					DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
+				}
 			}
 		}
+		DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
 
 		DX12Profiling::RecordIaDrawOverrideCheck();
 		DX12ModIaReplacement iaReplacement;
@@ -149,36 +160,57 @@ public:
 		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
+		DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
 		if (DX12CommandListRuntime::BuildIaHashState(
 			runtimeState.ia, draw.indexed, draw.vertexCount, draw.indexCount,
 			draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState)) {
+			DX12_HOTPATH_TIME_END(DrawBuildIaHash);
 			DX12Profiling::RecordIaHashStateResult(true);
 
 			// PSO+IA 组合级负缓存：同一 PSO + 同一 IA hash 组合上次已确认无匹配
 			// → 跳过 DX12ModPrepareShaderOverrideReplacement 的完整流程。
 			// Key 不含 draw 参数 → 命中率远高于 ShaderOverrideNegativeCache。
+			DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
 			const UINT64 psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 				runtimeState.pipelineState, iaState);
-			if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey))
+			if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey)) {
+				DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
+			}
+			DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
 
+			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
 			if (DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, iaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, &iaReplacement)) {
+				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
+				DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
 				if (DX12IaReplacementExecutor::ApplyAndExecute(
-					commandList, draw, iaState, &iaReplacement, runtimeState, callbacks))
+					commandList, draw, iaState, &iaReplacement, runtimeState, callbacks)) {
+					DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return true;
+				}
+				DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+			} else {
+				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
 			}
 
 			// 未匹配 → 存入 PSO+IA 负缓存
 			DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
+			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
+		DX12_HOTPATH_TIME_END(DrawBuildIaHash);
 
 		DX12Profiling::RecordIaHashStateResult(false);
-		if (DX12ModShouldSkipPipelineState(runtimeState.pipelineState, false))
+		if (DX12ModShouldSkipPipelineState(runtimeState.pipelineState, false)) {
+			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return true;
+		}
+		DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 		return false;
 	}
 };

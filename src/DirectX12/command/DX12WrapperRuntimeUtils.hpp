@@ -20,6 +20,7 @@
 #include "DX12Profiling.hpp"
 #include "dxgi/DXGIHookRuntime.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 class DX12WrapperRuntimeUtils
 {
@@ -480,6 +481,7 @@ public:
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				DXGIHookRuntime::RunPostPresentUi(swapChain);
 			DX12HotPathState::Update();
+			DX12_HOTPATH_LOG_AND_RESET();
 			return skipHr;
 		}
 
@@ -514,6 +516,7 @@ public:
 		DX12HotPathState::Update();
 		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
 		DX12Profiling::EndFrame();
+		DX12_HOTPATH_LOG_AND_RESET();
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperEnd", swapChain, hr);
 		return hr;
 	}
@@ -543,6 +546,7 @@ public:
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				DXGIHookRuntime::RunPostPresentUi(swapChain);
 			DX12HotPathState::Update();
+			DX12_HOTPATH_LOG_AND_RESET();
 			return skipHr;
 		}
 
@@ -577,6 +581,7 @@ public:
 		DX12HotPathState::Update();
 		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present1", swapChain, hr, dumpFrame, dumpShaders);
 		DX12Profiling::EndFrame();
+		DX12_HOTPATH_LOG_AND_RESET();
 		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperEnd", swapChain, hr);
 		return hr;
 	}
@@ -779,12 +784,14 @@ public:
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
+		DX12_HOTPATH_TIME_BEGIN(SetPipelineStateTotal);
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateFlow::CapturePipelineState(commandList, UnwrapPipelineState(pipelineState));
 		if (original)
 			original(commandList, activePipelineState);
 		else
 			commandList->SetPipelineState(activePipelineState);
+		DX12_HOTPATH_TIME_END(SetPipelineStateTotal);
 	}
 
 	static void ResourceBarrier(
@@ -793,16 +800,22 @@ public:
 		const D3D12_RESOURCE_BARRIER *barriers,
 		DX12CommandListHookSignatures::ResourceBarrier original)
 	{
+		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
 		std::vector<D3D12_RESOURCE_BARRIER> unwrappedBarriers;
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
+		DX12_HOTPATH_TIME_BEGIN(BarrierUnwrap);
 		UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
+		DX12_HOTPATH_TIME_END(BarrierUnwrap);
 		LogCommandListStage("ResourceBarrier", "before", commandList);
+		DX12_HOTPATH_TIME_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);
+		DX12_HOTPATH_TIME_END(BarrierCapture);
 		if (original)
 			original(commandList, numBarriers, activeBarriers);
 		else
 			commandList->ResourceBarrier(numBarriers, activeBarriers);
 		LogCommandListStage("ResourceBarrier", "after", commandList);
+		DX12_HOTPATH_TIME_END(ResourceBarrierTotal);
 	}
 
 	static void IASetIndexBuffer(
@@ -844,11 +857,13 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
+		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetDescriptorHeaps);
 			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(commandList, count, heaps);
 		}
 		commandList->SetDescriptorHeaps(count, heaps);
+		DX12_HOTPATH_TIME_END(DescriptorHeapsTotal);
 	}
 
 	static void SetComputeRootSignature(

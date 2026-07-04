@@ -17,6 +17,7 @@
 #include "DX12ShaderHunt.hpp"
 #include "DX12UiActions.hpp"
 #include "DXGIHookDiagnostics.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 class DXGIHookRuntime
 {
@@ -139,6 +140,7 @@ public:
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				RunPostPresentUi(swapChain);
 			DX12HotPathState::Update();
+			DX12_HOTPATH_LOG_AND_RESET();
 			return skipHr;
 		}
 
@@ -177,6 +179,7 @@ public:
 
 		CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
 		DX12Profiling::EndFrame();
+		DX12_HOTPATH_LOG_AND_RESET();
 		DXGIHookDiagnostics::LogPresentStage("Present", "end", swapChain, hr);
 		return hr;
 	}
@@ -207,6 +210,7 @@ public:
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				RunPostPresentUi(swapChain);
 			DX12HotPathState::Update();
+			DX12_HOTPATH_LOG_AND_RESET();
 			return skipHr;
 		}
 
@@ -244,6 +248,7 @@ public:
 
 		CompleteCaptureOrBeginNext("Present1", swapChain, hr, dumpFrame, dumpShaders);
 		DX12Profiling::EndFrame();
+		DX12_HOTPATH_LOG_AND_RESET();
 		DXGIHookDiagnostics::LogPresentStage("Present1", "end", swapChain, hr);
 		return hr;
 	}

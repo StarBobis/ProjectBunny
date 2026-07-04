@@ -15,6 +15,7 @@
 #include "DX12ShaderHunt.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 class DX12DrawHookFlow
 {
@@ -35,6 +36,7 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
+		DX12_HOTPATH_TIME_BEGIN(DrawHookTotal);
 		// 使用单一 flags word 替代 9 个独立状态检查
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
@@ -44,6 +46,7 @@ public:
 		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
@@ -55,15 +58,19 @@ public:
 		if (DX12IaReplacementDrawScope::IsExecuting()) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsModWork) {
 			DX12_PROFILE_FAST_FORWARD();
-			if (ShouldSkipHuntDraw(commandList, draw))
+			if (ShouldSkipHuntDraw(commandList, draw)) {
+				DX12_HOTPATH_TIME_END(DrawHookTotal);
 				return;
+			}
 			RecordHuntDraw(commandList, draw);
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
@@ -78,12 +85,14 @@ public:
 		if (!needsModWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
 		const DX12CommandListRuntimeState *runtimeState =
 			DX12CommandListRuntime::GetStatePtr(commandList);
 		Execute(commandList, draw, runtimeState, callbacks);
+		DX12_HOTPATH_TIME_END(DrawHookTotal);
 	}
 
 	static void Execute(

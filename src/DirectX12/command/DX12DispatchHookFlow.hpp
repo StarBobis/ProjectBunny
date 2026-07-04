@@ -17,6 +17,7 @@
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
 #include "DX12LogManager.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 #if defined(_DEBUG)
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
@@ -90,6 +91,8 @@ public:
 		if (!originalDispatch)
 			return;
 
+		DX12_HOTPATH_TIME_BEGIN(DispatchHookTotal);
+
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
@@ -102,15 +105,19 @@ public:
 
 		if (DX12InternalReplayState::IsActive()) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12HuntRecordDispatch(commandList);
-			if (DX12HuntShouldSkipDispatch(commandList))
+			if (DX12HuntShouldSkipDispatch(commandList)) {
+				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
+			}
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -122,12 +129,15 @@ public:
 				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		if (huntEnabled) {
 			DX12HuntRecordDispatch(commandList);
-			if (DX12HuntShouldSkipDispatch(commandList))
+			if (DX12HuntShouldSkipDispatch(commandList)) {
+				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
+			}
 		}
 		if (!needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -137,11 +147,13 @@ public:
 			if (!HasConfiguredPreSkinCs(commandList, runtimeState)) {
 				DX12_PROFILE_FAST_FORWARD();
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
 			}
 			Execute(
 				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 				runtimeState, originalDispatch);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -150,6 +162,7 @@ public:
 		Execute(
 			commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 			runtimeState, originalDispatch);
+		DX12_HOTPATH_TIME_END(DispatchHookTotal);
 	}
 
 	static void Execute(
