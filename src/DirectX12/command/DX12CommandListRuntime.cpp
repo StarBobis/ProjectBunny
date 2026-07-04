@@ -301,6 +301,16 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	if (fastState) {
 		fastState->ia.hasIndexBuffer = view != nullptr;
 		fastState->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+		// 对齐 DX11：IB 绑定时预计算 full-buffer hash
+		if (view && view->BufferLocation && view->SizeInBytes) {
+			UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
+			fastState->ia.precomputedIndexHash = DX12HashIaBufferView(
+				view->BufferLocation, view->SizeInBytes, stride,
+				static_cast<UINT>(view->Format), 0);
+			fastState->ia.indexHashValid = true;
+		} else {
+			fastState->ia.indexHashValid = false;
+		}
 		return;
 	}
 
@@ -309,6 +319,15 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	DX12ActiveIaState &state = shard.states[commandList].ia;
 	state.hasIndexBuffer = view != nullptr;
 	state.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	if (view && view->BufferLocation && view->SizeInBytes) {
+		UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
+		state.precomputedIndexHash = DX12HashIaBufferView(
+			view->BufferLocation, view->SizeInBytes, stride,
+			static_cast<UINT>(view->Format), 0);
+		state.indexHashValid = true;
+	} else {
+		state.indexHashValid = false;
+	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -327,6 +346,15 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
 			state.hasVertexBuffer[slot] = view != nullptr;
 			state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
+			// 对齐 DX11：VB 绑定时预计算 full-buffer hash，draw 时直接读
+			if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
+				state.precomputedVertexHashes[slot] = DX12HashIaBufferView(
+					view->BufferLocation, view->SizeInBytes,
+					view->StrideInBytes, 0, slot);
+				state.vertexHashValid[slot] = true;
+			} else {
+				state.vertexHashValid[slot] = false;
+			}
 		}
 		return;
 	}
@@ -339,6 +367,14 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
 		state.hasVertexBuffer[slot] = view != nullptr;
 		state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
+		if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
+			state.precomputedVertexHashes[slot] = DX12HashIaBufferView(
+				view->BufferLocation, view->SizeInBytes,
+				view->StrideInBytes, 0, slot);
+			state.vertexHashValid[slot] = true;
+		} else {
+			state.vertexHashValid[slot] = false;
+		}
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
@@ -389,9 +425,10 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	if (!state)
 		return false;
 	*state = DX12IaHashState();
-	// 预分配避免 push_back 触发的多次 heap 分配（277 次/帧 → 0）
 	state->vertexBuffers.reserve(8);
 
+	// 必须使用 draw-range hash（与 Mod 配置中的记录值匹配）。
+	// 预计算的 full-buffer hash 仅供廉价指纹缓存使用，不用于此函数。
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
