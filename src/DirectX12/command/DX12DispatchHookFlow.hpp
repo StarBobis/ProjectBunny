@@ -453,10 +453,12 @@ public:
 			commandList, probe->computeShaderHash, bindingHash,
 			probe->applied, &probe->dispatchOverride);
 
-		// Remember successful probe for this CS+bindingSerial combination
-		// so subsequent dispatches with same bindings skip the probe entirely.
-		if (probe->applied)
-			s_csProbeBindingSerials[probe->computeShaderHash] = bindingQuerySerial;
+		// Remember probe result for this CS+bindingSerial combination.
+		// Cache BOTH successes AND failures — if bindings haven't changed,
+		// re-probing the same CS would produce the same result. This is
+		// critical for scenes where PreSkin never matches (applied=false):
+		// without this, every dispatch pays the full collection cost.
+		s_csProbeBindingSerials[probe->computeShaderHash] = bindingQuerySerial;
 
 		QueryPerformanceCounter(&t1);
 		QueryPerformanceFrequency(&freq);
