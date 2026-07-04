@@ -5044,18 +5044,24 @@ namespace DX12Wrapper
 
 			HRESULT STDMETHODCALLTYPE Close() override
 			{
+			DX12_HOTPATH_TIME_BEGIN(CloseCmdListTotal);
 				return DX12WrapperRuntimeUtils::CloseCommandList(mCommandList, mOrigClose);
+			DX12_HOTPATH_TIME_END(CloseCmdListTotal);
 			}
 
 			HRESULT STDMETHODCALLTYPE Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(ResetCmdListTotal);
 				return DX12WrapperRuntimeUtils::ResetCommandList(
 					mCommandList, pAllocator, pInitialState, mOrigReset);
+			DX12_HOTPATH_TIME_END(ResetCmdListTotal);
 			}
 
 			void STDMETHODCALLTYPE ClearState(ID3D12PipelineState *pPipelineState) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(ClearStateTotal);
 				mCommandList->ClearState(DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
+			DX12_HOTPATH_TIME_END(ClearStateTotal);
 			}
 
 			void STDMETHODCALLTYPE DrawInstanced(
@@ -5134,9 +5140,11 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(CopyResourceOpTotal);
 				mCommandList->CopyResource(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource),
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource));
+			DX12_HOTPATH_TIME_END(CopyResourceOpTotal);
 			}
 
 			void STDMETHODCALLTYPE CopyTiles(
@@ -5169,22 +5177,30 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(RSSetViewportsTotal);
 				mCommandList->RSSetViewports(NumViewports, pViewports);
+			DX12_HOTPATH_TIME_END(RSSetViewportsTotal);
 			}
 
 			void STDMETHODCALLTYPE RSSetScissorRects(UINT NumRects, const D3D12_RECT *pRects) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(RSSetScissorRectsTotal);
 				mCommandList->RSSetScissorRects(NumRects, pRects);
+			DX12_HOTPATH_TIME_END(RSSetScissorRectsTotal);
 			}
 
 			void STDMETHODCALLTYPE OMSetBlendFactor(const FLOAT BlendFactor[4]) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(OMSetBlendFactorTotal);
 				mCommandList->OMSetBlendFactor(BlendFactor);
+			DX12_HOTPATH_TIME_END(OMSetBlendFactorTotal);
 			}
 
 			void STDMETHODCALLTYPE OMSetStencilRef(UINT StencilRef) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(OMSetStencilRefTotal);
 				mCommandList->OMSetStencilRef(StencilRef);
+			DX12_HOTPATH_TIME_END(OMSetStencilRefTotal);
 			}
 
 			void STDMETHODCALLTYPE SetPipelineState(ID3D12PipelineState *pPipelineState) override
@@ -5207,7 +5223,9 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *pCommandList) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(ExecuteBundleTotal);
 				mCommandList->ExecuteBundle(DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList));
+			DX12_HOTPATH_TIME_END(ExecuteBundleTotal);
 			}
 
 			void STDMETHODCALLTYPE SetDescriptorHeaps(UINT NumDescriptorHeaps, ID3D12DescriptorHeap *const *ppDescriptorHeaps) override
@@ -5291,62 +5309,80 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetComputeCBVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetComputeCBVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetGraphicsCBVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetGraphicsCBVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetComputeSRVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetComputeSRVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetGraphicsSRVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetGraphicsSRVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetComputeUAVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetComputeUAVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetGraphicsUAVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
 					mCommandList, RootParameterIndex, BufferLocation);
+			DX12_HOTPATH_TIME_END(SetGraphicsUAVTotal);
 			}
 
 			void STDMETHODCALLTYPE IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(IASetIndexBufTotal);
 				if (DX12HotPathState::skipAll && mOrigIASetIndexBuffer) {
 					mOrigIASetIndexBuffer(mCommandList, pView);
 					return;
 				}
 				DX12WrapperRuntimeUtils::IASetIndexBuffer(mCommandList, pView, mOrigIASetIndexBuffer);
+			DX12_HOTPATH_TIME_END(IASetIndexBufTotal);
 			}
 
 			void STDMETHODCALLTYPE IASetVertexBuffers(UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW *pViews) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(IASetVertexBufTotal);
 				if (DX12HotPathState::skipAll && mOrigIASetVertexBuffers) {
 					mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
 					return;
 				}
 				DX12WrapperRuntimeUtils::IASetVertexBuffers(
 					mCommandList, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
+			DX12_HOTPATH_TIME_END(IASetVertexBufTotal);
 			}
 
 			void STDMETHODCALLTYPE SOSetTargets(UINT StartSlot, UINT NumViews, const D3D12_STREAM_OUTPUT_BUFFER_VIEW *pViews) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SOSetTargetsTotal);
 				mCommandList->SOSetTargets(StartSlot, NumViews, pViews);
+			DX12_HOTPATH_TIME_END(SOSetTargetsTotal);
 			}
 
 			void STDMETHODCALLTYPE OMSetRenderTargets(
@@ -5395,17 +5431,23 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(DiscardResourceTotal);
 				mCommandList->DiscardResource(DX12WrapperRuntimeUtils::UnwrapResource(pResource), pRegion);
+			DX12_HOTPATH_TIME_END(DiscardResourceTotal);
 			}
 
 			void STDMETHODCALLTYPE BeginQuery(ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT Index) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(BeginQueryTotal);
 				mCommandList->BeginQuery(DX12WrapperRuntimeUtils::UnwrapQueryHeap(pQueryHeap), Type, Index);
+			DX12_HOTPATH_TIME_END(BeginQueryTotal);
 			}
 
 			void STDMETHODCALLTYPE EndQuery(ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT Index) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(EndQueryTotal);
 				mCommandList->EndQuery(DX12WrapperRuntimeUtils::UnwrapQueryHeap(pQueryHeap), Type, Index);
+			DX12_HOTPATH_TIME_END(EndQueryTotal);
 			}
 
 			void STDMETHODCALLTYPE ResolveQueryData(
@@ -5426,17 +5468,23 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *pData, UINT Size) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetMarkerTotal);
 				mCommandList->SetMarker(Metadata, pData, Size);
+			DX12_HOTPATH_TIME_END(SetMarkerTotal);
 			}
 
 			void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *pData, UINT Size) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(BeginEventTotal);
 				mCommandList->BeginEvent(Metadata, pData, Size);
+			DX12_HOTPATH_TIME_END(BeginEventTotal);
 			}
 
 			void STDMETHODCALLTYPE EndEvent() override
 			{
+			DX12_HOTPATH_TIME_BEGIN(EndEventTotal);
 				mCommandList->EndEvent();
+			DX12_HOTPATH_TIME_END(EndEventTotal);
 			}
 
 			void STDMETHODCALLTYPE ExecuteIndirect(
@@ -5495,11 +5543,13 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE OMSetDepthBounds(FLOAT Min, FLOAT Max) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(OMSetDepthBoundsTotal);
 				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
 				if (SUCCEEDED(QueryCommandList1(&commandList1))) {
 					commandList1->OMSetDepthBounds(Min, Max);
 					commandList1->Release();
 				}
+			DX12_HOTPATH_TIME_END(OMSetDepthBoundsTotal);
 			}
 
 			void STDMETHODCALLTYPE SetSamplePositions(
@@ -5529,11 +5579,13 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetViewInstanceMask(UINT Mask) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetViewInstanceMaskTotal);
 				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
 				if (SUCCEEDED(QueryCommandList1(&commandList1))) {
 					commandList1->SetViewInstanceMask(Mask);
 					commandList1->Release();
 				}
+			DX12_HOTPATH_TIME_END(SetViewInstanceMaskTotal);
 			}
 
 			void STDMETHODCALLTYPE WriteBufferImmediate(
@@ -5549,12 +5601,14 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetProtectedResourceSession(ID3D12ProtectedResourceSession *pProtectedResourceSession) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetProtectedSessionTotal);
 				ID3D12GraphicsCommandList3 *commandList3 = nullptr;
 				if (SUCCEEDED(QueryCommandList3(&commandList3))) {
 					commandList3->SetProtectedResourceSession(
 						DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedResourceSession));
 					commandList3->Release();
 				}
+			DX12_HOTPATH_TIME_END(SetProtectedSessionTotal);
 			}
 
 			void STDMETHODCALLTYPE BeginRenderPass(
@@ -5570,11 +5624,13 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE EndRenderPass() override
 			{
+			DX12_HOTPATH_TIME_BEGIN(EndRenderPassTotal);
 				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
 				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
 					commandList4->EndRenderPass();
 					commandList4->Release();
 				}
+			DX12_HOTPATH_TIME_END(EndRenderPassTotal);
 			}
 
 			void STDMETHODCALLTYPE InitializeMetaCommand(
@@ -5641,47 +5697,57 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE SetPipelineState1(ID3D12StateObject *pStateObject) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetPSO1Total);
 				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
 				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
 					commandList4->SetPipelineState1(DX12WrapperRuntimeUtils::UnwrapStateObject(pStateObject));
 					commandList4->Release();
 				}
+			DX12_HOTPATH_TIME_END(SetPSO1Total);
 			}
 
 			void STDMETHODCALLTYPE DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(DispatchRaysTotal);
 				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
 				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
 					commandList4->DispatchRays(pDesc);
 					commandList4->Release();
 				}
+			DX12_HOTPATH_TIME_END(DispatchRaysTotal);
 			}
 
 			void STDMETHODCALLTYPE RSSetShadingRate(D3D12_SHADING_RATE baseShadingRate, const D3D12_SHADING_RATE_COMBINER *combiners) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateTotal);
 				ID3D12GraphicsCommandList5 *commandList5 = nullptr;
 				if (SUCCEEDED(QueryCommandList5(&commandList5))) {
 					commandList5->RSSetShadingRate(baseShadingRate, combiners);
 					commandList5->Release();
 				}
+			DX12_HOTPATH_TIME_END(RSSetShadingRateTotal);
 			}
 
 			void STDMETHODCALLTYPE RSSetShadingRateImage(ID3D12Resource *pShadingRateImage) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateImgTotal);
 				ID3D12GraphicsCommandList5 *commandList5 = nullptr;
 				if (SUCCEEDED(QueryCommandList5(&commandList5))) {
 					commandList5->RSSetShadingRateImage(DX12WrapperRuntimeUtils::UnwrapResource(pShadingRateImage));
 					commandList5->Release();
 				}
+			DX12_HOTPATH_TIME_END(RSSetShadingRateImgTotal);
 			}
 
 			void STDMETHODCALLTYPE DispatchMesh(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(DispatchMeshTotal);
 				ID3D12GraphicsCommandList6 *commandList6 = nullptr;
 				if (SUCCEEDED(QueryCommandList6(&commandList6))) {
 					commandList6->DispatchMesh(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 					commandList6->Release();
 				}
+			DX12_HOTPATH_TIME_END(DispatchMeshTotal);
 			}
 
 			void STDMETHODCALLTYPE Barrier(
@@ -5709,47 +5775,57 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(OMSetFrontBackStencilTotal);
 				ID3D12GraphicsCommandList8 *commandList8 = nullptr;
 				if (SUCCEEDED(QueryCommandList8(&commandList8))) {
 					commandList8->OMSetFrontAndBackStencilRef(FrontStencilRef, BackStencilRef);
 					commandList8->Release();
 				}
+			DX12_HOTPATH_TIME_END(OMSetFrontBackStencilTotal);
 			}
 
 			void STDMETHODCALLTYPE RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(RSSetDepthBiasTotal);
 				ID3D12GraphicsCommandList9 *commandList9 = nullptr;
 				if (SUCCEEDED(QueryCommandList9(&commandList9))) {
 					commandList9->RSSetDepthBias(DepthBias, DepthBiasClamp, SlopeScaledDepthBias);
 					commandList9->Release();
 				}
+			DX12_HOTPATH_TIME_END(RSSetDepthBiasTotal);
 			}
 
 			void STDMETHODCALLTYPE IASetIndexBufferStripCutValue(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(IASetIBStripCutTotal);
 				ID3D12GraphicsCommandList9 *commandList9 = nullptr;
 				if (SUCCEEDED(QueryCommandList9(&commandList9))) {
 					commandList9->IASetIndexBufferStripCutValue(IBStripCutValue);
 					commandList9->Release();
 				}
+			DX12_HOTPATH_TIME_END(IASetIBStripCutTotal);
 			}
 
 			void STDMETHODCALLTYPE SetProgram(const D3D12_SET_PROGRAM_DESC *pDesc) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(SetProgramTotal);
 				ID3D12GraphicsCommandList10 *commandList10 = nullptr;
 				if (SUCCEEDED(QueryCommandList10(&commandList10))) {
 					commandList10->SetProgram(pDesc);
 					commandList10->Release();
 				}
+			DX12_HOTPATH_TIME_END(SetProgramTotal);
 			}
 
 			void STDMETHODCALLTYPE DispatchGraph(const D3D12_DISPATCH_GRAPH_DESC *pDesc) override
 			{
+			DX12_HOTPATH_TIME_BEGIN(DispatchGraphTotal);
 				ID3D12GraphicsCommandList10 *commandList10 = nullptr;
 				if (SUCCEEDED(QueryCommandList10(&commandList10))) {
 					commandList10->DispatchGraph(pDesc);
 					commandList10->Release();
 				}
+			DX12_HOTPATH_TIME_END(DispatchGraphTotal);
 			}
 
 		public:

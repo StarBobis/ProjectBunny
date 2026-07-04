@@ -11,6 +11,7 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 
 class DX12CommandQueueExecutionFlow
 {
@@ -129,7 +130,9 @@ public:
 			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
+		DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
 		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
+		DX12_HOTPATH_TIME_END(ExecuteCLNotify);
 		RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
 #if defined(_DEBUG)
 		DX12CommandListFlowDiagnostics::LogQueueStage(

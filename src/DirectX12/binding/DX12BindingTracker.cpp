@@ -8,6 +8,7 @@
 #include "DX12CaptureLedger.hpp"
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12CommandListRuntime.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
@@ -1401,13 +1402,18 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 
 	CommandListBindingState snapshot;
 	UINT64 bindingQuerySerial = 0;
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
+	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
+	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial)) {
+		DX12_HOTPATH_TIME_END(BindSnapshot);
 		return false;
+	}
+	DX12_HOTPATH_TIME_END(BindSnapshot);
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
+	// 不用 bindingQuerySerial 做 key——serial 每 dispatch 变化导致缓存必 miss。
+	// bindings 不变 → heap/version 相同 → 跨 dispatch 命中。
 	if (tlsComputeAllQueryCache.commandList == commandList &&
-		tlsComputeAllQueryCache.bindingQuerySerial == bindingQuerySerial &&
 		tlsComputeAllQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
 		tlsComputeAllQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
 		if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
@@ -1422,8 +1428,10 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	std::vector<DX12CurrentComputeUavBinding> cachedSrvs;
 	std::vector<DX12CurrentComputeUavBinding> cachedCbvs;
 	std::vector<DX12CurrentRootConstants> cachedConstants;
+	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
+	DX12_HOTPATH_TIME_END(BindCollect);
 	tlsComputeAllQueryCache.commandList = commandList;
 	tlsComputeAllQueryCache.bindingQuerySerial = bindingQuerySerial;
 	tlsComputeAllQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
