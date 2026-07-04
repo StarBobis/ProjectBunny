@@ -4,6 +4,7 @@
 
 #include "D3D12ProxySignatures.hpp"
 #include "D3D12ProxyState.hpp"
+#include "DX12Wrapper.hpp"
 #include "DX12DeviceHooks.hpp"
 #include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
@@ -197,15 +198,14 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 	IUnknown *adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void **device)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DXGIHooks::Install();
 	if (!D3D12ProxyState::OrigCreateDevice)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateDevice(adapter, minimumFeatureLevel, riid, device);
 	DX12LogManager::JsonFunc("D3D12CreateDevice",
 		"\"adapter\":\"%p\",\"minFeature\":\"0x%x\",\"hr\":\"0x%lx\",\"device\":\"%p\"",
 		adapter, minimumFeatureLevel, hr, device ? *device : nullptr);
-	if (SUCCEEDED(hr) && device && *device)
-		DX12DeviceHooks::HookDevice(static_cast<IUnknown*>(*device));
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapD3D12DeviceResult(riid, device);
 	return hr;
 }
 
@@ -303,8 +303,8 @@ extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **
 	DX12LogManager::JsonFunc("D3D12GetInterface",
 		"\"clsid\":\"%p\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"object\":\"%p\"",
 		&clsid, &riid, hr, object ? *object : nullptr);
-	if (SUCCEEDED(hr) && object && *object)
-		DX12DeviceHooks::HookDeviceFactory(static_cast<IUnknown*>(*object));
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapD3D12DeviceFactoryResult(riid, object);
 	return hr;
 }
 
@@ -400,6 +400,7 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 		D3D12ProxyRuntime::Initialize(module);
 		break;
 	case DLL_PROCESS_DETACH:
+		DX12Wrapper::Shutdown();
 		D3D12ProxyRuntime::Shutdown();
 		break;
 	}

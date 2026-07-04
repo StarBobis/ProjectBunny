@@ -52,6 +52,9 @@ public:
 		ID3D12Device *device, const D3D12_RESOURCE_DESC *desc,
 		D3D12_RESOURCE_STATES initialState, const D3D12_CLEAR_VALUE *optimizedClearValue,
 		REFIID riid, void **resource);
+	static HRESULT STDMETHODCALLTYPE HookedCreateFence(
+		ID3D12Device *device, UINT64 initialValue, D3D12_FENCE_FLAGS flags,
+		REFIID riid, void **fence);
 	static HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource1(
 		ID3D12Device4 *device, const D3D12_HEAP_PROPERTIES *heapProperties,
 		D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC *desc,

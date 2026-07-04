@@ -17,7 +17,6 @@
 #include "DX12ShaderHunt.hpp"
 #include "DX12UiActions.hpp"
 #include "DXGIHookDiagnostics.hpp"
-#include "DXGIHookRegistry.hpp"
 
 class DXGIHookRuntime
 {
@@ -116,86 +115,12 @@ public:
 		}
 	}
 
-	static HRESULT PresentSkipPath(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags, volatile LONG *firstPresentLog)
-	{
-		DXGIHookSignatures::Present original = DXGIHookRegistry::GetPresentOriginal(swapChain);
-		if (!original)
-			return DXGI_ERROR_INVALID_CALL;
-		DX12PresentSkipLogUtils::Record("Present", "EnterSkip", swapChain, S_OK);
-		if (InterlockedCompareExchange(firstPresentLog, 2, 1) == 1)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
-				swapChain);
-		DX12PresentSkipLogUtils::Record("Present", "BeforeOriginalSkip", swapChain, S_OK);
-		HRESULT hr = original(swapChain, syncInterval, flags);
-		DX12PresentSkipLogUtils::Record("Present", "AfterOriginalSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 3, 2) == 2)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		DX12RuntimeState::IncrementPresentCount();
-		DX12HuntOnPresent();
-		if (DX12RuntimeState::GetPresentCount() > 2)
-			RunPostPresentUi(swapChain);
-		DX12PresentSkipLogUtils::Record("Present", "AfterUiSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 4, 3) == 3)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		DX12PresentSkipLogUtils::Record("Present", "BeforeHotPathUpdateSkip", swapChain, hr);
-		DX12HotPathState::Update();
-		DX12PresentSkipLogUtils::Record("Present", "ReturnSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 5, 4) == 4)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		return hr;
-	}
-
-	static HRESULT Present1SkipPath(
-		IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags,
-		const DXGI_PRESENT_PARAMETERS *presentParameters, volatile LONG *firstPresentLog)
-	{
-		DXGIHookSignatures::Present1 original = DXGIHookRegistry::GetPresent1Original(swapChain);
-		if (!original)
-			return DXGI_ERROR_INVALID_CALL;
-		DX12PresentSkipLogUtils::Record("Present1", "EnterSkip", swapChain, S_OK);
-		if (InterlockedCompareExchange(firstPresentLog, 2, 1) == 1)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present1\",\"stage\":\"before_original_skip\",\"swapchain\":\"%p\"",
-				swapChain);
-		DX12PresentSkipLogUtils::Record("Present1", "BeforeOriginalSkip", swapChain, S_OK);
-		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
-		DX12PresentSkipLogUtils::Record("Present1", "AfterOriginalSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 3, 2) == 2)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present1\",\"stage\":\"after_original_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		DX12RuntimeState::IncrementPresentCount();
-		DX12HuntOnPresent();
-		if (DX12RuntimeState::GetPresentCount() > 2)
-			RunPostPresentUi(swapChain);
-		DX12PresentSkipLogUtils::Record("Present1", "AfterUiSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 4, 3) == 3)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present1\",\"stage\":\"before_hotpath_update_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		DX12PresentSkipLogUtils::Record("Present1", "BeforeHotPathUpdateSkip", swapChain, hr);
-		DX12HotPathState::Update();
-		DX12PresentSkipLogUtils::Record("Present1", "ReturnSkip", swapChain, hr);
-		if (InterlockedCompareExchange(firstPresentLog, 5, 4) == 4)
-			DX12LogManager::JsonFuncFlush("DX12PresentFirst",
-				"\"api\":\"Present1\",\"stage\":\"return_skip\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-				swapChain, hr);
-		return hr;
-	}
-
 	static HRESULT Present(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 	{
-		if (DX12InternalReplayState::IsActive()) {
-			DXGIHookSignatures::Present original = DXGIHookRegistry::GetPresentOriginal(swapChain);
-			return original ? original(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
-		}
+		if (!swapChain)
+			return DXGI_ERROR_INVALID_CALL;
+		if (DX12InternalReplayState::IsActive())
+			return swapChain->Present(syncInterval, flags);
 
 		ConsumeUiActionsForFrame();
 
@@ -205,8 +130,17 @@ public:
 				"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
-		if (DX12HotPathState::skipAll)
-			return PresentSkipPath(swapChain, syncInterval, flags, &firstPresentLog);
+		if (DX12HotPathState::skipAll) {
+			DX12PresentSkipLogUtils::Record("Present", "BeforeOriginalSkip", swapChain, S_OK);
+			HRESULT skipHr = swapChain->Present(syncInterval, flags);
+			DX12PresentSkipLogUtils::Record("Present", "AfterOriginalSkip", swapChain, skipHr);
+			DX12RuntimeState::IncrementPresentCount();
+			DX12HuntOnPresent();
+			if (DX12RuntimeState::GetPresentCount() > 2)
+				RunPostPresentUi(swapChain);
+			DX12HotPathState::Update();
+			return skipHr;
+		}
 
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
 		DX12_PROFILE_SCOPE(Present);
@@ -219,13 +153,10 @@ public:
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
-		DXGIHookSignatures::Present original = DXGIHookRegistry::GetPresentOriginal(swapChain);
-		if (!original)
-			return DXGI_ERROR_INVALID_CALL;
 		DXGIHookDiagnostics::LogPresentStage("Present", "beforeOriginal", swapChain);
 		LARGE_INTEGER tPresent0, tPresent1, freq;
 		QueryPerformanceCounter(&tPresent0);
-		HRESULT hr = original(swapChain, syncInterval, flags);
+		HRESULT hr = swapChain->Present(syncInterval, flags);
 		QueryPerformanceCounter(&tPresent1);
 		QueryPerformanceFrequency(&freq);
 		DX12LogManager::JsonFunc("DX12Perf",
@@ -254,10 +185,10 @@ public:
 		IDXGISwapChain1 *swapChain, UINT syncInterval, UINT flags,
 		const DXGI_PRESENT_PARAMETERS *presentParameters)
 	{
-		if (DX12InternalReplayState::IsActive()) {
-			DXGIHookSignatures::Present1 original = DXGIHookRegistry::GetPresent1Original(swapChain);
-			return original ? original(swapChain, syncInterval, flags, presentParameters) : DXGI_ERROR_INVALID_CALL;
-		}
+		if (!swapChain)
+			return DXGI_ERROR_INVALID_CALL;
+		if (DX12InternalReplayState::IsActive())
+			return swapChain->Present1(syncInterval, flags, presentParameters);
 
 		ConsumeUiActionsForFrame();
 
@@ -267,8 +198,17 @@ public:
 				"\"api\":\"Present1\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
-		if (DX12HotPathState::skipAll)
-			return Present1SkipPath(swapChain, syncInterval, flags, presentParameters, &firstPresent1Log);
+		if (DX12HotPathState::skipAll) {
+			DX12PresentSkipLogUtils::Record("Present1", "BeforeOriginalSkip", swapChain, S_OK);
+			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
+			DX12PresentSkipLogUtils::Record("Present1", "AfterOriginalSkip", swapChain, skipHr);
+			DX12RuntimeState::IncrementPresentCount();
+			DX12HuntOnPresent();
+			if (DX12RuntimeState::GetPresentCount() > 2)
+				RunPostPresentUi(swapChain);
+			DX12HotPathState::Update();
+			return skipHr;
+		}
 
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain1::Present1", swapChain);
 
@@ -280,13 +220,10 @@ public:
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
-		DXGIHookSignatures::Present1 original = DXGIHookRegistry::GetPresent1Original(swapChain);
-		if (!original)
-			return DXGI_ERROR_INVALID_CALL;
 		DXGIHookDiagnostics::LogPresentStage("Present1", "beforeOriginal", swapChain);
 		LARGE_INTEGER tPresent0, tPresent1, freq;
 		QueryPerformanceCounter(&tPresent0);
-		HRESULT hr = original(swapChain, syncInterval, flags, presentParameters);
+		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		QueryPerformanceCounter(&tPresent1);
 		QueryPerformanceFrequency(&freq);
 		LONG64 presentUs = (tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart;

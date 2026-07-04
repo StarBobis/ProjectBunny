@@ -8,6 +8,7 @@
 #include "DX12ResourceTrackerHookRegistry.hpp"
 #include "DX12ResourceTrackerHookRuntime.hpp"
 #include "DX12ResourceTrackerHooks.hpp"
+#include "proxy/DX12Wrapper.hpp"
 #include "DX12ResourceTrackerHookState.hpp"
 #include "DX12ResourceStateTracker.hpp"
 #include "types/DX12ResourceTrackerPrivateDataGuids.hpp"
@@ -590,6 +591,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDescript
 		return original ? original(device, desc, riid, heap) : E_FAIL;
 	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
 	DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(hr, device, desc, heap);
+	if (SUCCEEDED(hr) && heap && *heap)
+		DX12Wrapper::WrapD3D12DescriptorHeapResult(riid, heap);
 	return hr;
 }
 
@@ -787,6 +790,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -817,6 +822,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -845,6 +852,24 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	return hr;
+}
+
+HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateFence(
+	ID3D12Device *device, UINT64 initialValue, D3D12_FENCE_FLAGS flags,
+	REFIID riid, void **fence)
+{
+	DX12ResourceTrackerHookDiagnostics::LogResourceHookCallWhenTracking("ID3D12Device::CreateFence", device);
+	auto original = DX12ResourceTrackerHookRegistry::GetDeviceOriginal(
+		device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateFence,
+		DX12ResourceTrackerHookState::OrigCreateFence, "ID3D12Device::CreateFence");
+	if (!original)
+		return E_FAIL;
+	HRESULT hr = original(device, initialValue, flags, riid, fence);
+	if (SUCCEEDED(hr) && fence && *fence)
+		DX12Wrapper::WrapD3D12FenceResult(riid, fence);
 	return hr;
 }
 
@@ -877,6 +902,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -905,6 +932,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -937,6 +966,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -967,6 +998,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -1003,6 +1036,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreateCommittedResource3", "HookReturn", device, hr,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -1037,6 +1072,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "HookReturn", device, hr,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -1060,6 +1097,8 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 		riid, resource);
 	DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
 		hr, resource, desc, nullptr, nullptr, initialLayout);
+	if (SUCCEEDED(hr) && resource && *resource)
+		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
 	return hr;
 }
 
@@ -1102,6 +1141,8 @@ void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 			DX12ResourceTrackerHookCallbacks::HookedCreatePlacedResource, "ID3D12Device::CreatePlacedResource"},
 		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateReservedResource, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateReservedResource),
 			DX12ResourceTrackerHookCallbacks::HookedCreateReservedResource, "ID3D12Device::CreateReservedResource"},
+		{DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateFence, reinterpret_cast<void**>(&DX12ResourceTrackerHookState::OrigCreateFence),
+			DX12ResourceTrackerHookCallbacks::HookedCreateFence, "ID3D12Device::CreateFence"},
 	};
 	DX12HookManager::InstallVTableHooks(device, deviceHooks);
 

@@ -21,6 +21,7 @@ public:
 		static constexpr UINT CreateCommittedResource = 27;
 		static constexpr UINT CreatePlacedResource = 29;
 		static constexpr UINT CreateReservedResource = 30;
+		static constexpr UINT CreateFence = 36;
 	};
 
 	class ID3D12Device4

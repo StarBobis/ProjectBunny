@@ -4,6 +4,7 @@
 add_library(DirectX12 SHARED
     # Proxy entry point
     proxy/D3D12Proxy.cpp
+    proxy/DX12Wrapper.cpp
 
     # Resource tracking
     descriptor/DX12DescriptorCollectPipeline.cpp

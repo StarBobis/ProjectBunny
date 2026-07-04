@@ -17,6 +17,7 @@
 
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ResourceStateTracker.hpp"
+#include "DX12ResourceTrackerRuntimeTypes.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12ShaderHunt.hpp"
@@ -184,13 +185,6 @@ struct ResourceRecord
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;
 	bool stateTrackedByBarrier = false;
-};
-
-struct PlacedResourceInfo
-{
-	bool hasPlacedHeap = false;
-	UINT64 heapOffset = 0;
-	UINT64 heapSize = 0;
 };
 
 class DX12ResourceSnapshotUtils

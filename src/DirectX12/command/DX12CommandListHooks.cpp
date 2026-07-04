@@ -4,6 +4,7 @@
 #include "DX12CommandListHookCallbacks.hpp"
 #include "DX12CommandListHookDiagnostics.hpp"
 #include "DX12CommandListHookRegistry.hpp"
+#include "proxy/DX12Wrapper.hpp"
 
 #include <d3d12.h>
 #include <unordered_set>
@@ -295,6 +296,8 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCreateCommandAlloc
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandAllocator",
 		"\"hr\":\"0x%lx\",\"allocator\":\"%p\"",
 		hr, allocator ? *allocator : nullptr);
+	if (SUCCEEDED(hr) && allocator && *allocator)
+		DX12Wrapper::WrapD3D12CommandAllocatorResult(riid, allocator);
 	return hr;
 }
 
@@ -1025,6 +1028,10 @@ void DX12CommandListHooks::HookCommandQueue(IUnknown *commandQueue)
 	DX12VTableHook queueHooks[] = {
 		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::ExecuteCommandLists, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueExecuteCommandLists),
 			DX12CommandListHookCallbacks::HookedQueueExecuteCommandLists, "ID3D12CommandQueue::ExecuteCommandLists"},
+		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::Signal, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueSignal),
+			DX12CommandListHookCallbacks::HookedQueueSignal, "ID3D12CommandQueue::Signal"},
+		{DX12CommandListHookSlotTypes::ID3D12CommandQueue::Wait, reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueWait),
+			DX12CommandListHookCallbacks::HookedQueueWait, "ID3D12CommandQueue::Wait"},
 	};
 	DX12HookManager::InstallVTableHooks(queue, queueHooks);
 	queue->Release();
@@ -1074,6 +1081,8 @@ void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 	}
 
 	DX12VTableHook commandListHooks[] = {
+		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Close, reinterpret_cast<void**>(&DX12CommandListHookState::OrigCloseCommandList),
+			DX12CommandListHookCallbacks::HookedCloseCommandList, "ID3D12GraphicsCommandList::Close"},
 		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, reinterpret_cast<void**>(&DX12CommandListHookState::OrigResetCommandList),
 			DX12CommandListHookCallbacks::HookedResetCommandList, "ID3D12GraphicsCommandList::Reset"},
 		{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, reinterpret_cast<void**>(&DX12CommandListHookState::OrigDrawInstanced),

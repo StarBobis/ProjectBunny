@@ -2,6 +2,8 @@
 
 #include <d3d12.h>
 
+#include "DX12ResourceTrackerRuntimeTypes.hpp"
+
 class DX12ResourceTrackerHookRuntime
 {
 public:
