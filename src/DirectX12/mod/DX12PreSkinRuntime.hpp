@@ -1285,6 +1285,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
 	UINT tempIncrement = 0;
 	ID3D12DescriptorHeap *tempHeap = nullptr;
+			DX12_HOTPATH_TIME_BEGIN(PreSkinRingAlloc);
 	if (!EnsurePreSkinDescriptorRingLocked(
 		    device, commandList, totalDescriptors, &tempCpuBase, &tempGpuBase, &tempIncrement,
 		    &tempHeap)) {
@@ -1292,6 +1293,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		return false;
 	}
 	logStage("ring_allocated", static_cast<UINT>(tables.size()), totalDescriptors);
+			DX12_HOTPATH_TIME_END(PreSkinRingAlloc);
 	for (const TableCopy &table : tables) {
 		D3D12_CPU_DESCRIPTOR_HANDLE src = {};
 		src.ptr = table.cpuStart;
@@ -1303,6 +1305,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	logStage("tables_copied", static_cast<UINT>(tables.size()), totalDescriptors);
 
+			DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
 	auto findTable = [&tables](const DX12CurrentComputeUavBinding &binding) -> const TableCopy* {
 		for (const TableCopy &table : tables) {
 			if (table.root == binding.rootParameterIndex &&
@@ -1318,6 +1321,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	bool patchedAnySrv = false;
 	for (const DX12CurrentComputeUavBinding &srv : srvs) {
 		const DX12PreSkinSrvReplacementBinding *replacementBinding = nullptr;
+			DX12_HOTPATH_TIME_BEGIN(PreSkinLoadResource);
 		for (const DX12PreSkinSrvReplacementBinding &binding : srvReplacements) {
 			if (binding.shaderRegister == srv.shaderRegister) {
 				replacementBinding = &binding;
@@ -1406,6 +1410,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 			"\"status\":\"skip_no_srv_patched\",\"section\":\"%S\",\"triggerHash\":\"%08x\"",
 			section ? section : L"", triggerHash);
+			DX12_HOTPATH_TIME_END(PreSkinLoadResource);
 #endif
 		return false;
 	}
@@ -1453,7 +1458,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	DX12PreSkinReplacementState state;
 	state.active = true;
+			DX12_HOTPATH_TIME_END(PreSkinCopyPatch);
 	state.rootParameterIndex = uavBinding.rootParameterIndex;
+			DX12_HOTPATH_TIME_BEGIN(PreSkinBindHeaps);
 	state.originalTable = uavBinding.tableGpuStart;
 	state.originalHeap = uavBinding.tableHeap;
 	state.resource = uavBinding.descriptor.resource;
@@ -1482,6 +1489,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		state.tableRestores.push_back(restore);
 	}
 	if (originalVertexCountOut)
+			DX12_HOTPATH_TIME_END(PreSkinBindHeaps);
 		*originalVertexCountOut = originalVertexCount;
 	if (overrideVertexCountOut)
 		*overrideVertexCountOut = overrideVertexCount;

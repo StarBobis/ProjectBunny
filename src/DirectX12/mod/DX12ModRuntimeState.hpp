@@ -165,12 +165,12 @@ bool DX12ModHasCachedPreSkinningUavMatch(
 	if (!matched || !commandList || !computeShaderHash || computeBindingSerial == 0)
 		return false;
 
+	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
+		commandList, computeShaderHash, computeBindingSerial);
 	AcquireSRWLockShared(&gModLock);
-	auto cached = gPreSkinUavMatchCache.find(commandList);
+	auto cached = gPreSkinUavMatchCache.find(cacheKey);
 	if (cached != gPreSkinUavMatchCache.end() &&
-	    cached->second.valid &&
-	    cached->second.computeShaderHash == computeShaderHash &&
-	    cached->second.computeBindingSerial == computeBindingSerial) {
+	    cached->second.valid) {
 		*matched = cached->second.matched;
 		ReleaseSRWLockShared(&gModLock);
 		return true;
@@ -186,13 +186,17 @@ static void UpdatePreSkinningUavMatchCacheLocked(
 	bool matched,
 	const DX12PreSkinDispatchOverride *dispatchOverride)
 {
-	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[commandList];
+	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
+		commandList, computeShaderHash, computeBindingSerial);
+	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[cacheKey];
 	entry.computeShaderHash = computeShaderHash;
 	entry.computeBindingSerial = computeBindingSerial;
 	entry.valid = true;
 	entry.matched = matched;
 	if (dispatchOverride)
 		entry.dispatchOverride = *dispatchOverride;
+	if (gPreSkinUavMatchCache.size() > 64)
+		gPreSkinUavMatchCache.clear();
 }
 
 void DX12ModStoreCachedPreSkinningUavMatch(
@@ -220,12 +224,12 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	if (!result || !commandList || !computeShaderHash || computeBindingSerial == 0)
 		return false;
 
+	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
+		commandList, computeShaderHash, computeBindingSerial);
 	AcquireSRWLockShared(&gModLock);
-	auto cached = gPreSkinUavMatchCache.find(commandList);
+	auto cached = gPreSkinUavMatchCache.find(cacheKey);
 	if (cached != gPreSkinUavMatchCache.end() &&
-	    cached->second.valid &&
-	    cached->second.computeShaderHash == computeShaderHash &&
-	    cached->second.computeBindingSerial == computeBindingSerial) {
+	    cached->second.valid) {
 		result->applied = cached->second.matched;
 		result->dispatchOverride = cached->second.dispatchOverride;
 		ReleaseSRWLockShared(&gModLock);

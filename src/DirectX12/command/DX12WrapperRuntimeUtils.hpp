@@ -640,6 +640,7 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
+		DX12_HOTPATH_TIME_BEGIN(ExecuteCLTotal);
 		// Stack buffer for common case (≤8 command lists), fallback to heap.
 		ID3D12CommandList *stackUnwrapped[8];
 		ID3D12CommandList *const *activeCommandLists = commandLists;
@@ -660,6 +661,7 @@ public:
 			activeCommandLists,
 			original ? original : DirectQueueExecuteCommandLists,
 			RegisterSubmittedCommandListDirect);
+		DX12_HOTPATH_TIME_END(ExecuteCLTotal);
 	}
 
 	static void DrawInstanced(

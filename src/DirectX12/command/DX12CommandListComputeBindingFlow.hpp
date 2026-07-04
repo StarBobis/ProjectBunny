@@ -143,9 +143,9 @@ public:
 		} else {
 			DX12CommandListStateCapture::ComputeRootDescriptorTable(
 				commandList, rootParameterIndex, baseDescriptor);
-			uint64_t component = (static_cast<uint64_t>(rootParameterIndex) << 32) |
-				(baseDescriptor.ptr & 0xFFFFFFFF);
-			UpdateComputeBindingHash(commandList, component);
+			// 只用稳定的 root parameter index，不用 descriptor heap ptr（每帧变化）
+			UpdateComputeBindingHash(commandList,
+				static_cast<uint64_t>(rootParameterIndex) ^ 0x9e3779b97f4a7c15ull);
 		}
 	}
 

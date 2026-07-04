@@ -401,8 +401,11 @@ public:
 #if defined(_DEBUG)
 		probe->shouldLog = true;
 #endif
-		if (!probe->uavsFound)
+		if (!probe->uavsFound) {
+			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			probe->uavsFound = DX12BindingTracker::GetCurrentComputeAll(commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
+			DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+		}
 		probe->srvsFound = !probe->srvs.empty();
 		probe->cbvsFound = !probe->cbvs.empty();
 		probe->rootConstantsFound = !probe->rootConstants.empty();
@@ -420,6 +423,8 @@ public:
 #if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
 #endif
+		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
+		DX12_HOTPATH_TIME_BEGIN(PreSkinApply);
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
 			probe->uavsFound ? probe->uavs : kEmptyComputeBindings,
@@ -428,6 +433,8 @@ public:
 			probe->rootConstantsFound ? probe->rootConstants : kEmptyRootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
+		DX12_HOTPATH_TIME_END(PreSkinApply);
+		DX12_HOTPATH_TIME_END(PreSkinMatch);
 		DX12ModStoreCachedPreSkinningUavMatch(
 			commandList, probe->computeShaderHash, bindingHash,
 			probe->applied, &probe->dispatchOverride);

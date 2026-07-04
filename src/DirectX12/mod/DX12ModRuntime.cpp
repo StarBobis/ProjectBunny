@@ -260,7 +260,21 @@ public:
 	bool matched = false;
 	DX12PreSkinDispatchOverride dispatchOverride;
 };
-static std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
+// 复合 key：(commandList, csHash, bindingHash) — 支持多 CS/多绑定状态缓存
+static std::unordered_map<UINT64, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
+
+static UINT64 MakePreSkinUavMatchCacheKey(
+	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash)
+{
+	UINT64 key = reinterpret_cast<UINT64>(commandList);
+	key ^= key >> 33;
+	key *= 0xff51afd7ed558ccdull;
+	key ^= csHash;
+	key ^= key >> 33;
+	key *= 0xc4ceb9fe1a85ec53ull;
+	key ^= bindingHash;
+	return key;
+}
 static volatile LONG gDx12SafeMode = 0;
 static volatile LONG gPresentCommandListExecutedPresent = -1;
 static volatile UINT64 gPreSkinActiveGeneration = 1;
@@ -1366,6 +1380,7 @@ enum class DX12PsoKind
 #include "DX12IaReplacementExecutor.hpp"
 #include "DX12ModRuntimeLoader.hpp"
 #include "DX12ModResourceRuntime.hpp"
+#include "hotpath/DX12HotPathTimingUtils.hpp"
 #include "DX12PreSkinRuntime.hpp"
 #include "DX12ModRuntimeState.hpp"
 #include "DX12IaOverrideMatcher.hpp"

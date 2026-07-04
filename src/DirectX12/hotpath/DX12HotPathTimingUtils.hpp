@@ -44,6 +44,14 @@ public:
 		UnwrapObjTotal,         // UnwrapPipelineState / UnwrapResource (gIdentityMap lookup)
 		StatePtrLookupTotal,    // GetStatePtrFast (gDirectStateMap lookup)
 		PsoCacheLookupTotal,    // PSO replacement cache check (RuntimeState read)
+		PreSkinBindQuery,        // GetCurrentComputeAll (BindingTracker query)
+		PreSkinMatch,            // FindProducer matching (UAV hash lookup)
+		PreSkinApply,            // ApplyPreSkinDescriptorTablePatchLocked
+		ExecuteCLTotal,          // ExecuteCommandLists wrapper path
+		PreSkinLoadResource,     // EnsureLoadedResourceForPreSkin + EnsureResourceSrvLocked
+		PreSkinRingAlloc,        // EnsurePreSkinDescriptorRingLocked (CreateDescriptorHeap)
+		PreSkinCopyPatch,        // CopyDescriptorsSimple + SRV patch + CBV patch
+		PreSkinBindHeaps,        // SetDescriptorHeaps + SetComputeRootDescriptorTable
 
 		STAGE_COUNT
 	};
@@ -57,6 +65,9 @@ public:
 			"SetPipelineState", "DescriptorHeaps",
 			"RootDescTable", "RootSignature", "IaSetTopology",
 			"UnwrapObj", "StatePtrLookup", "PsoCacheLookup",
+			"PreSkinQuery", "PreSkinMatch", "PreSkinApply",
+			"ExecuteCL",
+			"PreSkinLoad", "PreSkinRing", "PreSkinCopy", "PreSkinBind",
 		};
 		return (id < STAGE_COUNT) ? names[id] : "?";
 	}
