@@ -110,7 +110,9 @@ void DX12ModBeginFrame()
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvPositiveCache.clear();
-	DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
+	// PsoIaNegativeCache 跨帧持久：mod 配置不变则匹配结果不变。
+	// 仅在 mod 重载时通过 DX12ModRuntimeLoader 清空。
+	// DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 	AcquireSRWLockExclusive(&gModLock);
