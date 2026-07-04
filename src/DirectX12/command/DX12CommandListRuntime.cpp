@@ -12,6 +12,27 @@
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
 volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
 thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
+std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> DX12CommandListRuntime::gDirectStateMap;
+SRWLOCK DX12CommandListRuntime::gDirectStateMapLock = SRWLOCK_INIT;
+
+void DX12CommandListRuntime::RegisterDirectState(
+	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state)
+{
+	if (!commandList || !state)
+		return;
+	AcquireSRWLockExclusive(&gDirectStateMapLock);
+	gDirectStateMap[commandList] = state;
+	ReleaseSRWLockExclusive(&gDirectStateMapLock);
+}
+
+void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+	AcquireSRWLockExclusive(&gDirectStateMapLock);
+	gDirectStateMap.erase(commandList);
+	ReleaseSRWLockExclusive(&gDirectStateMapLock);
+}
 
 DX12CommandListRuntimeShard &DX12CommandListRuntime::ShardFor(ID3D12GraphicsCommandList *commandList)
 {
@@ -30,6 +51,26 @@ void DX12CommandListRuntime::RefreshTrackingCache(DX12CommandListTrackingCache &
 	cache.recordBindingEvents = DX12CommandListStateCapture::ShouldRecordBindingEvents();
 	cache.trackHuntIa = DX12CommandListStateCapture::ShouldTrackHuntIa();
 	cache.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
+}
+
+void DX12CommandListRuntime::TlsRefreshFromState(
+	DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList)
+{
+	if (!state) {
+		Tls.commandList = nullptr;
+		Tls.shard = nullptr;
+		Tls.statePtr = nullptr;
+		Tls.trackingGeneration = 0;
+		return;
+	}
+
+	Tls.shard = nullptr;
+	Tls.statePtr = state;
+
+	DX12CommandListTrackingCache &mapCache = state->trackingCache;
+	if (mapCache.generation != TrackingGenerationValue)
+		DX12CommandListRuntime::RefreshTrackingCache(mapCache);
+	Tls.tracking = mapCache;
 }
 
 void DX12CommandListRuntime::TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
@@ -59,11 +100,33 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	DX12CommandListTrackingCache &out)
 {
 	out = DX12CommandListTrackingCache();
+	if (!commandList)
+		return;
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
 		out = Tls.tracking;
 		return;
 	}
 
+	// 快速路径：从嵌入的 RuntimeState 获取
+	{
+		DX12CommandListRuntimeState *state = nullptr;
+		AcquireSRWLockShared(&gDirectStateMapLock);
+		auto it = gDirectStateMap.find(commandList);
+		if (it != gDirectStateMap.end())
+			state = it->second;
+		ReleaseSRWLockShared(&gDirectStateMapLock);
+
+		if (state) {
+			Tls.commandList = commandList;
+			Tls.statePtr = state;
+			Tls.trackingGeneration = TrackingGenerationValue;
+			TlsRefreshFromState(state, commandList);
+			out = Tls.tracking;
+			return;
+		}
+	}
+
+	// 回退：sharded map
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);
@@ -98,9 +161,30 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 	ID3D12GraphicsCommandList *commandList)
 {
+	if (!commandList)
+		return nullptr;
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue)
 		return Tls.statePtr;
 
+	// 快速路径：直接从 Wrapper 嵌入的 RuntimeState 获取（DX11 Push-Based 模型）
+	{
+		DX12CommandListRuntimeState *state = nullptr;
+		AcquireSRWLockShared(&gDirectStateMapLock);
+		auto it = gDirectStateMap.find(commandList);
+		if (it != gDirectStateMap.end())
+			state = it->second;
+		ReleaseSRWLockShared(&gDirectStateMapLock);
+
+		if (state) {
+			Tls.commandList = commandList;
+			Tls.statePtr = state;
+			Tls.trackingGeneration = TrackingGenerationValue;
+			TlsRefreshFromState(state, commandList);
+			return state;
+		}
+	}
+
+	// 回退：sharded map（非 wrapper command list 或初始化阶段）
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);

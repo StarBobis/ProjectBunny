@@ -4749,6 +4749,8 @@ namespace DX12Wrapper
 				: WrapperBase(commandList)
 			{
 				mCommandList = commandList;
+			// 对齐 DX11 HackerContext：RuntimeState 嵌入 Wrapper，O(1) 直接成员访问
+			DX12CommandListRuntime::RegisterDirectState(commandList, &mRuntimeState);
 				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12CommandList*>(this));
@@ -4802,6 +4804,12 @@ namespace DX12Wrapper
 			DX12LogManager::JsonFunc("DX12Wrapper",
 				"\"kind\":\"graphics_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
 				this, commandList);
+		}
+
+		~GraphicsCommandListWrapper()
+		{
+			if (mCommandList)
+				DX12CommandListRuntime::UnregisterDirectState(mCommandList);
 		}
 
 		DX12CommandListHookSignatures::DrawInstanced ResolveOriginalDrawInstanced()
@@ -5757,6 +5765,8 @@ namespace DX12Wrapper
 			DX12CommandListHookSignatures::IaSetIndexBuffer mOrigIASetIndexBuffer = nullptr;
 			DX12CommandListHookSignatures::IaSetVertexBuffers mOrigIASetVertexBuffers = nullptr;
 			DX12CommandListHookSignatures::ExecuteIndirect mOrigExecuteIndirect = nullptr;
+			// 对齐 DX11 HackerContext：RuntimeState 嵌入 Wrapper，消除 sharded map 查找
+			DX12CommandListRuntimeState mRuntimeState;
 		};
 
 		class DeviceWrapper

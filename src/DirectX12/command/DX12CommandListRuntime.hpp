@@ -3,6 +3,8 @@
 #include <Windows.h>
 #include <d3d12.h>
 
+#include <unordered_map>
+
 #include "DX12ActiveIaState.hpp"
 #include "DX12CommandListRuntimeShard.hpp"
 #include "DX12CommandListRuntimeState.hpp"
@@ -20,10 +22,18 @@ public:
 	static volatile UINT64 TrackingGenerationValue;
 	static thread_local DX12CommandListRuntimeTlsCache Tls;
 
+	// 直接映射：原始 command list → 嵌入的 RuntimeState（Wrapper 模式 O(1) 访问）
+	static std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> gDirectStateMap;
+	static SRWLOCK gDirectStateMapLock;
+
+	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state);
+	static void UnregisterDirectState(ID3D12GraphicsCommandList *commandList);
+
 	static UINT64 TrackingGeneration();
 	static void BumpTrackingGeneration();
 	static DX12CommandListRuntimeShard &ShardFor(ID3D12GraphicsCommandList *commandList);
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
+	static void TlsRefreshFromState(DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
