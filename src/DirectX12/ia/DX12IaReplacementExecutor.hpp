@@ -73,6 +73,12 @@ public:
 		if (!DX12ModHasActiveShaderOverrides())
 			return false;
 
+		// PSO 级提前退出：若该 PSO 已缓存且无匹配 shader override 配置，
+		// 则跳过后续 IA hash 计算，直接返回。首次遇到的 PSO 仍走完整流程并填充缓存。
+		if (runtimeState.pipelineState &&
+		    !DX12ModHasShaderOverridesForPso(runtimeState.pipelineState))
+			return false;
+
 		DX12Profiling::RecordIaDrawOverrideCheck();
 		DX12ModIaReplacement iaReplacement;
 		DX12IaHashState iaState;

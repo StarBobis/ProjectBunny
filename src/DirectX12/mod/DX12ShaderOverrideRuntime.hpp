@@ -229,6 +229,20 @@ static bool TryFindCachedShaderOverridesForPsoLocked(
 	return false;
 }
 
+// 公开 API：检查 PSO 是否有匹配的 shader override 配置（draw 路径）。
+// 在 hash 计算前调用，避免对无配置 PSO 做无效 IA hash。
+bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
+{
+	if (!pipelineState)
+		return false;
+	std::vector<const Bunny::ShaderOverrideConfig*> configs;
+	bool cached = false;
+	AcquireSRWLockShared(&gModLock);
+	cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
+	ReleaseSRWLockShared(&gModLock);
+	return !cached || !configs.empty();
+}
+
 static void FindShaderOverridesForPsoLocked(
 	ID3D12PipelineState *pipelineState, bool dispatch,
 	std::vector<const Bunny::ShaderOverrideConfig*> *configs)

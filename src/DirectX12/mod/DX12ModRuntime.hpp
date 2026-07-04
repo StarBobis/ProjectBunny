@@ -24,6 +24,7 @@ bool DX12ModReplaceShaderBytecode(
 	D3D12_SHADER_BYTECODE *replacement, std::vector<unsigned char> *storage);
 bool DX12ModHasShaderOverride(uint64_t hash);
 bool DX12ModHasActiveShaderOverrides();
+bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState);
 bool DX12ModNeedsShaderDescriptorTracking();
 UINT64 DX12ModGetReloadGeneration();
 bool DX12ModHasActiveTextureOverrides();
