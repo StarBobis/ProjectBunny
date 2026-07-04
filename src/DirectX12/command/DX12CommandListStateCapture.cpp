@@ -22,6 +22,12 @@ bool DX12CommandListStateCapture::ShouldTrackIaBindings()
 		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
 }
 
+bool DX12CommandListStateCapture::ShouldTrackPipelineStateBindings()
+{
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+}
+
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()
 {
 	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
@@ -46,6 +52,7 @@ DX12CommandListTrackingState DX12CommandListStateCapture::MakeTrackingState()
 	DX12CommandListTrackingState state;
 	state.trackBindings = DX12CommandListStateCapture::ShouldTrackBindings();
 	state.trackIaBindings = DX12CommandListStateCapture::ShouldTrackIaBindings();
+	state.trackPipelineStateBindings = DX12CommandListStateCapture::ShouldTrackPipelineStateBindings();
 	state.recordBindingEvents = DX12CommandListStateCapture::ShouldRecordBindingEvents();
 	state.trackHuntIa = DX12CommandListStateCapture::ShouldTrackHuntIa();
 	state.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
@@ -85,7 +92,7 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackBindings) {
+	if (tracking.trackPipelineStateBindings) {
 		DX12BindingTracker::SetPipelineState(commandList, activePipelineState);
 		if (tracking.recordBindingEvents)
 			DX12BindingTracker::RecordStateEvent(commandList, "set_pso");

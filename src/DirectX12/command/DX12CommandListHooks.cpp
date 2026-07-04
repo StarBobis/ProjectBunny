@@ -603,7 +603,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
 	PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
-	if (DX12HotPathState::skipAll) {
+	// DX11 风格: PreSkin 需要 dispatch hook，但不需要其他 hook。
+	// skipAll=1 时除 dispatch 外全部跳过，此处 PreSkin 绕过 skipAll。
+	if (DX12HotPathState::skipAll && !DX12ModNeedsPreSkinningUavProbe()) {
 		if (original)
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;

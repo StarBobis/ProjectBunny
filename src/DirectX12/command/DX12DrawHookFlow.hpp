@@ -38,6 +38,21 @@ public:
 		const bool needsModWork =
 			DX12ModNeedsPresentReplacement() || DX12ModHasActiveShaderOverrides();
 		const bool huntEnabled = DX12HuntIsEnabled();
+
+		// 快速路径: 无 draw 级 Mod 工作、无 Hunt、无 Frame Analysis、无 Shader Dump
+		// → 直接执行原始 draw。PreSkin-only 模式下跳过全部 hook 开销。
+		if (!needsModWork && !huntEnabled &&
+		    !DX12FrameAnalysisState::IsActive() &&
+		    !DX12FrameAnalysisState::IsCapturing() &&
+		    !DX12FrameAnalysisState::IsCaptureRequested() &&
+		    !DX12ShaderDumpIsCapturingFrame() &&
+		    !DX12ShaderDumpIsCaptureRequested() &&
+		    !DX12ShaderDumpIsBusy()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			return;
+		}
+
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList);
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)

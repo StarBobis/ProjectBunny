@@ -38,7 +38,8 @@ public:
 			!DX12HuntNeedsHotPath() &&
 			!DX12ModHasActiveShaderOverrides() &&
 			!DX12ModNeedsPresentReplacement() &&
-			!DX12ModNeedsPreSkinningUavProbe())
+			!DX12ModNeedsPreSkinningUavProbe() &&
+			!DX12ModNeedsPreSkinningBindingTracking())
 			return;
 
 		const bool huntingMode = DX12RuntimeState::IsHuntingMode();
@@ -47,11 +48,13 @@ public:
 			DX12ShaderDumpIsCapturingFrame() ||
 			DX12ShaderDumpIsBusy();
 
+		// DX11 风格: skipAll 只控制 draw/state/copy 级 hook。
+		// PreSkin 仅需 dispatch hook + compute binding 跟踪，
+		// 通过 skipBindings + dispatch hook 中的独立检查保证。
 		const bool needsRecordWork =
 			huntingMode ||
 			DX12ModHasActiveShaderOverrides() ||
-			DX12ModNeedsPresentReplacement() ||
-			DX12ModNeedsPreSkinningUavProbe();
+			DX12ModNeedsPresentReplacement();
 		const bool needsBindingState =
 			needsHeavyTracking ||
 			DX12ModNeedsPreSkinningBindingTracking();
