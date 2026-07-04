@@ -1,6 +1,8 @@
 #include "D3D12ProxyRuntime.hpp"
 
 #include <Shlwapi.h>
+#include <crtdbg.h>
+#include <stdlib.h>
 
 #include "D3D12ProxySignatures.hpp"
 #include "D3D12ProxyState.hpp"
@@ -397,6 +399,20 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 	switch (reason) {
 	case DLL_PROCESS_ATTACH:
 		DisableThreadLibraryCalls(module);
+
+		// Suppress Debug STL abort() popups — redirect to debugger output.
+		// The MSVC Debug STL (_ITERATOR_DEBUG_LEVEL=2) calls abort() on
+		// container misuse (e.g. vector out-of-bounds). This does not
+		// indicate a crash or memory corruption — the game continues
+		// running after clicking Ignore. Redirect to stderr so the dialog
+		// does not block automated test runs.
+#if _DEBUG
+		_set_abort_behavior(0, _WRITE_ABORT_MSG);
+		_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
+		_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG);
+		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
+#endif
+
 		if (!D3D12ProxyTargetHelper::VerifyIntendedTarget(module))
 			return FALSE;
 		D3D12ProxyRuntime::Initialize(module);
