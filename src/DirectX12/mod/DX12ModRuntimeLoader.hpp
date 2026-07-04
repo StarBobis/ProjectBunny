@@ -1195,6 +1195,7 @@ bool DX12ModRuntimeLoad(
 	gIaAnyVertexTextureOverrideIndex.swap(iaAnyVertexTextureOverrideIndex);
 	gIaMergedVertexTextureOverrideIndex.swap(iaMergedVertexTextureOverrideIndex);
 	gTextureOverrideLookupCache.clear();
+	gIaTextureOverrideHashNoCandidates.clear();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
 	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);

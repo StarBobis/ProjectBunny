@@ -80,6 +80,11 @@ static std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverride
 static std::unordered_map<UINT64, std::vector<size_t>> gIaVertexTextureOverrideIndex;
 static std::unordered_map<uint32_t, std::vector<size_t>> gIaAnyVertexTextureOverrideIndex;
 static std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverrideIndex;
+
+// Hash 级负缓存：记录 (hash, indexBuffer, vertexSlot) 在全局索引中无任何候选。
+// draw-context 无关 → 命中率远高于 draw-params 依赖的全量缓存。
+// key = bits[31:0]=hash | bit[32]=indexBuffer | bits[47:33]=vertexSlot
+static std::unordered_set<UINT64> gIaTextureOverrideHashNoCandidates;
 class DX12TriggeredTextureOverride
 {
 public:

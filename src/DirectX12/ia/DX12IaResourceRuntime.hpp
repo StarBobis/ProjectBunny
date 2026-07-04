@@ -265,6 +265,12 @@ static bool FindIaTextureOverridesCachedLocked(
 			"\"stage\":\"no_candidates\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\"",
 			indexBuffer ? "ib" : "vb", vertexSlot, hash);
 #endif
+		// 写入 hash 级负缓存：该 hash 永久无候选（直到配置重载清除）
+		const UINT64 hashNoCandidateKey =
+			(static_cast<UINT64>(hash)) |
+			(indexBuffer ? (1ull << 32) : 0) |
+			(static_cast<UINT64>(vertexSlot) << 33);
+		gIaTextureOverrideHashNoCandidates.insert(hashNoCandidateKey);
 		StoreIaTextureOverrideLookupCacheLocked(key, std::vector<size_t>());
 		return false;
 	}
@@ -318,6 +324,20 @@ static bool FindIaTextureOverridesCached(
 {
 	if (configs)
 		configs->clear();
+
+	// Hash 级负缓存：如果该 hash 在全局索引中无任何候选，直接返回 false。
+	// 此检查与 draw 参数无关，命中率远超全量缓存。
+	const UINT64 hashNoCandidateKey =
+		(static_cast<UINT64>(hash)) |
+		(indexBuffer ? (1ull << 32) : 0) |
+		(static_cast<UINT64>(vertexSlot) << 33);
+	AcquireSRWLockShared(&gModLock);
+	if (gIaTextureOverrideHashNoCandidates.find(hashNoCandidateKey) !=
+	    gIaTextureOverrideHashNoCandidates.end()) {
+		ReleaseSRWLockShared(&gModLock);
+		return false;
+	}
+	ReleaseSRWLockShared(&gModLock);
 	std::unordered_set<std::wstring> activePreSkinSections;
 	const UINT64 preSkinGeneration =
 		SnapshotActivePreSkinSections(&activePreSkinSections);
