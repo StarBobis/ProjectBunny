@@ -623,13 +623,19 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
-		std::vector<ID3D12CommandList*> unwrapped;
+		// Stack buffer for common case (≤8 command lists), fallback to heap.
+		ID3D12CommandList *stackUnwrapped[8];
 		ID3D12CommandList *const *activeCommandLists = commandLists;
+		std::vector<ID3D12CommandList*> heapUnwrapped;
 		if (commandLists && numCommandLists) {
-			unwrapped.resize(numCommandLists);
+			ID3D12CommandList **dest = stackUnwrapped;
+			if (numCommandLists > 8) {
+				heapUnwrapped.resize(numCommandLists);
+				dest = heapUnwrapped.data();
+			}
 			for (UINT i = 0; i < numCommandLists; ++i)
-				unwrapped[i] = UnwrapCommandList(commandLists[i]);
-			activeCommandLists = unwrapped.data();
+				dest[i] = UnwrapCommandList(commandLists[i]);
+			activeCommandLists = dest;
 		}
 		DX12CommandQueueExecutionFlow::Execute(
 			queue,
@@ -815,7 +821,10 @@ public:
 
 	static bool ShouldSkipComputeBinding()
 	{
-		return DX12HotPathState::skipAll && !DX12ModNeedsPreSkinningBindingTracking();
+		// Single bit test on HookWorkFlags — avoids function call
+		// to DX12ModNeedsPreSkinningBindingTracking() per binding call.
+		return DX12HotPathState::skipAll &&
+			!(DX12HotPathState::HookWorkFlags & DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK);
 	}
 
 	static void SetDescriptorHeaps(

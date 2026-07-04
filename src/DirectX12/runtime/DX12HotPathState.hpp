@@ -38,6 +38,7 @@ public:
 	static constexpr UINT64 FLAG_FRAME_ANALYSIS_ACTIVE   = 1ull << 2;
 	static constexpr UINT64 FLAG_SHADER_DUMP_ACTIVE      = 1ull << 3;
 	static constexpr UINT64 FLAG_PRE_SKIN_PROBE          = 1ull << 4;
+	static constexpr UINT64 FLAG_PRE_SKIN_BINDING_TRACK  = 1ull << 5;
 
 	// 汇总 mask：一条 if 即可判断是否有 draw / dispatch 级 hook 工作
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -59,6 +60,8 @@ public:
 			flags |= FLAG_SHADER_DUMP_ACTIVE;
 		if (DX12ModNeedsPreSkinningUavProbe())
 			flags |= FLAG_PRE_SKIN_PROBE;
+		if (DX12ModNeedsPreSkinningBindingTracking())
+			flags |= FLAG_PRE_SKIN_BINDING_TRACK;
 
 		InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&HookWorkFlags), static_cast<LONG64>(flags));
 	}

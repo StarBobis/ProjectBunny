@@ -8093,10 +8093,21 @@ namespace DX12Wrapper
 		if (!object)
 			return nullptr;
 
+		// Thread-local one-element cache: repeated unwraps of the same
+		// wrapped pointer (common for PSO, root signature, resource)
+		// bypass the SRW lock + hashmap lookup entirely.
+		static thread_local IUnknown *tlsCachedWrapperPtr = nullptr;
+		static thread_local IUnknown *tlsCachedRealPtr = nullptr;
+
+		if (object == tlsCachedWrapperPtr)
+			return tlsCachedRealPtr;
+
 		WrapperBase *wrapper = WrapperBase::FindByWrapperPointer(object);
-		if (wrapper)
-			return wrapper->GetObject();
-		return object;
+		IUnknown *result = wrapper ? wrapper->GetObject() : object;
+
+		tlsCachedWrapperPtr = object;
+		tlsCachedRealPtr = result;
+		return result;
 	}
 
 void Shutdown()
