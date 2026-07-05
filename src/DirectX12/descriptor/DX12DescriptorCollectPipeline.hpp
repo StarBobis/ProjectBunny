@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -26,18 +27,22 @@ class DX12DescriptorCollectTask
 public:
 	DX12DescriptorCollectTaskKind kind = DX12DescriptorCollectTaskKind::DescriptorBatch;
 	std::vector<DescriptorRecord> descriptors;
+	std::vector<uint8_t> descriptorConsumed;
 	ID3D12Device *device = nullptr;
 	D3D12_DESCRIPTOR_HEAP_TYPE type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	D3D12_CPU_DESCRIPTOR_HANDLE destStart = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE srcStart = {};
 	UINT count = 0;
 	std::string source;
+	uint64_t taskId = 0;
 	uint64_t sequence = 0;
+	bool consumed = false;
 	SIZE_T trackedCpuHandleStart = 0;
 	SIZE_T trackedCpuHandleEnd = 0;
 	SIZE_T trackedSrcCpuHandleStart = 0;
 	SIZE_T trackedSrcCpuHandleEnd = 0;
 	DWORD enqueueThreadId = 0;
+	std::vector<SIZE_T> indexedCpuHandles;
 };
 
 class DX12DescriptorCollectBatch
@@ -46,6 +51,14 @@ public:
 	std::vector<DescriptorRecord> descriptors;
 	uint64_t sequence = 0;
 	DWORD enqueueThreadId = 0;
+};
+
+class DX12DescriptorPendingTaskRef
+{
+public:
+	uint64_t taskId = 0;
+	size_t recordIndex = 0;
+	bool sourceDependency = false;
 };
 
 class DX12DescriptorCollectPipeline
@@ -58,11 +71,14 @@ public:
 	inline static std::atomic<bool> started = false;
 	inline static std::atomic<bool> stopRequested = false;
 	inline static std::atomic<uint64_t> nextSequence = 1;
+	inline static std::atomic<uint64_t> nextTaskId = 1;
 	inline static std::atomic<uint64_t> enqueuedBatches = 0;
 	inline static std::atomic<uint64_t> completedBatches = 0;
 	inline static std::atomic<uint64_t> completedSequence = 0;
 	inline static std::atomic<uint64_t> maxPendingDescriptorWrites = 0;
-	inline static std::deque<DX12DescriptorCollectTask> queuedTasks;
+	inline static std::deque<std::shared_ptr<DX12DescriptorCollectTask>> queuedTasks;
+	inline static std::unordered_map<uint64_t, std::shared_ptr<DX12DescriptorCollectTask>> queuedTaskById;
+	inline static std::unordered_map<SIZE_T, std::vector<DX12DescriptorPendingTaskRef>> pendingTaskRefsByCpuHandle;
 	inline static std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
 	inline static std::unordered_map<SIZE_T, uint64_t> pendingDescriptorSequences;
 	inline static std::unordered_map<SIZE_T, uint64_t> visibleDescriptorSequences;
@@ -87,6 +103,14 @@ public:
 	inline static uint64_t targetedInlineBlockedActive = 0;
 	inline static uint64_t targetedInlineBlockedQueued = 0;
 	inline static uint64_t targetedInlineNoPending = 0;
+	inline static uint64_t targetedQueuedPromoteCalls = 0;
+	inline static uint64_t targetedQueuedPromotedDescriptorBatches = 0;
+	inline static uint64_t targetedQueuedPromotedDescriptorRecords = 0;
+	inline static uint64_t targetedQueuedPromotedCopyRanges = 0;
+	inline static uint64_t targetedQueuedPromotedCopyDescriptors = 0;
+	inline static uint64_t targetedQueuedBlockedActive = 0;
+	inline static uint64_t targetedQueuedBlockedPrior = 0;
+	inline static uint64_t targetedQueuedSkippedLargeCopy = 0;
 
 	static void RecordDescriptor(DescriptorRecord &&record, const char *source);
 	static void RecordDescriptorCopyRange(
@@ -127,6 +151,7 @@ public:
 		UINT count,
 		DWORD enqueueThreadId);
 	static bool QueueDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
+	static bool QueueTaskLocked(DX12DescriptorCollectTask *task);
 	static void FlushPendingDescriptorWrites(const char *reason);
 	static bool RetainDescriptorResourcesForAsync(DescriptorRecord *record);
 	static bool TryStealDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
@@ -142,6 +167,82 @@ public:
 	static bool ActiveTaskTouchesCpuHandleLocked(SIZE_T cpuHandle);
 	static bool QueuedTasksTouchAnyCpuHandleLocked(
 		const std::vector<SIZE_T> &cpuHandles);
+	static bool TaskTouchesAnyCpuHandleLocked(
+		const DX12DescriptorCollectTask &task,
+		const std::vector<SIZE_T> &cpuHandles);
+	static bool ActiveTaskTouchesAnyCpuHandleLocked(
+		const std::vector<SIZE_T> &cpuHandles);
+	static bool PriorQueuedTasksTouchAnyCpuHandleLocked(
+		size_t taskIndex,
+		const std::vector<SIZE_T> &cpuHandles);
+	static bool CpuHandleInList(
+		SIZE_T cpuHandle,
+		const std::vector<SIZE_T> &cpuHandles);
+	static bool BuildCopyTaskDependencyHandles(
+		const DX12DescriptorCollectTask &task,
+		std::vector<SIZE_T> *cpuHandles);
+	static void RegisterTaskIndexLocked(DX12DescriptorCollectTask *task);
+	static void RegisterIndexHandleLocked(
+		DX12DescriptorCollectTask *task,
+		SIZE_T cpuHandle,
+		size_t recordIndex,
+		bool sourceDependency);
+	static void RemoveTaskIndexHandleRefLocked(
+		SIZE_T cpuHandle,
+		uint64_t taskId,
+		size_t recordIndex,
+		bool sourceDependency);
+	static void UnregisterTaskIndexLocked(DX12DescriptorCollectTask *task);
+	static void CleanPendingRefsForCpuHandleLocked(SIZE_T cpuHandle);
+	static bool IsTaskRecordConsumed(
+		const DX12DescriptorCollectTask &task,
+		size_t recordIndex);
+	static bool IsTaskFullyConsumed(const DX12DescriptorCollectTask &task);
+	static void MarkTaskRecordConsumedAfterMove(
+		DX12DescriptorCollectTask *task,
+		size_t recordIndex);
+	static void MarkDescriptorHandleVisibleAfterInlineLocked(
+		SIZE_T cpuHandle,
+		uint64_t taskSequence);
+	static void MarkCopyRangeVisibleAfterInlineLocked(
+		const DX12DescriptorCollectTask &task);
+	static bool TryPromoteQueuedTasksForHandlesLocked(
+		const std::vector<SIZE_T> &uniqueCpuHandles,
+		const char *reason,
+		size_t *promotedDescriptorRecords,
+		size_t *promotedCopyRanges,
+		size_t *promotedCopyDescriptors,
+		bool *blockedByActiveTask,
+		bool *blockedByPriorTask,
+		bool *skippedLargeCopy);
+	static bool TryPromoteHandleRefsBeforeSequenceLocked(
+		SIZE_T cpuHandle,
+		uint64_t beforeSequence,
+		const char *reason,
+		size_t *promotedDescriptorRecords,
+		size_t *promotedCopyRanges,
+		size_t *promotedCopyDescriptors,
+		bool *blockedByActiveTask,
+		bool *blockedByPriorTask,
+		bool *skippedLargeCopy);
+	static bool TryPromoteTaskRefLocked(
+		const DX12DescriptorPendingTaskRef &taskRef,
+		const char *reason,
+		size_t *promotedDescriptorRecords,
+		size_t *promotedCopyRanges,
+		size_t *promotedCopyDescriptors,
+		bool *blockedByActiveTask,
+		bool *blockedByPriorTask,
+		bool *skippedLargeCopy);
+	static bool TryPromoteTaskDependenciesLocked(
+		const DX12DescriptorCollectTask &task,
+		const char *reason,
+		size_t *promotedDescriptorRecords,
+		size_t *promotedCopyRanges,
+		size_t *promotedCopyDescriptors,
+		bool *blockedByActiveTask,
+		bool *blockedByPriorTask,
+		bool *skippedLargeCopy);
 	static void SetActiveTaskLocked(const DX12DescriptorCollectTask &task);
 	static void ClearActiveTaskLocked();
 	static bool BuildUniqueCpuHandleList(
