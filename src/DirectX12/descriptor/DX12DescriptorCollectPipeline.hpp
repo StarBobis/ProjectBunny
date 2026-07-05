@@ -124,6 +124,15 @@ public:
 		const SIZE_T *cpuHandles,
 		size_t count,
 		const char *reason);
+	static void FindPendingDescriptorHandles(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		uint8_t *pending);
+	static void CopyPendingDescriptorWrites(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		DescriptorRecord *records,
+		uint8_t *found);
 	static void DrainForSnapshot(const char *reason);
 	static void Stop();
 

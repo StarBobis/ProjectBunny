@@ -26,6 +26,17 @@ public:
 	bool valid = false;
 	UINT rootParameterIndex = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor = {};
+	bool runtimeHeapResolved = false;
+	ID3D12DescriptorHeap *runtimeHeap = nullptr;
+	UINT runtimeHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	SIZE_T runtimeHeapCpuStart = 0;
+	UINT64 runtimeHeapGpuStart = 0;
+	UINT runtimeHeapIncrement = 0;
+	UINT runtimeHeapNumDescriptors = 0;
+	UINT64 runtimeHeapVersion = 0;
+	UINT64 runtimeTableBaseIndex = 0;
+	SIZE_T runtimeTableCpuStart = 0;
+	UINT64 runtimeTableGpuStart = 0;
 };
 
 class RootDescriptorState
@@ -57,6 +68,10 @@ public:
 	ID3D12RootSignature *computeRootSignature = nullptr;
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	bool runtimeCbvSrvUavHeapResolved = false;
+	DX12DescriptorHeapSummary runtimeCbvSrvUavHeap = {};
+	bool runtimeSamplerHeapResolved = false;
+	DX12DescriptorHeapSummary runtimeSamplerHeap = {};
 	UINT64 computeBindingSerial = 0;
 	UINT64 bindingQuerySerial = 1;
 	UINT graphicsTableValidCount = 0;

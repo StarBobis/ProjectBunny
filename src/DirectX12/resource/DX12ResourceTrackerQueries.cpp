@@ -1298,6 +1298,13 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 		1,
 		"FindDescriptorSummaryLight");
 	AcquireSRWLockShared(&gDescriptorLock);
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
+		gRuntimeDescriptorByCpuHandle.find(cpuHandle);
+	if (runtimeFound != gRuntimeDescriptorByCpuHandle.end()) {
+		FillDescriptorSummary(summary, runtimeFound->second, false, false, false);
+		ReleaseSRWLockShared(&gDescriptorLock);
+		return true;
+	}
 	DescriptorSlotLocation location = {};
 	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
 		if (location.heapIndex < gDescriptorHeaps.size()) {
@@ -1330,6 +1337,13 @@ static bool FillLightSummaryLocked(SIZE_T cpuHandle, DX12DescriptorSummary *summ
 {
 	if (!cpuHandle || !summary)
 		return false;
+
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
+		gRuntimeDescriptorByCpuHandle.find(cpuHandle);
+	if (runtimeFound != gRuntimeDescriptorByCpuHandle.end()) {
+		FillDescriptorSummary(summary, runtimeFound->second, false, false, false);
+		return true;
+	}
 
 	DescriptorSlotLocation location = {};
 	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
@@ -1466,6 +1480,63 @@ void DX12FindDescriptorSummariesByCpuHandle(
 	if (completeResourceInfo)
 		DX12DescriptorQueryBatchUtils::CompleteResourceInfoForFoundSummaries(
 			summaries, found, count);
+}
+
+void DX12FindDescriptorSummariesByCpuHandleNoWait(
+	const SIZE_T *cpuHandles, size_t count,
+	DX12DescriptorSummary *summaries, uint8_t *found,
+	uint8_t *pending,
+	bool completeResourceInfo)
+{
+	if (!cpuHandles || !summaries || !found || count == 0)
+		return;
+
+	memset(found, 0, count * sizeof(uint8_t));
+	std::vector<DescriptorRecord> pendingRecords;
+	std::vector<uint8_t> pendingDirect;
+	std::vector<uint8_t> pendingRaw;
+	if (pending) {
+		pendingRaw.resize(count);
+		DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
+			cpuHandles, count, pendingRaw.data());
+		memset(pending, 0, count * sizeof(uint8_t));
+	}
+	if (pending) {
+		pendingRecords.resize(count);
+		pendingDirect.resize(count);
+		DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
+			cpuHandles, count, pendingRecords.data(), pendingDirect.data());
+	}
+
+	AcquireSRWLockShared(&gDescriptorLock);
+	for (size_t i = 0; i < count; ++i) {
+		summaries[i] = DX12DescriptorSummary();
+		if (pending && pendingDirect.size() == count && pendingDirect[i]) {
+			FillDescriptorSummary(
+				&summaries[i],
+				pendingRecords[i],
+				false,
+				false,
+				false);
+			found[i] = 1;
+			pending[i] = 0;
+			continue;
+		}
+		if (DX12DescriptorQueryBatchUtils::FillLightSummaryLocked(cpuHandles[i], &summaries[i])) {
+			found[i] = 1;
+			if (pending)
+				pending[i] = 0;
+		} else if (pending && pendingRaw.size() == count && pendingRaw[i]) {
+			pending[i] = 1;
+		}
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+
+	if (completeResourceInfo)
+		DX12DescriptorQueryBatchUtils::CompleteResourceInfoForFoundSummaries(
+			summaries, found, count);
+	for (size_t i = 0; i < pendingRecords.size(); ++i)
+		ReleaseDescriptorRecordResources(&pendingRecords[i]);
 }
 
 bool FindDescriptorSummaryByCpuHandleAtEpoch(

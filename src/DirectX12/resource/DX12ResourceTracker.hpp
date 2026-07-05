@@ -57,6 +57,11 @@ void DX12FindDescriptorSummariesByCpuHandle(
 	const SIZE_T *cpuHandles, size_t count,
 	DX12DescriptorSummary *summaries, uint8_t *found,
 	bool completeResourceInfo = true);
+void DX12FindDescriptorSummariesByCpuHandleNoWait(
+	const SIZE_T *cpuHandles, size_t count,
+	DX12DescriptorSummary *summaries, uint8_t *found,
+	uint8_t *pending,
+	bool completeResourceInfo = true);
 UINT64 CurrentDescriptorEpoch();
 UINT64 CurrentDescriptorQuerySerial();
 UINT64 DX12GetDescriptorHeapVersion(ID3D12DescriptorHeap *heap);

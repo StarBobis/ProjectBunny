@@ -3,6 +3,7 @@
 #include "DX12BindingCollectQueue.hpp"
 #include "DX12DescriptorCollectPipeline.hpp"
 #include "DX12ResourceCollectQueue.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 {
@@ -24,6 +25,7 @@ std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
 std::unordered_map<SIZE_T, DescriptorRecord> gDescriptorByCpuHandle;
+std::unordered_map<SIZE_T, DescriptorRecord> gRuntimeDescriptorByCpuHandle;
 std::vector<PsoRootRecord> gPsoRoots;
 std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
@@ -272,16 +274,55 @@ static size_t DescriptorHeapHistoryEntriesLocked()
 
 static void ClearCpuDescriptorLedgerLocked()
 {
-	for (auto &entry : gDescriptorByCpuHandle)
+	for (std::unordered_map<SIZE_T, DescriptorRecord>::value_type &entry : gDescriptorByCpuHandle)
 		ReleaseDescriptorRecordResources(&entry.second);
 	gDescriptorByCpuHandle.clear();
+	for (std::unordered_map<SIZE_T, DescriptorRecord>::value_type &entry : gRuntimeDescriptorByCpuHandle)
+		ReleaseDescriptorRecordResources(&entry.second);
+	gRuntimeDescriptorByCpuHandle.clear();
+}
+
+static DescriptorRecord CloneRuntimeDescriptorRecord(const DescriptorRecord &record)
+{
+	DescriptorRecord clone = record;
+	clone.ownsResource = false;
+	clone.ownsCounterResource = false;
+	if (clone.resource) {
+		if (DX12ResourceSnapshotUtils::TryAddRef(clone.resource))
+			clone.ownsResource = true;
+		else
+			clone.resource = nullptr;
+	}
+	if (clone.counterResource) {
+		if (DX12ResourceSnapshotUtils::TryAddRef(clone.counterResource))
+			clone.ownsCounterResource = true;
+		else
+			clone.counterResource = nullptr;
+	}
+	return clone;
+}
+
+static void StoreRuntimeDescriptorRecordLocked(const DescriptorRecord &record)
+{
+	if (!record.cpuHandle)
+		return;
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+		gRuntimeDescriptorByCpuHandle.find(record.cpuHandle);
+	if (found != gRuntimeDescriptorByCpuHandle.end())
+		ReleaseDescriptorRecordResources(&found->second);
+	DescriptorRecord runtimeRecord = CloneRuntimeDescriptorRecord(record);
+	if (runtimeRecord.valueId == 0)
+		PrepareDescriptorValueId(&runtimeRecord);
+	gRuntimeDescriptorByCpuHandle[record.cpuHandle] = std::move(runtimeRecord);
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeDescriptorWrite();
 }
 
 void StoreCpuDescriptorRecordLocked(DescriptorRecord &&record)
 {
 	if (!record.cpuHandle)
 		return;
-	auto found = gDescriptorByCpuHandle.find(record.cpuHandle);
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+		gDescriptorByCpuHandle.find(record.cpuHandle);
 	if (found != gDescriptorByCpuHandle.end())
 		ReleaseDescriptorRecordResources(&found->second);
 	gDescriptorByCpuHandle[record.cpuHandle] = std::move(record);
@@ -296,6 +337,19 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 		return;
 	DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
 	const SIZE_T cpuStart = record.cpuStart;
+	const UINT increment = record.increment;
+	const UINT numDescriptors = record.desc.NumDescriptors;
+	if (cpuStart && increment && numDescriptors) {
+		for (UINT slot = 0; slot < numDescriptors; ++slot) {
+			const SIZE_T cpuHandle = cpuStart + static_cast<SIZE_T>(slot) * increment;
+			std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
+				gRuntimeDescriptorByCpuHandle.find(cpuHandle);
+			if (runtimeFound == gRuntimeDescriptorByCpuHandle.end())
+				continue;
+			ReleaseDescriptorRecordResources(&runtimeFound->second);
+			gRuntimeDescriptorByCpuHandle.erase(runtimeFound);
+		}
+	}
 	ClearDescriptorHeapLocked(&record);
 	record.heap = nullptr;
 	record.desc = D3D12_DESCRIPTOR_HEAP_DESC();
@@ -1535,12 +1589,20 @@ static bool FindLatestDescriptorLocked(SIZE_T cpuHandle, DescriptorRecord *recor
 	if (!record)
 		return false;
 
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
+		gRuntimeDescriptorByCpuHandle.find(cpuHandle);
+	if (runtimeFound != gRuntimeDescriptorByCpuHandle.end()) {
+		*record = CloneDescriptorRecord(runtimeFound->second);
+		return true;
+	}
+
 	DescriptorSlotLocation heapLocation = {};
 	if (DescriptorSlotForHandleLocked(cpuHandle, &heapLocation) &&
 			FindLatestDescriptorAtSlotLocked(heapLocation, record))
 		return true;
 
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+		gDescriptorByCpuHandle.find(cpuHandle);
 	if (found != gDescriptorByCpuHandle.end()) {
 		*record = CloneDescriptorRecord(found->second);
 		return true;
@@ -1788,6 +1850,80 @@ static bool CopyHeapRangeLocked(
 static void RecordDescriptorLocked(DescriptorRecord &&record)
 {
 	RecordDescriptorInCacheLocked(std::move(record), true);
+}
+
+void RecordRuntimeDescriptor(DescriptorRecord &&record)
+{
+	if (!record.cpuHandle) {
+		ReleaseDescriptorRecordResources(&record);
+		return;
+	}
+	if (record.valueId == 0)
+		PrepareDescriptorValueId(&record);
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	StoreRuntimeDescriptorRecordLocked(record);
+	BumpDescriptorQuerySerial();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+	ReleaseDescriptorRecordResources(&record);
+}
+
+void RecordRuntimeDescriptorCopyRange(
+	ID3D12Device *device,
+	D3D12_DESCRIPTOR_HEAP_TYPE type,
+	D3D12_CPU_DESCRIPTOR_HANDLE destStart,
+	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
+	UINT count)
+{
+	if (!device || count == 0)
+		return;
+
+	const UINT increment = device->GetDescriptorHandleIncrementSize(type);
+	if (increment == 0)
+		return;
+
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	std::vector<DescriptorRecord> sourceSnapshot;
+	std::vector<uint8_t> sourceValid;
+	UINT copiedCount = 0;
+	UINT missCount = 0;
+	sourceSnapshot.resize(count);
+	sourceValid.assign(count, 0);
+	for (UINT offset = 0; offset < count; ++offset) {
+		const SIZE_T srcHandle =
+			srcStart.ptr + static_cast<SIZE_T>(offset) * increment;
+		DescriptorRecord source;
+		if (!FindLatestDescriptorLocked(srcHandle, &source)) {
+			missCount++;
+			continue;
+		}
+		DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+			&sourceSnapshot[offset],
+			source,
+			srcHandle);
+		sourceValid[offset] = 1;
+		ReleaseDescriptorRecordResources(&source);
+	}
+
+	for (UINT offset = 0; offset < count; ++offset) {
+		if (!sourceValid[offset])
+			continue;
+		const SIZE_T destHandle =
+			destStart.ptr + static_cast<SIZE_T>(offset) * increment;
+		DescriptorRecord runtimeRecord;
+		DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+			&runtimeRecord,
+			sourceSnapshot[offset],
+			destHandle);
+		StoreRuntimeDescriptorRecordLocked(runtimeRecord);
+		copiedCount++;
+		ReleaseDescriptorRecordResources(&runtimeRecord);
+		ReleaseDescriptorRecordResources(&sourceSnapshot[offset]);
+	}
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeDescriptorCopy(
+		copiedCount, missCount);
+	if (copiedCount)
+		BumpDescriptorQuerySerial();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 
 void RecordDescriptorCopyRange(

@@ -40,6 +40,7 @@ static bool TryComputeTrackedCpuHandleRange(
 
 void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *source)
 {
+	::RecordRuntimeDescriptor(CloneDescriptorRecord(record));
 	if (!EnqueueDescriptorTask(&record, source))
 		::RecordDescriptor(std::move(record));
 	MaybeLogInlineStats(source ? source : "RecordDescriptor");
@@ -56,6 +57,7 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 	if (!device || count == 0)
 		return;
 
+	::RecordRuntimeDescriptorCopyRange(device, type, destStart, srcStart, count);
 	Start();
 
 	std::unique_lock<std::mutex> lock(mutex);
@@ -117,6 +119,51 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
 {
 	EnsureDescriptorWritesVisible(
 		cpuHandles, count, reason ? reason : "EnsureDescriptorHandlesVisible");
+}
+
+void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	uint8_t *pending)
+{
+	if (!pending || count == 0)
+		return;
+	memset(pending, 0, count * sizeof(uint8_t));
+	if (!cpuHandles)
+		return;
+
+	std::lock_guard<std::mutex> lock(mutex);
+	for (size_t index = 0; index < count; ++index) {
+		const SIZE_T cpuHandle = cpuHandles[index];
+		if (!cpuHandle)
+			continue;
+		if (pendingDescriptorSequences.find(cpuHandle) != pendingDescriptorSequences.end())
+			pending[index] = 1;
+	}
+}
+
+void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	DescriptorRecord *records,
+	uint8_t *found)
+{
+	if (!cpuHandles || !records || !found || count == 0)
+		return;
+	memset(found, 0, count * sizeof(uint8_t));
+
+	std::lock_guard<std::mutex> lock(mutex);
+	for (size_t index = 0; index < count; ++index) {
+		const SIZE_T cpuHandle = cpuHandles[index];
+		if (!cpuHandle)
+			continue;
+		std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator pendingWrite =
+			pendingDescriptorWrites.find(cpuHandle);
+		if (pendingWrite == pendingDescriptorWrites.end())
+			continue;
+		records[index] = CloneDescriptorRecord(pendingWrite->second);
+		found[index] = 1;
+	}
 }
 
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *reason)

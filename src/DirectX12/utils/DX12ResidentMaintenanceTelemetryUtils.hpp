@@ -96,6 +96,16 @@ public:
 	inline static volatile LONG64 PreSkinBindingFullDescriptorLookups = 0;
 	inline static volatile LONG64 PreSkinBindingConstants = 0;
 	inline static volatile LONG64 PreSkinBindingRootDescriptors = 0;
+	inline static volatile LONG64 PreSkinBindingRuntimeResolved = 0;
+	inline static volatile LONG64 PreSkinBindingRuntimeUnresolved = 0;
+	inline static volatile LONG64 PreSkinBindingDescriptorHits = 0;
+	inline static volatile LONG64 PreSkinBindingDescriptorMisses = 0;
+	inline static volatile LONG64 PreSkinBindingDescriptorPending = 0;
+	inline static volatile LONG64 PreSkinBindingWaitAvoided = 0;
+	inline static volatile LONG64 RuntimeDescriptorWrites = 0;
+	inline static volatile LONG64 RuntimeDescriptorCopyCalls = 0;
+	inline static volatile LONG64 RuntimeDescriptorCopied = 0;
+	inline static volatile LONG64 RuntimeDescriptorCopyMisses = 0;
 
 	static void Inc(volatile LONG *value)
 	{
@@ -426,6 +436,37 @@ public:
 		Add64(&PreSkinBindingRootDescriptors, 1);
 	}
 
+	static void RecordPreSkinBindingRuntimeTable(bool resolved)
+	{
+		if (resolved)
+			Add64(&PreSkinBindingRuntimeResolved, 1);
+		else
+			Add64(&PreSkinBindingRuntimeUnresolved, 1);
+	}
+
+	static void RecordPreSkinBindingDescriptorLookupResult(
+		LONG64 hitCount,
+		LONG64 missCount,
+		LONG64 pendingCount)
+	{
+		Add64(&PreSkinBindingDescriptorHits, hitCount);
+		Add64(&PreSkinBindingDescriptorMisses, missCount);
+		Add64(&PreSkinBindingDescriptorPending, pendingCount);
+		Add64(&PreSkinBindingWaitAvoided, hitCount + missCount + pendingCount);
+	}
+
+	static void RecordRuntimeDescriptorWrite()
+	{
+		Add64(&RuntimeDescriptorWrites, 1);
+	}
+
+	static void RecordRuntimeDescriptorCopy(UINT copied, UINT misses)
+	{
+		Add64(&RuntimeDescriptorCopyCalls, 1);
+		Add64(&RuntimeDescriptorCopied, static_cast<LONG64>(copied));
+		Add64(&RuntimeDescriptorCopyMisses, static_cast<LONG64>(misses));
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -584,11 +625,24 @@ public:
 		LONG64 preSkinBindingFullDescriptorLookups = Take64(&PreSkinBindingFullDescriptorLookups);
 		LONG64 preSkinBindingConstants = Take64(&PreSkinBindingConstants);
 		LONG64 preSkinBindingRootDescriptors = Take64(&PreSkinBindingRootDescriptors);
+		LONG64 preSkinBindingRuntimeResolved = Take64(&PreSkinBindingRuntimeResolved);
+		LONG64 preSkinBindingRuntimeUnresolved = Take64(&PreSkinBindingRuntimeUnresolved);
+		LONG64 preSkinBindingDescriptorHits = Take64(&PreSkinBindingDescriptorHits);
+		LONG64 preSkinBindingDescriptorMisses = Take64(&PreSkinBindingDescriptorMisses);
+		LONG64 preSkinBindingDescriptorPending = Take64(&PreSkinBindingDescriptorPending);
+		LONG64 preSkinBindingWaitAvoided = Take64(&PreSkinBindingWaitAvoided);
+		LONG64 runtimeDescriptorWrites = Take64(&RuntimeDescriptorWrites);
+		LONG64 runtimeDescriptorCopyCalls = Take64(&RuntimeDescriptorCopyCalls);
+		LONG64 runtimeDescriptorCopied = Take64(&RuntimeDescriptorCopied);
+		LONG64 runtimeDescriptorCopyMisses = Take64(&RuntimeDescriptorCopyMisses);
 		if (!preSkinBindingCacheCalls && !preSkinBindingCacheHits &&
-			!preSkinBindingCacheMisses && !preSkinBindingCacheStores)
+			!preSkinBindingCacheMisses && !preSkinBindingCacheStores &&
+			!preSkinBindingRuntimeResolved && !preSkinBindingRuntimeUnresolved &&
+			!preSkinBindingWaitAvoided && !runtimeDescriptorWrites &&
+			!runtimeDescriptorCopyCalls)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"preskin_bind_cache\",\"calls\":%ld,\"hits\":%ld,\"misses\":%ld,\"stores\":%ld,\"rootTables\":%lld,\"ranges\":%lld,\"lightDescriptorLookups\":%lld,\"fullDescriptorLookups\":%lld,\"constants\":%lld,\"rootDescriptors\":%lld",
+			"\"category\":\"preskin_bind_cache\",\"calls\":%ld,\"hits\":%ld,\"misses\":%ld,\"stores\":%ld,\"rootTables\":%lld,\"ranges\":%lld,\"lightDescriptorLookups\":%lld,\"fullDescriptorLookups\":%lld,\"constants\":%lld,\"rootDescriptors\":%lld,\"runtimeResolved\":%lld,\"runtimeUnresolved\":%lld,\"descriptorHits\":%lld,\"descriptorMisses\":%lld,\"descriptorPending\":%lld,\"waitAvoided\":%lld,\"runtimeDescriptorWrites\":%lld,\"runtimeDescriptorCopyCalls\":%lld,\"runtimeDescriptorCopied\":%lld,\"runtimeDescriptorCopyMisses\":%lld",
 			preSkinBindingCacheCalls, preSkinBindingCacheHits,
 			preSkinBindingCacheMisses, preSkinBindingCacheStores,
 			static_cast<long long>(preSkinBindingRootTables),
@@ -596,7 +650,17 @@ public:
 			static_cast<long long>(preSkinBindingLightDescriptorLookups),
 			static_cast<long long>(preSkinBindingFullDescriptorLookups),
 			static_cast<long long>(preSkinBindingConstants),
-			static_cast<long long>(preSkinBindingRootDescriptors));
+			static_cast<long long>(preSkinBindingRootDescriptors),
+			static_cast<long long>(preSkinBindingRuntimeResolved),
+			static_cast<long long>(preSkinBindingRuntimeUnresolved),
+			static_cast<long long>(preSkinBindingDescriptorHits),
+			static_cast<long long>(preSkinBindingDescriptorMisses),
+			static_cast<long long>(preSkinBindingDescriptorPending),
+			static_cast<long long>(preSkinBindingWaitAvoided),
+			static_cast<long long>(runtimeDescriptorWrites),
+			static_cast<long long>(runtimeDescriptorCopyCalls),
+			static_cast<long long>(runtimeDescriptorCopied),
+			static_cast<long long>(runtimeDescriptorCopyMisses));
 	}
 
 	static void LogAndReset()
