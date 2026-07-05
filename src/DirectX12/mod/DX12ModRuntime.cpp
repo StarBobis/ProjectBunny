@@ -260,19 +260,20 @@ public:
 	bool matched = false;
 	DX12PreSkinDispatchOverride dispatchOverride;
 };
-// 复合 key：(commandList, csHash, bindingHash) — 支持多 CS/多绑定状态缓存
+// Stable key: reload generation + CS hash + effective binding fingerprint.
+// Command list pointer is intentionally not part of the key because the cache
+// stores match decisions, not reusable command-list commands.
 static std::unordered_map<UINT64, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
+static constexpr size_t MaxPreSkinUavMatchCacheEntries = 4096;
 
 static UINT64 MakePreSkinUavMatchCacheKey(
 	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash)
 {
-	UINT64 key = reinterpret_cast<UINT64>(commandList);
-	key ^= key >> 33;
-	key *= 0xff51afd7ed558ccdull;
-	key ^= csHash;
-	key ^= key >> 33;
-	key *= 0xc4ceb9fe1a85ec53ull;
-	key ^= bindingHash;
+	(void)commandList;
+	UINT64 key = 0x4f1bbcdc9cb7a2c5ull;
+	key = HashCombine64(key, gReloadGeneration);
+	key = HashCombine64(key, csHash);
+	key = HashCombine64(key, bindingHash);
 	return key;
 }
 static volatile LONG gDx12SafeMode = 0;

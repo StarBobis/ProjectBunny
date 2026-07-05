@@ -12,6 +12,7 @@
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12ModRuntime.hpp"
+#include "DX12PreSkinPlan.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12RuntimeState.hpp"
 #include "DX12ShaderDump.hpp"
@@ -377,8 +378,8 @@ public:
 		QueryPerformanceCounter(&t0);
 
 		// Match DX11 by reading the precomputed CS hash from RuntimeState.
-	probe->computeShaderHash = runtimeState.cachedCsHashValid ?
-		runtimeState.cachedCsHash : GetCachedCsHash(runtimeState.pipelineState);
+		probe->computeShaderHash = runtimeState.cachedCsHashValid ?
+			runtimeState.cachedCsHash : GetCachedCsHash(runtimeState.pipelineState);
 		if (!probe->computeShaderHash) {
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
@@ -396,24 +397,42 @@ public:
 			return;
 		}
 
-		// Cache the match decision by the compute binding hash. Positive hits
-		// still need a command-list reapply because descriptor table changes are
-		// recorded D3D12 commands, not reusable CPU-side facts.
-		UINT64 bindingHash = runtimeState.computeBindingHash;
-		if (bindingHash == 0)
-			bindingHash = 1;
+		if (!probe->uavsFound) {
+			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
+			// CollectPreSkinBindings: lightweight O(tables) replacement for
+			// GetCurrentComputeAll (O(descriptors_in_all_ranges)). ~50x faster
+			// on the PreSkin hot path. Uses bindingQuerySerial as cache key
+			// instead of per-frame present count.
+			probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
+				commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
+				&probe->rootConstants);
+			DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+		}
+		probe->srvsFound = !probe->srvs.empty();
+		probe->cbvsFound = !probe->cbvs.empty();
+		probe->rootConstantsFound = !probe->rootConstants.empty();
 
-		// Negative hits can skip probing. Positive hits re-enter binding
-		// collection and apply so every dispatch records the required patch.
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
+		UINT64 bindingFingerprint = DX12PreSkinPlanUtils::BuildStableBindingFingerprint(
+			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
+		if (bindingFingerprint == 0)
+			bindingFingerprint = 1;
+		probe->computeBindingSerial = bindingFingerprint;
+
+		// Negative hits can skip matching. Positive hits still reapply through
+		// the existing path so required D3D12 commands are emitted.
 		bool positiveCacheHit = false;
 		DX12PreSkinDispatchOverride cachedDispatchOverride;
 		DX12PreSkinProbeCacheEntry cacheEntry;
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 		if (DX12ModGetCachedPreSkinProbeResult(
-			    commandList, probe->computeShaderHash, bindingHash, &cacheEntry)) {
-			probe->computeBindingSerial = bindingHash;
+			    commandList, probe->computeShaderHash, bindingFingerprint, &cacheEntry)) {
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(
+				cacheEntry.applied);
 #if defined(_DEBUG)
-			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d bindingHash=%llu\n",
-				cacheEntry.applied ? 1 : 0, static_cast<unsigned long long>(bindingHash));
+			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
+				cacheEntry.applied ? 1 : 0,
+				static_cast<unsigned long long>(bindingFingerprint));
 #endif
 			if (!cacheEntry.applied) {
 				probe->applied = false;
@@ -428,26 +447,15 @@ public:
 			positiveCacheHit = true;
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
 #if defined(_DEBUG)
-			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply bindingHash=%llu\n",
-				static_cast<unsigned long long>(bindingHash));
+			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
+				static_cast<unsigned long long>(bindingFingerprint));
 #endif
+		} else {
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheMiss();
 		}
-		probe->computeBindingSerial = bindingHash;
 #if defined(_DEBUG)
 		probe->shouldLog = true;
 #endif
-		if (!probe->uavsFound) {
-			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
-			// CollectPreSkinBindings: lightweight O(tables) replacement for
-			// GetCurrentComputeAll (O(descriptors_in_all_ranges)). ~50x faster
-			// on the PreSkin hot path. Uses bindingQuerySerial as cache key
-			// instead of per-frame present count.
-			probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
-			DX12_HOTPATH_TIME_END(PreSkinBindQuery);
-		}
-		probe->srvsFound = !probe->srvs.empty();
-		probe->cbvsFound = !probe->cbvs.empty();
-		probe->rootConstantsFound = !probe->rootConstants.empty();
 #if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 			probe->uavsFound ? 1 : 0, probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
@@ -480,8 +488,9 @@ public:
 		DX12_HOTPATH_TIME_END(PreSkinMatch);
 		if (!positiveCacheHit || probe->applied) {
 			DX12ModStoreCachedPreSkinningUavMatch(
-				commandList, probe->computeShaderHash, bindingHash,
+				commandList, probe->computeShaderHash, bindingFingerprint,
 				probe->applied, &probe->dispatchOverride);
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheStore();
 		}
 
 		QueryPerformanceCounter(&t1);

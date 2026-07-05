@@ -118,6 +118,14 @@ public:
 	inline static volatile LONG DispatchDecisionShaderOverrideWork = 0;
 	inline static volatile LONG DispatchDecisionFastRejects = 0;
 
+	inline static volatile LONG PreSkinPlanCacheLookups = 0;
+	inline static volatile LONG PreSkinPlanCacheHits = 0;
+	inline static volatile LONG PreSkinPlanCacheNegativeHits = 0;
+	inline static volatile LONG PreSkinPlanCachePositiveHits = 0;
+	inline static volatile LONG PreSkinPlanCacheMisses = 0;
+	inline static volatile LONG PreSkinPlanCacheStores = 0;
+	inline static volatile LONG PreSkinPlanFingerprintBuilds = 0;
+
 	static void Inc(volatile LONG *value)
 	{
 		InterlockedIncrement(value);
@@ -528,6 +536,35 @@ public:
 		Inc(&DispatchDecisionFastRejects);
 	}
 
+	static void RecordPreSkinPlanCacheLookup()
+	{
+		Inc(&PreSkinPlanCacheLookups);
+	}
+
+	static void RecordPreSkinPlanCacheHit(bool positive)
+	{
+		Inc(&PreSkinPlanCacheHits);
+		if (positive)
+			Inc(&PreSkinPlanCachePositiveHits);
+		else
+			Inc(&PreSkinPlanCacheNegativeHits);
+	}
+
+	static void RecordPreSkinPlanCacheMiss()
+	{
+		Inc(&PreSkinPlanCacheMisses);
+	}
+
+	static void RecordPreSkinPlanCacheStore()
+	{
+		Inc(&PreSkinPlanCacheStores);
+	}
+
+	static void RecordPreSkinPlanFingerprintBuild()
+	{
+		Inc(&PreSkinPlanFingerprintBuilds);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -748,6 +785,24 @@ public:
 			shaderOverrideWork, fastRejects);
 	}
 
+	static void LogPreSkinPlanState()
+	{
+		LONG lookups = Take(&PreSkinPlanCacheLookups);
+		LONG hits = Take(&PreSkinPlanCacheHits);
+		LONG negativeHits = Take(&PreSkinPlanCacheNegativeHits);
+		LONG positiveHits = Take(&PreSkinPlanCachePositiveHits);
+		LONG misses = Take(&PreSkinPlanCacheMisses);
+		LONG stores = Take(&PreSkinPlanCacheStores);
+		LONG fingerprints = Take(&PreSkinPlanFingerprintBuilds);
+		if (!lookups && !hits && !negativeHits && !positiveHits &&
+			!misses && !stores && !fingerprints)
+			return;
+		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
+			"\"category\":\"preskin_plan\",\"lookups\":%ld,\"hits\":%ld,\"negativeHits\":%ld,\"positiveHits\":%ld,\"misses\":%ld,\"stores\":%ld,\"fingerprintBuilds\":%ld",
+			lookups, hits, negativeHits, positiveHits,
+			misses, stores, fingerprints);
+	}
+
 	static void LogAndReset()
 	{
 		LogPso();
@@ -757,5 +812,6 @@ public:
 		LogBarrierState();
 		LogPreSkinBindingState();
 		LogDispatchDecisionState();
+		LogPreSkinPlanState();
 	}
 };

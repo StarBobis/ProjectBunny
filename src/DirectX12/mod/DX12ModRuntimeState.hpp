@@ -195,7 +195,7 @@ static void UpdatePreSkinningUavMatchCacheLocked(
 	entry.matched = matched;
 	if (dispatchOverride)
 		entry.dispatchOverride = *dispatchOverride;
-	if (gPreSkinUavMatchCache.size() > 64)
+	if (gPreSkinUavMatchCache.size() > MaxPreSkinUavMatchCacheEntries)
 		gPreSkinUavMatchCache.clear();
 }
 
