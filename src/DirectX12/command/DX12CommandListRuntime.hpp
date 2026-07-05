@@ -22,7 +22,7 @@ public:
 	static volatile UINT64 TrackingGenerationValue;
 	static thread_local DX12CommandListRuntimeTlsCache Tls;
 
-	// 直接映射：原始 command list → 嵌入的 RuntimeState（Wrapper 模式 O(1) 访问）
+	// Direct map for command lists whose runtime state is embedded in a wrapper.
 	static std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> gDirectStateMap;
 	static SRWLOCK gDirectStateMapLock;
 
@@ -33,6 +33,8 @@ public:
 	static void BumpTrackingGeneration();
 	static DX12CommandListRuntimeShard &ShardFor(ID3D12GraphicsCommandList *commandList);
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
+	static DX12CommandListTrackingState MakeTrackingState(const DX12CommandListTrackingCache &cache);
+	static DX12CommandListTrackingState GetTrackingState(DX12CommandListRuntimeState *state);
 	static void TlsRefreshFromState(DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
@@ -41,18 +43,25 @@ public:
 	static void TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList);
 
 	static void Register(ID3D12GraphicsCommandList *commandList);
+	static void Reset(DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState);
 	static void Reset(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
+	static void RememberPipelineState(DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState);
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
+	static void ResetIa(DX12CommandListRuntimeState *state);
 	static void ResetIa(ID3D12GraphicsCommandList *commandList);
+	static void RememberIndexBuffer(DX12CommandListRuntimeState *state, const D3D12_INDEX_BUFFER_VIEW *view);
 	static void RememberIndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
+	static void RememberVertexBuffers(DX12CommandListRuntimeState *state, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 	static void RememberVertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
+	static void RememberPrimitiveTopology(DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static void RememberPrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
+	static void BumpComputeBindingSerial(DX12CommandListRuntimeState *state);
 	static void BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
 	static DX12CommandListRuntimeState GetState(ID3D12GraphicsCommandList *commandList);
 	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);
+	static void SetDescriptorHeaps(DX12CommandListRuntimeState *state, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static void SetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static bool GetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 };
-

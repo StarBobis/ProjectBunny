@@ -5053,7 +5053,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(ResetCmdListTotal);
 				return DX12WrapperRuntimeUtils::ResetCommandList(
-					mCommandList, pAllocator, pInitialState, mOrigReset);
+					mCommandList, &mRuntimeState, pAllocator, pInitialState, mOrigReset);
 			DX12_HOTPATH_TIME_END(ResetCmdListTotal);
 			}
 
@@ -5076,6 +5076,7 @@ namespace DX12Wrapper
 			}
 			DX12WrapperRuntimeUtils::DrawInstanced(
 				mCommandList,
+				&mRuntimeState,
 				VertexCountPerInstance,
 				InstanceCount,
 				StartVertexLocation,
@@ -5094,6 +5095,7 @@ namespace DX12Wrapper
 			}
 			DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 				mCommandList,
+				&mRuntimeState,
 				IndexCountPerInstance,
 				InstanceCount,
 				StartIndexLocation,
@@ -5110,6 +5112,7 @@ namespace DX12Wrapper
 			}
 			DX12WrapperRuntimeUtils::Dispatch(
 				mCommandList,
+				&mRuntimeState,
 				ThreadGroupCountX,
 				ThreadGroupCountY,
 				ThreadGroupCountZ,
@@ -5171,7 +5174,8 @@ namespace DX12Wrapper
 			void STDMETHODCALLTYPE IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) override
 			{
 				DX12_HOTPATH_TIME_BEGIN(IaSetTopologyTotal);
-				DX12WrapperRuntimeUtils::IASetPrimitiveTopology(mCommandList, PrimitiveTopology);
+				DX12WrapperRuntimeUtils::IASetPrimitiveTopology(
+					mCommandList, &mRuntimeState, PrimitiveTopology);
 				DX12_HOTPATH_TIME_END(IaSetTopologyTotal);
 			}
 
@@ -5209,7 +5213,8 @@ namespace DX12Wrapper
 					mOrigSetPipelineState(mCommandList, pPipelineState);
 					return;
 				}
-				DX12WrapperRuntimeUtils::SetPipelineState(mCommandList, pPipelineState, mOrigSetPipelineState);
+				DX12WrapperRuntimeUtils::SetPipelineState(
+					mCommandList, &mRuntimeState, pPipelineState, mOrigSetPipelineState);
 			}
 
 			void STDMETHODCALLTYPE ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER *pBarriers) override
@@ -5244,14 +5249,15 @@ namespace DX12Wrapper
 						dest[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
 					activeHeaps = dest;
 				}
-				DX12WrapperRuntimeUtils::SetDescriptorHeaps(mCommandList, NumDescriptorHeaps, activeHeaps);
+				DX12WrapperRuntimeUtils::SetDescriptorHeaps(
+					mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootSignature(ID3D12RootSignature *pRootSignature) override
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootSignature(mCommandList,
-					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+					&mRuntimeState, DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
 				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
@@ -5259,7 +5265,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootSignature(mCommandList,
-					DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+					&mRuntimeState, DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
 				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
@@ -5268,7 +5274,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
-					mCommandList, RootParameterIndex, BaseDescriptor);
+					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor);
 				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
@@ -5277,7 +5283,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
-					mCommandList, RootParameterIndex, BaseDescriptor);
+					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor);
 				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
@@ -5311,7 +5317,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeCBVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeCBVTotal);
 			}
 
@@ -5319,7 +5325,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsCBVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsCBVTotal);
 			}
 
@@ -5327,7 +5333,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeSRVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeSRVTotal);
 			}
 
@@ -5335,7 +5341,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsSRVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsSRVTotal);
 			}
 
@@ -5343,7 +5349,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeUAVTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeUAVTotal);
 			}
 
@@ -5351,7 +5357,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsUAVTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
-					mCommandList, RootParameterIndex, BufferLocation);
+					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsUAVTotal);
 			}
 
@@ -5362,7 +5368,8 @@ namespace DX12Wrapper
 					mOrigIASetIndexBuffer(mCommandList, pView);
 					return;
 				}
-				DX12WrapperRuntimeUtils::IASetIndexBuffer(mCommandList, pView, mOrigIASetIndexBuffer);
+				DX12WrapperRuntimeUtils::IASetIndexBuffer(
+					mCommandList, &mRuntimeState, pView, mOrigIASetIndexBuffer);
 			DX12_HOTPATH_TIME_END(IASetIndexBufTotal);
 			}
 
@@ -5374,7 +5381,7 @@ namespace DX12Wrapper
 					return;
 				}
 				DX12WrapperRuntimeUtils::IASetVertexBuffers(
-					mCommandList, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
+					mCommandList, &mRuntimeState, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
 			DX12_HOTPATH_TIME_END(IASetVertexBufTotal);
 			}
 

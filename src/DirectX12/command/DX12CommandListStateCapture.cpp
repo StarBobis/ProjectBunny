@@ -8,7 +8,6 @@
 #include "DX12ShaderHunt.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 
-
 bool DX12CommandListStateCapture::ShouldTrackBindings()
 {
 	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
@@ -61,6 +60,12 @@ DX12CommandListTrackingState DX12CommandListStateCapture::MakeTrackingState()
 }
 
 DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
+	DX12CommandListRuntimeState *runtimeState)
+{
+	return DX12CommandListRuntime::GetTrackingState(runtimeState);
+}
+
+DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
@@ -68,14 +73,35 @@ DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
 	return DX12CommandListRuntime::GetTrackingState(commandList);
 }
 
+DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
+	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState)
+{
+	if (runtimeState)
+		return DX12CommandListStateCapture::GetTrackingState(runtimeState);
+	return DX12CommandListStateCapture::GetTrackingState(commandList);
+}
 
 void DX12CommandListStateCapture::PrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::PrimitiveTopology(commandList, runtimeState, topology);
+}
+
+void DX12CommandListStateCapture::PrimitiveTopology(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	D3D12_PRIMITIVE_TOPOLOGY topology)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackHuntIa)
-		DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
+	if (tracking.trackHuntIa) {
+		if (runtimeState)
+			DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
+		else
+			DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
+	}
 	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetPrimitiveTopology(commandList, topology);
 }
@@ -83,27 +109,30 @@ void DX12CommandListStateCapture::PrimitiveTopology(
 ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	return DX12CommandListStateCapture::PipelineState(commandList, runtimeState, pipelineState);
+}
+
+ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	ID3D12PipelineState *pipelineState)
+{
 	ID3D12PipelineState *activePipelineState = pipelineState;
 	if (DX12ModHasActiveShaderOverrides()) {
-		// 对齐 DX11 创建期替换：PSO 替换结果缓存在 RuntimeState 中。
-		// 首次查 gPsoRecords（一次锁），后续 O(1) 直接读缓存。
 		DX12_HOTPATH_TIME_BEGIN(PsoCacheLookupTotal);
-		DX12CommandListRuntimeState *state =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		if (state && state->cachedReplacementPsoKey == pipelineState) {
-			if (state->cachedReplacementPso) {
-				activePipelineState = state->cachedReplacementPso;
-				DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
-			} else {
-				DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
-			}
+		if (runtimeState && runtimeState->cachedReplacementPsoKey == pipelineState) {
+			if (runtimeState->cachedReplacementPso)
+				activePipelineState = runtimeState->cachedReplacementPso;
+			DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
 		} else {
 			DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
 			ID3D12PipelineState *replacement =
 				DX12ModGetReplacementPipelineState(pipelineState);
-			if (state) {
-				state->cachedReplacementPsoKey = pipelineState;
-				state->cachedReplacementPso = replacement;
+			if (runtimeState) {
+				runtimeState->cachedReplacementPsoKey = pipelineState;
+				runtimeState->cachedReplacementPso = replacement;
 			}
 			if (replacement)
 				activePipelineState = replacement;
@@ -111,14 +140,18 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	}
 
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (tracking.trackPipelineStateBindings) {
 		DX12BindingTracker::SetPipelineState(commandList, activePipelineState);
 		if (tracking.recordBindingEvents)
 			DX12BindingTracker::RecordStateEvent(commandList, "set_pso");
 	}
-	if (tracking.trackPsoState)
-		DX12CommandListRuntime::RememberPipelineState(commandList, activePipelineState);
+	if (tracking.trackPsoState) {
+		if (runtimeState)
+			DX12CommandListRuntime::RememberPipelineState(runtimeState, activePipelineState);
+		else
+			DX12CommandListRuntime::RememberPipelineState(commandList, activePipelineState);
+	}
 	if (tracking.trackHuntIa)
 		DX12HuntObservePipelineState(activePipelineState);
 	return activePipelineState;
@@ -127,8 +160,19 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList, UINT count, ID3D12DescriptorHeap *const *heaps)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::DescriptorHeaps(commandList, runtimeState, count, heaps);
+}
+
+void DX12CommandListStateCapture::DescriptorHeaps(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT count,
+	ID3D12DescriptorHeap *const *heaps)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 
@@ -142,8 +186,20 @@ void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::DescriptorHeaps(
+		commandList, runtimeState, cbvSrvUavHeap, samplerHeap);
+}
+
+void DX12CommandListStateCapture::DescriptorHeaps(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	ID3D12DescriptorHeap *cbvSrvUavHeap,
+	ID3D12DescriptorHeap *samplerHeap)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 
@@ -155,8 +211,18 @@ void DX12CommandListStateCapture::DescriptorHeaps(
 void DX12CommandListStateCapture::ComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::ComputeRootSignature(commandList, runtimeState, rootSignature);
+}
+
+void DX12CommandListStateCapture::ComputeRootSignature(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	ID3D12RootSignature *rootSignature)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetComputeRootSignature(commandList, rootSignature);
@@ -167,8 +233,18 @@ void DX12CommandListStateCapture::ComputeRootSignature(
 void DX12CommandListStateCapture::GraphicsRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::GraphicsRootSignature(commandList, runtimeState, rootSignature);
+}
+
+void DX12CommandListStateCapture::GraphicsRootSignature(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	ID3D12RootSignature *rootSignature)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetGraphicsRootSignature(commandList, rootSignature);
@@ -180,8 +256,20 @@ void DX12CommandListStateCapture::ComputeRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::ComputeRootDescriptorTable(
+		commandList, runtimeState, rootParameterIndex, baseDescriptor);
+}
+
+void DX12CommandListStateCapture::ComputeRootDescriptorTable(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetComputeRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
@@ -193,8 +281,20 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::GraphicsRootDescriptorTable(
+		commandList, runtimeState, rootParameterIndex, baseDescriptor);
+}
+
+void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetGraphicsRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
@@ -205,8 +305,21 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::ComputeRoot32BitConstant(
+		commandList, runtimeState, rootParameterIndex, srcData, destOffset);
+}
+
+void DX12CommandListStateCapture::ComputeRoot32BitConstant(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	UINT srcData,
+	UINT destOffset)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetComputeRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
@@ -217,8 +330,21 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 void DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::GraphicsRoot32BitConstant(
+		commandList, runtimeState, rootParameterIndex, srcData, destOffset);
+}
+
+void DX12CommandListStateCapture::GraphicsRoot32BitConstant(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	UINT srcData,
+	UINT destOffset)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetGraphicsRoot32BitConstant(commandList, rootParameterIndex, destOffset, srcData);
@@ -230,8 +356,22 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet,
 	const void *srcData, UINT destOffset)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::ComputeRoot32BitConstants(
+		commandList, runtimeState, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
+}
+
+void DX12CommandListStateCapture::ComputeRoot32BitConstants(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	UINT num32BitValuesToSet,
+	const void *srcData,
+	UINT destOffset)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetComputeRoot32BitConstants(
@@ -244,8 +384,22 @@ void DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet,
 	const void *srcData, UINT destOffset)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::GraphicsRoot32BitConstants(
+		commandList, runtimeState, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
+}
+
+void DX12CommandListStateCapture::GraphicsRoot32BitConstants(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	UINT num32BitValuesToSet,
+	const void *srcData,
+	UINT destOffset)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetGraphicsRoot32BitConstants(
@@ -258,8 +412,21 @@ void DX12CommandListStateCapture::ComputeRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::ComputeRootDescriptor(
+		commandList, runtimeState, rootParameterIndex, type, address);
+}
+
+void DX12CommandListStateCapture::ComputeRootDescriptor(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetComputeRootDescriptor(commandList, rootParameterIndex, type, address);
@@ -273,8 +440,21 @@ void DX12CommandListStateCapture::GraphicsRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::GraphicsRootDescriptor(
+		commandList, runtimeState, rootParameterIndex, type, address);
+}
+
+void DX12CommandListStateCapture::GraphicsRootDescriptor(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
 	DX12BindingTracker::SetGraphicsRootDescriptor(commandList, rootParameterIndex, type, address);
@@ -287,24 +467,52 @@ void DX12CommandListStateCapture::GraphicsRootDescriptor(
 void DX12CommandListStateCapture::IndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
+}
+
+void DX12CommandListStateCapture::IndexBuffer(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	const D3D12_INDEX_BUFFER_VIEW *view)
+{
 	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetIndexBuffer(commandList, view);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
-		DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
+		if (runtimeState)
+			DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
+		else
+			DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
+	}
 }
 
 void DX12CommandListStateCapture::VertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
-	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackIaBindings)
-		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
-		DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12CommandListStateCapture::VertexBuffers(commandList, runtimeState, startSlot, count, views);
 }
 
-
+void DX12CommandListStateCapture::VertexBuffers(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	UINT startSlot,
+	UINT count,
+	const D3D12_VERTEX_BUFFER_VIEW *views)
+{
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
+	if (tracking.trackIaBindings)
+		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
+		if (runtimeState)
+			DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
+		else
+			DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
+	}
+}

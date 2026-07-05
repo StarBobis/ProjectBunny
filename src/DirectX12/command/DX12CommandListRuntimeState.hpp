@@ -2,6 +2,8 @@
 
 #include <d3d12.h>
 
+#include <cstdint>
+
 #include "DX12ActiveIaState.hpp"
 #include "DX12CommandListTrackingCache.hpp"
 
@@ -16,22 +18,18 @@ public:
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
 
-	// PSO 级缓存：同一 PSO 在本帧是否有匹配的 shader override 配置。
-	// generation 与 HotPathState 同步，避免每 draw 都获取 gModLock 查询。
+	// Per-PSO override cache aligned with HotPathState generation.
 	volatile LONG psoHasOverridesGeneration = -1;
 	bool psoHasShaderOverrides = true;
 
-	// PSO 替换缓存：对齐 DX11 的"创建期替换"模式。
-	// 首次看到 PSO 时查 gPsoRecords（一次锁），后续直接读缓存（零锁）。
+	// Replacement PSO cache. First use may query global records; repeated use is direct.
 	ID3D12PipelineState *cachedReplacementPsoKey = nullptr;
 	ID3D12PipelineState *cachedReplacementPso = nullptr;
 
-	// CS Hash 缓存：对齐 DX11 的 mCurrentComputeShader 直接成员模式。
-	// 在 RememberPipelineState 时计算一次，dispatch 时 O(1) 读取。
+	// Compute shader hash cache, equivalent to DX11 current compute shader state.
 	uint64_t cachedCsHash = 0;
 	bool cachedCsHashValid = false;
 
-	// Compute binding 指纹：增量更新，dispatch 时用作探针缓存 key。
-	// 替代 computeBindingSerial（每次 dispatch 递增导致缓存永不命中）。
+	// Stable compute binding fingerprint used as a dispatch probe cache key.
 	uint64_t computeBindingHash = 0;
 };

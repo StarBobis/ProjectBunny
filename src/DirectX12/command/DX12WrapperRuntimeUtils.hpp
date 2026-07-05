@@ -10,6 +10,7 @@
 #include "DX12CommandListHookDiagnostics.hpp"
 #include "DX12CommandListHookSignatures.hpp"
 #include "DX12CommandListLifecycle.hpp"
+#include "DX12CommandListRuntime.hpp"
 #include "DX12CommandQueueExecutionFlow.hpp"
 #include "DX12DispatchHookFlow.hpp"
 #include "DX12DrawHookFlow.hpp"
@@ -674,6 +675,27 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::DrawInstanced(
+			commandList,
+			runtimeState,
+			vertexCountPerInstance,
+			instanceCount,
+			startVertexLocation,
+			startInstanceLocation,
+			original);
+	}
+
+	static void DrawInstanced(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT vertexCountPerInstance,
+		UINT instanceCount,
+		UINT startVertexLocation,
+		UINT startInstanceLocation,
+		DX12CommandListHookSignatures::DrawInstanced original)
+	{
 		// Use pre-hook original as callback to bypass vtable hook.
 		// Falls back to DirectDrawInstanced (hooked vtable) only if original is null.
 		DX12IaReplacementExecutorCallbacks callbacks;
@@ -686,11 +708,34 @@ public:
 		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
 			vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
-		DX12DrawHookFlow::ExecuteHook(commandList, draw, callbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
 	}
 
 	static void DrawIndexedInstanced(
 		ID3D12GraphicsCommandList *commandList,
+		UINT indexCountPerInstance,
+		UINT instanceCount,
+		UINT startIndexLocation,
+		INT baseVertexLocation,
+		UINT startInstanceLocation,
+		DX12CommandListHookSignatures::DrawIndexedInstanced original)
+	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
+			commandList,
+			runtimeState,
+			indexCountPerInstance,
+			instanceCount,
+			startIndexLocation,
+			baseVertexLocation,
+			startInstanceLocation,
+			original);
+	}
+
+	static void DrawIndexedInstanced(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
 		UINT indexCountPerInstance,
 		UINT instanceCount,
 		UINT startIndexLocation,
@@ -708,7 +753,7 @@ public:
 		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 			indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
-		DX12DrawHookFlow::ExecuteHook(commandList, draw, callbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
 	}
 
 	static void Dispatch(
@@ -718,8 +763,28 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn original)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::Dispatch(
+			commandList,
+			runtimeState,
+			threadGroupCountX,
+			threadGroupCountY,
+			threadGroupCountZ,
+			original);
+	}
+
+	static void Dispatch(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT threadGroupCountX,
+		UINT threadGroupCountY,
+		UINT threadGroupCountZ,
+		DX12DispatchHookFlowDispatch::Fn original)
+	{
 		DX12DispatchHookFlow::ExecuteHook(
 			commandList,
+			runtimeState,
 			threadGroupCountX,
 			threadGroupCountY,
 			threadGroupCountZ,
@@ -776,13 +841,29 @@ public:
 		ID3D12PipelineState *initialState,
 		DX12CommandListHookSignatures::ResetCommandList original)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		return DX12WrapperRuntimeUtils::ResetCommandList(
+			commandList, runtimeState, allocator, initialState, original);
+	}
+
+	static HRESULT ResetCommandList(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		ID3D12CommandAllocator *allocator,
+		ID3D12PipelineState *initialState,
+		DX12CommandListHookSignatures::ResetCommandList original)
+	{
 		ID3D12CommandAllocator *unwrappedAllocator = UnwrapCommandAllocator(allocator);
 		ID3D12PipelineState *unwrappedInitialState = UnwrapPipelineState(initialState);
 		HRESULT hr = original ?
 			original(commandList, unwrappedAllocator, unwrappedInitialState) :
 			commandList->Reset(unwrappedAllocator, unwrappedInitialState);
 		if (SUCCEEDED(hr)) {
-			DX12CommandListRuntime::Reset(commandList, unwrappedInitialState);
+			if (runtimeState)
+				DX12CommandListRuntime::Reset(runtimeState, unwrappedInitialState);
+			else
+				DX12CommandListRuntime::Reset(commandList, unwrappedInitialState);
 			DX12CommandListLifecycle::Reset(commandList, unwrappedInitialState);
 		}
 		return hr;
@@ -800,9 +881,22 @@ public:
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetPipelineState(
+			commandList, runtimeState, pipelineState, original);
+	}
+
+	static void SetPipelineState(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		ID3D12PipelineState *pipelineState,
+		DX12CommandListHookSignatures::SetPipelineState original)
+	{
 		DX12_HOTPATH_TIME_BEGIN(SetPipelineStateTotal);
 		ID3D12PipelineState *activePipelineState =
-			DX12CommandListStateFlow::CapturePipelineState(commandList, UnwrapPipelineState(pipelineState));
+			DX12CommandListStateFlow::CapturePipelineState(
+				commandList, runtimeState, UnwrapPipelineState(pipelineState));
 		if (original)
 			original(commandList, activePipelineState);
 		else
@@ -839,7 +933,18 @@ public:
 		const D3D12_INDEX_BUFFER_VIEW *view,
 		DX12CommandListHookSignatures::IaSetIndexBuffer original)
 	{
-		DX12CommandListStateCapture::IndexBuffer(commandList, view);
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::IASetIndexBuffer(commandList, runtimeState, view, original);
+	}
+
+	static void IASetIndexBuffer(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		const D3D12_INDEX_BUFFER_VIEW *view,
+		DX12CommandListHookSignatures::IaSetIndexBuffer original)
+	{
+		DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
 		if (original)
 			original(commandList, view);
 		else
@@ -853,7 +958,22 @@ public:
 		const D3D12_VERTEX_BUFFER_VIEW *views,
 		DX12CommandListHookSignatures::IaSetVertexBuffers original)
 	{
-		DX12CommandListStateCapture::VertexBuffers(commandList, startSlot, count, views);
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::IASetVertexBuffers(
+			commandList, runtimeState, startSlot, count, views, original);
+	}
+
+	static void IASetVertexBuffers(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT startSlot,
+		UINT count,
+		const D3D12_VERTEX_BUFFER_VIEW *views,
+		DX12CommandListHookSignatures::IaSetVertexBuffers original)
+	{
+		DX12CommandListStateCapture::VertexBuffers(
+			commandList, runtimeState, startSlot, count, views);
 		if (original)
 			original(commandList, startSlot, count, views);
 		else
@@ -873,10 +993,22 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetDescriptorHeaps(commandList, runtimeState, count, heaps);
+	}
+
+	static void SetDescriptorHeaps(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT count,
+		ID3D12DescriptorHeap *const *heaps)
+	{
 		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetDescriptorHeaps);
-			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(commandList, count, heaps);
+			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
+				commandList, runtimeState, count, heaps);
 		}
 		commandList->SetDescriptorHeaps(count, heaps);
 		DX12_HOTPATH_TIME_END(DescriptorHeapsTotal);
@@ -886,9 +1018,21 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetComputeRootSignature(
+			commandList, runtimeState, rootSignature);
+	}
+
+	static void SetComputeRootSignature(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		ID3D12RootSignature *rootSignature)
+	{
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootSignature);
-			DX12CommandListComputeBindingFlow::CaptureRootSignature(commandList, rootSignature, false);
+			DX12CommandListComputeBindingFlow::CaptureRootSignature(
+				commandList, runtimeState, rootSignature, false);
 		}
 		commandList->SetComputeRootSignature(rootSignature);
 	}
@@ -897,11 +1041,23 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetGraphicsRootSignature(
+			commandList, runtimeState, rootSignature);
+	}
+
+	static void SetGraphicsRootSignature(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		ID3D12RootSignature *rootSignature)
+	{
 		if (DX12HotPathState::skipAll)
 			commandList->SetGraphicsRootSignature(rootSignature);
 		else {
 			DX12_PROFILE_SCOPE(SetGraphicsRootSignature);
-			DX12CommandListComputeBindingFlow::CaptureRootSignature(commandList, rootSignature, true);
+			DX12CommandListComputeBindingFlow::CaptureRootSignature(
+				commandList, runtimeState, rootSignature, true);
 			commandList->SetGraphicsRootSignature(rootSignature);
 		}
 	}
@@ -911,10 +1067,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
+			commandList, runtimeState, rootParameterIndex, baseDescriptor);
+	}
+
+	static void SetComputeRootDescriptorTable(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+	{
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootDescriptorTable);
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
-				commandList, rootParameterIndex, baseDescriptor, false);
+				commandList, runtimeState, rootParameterIndex, baseDescriptor, false);
 		}
 		commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
 	}
@@ -924,12 +1092,24 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
+			commandList, runtimeState, rootParameterIndex, baseDescriptor);
+	}
+
+	static void SetGraphicsRootDescriptorTable(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+	{
 		if (DX12HotPathState::skipAll)
 			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		else {
 			DX12_PROFILE_SCOPE(SetGraphicsRootDescriptorTable);
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
-				commandList, rootParameterIndex, baseDescriptor, true);
+				commandList, runtimeState, rootParameterIndex, baseDescriptor, true);
 			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		}
 	}
@@ -939,10 +1119,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetComputeRootConstantBufferView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootConstantBufferView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
 		}
 		commandList->SetComputeRootConstantBufferView(rootParameterIndex, bufferLocation);
 	}
@@ -952,10 +1144,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootConstantBufferView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootConstantBufferView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
 		}
 		commandList->SetGraphicsRootConstantBufferView(rootParameterIndex, bufferLocation);
 	}
@@ -965,10 +1169,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetComputeRootShaderResourceView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootShaderResourceView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
 		}
 		commandList->SetComputeRootShaderResourceView(rootParameterIndex, bufferLocation);
 	}
@@ -978,10 +1194,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootShaderResourceView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootShaderResourceView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
 		}
 		commandList->SetGraphicsRootShaderResourceView(rootParameterIndex, bufferLocation);
 	}
@@ -991,10 +1219,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetComputeRootUnorderedAccessView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootUnorderedAccessView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
 		}
 		commandList->SetComputeRootUnorderedAccessView(rootParameterIndex, bufferLocation);
 	}
@@ -1004,10 +1244,22 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
+			commandList, runtimeState, rootParameterIndex, bufferLocation);
+	}
+
+	static void SetGraphicsRootUnorderedAccessView(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT rootParameterIndex,
+		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
+	{
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootUnorderedAccessView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
-				commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
 		}
 		commandList->SetGraphicsRootUnorderedAccessView(rootParameterIndex, bufferLocation);
 	}
@@ -1016,11 +1268,21 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12WrapperRuntimeUtils::IASetPrimitiveTopology(commandList, runtimeState, topology);
+	}
+
+	static void IASetPrimitiveTopology(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		D3D12_PRIMITIVE_TOPOLOGY topology)
+	{
 		if (DX12HotPathState::skipAll)
 			commandList->IASetPrimitiveTopology(topology);
 		else {
 			DX12_PROFILE_SCOPE(IASetPrimitiveTopology);
-			DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, topology);
+			DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, runtimeState, topology);
 			commandList->IASetPrimitiveTopology(topology);
 		}
 	}

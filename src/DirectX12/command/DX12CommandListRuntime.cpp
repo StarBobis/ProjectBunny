@@ -8,7 +8,6 @@
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
 
-
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
 volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
 thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
@@ -20,6 +19,7 @@ void DX12CommandListRuntime::RegisterDirectState(
 {
 	if (!commandList || !state)
 		return;
+
 	AcquireSRWLockExclusive(&gDirectStateMapLock);
 	gDirectStateMap[commandList] = state;
 	ReleaseSRWLockExclusive(&gDirectStateMapLock);
@@ -29,9 +29,11 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 {
 	if (!commandList)
 		return;
+
 	AcquireSRWLockExclusive(&gDirectStateMapLock);
 	gDirectStateMap.erase(commandList);
 	ReleaseSRWLockExclusive(&gDirectStateMapLock);
+	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
 DX12CommandListRuntimeShard &DX12CommandListRuntime::ShardFor(ID3D12GraphicsCommandList *commandList)
@@ -53,6 +55,33 @@ void DX12CommandListRuntime::RefreshTrackingCache(DX12CommandListTrackingCache &
 	cache.trackPsoState = DX12CommandListStateCapture::ShouldTrackPsoState();
 }
 
+DX12CommandListTrackingState DX12CommandListRuntime::MakeTrackingState(
+	const DX12CommandListTrackingCache &cache)
+{
+	DX12CommandListTrackingState state;
+	state.trackBindings = cache.trackBindings;
+	state.trackIaBindings = cache.trackIaBindings;
+	state.trackPipelineStateBindings = cache.trackPipelineStateBindings;
+	state.recordBindingEvents = cache.recordBindingEvents;
+	state.trackHuntIa = cache.trackHuntIa;
+	state.trackPsoState = cache.trackPsoState;
+	return state;
+}
+
+DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
+	DX12CommandListRuntimeState *state)
+{
+	DX12CommandListTrackingCache cache;
+	if (!state) {
+		DX12CommandListRuntime::RefreshTrackingCache(cache);
+		return DX12CommandListRuntime::MakeTrackingState(cache);
+	}
+
+	if (state->trackingCache.generation != TrackingGenerationValue)
+		DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
+	return DX12CommandListRuntime::MakeTrackingState(state->trackingCache);
+}
+
 void DX12CommandListRuntime::TlsRefreshFromState(
 	DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList)
 {
@@ -64,8 +93,10 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 		return;
 	}
 
+	Tls.commandList = commandList;
 	Tls.shard = nullptr;
 	Tls.statePtr = state;
+	Tls.trackingGeneration = TrackingGenerationValue;
 
 	DX12CommandListTrackingCache &mapCache = state->trackingCache;
 	if (mapCache.generation != TrackingGenerationValue)
@@ -73,9 +104,11 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 	Tls.tracking = mapCache;
 }
 
-void DX12CommandListRuntime::TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
+void DX12CommandListRuntime::TlsRefresh(
+	DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
 {
-	auto it = shard.states.find(commandList);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
 	if (it == shard.states.end()) {
 		Tls.commandList = nullptr;
 		Tls.shard = nullptr;
@@ -107,26 +140,22 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 		return;
 	}
 
-	// 快速路径：从嵌入的 RuntimeState 获取
 	{
 		DX12CommandListRuntimeState *state = nullptr;
 		AcquireSRWLockShared(&gDirectStateMapLock);
-		auto it = gDirectStateMap.find(commandList);
+		std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
+			gDirectStateMap.find(commandList);
 		if (it != gDirectStateMap.end())
 			state = it->second;
 		ReleaseSRWLockShared(&gDirectStateMapLock);
 
 		if (state) {
-			Tls.commandList = commandList;
-			Tls.statePtr = state;
-			Tls.trackingGeneration = TrackingGenerationValue;
-			TlsRefreshFromState(state, commandList);
+			DX12CommandListRuntime::TlsRefreshFromState(state, commandList);
 			out = Tls.tracking;
 			return;
 		}
 	}
 
-	// 回退：sharded map
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);
@@ -148,14 +177,7 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 			DX12CommandListRuntime::RefreshTrackingCache(cache);
 	}
 
-	DX12CommandListTrackingState state;
-	state.trackBindings = cache.trackBindings;
-	state.trackIaBindings = cache.trackIaBindings;
-	state.trackPipelineStateBindings = cache.trackPipelineStateBindings;
-	state.recordBindingEvents = cache.recordBindingEvents;
-	state.trackHuntIa = cache.trackHuntIa;
-	state.trackPsoState = cache.trackPsoState;
-	return state;
+	return DX12CommandListRuntime::MakeTrackingState(cache);
 }
 
 DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
@@ -166,25 +188,21 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue)
 		return Tls.statePtr;
 
-	// 快速路径：直接从 Wrapper 嵌入的 RuntimeState 获取（DX11 Push-Based 模型）
 	{
 		DX12CommandListRuntimeState *state = nullptr;
 		AcquireSRWLockShared(&gDirectStateMapLock);
-		auto it = gDirectStateMap.find(commandList);
+		std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
+			gDirectStateMap.find(commandList);
 		if (it != gDirectStateMap.end())
 			state = it->second;
 		ReleaseSRWLockShared(&gDirectStateMapLock);
 
 		if (state) {
-			Tls.commandList = commandList;
-			Tls.statePtr = state;
-			Tls.trackingGeneration = TrackingGenerationValue;
-			TlsRefreshFromState(state, commandList);
+			DX12CommandListRuntime::TlsRefreshFromState(state, commandList);
 			return state;
 		}
 	}
 
-	// 回退：sharded map（非 wrapper command list 或初始化阶段）
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);
@@ -197,8 +215,12 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 
 void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList)
 {
-	if (Tls.commandList == commandList)
-		Tls.commandList = nullptr;
+	if (Tls.commandList != commandList)
+		return;
+	Tls.commandList = nullptr;
+	Tls.shard = nullptr;
+	Tls.statePtr = nullptr;
+	Tls.trackingGeneration = 0;
 }
 
 UINT64 DX12CommandListRuntime::TrackingGeneration()
@@ -223,22 +245,60 @@ void DX12CommandListRuntime::Register(ID3D12GraphicsCommandList *commandList)
 }
 
 void DX12CommandListRuntime::Reset(
+	DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState)
+{
+	if (!state)
+		return;
+
+	DX12CommandListTrackingCache oldCache = state->trackingCache;
+	*state = DX12CommandListRuntimeState();
+	state->pipelineState = initialState;
+	state->trackingCache = oldCache;
+	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
+	DX12CommandListRuntime::RememberPipelineState(state, initialState);
+}
+
+void DX12CommandListRuntime::Reset(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState)
 {
 	if (!commandList)
 		return;
 
+	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (fastState) {
+		DX12CommandListRuntime::Reset(fastState, initialState);
+		DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
+		return;
+	}
+
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
-	DX12CommandListTrackingCache oldCache = state.trackingCache;
-	state = DX12CommandListRuntimeState();
-	state.pipelineState = initialState;
-	state.trackingCache = oldCache;
-	DX12CommandListRuntime::RefreshTrackingCache(state.trackingCache);
+	DX12CommandListRuntime::Reset(&state, initialState);
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
+}
+
+void DX12CommandListRuntime::RememberPipelineState(
+	DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState)
+{
+	if (!state)
+		return;
+
+	if (state->pipelineState != pipelineState) {
+		state->cachedReplacementPsoKey = nullptr;
+		state->cachedReplacementPso = nullptr;
+		state->cachedCsHashValid = false;
+	}
+	state->pipelineState = pipelineState;
+	if (!state->cachedCsHashValid && pipelineState) {
+		DX12PsoShaderInfo shaderInfo = {};
+		if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) && shaderInfo.hasCS) {
+			state->cachedCsHash = shaderInfo.cs;
+			state->cachedCsHashValid = true;
+		}
+	}
 }
 
 void DX12CommandListRuntime::RememberPipelineState(
@@ -249,28 +309,22 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		// PSO 变更 → 失效 PSO 相关缓存
-		if (fastState->pipelineState != pipelineState) {
-			fastState->cachedReplacementPsoKey = nullptr;
-			fastState->cachedReplacementPso = nullptr;
-			fastState->cachedCsHashValid = false;
-		}
-		fastState->pipelineState = pipelineState;
-		// 对齐 DX11 mCurrentComputeShader：PSO 首次设置时计算 CS hash，后续 O(1) 读取
-		if (!fastState->cachedCsHashValid && pipelineState) {
-			DX12PsoShaderInfo shaderInfo = {};
-			if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) && shaderInfo.hasCS) {
-				fastState->cachedCsHash = shaderInfo.cs;
-				fastState->cachedCsHashValid = true;
-			}
-		}
+		DX12CommandListRuntime::RememberPipelineState(fastState, pipelineState);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.states[commandList].pipelineState = pipelineState;
+	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12CommandListRuntime::RememberPipelineState(&state, pipelineState);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::ResetIa(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	state->ia = DX12ActiveIaState();
 }
 
 void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
@@ -280,15 +334,34 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		fastState->ia = DX12ActiveIaState();
+		DX12CommandListRuntime::ResetIa(fastState);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
-	state.ia = DX12ActiveIaState();
+	DX12CommandListRuntime::ResetIa(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberIndexBuffer(
+	DX12CommandListRuntimeState *state, const D3D12_INDEX_BUFFER_VIEW *view)
+{
+	if (!state)
+		return;
+
+	state->ia.hasIndexBuffer = view != nullptr;
+	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	if (view && view->BufferLocation && view->SizeInBytes) {
+		UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
+		state->ia.precomputedIndexHash = DX12HashIaBufferView(
+			view->BufferLocation, view->SizeInBytes, stride,
+			static_cast<UINT>(view->Format), 0);
+		state->ia.indexHashValid = true;
+	} else {
+		state->ia.indexHashValid = false;
+	}
 }
 
 void DX12CommandListRuntime::RememberIndexBuffer(
@@ -299,36 +372,41 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		fastState->ia.hasIndexBuffer = view != nullptr;
-		fastState->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
-		// 对齐 DX11：IB 绑定时预计算 full-buffer hash
-		if (view && view->BufferLocation && view->SizeInBytes) {
-			UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
-			fastState->ia.precomputedIndexHash = DX12HashIaBufferView(
-				view->BufferLocation, view->SizeInBytes, stride,
-				static_cast<UINT>(view->Format), 0);
-			fastState->ia.indexHashValid = true;
-		} else {
-			fastState->ia.indexHashValid = false;
-		}
+		DX12CommandListRuntime::RememberIndexBuffer(fastState, view);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12ActiveIaState &state = shard.states[commandList].ia;
-	state.hasIndexBuffer = view != nullptr;
-	state.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
-	if (view && view->BufferLocation && view->SizeInBytes) {
-		UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
-		state.precomputedIndexHash = DX12HashIaBufferView(
-			view->BufferLocation, view->SizeInBytes, stride,
-			static_cast<UINT>(view->Format), 0);
-		state.indexHashValid = true;
-	} else {
-		state.indexHashValid = false;
-	}
+	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12CommandListRuntime::RememberIndexBuffer(&state, view);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberVertexBuffers(
+	DX12CommandListRuntimeState *state,
+	UINT startSlot,
+	UINT count,
+	const D3D12_VERTEX_BUFFER_VIEW *views)
+{
+	if (!state)
+		return;
+
+	DX12ActiveIaState &ia = state->ia;
+	for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(ia.vertexBuffers); ++i) {
+		const UINT slot = startSlot + i;
+		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
+		ia.hasVertexBuffer[slot] = view != nullptr;
+		ia.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
+		if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
+			ia.precomputedVertexHashes[slot] = DX12HashIaBufferView(
+				view->BufferLocation, view->SizeInBytes,
+				view->StrideInBytes, 0, slot);
+			ia.vertexHashValid[slot] = true;
+		} else {
+			ia.vertexHashValid[slot] = false;
+		}
+	}
 }
 
 void DX12CommandListRuntime::RememberVertexBuffers(
@@ -340,43 +418,23 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		DX12ActiveIaState &state = fastState->ia;
-		for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(state.vertexBuffers); ++i) {
-			const UINT slot = startSlot + i;
-			const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
-			state.hasVertexBuffer[slot] = view != nullptr;
-			state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
-			// 对齐 DX11：VB 绑定时预计算 full-buffer hash，draw 时直接读
-			if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
-				state.precomputedVertexHashes[slot] = DX12HashIaBufferView(
-					view->BufferLocation, view->SizeInBytes,
-					view->StrideInBytes, 0, slot);
-				state.vertexHashValid[slot] = true;
-			} else {
-				state.vertexHashValid[slot] = false;
-			}
-		}
+		DX12CommandListRuntime::RememberVertexBuffers(fastState, startSlot, count, views);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12ActiveIaState &state = shard.states[commandList].ia;
-	for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(state.vertexBuffers); ++i) {
-		const UINT slot = startSlot + i;
-		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
-		state.hasVertexBuffer[slot] = view != nullptr;
-		state.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
-		if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
-			state.precomputedVertexHashes[slot] = DX12HashIaBufferView(
-				view->BufferLocation, view->SizeInBytes,
-				view->StrideInBytes, 0, slot);
-			state.vertexHashValid[slot] = true;
-		} else {
-			state.vertexHashValid[slot] = false;
-		}
-	}
+	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12CommandListRuntime::RememberVertexBuffers(&state, startSlot, count, views);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberPrimitiveTopology(
+	DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology)
+{
+	if (!state)
+		return;
+	state->ia.primitiveTopology = topology;
 }
 
 void DX12CommandListRuntime::RememberPrimitiveTopology(
@@ -387,14 +445,22 @@ void DX12CommandListRuntime::RememberPrimitiveTopology(
 
 	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		fastState->ia.primitiveTopology = topology;
+		DX12CommandListRuntime::RememberPrimitiveTopology(fastState, topology);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.states[commandList].ia.primitiveTopology = topology;
+	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12CommandListRuntime::RememberPrimitiveTopology(&state, topology);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::BumpComputeBindingSerial(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&state->computeBindingSerial));
 }
 
 void DX12CommandListRuntime::BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
@@ -404,17 +470,16 @@ void DX12CommandListRuntime::BumpComputeBindingSerial(ID3D12GraphicsCommandList 
 
 	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
-		InterlockedIncrement64(
-			reinterpret_cast<volatile LONG64*>(&state->computeBindingSerial));
+		DX12CommandListRuntime::BumpComputeBindingSerial(state);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
 	if (it != shard.states.end())
-		InterlockedIncrement64(
-			reinterpret_cast<volatile LONG64*>(&it->second.computeBindingSerial));
+		DX12CommandListRuntime::BumpComputeBindingSerial(&it->second);
 	ReleaseSRWLockShared(&shard.lock);
 }
 
@@ -427,8 +492,6 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	*state = DX12IaHashState();
 	state->vertexBuffers.reserve(8);
 
-	// 必须使用 draw-range hash（与 Mod 配置中的记录值匹配）。
-	// 预计算的 full-buffer hash 仅供廉价指纹缓存使用，不用于此函数。
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
@@ -469,7 +532,8 @@ ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
 	ID3D12PipelineState *result =
 		it == shard.states.end() ? nullptr : it->second.pipelineState;
 	ReleaseSRWLockShared(&shard.lock);
@@ -484,10 +548,8 @@ DX12CommandListRuntimeState DX12CommandListRuntime::GetState(
 		return result;
 
 	const DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtr(commandList);
-	if (state) {
+	if (state)
 		result = *state;
-		return result;
-	}
 	return result;
 }
 
@@ -499,6 +561,16 @@ const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
 	return DX12CommandListRuntime::GetStatePtrFast(commandList);
 }
 
+void DX12CommandListRuntime::SetDescriptorHeaps(
+	DX12CommandListRuntimeState *state,
+	ID3D12DescriptorHeap *cbvSrvUavHeap,
+	ID3D12DescriptorHeap *samplerHeap)
+{
+	if (!state)
+		return;
+	state->cbvSrvUavHeap = cbvSrvUavHeap;
+	state->samplerHeap = samplerHeap;
+}
 
 void DX12CommandListRuntime::SetDescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
@@ -510,18 +582,16 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 
 	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
-		state->cbvSrvUavHeap = cbvSrvUavHeap;
-		state->samplerHeap = samplerHeap;
+		DX12CommandListRuntime::SetDescriptorHeaps(state, cbvSrvUavHeap, samplerHeap);
 		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end()) {
-		it->second.cbvSrvUavHeap = cbvSrvUavHeap;
-		it->second.samplerHeap = samplerHeap;
-	}
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end())
+		DX12CommandListRuntime::SetDescriptorHeaps(&it->second, cbvSrvUavHeap, samplerHeap);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -548,7 +618,8 @@ bool DX12CommandListRuntime::GetDescriptorHeaps(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
 	bool found = false;
 	if (it != shard.states.end()) {
 		if (cbvSrvUavHeap)
@@ -560,5 +631,3 @@ bool DX12CommandListRuntime::GetDescriptorHeaps(
 	ReleaseSRWLockShared(&shard.lock);
 	return found;
 }
-
-

@@ -36,13 +36,22 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
+	}
+
+	static void ExecuteHook(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		const DX12IaDrawInvocation &draw,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
 		DX12_HOTPATH_TIME_BEGIN(DrawHookTotal);
-		// 使用单一 flags word 替代 9 个独立状态检查
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 
-		// 快速路径: 无 draw 级工作 → 直接执行原始 draw
 		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
@@ -51,7 +60,7 @@ public:
 		}
 
 		const DX12CommandListTrackingState tracking =
-			DX12CommandListStateCapture::GetTrackingState(commandList);
+			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 
@@ -89,9 +98,7 @@ public:
 			return;
 		}
 
-		const DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtr(commandList);
-		Execute(commandList, draw, runtimeState, callbacks);
+		DX12DrawHookFlow::Execute(commandList, draw, runtimeState, callbacks);
 		DX12_HOTPATH_TIME_END(DrawHookTotal);
 	}
 

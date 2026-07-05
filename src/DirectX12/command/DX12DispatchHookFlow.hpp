@@ -88,6 +88,25 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch)
 	{
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12DispatchHookFlow::ExecuteHook(
+			commandList,
+			runtimeState,
+			threadGroupCountX,
+			threadGroupCountY,
+			threadGroupCountZ,
+			originalDispatch);
+	}
+
+	static void ExecuteHook(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		UINT threadGroupCountX,
+		UINT threadGroupCountY,
+		UINT threadGroupCountZ,
+		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+	{
 		if (!originalDispatch)
 			return;
 
@@ -99,7 +118,7 @@ public:
 		const bool needsDispatchWork = hasShaderOverrides || needsPreSkinProbe;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const DX12CommandListTrackingState tracking =
-			DX12CommandListStateCapture::GetTrackingState(commandList);
+			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		if (DX12Profiling::ShouldCollectCounters() || needsDispatchWork)
 			DX12RuntimeState::IncrementFrameDispatches();
 
@@ -142,8 +161,6 @@ public:
 		}
 
 		if (!hasShaderOverrides && needsPreSkinProbe) {
-			const DX12CommandListRuntimeState *runtimeState =
-				DX12CommandListRuntime::GetStatePtr(commandList);
 			if (!HasConfiguredPreSkinCs(commandList, runtimeState)) {
 				DX12_PROFILE_FAST_FORWARD();
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
@@ -157,8 +174,6 @@ public:
 			return;
 		}
 
-		const DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtr(commandList);
 		Execute(
 			commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 			runtimeState, originalDispatch);
@@ -170,14 +185,17 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
-		const DX12CommandListRuntimeState *runtimeState,
+		DX12CommandListRuntimeState *runtimeState,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch)
 	{
 		if (!originalDispatch)
 			return;
-		// 统一 bump compute binding serial：每 dispatch 一次，替代之前
-		// 每个 binding call 的 InterlockedIncrement（~500 次/帧 → ~33 次/帧）
-		DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
+		// Bump the compute binding serial once per dispatch instead of once per
+		// binding call.
+		if (runtimeState)
+			DX12CommandListRuntime::BumpComputeBindingSerial(runtimeState);
+		else
+			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
 		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
 		if (InDispatchHookFlow) {
@@ -232,13 +250,13 @@ public:
 			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
 	}
 
-	// 对齐 DX11 mCurrentComputeShader：CS hash 已嵌入 RuntimeState。
-	// RememberPipelineState 在 PSO 首次设置时计算一次，此处仅回退到外部缓存。
+	// Match the DX11 current-compute-shader model: the CS hash lives in the
+	// runtime state and this fallback cache is only used outside wrapper mode.
 	static uint64_t GetCachedCsHash(ID3D12PipelineState *pipelineState)
 	{
 		if (!pipelineState)
 			return 0;
-		// 回退缓存：仅当 RuntimeState 未嵌入时使用（非 wrapper 模式）
+		// Fallback cache for command lists without an embedded runtime state.
 		static std::unordered_map<ID3D12PipelineState*, uint64_t> cache;
 		static UINT64 lastReloadGen = 0;
 		UINT64 reloadGen = DX12ModGetReloadGeneration();
@@ -246,7 +264,7 @@ public:
 			cache.clear();
 			lastReloadGen = reloadGen;
 		}
-		auto it = cache.find(pipelineState);
+		std::unordered_map<ID3D12PipelineState*, uint64_t>::iterator it = cache.find(pipelineState);
 		if (it != cache.end())
 			return it->second;
 		DX12PsoShaderInfo shaderInfo = {};
@@ -333,7 +351,7 @@ public:
 		LARGE_INTEGER t0, t1, freq;
 		QueryPerformanceCounter(&t0);
 
-		// 对齐 DX11：CS hash 从 RuntimeState 直接读取（RememberPipelineState 时已预计算）
+		// Match DX11 by reading the precomputed CS hash from RuntimeState.
 	probe->computeShaderHash = runtimeState.cachedCsHashValid ?
 		runtimeState.cachedCsHash : GetCachedCsHash(runtimeState.pipelineState);
 		if (!probe->computeShaderHash) {
@@ -353,61 +371,41 @@ public:
 			return;
 		}
 
-		// Per-CS-hash probe cache keyed by bindingQuerySerial (stable — only
-		// bumps when bindings actually change, not on every dispatch like
-		// computeBindingSerial). Survives across frames and repeated dispatches.
-		static thread_local std::unordered_map<uint64_t, UINT64> s_csProbeBindingSerials;
-		static thread_local UINT64 s_csProbeReloadGen = 0;
-		UINT64 reloadGen = DX12ModGetReloadGeneration();
-		if (s_csProbeReloadGen != reloadGen) {
-			s_csProbeBindingSerials.clear();
-			s_csProbeReloadGen = reloadGen;
-		}
-		// Use stable bindingQuerySerial from CommandListBindingState — only
-		// bumped when bindings actually change, NOT every dispatch.
-		UINT64 stableBindingSerial = DX12BindingTracker::GetBindingQuerySerial(commandList);
-		if (stableBindingSerial == 0)
-			stableBindingSerial = 1;
-		{
-			std::unordered_map<uint64_t, UINT64>::const_iterator csIt =
-				s_csProbeBindingSerials.find(probe->computeShaderHash);
-			if (csIt != s_csProbeBindingSerials.end() && csIt->second == stableBindingSerial) {
-				QueryPerformanceCounter(&t1);
-				QueryPerformanceFrequency(&freq);
-				DX12LogManager::JsonFunc("DX12Perf",
-					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"cs_serial_skip\",\"us\":%lld",
-					static_cast<unsigned long long>(probe->computeShaderHash),
-					static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
-				return;
-			}
-		}
-
-		// 用 computeBindingHash（绑定指纹）替代 serial 做缓存 key。
-		// 绑定不变 → hash 不变 → 跨帧跨 dispatch 命中，无需每帧冷启动。
+		// Cache the match decision by the compute binding hash. Positive hits
+		// still need a command-list reapply because descriptor table changes are
+		// recorded D3D12 commands, not reusable CPU-side facts.
 		UINT64 bindingHash = runtimeState.computeBindingHash;
 		if (bindingHash == 0)
-			bindingHash = 1; // fallback：无绑定信息时使用固定值
+			bindingHash = 1;
 
-		// 缓存命中 → 跳过完整探测
+		// Negative hits can skip probing. Positive hits re-enter binding
+		// collection and apply so every dispatch records the required patch.
+		bool positiveCacheHit = false;
+		DX12PreSkinDispatchOverride cachedDispatchOverride;
 		DX12PreSkinProbeCacheEntry cacheEntry;
 		if (DX12ModGetCachedPreSkinProbeResult(
 			    commandList, probe->computeShaderHash, bindingHash, &cacheEntry)) {
 			probe->computeBindingSerial = bindingHash;
-			probe->applied = cacheEntry.applied;
-			probe->dispatchOverride = cacheEntry.dispatchOverride;
-			s_csProbeBindingSerials[probe->computeShaderHash] = stableBindingSerial;
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d bindingHash=%llu\n",
-				probe->applied ? 1 : 0, static_cast<unsigned long long>(bindingHash));
+				cacheEntry.applied ? 1 : 0, static_cast<unsigned long long>(bindingHash));
 #endif
-			QueryPerformanceCounter(&t1);
-			QueryPerformanceFrequency(&freq);
-			DX12LogManager::JsonFunc("DX12Perf",
-				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"hit\",\"us\":%lld",
-				static_cast<unsigned long long>(probe->computeShaderHash),
-				probe->applied ? "true" : "false",
-				static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
-			return;
+			if (!cacheEntry.applied) {
+				probe->applied = false;
+				QueryPerformanceCounter(&t1);
+				QueryPerformanceFrequency(&freq);
+				DX12LogManager::JsonFunc("DX12Perf",
+					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit\",\"us\":%lld",
+					static_cast<unsigned long long>(probe->computeShaderHash),
+					static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
+				return;
+			}
+			positiveCacheHit = true;
+			cachedDispatchOverride = cacheEntry.dispatchOverride;
+#if defined(_DEBUG)
+			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply bindingHash=%llu\n",
+				static_cast<unsigned long long>(bindingHash));
+#endif
 		}
 		probe->computeBindingSerial = bindingHash;
 #if defined(_DEBUG)
@@ -449,25 +447,25 @@ public:
 			probe->rootConstantsFound ? probe->rootConstants : kEmptyRootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
+		if (positiveCacheHit && probe->applied && !probe->dispatchOverride.hasDispatch &&
+		    cachedDispatchOverride.hasDispatch) {
+			probe->dispatchOverride = cachedDispatchOverride;
+		}
 		DX12_HOTPATH_TIME_END(PreSkinApply);
 		DX12_HOTPATH_TIME_END(PreSkinMatch);
-		DX12ModStoreCachedPreSkinningUavMatch(
-			commandList, probe->computeShaderHash, bindingHash,
-			probe->applied, &probe->dispatchOverride);
-
-		// Remember probe result for this CS+bindingSerial combination.
-		// Cache BOTH successes AND failures — if bindings haven't changed,
-		// re-probing the same CS would produce the same result. This is
-		// critical for scenes where PreSkin never matches (applied=false):
-		// without this, every dispatch pays the full collection cost.
-		s_csProbeBindingSerials[probe->computeShaderHash] = stableBindingSerial;
+		if (!positiveCacheHit || probe->applied) {
+			DX12ModStoreCachedPreSkinningUavMatch(
+				commandList, probe->computeShaderHash, bindingHash,
+				probe->applied, &probe->dispatchOverride);
+		}
 
 		QueryPerformanceCounter(&t1);
 		QueryPerformanceFrequency(&freq);
 		DX12LogManager::JsonFunc("DX12Perf",
-			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"us\":%lld",
+			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"%s\",\"us\":%lld",
 			static_cast<unsigned long long>(probe->computeShaderHash),
 			probe->applied ? "true" : "false",
+			positiveCacheHit ? "positive_reapply" : "miss",
 			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
 	}
 
