@@ -19,6 +19,7 @@
 #include "DX12ResourceStateTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "dxgi/DXGIHookRuntime.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 namespace DX12Wrapper
 {
@@ -3205,17 +3206,58 @@ namespace DX12Wrapper
 
 			UINT64 STDMETHODCALLTYPE GetCompletedValue() override
 			{
-				return mFence->GetCompletedValue();
+				LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+				UINT64 completed = mFence->GetCompletedValue();
+				DX12OuterTimingProbeUtils::LogFenceSlice(
+					"GetCompletedValue",
+					"wrapper",
+					mFence,
+					0,
+					0,
+					completed,
+					S_OK,
+					DX12OuterTimingProbeUtils::ElapsedUs(begin));
+				return completed;
 			}
 
 			HRESULT STDMETHODCALLTYPE SetEventOnCompletion(UINT64 Value, HANDLE hEvent) override
 			{
-				return mFence->SetEventOnCompletion(Value, hEvent);
+				const UINT64 completedBefore =
+					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+				LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+				HRESULT hr = mFence->SetEventOnCompletion(Value, hEvent);
+				const UINT64 completedAfter =
+					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+				DX12OuterTimingProbeUtils::LogFenceSlice(
+					"SetEventOnCompletion",
+					"wrapper",
+					mFence,
+					Value,
+					completedBefore,
+					completedAfter,
+					hr,
+					DX12OuterTimingProbeUtils::ElapsedUs(begin));
+				return hr;
 			}
 
 			HRESULT STDMETHODCALLTYPE Signal(UINT64 Value) override
 			{
-				return mFence->Signal(Value);
+				const UINT64 completedBefore =
+					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+				LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+				HRESULT hr = mFence->Signal(Value);
+				const UINT64 completedAfter =
+					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+				DX12OuterTimingProbeUtils::LogFenceSlice(
+					"Signal",
+					"wrapper",
+					mFence,
+					Value,
+					completedBefore,
+					completedAfter,
+					hr,
+					DX12OuterTimingProbeUtils::ElapsedUs(begin));
+				return hr;
 			}
 
 			D3D12_FENCE_FLAGS STDMETHODCALLTYPE GetCreationFlags() override

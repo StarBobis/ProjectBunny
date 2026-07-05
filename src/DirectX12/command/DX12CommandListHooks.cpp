@@ -33,6 +33,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 #include "types/DX12CommandListHookSlotTypes.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 using PFN_CREATE_COMMAND_QUEUE = DX12CommandListHookSignatures::CreateCommandQueue;
 using PFN_CREATE_COMMAND_ALLOCATOR = DX12CommandListHookSignatures::CreateCommandAllocator;
@@ -428,7 +429,22 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueSignal(
 	DX12CommandListHookDiagnostics::LogQueueStage("Signal", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
+	const UINT64 completedBefore =
+		DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 	HRESULT hr = original(queue, fence, value);
+	const UINT64 completedAfter =
+		DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	DX12OuterTimingProbeUtils::LogQueueFenceSlice(
+		"Signal",
+		"hook_original",
+		queue,
+		fence,
+		value,
+		completedBefore,
+		completedAfter,
+		hr,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 #if defined(_DEBUG)
 	DX12CommandListHookDiagnostics::LogQueueStage("Signal", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);
@@ -449,7 +465,22 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueWait(
 	DX12CommandListHookDiagnostics::LogQueueStage("Wait", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
+	const UINT64 completedBefore =
+		DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 	HRESULT hr = original(queue, fence, value);
+	const UINT64 completedAfter =
+		DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	DX12OuterTimingProbeUtils::LogQueueFenceSlice(
+		"Wait",
+		"hook_original",
+		queue,
+		fence,
+		value,
+		completedBefore,
+		completedAfter,
+		hr,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 #if defined(_DEBUG)
 	DX12CommandListHookDiagnostics::LogQueueStage("Wait", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);

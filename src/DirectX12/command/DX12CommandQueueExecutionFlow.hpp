@@ -12,6 +12,7 @@
 #include "DX12Profiling.hpp"
 #include "DX12ShaderHunt.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 class DX12CommandQueueExecutionFlow
 {
@@ -66,6 +67,7 @@ public:
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original,
 		RegisterSubmittedCommandListFn registerSubmittedCommandList)
 	{
+		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 		volatile LONG &firstExecuteLog = DX12CommandQueueExecutionState::FirstExecuteLog;
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
@@ -74,7 +76,13 @@ public:
 				DX12InternalReplayState::IsActive() ? "true" : "false");
 
 		// 每帧刷新 flags word：确保 draw/dispatch 热路径使用最新状态
+		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12HotPathState::RebuildHookWorkFlags();
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"rebuild_work_flags",
+			queue,
+			numCommandLists,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
 		if (DX12HotPathState::skipAll) {
 			if (original) {
@@ -84,7 +92,13 @@ public:
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				original(queue, numCommandLists, commandLists);
+				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+					"original_skip",
+					queue,
+					numCommandLists,
+					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "AfterOriginalSkip");
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
@@ -92,23 +106,53 @@ public:
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 			}
-			if (DX12HuntIsEnabled())
+			if (DX12HuntIsEnabled()) {
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
+				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+					"register_submitted_skip",
+					queue,
+					numCommandLists,
+					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+			}
 			DX12ExecuteSkipLogUtils::Record(queue, numCommandLists, "ReturnSkip");
+			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+				"total_skip",
+				queue,
+				numCommandLists,
+				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
 			return;
 		}
 
 		if (DX12InternalReplayState::IsActive()) {
-			if (original)
+			if (original) {
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				original(queue, numCommandLists, commandLists);
+				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+					"original_internal_replay",
+					queue,
+					numCommandLists,
+					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+			}
+			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+				"total_internal_replay",
+				queue,
+				numCommandLists,
+				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
 			return;
 		}
 
 		DX12_PROFILE_SCOPE(ExecuteCommandLists);
 		DX12CommandListFlowDiagnostics::LogDX12Call(
 			"ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
-		if (!original)
+		if (!original) {
+			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+				"total_no_original",
+				queue,
+				numCommandLists,
+				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
 			return;
+		}
 
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
@@ -119,7 +163,13 @@ public:
 			"ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		ULONGLONG startTick = GetTickCount64();
 #endif
+		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		original(queue, numCommandLists, commandLists);
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"original",
+			queue,
+			numCommandLists,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
@@ -131,13 +181,30 @@ public:
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
 		DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
+		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"mod_notify_submitted",
+			queue,
+			numCommandLists,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DX12_HOTPATH_TIME_END(ExecuteCLNotify);
+		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"register_submitted",
+			queue,
+			numCommandLists,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 #if defined(_DEBUG)
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterNotify", queue, numCommandLists,
 			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);
 #endif
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"total",
+			queue,
+			numCommandLists,
+			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
 	}
 };

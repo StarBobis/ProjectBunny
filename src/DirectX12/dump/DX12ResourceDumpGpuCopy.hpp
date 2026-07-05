@@ -10,6 +10,7 @@
 #include "DX12ResourceDumpCore.hpp"
 #include "DX12ResourceDumpPrepare.hpp"
 #include "DX12ResourceDumpTypes.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 class DX12ResourceDumpGpuCopy
 {
@@ -73,16 +74,59 @@ static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device, DWORD 
 	DWORD waitResult = WAIT_OBJECT_0;
 	DWORD waitError = 0;
 	UINT64 completedValue = 0;
+	UINT64 completedBeforeSignal = DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	LARGE_INTEGER signalBegin = DX12OuterTimingProbeUtils::Now();
 	hr = queue->Signal(fence, 1);
-	if (SUCCEEDED(hr) && fence->GetCompletedValue() < 1) {
+	UINT64 completedAfterSignal = DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	DX12OuterTimingProbeUtils::LogQueueFenceSlice(
+		"Signal",
+		"dump_copy_signal",
+		queue,
+		fence,
+		1,
+		completedBeforeSignal,
+		completedAfterSignal,
+		hr,
+		DX12OuterTimingProbeUtils::ElapsedUs(signalBegin));
+	if (SUCCEEDED(hr) && completedAfterSignal < 1) {
+		LARGE_INTEGER setEventBegin = DX12OuterTimingProbeUtils::Now();
 		hr = fence->SetEventOnCompletion(1, eventHandle);
+		UINT64 completedAfterSetEvent = DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+		DX12OuterTimingProbeUtils::LogFenceSlice(
+			"SetEventOnCompletion",
+			"dump_copy_set_event",
+			fence,
+			1,
+			completedAfterSignal,
+			completedAfterSetEvent,
+			hr,
+			DX12OuterTimingProbeUtils::ElapsedUs(setEventBegin));
 		if (SUCCEEDED(hr)) {
+			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
 			waitResult = WaitForSingleObject(eventHandle, CopyFenceTimeoutMs());
 			if (waitResult == WAIT_FAILED)
 				waitError = GetLastError();
+			DX12OuterTimingProbeUtils::LogEventWaitSlice(
+				"WaitForSingleObject",
+				"dump_copy_wait_event",
+				eventHandle,
+				waitResult,
+				waitError,
+				CopyFenceTimeoutMs(),
+				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
 		}
 	}
-	completedValue = fence->GetCompletedValue();
+	LARGE_INTEGER completedBegin = DX12OuterTimingProbeUtils::Now();
+	completedValue = DX12OuterTimingProbeUtils::FenceCompletedValue(fence);
+	DX12OuterTimingProbeUtils::LogFenceSlice(
+		"GetCompletedValue",
+		"dump_copy_final_completed",
+		fence,
+		1,
+		completedAfterSignal,
+		completedValue,
+		S_OK,
+		DX12OuterTimingProbeUtils::ElapsedUs(completedBegin));
 
 	CloseHandle(eventHandle);
 	fence->Release();
@@ -191,7 +235,13 @@ static bool ExecuteCopyTask(
 	bool ok = false;
 	DWORD waitResult = WAIT_FAILED;
 	__try {
+		LARGE_INTEGER executeBegin = DX12OuterTimingProbeUtils::Now();
 		queue->ExecuteCommandLists(1, lists);
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"dump_copy_execute",
+			queue,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(executeBegin));
 		ok = DX12ResourceDumpGpuCopy::WaitForFence(queue, device, &waitResult);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {

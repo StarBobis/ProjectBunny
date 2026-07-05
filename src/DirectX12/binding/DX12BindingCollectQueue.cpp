@@ -5,6 +5,7 @@
 #include "DX12Profiling.hpp"
 #include "DX12BindingTracker.hpp"
 #include "DX12LogManager.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 static constexpr uint64_t kBindingQueueStatsInterval = 4096;
 static constexpr int64_t kBindingQueueSlowTaskUs = 1000;
@@ -202,9 +203,18 @@ void DX12BindingCollectQueue::WorkerLoop()
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
+			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
 			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
 			});
+			DX12OuterTimingProbeUtils::LogWorkerWait(
+				"BindingCollectQueue",
+				"WorkerWake",
+				"worker_idle",
+				0,
+				completedSequence.load(std::memory_order_acquire),
+				tasks.size() + static_cast<size_t>(activeTasks),
+				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
 			if (tasks.empty()) {
 				if (stopRequested.load(std::memory_order_acquire))
 					break;
@@ -251,6 +261,14 @@ void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"BindingCollectQueue",
+		reason ? reason : "",
+		"idle",
+		0,
+		completedSequence.load(std::memory_order_acquire),
+		pendingSnapshot,
+		static_cast<LONG64>(elapsedUs));
 	drainCalls.fetch_add(1, std::memory_order_relaxed);
 	RecordDrainWaitStats(elapsedUs);
 	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
@@ -283,6 +301,14 @@ void DX12BindingCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, co
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"BindingCollectQueue",
+		reason ? reason : "",
+		"sequence",
+		targetSequence,
+		completedSequence.load(std::memory_order_acquire),
+		pendingSnapshot,
+		static_cast<LONG64>(elapsedUs));
 	drainCalls.fetch_add(1, std::memory_order_relaxed);
 	RecordDrainWaitStats(elapsedUs);
 	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
@@ -302,6 +328,9 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 	if (!task)
 		return;
 
+	const UINT taskKind = static_cast<UINT>(task->kind);
+	const UINT64 sequence = task->sequence;
+	const DWORD enqueueThreadId = task->enqueueThreadId;
 	const auto begin = std::chrono::steady_clock::now();
 	switch (task->kind) {
 	case DX12BindingCollectTaskKind::StateEvent:
@@ -321,6 +350,15 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	DX12OuterTimingProbeUtils::LogWorkerTask(
+		"BindingCollectQueue",
+		"process_task",
+		taskKind,
+		sequence,
+		1,
+		PendingCount(),
+		enqueueThreadId,
+		static_cast<LONG64>(elapsedUs));
 	RecordTaskStats(elapsedUs);
 	DX12Profiling::RecordBindingQueueTaskUs(static_cast<LONG64>(elapsedUs));
 	if (task->kind != DX12BindingCollectTaskKind::OutputEvent)

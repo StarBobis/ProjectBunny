@@ -5,6 +5,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12ResourceTrackerHookRuntime.hpp"
 #include "DX12ResourceTrackerPrivate.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 static constexpr uint64_t kResourceQueueStatsInterval = 4096;
 static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
@@ -275,9 +276,18 @@ void DX12ResourceCollectQueue::WorkerLoop()
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
+			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
 			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
 			});
+			DX12OuterTimingProbeUtils::LogWorkerWait(
+				"ResourceCollectQueue",
+				"WorkerWake",
+				"worker_idle",
+				0,
+				completedSequence.load(std::memory_order_acquire),
+				tasks.size() + static_cast<size_t>(activeTasks),
+				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
 			if (tasks.empty()) {
 				if (stopRequested.load(std::memory_order_acquire))
 					break;
@@ -352,6 +362,14 @@ void DX12ResourceCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, c
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"ResourceCollectQueue",
+		reason ? reason : "",
+		"sequence",
+		targetSequence,
+		completedSequence.load(std::memory_order_acquire),
+		pendingSnapshot,
+		static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kResourceQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
 			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedSequence\":%llu,\"pending\":%zu,\"elapsedUs\":%lld",
@@ -378,6 +396,14 @@ void DX12ResourceCollectQueue::WaitForIdle(const char *reason)
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"ResourceCollectQueue",
+		reason ? reason : "",
+		"idle",
+		0,
+		completedSequence.load(std::memory_order_acquire),
+		pendingSnapshot,
+		static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kResourceQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
 			"\"reason\":\"%s\",\"mode\":\"idle\",\"pending\":%zu,\"elapsedUs\":%lld",
@@ -392,22 +418,41 @@ void DX12ResourceCollectQueue::ProcessTask(DX12ResourceCollectTask *task, const 
 	if (!task)
 		return;
 
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+	const UINT taskKind = static_cast<UINT>(task->kind);
+	const UINT64 sequence = task->sequence;
+	const DWORD enqueueThreadId = task->enqueueThreadId;
+	size_t itemCount = 1;
+	if (task->kind == DX12ResourceCollectTaskKind::ResourceBarrier)
+		itemCount = task->barriers.size();
+	else if (task->kind == DX12ResourceCollectTaskKind::RootSignature)
+		itemCount = task->rootSignatureBlob.size();
+
 	switch (task->kind) {
 	case DX12ResourceCollectTaskKind::Resource:
 		ProcessResourceTask(task, source);
-		return;
+		break;
 	case DX12ResourceCollectTaskKind::ResourceBarrier:
 		ProcessResourceBarrierTask(task, source);
-		return;
+		break;
 	case DX12ResourceCollectTaskKind::RootSignature:
 		ProcessRootSignatureTask(task, source);
-		return;
+		break;
 	case DX12ResourceCollectTaskKind::PsoRootSignature:
 		ProcessPsoRootSignatureTask(task, source);
-		return;
+		break;
 	default:
-		return;
+		break;
 	}
+	DX12OuterTimingProbeUtils::LogWorkerTask(
+		"ResourceCollectQueue",
+		"process_task",
+		taskKind,
+		sequence,
+		itemCount,
+		PendingCount(),
+		enqueueThreadId,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 }
 
 void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task, const char *source)

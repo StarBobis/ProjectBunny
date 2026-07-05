@@ -1,6 +1,7 @@
 #include "DX12DescriptorCollectPipeline.hpp"
 
 #include "DX12LogManager.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 #include <chrono>
 
@@ -326,6 +327,14 @@ void DX12DescriptorCollectPipeline::WaitForSequence(uint64_t targetSequence, con
 	const std::chrono::microseconds elapsedDuration =
 		std::chrono::duration_cast<std::chrono::microseconds>(end - begin);
 	const long long elapsedUs = static_cast<long long>(elapsedDuration.count());
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"DescriptorCollectPipeline",
+		reason ? reason : "",
+		"sequence",
+		targetSequence,
+		completedSequence.load(std::memory_order_acquire),
+		PendingCount(),
+		static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= 1000) {
 		DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineWait",
 			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedBeforeWait\":%llu,\"completedAfterWait\":%llu,\"elapsedUs\":%lld",
@@ -347,19 +356,43 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 		std::shared_ptr<DX12DescriptorCollectTask> task;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
+			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
 			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) ||
 					!pendingDescriptorWrites.empty() ||
 					!queuedTasks.empty();
 			});
+			size_t pendingAfterWake = pendingDescriptorWrites.size() +
+				queuedTasks.size() +
+				static_cast<size_t>(activeQueuedTasks);
+			DX12OuterTimingProbeUtils::LogWorkerWait(
+				"DescriptorCollectPipeline",
+				"WorkerWake",
+				"worker_idle",
+				0,
+				completedSequence.load(std::memory_order_acquire),
+				pendingAfterWake,
+				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
 			if (queuedTasks.empty() && !pendingDescriptorWrites.empty() &&
 					!stopRequested.load(std::memory_order_acquire) &&
 					pendingDescriptorWrites.size() < kDescriptorWorkerBatchTarget) {
+				LARGE_INTEGER coalesceBegin = DX12OuterTimingProbeUtils::Now();
 				wake.wait_for(lock, kDescriptorWorkerCoalesceWindow, []() {
 					return stopRequested.load(std::memory_order_acquire) ||
 						!queuedTasks.empty() ||
 						pendingDescriptorWrites.size() >= kDescriptorWorkerBatchTarget;
 				});
+				size_t pendingAfterCoalesce = pendingDescriptorWrites.size() +
+					queuedTasks.size() +
+					static_cast<size_t>(activeQueuedTasks);
+				DX12OuterTimingProbeUtils::LogWorkerWait(
+					"DescriptorCollectPipeline",
+					"WorkerCoalesce",
+					"worker_coalesce",
+					0,
+					completedSequence.load(std::memory_order_acquire),
+					pendingAfterCoalesce,
+					DX12OuterTimingProbeUtils::ElapsedUs(coalesceBegin));
 			}
 			if (queuedTasks.empty() && !pendingDescriptorWrites.empty()) {
 				DX12DescriptorCollectBatch batch;
@@ -381,8 +414,26 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 			SetActiveTaskLocked(*task);
 		}
 
+		const UINT taskKind = static_cast<UINT>(task->kind);
+		const UINT64 sequence = task->sequence;
+		const DWORD enqueueThreadId = task->enqueueThreadId;
+		size_t itemCount = 0;
+		if (task->kind == DX12DescriptorCollectTaskKind::DescriptorBatch)
+			itemCount = task->descriptors.size();
+		else if (task->kind == DX12DescriptorCollectTaskKind::CopyRange)
+			itemCount = task->count;
+		LARGE_INTEGER taskBegin = DX12OuterTimingProbeUtils::Now();
 		if (!IsTaskFullyConsumed(*task))
 			ProcessTask(task.get(), "Worker");
+		DX12OuterTimingProbeUtils::LogWorkerTask(
+			"DescriptorCollectPipeline",
+			"process_task",
+			taskKind,
+			sequence,
+			itemCount,
+			PendingCount(),
+			enqueueThreadId,
+			DX12OuterTimingProbeUtils::ElapsedUs(taskBegin));
 
 		{
 			std::lock_guard<std::mutex> lock(mutex);
@@ -578,11 +629,23 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 			QueueDescriptorBatchLocked(&batch);
 	}
 	wake.notify_one();
+	LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
+	size_t pendingBeforeWait = pendingDescriptorWrites.size() +
+		queuedTasks.size() +
+		static_cast<size_t>(activeQueuedTasks);
 	idle.wait(lock, []() {
 		return pendingDescriptorWrites.empty() &&
 			queuedTasks.empty() &&
 			activeQueuedTasks == 0;
 	});
+	DX12OuterTimingProbeUtils::LogWorkerWait(
+		"DescriptorCollectPipeline",
+		reason ? reason : "",
+		"flush_idle",
+		0,
+		completedSequence.load(std::memory_order_acquire),
+		pendingBeforeWait,
+		DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
 }
 
 void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
