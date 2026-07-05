@@ -4,18 +4,23 @@
 
 #include <stdio.h>
 
+// ── DX11-aligned global log utilities ──────────────────────────────
+// Replaces JSON wrapping with plain TSV (tab-separated values) format.
+// Format: raw_tick<TAB>FuncName<TAB>k1=v1<TAB>k2=v2<NEWLINE>
+//
+// Time is GetTickCount64() raw value — zero formatting overhead.
+// No SYSTEMTIME conversion, no snprintf time fields, no JSON escaping.
+
 class DX12LogUtils
 {
 public:
-	static void MakeLogTime(char *buffer, size_t bufferSize)
+	// Raw tick timestamp — GetTickCount64() (~20ns), output as raw uint64.
+	// Zero formatting overhead vs. the old GetLocalTime() + snprintf HH:MM:SS.mmm.
+	static void MakeLogTimePlain(char *buffer, size_t bufferSize)
 	{
 		if (!buffer || !bufferSize)
 			return;
-		SYSTEMTIME localTime;
-		GetLocalTime(&localTime);
-		snprintf(buffer, bufferSize,
-			"\"%02u:%02u:%02u.%03u\"",
-			localTime.wHour, localTime.wMinute, localTime.wSecond,
-			localTime.wMilliseconds);
+		snprintf(buffer, bufferSize, "%llu",
+			static_cast<unsigned long long>(GetTickCount64()));
 	}
 };

@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "utils/DX12JsonUtils.hpp"
 #include "utils/DX12LogUtils.hpp"
 #include "DX12RuntimeState.hpp"
 
@@ -71,9 +70,10 @@ public:
 				const LONG dropped = InterlockedExchange(&state.droppedLines, 0);
 				if (dropped > 0) {
 					char droppedLine[256];
+					char timePlain[32];
+					DX12LogUtils::MakeLogTimePlain(timePlain, sizeof(timePlain));
 					snprintf(droppedLine, sizeof(droppedLine),
-						"{\"func\":\"DX12LogQueue\",\"event\":\"DroppedLines\",\"count\":%ld}\n",
-						dropped);
+						"%s\tDX12LogQueue\tcount=%ld\n", timePlain, dropped);
 					fputs(droppedLine, state.log);
 				}
 				for (const auto &line : pending)
@@ -268,29 +268,24 @@ public:
 			SetEvent(state.event);
 	}
 
-	static void WriteJsonLogLine(
-		const char *func, const char *funcJson, const char *extra, bool flush)
+	// ── TSV log format (DX11-aligned, no JSON overhead) ──────────────
+	// Format: HH:MM:SS.mmm<TAB>FuncName<TAB>k1=v1<TAB>k2=v2<NEWLINE>
+	// No JSON escaping — plain fprintf to async queue. Direct sprintf for
+	// max speed, no intermediate field quoting or brace wrapping.
+
+	static void WriteLogLine(
+		const char *func, const char *extra, bool flush)
 	{
 		if (!Get().log)
 			return;
 
-		char timeJson[64] = {};
-		DX12LogUtils::MakeLogTime(timeJson, sizeof(timeJson));
-		const bool isHookCall = func && strcmp(func, "DX12HookCall") == 0;
+		char timePlain[32] = {};
+		DX12LogUtils::MakeLogTimePlain(timePlain, sizeof(timePlain));
 		char line[8192];
 		if (extra && extra[0]) {
-			if (isHookCall) {
-				snprintf(line, sizeof(line), "{%s,\"time\":%s}\n", extra, timeJson);
-			} else {
-				snprintf(line, sizeof(line), "{\"func\":%s,\"time\":%s,%s}\n",
-					funcJson, timeJson, extra);
-			}
+			snprintf(line, sizeof(line), "%s\t%s\t%s\n", timePlain, func, extra);
 		} else {
-			if (isHookCall) {
-				snprintf(line, sizeof(line), "{\"api\":\"\",\"time\":%s}\n", timeJson);
-			} else {
-				snprintf(line, sizeof(line), "{\"func\":%s,\"time\":%s}\n", funcJson, timeJson);
-			}
+			snprintf(line, sizeof(line), "%s\t%s\n", timePlain, func);
 		}
 		EnqueueJsonLogLine(line);
 		if (flush)
@@ -308,17 +303,11 @@ public:
 
 		va_list args;
 		char message[2048];
-		char fields[4096];
-
 		va_start(args, fmt);
 		vsnprintf(message, sizeof(message), fmt, args);
 		va_end(args);
 
-		fields[0] = '\0';
-		DX12JsonUtils::AppendLogFieldsFromText(fields, sizeof(fields), message);
-		char funcJson[16];
-		DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), "Log");
-		WriteJsonLogLine("Log", funcJson, fields[0] == ',' ? fields + 1 : fields, false);
+		WriteLogLine("Log", message, false);
 	}
 
 	static void JsonFuncV(const char *func, const char *fmt, va_list args, bool flush)
@@ -330,15 +319,14 @@ public:
 			return;
 #endif
 
-		char funcJson[512];
+		const char *safeFunc = func ? func : "Unknown";
 		char extra[4096];
-		DX12JsonUtils::EscapeString(funcJson, sizeof(funcJson), func ? func : "Unknown");
 		extra[0] = '\0';
 
 		if (fmt && fmt[0])
 			vsnprintf(extra, sizeof(extra), fmt, args);
 
-		WriteJsonLogLine(func ? func : "Unknown", funcJson, extra, flush);
+		WriteLogLine(safeFunc, extra, flush);
 	}
 
 	static void JsonFunc(const char *func, const char *fmt, ...)
