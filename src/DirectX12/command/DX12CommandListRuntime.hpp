@@ -84,6 +84,7 @@ public:
 	static void BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
+	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, ID3D12PipelineState *pipelineState, UINT64 reloadGeneration, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
 	static DX12CommandListRuntimeState GetState(ID3D12GraphicsCommandList *commandList);
 	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);

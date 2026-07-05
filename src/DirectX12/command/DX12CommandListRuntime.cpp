@@ -4,6 +4,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12IaRegion.hpp"
 #include "DX12ModRuntime.hpp"
+#include "DX12PsoDecisionCacheUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
@@ -288,12 +289,30 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 {
 	DX12CompiledDispatchDecision decision;
 	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	DX12PsoDecisionCacheUtils::ClearIfReloadChanged(reloadGeneration);
+	if (DX12PsoDecisionCacheUtils::TryLoadDispatch(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			needsPreSkinProbe,
+			&decision)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPsoCacheHit();
+		return decision;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPsoCacheMiss();
 	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionBuild();
 
 	if (!pipelineState) {
 		decision.SetNoComputeShader(
 			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		DX12PsoDecisionCacheUtils::StoreDispatch(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			needsPreSkinProbe,
+			decision);
 		return decision;
 	}
 
@@ -302,6 +321,12 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 		decision.SetNoComputeShader(
 			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		DX12PsoDecisionCacheUtils::StoreDispatch(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			needsPreSkinProbe,
+			decision);
 		return decision;
 	}
 
@@ -316,6 +341,12 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
 			hasShaderOverrides, needsPreSkinProbe);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidate();
+		DX12PsoDecisionCacheUtils::StoreDispatch(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			needsPreSkinProbe,
+			decision);
 		return decision;
 	}
 
@@ -324,6 +355,12 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
 			hasShaderOverrides, needsPreSkinProbe);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionShaderOverrideWork();
+		DX12PsoDecisionCacheUtils::StoreDispatch(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			needsPreSkinProbe,
+			decision);
 		return decision;
 	}
 
@@ -331,6 +368,12 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 		pipelineState, reloadGeneration, csHash,
 		hasShaderOverrides, needsPreSkinProbe);
 	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoPreSkinCandidate();
+	DX12PsoDecisionCacheUtils::StoreDispatch(
+		pipelineState,
+		reloadGeneration,
+		hasShaderOverrides,
+		needsPreSkinProbe,
+		decision);
 	return decision;
 }
 
@@ -339,12 +382,24 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 	bool hasShaderOverrides)
 {
 	DX12CompiledDrawDecision decision;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	DX12PsoDecisionCacheUtils::ClearIfReloadChanged(reloadGeneration);
+	if (DX12PsoDecisionCacheUtils::TryLoadDraw(
+			pipelineState,
+			reloadGeneration,
+			hasShaderOverrides,
+			&decision)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionPsoCacheHit();
+		return decision;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionPsoCacheMiss();
 	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionBuild();
 	if (!DX12ModCompileDrawDecision(pipelineState, &decision)) {
 		DX12IaHashTargetPlan targetPlan;
 		targetPlan.RequireAll();
 		decision.SetFromTargetPlan(
-			pipelineState, DX12ModGetReloadGenerationFast(),
+			pipelineState, reloadGeneration,
 			hasShaderOverrides, hasShaderOverrides, false,
 			targetPlan, DX12ModNeedsShaderDescriptorTracking());
 	}
@@ -374,6 +429,11 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 		break;
 	}
 
+	DX12PsoDecisionCacheUtils::StoreDraw(
+		pipelineState,
+		reloadGeneration,
+		hasShaderOverrides,
+		decision);
 	return decision;
 }
 
@@ -663,8 +723,6 @@ void DX12CommandListRuntime::BumpIaEpoch(DX12CommandListRuntimeState *state)
 	state->iaEpoch++;
 	if (!state->iaEpoch)
 		state->iaEpoch = 1;
-	DX12IaHashStateCacheUtils::Clear(
-		&state->iaHashStateCache, &state->iaHashStateCacheClock);
 }
 
 void DX12CommandListRuntime::BumpIaContentEpoch(DX12CommandListRuntimeState *state)
@@ -674,8 +732,6 @@ void DX12CommandListRuntime::BumpIaContentEpoch(DX12CommandListRuntimeState *sta
 	state->iaContentEpoch++;
 	if (!state->iaContentEpoch)
 		state->iaContentEpoch = 1;
-	DX12IaHashStateCacheUtils::Clear(
-		&state->iaHashStateCache, &state->iaHashStateCacheClock);
 }
 
 void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList)
@@ -772,6 +828,72 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	}
 
 	return state->hasIndexBuffer || !state->vertexBuffers.empty();
+}
+
+DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
+	const DX12ActiveIaState &ia,
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	UINT vertexCount,
+	UINT indexCount,
+	UINT firstVertex,
+	UINT firstIndex,
+	INT baseVertex)
+{
+	DX12IaHashStateCacheKey key;
+	key.pipelineState = pipelineState;
+	key.reloadGeneration = reloadGeneration;
+	key.contentGeneration = DX12GetIaHashContentGeneration();
+	key.resolveGeneration = DX12GetIaHashResolveGeneration();
+	key.targetPlanFingerprint = targetPlan.Fingerprint();
+	key.indexed = indexed;
+	key.vertexCount = vertexCount;
+	key.indexCount = indexCount;
+	key.firstVertex = firstVertex;
+	key.firstIndex = firstIndex;
+	key.baseVertex = baseVertex;
+	key.iaViewFingerprint = 0x84222325a9582d75ull;
+
+	if (targetPlan.RequiresIndexBuffer(indexed)) {
+		key.iaViewFingerprint ^= 0x100000001b3ull;
+		key.iaViewFingerprint ^= ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull;
+		if (ia.hasIndexBuffer) {
+			key.iaViewFingerprint ^= ia.indexBuffer.BufferLocation +
+				0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+				(key.iaViewFingerprint >> 2);
+			key.iaViewFingerprint ^= static_cast<UINT64>(ia.indexBuffer.SizeInBytes) +
+				0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+				(key.iaViewFingerprint >> 2);
+			key.iaViewFingerprint ^= static_cast<UINT64>(ia.indexBuffer.Format) +
+				0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+				(key.iaViewFingerprint >> 2);
+		}
+	}
+
+	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot))
+			continue;
+		key.iaViewFingerprint ^= static_cast<UINT64>(slot + 1) *
+			0x9e3779b97f4a7c15ull;
+		key.iaViewFingerprint ^= ia.hasVertexBuffer[slot] ? 0x27d4eb2full : 0x165667b1ull;
+		if (!ia.hasVertexBuffer[slot])
+			continue;
+		key.iaViewFingerprint ^= ia.vertexBuffers[slot].BufferLocation +
+			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+			(key.iaViewFingerprint >> 2);
+		key.iaViewFingerprint ^= static_cast<UINT64>(ia.vertexBuffers[slot].SizeInBytes) +
+			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+			(key.iaViewFingerprint >> 2);
+		key.iaViewFingerprint ^= static_cast<UINT64>(ia.vertexBuffers[slot].StrideInBytes) +
+			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+			(key.iaViewFingerprint >> 2);
+	}
+
+	if (!key.iaViewFingerprint)
+		key.iaViewFingerprint = 1;
+	return key;
 }
 
 ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(

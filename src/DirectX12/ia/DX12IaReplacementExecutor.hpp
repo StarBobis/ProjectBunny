@@ -264,22 +264,18 @@ public:
 
 		bool hasIaHashState = false;
 		if (targetPlanHasIaTargets) {
-			DX12IaHashStateCacheKey iaCacheKey;
-			iaCacheKey.pipelineState = runtimeState.pipelineState;
-			iaCacheKey.reloadGeneration = drawDecision->reloadGeneration;
-			iaCacheKey.presentGeneration =
-				static_cast<UINT64>(DX12RuntimeState::GetPresentCount());
-			iaCacheKey.contentGeneration = DX12GetIaHashContentGeneration();
-			iaCacheKey.resolveGeneration = DX12GetIaHashResolveGeneration();
-			iaCacheKey.targetPlanFingerprint = targetPlan.Fingerprint();
-			iaCacheKey.iaEpoch = runtimeState.iaEpoch;
-			iaCacheKey.iaContentEpoch = runtimeState.iaContentEpoch;
-			iaCacheKey.indexed = draw.indexed;
-			iaCacheKey.vertexCount = draw.vertexCount;
-			iaCacheKey.indexCount = draw.indexCount;
-			iaCacheKey.firstVertex = draw.firstVertex;
-			iaCacheKey.firstIndex = draw.firstIndex;
-			iaCacheKey.baseVertex = draw.baseVertex;
+			DX12IaHashStateCacheKey iaCacheKey =
+				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
+					runtimeState.ia,
+					runtimeState.pipelineState,
+					drawDecision->reloadGeneration,
+					targetPlan,
+					draw.indexed,
+					draw.vertexCount,
+					draw.indexCount,
+					draw.firstVertex,
+					draw.firstIndex,
+					draw.baseVertex);
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
 			if (DX12IaHashStateCacheUtils::TryLoad(
 					&mutableRuntimeState->iaHashStateCache,

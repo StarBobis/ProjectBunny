@@ -110,6 +110,8 @@ public:
 
 	inline static volatile LONG DispatchDecisionCacheHits = 0;
 	inline static volatile LONG DispatchDecisionCacheMisses = 0;
+	inline static volatile LONG DispatchDecisionPsoCacheHits = 0;
+	inline static volatile LONG DispatchDecisionPsoCacheMisses = 0;
 	inline static volatile LONG DispatchDecisionBuilds = 0;
 	inline static volatile LONG DispatchDecisionNoCompute = 0;
 	inline static volatile LONG DispatchDecisionNoPreSkinCandidate = 0;
@@ -128,6 +130,8 @@ public:
 
 	inline static volatile LONG DrawDecisionCacheHits = 0;
 	inline static volatile LONG DrawDecisionCacheMisses = 0;
+	inline static volatile LONG DrawDecisionPsoCacheHits = 0;
+	inline static volatile LONG DrawDecisionPsoCacheMisses = 0;
 	inline static volatile LONG DrawDecisionBuilds = 0;
 	inline static volatile LONG DrawDecisionNoPso = 0;
 	inline static volatile LONG DrawDecisionNoShaderOverride = 0;
@@ -520,6 +524,16 @@ public:
 		Inc(&DispatchDecisionCacheMisses);
 	}
 
+	static void RecordDispatchDecisionPsoCacheHit()
+	{
+		Inc(&DispatchDecisionPsoCacheHits);
+	}
+
+	static void RecordDispatchDecisionPsoCacheMiss()
+	{
+		Inc(&DispatchDecisionPsoCacheMisses);
+	}
+
 	static void RecordDispatchDecisionBuild()
 	{
 		Inc(&DispatchDecisionBuilds);
@@ -592,6 +606,16 @@ public:
 	static void RecordDrawDecisionCacheMiss()
 	{
 		Inc(&DrawDecisionCacheMisses);
+	}
+
+	static void RecordDrawDecisionPsoCacheHit()
+	{
+		Inc(&DrawDecisionPsoCacheHits);
+	}
+
+	static void RecordDrawDecisionPsoCacheMiss()
+	{
+		Inc(&DrawDecisionPsoCacheMisses);
 	}
 
 	static void RecordDrawDecisionBuild()
@@ -873,6 +897,8 @@ public:
 	{
 		LONG cacheHits = Take(&DispatchDecisionCacheHits);
 		LONG cacheMisses = Take(&DispatchDecisionCacheMisses);
+		LONG psoCacheHits = Take(&DispatchDecisionPsoCacheHits);
+		LONG psoCacheMisses = Take(&DispatchDecisionPsoCacheMisses);
 		LONG builds = Take(&DispatchDecisionBuilds);
 		LONG noCompute = Take(&DispatchDecisionNoCompute);
 		LONG noPreSkinCandidate = Take(&DispatchDecisionNoPreSkinCandidate);
@@ -880,13 +906,14 @@ public:
 		LONG preSkinCandidateDispatches = Take(&DispatchDecisionPreSkinCandidateDispatches);
 		LONG shaderOverrideWork = Take(&DispatchDecisionShaderOverrideWork);
 		LONG fastRejects = Take(&DispatchDecisionFastRejects);
-		if (!cacheHits && !cacheMisses && !builds && !noCompute &&
+		if (!cacheHits && !cacheMisses && !psoCacheHits && !psoCacheMisses &&
+			!builds && !noCompute &&
 			!noPreSkinCandidate && !preSkinCandidate && !preSkinCandidateDispatches &&
 			!shaderOverrideWork && !fastRejects)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"dispatch_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noCompute\":%ld,\"noPreSkinCandidate\":%ld,\"preSkinCandidateBuilds\":%ld,\"preSkinCandidateDispatches\":%ld,\"shaderOverrideWork\":%ld,\"fastRejects\":%ld",
-			cacheHits, cacheMisses, builds, noCompute,
+			"\"category\":\"dispatch_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noCompute\":%ld,\"noPreSkinCandidate\":%ld,\"preSkinCandidateBuilds\":%ld,\"preSkinCandidateDispatches\":%ld,\"shaderOverrideWork\":%ld,\"fastRejects\":%ld",
+			cacheHits, cacheMisses, psoCacheHits, psoCacheMisses, builds, noCompute,
 			noPreSkinCandidate, preSkinCandidate, preSkinCandidateDispatches,
 			shaderOverrideWork, fastRejects);
 	}
@@ -913,6 +940,8 @@ public:
 	{
 		LONG cacheHits = Take(&DrawDecisionCacheHits);
 		LONG cacheMisses = Take(&DrawDecisionCacheMisses);
+		LONG psoCacheHits = Take(&DrawDecisionPsoCacheHits);
+		LONG psoCacheMisses = Take(&DrawDecisionPsoCacheMisses);
 		LONG builds = Take(&DrawDecisionBuilds);
 		LONG noPso = Take(&DrawDecisionNoPso);
 		LONG noShaderOverride = Take(&DrawDecisionNoShaderOverride);
@@ -929,7 +958,8 @@ public:
 		LONG iaHashCacheStores = Take(&DrawDecisionIaHashCacheStores);
 		LONG iaHashCacheNegativeHits = Take(&DrawDecisionIaHashCacheNegativeHits);
 		LONG descriptorDraws = Take(&DrawDecisionDescriptorDraws);
-		if (!cacheHits && !cacheMisses && !builds && !noPso &&
+		if (!cacheHits && !cacheMisses && !psoCacheHits && !psoCacheMisses &&
+			!builds && !noPso &&
 			!noShaderOverride && !noDrawOverride && !needsIaHash &&
 			!needsDescriptorMatch && !needsReplacement && !skipOriginal &&
 			!fastRejects && !iaHashDraws && !iaHashCacheLookups &&
@@ -937,8 +967,8 @@ public:
 			!iaHashCacheNegativeHits && !descriptorDraws)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld",
-			cacheHits, cacheMisses, builds, noPso,
+			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld",
+			cacheHits, cacheMisses, psoCacheHits, psoCacheMisses, builds, noPso,
 			noShaderOverride, noDrawOverride, needsIaHash,
 			needsDescriptorMatch, needsReplacement, skipOriginal,
 			fastRejects, iaHashDraws, iaHashCacheLookups,

@@ -510,7 +510,6 @@ public:
 		LONG64 presentWallUs,
 		LONG64 frameWallUs)
 	{
-		(void)outsideUs;
 		const LONG present = DX12RuntimeState::GetPresentCount();
 		const LONG presentEnterCalls = TakeLong(&PresentEnterCalls);
 		const LONG presentLeaveCalls = TakeLong(&PresentLeaveCalls);
@@ -559,6 +558,7 @@ public:
 		DX12LogManager::JsonFunc("DX12FrameTimeline",
 			"\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
 			"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,"
+			"\"outsidePresentUs\":%lld,"
 			"\"presentWallUs\":%lld,\"presentSliceKnownUs\":%lld,\"presentOriginalUs\":%lld,"
 			"\"presentPostOriginalRuntimeUs\":%lld,\"presentModBeginFrameUs\":%lld,"
 			"\"presentProfilingFlushUs\":%lld,\"presentConsumeUiActionsUs\":%lld,"
@@ -582,6 +582,7 @@ public:
 			static_cast<long>(hr),
 			static_cast<long long>(frameIntervalUs),
 			static_cast<long long>(frameWallUs),
+			static_cast<long long>(outsideUs),
 			static_cast<long long>(presentWallUs),
 			static_cast<long long>(presentSliceKnownUs),
 			static_cast<long long>(presentOriginalUs),

@@ -12,12 +12,10 @@ class DX12IaHashStateCacheKey
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	UINT64 reloadGeneration = 0;
-	UINT64 presentGeneration = 0;
 	UINT64 contentGeneration = 0;
 	UINT64 resolveGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
-	UINT64 iaEpoch = 0;
-	UINT64 iaContentEpoch = 0;
+	UINT64 iaViewFingerprint = 0;
 	bool indexed = false;
 	UINT vertexCount = 0;
 	UINT indexCount = 0;
@@ -47,12 +45,10 @@ public:
 	{
 		return left.pipelineState == right.pipelineState &&
 			left.reloadGeneration == right.reloadGeneration &&
-			left.presentGeneration == right.presentGeneration &&
 			left.contentGeneration == right.contentGeneration &&
 			left.resolveGeneration == right.resolveGeneration &&
 			left.targetPlanFingerprint == right.targetPlanFingerprint &&
-			left.iaEpoch == right.iaEpoch &&
-			left.iaContentEpoch == right.iaContentEpoch &&
+			left.iaViewFingerprint == right.iaViewFingerprint &&
 			left.indexed == right.indexed &&
 			left.vertexCount == right.vertexCount &&
 			left.indexCount == right.indexCount &&
