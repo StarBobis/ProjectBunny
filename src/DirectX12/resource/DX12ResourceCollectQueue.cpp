@@ -461,18 +461,33 @@ void DX12ResourceCollectQueue::ProcessResourceTask(DX12ResourceCollectTask *task
 		return;
 
 	const auto begin = std::chrono::steady_clock::now();
+	LARGE_INTEGER recordBegin = DX12OuterTimingProbeUtils::Now();
 	RecordResource(
 		task->resource,
 		task->hasDesc ? &task->desc : nullptr,
 		task->hasHeapProperties ? &task->heapProperties : nullptr,
 		task->hasPlacedInfo ? &task->placedInfo : nullptr,
 		task->initialState);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"record_resource",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(recordBegin));
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	RecordResourceTaskStats(task, source, static_cast<int64_t>(elapsedUs));
-	if (task->retainedResource)
+	if (task->retainedResource) {
+		LARGE_INTEGER releaseBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ResourceSnapshotUtils::Release(task->resource);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"ResourceCollectQueue",
+			"release_resource_ref",
+			static_cast<UINT>(task->kind),
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(releaseBegin));
+	}
 	task->resource = nullptr;
 	task->retainedResource = false;
 }
@@ -492,7 +507,14 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 		task->enqueueThreadId,
 		GetCurrentThreadId());
 
+	LARGE_INTEGER recordBegin = DX12OuterTimingProbeUtils::Now();
 	DX12RecordResourceBarrier(static_cast<UINT>(task->barriers.size()), task->barriers.data());
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"record_resource_barriers",
+		static_cast<UINT>(task->kind),
+		task->barriers.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(recordBegin));
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
@@ -505,9 +527,16 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 		static_cast<long long>(elapsedUs),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
 
+	LARGE_INTEGER releaseBegin = DX12OuterTimingProbeUtils::Now();
 	for (D3D12_RESOURCE_BARRIER &barrier : task->barriers) {
 		ReleaseBarrierResources(&barrier);
 	}
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"release_barrier_refs",
+		static_cast<UINT>(task->kind),
+		task->barriers.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseBegin));
 	task->barriers.clear();
 }
 
@@ -530,16 +559,25 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 
 	RootSignatureRecord record;
 	record.rootSignature = task->rootSignature;
+	LARGE_INTEGER parseBegin = DX12OuterTimingProbeUtils::Now();
 	record.hash = Fnv1a64(task->rootSignatureBlob.data(), task->rootSignatureBlob.size());
 	record.size = task->rootSignatureBlob.size();
 	record.nodeMask = task->rootSignatureNodeMask;
 	ParseRootSignatureBlob(&record, task->rootSignatureBlob.data(), task->rootSignatureBlob.size());
 	const bool parsed = record.parsed;
 	const size_t parameterCount = record.parameters.size();
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"parse_root_signature",
+		static_cast<UINT>(task->kind),
+		task->rootSignatureBlob.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(parseBegin));
 
+	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	++gRootSignatureRecordsSeen;
-	auto found = gRootSignatureByPtr.find(record.rootSignature);
+	std::unordered_map<ID3D12RootSignature*, size_t>::iterator found =
+		gRootSignatureByPtr.find(record.rootSignature);
 	if (found != gRootSignatureByPtr.end()) {
 		gRootSignatures[found->second] = std::move(record);
 	} else {
@@ -548,6 +586,12 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 	}
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"store_root_signature",
+		static_cast<UINT>(task->kind),
+		parameterCount,
+		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
@@ -561,7 +605,14 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 		parameterCount,
 		static_cast<long long>(elapsedUs),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
+	LARGE_INTEGER releaseBegin = DX12OuterTimingProbeUtils::Now();
 	ReleaseTaskRootSignature(task);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"release_root_signature",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseBegin));
 }
 
 void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTask *task, const char *source)
@@ -582,11 +633,18 @@ void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTa
 		task->enqueueThreadId,
 		GetCurrentThreadId());
 
+	LARGE_INTEGER recordBegin = DX12OuterTimingProbeUtils::Now();
 	DX12RecordPsoRootSignatureImmediate(
 		task->psoIndex,
 		task->psoKind.c_str(),
 		task->pipelineState,
 		task->rootSignature);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"record_pso_root_signature",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(recordBegin));
 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
@@ -598,7 +656,14 @@ void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTa
 		static_cast<unsigned long long>(task->psoIndex),
 		static_cast<long long>(elapsedUs),
 		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)));
+	LARGE_INTEGER releaseBegin = DX12OuterTimingProbeUtils::Now();
 	ReleaseTaskPsoRootSignature(task);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"ResourceCollectQueue",
+		"release_pso_root_signature",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseBegin));
 }
 
 bool DX12ResourceCollectQueue::TryAddRefBarrierResources(D3D12_RESOURCE_BARRIER *barrier)

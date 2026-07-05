@@ -31,6 +31,7 @@
 #include "MigotoShaderOverride.hpp"
 #include "MigotoShaderRegex.hpp"
 #include "MigotoTextureOverride.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 static DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
 {

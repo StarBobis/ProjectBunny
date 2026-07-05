@@ -58,14 +58,29 @@ public:
 		{
 			bucket = value;
 			begin = DX12OuterTimingProbeUtils::Now();
+			DX12OuterTimingProbeUtils::LogApiScopeBegin(begin.QuadPart);
 		}
 
 		~ApiWallScope()
 		{
-			DX12OuterTimingProbeUtils::LogApiWallSlice(
+			const LARGE_INTEGER end = DX12OuterTimingProbeUtils::Now();
+			DX12OuterTimingProbeUtils::LogApiScopeEnd(
 				bucket,
-				DX12OuterTimingProbeUtils::ElapsedUs(begin));
+				begin.QuadPart,
+				end.QuadPart);
 		}
+	};
+
+	class CpuStageBucket
+	{
+	public:
+		char category[48] = {};
+		char stage[64] = {};
+		UINT kind = 0;
+		LONG64 calls = 0;
+		LONG64 totalUs = 0;
+		LONG64 maxUs = 0;
+		LONG64 items = 0;
 	};
 
 	inline static volatile LONG64 LastPresentEnterQpc = 0;
@@ -117,6 +132,17 @@ public:
 	inline static volatile LONG64 ApiWallCalls[ApiWallBucketCount] = {};
 	inline static volatile LONG64 ApiWallTotalUs[ApiWallBucketCount] = {};
 	inline static volatile LONG64 ApiWallMaxUs[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiScopeActiveDepth = 0;
+	inline static volatile LONG64 ApiScopeCalls = 0;
+	inline static volatile LONG64 ApiScopeTotalUs = 0;
+	inline static volatile LONG64 ApiScopeNestedCalls = 0;
+	inline static volatile LONG64 ApiScopeFirstBeginQpc = 0;
+	inline static volatile LONG64 ApiScopeLastEndQpc = 0;
+	inline static volatile LONG64 ApiScopeMaxGapUs = 0;
+
+	inline static SRWLOCK CpuStageLock = SRWLOCK_INIT;
+	inline static CpuStageBucket CpuStageBuckets[160] = {};
+	inline static LONG CpuStageBucketCount = 0;
 
 	static LARGE_INTEGER Frequency()
 	{
@@ -175,6 +201,25 @@ public:
 			return false;
 		const size_t prefixLength = strlen(prefix);
 		return strncmp(stage, prefix, prefixLength) == 0;
+	}
+
+	static bool LabelEquals(const char *left, const char *right)
+	{
+		if (!left)
+			left = "";
+		if (!right)
+			right = "";
+		return strcmp(left, right) == 0;
+	}
+
+	static void CopyLabel(char *target, size_t targetSize, const char *source)
+	{
+		if (!target || targetSize == 0)
+			return;
+		target[0] = '\0';
+		if (!source)
+			source = "";
+		strncpy_s(target, targetSize, source, _TRUNCATE);
 	}
 
 	static LONG64 TakeLong64(volatile LONG64 *value)
@@ -242,6 +287,48 @@ public:
 		}
 	}
 
+	static void MaxQpc(volatile LONG64 *target, LONGLONG value)
+	{
+		LONG64 oldValue = InterlockedCompareExchange64(target, 0, 0);
+		while (value > oldValue) {
+			const LONG64 previous =
+				InterlockedCompareExchange64(target, static_cast<LONG64>(value), oldValue);
+			if (previous == oldValue)
+				break;
+			oldValue = previous;
+		}
+	}
+
+	static void LogApiScopeBegin(LONGLONG beginQpc)
+	{
+		const LONG64 activeDepth = InterlockedIncrement64(&ApiScopeActiveDepth);
+		if (activeDepth > 1) {
+			InterlockedIncrement64(&ApiScopeNestedCalls);
+			return;
+		}
+		InterlockedIncrement64(&ApiScopeCalls);
+		InterlockedCompareExchange64(
+			&ApiScopeFirstBeginQpc,
+			static_cast<LONG64>(beginQpc),
+			0);
+		const LONG64 previousEndQpc =
+			InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
+		if (previousEndQpc > 0 && beginQpc > previousEndQpc)
+			MaxUs(&ApiScopeMaxGapUs, DeltaUs(previousEndQpc, beginQpc));
+	}
+
+	static void LogApiScopeEnd(int bucket, LONGLONG beginQpc, LONGLONG endQpc)
+	{
+		const LONG64 elapsedUs = DeltaUs(beginQpc, endQpc);
+		const LONG64 activeDepth = InterlockedCompareExchange64(&ApiScopeActiveDepth, 0, 0);
+		if (activeDepth <= 1) {
+			AddUs(&ApiScopeTotalUs, elapsedUs);
+			MaxQpc(&ApiScopeLastEndQpc, endQpc);
+		}
+		LogApiWallSlice(bucket, elapsedUs);
+		InterlockedDecrement64(&ApiScopeActiveDepth);
+	}
+
 	static void LogApiWallSlice(int bucket, LONG64 us)
 	{
 		if (bucket < 0 || bucket >= ApiWallBucketCount)
@@ -275,6 +362,161 @@ public:
 		}
 	}
 
+	static void LogCpuTimelineCoverageState(
+		LONG present,
+		LONGLONG frameStartQpc,
+		LONGLONG frameEndQpc,
+		LONG64 frameWallUs,
+		LONG64 presentWallUs)
+	{
+		const LONG64 calls = TakeLong64(&ApiScopeCalls);
+		const LONG64 totalUs = TakeLong64(&ApiScopeTotalUs);
+		const LONG64 nestedCalls = TakeLong64(&ApiScopeNestedCalls);
+		const LONG64 firstBeginQpc = TakeLong64(&ApiScopeFirstBeginQpc);
+		const LONG64 lastEndQpc = TakeLong64(&ApiScopeLastEndQpc);
+		const LONG64 maxGapUs = TakeLong64(&ApiScopeMaxGapUs);
+
+		const LONG64 apiSpanUs =
+			(firstBeginQpc > 0 && lastEndQpc > firstBeginQpc) ?
+				DeltaUs(firstBeginQpc, lastEndQpc) : 0;
+		const LONG64 beforeFirstApiUs =
+			(frameStartQpc > 0 && firstBeginQpc > frameStartQpc) ?
+				DeltaUs(frameStartQpc, firstBeginQpc) : 0;
+		const LONG64 afterLastApiUs =
+			(lastEndQpc > 0 && frameEndQpc > lastEndQpc) ?
+				DeltaUs(lastEndQpc, frameEndQpc) : 0;
+		const LONG64 firstBeginToPresentUs =
+			(firstBeginQpc > 0 && frameEndQpc > firstBeginQpc) ?
+				DeltaUs(firstBeginQpc, frameEndQpc) : 0;
+		const LONG64 lastEndToPresentUs =
+			(lastEndQpc > 0 && frameEndQpc > lastEndQpc) ?
+				DeltaUs(lastEndQpc, frameEndQpc) : 0;
+
+		DX12LogManager::JsonFunc("DX12CpuTimelineCoverage",
+			"\"present\":%ld,\"apiScopeCalls\":%lld,\"apiScopeNestedCalls\":%lld,"
+			"\"apiScopeTotalUs\":%lld,\"apiScopeSpanUs\":%lld,\"apiScopeMaxGapUs\":%lld,"
+			"\"apiBeforeFirstScopeUs\":%lld,\"apiAfterLastScopeUs\":%lld,"
+			"\"apiFirstBeginToPresentUs\":%lld,\"apiLastEndToPresentUs\":%lld,"
+			"\"frameWallUs\":%lld,\"presentWallUs\":%lld,\"frameMinusApiTotalUs\":%lld,"
+			"\"frameMinusApiSpanUs\":%lld,\"apiTotalPctX100\":%lld,\"apiSpanPctX100\":%lld",
+			present,
+			static_cast<long long>(calls),
+			static_cast<long long>(nestedCalls),
+			static_cast<long long>(totalUs),
+			static_cast<long long>(apiSpanUs),
+			static_cast<long long>(maxGapUs),
+			static_cast<long long>(beforeFirstApiUs),
+			static_cast<long long>(afterLastApiUs),
+			static_cast<long long>(firstBeginToPresentUs),
+			static_cast<long long>(lastEndToPresentUs),
+			static_cast<long long>(frameWallUs),
+			static_cast<long long>(presentWallUs),
+			static_cast<long long>(SafeSubtract(frameWallUs, totalUs)),
+			static_cast<long long>(SafeSubtract(frameWallUs, apiSpanUs)),
+			static_cast<long long>(frameWallUs > 0 ? (totalUs * 10000 / frameWallUs) : 0),
+			static_cast<long long>(frameWallUs > 0 ? (apiSpanUs * 10000 / frameWallUs) : 0));
+	}
+
+	static LONG FindCpuStageBucketLocked(const char *category, const char *stage, UINT kind)
+	{
+		for (LONG index = 0; index < CpuStageBucketCount; ++index) {
+			if (CpuStageBuckets[index].kind == kind &&
+					LabelEquals(CpuStageBuckets[index].category, category) &&
+					LabelEquals(CpuStageBuckets[index].stage, stage)) {
+				return index;
+			}
+		}
+		if (CpuStageBucketCount >= static_cast<LONG>(sizeof(CpuStageBuckets) / sizeof(CpuStageBuckets[0])))
+			return -1;
+		const LONG newIndex = CpuStageBucketCount;
+		++CpuStageBucketCount;
+		CopyLabel(CpuStageBuckets[newIndex].category, sizeof(CpuStageBuckets[newIndex].category), category);
+		CopyLabel(CpuStageBuckets[newIndex].stage, sizeof(CpuStageBuckets[newIndex].stage), stage);
+		CpuStageBuckets[newIndex].kind = kind;
+		return newIndex;
+	}
+
+	static void LogCpuStage(
+		const char *category,
+		const char *stage,
+		UINT kind,
+		size_t itemCount,
+		LONG64 us)
+	{
+		const LONG64 safeUs = ClampUs(us);
+		AcquireSRWLockExclusive(&CpuStageLock);
+		const LONG index = FindCpuStageBucketLocked(category, stage, kind);
+		if (index >= 0) {
+			++CpuStageBuckets[index].calls;
+			CpuStageBuckets[index].totalUs += safeUs;
+			if (safeUs > CpuStageBuckets[index].maxUs)
+				CpuStageBuckets[index].maxUs = safeUs;
+			CpuStageBuckets[index].items += static_cast<LONG64>(itemCount);
+		}
+		ReleaseSRWLockExclusive(&CpuStageLock);
+	}
+
+	static void LogCpuStageTimingState(LONG present, LONG64 frameWallUs)
+	{
+		CpuStageBucket snapshot[160] = {};
+		LONG snapshotCount = 0;
+		AcquireSRWLockExclusive(&CpuStageLock);
+		snapshotCount = CpuStageBucketCount;
+		for (LONG index = 0; index < snapshotCount; ++index)
+			snapshot[index] = CpuStageBuckets[index];
+		memset(CpuStageBuckets, 0, sizeof(CpuStageBuckets));
+		CpuStageBucketCount = 0;
+		ReleaseSRWLockExclusive(&CpuStageLock);
+
+		for (LONG index = 0; index < snapshotCount; ++index) {
+			if (!snapshot[index].calls && !snapshot[index].totalUs)
+				continue;
+			DX12LogManager::JsonFunc("DX12CpuStageTiming",
+				"\"present\":%ld,\"category\":\"%s\",\"stage\":\"%s\",\"kind\":%u,"
+				"\"calls\":%lld,\"items\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,"
+				"\"frameWallUs\":%lld,\"framePctX100\":%lld",
+				present,
+				snapshot[index].category,
+				snapshot[index].stage,
+				snapshot[index].kind,
+				static_cast<long long>(snapshot[index].calls),
+				static_cast<long long>(snapshot[index].items),
+				static_cast<long long>(snapshot[index].totalUs),
+				static_cast<long long>(snapshot[index].maxUs),
+				static_cast<long long>(frameWallUs),
+				static_cast<long long>(
+					frameWallUs > 0 ? (snapshot[index].totalUs * 10000 / frameWallUs) : 0));
+		}
+	}
+
+	static void LogLogCostState(LONG present, LONG64 frameWallUs)
+	{
+		DX12LogManager::DX12LogCostSnapshot snapshot = {};
+		DX12LogManager::TakeLogCostSnapshot(&snapshot);
+		if (!snapshot.jsonCalls && !snapshot.textCalls && !snapshot.debugJsonCalls &&
+				!snapshot.enqueueCalls && !snapshot.formatUs && !snapshot.enqueueUs &&
+				!snapshot.droppedLines) {
+			return;
+		}
+		const LONG64 totalUs = snapshot.formatUs + snapshot.enqueueUs;
+		DX12LogManager::JsonFunc("DX12LogCost",
+			"\"present\":%ld,\"jsonCalls\":%lld,\"textCalls\":%lld,"
+			"\"debugJsonCalls\":%lld,\"enqueueCalls\":%lld,\"formatUs\":%lld,"
+			"\"enqueueUs\":%lld,\"totalUs\":%lld,\"droppedLines\":%lld,"
+			"\"frameWallUs\":%lld,\"framePctX100\":%lld",
+			present,
+			static_cast<long long>(snapshot.jsonCalls),
+			static_cast<long long>(snapshot.textCalls),
+			static_cast<long long>(snapshot.debugJsonCalls),
+			static_cast<long long>(snapshot.enqueueCalls),
+			static_cast<long long>(snapshot.formatUs),
+			static_cast<long long>(snapshot.enqueueUs),
+			static_cast<long long>(totalUs),
+			static_cast<long long>(snapshot.droppedLines),
+			static_cast<long long>(frameWallUs),
+			static_cast<long long>(frameWallUs > 0 ? (totalUs * 10000 / frameWallUs) : 0));
+	}
+
 	static void LogPresentEnter(const char *api, IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 	{
 		(void)api;
@@ -301,6 +543,7 @@ public:
 	{
 		const LARGE_INTEGER now = Now();
 		const LONGLONG enter = InterlockedCompareExchange64(&CurrentPresentEnterQpc, 0, 0);
+		const LONGLONG previousLeave = InterlockedCompareExchange64(&LastPresentLeaveQpc, 0, 0);
 		const LONG64 presentWallUs = enter > 0 ? DeltaUs(enter, now.QuadPart) : 0;
 		const LONG64 frameIntervalUs = InterlockedCompareExchange64(&CurrentFrameIntervalUs, 0, 0);
 		const LONG64 outsideUs = InterlockedCompareExchange64(&CurrentOutsideBetweenPresentsUs, 0, 0);
@@ -314,7 +557,9 @@ public:
 			frameIntervalUs,
 			outsideUs,
 			presentWallUs,
-			frameWallUs);
+			frameWallUs,
+			previousLeave,
+			now.QuadPart);
 		InterlockedExchange64(&LastPresentLeaveQpc, now.QuadPart);
 	}
 
@@ -459,8 +704,6 @@ public:
 
 	static void LogWorkerTask(const char *queueName, const char *stage, UINT taskKind, UINT64 sequence, size_t batchSize, size_t pending, DWORD enqueueThreadId, LONG64 us)
 	{
-		(void)queueName;
-		(void)stage;
 		(void)taskKind;
 		(void)sequence;
 		(void)batchSize;
@@ -469,6 +712,7 @@ public:
 
 		InterlockedIncrement64(&WorkerTaskCalls);
 		AddUs(&WorkerTaskUs, us);
+		LogCpuStage(queueName, stage, taskKind, batchSize, us);
 	}
 
 	static void LogWorkerWait(const char *queueName, const char *reason, const char *mode, UINT64 targetSequence, UINT64 completedSequence, size_t pending, LONG64 us)
@@ -508,7 +752,9 @@ public:
 		LONG64 frameIntervalUs,
 		LONG64 outsideUs,
 		LONG64 presentWallUs,
-		LONG64 frameWallUs)
+		LONG64 frameWallUs,
+		LONGLONG frameStartQpc,
+		LONGLONG frameEndQpc)
 	{
 		const LONG present = DX12RuntimeState::GetPresentCount();
 		const LONG presentEnterCalls = TakeLong(&PresentEnterCalls);
@@ -553,7 +799,14 @@ public:
 		const LONG64 workerIdleWaitUs = TakeLong64(&WorkerIdleWaitUs);
 		const LONG64 workerDrainWaitUs = TakeLong64(&WorkerDrainWaitUs);
 
+		LogCpuTimelineCoverageState(
+			present,
+			frameStartQpc,
+			frameEndQpc,
+			frameWallUs,
+			presentWallUs);
 		LogApiWallTimingState(present, frameWallUs);
+		LogCpuStageTimingState(present, frameWallUs);
 
 		DX12LogManager::JsonFunc("DX12FrameTimeline",
 			"\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
@@ -623,5 +876,6 @@ public:
 			static_cast<long long>(workerIdleWaitUs),
 			static_cast<long long>(workerDrainWaitUs),
 			static_cast<long long>(SafeSubtract(presentWallUs, presentSliceKnownUs)));
+		LogLogCostState(present, frameWallUs);
 	}
 };

@@ -1731,7 +1731,14 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	if (!commandList || !DX12ModHasActiveTextureOverrides())
 		return false;
 
+	LARGE_INTEGER acquireDeviceBegin = DX12OuterTimingProbeUtils::Now();
 	ID3D12Device *device = AcquireModDevice(commandList);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"apply_acquire_device",
+		0,
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(acquireDeviceBegin));
 	if (!device)
 		return false;
 
@@ -1748,19 +1755,47 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	bool hasExplicitDispatch = false;
 	bool vlrMatched = false;
 	std::unordered_set<std::wstring> activePreSkinSections;
+	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
 	SnapshotActivePreSkinSections(&activePreSkinSections);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"snapshot_active_sections",
+		0,
+		activePreSkinSections.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 
+	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
 	AcquireSRWLockExclusive(&gModLock);
+	LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
 		uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		hashMatched ? "match_cs_hit" : "match_cs_miss",
+		0,
+		uavs.size() + srvs.size() + cbvs.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(matchCsBegin));
 	if (hashMatched)
 		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(hashMatch.config);
 	if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
+		LARGE_INTEGER vlrMatchBegin = DX12OuterTimingProbeUtils::Now();
 		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
 			FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			vlrMatched ? "vlr_match_hit" : "vlr_match_miss",
+			0,
+			uavs.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(vlrMatchBegin));
 	}
 	ReleaseSRWLockExclusive(&gModLock);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"mod_lock_match_total",
+		0,
+		uavs.size() + srvs.size() + cbvs.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(matchBegin));
 
 	if (hashMatched) {
 		if (!hasExplicitDispatch) {
@@ -1772,6 +1807,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 #endif
 		} else {
 			if (!hashMatch.srvReplacements.empty()) {
+				LARGE_INTEGER patchBegin = DX12OuterTimingProbeUtils::Now();
 				applied = ApplyPreSkinDescriptorTablePatchLocked(
 					device, commandList, hashBinding, producer,
 					hashMatch.config, hashMatch.srvReplacements,
@@ -1780,19 +1816,47 @@ bool DX12ModApplyPreSkinningUavReplacement(
 						hashMatch.config.section.c_str() :
 						hashMatch.config.originalSection.c_str(),
 					hashMatch.hash, originalVertexCount, overrideVertexCount);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"PreSkinRuntime",
+					applied ? "descriptor_table_patch_hit" : "descriptor_table_patch_miss",
+					0,
+					hashMatch.srvReplacements.size(),
+					DX12OuterTimingProbeUtils::ElapsedUs(patchBegin));
 			}
 			if (applied) {
+				LARGE_INTEGER dispatchOverrideBegin = DX12OuterTimingProbeUtils::Now();
 				FillPreSkinDispatchOverrideFromConfig(hashMatch.config, dispatchOverride);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"PreSkinRuntime",
+					"fill_dispatch_override",
+					0,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(dispatchOverrideBegin));
 				DX12Profiling::RecordPreSkinApplied();
 			}
 		}
 	}
 	if (!applied && vlrMatched) {
+		LARGE_INTEGER loadBegin = DX12OuterTimingProbeUtils::Now();
 		replacement = EnsureLoadedResourceForPreSkin(device, vlrResourceName);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			replacement ? "vlr_load_resource_hit" : "vlr_load_resource_miss",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(loadBegin));
+		LARGE_INTEGER ensureUavBegin = DX12OuterTimingProbeUtils::Now();
 		if (replacement && EnsureResourceUavLocked(
 			device, commandList, replacement,
 			vlr.uavByteStride ? vlr.uavByteStride : vlr.overrideByteStride,
 			0, true, &activePreSkinSections)) {
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				"vlr_ensure_uav_hit",
+				0,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(ensureUavBegin));
+			LARGE_INTEGER findBindingBegin = DX12OuterTimingProbeUtils::Now();
 			const DX12CurrentComputeUavBinding *binding = nullptr;
 			for (const DX12CurrentComputeUavBinding &uav : uavs) {
 				if (uav.rootParameterIndex == producer.rootParameterIndex &&
@@ -1803,20 +1867,47 @@ bool DX12ModApplyPreSkinningUavReplacement(
 					break;
 				}
 			}
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				binding ? "vlr_find_binding_hit" : "vlr_find_binding_miss",
+				0,
+				uavs.size(),
+				DX12OuterTimingProbeUtils::ElapsedUs(findBindingBegin));
 			if (binding) {
 				std::vector<DX12PreSkinReplacementState::DescriptorRestore> descriptorRestores;
+				LARGE_INTEGER bindingPatchBegin = DX12OuterTimingProbeUtils::Now();
 				applied = ApplyPreSkinBindingPatchLocked(
 					device, commandList, *binding, producer, replacement,
 					vlr.section.c_str(), 0, &descriptorRestores);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"PreSkinRuntime",
+					applied ? "vlr_binding_patch_hit" : "vlr_binding_patch_miss",
+					0,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(bindingPatchBegin));
 				if (applied)
 					DX12Profiling::RecordPreSkinApplied();
 				if (!applied)
 					ReleasePreSkinDescriptorRestores(&descriptorRestores);
 			}
+		} else {
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				"vlr_ensure_uav_miss",
+				0,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(ensureUavBegin));
 		}
 	}
 	DX12Profiling::RecordPreSkinUavTest(applied);
+	LARGE_INTEGER releaseDeviceBegin = DX12OuterTimingProbeUtils::Now();
 	device->Release();
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"apply_release_device",
+		0,
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseDeviceBegin));
 	return applied;
 }
 
@@ -1826,41 +1917,98 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 		return false;
 
 	std::vector<std::pair<SIZE_T, std::wstring>> patches;
+	LARGE_INTEGER snapshotBegin = DX12OuterTimingProbeUtils::Now();
 	AcquireSRWLockShared(&gPreSkinLock);
 	patches.assign(gKnownPreSkinDescriptorPatches.begin(), gKnownPreSkinDescriptorPatches.end());
 	ReleaseSRWLockShared(&gPreSkinLock);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"known_patch_snapshot",
+		0,
+		patches.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(snapshotBegin));
 	if (patches.empty())
 		return false;
 
+	LARGE_INTEGER acquireDeviceBegin = DX12OuterTimingProbeUtils::Now();
 	ID3D12Device *device = AcquireModDevice(commandList);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"known_patch_acquire_device",
+		0,
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(acquireDeviceBegin));
 	if (!device)
 		return false;
 
 	DX12InternalReplayScope internalReplay;
 	bool applied = false;
 	std::unordered_set<std::wstring> activePreSkinSections;
+	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
 	SnapshotActivePreSkinSections(&activePreSkinSections);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"known_patch_active_sections",
+		0,
+		activePreSkinSections.size(),
+		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 	for (const auto &patch : patches) {
+		LARGE_INTEGER blockedBegin = DX12OuterTimingProbeUtils::Now();
 		AcquireSRWLockExclusive(&gModLock);
 		const bool blocked =
 			ResourceBlockedByInactiveExplicitMatchCsLocked(patch.second, activePreSkinSections);
 		ReleaseSRWLockExclusive(&gModLock);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			blocked ? "known_patch_blocked" : "known_patch_allowed",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(blockedBegin));
 		if (blocked)
 			continue;
+		LARGE_INTEGER loadBegin = DX12OuterTimingProbeUtils::Now();
 		DX12LoadedResource *resource = EnsureLoadedResourceForPreSkin(device, patch.second);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			resource ? "known_patch_load_resource_hit" : "known_patch_load_resource_miss",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(loadBegin));
 		if (!resource)
 			continue;
+		LARGE_INTEGER strideBegin = DX12OuterTimingProbeUtils::Now();
 		AcquireSRWLockExclusive(&gModLock);
 		const UINT elementStride =
 			FindPreSkinUavElementStrideLocked(*resource, activePreSkinSections);
 		ReleaseSRWLockExclusive(&gModLock);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			"known_patch_find_stride",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(strideBegin));
+		LARGE_INTEGER ensureBegin = DX12OuterTimingProbeUtils::Now();
 		if (!EnsureResourceUavLocked(
 			device, commandList, resource, elementStride, 0, true,
-			&activePreSkinSections))
+			&activePreSkinSections)) {
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				"known_patch_ensure_uav_miss",
+				0,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(ensureBegin));
 			continue;
+		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			"known_patch_ensure_uav_hit",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(ensureBegin));
 		if (!resource->uavResource || !resource->uavCpu.ptr)
 			continue;
 		if (resource->uavState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+			LARGE_INTEGER barrierBegin = DX12OuterTimingProbeUtils::Now();
 			D3D12_RESOURCE_BARRIER barrier = {};
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			barrier.Transition.pResource = resource->uavResource;
@@ -1869,17 +2017,37 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			commandList->ResourceBarrier(1, &barrier);
 			resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				"known_patch_resource_barrier",
+				0,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(barrierBegin));
 		}
 		D3D12_CPU_DESCRIPTOR_HANDLE target = {};
 		target.ptr = patch.first;
+		LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
 		device->CopyDescriptorsSimple(
 			1, target, resource->uavCpu,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			"known_patch_copy_descriptor",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(copyBegin));
 		resource->uavWritten = true;
 		resource->uavValid = true;
 		applied = true;
 	}
+	LARGE_INTEGER releaseDeviceBegin = DX12OuterTimingProbeUtils::Now();
 	device->Release();
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"PreSkinRuntime",
+		"known_patch_release_device",
+		0,
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseDeviceBegin));
 	return applied;
 }
 

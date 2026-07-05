@@ -15,6 +15,7 @@
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 // Legacy stub - referenced by compiled code but definition was never provided.
@@ -205,12 +206,19 @@ public:
 		// Draw consumes the compiled PSO decision instead of rediscovering
 		// shader override metadata on every command.
 		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
+		LARGE_INTEGER psoDecisionBegin = DX12OuterTimingProbeUtils::Now();
 		const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
 		DX12CommandListRuntimeState *mutableRuntimeState =
 			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
 		const DX12CompiledDrawDecision *drawDecision =
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement",
+			"ensure_draw_decision",
+			draw.indexed ? 1u : 0u,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(psoDecisionBegin));
 		if (!drawDecision || drawDecision->CanFastReject()) {
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionFastReject();
 			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
@@ -237,12 +245,20 @@ public:
 		UINT64 cheapKey = 0;
 
 		if (psoIaNegativeCacheSafe && targetPlanHasIaTargets) {
+			LARGE_INTEGER cheapBuildBegin = DX12OuterTimingProbeUtils::Now();
 			cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
 				runtimeState.pipelineState, targetPlan, runtimeState.ia,
 				draw.indexed, draw.vertexCount, draw.indexCount,
 				draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"cheap_fingerprint",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(cheapBuildBegin));
 			UINT64 mappedFullKey = 0;
 			bool cheapHit = false;
+			LARGE_INTEGER cheapLookupBegin = DX12OuterTimingProbeUtils::Now();
 			AcquireSRWLockShared(&s_cheapToFullKeyMapLock);
 			std::unordered_map<UINT64, UINT64>::iterator it =
 				s_cheapToFullKeyMap.find(cheapKey);
@@ -251,19 +267,39 @@ public:
 				cheapHit = true;
 			}
 			ReleaseSRWLockShared(&s_cheapToFullKeyMapLock);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"cheap_negative_lookup",
+				draw.indexed ? 1u : 0u,
+				cheapHit ? 1 : 0,
+				DX12OuterTimingProbeUtils::ElapsedUs(cheapLookupBegin));
 
 			if (cheapHit) {
 				// Cheap fingerprint hits let repeated no-match draws skip
 				// draw-region IA hashing.
+				LARGE_INTEGER fullLookupBegin = DX12OuterTimingProbeUtils::Now();
 				if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(mappedFullKey)) {
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						"cheap_full_negative_hit",
+						draw.indexed ? 1u : 0u,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(fullLookupBegin));
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"cheap_full_negative_miss",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(fullLookupBegin));
 			}
 		}
 
 		bool hasIaHashState = false;
 		if (targetPlanHasIaTargets) {
+			LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
 					runtimeState.ia,
@@ -276,29 +312,62 @@ public:
 					draw.firstVertex,
 					draw.firstIndex,
 					draw.baseVertex);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"build_ia_cache_key",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(iaKeyBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
+			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12IaHashStateCacheUtils::TryLoad(
 					&mutableRuntimeState->iaHashStateCache,
 					&mutableRuntimeState->iaHashStateCacheClock,
 					iaCacheKey,
 					&iaState,
 					&hasIaHashState)) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"ia_hash_cache_hit",
+					draw.indexed ? 1u : 0u,
+					hasIaHashState ? 1 : 0,
+					DX12OuterTimingProbeUtils::ElapsedUs(iaCacheBegin));
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheHit(
 					hasIaHashState);
 			} else {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"ia_hash_cache_miss",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(iaCacheBegin));
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheMiss();
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
 				DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
+				LARGE_INTEGER buildHashBegin = DX12OuterTimingProbeUtils::Now();
 				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargets(
 					runtimeState.ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
 					draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"build_ia_hash_state",
+					draw.indexed ? 1u : 0u,
+					hasIaHashState ? 1 : 0,
+					DX12OuterTimingProbeUtils::ElapsedUs(buildHashBegin));
 				DX12_HOTPATH_TIME_END(DrawBuildIaHash);
+				LARGE_INTEGER storeHashBegin = DX12OuterTimingProbeUtils::Now();
 				DX12IaHashStateCacheUtils::Store(
 					&mutableRuntimeState->iaHashStateCache,
 					&mutableRuntimeState->iaHashStateCacheClock,
 					iaCacheKey,
 					hasIaHashState,
 					iaState);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"store_ia_hash_cache",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(storeHashBegin));
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheStore();
 			}
 			DX12Profiling::RecordIaHashStateResult(hasIaHashState);
@@ -314,9 +383,23 @@ public:
 			// PSO and IA negative cache.
 			if (canUsePsoIaNegativeCache) {
 				DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
+				LARGE_INTEGER negKeyBegin = DX12OuterTimingProbeUtils::Now();
 				psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 					runtimeState.pipelineState, targetPlan, iaState);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"build_pso_ia_negative_key",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(negKeyBegin));
+				LARGE_INTEGER negLookupBegin = DX12OuterTimingProbeUtils::Now();
 				if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey)) {
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						"pso_ia_negative_hit",
+						draw.indexed ? 1u : 0u,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
 					// Cache the cheap fingerprint so later identical no-match draws
 					// can skip BuildIaHashState entirely.
 					if (cheapKey)
@@ -325,33 +408,72 @@ public:
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"pso_ia_negative_miss",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
 				DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
 			}
 
 			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
+			LARGE_INTEGER prepareBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, iaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, &iaReplacement,
 				psoIaNegativeCacheSafe)) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"prepare_shader_override_match",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(prepareBegin));
 				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
 				DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
+				LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
 				if (DX12IaReplacementExecutor::ApplyAndExecute(
 					commandList, draw, iaState, &iaReplacement, runtimeState, callbacks)) {
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						"apply_and_execute_match",
+						draw.indexed ? 1u : 0u,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
 					DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return true;
 				}
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"apply_and_execute_failed",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
 				DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
 			} else {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"prepare_shader_override_miss",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(prepareBegin));
 				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
 			}
 
 			if (canUsePsoIaNegativeCache) {
 				// No match: store both the full negative key and cheap-to-full map.
+				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
 				DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
 				if (cheapKey)
 					DX12IaReplacementExecutor::StoreCheapToFullKeyMap(cheapKey, psoIaNegKey);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"store_pso_ia_negative",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(negStoreBegin));
 			}
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;

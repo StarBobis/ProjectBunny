@@ -41,9 +41,38 @@ static bool TryComputeTrackedCpuHandleRange(
 
 void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *source)
 {
+	LARGE_INTEGER runtimeBegin = DX12OuterTimingProbeUtils::Now();
 	::RecordRuntimeDescriptor(CloneDescriptorRecord(record));
-	if (!EnqueueDescriptorTask(&record, source))
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"record_runtime_descriptor",
+		static_cast<UINT>(DX12DescriptorCollectTaskKind::DescriptorBatch),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(runtimeBegin));
+	LARGE_INTEGER enqueueBegin = DX12OuterTimingProbeUtils::Now();
+	if (!EnqueueDescriptorTask(&record, source)) {
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"enqueue_descriptor_fallback",
+			static_cast<UINT>(DX12DescriptorCollectTaskKind::DescriptorBatch),
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(enqueueBegin));
+		LARGE_INTEGER directBegin = DX12OuterTimingProbeUtils::Now();
 		::RecordDescriptor(std::move(record));
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"record_descriptor_direct",
+			static_cast<UINT>(DX12DescriptorCollectTaskKind::DescriptorBatch),
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(directBegin));
+	} else {
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"enqueue_descriptor",
+			static_cast<UINT>(DX12DescriptorCollectTaskKind::DescriptorBatch),
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(enqueueBegin));
+	}
 	MaybeLogInlineStats(source ? source : "RecordDescriptor");
 }
 
@@ -58,17 +87,42 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 	if (!device || count == 0)
 		return;
 
+	LARGE_INTEGER runtimeBegin = DX12OuterTimingProbeUtils::Now();
 	::RecordRuntimeDescriptorCopyRange(device, type, destStart, srcStart, count);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"record_runtime_copy_range",
+		static_cast<UINT>(DX12DescriptorCollectTaskKind::CopyRange),
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(runtimeBegin));
 	Start();
 
+	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 	std::unique_lock<std::mutex> lock(mutex);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"copy_range_lock_wait",
+		static_cast<UINT>(DX12DescriptorCollectTaskKind::CopyRange),
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(lockBegin));
 	copyRangeCalls++;
 	copiedDescriptors += count;
 	if (!pendingDescriptorWrites.empty()) {
+		LARGE_INTEGER flushBegin = DX12OuterTimingProbeUtils::Now();
 		DX12DescriptorCollectBatch batch;
-		if (TryStealDescriptorBatchLocked(&batch))
+		size_t stolenDescriptorCount = 0;
+		if (TryStealDescriptorBatchLocked(&batch)) {
+			stolenDescriptorCount = batch.descriptors.size();
 			QueueDescriptorBatchLocked(&batch);
+		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"copy_range_flush_pending",
+			static_cast<UINT>(DX12DescriptorCollectTaskKind::CopyRange),
+			stolenDescriptorCount,
+			DX12OuterTimingProbeUtils::ElapsedUs(flushBegin));
 	}
+	LARGE_INTEGER queueBegin = DX12OuterTimingProbeUtils::Now();
 	if (!TryMergeQueuedCopyTaskLocked(
 			device, type, destStart, srcStart, count, GetCurrentThreadId())) {
 		DX12DescriptorCollectTask task;
@@ -108,6 +162,12 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		if (count > maxMergedCount)
 			maxMergedCount = count;
 	}
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"copy_range_queue_or_merge",
+		static_cast<UINT>(DX12DescriptorCollectTaskKind::CopyRange),
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(queueBegin));
 	lock.unlock();
 	wake.notify_one();
 	MaybeLogInlineStats(source ? source : "RecordCopyRange");
@@ -133,6 +193,7 @@ void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
 	if (!cpuHandles)
 		return;
 
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 	std::lock_guard<std::mutex> lock(mutex);
 	for (size_t index = 0; index < count; ++index) {
 		const SIZE_T cpuHandle = cpuHandles[index];
@@ -141,6 +202,12 @@ void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
 		if (pendingDescriptorSequences.find(cpuHandle) != pendingDescriptorSequences.end())
 			pending[index] = 1;
 	}
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"find_pending_handles",
+		0,
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 }
 
 void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
@@ -153,6 +220,7 @@ void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
 		return;
 	memset(found, 0, count * sizeof(uint8_t));
 
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 	std::lock_guard<std::mutex> lock(mutex);
 	for (size_t index = 0; index < count; ++index) {
 		const SIZE_T cpuHandle = cpuHandles[index];
@@ -165,6 +233,12 @@ void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
 		records[index] = CloneDescriptorRecord(pendingWrite->second);
 		found[index] = 1;
 	}
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"copy_pending_writes",
+		0,
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 }
 
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *reason)
@@ -490,6 +564,7 @@ void DX12DescriptorCollectPipeline::ProcessTask(DX12DescriptorCollectTask *task,
 	if (!task)
 		return;
 	if (task->kind == DX12DescriptorCollectTaskKind::DescriptorBatch) {
+		LARGE_INTEGER compactBegin = DX12OuterTimingProbeUtils::Now();
 		std::vector<DescriptorRecord> liveDescriptors;
 		liveDescriptors.reserve(task->descriptors.size());
 		for (size_t index = 0; index < task->descriptors.size(); ++index) {
@@ -498,15 +573,36 @@ void DX12DescriptorCollectPipeline::ProcessTask(DX12DescriptorCollectTask *task,
 			liveDescriptors.push_back(std::move(task->descriptors[index]));
 			MarkTaskRecordConsumedAfterMove(task, index);
 		}
-		if (!liveDescriptors.empty())
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"worker_compact_descriptor_batch",
+			static_cast<UINT>(task->kind),
+			task->descriptors.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(compactBegin));
+		if (!liveDescriptors.empty()) {
+			LARGE_INTEGER recordBegin = DX12OuterTimingProbeUtils::Now();
 			::RecordDescriptorBatch(&liveDescriptors);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"DescriptorCollectPipeline",
+				"worker_record_descriptor_batch",
+				static_cast<UINT>(task->kind),
+				liveDescriptors.size(),
+				DX12OuterTimingProbeUtils::ElapsedUs(recordBegin));
+		}
 		return;
 	}
 	if (task->kind == DX12DescriptorCollectTaskKind::CopyRange) {
 		if (task->consumed)
 			return;
+		LARGE_INTEGER recordBegin = DX12OuterTimingProbeUtils::Now();
 		::RecordDescriptorCopyRange(
 			task->device, task->type, task->destStart, task->srcStart, task->count);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"worker_record_copy_range",
+			static_cast<UINT>(task->kind),
+			task->count,
+			DX12OuterTimingProbeUtils::ElapsedUs(recordBegin));
 		task->consumed = true;
 	}
 }
@@ -515,6 +611,8 @@ void DX12DescriptorCollectPipeline::ReleaseTask(DX12DescriptorCollectTask *task)
 {
 	if (!task)
 		return;
+	LARGE_INTEGER releaseBegin = DX12OuterTimingProbeUtils::Now();
+	const size_t descriptorCount = task->descriptors.size();
 	for (size_t index = 0; index < task->descriptors.size(); ++index) {
 		if (IsTaskRecordConsumed(*task, index))
 			continue;
@@ -524,6 +622,12 @@ void DX12DescriptorCollectPipeline::ReleaseTask(DX12DescriptorCollectTask *task)
 	task->descriptors.clear();
 	task->descriptorConsumed.clear();
 	task->indexedCpuHandles.clear();
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"release_task",
+		static_cast<UINT>(task->kind),
+		descriptorCount,
+		DX12OuterTimingProbeUtils::ElapsedUs(releaseBegin));
 }
 
 void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
@@ -622,11 +726,28 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 {
 	(void)reason;
 	Start();
+	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 	std::unique_lock<std::mutex> lock(mutex);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"flush_lock_wait",
+		0,
+		0,
+		DX12OuterTimingProbeUtils::ElapsedUs(lockBegin));
 	if (!pendingDescriptorWrites.empty()) {
+		LARGE_INTEGER queueBegin = DX12OuterTimingProbeUtils::Now();
 		DX12DescriptorCollectBatch batch;
-		if (TryStealDescriptorBatchLocked(&batch))
+		size_t stolenDescriptorCount = 0;
+		if (TryStealDescriptorBatchLocked(&batch)) {
+			stolenDescriptorCount = batch.descriptors.size();
 			QueueDescriptorBatchLocked(&batch);
+		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"flush_queue_pending",
+			static_cast<UINT>(DX12DescriptorCollectTaskKind::DescriptorBatch),
+			stolenDescriptorCount,
+			DX12OuterTimingProbeUtils::ElapsedUs(queueBegin));
 	}
 	wake.notify_one();
 	LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
@@ -656,8 +777,15 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 	if (!cpuHandles || count == 0)
 		return;
 	Start();
+	LARGE_INTEGER uniqueBegin = DX12OuterTimingProbeUtils::Now();
 	std::vector<SIZE_T> uniqueCpuHandles;
 	BuildUniqueCpuHandleList(cpuHandles, count, &uniqueCpuHandles);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"DescriptorCollectPipeline",
+		"ensure_build_unique_handles",
+		0,
+		count,
+		DX12OuterTimingProbeUtils::ElapsedUs(uniqueBegin));
 	size_t requestedPendingWrites = 0;
 	size_t resolvedInlineWrites = 0;
 	size_t promotedDescriptorRecords = 0;
@@ -672,7 +800,15 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 	uint64_t activeQueuedTasksSnapshot = 0;
 	uint64_t targetSequence = 0;
 	{
+		LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 		std::unique_lock<std::mutex> lock(mutex);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"ensure_lock_wait",
+			0,
+			uniqueCpuHandles.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(lockBegin));
+		LARGE_INTEGER inlineBegin = DX12OuterTimingProbeUtils::Now();
 		TryResolveRequestedPendingWritesInlineLocked(
 			uniqueCpuHandles,
 			reason ? reason : "EnsureDescriptorWritesVisible",
@@ -680,6 +816,13 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 			&resolvedInlineWrites,
 			&blockedByActiveTask,
 			&blockedByQueuedTask);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"ensure_inline_resolve",
+			0,
+			uniqueCpuHandles.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(inlineBegin));
+		LARGE_INTEGER promoteBegin = DX12OuterTimingProbeUtils::Now();
 		TryPromoteQueuedTasksForHandlesLocked(
 			uniqueCpuHandles,
 			reason ? reason : "EnsureDescriptorWritesVisible",
@@ -689,7 +832,20 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 			&queuedBlockedByActiveTask,
 			&queuedBlockedByPriorTask,
 			&queuedSkippedLargeCopy);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"ensure_promote_queued",
+			0,
+			uniqueCpuHandles.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(promoteBegin));
+		LARGE_INTEGER sequenceBegin = DX12OuterTimingProbeUtils::Now();
 		targetSequence = RequiredSequenceForHandlesLocked(cpuHandles, count);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DescriptorCollectPipeline",
+			"ensure_required_sequence",
+			0,
+			count,
+			DX12OuterTimingProbeUtils::ElapsedUs(sequenceBegin));
 		queuedTasksSnapshot = queuedTasks.size();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
 		wake.notify_one();

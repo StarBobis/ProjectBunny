@@ -17,6 +17,18 @@
 class DX12LogManager
 {
 public:
+	class DX12LogCostSnapshot
+	{
+	public:
+		LONG64 jsonCalls = 0;
+		LONG64 textCalls = 0;
+		LONG64 debugJsonCalls = 0;
+		LONG64 enqueueCalls = 0;
+		LONG64 formatUs = 0;
+		LONG64 enqueueUs = 0;
+		LONG64 droppedLines = 0;
+	};
+
 	FILE *log = nullptr;
 	HANDLE thread = nullptr;
 	HANDLE event = nullptr;
@@ -27,6 +39,13 @@ public:
 #if !defined(_DEBUG)
 	std::atomic<bool> releaseStartupLogging{ true };
 #endif
+	inline static volatile LONG64 LogCostJsonCalls = 0;
+	inline static volatile LONG64 LogCostTextCalls = 0;
+	inline static volatile LONG64 LogCostDebugJsonCalls = 0;
+	inline static volatile LONG64 LogCostEnqueueCalls = 0;
+	inline static volatile LONG64 LogCostFormatUs = 0;
+	inline static volatile LONG64 LogCostEnqueueUs = 0;
+	inline static volatile LONG64 LogCostDroppedLines = 0;
 
 	DX12LogManager()
 	{
@@ -46,6 +65,59 @@ public:
 #else
 		return 8192;
 #endif
+	}
+
+	static LARGE_INTEGER LogFrequency()
+	{
+		static LARGE_INTEGER frequency = InitLogFrequency();
+		return frequency;
+	}
+
+	static LARGE_INTEGER InitLogFrequency()
+	{
+		LARGE_INTEGER frequency = {};
+		QueryPerformanceFrequency(&frequency);
+		return frequency;
+	}
+
+	static LARGE_INTEGER LogNow()
+	{
+		LARGE_INTEGER value = {};
+		QueryPerformanceCounter(&value);
+		return value;
+	}
+
+	static LONG64 LogDeltaUs(const LARGE_INTEGER &begin, const LARGE_INTEGER &end)
+	{
+		const LARGE_INTEGER frequency = LogFrequency();
+		if (frequency.QuadPart <= 0 || end.QuadPart <= begin.QuadPart)
+			return 0;
+		return static_cast<LONG64>(
+			(end.QuadPart - begin.QuadPart) * 1000000 / frequency.QuadPart);
+	}
+
+	static void AddLogCost(volatile LONG64 *target, LONG64 us)
+	{
+		if (target && us > 0)
+			InterlockedAdd64(target, us);
+	}
+
+	static LONG64 TakeLong64(volatile LONG64 *value)
+	{
+		return InterlockedExchange64(value, 0);
+	}
+
+	static void TakeLogCostSnapshot(DX12LogCostSnapshot *snapshot)
+	{
+		if (!snapshot)
+			return;
+		snapshot->jsonCalls = TakeLong64(&LogCostJsonCalls);
+		snapshot->textCalls = TakeLong64(&LogCostTextCalls);
+		snapshot->debugJsonCalls = TakeLong64(&LogCostDebugJsonCalls);
+		snapshot->enqueueCalls = TakeLong64(&LogCostEnqueueCalls);
+		snapshot->formatUs = TakeLong64(&LogCostFormatUs);
+		snapshot->enqueueUs = TakeLong64(&LogCostEnqueueUs);
+		snapshot->droppedLines = TakeLong64(&LogCostDroppedLines);
 	}
 
 	static DWORD WINAPI ThreadProc(void*)
@@ -263,16 +335,20 @@ public:
 		if (!line || !line[0])
 			return;
 
+		const LARGE_INTEGER begin = LogNow();
 		DX12LogManager &state = Get();
+		InterlockedIncrement64(&LogCostEnqueueCalls);
 		AcquireSRWLockExclusive(&state.queueLock);
 		if (state.queue.size() < MaxQueuedLogLines()) {
 			state.queue.emplace_back(line);
 		} else {
 			InterlockedIncrement(&state.droppedLines);
+			InterlockedIncrement64(&LogCostDroppedLines);
 		}
 		ReleaseSRWLockExclusive(&state.queueLock);
 		if (state.event)
 			SetEvent(state.event);
+		AddLogCost(&LogCostEnqueueUs, LogDeltaUs(begin, LogNow()));
 	}
 
 	// ── TSV log format (DX11-aligned, no JSON overhead) ──────────────
@@ -286,6 +362,7 @@ public:
 		if (!Get().log)
 			return;
 
+		const LARGE_INTEGER formatBegin = LogNow();
 		char timePlain[32] = {};
 		DX12LogUtils::MakeLogTimePlain(timePlain, sizeof(timePlain));
 		char line[8192];
@@ -294,6 +371,7 @@ public:
 		} else {
 			snprintf(line, sizeof(line), "%s\t%s\n", timePlain, func);
 		}
+		AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
 		EnqueueJsonLogLine(line);
 		if (flush)
 			Flush();
@@ -310,14 +388,17 @@ public:
 
 		va_list args;
 		char message[2048];
+		InterlockedIncrement64(&LogCostTextCalls);
+		const LARGE_INTEGER formatBegin = LogNow();
 		va_start(args, fmt);
 		vsnprintf(message, sizeof(message), fmt, args);
 		va_end(args);
+		AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
 
 		WriteLogLine("Log", message, false);
 	}
 
-	static void JsonFuncV(const char *func, const char *fmt, va_list args, bool flush)
+	static void JsonFuncV(const char *func, const char *fmt, va_list args, bool flush, bool debugCall)
 	{
 		if (!Get().log)
 			return;
@@ -329,9 +410,16 @@ public:
 		const char *safeFunc = func ? func : "Unknown";
 		char extra[4096];
 		extra[0] = '\0';
+		if (debugCall)
+			InterlockedIncrement64(&LogCostDebugJsonCalls);
+		else
+			InterlockedIncrement64(&LogCostJsonCalls);
 
-		if (fmt && fmt[0])
+		if (fmt && fmt[0]) {
+			const LARGE_INTEGER formatBegin = LogNow();
 			vsnprintf(extra, sizeof(extra), fmt, args);
+			AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
+		}
 
 		WriteLogLine(safeFunc, extra, flush);
 	}
@@ -340,7 +428,7 @@ public:
 	{
 		va_list args;
 		va_start(args, fmt);
-		JsonFuncV(func, fmt, args, false);
+		JsonFuncV(func, fmt, args, false, false);
 		va_end(args);
 	}
 
@@ -348,7 +436,7 @@ public:
 	{
 		va_list args;
 		va_start(args, fmt);
-		JsonFuncV(func, fmt, args, true);
+		JsonFuncV(func, fmt, args, true, false);
 		va_end(args);
 	}
 
@@ -359,7 +447,7 @@ public:
 			return;
 		va_list args;
 		va_start(args, fmt);
-		JsonFuncV(func, fmt, args, false);
+		JsonFuncV(func, fmt, args, false, true);
 		va_end(args);
 	}
 
@@ -369,7 +457,7 @@ public:
 			return;
 		va_list args;
 		va_start(args, fmt);
-		JsonFuncV(func, fmt, args, true);
+		JsonFuncV(func, fmt, args, true, true);
 		va_end(args);
 	}
 #else

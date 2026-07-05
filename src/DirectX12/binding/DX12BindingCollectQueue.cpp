@@ -181,7 +181,14 @@ bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
 
 	size_t depth = 0;
 	{
+		LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 		std::lock_guard<std::mutex> lock(mutex);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"BindingCollectQueue",
+			"enqueue_lock_wait",
+			static_cast<UINT>(task.kind),
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(lockBegin));
 		tasks.push_back(std::move(task));
 		depth = tasks.size() + static_cast<size_t>(activeTasks);
 	}
@@ -382,6 +389,7 @@ void DX12BindingCollectQueue::ProcessStateEventTask(DX12BindingCollectTask *task
 		return;
 
 	BindingEvent event;
+	LARGE_INTEGER buildBegin = DX12OuterTimingProbeUtils::Now();
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
 			task->eventKind ? task->eventKind : "state",
@@ -390,8 +398,21 @@ void DX12BindingCollectQueue::ProcessStateEventTask(DX12BindingCollectTask *task
 			task->descriptorEpoch,
 			task->captureSessionId))
 		return;
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"build_state_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(buildBegin));
 
+	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 	DX12BindingTracker::StoreEventLocked(event);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"store_state_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
 }
 
 void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task, const char *source)
@@ -401,6 +422,7 @@ void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task,
 		return;
 
 	BindingEvent event;
+	LARGE_INTEGER buildBegin = DX12OuterTimingProbeUtils::Now();
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
 			task->eventKind ? task->eventKind : "draw",
@@ -409,6 +431,12 @@ void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task,
 			task->descriptorEpoch,
 			task->captureSessionId))
 		return;
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"build_draw_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(buildBegin));
 	event.vertexCountPerInstance = task->vertexCountPerInstance;
 	event.indexCountPerInstance = task->indexCountPerInstance;
 	event.instanceCount = task->instanceCount;
@@ -417,8 +445,22 @@ void DX12BindingCollectQueue::ProcessDrawEventTask(DX12BindingCollectTask *task,
 	event.baseVertexLocation = task->baseVertexLocation;
 	event.startInstanceLocation = task->startInstanceLocation;
 
+	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 	DX12BindingTracker::StoreEventLocked(event);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"store_draw_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
+	LARGE_INTEGER outputBegin = DX12OuterTimingProbeUtils::Now();
 	DX12BindingTracker::StoreCurrentOutputTargetsLocked(task->commandList, task->state);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"store_draw_outputs",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(outputBegin));
 }
 
 void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *task, const char *source)
@@ -428,6 +470,7 @@ void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *t
 		return;
 
 	BindingEvent event;
+	LARGE_INTEGER buildBegin = DX12OuterTimingProbeUtils::Now();
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
 			task->eventKind ? task->eventKind : "dispatch",
@@ -436,11 +479,24 @@ void DX12BindingCollectQueue::ProcessDispatchEventTask(DX12BindingCollectTask *t
 			task->descriptorEpoch,
 			task->captureSessionId))
 		return;
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"build_dispatch_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(buildBegin));
 	event.threadGroupCountX = task->threadGroupCountX;
 	event.threadGroupCountY = task->threadGroupCountY;
 	event.threadGroupCountZ = task->threadGroupCountZ;
 
+	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 	DX12BindingTracker::StoreEventLocked(event);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"store_dispatch_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
 }
 
 void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *task, const char *source)
@@ -449,6 +505,7 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 	if (!task || !task->cpuHandle)
 		return;
 
+	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 	DX12BindingTracker::StoreOutputEventLocked(
 		task->eventKind ? task->eventKind : "",
 		task->commandList,
@@ -457,6 +514,12 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 		task->cpuHandle,
 		task->drawId,
 		task->captureSessionId);
+	DX12OuterTimingProbeUtils::LogCpuStage(
+		"BindingCollectQueue",
+		"store_output_event",
+		static_cast<UINT>(task->kind),
+		1,
+		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
 }
 
 void DX12BindingCollectQueue::UpdateMaxDepth(size_t depth)
