@@ -509,6 +509,7 @@ void DX12CommandListRuntime::ResetIa(DX12CommandListRuntimeState *state)
 	if (!state)
 		return;
 	state->ia = DX12ActiveIaState();
+	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
 void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
@@ -547,6 +548,7 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 		return;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
 void DX12CommandListRuntime::RememberIndexBuffer(
@@ -581,6 +583,7 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 	const UINT trackedCount = startSlot < ARRAYSIZE(ia.vertexBuffers) ?
 		min(count, static_cast<UINT>(ARRAYSIZE(ia.vertexBuffers)) - startSlot) : 0;
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferCall(trackedCount);
+	bool changedAny = false;
 	for (UINT i = 0; i < trackedCount; ++i) {
 		const UINT slot = startSlot + i;
 		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
@@ -596,7 +599,10 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
 		ia.vertexBuffers[slot] = newView;
+		changedAny = true;
 	}
+	if (changedAny)
+		DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
 void DX12CommandListRuntime::RememberVertexBuffers(
@@ -647,6 +653,48 @@ void DX12CommandListRuntime::RememberPrimitiveTopology(
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntimeState &state = shard.states[commandList];
 	DX12CommandListRuntime::RememberPrimitiveTopology(&state, topology);
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::BumpIaEpoch(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	state->iaEpoch++;
+	if (!state->iaEpoch)
+		state->iaEpoch = 1;
+	DX12IaHashStateCacheUtils::Clear(
+		&state->iaHashStateCache, &state->iaHashStateCacheClock);
+}
+
+void DX12CommandListRuntime::BumpIaContentEpoch(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	state->iaContentEpoch++;
+	if (!state->iaContentEpoch)
+		state->iaContentEpoch = 1;
+	DX12IaHashStateCacheUtils::Clear(
+		&state->iaHashStateCache, &state->iaHashStateCacheClock);
+}
+
+void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::BumpIaContentEpoch(state);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end())
+		DX12CommandListRuntime::BumpIaContentEpoch(&it->second);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 

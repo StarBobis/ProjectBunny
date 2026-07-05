@@ -10,6 +10,8 @@
 #include "DX12IaReplacementDrawExecutor.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
+#include "DX12ResourceTracker.hpp"
+#include "DX12RuntimeState.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
@@ -215,8 +217,6 @@ public:
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
-		if (drawDecision->NeedsIaHash())
-			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
 		if (drawDecision->NeedsDescriptorMatch())
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();
 		DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
@@ -264,11 +264,47 @@ public:
 
 		bool hasIaHashState = false;
 		if (targetPlanHasIaTargets) {
-			DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
-			hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargets(
-				runtimeState.ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
-				draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
-			DX12_HOTPATH_TIME_END(DrawBuildIaHash);
+			DX12IaHashStateCacheKey iaCacheKey;
+			iaCacheKey.pipelineState = runtimeState.pipelineState;
+			iaCacheKey.reloadGeneration = drawDecision->reloadGeneration;
+			iaCacheKey.presentGeneration =
+				static_cast<UINT64>(DX12RuntimeState::GetPresentCount());
+			iaCacheKey.contentGeneration = DX12GetIaHashContentGeneration();
+			iaCacheKey.resolveGeneration = DX12GetIaHashResolveGeneration();
+			iaCacheKey.targetPlanFingerprint = targetPlan.Fingerprint();
+			iaCacheKey.iaEpoch = runtimeState.iaEpoch;
+			iaCacheKey.iaContentEpoch = runtimeState.iaContentEpoch;
+			iaCacheKey.indexed = draw.indexed;
+			iaCacheKey.vertexCount = draw.vertexCount;
+			iaCacheKey.indexCount = draw.indexCount;
+			iaCacheKey.firstVertex = draw.firstVertex;
+			iaCacheKey.firstIndex = draw.firstIndex;
+			iaCacheKey.baseVertex = draw.baseVertex;
+			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
+			if (DX12IaHashStateCacheUtils::TryLoad(
+					&mutableRuntimeState->iaHashStateCache,
+					&mutableRuntimeState->iaHashStateCacheClock,
+					iaCacheKey,
+					&iaState,
+					&hasIaHashState)) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheHit(
+					hasIaHashState);
+			} else {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheMiss();
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
+				DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
+				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargets(
+					runtimeState.ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
+					draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
+				DX12_HOTPATH_TIME_END(DrawBuildIaHash);
+				DX12IaHashStateCacheUtils::Store(
+					&mutableRuntimeState->iaHashStateCache,
+					&mutableRuntimeState->iaHashStateCacheClock,
+					iaCacheKey,
+					hasIaHashState,
+					iaState);
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheStore();
+			}
 			DX12Profiling::RecordIaHashStateResult(hasIaHashState);
 		} else {
 			DX12Profiling::RecordIaHashStateResult(false);

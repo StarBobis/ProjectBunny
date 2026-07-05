@@ -748,6 +748,8 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiExecuteCommandLists);
 		DX12_HOTPATH_TIME_BEGIN(ExecuteCLTotal);
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 		LARGE_INTEGER unwrapBegin = DX12OuterTimingProbeUtils::Now();
@@ -813,6 +815,8 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiDrawInstanced);
 		// Use pre-hook original as callback to bypass vtable hook.
 		// Falls back to DirectDrawInstanced (hooked vtable) only if original is null.
 		DX12IaReplacementExecutorCallbacks callbacks;
@@ -860,6 +864,8 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawIndexedInstanced original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 		DX12IaReplacementExecutorCallbacks callbacks;
 		callbacks.drawInstanced = DirectDrawInstanced;
 		callbacks.drawIndexedInstanced = original ? reinterpret_cast<DX12IaCommandSignatures::DrawIndexedInstanced>(original) : DirectDrawIndexedInstanced;
@@ -899,6 +905,9 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiDispatch);
+		DX12CommandListRuntime::BumpIaContentEpoch(runtimeState);
 		DX12DispatchHookFlow::ExecuteHook(
 			commandList,
 			runtimeState,
@@ -918,6 +927,9 @@ public:
 		UINT64 countBufferOffset,
 		DX12CommandListHookSignatures::ExecuteIndirect original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiExecuteIndirect);
+		DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 		ID3D12Resource *unwrappedArgumentBuffer = UnwrapResource(argumentBuffer);
 		ID3D12Resource *unwrappedCountBuffer = UnwrapResource(countBuffer);
 		ID3D12CommandSignature *unwrappedCommandSignature = UnwrapCommandSignature(commandSignature);
@@ -938,6 +950,8 @@ public:
 		UINT64 value,
 		DX12CommandListHookSignatures::QueueSignal original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiQueueSignal);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
 		const UINT64 completedBefore =
 			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
@@ -965,6 +979,8 @@ public:
 		UINT64 value,
 		DX12CommandListHookSignatures::QueueWait original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiQueueWait);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
 		const UINT64 completedBefore =
 			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
@@ -1005,6 +1021,8 @@ public:
 		ID3D12PipelineState *initialState,
 		DX12CommandListHookSignatures::ResetCommandList original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiResetCommandList);
 		ID3D12CommandAllocator *unwrappedAllocator = UnwrapCommandAllocator(allocator);
 		ID3D12PipelineState *unwrappedInitialState = UnwrapPipelineState(initialState);
 		HRESULT hr = original ?
@@ -1024,6 +1042,8 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListHookSignatures::CloseCommandList original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiCloseCommandList);
 		return original ? original(commandList) : commandList->Close();
 	}
 
@@ -1044,6 +1064,8 @@ public:
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetPipelineState);
 		DX12_HOTPATH_TIME_BEGIN(SetPipelineStateTotal);
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateFlow::CapturePipelineState(
@@ -1061,6 +1083,8 @@ public:
 		const D3D12_RESOURCE_BARRIER *barriers,
 		DX12CommandListHookSignatures::ResourceBarrier original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiResourceBarrier);
 		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
 		std::vector<D3D12_RESOURCE_BARRIER> unwrappedBarriers;
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
@@ -1095,6 +1119,8 @@ public:
 		const D3D12_INDEX_BUFFER_VIEW *view,
 		DX12CommandListHookSignatures::IaSetIndexBuffer original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
 		DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
 		if (original)
 			original(commandList, view);
@@ -1123,6 +1149,8 @@ public:
 		const D3D12_VERTEX_BUFFER_VIEW *views,
 		DX12CommandListHookSignatures::IaSetVertexBuffers original)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
 		DX12CommandListStateCapture::VertexBuffers(
 			commandList, runtimeState, startSlot, count, views);
 		if (original)
@@ -1155,6 +1183,8 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
 		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetDescriptorHeaps);
@@ -1180,6 +1210,8 @@ public:
 		DX12CommandListRuntimeState *runtimeState,
 		ID3D12RootSignature *rootSignature)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetComputeRootSignature);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootSignature);
 			DX12CommandListComputeBindingFlow::CaptureRootSignature(
@@ -1203,6 +1235,8 @@ public:
 		DX12CommandListRuntimeState *runtimeState,
 		ID3D12RootSignature *rootSignature)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
 		if (DX12HotPathState::skipAll)
 			commandList->SetGraphicsRootSignature(rootSignature);
 		else {
@@ -1230,6 +1264,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptorTable);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootDescriptorTable);
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
@@ -1255,6 +1291,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
 		if (DX12HotPathState::skipAll)
 			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		else {
@@ -1282,6 +1320,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootConstantBufferView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
@@ -1307,6 +1347,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootConstantBufferView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
@@ -1332,6 +1374,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootShaderResourceView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
@@ -1357,6 +1401,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootShaderResourceView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
@@ -1382,6 +1428,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootUnorderedAccessView);
 			DX12CommandListStateCapture::ComputeRootDescriptor(
@@ -1407,6 +1455,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		if (!DX12HotPathState::skipAll) {
 			DX12_PROFILE_SCOPE(SetGraphicsRootUnorderedAccessView);
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
@@ -1429,6 +1479,8 @@ public:
 		DX12CommandListRuntimeState *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
+		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+			DX12OuterTimingProbeUtils::ApiIASetPrimitiveTopology);
 		if (DX12HotPathState::skipAll)
 			commandList->IASetPrimitiveTopology(topology);
 		else {

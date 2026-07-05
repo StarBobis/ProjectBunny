@@ -3,11 +3,13 @@
 #include <d3d12.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "DX12ActiveIaState.hpp"
 #include "DX12CompiledDispatchDecision.hpp"
 #include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
+#include "ia/DX12IaHashStateCacheUtils.hpp"
 
 class DX12CommandListRuntimeState
 {
@@ -15,6 +17,10 @@ public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	volatile UINT64 computeBindingSerial = 0;
 	DX12ActiveIaState ia;
+	UINT64 iaEpoch = 1;
+	UINT64 iaContentEpoch = 1;
+	UINT64 iaHashStateCacheClock = 0;
+	std::vector<DX12IaHashStateCacheEntry> iaHashStateCache;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;

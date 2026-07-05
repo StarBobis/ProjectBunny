@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -29,11 +30,15 @@ public:
 	static uint64_t AppendDescriptor(uint64_t hash, const DX12DescriptorSummary &descriptor)
 	{
 		hash = HashString(hash, descriptor.kind);
+		hash = HashCombine(hash, descriptor.hasDesc ? 1 : 0);
 		hash = HashCombine(hash, reinterpret_cast<uint64_t>(descriptor.resource));
 		hash = HashCombine(hash, reinterpret_cast<uint64_t>(descriptor.counterResource));
 		hash = HashCombine(hash, descriptor.gpuVirtualAddress);
 		hash = HashCombine(hash, descriptor.resourceOffset);
 		hash = HashCombine(hash, descriptor.viewSize);
+		hash = HashCombine(hash, descriptor.hasResourceHeapType ? 1 : 0);
+		hash = HashCombine(hash, descriptor.hasResourceHeapType ?
+			descriptor.resourceHeapType : 0);
 		hash = HashCombine(hash, descriptor.viewFormat);
 		hash = HashCombine(hash, descriptor.viewDimension);
 		hash = HashCombine(hash, descriptor.cbvSize);
@@ -56,6 +61,25 @@ public:
 		return hash;
 	}
 
+	static bool BindingLess(
+		const DX12CurrentComputeUavBinding &left,
+		const DX12CurrentComputeUavBinding &right)
+	{
+		if (left.rootParameterIndex != right.rootParameterIndex)
+			return left.rootParameterIndex < right.rootParameterIndex;
+		if (left.registerSpace != right.registerSpace)
+			return left.registerSpace < right.registerSpace;
+		if (left.shaderRegister != right.shaderRegister)
+			return left.shaderRegister < right.shaderRegister;
+		if (left.rangeIndex != right.rangeIndex)
+			return left.rangeIndex < right.rangeIndex;
+		if (left.descriptorOffset != right.descriptorOffset)
+			return left.descriptorOffset < right.descriptorOffset;
+		if (left.rootDescriptor != right.rootDescriptor)
+			return left.rootDescriptor < right.rootDescriptor;
+		return left.gpuVirtualAddress < right.gpuVirtualAddress;
+	}
+
 	static uint64_t AppendBinding(
 		uint64_t hash,
 		const DX12CurrentComputeUavBinding &binding,
@@ -74,11 +98,7 @@ public:
 		if (binding.hasDescriptor) {
 			hash = AppendDescriptor(hash, binding.descriptor);
 		} else {
-			hash = HashCombine(hash, binding.descriptorIncrement);
-			hash = HashCombine(hash, binding.tableCopyCount);
-			hash = HashCombine(hash, static_cast<uint64_t>(binding.tableCpuStart));
-			hash = HashCombine(hash, binding.tableGpuStart.ptr);
-			hash = HashCombine(hash, reinterpret_cast<uint64_t>(binding.tableHeap));
+			hash = HashCombine(hash, binding.rootDescriptor ? 0x726f6f7464657363ull : 0x756e7265736f6c76ull);
 		}
 		return hash;
 	}
@@ -88,20 +108,37 @@ public:
 		const std::vector<DX12CurrentComputeUavBinding> &bindings,
 		uint64_t listSalt)
 	{
-		hash = HashCombine(hash, bindings.size());
-		for (size_t index = 0; index < bindings.size(); ++index) {
-			hash = AppendBinding(hash, bindings[index], listSalt);
+		std::vector<DX12CurrentComputeUavBinding> sortedBindings = bindings;
+		std::sort(
+			sortedBindings.begin(),
+			sortedBindings.end(),
+			DX12PreSkinPlanUtils::BindingLess);
+		hash = HashCombine(hash, sortedBindings.size());
+		for (size_t index = 0; index < sortedBindings.size(); ++index) {
+			hash = AppendBinding(hash, sortedBindings[index], listSalt);
 		}
 		return hash;
+	}
+
+	static bool RootConstantsLess(
+		const DX12CurrentRootConstants &left,
+		const DX12CurrentRootConstants &right)
+	{
+		return left.rootParameterIndex < right.rootParameterIndex;
 	}
 
 	static uint64_t AppendRootConstants(
 		uint64_t hash,
 		const std::vector<DX12CurrentRootConstants> &rootConstants)
 	{
-		hash = HashCombine(hash, rootConstants.size());
-		for (size_t rootIndex = 0; rootIndex < rootConstants.size(); ++rootIndex) {
-			const DX12CurrentRootConstants &root = rootConstants[rootIndex];
+		std::vector<DX12CurrentRootConstants> sortedConstants = rootConstants;
+		std::sort(
+			sortedConstants.begin(),
+			sortedConstants.end(),
+			DX12PreSkinPlanUtils::RootConstantsLess);
+		hash = HashCombine(hash, sortedConstants.size());
+		for (size_t rootIndex = 0; rootIndex < sortedConstants.size(); ++rootIndex) {
+			const DX12CurrentRootConstants &root = sortedConstants[rootIndex];
 			hash = HashCombine(hash, root.rootParameterIndex);
 			hash = HashCombine(hash, root.maxSet);
 			for (UINT valueIndex = 0; valueIndex < 64; ++valueIndex) {

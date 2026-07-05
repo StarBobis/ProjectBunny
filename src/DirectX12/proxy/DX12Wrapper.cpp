@@ -5112,6 +5112,8 @@ namespace DX12Wrapper
 			{
 			// Fast-path: skipAll + resolved original -> call driver directly, bypass hook entirely
 			if (DX12HotPathState::skipAll && mOrigDrawInstanced) {
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiDrawInstanced);
 				mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
 					StartVertexLocation, StartInstanceLocation);
 				return;
@@ -5131,6 +5133,8 @@ namespace DX12Wrapper
 			INT BaseVertexLocation, UINT StartInstanceLocation) override
 		{
 			if (DX12HotPathState::skipAll && mOrigDrawIndexedInstanced) {
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 				mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
 					StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 				return;
@@ -5149,6 +5153,9 @@ namespace DX12Wrapper
 		void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 		{
 			if (DX12HotPathState::skipAll && mOrigDispatch) {
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiDispatch);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 				return;
 			}
@@ -5165,6 +5172,9 @@ namespace DX12Wrapper
 				ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer,
 				UINT64 SrcOffset, UINT64 NumBytes) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->CopyBufferRegion(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer), DstOffset,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcBuffer), SrcOffset, NumBytes);
@@ -5174,6 +5184,9 @@ namespace DX12Wrapper
 				const D3D12_TEXTURE_COPY_LOCATION *pDst, UINT DstX, UINT DstY, UINT DstZ,
 				const D3D12_TEXTURE_COPY_LOCATION *pSrc, const D3D12_BOX *pSrcBox) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				D3D12_TEXTURE_COPY_LOCATION dstStorage = {};
 				D3D12_TEXTURE_COPY_LOCATION srcStorage = {};
 				const D3D12_TEXTURE_COPY_LOCATION *activeDst = pDst;
@@ -5185,6 +5198,9 @@ namespace DX12Wrapper
 
 			void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
 			{
+			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+				DX12OuterTimingProbeUtils::ApiCopyResource);
+			DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 			DX12_HOTPATH_TIME_BEGIN(CopyResourceOpTotal);
 				mCommandList->CopyResource(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource),
@@ -5198,6 +5214,9 @@ namespace DX12Wrapper
 				const D3D12_TILE_REGION_SIZE *pTileRegionSize, ID3D12Resource *pBuffer,
 				UINT64 BufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS Flags) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiCopyTiles);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->CopyTiles(
 					DX12WrapperRuntimeUtils::UnwrapResource(pTiledResource),
 					pTileRegionStartCoordinate, pTileRegionSize,
@@ -5208,6 +5227,9 @@ namespace DX12Wrapper
 				ID3D12Resource *pDstResource, UINT DstSubresource,
 				ID3D12Resource *pSrcResource, UINT SrcSubresource, DXGI_FORMAT Format) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiResolveSubresource);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ResolveSubresource(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource), DstSubresource,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource), SrcSubresource, Format);
@@ -5252,6 +5274,8 @@ namespace DX12Wrapper
 			void STDMETHODCALLTYPE SetPipelineState(ID3D12PipelineState *pPipelineState) override
 			{
 				if (DX12HotPathState::skipAll && mOrigSetPipelineState) {
+					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+						DX12OuterTimingProbeUtils::ApiSetPipelineState);
 					mOrigSetPipelineState(mCommandList, pPipelineState);
 					return;
 				}
@@ -5262,6 +5286,8 @@ namespace DX12Wrapper
 			void STDMETHODCALLTYPE ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER *pBarriers) override
 			{
 				if (DX12HotPathState::skipAll && mOrigResourceBarrier) {
+					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+						DX12OuterTimingProbeUtils::ApiResourceBarrier);
 					mOrigResourceBarrier(mCommandList, NumBarriers, pBarriers);
 					return;
 				}
@@ -5332,18 +5358,24 @@ namespace DX12Wrapper
 			void STDMETHODCALLTYPE SetComputeRoot32BitConstant(
 				UINT RootParameterIndex, UINT SrcData, UINT DestOffsetIn32BitValues) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
 				mCommandList->SetComputeRoot32BitConstant(RootParameterIndex, SrcData, DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRoot32BitConstant(
 				UINT RootParameterIndex, UINT SrcData, UINT DestOffsetIn32BitValues) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
 				mCommandList->SetGraphicsRoot32BitConstant(RootParameterIndex, SrcData, DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRoot32BitConstants(
 				UINT RootParameterIndex, UINT Num32BitValuesToSet, const void *pSrcData, UINT DestOffsetIn32BitValues) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
 				mCommandList->SetComputeRoot32BitConstants(
 					RootParameterIndex, Num32BitValuesToSet, pSrcData, DestOffsetIn32BitValues);
 			}
@@ -5351,6 +5383,8 @@ namespace DX12Wrapper
 			void STDMETHODCALLTYPE SetGraphicsRoot32BitConstants(
 				UINT RootParameterIndex, UINT Num32BitValuesToSet, const void *pSrcData, UINT DestOffsetIn32BitValues) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
 				mCommandList->SetGraphicsRoot32BitConstants(
 					RootParameterIndex, Num32BitValuesToSet, pSrcData, DestOffsetIn32BitValues);
 			}
@@ -5407,6 +5441,8 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(IASetIndexBufTotal);
 				if (DX12HotPathState::skipAll && mOrigIASetIndexBuffer) {
+					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+						DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
 					mOrigIASetIndexBuffer(mCommandList, pView);
 					return;
 				}
@@ -5419,6 +5455,8 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(IASetVertexBufTotal);
 				if (DX12HotPathState::skipAll && mOrigIASetVertexBuffers) {
+					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+						DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
 					mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
 					return;
 				}
@@ -5463,6 +5501,9 @@ namespace DX12Wrapper
 				D3D12_CPU_DESCRIPTOR_HANDLE ViewCPUHandle, ID3D12Resource *pResource,
 				const UINT Values[4], UINT NumRects, const D3D12_RECT *pRects) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ClearUnorderedAccessViewUint(
 					ViewGPUHandleInCurrentHeap, ViewCPUHandle,
 					DX12WrapperRuntimeUtils::UnwrapResource(pResource), Values, NumRects, pRects);
@@ -5473,6 +5514,9 @@ namespace DX12Wrapper
 				D3D12_CPU_DESCRIPTOR_HANDLE ViewCPUHandle, ID3D12Resource *pResource,
 				const FLOAT Values[4], UINT NumRects, const D3D12_RECT *pRects) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ClearUnorderedAccessViewFloat(
 					ViewGPUHandleInCurrentHeap, ViewCPUHandle,
 					DX12WrapperRuntimeUtils::UnwrapResource(pResource), Values, NumRects, pRects);

@@ -76,7 +76,7 @@ public:
 						"%s\tDX12LogQueue\tcount=%ld\n", timePlain, dropped);
 					fputs(droppedLine, state.log);
 				}
-				for (const auto &line : pending)
+				for (const std::string &line : pending)
 					fputs(line.c_str(), state.log);
 				if (!pending.empty() || stopping)
 					fflush(state.log);
@@ -230,6 +230,10 @@ public:
 		if (!strcmp(func, "DX12PresentFirst"))
 			return true;
 		if (!strcmp(func, "DX12FrameTimeline"))
+			return true;
+		if (!strcmp(func, "DX12ApiWallTiming"))
+			return true;
+		if (!strcmp(func, "DX12ResidentMaintenance"))
 			return true;
 		if (!strcmp(func, "DX12HotPathHookGate"))
 			return true;

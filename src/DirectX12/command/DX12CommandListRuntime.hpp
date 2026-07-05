@@ -77,6 +77,9 @@ public:
 	static void RememberVertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 	static void RememberPrimitiveTopology(DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static void RememberPrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
+	static void BumpIaEpoch(DX12CommandListRuntimeState *state);
+	static void BumpIaContentEpoch(DX12CommandListRuntimeState *state);
+	static void BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList);
 	static void BumpComputeBindingSerial(DX12CommandListRuntimeState *state);
 	static void BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);

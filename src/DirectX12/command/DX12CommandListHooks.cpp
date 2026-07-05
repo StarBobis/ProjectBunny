@@ -33,6 +33,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 #include "types/DX12CommandListHookSlotTypes.hpp"
+#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 using PFN_CREATE_COMMAND_QUEUE = DX12CommandListHookSignatures::CreateCommandQueue;
 using PFN_CREATE_COMMAND_ALLOCATOR = DX12CommandListHookSignatures::CreateCommandAllocator;
@@ -373,6 +374,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueCopyTileMappings
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueExecuteCommandLists(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiExecuteCommandLists);
 	PFN_QUEUE_EXECUTE_COMMAND_LISTS original =
 		DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::ExecuteCommandLists, PFN_QUEUE_EXECUTE_COMMAND_LISTS, DX12CommandListHookState::OrigQueueExecuteCommandLists, "ExecuteCommandLists");
 	DX12CommandQueueExecutionFlow::Execute(
@@ -412,6 +415,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueEndEvent(ID3D12C
 HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueSignal(
 	ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiQueueSignal);
 	if (DX12InternalReplayState::IsActive()) {
 		PFN_QUEUE_SIGNAL original =
 			DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::Signal, PFN_QUEUE_SIGNAL, DX12CommandListHookState::OrigQueueSignal, "Signal");
@@ -454,6 +459,8 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueSignal(
 HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueWait(
 	ID3D12CommandQueue *queue, ID3D12Fence *fence, UINT64 value)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiQueueWait);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12CommandQueue::Wait", queue, " fence=%p value=%llu",
 		fence, static_cast<unsigned long long>(value));
 	PFN_QUEUE_WAIT original =
@@ -529,6 +536,8 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueGetClockCalib
 
 HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCloseCommandList(ID3D12GraphicsCommandList *commandList)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCloseCommandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::Close", commandList);
 	PFN_CLOSE_COMMAND_LIST original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Close, PFN_CLOSE_COMMAND_LIST, DX12CommandListHookState::OrigCloseCommandList, "CloseCommandList");
 	return original ? original(commandList) : E_FAIL;
@@ -538,6 +547,8 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 	ID3D12GraphicsCommandList *commandList, ID3D12CommandAllocator *allocator,
 	ID3D12PipelineState *initialState)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiResetCommandList);
 	if (DX12HotPathState::skipAll) {
 		PFN_RESET_COMMAND_LIST original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
@@ -593,6 +604,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT vertexCountPerInstance, UINT instanceCount,
 	UINT startVertexLocation, UINT startInstanceLocation)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiDrawInstanced);
 	// 真·快速路径：skipAll 或 flags word 无 draw 级工作 → 单次位测试替代 9 个函数调用
 	if (DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
 		PFN_DRAW_INSTANCED original =
@@ -614,6 +627,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	ID3D12GraphicsCommandList *commandList, UINT indexCountPerInstance, UINT instanceCount,
 	UINT startIndexLocation, INT baseVertexLocation, UINT startInstanceLocation)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 	// 真·快速路径：skipAll 或 flags word 无 draw 级工作 → 单次位测试替代 9 个函数调用
 	if (DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
 		PFN_DRAW_INDEXED_INSTANCED original =
@@ -636,6 +651,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 	ID3D12GraphicsCommandList *commandList, UINT threadGroupCountX,
 	UINT threadGroupCountY, UINT threadGroupCountZ)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiDispatch);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	// 真·快速路径：flags word 无 dispatch 级工作 → 单次位测试替代 skipAll+PreSkin 双重判断
 	if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
 		PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
@@ -653,6 +671,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyBufferRegion(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstBuffer, UINT64 dstOffset,
 	ID3D12Resource *srcBuffer, UINT64 srcOffset, UINT64 numBytes)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyBufferRegion", commandList,
 		" dst=%p dstOffset=%llu src=%p srcOffset=%llu bytes=%llu",
 		dstBuffer, static_cast<unsigned long long>(dstOffset), srcBuffer,
@@ -664,6 +685,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
 	ID3D12GraphicsCommandList *commandList, const D3D12_TEXTURE_COPY_LOCATION *dst,
 	UINT dstX, UINT dstY, UINT dstZ, const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTextureRegion", commandList,
 		" dst=%p dstXYZ=%u,%u,%u src=%p srcBox=%p", dst, dstX, dstY, dstZ, src, srcBox);
 	DX12CommandListHookState::OrigCopyTextureRegion(commandList, dst, dstX, dstY, dstZ, src, srcBox);
@@ -672,6 +696,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyResource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, ID3D12Resource *srcResource)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyResource);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
 		" dst=%p src=%p", dstResource, srcResource);
 	DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
@@ -683,6 +710,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTiles(
 	const D3D12_TILE_REGION_SIZE *tileRegionSize, ID3D12Resource *buffer,
 	UINT64 bufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS flags)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyTiles);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTiles", commandList,
 		" tiled=%p buffer=%p offset=%llu flags=0x%x", tiledResource, buffer,
 		static_cast<unsigned long long>(bufferStartOffsetInBytes), static_cast<UINT>(flags));
@@ -694,6 +724,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveSubresource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, UINT dstSubresource,
 	ID3D12Resource *srcResource, UINT srcSubresource, DXGI_FORMAT format)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiResolveSubresource);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ResolveSubresource", commandList,
 		" dst=%p dstSub=%u src=%p srcSub=%u format=%u",
 		dstResource, dstSubresource, srcResource, srcSubresource, static_cast<UINT>(format));
@@ -703,6 +736,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveSubresource(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiIASetPrimitiveTopology);
 	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology, PFN_IA_SET_PRIMITIVE_TOPOLOGY, DX12CommandListHookState::OrigIASetPrimitiveTopology, "IASetPrimitiveTopology");
@@ -749,6 +784,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetStencilRef(ID3D1
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetPipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiSetPipelineState);
 	if (DX12HotPathState::skipAll) {
 		PFN_SET_PIPELINE_STATE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState, PFN_SET_PIPELINE_STATE, DX12CommandListHookState::OrigSetPipelineState, "SetPipelineState");
@@ -769,6 +806,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResourceBarrier(
 	ID3D12GraphicsCommandList *commandList, UINT numBarriers,
 	const D3D12_RESOURCE_BARRIER *barriers)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiResourceBarrier);
 	if (DX12HotPathState::skipAll) {
 		PFN_RESOURCE_BARRIER original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier, PFN_RESOURCE_BARRIER, DX12CommandListHookState::OrigResourceBarrier, "ResourceBarrier");
@@ -796,6 +835,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteBundle(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorderedAccessView(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 	if (DX12HotPathState::skipAll) {
 		PFN_SET_ROOT_GPU_VA original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
@@ -827,6 +868,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorde
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
 	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_INDEX_BUFFER original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer, PFN_IA_SET_INDEX_BUFFER, DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
@@ -846,6 +889,8 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
 	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_VERTEX_BUFFERS original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
@@ -920,6 +965,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const UINT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
 		static_cast<unsigned long long>(viewGpuHandleInCurrentHeap.ptr),
@@ -933,6 +981,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const FLOAT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
 		static_cast<unsigned long long>(viewGpuHandleInCurrentHeap.ptr),
@@ -1011,6 +1062,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 	UINT maxCommandCount, ID3D12Resource *argumentBuffer, UINT64 argumentBufferOffset,
 	ID3D12Resource *countBuffer, UINT64 countBufferOffset)
 {
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiExecuteIndirect);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	PFN_EXECUTE_INDIRECT original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
 	if (DX12HotPathState::skipAll) {

@@ -10,7 +10,8 @@ bool DX12GetRootSignatureSummary(
 		return false;
 
 	AcquireSRWLockShared(&gDescriptorLock);
-	auto found = gRootSignatureByPtr.find(rootSignature);
+	std::unordered_map<ID3D12RootSignature*, size_t>::iterator found =
+		gRootSignatureByPtr.find(rootSignature);
 	if (found == gRootSignatureByPtr.end() ||
 		found->second >= gRootSignatures.size()) {
 		ReleaseSRWLockShared(&gDescriptorLock);
@@ -37,7 +38,8 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 
 	*rootSignature = nullptr;
 	AcquireSRWLockShared(&gDescriptorLock);
-	auto found = gPsoRootByIndex.find(psoIndex);
+	std::unordered_map<UINT64, size_t>::iterator found =
+		gPsoRootByIndex.find(psoIndex);
 	if (found == gPsoRootByIndex.end() ||
 		found->second >= gPsoRoots.size() ||
 		!gPsoRoots[found->second].rootSignature) {
@@ -198,7 +200,8 @@ bool DX12ResolveBufferResourceByGpuVa(
 	UINT64 resolvedEnd = 0;
 	UINT backwardProbes = 0;
 	AcquireSRWLockShared(&gResourceLock);
-	auto cached = gBufferResolveCache.upper_bound(gpuVirtualAddress);
+	std::map<UINT64, BufferResolveCacheEntry>::iterator cached =
+		gBufferResolveCache.upper_bound(gpuVirtualAddress);
 	if (cached != gBufferResolveCache.begin()) {
 		--cached;
 		if (gpuVirtualAddress >= cached->second.begin &&
@@ -217,7 +220,8 @@ bool DX12ResolveBufferResourceByGpuVa(
 		}
 	}
 
-	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	std::map<UINT64, size_t>::iterator foundBuffer =
+		gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
 	if (foundBuffer != gBufferResourceByGpuVa.begin()) {
 		--foundBuffer;
 		resolved = DX12BufferResolveRangeUtils::SearchBackwardForCoveringBuffer(
@@ -310,7 +314,8 @@ static bool FillBufferSummaryFromRecordLocked(
 	if (requestedEnd < gpuVirtualAddress)
 		return false;
 
-	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	std::map<UINT64, size_t>::iterator foundBuffer =
+		gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
 	if (foundBuffer == gBufferResourceByGpuVa.begin())
 		return false;
 	--foundBuffer;
@@ -344,7 +349,8 @@ static const char *ReasonLocked(UINT64 gpuVirtualAddress, UINT64 size,
 	if (requestedEnd < gpuVirtualAddress)
 		return "range_overflow";
 
-	auto foundBuffer = gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
+	std::map<UINT64, size_t>::iterator foundBuffer =
+		gBufferResourceByGpuVa.upper_bound(gpuVirtualAddress);
 	if (foundBuffer == gBufferResourceByGpuVa.begin())
 		return "no_lower_buffer";
 	for (--foundBuffer;; --foundBuffer) {
@@ -511,7 +517,8 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 		return false;
 
 	AcquireSRWLockShared(&gBufferContentLock);
-	auto it = gBufferContentByResource.find(summary.resource);
+	std::unordered_map<ID3D12Resource*, CachedBufferContent>::iterator it =
+		gBufferContentByResource.find(summary.resource);
 	if (it == gBufferContentByResource.end()) {
 		ReleaseSRWLockShared(&gBufferContentLock);
 		return false;
@@ -535,6 +542,16 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 //   1. Content cache hit �?CRC32 of actual buffer bytes (stable, like DX11)
 //   2. Resource resolved  �?hash on RESOURCE_DESC + offset + viewSize (stable)
 //   3. Fallback           �?hash on size + stride + format + slot (NO GPU VA!)
+
+UINT64 DX12GetIaHashContentGeneration()
+{
+	return gBufferContentGeneration.load(std::memory_order_relaxed);
+}
+
+UINT64 DX12GetIaHashResolveGeneration()
+{
+	return gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
+}
 
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
@@ -785,7 +802,8 @@ static void CompleteDescriptorSummaryResourceInfo(
 
 	if (!resourceLockHeld)
 		AcquireSRWLockShared(&gResourceLock);
-	auto found = gResourceByPtr.find(summary->resource);
+	std::unordered_map<ID3D12Resource*, size_t>::iterator found =
+		gResourceByPtr.find(summary->resource);
 	if (found == gResourceByPtr.end() || found->second >= gResources.size()) {
 		if (!resourceLockHeld)
 			ReleaseSRWLockShared(&gResourceLock);
@@ -1055,7 +1073,7 @@ static void BuildResourceMetadataSnapshot(
 				liveDescriptors.push_back(&heap.slots[slot]);
 		}
 	}
-	for (const auto &entry : gDescriptorByCpuHandle) {
+	for (const std::pair<const SIZE_T, DescriptorRecord> &entry : gDescriptorByCpuHandle) {
 		DescriptorSlotLocation ledgerLocation = {};
 		if (ResolveDescriptorSlotForCpuHandleLocked(
 				entry.first, nullptr, &ledgerLocation, nullptr) &&
@@ -1080,7 +1098,8 @@ static void BuildResourceMetadataSnapshot(
 		const DescriptorRecord &record = *recordPtr;
 		bool hasCurrentState = record.hasCurrentState;
 		if (!hasCurrentState && record.resource) {
-			auto foundResource = gResourceByPtr.find(record.resource);
+			std::unordered_map<ID3D12Resource*, size_t>::iterator foundResource =
+				gResourceByPtr.find(record.resource);
 			if (foundResource != gResourceByPtr.end() &&
 				foundResource->second < gResources.size()) {
 				hasCurrentState = gResources[foundResource->second].hasCurrentState;
@@ -1091,7 +1110,8 @@ static void BuildResourceMetadataSnapshot(
 		D3D12_RESOURCE_DESC resourceDesc = record.resourceDesc;
 		bool hasResourceDesc = record.hasResourceDesc;
 		if (!hasResourceDesc && record.resource) {
-			auto foundResource = gResourceByPtr.find(record.resource);
+			std::unordered_map<ID3D12Resource*, size_t>::iterator foundResource =
+				gResourceByPtr.find(record.resource);
 			if (foundResource != gResourceByPtr.end() &&
 				foundResource->second < gResources.size()) {
 				resourceDesc = gResources[foundResource->second].desc;
@@ -1319,7 +1339,8 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 		}
 	}
 
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+		gDescriptorByCpuHandle.find(cpuHandle);
 	if (found != gDescriptorByCpuHandle.end()) {
 		FillDescriptorSummary(summary, found->second, false, false, false);
 		ReleaseSRWLockShared(&gDescriptorLock);
@@ -1358,7 +1379,8 @@ static bool FillLightSummaryLocked(SIZE_T cpuHandle, DX12DescriptorSummary *summ
 		}
 	}
 
-	auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+		gDescriptorByCpuHandle.find(cpuHandle);
 	if (found != gDescriptorByCpuHandle.end()) {
 		FillDescriptorSummary(summary, found->second, false, false, false);
 		return true;

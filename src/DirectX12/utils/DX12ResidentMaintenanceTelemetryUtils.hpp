@@ -138,6 +138,11 @@ public:
 	inline static volatile LONG DrawDecisionSkipOriginal = 0;
 	inline static volatile LONG DrawDecisionFastRejects = 0;
 	inline static volatile LONG DrawDecisionIaHashDraws = 0;
+	inline static volatile LONG DrawDecisionIaHashCacheLookups = 0;
+	inline static volatile LONG DrawDecisionIaHashCacheHits = 0;
+	inline static volatile LONG DrawDecisionIaHashCacheMisses = 0;
+	inline static volatile LONG DrawDecisionIaHashCacheStores = 0;
+	inline static volatile LONG DrawDecisionIaHashCacheNegativeHits = 0;
 	inline static volatile LONG DrawDecisionDescriptorDraws = 0;
 
 	static void Inc(volatile LONG *value)
@@ -639,6 +644,28 @@ public:
 		Inc(&DrawDecisionIaHashDraws);
 	}
 
+	static void RecordDrawDecisionIaHashCacheLookup()
+	{
+		Inc(&DrawDecisionIaHashCacheLookups);
+	}
+
+	static void RecordDrawDecisionIaHashCacheHit(bool hasIaHashState)
+	{
+		Inc(&DrawDecisionIaHashCacheHits);
+		if (!hasIaHashState)
+			Inc(&DrawDecisionIaHashCacheNegativeHits);
+	}
+
+	static void RecordDrawDecisionIaHashCacheMiss()
+	{
+		Inc(&DrawDecisionIaHashCacheMisses);
+	}
+
+	static void RecordDrawDecisionIaHashCacheStore()
+	{
+		Inc(&DrawDecisionIaHashCacheStores);
+	}
+
 	static void RecordDrawDecisionDescriptorDraw()
 	{
 		Inc(&DrawDecisionDescriptorDraws);
@@ -896,18 +923,27 @@ public:
 		LONG skipOriginal = Take(&DrawDecisionSkipOriginal);
 		LONG fastRejects = Take(&DrawDecisionFastRejects);
 		LONG iaHashDraws = Take(&DrawDecisionIaHashDraws);
+		LONG iaHashCacheLookups = Take(&DrawDecisionIaHashCacheLookups);
+		LONG iaHashCacheHits = Take(&DrawDecisionIaHashCacheHits);
+		LONG iaHashCacheMisses = Take(&DrawDecisionIaHashCacheMisses);
+		LONG iaHashCacheStores = Take(&DrawDecisionIaHashCacheStores);
+		LONG iaHashCacheNegativeHits = Take(&DrawDecisionIaHashCacheNegativeHits);
 		LONG descriptorDraws = Take(&DrawDecisionDescriptorDraws);
 		if (!cacheHits && !cacheMisses && !builds && !noPso &&
 			!noShaderOverride && !noDrawOverride && !needsIaHash &&
 			!needsDescriptorMatch && !needsReplacement && !skipOriginal &&
-			!fastRejects && !iaHashDraws && !descriptorDraws)
+			!fastRejects && !iaHashDraws && !iaHashCacheLookups &&
+			!iaHashCacheHits && !iaHashCacheMisses && !iaHashCacheStores &&
+			!iaHashCacheNegativeHits && !descriptorDraws)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"descriptorDraws\":%ld",
+			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld",
 			cacheHits, cacheMisses, builds, noPso,
 			noShaderOverride, noDrawOverride, needsIaHash,
 			needsDescriptorMatch, needsReplacement, skipOriginal,
-			fastRejects, iaHashDraws, descriptorDraws);
+			fastRejects, iaHashDraws, iaHashCacheLookups,
+			iaHashCacheHits, iaHashCacheMisses, iaHashCacheStores,
+			iaHashCacheNegativeHits, descriptorDraws);
 	}
 
 	static void LogAndReset()

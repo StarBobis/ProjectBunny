@@ -13,6 +13,61 @@
 class DX12OuterTimingProbeUtils
 {
 public:
+	enum ApiWallBucket
+	{
+		ApiDrawInstanced = 0,
+		ApiDrawIndexedInstanced,
+		ApiDispatch,
+		ApiExecuteIndirect,
+		ApiExecuteCommandLists,
+		ApiQueueSignal,
+		ApiQueueWait,
+		ApiResetCommandList,
+		ApiCloseCommandList,
+		ApiSetPipelineState,
+		ApiResourceBarrier,
+		ApiSetDescriptorHeaps,
+		ApiSetComputeRootSignature,
+		ApiSetGraphicsRootSignature,
+		ApiSetComputeRootDescriptorTable,
+		ApiSetGraphicsRootDescriptorTable,
+		ApiSetComputeRootDescriptor,
+		ApiSetGraphicsRootDescriptor,
+		ApiSetComputeRootConstants,
+		ApiSetGraphicsRootConstants,
+		ApiIASetIndexBuffer,
+		ApiIASetVertexBuffers,
+		ApiIASetPrimitiveTopology,
+		ApiCopyBufferRegion,
+		ApiCopyTextureRegion,
+		ApiCopyResource,
+		ApiCopyTiles,
+		ApiResolveSubresource,
+		ApiClearUnorderedAccessView,
+		ApiOtherCommandList,
+		ApiWallBucketCount
+	};
+
+	class ApiWallScope
+	{
+	public:
+		int bucket = ApiOtherCommandList;
+		LARGE_INTEGER begin = {};
+
+		ApiWallScope(int value)
+		{
+			bucket = value;
+			begin = DX12OuterTimingProbeUtils::Now();
+		}
+
+		~ApiWallScope()
+		{
+			DX12OuterTimingProbeUtils::LogApiWallSlice(
+				bucket,
+				DX12OuterTimingProbeUtils::ElapsedUs(begin));
+		}
+	};
+
 	inline static volatile LONG64 LastPresentEnterQpc = 0;
 	inline static volatile LONG64 LastPresentLeaveQpc = 0;
 	inline static volatile LONG64 CurrentPresentEnterQpc = 0;
@@ -59,6 +114,9 @@ public:
 	inline static volatile LONG64 WorkerWaitUs = 0;
 	inline static volatile LONG64 WorkerIdleWaitUs = 0;
 	inline static volatile LONG64 WorkerDrainWaitUs = 0;
+	inline static volatile LONG64 ApiWallCalls[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiWallTotalUs[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiWallMaxUs[ApiWallBucketCount] = {};
 
 	static LARGE_INTEGER Frequency()
 	{
@@ -134,6 +192,87 @@ public:
 		const LONG64 safeUs = ClampUs(us);
 		if (safeUs > 0)
 			InterlockedAdd64(target, safeUs);
+	}
+
+	static const char *ApiWallBucketName(int bucket)
+	{
+		switch (bucket) {
+		case ApiDrawInstanced: return "DrawInstanced";
+		case ApiDrawIndexedInstanced: return "DrawIndexedInstanced";
+		case ApiDispatch: return "Dispatch";
+		case ApiExecuteIndirect: return "ExecuteIndirect";
+		case ApiExecuteCommandLists: return "ExecuteCommandLists";
+		case ApiQueueSignal: return "QueueSignal";
+		case ApiQueueWait: return "QueueWait";
+		case ApiResetCommandList: return "ResetCommandList";
+		case ApiCloseCommandList: return "CloseCommandList";
+		case ApiSetPipelineState: return "SetPipelineState";
+		case ApiResourceBarrier: return "ResourceBarrier";
+		case ApiSetDescriptorHeaps: return "SetDescriptorHeaps";
+		case ApiSetComputeRootSignature: return "SetComputeRootSignature";
+		case ApiSetGraphicsRootSignature: return "SetGraphicsRootSignature";
+		case ApiSetComputeRootDescriptorTable: return "SetComputeRootDescriptorTable";
+		case ApiSetGraphicsRootDescriptorTable: return "SetGraphicsRootDescriptorTable";
+		case ApiSetComputeRootDescriptor: return "SetComputeRootDescriptor";
+		case ApiSetGraphicsRootDescriptor: return "SetGraphicsRootDescriptor";
+		case ApiSetComputeRootConstants: return "SetComputeRootConstants";
+		case ApiSetGraphicsRootConstants: return "SetGraphicsRootConstants";
+		case ApiIASetIndexBuffer: return "IASetIndexBuffer";
+		case ApiIASetVertexBuffers: return "IASetVertexBuffers";
+		case ApiIASetPrimitiveTopology: return "IASetPrimitiveTopology";
+		case ApiCopyBufferRegion: return "CopyBufferRegion";
+		case ApiCopyTextureRegion: return "CopyTextureRegion";
+		case ApiCopyResource: return "CopyResource";
+		case ApiCopyTiles: return "CopyTiles";
+		case ApiResolveSubresource: return "ResolveSubresource";
+		case ApiClearUnorderedAccessView: return "ClearUnorderedAccessView";
+		default: return "OtherCommandList";
+		}
+	}
+
+	static void MaxUs(volatile LONG64 *target, LONG64 value)
+	{
+		LONG64 oldValue = InterlockedCompareExchange64(target, 0, 0);
+		while (value > oldValue) {
+			const LONG64 previous =
+				InterlockedCompareExchange64(target, value, oldValue);
+			if (previous == oldValue)
+				break;
+			oldValue = previous;
+		}
+	}
+
+	static void LogApiWallSlice(int bucket, LONG64 us)
+	{
+		if (bucket < 0 || bucket >= ApiWallBucketCount)
+			bucket = ApiOtherCommandList;
+		const LONG64 safeUs = ClampUs(us);
+		if (safeUs <= 0)
+			return;
+		InterlockedIncrement64(&ApiWallCalls[bucket]);
+		InterlockedAdd64(&ApiWallTotalUs[bucket], safeUs);
+		MaxUs(&ApiWallMaxUs[bucket], safeUs);
+	}
+
+	static void LogApiWallTimingState(LONG present, LONG64 frameWallUs)
+	{
+		for (int bucket = 0; bucket < ApiWallBucketCount; ++bucket) {
+			const LONG64 calls = TakeLong64(&ApiWallCalls[bucket]);
+			const LONG64 totalUs = TakeLong64(&ApiWallTotalUs[bucket]);
+			const LONG64 maxUs = TakeLong64(&ApiWallMaxUs[bucket]);
+			if (!calls && !totalUs && !maxUs)
+				continue;
+			DX12LogManager::JsonFunc("DX12ApiWallTiming",
+				"\"present\":%ld,\"bucket\":\"%s\",\"calls\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,\"frameWallUs\":%lld,\"framePctX100\":%lld",
+				present,
+				ApiWallBucketName(bucket),
+				static_cast<long long>(calls),
+				static_cast<long long>(totalUs),
+				static_cast<long long>(maxUs),
+				static_cast<long long>(frameWallUs),
+				static_cast<long long>(
+					frameWallUs > 0 ? (totalUs * 10000 / frameWallUs) : 0));
+		}
 	}
 
 	static void LogPresentEnter(const char *api, IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
@@ -371,6 +510,7 @@ public:
 		LONG64 presentWallUs,
 		LONG64 frameWallUs)
 	{
+		(void)outsideUs;
 		const LONG present = DX12RuntimeState::GetPresentCount();
 		const LONG presentEnterCalls = TakeLong(&PresentEnterCalls);
 		const LONG presentLeaveCalls = TakeLong(&PresentLeaveCalls);
@@ -414,9 +554,11 @@ public:
 		const LONG64 workerIdleWaitUs = TakeLong64(&WorkerIdleWaitUs);
 		const LONG64 workerDrainWaitUs = TakeLong64(&WorkerDrainWaitUs);
 
+		LogApiWallTimingState(present, frameWallUs);
+
 		DX12LogManager::JsonFunc("DX12FrameTimeline",
 			"\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
-			"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,\"outsideBetweenPresentsUs\":%lld,"
+			"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,"
 			"\"presentWallUs\":%lld,\"presentSliceKnownUs\":%lld,\"presentOriginalUs\":%lld,"
 			"\"presentPostOriginalRuntimeUs\":%lld,\"presentModBeginFrameUs\":%lld,"
 			"\"presentProfilingFlushUs\":%lld,\"presentConsumeUiActionsUs\":%lld,"
@@ -432,7 +574,7 @@ public:
 			"\"fenceCalls\":%lld,\"fenceTotalUs\":%lld,\"eventWaitCalls\":%lld,"
 			"\"eventWaitTotalUs\":%lld,\"workerTaskCalls\":%lld,\"workerTaskUs\":%lld,"
 			"\"workerWaitCalls\":%lld,\"workerWaitUs\":%lld,\"workerIdleWaitUs\":%lld,"
-			"\"workerDrainWaitUs\":%lld,\"outsideMinusQueueEstimatedUs\":%lld,"
+			"\"workerDrainWaitUs\":%lld,"
 			"\"presentWallMinusKnownSlicesUs\":%lld",
 			present,
 			api ? api : "",
@@ -440,7 +582,6 @@ public:
 			static_cast<long>(hr),
 			static_cast<long long>(frameIntervalUs),
 			static_cast<long long>(frameWallUs),
-			static_cast<long long>(outsideUs),
 			static_cast<long long>(presentWallUs),
 			static_cast<long long>(presentSliceKnownUs),
 			static_cast<long long>(presentOriginalUs),
@@ -480,7 +621,6 @@ public:
 			static_cast<long long>(workerWaitUs),
 			static_cast<long long>(workerIdleWaitUs),
 			static_cast<long long>(workerDrainWaitUs),
-			static_cast<long long>(SafeSubtract(outsideUs, queueEstimatedTotalUs)),
 			static_cast<long long>(SafeSubtract(presentWallUs, presentSliceKnownUs)));
 	}
 };
