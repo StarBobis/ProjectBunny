@@ -29,6 +29,7 @@ public:
 	// Compute shader hash cache, equivalent to DX11 current compute shader state.
 	uint64_t cachedCsHash = 0;
 	bool cachedCsHashValid = false;
+	bool cachedCsHashResolved = false;
 
 	// Stable compute binding fingerprint used as a dispatch probe cache key.
 	uint64_t computeBindingHash = 0;

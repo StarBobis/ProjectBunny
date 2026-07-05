@@ -7,6 +7,7 @@
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
 volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
@@ -286,18 +287,30 @@ void DX12CommandListRuntime::RememberPipelineState(
 	if (!state)
 		return;
 
-	if (state->pipelineState != pipelineState) {
+	const bool changed = state->pipelineState != pipelineState;
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePso(changed);
+	if (!changed && state->cachedCsHashResolved)
+		return;
+
+	if (changed) {
 		state->cachedReplacementPsoKey = nullptr;
 		state->cachedReplacementPso = nullptr;
 		state->cachedCsHashValid = false;
+		state->cachedCsHashResolved = false;
+		state->cachedCsHash = 0;
 	}
 	state->pipelineState = pipelineState;
-	if (!state->cachedCsHashValid && pipelineState) {
+	if (!state->cachedCsHashResolved && pipelineState) {
 		DX12PsoShaderInfo shaderInfo = {};
-		if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) && shaderInfo.hasCS) {
-			state->cachedCsHash = shaderInfo.cs;
-			state->cachedCsHashValid = true;
+		if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo)) {
+			state->cachedCsHash = shaderInfo.hasCS ? shaderInfo.cs : 0;
+			state->cachedCsHashValid = shaderInfo.hasCS;
+			state->cachedCsHashResolved = true;
 		}
+	} else if (!pipelineState) {
+		state->cachedCsHash = 0;
+		state->cachedCsHashValid = false;
+		state->cachedCsHashResolved = true;
 	}
 }
 
@@ -351,7 +364,17 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	if (!state)
 		return;
 
-	state->ia.hasIndexBuffer = view != nullptr;
+	const bool newValid = view != nullptr;
+	const bool same =
+		state->ia.hasIndexBuffer == newValid &&
+		(!newValid ||
+			(state->ia.indexBuffer.BufferLocation == view->BufferLocation &&
+				state->ia.indexBuffer.SizeInBytes == view->SizeInBytes &&
+				state->ia.indexBuffer.Format == view->Format));
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeIndexBuffer(!same);
+	if (same)
+		return;
+	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
 }
 
@@ -384,11 +407,24 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 		return;
 
 	DX12ActiveIaState &ia = state->ia;
-	for (UINT i = 0; i < count && startSlot + i < ARRAYSIZE(ia.vertexBuffers); ++i) {
+	const UINT trackedCount = startSlot < ARRAYSIZE(ia.vertexBuffers) ?
+		min(count, static_cast<UINT>(ARRAYSIZE(ia.vertexBuffers)) - startSlot) : 0;
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferCall(trackedCount);
+	for (UINT i = 0; i < trackedCount; ++i) {
 		const UINT slot = startSlot + i;
 		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
-		ia.hasVertexBuffer[slot] = view != nullptr;
-		ia.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
+		D3D12_VERTEX_BUFFER_VIEW newView = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
+		const bool newValid = view != nullptr;
+		const bool same =
+			ia.hasVertexBuffer[slot] == newValid &&
+			ia.vertexBuffers[slot].BufferLocation == newView.BufferLocation &&
+			ia.vertexBuffers[slot].SizeInBytes == newView.SizeInBytes &&
+			ia.vertexBuffers[slot].StrideInBytes == newView.StrideInBytes;
+		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferSlot(!same);
+		if (same)
+			continue;
+		ia.hasVertexBuffer[slot] = newValid;
+		ia.vertexBuffers[slot] = newView;
 	}
 }
 
@@ -416,6 +452,10 @@ void DX12CommandListRuntime::RememberPrimitiveTopology(
 	DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!state)
+		return;
+	const bool changed = state->ia.primitiveTopology != topology;
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePrimitiveTopology(changed);
+	if (!changed)
 		return;
 	state->ia.primitiveTopology = topology;
 }

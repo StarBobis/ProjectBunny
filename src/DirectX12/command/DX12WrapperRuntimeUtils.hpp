@@ -22,6 +22,7 @@
 #include "dxgi/DXGIHookRuntime.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 class DX12WrapperRuntimeUtils
 {
@@ -273,6 +274,7 @@ public:
 		*result = source;
 		if (!source || !storage || !count)
 			return;
+		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierUnwrap(count);
 		storage->resize(count);
 		for (UINT i = 0; i < count; ++i)
 			UnwrapResourceBarrier(&source[i], &(*storage)[i]);

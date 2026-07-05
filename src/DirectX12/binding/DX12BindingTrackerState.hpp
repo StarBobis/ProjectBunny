@@ -59,6 +59,8 @@ public:
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
 	UINT64 computeBindingSerial = 0;
 	UINT64 bindingQuerySerial = 1;
+	UINT graphicsTableValidCount = 0;
+	UINT computeTableValidCount = 0;
 	RootTableState graphicsTables[MaxRootParameters] = {};
 	RootTableState computeTables[MaxRootParameters] = {};
 	RootDescriptorState graphicsRootDescriptors[MaxRootParameters] = {};
@@ -156,6 +158,7 @@ class BindingTlsTableCache
 {
 public:
 	ID3D12GraphicsCommandList *cl = nullptr;
+	bool valid[MaxRootParameters] = {};
 	UINT64 gpuHandle[MaxRootParameters] = {};
 };
 
@@ -163,7 +166,9 @@ class BindingTlsDescriptorCache
 {
 public:
 	ID3D12GraphicsCommandList *cl = nullptr;
+	bool valid[MaxRootParameters] = {};
 	UINT64 address[MaxRootParameters] = {};
+	D3D12_ROOT_PARAMETER_TYPE type[MaxRootParameters] = {};
 };
 
 class BindingTlsDescriptorQueryCache

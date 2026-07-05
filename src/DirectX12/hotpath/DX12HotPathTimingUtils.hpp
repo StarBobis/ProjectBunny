@@ -5,6 +5,7 @@
 #include <atomic>
 
 #include "DX12LogManager.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 // ── Hot-path stage timing ───────────────────────────────────────────
 // Thread-local accumulators. QPC-based. Logged per-frame at Present.
@@ -214,6 +215,7 @@ public:
 			snap[i] = tlsAccum[i];
 			tlsAccum[i] = Accumulator{};
 		}
+		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
 
 		// Only log if anything was measured this frame
 		bool anyActive = false;

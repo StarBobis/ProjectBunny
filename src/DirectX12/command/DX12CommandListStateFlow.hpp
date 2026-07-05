@@ -9,6 +9,7 @@
 #include "DX12HotPathState.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 class DX12CommandListStateFlow
 {
@@ -52,10 +53,14 @@ public:
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers)
 	{
-		if (DX12InternalReplayState::IsActive())
+		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureCall(numBarriers);
+		if (DX12InternalReplayState::IsActive()) {
+			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedInternalReplay();
 			return false;
+		}
 		if (DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedHotPath();
 			return false;
 		}
 
@@ -63,6 +68,7 @@ public:
 			"ID3D12GraphicsCommandList::ResourceBarrier", commandList,
 			" count=%u", numBarriers);
 		DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
+		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierRecorded(numBarriers);
 		return true;
 	}
 

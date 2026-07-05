@@ -14,6 +14,7 @@
 #include "DX12ShaderDump.hpp"
 #include "DX12LogManager.hpp"
 #include "DX12ModRuntime.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];
 volatile LONG64 DX12BindingTrackerState::GlobalDrawSerial = 0;
@@ -1157,6 +1158,7 @@ void DX12BindingTracker::SetPipelineState(
 	if (!commandList)
 		return;
 
+	DX12ResidentMaintenanceTelemetryUtils::RecordPsoCall();
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 	AcquireSRWLockExclusive(&shard.lock);
@@ -1166,9 +1168,15 @@ void DX12BindingTracker::SetPipelineState(
 		tlsStateCache.shardGeneration = shard.generation;
 	}
 	CommandListBindingState &state = *statePtr;
+	if (state.pipelineState == pipelineState) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordPsoNoChange();
+		ReleaseSRWLockExclusive(&shard.lock);
+		return;
+	}
 	state.pipelineState = pipelineState;
 	DX12BindingTracker::InvalidatePipelineShaderInfo(&state);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	DX12ResidentMaintenanceTelemetryUtils::RecordPsoChanged();
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1187,8 +1195,14 @@ void DX12BindingTracker::SetGraphicsRootSignature(
 		tlsStateCache.shardGeneration = shard.generation;
 	}
 	CommandListBindingState &state = *statePtr;
+	if (state.graphicsRootSignature == rootSignature) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(false);
+		ReleaseSRWLockExclusive(&shard.lock);
+		return;
+	}
 	state.graphicsRootSignature = rootSignature;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(true);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1207,9 +1221,15 @@ void DX12BindingTracker::SetComputeRootSignature(
 		tlsStateCache.shardGeneration = shard.generation;
 	}
 	CommandListBindingState &state = *statePtr;
+	if (state.computeRootSignature == rootSignature) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(false);
+		ReleaseSRWLockExclusive(&shard.lock);
+		return;
+	}
 	state.computeRootSignature = rootSignature;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(true);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1249,6 +1269,7 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapResolve(count);
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
 	for (UINT i = 0; i < count && heaps; ++i) {
@@ -1278,18 +1299,21 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	CommandListBindingState &state = shard.states[commandList];
 	if (state.cbvSrvUavHeap == cbvSrvUavHeap &&
 	    state.samplerHeap == samplerHeap) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsNoChange();
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
-	size_t invalidatedGraphicsTables = 0;
-	size_t invalidatedComputeTables = 0;
-	for (UINT root = 0; root < MaxRootParameters; ++root) {
-		if (state.graphicsTables[root].valid)
-			invalidatedGraphicsTables++;
-		if (state.computeTables[root].valid)
-			invalidatedComputeTables++;
-		state.graphicsTables[root] = RootTableState();
-		state.computeTables[root] = RootTableState();
+	UINT invalidatedGraphicsTables = state.graphicsTableValidCount;
+	UINT invalidatedComputeTables = state.computeTableValidCount;
+	if (state.graphicsTableValidCount || state.computeTableValidCount) {
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			if (state.graphicsTables[root].valid)
+				state.graphicsTables[root] = RootTableState();
+			if (state.computeTables[root].valid)
+				state.computeTables[root] = RootTableState();
+		}
+		state.graphicsTableValidCount = 0;
+		state.computeTableValidCount = 0;
 	}
 	state.cbvSrvUavHeap = cbvSrvUavHeap;
 	state.samplerHeap = samplerHeap;
@@ -1298,8 +1322,10 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsGraphicsTableCache.cl = nullptr;
 	tlsComputeTableCache.cl = nullptr;
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsChanged(
+		invalidatedGraphicsTables, invalidatedComputeTables);
 	DX12LogManager::DebugJsonFunc("DX12BindingDescriptorHeapsChanged",
-		"\"commandList\":\"%p\",\"cbvSrvUavHeap\":\"%p\",\"samplerHeap\":\"%p\",\"invalidatedGraphicsTables\":%zu,\"invalidatedComputeTables\":%zu",
+		"\"commandList\":\"%p\",\"cbvSrvUavHeap\":\"%p\",\"samplerHeap\":\"%p\",\"invalidatedGraphicsTables\":%u,\"invalidatedComputeTables\":%u",
 		commandList,
 		cbvSrvUavHeap,
 		samplerHeap,
@@ -1314,9 +1340,14 @@ void DX12BindingTracker::SetGraphicsRootDescriptorTable(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableCall();
 	if (tlsGraphicsTableCache.cl == commandList &&
+		tlsGraphicsTableCache.valid[rootParameterIndex] &&
 		tlsGraphicsTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
+	{
+		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableTlsHit();
 		return;
+	}
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
@@ -1324,15 +1355,31 @@ void DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	RootTableState &stateTable = state.graphicsTables[rootParameterIndex];
 	if (stateTable.valid && stateTable.baseDescriptor.ptr == baseDescriptor.ptr) {
 		ReleaseSRWLockExclusive(&shard.lock);
+		if (tlsGraphicsTableCache.cl != commandList) {
+			memset(tlsGraphicsTableCache.valid, 0, sizeof(tlsGraphicsTableCache.valid));
+			memset(tlsGraphicsTableCache.gpuHandle, 0, sizeof(tlsGraphicsTableCache.gpuHandle));
+			tlsGraphicsTableCache.cl = commandList;
+		}
+		tlsGraphicsTableCache.valid[rootParameterIndex] = true;
+		tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
+		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableNoChange();
 		return;
 	}
+	if (!stateTable.valid)
+		++state.graphicsTableValidCount;
 	stateTable.valid = true;
 	stateTable.rootParameterIndex = rootParameterIndex;
 	stateTable.baseDescriptor = baseDescriptor;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	tlsGraphicsTableCache.cl = commandList;
+	if (tlsGraphicsTableCache.cl != commandList) {
+		memset(tlsGraphicsTableCache.valid, 0, sizeof(tlsGraphicsTableCache.valid));
+		memset(tlsGraphicsTableCache.gpuHandle, 0, sizeof(tlsGraphicsTableCache.gpuHandle));
+		tlsGraphicsTableCache.cl = commandList;
+	}
+	tlsGraphicsTableCache.valid[rootParameterIndex] = true;
 	tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableChanged();
 }
 
 void DX12BindingTracker::SetComputeRootDescriptorTable(
@@ -1341,9 +1388,14 @@ void DX12BindingTracker::SetComputeRootDescriptorTable(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableCall();
 	if (tlsComputeTableCache.cl == commandList &&
+		tlsComputeTableCache.valid[rootParameterIndex] &&
 		tlsComputeTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
+	{
+		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableTlsHit();
 		return;
+	}
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
@@ -1351,16 +1403,32 @@ void DX12BindingTracker::SetComputeRootDescriptorTable(
 	RootTableState &table = state.computeTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
 		ReleaseSRWLockExclusive(&shard.lock);
+		if (tlsComputeTableCache.cl != commandList) {
+			memset(tlsComputeTableCache.valid, 0, sizeof(tlsComputeTableCache.valid));
+			memset(tlsComputeTableCache.gpuHandle, 0, sizeof(tlsComputeTableCache.gpuHandle));
+			tlsComputeTableCache.cl = commandList;
+		}
+		tlsComputeTableCache.valid[rootParameterIndex] = true;
+		tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
+		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableNoChange();
 		return;
 	}
+	if (!table.valid)
+		++state.computeTableValidCount;
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	tlsComputeTableCache.cl = commandList;
+	if (tlsComputeTableCache.cl != commandList) {
+		memset(tlsComputeTableCache.valid, 0, sizeof(tlsComputeTableCache.valid));
+		memset(tlsComputeTableCache.gpuHandle, 0, sizeof(tlsComputeTableCache.gpuHandle));
+		tlsComputeTableCache.cl = commandList;
+	}
+	tlsComputeTableCache.valid[rootParameterIndex] = true;
 	tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableChanged();
 }
 
 void DX12BindingTracker::SetPrimitiveTopology(
@@ -1378,8 +1446,14 @@ void DX12BindingTracker::SetPrimitiveTopology(
 		tlsStateCache.shardGeneration = shard.generation;
 	}
 	CommandListBindingState &state = *statePtr;
+	if (state.primitiveTopology == topology) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordPrimitiveTopology(false);
+		ReleaseSRWLockExclusive(&shard.lock);
+		return;
+	}
 	state.primitiveTopology = topology;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	DX12ResidentMaintenanceTelemetryUtils::RecordPrimitiveTopology(true);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1400,6 +1474,24 @@ void DX12BindingTracker::SetIndexBuffer(
 	}
 	CommandListBindingState &state = *statePtr;
 
+	const bool newValid = view != nullptr;
+	const bool same =
+		state.indexBufferValid == newValid &&
+		(!newValid ||
+			(state.indexBuffer.BufferLocation == view->BufferLocation &&
+				state.indexBuffer.SizeInBytes == view->SizeInBytes &&
+				state.indexBuffer.Format == view->Format));
+	if (same) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(false);
+		ReleaseSRWLockExclusive(&shard.lock);
+		return;
+	}
+
+	const bool hadResolved = state.indexBufferResolved;
+	DX12BindingTracker::ReleaseResolvedIaResource(
+		&state.indexBufferResource, &state.indexBufferResolved);
+	if (hadResolved)
+		DX12ResidentMaintenanceTelemetryUtils::RecordIndexBufferResolvedReleased();
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
@@ -1409,6 +1501,7 @@ void DX12BindingTracker::SetIndexBuffer(
 	}
 	// Resource resolution DEFERRED to draw time — see SetVertexBuffers comment.
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(true);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1418,6 +1511,9 @@ void DX12BindingTracker::SetVertexBuffers(
 {
 	if (!commandList || startSlot >= MaxVertexBufferSlots)
 		return;
+
+	const UINT trackedCount = min(count, MaxVertexBufferSlots - startSlot);
+	DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferCall(trackedCount);
 
 	// Use TLS-cached state pointer to avoid ShardFor() hash + HashMap lookup.
 	// Still acquire lock for mutation safety (negligible cost when uncontended,
@@ -1434,22 +1530,43 @@ void DX12BindingTracker::SetVertexBuffers(
 	}
 	CommandListBindingState &state = *statePtr;
 
-	for (UINT i = 0; i < count && startSlot + i < MaxVertexBufferSlots; ++i) {
+	bool anyChanged = false;
+	for (UINT i = 0; i < trackedCount; ++i) {
 		const UINT slot = startSlot + i;
+		D3D12_VERTEX_BUFFER_VIEW newView = {};
+		bool newValid = false;
 		if (views) {
-			state.vertexBuffers[slot] = views[i];
-			state.vertexBufferValid[slot] = views[i].BufferLocation != 0 && views[i].SizeInBytes != 0;
-		} else {
-			state.vertexBuffers[slot] = {};
-			state.vertexBufferValid[slot] = false;
+			newView = views[i];
+			newValid = newView.BufferLocation != 0 && newView.SizeInBytes != 0;
 		}
+		const bool same =
+			state.vertexBufferValid[slot] == newValid &&
+			state.vertexBuffers[slot].BufferLocation == newView.BufferLocation &&
+			state.vertexBuffers[slot].SizeInBytes == newView.SizeInBytes &&
+			state.vertexBuffers[slot].StrideInBytes == newView.StrideInBytes;
+		if (same) {
+			DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferSlot(false);
+			continue;
+		}
+
+		const bool hadResolved = state.vertexBufferResolved[slot];
+		DX12BindingTracker::ReleaseResolvedIaResource(
+			&state.vertexBufferResources[slot],
+			&state.vertexBufferResolved[slot]);
+		if (hadResolved)
+			DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferResolvedReleased();
+		state.vertexBuffers[slot] = newView;
+		state.vertexBufferValid[slot] = newValid;
+		DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferSlot(true);
+		anyChanged = true;
 		// Resource resolution DEFERRED to draw time (RecordDrawInstanced /
 		// RecordDrawIndexedInstanced). This is a ~90% cost reduction per call:
 		//   Old: ReleaseResolvedIaResource + ResolveAndRetainIaResource
 		//        → DX12ReleaseRetainedResource + DX12ResolveBufferResourceByGpuVa + DX12RetainResource
 		//   New: trivial struct copy (D3D12_VERTEX_BUFFER_VIEW = 3x UINT64)
 	}
-	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	if (anyChanged)
+		DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -2026,22 +2143,54 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorCall();
 	if (tlsGraphicsDescCache.cl == commandList &&
-		tlsGraphicsDescCache.address[rootParameterIndex] == address)
+		tlsGraphicsDescCache.valid[rootParameterIndex] &&
+		tlsGraphicsDescCache.address[rootParameterIndex] == address &&
+		tlsGraphicsDescCache.type[rootParameterIndex] == type)
+	{
+		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorTlsHit();
 		return;
+	}
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootDescriptorState &descriptor = state.graphicsRootDescriptors[rootParameterIndex];
-	descriptor.valid = address != 0;
+	const bool newValid = address != 0;
+	if (descriptor.valid == newValid &&
+		descriptor.rootParameterIndex == rootParameterIndex &&
+		descriptor.type == type &&
+		descriptor.address == address) {
+		ReleaseSRWLockExclusive(&shard.lock);
+		if (tlsGraphicsDescCache.cl != commandList) {
+			memset(tlsGraphicsDescCache.valid, 0, sizeof(tlsGraphicsDescCache.valid));
+			memset(tlsGraphicsDescCache.address, 0, sizeof(tlsGraphicsDescCache.address));
+			memset(tlsGraphicsDescCache.type, 0, sizeof(tlsGraphicsDescCache.type));
+			tlsGraphicsDescCache.cl = commandList;
+		}
+		tlsGraphicsDescCache.valid[rootParameterIndex] = true;
+		tlsGraphicsDescCache.address[rootParameterIndex] = address;
+		tlsGraphicsDescCache.type[rootParameterIndex] = type;
+		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorNoChange();
+		return;
+	}
+	descriptor.valid = newValid;
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	tlsGraphicsDescCache.cl = commandList;
+	if (tlsGraphicsDescCache.cl != commandList) {
+		memset(tlsGraphicsDescCache.valid, 0, sizeof(tlsGraphicsDescCache.valid));
+		memset(tlsGraphicsDescCache.address, 0, sizeof(tlsGraphicsDescCache.address));
+		memset(tlsGraphicsDescCache.type, 0, sizeof(tlsGraphicsDescCache.type));
+		tlsGraphicsDescCache.cl = commandList;
+	}
+	tlsGraphicsDescCache.valid[rootParameterIndex] = true;
 	tlsGraphicsDescCache.address[rootParameterIndex] = address;
+	tlsGraphicsDescCache.type[rootParameterIndex] = type;
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorChanged();
 }
 
 void DX12BindingTracker::SetComputeRootDescriptor(
@@ -2050,23 +2199,55 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorCall();
 	if (tlsComputeDescCache.cl == commandList &&
-		tlsComputeDescCache.address[rootParameterIndex] == address)
+		tlsComputeDescCache.valid[rootParameterIndex] &&
+		tlsComputeDescCache.address[rootParameterIndex] == address &&
+		tlsComputeDescCache.type[rootParameterIndex] == type)
+	{
+		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorTlsHit();
 		return;
+	}
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootDescriptorState &descriptor = state.computeRootDescriptors[rootParameterIndex];
-	descriptor.valid = address != 0;
+	const bool newValid = address != 0;
+	if (descriptor.valid == newValid &&
+		descriptor.rootParameterIndex == rootParameterIndex &&
+		descriptor.type == type &&
+		descriptor.address == address) {
+		ReleaseSRWLockExclusive(&shard.lock);
+		if (tlsComputeDescCache.cl != commandList) {
+			memset(tlsComputeDescCache.valid, 0, sizeof(tlsComputeDescCache.valid));
+			memset(tlsComputeDescCache.address, 0, sizeof(tlsComputeDescCache.address));
+			memset(tlsComputeDescCache.type, 0, sizeof(tlsComputeDescCache.type));
+			tlsComputeDescCache.cl = commandList;
+		}
+		tlsComputeDescCache.valid[rootParameterIndex] = true;
+		tlsComputeDescCache.address[rootParameterIndex] = address;
+		tlsComputeDescCache.type[rootParameterIndex] = type;
+		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorNoChange();
+		return;
+	}
+	descriptor.valid = newValid;
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	tlsComputeDescCache.cl = commandList;
+	if (tlsComputeDescCache.cl != commandList) {
+		memset(tlsComputeDescCache.valid, 0, sizeof(tlsComputeDescCache.valid));
+		memset(tlsComputeDescCache.address, 0, sizeof(tlsComputeDescCache.address));
+		memset(tlsComputeDescCache.type, 0, sizeof(tlsComputeDescCache.type));
+		tlsComputeDescCache.cl = commandList;
+	}
+	tlsComputeDescCache.valid[rootParameterIndex] = true;
 	tlsComputeDescCache.address[rootParameterIndex] = address;
+	tlsComputeDescCache.type[rootParameterIndex] = type;
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorChanged();
 }
 
 void DX12BindingTracker::SetRootConstantsLocked(
@@ -2111,6 +2292,7 @@ void DX12BindingTracker::SetGraphicsRoot32BitConstants(
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
+	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootConstants(count);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -2127,6 +2309,7 @@ void DX12BindingTracker::SetComputeRoot32BitConstants(
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
+	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootConstants(count);
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
