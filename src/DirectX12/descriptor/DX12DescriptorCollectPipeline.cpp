@@ -79,6 +79,13 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 			count,
 			&task.trackedCpuHandleStart,
 			&task.trackedCpuHandleEnd);
+		TryComputeTrackedCpuHandleRange(
+			device,
+			type,
+			srcStart,
+			count,
+			&task.trackedSrcCpuHandleStart,
+			&task.trackedSrcCpuHandleEnd);
 		if (task.trackedCpuHandleStart && task.trackedCpuHandleEnd &&
 			task.trackedCpuHandleEnd >= task.trackedCpuHandleStart) {
 			for (UINT offset = 0; offset < count; ++offset) {
@@ -248,7 +255,8 @@ void DX12DescriptorCollectPipeline::WaitForSequence(uint64_t targetSequence, con
 	if (targetSequence == 0)
 		return;
 
-	const auto begin = std::chrono::steady_clock::now();
+	const std::chrono::steady_clock::time_point begin =
+		std::chrono::steady_clock::now();
 	const uint64_t completedBeforeWait = completedSequence.load(std::memory_order_acquire);
 	{
 		std::unique_lock<std::mutex> lock(mutex);
@@ -261,8 +269,11 @@ void DX12DescriptorCollectPipeline::WaitForSequence(uint64_t targetSequence, con
 			});
 		}
 	}
-	const auto end = std::chrono::steady_clock::now();
-	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+	const std::chrono::steady_clock::time_point end =
+		std::chrono::steady_clock::now();
+	const std::chrono::microseconds elapsedDuration =
+		std::chrono::duration_cast<std::chrono::microseconds>(end - begin);
+	const long long elapsedUs = static_cast<long long>(elapsedDuration.count());
 	if (elapsedUs >= 1000) {
 		DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineWait",
 			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedBeforeWait\":%llu,\"completedAfterWait\":%llu,\"elapsedUs\":%lld",
@@ -270,7 +281,7 @@ void DX12DescriptorCollectPipeline::WaitForSequence(uint64_t targetSequence, con
 			static_cast<unsigned long long>(targetSequence),
 			static_cast<unsigned long long>(completedBeforeWait),
 			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)),
-			static_cast<long long>(elapsedUs));
+			elapsedUs);
 	}
 }
 
@@ -311,6 +322,7 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 			task = std::move(queuedTasks.front());
 			queuedTasks.pop_front();
 			activeQueuedTasks++;
+			SetActiveTaskLocked(task);
 		}
 
 		ProcessTask(&task, "Worker");
@@ -349,6 +361,7 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 			}
 			if (activeQueuedTasks > 0)
 				activeQueuedTasks--;
+			ClearActiveTaskLocked();
 		}
 		completedBatches.fetch_add(1, std::memory_order_relaxed);
 		completedSequence.store(task.sequence, std::memory_order_release);
@@ -398,6 +411,12 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 	uint64_t copiedDescriptorsSnapshot = 0;
 	uint64_t drainCallsSnapshot = 0;
 	uint64_t maxMergedCountSnapshot = 0;
+	uint64_t targetedInlineResolveCallsSnapshot = 0;
+	uint64_t targetedInlineResolveBatchesSnapshot = 0;
+	uint64_t targetedInlineResolvedWritesSnapshot = 0;
+	uint64_t targetedInlineBlockedActiveSnapshot = 0;
+	uint64_t targetedInlineBlockedQueuedSnapshot = 0;
+	uint64_t targetedInlineNoPendingSnapshot = 0;
 	uint64_t pendingDescriptorWritesSnapshot = 0;
 	uint64_t activeQueuedTasksSnapshot = 0;
 	size_t queuedTasksSnapshot = 0;
@@ -412,12 +431,18 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 		copiedDescriptorsSnapshot = copiedDescriptors;
 		drainCallsSnapshot = drainCalls;
 		maxMergedCountSnapshot = maxMergedCount;
+		targetedInlineResolveCallsSnapshot = targetedInlineResolveCalls;
+		targetedInlineResolveBatchesSnapshot = targetedInlineResolveBatches;
+		targetedInlineResolvedWritesSnapshot = targetedInlineResolvedWrites;
+		targetedInlineBlockedActiveSnapshot = targetedInlineBlockedActive;
+		targetedInlineBlockedQueuedSnapshot = targetedInlineBlockedQueued;
+		targetedInlineNoPendingSnapshot = targetedInlineNoPending;
 		pendingDescriptorWritesSnapshot = pendingDescriptorWrites.size();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
 		queuedTasksSnapshot = queuedTasks.size();
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineStats",
-		"\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
+		"\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"targetedInlineResolveCalls\":%llu,\"targetedInlineResolveBatches\":%llu,\"targetedInlineResolvedWrites\":%llu,\"targetedInlineBlockedActive\":%llu,\"targetedInlineBlockedQueued\":%llu,\"targetedInlineNoPending\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
 		static_cast<unsigned long long>(descriptorWritesSnapshot),
 		static_cast<unsigned long long>(descriptorWriteBatchesSnapshot),
 		static_cast<unsigned long long>(descriptorWriteQueuedSnapshot),
@@ -427,6 +452,12 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 		static_cast<unsigned long long>(copiedDescriptorsSnapshot),
 		static_cast<unsigned long long>(drainCallsSnapshot),
 		static_cast<unsigned long long>(maxMergedCountSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolveCallsSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolveBatchesSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolvedWritesSnapshot),
+		static_cast<unsigned long long>(targetedInlineBlockedActiveSnapshot),
+		static_cast<unsigned long long>(targetedInlineBlockedQueuedSnapshot),
+		static_cast<unsigned long long>(targetedInlineNoPendingSnapshot),
 		static_cast<unsigned long long>(pendingDescriptorWritesSnapshot),
 		queuedTasksSnapshot,
 		static_cast<unsigned long long>(activeQueuedTasksSnapshot),
@@ -463,32 +494,43 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 	if (!cpuHandles || count == 0)
 		return;
 	Start();
+	std::vector<SIZE_T> uniqueCpuHandles;
+	BuildUniqueCpuHandleList(cpuHandles, count, &uniqueCpuHandles);
+	size_t requestedPendingWrites = 0;
+	size_t resolvedInlineWrites = 0;
+	bool blockedByActiveTask = false;
+	bool blockedByQueuedTask = false;
+	size_t queuedTasksSnapshot = 0;
+	uint64_t activeQueuedTasksSnapshot = 0;
 	uint64_t targetSequence = 0;
 	{
 		std::unique_lock<std::mutex> lock(mutex);
-		DX12DescriptorCollectBatch batch;
-		bool hasRequestedPendingWrites = false;
-		for (size_t i = 0; i < count; ++i) {
-			const SIZE_T cpuHandle = cpuHandles[i];
-			if (!cpuHandle)
-				continue;
-			std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
-				pendingDescriptorWrites.find(cpuHandle);
-			if (found == pendingDescriptorWrites.end())
-				continue;
-			if (!hasRequestedPendingWrites) {
-				hasRequestedPendingWrites = true;
-				batch.sequence = NextDescriptorSequence();
-				batch.enqueueThreadId = GetCurrentThreadId();
-			}
-			batch.descriptors.push_back(std::move(found->second));
-			pendingDescriptorWrites.erase(found);
-			pendingDescriptorSequences[cpuHandle] = batch.sequence;
-		}
-		if (hasRequestedPendingWrites)
-			QueueDescriptorBatchLocked(&batch);
+		TryResolveRequestedPendingWritesInlineLocked(
+			uniqueCpuHandles,
+			reason ? reason : "EnsureDescriptorWritesVisible",
+			&requestedPendingWrites,
+			&resolvedInlineWrites,
+			&blockedByActiveTask,
+			&blockedByQueuedTask);
 		targetSequence = RequiredSequenceForHandlesLocked(cpuHandles, count);
+		queuedTasksSnapshot = queuedTasks.size();
+		activeQueuedTasksSnapshot = activeQueuedTasks;
 		wake.notify_one();
+	}
+	if (requestedPendingWrites != 0 || resolvedInlineWrites != 0 ||
+			blockedByActiveTask || blockedByQueuedTask) {
+		DX12LogManager::JsonFunc("DX12DescriptorTargetedResolve",
+			"\"reason\":\"%s\",\"requestedHandles\":%zu,\"pendingWrites\":%zu,\"inlineWrites\":%zu,\"blockedByActiveTask\":%s,\"blockedByQueuedTask\":%s,\"targetSequence\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"completedSequence\":%llu",
+			reason ? reason : "EnsureDescriptorWritesVisible",
+			uniqueCpuHandles.size(),
+			requestedPendingWrites,
+			resolvedInlineWrites,
+			blockedByActiveTask ? "true" : "false",
+			blockedByQueuedTask ? "true" : "false",
+			static_cast<unsigned long long>(targetSequence),
+			queuedTasksSnapshot,
+			static_cast<unsigned long long>(activeQueuedTasksSnapshot),
+			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)));
 	}
 	WaitForSequence(targetSequence, reason ? reason : "EnsureDescriptorWritesVisible");
 }
@@ -585,6 +627,13 @@ bool DX12DescriptorCollectPipeline::TryMergeQueuedCopyTaskLocked(
 		pendingCopy.count,
 		&pendingCopy.trackedCpuHandleStart,
 		&pendingCopy.trackedCpuHandleEnd);
+	TryComputeTrackedCpuHandleRange(
+		device,
+		type,
+		pendingCopy.srcStart,
+		pendingCopy.count,
+		&pendingCopy.trackedSrcCpuHandleStart,
+		&pendingCopy.trackedSrcCpuHandleEnd);
 	for (UINT offset = 0; offset < count; ++offset) {
 		const SIZE_T cpuHandle =
 			destStart.ptr + static_cast<SIZE_T>(offset) * increment;
@@ -593,6 +642,255 @@ bool DX12DescriptorCollectPipeline::TryMergeQueuedCopyTaskLocked(
 	copyRangeMerged++;
 	if (pendingCopy.count > maxMergedCount)
 		maxMergedCount = pendingCopy.count;
+	return true;
+}
+
+bool DX12DescriptorCollectPipeline::CpuHandleInTrackedRange(
+	SIZE_T cpuHandle,
+	SIZE_T rangeStart,
+	SIZE_T rangeEnd)
+{
+	return cpuHandle != 0 &&
+		rangeStart != 0 &&
+		rangeEnd >= rangeStart &&
+		cpuHandle >= rangeStart &&
+		cpuHandle <= rangeEnd;
+}
+
+bool DX12DescriptorCollectPipeline::TaskTouchesCpuHandleLocked(
+	const DX12DescriptorCollectTask &task,
+	SIZE_T cpuHandle)
+{
+	if (!cpuHandle)
+		return false;
+	if (task.kind == DX12DescriptorCollectTaskKind::DescriptorBatch) {
+		for (const DescriptorRecord &record : task.descriptors) {
+			if (record.cpuHandle == cpuHandle)
+				return true;
+		}
+		return false;
+	}
+	if (task.kind == DX12DescriptorCollectTaskKind::CopyRange) {
+		if (CpuHandleInTrackedRange(
+				cpuHandle,
+				task.trackedCpuHandleStart,
+				task.trackedCpuHandleEnd)) {
+			return true;
+		}
+		if (CpuHandleInTrackedRange(
+				cpuHandle,
+				task.trackedSrcCpuHandleStart,
+				task.trackedSrcCpuHandleEnd)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool DX12DescriptorCollectPipeline::ActiveTaskTouchesCpuHandleLocked(SIZE_T cpuHandle)
+{
+	if (!cpuHandle)
+		return false;
+	for (size_t index = 0; index < activeDescriptorTaskCpuHandles.size(); ++index) {
+		if (activeDescriptorTaskCpuHandles[index] == cpuHandle)
+			return true;
+	}
+	if (CpuHandleInTrackedRange(
+			cpuHandle,
+			activeTaskDestCpuHandleStart,
+			activeTaskDestCpuHandleEnd)) {
+		return true;
+	}
+	if (CpuHandleInTrackedRange(
+			cpuHandle,
+			activeTaskSrcCpuHandleStart,
+			activeTaskSrcCpuHandleEnd)) {
+		return true;
+	}
+	return false;
+}
+
+bool DX12DescriptorCollectPipeline::QueuedTasksTouchAnyCpuHandleLocked(
+	const std::vector<SIZE_T> &cpuHandles)
+{
+	if (cpuHandles.empty())
+		return false;
+	for (const DX12DescriptorCollectTask &task : queuedTasks) {
+		for (size_t index = 0; index < cpuHandles.size(); ++index) {
+			if (TaskTouchesCpuHandleLocked(task, cpuHandles[index]))
+				return true;
+		}
+	}
+	return false;
+}
+
+void DX12DescriptorCollectPipeline::SetActiveTaskLocked(
+	const DX12DescriptorCollectTask &task)
+{
+	ClearActiveTaskLocked();
+	if (task.kind == DX12DescriptorCollectTaskKind::DescriptorBatch) {
+		activeDescriptorTaskCpuHandles.reserve(task.descriptors.size());
+		for (const DescriptorRecord &record : task.descriptors) {
+			if (record.cpuHandle)
+				activeDescriptorTaskCpuHandles.push_back(record.cpuHandle);
+		}
+		return;
+	}
+	if (task.kind == DX12DescriptorCollectTaskKind::CopyRange) {
+		activeTaskDestCpuHandleStart = task.trackedCpuHandleStart;
+		activeTaskDestCpuHandleEnd = task.trackedCpuHandleEnd;
+		activeTaskSrcCpuHandleStart = task.trackedSrcCpuHandleStart;
+		activeTaskSrcCpuHandleEnd = task.trackedSrcCpuHandleEnd;
+	}
+}
+
+void DX12DescriptorCollectPipeline::ClearActiveTaskLocked()
+{
+	activeDescriptorTaskCpuHandles.clear();
+	activeTaskDestCpuHandleStart = 0;
+	activeTaskDestCpuHandleEnd = 0;
+	activeTaskSrcCpuHandleStart = 0;
+	activeTaskSrcCpuHandleEnd = 0;
+}
+
+bool DX12DescriptorCollectPipeline::BuildUniqueCpuHandleList(
+	const SIZE_T *cpuHandles,
+	size_t count,
+	std::vector<SIZE_T> *uniqueCpuHandles)
+{
+	if (!cpuHandles || !uniqueCpuHandles)
+		return false;
+	uniqueCpuHandles->clear();
+	uniqueCpuHandles->reserve(count);
+	for (size_t index = 0; index < count; ++index) {
+		const SIZE_T cpuHandle = cpuHandles[index];
+		if (!cpuHandle)
+			continue;
+		bool alreadyAdded = false;
+		for (size_t existingIndex = 0; existingIndex < uniqueCpuHandles->size(); ++existingIndex) {
+			if ((*uniqueCpuHandles)[existingIndex] == cpuHandle) {
+				alreadyAdded = true;
+				break;
+			}
+		}
+		if (!alreadyAdded)
+			uniqueCpuHandles->push_back(cpuHandle);
+	}
+	return !uniqueCpuHandles->empty();
+}
+
+bool DX12DescriptorCollectPipeline::TryResolveRequestedPendingWritesInlineLocked(
+	const std::vector<SIZE_T> &uniqueCpuHandles,
+	const char *reason,
+	size_t *pendingWrites,
+	size_t *resolvedWrites,
+	bool *blockedByActiveTask,
+	bool *blockedByQueuedTask)
+{
+	if (pendingWrites) *pendingWrites = 0;
+	if (resolvedWrites) *resolvedWrites = 0;
+	if (blockedByActiveTask) *blockedByActiveTask = false;
+	if (blockedByQueuedTask) *blockedByQueuedTask = false;
+	if (uniqueCpuHandles.empty())
+		return false;
+
+	targetedInlineResolveCalls++;
+	std::vector<SIZE_T> pendingCpuHandles;
+	pendingCpuHandles.reserve(uniqueCpuHandles.size());
+	for (size_t index = 0; index < uniqueCpuHandles.size(); ++index) {
+		const SIZE_T cpuHandle = uniqueCpuHandles[index];
+		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+			pendingDescriptorWrites.find(cpuHandle);
+		if (found != pendingDescriptorWrites.end())
+			pendingCpuHandles.push_back(cpuHandle);
+	}
+	if (pendingWrites)
+		*pendingWrites = pendingCpuHandles.size();
+	if (pendingCpuHandles.empty()) {
+		targetedInlineNoPending++;
+		return false;
+	}
+
+	bool activeBlocked = false;
+	for (size_t index = 0; index < pendingCpuHandles.size(); ++index) {
+		if (ActiveTaskTouchesCpuHandleLocked(pendingCpuHandles[index])) {
+			activeBlocked = true;
+			break;
+		}
+	}
+	const bool queuedBlocked =
+		QueuedTasksTouchAnyCpuHandleLocked(pendingCpuHandles);
+	if (blockedByActiveTask) *blockedByActiveTask = activeBlocked;
+	if (blockedByQueuedTask) *blockedByQueuedTask = queuedBlocked;
+
+	if (activeBlocked || queuedBlocked) {
+		if (activeBlocked)
+			targetedInlineBlockedActive++;
+		if (queuedBlocked)
+			targetedInlineBlockedQueued++;
+
+		DX12DescriptorCollectBatch fallbackBatch;
+		fallbackBatch.sequence = NextDescriptorSequence();
+		fallbackBatch.enqueueThreadId = GetCurrentThreadId();
+		fallbackBatch.descriptors.reserve(pendingCpuHandles.size());
+		for (size_t index = 0; index < pendingCpuHandles.size(); ++index) {
+			const SIZE_T cpuHandle = pendingCpuHandles[index];
+			std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+				pendingDescriptorWrites.find(cpuHandle);
+			if (found == pendingDescriptorWrites.end())
+				continue;
+			fallbackBatch.descriptors.push_back(std::move(found->second));
+			pendingDescriptorWrites.erase(found);
+			pendingDescriptorSequences[cpuHandle] = fallbackBatch.sequence;
+		}
+		QueueDescriptorBatchLocked(&fallbackBatch);
+		return false;
+	}
+
+	DX12DescriptorCollectBatch inlineBatch;
+	inlineBatch.sequence = NextDescriptorSequence();
+	inlineBatch.enqueueThreadId = GetCurrentThreadId();
+	inlineBatch.descriptors.reserve(pendingCpuHandles.size());
+	std::vector<SIZE_T> resolvedCpuHandles;
+	resolvedCpuHandles.reserve(pendingCpuHandles.size());
+	for (size_t index = 0; index < pendingCpuHandles.size(); ++index) {
+		const SIZE_T cpuHandle = pendingCpuHandles[index];
+		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+			pendingDescriptorWrites.find(cpuHandle);
+		if (found == pendingDescriptorWrites.end())
+			continue;
+		inlineBatch.descriptors.push_back(std::move(found->second));
+		pendingDescriptorWrites.erase(found);
+		pendingDescriptorSequences.erase(cpuHandle);
+		resolvedCpuHandles.push_back(cpuHandle);
+	}
+	if (inlineBatch.descriptors.empty())
+		return false;
+
+	const std::chrono::steady_clock::time_point begin =
+		std::chrono::steady_clock::now();
+	::RecordDescriptorBatch(&inlineBatch.descriptors);
+	const UINT64 visibleSequence = completedSequence.load(std::memory_order_acquire);
+	for (size_t index = 0; index < resolvedCpuHandles.size(); ++index)
+		visibleDescriptorSequences[resolvedCpuHandles[index]] = visibleSequence;
+	const std::chrono::steady_clock::time_point end =
+		std::chrono::steady_clock::now();
+	const std::chrono::microseconds elapsedDuration =
+		std::chrono::duration_cast<std::chrono::microseconds>(end - begin);
+	const long long elapsedUs = static_cast<long long>(elapsedDuration.count());
+
+	targetedInlineResolveBatches++;
+	targetedInlineResolvedWrites += resolvedCpuHandles.size();
+	if (resolvedWrites)
+		*resolvedWrites = resolvedCpuHandles.size();
+	DX12LogManager::JsonFunc("DX12DescriptorTargetedInline",
+		"\"reason\":\"%s\",\"resolvedWrites\":%zu,\"elapsedUs\":%lld,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"completedSequence\":%llu",
+		reason ? reason : "",
+		resolvedCpuHandles.size(),
+		elapsedUs,
+		queuedTasks.size(),
+		static_cast<unsigned long long>(activeQueuedTasks),
+		static_cast<unsigned long long>(visibleSequence));
 	return true;
 }
 
@@ -612,6 +910,12 @@ void DX12DescriptorCollectPipeline::MaybeLogInlineStats(const char *reason)
 	uint64_t copiedDescriptorsSnapshot = 0;
 	uint64_t drainCallsSnapshot = 0;
 	uint64_t maxMergedCountSnapshot = 0;
+	uint64_t targetedInlineResolveCallsSnapshot = 0;
+	uint64_t targetedInlineResolveBatchesSnapshot = 0;
+	uint64_t targetedInlineResolvedWritesSnapshot = 0;
+	uint64_t targetedInlineBlockedActiveSnapshot = 0;
+	uint64_t targetedInlineBlockedQueuedSnapshot = 0;
+	uint64_t targetedInlineNoPendingSnapshot = 0;
 	uint64_t pendingDescriptorWritesSnapshot = 0;
 	uint64_t activeQueuedTasksSnapshot = 0;
 	size_t queuedTasksSnapshot = 0;
@@ -629,12 +933,18 @@ void DX12DescriptorCollectPipeline::MaybeLogInlineStats(const char *reason)
 		copiedDescriptorsSnapshot = copiedDescriptors;
 		drainCallsSnapshot = drainCalls;
 		maxMergedCountSnapshot = maxMergedCount;
+		targetedInlineResolveCallsSnapshot = targetedInlineResolveCalls;
+		targetedInlineResolveBatchesSnapshot = targetedInlineResolveBatches;
+		targetedInlineResolvedWritesSnapshot = targetedInlineResolvedWrites;
+		targetedInlineBlockedActiveSnapshot = targetedInlineBlockedActive;
+		targetedInlineBlockedQueuedSnapshot = targetedInlineBlockedQueued;
+		targetedInlineNoPendingSnapshot = targetedInlineNoPending;
 		pendingDescriptorWritesSnapshot = pendingDescriptorWrites.size();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
 		queuedTasksSnapshot = queuedTasks.size();
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineStats",
-		"\"reason\":\"%s\",\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
+		"\"reason\":\"%s\",\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"targetedInlineResolveCalls\":%llu,\"targetedInlineResolveBatches\":%llu,\"targetedInlineResolvedWrites\":%llu,\"targetedInlineBlockedActive\":%llu,\"targetedInlineBlockedQueued\":%llu,\"targetedInlineNoPending\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
 		reason ? reason : "",
 		static_cast<unsigned long long>(descriptorWritesSnapshot),
 		static_cast<unsigned long long>(descriptorWriteBatchesSnapshot),
@@ -645,6 +955,12 @@ void DX12DescriptorCollectPipeline::MaybeLogInlineStats(const char *reason)
 		static_cast<unsigned long long>(copiedDescriptorsSnapshot),
 		static_cast<unsigned long long>(drainCallsSnapshot),
 		static_cast<unsigned long long>(maxMergedCountSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolveCallsSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolveBatchesSnapshot),
+		static_cast<unsigned long long>(targetedInlineResolvedWritesSnapshot),
+		static_cast<unsigned long long>(targetedInlineBlockedActiveSnapshot),
+		static_cast<unsigned long long>(targetedInlineBlockedQueuedSnapshot),
+		static_cast<unsigned long long>(targetedInlineNoPendingSnapshot),
 		static_cast<unsigned long long>(pendingDescriptorWritesSnapshot),
 		queuedTasksSnapshot,
 		static_cast<unsigned long long>(activeQueuedTasksSnapshot),

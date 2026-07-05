@@ -35,6 +35,8 @@ public:
 	uint64_t sequence = 0;
 	SIZE_T trackedCpuHandleStart = 0;
 	SIZE_T trackedCpuHandleEnd = 0;
+	SIZE_T trackedSrcCpuHandleStart = 0;
+	SIZE_T trackedSrcCpuHandleEnd = 0;
 	DWORD enqueueThreadId = 0;
 };
 
@@ -64,6 +66,11 @@ public:
 	inline static std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
 	inline static std::unordered_map<SIZE_T, uint64_t> pendingDescriptorSequences;
 	inline static std::unordered_map<SIZE_T, uint64_t> visibleDescriptorSequences;
+	inline static std::vector<SIZE_T> activeDescriptorTaskCpuHandles;
+	inline static SIZE_T activeTaskDestCpuHandleStart = 0;
+	inline static SIZE_T activeTaskDestCpuHandleEnd = 0;
+	inline static SIZE_T activeTaskSrcCpuHandleStart = 0;
+	inline static SIZE_T activeTaskSrcCpuHandleEnd = 0;
 	inline static uint64_t activeQueuedTasks = 0;
 	inline static uint64_t descriptorWrites = 0;
 	inline static uint64_t descriptorWriteBatches = 0;
@@ -74,6 +81,12 @@ public:
 	inline static uint64_t copiedDescriptors = 0;
 	inline static uint64_t drainCalls = 0;
 	inline static uint64_t maxMergedCount = 0;
+	inline static uint64_t targetedInlineResolveCalls = 0;
+	inline static uint64_t targetedInlineResolveBatches = 0;
+	inline static uint64_t targetedInlineResolvedWrites = 0;
+	inline static uint64_t targetedInlineBlockedActive = 0;
+	inline static uint64_t targetedInlineBlockedQueued = 0;
+	inline static uint64_t targetedInlineNoPending = 0;
 
 	static void RecordDescriptor(DescriptorRecord &&record, const char *source);
 	static void RecordDescriptorCopyRange(
@@ -119,4 +132,27 @@ public:
 	static bool TryStealDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
 	static void RecordDescriptorWriteStats(const DescriptorRecord &record);
 	static void MaybeLogInlineStats(const char *reason);
+	static bool CpuHandleInTrackedRange(
+		SIZE_T cpuHandle,
+		SIZE_T rangeStart,
+		SIZE_T rangeEnd);
+	static bool TaskTouchesCpuHandleLocked(
+		const DX12DescriptorCollectTask &task,
+		SIZE_T cpuHandle);
+	static bool ActiveTaskTouchesCpuHandleLocked(SIZE_T cpuHandle);
+	static bool QueuedTasksTouchAnyCpuHandleLocked(
+		const std::vector<SIZE_T> &cpuHandles);
+	static void SetActiveTaskLocked(const DX12DescriptorCollectTask &task);
+	static void ClearActiveTaskLocked();
+	static bool BuildUniqueCpuHandleList(
+		const SIZE_T *cpuHandles,
+		size_t count,
+		std::vector<SIZE_T> *uniqueCpuHandles);
+	static bool TryResolveRequestedPendingWritesInlineLocked(
+		const std::vector<SIZE_T> &uniqueCpuHandles,
+		const char *reason,
+		size_t *pendingWrites,
+		size_t *resolvedWrites,
+		bool *blockedByActiveTask,
+		bool *blockedByQueuedTask);
 };
