@@ -18,6 +18,7 @@
 #include "DX12ShaderHunt.hpp"
 #include "DX12LogManager.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 #if defined(_DEBUG)
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
@@ -115,11 +116,10 @@ public:
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
-		const bool needsDispatchWork = hasShaderOverrides || needsPreSkinProbe;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
-		if (DX12Profiling::ShouldCollectCounters() || needsDispatchWork)
+		if (DX12Profiling::ShouldCollectCounters() || hasShaderOverrides || needsPreSkinProbe)
 			DX12RuntimeState::IncrementFrameDispatches();
 
 		if (DX12InternalReplayState::IsActive()) {
@@ -127,6 +127,24 @@ public:
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
+
+		DX12CompiledDispatchDecision fallbackDecision;
+		const DX12CompiledDispatchDecision *dispatchDecision =
+			DX12CommandListRuntime::EnsureDispatchDecision(
+				runtimeState, hasShaderOverrides, needsPreSkinProbe);
+		if (!dispatchDecision) {
+			ID3D12PipelineState *pipelineState =
+				DX12CommandListRuntime::GetPipelineState(commandList);
+			fallbackDecision = DX12CommandListRuntime::BuildDispatchDecision(
+				pipelineState, hasShaderOverrides, needsPreSkinProbe);
+			dispatchDecision = &fallbackDecision;
+		}
+		const bool decisionNeedsPreSkinProbe =
+			needsPreSkinProbe && dispatchDecision && dispatchDecision->NeedsPreSkinProbe();
+		const bool decisionNeedsShaderOverrideWork =
+			hasShaderOverrides && dispatchDecision && dispatchDecision->NeedsShaderOverrideWork();
+		const bool needsDispatchWork =
+			decisionNeedsShaderOverrideWork || decisionNeedsPreSkinProbe;
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -154,29 +172,17 @@ public:
 			}
 		}
 		if (!needsDispatchWork) {
+			if (needsPreSkinProbe && dispatchDecision && dispatchDecision->IsPreSkinRejected())
+				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
 			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
-		if (!hasShaderOverrides && needsPreSkinProbe) {
-			if (!HasConfiguredPreSkinCs(commandList, runtimeState)) {
-				DX12_PROFILE_FAST_FORWARD();
-				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-				DX12_HOTPATH_TIME_END(DispatchHookTotal);
-				return;
-			}
-			Execute(
-				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-				runtimeState, originalDispatch);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
-			return;
-		}
-
 		Execute(
 			commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-			runtimeState, originalDispatch);
+			runtimeState, originalDispatch, dispatchDecision);
 		DX12_HOTPATH_TIME_END(DispatchHookTotal);
 	}
 
@@ -186,7 +192,8 @@ public:
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
 		DX12CommandListRuntimeState *runtimeState,
-		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+		DX12DispatchHookFlowDispatch::Fn originalDispatch,
+		const DX12CompiledDispatchDecision *dispatchDecision = nullptr)
 	{
 		if (!originalDispatch)
 			return;
@@ -202,8 +209,14 @@ public:
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		if (runtimeState && hasShaderOverrides &&
-		    DX12ModShouldSkipPipelineState(runtimeState->pipelineState, true))
+		bool shouldSkipDispatch = false;
+		if (hasShaderOverrides) {
+			if (dispatchDecision)
+				shouldSkipDispatch = dispatchDecision->hasShaderOverrideSkip;
+			else if (runtimeState)
+				shouldSkipDispatch = DX12ModShouldSkipPipelineState(runtimeState->pipelineState, true);
+		}
+		if (shouldSkipDispatch)
 			return;
 
 		DX12DispatchHookFlowGuard guard(InDispatchHookFlow);
@@ -220,10 +233,22 @@ public:
 			effectiveState = &fallbackState;
 		}
 
-		if (!needsPreSkinProbe || !effectiveState) {
+		DX12CompiledDispatchDecision localDecision;
+		const DX12CompiledDispatchDecision *effectiveDecision = dispatchDecision;
+		if (!effectiveDecision && effectiveState) {
+			localDecision = DX12CommandListRuntime::BuildDispatchDecision(
+				effectiveState->pipelineState, hasShaderOverrides, needsPreSkinProbe);
+			effectiveDecision = &localDecision;
+		}
+		const bool decisionNeedsPreSkinProbe =
+			needsPreSkinProbe && effectiveDecision && effectiveDecision->NeedsPreSkinProbe();
+		if (!needsPreSkinProbe || !effectiveState || !decisionNeedsPreSkinProbe) {
+			if (needsPreSkinProbe && effectiveDecision && effectiveDecision->IsPreSkinRejected())
+				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidateDispatch();
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
 		PreparePreSkinProbe(commandList, *effectiveState, &probe);

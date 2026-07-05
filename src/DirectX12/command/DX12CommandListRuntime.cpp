@@ -281,6 +281,93 @@ void DX12CommandListRuntime::Reset(
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
+DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
+	ID3D12PipelineState *pipelineState,
+	bool hasShaderOverrides,
+	bool needsPreSkinProbe)
+{
+	DX12CompiledDispatchDecision decision;
+	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionBuild();
+
+	if (!pipelineState) {
+		decision.SetNoComputeShader(
+			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		return decision;
+	}
+
+	DX12PsoShaderInfo shaderInfo = {};
+	if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) || !shaderInfo.hasCS) {
+		decision.SetNoComputeShader(
+			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		return decision;
+	}
+
+	const uint64_t csHash = shaderInfo.cs;
+	const bool shaderOverrideSkip = hasShaderOverrides ?
+		DX12ModShouldSkipPipelineState(pipelineState, true) : false;
+	const bool preSkinCandidate = needsPreSkinProbe && csHash != 0 ?
+		DX12ModShouldTrackPreSkinBindingsForCs(csHash) : false;
+
+	if (preSkinCandidate) {
+		decision.SetNeedsPreSkinProbe(
+			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
+			hasShaderOverrides, needsPreSkinProbe);
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidate();
+		return decision;
+	}
+
+	if (shaderOverrideSkip) {
+		decision.SetNeedsShaderOverrideWork(
+			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
+			hasShaderOverrides, needsPreSkinProbe);
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionShaderOverrideWork();
+		return decision;
+	}
+
+	decision.SetNoPreSkinCandidate(
+		pipelineState, reloadGeneration, csHash,
+		hasShaderOverrides, needsPreSkinProbe);
+	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoPreSkinCandidate();
+	return decision;
+}
+
+const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecision(
+	DX12CommandListRuntimeState *state,
+	bool hasShaderOverrides,
+	bool needsPreSkinProbe)
+{
+	if (!state)
+		return nullptr;
+
+	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	if (state->dispatchDecision.resolved &&
+	    state->dispatchDecision.pipelineState == state->pipelineState &&
+	    state->dispatchDecision.reloadGeneration == reloadGeneration &&
+	    state->dispatchDecision.MatchesGlobals(hasShaderOverrides, needsPreSkinProbe)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheHit();
+		return &state->dispatchDecision;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheMiss();
+	DX12CommandListRuntime::CompileDispatchDecision(
+		state, hasShaderOverrides, needsPreSkinProbe);
+	return &state->dispatchDecision;
+}
+
+void DX12CommandListRuntime::CompileDispatchDecision(
+	DX12CommandListRuntimeState *state,
+	bool hasShaderOverrides,
+	bool needsPreSkinProbe)
+{
+	if (!state)
+		return;
+	state->dispatchDecision = DX12CommandListRuntime::BuildDispatchDecision(
+		state->pipelineState, hasShaderOverrides, needsPreSkinProbe);
+}
+
 void DX12CommandListRuntime::RememberPipelineState(
 	DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState)
 {
@@ -289,7 +376,9 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	const bool changed = state->pipelineState != pipelineState;
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePso(changed);
-	if (!changed && state->cachedCsHashResolved)
+	if (!changed && state->cachedCsHashResolved &&
+	    state->dispatchDecision.resolved &&
+	    state->dispatchDecision.pipelineState == pipelineState)
 		return;
 
 	if (changed) {
@@ -298,6 +387,7 @@ void DX12CommandListRuntime::RememberPipelineState(
 		state->cachedCsHashValid = false;
 		state->cachedCsHashResolved = false;
 		state->cachedCsHash = 0;
+		state->dispatchDecision.Reset();
 	}
 	state->pipelineState = pipelineState;
 	if (!state->cachedCsHashResolved && pipelineState) {
@@ -312,6 +402,8 @@ void DX12CommandListRuntime::RememberPipelineState(
 		state->cachedCsHashValid = false;
 		state->cachedCsHashResolved = true;
 	}
+	DX12CommandListRuntime::CompileDispatchDecision(
+		state, DX12ModHasActiveShaderOverrides(), DX12ModNeedsPreSkinningUavProbe());
 }
 
 void DX12CommandListRuntime::RememberPipelineState(

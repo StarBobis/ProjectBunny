@@ -46,6 +46,18 @@ public:
 	static void Register(ID3D12GraphicsCommandList *commandList);
 	static void Reset(DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState);
 	static void Reset(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
+	static DX12CompiledDispatchDecision BuildDispatchDecision(
+		ID3D12PipelineState *pipelineState,
+		bool hasShaderOverrides,
+		bool needsPreSkinProbe);
+	static const DX12CompiledDispatchDecision *EnsureDispatchDecision(
+		DX12CommandListRuntimeState *state,
+		bool hasShaderOverrides,
+		bool needsPreSkinProbe);
+	static void CompileDispatchDecision(
+		DX12CommandListRuntimeState *state,
+		bool hasShaderOverrides,
+		bool needsPreSkinProbe);
 	static void RememberPipelineState(DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState);
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void ResetIa(DX12CommandListRuntimeState *state);

@@ -108,6 +108,16 @@ public:
 	inline static volatile LONG64 RuntimeDescriptorCopied = 0;
 	inline static volatile LONG64 RuntimeDescriptorCopyMisses = 0;
 
+	inline static volatile LONG DispatchDecisionCacheHits = 0;
+	inline static volatile LONG DispatchDecisionCacheMisses = 0;
+	inline static volatile LONG DispatchDecisionBuilds = 0;
+	inline static volatile LONG DispatchDecisionNoCompute = 0;
+	inline static volatile LONG DispatchDecisionNoPreSkinCandidate = 0;
+	inline static volatile LONG DispatchDecisionPreSkinCandidate = 0;
+	inline static volatile LONG DispatchDecisionPreSkinCandidateDispatches = 0;
+	inline static volatile LONG DispatchDecisionShaderOverrideWork = 0;
+	inline static volatile LONG DispatchDecisionFastRejects = 0;
+
 	static void Inc(volatile LONG *value)
 	{
 		InterlockedIncrement(value);
@@ -473,6 +483,51 @@ public:
 		Add64(&RuntimeDescriptorCopyMisses, static_cast<LONG64>(misses));
 	}
 
+	static void RecordDispatchDecisionCacheHit()
+	{
+		Inc(&DispatchDecisionCacheHits);
+	}
+
+	static void RecordDispatchDecisionCacheMiss()
+	{
+		Inc(&DispatchDecisionCacheMisses);
+	}
+
+	static void RecordDispatchDecisionBuild()
+	{
+		Inc(&DispatchDecisionBuilds);
+	}
+
+	static void RecordDispatchDecisionNoCompute()
+	{
+		Inc(&DispatchDecisionNoCompute);
+	}
+
+	static void RecordDispatchDecisionNoPreSkinCandidate()
+	{
+		Inc(&DispatchDecisionNoPreSkinCandidate);
+	}
+
+	static void RecordDispatchDecisionPreSkinCandidate()
+	{
+		Inc(&DispatchDecisionPreSkinCandidate);
+	}
+
+	static void RecordDispatchDecisionPreSkinCandidateDispatch()
+	{
+		Inc(&DispatchDecisionPreSkinCandidateDispatches);
+	}
+
+	static void RecordDispatchDecisionShaderOverrideWork()
+	{
+		Inc(&DispatchDecisionShaderOverrideWork);
+	}
+
+	static void RecordDispatchDecisionFastReject()
+	{
+		Inc(&DispatchDecisionFastRejects);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -671,6 +726,28 @@ public:
 			static_cast<long long>(runtimeDescriptorCopyMisses));
 	}
 
+	static void LogDispatchDecisionState()
+	{
+		LONG cacheHits = Take(&DispatchDecisionCacheHits);
+		LONG cacheMisses = Take(&DispatchDecisionCacheMisses);
+		LONG builds = Take(&DispatchDecisionBuilds);
+		LONG noCompute = Take(&DispatchDecisionNoCompute);
+		LONG noPreSkinCandidate = Take(&DispatchDecisionNoPreSkinCandidate);
+		LONG preSkinCandidate = Take(&DispatchDecisionPreSkinCandidate);
+		LONG preSkinCandidateDispatches = Take(&DispatchDecisionPreSkinCandidateDispatches);
+		LONG shaderOverrideWork = Take(&DispatchDecisionShaderOverrideWork);
+		LONG fastRejects = Take(&DispatchDecisionFastRejects);
+		if (!cacheHits && !cacheMisses && !builds && !noCompute &&
+			!noPreSkinCandidate && !preSkinCandidate && !preSkinCandidateDispatches &&
+			!shaderOverrideWork && !fastRejects)
+			return;
+		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
+			"\"category\":\"dispatch_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noCompute\":%ld,\"noPreSkinCandidate\":%ld,\"preSkinCandidateBuilds\":%ld,\"preSkinCandidateDispatches\":%ld,\"shaderOverrideWork\":%ld,\"fastRejects\":%ld",
+			cacheHits, cacheMisses, builds, noCompute,
+			noPreSkinCandidate, preSkinCandidate, preSkinCandidateDispatches,
+			shaderOverrideWork, fastRejects);
+	}
+
 	static void LogAndReset()
 	{
 		LogPso();
@@ -679,5 +756,6 @@ public:
 		LogIaState();
 		LogBarrierState();
 		LogPreSkinBindingState();
+		LogDispatchDecisionState();
 	}
 };

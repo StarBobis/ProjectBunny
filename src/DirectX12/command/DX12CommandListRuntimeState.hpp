@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "DX12ActiveIaState.hpp"
+#include "DX12CompiledDispatchDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
 
 class DX12CommandListRuntimeState
@@ -33,4 +34,8 @@ public:
 
 	// Stable compute binding fingerprint used as a dispatch probe cache key.
 	uint64_t computeBindingHash = 0;
+
+	// Compiled per-PSO dispatch policy. Dispatch consumes this instead of
+	// rediscovering non-candidate PreSkin state on every command.
+	DX12CompiledDispatchDecision dispatchDecision;
 };
