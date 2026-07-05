@@ -229,6 +229,8 @@ public:
 			return true;
 		if (!strcmp(func, "DX12PresentFirst"))
 			return true;
+		if (!strcmp(func, "DX12FrameTimeline"))
+			return true;
 		if (!strcmp(func, "DX12HotPathHookGate"))
 			return true;
 		if (!strcmp(func, "DX12HotPathState"))
