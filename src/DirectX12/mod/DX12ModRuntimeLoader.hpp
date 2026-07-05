@@ -15,6 +15,7 @@ public:
 	std::vector<unsigned char> csBytecode;
 	ID3D12PipelineState *replacement = nullptr;
 	UINT64 replacementGeneration = 0;
+	UINT64 replacementNoopGeneration = 0;
 	bool skipDraw = false;
 	bool skipDispatch = false;
 	UINT64 skipGeneration = 0;

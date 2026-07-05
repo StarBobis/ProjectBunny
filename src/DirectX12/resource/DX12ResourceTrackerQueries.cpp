@@ -432,6 +432,7 @@ struct CachedBufferContent
 
 static std::unordered_map<ID3D12Resource*, CachedBufferContent> gBufferContentByResource;
 static SRWLOCK gBufferContentLock = SRWLOCK_INIT;
+static std::atomic<UINT64> gBufferContentGeneration{1};
 
 bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize)
 {
@@ -450,6 +451,7 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 	AcquireSRWLockExclusive(&gBufferContentLock);
 	gBufferContentByResource[resource] = std::move(entry);
 	ReleaseSRWLockExclusive(&gBufferContentLock);
+	gBufferContentGeneration.fetch_add(1, std::memory_order_relaxed);
 
 #if defined(_DEBUG)
 	DX12LogManager::DebugJsonFunc("DX12BufferContentCache",
@@ -510,7 +512,11 @@ uint32_t DX12HashIaBufferView(
 	// L1: gpuVa-based key — 快速捕捉时间局部性（同一 gpuVa 重复出现）
 	// L2: resource-based key — 稳定捕捉 buffer 级复用（同一 buffer 不同 offset）
 	//     对齐 DX11 的 (ID3D11Buffer*, offset, size) 模式。
-	// 帧级失效：present count 变化时清空。
+	// Resource-generation invalidation:
+	// - GPUVA index/resource lifetime changes bump gBufferResolveGeneration.
+	// - CPU-upload content changes bump gBufferContentGeneration.
+	// This keeps IA region hashes reusable across frames without keeping stale
+	// content-derived hashes after upload buffers are rewritten.
 
 	// -- L1 key (gpuVa-based) --
 	struct IaHashKeyL1 {
@@ -547,9 +553,17 @@ uint32_t DX12HashIaBufferView(
 
 	static thread_local std::unordered_map<IaHashKeyL1, uint32_t, IaHashKeyL1Hasher> s_cacheL1;
 	static thread_local std::unordered_map<IaHashKeyL2, uint32_t, IaHashKeyL2Hasher> s_cacheL2;
-	static thread_local LONG s_cachePresent = -1;
-	LONG present = DX12RuntimeState::GetPresentCount();
-	if (s_cachePresent != present) { s_cacheL1.clear(); s_cacheL2.clear(); s_cachePresent = present; }
+	static thread_local UINT64 s_cacheResolveGeneration = 0;
+	static thread_local UINT64 s_cacheContentGeneration = 0;
+	const UINT64 resolveGeneration = gBufferResolveGeneration.load(std::memory_order_relaxed);
+	const UINT64 contentGeneration = gBufferContentGeneration.load(std::memory_order_relaxed);
+	if (s_cacheResolveGeneration != resolveGeneration ||
+	    s_cacheContentGeneration != contentGeneration) {
+		s_cacheL1.clear();
+		s_cacheL2.clear();
+		s_cacheResolveGeneration = resolveGeneration;
+		s_cacheContentGeneration = contentGeneration;
+	}
 
 	// -- L1 lookup (gpuVa-based, fastest) --
 	IaHashKeyL1 keyL1 = { gpuVirtualAddress, size, stride, format, slot };
@@ -593,6 +607,10 @@ uint32_t DX12HashIaBufferView(
 				summary.resourceOffset, summary.viewSize,
 				stride, format, slot };
 			s_cacheL2[keyL2] = hash;
+		}
+		if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
+			s_cacheL1.clear();
+			s_cacheL2.clear();
 		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
@@ -659,6 +677,10 @@ uint32_t DX12HashIaBufferView(
 			summary.resourceOffset, summary.viewSize,
 			stride, format, slot };
 		s_cacheL2[keyL2] = hash;
+	}
+	if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
+		s_cacheL1.clear();
+		s_cacheL2.clear();
 	}
 	return hash;
 }

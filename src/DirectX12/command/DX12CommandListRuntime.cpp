@@ -353,15 +353,6 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 
 	state->ia.hasIndexBuffer = view != nullptr;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
-	if (view && view->BufferLocation && view->SizeInBytes) {
-		UINT stride = (view->Format == DXGI_FORMAT_R32_UINT) ? 4u : 2u;
-		state->ia.precomputedIndexHash = DX12HashIaBufferView(
-			view->BufferLocation, view->SizeInBytes, stride,
-			static_cast<UINT>(view->Format), 0);
-		state->ia.indexHashValid = true;
-	} else {
-		state->ia.indexHashValid = false;
-	}
 }
 
 void DX12CommandListRuntime::RememberIndexBuffer(
@@ -398,14 +389,6 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 		const D3D12_VERTEX_BUFFER_VIEW *view = views ? &views[i] : nullptr;
 		ia.hasVertexBuffer[slot] = view != nullptr;
 		ia.vertexBuffers[slot] = view ? *view : D3D12_VERTEX_BUFFER_VIEW();
-		if (view && view->BufferLocation && view->SizeInBytes && view->StrideInBytes) {
-			ia.precomputedVertexHashes[slot] = DX12HashIaBufferView(
-				view->BufferLocation, view->SizeInBytes,
-				view->StrideInBytes, 0, slot);
-			ia.vertexHashValid[slot] = true;
-		} else {
-			ia.vertexHashValid[slot] = false;
-		}
 	}
 }
 

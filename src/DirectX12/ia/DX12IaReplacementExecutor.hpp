@@ -2,6 +2,7 @@
 
 #include <d3d12.h>
 
+#include <unordered_map>
 #include <unordered_set>
 
 #include "DX12CommandListRuntime.hpp"
@@ -87,6 +88,18 @@ public:
 		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
 		s_psoIaNegativeCache.insert(key);
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
+	}
+
+	static void StoreCheapToFullKeyMap(UINT64 cheapKey, UINT64 fullKey)
+	{
+		if (!cheapKey || !fullKey)
+			return;
+
+		AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
+		if (s_cheapToFullKeyMap.size() > 4096)
+			s_cheapToFullKeyMap.clear();
+		s_cheapToFullKeyMap[cheapKey] = fullKey;
+		ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
 	}
 
 	static void ClearPsoIaNegativeCache()
@@ -199,31 +212,29 @@ public:
 		// ── 廉价指纹缓存：用 (PSO, GpuVa, draw args) 替代内容 hash ──
 		// 指纹计算只需指针读取+整数运算（~0.3us vs BuildIaHash 的 ~35us）。
 		// 命中时直接跳过 BuildIaHash 链条。
+		const UINT64 cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
+			runtimeState.pipelineState, runtimeState.ia,
+			draw.indexed, draw.vertexCount, draw.indexCount,
+			draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+
 		{
-			const UINT64 cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
-				runtimeState.pipelineState, runtimeState.ia,
-				draw.indexed, draw.vertexCount, draw.indexCount,
-				draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+			UINT64 mappedFullKey = 0;
+			bool cheapHit = false;
+			AcquireSRWLockShared(&s_cheapToFullKeyMapLock);
+			std::unordered_map<UINT64, UINT64>::iterator it =
+				s_cheapToFullKeyMap.find(cheapKey);
+			if (it != s_cheapToFullKeyMap.end()) {
+				mappedFullKey = it->second;
+				cheapHit = true;
+			}
+			ReleaseSRWLockShared(&s_cheapToFullKeyMapLock);
 
-			{
-				UINT64 mappedFullKey = 0;
-				bool cheapHit = false;
-				AcquireSRWLockShared(&s_cheapToFullKeyMapLock);
-				auto it = s_cheapToFullKeyMap.find(cheapKey);
-				if (it != s_cheapToFullKeyMap.end()) {
-					mappedFullKey = it->second;
-					cheapHit = true;
-				}
-				ReleaseSRWLockShared(&s_cheapToFullKeyMapLock);
-
-				if (cheapHit) {
-					// 找到廉价映射 → 直接用 full key 检查 PsoIaNegCache
-					if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(mappedFullKey)) {
-						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-						return false;
-					}
-					// cheap key 命中但 full key 不在 neg cache → 可能是碰撞或 stale
-					// 继续走完整路径
+			if (cheapHit) {
+				// Cheap fingerprint hits let repeated no-match draws skip
+				// draw-region IA hashing.
+				if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(mappedFullKey)) {
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
 				}
 			}
 		}
@@ -240,16 +251,9 @@ public:
 			const UINT64 psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 				runtimeState.pipelineState, iaState);
 			if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey)) {
-				// 负缓存命中 → 存储廉价指纹映射，后续同样组合直接跳过 BuildIaHash
-				const UINT64 cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
-					runtimeState.pipelineState, runtimeState.ia,
-					draw.indexed, draw.vertexCount, draw.indexCount,
-					draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
-				AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
-				if (s_cheapToFullKeyMap.size() > 4096)
-					s_cheapToFullKeyMap.clear();
-				s_cheapToFullKeyMap[cheapKey] = psoIaNegKey;
-				ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
+				// Cache the cheap fingerprint so later identical no-match draws
+				// can skip BuildIaHashState entirely.
+				DX12IaReplacementExecutor::StoreCheapToFullKeyMap(cheapKey, psoIaNegKey);
 				DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
@@ -274,8 +278,9 @@ public:
 				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
 			}
 
-			// 未匹配 → 存入 PSO+IA 负缓存
+			// No match: store both the full negative key and cheap-to-full map.
 			DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
+			DX12IaReplacementExecutor::StoreCheapToFullKeyMap(cheapKey, psoIaNegKey);
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}

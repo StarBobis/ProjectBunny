@@ -13,10 +13,4 @@ public:
 	bool hasVertexBuffer[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-
-	// Bind-time full-buffer hashes used as cheap fingerprints before draw-range hashing.
-	uint32_t precomputedVertexHashes[32] = {};
-	bool vertexHashValid[32] = {};
-	uint32_t precomputedIndexHash = 0;
-	bool indexHashValid = false;
 };

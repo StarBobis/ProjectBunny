@@ -616,8 +616,28 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	bool shouldCreate = false;
 	UINT64 generation = 0;
 
+	AcquireSRWLockShared(&gModLock);
+	std::unordered_map<ID3D12PipelineState*, DX12StoredPso>::iterator cached =
+		gPsoRecords.find(pipelineState);
+	if (cached == gPsoRecords.end()) {
+		ReleaseSRWLockShared(&gModLock);
+		return nullptr;
+	}
+	generation = gReloadGeneration;
+	if (cached->second.replacement && cached->second.replacementGeneration == generation) {
+		ID3D12PipelineState *replacement = cached->second.replacement;
+		ReleaseSRWLockShared(&gModLock);
+		return replacement;
+	}
+	if (cached->second.replacementNoopGeneration == generation) {
+		ReleaseSRWLockShared(&gModLock);
+		return nullptr;
+	}
+	ReleaseSRWLockShared(&gModLock);
+
 	AcquireSRWLockExclusive(&gModLock);
-	auto it = gPsoRecords.find(pipelineState);
+	std::unordered_map<ID3D12PipelineState*, DX12StoredPso>::iterator it =
+		gPsoRecords.find(pipelineState);
 	if (it == gPsoRecords.end()) {
 		ReleaseSRWLockExclusive(&gModLock);
 		return nullptr;
@@ -630,6 +650,10 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 		ReleaseSRWLockExclusive(&gModLock);
 		return replacement;
 	}
+	if (record.replacementNoopGeneration == generation) {
+		ReleaseSRWLockExclusive(&gModLock);
+		return nullptr;
+	}
 
 	if (record.replacement) {
 		record.replacement->Release();
@@ -641,9 +665,11 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 		GraphicsPsoNeedsReplacementLocked(record.graphicsDesc) :
 		ComputePsoNeedsReplacementLocked(record.computeDesc);
 	if (!needsReplacement) {
+		record.replacementNoopGeneration = generation;
 		ReleaseSRWLockExclusive(&gModLock);
 		return nullptr;
 	}
+	record.replacementNoopGeneration = 0;
 
 	createRecord.kind = record.kind;
 	createRecord.device = record.device;
