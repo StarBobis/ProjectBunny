@@ -52,6 +52,39 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 class DX12BufferResolveRangeUtils
 {
 public:
+static void ApplyLatestResourceStateLocked(DX12BufferResourceSummary *summary)
+{
+	if (!summary || !summary->resource)
+		return;
+
+	std::unordered_map<ID3D12Resource*, size_t>::iterator found = gResourceByPtr.find(summary->resource);
+	if (found == gResourceByPtr.end() || found->second >= gResources.size())
+		return;
+
+	const ResourceRecord &resource = gResources[found->second];
+	if (!resource.resource)
+		return;
+
+	summary->currentState = static_cast<UINT>(resource.currentState);
+	summary->hasCurrentState = resource.hasCurrentState;
+	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+}
+
+static bool FillSummaryFromCacheEntry(
+	UINT64 gpuVirtualAddress, UINT64 size,
+	const BufferResolveCacheEntry &entry,
+	DX12BufferResourceSummary *summary)
+{
+	if (!summary || !entry.begin || gpuVirtualAddress < entry.begin || gpuVirtualAddress >= entry.end)
+		return false;
+	*summary = entry.summary;
+	summary->resourceOffset = gpuVirtualAddress - entry.begin;
+	const UINT64 available = entry.end - gpuVirtualAddress;
+	summary->viewSize = size < available ? size : available;
+	DX12BufferResolveRangeUtils::ApplyLatestResourceStateLocked(summary);
+	return true;
+}
+
 static bool TryResolveSummaryFromResourceRecord(
 	UINT64 gpuVirtualAddress, UINT64 size,
 	const ResourceRecord &resource,
@@ -140,25 +173,23 @@ bool DX12ResolveBufferResourceByGpuVa(
 
 	struct LocalBufferResolveCache
 	{
-		UINT64 generation = 0;
 		size_t next = 0;
 		BufferResolveCacheEntry entries[256] = {};
 	};
 	static thread_local LocalBufferResolveCache localCache;
-	const UINT64 generation = gBufferResolveGeneration.load(std::memory_order_relaxed);
-	if (localCache.generation != generation) {
-		localCache = LocalBufferResolveCache();
-		localCache.generation = generation;
-		gBufferResolveGenerationResets++;
-	}
 	for (const BufferResolveCacheEntry &entry : localCache.entries) {
 		if (entry.begin && gpuVirtualAddress >= entry.begin && gpuVirtualAddress < entry.end) {
-			gBufferResolveTlsHits++;
-			*summary = entry.summary;
-			summary->resourceOffset = gpuVirtualAddress - entry.begin;
-			const UINT64 available = entry.end - gpuVirtualAddress;
-			summary->viewSize = size < available ? size : available;
-			return true;
+			AcquireSRWLockShared(&gResourceLock);
+			const bool entryInvalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+				entry.begin, entry.end, entry.rangeEpoch);
+			const bool cacheResolved = !entryInvalidated &&
+				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
+					gpuVirtualAddress, size, entry, summary);
+			ReleaseSRWLockShared(&gResourceLock);
+			if (cacheResolved) {
+				gBufferResolveTlsHits++;
+				return true;
+			}
 		}
 	}
 
@@ -172,14 +203,17 @@ bool DX12ResolveBufferResourceByGpuVa(
 		--cached;
 		if (gpuVirtualAddress >= cached->second.begin &&
 		    gpuVirtualAddress < cached->second.end) {
-			gBufferResolveGlobalHits++;
-			*summary = cached->second.summary;
-			summary->resourceOffset = gpuVirtualAddress - cached->second.begin;
-			const UINT64 available = cached->second.end - gpuVirtualAddress;
-			summary->viewSize = size < available ? size : available;
-			localCache.entries[localCache.next++ % 8] = cached->second;
-			ReleaseSRWLockShared(&gResourceLock);
-			return true;
+			const bool entryInvalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+				cached->second.begin, cached->second.end, cached->second.rangeEpoch);
+			const bool cacheResolved = !entryInvalidated &&
+				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
+					gpuVirtualAddress, size, cached->second, summary);
+			if (cacheResolved) {
+				gBufferResolveGlobalHits++;
+				localCache.entries[localCache.next++ % 8] = cached->second;
+				ReleaseSRWLockShared(&gResourceLock);
+				return true;
+			}
 		}
 	}
 
@@ -243,11 +277,11 @@ bool DX12ResolveBufferResourceByGpuVa(
 		entry.summary = *summary;
 		entry.summary.resourceOffset = 0;
 		entry.summary.viewSize = entry.end - entry.begin;
-		localCache.entries[localCache.next++ % 8] = entry;
 		AcquireSRWLockExclusive(&gResourceLock);
-		if (gBufferResolveGeneration.load(std::memory_order_relaxed) == generation)
-			gBufferResolveCache[entry.begin] = entry;
+		entry.rangeEpoch = DX12BufferResolveCacheUtils::CurrentInvalidationEpochLocked();
+		gBufferResolveCache[entry.begin] = entry;
 		ReleaseSRWLockExclusive(&gResourceLock);
+		localCache.entries[localCache.next++ % 8] = entry;
 		if (backwardProbes > 1) {
 			DX12FrameAnalysis::LogJsonFunc("BufferResolveBackwardScanHit",
 				"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"probes\":%u,\"resource\":\"%p\"",
@@ -517,6 +551,13 @@ uint32_t DX12HashIaBufferView(
 	// - CPU-upload content changes bump gBufferContentGeneration.
 	// This keeps IA region hashes reusable across frames without keeping stale
 	// content-derived hashes after upload buffers are rewritten.
+	struct IaHashCacheValue {
+		uint32_t hash = 0;
+		UINT64 resolveGeneration = 0;
+		UINT64 contentGeneration = 0;
+		UINT64 gpuVa = 0;
+		UINT64 size = 0;
+	};
 
 	// -- L1 key (gpuVa-based) --
 	struct IaHashKeyL1 {
@@ -551,25 +592,27 @@ uint32_t DX12HashIaBufferView(
 		}
 	};
 
-	static thread_local std::unordered_map<IaHashKeyL1, uint32_t, IaHashKeyL1Hasher> s_cacheL1;
-	static thread_local std::unordered_map<IaHashKeyL2, uint32_t, IaHashKeyL2Hasher> s_cacheL2;
-	static thread_local UINT64 s_cacheResolveGeneration = 0;
-	static thread_local UINT64 s_cacheContentGeneration = 0;
-	const UINT64 resolveGeneration = gBufferResolveGeneration.load(std::memory_order_relaxed);
+	static thread_local std::unordered_map<IaHashKeyL1, IaHashCacheValue, IaHashKeyL1Hasher> s_cacheL1;
+	static thread_local std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher> s_cacheL2;
+	const UINT64 resolveGeneration = gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
 	const UINT64 contentGeneration = gBufferContentGeneration.load(std::memory_order_relaxed);
-	if (s_cacheResolveGeneration != resolveGeneration ||
-	    s_cacheContentGeneration != contentGeneration) {
-		s_cacheL1.clear();
-		s_cacheL2.clear();
-		s_cacheResolveGeneration = resolveGeneration;
-		s_cacheContentGeneration = contentGeneration;
-	}
 
 	// -- L1 lookup (gpuVa-based, fastest) --
 	IaHashKeyL1 keyL1 = { gpuVirtualAddress, size, stride, format, slot };
-	auto itL1 = s_cacheL1.find(keyL1);
-	if (itL1 != s_cacheL1.end())
-		return itL1->second;
+	std::unordered_map<IaHashKeyL1, IaHashCacheValue, IaHashKeyL1Hasher>::iterator itL1 = s_cacheL1.find(keyL1);
+	if (itL1 != s_cacheL1.end()) {
+		const IaHashCacheValue &cacheValue = itL1->second;
+		bool invalidated = true;
+		if (cacheValue.contentGeneration == contentGeneration) {
+			AcquireSRWLockShared(&gResourceLock);
+			invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+				cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+			ReleaseSRWLockShared(&gResourceLock);
+		}
+		if (!invalidated)
+			return cacheValue.hash;
+		s_cacheL1.erase(itL1);
+	}
 
 	// -- L2 lookup (resource-based, stable across draws) --
 	// 对齐 DX11: 用 (resource, offset, viewSize) 替代 gpuVa
@@ -579,11 +622,22 @@ uint32_t DX12HashIaBufferView(
 		IaHashKeyL2 keyL2 = { summary.resource,
 			summary.resourceOffset, summary.viewSize,
 			stride, format, slot };
-		auto itL2 = s_cacheL2.find(keyL2);
+		std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher>::iterator itL2 = s_cacheL2.find(keyL2);
 		if (itL2 != s_cacheL2.end()) {
 			// L2 命中 → 提升到 L1（下次相同 gpuVa 直接命中）
-			s_cacheL1[keyL1] = itL2->second;
-			return itL2->second;
+			const IaHashCacheValue &cacheValue = itL2->second;
+			bool invalidated = true;
+			if (cacheValue.contentGeneration == contentGeneration) {
+				AcquireSRWLockShared(&gResourceLock);
+				invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+					cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+				ReleaseSRWLockShared(&gResourceLock);
+			}
+			if (!invalidated) {
+				s_cacheL1[keyL1] = cacheValue;
+				return cacheValue.hash;
+			}
+			s_cacheL2.erase(itL2);
 		}
 	}
 
@@ -601,12 +655,18 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &stride, sizeof(stride));
 		hash = HashBytes(hash, &format, sizeof(format));
 		hash = HashBytes(hash, &slot, sizeof(slot));
-		s_cacheL1[keyL1] = hash;
+		IaHashCacheValue contentCacheValue;
+		contentCacheValue.hash = hash;
+		contentCacheValue.resolveGeneration = resolveGeneration;
+		contentCacheValue.contentGeneration = contentGeneration;
+		contentCacheValue.gpuVa = gpuVirtualAddress;
+		contentCacheValue.size = size;
+		s_cacheL1[keyL1] = contentCacheValue;
 		if (resolved && summary.resource) {
 			IaHashKeyL2 keyL2 = { summary.resource,
 				summary.resourceOffset, summary.viewSize,
 				stride, format, slot };
-			s_cacheL2[keyL2] = hash;
+			s_cacheL2[keyL2] = contentCacheValue;
 		}
 		if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
 			s_cacheL1.clear();
@@ -671,12 +731,18 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &slot, sizeof(slot));
 
 	// 写入双级缓存
-	s_cacheL1[keyL1] = hash;
+	IaHashCacheValue cacheValue;
+	cacheValue.hash = hash;
+	cacheValue.resolveGeneration = resolveGeneration;
+	cacheValue.contentGeneration = contentGeneration;
+	cacheValue.gpuVa = gpuVirtualAddress;
+	cacheValue.size = size;
+	s_cacheL1[keyL1] = cacheValue;
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,
 			summary.resourceOffset, summary.viewSize,
 			stride, format, slot };
-		s_cacheL2[keyL2] = hash;
+		s_cacheL2[keyL2] = cacheValue;
 	}
 	if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
 		s_cacheL1.clear();

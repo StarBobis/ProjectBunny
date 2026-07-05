@@ -55,6 +55,14 @@ UINT64 gBufferResolveBackwardScanHits = 0;
 UINT64 gBufferResolveMisses = 0;
 UINT64 gBufferResolveFallbackScanHits = 0;
 UINT64 gBufferResolveGenerationResets = 0;
+UINT64 gBufferResolveRangeInvalidations = 0;
+UINT64 gBufferResolveRangeInvalidationEntries = 0;
+UINT64 gBufferResolveIndexNoopUpdates = 0;
+UINT64 gBufferResolveStateOnlyUpdates = 0;
+UINT64 gBufferResolveInvalidationEpoch = 0;
+std::atomic<UINT64> gBufferResolveInvalidationEpochAtomic{0};
+UINT64 gBufferResolveInvalidationHistoryLost = 0;
+DX12BufferResolveInvalidatedRange gBufferResolveInvalidatedRanges[kDX12BufferResolveInvalidationHistoryCapacity] = {};
 UINT64 gResourceExclusiveLockSlowCount = 0;
 UINT64 gResourceExclusiveLockSlowMaxUs = 0;
 UINT64 gDescriptorExclusiveLockSlowCount = 0;
@@ -325,6 +333,7 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		return;
 	}
 	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
+	ResourceRecord oldRecord = record;
 	if (record.gpuVirtualAddress)
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
 	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
@@ -337,6 +346,8 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)
 		gLiveResourceCount--;
+	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
+		&oldRecord, nullptr, "resource_invalidate", resource);
 	DX12LogManager::DebugJsonFunc("DX12ResourceInvalidated",
 		"\"resource\":\"%p\",\"canonical\":\"%p\",\"index\":%zu,\"gpuVa\":\"0x%llx\",\"liveResources\":%zu",
 		resource,
@@ -344,8 +355,6 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		index,
 		static_cast<unsigned long long>(invalidatedGpuVa),
 		gLiveResourceCount);
-	gBufferResolveCache.clear();
-	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
@@ -573,20 +582,19 @@ void RecordResource(
 	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
-	bool gpuVaIndexChanged = false;
+	ResourceRecord oldRecord = {};
+	bool hadOldRecord = false;
 	if (found != gResourceByPtr.end()) {
 		ResourceRecord &existing = gResources[found->second];
-		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress) {
+		oldRecord = existing;
+		hadOldRecord = true;
+		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress)
 			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
-			gpuVaIndexChanged = true;
-		}
 		gResources[found->second] = record;
 		gResourceByPtr[resource] = found->second;
 		gResourceByPtr[canonical] = found->second;
-		if (record.gpuVirtualAddress && record.size) {
+		if (record.gpuVirtualAddress && record.size)
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
-			gpuVaIndexChanged = true;
-		}
 	} else {
 		size_t index = 0;
 		if (!gFreeResourceSlots.empty()) {
@@ -600,29 +608,11 @@ void RecordResource(
 		gLiveResourceCount++;
 		gResourceByPtr[resource] = index;
 		gResourceByPtr[canonical] = index;
-		if (record.gpuVirtualAddress && record.size) {
+		if (record.gpuVirtualAddress && record.size)
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = index;
-			gpuVaIndexChanged = true;
-		}
 	}
-	if (gpuVaIndexChanged) {
-		// Descriptor creation resolves CBV/SRV/UAV GPU VAs constantly; keep
-		// its cache warm unless the buffer VA index actually changed.
-		const size_t cacheEntriesBeforeClear = gBufferResolveCache.size();
-		gBufferResolveCache.clear();
-		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
-		gBufferResolveCacheInvalidations++;
-		gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
-		DX12LogManager::DebugJsonFunc("BufferResolveCacheInvalidated",
-			"\"reason\":\"resource_record_update\",\"present\":%ld,\"threadId\":%lu,\"cacheEntriesBeforeClear\":%zu,\"generation\":%llu,\"resource\":\"%p\",\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId(),
-			cacheEntriesBeforeClear,
-			static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
-			resource,
-			gBufferResourceByGpuVa.size(),
-			gLiveResourceCount);
-	}
+	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
+		hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
 	gResourcesRecordedFromCreate++;
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
@@ -663,12 +653,7 @@ void CleanupTrackedResources()
 	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
 	gBufferResourceByGpuVa.clear();
-	const size_t cacheEntriesBeforeClear = gBufferResolveCache.size();
-	gBufferResolveCache.clear();
-	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
-	gBufferResolveCacheInvalidations++;
-	gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
-	gBufferResolveGenerationResets++;
+	DX12BufferResolveCacheUtils::InvalidateAllLocked("cleanup");
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
@@ -1155,7 +1140,11 @@ void LogResourceTrackerStatsLocked()
 		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
 		"\"descriptorCopySpanFastPathCalls\":%llu,\"descriptorCopySpanFastPathSlots\":%llu,\"descriptorCopySpanFallbackCalls\":%llu,"
 		"\"bufferResolveCacheEntries\":%zu,\"bufferResolveGeneration\":%llu,"
-		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveFallbackScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
+		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,"
+		"\"bufferResolveRangeInvalidations\":%llu,\"bufferResolveRangeInvalidationEntries\":%llu,"
+		"\"bufferResolveIndexNoopUpdates\":%llu,\"bufferResolveStateOnlyUpdates\":%llu,"
+		"\"bufferResolveInvalidationEpoch\":%llu,\"bufferResolveInvalidationHistoryLost\":%llu,"
+		"\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveFallbackScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
 		"\"resourceExclusiveLockSlowCount\":%llu,\"resourceExclusiveLockSlowMaxUs\":%llu,\"descriptorExclusiveLockSlowCount\":%llu,\"descriptorExclusiveLockSlowMaxUs\":%llu,"
 		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
 		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
@@ -1179,6 +1168,12 @@ void LogResourceTrackerStatsLocked()
 		static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(gBufferResolveCacheInvalidations),
 		static_cast<unsigned long long>(gBufferResolveCacheInvalidationEntries),
+		static_cast<unsigned long long>(gBufferResolveRangeInvalidations),
+		static_cast<unsigned long long>(gBufferResolveRangeInvalidationEntries),
+		static_cast<unsigned long long>(gBufferResolveIndexNoopUpdates),
+		static_cast<unsigned long long>(gBufferResolveStateOnlyUpdates),
+		static_cast<unsigned long long>(gBufferResolveInvalidationEpoch),
+		static_cast<unsigned long long>(gBufferResolveInvalidationHistoryLost),
 		static_cast<unsigned long long>(gBufferResolveTlsHits),
 		static_cast<unsigned long long>(gBufferResolveGlobalHits),
 		static_cast<unsigned long long>(gBufferResolveBackwardScanHits),
@@ -1937,8 +1932,15 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 		}
 	}
 	if (resourceStateChanged) {
-		gBufferResolveCache.clear();
-		gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
+		DX12BufferResolveCacheUtils::RecordStateOnlyUpdateLocked();
+		DX12LogManager::DebugJsonFunc("BufferResolveCacheInvalidated",
+			"\"reason\":\"resource_barrier_state_update\",\"mode\":\"state_only\",\"present\":%ld,"
+			"\"threadId\":%lu,\"generation\":%llu,\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId(),
+			static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
+			gBufferResourceByGpuVa.size(),
+			gLiveResourceCount);
 	}
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
