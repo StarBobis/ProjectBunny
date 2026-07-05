@@ -4,6 +4,7 @@
 #include "DX12CommandListRuntime.hpp"
 #include "DX12FrameAnalysis.hpp"
 #include "DX12ModRuntime.hpp"
+#include "DX12RuntimeState.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
@@ -26,6 +27,15 @@ bool DX12CommandListStateCapture::ShouldTrackPipelineStateBindings()
 {
 	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
 		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+}
+
+bool DX12CommandListStateCapture::ShouldTrackResourceStates()
+{
+	return DX12FrameAnalysis::IsCapturing() ||
+		DX12ShaderDumpIsCapturingFrame() ||
+		DX12ShaderDumpIsCaptureRequested() ||
+		DX12ShaderDumpIsBusy() ||
+		DX12RuntimeState::IsHuntingMode();
 }
 
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()

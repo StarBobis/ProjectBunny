@@ -8,10 +8,10 @@
 void DX12CommandListCommandRecorder::RecordResourceBarrier(
 	UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers)
 {
-	// ResourceBarrier is the explicit D3D12 synchronization point. This module
-	// only records observed barriers today; future state validation can grow
-	// here without making hook entry points understand resource-state policy.
-	if (DX12CommandListStateCapture::ShouldTrackBindings())
+	// ResourceBarrier changes usage state, not buffer identity or content.
+	// Stable IA/mod hashes depend on GPUVA, content, and view metadata, so normal
+	// mod runtime does not need barrier state capture.
+	if (DX12CommandListStateCapture::ShouldTrackResourceStates())
 		DX12RecordResourceBarrier(numBarriers, barriers);
 }
 

@@ -81,6 +81,7 @@ public:
 	inline static volatile LONG64 BarrierCaptureItems = 0;
 	inline static volatile LONG BarrierCaptureSkippedInternalReplay = 0;
 	inline static volatile LONG BarrierCaptureSkippedHotPath = 0;
+	inline static volatile LONG BarrierCaptureSkippedStatePolicy = 0;
 	inline static volatile LONG BarrierRecordedCalls = 0;
 	inline static volatile LONG64 BarrierRecordedItems = 0;
 	inline static volatile LONG BarrierUnwrapCalls = 0;
@@ -374,6 +375,11 @@ public:
 		Inc(&BarrierCaptureSkippedHotPath);
 	}
 
+	static void RecordBarrierCaptureSkippedStatePolicy()
+	{
+		Inc(&BarrierCaptureSkippedStatePolicy);
+	}
+
 	static void RecordBarrierRecorded(UINT count)
 	{
 		Inc(&BarrierRecordedCalls);
@@ -599,6 +605,7 @@ public:
 		LONG64 barrierCaptureItems = Take64(&BarrierCaptureItems);
 		LONG barrierCaptureSkippedInternalReplay = Take(&BarrierCaptureSkippedInternalReplay);
 		LONG barrierCaptureSkippedHotPath = Take(&BarrierCaptureSkippedHotPath);
+		LONG barrierCaptureSkippedStatePolicy = Take(&BarrierCaptureSkippedStatePolicy);
 		LONG barrierRecordedCalls = Take(&BarrierRecordedCalls);
 		LONG64 barrierRecordedItems = Take64(&BarrierRecordedItems);
 		LONG barrierUnwrapCalls = Take(&BarrierUnwrapCalls);
@@ -606,9 +613,10 @@ public:
 		if (!barrierCaptureCalls && !barrierRecordedCalls && !barrierUnwrapCalls)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"barrier\",\"captureCalls\":%ld,\"captureItems\":%lld,\"captureSkippedInternalReplay\":%ld,\"captureSkippedHotPath\":%ld,\"recordedCalls\":%ld,\"recordedItems\":%lld,\"unwrapCalls\":%ld,\"unwrapItems\":%lld",
+			"\"category\":\"barrier\",\"captureCalls\":%ld,\"captureItems\":%lld,\"captureSkippedInternalReplay\":%ld,\"captureSkippedHotPath\":%ld,\"captureSkippedStatePolicy\":%ld,\"recordedCalls\":%ld,\"recordedItems\":%lld,\"unwrapCalls\":%ld,\"unwrapItems\":%lld",
 			barrierCaptureCalls, static_cast<long long>(barrierCaptureItems),
 			barrierCaptureSkippedInternalReplay, barrierCaptureSkippedHotPath,
+			barrierCaptureSkippedStatePolicy,
 			barrierRecordedCalls, static_cast<long long>(barrierRecordedItems),
 			barrierUnwrapCalls, static_cast<long long>(barrierUnwrapItems));
 	}

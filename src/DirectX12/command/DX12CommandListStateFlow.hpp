@@ -63,6 +63,11 @@ public:
 			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedHotPath();
 			return false;
 		}
+		if (!DX12CommandListStateCapture::ShouldTrackResourceStates()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedStatePolicy();
+			return false;
+		}
 
 		DX12CommandListFlowDiagnostics::LogDX12Call(
 			"ID3D12GraphicsCommandList::ResourceBarrier", commandList,
