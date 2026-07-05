@@ -262,6 +262,7 @@ extern std::vector<size_t> gFreeResourceSlots;
 extern size_t gLiveResourceCount;
 extern std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
+extern std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 extern std::atomic<UINT64> gBufferResolveGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;
@@ -345,8 +346,15 @@ static size_t PurgeRangeLocked(UINT64 begin, UINT64 end)
 		return 0;
 
 	size_t removed = 0;
-	for (std::map<UINT64, BufferResolveCacheEntry>::iterator it = gBufferResolveCache.begin();
-		it != gBufferResolveCache.end();) {
+	// gBufferResolveCache is keyed by entry begin address.
+	// Entries overlapping [begin, end) must satisfy: key < end AND entry.end > begin.
+	// Find the entry with the largest key that is <= begin, then iterate forward
+	// until key >= end (entries starting at or past 'end' cannot overlap).
+	std::map<UINT64, BufferResolveCacheEntry>::iterator it =
+		gBufferResolveCache.lower_bound(begin);
+	if (it != gBufferResolveCache.begin())
+		--it;
+	while (it != gBufferResolveCache.end() && it->first < end) {
 		if (DX12BufferResolveCacheUtils::RangesOverlap(
 				it->second.begin, it->second.end, begin, end)) {
 			it = gBufferResolveCache.erase(it);

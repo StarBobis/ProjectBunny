@@ -1221,7 +1221,9 @@ bool DX12ModRuntimeLoad(
 	gPreSkinSrvPositiveCache.clear();
 	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
+	gPreSkinAsyncQueue.Stop();
 	gPreSkinUavMatchCache.clear();
+	gPreSkinUavMatchCacheLru.clear();
 	gPreSkinMatchCsInputCache.clear();
 	gPreSkinMatchCsProbeKeys.clear();
 	InterlockedExchange(&gPreSkinMatchCsProbeLogCount, 0);

@@ -33,6 +33,7 @@ std::vector<size_t> gFreeResourceSlots;
 size_t gLiveResourceCount = 0;
 std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
+std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 std::atomic<UINT64> gBufferResolveGeneration{1};
 std::atomic<UINT64> gDescriptorQuerySerial{1};
@@ -388,8 +389,10 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	}
 	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
 	ResourceRecord oldRecord = record;
-	if (record.gpuVirtualAddress)
+	if (record.gpuVirtualAddress) {
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
+		gBufferResourceByGpuVaComplete.erase(record.gpuVirtualAddress);
+	}
 	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
 		if (it->second == index)
 			it = gResourceByPtr.erase(it);
@@ -642,13 +645,17 @@ void RecordResource(
 		ResourceRecord &existing = gResources[found->second];
 		oldRecord = existing;
 		hadOldRecord = true;
-		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress)
+		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress) {
 			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
+			gBufferResourceByGpuVaComplete.erase(existing.gpuVirtualAddress);
+		}
 		gResources[found->second] = record;
 		gResourceByPtr[resource] = found->second;
 		gResourceByPtr[canonical] = found->second;
-		if (record.gpuVirtualAddress && record.size)
+		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
+			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = found->second;
+		}
 	} else {
 		size_t index = 0;
 		if (!gFreeResourceSlots.empty()) {
@@ -662,8 +669,10 @@ void RecordResource(
 		gLiveResourceCount++;
 		gResourceByPtr[resource] = index;
 		gResourceByPtr[canonical] = index;
-		if (record.gpuVirtualAddress && record.size)
+		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = index;
+			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = index;
+		}
 	}
 	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
 		hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
@@ -707,6 +716,7 @@ void CleanupTrackedResources()
 	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
 	gBufferResourceByGpuVa.clear();
+	gBufferResourceByGpuVaComplete.clear();
 	DX12BufferResolveCacheUtils::InvalidateAllLocked("cleanup");
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);

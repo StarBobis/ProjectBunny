@@ -12,6 +12,7 @@
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12ModRuntime.hpp"
+#include "DX12PreSkinAsyncUtils.hpp"
 #include "DX12PreSkinPlan.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12RuntimeState.hpp"
@@ -535,6 +536,20 @@ public:
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheMiss();
+
+			// Async cache warming: enqueue a copy of the binding data to the
+			// worker thread so it can pre-populate gPreSkinMatchCsInputCache and
+			// related internal caches.  The render thread always runs the full
+			// sync computation below for correctness — the binding fingerprint
+			// includes per-frame fields (GPU VA, resource ptr) that can change
+			// between frames, so skipping on miss would cause Mod flickering.
+			gPreSkinAsyncQueue.Enqueue(DX12PreSkinAsyncRequest(
+				probe->computeShaderHash,
+				bindingFingerprint,
+				std::vector<DX12CurrentComputeUavBinding>(probe->uavs),
+				std::vector<DX12CurrentComputeUavBinding>(probe->srvs),
+				std::vector<DX12CurrentComputeUavBinding>(probe->cbvs),
+				std::vector<DX12CurrentRootConstants>(probe->rootConstants)));
 		}
 #if defined(_DEBUG)
 		probe->shouldLog = true;

@@ -28,6 +28,7 @@
 #include "MigotoCommandList.hpp"
 #include "MigotoIniLoader.hpp"
 #include "MigotoResource.hpp"
+#include "DX12PreSkinAsyncUtils.hpp"
 #include "MigotoShaderOverride.hpp"
 #include "MigotoShaderRegex.hpp"
 #include "MigotoTextureOverride.hpp"
@@ -265,7 +266,9 @@ public:
 // Command list pointer is intentionally not part of the key because the cache
 // stores match decisions, not reusable command-list commands.
 static std::unordered_map<UINT64, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
+static std::deque<UINT64> gPreSkinUavMatchCacheLru;
 static constexpr size_t MaxPreSkinUavMatchCacheEntries = 4096;
+
 
 static UINT64 MakePreSkinUavMatchCacheKey(
 	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash)
@@ -1398,7 +1401,10 @@ enum class DX12PsoKind
 #include "DX12ModRuntimeLoader.hpp"
 #include "DX12ModResourceRuntime.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+
+DX12PreSkinAsyncQueue gPreSkinAsyncQueue;
 #include "DX12PreSkinRuntime.hpp"
+
 #include "DX12ModRuntimeState.hpp"
 #include "DX12IaOverrideMatcher.hpp"
 #include "DX12IaResourceRuntime.hpp"
@@ -1407,3 +1413,57 @@ enum class DX12PsoKind
 
 
 
+
+
+// ---------------------------------------------------------------------------
+// DX12PreSkinAsyncQueue::ProcessRequest — worker-thread entry point.
+// Calls the match-only computation and populates the PreSkinUavMatchCache
+// so that the next render-thread Dispatch call hits the cache.
+// ---------------------------------------------------------------------------
+void DX12PreSkinAsyncQueue::ProcessRequest(DX12PreSkinAsyncRequest *request)
+{
+	if (!request || request->computeShaderHash == 0 ||
+		request->computeBindingSerial == 0)
+		return;
+
+	bool matched = false;
+	DX12PreSkinDispatchOverride dispatchOverride;
+	DX12ModComputePreSkinMatchOnly(
+		request->computeShaderHash,
+		request->uavs,
+		request->srvs,
+		request->cbvs,
+		request->rootConstants,
+		&matched,
+		&dispatchOverride);
+
+	// Store the computed result in the PreSkinUavMatchCache so the render
+	// thread finds a cache hit on the next frame.
+	// We use a dummy commandList pointer — the cache key only depends on
+	// reload generation + CS hash + binding fingerprint.
+	UINT64 dummyHash = 0x4f1bbcdc9cb7a2c5ull;
+	dummyHash = HashCombine64(dummyHash, gReloadGeneration);
+	dummyHash = HashCombine64(dummyHash, request->computeShaderHash);
+	dummyHash = HashCombine64(dummyHash, request->computeBindingSerial);
+	UINT64 cacheKey = dummyHash;
+
+	AcquireSRWLockExclusive(&gModLock);
+	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[cacheKey];
+	bool isNewEntry = !entry.valid;
+	entry.computeShaderHash = request->computeShaderHash;
+	entry.computeBindingSerial = request->computeBindingSerial;
+	entry.valid = true;
+	entry.matched = matched;
+	entry.dispatchOverride = dispatchOverride;
+	if (isNewEntry) {
+		gPreSkinUavMatchCacheLru.push_back(cacheKey);
+	}
+	if (gPreSkinUavMatchCache.size() > MaxPreSkinUavMatchCacheEntries) {
+		if (!gPreSkinUavMatchCacheLru.empty()) {
+			UINT64 oldestKey = gPreSkinUavMatchCacheLru.front();
+			gPreSkinUavMatchCacheLru.pop_front();
+			gPreSkinUavMatchCache.erase(oldestKey);
+		}
+	}
+	ReleaseSRWLockExclusive(&gModLock);
+}

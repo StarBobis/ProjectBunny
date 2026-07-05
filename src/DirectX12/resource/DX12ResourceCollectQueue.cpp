@@ -271,8 +271,10 @@ void DX12ResourceCollectQueue::WorkerLoop()
 		"\"event\":\"WorkerEnter\",\"threadId\":%lu",
 		GetCurrentThreadId());
 
+	static constexpr size_t kBatchSize = 64;
 	for (;;) {
-		DX12ResourceCollectTask task;
+		DX12ResourceCollectTask batch[kBatchSize];
+		size_t batchCount = 0;
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
@@ -293,22 +295,33 @@ void DX12ResourceCollectQueue::WorkerLoop()
 					break;
 				continue;
 			}
-			task = std::move(tasks.front());
-			tasks.pop_front();
-			activeTasks++;
+			// Batch dequeue: process up to kBatchSize tasks per lock acquisition.
+			// Amortizes lock overhead ~64x and reduces cache invalidation storms.
+			while (batchCount < kBatchSize && !tasks.empty()) {
+				batch[batchCount] = std::move(tasks.front());
+				tasks.pop_front();
+				batchCount++;
+			}
+			activeTasks += batchCount;
 			depthAfterPop = tasks.size() + static_cast<size_t>(activeTasks);
 		}
-		dequeued.fetch_add(1, std::memory_order_relaxed);
-		if (depthAfterPop > 0)
-			LogStats("DequeueNonEmpty", task.sequence, depthAfterPop);
-		ProcessTask(&task, "Worker");
+		UINT64 lastSequence = 0;
+		for (size_t i = 0; i < batchCount; ++i) {
+			dequeued.fetch_add(1, std::memory_order_relaxed);
+			if (depthAfterPop > 0)
+				LogStats("DequeueNonEmpty", batch[i].sequence, depthAfterPop);
+			ProcessTask(&batch[i], "Worker");
+			lastSequence = batch[i].sequence;
+		}
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-			if (activeTasks > 0)
-				activeTasks--;
+			if (activeTasks >= static_cast<int>(batchCount))
+				activeTasks -= static_cast<int>(batchCount);
+			else
+				activeTasks = 0;
 		}
-		completed.fetch_add(1, std::memory_order_relaxed);
-		completedSequence.store(task.sequence, std::memory_order_release);
+		completed.fetch_add(batchCount, std::memory_order_relaxed);
+		completedSequence.store(lastSequence, std::memory_order_release);
 		idle.notify_all();
 	}
 
@@ -318,29 +331,41 @@ void DX12ResourceCollectQueue::WorkerLoop()
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
 		"\"event\":\"WorkerExit\",\"threadId\":%lu,\"pending\":%zu",
 		GetCurrentThreadId(), PendingCount());
+
 }
 
 void DX12ResourceCollectQueue::DrainPending(const char *reason)
 {
+	static constexpr size_t kBatchSize = 64;
 	for (;;) {
-		DX12ResourceCollectTask task;
+		DX12ResourceCollectTask batch[kBatchSize];
+		size_t batchCount = 0;
 		size_t depthAfterPop = 0;
 		{
 			std::lock_guard<std::mutex> lock(mutex);
 			if (tasks.empty())
 				break;
-			task = tasks.front();
-			tasks.pop_front();
+			while (batchCount < kBatchSize && !tasks.empty()) {
+				batch[batchCount] = tasks.front();
+				tasks.pop_front();
+				batchCount++;
+			}
+			activeTasks += batchCount;
 			depthAfterPop = tasks.size() + static_cast<size_t>(activeTasks);
 		}
-		dequeued.fetch_add(1, std::memory_order_relaxed);
-		if (depthAfterPop > 0)
-			LogStats(reason ? reason : "Drain", task.sequence, depthAfterPop);
-		ProcessTask(&task, reason ? reason : "Drain");
-		completed.fetch_add(1, std::memory_order_relaxed);
-		completedSequence.store(task.sequence, std::memory_order_release);
+		UINT64 lastSequence = 0;
+		for (size_t i = 0; i < batchCount; ++i) {
+			dequeued.fetch_add(1, std::memory_order_relaxed);
+			if (depthAfterPop > 0)
+				LogStats(reason ? reason : "Drain", batch[i].sequence, depthAfterPop);
+			ProcessTask(&batch[i], reason ? reason : "Drain");
+			lastSequence = batch[i].sequence;
+		}
+		completed.fetch_add(batchCount, std::memory_order_relaxed);
+		completedSequence.store(lastSequence, std::memory_order_release);
 		idle.notify_all();
 	}
+
 }
 
 void DX12ResourceCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, const char *reason)

@@ -237,42 +237,58 @@ bool DX12ResolveBufferResourceByGpuVa(
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (!resolved) {
-		// Fallback: linear scan all gResources for buffer entries whose
-		// GPU VA range covers the requested address.  This catches
-		// resources that were tracked but whose GPU VA never made it
-		// into gBufferResourceByGpuVa (e.g. reserved resources that
-		// returned zero VA at creation time, or resources created
-		// before the hook was active).
+		// Fallback: first try gBufferResourceByGpuVaComplete — a secondary index
+		// that mirrors all buffer resources with valid GPU VA that were missed by
+		// the primary gBufferResourceByGpuVa index (e.g. reserved resources with
+		// delayed VA assignment, or resources created before hook activation).
+		// This replaces the O(n) linear scan with O(log n) map lookup.
 		AcquireSRWLockShared(&gResourceLock);
-		for (size_t i = 0; i < gResources.size(); ++i) {
-			const ResourceRecord &resource = gResources[i];
-			if (!resource.resource)
-				continue;
-			if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-				continue;
-			if (resource.gpuVirtualAddress == 0 || resource.size == 0)
-				continue;
+		std::map<UINT64, size_t>::iterator completeIt =
+			gBufferResourceByGpuVaComplete.upper_bound(gpuVirtualAddress);
+		if (completeIt != gBufferResourceByGpuVaComplete.begin()) {
+			--completeIt;
+			const ResourceRecord &completeResource = gResources[completeIt->second];
 			if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
-					gpuVirtualAddress, size, resource, summary,
+					gpuVirtualAddress, size, completeResource, summary,
 					&resolvedBegin, &resolvedEnd)) {
 				resolved = true;
 				gBufferResolveFallbackScanHits++;
-				DX12FrameAnalysis::LogJsonFunc("BufferResolveFallbackScanHit",
-					"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"resource\":\"%p\",\"resourceSize\":%llu,\"heapType\":%u,\"hasHeapType\":%u",
-					static_cast<unsigned long long>(gpuVirtualAddress),
-					static_cast<unsigned long long>(size),
-					static_cast<unsigned long long>(resolvedBegin),
-					static_cast<unsigned long long>(resolvedEnd),
-					resource.resource,
-					static_cast<unsigned long long>(resource.size),
-					resource.hasHeapType ? static_cast<UINT>(resource.heapType) : UINT_MAX,
-					resource.hasHeapType ? 1 : 0);
-				break;
+			}
+		}
+		// Safety net: bounded linear scan for truly unindexed resources.
+		// Limit iterations to prevent runaway cost in pathological cases.
+		if (!resolved) {
+			static constexpr size_t kMaxFallbackScan = 2048;
+			size_t scanned = 0;
+			for (size_t i = 0; i < gResources.size() && scanned < kMaxFallbackScan; ++i, ++scanned) {
+				const ResourceRecord &resource = gResources[i];
+				if (!resource.resource)
+					continue;
+				if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+					continue;
+				if (resource.gpuVirtualAddress == 0 || resource.size == 0)
+					continue;
+				if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
+						gpuVirtualAddress, size, resource, summary,
+						&resolvedBegin, &resolvedEnd)) {
+					resolved = true;
+					gBufferResolveFallbackScanHits++;
+					DX12FrameAnalysis::LogJsonFunc("BufferResolveFallbackScanHit",
+							"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"resource\":\"%p\",\"resourceSize\":%llu,\"heapType\":%u,\"hasHeapType\":%u",
+						static_cast<unsigned long long>(gpuVirtualAddress),
+						static_cast<unsigned long long>(size),
+						static_cast<unsigned long long>(resolvedBegin),
+						static_cast<unsigned long long>(resolvedEnd),
+						resource.resource,
+						static_cast<unsigned long long>(resource.size),
+						resource.hasHeapType ? static_cast<UINT>(resource.heapType) : UINT_MAX,
+						resource.hasHeapType ? 1 : 0);
+					break;
+				}
 			}
 		}
 		ReleaseSRWLockShared(&gResourceLock);
 	}
-
 	if (resolved) {
 		gBufferResolveBackwardScanHits++;
 		BufferResolveCacheEntry entry;

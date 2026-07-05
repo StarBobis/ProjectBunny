@@ -2145,3 +2145,62 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 
 
 
+
+// ---------------------------------------------------------------------------
+// DX12ModComputePreSkinMatchOnly — off-critical-path match computation.
+// Runs only the data-structure lookup phase of PreSkinProbe without emitting
+// any D3D12 commands.  Safe to call from the async worker thread.
+// Populates gPreSkinUavMatchCache so that the next render-thread Dispatch
+// hits the cache and applies synchronously (fast path).
+// ---------------------------------------------------------------------------
+bool DX12ModComputePreSkinMatchOnly(
+	uint64_t computeShaderHash,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs,
+	const std::vector<DX12CurrentComputeUavBinding> &srvs,
+	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
+	const std::vector<DX12CurrentRootConstants> &rootConstants,
+	bool *outMatched,
+	DX12PreSkinDispatchOverride *outDispatchOverride)
+{
+	if (outMatched)
+		*outMatched = false;
+	if (outDispatchOverride)
+		*outDispatchOverride = DX12PreSkinDispatchOverride();
+	if (!DX12ModHasActiveTextureOverrides())
+		return false;
+
+	DX12ComputeUavProducer producer = {};
+	DX12VertexLimitRaiseConfig vlr = {};
+	std::wstring vlrResourceName;
+	DX12CurrentComputeUavBinding hashBinding = {};
+	DX12UavHashTextureOverrideMatch hashMatch = {};
+	bool hashMatched = false;
+	bool explicitMatchCs = false;
+	bool hasExplicitDispatch = false;
+	bool vlrMatched = false;
+	std::unordered_set<std::wstring> activePreSkinSections;
+	SnapshotActivePreSkinSections(&activePreSkinSections);
+
+	AcquireSRWLockExclusive(&gModLock);
+	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
+	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
+		uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
+	if (hashMatched)
+		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(hashMatch.config);
+	if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
+		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
+			FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
+	}
+	ReleaseSRWLockExclusive(&gModLock);
+
+	bool matched = hashMatched || vlrMatched;
+	if (outMatched)
+		*outMatched = matched;
+	if (matched && outDispatchOverride && hashMatched && hasExplicitDispatch) {
+		// MatchCs path: populate dispatch override from the matched config.
+		// VLR path sets matched=true but does not populate dispatchOverride;
+		// the apply phase handles VLR via resource loading and UAV setup.
+		FillPreSkinDispatchOverrideFromConfig(hashMatch.config, outDispatchOverride);
+	}
+	return matched;
+}

@@ -1,0 +1,25 @@
+{
+  "task_id": "20260705-142302-1-33-begin-1-33-docs-docs-do-not-send-optional-commentar",
+  "goal": "[已粘贴文本 #1 · 33 行]\n\n--- Begin [已粘贴文本 #1 · 33 行] ---\n接下来的对话中遵循如下约定：\n核心思想\n● 不管你要改什么代码，你都必须把完整修改计划先写到docs下面，防止忘记，才能继续改代码，这样即使上下文压缩或者中途换人了，也能继续之前完整的计划。顺手把已经确认实现的docs给删掉，不留冗余内容。\n● 必须使用第一性原理分析所有问题。\n● DO NOT send optional commentary\n● 模块化设计\n● 查找代码设计缺陷并给出优化方案\n● 当我和你提出问题时，请分析这个问题的根因，并给出一个架构层面更稳健、能从根本上规避边界问题的重构方案，而不是局部打补丁。\n● 遇到架构问题要从根本上解决推翻重构，而不是在错误的架构上小修小补。\n● \n协助测试\n● 测试后日志一般位于D:\\SSMTCacheFolder\\3Dmigoto\\ZZMIDX12\\d3d12_log.jsonl\n● 开发中一般使用build_debug_x64.ps1构建，修改完代码别忘了帮我构建，只有真正修改了代码才需要执行这个构建，不是无条件执行。\n● 排查卡死、未响应、闪退问题时，不要第一时间认为是日志导致的，高频日志只会拖慢运行速度，无其它风险。\n● 如果日志无法定位问题，说明日志加的还是不够多，果断加更多更全面的日志\n● 你无需考虑日志性能问题，因为日志绝对不会导致卡死，日志执行速度慢是允许的，所有函数都尽可能留下简短的日志方便定位问题。\n● 每次改完代码之后，描述要带有类似：优化了xx%的性能，预计提升xx%，热点降低xx%，等等，让我能直观的知道这次修改预计的效果提升。\n● 每次看完日志之后，都要根据日志内容简短汇报一下，时间单位为总ms和us每次：一帧的总消耗时间，帧间隔，每个函数的消耗总时间，每个函数消耗占比，预期帧率，并绘制图形报表。\n● 如果需要写脚本分析日志，请放到项目的tools目录下\n代码规范\n● 修改代码前，必须去查询DX12官方文档以佐证自己的思路。\n● 如果你要靠猜才能验证的话，不妨看看Github上关于RenderDoc、ReShade、RenoDX等常见DX12项目是如何处理类似情况的，也可以自行上网搜索相关文档。\n● 允许失败，因为失败了会积累经验，也就是说如果你觉得做不到，就要告诉我做不到。\n● 我喜欢逻辑推理得到的结果，而不是靠猜。\n● 当我让你和某某项目代码对齐颗粒度时，不要\"补一颗螺丝测一次\"，而是成体系的颗粒度对齐！ 大幅度更改，别老每次改一点点浪费我测试时间 ！\n● 尽可能使用面向对象编程而不是函数式编程，否则代码难以维护。\n● 工具类尽可能声明在.hpp中，不要将函数代码散落在.cpp中，且命名应该严格以Utils结尾\n● 所有编写的class，不得有任何private属性和方法，所有属性和函数都必须是public的，这样就不用写额外的getter/setter函数了。\n● 代码尽量放在某种class或者某种Utils.class中，除非架构设计需要，否则不允许独立散落函数导致难以维护。\n● 绝对禁止使用auto，所有类型必须显式声明！\n● 如果你需要在项目根目录下创建额外的测试ps1脚本、产生临时一次性目录之类的，请添加.gitignore防止我提交无效内容到git仓库\n● 本项目使用C++ 17标准，注意你写的代码要基本功扎实\n● 写代码或者注释，必须使用纯英文！！！\n--- End [已粘贴文本 #1 · 33 行] ---",
+  "scope": null,
+  "non_goals": null,
+  "allowed_operations": {
+    "write": true,
+    "network": false,
+    "publish": false
+  },
+  "success_criteria": [
+    {
+      "id": "objective_evidence",
+      "description": "The goal outcome is supported by direct evidence, such as inspected code, reproduced behavior, source material, or concrete findings.",
+      "required": true,
+      "evidence_ids": null
+    },
+    {
+      "id": "verification",
+      "description": "The result has relevant verification evidence, such as tests, commands, benchmarks, manual checks, or a documented reason why verification is not applicable.",
+      "required": true,
+      "evidence_ids": null
+    }
+  ]
+}
