@@ -16,6 +16,8 @@
 #include "DX12ModRuntime.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
+FILE *DX12LogUtils::LogFile = nullptr;
+
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];
 volatile LONG64 DX12BindingTrackerState::GlobalDrawSerial = 0;
 volatile LONG64 DX12BindingTrackerState::GlobalDispatchSerial = 0;

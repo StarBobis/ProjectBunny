@@ -97,6 +97,7 @@ public:
 		DX12CommandListHookState::ReleaseKnownCommandQueue();
 		DX12HookRegistry::UnhookAll();
 		DX12LogManager::Close();
+		DX12LogUtils::Close();
 		LoadRealD3D12 = nullptr;
 		Initialized = false;
 	}

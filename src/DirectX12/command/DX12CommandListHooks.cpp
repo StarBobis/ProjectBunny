@@ -33,7 +33,6 @@
 #include "DX12LogManager.hpp"
 #include "DX12RuntimeState.hpp"
 #include "types/DX12CommandListHookSlotTypes.hpp"
-#include "utils/DX12OuterTimingProbeUtils.hpp"
 
 using PFN_CREATE_COMMAND_QUEUE = DX12CommandListHookSignatures::CreateCommandQueue;
 using PFN_CREATE_COMMAND_ALLOCATOR = DX12CommandListHookSignatures::CreateCommandAllocator;

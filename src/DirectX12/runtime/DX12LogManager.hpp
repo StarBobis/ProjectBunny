@@ -101,6 +101,7 @@ public:
 		PathRemoveFileSpecW(path);
 		PathAppendW(path, L"d3d12_log.jsonl");
 		state.log = _wfsopen(path, L"w", _SH_DENYNO);
+		DX12LogUtils::Open(path); // DX11-style direct fprintf file
 		if (!state.log)
 			return false;
 
