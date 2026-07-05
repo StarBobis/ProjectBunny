@@ -910,40 +910,58 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				}
 
 				const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBaseIndex, range);
+				std::vector<SIZE_T> cpuHandles;
+				std::vector<UINT> descriptorOffsets;
+				cpuHandles.reserve(count);
+				descriptorOffsets.reserve(count);
 				for (UINT offset = 0; offset < count; ++offset) {
 					const UINT64 di = tableBaseIndex + range.effectiveOffset + offset;
 					if (di >= heap.numDescriptors)
 						break;
 					const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-
-					DX12DescriptorSummary desc = {};
 					if (needFullResource) {
 						DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
-						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
-							continue;
-						if (desc.kind != kind)
-							continue;
 					} else {
 						DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
-						if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &desc))
-							continue;
-						if (desc.kind != kind)
-							continue;
 					}
+					cpuHandles.push_back(cpuHandle);
+					descriptorOffsets.push_back(offset);
+				}
+				if (cpuHandles.empty())
+					continue;
+
+				std::vector<DX12DescriptorSummary> descriptors;
+				std::vector<uint8_t> foundDescriptors;
+				descriptors.resize(cpuHandles.size());
+				foundDescriptors.resize(cpuHandles.size());
+				DX12FindDescriptorSummariesByCpuHandle(
+					cpuHandles.data(),
+					cpuHandles.size(),
+					descriptors.data(),
+					foundDescriptors.data(),
+					needFullResource);
+				for (size_t descriptorIndex = 0;
+					descriptorIndex < cpuHandles.size();
+					++descriptorIndex) {
+					if (!foundDescriptors[descriptorIndex] ||
+						descriptors[descriptorIndex].kind != kind)
+						continue;
 
 					DX12CurrentComputeUavBinding binding;
 					binding.rootParameterIndex = root;
 					binding.rangeIndex = range.rangeIndex;
 					binding.shaderVisibility = range.shaderVisibility;
-					binding.shaderRegister = range.baseShaderRegister + offset;
+					binding.shaderRegister =
+						range.baseShaderRegister + descriptorOffsets[descriptorIndex];
 					binding.registerSpace = range.registerSpace;
-					binding.descriptorOffset = range.effectiveOffset + offset;
+					binding.descriptorOffset =
+						range.effectiveOffset + descriptorOffsets[descriptorIndex];
 					binding.descriptorIncrement = heap.increment;
 					binding.tableCopyCount = count;
 					binding.tableCpuStart = heap.cpuStart + static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
 					binding.tableGpuStart.ptr = heap.gpuStart + tableBaseIndex * heap.increment;
 					binding.tableHeap = heap.heap;
-					binding.descriptor = desc;
+					binding.descriptor = descriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					out->push_back(std::move(binding));
 
@@ -957,43 +975,68 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			// No root signature info: scan next descriptors, classify by kind
 			const UINT64 scanEnd = min(tableBaseIndex + kMaxScanPerTable,
 				static_cast<UINT64>(heap.numDescriptors));
+			std::vector<SIZE_T> cpuHandles;
+			std::vector<UINT64> descriptorIndices;
 			for (UINT64 di = tableBaseIndex; di < scanEnd; ++di) {
 				if (localUavs.size() >= kMaxUavs && localSrvs.size() >= kMaxSrvs)
 					break;
 
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-				DX12DescriptorSummary desc = {};
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
-				if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &desc))
+				cpuHandles.push_back(cpuHandle);
+				descriptorIndices.push_back(di);
+			}
+			if (cpuHandles.empty())
+				continue;
+
+			std::vector<DX12DescriptorSummary> descriptors;
+			std::vector<uint8_t> foundDescriptors;
+			descriptors.resize(cpuHandles.size());
+			foundDescriptors.resize(cpuHandles.size());
+			DX12FindDescriptorSummariesByCpuHandle(
+				cpuHandles.data(),
+				cpuHandles.size(),
+				descriptors.data(),
+				foundDescriptors.data(),
+				false);
+			for (size_t descriptorIndex = 0;
+				descriptorIndex < cpuHandles.size();
+				++descriptorIndex) {
+				if (!foundDescriptors[descriptorIndex])
 					continue;
 
 				DX12CurrentComputeUavBinding binding;
 				binding.rootParameterIndex = root;
 				binding.descriptorIncrement = heap.increment;
 				binding.tableCopyCount = 1;
-				binding.tableCpuStart = cpuHandle;
+				binding.tableCpuStart = cpuHandles[descriptorIndex];
 				binding.tableGpuStart = table.baseDescriptor;
 				binding.tableHeap = heap.heap;
-				binding.descriptorOffset = static_cast<UINT>(di - tableBaseIndex);
+				binding.descriptorOffset =
+					static_cast<UINT>(descriptorIndices[descriptorIndex] - tableBaseIndex);
 
-				if (desc.kind == "UAV" && localUavs.size() < kMaxUavs) {
+				if (descriptors[descriptorIndex].kind == "UAV" &&
+					localUavs.size() < kMaxUavs) {
 					DX12DescriptorSummary fullDesc = {};
 					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
-					if (DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &fullDesc))
-						desc = fullDesc;
-					binding.descriptor = desc;
+					if (DX12FindDescriptorSummaryByCpuHandle(
+							cpuHandles[descriptorIndex], &fullDesc))
+						descriptors[descriptorIndex] = fullDesc;
+					binding.descriptor = descriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					localUavs.push_back(std::move(binding));
-				} else if (desc.kind == "SRV" && localSrvs.size() < kMaxSrvs) {
-					binding.descriptor = desc;
+				} else if (descriptors[descriptorIndex].kind == "SRV" &&
+					localSrvs.size() < kMaxSrvs) {
+					binding.descriptor = descriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					localSrvs.push_back(std::move(binding));
-				} else if (desc.kind == "CBV") {
+				} else if (descriptors[descriptorIndex].kind == "CBV") {
 					DX12DescriptorSummary fullDesc = {};
 					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
-					if (DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &fullDesc))
-						desc = fullDesc;
-					binding.descriptor = desc;
+					if (DX12FindDescriptorSummaryByCpuHandle(
+							cpuHandles[descriptorIndex], &fullDesc))
+						descriptors[descriptorIndex] = fullDesc;
+					binding.descriptor = descriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					localCbvs.push_back(std::move(binding));
 				}
@@ -1034,11 +1077,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
 
-	if (canUseResultCache &&
-		CurrentDescriptorQuerySerial() == descriptorQuerySerialBefore) {
+	if (canUseResultCache) {
+		DX12PreSkinBindingCacheKey storeKey;
+		DX12PreSkinBindingCacheUtils::BuildKey(
+			snapshot,
+			commandList,
+			CurrentDescriptorQuerySerial(),
+			&storeKey);
 		DX12PreSkinBindingCacheUtils::Store(
 			&preSkinBindingCache,
-			cacheKey,
+			storeKey,
 			localUavs,
 			localSrvs,
 			localCbvs,
