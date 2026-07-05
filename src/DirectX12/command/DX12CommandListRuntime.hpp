@@ -12,6 +12,7 @@
 #include "DX12CommandListTrackingCache.hpp"
 #include "DX12CommandListTrackingState.hpp"
 #include "DX12IaHashState.hpp"
+#include "DX12IaHashTargetPlan.hpp"
 
 class DX12CommandListRuntime
 {
@@ -58,6 +59,7 @@ public:
 	static void BumpComputeBindingSerial(DX12CommandListRuntimeState *state);
 	static void BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
+	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
 	static DX12CommandListRuntimeState GetState(ID3D12GraphicsCommandList *commandList);
 	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);

@@ -470,6 +470,18 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
 	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
 {
+	DX12IaHashTargetPlan targetPlan;
+	targetPlan.RequireAll();
+	return DX12CommandListRuntime::BuildIaHashStateForTargets(
+		ia, targetPlan, indexed, vertexCount, indexCount,
+		firstVertex, firstIndex, baseVertex, state);
+}
+
+bool DX12CommandListRuntime::BuildIaHashStateForTargets(
+	const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan,
+	bool indexed, UINT vertexCount, UINT indexCount,
+	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
+{
 	if (!state)
 		return false;
 	*state = DX12IaHashState();
@@ -478,9 +490,9 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
-	const uint32_t indexHash = ia.hasIndexBuffer && indexed ?
-		DX12IaRegion::HashIndexBufferView(ia.indexBuffer, draw) : 0;
-	if (indexHash) {
+	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
+		const uint32_t indexHash = targetPlan.RequiresIndexBufferHash(indexed) ?
+			DX12IaRegion::HashIndexBufferView(ia.indexBuffer, draw) : 0;
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
@@ -489,10 +501,10 @@ bool DX12CommandListRuntime::BuildIaHashState(
 	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
 		if (!ia.hasVertexBuffer[slot])
 			continue;
+		if (!targetPlan.RequiresVertexBuffer(slot))
+			continue;
 		const uint32_t vertexHash =
 			DX12IaRegion::HashVertexBufferView(slot, ia.vertexBuffers[slot], draw);
-		if (!vertexHash)
-			continue;
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = vertexHash;

@@ -292,6 +292,7 @@ public:
 	std::vector<const Bunny::ShaderOverrideConfig*> dispatchConfigs;
 	std::vector<Bunny::ShaderOverrideConfig> regexDrawConfigs;
 	std::vector<Bunny::ShaderOverrideConfig> regexDispatchConfigs;
+	DX12IaHashTargetPlan drawTargetPlan;
 };
 static std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache> gShaderOverridePsoMatchCache;
 class DX12TextureOverrideLookupCacheKey
@@ -374,7 +375,14 @@ public:
 	uint32_t firstIndex = 0;
 	bool hasIndexBuffer = false;
 	uint32_t indexHash = 0;
+	UINT64 indexBufferLocation = 0;
+	uint32_t indexBufferSize = 0;
+	uint32_t indexBufferFormat = 0;
 	std::array<uint32_t, 32> vertexHashes = {};
+	std::array<uint8_t, 32> vertexPresent = {};
+	std::array<UINT64, 32> vertexBufferLocations = {};
+	std::array<uint32_t, 32> vertexBufferSizes = {};
+	std::array<uint32_t, 32> vertexBufferStrides = {};
 
 	bool operator==(const DX12ShaderOverrideNegativeCacheKey &other) const
 	{
@@ -388,7 +396,14 @@ public:
 			firstIndex == other.firstIndex &&
 			hasIndexBuffer == other.hasIndexBuffer &&
 			indexHash == other.indexHash &&
-			vertexHashes == other.vertexHashes;
+			indexBufferLocation == other.indexBufferLocation &&
+			indexBufferSize == other.indexBufferSize &&
+			indexBufferFormat == other.indexBufferFormat &&
+			vertexHashes == other.vertexHashes &&
+			vertexPresent == other.vertexPresent &&
+			vertexBufferLocations == other.vertexBufferLocations &&
+			vertexBufferSizes == other.vertexBufferSizes &&
+			vertexBufferStrides == other.vertexBufferStrides;
 	}
 };
 

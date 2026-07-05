@@ -25,6 +25,9 @@ bool DX12ModReplaceShaderBytecode(
 bool DX12ModHasShaderOverride(uint64_t hash);
 bool DX12ModHasActiveShaderOverrides();
 bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState);
+bool DX12ModCollectShaderOverrideIaHashTargets(
+	ID3D12PipelineState *pipelineState,
+	DX12IaHashTargetPlan *targetPlan);
 bool DX12ModNeedsShaderDescriptorTracking();
 UINT64 DX12ModGetReloadGeneration();
 bool DX12ModHasActiveTextureOverrides();
@@ -194,7 +197,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex,
-	DX12ModIaReplacement *replacement);
+	DX12ModIaReplacement *replacement,
+	bool allowNegativeCache = true);
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
