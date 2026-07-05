@@ -50,14 +50,23 @@ public:
 		ID3D12PipelineState *pipelineState,
 		bool hasShaderOverrides,
 		bool needsPreSkinProbe);
+	static DX12CompiledDrawDecision BuildDrawDecision(
+		ID3D12PipelineState *pipelineState,
+		bool hasShaderOverrides);
 	static const DX12CompiledDispatchDecision *EnsureDispatchDecision(
 		DX12CommandListRuntimeState *state,
 		bool hasShaderOverrides,
 		bool needsPreSkinProbe);
+	static const DX12CompiledDrawDecision *EnsureDrawDecision(
+		DX12CommandListRuntimeState *state,
+		bool hasShaderOverrides);
 	static void CompileDispatchDecision(
 		DX12CommandListRuntimeState *state,
 		bool hasShaderOverrides,
 		bool needsPreSkinProbe);
+	static void CompileDrawDecision(
+		DX12CommandListRuntimeState *state,
+		bool hasShaderOverrides);
 	static void RememberPipelineState(DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState);
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void ResetIa(DX12CommandListRuntimeState *state);

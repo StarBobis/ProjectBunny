@@ -1,0 +1,124 @@
+#pragma once
+
+#include <Windows.h>
+#include <d3d12.h>
+#include <stdint.h>
+
+#include "DX12IaHashTargetPlan.hpp"
+
+enum class DX12CompiledDrawDecisionKind : uint32_t
+{
+	NoopNeverMatches = 0,
+	NeedsIaHash = 1,
+	NeedsDescriptorMatch = 2,
+	NeedsReplacement = 3,
+	SkipOriginal = 4
+};
+
+class DX12CompiledDrawDecision
+{
+public:
+	DX12CompiledDrawDecisionKind kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
+	ID3D12PipelineState *pipelineState = nullptr;
+	UINT64 reloadGeneration = 0;
+	bool resolved = false;
+	bool hasActiveShaderOverrides = false;
+	bool hasShaderOverrides = false;
+	bool hasShaderOverrideSkip = false;
+	bool targetPlanResolved = false;
+	bool targetPlanHasIaTargets = false;
+	bool targetPlanHasDescriptorTargets = false;
+	bool negativeCacheSafe = false;
+	DX12IaHashTargetPlan targetPlan;
+
+	void Reset()
+	{
+		kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
+		pipelineState = nullptr;
+		reloadGeneration = 0;
+		resolved = false;
+		hasActiveShaderOverrides = false;
+		hasShaderOverrides = false;
+		hasShaderOverrideSkip = false;
+		targetPlanResolved = false;
+		targetPlanHasIaTargets = false;
+		targetPlanHasDescriptorTargets = false;
+		negativeCacheSafe = false;
+		targetPlan = DX12IaHashTargetPlan();
+	}
+
+	void SetNoopNeverMatches(
+		ID3D12PipelineState *state,
+		UINT64 generation,
+		bool activeShaderOverrides)
+	{
+		Reset();
+		kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
+		pipelineState = state;
+		reloadGeneration = generation;
+		resolved = true;
+		hasActiveShaderOverrides = activeShaderOverrides;
+	}
+
+	void SetFromTargetPlan(
+		ID3D12PipelineState *state,
+		UINT64 generation,
+		bool activeShaderOverrides,
+		bool shaderOverrides,
+		bool shaderOverrideSkip,
+		const DX12IaHashTargetPlan &plan,
+		bool descriptorTrackingNeeded)
+	{
+		Reset();
+		pipelineState = state;
+		reloadGeneration = generation;
+		resolved = true;
+		hasActiveShaderOverrides = activeShaderOverrides;
+		hasShaderOverrides = shaderOverrides;
+		hasShaderOverrideSkip = shaderOverrideSkip;
+		targetPlan = plan;
+		targetPlanResolved = true;
+		targetPlanHasIaTargets = targetPlan.HasIaTargets();
+		targetPlanHasDescriptorTargets = targetPlan.hasDescriptorTargets;
+		negativeCacheSafe = !targetPlanHasDescriptorTargets && !descriptorTrackingNeeded;
+
+		if (!hasShaderOverrides && !hasShaderOverrideSkip) {
+			kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
+		} else if (hasShaderOverrideSkip) {
+			kind = DX12CompiledDrawDecisionKind::SkipOriginal;
+		} else if (targetPlanHasDescriptorTargets) {
+			kind = DX12CompiledDrawDecisionKind::NeedsDescriptorMatch;
+		} else if (targetPlanHasIaTargets) {
+			kind = DX12CompiledDrawDecisionKind::NeedsIaHash;
+		} else {
+			kind = DX12CompiledDrawDecisionKind::NeedsReplacement;
+		}
+	}
+
+	bool CanFastReject() const
+	{
+		return resolved &&
+			kind == DX12CompiledDrawDecisionKind::NoopNeverMatches &&
+			!hasShaderOverrideSkip;
+	}
+
+	bool NeedsIaHash() const
+	{
+		return targetPlanHasIaTargets;
+	}
+
+	bool NeedsDescriptorMatch() const
+	{
+		return targetPlanHasDescriptorTargets;
+	}
+
+	bool NeedsDrawOverrideWork() const
+	{
+		return !CanFastReject();
+	}
+
+	bool MatchesGlobals(bool activeShaderOverrides) const
+	{
+		return hasActiveShaderOverrides == activeShaderOverrides;
+	}
+};

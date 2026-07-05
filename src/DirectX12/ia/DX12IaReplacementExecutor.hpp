@@ -13,8 +13,9 @@
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
+#include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
-// Legacy stub — referenced by compiled code but definition was never provided
+// Legacy stub - referenced by compiled code but definition was never provided.
 inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
 {
 	return false;
@@ -23,14 +24,13 @@ inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
 class DX12IaReplacementExecutor
 {
 public:
-	// PSO+IA 组合级负缓存：记录 (PSO, indexHash, vertexHashes[]) 无匹配结果。
-	// 跨帧持久，仅在 mod 重载时清空。
+	// PSO and IA negative cache for no-match results.
+	// The cache persists across frames and is cleared only on mod reload.
 	inline static std::unordered_set<UINT64> s_psoIaNegativeCache;
 	inline static SRWLOCK s_psoIaNegativeCacheLock = SRWLOCK_INIT;
 
-	// 廉价指纹缓存：用 (PSO, IB/VB GpuVa, draw args) 替代内容 hash 作为 key。
-	// 指纹计算只需读取指针+整数运算（~0.3us），vs BuildIaHash 的 ~35us。
-	// 指纹命中 → 映射到 full PsoIaNegKey → 检查 PsoIaNegCache → 跳过 hash。
+	// Cheap fingerprint cache maps PSO, IA GPUVA, and draw args to a full
+	// negative key so repeated no-match draws can skip content hashing.
 	inline static std::unordered_map<UINT64, UINT64> s_cheapToFullKeyMap;
 	inline static SRWLOCK s_cheapToFullKeyMapLock = SRWLOCK_INIT;
 
@@ -198,36 +198,27 @@ public:
 		const DX12CommandListRuntimeState &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		if (!DX12ModHasActiveShaderOverrides())
-			return false;
-
 		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
 
-		// PSO 级提前退出：利用 runtimeState 缓存的 PSO 标志，避免每 draw 获取 gModLock。
-		// 缓存在 tracking generation 变化时自动失效（通过 generation 比对）。
+		// Draw consumes the compiled PSO decision instead of rediscovering
+		// shader override metadata on every command.
 		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
-		if (runtimeState.pipelineState) {
-			const LONG gen = static_cast<LONG>(DX12CommandListRuntime::TrackingGeneration());
-			const LONG cachedGen = InterlockedCompareExchange(
-				const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), 0, 0);
-			if (cachedGen == gen) {
-				if (!runtimeState.psoHasShaderOverrides) {
-					DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-					return false;
-				}
-			} else {
-				const bool hasOverrides = DX12ModHasShaderOverridesForPso(runtimeState.pipelineState);
-				InterlockedExchange(
-					const_cast<volatile LONG*>(&runtimeState.psoHasOverridesGeneration), gen);
-				const_cast<DX12CommandListRuntimeState&>(runtimeState).psoHasShaderOverrides = hasOverrides;
-				if (!hasOverrides) {
-					DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-					return false;
-				}
-			}
+		const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
+		DX12CommandListRuntimeState *mutableRuntimeState =
+			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+		const DX12CompiledDrawDecision *drawDecision =
+			DX12CommandListRuntime::EnsureDrawDecision(
+				mutableRuntimeState, activeShaderOverrides);
+		if (!drawDecision || drawDecision->CanFastReject()) {
+			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionFastReject();
+			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			return false;
 		}
+		if (drawDecision->NeedsIaHash())
+			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
+		if (drawDecision->NeedsDescriptorMatch())
+			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();
 		DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
 
 		DX12Profiling::RecordIaDrawOverrideCheck();
@@ -238,18 +229,11 @@ public:
 		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
-		// ── 廉价指纹缓存：用 (PSO, GpuVa, draw args) 替代内容 hash ──
-		// 指纹计算只需指针读取+整数运算（~0.3us vs BuildIaHash 的 ~35us）。
-		// 命中时直接跳过 BuildIaHash 链条。
-		DX12IaHashTargetPlan targetPlan;
-		if (!DX12ModCollectShaderOverrideIaHashTargets(
-			    runtimeState.pipelineState, &targetPlan))
-			targetPlan.RequireAll();
-
-		const bool targetPlanHasIaTargets = targetPlan.HasIaTargets();
-		const bool psoIaNegativeCacheSafe =
-			!targetPlan.hasDescriptorTargets &&
-			!DX12ModNeedsShaderDescriptorTracking();
+		// Cheap negative cache lookup uses PSO, IA view identity, and draw args
+		// before falling back to stable IA content hashing.
+		DX12IaHashTargetPlan targetPlan = drawDecision->targetPlan;
+		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
+		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		UINT64 cheapKey = 0;
 
 		if (psoIaNegativeCacheSafe && targetPlanHasIaTargets) {
@@ -289,12 +273,13 @@ public:
 		} else {
 			DX12Profiling::RecordIaHashStateResult(false);
 		}
-		if (hasIaHashState || !targetPlanHasIaTargets || targetPlan.hasDescriptorTargets) {
+		if (hasIaHashState || !targetPlanHasIaTargets ||
+		    drawDecision->targetPlanHasDescriptorTargets) {
 			const bool canUsePsoIaNegativeCache =
 				psoIaNegativeCacheSafe && (!targetPlanHasIaTargets || hasIaHashState);
 			UINT64 psoIaNegKey = 0;
 
-			// PSO+IA 组合级负缓存
+			// PSO and IA negative cache.
 			if (canUsePsoIaNegativeCache) {
 				DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
 				psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
@@ -339,7 +324,7 @@ public:
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
-		if (DX12ModShouldSkipPipelineState(runtimeState.pipelineState, false)) {
+		if (drawDecision->hasShaderOverrideSkip) {
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return true;
 		}

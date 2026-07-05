@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
+#include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListRuntime.hpp"
 
 bool DX12ModRuntimeLoad(
@@ -28,8 +29,12 @@ bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState);
 bool DX12ModCollectShaderOverrideIaHashTargets(
 	ID3D12PipelineState *pipelineState,
 	DX12IaHashTargetPlan *targetPlan);
+bool DX12ModCompileDrawDecision(
+	ID3D12PipelineState *pipelineState,
+	DX12CompiledDrawDecision *decision);
 bool DX12ModNeedsShaderDescriptorTracking();
 UINT64 DX12ModGetReloadGeneration();
+UINT64 DX12ModGetReloadGenerationFast();
 bool DX12ModHasActiveTextureOverrides();
 bool DX12ModHasAnyActiveOverrides();
 bool DX12ModNeedsPresentReplacement();

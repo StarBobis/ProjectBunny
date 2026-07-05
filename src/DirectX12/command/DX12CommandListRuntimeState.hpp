@@ -6,6 +6,7 @@
 
 #include "DX12ActiveIaState.hpp"
 #include "DX12CompiledDispatchDecision.hpp"
+#include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
 
 class DX12CommandListRuntimeState
@@ -38,4 +39,8 @@ public:
 	// Compiled per-PSO dispatch policy. Dispatch consumes this instead of
 	// rediscovering non-candidate PreSkin state on every command.
 	DX12CompiledDispatchDecision dispatchDecision;
+
+	// Compiled per-PSO draw policy. Draw consumes this instead of rediscovering
+	// PSO shader override metadata on every command.
+	DX12CompiledDrawDecision drawDecision;
 };

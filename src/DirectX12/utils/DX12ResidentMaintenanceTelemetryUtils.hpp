@@ -126,6 +126,20 @@ public:
 	inline static volatile LONG PreSkinPlanCacheStores = 0;
 	inline static volatile LONG PreSkinPlanFingerprintBuilds = 0;
 
+	inline static volatile LONG DrawDecisionCacheHits = 0;
+	inline static volatile LONG DrawDecisionCacheMisses = 0;
+	inline static volatile LONG DrawDecisionBuilds = 0;
+	inline static volatile LONG DrawDecisionNoPso = 0;
+	inline static volatile LONG DrawDecisionNoShaderOverride = 0;
+	inline static volatile LONG DrawDecisionNoDrawOverride = 0;
+	inline static volatile LONG DrawDecisionNeedsIaHash = 0;
+	inline static volatile LONG DrawDecisionNeedsDescriptorMatch = 0;
+	inline static volatile LONG DrawDecisionNeedsReplacement = 0;
+	inline static volatile LONG DrawDecisionSkipOriginal = 0;
+	inline static volatile LONG DrawDecisionFastRejects = 0;
+	inline static volatile LONG DrawDecisionIaHashDraws = 0;
+	inline static volatile LONG DrawDecisionDescriptorDraws = 0;
+
 	static void Inc(volatile LONG *value)
 	{
 		InterlockedIncrement(value);
@@ -565,6 +579,71 @@ public:
 		Inc(&PreSkinPlanFingerprintBuilds);
 	}
 
+	static void RecordDrawDecisionCacheHit()
+	{
+		Inc(&DrawDecisionCacheHits);
+	}
+
+	static void RecordDrawDecisionCacheMiss()
+	{
+		Inc(&DrawDecisionCacheMisses);
+	}
+
+	static void RecordDrawDecisionBuild()
+	{
+		Inc(&DrawDecisionBuilds);
+	}
+
+	static void RecordDrawDecisionNoPso()
+	{
+		Inc(&DrawDecisionNoPso);
+	}
+
+	static void RecordDrawDecisionNoShaderOverride()
+	{
+		Inc(&DrawDecisionNoShaderOverride);
+	}
+
+	static void RecordDrawDecisionNoDrawOverride()
+	{
+		Inc(&DrawDecisionNoDrawOverride);
+	}
+
+	static void RecordDrawDecisionNeedsIaHash()
+	{
+		Inc(&DrawDecisionNeedsIaHash);
+	}
+
+	static void RecordDrawDecisionNeedsDescriptorMatch()
+	{
+		Inc(&DrawDecisionNeedsDescriptorMatch);
+	}
+
+	static void RecordDrawDecisionNeedsReplacement()
+	{
+		Inc(&DrawDecisionNeedsReplacement);
+	}
+
+	static void RecordDrawDecisionSkipOriginal()
+	{
+		Inc(&DrawDecisionSkipOriginal);
+	}
+
+	static void RecordDrawDecisionFastReject()
+	{
+		Inc(&DrawDecisionFastRejects);
+	}
+
+	static void RecordDrawDecisionIaHashDraw()
+	{
+		Inc(&DrawDecisionIaHashDraws);
+	}
+
+	static void RecordDrawDecisionDescriptorDraw()
+	{
+		Inc(&DrawDecisionDescriptorDraws);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -803,6 +882,34 @@ public:
 			misses, stores, fingerprints);
 	}
 
+	static void LogDrawDecisionState()
+	{
+		LONG cacheHits = Take(&DrawDecisionCacheHits);
+		LONG cacheMisses = Take(&DrawDecisionCacheMisses);
+		LONG builds = Take(&DrawDecisionBuilds);
+		LONG noPso = Take(&DrawDecisionNoPso);
+		LONG noShaderOverride = Take(&DrawDecisionNoShaderOverride);
+		LONG noDrawOverride = Take(&DrawDecisionNoDrawOverride);
+		LONG needsIaHash = Take(&DrawDecisionNeedsIaHash);
+		LONG needsDescriptorMatch = Take(&DrawDecisionNeedsDescriptorMatch);
+		LONG needsReplacement = Take(&DrawDecisionNeedsReplacement);
+		LONG skipOriginal = Take(&DrawDecisionSkipOriginal);
+		LONG fastRejects = Take(&DrawDecisionFastRejects);
+		LONG iaHashDraws = Take(&DrawDecisionIaHashDraws);
+		LONG descriptorDraws = Take(&DrawDecisionDescriptorDraws);
+		if (!cacheHits && !cacheMisses && !builds && !noPso &&
+			!noShaderOverride && !noDrawOverride && !needsIaHash &&
+			!needsDescriptorMatch && !needsReplacement && !skipOriginal &&
+			!fastRejects && !iaHashDraws && !descriptorDraws)
+			return;
+		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
+			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"descriptorDraws\":%ld",
+			cacheHits, cacheMisses, builds, noPso,
+			noShaderOverride, noDrawOverride, needsIaHash,
+			needsDescriptorMatch, needsReplacement, skipOriginal,
+			fastRejects, iaHashDraws, descriptorDraws);
+	}
+
 	static void LogAndReset()
 	{
 		LogPso();
@@ -813,5 +920,6 @@ public:
 		LogPreSkinBindingState();
 		LogDispatchDecisionState();
 		LogPreSkinPlanState();
+		LogDrawDecisionState();
 	}
 };

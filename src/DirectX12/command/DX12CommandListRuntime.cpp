@@ -334,6 +334,49 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	return decision;
 }
 
+DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
+	ID3D12PipelineState *pipelineState,
+	bool hasShaderOverrides)
+{
+	DX12CompiledDrawDecision decision;
+	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionBuild();
+	if (!DX12ModCompileDrawDecision(pipelineState, &decision)) {
+		DX12IaHashTargetPlan targetPlan;
+		targetPlan.RequireAll();
+		decision.SetFromTargetPlan(
+			pipelineState, DX12ModGetReloadGenerationFast(),
+			hasShaderOverrides, hasShaderOverrides, false,
+			targetPlan, DX12ModNeedsShaderDescriptorTracking());
+	}
+
+	if (!pipelineState) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoPso();
+	} else if (!decision.hasActiveShaderOverrides) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoShaderOverride();
+	} else if (!decision.hasShaderOverrides && !decision.hasShaderOverrideSkip) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoDrawOverride();
+	}
+
+	switch (decision.kind) {
+	case DX12CompiledDrawDecisionKind::NeedsIaHash:
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsIaHash();
+		break;
+	case DX12CompiledDrawDecisionKind::NeedsDescriptorMatch:
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsDescriptorMatch();
+		break;
+	case DX12CompiledDrawDecisionKind::NeedsReplacement:
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsReplacement();
+		break;
+	case DX12CompiledDrawDecisionKind::SkipOriginal:
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionSkipOriginal();
+		break;
+	default:
+		break;
+	}
+
+	return decision;
+}
+
 const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecision(
 	DX12CommandListRuntimeState *state,
 	bool hasShaderOverrides,
@@ -342,7 +385,7 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 	if (!state)
 		return nullptr;
 
-	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	if (state->dispatchDecision.resolved &&
 	    state->dispatchDecision.pipelineState == state->pipelineState &&
 	    state->dispatchDecision.reloadGeneration == reloadGeneration &&
@@ -357,6 +400,27 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 	return &state->dispatchDecision;
 }
 
+const DX12CompiledDrawDecision *DX12CommandListRuntime::EnsureDrawDecision(
+	DX12CommandListRuntimeState *state,
+	bool hasShaderOverrides)
+{
+	if (!state)
+		return nullptr;
+
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (state->drawDecision.resolved &&
+	    state->drawDecision.pipelineState == state->pipelineState &&
+	    state->drawDecision.reloadGeneration == reloadGeneration &&
+	    state->drawDecision.MatchesGlobals(hasShaderOverrides)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionCacheHit();
+		return &state->drawDecision;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionCacheMiss();
+	DX12CommandListRuntime::CompileDrawDecision(state, hasShaderOverrides);
+	return &state->drawDecision;
+}
+
 void DX12CommandListRuntime::CompileDispatchDecision(
 	DX12CommandListRuntimeState *state,
 	bool hasShaderOverrides,
@@ -366,6 +430,16 @@ void DX12CommandListRuntime::CompileDispatchDecision(
 		return;
 	state->dispatchDecision = DX12CommandListRuntime::BuildDispatchDecision(
 		state->pipelineState, hasShaderOverrides, needsPreSkinProbe);
+}
+
+void DX12CommandListRuntime::CompileDrawDecision(
+	DX12CommandListRuntimeState *state,
+	bool hasShaderOverrides)
+{
+	if (!state)
+		return;
+	state->drawDecision = DX12CommandListRuntime::BuildDrawDecision(
+		state->pipelineState, hasShaderOverrides);
 }
 
 void DX12CommandListRuntime::RememberPipelineState(
@@ -378,7 +452,9 @@ void DX12CommandListRuntime::RememberPipelineState(
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePso(changed);
 	if (!changed && state->cachedCsHashResolved &&
 	    state->dispatchDecision.resolved &&
-	    state->dispatchDecision.pipelineState == pipelineState)
+	    state->dispatchDecision.pipelineState == pipelineState &&
+	    state->drawDecision.resolved &&
+	    state->drawDecision.pipelineState == pipelineState)
 		return;
 
 	if (changed) {
@@ -388,6 +464,7 @@ void DX12CommandListRuntime::RememberPipelineState(
 		state->cachedCsHashResolved = false;
 		state->cachedCsHash = 0;
 		state->dispatchDecision.Reset();
+		state->drawDecision.Reset();
 	}
 	state->pipelineState = pipelineState;
 	if (!state->cachedCsHashResolved && pipelineState) {
@@ -402,8 +479,10 @@ void DX12CommandListRuntime::RememberPipelineState(
 		state->cachedCsHashValid = false;
 		state->cachedCsHashResolved = true;
 	}
+	const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
 	DX12CommandListRuntime::CompileDispatchDecision(
-		state, DX12ModHasActiveShaderOverrides(), DX12ModNeedsPreSkinningUavProbe());
+		state, activeShaderOverrides, DX12ModNeedsPreSkinningUavProbe());
+	DX12CommandListRuntime::CompileDrawDecision(state, activeShaderOverrides);
 }
 
 void DX12CommandListRuntime::RememberPipelineState(

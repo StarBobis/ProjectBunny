@@ -455,8 +455,8 @@ static bool TryFindCachedShaderOverridesForPsoLocked(
 	return false;
 }
 
-// 公开 API：检查 PSO 是否有匹配的 shader override 配置（draw 路径）。
-// 在 hash 计算前调用，避免对无配置 PSO 做无效 IA hash。
+// Public draw-path PSO plan lookup used before IA hash work.
+// This avoids building IA hashes for PSOs with no matching shader overrides.
 static bool TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
 	ID3D12PipelineState *pipelineState,
 	DX12IaHashTargetPlan *targetPlan)
@@ -558,6 +558,65 @@ bool DX12ModCollectShaderOverrideIaHashTargets(
 			pipelineState, targetPlan);
 	ReleaseSRWLockExclusive(&gModLock);
 	return builtPlan;
+}
+
+bool DX12ModCompileDrawDecision(
+	ID3D12PipelineState *pipelineState,
+	DX12CompiledDrawDecision *decision)
+{
+	if (!decision)
+		return false;
+
+	const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
+	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	if (!pipelineState || !activeShaderOverrides) {
+		decision->SetNoopNeverMatches(
+			pipelineState, reloadGeneration, activeShaderOverrides);
+		return true;
+	}
+
+	std::vector<const Bunny::ShaderOverrideConfig*> configs;
+	DX12IaHashTargetPlan targetPlan;
+	targetPlan.RequireAll();
+	bool cached = false;
+	bool targetPlanResolved = false;
+
+	AcquireSRWLockShared(&gModLock);
+	cached = TryFindCachedShaderOverridesForPsoLocked(
+		pipelineState, false, &configs);
+	if (cached) {
+		targetPlanResolved =
+			TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
+				pipelineState, &targetPlan);
+	}
+	ReleaseSRWLockShared(&gModLock);
+
+	if (!cached) {
+		AcquireSRWLockExclusive(&gModLock);
+		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
+		cached = TryFindCachedShaderOverridesForPsoLocked(
+			pipelineState, false, &configs);
+		if (cached) {
+			targetPlanResolved =
+				TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
+					pipelineState, &targetPlan);
+		}
+		ReleaseSRWLockExclusive(&gModLock);
+	}
+
+	const bool shaderOverrides = cached ? !configs.empty() : true;
+	if (!targetPlanResolved)
+		targetPlan.RequireAll();
+
+	const bool shaderOverrideSkip =
+		DX12ModShouldSkipPipelineState(pipelineState, false);
+	const bool descriptorTrackingNeeded =
+		DX12ModNeedsShaderDescriptorTracking();
+	decision->SetFromTargetPlan(
+		pipelineState, reloadGeneration, activeShaderOverrides,
+		shaderOverrides, shaderOverrideSkip, targetPlan,
+		descriptorTrackingNeeded);
+	return true;
 }
 
 bool DX12ModPrepareShaderOverrideReplacement(
@@ -767,6 +826,12 @@ UINT64 DX12ModGetReloadGeneration()
 	UINT64 generation = gReloadGeneration;
 	ReleaseSRWLockShared(&gModLock);
 	return generation;
+}
+
+UINT64 DX12ModGetReloadGenerationFast()
+{
+	return static_cast<UINT64>(InterlockedCompareExchange64(
+		reinterpret_cast<volatile LONG64*>(&gReloadGeneration), 0, 0));
 }
 
 void DX12ModRecordGraphicsPipelineState(

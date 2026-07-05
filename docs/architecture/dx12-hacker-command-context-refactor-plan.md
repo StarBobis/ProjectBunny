@@ -828,3 +828,71 @@ cs_not_configured: should approach zero for non-candidate CS dispatches.
 PreSkinProbeCalls: should remain only for compiled candidate CS dispatches.
 Measured hot path: expected 10 ms to 16 ms reduction on the previous 106 ms frame.
 ```
+
+### 2026-07-05 Phase 4 Slice: Compiled Draw Decision
+
+Detailed plan:
+
+```text
+docs/architecture/dx12-compiled-draw-decision-phase4.md
+```
+
+Implemented files:
+
+```text
+src/DirectX12/command/DX12CompiledDrawDecision.hpp
+src/DirectX12/command/DX12CommandListRuntimeState.hpp
+src/DirectX12/command/DX12CommandListRuntime.hpp
+src/DirectX12/command/DX12CommandListRuntime.cpp
+src/DirectX12/mod/DX12ModRuntime.hpp
+src/DirectX12/mod/DX12ShaderOverrideRuntime.hpp
+src/DirectX12/ia/DX12IaReplacementExecutor.hpp
+src/DirectX12/utils/DX12ResidentMaintenanceTelemetryUtils.hpp
+```
+
+Design:
+
+```text
+SetPipelineState / Reset
+  -> compile DX12CompiledDrawDecision from PSO + mod reload generation
+
+Draw
+  -> EnsureDrawDecision
+  -> fast reject NoopNeverMatches
+  -> reuse compiled IA/descriptor target plan
+  -> keep DX12ModPrepareShaderOverrideReplacement as execution authority
+```
+
+Preserved invariants:
+
+```text
+IA hash algorithm unchanged.
+IA hash inputs unchanged.
+Shader hash algorithm unchanged.
+TextureOverride hash matching unchanged.
+ShaderOverride replacement semantics unchanged.
+```
+
+New per-frame log category:
+
+```text
+DX12ResidentMaintenance category=draw_decision
+```
+
+Expected effect:
+
+```text
+DrawOverride: expected 35% to 60% reduction.
+ModPrepareOverride: expected 15% to 35% reduction.
+BuildIaHash avoid rate on no-op PSOs: expected 40% to 70%.
+Total hot path: expected 14% to 25% reduction from the 42.983 ms Phase 3 frame.
+Expected FPS: 3.55 -> 4.0 to 4.7 FPS on the same scene.
+```
+
+Verification:
+
+```text
+.\build_debug_x64.ps1
+Result: All projects built successfully.
+DX12 DLL copied to D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12.dll.
+```
