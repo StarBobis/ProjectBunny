@@ -353,10 +353,9 @@ public:
 			return;
 		}
 
-		// Per-CS-hash probe cache keyed by binding serial instead of per-present-frame.
-		// Survives across frames when neither the mod config nor bindings changed,
-		// eliminating the per-frame cold start that forced a full binding collection
-		// on every frame's first dispatch of each PreSkin-configured CS.
+		// Per-CS-hash probe cache keyed by bindingQuerySerial (stable — only
+		// bumps when bindings actually change, not on every dispatch like
+		// computeBindingSerial). Survives across frames and repeated dispatches.
 		static thread_local std::unordered_map<uint64_t, UINT64> s_csProbeBindingSerials;
 		static thread_local UINT64 s_csProbeReloadGen = 0;
 		UINT64 reloadGen = DX12ModGetReloadGeneration();
@@ -364,13 +363,15 @@ public:
 			s_csProbeBindingSerials.clear();
 			s_csProbeReloadGen = reloadGen;
 		}
-		UINT64 bindingQuerySerial = runtimeState.computeBindingSerial;
-		if (bindingQuerySerial == 0)
-			bindingQuerySerial = 1;
+		// Use stable bindingQuerySerial from CommandListBindingState — only
+		// bumped when bindings actually change, NOT every dispatch.
+		UINT64 stableBindingSerial = DX12BindingTracker::GetBindingQuerySerial(commandList);
+		if (stableBindingSerial == 0)
+			stableBindingSerial = 1;
 		{
 			std::unordered_map<uint64_t, UINT64>::const_iterator csIt =
 				s_csProbeBindingSerials.find(probe->computeShaderHash);
-			if (csIt != s_csProbeBindingSerials.end() && csIt->second == bindingQuerySerial) {
+			if (csIt != s_csProbeBindingSerials.end() && csIt->second == stableBindingSerial) {
 				QueryPerformanceCounter(&t1);
 				QueryPerformanceFrequency(&freq);
 				DX12LogManager::JsonFunc("DX12Perf",
@@ -394,6 +395,7 @@ public:
 			probe->computeBindingSerial = bindingHash;
 			probe->applied = cacheEntry.applied;
 			probe->dispatchOverride = cacheEntry.dispatchOverride;
+			s_csProbeBindingSerials[probe->computeShaderHash] = stableBindingSerial;
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d bindingHash=%llu\n",
 				probe->applied ? 1 : 0, static_cast<unsigned long long>(bindingHash));
@@ -458,7 +460,7 @@ public:
 		// re-probing the same CS would produce the same result. This is
 		// critical for scenes where PreSkin never matches (applied=false):
 		// without this, every dispatch pays the full collection cost.
-		s_csProbeBindingSerials[probe->computeShaderHash] = bindingQuerySerial;
+		s_csProbeBindingSerials[probe->computeShaderHash] = stableBindingSerial;
 
 		QueryPerformanceCounter(&t1);
 		QueryPerformanceFrequency(&freq);

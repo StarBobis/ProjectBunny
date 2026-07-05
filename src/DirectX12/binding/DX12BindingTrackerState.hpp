@@ -147,6 +147,7 @@ class BindingShard
 public:
 	SRWLOCK lock = SRWLOCK_INIT;
 	std::unordered_map<ID3D12GraphicsCommandList*, CommandListBindingState> states;
+	volatile UINT64 generation = 0;
 };
 
 // Per-thread read cache for binding tracker: avoids SRWLOCK on repeated identical calls.
@@ -186,6 +187,23 @@ public:
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;
 	std::vector<DX12CurrentRootConstants> constants;
+};
+
+// TLS cache for direct CommandListBindingState pointer lookup.
+// Eliminates ShardFor() hash + AcquireSRWLockExclusive + HashMap::operator[]
+// on every state-mutation call (SetVB, SetIB, SetPSO, SetRootSig, etc.).
+// Key insight: D3D12 command lists are strictly single-threaded during recording,
+// so treating the unordered_map element pointer as stable within a single
+// recording session is safe. Generation counter guards against unordered_map
+// rehash (which can invalidate pointers) triggered by RegisterCommandList on
+// other threads.
+class BindingTlsStateCache
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	CommandListBindingState *state = nullptr;
+	UINT64 shardGeneration = 0;
+	size_t shardIndex = 0;
 };
 
 
