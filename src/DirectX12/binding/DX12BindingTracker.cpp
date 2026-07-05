@@ -425,6 +425,313 @@ public:
 	}
 };
 
+class DX12PreSkinBindingRootTableCacheKey
+{
+public:
+	UINT rootParameterIndex = 0;
+	UINT64 baseDescriptorPtr = 0;
+	bool resolvedHeap = false;
+	ID3D12DescriptorHeap *heap = nullptr;
+	SIZE_T heapCpuStart = 0;
+	UINT64 heapGpuStart = 0;
+	UINT heapIncrement = 0;
+	UINT heapNumDescriptors = 0;
+	UINT64 heapVersion = 0;
+};
+
+class DX12PreSkinBindingRootDescriptorCacheKey
+{
+public:
+	UINT rootParameterIndex = 0;
+	UINT type = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+};
+
+class DX12PreSkinBindingRootConstantsCacheKey
+{
+public:
+	UINT rootParameterIndex = 0;
+	UINT maxSet = 0;
+	UINT values[64] = {};
+	bool valueValid[64] = {};
+};
+
+class DX12PreSkinBindingCacheKey
+{
+public:
+	UINT64 fingerprint = 0;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	ID3D12RootSignature *computeRootSignature = nullptr;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	UINT64 cbvSrvUavHeapVersion = 0;
+	UINT64 descriptorQuerySerial = 0;
+	std::vector<DX12PreSkinBindingRootTableCacheKey> rootTables;
+	std::vector<DX12PreSkinBindingRootDescriptorCacheKey> rootDescriptors;
+	std::vector<DX12PreSkinBindingRootConstantsCacheKey> rootConstants;
+};
+
+class DX12PreSkinBindingCacheEntry
+{
+public:
+	bool valid = false;
+	UINT64 age = 0;
+	bool foundAny = false;
+	DX12PreSkinBindingCacheKey key;
+	std::vector<DX12CurrentComputeUavBinding> uavs;
+	std::vector<DX12CurrentComputeUavBinding> srvs;
+	std::vector<DX12CurrentComputeUavBinding> cbvs;
+	std::vector<DX12CurrentRootConstants> constants;
+};
+
+class DX12PreSkinBindingTlsCache
+{
+public:
+	UINT64 clock = 0;
+	std::vector<DX12PreSkinBindingCacheEntry> entries;
+};
+
+class DX12PreSkinBindingCacheUtils
+{
+public:
+	static constexpr size_t CacheCapacity = 64;
+
+	static void MixValue(DX12PreSkinBindingCacheKey *key, UINT64 value)
+	{
+		if (!key)
+			return;
+		key->fingerprint ^= value + 0x9e3779b97f4a7c15ull +
+			(key->fingerprint << 6) + (key->fingerprint >> 2);
+	}
+
+	static void MixPointer(DX12PreSkinBindingCacheKey *key, const void *value)
+	{
+		DX12PreSkinBindingCacheUtils::MixValue(
+			key,
+			static_cast<UINT64>(reinterpret_cast<uintptr_t>(value)));
+	}
+
+	static void BuildKey(
+		const CommandListBindingState &snapshot,
+		ID3D12GraphicsCommandList *commandList,
+		UINT64 descriptorQuerySerial,
+		DX12PreSkinBindingCacheKey *key)
+	{
+		if (!key)
+			return;
+
+		*key = DX12PreSkinBindingCacheKey();
+		key->fingerprint = 14695981039346656037ull;
+		key->commandList = commandList;
+		key->computeRootSignature = snapshot.computeRootSignature;
+		key->cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+		key->cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+		key->descriptorQuerySerial = descriptorQuerySerial;
+		key->rootTables.reserve(snapshot.computeTableValidCount);
+		key->rootDescriptors.reserve(MaxRootParameters);
+		key->rootConstants.reserve(MaxRootParameters);
+
+		DX12PreSkinBindingCacheUtils::MixPointer(key, key->commandList);
+		DX12PreSkinBindingCacheUtils::MixPointer(key, key->computeRootSignature);
+		DX12PreSkinBindingCacheUtils::MixPointer(key, key->cbvSrvUavHeap);
+		DX12PreSkinBindingCacheUtils::MixValue(key, key->cbvSrvUavHeapVersion);
+		DX12PreSkinBindingCacheUtils::MixValue(key, key->descriptorQuerySerial);
+
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			const RootTableState &table = snapshot.computeTables[root];
+			if (table.valid) {
+				DX12PreSkinBindingRootTableCacheKey tableKey;
+				tableKey.rootParameterIndex = root;
+				tableKey.baseDescriptorPtr = table.baseDescriptor.ptr;
+				DX12DescriptorHeapSummary heap = {};
+				if (DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+						snapshot, table, &heap)) {
+					tableKey.resolvedHeap = true;
+					tableKey.heap = heap.heap;
+					tableKey.heapCpuStart = heap.cpuStart;
+					tableKey.heapGpuStart = heap.gpuStart;
+					tableKey.heapIncrement = heap.increment;
+					tableKey.heapNumDescriptors = heap.numDescriptors;
+					tableKey.heapVersion = heap.version;
+				}
+				key->rootTables.push_back(tableKey);
+				DX12PreSkinBindingCacheUtils::MixValue(key, root);
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.baseDescriptorPtr);
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.resolvedHeap ? 1 : 0);
+				DX12PreSkinBindingCacheUtils::MixPointer(key, tableKey.heap);
+				DX12PreSkinBindingCacheUtils::MixValue(key, static_cast<UINT64>(tableKey.heapCpuStart));
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapGpuStart);
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapIncrement);
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapNumDescriptors);
+				DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapVersion);
+			}
+
+			const RootDescriptorState &rootDescriptor = snapshot.computeRootDescriptors[root];
+			if (rootDescriptor.valid) {
+				DX12PreSkinBindingRootDescriptorCacheKey descriptorKey;
+				descriptorKey.rootParameterIndex = root;
+				descriptorKey.type = static_cast<UINT>(rootDescriptor.type);
+				descriptorKey.address = rootDescriptor.address;
+				key->rootDescriptors.push_back(descriptorKey);
+				DX12PreSkinBindingCacheUtils::MixValue(key, root);
+				DX12PreSkinBindingCacheUtils::MixValue(key, descriptorKey.type);
+				DX12PreSkinBindingCacheUtils::MixValue(key, descriptorKey.address);
+			}
+
+			const RootConstantsState &rootConstants = snapshot.computeRootConstants[root];
+			if (rootConstants.valid) {
+				DX12PreSkinBindingRootConstantsCacheKey constantsKey;
+				constantsKey.rootParameterIndex = root;
+				constantsKey.maxSet = rootConstants.maxSet;
+				memcpy(constantsKey.values, rootConstants.values, sizeof(constantsKey.values));
+				memcpy(constantsKey.valueValid, rootConstants.valueValid, sizeof(constantsKey.valueValid));
+				key->rootConstants.push_back(constantsKey);
+				DX12PreSkinBindingCacheUtils::MixValue(key, root);
+				DX12PreSkinBindingCacheUtils::MixValue(key, constantsKey.maxSet);
+				for (UINT index = 0; index < 64; ++index) {
+					DX12PreSkinBindingCacheUtils::MixValue(key, constantsKey.values[index]);
+					DX12PreSkinBindingCacheUtils::MixValue(
+						key, constantsKey.valueValid[index] ? 1 : 0);
+				}
+			}
+		}
+	}
+
+	static bool RootTablesEqual(
+		const DX12PreSkinBindingRootTableCacheKey &left,
+		const DX12PreSkinBindingRootTableCacheKey &right)
+	{
+		return left.rootParameterIndex == right.rootParameterIndex &&
+			left.baseDescriptorPtr == right.baseDescriptorPtr &&
+			left.resolvedHeap == right.resolvedHeap &&
+			left.heap == right.heap &&
+			left.heapCpuStart == right.heapCpuStart &&
+			left.heapGpuStart == right.heapGpuStart &&
+			left.heapIncrement == right.heapIncrement &&
+			left.heapNumDescriptors == right.heapNumDescriptors &&
+			left.heapVersion == right.heapVersion;
+	}
+
+	static bool RootDescriptorsEqual(
+		const DX12PreSkinBindingRootDescriptorCacheKey &left,
+		const DX12PreSkinBindingRootDescriptorCacheKey &right)
+	{
+		return left.rootParameterIndex == right.rootParameterIndex &&
+			left.type == right.type &&
+			left.address == right.address;
+	}
+
+	static bool RootConstantsEqual(
+		const DX12PreSkinBindingRootConstantsCacheKey &left,
+		const DX12PreSkinBindingRootConstantsCacheKey &right)
+	{
+		if (left.rootParameterIndex != right.rootParameterIndex ||
+			left.maxSet != right.maxSet)
+			return false;
+		return memcmp(left.values, right.values, sizeof(left.values)) == 0 &&
+			memcmp(left.valueValid, right.valueValid, sizeof(left.valueValid)) == 0;
+	}
+
+	static bool KeysEqual(
+		const DX12PreSkinBindingCacheKey &left,
+		const DX12PreSkinBindingCacheKey &right)
+	{
+		if (left.fingerprint != right.fingerprint ||
+			left.commandList != right.commandList ||
+			left.computeRootSignature != right.computeRootSignature ||
+			left.cbvSrvUavHeap != right.cbvSrvUavHeap ||
+			left.cbvSrvUavHeapVersion != right.cbvSrvUavHeapVersion ||
+			left.descriptorQuerySerial != right.descriptorQuerySerial ||
+			left.rootTables.size() != right.rootTables.size() ||
+			left.rootDescriptors.size() != right.rootDescriptors.size() ||
+			left.rootConstants.size() != right.rootConstants.size())
+			return false;
+
+		for (size_t index = 0; index < left.rootTables.size(); ++index) {
+			if (!DX12PreSkinBindingCacheUtils::RootTablesEqual(
+					left.rootTables[index], right.rootTables[index]))
+				return false;
+		}
+		for (size_t index = 0; index < left.rootDescriptors.size(); ++index) {
+			if (!DX12PreSkinBindingCacheUtils::RootDescriptorsEqual(
+					left.rootDescriptors[index], right.rootDescriptors[index]))
+				return false;
+		}
+		for (size_t index = 0; index < left.rootConstants.size(); ++index) {
+			if (!DX12PreSkinBindingCacheUtils::RootConstantsEqual(
+					left.rootConstants[index], right.rootConstants[index]))
+				return false;
+		}
+
+		return true;
+	}
+
+	static bool TryLoad(
+		DX12PreSkinBindingTlsCache *cache,
+		const DX12PreSkinBindingCacheKey &key,
+		std::vector<DX12CurrentComputeUavBinding> *uavs,
+		std::vector<DX12CurrentComputeUavBinding> *srvs,
+		std::vector<DX12CurrentComputeUavBinding> *cbvs,
+		std::vector<DX12CurrentRootConstants> *constants,
+		bool *foundAny)
+	{
+		if (!cache)
+			return false;
+		for (size_t index = 0; index < cache->entries.size(); ++index) {
+			DX12PreSkinBindingCacheEntry &entry = cache->entries[index];
+			if (!entry.valid ||
+				!DX12PreSkinBindingCacheUtils::KeysEqual(entry.key, key))
+				continue;
+			entry.age = ++cache->clock;
+			if (uavs) *uavs = entry.uavs;
+			if (srvs) *srvs = entry.srvs;
+			if (cbvs) *cbvs = entry.cbvs;
+			if (constants) *constants = entry.constants;
+			if (foundAny) *foundAny = entry.foundAny;
+			return true;
+		}
+		return false;
+	}
+
+	static void Store(
+		DX12PreSkinBindingTlsCache *cache,
+		const DX12PreSkinBindingCacheKey &key,
+		const std::vector<DX12CurrentComputeUavBinding> &uavs,
+		const std::vector<DX12CurrentComputeUavBinding> &srvs,
+		const std::vector<DX12CurrentComputeUavBinding> &cbvs,
+		const std::vector<DX12CurrentRootConstants> &constants,
+		bool foundAny)
+	{
+		if (!cache)
+			return;
+
+		DX12PreSkinBindingCacheEntry *target = nullptr;
+		if (cache->entries.size() < DX12PreSkinBindingCacheUtils::CacheCapacity) {
+			DX12PreSkinBindingCacheEntry entry;
+			cache->entries.push_back(entry);
+			target = &cache->entries[cache->entries.size() - 1];
+		} else {
+			size_t targetIndex = 0;
+			UINT64 oldestAge = cache->entries[0].age;
+			for (size_t index = 1; index < cache->entries.size(); ++index) {
+				if (cache->entries[index].age < oldestAge) {
+					oldestAge = cache->entries[index].age;
+					targetIndex = index;
+				}
+			}
+			target = &cache->entries[targetIndex];
+		}
+
+		target->valid = true;
+		target->age = ++cache->clock;
+		target->foundAny = foundAny;
+		target->key = key;
+		target->uavs = uavs;
+		target->srvs = srvs;
+		target->cbvs = cbvs;
+		target->constants = constants;
+	}
+};
+
 // ============================================================================
 // CollectPreSkinBindings — lightweight replacement for GetCurrentComputeAll
 // in the PreSkin hot path. Uses a cached root signature summary (parsed once
@@ -450,32 +757,92 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	if (constants) constants->clear();
 
 	CommandListBindingState snapshot;
-	UINT64 bindingQuerySerial = 0;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial)) {
+	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
 		DX12_HOTPATH_TIME_END(BindSnapshot);
 		return false;
 	}
 	DX12_HOTPATH_TIME_END(BindSnapshot);
 
-	// Thread-local cache keyed by (commandList, bindingQuerySerial).
-	static thread_local struct PreSkinBindingsTlsCache {
-		ID3D12GraphicsCommandList *commandList = nullptr;
-		UINT64 bindingQuerySerial = 0;
-		std::vector<DX12CurrentComputeUavBinding> uavs;
-		std::vector<DX12CurrentComputeUavBinding> srvs;
-		std::vector<DX12CurrentComputeUavBinding> cbvs;
-		std::vector<DX12CurrentRootConstants> constants;
-	} cache;
+	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheCall();
 
-	if (cache.commandList == commandList && cache.bindingQuerySerial == bindingQuerySerial) {
-		if (uavs) *uavs = cache.uavs;
-		if (srvs) *srvs = cache.srvs;
-		if (cbvs) *cbvs = cache.cbvs;
-		if (constants) *constants = cache.constants;
-		return (uavs && !uavs->empty()) || (srvs && !srvs->empty()) ||
-			(cbvs && !cbvs->empty()) || (constants && !constants->empty());
+	// Cache root signature summary per ID3D12RootSignature* pointer.
+	// Parse the blob once, reuse across all dispatches with the same signature.
+	static std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary> s_rootSigCache;
+	static SRWLOCK s_rootSigCacheLock = SRWLOCK_INIT;
+	static UINT64 s_rootSigCacheReloadGen = 0;
+	UINT64 reloadGen = DX12ModGetReloadGeneration();
+	AcquireSRWLockExclusive(&s_rootSigCacheLock);
+	if (s_rootSigCacheReloadGen != reloadGen) {
+		s_rootSigCache.clear();
+		s_rootSigCacheReloadGen = reloadGen;
 	}
+	ReleaseSRWLockExclusive(&s_rootSigCacheLock);
+
+	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
+	DX12RootSignatureSummary rootSignatureSummary;
+	const DX12RootSignatureSummary *cachedSummary = nullptr;
+	bool canUseResultCache = true;
+	if (computeRootSig) {
+		AcquireSRWLockShared(&s_rootSigCacheLock);
+		std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::const_iterator sigIt =
+			s_rootSigCache.find(computeRootSig);
+		if (sigIt != s_rootSigCache.end()) {
+			rootSignatureSummary = sigIt->second;
+			cachedSummary = &rootSignatureSummary;
+		}
+		ReleaseSRWLockShared(&s_rootSigCacheLock);
+
+		if (!cachedSummary) {
+			DX12RootSignatureSummary parsed;
+			if (DX12GetRootSignatureSummary(computeRootSig, &parsed)) {
+				AcquireSRWLockExclusive(&s_rootSigCacheLock);
+				if (s_rootSigCacheReloadGen != reloadGen) {
+					s_rootSigCache.clear();
+					s_rootSigCacheReloadGen = reloadGen;
+				}
+				std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::iterator storeIt =
+					s_rootSigCache.find(computeRootSig);
+				if (storeIt == s_rootSigCache.end()) {
+					s_rootSigCache[computeRootSig] = parsed;
+					rootSignatureSummary = parsed;
+				} else {
+					rootSignatureSummary = storeIt->second;
+				}
+				ReleaseSRWLockExclusive(&s_rootSigCacheLock);
+				cachedSummary = &rootSignatureSummary;
+			} else {
+				canUseResultCache = false;
+			}
+		}
+	}
+
+	static thread_local DX12PreSkinBindingTlsCache preSkinBindingCache;
+	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
+	DX12PreSkinBindingCacheKey cacheKey;
+	if (canUseResultCache) {
+		DX12PreSkinBindingCacheUtils::BuildKey(
+			snapshot,
+			commandList,
+			descriptorQuerySerialBefore,
+			&cacheKey);
+		bool cachedFoundAny = false;
+		if (DX12PreSkinBindingCacheUtils::TryLoad(
+				&preSkinBindingCache,
+				cacheKey,
+				uavs,
+				srvs,
+				cbvs,
+				constants,
+				&cachedFoundAny)) {
+			const UINT64 descriptorQuerySerialAfterHit = CurrentDescriptorQuerySerial();
+			if (descriptorQuerySerialAfterHit == descriptorQuerySerialBefore) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+				return cachedFoundAny;
+			}
+		}
+	}
+	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
 
 	std::vector<DX12CurrentComputeUavBinding> localUavs;
 	std::vector<DX12CurrentComputeUavBinding> localSrvs;
@@ -493,38 +860,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootConstantsState &rc = snapshot.computeRootConstants[root];
 		if (!rc.valid)
 			continue;
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingConstant();
 		DX12CurrentRootConstants current;
 		current.rootParameterIndex = root;
 		current.maxSet = rc.maxSet;
 		memcpy(current.values, rc.values, sizeof(current.values));
 		memcpy(current.valueValid, rc.valueValid, sizeof(current.valueValid));
 		localConstants.push_back(current);
-	}
-
-	// Cache root signature summary per ID3D12RootSignature* pointer.
-	// Parse the blob once, reuse across all dispatches with the same signature.
-	static std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary> s_rootSigCache;
-	static UINT64 s_rootSigCacheReloadGen = 0;
-	UINT64 reloadGen = DX12ModGetReloadGeneration();
-	if (s_rootSigCacheReloadGen != reloadGen) {
-		s_rootSigCache.clear();
-		s_rootSigCacheReloadGen = reloadGen;
-	}
-
-	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
-	const DX12RootSignatureSummary *cachedSummary = nullptr;
-	if (computeRootSig) {
-		std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::iterator sigIt =
-			s_rootSigCache.find(computeRootSig);
-		if (sigIt != s_rootSigCache.end()) {
-			cachedSummary = &sigIt->second;
-		} else {
-			DX12RootSignatureSummary parsed;
-			if (DX12GetRootSignatureSummary(computeRootSig, &parsed)) {
-				s_rootSigCache[computeRootSig] = parsed;
-				cachedSummary = &s_rootSigCache[computeRootSig];
-			}
-		}
 	}
 
 	// Collect descriptor table bindings.
@@ -534,6 +876,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootTableState &table = snapshot.computeTables[root];
 		if (!table.valid)
 			continue;
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootTable();
 
 		DX12DescriptorHeapSummary heap = {};
 		if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(snapshot, table, &heap))
@@ -549,6 +892,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
 			// Root signature available: iterate declared ranges with correct metadata
 			for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRange();
 				if (localUavs.size() >= kMaxUavs && localSrvs.size() >= kMaxSrvs && range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
 					continue;
 
@@ -574,11 +918,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 					DX12DescriptorSummary desc = {};
 					if (needFullResource) {
+						DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
 						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
 							continue;
 						if (desc.kind != kind)
 							continue;
 					} else {
+						DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
 						if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &desc))
 							continue;
 						if (desc.kind != kind)
@@ -617,6 +963,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12DescriptorSummary desc = {};
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
 				if (!DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &desc))
 					continue;
 
@@ -631,6 +978,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 				if (desc.kind == "UAV" && localUavs.size() < kMaxUavs) {
 					DX12DescriptorSummary fullDesc = {};
+					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
 					if (DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &fullDesc))
 						desc = fullDesc;
 					binding.descriptor = desc;
@@ -642,6 +990,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 					localSrvs.push_back(std::move(binding));
 				} else if (desc.kind == "CBV") {
 					DX12DescriptorSummary fullDesc = {};
+					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
 					if (DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &fullDesc))
 						desc = fullDesc;
 					binding.descriptor = desc;
@@ -657,6 +1006,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootDescriptorState &rd = snapshot.computeRootDescriptors[root];
 		if (!rd.valid)
 			continue;
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootDescriptor();
 
 		const DX12RootParameterSummary *parameter =
 			cachedSummary ? DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) : nullptr;
@@ -681,20 +1031,28 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	DX12_HOTPATH_TIME_END(BindCollect);
 
-	cache.commandList = commandList;
-	cache.bindingQuerySerial = bindingQuerySerial;
-	cache.uavs = localUavs;
-	cache.srvs = localSrvs;
-	cache.cbvs = localCbvs;
-	cache.constants = localConstants;
+	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
+		!localCbvs.empty() || !localConstants.empty();
 
-	if (uavs) *uavs = cache.uavs;
-	if (srvs) *srvs = cache.srvs;
-	if (cbvs) *cbvs = cache.cbvs;
-	if (constants) *constants = cache.constants;
+	if (canUseResultCache &&
+		CurrentDescriptorQuerySerial() == descriptorQuerySerialBefore) {
+		DX12PreSkinBindingCacheUtils::Store(
+			&preSkinBindingCache,
+			cacheKey,
+			localUavs,
+			localSrvs,
+			localCbvs,
+			localConstants,
+			foundAny);
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
+	}
 
-	return (uavs && !uavs->empty()) || (srvs && !srvs->empty()) ||
-		(cbvs && !cbvs->empty()) || (constants && !constants->empty());
+	if (uavs) *uavs = localUavs;
+	if (srvs) *srvs = localSrvs;
+	if (cbvs) *cbvs = localCbvs;
+	if (constants) *constants = localConstants;
+
+	return foundAny;
 }
 
 void DX12BindingTracker::DrainPendingEvents(const char *reason)

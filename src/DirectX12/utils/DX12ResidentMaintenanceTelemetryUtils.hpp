@@ -86,6 +86,17 @@ public:
 	inline static volatile LONG BarrierUnwrapCalls = 0;
 	inline static volatile LONG64 BarrierUnwrapItems = 0;
 
+	inline static volatile LONG PreSkinBindingCacheCalls = 0;
+	inline static volatile LONG PreSkinBindingCacheHits = 0;
+	inline static volatile LONG PreSkinBindingCacheMisses = 0;
+	inline static volatile LONG PreSkinBindingCacheStores = 0;
+	inline static volatile LONG64 PreSkinBindingRootTables = 0;
+	inline static volatile LONG64 PreSkinBindingRanges = 0;
+	inline static volatile LONG64 PreSkinBindingLightDescriptorLookups = 0;
+	inline static volatile LONG64 PreSkinBindingFullDescriptorLookups = 0;
+	inline static volatile LONG64 PreSkinBindingConstants = 0;
+	inline static volatile LONG64 PreSkinBindingRootDescriptors = 0;
+
 	static void Inc(volatile LONG *value)
 	{
 		InterlockedIncrement(value);
@@ -365,6 +376,56 @@ public:
 		Add64(&BarrierUnwrapItems, static_cast<LONG64>(count));
 	}
 
+	static void RecordPreSkinBindingCacheCall()
+	{
+		Inc(&PreSkinBindingCacheCalls);
+	}
+
+	static void RecordPreSkinBindingCacheHit()
+	{
+		Inc(&PreSkinBindingCacheHits);
+	}
+
+	static void RecordPreSkinBindingCacheMiss()
+	{
+		Inc(&PreSkinBindingCacheMisses);
+	}
+
+	static void RecordPreSkinBindingCacheStore()
+	{
+		Inc(&PreSkinBindingCacheStores);
+	}
+
+	static void RecordPreSkinBindingRootTable()
+	{
+		Add64(&PreSkinBindingRootTables, 1);
+	}
+
+	static void RecordPreSkinBindingRange()
+	{
+		Add64(&PreSkinBindingRanges, 1);
+	}
+
+	static void RecordPreSkinBindingLightDescriptorLookup()
+	{
+		Add64(&PreSkinBindingLightDescriptorLookups, 1);
+	}
+
+	static void RecordPreSkinBindingFullDescriptorLookup()
+	{
+		Add64(&PreSkinBindingFullDescriptorLookups, 1);
+	}
+
+	static void RecordPreSkinBindingConstant()
+	{
+		Add64(&PreSkinBindingConstants, 1);
+	}
+
+	static void RecordPreSkinBindingRootDescriptor()
+	{
+		Add64(&PreSkinBindingRootDescriptors, 1);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -511,6 +572,33 @@ public:
 			barrierUnwrapCalls, static_cast<long long>(barrierUnwrapItems));
 	}
 
+	static void LogPreSkinBindingState()
+	{
+		LONG preSkinBindingCacheCalls = Take(&PreSkinBindingCacheCalls);
+		LONG preSkinBindingCacheHits = Take(&PreSkinBindingCacheHits);
+		LONG preSkinBindingCacheMisses = Take(&PreSkinBindingCacheMisses);
+		LONG preSkinBindingCacheStores = Take(&PreSkinBindingCacheStores);
+		LONG64 preSkinBindingRootTables = Take64(&PreSkinBindingRootTables);
+		LONG64 preSkinBindingRanges = Take64(&PreSkinBindingRanges);
+		LONG64 preSkinBindingLightDescriptorLookups = Take64(&PreSkinBindingLightDescriptorLookups);
+		LONG64 preSkinBindingFullDescriptorLookups = Take64(&PreSkinBindingFullDescriptorLookups);
+		LONG64 preSkinBindingConstants = Take64(&PreSkinBindingConstants);
+		LONG64 preSkinBindingRootDescriptors = Take64(&PreSkinBindingRootDescriptors);
+		if (!preSkinBindingCacheCalls && !preSkinBindingCacheHits &&
+			!preSkinBindingCacheMisses && !preSkinBindingCacheStores)
+			return;
+		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
+			"\"category\":\"preskin_bind_cache\",\"calls\":%ld,\"hits\":%ld,\"misses\":%ld,\"stores\":%ld,\"rootTables\":%lld,\"ranges\":%lld,\"lightDescriptorLookups\":%lld,\"fullDescriptorLookups\":%lld,\"constants\":%lld,\"rootDescriptors\":%lld",
+			preSkinBindingCacheCalls, preSkinBindingCacheHits,
+			preSkinBindingCacheMisses, preSkinBindingCacheStores,
+			static_cast<long long>(preSkinBindingRootTables),
+			static_cast<long long>(preSkinBindingRanges),
+			static_cast<long long>(preSkinBindingLightDescriptorLookups),
+			static_cast<long long>(preSkinBindingFullDescriptorLookups),
+			static_cast<long long>(preSkinBindingConstants),
+			static_cast<long long>(preSkinBindingRootDescriptors));
+	}
+
 	static void LogAndReset()
 	{
 		LogPso();
@@ -518,5 +606,6 @@ public:
 		LogDescriptorState();
 		LogIaState();
 		LogBarrierState();
+		LogPreSkinBindingState();
 	}
 };
