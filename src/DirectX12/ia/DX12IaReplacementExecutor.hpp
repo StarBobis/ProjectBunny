@@ -32,53 +32,12 @@ public:
 	inline static std::unordered_set<UINT64> s_psoIaNegativeCache;
 	inline static SRWLOCK s_psoIaNegativeCacheLock = SRWLOCK_INIT;
 
-	// Cheap fingerprint cache maps PSO, IA GPUVA, and draw args to a full
-	// negative key so repeated no-match draws can skip content hashing.
-	inline static std::unordered_map<UINT64, UINT64> s_cheapToFullKeyMap;
-	inline static SRWLOCK s_cheapToFullKeyMapLock = SRWLOCK_INIT;
-
 	static UINT64 MixCheapValue(UINT64 key, UINT64 value)
 	{
 		key ^= value + 0x9e3779b97f4a7c15ull + (key << 6) + (key >> 2);
 		key ^= key >> 33;
 		key *= 0xff51afd7ed558ccdull;
 		return key;
-	}
-
-	static UINT64 MakeCheapIaFingerprint(
-		ID3D12PipelineState *pipelineState,
-		const DX12IaHashTargetPlan &targetPlan,
-		const DX12ActiveIaState &ia,
-		bool indexed, UINT vertexCount, UINT indexCount,
-		UINT firstVertex, UINT firstIndex, INT baseVertex, UINT instanceCount)
-	{
-		UINT64 key = reinterpret_cast<UINT64>(pipelineState);
-		key = MixCheapValue(key, targetPlan.Fingerprint());
-		key = MixCheapValue(key, (static_cast<UINT64>(indexed) << 63) |
-			(static_cast<UINT64>(vertexCount) << 32) | static_cast<UINT64>(indexCount));
-		key = MixCheapValue(key,
-			(static_cast<UINT64>(firstVertex) << 32) | static_cast<UINT64>(firstIndex));
-		key = MixCheapValue(key,
-			(static_cast<UINT64>(static_cast<UINT32>(baseVertex)) << 32) |
-			static_cast<UINT64>(instanceCount));
-		if (targetPlan.RequiresIndexBuffer(indexed)) {
-			key = MixCheapValue(key, ia.hasIndexBuffer ? 0x1bull : 0x10ull);
-			if (ia.hasIndexBuffer) {
-				key = MixCheapValue(key, ia.indexBuffer.SizeInBytes);
-				key = MixCheapValue(key, static_cast<UINT64>(ia.indexBuffer.Format));
-			}
-		}
-		for (UINT slot = 0; slot < 32; ++slot) {
-			if (!targetPlan.RequiresVertexBuffer(slot))
-				continue;
-			key = MixCheapValue(key, (static_cast<UINT64>(slot) << 32) |
-				(ia.hasVertexBuffer[slot] ? 0x1ull : 0x0ull));
-			if (!ia.hasVertexBuffer[slot])
-				continue;
-			key = MixCheapValue(key, ia.vertexBuffers[slot].SizeInBytes);
-			key = MixCheapValue(key, ia.vertexBuffers[slot].StrideInBytes);
-		}
-		return key ? key : 1;
 	}
 
 	static UINT64 MakePsoIaNegativeKey(
@@ -91,14 +50,12 @@ public:
 		key = MixCheapValue(key, iaState.hasIndexBuffer ? 1ull : 0ull);
 		if (iaState.hasIndexBuffer) {
 			key = MixCheapValue(key, iaState.indexHash);
-			key = MixCheapValue(key, iaState.indexView.BufferLocation);
 			key = MixCheapValue(key, iaState.indexView.SizeInBytes);
 			key = MixCheapValue(key, static_cast<UINT64>(iaState.indexView.Format));
 		}
 		for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
 			key = MixCheapValue(key, static_cast<UINT64>(buffer.slot));
 			key = MixCheapValue(key, buffer.hash);
-			key = MixCheapValue(key, buffer.vertexView.BufferLocation);
 			key = MixCheapValue(key, buffer.vertexView.SizeInBytes);
 			key = MixCheapValue(key, buffer.vertexView.StrideInBytes);
 		}
@@ -120,26 +77,15 @@ public:
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
 	}
 
-	static void StoreCheapToFullKeyMap(UINT64 cheapKey, UINT64 fullKey)
-	{
-		if (!cheapKey || !fullKey)
-			return;
-
-		AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
-		if (s_cheapToFullKeyMap.size() > 4096)
-			s_cheapToFullKeyMap.clear();
-		s_cheapToFullKeyMap[cheapKey] = fullKey;
-		ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
-	}
 
 	static void ClearPsoIaNegativeCache()
 	{
 		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
 		s_psoIaNegativeCache.clear();
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
-		AcquireSRWLockExclusive(&s_cheapToFullKeyMapLock);
-		s_cheapToFullKeyMap.clear();
-		ReleaseSRWLockExclusive(&s_cheapToFullKeyMapLock);
+
+		
+
 	}
 
 	static bool ExecutePresent(
@@ -240,61 +186,6 @@ public:
 		DX12IaHashTargetPlan targetPlan = drawDecision->targetPlan;
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
-		UINT64 cheapKey = 0;
-
-		if (psoIaNegativeCacheSafe && targetPlanHasIaTargets) {
-			LARGE_INTEGER cheapBuildBegin = DX12OuterTimingProbeUtils::Now();
-			cheapKey = DX12IaReplacementExecutor::MakeCheapIaFingerprint(
-				runtimeState.pipelineState, targetPlan, runtimeState.ia,
-				draw.indexed, draw.vertexCount, draw.indexCount,
-				draw.firstVertex, draw.firstIndex, draw.baseVertex, draw.instanceCount);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"IaReplacement",
-				"cheap_fingerprint",
-				draw.indexed ? 1u : 0u,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(cheapBuildBegin));
-			UINT64 mappedFullKey = 0;
-			bool cheapHit = false;
-			LARGE_INTEGER cheapLookupBegin = DX12OuterTimingProbeUtils::Now();
-			AcquireSRWLockShared(&s_cheapToFullKeyMapLock);
-			std::unordered_map<UINT64, UINT64>::iterator it =
-				s_cheapToFullKeyMap.find(cheapKey);
-			if (it != s_cheapToFullKeyMap.end()) {
-				mappedFullKey = it->second;
-				cheapHit = true;
-			}
-			ReleaseSRWLockShared(&s_cheapToFullKeyMapLock);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"IaReplacement",
-				"cheap_negative_lookup",
-				draw.indexed ? 1u : 0u,
-				cheapHit ? 1 : 0,
-				DX12OuterTimingProbeUtils::ElapsedUs(cheapLookupBegin));
-
-			if (cheapHit) {
-				// Cheap fingerprint hits let repeated no-match draws skip
-				// draw-region IA hashing.
-				LARGE_INTEGER fullLookupBegin = DX12OuterTimingProbeUtils::Now();
-				if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(mappedFullKey)) {
-					DX12OuterTimingProbeUtils::LogCpuStage(
-						"IaReplacement",
-						"cheap_full_negative_hit",
-						draw.indexed ? 1u : 0u,
-						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(fullLookupBegin));
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-					return false;
-				}
-				DX12OuterTimingProbeUtils::LogCpuStage(
-					"IaReplacement",
-					"cheap_full_negative_miss",
-					draw.indexed ? 1u : 0u,
-					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(fullLookupBegin));
-			}
-		}
-
 		bool hasIaHashState = false;
 		if (targetPlanHasIaTargets) {
 			LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
@@ -398,10 +289,6 @@ public:
 						draw.indexed ? 1u : 0u,
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
-					// Cache the cheap fingerprint so later identical no-match draws
-					// can skip BuildIaHashState entirely.
-					if (cheapKey)
-						DX12IaReplacementExecutor::StoreCheapToFullKeyMap(cheapKey, psoIaNegKey);
 					DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
@@ -464,8 +351,7 @@ public:
 				// No match: store both the full negative key and cheap-to-full map.
 				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
 				DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
-				if (cheapKey)
-					DX12IaReplacementExecutor::StoreCheapToFullKeyMap(cheapKey, psoIaNegKey);
+
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"store_pso_ia_negative",
