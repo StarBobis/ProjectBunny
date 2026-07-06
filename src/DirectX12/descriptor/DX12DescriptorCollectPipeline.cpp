@@ -10,6 +10,58 @@ static constexpr size_t kDescriptorWorkerBatchTarget = 64;
 static constexpr size_t kDescriptorPendingWriteBudget = 16384;
 static const std::chrono::milliseconds kDescriptorWorkerCoalesceWindow(1);
 
+thread_local DX12DescriptorTlsBatchUtils::TlsBatch DX12DescriptorTlsBatchUtils::tlsBatch;
+
+void DX12DescriptorTlsBatchUtils::FlushBatch()
+{
+	if (tlsBatch.records.empty())
+		return;
+
+	std::unique_lock<std::mutex> lock(DX12DescriptorCollectPipeline::mapsMutex);
+	for (DescriptorRecord &record : tlsBatch.records) {
+		if (!record.cpuHandle) {
+			ReleaseDescriptorRecordResources(&record);
+			continue;
+		}
+		DX12DescriptorCollectPipeline::RecordDescriptorWriteStats(record);
+		const uint64_t sequence = DX12DescriptorCollectPipeline::nextSequence.fetch_add(1, std::memory_order_relaxed);
+		DX12DescriptorCollectPipeline::pendingDescriptorSequences[record.cpuHandle] = sequence;
+		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+			DX12DescriptorCollectPipeline::pendingDescriptorWrites.find(record.cpuHandle);
+		if (found != DX12DescriptorCollectPipeline::pendingDescriptorWrites.end()) {
+			ReleaseDescriptorRecordResources(&found->second);
+			found->second = std::move(record);
+			DX12DescriptorCollectPipeline::descriptorWriteReplaced++;
+		} else {
+			DX12DescriptorCollectPipeline::pendingDescriptorWrites.emplace(
+				record.cpuHandle, std::move(record));
+		}
+	}
+
+	const uint64_t pending = static_cast<uint64_t>(
+		DX12DescriptorCollectPipeline::pendingDescriptorWrites.size());
+	uint64_t currentMax = DX12DescriptorCollectPipeline::maxPendingDescriptorWrites.load(
+		std::memory_order_relaxed);
+	while (pending > currentMax &&
+		!DX12DescriptorCollectPipeline::maxPendingDescriptorWrites.compare_exchange_weak(
+			currentMax, pending, std::memory_order_relaxed)) {
+	}
+
+	if (DX12DescriptorCollectPipeline::pendingDescriptorWrites.size() >= kDescriptorPendingWriteBudget) {
+		DX12DescriptorCollectBatch batch;
+		if (DX12DescriptorCollectPipeline::TryStealDescriptorBatchLocked(&batch))
+			DX12DescriptorCollectPipeline::QueueDescriptorBatchLocked(&batch);
+	}
+	lock.unlock();
+
+	{
+		std::lock_guard<std::mutex> lk(DX12DescriptorCollectPipeline::wakeMutex);
+		DX12DescriptorCollectPipeline::wakeCv.notify_one();
+	}
+
+	tlsBatch.records.clear();
+}
+
 static uint64_t NextDescriptorSequence()
 {
 	return DX12DescriptorCollectPipeline::nextSequence.fetch_add(1, std::memory_order_relaxed);
@@ -96,6 +148,8 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		count,
 		DX12OuterTimingProbeUtils::ElapsedUs(runtimeBegin));
 	Start();
+
+	DX12DescriptorTlsBatchUtils::FlushBatch();
 
 	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 	std::unique_lock<std::mutex> lock(mapsMutex);
@@ -311,36 +365,8 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *reco
 	if (!RetainDescriptorResourcesForAsync(record))
 		return false;
 
-	std::unique_lock<std::mutex> lock(mapsMutex);
-	RecordDescriptorWriteStats(*record);
-	const uint64_t sequence = NextDescriptorSequence();
-	pendingDescriptorSequences[record->cpuHandle] = sequence;
-	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
-		pendingDescriptorWrites.find(record->cpuHandle);
-	if (found != pendingDescriptorWrites.end()) {
-		ReleaseDescriptorRecordResources(&found->second);
-		found->second = std::move(*record);
-		descriptorWriteReplaced++;
-	} else {
-		pendingDescriptorWrites.emplace(record->cpuHandle, std::move(*record));
-	}
 	descriptorWriteQueued++;
-	const uint64_t pending = static_cast<uint64_t>(pendingDescriptorWrites.size());
-	uint64_t currentMax = maxPendingDescriptorWrites.load(std::memory_order_relaxed);
-	while (pending > currentMax &&
-		!maxPendingDescriptorWrites.compare_exchange_weak(
-			currentMax, pending, std::memory_order_relaxed)) {
-	}
-	if (pendingDescriptorWrites.size() >= kDescriptorPendingWriteBudget) {
-		DX12DescriptorCollectBatch batch;
-		if (TryStealDescriptorBatchLocked(&batch))
-			QueueDescriptorBatchLocked(&batch);
-	}
-	lock.unlock();
-	{
-		std::lock_guard<std::mutex> lk(wakeMutex);
-		wakeCv.notify_one();
-	}
+	DX12DescriptorTlsBatchUtils::AddToBatch(std::move(*record));
 	return true;
 }
 
@@ -722,6 +748,7 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *reason)
 {
 	(void)reason;
+	DX12DescriptorTlsBatchUtils::FlushBatch();
 	Start();
 	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
 	std::unique_lock<std::mutex> lock(mapsMutex);
@@ -776,6 +803,7 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 {
 	if (!cpuHandles || count == 0)
 		return;
+	DX12DescriptorTlsBatchUtils::FlushBatch();
 	Start();
 	LARGE_INTEGER uniqueBegin = DX12OuterTimingProbeUtils::Now();
 	std::vector<SIZE_T> uniqueCpuHandles;

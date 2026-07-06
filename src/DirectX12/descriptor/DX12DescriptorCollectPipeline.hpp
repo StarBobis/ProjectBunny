@@ -15,6 +15,7 @@
 
 #include "DX12ResourceTrackerPrivate.hpp"
 #include "utils/DX12DescriptorTaskRingBufferUtils.hpp"
+#include "utils/DX12DescriptorTlsBatchUtils.hpp"
 
 enum class DX12DescriptorCollectTaskKind
 {
