@@ -1236,7 +1236,7 @@ void DX12ModNotifyCommandListsSubmitted(
 	}
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	DX12LogManager::DebugJsonFunc("DX12PreSkinRetireSubmit",
-		"\"present\":%ld,\"queue\":\"%p\",\"commandLists\":%u,\"resources\":%zu,\"descriptorHeaps\":%zu,\"delay\":%ld",
+		"present=%ld,queue=%p,commandLists=%u,resources=%zu,descriptorHeaps=%zu,delay=%ld",
 		retirePresent, queue, numCommandLists,
 		pending.resources.size(), pending.descriptorHeaps.size(),
 		PreSkinRetiredObjectPresentDelay);
@@ -1309,7 +1309,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 				RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
 			DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
-				"\"status\":\"reuse\",\"required\":%u,\"capacity\":%u,\"offset\":%u,\"present\":%ld",
+				"status=reuse,required=%u,capacity=%u,offset=%u,present=%ld",
 				requiredDescriptors,
 				gPreSkinDescriptorRing.capacity,
 				gPreSkinDescriptorRing.offset,
@@ -1344,7 +1344,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
 #if defined(_DEBUG)
 			DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
-				"\"status\":\"create_raced\",\"required\":%u,\"capacity\":%u,\"elapsedUs\":%lld,\"present\":%ld",
+				"status=create_raced,required=%u,capacity=%u,elapsedUs=%lld,present=%ld",
 				requiredDescriptors,
 				capacityToCreate,
 				static_cast<long long>(createElapsedUs),
@@ -1381,7 +1381,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
-			"\"status\":\"created\",\"capacity\":%u,\"required\":%u,\"elapsedUs\":%lld,\"present\":%ld",
+			"status=created,capacity=%u,required=%u,elapsedUs=%lld,present=%ld",
 			capacityToCreate, requiredDescriptors,
 			static_cast<long long>(createElapsedUs),
 			DX12RuntimeState::GetPresentCount());

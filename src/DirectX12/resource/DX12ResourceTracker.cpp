@@ -70,6 +70,10 @@ UINT64 gResourceExclusiveLockSlowMaxUs = 0;
 UINT64 gDescriptorExclusiveLockSlowCount = 0;
 UINT64 gDescriptorExclusiveLockSlowMaxUs = 0;
 
+// Canonical identity cache: avoids per-call COM QueryInterface overhead.
+static std::unordered_map<ID3D12Resource*, ID3D12Resource*> gCanonicalCache;
+static SRWLOCK gCanonicalCacheLock = SRWLOCK_INIT;
+
 class DX12BufferAddressRangeLogUtils
 {
 public:
@@ -90,7 +94,7 @@ public:
 		if (InterlockedCompareExchange(&LastPresentLogged, present, last) != last)
 			return;
 		DX12LogManager::JsonFunc("DX12BufferAddressRangeAdded",
-			"\"mode\":\"aggregate\",\"present\":%ld,\"threadId\":%lu,\"resource\":\"%p\",\"gpuVa\":\"0x%llX\",\"size\":%llu,\"realEnd\":\"0x%llX\",\"oobEnd\":\"0x%llX\",\"calls\":%lld,\"bytes\":%lld,\"hasPlacedHeap\":%u",
+			"mode=aggregate,present=%ld,threadId=%lu,resource=%p,gpuVa=0x%llX,size=%llu,realEnd=0x%llX,oobEnd=0x%llX,calls=%lld,bytes=%lld,hasPlacedHeap=%u",
 			present,
 			GetCurrentThreadId(),
 			resource,
@@ -277,7 +281,7 @@ static void ClearCpuDescriptorLedgerLocked()
 	for (std::unordered_map<SIZE_T, DescriptorRecord>::value_type &entry : gDescriptorByCpuHandle)
 		ReleaseDescriptorRecordResources(&entry.second);
 	gDescriptorByCpuHandle.clear();
-	// gRuntimeDescriptorByCpuHandle removed â€” heap slots are the single source of truth
+	// gRuntimeDescriptorByCpuHandle removed â€?heap slots are the single source of truth
 }
 
 static DescriptorRecord CloneRuntimeDescriptorRecord(const DescriptorRecord &record)
@@ -329,7 +333,7 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	const SIZE_T cpuStart = record.cpuStart;
 	const UINT increment = record.increment;
 	const UINT numDescriptors = record.desc.NumDescriptors;
-	// gRuntimeDescriptorByCpuHandle removed â€” heap slots self-clean via ClearDescriptorHeapLocked
+	// gRuntimeDescriptorByCpuHandle removed â€?heap slots self-clean via ClearDescriptorHeapLocked
 	ClearDescriptorHeapLocked(&record);
 	record.heap = nullptr;
 	record.desc = D3D12_DESCRIPTOR_HEAP_DESC();
@@ -359,7 +363,7 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		return;
 	if (record.resource != resource && record.resource != canonical) {
 		DX12LogManager::DebugJsonFunc("DX12ResourceInvalidateSkipped",
-			"\"reason\":\"resource_mismatch\",\"resource\":\"%p\",\"canonical\":\"%p\",\"recordResource\":\"%p\",\"index\":%zu",
+			"reason=resource_mismatch,resource=%p,canonical=%p,recordResource=%p,index=%zu",
 			resource,
 			canonical,
 			record.resource,
@@ -378,6 +382,12 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		else
 			++it;
 	}
+	// Invalidate canonical cache entries for this resource
+	AcquireSRWLockExclusive(&gCanonicalCacheLock);
+	gCanonicalCache.erase(resource);
+	if (canonical != resource)
+		gCanonicalCache.erase(canonical);
+	ReleaseSRWLockExclusive(&gCanonicalCacheLock);
 	record = ResourceRecord();
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)
@@ -385,7 +395,7 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
 		&oldRecord, nullptr, "resource_invalidate", resource);
 	DX12LogManager::DebugJsonFunc("DX12ResourceInvalidated",
-		"\"resource\":\"%p\",\"canonical\":\"%p\",\"index\":%zu,\"gpuVa\":\"0x%llx\",\"liveResources\":%zu",
+		"resource=%p,canonical=%p,index=%zu,gpuVa=0x%llx,liveResources=%zu",
 		resource,
 		canonical,
 		index,
@@ -523,10 +533,27 @@ ID3D12Resource *CanonicalResource(ID3D12Resource *resource)
 	if (!resource)
 		return nullptr;
 
+	// Fast path: cache lookup (shared lock)
+	AcquireSRWLockShared(&gCanonicalCacheLock);
+	std::unordered_map<ID3D12Resource*, ID3D12Resource*>::const_iterator it =
+		gCanonicalCache.find(resource);
+	if (it != gCanonicalCache.end()) {
+		ID3D12Resource *canonical = it->second;
+		ReleaseSRWLockShared(&gCanonicalCacheLock);
+		return canonical;
+	}
+	ReleaseSRWLockShared(&gCanonicalCacheLock);
+
+	// Slow path: QI + cache insert (exclusive lock)
 	IUnknown *unknown = nullptr;
 	if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&unknown))) && unknown) {
 		ID3D12Resource *canonical = reinterpret_cast<ID3D12Resource*>(unknown);
 		unknown->Release();
+
+		AcquireSRWLockExclusive(&gCanonicalCacheLock);
+		gCanonicalCache[resource] = canonical;
+		ReleaseSRWLockExclusive(&gCanonicalCacheLock);
+
 		return canonical;
 	}
 	return resource;
@@ -665,7 +692,7 @@ void RecordResource(
 		if (static_cast<UINT64>(elapsedUs) > gResourceExclusiveLockSlowMaxUs)
 			gResourceExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
 		DX12LogManager::DebugJsonFunc("DX12ResourceLockSlow",
-			"\"source\":\"RecordResource\",\"elapsedUs\":%lld,\"resource\":\"%p\",\"present\":%ld,\"threadId\":%lu",
+			"source=RecordResource,elapsedUs=%lld,resource=%p,present=%ld,threadId=%lu",
 			static_cast<long long>(elapsedUs),
 			resource,
 			DX12RuntimeState::GetPresentCount(),
@@ -677,7 +704,7 @@ void CleanupTrackedResources()
 {
 	DX12BindingCollectQueue::Stop();
 	DX12ResourceCollectQueue::Stop();
-	// DX12DescriptorCollectPipeline::Stop() removed â€” pipeline was dead code
+	// DX12DescriptorCollectPipeline::Stop() removed â€?pipeline was dead code
 	AcquireSRWLockExclusive(&gResourceLock);
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps)
@@ -1176,22 +1203,22 @@ void LogResourceTrackerStatsLocked()
 	if (InterlockedCompareExchange(&gLastResourceStatsPresent, present, last) != last)
 		return;
 	DX12LogManager::DebugJsonFunc("DX12ResourceTrackerStats",
-		"\"present\":%ld,\"roots\":%zu,\"rootRecordsSeen\":%llu,"
-		"\"heaps\":%zu,\"heapRecordsSeen\":%llu,"
-		"\"descriptorSlots\":%zu,\"shaderVisibleDescriptorSlots\":%zu,\"descriptorSlotCapacity\":%zu,\"descriptorHistoryEntries\":%zu,"
-		"\"descriptorHeapRanges\":%zu,"
-		"\"descriptorRecordsSeen\":%llu,\"descriptorCopyRecordsSeen\":%llu,"
-		"\"descriptorCopySpanFastPathCalls\":%llu,\"descriptorCopySpanFastPathSlots\":%llu,\"descriptorCopySpanFallbackCalls\":%llu,"
-		"\"bufferResolveCacheEntries\":%zu,\"bufferResolveGeneration\":%llu,"
-		"\"bufferResolveInvalidations\":%llu,\"bufferResolveInvalidationEntries\":%llu,"
-		"\"bufferResolveRangeInvalidations\":%llu,\"bufferResolveRangeInvalidationEntries\":%llu,"
-		"\"bufferResolveIndexNoopUpdates\":%llu,\"bufferResolveStateOnlyUpdates\":%llu,"
-		"\"bufferResolveInvalidationEpoch\":%llu,\"bufferResolveInvalidationHistoryLost\":%llu,"
-		"\"bufferResolveTlsHits\":%llu,\"bufferResolveGlobalHits\":%llu,\"bufferResolveBackwardScanHits\":%llu,\"bufferResolveFallbackScanHits\":%llu,\"bufferResolveMisses\":%llu,\"bufferResolveGenerationResets\":%llu,"
-		"\"resourceExclusiveLockSlowCount\":%llu,\"resourceExclusiveLockSlowMaxUs\":%llu,\"descriptorExclusiveLockSlowCount\":%llu,\"descriptorExclusiveLockSlowMaxUs\":%llu,"
-		"\"resources\":%zu,\"resourceSlots\":%zu,\"freeResourceSlots\":%zu,"
-		"\"resourcesFromCreate\":%llu,\"cpuDescriptorLedger\":%zu,"
-		"\"psoRoots\":%zu,\"psoRootRecordsSeen\":%llu",
+		"present=%ld,roots=%zu,rootRecordsSeen=%llu,"
+		"heaps=%zu,heapRecordsSeen=%llu,"
+		"descriptorSlots=%zu,shaderVisibleDescriptorSlots=%zu,descriptorSlotCapacity=%zu,descriptorHistoryEntries=%zu,"
+		"descriptorHeapRanges=%zu,"
+		"descriptorRecordsSeen=%llu,descriptorCopyRecordsSeen=%llu,"
+		"descriptorCopySpanFastPathCalls=%llu,descriptorCopySpanFastPathSlots=%llu,descriptorCopySpanFallbackCalls=%llu,"
+		"bufferResolveCacheEntries=%zu,bufferResolveGeneration=%llu,"
+		"bufferResolveInvalidations=%llu,bufferResolveInvalidationEntries=%llu,"
+		"bufferResolveRangeInvalidations=%llu,bufferResolveRangeInvalidationEntries=%llu,"
+		"bufferResolveIndexNoopUpdates=%llu,bufferResolveStateOnlyUpdates=%llu,"
+		"bufferResolveInvalidationEpoch=%llu,bufferResolveInvalidationHistoryLost=%llu,"
+		"bufferResolveTlsHits=%llu,bufferResolveGlobalHits=%llu,bufferResolveBackwardScanHits=%llu,bufferResolveFallbackScanHits=%llu,bufferResolveMisses=%llu,bufferResolveGenerationResets=%llu,"
+		"resourceExclusiveLockSlowCount=%llu,resourceExclusiveLockSlowMaxUs=%llu,descriptorExclusiveLockSlowCount=%llu,descriptorExclusiveLockSlowMaxUs=%llu,"
+		"resources=%zu,resourceSlots=%zu,freeResourceSlots=%zu,"
+		"resourcesFromCreate=%llu,cpuDescriptorLedger=%zu,"
+		"psoRoots=%zu,psoRootRecordsSeen=%llu",
 		present,
 		gRootSignatures.size(),
 		static_cast<unsigned long long>(gRootSignatureRecordsSeen),
@@ -1421,7 +1448,7 @@ void RecordDescriptor(DescriptorRecord &&record)
 		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
 			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
 		DX12LogManager::DebugJsonFunc("DX12DescriptorLockSlow",
-			"\"source\":\"RecordDescriptor\",\"elapsedUs\":%lld,\"present\":%ld,\"threadId\":%lu",
+			"source=RecordDescriptor,elapsedUs=%lld,present=%ld,threadId=%lu",
 			static_cast<long long>(elapsedUs),
 			DX12RuntimeState::GetPresentCount(),
 			GetCurrentThreadId());
@@ -1454,7 +1481,7 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
 			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
 		DX12LogManager::DebugJsonFunc("DX12DescriptorLockSlow",
-			"\"source\":\"RecordDescriptorBatch\",\"elapsedUs\":%lld,\"records\":%zu,\"present\":%ld,\"threadId\":%lu",
+			"source=RecordDescriptorBatch,elapsedUs=%lld,records=%zu,present=%ld,threadId=%lu",
 			static_cast<long long>(elapsedUs),
 			recordCount,
 			DX12RuntimeState::GetPresentCount(),
@@ -1517,7 +1544,7 @@ void DX12PrimeDescriptorHistoryForHunting()
 		}
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorHistoryPrime",
-		"\"heaps\":%zu,\"occupied\":%zu,\"primed\":%zu,\"epoch\":%llu,\"historyEntries\":%zu",
+		"heaps=%zu,occupied=%zu,primed=%zu,epoch=%llu,historyEntries=%zu",
 		gDescriptorHeaps.size(),
 		occupied,
 		primed,
@@ -1835,7 +1862,7 @@ void RecordRuntimeDescriptorCopyRange(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
 	UINT count)
 {
-	(void)device; // No longer needed â€” ShadowUtils resolves handles via gDescriptorHeapByCpuStart
+	(void)device; // No longer needed â€?ShadowUtils resolves handles via gDescriptorHeapByCpuStart
 	DX12DescriptorHeapShadowUtils::CopyDescriptorRange(type, destStart, srcStart, count);
 }
 
@@ -1853,7 +1880,7 @@ void DX12RecordPsoRootSignature(
 	ID3D12RootSignature *rootSignature)
 {
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"PsoRootSignatureImmediate\",\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"threadId\":%lu",
+		"event=PsoRootSignatureImmediate,pso=%llu,kind=%s,pipelineState=%p,rootSignature=%p,threadId=%lu",
 		static_cast<unsigned long long>(psoIndex),
 		kind ? kind : "",
 		pipelineState,
@@ -1920,8 +1947,8 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 	if (resourceStateChanged) {
 		DX12BufferResolveCacheUtils::RecordStateOnlyUpdateLocked();
 		DX12LogManager::DebugJsonFunc("BufferResolveCacheInvalidated",
-			"\"reason\":\"resource_barrier_state_update\",\"mode\":\"state_only\",\"present\":%ld,"
-			"\"threadId\":%lu,\"generation\":%llu,\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
+			"reason=resource_barrier_state_update,mode=state_only,present=%ld,"
+			"threadId=%lu,generation=%llu,gpuVaIndexSize=%zu,liveResources=%zu",
 			DX12RuntimeState::GetPresentCount(),
 			GetCurrentThreadId(),
 			static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
@@ -1933,5 +1960,5 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 
 
 
-// RecordDescriptorMerged removed â€” dead code.  Hooks now call
+// RecordDescriptorMerged removed â€?dead code.  Hooks now call
 // DX12DescriptorHeapShadowUtils::RecordDescriptor directly.

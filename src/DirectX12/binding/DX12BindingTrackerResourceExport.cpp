@@ -193,7 +193,7 @@ void DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(
 	}
 
 	DX12FrameAnalysis::LogJsonFunc("HuntingUavStateResourceUsages",
-		"\"resources\":%zu,\"dispatches\":%zu,\"candidates\":%zu,\"emitted\":%zu",
+		"resources=%zu,dispatches=%zu,candidates=%zu,emitted=%zu",
 		resources.size(), dispatches.size(), candidates, emitted);
 }
 
@@ -275,7 +275,7 @@ void DX12BindingResourceExport::CollectActivePreSkinProducerBindings(
 	}
 
 	DX12FrameAnalysis::LogJsonFunc("ActivePreSkinProducerBindings",
-		"\"candidates\":%zu,\"emitted\":%zu",
+		"candidates=%zu,emitted=%zu",
 		candidates, emitted);
 }
 
@@ -726,7 +726,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	PopulatePreferredResourceEventSource(&source, "GetCurrentFrameResourceBindings");
 	const std::vector<BindingEvent> &events = source.GetEvents();
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesSnapshot",
-		"\"events\":%zu,\"capture_session_id\":%llu",
+		"events=%zu,capture_session_id=%llu",
 		events.size(),
 		static_cast<unsigned long long>(source.captureSessionId));
 
@@ -734,12 +734,12 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	std::vector<DX12DescriptorHeapSummary> heaps;
 	DX12GetResourceMetadataSnapshot(nullptr, &descriptors, nullptr, &heaps);
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesMetadataReady",
-		"\"descriptors\":%zu,\"heaps\":%zu",
+		"descriptors=%zu,heaps=%zu",
 		descriptors.size(), heaps.size());
 	DescriptorLookup descriptorLookup;
 	DX12BindingResourceExport::BuildDescriptorLookup(descriptors, heaps, &descriptorLookup);
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesLookupReady",
-		"\"cpu_entries\":%zu,\"slot_entries\":%zu",
+		"cpu_entries=%zu,slot_entries=%zu",
 		descriptorLookup.byCpuHandle.size(), descriptorLookup.bySlot.size());
 
 	bindings->clear();
@@ -826,7 +826,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 			textureBindings++;
 	}
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesCollected",
-		"\"bindings\":%zu,\"unique\":%zu,\"rebuilt_bindings\":%zu,\"rebuilt_resolved\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"zero_descriptor_epoch_events\":%zu,\"draw_events\":%zu,\"dispatch_events\":%zu,\"graphics_tables\":%zu,\"compute_tables\":%zu,\"graphics_tables_with_roots\":%zu,\"compute_tables_with_roots\":%zu,\"root_range_tables\":%zu,\"table_start_only\":%zu,\"graphics_tables_without_roots\":%zu,\"compute_tables_without_roots\":%zu,\"descriptor_tables_without_ranges\":%zu,\"unbounded_ranges\":%zu,\"unbounded_descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"sampler\":%zu,\"texture\":%zu,\"untracked\":%zu,\"untracked_cbv\":%zu,\"untracked_srv\":%zu,\"untracked_uav\":%zu,\"untracked_skipped\":%zu",
+		"bindings=%zu,unique=%zu,rebuilt_bindings=%zu,rebuilt_resolved=%zu,descriptor_history_lookups=%zu,descriptor_history_hits=%zu,zero_descriptor_epoch_events=%zu,draw_events=%zu,dispatch_events=%zu,graphics_tables=%zu,compute_tables=%zu,graphics_tables_with_roots=%zu,compute_tables_with_roots=%zu,root_range_tables=%zu,table_start_only=%zu,graphics_tables_without_roots=%zu,compute_tables_without_roots=%zu,descriptor_tables_without_ranges=%zu,unbounded_ranges=%zu,unbounded_descriptors=%zu,cbv=%zu,srv=%zu,uav=%zu,sampler=%zu,texture=%zu,untracked=%zu,untracked_cbv=%zu,untracked_srv=%zu,untracked_uav=%zu,untracked_skipped=%zu",
 		bindings->size(), seen.size(), rebuiltEventBindings, rebuiltResolvedBindings,
 		descriptorHistoryLookups, descriptorHistoryHits, zeroDescriptorEpochEvents,
 		drawEvents, dispatchEvents,
@@ -850,7 +850,7 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 	else if (untrackedUavBindings)
 		historyStatus = "untracked_uav";
 	DX12FrameAnalysis::LogJsonFunc("BindingResourcesHistoryHealth",
-		"\"status\":\"%s\",\"events\":%zu,\"zero_descriptor_epoch_events\":%zu,\"descriptor_history_lookups\":%zu,\"descriptor_history_hits\":%zu,\"untracked_uav\":%zu",
+		"status=%s,events=%zu,zero_descriptor_epoch_events=%zu,descriptor_history_lookups=%zu,descriptor_history_hits=%zu,untracked_uav=%zu",
 		historyStatus,
 		drawEvents + dispatchEvents,
 		zeroDescriptorEpochEvents,
@@ -869,7 +869,7 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	const std::vector<OutputBindingEvent> &events = source.GetOutputEvents();
 	const UINT64 dropped = source.droppedOutputEvents;
 	DX12FrameAnalysis::LogJsonFunc("OutputResourcesLedgerSnapshot",
-		"\"events\":%zu,\"capture_session_id\":%llu,\"dropped\":%llu",
+		"events=%zu,capture_session_id=%llu,dropped=%llu",
 		events.size(),
 		static_cast<unsigned long long>(source.captureSessionId),
 		static_cast<unsigned long long>(dropped));
@@ -932,11 +932,11 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 	}
 
 	DX12FrameAnalysis::LogJsonFunc("OutputResourcesCollected",
-		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
+		"bindings=%zu,rtv=%zu,dsv=%zu,untracked=%zu,dropped=%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
 	DX12LogManager::JsonFunc("DX12OutputResourcesCollected",
-		"\"bindings\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"untracked\":%zu,\"dropped\":%llu",
+		"bindings=%zu,rtv=%zu,dsv=%zu,untracked=%zu,dropped=%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
 }

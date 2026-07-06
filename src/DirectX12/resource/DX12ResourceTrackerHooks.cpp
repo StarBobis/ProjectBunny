@@ -27,7 +27,7 @@ struct DX12ResourceMapTracking
 
 static thread_local DX12ResourceMapTracking gActiveMap;
 
-// Hooked Map â€” records the mapped pointer for later content capture
+// Hooked Map â€?records the mapped pointer for later content capture
 static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	ID3D12Resource *resource,
 	UINT Subresource,
@@ -57,7 +57,7 @@ static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	return hr;
 }
 
-// Hooked Unmap â€” captures buffer content before unmapping
+// Hooked Unmap â€?captures buffer content before unmapping
 static void STDMETHODCALLTYPE HookedResourceUnmap(
 	ID3D12Resource *resource,
 	UINT Subresource,
@@ -75,7 +75,7 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 			dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
 		}
 		if (dataSize == 0) {
-			// Game wrote entire resource â€” resolve size from resource desc
+			// Game wrote entire resource â€?resolve size from resource desc
 			D3D12_RESOURCE_DESC desc = resource->GetDesc();
 			dataSize = static_cast<size_t>(desc.Width);
 		}
@@ -128,7 +128,7 @@ void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resour
 	DX12HookManager::InstallVTableHooks(resource, hooks, ARRAYSIZE(hooks));
 
 	DX12LogManager::DebugJsonFunc("DX12BufferContentHook",
-		"\"stage\":\"installed\",\"resource\":\"0x%p\",\"bytes\":%llu,\"heapType\":%u",
+		"stage=installed,resource=0x%p,bytes=%llu,heapType=%u",
 		resource, static_cast<unsigned long long>(desc.Width),
 		static_cast<UINT>(heapProps.Type));
 }
@@ -161,10 +161,10 @@ public:
 		if (SUCCEEDED(hr) && !ShouldLogSample(calls))
 			return;
 		DX12LogManager::JsonFunc("DX12ResourceCreateStage",
-			"\"api\":\"%s\",\"stage\":\"%s\",\"stageCalls\":%lld,\"present\":%ld,\"threadId\":%lu,"
-			"\"device\":\"%p\",\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\","
-			"\"hasDesc\":%u,\"dimension\":%u,\"width\":%llu,\"height\":%u,\"format\":%u,\"flags\":\"0x%llx\","
-			"\"hasHeap\":%u,\"heapType\":%u,\"initialState\":%u,\"skipAll\":%ld",
+			"api=%s,stage=%s,stageCalls=%lld,present=%ld,threadId=%lu,"
+			"device=%p,hr=0x%lx,resourcePtr=%p,resource=%p,"
+			"hasDesc=%u,dimension=%u,width=%llu,height=%u,format=%u,flags=0x%llx,"
+			"hasHeap=%u,heapType=%u,initialState=%u,skipAll=%ld",
 			api ? api : "",
 			stage ? stage : "",
 			static_cast<long long>(calls),
@@ -196,7 +196,7 @@ public:
 		if (SUCCEEDED(hr) && shouldTrack && !ShouldLogSample(calls))
 			return;
 		DX12LogManager::JsonFunc("DX12ResourceCreateRecord",
-			"\"stage\":\"%s\",\"recordCalls\":%lld,\"tracked\":%lld,\"skipped\":%lld,\"present\":%ld,\"threadId\":%lu,\"hr\":\"0x%lx\",\"resourcePtr\":\"%p\",\"resource\":\"%p\",\"shouldTrack\":%u",
+			"stage=%s,recordCalls=%lld,tracked=%lld,skipped=%lld,present=%ld,threadId=%lu,hr=0x%lx,resourcePtr=%p,resource=%p,shouldTrack=%u",
 			stage ? stage : "",
 			static_cast<long long>(calls),
 			static_cast<long long>(InterlockedCompareExchange64(&RecordTracked, 0, 0)),
@@ -212,7 +212,7 @@ public:
 	static void LogFallback(ID3D12Resource *resource)
 	{
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-			"\"event\":\"FallbackInlineRecord\",\"resource\":\"%p\"",
+			"event=FallbackInlineRecord,resource=%p",
 			resource);
 	}
 };

@@ -585,7 +585,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Debug5*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Debug6*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"debug_interface\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=debug_interface,stage=create,wrapper=%p,object=%p",
 					this, debug);
 			}
 
@@ -744,7 +744,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedDataSettings1*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedDataSettings2*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"dred_settings\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=dred_settings,stage=create,wrapper=%p,object=%p",
 					this, settings);
 			}
 
@@ -842,7 +842,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedData1*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedData2*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"dred_data\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=dred_data,stage=create,wrapper=%p,object=%p",
 					this, data);
 			}
 
@@ -959,7 +959,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Tools1*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Tools2*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"tools\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=tools,stage=create,wrapper=%p,object=%p",
 					this, tools);
 			}
 
@@ -1064,7 +1064,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12SDKConfiguration*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12SDKConfiguration1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"sdk_configuration\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=sdk_configuration,stage=create,wrapper=%p,object=%p",
 					this, configuration);
 			}
 
@@ -1153,7 +1153,7 @@ namespace DX12Wrapper
 				mContract = contract;
 				RegisterWrapperPointer(static_cast<ID3D12SharingContract*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"sharing_contract\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=sharing_contract,stage=create,wrapper=%p,object=%p",
 					this, contract);
 			}
 
@@ -1231,7 +1231,7 @@ namespace DX12Wrapper
 				mTrackingResource = resource;
 				RegisterWrapperPointer(static_cast<ID3D12ManualWriteTrackingResource*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"manual_write_tracking_resource\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=manual_write_tracking_resource,stage=create,wrapper=%p,object=%p",
 					this, resource);
 			}
 
@@ -1295,7 +1295,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12InfoQueue*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12InfoQueue1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"info_queue\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=info_queue,stage=create,wrapper=%p,object=%p",
 					this, queue);
 			}
 
@@ -1566,7 +1566,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DebugDevice1*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DebugDevice2*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"debug_device\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=debug_device,stage=create,wrapper=%p,object=%p",
 					this, device);
 			}
 
@@ -1683,7 +1683,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DebugCommandQueue*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DebugCommandQueue1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"debug_command_queue\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=debug_command_queue,stage=create,wrapper=%p,object=%p",
 					this, queue);
 			}
 
@@ -1779,7 +1779,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DebugCommandList2*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DebugCommandList3*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"debug_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=debug_command_list,stage=create,wrapper=%p,object=%p",
 					this, commandList);
 			}
 
@@ -1921,7 +1921,7 @@ namespace DX12Wrapper
 				mFactory = factory;
 				RegisterWrapperPointer(static_cast<ID3D12DeviceFactory*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"device_factory\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=device_factory,stage=create,wrapper=%p,object=%p",
 					this, factory);
 			}
 
@@ -2020,7 +2020,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<IDXGIFactory6*>(this));
 				RegisterWrapperPointer(static_cast<IDXGIFactory7*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"factory\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=factory,stage=create,wrapper=%p,object=%p",
 					this, factory);
 			}
 
@@ -2417,7 +2417,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<IDXGISwapChain3*>(this));
 				RegisterWrapperPointer(static_cast<IDXGISwapChain4*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"swapchain\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=swapchain,stage=create,wrapper=%p,object=%p",
 					this, swapChain);
 			}
 
@@ -2860,7 +2860,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12CommandQueue*>(this));
 				DX12CommandQueueState::Set(queue);
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"command_queue\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\",\"type\":%d",
+					"kind=command_queue,stage=create,wrapper=%p,object=%p,type=%d",
 					this, queue, static_cast<int>(mDesc.Type));
 			}
 
@@ -2965,7 +2965,7 @@ namespace DX12Wrapper
 				static volatile LONG nonDirectExecuteLogs = 0;
 				if (InterlockedIncrement(&nonDirectExecuteLogs) <= 8)
 					DX12LogManager::JsonFunc("DX12ExecuteCommandLists",
-						"\"stage\":\"non_direct_passthrough\",\"queue\":\"%p\",\"type\":%d,\"count\":%u",
+						"stage=non_direct_passthrough,queue=%p,type=%d,count=%u",
 						mQueue, static_cast<int>(mDesc.Type), NumCommandLists);
 				DX12WrapperRuntimeUtils::ExecuteCommandListsDirectNative(mQueue, NumCommandLists, ppCommandLists);
 			}
@@ -3562,7 +3562,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Heap*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"heap\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=heap,stage=create,wrapper=%p,object=%p",
 					this, heap);
 			}
 
@@ -3660,7 +3660,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12PipelineState*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"pipeline_state\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=pipeline_state,stage=create,wrapper=%p,object=%p",
 					this, pipelineState);
 			}
 
@@ -3758,7 +3758,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12RootSignature*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"root_signature\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=root_signature,stage=create,wrapper=%p,object=%p",
 					this, rootSignature);
 			}
 
@@ -3850,7 +3850,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12QueryHeap*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"query_heap\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=query_heap,stage=create,wrapper=%p,object=%p",
 					this, queryHeap);
 			}
 
@@ -3943,7 +3943,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12CommandSignature*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"command_signature\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=command_signature,stage=create,wrapper=%p,object=%p",
 					this, commandSignature);
 			}
 
@@ -4036,7 +4036,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12LifetimeTracker*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"lifetime_tracker\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=lifetime_tracker,stage=create,wrapper=%p,object=%p",
 					this, tracker);
 			}
 
@@ -4135,7 +4135,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"protected_resource_session\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=protected_resource_session,stage=create,wrapper=%p,object=%p",
 					this, session);
 			}
 
@@ -4265,7 +4265,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12MetaCommand*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"meta_command\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=meta_command,stage=create,wrapper=%p,object=%p",
 					this, metaCommand);
 			}
 
@@ -4370,7 +4370,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"state_object\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=state_object,stage=create,wrapper=%p,object=%p",
 					this, stateObject);
 			}
 
@@ -4527,7 +4527,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary1*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"pipeline_library\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=pipeline_library,stage=create,wrapper=%p,object=%p",
 					this, library);
 			}
 
@@ -4682,7 +4682,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12ShaderCacheSession*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"shader_cache_session\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=shader_cache_session,stage=create,wrapper=%p,object=%p",
 					this, session);
 			}
 
@@ -4844,7 +4844,7 @@ namespace DX12Wrapper
 			mOrigExecuteIndirect = ResolveOriginalExecuteIndirect();
 
 			DX12LogManager::JsonFunc("DX12Wrapper",
-				"\"kind\":\"graphics_command_list\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+				"kind=graphics_command_list,stage=create,wrapper=%p,object=%p",
 				this, commandList);
 		}
 
@@ -6641,7 +6641,7 @@ namespace DX12Wrapper
 				RegisterWrapperPointer(static_cast<ID3D12Device13*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Device14*>(this));
 				DX12LogManager::JsonFunc("DX12Wrapper",
-					"\"kind\":\"device\",\"stage\":\"create\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+					"kind=device,stage=create,wrapper=%p,object=%p",
 					this, device);
 			}
 
@@ -8158,7 +8158,7 @@ namespace DX12Wrapper
 		baseDevice->Release();
 		originalObject->Release();
 		DX12LogManager::JsonFunc("DX12Wrapper",
-			"\"kind\":\"device\",\"stage\":\"wrapped\",\"wrapper\":\"%p\",\"object\":\"%p\"",
+			"kind=device,stage=wrapped,wrapper=%p,object=%p",
 			*device, originalObject);
 		return true;
 	}
@@ -8457,6 +8457,6 @@ namespace DX12Wrapper
 
 void Shutdown()
 {
-	DX12LogManager::JsonFunc("DX12Wrapper", "\"stage\":\"shutdown\"");
+	DX12LogManager::JsonFunc("DX12Wrapper", "stage=shutdown");
 }
 }

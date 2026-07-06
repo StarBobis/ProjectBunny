@@ -44,7 +44,7 @@ UINT64 DX12ResourceCollectQueue::LastSubmittedSequence()
 void DX12ResourceCollectQueue::WorkerLoop()
 {
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"WorkerEnter\",\"threadId\":%lu",
+		"event=WorkerEnter,threadId=%lu",
 		GetCurrentThreadId());
 
 	static constexpr size_t kBatchSize = 64;
@@ -105,7 +105,7 @@ void DX12ResourceCollectQueue::WorkerLoop()
 	DrainPending("WorkerStop");
 	idle.notify_all();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"WorkerExit\",\"threadId\":%lu,\"pending\":%zu",
+		"event=WorkerExit,threadId=%lu,pending=%zu",
 		GetCurrentThreadId(), PendingCount());
 
 }
@@ -173,7 +173,7 @@ void DX12ResourceCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, c
 		static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kResourceQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
-			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedSequence\":%llu,\"pending\":%zu,\"elapsedUs\":%lld",
+			"reason=%s,mode=sequence,targetSequence=%llu,completedSequence=%llu,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			static_cast<unsigned long long>(targetSequence),
 			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)),
@@ -207,7 +207,7 @@ void DX12ResourceCollectQueue::WaitForIdle(const char *reason)
 		static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kResourceQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueueDrain",
-			"\"reason\":\"%s\",\"mode\":\"idle\",\"pending\":%zu,\"elapsedUs\":%lld",
+			"reason=%s,mode=idle,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			pendingSnapshot,
 			static_cast<long long>(elapsedUs));
@@ -300,7 +300,7 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 
 	const auto begin = std::chrono::steady_clock::now();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessResourceBarrierBegin\",\"source\":\"%s\",\"barrierSource\":\"%s\",\"seq\":%llu,\"count\":%zu,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		"event=ProcessResourceBarrierBegin,source=%s,barrierSource=%s,seq=%llu,count=%zu,enqueueThreadId=%lu,workerThreadId=%lu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -320,7 +320,7 @@ void DX12ResourceCollectQueue::ProcessResourceBarrierTask(DX12ResourceCollectTas
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessResourceBarrierComplete\",\"source\":\"%s\",\"barrierSource\":\"%s\",\"seq\":%llu,\"count\":%zu,\"elapsedUs\":%lld,\"completed\":%llu",
+		"event=ProcessResourceBarrierComplete,source=%s,barrierSource=%s,seq=%llu,count=%zu,elapsedUs=%lld,completed=%llu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -348,7 +348,7 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 
 	const auto begin = std::chrono::steady_clock::now();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessRootSignatureBegin\",\"source\":\"%s\",\"rootSource\":\"%s\",\"seq\":%llu,\"rootSignature\":\"%p\",\"blobSize\":%zu,\"nodeMask\":%u,\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		"event=ProcessRootSignatureBegin,source=%s,rootSource=%s,seq=%llu,rootSignature=%p,blobSize=%zu,nodeMask=%u,enqueueThreadId=%lu,workerThreadId=%lu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -397,7 +397,7 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessRootSignatureComplete\",\"source\":\"%s\",\"rootSource\":\"%s\",\"seq\":%llu,\"rootSignature\":\"%p\",\"parsed\":%u,\"parameterCount\":%zu,\"elapsedUs\":%lld,\"completed\":%llu",
+		"event=ProcessRootSignatureComplete,source=%s,rootSource=%s,seq=%llu,rootSignature=%p,parsed=%u,parameterCount=%zu,elapsedUs=%lld,completed=%llu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -423,7 +423,7 @@ void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTa
 
 	const auto begin = std::chrono::steady_clock::now();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessPsoRootSignatureBegin\",\"source\":\"%s\",\"psoSource\":\"%s\",\"seq\":%llu,\"pso\":%llu,\"kind\":\"%s\",\"pipelineState\":\"%p\",\"rootSignature\":\"%p\",\"enqueueThreadId\":%lu,\"workerThreadId\":%lu",
+		"event=ProcessPsoRootSignatureBegin,source=%s,psoSource=%s,seq=%llu,pso=%llu,kind=%s,pipelineState=%p,rootSignature=%p,enqueueThreadId=%lu,workerThreadId=%lu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -450,7 +450,7 @@ void DX12ResourceCollectQueue::ProcessPsoRootSignatureTask(DX12ResourceCollectTa
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"ProcessPsoRootSignatureComplete\",\"source\":\"%s\",\"psoSource\":\"%s\",\"seq\":%llu,\"pso\":%llu,\"elapsedUs\":%lld,\"completed\":%llu",
+		"event=ProcessPsoRootSignatureComplete,source=%s,psoSource=%s,seq=%llu,pso=%llu,elapsedUs=%lld,completed=%llu",
 		source ? source : "",
 		task->source ? task->source : "",
 		static_cast<unsigned long long>(task->sequence),
@@ -571,7 +571,7 @@ void DX12ResourceCollectQueue::LogStats(const char *event, uint64_t sequence, si
 	if (sequence != 0 && depth < 1024 && serial % kResourceQueueStatsInterval != 0)
 		return;
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"\"event\":\"%s\",\"seq\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu",
+		"event=%s,seq=%llu,pending=%zu,enqueued=%llu,dequeued=%llu,completed=%llu,maxDepth=%llu",
 		event ? event : "",
 		static_cast<unsigned long long>(sequence),
 		depth,
@@ -595,7 +595,7 @@ void DX12ResourceCollectQueue::RecordResourceTaskStats(
 
 	if (elapsedUs >= kResourceQueueSlowTaskUs) {
 		DX12LogManager::JsonFunc("DX12ResourceCollectQueueSlowResource",
-			"\"source\":\"%s\",\"seq\":%llu,\"resource\":\"%p\",\"elapsedUs\":%lld,\"completed\":%llu,\"pending\":%zu",
+			"source=%s,seq=%llu,resource=%p,elapsedUs=%lld,completed=%llu,pending=%zu",
 			source ? source : "",
 			static_cast<unsigned long long>(task ? task->sequence : 0),
 			task ? task->resource : nullptr,
@@ -611,7 +611,7 @@ void DX12ResourceCollectQueue::RecordResourceTaskStats(
 	const uint64_t totalUs = resourceTasksElapsedUs.load(std::memory_order_relaxed);
 	const uint64_t maxUs = resourceTasksMaxElapsedUs.load(std::memory_order_relaxed);
 	DX12LogManager::JsonFunc("DX12ResourceCollectQueueStats",
-		"\"resourceCompleted\":%llu,\"resourceElapsedUs\":%llu,\"resourceAvgUs\":%llu,\"resourceMaxUs\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu",
+		"resourceCompleted=%llu,resourceElapsedUs=%llu,resourceAvgUs=%llu,resourceMaxUs=%llu,pending=%zu,enqueued=%llu,dequeued=%llu,completed=%llu,maxDepth=%llu",
 		static_cast<unsigned long long>(count),
 		static_cast<unsigned long long>(totalUs),
 		static_cast<unsigned long long>(count ? totalUs / count : 0),

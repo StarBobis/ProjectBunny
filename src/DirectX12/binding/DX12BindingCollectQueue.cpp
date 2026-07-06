@@ -173,7 +173,7 @@ bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
 void DX12BindingCollectQueue::WorkerLoop()
 {
 	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"WorkerEnter\",\"threadId\":%lu",
+		"event=WorkerEnter,threadId=%lu",
 		GetCurrentThreadId());
 
 	for (;;) {
@@ -219,7 +219,7 @@ void DX12BindingCollectQueue::WorkerLoop()
 
 	idle.notify_all();
 	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"WorkerExit\",\"threadId\":%lu,\"pending\":%zu",
+		"event=WorkerExit,threadId=%lu,pending=%zu",
 		GetCurrentThreadId(), PendingCount());
 }
 
@@ -252,7 +252,7 @@ void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
 	if (elapsedUs >= kBindingQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12BindingCollectQueueDrain",
-			"\"reason\":\"%s\",\"pending\":%zu,\"elapsedUs\":%lld",
+			"reason=%s,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			pendingSnapshot,
 			static_cast<long long>(elapsedUs));
@@ -292,7 +292,7 @@ void DX12BindingCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, co
 	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
 	if (elapsedUs >= kBindingQueueSlowDrainUs) {
 		DX12LogManager::JsonFunc("DX12BindingCollectQueueDrain",
-			"\"reason\":\"%s\",\"mode\":\"sequence\",\"targetSequence\":%llu,\"completedSequence\":%llu,\"pending\":%zu,\"elapsedUs\":%lld",
+			"reason=%s,mode=sequence,targetSequence=%llu,completedSequence=%llu,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			static_cast<unsigned long long>(targetSequence),
 			static_cast<unsigned long long>(completedSequence.load(std::memory_order_acquire)),
@@ -343,7 +343,7 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 		DX12BindingTracker::ReleaseRetainedIaResources(&task->state);
 	if (elapsedUs >= kBindingQueueSlowTaskUs) {
 		DX12LogManager::JsonFunc("DX12BindingCollectQueueSlowTask",
-			"\"source\":\"%s\",\"seq\":%llu,\"captureSessionId\":%llu,\"kind\":%u,\"elapsedUs\":%lld,\"pending\":%zu",
+			"source=%s,seq=%llu,captureSessionId=%llu,kind=%u,elapsedUs=%lld,pending=%zu",
 			source ? source : "",
 			static_cast<unsigned long long>(task->sequence),
 			static_cast<unsigned long long>(task->captureSessionId),
@@ -539,7 +539,7 @@ void DX12BindingCollectQueue::LogStats(const char *event, uint64_t sequence, siz
 		return;
 
 	DX12LogManager::JsonFunc("DX12BindingCollectQueueStats",
-		"\"event\":\"%s\",\"seq\":%llu,\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"completedSequence\":%llu,\"maxDepth\":%llu,\"maxPendingAtDrain\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
+		"event=%s,seq=%llu,pending=%zu,enqueued=%llu,dequeued=%llu,completed=%llu,completedSequence=%llu,maxDepth=%llu,maxPendingAtDrain=%llu,drainCalls=%llu,drainWaitUs=%llu,drainMaxUs=%llu,taskElapsedUs=%llu,taskMaxUs=%llu",
 		event ? event : "",
 		static_cast<unsigned long long>(sequence),
 		depth,

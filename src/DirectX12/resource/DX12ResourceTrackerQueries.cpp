@@ -237,7 +237,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (!resolved) {
-		// Fallback: first try gBufferResourceByGpuVaComplete — a secondary index
+		// Fallback: first try gBufferResourceByGpuVaComplete �?a secondary index
 		// that mirrors all buffer resources with valid GPU VA that were missed by
 		// the primary gBufferResourceByGpuVa index (e.g. reserved resources with
 		// delayed VA assignment, or resources created before hook activation).
@@ -511,7 +511,7 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 
 #if defined(_DEBUG)
 	DX12LogManager::DebugJsonFunc("DX12BufferContentCache",
-		"\"stage\":\"stored\",\"resource\":\"0x%p\",\"bytes\":%zu,\"gpuVaBase\":\"0x%llx\"",
+		"stage=stored,resource=0x%p,bytes=%zu,gpuVaBase=0x%llx",
 		resource, dataSize, static_cast<unsigned long long>(entry.gpuVaBase));
 #endif
 	return true;
@@ -555,9 +555,9 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 
 // ── IA Buffer Hash (Content-Based, like DX11) ──────────────────────────
 // Priority:
-//   1. Content cache hit �?CRC32 of actual buffer bytes (stable, like DX11)
-//   2. Resource resolved  �?hash on RESOURCE_DESC + offset + viewSize (stable)
-//   3. Fallback           �?hash on size + stride + format + slot (NO GPU VA!)
+//   1. Content cache hit �?CRC32 of actual buffer bytes (stable, like DX11)
+//   2. Resource resolved  �?hash on RESOURCE_DESC + offset + viewSize (stable)
+//   3. Fallback           �?hash on size + stride + format + slot (NO GPU VA!)
 
 UINT64 DX12GetIaHashContentGeneration()
 {
@@ -576,9 +576,9 @@ uint32_t DX12HashIaBufferView(
 		return 0;
 
 	// ── DX11 对齐: 双级 TLS 缓存 ──────────────────────────────────
-	// L1: gpuVa-based key — 快速捕捉时间局部性（同一 gpuVa 重复出现）
-	// L2: resource-based key — 稳定捕捉 buffer 级复用（同一 buffer 不同 offset）
-	//     对齐 DX11 的 (ID3D11Buffer*, offset, size) 模式。
+	// L1: gpuVa-based key �?快速捕捉时间局部性（同一 gpuVa 重复出现�?
+	// L2: resource-based key �?稳定捕捉 buffer 级复用（同一 buffer 不同 offset�?
+	//     对齐 DX11 �?(ID3D11Buffer*, offset, size) 模式�?
 	// Resource-generation invalidation:
 	// - GPUVA index/resource lifetime changes bump gBufferResolveGeneration.
 	// - CPU-upload content changes bump gBufferContentGeneration.
@@ -648,7 +648,7 @@ uint32_t DX12HashIaBufferView(
 	}
 
 	// -- L2 lookup (resource-based, stable across draws) --
-	// 对齐 DX11: 用 (resource, offset, viewSize) 替代 gpuVa
+	// 对齐 DX11: �?(resource, offset, viewSize) 替代 gpuVa
 	DX12BufferResourceSummary summary = {};
 	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary);
 	if (resolved && summary.resource) {
@@ -657,7 +657,7 @@ uint32_t DX12HashIaBufferView(
 			stride, format, slot };
 		std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher>::iterator itL2 = s_cacheL2.find(keyL2);
 		if (itL2 != s_cacheL2.end()) {
-			// L2 命中 → 提升到 L1（下次相同 gpuVa 直接命中）
+			// L2 命中 �?提升�?L1（下次相�?gpuVa 直接命中�?
 			const IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
 			if (cacheValue.contentGeneration == contentGeneration) {
@@ -674,7 +674,7 @@ uint32_t DX12HashIaBufferView(
 		}
 	}
 
-	// -- 两级缓存都 miss → 计算 hash --
+	// -- 两级缓存�?miss �?计算 hash --
 	uint32_t hash = 0;
 
 	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
@@ -707,8 +707,8 @@ uint32_t DX12HashIaBufferView(
 		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
-			"\"stage\":\"content_crc32\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
-			"\"stride\":%u,\"format\":%u,\"slot\":%u,\"hash\":\"%08x\"",
+			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
+			"stride=%u,format=%u,slot=%u,hash=%08x",
 			static_cast<unsigned long long>(gpuVirtualAddress),
 			static_cast<unsigned long long>(size),
 			stride, format, slot, hash);
@@ -737,9 +737,9 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
-			"\"stage\":\"resolved\",\"gpuVa\":\"0x%llx\",\"size\":%llu,"
-			"\"offset\":%llu,\"viewSize\":%llu,\"stride\":%u,\"format\":%u,"
-			"\"slot\":%u,\"hash\":\"%08x\"",
+			"stage=resolved,gpuVa=0x%llx,size=%llu,"
+			"offset=%llu,viewSize=%llu,stride=%u,format=%u,"
+			"slot=%u,hash=%08x",
 			static_cast<unsigned long long>(gpuVirtualAddress),
 			static_cast<unsigned long long>(size),
 			static_cast<unsigned long long>(summary.resourceOffset),
@@ -750,9 +750,9 @@ uint32_t DX12HashIaBufferView(
 		hash = HashBytes(hash, &size, sizeof(size));
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaHashResolve",
-			"\"stage\":\"fallback_no_gpuva\",\"gpuVa\":\"0x%llx\","
-			"\"size\":%llu,\"stride\":%u,\"format\":%u,\"slot\":%u,"
-			"\"hash\":\"%08x\"",
+			"stage=fallback_no_gpuva,gpuVa=0x%llx,"
+			"size=%llu,stride=%u,format=%u,slot=%u,"
+			"hash=%08x",
 			static_cast<unsigned long long>(gpuVirtualAddress),
 			static_cast<unsigned long long>(size),
 			stride, format, slot, hash);
@@ -1039,7 +1039,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
-	// DX12DescriptorCollectPipeline::DrainForSnapshot removed — was dead code
+	// DX12DescriptorCollectPipeline::DrainForSnapshot removed �?was dead code
 	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
 	if (cache.enabled && !cache.building) {
 		if (!cache.populated) {
@@ -1162,7 +1162,7 @@ static void BuildResourceMetadataSnapshot(
 		psoRoots ? 1 : 0,
 		descriptorHeaps ? 1 : 0);
 	DX12LogManager::JsonFunc("DX12MetadataSnapshot",
-		"\"descriptors\":%zu,\"cbv\":%zu,\"srv\":%zu,\"uav\":%zu,\"rtv\":%zu,\"dsv\":%zu,\"texture\":%zu,\"resources\":%zu,\"resourceSlots\":%zu,\"heaps\":%zu",
+		"descriptors=%zu,cbv=%zu,srv=%zu,uav=%zu,rtv=%zu,dsv=%zu,texture=%zu,resources=%zu,resourceSlots=%zu,heaps=%zu",
 		liveDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
 		rtvDescriptors, dsvDescriptors, textureDescriptors,
 		gLiveResourceCount, gResources.size(), gDescriptorHeaps.size());
@@ -1534,13 +1534,13 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 	std::vector<uint8_t> pendingRaw;
 	if (pending) {
 		pendingRaw.resize(count);
-		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed — was dead code
+		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed �?was dead code
 		memset(pending, 0, count * sizeof(uint8_t));
 	}
 	if (pending) {
 		pendingRecords.resize(count);
 		pendingDirect.resize(count);
-		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed — was dead code
+		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed �?was dead code
 	}
 
 	AcquireSRWLockShared(&gDescriptorLock);

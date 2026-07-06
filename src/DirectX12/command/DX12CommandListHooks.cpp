@@ -653,7 +653,6 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDispatch);
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	// 真·快速路径：flags word 无 dispatch 级工作 → 单次位测试替代 skipAll+PreSkin 双重判断
 	if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
 		PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
@@ -661,6 +660,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
 	}
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 	DX12_PROFILE_SCOPE(Dispatch);
 	DX12DispatchHookFlow::ExecuteHook(
@@ -673,6 +673,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyBufferRegion(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCopyBufferRegion)
+			DX12CommandListHookState::OrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyBufferRegion", commandList,
 		" dst=%p dstOffset=%llu src=%p srcOffset=%llu bytes=%llu",
@@ -687,6 +692,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCopyTextureRegion)
+			DX12CommandListHookState::OrigCopyTextureRegion(commandList, dst, dstX, dstY, dstZ, src, srcBox);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTextureRegion", commandList,
 		" dst=%p dstXYZ=%u,%u,%u src=%p srcBox=%p", dst, dstX, dstY, dstZ, src, srcBox);
@@ -698,6 +708,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyResource(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiCopyResource);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCopyResource)
+			DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
 		" dst=%p src=%p", dstResource, srcResource);
@@ -712,6 +727,12 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTiles(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiCopyTiles);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCopyTiles)
+			DX12CommandListHookState::OrigCopyTiles(commandList, tiledResource, tileRegionStartCoordinate,
+				tileRegionSize, buffer, bufferStartOffsetInBytes, flags);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTiles", commandList,
 		" tiled=%p buffer=%p offset=%llu flags=0x%x", tiledResource, buffer,
@@ -726,6 +747,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveSubresource(
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiResolveSubresource);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigResolveSubresource)
+			DX12CommandListHookState::OrigResolveSubresource(commandList, dstResource, dstSubresource, srcResource, srcSubresource, format);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ResolveSubresource", commandList,
 		" dst=%p dstSub=%u src=%p srcSub=%u format=%u",
@@ -757,6 +783,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetPrimitiveTopolog
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedRSSetViewports(
 	ID3D12GraphicsCommandList *commandList, UINT count, const D3D12_VIEWPORT *viewports)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigRSSetViewports)
+			DX12CommandListHookState::OrigRSSetViewports(commandList, count, viewports);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::RSSetViewports", commandList, " count=%u", count);
 	DX12CommandListHookState::OrigRSSetViewports(commandList, count, viewports);
 }
@@ -764,6 +795,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedRSSetViewports(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedRSSetScissorRects(
 	ID3D12GraphicsCommandList *commandList, UINT count, const D3D12_RECT *rects)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigRSSetScissorRects)
+			DX12CommandListHookState::OrigRSSetScissorRects(commandList, count, rects);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::RSSetScissorRects", commandList, " count=%u", count);
 	DX12CommandListHookState::OrigRSSetScissorRects(commandList, count, rects);
 }
@@ -771,12 +807,22 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedRSSetScissorRects(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetBlendFactor(
 	ID3D12GraphicsCommandList *commandList, const FLOAT blendFactor[4])
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigOMSetBlendFactor)
+			DX12CommandListHookState::OrigOMSetBlendFactor(commandList, blendFactor);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::OMSetBlendFactor", commandList);
 	DX12CommandListHookState::OrigOMSetBlendFactor(commandList, blendFactor);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetStencilRef(ID3D12GraphicsCommandList *commandList, UINT stencilRef)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigOMSetStencilRef)
+			DX12CommandListHookState::OrigOMSetStencilRef(commandList, stencilRef);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::OMSetStencilRef", commandList, " stencilRef=%u", stencilRef);
 	DX12CommandListHookState::OrigOMSetStencilRef(commandList, stencilRef);
 }
@@ -911,6 +957,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSOSetTargets(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_STREAM_OUTPUT_BUFFER_VIEW *views)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigSOSetTargets)
+			DX12CommandListHookState::OrigSOSetTargets(commandList, startSlot, count, views);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SOSetTargets", commandList,
 		" start=%u count=%u", startSlot, count);
 	DX12CommandListHookState::OrigSOSetTargets(commandList, startSlot, count, views);
@@ -967,6 +1018,12 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigClearUnorderedAccessViewUint)
+			DX12CommandListHookState::OrigClearUnorderedAccessViewUint(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
+				resource, values, numRects, rects);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
@@ -983,6 +1040,12 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigClearUnorderedAccessViewFloat)
+			DX12CommandListHookState::OrigClearUnorderedAccessViewFloat(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
+				resource, values, numRects, rects);
+		return;
+	}
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
@@ -995,6 +1058,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDiscardResource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *resource, const D3D12_DISCARD_REGION *region)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigDiscardResource)
+			DX12CommandListHookState::OrigDiscardResource(commandList, resource, region);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::DiscardResource", commandList, " resource=%p region=%p", resource, region);
 	DX12CommandListHookState::OrigDiscardResource(commandList, resource, region);
 }
@@ -1002,6 +1070,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDiscardResource(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedBeginQuery(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type, UINT index)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigBeginQuery)
+			DX12CommandListHookState::OrigBeginQuery(commandList, queryHeap, type, index);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::BeginQuery", commandList,
 		" heap=%p type=%u index=%u", queryHeap, static_cast<UINT>(type), index);
 	DX12CommandListHookState::OrigBeginQuery(commandList, queryHeap, type, index);
@@ -1010,6 +1083,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedBeginQuery(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedEndQuery(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type, UINT index)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigEndQuery)
+			DX12CommandListHookState::OrigEndQuery(commandList, queryHeap, type, index);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::EndQuery", commandList,
 		" heap=%p type=%u index=%u", queryHeap, static_cast<UINT>(type), index);
 	DX12CommandListHookState::OrigEndQuery(commandList, queryHeap, type, index);
@@ -1019,6 +1097,12 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveQueryData(
 	ID3D12GraphicsCommandList *commandList, ID3D12QueryHeap *queryHeap, D3D12_QUERY_TYPE type,
 	UINT startIndex, UINT numQueries, ID3D12Resource *destinationBuffer, UINT64 alignedDestinationBufferOffset)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigResolveQueryData)
+			DX12CommandListHookState::OrigResolveQueryData(commandList, queryHeap, type, startIndex, numQueries,
+				destinationBuffer, alignedDestinationBufferOffset);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ResolveQueryData", commandList,
 		" heap=%p type=%u start=%u count=%u dst=%p offset=%llu",
 		queryHeap, static_cast<UINT>(type), startIndex, numQueries, destinationBuffer,
@@ -1031,6 +1115,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetPredication(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *buffer,
 	UINT64 alignedBufferOffset, D3D12_PREDICATION_OP operation)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigSetPredication)
+			DX12CommandListHookState::OrigSetPredication(commandList, buffer, alignedBufferOffset, operation);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetPredication", commandList,
 		" buffer=%p offset=%llu op=%u", buffer,
 		static_cast<unsigned long long>(alignedBufferOffset), static_cast<UINT>(operation));
@@ -1040,6 +1129,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetPredication(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCommandListSetMarker(
 	ID3D12GraphicsCommandList *commandList, UINT metadata, const void *data, UINT size)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCommandListSetMarker)
+			DX12CommandListHookState::OrigCommandListSetMarker(commandList, metadata, data, size);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetMarker", commandList, " metadata=%u size=%u", metadata, size);
 	DX12CommandListHookState::OrigCommandListSetMarker(commandList, metadata, data, size);
 }
@@ -1047,12 +1141,22 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCommandListSetMarker(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCommandListBeginEvent(
 	ID3D12GraphicsCommandList *commandList, UINT metadata, const void *data, UINT size)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCommandListBeginEvent)
+			DX12CommandListHookState::OrigCommandListBeginEvent(commandList, metadata, data, size);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::BeginEvent", commandList, " metadata=%u size=%u", metadata, size);
 	DX12CommandListHookState::OrigCommandListBeginEvent(commandList, metadata, data, size);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCommandListEndEvent(ID3D12GraphicsCommandList *commandList)
 {
+	if (DX12HotPathState::skipAll) {
+		if (DX12CommandListHookState::OrigCommandListEndEvent)
+			DX12CommandListHookState::OrigCommandListEndEvent(commandList);
+		return;
+	}
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::EndEvent", commandList);
 	DX12CommandListHookState::OrigCommandListEndEvent(commandList);
 }
@@ -1062,9 +1166,6 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 	UINT maxCommandCount, ID3D12Resource *argumentBuffer, UINT64 argumentBufferOffset,
 	ID3D12Resource *countBuffer, UINT64 countBufferOffset)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiExecuteIndirect);
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	PFN_EXECUTE_INDIRECT original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
 	if (DX12HotPathState::skipAll) {
@@ -1073,6 +1174,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 				argumentBufferOffset, countBuffer, countBufferOffset);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiExecuteIndirect);
+	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ExecuteIndirect", commandList,
 		" signature=%p max=%u args=%p argOffset=%llu count=%p countOffset=%llu",

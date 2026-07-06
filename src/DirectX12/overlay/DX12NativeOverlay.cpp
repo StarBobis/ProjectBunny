@@ -447,7 +447,7 @@ static DWORD WINAPI UiThreadProc(void*)
 
 	SetSharedOverlayWindow(hwnd);
 	DX12LogManager::JsonFunc("DX12NativeOverlay",
-		"\"event\":\"thread_started\",\"hwnd\":\"%p\"", hwnd);
+		"event=thread_started,hwnd=%p", hwnd);
 	FollowGameWindow();
 
 	MSG msg = {};
@@ -459,7 +459,7 @@ static DWORD WINAPI UiThreadProc(void*)
 
 	if (IsWindow(hwnd))
 		DestroyWindow(hwnd);
-	DX12LogManager::JsonFunc("DX12NativeOverlay", "\"event\":\"thread_stopped\"");
+	DX12LogManager::JsonFunc("DX12NativeOverlay", "event=thread_stopped");
 	InterlockedExchange(&gThreadStarted, 0);
 	return 0;
 }
@@ -473,7 +473,7 @@ static void EnsureUiThread()
 	if (!gUiThread) {
 		gUiThreadId = 0;
 		InterlockedExchange(&gThreadStarted, 0);
-		DX12LogManager::JsonFunc("DX12NativeOverlay", "\"event\":\"thread_create_failed\"");
+		DX12LogManager::JsonFunc("DX12NativeOverlay", "event=thread_create_failed");
 	}
 }
 

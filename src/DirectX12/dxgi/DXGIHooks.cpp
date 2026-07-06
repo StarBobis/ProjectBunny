@@ -13,7 +13,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **fa
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory ?
 		DXGIHookState::OrigCreateDXGIFactory(riid, factory) : DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("CreateDXGIFactory",
-		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
+		"riid=%p,hr=0x%lx,factory=%p",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);
@@ -26,7 +26,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory1(REFIID riid, void **f
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory1 ?
 		DXGIHookState::OrigCreateDXGIFactory1(riid, factory) : DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("CreateDXGIFactory1",
-		"\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
+		"riid=%p,hr=0x%lx,factory=%p",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);
@@ -39,7 +39,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory2(UINT flags, REFIID ri
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory2 ?
 		DXGIHookState::OrigCreateDXGIFactory2(flags, riid, factory) : DXGI_ERROR_INVALID_CALL;
 	DX12LogManager::JsonFunc("CreateDXGIFactory2",
-		"\"flags\":\"0x%x\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"factory\":\"%p\"",
+		"flags=0x%x,riid=%p,hr=0x%lx,factory=%p",
 		flags, &riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);

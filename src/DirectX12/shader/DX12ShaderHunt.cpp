@@ -270,7 +270,7 @@ static void AdvanceStage(StageSelection &stage, HuntCopyTarget target, int delta
 	hash = SelectedHashLocked(stage);
 	ReleaseSRWLockExclusive(&gHuntLock);
 	DX12LogManager::JsonFunc("DX12HuntSelect",
-		"\"target\":\"%s\",\"selected\":%zu,\"count\":%zu,\"hash\":\"%016llx\"",
+		"target=%s,selected=%zu,count=%zu,hash=%016llx",
 		target == HuntCopyTarget::VS ? "VS" :
 		target == HuntCopyTarget::PS ? "PS" :
 		target == HuntCopyTarget::CS ? "CS" : "",
@@ -326,7 +326,7 @@ static void AdvanceIa(IaSelection &selection, HuntCopyTarget target, int delta)
 	hash = SelectedIaHashLocked(selection);
 	ReleaseSRWLockExclusive(&gHuntLock);
 	DX12LogManager::JsonFunc("DX12HuntSelect",
-		"\"target\":\"%s\",\"selected\":%zu,\"count\":%zu,\"hash\":\"%08x\"",
+		"target=%s,selected=%zu,count=%zu,hash=%08x",
 		target == HuntCopyTarget::IB ? "IB" :
 		target == HuntCopyTarget::VB ? "VB" : "",
 		selected, count, hash);
@@ -671,24 +671,24 @@ void DX12HuntToggle()
 	}
 
 	DX12LogManager::JsonFunc("DX12HuntToggle",
-		"\"stage\":\"state\",\"enabled\":%s,\"oldIa\":%zu,\"oldIb\":%zu,\"oldVb\":%zu",
+		"stage=state,enabled=%s,oldIa=%zu,oldIb=%zu,oldVb=%zu",
 		enabled ? "true" : "false", oldIa, oldIB, oldVB);
 	DX12HotPathState::Update();
 	DX12LogManager::JsonFunc("DX12HuntToggle",
-		"\"stage\":\"hotpath_update\",\"enabled\":%s",
+		"stage=hotpath_update,enabled=%s",
 		enabled ? "true" : "false");
 	if (enabled) {
 		DX12PrimeDescriptorHistoryForHunting();
-		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"prime_descriptor_history\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "stage=prime_descriptor_history,enabled=true");
 		DX12HuntRefreshOverlay();
-		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"refresh_overlay\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "stage=refresh_overlay,enabled=true");
 		DX12CommandListRuntime::BumpTrackingGeneration();
-		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"bump_generation\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "stage=bump_generation,enabled=true");
 		DX12Overlay::Show();
-		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"show_overlay\",\"enabled\":true");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "stage=show_overlay,enabled=true");
 	} else {
 		DX12Overlay::Hide();
-		DX12LogManager::JsonFunc("DX12HuntToggle", "\"stage\":\"hide_overlay\",\"enabled\":false");
+		DX12LogManager::JsonFunc("DX12HuntToggle", "stage=hide_overlay,enabled=false");
 	}
 	DX12LogManager::Text("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 }
@@ -716,7 +716,7 @@ void DX12HuntOnPresent()
 
 	if (shouldLog)
 		DX12LogManager::JsonFunc("DX12HuntIaStats",
-			"\"frame\":%llu,\"ib\":%zu,\"vb\":%zu",
+			"frame=%llu,ib=%zu,vb=%zu",
 			static_cast<unsigned long long>(gPresentFrames), ibCount, vbCount);
 }
 

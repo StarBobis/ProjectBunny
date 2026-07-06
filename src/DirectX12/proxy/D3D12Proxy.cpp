@@ -204,7 +204,7 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateDevice(adapter, minimumFeatureLevel, riid, device);
 	DX12LogManager::JsonFunc("D3D12CreateDevice",
-		"\"adapter\":\"%p\",\"minFeature\":\"0x%x\",\"hr\":\"0x%lx\",\"device\":\"%p\"",
+		"adapter=%p,minFeature=0x%x,hr=0x%lx,device=%p",
 		adapter, minimumFeatureLevel, hr, device ? *device : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapD3D12DeviceResult(riid, device);
@@ -214,12 +214,12 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 extern "C" HRESULT WINAPI D3D12GetDebugInterface(REFIID riid, void **debug)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12GetDebugInterface\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12GetDebugInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetDebugInterface)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigGetDebugInterface(riid, debug);
 	DX12LogManager::JsonFunc("D3D12GetDebugInterface",
-		"\"hr\":\"0x%lx\",\"debug\":\"%p\"", hr, debug ? *debug : nullptr);
+		"hr=0x%lx,debug=%p", hr, debug ? *debug : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapD3D12DebugInterfaceResult(riid, debug);
 	return hr;
@@ -230,12 +230,12 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 	ID3DBlob **blob, ID3DBlob **errorBlob)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12SerializeRootSignature\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12SerializeRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeRootSignature(desc, version, blob, errorBlob);
 	DX12LogManager::JsonFunc("D3D12SerializeRootSignature",
-		"\"version\":%u,\"hr\":\"0x%lx\"", static_cast<UINT>(version), hr);
+		"version=%u,hr=0x%lx", static_cast<UINT>(version), hr);
 	return hr;
 }
 
@@ -243,13 +243,13 @@ extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12CreateRootSignatureDeserializer\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12CreateRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateRootSignatureDeserializer(
 		srcData, srcDataSize, riid, rootSignatureDeserializer);
 	DX12LogManager::JsonFunc("D3D12CreateRootSignatureDeserializer",
-		"\"size\":%llu,\"hr\":\"0x%lx\",\"object\":\"%p\"",
+		"size=%llu,hr=0x%lx,object=%p",
 		static_cast<unsigned long long>(srcDataSize), hr,
 		rootSignatureDeserializer ? *rootSignatureDeserializer : nullptr);
 	return hr;
@@ -259,11 +259,11 @@ extern "C" HRESULT WINAPI D3D12SerializeVersionedRootSignature(
 	const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc, ID3DBlob **blob, ID3DBlob **errorBlob)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12SerializeVersionedRootSignature\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12SerializeVersionedRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeVersionedRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeVersionedRootSignature(desc, blob, errorBlob);
-	DX12LogManager::JsonFunc("D3D12SerializeVersionedRootSignature", "\"hr\":\"0x%lx\"", hr);
+	DX12LogManager::JsonFunc("D3D12SerializeVersionedRootSignature", "hr=0x%lx", hr);
 	return hr;
 }
 
@@ -271,13 +271,13 @@ extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12CreateVersionedRootSignatureDeserializer\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12CreateVersionedRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer(
 		srcData, srcDataSize, riid, rootSignatureDeserializer);
 	DX12LogManager::JsonFunc("D3D12CreateVersionedRootSignatureDeserializer",
-		"\"size\":%llu,\"hr\":\"0x%lx\",\"object\":\"%p\"",
+		"size=%llu,hr=0x%lx,object=%p",
 		static_cast<unsigned long long>(srcDataSize), hr,
 		rootSignatureDeserializer ? *rootSignatureDeserializer : nullptr);
 	return hr;
@@ -287,25 +287,25 @@ extern "C" HRESULT WINAPI D3D12EnableExperimentalFeatures(
 	UINT numFeatures, const IID *featureIIDs, void *configurationStructs, UINT *configurationStructSizes)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12EnableExperimentalFeatures\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12EnableExperimentalFeatures,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigEnableExperimentalFeatures)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigEnableExperimentalFeatures(
 		numFeatures, featureIIDs, configurationStructs, configurationStructSizes);
 	DX12LogManager::JsonFunc("D3D12EnableExperimentalFeatures",
-		"\"features\":%u,\"hr\":\"0x%lx\"", numFeatures, hr);
+		"features=%u,hr=0x%lx", numFeatures, hr);
 	return hr;
 }
 
 extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **object)
 {
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugJsonFunc("DX12HookCall", "\"api\":\"D3D12GetInterface\",\"this\":\"%p\"", nullptr);
+	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12GetInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetInterface)
 		return E_NOINTERFACE;
 	HRESULT hr = D3D12ProxyState::OrigGetInterface(clsid, riid, object);
 	DX12LogManager::JsonFunc("D3D12GetInterface",
-		"\"clsid\":\"%p\",\"riid\":\"%p\",\"hr\":\"0x%lx\",\"object\":\"%p\"",
+		"clsid=%p,riid=%p,hr=0x%lx,object=%p",
 		&clsid, &riid, hr, object ? *object : nullptr);
 	if (SUCCEEDED(hr) && !DX12Wrapper::WrapD3D12DeviceFactoryResult(riid, object))
 		DX12Wrapper::WrapD3D12AuxiliaryResult(riid, object);
