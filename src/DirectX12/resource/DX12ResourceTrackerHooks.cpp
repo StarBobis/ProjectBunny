@@ -523,10 +523,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 		return;
 	}
 	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
-	if (!DX12ResourceCollectQueue::Enqueue(d3dResource, desc, heapProperties, placedInfo, initialState)) {
-		DX12ResourceCreateLogUtils::LogFallback(d3dResource);
-		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
-	}
+	RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
 	// ── Install Map/Unmap hooks for buffer content capture ──────────
 	// Covers ALL creation paths (CreateCommittedResource, CreatePlacedResource,
 	// CreateReservedResource, and all _1/_2/_3 variants).

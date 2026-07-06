@@ -13,44 +13,15 @@ static constexpr int64_t kBindingQueueSlowDrainUs = 1000;
 
 void DX12BindingCollectQueue::Start()
 {
-	bool expected = false;
-	if (!started.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-		return;
-
-	stopRequested.store(false, std::memory_order_release);
-	worker = std::thread([]() { WorkerLoop(); });
-	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"Start\",\"thread\":\"%p\"",
-		worker.native_handle());
+	started.store(true, std::memory_order_release);
 }
+
 
 void DX12BindingCollectQueue::Stop()
 {
-	if (!started.load(std::memory_order_acquire))
-		return;
-
-	WaitForIdle("StopBegin");
-	stopRequested.store(true, std::memory_order_release);
-	wake.notify_all();
-	idle.notify_all();
-	if (worker.joinable())
-		worker.join();
 	started.store(false, std::memory_order_release);
-
-	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
-		"\"event\":\"Stopped\",\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"maxDepth\":%llu,\"drainCalls\":%llu,\"drainWaitUs\":%llu,\"drainMaxUs\":%llu,\"taskElapsedUs\":%llu,\"taskMaxUs\":%llu",
-		PendingCount(),
-		static_cast<unsigned long long>(enqueued.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(dequeued.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(completed.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(maxDepth.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainCalls.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainWaitUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(drainMaxUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(taskElapsedUs.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(taskMaxUs.load(std::memory_order_relaxed)));
 }
-
+//STOP_R
 void DX12BindingCollectQueue::DrainForSnapshot(const char *reason)
 {
 	WaitForIdle(reason ? reason : "Snapshot");
