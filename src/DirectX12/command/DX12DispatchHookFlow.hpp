@@ -489,17 +489,10 @@ public:
 
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
-		UINT64 bindingFingerprint = DX12PreSkinPlanUtils::BuildStableBindingFingerprint(
+		UINT64 computeIaFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
 			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
-		if (bindingFingerprint == 0)
-			bindingFingerprint = 1;
-		// Cross-frame stable fingerprint: strips GPU VA / resource ptr so the
-		// same shader+binding pattern matches across frames.
-		UINT64 crossFrameFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
-			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
-		if (crossFrameFingerprint == 0)
-			crossFrameFingerprint = 1;
-		probe->computeBindingSerial = bindingFingerprint;
+		if (computeIaFingerprint == 0)
+			computeIaFingerprint = 1;
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			"build_binding_fingerprint",
@@ -515,7 +508,7 @@ public:
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModGetCachedPreSkinProbeResult(
-			    commandList, probe->computeShaderHash, crossFrameFingerprint, &cacheEntry)) {
+			    commandList, probe->computeShaderHash, computeIaFingerprint, &cacheEntry)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				cacheEntry.applied ? "probe_cache_positive_hit" : "probe_cache_negative_hit",
@@ -527,7 +520,7 @@ public:
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
 				cacheEntry.applied ? 1 : 0,
-				static_cast<unsigned long long>(bindingFingerprint));
+				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
 			if (!cacheEntry.applied) {
 				probe->applied = false;
@@ -543,7 +536,7 @@ public:
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
-				static_cast<unsigned long long>(bindingFingerprint));
+				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
 		} else {
 			DX12OuterTimingProbeUtils::LogCpuStage(
@@ -560,7 +553,7 @@ public:
 			// sync computation below for correctness.
 			gPreSkinAsyncQueue.Enqueue(DX12PreSkinAsyncRequest(
 				probe->computeShaderHash,
-				crossFrameFingerprint,
+				computeIaFingerprint,
 				std::vector<DX12CurrentComputeUavBinding>(probe->uavs),
 				std::vector<DX12CurrentComputeUavBinding>(probe->srvs),
 				std::vector<DX12CurrentComputeUavBinding>(probe->cbvs),
@@ -609,7 +602,7 @@ public:
 		if (!positiveCacheHit || probe->applied) {
 			LARGE_INTEGER storeCacheBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModStoreCachedPreSkinningUavMatch(
-				commandList, probe->computeShaderHash, bindingFingerprint,
+				commandList, probe->computeShaderHash, computeIaFingerprint,
 				probe->applied, &probe->dispatchOverride);
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
