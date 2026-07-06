@@ -72,38 +72,12 @@ public:
 
 	void Start()
 	{
-		bool expected = false;
-		if (!started.compare_exchange_strong(expected, true))
-			return;
-
-		stopRequested.store(false);
-		workerThread = std::thread([this]() { WorkerLoop(); });
-		DX12LogManager::JsonFunc("DX12PreSkinAsyncQueue",
-			"\"event\":\"Start\",\"thread\":\"%p\"",
-			workerThread.native_handle());
+		started.store(true);
 	}
 
 	void Stop()
 	{
-		if (!started.load())
-			return;
-
-		DX12LogManager::JsonFunc("DX12PreSkinAsyncQueue",
-			"\"event\":\"StopRequested\",\"pending\":%zu,\"enqueued\":%llu,\"dequeued\":%llu,\"completed\":%llu,\"dropped\":%llu",
-			requests.size(),
-			static_cast<unsigned long long>(enqueued.load()),
-			static_cast<unsigned long long>(dequeued.load()),
-			static_cast<unsigned long long>(completed.load()),
-			static_cast<unsigned long long>(dropped.load()));
-
-		stopRequested.store(true);
-		wakeCondition.notify_all();
-		if (workerThread.joinable())
-			workerThread.join();
 		started.store(false);
-
-		DX12LogManager::JsonFunc("DX12PreSkinAsyncQueue",
-			"\"event\":\"Stopped\"");
 	}
 
 	bool Enqueue(DX12PreSkinAsyncRequest &&request)
