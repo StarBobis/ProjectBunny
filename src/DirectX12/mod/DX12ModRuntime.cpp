@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cwctype>
+#include <deque>
 #include <map>
 #include <set>
 #include <string>
@@ -445,7 +446,7 @@ public:
 
 static SRWLOCK gPreSkinLock = SRWLOCK_INIT;
 static UINT64 gComputeUavSerial = 0;
-static std::vector<DX12ComputeUavProducer> gRecentComputeUavs;
+static std::deque<DX12ComputeUavProducer> gRecentComputeUavs;
 static constexpr size_t MaxRecentComputeUavs = 512;
 static std::set<SIZE_T> gPatchedPreSkinDescriptors;
 static std::map<SIZE_T, std::wstring> gKnownPreSkinDescriptorPatches;

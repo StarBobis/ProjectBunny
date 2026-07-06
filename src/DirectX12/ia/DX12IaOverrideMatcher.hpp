@@ -547,7 +547,7 @@ static void LogPreSkinningCandidatesLimited(const DX12IaHashState &iaState)
 #if defined(_DEBUG)
 	std::vector<DX12ComputeUavProducer> producers;
 	AcquireSRWLockShared(&gPreSkinLock);
-	producers = gRecentComputeUavs;
+	producers.assign(gRecentComputeUavs.begin(), gRecentComputeUavs.end());
 	ReleaseSRWLockShared(&gPreSkinLock);
 
 	if (producers.empty())

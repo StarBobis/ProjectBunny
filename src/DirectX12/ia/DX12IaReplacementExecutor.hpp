@@ -248,6 +248,7 @@ public:
 				DX12IaHashStateCacheUtils::Store(
 					&mutableRuntimeState->iaHashStateCache,
 					&mutableRuntimeState->iaHashStateCacheClock,
+					&mutableRuntimeState->iaHashStateCacheCursor,
 					iaCacheKey,
 					hasIaHashState,
 					iaState);

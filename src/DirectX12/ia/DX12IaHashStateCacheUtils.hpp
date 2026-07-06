@@ -103,11 +103,12 @@ public:
 		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
 			DX12IaHashStateCacheKeyHash> *entries,
 		UINT64 *clock,
+		UINT *evictCursor,
 		const DX12IaHashStateCacheKey &key,
 		bool hasIaHashState,
-		const DX12IaHashState &state)
+		DX12IaHashState state)
 	{
-		if (!entries || !clock)
+		if (!entries || !clock || !evictCursor)
 			return;
 
 		typename std::unordered_map<DX12IaHashStateCacheKey,
@@ -116,44 +117,40 @@ public:
 		if (it != entries->end()) {
 			it->second.age = ++(*clock);
 			it->second.hasIaHashState = hasIaHashState;
-			it->second.state = state;
+			it->second.state = std::move(state);
 			return;
 		}
 
-		// Evict oldest if at capacity
+		// Round-robin clock eviction: O(1) amortized, no full-scan age comparison
 		if (entries->size() >= CacheCapacity) {
-			UINT64 oldestAge = UINT64_MAX;
+			size_t pos = static_cast<size_t>(*evictCursor) % CacheCapacity;
 			typename std::unordered_map<DX12IaHashStateCacheKey,
-				DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator oldest =
-				entries->end();
-			for (typename std::unordered_map<DX12IaHashStateCacheKey,
-				DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator ei =
-				entries->begin(); ei != entries->end(); ++ei) {
-				if (ei->second.age < oldestAge) {
-					oldestAge = ei->second.age;
-					oldest = ei;
-				}
-			}
-			if (oldest != entries->end())
-				entries->erase(oldest);
+				DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator victim =
+				entries->begin();
+			std::advance(victim, pos);
+			entries->erase(victim);
+			++(*evictCursor);
 		}
 
 		DX12IaHashStateCacheEntry entry;
 		entry.age = ++(*clock);
 		entry.key = key;
 		entry.hasIaHashState = hasIaHashState;
-		entry.state = state;
-		(*entries)[key] = entry;
+		entry.state = std::move(state);
+		(*entries)[key] = std::move(entry);
 	}
 
 	static void Clear(
 		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
 			DX12IaHashStateCacheKeyHash> *entries,
-		UINT64 *clock)
+		UINT64 *clock,
+		UINT *evictCursor)
 	{
 		if (entries)
 			entries->clear();
 		if (clock)
 			*clock = 0;
+		if (evictCursor)
+			*evictCursor = 0;
 	}
 };

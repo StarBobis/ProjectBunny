@@ -272,11 +272,8 @@ void DX12ModRecordComputeUavs(
 		producer.descriptor = uav.descriptor;
 		gRecentComputeUavs.push_back(std::move(producer));
 	}
-	if (gRecentComputeUavs.size() > MaxRecentComputeUavs) {
-		gRecentComputeUavs.erase(
-			gRecentComputeUavs.begin(),
-			gRecentComputeUavs.begin() +
-			static_cast<ptrdiff_t>(gRecentComputeUavs.size() - MaxRecentComputeUavs));
+	while (gRecentComputeUavs.size() > MaxRecentComputeUavs) {
+		gRecentComputeUavs.pop_front();
 	}
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 }
