@@ -7,7 +7,6 @@ add_library(DirectX12 SHARED
     proxy/DX12Wrapper.cpp
 
     # Resource tracking
-    descriptor/DX12DescriptorCollectPipeline.cpp
     resource/DX12ResourceCollectQueue.cpp
     resource/DX12ResourceTracker.cpp
     resource/DX12ResourceTrackerHooks.cpp

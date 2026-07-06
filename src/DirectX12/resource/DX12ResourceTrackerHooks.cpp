@@ -1,6 +1,6 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
-#include "DX12DescriptorCollectPipeline.hpp"
+#include "../utils/DX12DescriptorHeapShadowUtils.hpp"
 #include "DX12HookManager.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 #include "DX12ResourceTrackerHookCallbacks.hpp"
@@ -358,7 +358,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
 	record.gpuVirtualAddress = desc->BufferLocation;
 	record.viewSize = desc->SizeInBytes;
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateConstantBufferView");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
@@ -376,7 +381,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 		FillSrvBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateShaderResourceView");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
@@ -396,7 +406,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 		FillUavBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateUnorderedAccessView");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(
@@ -413,7 +428,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(
 		record.hasDesc = true;
 	}
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateRenderTargetView");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(
@@ -430,7 +450,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(
 		record.hasDesc = true;
 	}
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateDepthStencilView");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
@@ -445,7 +470,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 	record.sampler = *desc;
 	record.hasDesc = true;
 	PrepareDescriptorValueId(&record);
-	DX12DescriptorCollectPipeline::RecordDescriptor(std::move(record), "CreateSampler");
+	{
+		SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
+		DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
+		DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(ledgerCopy));
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
@@ -487,8 +517,8 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 			dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 			src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-			DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
-				device, descriptorHeapsType, dest, src, count, "CopyDescriptors");
+			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+				descriptorHeapsType, dest, src, count);
 		}
 		destOffset += count;
 		srcOffset += count;
@@ -503,9 +533,9 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
 	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking())
-		DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
-			device, descriptorHeapsType, destDescriptorRangeStart,
-			srcDescriptorRangeStart, numDescriptors, "CopyDescriptorsSimple");
+		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+			descriptorHeapsType, destDescriptorRangeStart,
+			srcDescriptorRangeStart, numDescriptors);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource(

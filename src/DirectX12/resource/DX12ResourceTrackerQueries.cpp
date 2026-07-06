@@ -1,6 +1,6 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
-#include "DX12DescriptorCollectPipeline.hpp"
+#include "../utils/DX12DescriptorHeapShadowUtils.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 
 bool DX12GetRootSignatureSummary(
@@ -1039,7 +1039,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
-	DX12DescriptorCollectPipeline::DrainForSnapshot("MetadataSnapshot");
+	// DX12DescriptorCollectPipeline::DrainForSnapshot removed — was dead code
 	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
 	if (cache.enabled && !cache.building) {
 		if (!cache.populated) {
@@ -1328,18 +1328,17 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 	if (!cpuHandle || !summary)
 		return false;
 
-	DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
 		&cpuHandle,
-		1,
-		"FindDescriptorSummaryLight");
-	AcquireSRWLockShared(&gDescriptorLock);
-	std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
-		gRuntimeDescriptorByCpuHandle.find(cpuHandle);
-	if (runtimeFound != gRuntimeDescriptorByCpuHandle.end()) {
-		FillDescriptorSummary(summary, runtimeFound->second, false, false, false);
-		ReleaseSRWLockShared(&gDescriptorLock);
+		1);
+	// Try heap slot via ShadowUtils first (per-heap lock, no global contention)
+	DescriptorRecord shadowRecord;
+	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlot(cpuHandle,
+			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &shadowRecord)) {
+		FillDescriptorSummary(summary, shadowRecord, false, false, false);
 		return true;
 	}
+	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr)) {
 		if (location.heapIndex < gDescriptorHeaps.size()) {
@@ -1374,10 +1373,12 @@ static bool FillLightSummaryLocked(SIZE_T cpuHandle, DX12DescriptorSummary *summ
 	if (!cpuHandle || !summary)
 		return false;
 
-	std::unordered_map<SIZE_T, DescriptorRecord>::iterator runtimeFound =
-		gRuntimeDescriptorByCpuHandle.find(cpuHandle);
-	if (runtimeFound != gRuntimeDescriptorByCpuHandle.end()) {
-		FillDescriptorSummary(summary, runtimeFound->second, false, false, false);
+	DescriptorRecord shadowRecord;
+	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlot(
+			cpuHandle,
+			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+			&shadowRecord)) {
+		FillDescriptorSummary(summary, shadowRecord, false, false, false);
 		return true;
 	}
 
@@ -1502,10 +1503,9 @@ void DX12FindDescriptorSummariesByCpuHandle(
 		return;
 
 	memset(found, 0, count * sizeof(uint8_t));
-	DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
 		cpuHandles,
-		count,
-		"FindDescriptorSummariesBatch");
+		count);
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (size_t i = 0; i < count; ++i) {
 		summaries[i] = DX12DescriptorSummary();
@@ -1534,15 +1534,13 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 	std::vector<uint8_t> pendingRaw;
 	if (pending) {
 		pendingRaw.resize(count);
-		DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
-			cpuHandles, count, pendingRaw.data());
+		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed — was dead code
 		memset(pending, 0, count * sizeof(uint8_t));
 	}
 	if (pending) {
 		pendingRecords.resize(count);
 		pendingDirect.resize(count);
-		DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
-			cpuHandles, count, pendingRecords.data(), pendingDirect.data());
+		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed — was dead code
 	}
 
 	AcquireSRWLockShared(&gDescriptorLock);
@@ -1582,10 +1580,9 @@ bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	if (!cpuHandle || !epoch || !summary)
 		return false;
 
-	DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
 		&cpuHandle,
-		1,
-		"FindDescriptorSummaryAtEpoch");
+		1);
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
@@ -1633,10 +1630,9 @@ bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
 	if (!cpuHandle || !epoch || !kind || !kind[0] || !summary)
 		return false;
 
-	DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
 		&cpuHandle,
-		1,
-		"FindDescriptorSummaryAtEpochAndKind");
+		1);
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||

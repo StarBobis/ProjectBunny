@@ -254,7 +254,8 @@ extern std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 extern std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 extern std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
 extern std::unordered_map<SIZE_T, DescriptorRecord> gDescriptorByCpuHandle;
-extern std::unordered_map<SIZE_T, DescriptorRecord> gRuntimeDescriptorByCpuHandle;
+// gRuntimeDescriptorByCpuHandle removed — heap slots are the single source of truth.
+// Use DX12DescriptorHeapShadowUtils::FindLatestDescriptor instead.
 extern std::vector<PsoRootRecord> gPsoRoots;
 extern std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 extern std::vector<ResourceRecord> gResources;
@@ -571,7 +572,8 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable);
 void RecordDescriptor(DescriptorRecord &&record);
-void RecordDescriptorMerged(DescriptorRecord &&record);
+// RecordDescriptorMerged replaced by DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot
+// + WriteToCpuLedger (dual-path: heap-slot fast path or CPU ledger fallback)
 void RecordDescriptorBatch(std::vector<DescriptorRecord> *records);
 void RecordRuntimeDescriptor(DescriptorRecord &&record);
 void DX12RecordRootSignatureImmediate(
@@ -581,8 +583,8 @@ void DX12RecordRootSignatureImmediate(
 	SIZE_T blobLength);
 void DX12PrimeDescriptorHistoryForHunting();
 void BumpDescriptorQuerySerial();
-void RecordDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);
-void RecordRuntimeDescriptorCopyRange(ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type, D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart, UINT count);
+// RecordDescriptorCopyRange and RecordRuntimeDescriptorCopyRange replaced by
+// DX12DescriptorHeapShadowUtils::CopyDescriptorRange
 void DX12RecordPsoRootSignatureImmediate(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature);

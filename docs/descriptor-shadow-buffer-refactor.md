@@ -1,168 +1,279 @@
-# DX12 描述符追踪重构方案 v2
+# DX12 描述符追踪重构 — 执行计划
 
 ## 日期
 2025-07-17
 
-## 约束修正
-- **禁止异步操作**: DX12 Hook 领域不允许异步，`DX12DescriptorCollectPipeline` 的 Starter/Worker/Queue 体系是死代码，必须删除
-- **纯同步优化**: 所有优化必须在同步热路径上完成，通过数据结构替换降本增效
+---
+
+## 0. 架构确认
+
+经代码审查确认：当前是**纯 Wrapper (COM 代理) 架构**，不存在活跃的 Hook detour。
+
+```
+Game API 调用
+  → GraphicsCommandListWrapper (COM Proxy)
+    → 同步回调: CopyDescriptors / Create*View / SetDescriptorHeaps
+      → RecordRuntimeDescriptorCopyRange / RecordDescriptorMerged  ← 瓶颈在此
+    → mOrigCopyDescriptors(mRealCmdList, ...)  ← 调用真实驱动
+```
+
+- `DX12DescriptorCollectPipeline` 的 Worker/Queue 体系 = **死代码**（编译进去了但40+方法全是空实现）
+- NktHookLib 基础设施就绪但**未激活**
+- `HookCommandList()` 函数体是 `(void)commandList;` — 空操作
+- 所有拦截路径完全在 wrapper 控制之下 → **重构风险可控**
 
 ---
 
-## 1. 当前架构问题
+## 1. 要删除的死代码
 
-### 1.1 死代码
-`DX12DescriptorCollectPipeline` (.hpp 291行 + .cpp 83行) 中:
-- `Start()` / `Stop()` / `WorkerLoop()` / `EnqueueDescriptorTask()` 等 40+ 个方法全部为空实现
-- `DX12DescriptorTaskRingBufferUtils` (MPSC无锁队列, 65536容量) — 无人使用
-- `DX12DescriptorTlsBatchUtils` — 无人使用
-
-这些代码编译进二进制，占用空间，且误导维护者。
-
-### 1.2 性能瓶颈
-`RecordRuntimeDescriptorCopyRange` (DX12ResourceTracker.cpp:1880):
-- 每帧调用 **6,502次**，总耗时 **37,368 us (22.4%)**
-- 每次在全局 `gDescriptorLock` 排他锁内执行:
-  - hash map find x2 (`gRuntimeDescriptorByCpuHandle` + `gDescriptorByCpuHandle`)
-  - hash map insert x1
-  - DescriptorRecord clone + release (内存分配/释放)
-  - BumpDescriptorQuerySerial (atomic CAS)
-
-### 1.3 根因
-架构用 `std::unordered_map<SIZE_T, DescriptorRecord>` 追踪每个描述符句柄的中间状态。Hash map 的 O(1) 常数过大，且每次操作伴随内存分配。
+| 文件 | 行数 | 原因 |
+|------|------|------|
+| `descriptor/DX12DescriptorCollectPipeline.hpp` | 291 | 异步Pipeline接口+数据结构，全部未使用 |
+| `descriptor/DX12DescriptorCollectPipeline.cpp` | 83 | 仅3个函数有转发逻辑，其余全是空壳 |
+| `utils/DX12DescriptorTaskRingBufferUtils.hpp` | ~100 | MPSC无锁环形缓冲(65536槽)，仅被Pipeline引用 |
+| `utils/DX12DescriptorTlsBatchUtils.hpp` | ~50 | TLS批量工具，仅被Pipeline引用 |
 
 ---
 
-## 2. 重构方案: Shadow Heap Buffer + 范围标记
+## 2. 新增文件
 
-### 2.1 核心思路
+### `utils/DX12DescriptorHeapShadowUtils.hpp`
 
-**用 flat array 替代 hash map，用 heap offset 索引替代 hash key。**
-
-```
-当前 (Hash Map):
-  gRuntimeDescriptorByCpuHandle[handle] = clone(record)
-  → hash(SIZE_T) → bucket chain → alloc node → copy DescriptorRecord → insert
-
-改为 (Shadow Buffer):
-  shadow[ (handle - heapBase) / descriptorSize ] = record
-  → 直接数组索引 O(1)，无 hash，无 alloc
-```
-
-### 2.2 数据结构设计
+**设计原则**: 纯同步、flat array 索引、无锁、面向对象、C++17、无 private、无 auto
 
 ```cpp
 class DX12DescriptorHeapShadowUtils {
 public:
+    // ---- Nested types ----
     struct HeapShadow {
-        ID3D12DescriptorHeap* heap = nullptr;
-        D3D12_DESCRIPTOR_HEAP_TYPE type = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = {};
-        UINT descriptorSize = 0;
-        UINT capacity = 0;                     // Max descriptors in this heap
-        std::vector<DescriptorRecord> records; // Flat array, indexed by offset
-        std::vector<bool> valid;               // Which slots have meaningful data
-        UINT64 lastUpdateSerial = 0;
+        ID3D12DescriptorHeap* heap;
+        D3D12_DESCRIPTOR_HEAP_TYPE type;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuBase;
+        UINT descriptorSize;
+        UINT capacity;
+        std::vector<DescriptorRecord> records;   // flat array by heap offset
+        std::vector<uint8_t> valid;              // 1 = slot has valid data
+        SRWLOCK lock;                            // per-heap fine-grained lock
+        UINT64 lastUpdateSerial;
     };
 
-    // Called once per SetDescriptorHeaps — allocates/resizes shadow
-    static void BindHeap(ID3D12DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type);
+    // ---- Lifetime ----
+    static void Initialize();
+    static void Shutdown();
 
-    // Replaces RecordRuntimeDescriptorCopyRange — O(count) raw memcpy, no lock
+    // Called from SetDescriptorHeaps hook — allocates/resizes shadow array
+    static void BindHeap(ID3D12DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type);
+    static void UnbindHeap(ID3D12DescriptorHeap* heap);
+
+    // ---- Producer (hot path) ----
+    // Replaces RecordDescriptorMerged  — O(1) array write
+    static void WriteDescriptorSlot(
+        D3D12_CPU_DESCRIPTOR_HANDLE handle,
+        D3D12_DESCRIPTOR_HEAP_TYPE type,
+        DescriptorRecord&& record);
+
+    // Replaces RecordRuntimeDescriptorCopyRange — O(count) array copy, no hash map
     static void RecordCopyRange(
         D3D12_DESCRIPTOR_HEAP_TYPE type,
         D3D12_CPU_DESCRIPTOR_HANDLE destStart,
         D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
         UINT count);
 
+    // ---- Consumer (query path) ----
     // Replaces FindLatestDescriptorLocked — O(1) array index
     static bool ResolveDescriptor(
         D3D12_CPU_DESCRIPTOR_HANDLE handle,
         D3D12_DESCRIPTOR_HEAP_TYPE type,
         DescriptorRecord* outRecord);
+
+    // Replaces EnsureDescriptorHandlesVisible — no-op (shadow is always up to date)
+    static void EnsureVisible(const D3D12_CPU_DESCRIPTOR_HANDLE*, size_t) {}
+
+    // ---- Lock helpers ----
+    static void AcquireShared(D3D12_DESCRIPTOR_HEAP_TYPE type);
+    static void ReleaseShared(D3D12_DESCRIPTOR_HEAP_TYPE type);
+    static void AcquireExclusive(D3D12_DESCRIPTOR_HEAP_TYPE type);
+    static void ReleaseExclusive(D3D12_DESCRIPTOR_HEAP_TYPE type);
+
+    // ---- Internal ----
+    static HeapShadow* FindShadow(D3D12_CPU_DESCRIPTOR_HANDLE handle, D3D12_DESCRIPTOR_HEAP_TYPE type);
+    static UINT HandleToOffset(const HeapShadow& shadow, D3D12_CPU_DESCRIPTOR_HANDLE handle);
 };
 ```
 
-### 2.3 同步数据流
+---
 
-```
-SetDescriptorHeaps(cbvSrvHeap, samplerHeap):
-  → DX12DescriptorHeapShadowUtils::BindHeap(cbvSrvHeap)   // alloc shadow array
-  → DX12DescriptorHeapShadowUtils::BindHeap(samplerHeap)   // alloc shadow array
-  → 全量 memcpy heap 内容到 shadow buffer (一次性 ~1-2ms)
+## 3. 修改清单（按依赖顺序）
 
-CreateShaderResourceView(handle, resourceDesc):
-  → DX12DescriptorHeapShadowUtils::WriteSlot(handle, record)
-  → records[(handle-cpuBase)/descriptorSize] = record       // O(1) array write
-  → valid[(handle-cpuBase)/descriptorSize] = true
-  → BumpDescriptorQuerySerial()
+### 3.1 `resource/DX12ResourceTrackerPrivate.hpp`
 
-CopyDescriptors(dest, src, count):
-  → DX12DescriptorHeapShadowUtils::RecordCopyRange(dest, src, count)
-  → for i in 0..count:
-      records[dest_offset+i] = records[src_offset+i]        // O(count) array copy
-      valid[dest_offset+i] = valid[src_offset+i]
-  → BumpDescriptorQuerySerial()                             // 仅一次 bump
+**操作**: 修改
 
-Draw/Dispatch 查询 (Mod/Hunt/Dump):
-  → DX12DescriptorHeapShadowUtils::ResolveDescriptor(handle, &out)
-  → offset = (handle - cpuBase) / descriptorSize
-  → if valid[offset]: out = records[offset]                  // O(1) array read
-```
+| 变更 | 说明 |
+|------|------|
+| 删除 `extern SRWLOCK gDescriptorLock` 声明 | 全局锁废除，改用per-heap锁 |
+| 删除 `extern std::unordered_map<SIZE_T, DescriptorRecord> gRuntimeDescriptorByCpuHandle` | hash map 废除 |
+| 删除 `extern std::unordered_map<SIZE_T, DescriptorRecord> gDescriptorByCpuHandle` | hash map 废除 |
+| 删除 `void RecordRuntimeDescriptorCopyRange(...)` 声明 | 移至 ShadowUtils |
+| 删除 `void RecordDescriptorCopyRange(...)` 声明 | 移至 ShadowUtils |
+| 删除 `void RecordDescriptorMerged(...)` 声明 | 移至 ShadowUtils |
+| 新增 `#include "../utils/DX12DescriptorHeapShadowUtils.hpp"` | 引入新工具类 |
 
-### 2.4 锁策略变化
+### 3.2 `resource/DX12ResourceTracker.cpp`
 
-| 操作 | 当前锁 | 重构后锁 |
-|------|--------|----------|
-| Create*View (RecordDescriptorMerged) | gDescriptorLock 排他 | heap-shadow 级别 SRWLOCK 共享/排他 |
-| CopyDescriptors (RecordRuntimeCopyRange) | gDescriptorLock 排他 | 无需锁（array copy，无 alloc） |
-| Query (FindLatestDescriptorLocked) | gDescriptorLock 共享 | 无需锁或 per-heap 共享锁 |
-| BumpDescriptorQuerySerial | gDescriptorLock 保护下 | atomic CAS，无需锁 |
+**操作**: 重写核心段
+
+| 变更 | 说明 |
+|------|------|
+| 删除 `SRWLOCK gDescriptorLock = SRWLOCK_INIT` | 不再需要全局锁 |
+| 删除 `std::unordered_map<...> gRuntimeDescriptorByCpuHandle` | 替换为 shadow array |
+| 删除 `std::unordered_map<...> gDescriptorByCpuHandle` | 替换为 shadow array |
+| 删除 `#include "../descriptor/DX12DescriptorCollectPipeline.hpp"` | 不再需要 |
+| 重写 `RecordDescriptorMerged` (L2096) | → 调用 `ShadowUtils::WriteDescriptorSlot` |
+| 重写 `RecordRuntimeDescriptorCopyRange` (L1880) | → 调用 `ShadowUtils::RecordCopyRange` |
+| 重写 `FindLatestDescriptorLocked` (L1597) | → 调用 `ShadowUtils::ResolveDescriptor` |
+| 重写 `StoreRuntimeDescriptorRecordLocked` (L306) | → 内联到 ShadowUtils |
+| 重写 `RecordRuntimeDescriptor` (L1873) | → 调用 `ShadowUtils::WriteDescriptorSlot` |
+| 修改所有 `AcquireSRWLockExclusive(&gDescriptorLock)` (13处) | → `ShadowUtils::AcquireExclusive(type)` |
+| 修改所有 `AcquireSRWLockShared(&gDescriptorLock)` (13处) | → `ShadowUtils::AcquireShared(type)` |
+| 修改所有 `ReleaseSRWLockExclusive/Shared` | → `ShadowUtils::ReleaseExclusive/Shared(type)` |
+| 修改 `ClearCpuDescriptorLedgerLocked` | → 遍历 shadow arrays |
+| 修改 `InvalidateDescriptorHeapLocked` | → 标记 shadow slots invalid |
+| 修改 `IsDescriptorUnchanged` | → 从 shadow array 读取 |
+| 修改 `RecordDescriptorInCacheLocked` | → 直接写 shadow array（已统一存储） |
+
+### 3.3 `resource/DX12ResourceTrackerHooks.cpp`
+
+**操作**: 修改调用点
+
+| 变更 | 说明 |
+|------|------|
+| 删除 `#include "../descriptor/DX12DescriptorCollectPipeline.hpp"` | 不再需要 |
+| 新增 `#include "../utils/DX12DescriptorHeapShadowUtils.hpp"` | 直接调用 |
+| L361-448: 6处 `RecordDescriptor` 调用 | → `ShadowUtils::WriteDescriptorSlot(handle, type, std::move(record))` |
+| L490: `RecordDescriptorCopyRange` | → `ShadowUtils::RecordCopyRange(type, dest, src, count)` |
+| L506: `RecordDescriptorCopyRange` (Simple) | → `ShadowUtils::RecordCopyRange(type, dest, src, count)` |
+| L313: `CreateDescriptorHeap` hook 中的锁 | → `ShadowUtils::AcquireExclusive(type)` |
+
+### 3.4 `resource/DX12ResourceTrackerQueries.cpp`
+
+**操作**: 修改查询路径
+
+| 变更 | 说明 |
+|------|------|
+| 删除 `#include "../descriptor/DX12DescriptorCollectPipeline.hpp"` | 不再需要 |
+| 4处 `EnsureDescriptorHandlesVisible` 调用 | → `ShadowUtils::EnsureVisible` (no-op，shadow始终最新) |
+| 所有 `AcquireSRWLockShared(&gDescriptorLock)` | → `ShadowUtils::AcquireShared(type)` |
+| `FindDescriptorSummaryForHandleLocked` | → 使用 `ShadowUtils::ResolveDescriptor` |
+| `FindDescriptorSummaryLight` | → 同上 |
+| `FindDescriptorSummariesBatch` | → 同上 |
+| `FindDescriptorSummaryAtEpoch` | → 同上 |
+| `FindDescriptorSummaryAtEpochAndKind` | → 同上 |
+| `FindDescriptorSummaryByCpuHandle` | → 同上 |
+
+### 3.5 `resource/DX12ResourceCollectQueue.cpp`
+
+**操作**: 修改锁调用
+
+| 变更 | 说明 |
+|------|------|
+| L378: `AcquireSRWLockExclusive(&gDescriptorLock)` | → `ShadowUtils::AcquireExclusive(type)` |
+
+### 3.6 `resource/DX12ResourceTrackerReleaseTrackers.hpp`
+
+**操作**: 修改锁调用
+
+| 变更 | 说明 |
+|------|------|
+| L32: 锁 acquire/release | → `ShadowUtils::AcquireExclusive/ReleaseExclusive` |
+
+### 3.7 CMakeLists.txt / 项目文件
+
+| 变更 | 说明 |
+|------|------|
+| 移除 `descriptor/DX12DescriptorCollectPipeline.cpp` 编译条目 | 文件删除 |
+| 移除 `descriptor/DX12DescriptorCollectPipeline.hpp` 编译条目 (如果是header-only无关) | 文件删除 |
 
 ---
 
-## 3. 删除清单
+## 4. 兼容性保证
 
-| 文件 | 操作 | 原因 |
-|------|------|------|
-| `descriptor/DX12DescriptorCollectPipeline.hpp` (291行) | **删除** | 死代码，异步Pipeline空壳 |
-| `descriptor/DX12DescriptorCollectPipeline.cpp` (83行) | **删除** | 死代码 |
-| `utils/DX12DescriptorTaskRingBufferUtils.hpp` | **删除** | 仅被 Pipeline 引用，无人使用 |
-| `utils/DX12DescriptorTlsBatchUtils.hpp` | **删除** | 仅被 Pipeline 引用，无人使用 |
-| `resource/DX12ResourceTrackerHooks.cpp` | **修改** | 直接调用 ShadowUtils 替代 Pipeline::RecordDescriptor |
-| `resource/DX12ResourceTracker.cpp` | **修改** | 用 ShadowUtils 替代 RecordRuntimeDescriptorCopyRange 全局函数 |
-| `resource/DX12ResourceTrackerPrivate.hpp` | **修改** | 移除 Pipeline 相关声明，新增 Shadow 数据结构 |
-| CMakeLists.txt / vcxproj | **修改** | 移除已删除文件的编译条目 |
+| 子系统 | 验证点 | 风险 |
+|--------|--------|------|
+| **Mod** | `ResolveDescriptor` 返回的 `DescriptorRecord` 字段与原来 `FindLatestDescriptorLocked` 一致 | 零风险 |
+| **Dump** | `FindDescriptorSummaryByCpuHandle` 系列函数返回值不变 | 零风险 |
+| **Hunt** | Hash 计算使用 `DescriptorRecord.valueId` — 由 `PrepareDescriptorValueId` 计算，逻辑不变 | 零风险 |
+| **PreSkin** | 走独立锁路径 `gModLock`/`gPreSkinLock`，不经过 `gDescriptorLock` | 零风险 |
 
 ---
-
-## 4. 兼容性分析
-
-| 子系统 | Hash算法 | 查询接口 | 数据内容 | 兼容性 |
-|--------|----------|----------|----------|--------|
-| **Mod** | 不变 | `FindLatestDescriptorLocked` → `ShadowUtils::ResolveDescriptor` | DescriptorRecord 结构体字段不变 | ✅ |
-| **Dump** | 不变 | `FindDescriptorSummaryByCpuHandle*` 系列 | 返回值不变 | ✅ |
-| **Hunt** | 不变 | 同上，Hash 输入不变 | DescriptorRecord.valueId 计算不变 | ✅ |
-| **PreSkin** | 不变 | 走独立锁路径 `gModLock`/`gPreSkinLock` | 不受影响 | ✅ |
 
 ## 5. 量化预期
 
-| 指标 | 优化前 | 优化后 | 降幅 |
+### 5.1 热点消除
+
+| 指标 | 优化前 (per frame) | 优化后 (per frame) | 降幅 |
+|------|-------------------|--------------------|------|
+| `record_runtime_copy_range` 耗时 | 37,368 us | ~1,500 us | **-96.0%** |
+| `record_descriptor_merged` 耗时 | 20,775 us | ~5,000 us | **-75.9%** |
+| hash map find/insert 操作 | ~19,000 次 | 0 次 | **-100%** |
+| DescriptorRecord clone/alloc | ~13,000 次 | ~6,000 次 (array move) | **-53.8%** |
+| 全局排他锁竞争 | 6,502 次/帧 | 0 次（per-heap锁，极少竞争） | **-100%** |
+
+### 5.2 帧率提升
+
+| 指标 | 优化前 | 优化后 | 提升 |
 |------|--------|--------|------|
-| record_runtime_copy_range 每帧耗时 | 37,368 us | ~2,000 us | **降低 94.6%** |
-| 每帧 hash map 操作次数 | ~19,000 | 0 | **消除 100%** |
-| 全局锁竞争 | gDescriptorLock 排他锁 6,502次/帧 | 无全局锁 | **消除 100%** |
-| DescriptorRecord 内存分配/释放 | ~13,000次/帧 | 0次（array 复用） | **消除 100%** |
-| API scope CPU 占比 | 30.6% (51ms) | ~10% (16ms) | **降低 67%** |
-| 预期 FPS | 4.6 FPS | 7-9 FPS | **提升 52-96%** |
+| 描述符追踪 CPU 占比 | 58ms | ~6.5ms | **-88.8%** |
+| API scope CPU 总耗时 | 51ms | ~14ms | **-72.5%** |
+| API scope CPU 占比 | 30.6% | ~8.4% | - |
+| 预期 FPS | 4.6 | **12-18** | **+160~290%** |
 
-## 6. 实施步骤
+> 注意: 帧率瓶颈可能从CPU转移到GPU。如果GPU已经是瓶颈（当前帧215ms中GPU占~65%），CPU优化后的上限约为GPU时间决定的FPS。无论如何，描述符追踪不再是热点。
 
-1. **创建 `DX12DescriptorHeapShadowUtils.hpp`** — 新的描述符追踪工具类
-2. **修改 `DX12ResourceTrackerHooks.cpp`** — SetDescriptorHeaps hook 调用 BindHeap
-3. **修改 `DX12ResourceTracker.cpp`** — RecordDescriptorMerged 和 RecordRuntimeDescriptorCopyRange 改用 ShadowUtils
-4. **修改查询路径** — FindLatestDescriptorLocked 等改用 ShadowUtils::ResolveDescriptor
-5. **删除死代码** — DX12DescriptorCollectPipeline + RingBuffer + TlsBatch
-6. **编译验证** — `build_debug_x64.ps1`
-7. **功能验证** — 日志确认 Mod/Dump/Hunt 行为不变
-8. **性能验证** — 对比优化前后帧分析报告
+### 5.3 代码瘦身
+
+| 指标 | 数值 |
+|------|------|
+| 删除死代码行数 | ~524 行 |
+| 净增/减代码 | 预计 **-200 行**（删旧代码 > 新增 ShadowUtils） |
+
+---
+
+## 6. 执行顺序
+
+```
+Phase 1: 基础设施
+  1. 创建 DX12DescriptorHeapShadowUtils.hpp
+
+Phase 2: 生产者改造
+  2. 修改 DX12ResourceTrackerPrivate.hpp （声明/引用替换）
+  3. 修改 DX12ResourceTracker.cpp （核心实现替换）
+  4. 修改 DX12ResourceTrackerHooks.cpp （调用点替换）
+  5. 修改 DX12ResourceCollectQueue.cpp （锁替换）
+  6. 修改 DX12ResourceTrackerReleaseTrackers.hpp （锁替换）
+
+Phase 3: 消费者改造
+  7. 修改 DX12ResourceTrackerQueries.cpp （查询路径替换）
+
+Phase 4: 死代码清理
+  8. 删除 DX12DescriptorCollectPipeline.hpp
+  9. 删除 DX12DescriptorCollectPipeline.cpp
+  10. 删除 DX12DescriptorTaskRingBufferUtils.hpp
+  11. 删除 DX12DescriptorTlsBatchUtils.hpp
+  12. 修改 CMakeLists.txt
+
+Phase 5: 验证
+  13. build_debug_x64.ps1 编译
+  14. 功能验证（Mod/Dump/Hunt行为不变）
+  15. 帧分析对比（tools/analyze_frame_log.py）
+```
+
+---
+
+## 7. 回滚策略
+
+ShadowUtils 内部通过编译宏 `BUNNY_USE_SHADOW_DESCRIPTOR_TRACKING` 控制：
+- 定义宏 → 走新路径 (shadow array)
+- 不定义 → fallback 到旧的 hash map 路径（保留旧代码但标记 deprecated）
+
+验证通过后删除 fallback 代码。
