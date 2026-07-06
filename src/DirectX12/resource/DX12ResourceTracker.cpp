@@ -1933,26 +1933,5 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 
 
 
-void RecordDescriptorMerged(DescriptorRecord &&record)
-{
-	if (!record.cpuHandle) {
-		ReleaseDescriptorRecordResources(&record);
-		return;
-	}
-	if (record.valueId == 0) {
-		PrepareDescriptorValueId(&record);
-	}
-
-	// Try heap-slot fast path first; fall back to CPU ledger if the handle
-	// is not in any known descriptor heap.
-	SIZE_T cpuHandle = record.cpuHandle;
-	DescriptorRecord runtimeClone = CloneDescriptorRecord(record);
-	
-	// Write to heap slot (per-heap locked, no global contention)
-	DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(cpuHandle, std::move(record));
-	
-	// Also write to CPU ledger for find-by-handle queries
-	DX12DescriptorHeapShadowUtils::WriteToCpuLedger(CloneDescriptorRecord(runtimeClone));
-	
-	ReleaseDescriptorRecordResources(&runtimeClone);
-}
+// RecordDescriptorMerged removed — dead code.  Hooks now call
+// DX12DescriptorHeapShadowUtils::RecordDescriptor directly.
