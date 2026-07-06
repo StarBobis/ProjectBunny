@@ -577,6 +577,24 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 {
 	if (!commandList)
 		return false;
+
+	// Per-command-list PreSkin binding cache: when compute bindings have not
+	// changed since the last collection, reuse cached vectors.  Keyed by
+	// computeBindingSerial which bumps on every root signature / descriptor
+	// table / root descriptor / root constant change.
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (runtimeState && runtimeState->preSkinBindingsCached) {
+		UINT64 currentSerial = runtimeState->computeBindingSerial;
+		if (currentSerial == runtimeState->lastPreSkinBindingSerial) {
+			if (uavs) *uavs = runtimeState->cachedPreSkinUavs;
+			if (srvs) *srvs = runtimeState->cachedPreSkinSrvs;
+			if (cbvs) *cbvs = runtimeState->cachedPreSkinCbvs;
+			if (constants) *constants = runtimeState->cachedPreSkinConstants;
+			return !uavs->empty() || !srvs->empty() || !cbvs->empty() || !constants->empty();
+		}
+	}
+
 	if (uavs) uavs->clear();
 	if (srvs) srvs->clear();
 	if (cbvs) cbvs->clear();
@@ -970,6 +988,18 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	if (srvs) *srvs = localSrvs;
 	if (cbvs) *cbvs = localCbvs;
 	if (constants) *constants = localConstants;
+
+	// Store collected bindings in the per-command-list cache so subsequent
+	// dispatches on the same command list with unchanged bindings can reuse
+	// them without re-snapshotting and re-parsing the root signature.
+	if (runtimeState) {
+		runtimeState->lastPreSkinBindingSerial = runtimeState->computeBindingSerial;
+		runtimeState->cachedPreSkinUavs = localUavs;
+		runtimeState->cachedPreSkinSrvs = localSrvs;
+		runtimeState->cachedPreSkinCbvs = localCbvs;
+		runtimeState->cachedPreSkinConstants = localConstants;
+		runtimeState->preSkinBindingsCached = true;
+	}
 
 	return foundAny;
 }

@@ -9,6 +9,7 @@
 #include "DX12CompiledDispatchDecision.hpp"
 #include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
+#include "binding/DX12BindingTrackerTypes.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
 
 class DX12CommandListRuntimeState
@@ -49,4 +50,14 @@ public:
 	// Compiled per-PSO draw policy. Draw consumes this instead of rediscovering
 	// PSO shader override metadata on every command.
 	DX12CompiledDrawDecision drawDecision;
+
+	// PreSkin binding collection cache — keyed by computeBindingSerial.
+	// Avoids re-collecting CBV/SRV/UAV/constants on every dispatch when
+	// compute bindings have not changed since the last collection.
+	UINT64 lastPreSkinBindingSerial = 0;
+	bool preSkinBindingsCached = false;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinUavs;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
+	std::vector<DX12CurrentRootConstants> cachedPreSkinConstants;
 };

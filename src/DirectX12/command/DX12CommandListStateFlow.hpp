@@ -29,6 +29,15 @@ public:
 		DX12CommandListRuntimeState *runtimeState,
 		ID3D12PipelineState *pipelineState)
 	{
+		// Same-PSO fast path: when the identical PSO is set again, skip all
+		// tracking, cache lookups, and decision compilation.  The cached
+		// replacement PSO (if any) was resolved on the first Set of this PSO.
+		if (runtimeState && runtimeState->pipelineState == pipelineState) {
+			DX12_PROFILE_FAST_FORWARD();
+			return runtimeState->cachedReplacementPso
+				? runtimeState->cachedReplacementPso : pipelineState;
+		}
+
 		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() &&
 		    !DX12ModHasActiveShaderOverrides()) {
 			DX12_PROFILE_FAST_FORWARD();
