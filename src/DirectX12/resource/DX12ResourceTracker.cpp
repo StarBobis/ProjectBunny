@@ -2091,3 +2091,38 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
 
+
+
+void RecordDescriptorMerged(DescriptorRecord &&record)
+{
+	if (!record.cpuHandle) {
+		ReleaseDescriptorRecordResources(&record);
+		return;
+	}
+	if (record.valueId == 0)
+		PrepareDescriptorValueId(&record);
+
+	DescriptorRecord runtimeClone = CloneDescriptorRecord(record);
+
+	const auto lockBegin = std::chrono::steady_clock::now();
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	StoreRuntimeDescriptorRecordLocked(runtimeClone);
+	RecordDescriptorInCacheLocked(std::move(record), false);
+	BumpDescriptorQuerySerial();
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gDescriptorExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
+			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+		DX12LogManager::DebugJsonFunc("DX12DescriptorLockSlow",
+			"\"source\":\"RecordDescriptorMerged\",\"elapsedUs\":%lld,\"present\":%ld,\"threadId\":%lu",
+			static_cast<long long>(elapsedUs),
+			DX12RuntimeState::GetPresentCount(),
+			GetCurrentThreadId());
+	}
+
+	ReleaseDescriptorRecordResources(&runtimeClone);
+}

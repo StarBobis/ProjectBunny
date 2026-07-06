@@ -571,6 +571,7 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable);
 void RecordDescriptor(DescriptorRecord &&record);
+void RecordDescriptorMerged(DescriptorRecord &&record);
 void RecordDescriptorBatch(std::vector<DescriptorRecord> *records);
 void RecordRuntimeDescriptor(DescriptorRecord &&record);
 void DX12RecordRootSignatureImmediate(

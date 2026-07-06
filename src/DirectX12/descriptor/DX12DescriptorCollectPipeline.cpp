@@ -2,94 +2,41 @@
 #include "DX12LogManager.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
 
-// --- RecordDescriptor: write to BOTH runtime and heap/ledger tables ---
-
-void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *source)
+void DX12DescriptorCollectPipeline::RecordDescriptor(DescriptorRecord &&record, const char *)
 {
-	LARGE_INTEGER runtimeBegin = DX12OuterTimingProbeUtils::Now();
-	::RecordRuntimeDescriptor(CloneDescriptorRecord(record));
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+	::RecordDescriptorMerged(std::move(record));
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"DescriptorCollectPipeline",
-		"record_runtime_descriptor",
-		0,
-		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(runtimeBegin));
-	LARGE_INTEGER directBegin = DX12OuterTimingProbeUtils::Now();
-	::RecordDescriptor(std::move(record));
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"DescriptorCollectPipeline",
-		"record_descriptor_direct",
-		0,
-		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(directBegin));
+		"record_descriptor_merged",
+		0, 1,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 }
 
-// --- RecordDescriptorCopyRange: write to BOTH runtime and heap/ledger tables ---
-
 void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
-	ID3D12Device *device,
-	D3D12_DESCRIPTOR_HEAP_TYPE type,
-	D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-	UINT count,
-	const char *source)
+	ID3D12Device *device, D3D12_DESCRIPTOR_HEAP_TYPE type,
+	D3D12_CPU_DESCRIPTOR_HANDLE destStart, D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
+	UINT count, const char *)
 {
-	if (!device || count == 0)
-		return;
-
-	LARGE_INTEGER runtimeBegin = DX12OuterTimingProbeUtils::Now();
+	if (!device || count == 0) return;
+	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 	::RecordRuntimeDescriptorCopyRange(device, type, destStart, srcStart, count);
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"DescriptorCollectPipeline",
 		"record_runtime_copy_range",
-		1,
-		count,
-		DX12OuterTimingProbeUtils::ElapsedUs(runtimeBegin));
-	LARGE_INTEGER directBegin = DX12OuterTimingProbeUtils::Now();
+		1, count,
+		DX12OuterTimingProbeUtils::ElapsedUs(begin));
 	::RecordDescriptorCopyRange(device, type, destStart, srcStart, count);
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"DescriptorCollectPipeline",
-		"copy_range_direct",
-		1,
-		count,
-		DX12OuterTimingProbeUtils::ElapsedUs(directBegin));
 }
 
-// --- All queue / worker / pipeline infrastructure is now dead ---
-// Descriptors are written to gDescriptorHeaps / gDescriptorByCpuHandle
-// synchronously during the hook call.  No async worker, no ring buffer,
-// no EnsureDescriptorHandlesVisible blocking.
-
-void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(
-	const SIZE_T *, size_t, const char *) {}
-
-void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
-	const SIZE_T *, size_t, uint8_t *pending)
-{
-	if (pending) memset(pending, 0, sizeof(uint8_t));
-}
-
-void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
-	const SIZE_T *, size_t, DescriptorRecord *, uint8_t *found)
-{
-	if (found) memset(found, 0, sizeof(uint8_t));
-}
-
+void DX12DescriptorCollectPipeline::EnsureDescriptorHandlesVisible(const SIZE_T *, size_t, const char *) {}
+void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(const SIZE_T *, size_t, uint8_t *p) { if (p) memset(p, 0, 1); }
+void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(const SIZE_T *, size_t, DescriptorRecord *, uint8_t *f) { if (f) memset(f, 0, 1); }
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *) {}
-
-void DX12DescriptorCollectPipeline::Stop()
-{
-	started.store(false, std::memory_order_release);
-}
-
+void DX12DescriptorCollectPipeline::Stop() { started.store(false, std::memory_order_release); }
 void DX12DescriptorCollectPipeline::Start() {}
-
 void DX12DescriptorCollectPipeline::WorkerLoop() {}
-
 size_t DX12DescriptorCollectPipeline::PendingCount() { return 0; }
-
-// --- Stubs for functions referenced from the old pipeline that are now dead ---
-
 bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *, const char *) { return false; }
 void DX12DescriptorCollectPipeline::ProcessTask(DX12DescriptorCollectTask *, const char *) {}
 void DX12DescriptorCollectPipeline::ReleaseTask(DX12DescriptorCollectTask *) {}
