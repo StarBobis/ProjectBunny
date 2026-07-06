@@ -53,6 +53,10 @@ public:
 	bool hasCsHash = false;
 	std::map<uint32_t, uint32_t> preSkinMatchCsSrvHashes;
 	std::map<uint32_t, std::wstring> preSkinCsSrvResources;
+	// Draw-call texture slot replacement (ps-tN/vs-tN/this=).
+	std::map<uint32_t, std::wstring> drawPsSrvResources;
+	std::map<uint32_t, std::wstring> drawVsSrvResources;
+	std::wstring drawReplaceThisResource;
 	NumericMatch matchVertexCount;
 	NumericMatch matchIndexCount;
 	NumericMatch matchInstanceCount;
@@ -449,6 +453,25 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"srv", L"", &srvIndex)) {
 				config.preSkinCsSrvResources[srvIndex] =
+					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				continue;
+			}
+
+			// Draw-call texture slot replacement: ps-tN / vs-tN / this=
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"ps-t", L"", &srvIndex)) {
+				config.drawPsSrvResources[srvIndex] =
+					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				continue;
+			}
+
+			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"vs-t", L"", &srvIndex)) {
+				config.drawVsSrvResources[srvIndex] =
+					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				continue;
+			}
+
+			if (key == L"this") {
+				config.drawReplaceThisResource =
 					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
 				continue;
 			}

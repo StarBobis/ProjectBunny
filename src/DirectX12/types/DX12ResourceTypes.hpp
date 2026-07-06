@@ -97,6 +97,8 @@ public:
 	bool hasCurrentState = false;
 	bool stateTrackedByBarrier = false;
 	bool hasDesc = false;
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	bool hasSrvDesc = false;
 	UINT viewFormat = 0;
 	UINT viewDimension = 0;
 	UINT cbvSize = 0;

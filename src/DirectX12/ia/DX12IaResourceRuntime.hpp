@@ -54,6 +54,27 @@ static void ReleaseLoadedResourceObjects(DX12LoadedResource *resource)
 		resource->srvHeap->Release();
 		resource->srvHeap = nullptr;
 	}
+	if (resource->drawSrvTextureResource) {
+		RetirePreSkinResource(resource->drawSrvTextureResource);
+		resource->drawSrvTextureResource = nullptr;
+	}
+	if (resource->drawSrvUploadResource) {
+		RetirePreSkinResource(resource->drawSrvUploadResource);
+		resource->drawSrvUploadResource = nullptr;
+	}
+	if (resource->drawSrvHeap) {
+		RetirePreSkinDescriptorHeap(resource->drawSrvHeap);
+		resource->drawSrvHeap = nullptr;
+	}
+	for (std::map<UINT64, ID3D12DescriptorHeap*>::iterator heapIt =
+		     resource->drawSrvCompatibleHeaps.begin();
+	     heapIt != resource->drawSrvCompatibleHeaps.end(); ++heapIt) {
+		if (heapIt->second)
+			RetirePreSkinDescriptorHeap(heapIt->second);
+	}
+	resource->drawSrvCompatibleHeaps.clear();
+	resource->drawSrvCompatibleCpus.clear();
+	resource->drawSrvCpu = {};
 }
 
 static DX12IaHashState EmptyIaHashState();
@@ -416,12 +437,18 @@ static bool DescriptorBindingMatchesTarget(
 	return false;
 }
 
-static uint32_t HashDescriptorBinding(const DX12CurrentShaderResourceBinding &binding)
+static uint32_t HashDescriptorBinding(
+	ID3D12GraphicsCommandList *commandList,
+	const DX12CurrentShaderResourceBinding &binding)
 {
-	if (binding.hasDescriptor)
-		return DX12HashDescriptorBufferView(
-			&binding.descriptor, binding.gpuVirtualAddress,
-			binding.descriptor.viewSize);
+	if (binding.hasDescriptor) {
+		ID3D12Device *device = AcquireModDevice(commandList);
+		const uint32_t hash =
+			DX12TextureHashUtils::DescriptorHuntHash(device, binding);
+		if (device)
+			device->Release();
+		return hash;
+	}
 	if (binding.rootDescriptor && binding.gpuVirtualAddress) {
 		DX12BufferResourceSummary summary = {};
 		const UINT64 probeSize = 1;
@@ -433,6 +460,16 @@ static uint32_t HashDescriptorBinding(const DX12CurrentShaderResourceBinding &bi
 		}
 		return DX12HashBufferResourceView(nullptr, binding.gpuVirtualAddress, probeSize);
 	}
+	return 0;
+}
+
+static uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBinding &binding)
+{
+	if (!binding.hasDescriptor || !binding.descriptor.hasResourceDesc)
+		return 0;
+	if (binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		return DX12TextureHashUtils::Dx11StyleTexture2DDescHash(
+			binding.descriptor.resourceDesc, 0);
 	return 0;
 }
 
@@ -483,15 +520,53 @@ static bool FindTextureOverridesByHash(
 	return matched;
 }
 
+static void AppendTextureOverrideMatchesByHash(
+	uint32_t hash,
+	uint32_t resourceHash,
+	uint32_t descriptorHash,
+	const DX12CurrentShaderResourceBinding *binding,
+	bool compute,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	std::vector<DX12TextureOverrideMatch> *matches)
+{
+	if (!hash || !matches)
+		return;
+	std::vector<Bunny::TextureOverrideConfig> configs;
+	if (!FindTextureOverridesByHash(
+		    hash, vertexCount, indexCount, instanceCount,
+		    firstVertex, firstIndex, 0, &configs))
+		return;
+	for (const Bunny::TextureOverrideConfig &config : configs) {
+		DX12TextureOverrideMatch match;
+		match.config = config;
+		match.matchedHash = hash;
+		match.resourceHash = resourceHash;
+		match.descriptorHash = descriptorHash;
+		if (binding) {
+			match.hasThisSrvTarget =
+				binding->hasDescriptor &&
+				binding->descriptor.kind == DescriptorKind::SRV &&
+				!binding->rootDescriptor;
+			match.compute = compute;
+			match.thisSrvBinding = *binding;
+		}
+		matches->push_back(match);
+	}
+}
+
 static bool FindDescriptorTextureOverrides(
 	ID3D12GraphicsCommandList *commandList,
 	const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex,
-	std::vector<Bunny::TextureOverrideConfig> *configs)
+	std::vector<DX12TextureOverrideMatch> *matches)
 {
-	if (configs)
-		configs->clear();
+	if (matches)
+		matches->clear();
 	if (!commandList)
 		return false;
 
@@ -504,14 +579,35 @@ static bool FindDescriptorTextureOverrides(
 	for (const DX12CurrentShaderResourceBinding &binding : bindings) {
 		if (!DescriptorBindingMatchesTarget(binding, target))
 			continue;
-		const uint32_t hash = HashDescriptorBinding(binding);
-		std::vector<Bunny::TextureOverrideConfig> bindingConfigs;
-		if (FindTextureOverridesByHash(
-			    hash, vertexCount, indexCount, instanceCount,
-			    firstVertex, firstIndex, 0, &bindingConfigs) && configs)
-			configs->insert(configs->end(), bindingConfigs.begin(), bindingConfigs.end());
+		const uint32_t resourceHash = HashDescriptorBindingResource(binding);
+		const uint32_t descriptorHash = HashDescriptorBinding(commandList, binding);
+#if defined(_DEBUG)
+		DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+			"stage=this_candidate,targetSlot=%u,bindSpace=%s,slot=%u,root=%u,offset=%u,resourceHash=%08x,descriptorHash=%08x,resource=0x%p,dimension=%u,resourceFormat=%u,viewFormat=%u,width=%llu,height=%u",
+			target.slot,
+			compute ? "compute" : "graphics",
+			binding.shaderRegister,
+			binding.rootParameterIndex,
+			binding.descriptorOffset,
+			resourceHash,
+			descriptorHash,
+			binding.descriptor.resource,
+			binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Dimension) : 0,
+			binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Format) : 0,
+			binding.descriptor.viewFormat,
+			binding.descriptor.hasResourceDesc ? static_cast<unsigned long long>(binding.descriptor.resourceDesc.Width) : 0ull,
+			binding.descriptor.hasResourceDesc ? binding.descriptor.resourceDesc.Height : 0);
+#endif
+		AppendTextureOverrideMatchesByHash(
+			resourceHash, resourceHash, descriptorHash, &binding, compute,
+			vertexCount, indexCount, instanceCount, firstVertex, firstIndex, matches);
+		if (descriptorHash && descriptorHash != resourceHash) {
+			AppendTextureOverrideMatchesByHash(
+				descriptorHash, resourceHash, descriptorHash, &binding, compute,
+				vertexCount, indexCount, instanceCount, firstVertex, firstIndex, matches);
+		}
 	}
-	return configs && !configs->empty();
+	return matches && !matches->empty();
 }
 
 class DX12IaResourceViewSnapshot
@@ -771,10 +867,10 @@ static bool FindTargetTextureOverride(
 	const DX12IaHashState &iaState, const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex,
-	std::vector<Bunny::TextureOverrideConfig> *configs)
+	std::vector<DX12TextureOverrideMatch> *matches)
 {
-	if (configs)
-		configs->clear();
+	if (matches)
+		matches->clear();
 	if (target.kind == Bunny::CommandListTargetKind::IndexBuffer) {
 		if (!iaState.hasIndexBuffer || !iaState.indexHash) {
 #if defined(_DEBUG)
@@ -783,15 +879,24 @@ static bool FindTargetTextureOverride(
 #endif
 			return false;
 		}
+		std::vector<Bunny::TextureOverrideConfig> configs;
 		bool found = FindIaTextureOverridesCached(
 			target, iaState.indexHash,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, 0, true, 0, configs);
+			firstVertex, firstIndex, 0, true, 0, &configs);
+		if (found && matches) {
+			for (const Bunny::TextureOverrideConfig &config : configs) {
+				DX12TextureOverrideMatch match;
+				match.config = config;
+				match.matchedHash = iaState.indexHash;
+				matches->push_back(match);
+			}
+		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
 			"\"target\":\"ib\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
 			iaState.indexHash, found ? "true" : "false",
-			configs ? configs->size() : 0);
+			configs.size());
 #endif
 		return found;
 	}
@@ -806,15 +911,24 @@ static bool FindTargetTextureOverride(
 #endif
 		if (!slot || !slot->hash)
 			return false;
+		std::vector<Bunny::TextureOverrideConfig> configs;
 		bool found = FindIaTextureOverridesCached(
 			target, slot->hash,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, 0, false, target.slot, configs);
+			firstVertex, firstIndex, 0, false, target.slot, &configs);
+		if (found && matches) {
+			for (const Bunny::TextureOverrideConfig &config : configs) {
+				DX12TextureOverrideMatch match;
+				match.config = config;
+				match.matchedHash = slot->hash;
+				matches->push_back(match);
+			}
+		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaOverrideCheck",
 			"\"target\":\"vb%u\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
 			target.slot, slot->hash, found ? "true" : "false",
-			configs ? configs->size() : 0);
+			configs.size());
 #endif
 		return found;
 	}
@@ -824,7 +938,7 @@ static bool FindTargetTextureOverride(
 	    target.kind == Bunny::CommandListTargetKind::UnorderedAccessView) {
 		return FindDescriptorTextureOverrides(
 			commandList, target, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, configs);
+			firstVertex, firstIndex, matches);
 	}
 
 	return false;

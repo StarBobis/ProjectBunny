@@ -932,6 +932,8 @@ static void FillDescriptorSummary(
 			summary->bufferViewBytes = summary->viewSize;
 		}
 	} else if (record.kindId == DescriptorKind::SRV_ID && record.hasDesc) {
+		summary->srvDesc = record.srv;
+		summary->hasSrvDesc = true;
 		summary->viewFormat = static_cast<UINT>(record.srv.Format);
 		summary->viewDimension = static_cast<UINT>(record.srv.ViewDimension);
 		if (record.srv.ViewDimension == D3D12_SRV_DIMENSION_BUFFER) {

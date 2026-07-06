@@ -121,13 +121,15 @@ public:
 	void RunTextureOverride(
 		const Bunny::TextureOverrideConfig &config, bool includePost)
 	{
-		RunTextureOverride(config, 0, includePost);
+		DX12TextureOverrideMatch match;
+		match.config = config;
+		RunTextureOverride(match, 0, includePost);
 	}
 
 	void RunCommandListLinks(
 		const Bunny::CommandListLinks &links, bool includePost)
 	{
-		RunCommandListLinks(links, 0, includePost);
+		RunCommandListLinks(links, 0, includePost, nullptr);
 	}
 
 	void RunShaderOverride(const Bunny::ShaderOverrideConfig &config)
@@ -136,8 +138,8 @@ public:
 			return;
 		if (config.handlingSkip)
 			SetSkip();
-		RunCommandListLinks(config.commandLists, 0, false);
-		RunActions(config.actions, 0, false);
+		RunCommandListLinks(config.commandLists, 0, false, nullptr);
+		RunActions(config.actions, 0, false, nullptr);
 	}
 
 	void RunPostTextureOverrideLists(
@@ -154,7 +156,7 @@ public:
 	{
 		Bunny::CommandListLinks postLinks;
 		postLinks.main = config.commandLists.post;
-		RunCommandListLinks(postLinks, 0, true);
+		RunCommandListLinks(postLinks, 0, true, nullptr);
 	}
 
 public:
@@ -218,16 +220,17 @@ public:
 
 	bool FindTargetTextureOverride(
 		const Bunny::CommandListTarget &target,
-		std::vector<Bunny::TextureOverrideConfig> *configs) const
+		std::vector<DX12TextureOverrideMatch> *matches) const
 	{
 		return ::FindTargetTextureOverride(
 			mCommandList, mIaState, target, mVertexCount, mIndexCount, mInstanceCount,
-			mFirstVertex, mFirstIndex, configs);
+			mFirstVertex, mFirstIndex, matches);
 	}
 
 	void RunTextureOverride(
-		const Bunny::TextureOverrideConfig &config, int depth, bool includePost)
+		const DX12TextureOverrideMatch &match, int depth, bool includePost)
 	{
+		const Bunny::TextureOverrideConfig &config = match.config;
 		if (!mReplacement || depth > 16)
 			return;
 
@@ -235,29 +238,33 @@ public:
 			for (const std::wstring &list : config.commandLists.pre) {
 				Bunny::CommandListLinks links;
 				links.main.push_back(list);
-				RunCommandListLinks(links, depth + 1, false);
+				RunCommandListLinks(links, depth + 1, false, &match);
 			}
 		}
 
 		if (!RunCompiledTextureOverridePlan(config)) {
-			RunTextureOverrideActions(config, depth, includePost);
+			RunTextureOverrideActions(config, depth, includePost, &match);
 		}
 
 		if (mExecuteCommands) {
 			for (const std::wstring &list : config.commandLists.main) {
 				Bunny::CommandListLinks links;
 				links.main.push_back(list);
-				RunCommandListLinks(links, depth + 1, false);
+				RunCommandListLinks(links, depth + 1, false, &match);
 			}
 
 			if (includePost) {
 				for (const std::wstring &list : config.commandLists.post) {
 					Bunny::CommandListLinks links;
 					links.main.push_back(list);
-					RunCommandListLinks(links, depth + 1, true);
+					RunCommandListLinks(links, depth + 1, true, &match);
 				}
 			}
 		}
+
+		if (DX12DrawSrvReplacementUtils::ApplyConfig(
+			    mDevice, mCommandList, config, &match, mReplacement))
+			MarkChanged();
 	}
 
 	bool RunCompiledTextureOverridePlan(const Bunny::TextureOverrideConfig &config)
@@ -315,13 +322,15 @@ public:
 	}
 
 	void RunTextureOverrideActions(
-		const Bunny::TextureOverrideConfig &config, int depth, bool includePost)
+		const Bunny::TextureOverrideConfig &config, int depth, bool includePost,
+		const DX12TextureOverrideMatch *thisMatch)
 	{
-		RunActions(config.actions, depth, includePost);
+		RunActions(config.actions, depth, includePost, thisMatch);
 	}
 
 	void RunCommandList(
-		const Bunny::CommandListConfig &commandList, int depth, bool includePost)
+		const Bunny::CommandListConfig &commandList, int depth, bool includePost,
+		const DX12TextureOverrideMatch *thisMatch)
 	{
 		if (!mReplacement || depth > 16)
 			return;
@@ -334,14 +343,14 @@ public:
 			case Bunny::CommandListActionKind::Run: {
 				Bunny::CommandListConfig config;
 				if (SnapshotCommandListConfig(action.commandList, &config))
-					RunCommandList(config, depth + 1, includePost);
+					RunCommandList(config, depth + 1, includePost, thisMatch);
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
-				std::vector<Bunny::TextureOverrideConfig> configs;
-				if (FindTargetTextureOverride(action.target, &configs)) {
-					for (const Bunny::TextureOverrideConfig &config : configs)
-						RunTextureOverride(config, depth + 1, includePost);
+				std::vector<DX12TextureOverrideMatch> matches;
+				if (FindTargetTextureOverride(action.target, &matches)) {
+					for (const DX12TextureOverrideMatch &match : matches)
+						RunTextureOverride(match, depth + 1, includePost);
 				}
 				break;
 			}
@@ -371,7 +380,8 @@ public:
 	}
 
 	void RunActions(
-		const std::vector<Bunny::CommandListAction> &actions, int depth, bool includePost)
+		const std::vector<Bunny::CommandListAction> &actions, int depth, bool includePost,
+		const DX12TextureOverrideMatch *thisMatch)
 	{
 		if (!mReplacement || depth > 16)
 			return;
@@ -384,16 +394,16 @@ public:
 					break;
 				Bunny::CommandListConfig config;
 				if (SnapshotCommandListConfig(action.commandList, &config))
-					RunCommandList(config, depth + 1, includePost);
+					RunCommandList(config, depth + 1, includePost, thisMatch);
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
 				if (!mExecuteCommands)
 					break;
-				std::vector<Bunny::TextureOverrideConfig> matchedConfigs;
-				if (FindTargetTextureOverride(action.target, &matchedConfigs)) {
-					for (const Bunny::TextureOverrideConfig &matchedConfig : matchedConfigs)
-						RunTextureOverride(matchedConfig, depth + 1, includePost);
+				std::vector<DX12TextureOverrideMatch> matches;
+				if (FindTargetTextureOverride(action.target, &matches)) {
+					for (const DX12TextureOverrideMatch &match : matches)
+						RunTextureOverride(match, depth + 1, includePost);
 				}
 				break;
 			}
@@ -425,7 +435,8 @@ public:
 	}
 
 	void RunCommandListLinks(
-		const Bunny::CommandListLinks &links, int depth, bool includePost)
+		const Bunny::CommandListLinks &links, int depth, bool includePost,
+		const DX12TextureOverrideMatch *thisMatch)
 	{
 		if (depth > 16)
 			return;
@@ -437,7 +448,7 @@ public:
 				continue;
 			Bunny::CommandListConfig config;
 			if (SnapshotCommandListConfig(list, &config))
-				RunCommandList(config, depth + 1, false);
+				RunCommandList(config, depth + 1, false, thisMatch);
 		}
 		for (const std::wstring &list : links.main) {
 			if (!CommandListRuntimeEffect(list))
@@ -446,7 +457,7 @@ public:
 				continue;
 			Bunny::CommandListConfig config;
 			if (SnapshotCommandListConfig(list, &config))
-				RunCommandList(config, depth + 1, includePost);
+				RunCommandList(config, depth + 1, includePost, thisMatch);
 		}
 		if (includePost) {
 			for (const std::wstring &list : links.post) {
@@ -456,7 +467,7 @@ public:
 					continue;
 				Bunny::CommandListConfig config;
 				if (SnapshotCommandListConfig(list, &config))
-					RunCommandList(config, depth + 1, true);
+					RunCommandList(config, depth + 1, true, thisMatch);
 			}
 		}
 	}
@@ -471,7 +482,7 @@ public:
 			return true;
 		}
 #if defined(_DEBUG)
-		DX12LogManager::DebugJsonFunc("DX12CommandListCycleSuppressed",
+		DX12LogManager::JsonFunc("DX12CommandListCycleSuppressed",
 			"\"section\":\"%S\",\"depth\":%zu", name.c_str(),
 			mCommandListStack.size());
 #endif

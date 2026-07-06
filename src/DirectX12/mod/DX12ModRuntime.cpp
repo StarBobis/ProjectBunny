@@ -30,6 +30,7 @@
 #include "MigotoIniLoader.hpp"
 #include "MigotoResource.hpp"
 #include "DX12PreSkinAsyncUtils.hpp"
+#include "DX12TextureOverrideMatch.hpp"
 #include "MigotoShaderOverride.hpp"
 #include "MigotoShaderRegex.hpp"
 #include "MigotoTextureOverride.hpp"
@@ -244,6 +245,7 @@ static volatile LONG gHasShaderOverrides = 0;
 static volatile LONG gHasShaderRegexes = 0;
 static volatile LONG gHasTextureOverrides = 0;
 static volatile LONG gHasShaderDescriptorTextureOverrideTriggers = 0;
+static volatile LONG gHasDrawSrvTextureReplacementOverrides = 0;
 static volatile LONG gHasPreSkinTextureOverrideCandidates = 0;
 static volatile LONG gHasShaderTriggeredTextureOverrides = 0;
 static volatile LONG gHasPresentRuntimeEffect = 0;
@@ -879,8 +881,13 @@ public:
 	ID3D12Resource *resource = nullptr;
 	ID3D12Resource *uavResource = nullptr;
 	ID3D12Resource *srvResource = nullptr;
+	ID3D12Resource *drawSrvTextureResource = nullptr;
+	ID3D12Resource *drawSrvUploadResource = nullptr;
 	ID3D12DescriptorHeap *uavHeap = nullptr;
 	ID3D12DescriptorHeap *srvHeap = nullptr;
+	ID3D12DescriptorHeap *drawSrvHeap = nullptr;
+	std::map<UINT64, ID3D12DescriptorHeap*> drawSrvCompatibleHeaps;
+	std::map<UINT64, D3D12_CPU_DESCRIPTOR_HANDLE> drawSrvCompatibleCpus;
 	bool failed = false;
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
@@ -888,6 +895,7 @@ public:
 	D3D12_CPU_DESCRIPTOR_HANDLE uavCpu = {};
 	D3D12_GPU_DESCRIPTOR_HANDLE uavGpu = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE drawSrvCpu = {};
 	bool uavInitialized = false;
 	bool uavWritten = false;
 	bool uavValid = false;
@@ -896,6 +904,10 @@ public:
 	UINT uavStride = 0;
 	UINT64 srvByteWidth = 0;
 	UINT srvStride = 0;
+	DXGI_FORMAT drawSrvFormat = DXGI_FORMAT_UNKNOWN;
+	UINT drawSrvWidth = 0;
+	UINT drawSrvHeight = 0;
+	UINT drawSrvMipLevels = 0;
 	D3D12_RESOURCE_STATES uavState = D3D12_RESOURCE_STATE_COPY_DEST;
 	std::wstring name;
 	std::wstring path;
@@ -1398,9 +1410,10 @@ enum class DX12PsoKind
 };
 
 
-#include "DX12IaReplacementExecutor.hpp"
 #include "DX12ModRuntimeLoader.hpp"
+#include "utils/DX12TextureHashUtils.hpp"
 #include "DX12ModResourceRuntime.hpp"
+#include "utils/DX12DrawSrvReplacementUtils.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 
 DX12PreSkinAsyncQueue gPreSkinAsyncQueue;
@@ -1409,9 +1422,22 @@ DX12PreSkinAsyncQueue gPreSkinAsyncQueue;
 #include "DX12ModRuntimeState.hpp"
 #include "DX12IaOverrideMatcher.hpp"
 #include "DX12IaResourceRuntime.hpp"
+#include "DX12IaReplacementExecutor.hpp"
 #include "DX12CommandListRuntimeExecutor.hpp"
 #include "DX12ShaderOverrideRuntime.hpp"
 
+
+void DX12ModRestoreDrawSrvReplacement(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement)
+{
+	DX12DrawSrvReplacementUtils::Restore(commandList, replacement);
+}
+
+void DX12ModClearIaReplacementRuntimeCaches()
+{
+	DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
+}
 
 
 

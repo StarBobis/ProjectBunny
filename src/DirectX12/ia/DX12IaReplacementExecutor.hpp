@@ -135,6 +135,7 @@ public:
 		DX12IaDrawInvocation noDraw = {};
 		drawExecutor.ExecuteReplacementDraws(replacement, noDraw);
 		bindingExecutor.Restore(replacement, originalIa);
+		DX12ModRestoreDrawSrvReplacement(commandList, &replacement);
 		return true;
 	}
 
@@ -148,7 +149,8 @@ public:
 	{
 		if (!commandList || !replacement)
 			return false;
-		if (replacement->skip && replacement->draws.empty() && replacement->dispatches.empty()) {
+		if (replacement->skip && replacement->draws.empty() &&
+		    replacement->dispatches.empty() && replacement->drawSrvPatches.empty()) {
 			return true;
 		}
 
@@ -162,6 +164,7 @@ public:
 
 		drawExecutor.ExecuteReplacementDraws(*replacement, draw);
 		bindingExecutor.Restore(*replacement, originalIa);
+		DX12ModRestoreDrawSrvReplacement(commandList, replacement);
 		DX12Profiling::RecordIaApplied();
 		DX12ModRunPostShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,

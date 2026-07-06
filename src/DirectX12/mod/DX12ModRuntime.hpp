@@ -90,10 +90,16 @@ public:
 		  vertexBuffers(other.vertexBuffers),
 		  postCommandLists(other.postCommandLists),
 		  draws(other.draws),
-		  dispatches(other.dispatches)
+		  dispatches(other.dispatches),
+		  drawSrvPatches(other.drawSrvPatches),
+		  retainedDescriptorHeaps(other.retainedDescriptorHeaps)
 	{
 		for (ID3D12Resource *resource : other.retainedResources)
 			RetainResource(resource);
+		for (ID3D12DescriptorHeap *heap : retainedDescriptorHeaps) {
+			if (heap)
+				heap->AddRef();
+		}
 	}
 	DX12ModIaReplacement(DX12ModIaReplacement &&other) noexcept
 		: skip(other.skip),
@@ -104,7 +110,9 @@ public:
 		  postCommandLists(std::move(other.postCommandLists)),
 		  draws(std::move(other.draws)),
 		  dispatches(std::move(other.dispatches)),
-		  retainedResources(std::move(other.retainedResources))
+		  drawSrvPatches(std::move(other.drawSrvPatches)),
+		  retainedResources(std::move(other.retainedResources)),
+		  retainedDescriptorHeaps(std::move(other.retainedDescriptorHeaps))
 	{
 		other.retainedResources.clear();
 	}
@@ -125,8 +133,14 @@ public:
 		postCommandLists = other.postCommandLists;
 		draws = other.draws;
 		dispatches = other.dispatches;
+		drawSrvPatches = other.drawSrvPatches;
+		retainedDescriptorHeaps = other.retainedDescriptorHeaps;
 		for (ID3D12Resource *resource : other.retainedResources)
 			RetainResource(resource);
+		for (ID3D12DescriptorHeap *heap : retainedDescriptorHeaps) {
+			if (heap)
+				heap->AddRef();
+		}
 		return *this;
 	}
 	DX12ModIaReplacement &operator=(DX12ModIaReplacement &&other) noexcept
@@ -142,7 +156,9 @@ public:
 		postCommandLists = std::move(other.postCommandLists);
 		draws = std::move(other.draws);
 		dispatches = std::move(other.dispatches);
+		drawSrvPatches = std::move(other.drawSrvPatches);
 		retainedResources = std::move(other.retainedResources);
+		retainedDescriptorHeaps = std::move(other.retainedDescriptorHeaps);
 		other.retainedResources.clear();
 		return *this;
 	}
@@ -169,6 +185,11 @@ public:
 				resource->Release();
 		}
 		retainedResources.clear();
+		for (ID3D12DescriptorHeap *heap : retainedDescriptorHeaps) {
+			if (heap)
+				heap->Release();
+		}
+		retainedDescriptorHeaps.clear();
 	}
 
 	bool skip = false;
@@ -195,7 +216,21 @@ public:
 	};
 	std::vector<DrawCall> draws;
 	std::vector<DispatchCall> dispatches;
+	class DrawSrvTablePatch
+	{
+	public:
+		bool compute = false;
+		UINT rootParameterIndex = 0;
+		D3D12_GPU_DESCRIPTOR_HANDLE originalTable = {};
+		ID3D12DescriptorHeap *originalCbvSrvUavHeap = nullptr;
+		ID3D12DescriptorHeap *originalSamplerHeap = nullptr;
+		ID3D12DescriptorHeap *patchHeap = nullptr;
+		D3D12_CPU_DESCRIPTOR_HANDLE saveSlotCpu = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE targetCpu = {};
+	};
+	std::vector<DrawSrvTablePatch> drawSrvPatches;
 	std::vector<ID3D12Resource*> retainedResources;
+	std::vector<ID3D12DescriptorHeap*> retainedDescriptorHeaps;
 };
 bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
@@ -210,6 +245,10 @@ void DX12ModRunPostShaderOverrideReplacement(
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex,
 	DX12ModIaReplacement *replacement);
+void DX12ModRestoreDrawSrvReplacement(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement);
+void DX12ModClearIaReplacementRuntimeCaches();
 void DX12ModRecordGraphicsPipelineState(
 	ID3D12Device *device, ID3D12PipelineState *pipelineState,
 	const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc);

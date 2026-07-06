@@ -908,6 +908,23 @@ static bool ShaderRegexesHaveDescriptorTextureOverrideTrigger(
 	return false;
 }
 
+static bool TextureOverridesHaveDrawSrvReplacement(
+	const Bunny::TextureOverrideMap &textureOverrides)
+{
+	for (Bunny::TextureOverrideMap::const_iterator bucket = textureOverrides.begin();
+	     bucket != textureOverrides.end(); ++bucket) {
+		const Bunny::TextureOverrideList &configs = bucket->second;
+		for (size_t index = 0; index < configs.size(); ++index) {
+			const Bunny::TextureOverrideConfig &config = configs[index];
+			if (!config.drawPsSrvResources.empty() ||
+			    !config.drawVsSrvResources.empty() ||
+			    !config.drawReplaceThisResource.empty())
+				return true;
+		}
+	}
+	return false;
+}
+
 static bool CommandListActionHasRuntimeEffect(
 	const Bunny::CommandListAction &action,
 	const Bunny::CommandListMap &commandLists,
@@ -1128,14 +1145,17 @@ bool DX12ModRuntimeLoad(
 		!textureOverrides.empty() &&
 		(ShaderOverridesHaveTextureOverrideTrigger(shaderOverrides, commandLists) ||
 		 ShaderRegexesHaveTextureOverrideTrigger(shaderRegexes, commandLists));
+	bool hasDrawSrvTextureReplacementOverrides =
+		TextureOverridesHaveDrawSrvReplacement(textureOverrides);
 	bool hasExecutableShaderRegexes =
 		ShaderRegexesHaveExecutableNoPatternGroup(shaderRegexes);
 
 	DX12LogManager::DebugJsonFunc("DX12ModRuntimeLoadFlags",
-		"\"hasShaderTriggeredTextureOverrides\":%s,\"hasExecutableShaderRegexes\":%s,\"hasPreSkinCandidates\":%s",
+		"\"hasShaderTriggeredTextureOverrides\":%s,\"hasExecutableShaderRegexes\":%s,\"hasPreSkinCandidates\":%s,\"hasDrawSrvTextureReplacementOverrides\":%s",
 		hasShaderTriggeredTextureOverrides ? "true" : "false",
 		hasExecutableShaderRegexes ? "true" : "false",
-		hasPreSkinTextureOverrideCandidates ? "true" : "false");
+		hasPreSkinTextureOverrideCandidates ? "true" : "false",
+		hasDrawSrvTextureReplacementOverrides ? "true" : "false");
 
 	bool hasShaderDescriptorTextureOverrideTriggers =
 		hasShaderTriggeredTextureOverrides &&
@@ -1197,7 +1217,7 @@ bool DX12ModRuntimeLoad(
 	gIaMergedVertexTextureOverrideIndex.swap(iaMergedVertexTextureOverrideIndex);
 	gTextureOverrideLookupCache.clear();
 	gIaTextureOverrideHashNoCandidates.clear();
-	DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
+	DX12ModClearIaReplacementRuntimeCaches();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
 	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);
@@ -1241,6 +1261,9 @@ bool DX12ModRuntimeLoad(
 	InterlockedExchange(
 		&gHasShaderDescriptorTextureOverrideTriggers,
 		hasShaderDescriptorTextureOverrideTriggers ? 1 : 0);
+	InterlockedExchange(
+		&gHasDrawSrvTextureReplacementOverrides,
+		hasDrawSrvTextureReplacementOverrides ? 1 : 0);
 	InterlockedExchange(&gHasPresentRuntimeEffect, presentRuntimeEffect ? 1 : 0);
 	gLoaded = true;
 	++gReloadGeneration;

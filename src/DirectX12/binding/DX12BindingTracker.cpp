@@ -289,7 +289,8 @@ public:
 			DX12BindingTrackerQuery::GetRootSignatureForEvent(
 				event, compute, &rootSignature);
 		const bool completeDescriptorResourceInfo =
-			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV ||
+			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
 			const RootTableState &table = compute ?
 				snapshot.computeTables[root] : snapshot.graphicsTables[root];
@@ -446,7 +447,11 @@ public:
 						const char *kind = nullptr;
 						bool completeDescriptorResourceInfo = false;
 						if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && uavs) { out = uavs; kind = "UAV"; }
-						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && srvs) { out = srvs; kind = "SRV"; }
+						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && srvs) {
+							out = srvs;
+							kind = "SRV";
+							completeDescriptorResourceInfo = true;
+						}
 						else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV && cbvs) {
 							out = cbvs;
 							kind = "CBV";
@@ -500,7 +505,12 @@ public:
 					std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
 					bool completeDescriptorResourceInfo = false;
 					if (desc.kind == DescriptorKind::UAV && uavs) out = uavs;
-					else if (desc.kind == DescriptorKind::SRV && srvs) out = srvs;
+					else if (desc.kind == DescriptorKind::SRV && srvs) {
+						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
+							continue;
+						out = srvs;
+						completeDescriptorResourceInfo = true;
+					}
 					else if (desc.kind == DescriptorKind::CBV && cbvs) {
 						if (!DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &desc))
 							continue;

@@ -60,7 +60,8 @@ bool DX12ModHasActiveShaderOverrides()
 
 bool DX12ModNeedsShaderDescriptorTracking()
 {
-	return gHasShaderDescriptorTextureOverrideTriggers != 0 &&
+	return (gHasShaderDescriptorTextureOverrideTriggers != 0 ||
+		gHasDrawSrvTextureReplacementOverrides != 0) &&
 		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
 }
 
