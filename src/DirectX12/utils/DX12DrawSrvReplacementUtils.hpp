@@ -87,28 +87,6 @@ public:
 			compute ? "compute" : "graphics",
 			bindings->size(),
 			DX12RuntimeState::GetPresentCount());
-		// Dump all SRV slots once per present so the user can find textures.
-		if (!bindings->empty()) {
-			static volatile LONG gDumpPresent = -1;
-			LONG present = static_cast<LONG>(DX12RuntimeState::GetPresentCount());
-			if (InterlockedCompareExchange(&gDumpPresent, present, present - 1) != present) {
-				for (const DX12CurrentShaderResourceBinding &binding : *bindings) {
-					DX12LogManager::JsonFunc("DX12DrawSrvSlotDump",
-						"slot=%u,root=%u,offset=%u,viewDim=%u,viewFmt=%u,hasSrv=%s,hasRes=%s,resFmt=%u,resDim=%u,resMips=%u,vis=%u",
-						binding.shaderRegister,
-						binding.rootParameterIndex,
-						binding.descriptorOffset,
-						binding.descriptor.viewDimension,
-						binding.descriptor.viewFormat,
-						binding.descriptor.hasSrvDesc ? "1" : "0",
-						binding.descriptor.hasResourceDesc ? "1" : "0",
-						binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Format) : 0,
-						binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Dimension) : 0,
-						binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.MipLevels) : 0,
-						binding.shaderVisibility);
-				}
-			}
-		}
 #endif
 	}
 
