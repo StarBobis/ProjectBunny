@@ -64,7 +64,6 @@ public:
 		if (targetPlan.RequiresIndexBuffer(indexed)) {
 			key = MixCheapValue(key, ia.hasIndexBuffer ? 0x1bull : 0x10ull);
 			if (ia.hasIndexBuffer) {
-				key = MixCheapValue(key, ia.indexBuffer.BufferLocation);
 				key = MixCheapValue(key, ia.indexBuffer.SizeInBytes);
 				key = MixCheapValue(key, static_cast<UINT64>(ia.indexBuffer.Format));
 			}
@@ -76,7 +75,6 @@ public:
 				(ia.hasVertexBuffer[slot] ? 0x1ull : 0x0ull));
 			if (!ia.hasVertexBuffer[slot])
 				continue;
-			key = MixCheapValue(key, ia.vertexBuffers[slot].BufferLocation);
 			key = MixCheapValue(key, ia.vertexBuffers[slot].SizeInBytes);
 			key = MixCheapValue(key, ia.vertexBuffers[slot].StrideInBytes);
 		}

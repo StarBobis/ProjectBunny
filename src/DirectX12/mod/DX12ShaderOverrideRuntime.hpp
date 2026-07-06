@@ -363,7 +363,6 @@ static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
 	key.hasIndexBuffer = iaState.hasIndexBuffer;
 	key.indexHash = iaState.hasIndexBuffer ? iaState.indexHash : 0;
 	if (iaState.hasIndexBuffer) {
-		key.indexBufferLocation = iaState.indexView.BufferLocation;
 		key.indexBufferSize = iaState.indexView.SizeInBytes;
 		key.indexBufferFormat = static_cast<uint32_t>(iaState.indexView.Format);
 	}
@@ -371,7 +370,6 @@ static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
 		if (buffer.slot < key.vertexHashes.size()) {
 			key.vertexHashes[buffer.slot] = buffer.hash;
 			key.vertexPresent[buffer.slot] = 1;
-			key.vertexBufferLocations[buffer.slot] = buffer.vertexView.BufferLocation;
 			key.vertexBufferSizes[buffer.slot] = buffer.vertexView.SizeInBytes;
 			key.vertexBufferStrides[buffer.slot] = buffer.vertexView.StrideInBytes;
 		}
@@ -393,13 +391,11 @@ static UINT64 HashShaderOverrideNegativeCacheKey(
 	hash = HashCombine64(hash, key.firstIndex);
 	hash = HashCombine64(hash, key.hasIndexBuffer ? 1 : 0);
 	hash = HashCombine64(hash, key.indexHash);
-	hash = HashCombine64(hash, key.indexBufferLocation);
 	hash = HashCombine64(hash, key.indexBufferSize);
 	hash = HashCombine64(hash, key.indexBufferFormat);
 	for (size_t index = 0; index < key.vertexHashes.size(); ++index) {
 		hash = HashCombine64(hash, key.vertexHashes[index]);
 		hash = HashCombine64(hash, key.vertexPresent[index]);
-		hash = HashCombine64(hash, key.vertexBufferLocations[index]);
 		hash = HashCombine64(hash, key.vertexBufferSizes[index]);
 		hash = HashCombine64(hash, key.vertexBufferStrides[index]);
 	}
