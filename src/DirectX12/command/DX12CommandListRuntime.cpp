@@ -525,9 +525,6 @@ void DX12CommandListRuntime::RememberPipelineState(
 		state->cachedCsHash = 0;
 		state->dispatchDecision.Reset();
 		state->drawDecision.Reset();
-		// New PSO → different root signature → PreSkin binding cache is stale
-		state->preSkinBindingsCached = false;
-		state->lastPreSkinBindingSerial = 0;
 	}
 	state->pipelineState = pipelineState;
 	if (!state->cachedCsHashResolved && pipelineState) {

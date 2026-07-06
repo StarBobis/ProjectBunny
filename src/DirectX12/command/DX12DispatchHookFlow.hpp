@@ -457,13 +457,24 @@ public:
 		if (!probe->uavsFound) {
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
-			// CollectPreSkinBindings: lightweight O(tables) replacement for
-			// GetCurrentComputeAll (O(descriptors_in_all_ranges)). ~50x faster
-			// on the PreSkin hot path. Uses bindingQuerySerial as cache key
-			// instead of per-frame present count.
-			probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
-				commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
-				&probe->rootConstants);
+
+			// Per-command-list PreSkin binding cache: when compute bindings
+			// have not changed since the last collection, reuse cached vectors.
+			// Keyed by computeBindingSerial (bumps on every root signature /
+			// descriptor table / root descriptor / root constant change).
+			if (runtimeState.preSkinBindingsCached &&
+				runtimeState.computeBindingSerial == runtimeState.lastPreSkinBindingSerial) {
+				probe->uavs = runtimeState.cachedPreSkinUavs;
+				probe->srvs = runtimeState.cachedPreSkinSrvs;
+				probe->cbvs = runtimeState.cachedPreSkinCbvs;
+				probe->rootConstants = runtimeState.cachedPreSkinConstants;
+				probe->uavsFound = !probe->uavs.empty() || !probe->srvs.empty() ||
+					!probe->cbvs.empty() || !probe->rootConstants.empty();
+			} else {
+				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
+					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
+					&probe->rootConstants);
+			}
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				"collect_bindings",

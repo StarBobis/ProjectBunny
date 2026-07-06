@@ -43,12 +43,12 @@ public:
 
 	static void EnsureHeapLocks(size_t requiredCount)
 	{
+		if (requiredCount > MAX_HEAP_LOCKS)
+			return;
 		UINT current = gHeapLockCount.load(std::memory_order_relaxed);
-		while (current < requiredCount && current < MAX_HEAP_LOCKS) {
-			UINT expected = current;
-			gHeapLockCount.compare_exchange_weak(expected, static_cast<UINT>(requiredCount),
-				std::memory_order_relaxed, std::memory_order_relaxed);
-			current = gHeapLockCount.load(std::memory_order_relaxed);
+		if (current < static_cast<UINT>(requiredCount)) {
+			gHeapLockCount.store(static_cast<UINT>(requiredCount),
+				std::memory_order_relaxed);
 		}
 	}
 
@@ -170,7 +170,8 @@ public:
 
 			UnlockExclusive(heapIndex);
 
-			DescriptorRecord ledgerCopy = record;
+			// Clone to properly AddRef resources for the CPU ledger copy
+			DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
 			ledgerCopy.cpuHandle = cpuHandle;
 			WriteToCpuLedger(std::move(ledgerCopy));
 
@@ -210,6 +211,9 @@ public:
 				heap.occupied[slot] = 1;
 			}
 			DX12DescriptorHeapStateUtils::BumpVersion(&heap);
+		} else {
+			// Slot out of bounds — release the consumed record
+			ReleaseDescriptorRecordResources(&record);
 		}
 
 		UnlockExclusive(heapIndex);
@@ -408,8 +412,8 @@ public:
 			if (FindLatestDescriptor(srcHandle, &srcRecord)) {
 				srcRecord.cpuHandle = destHandle;
 				WriteDescriptorToSlot(destHandle, std::move(srcRecord));
-				// Also store in CPU ledger for consistency
-				DescriptorRecord ledgerCopy = srcRecord;
+				// Clone to properly AddRef resources for the CPU ledger copy
+				DescriptorRecord ledgerCopy = CloneDescriptorRecord(srcRecord);
 				ledgerCopy.cpuHandle = destHandle;
 				WriteToCpuLedger(std::move(ledgerCopy));
 				copiedCount++;
