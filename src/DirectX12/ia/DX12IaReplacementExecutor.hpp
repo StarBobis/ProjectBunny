@@ -32,6 +32,11 @@ public:
 	inline static std::unordered_set<UINT64> s_psoIaNegativeCache;
 	inline static SRWLOCK s_psoIaNegativeCacheLock = SRWLOCK_INIT;
 
+	// PSO-level pre-filter: keyed by (PSO, targetPlan, iaViewFingerprint).
+	// Checked BEFORE IaHash build; populated when full neg cache misses.
+	inline static std::unordered_set<UINT64> s_psoPreFilterCache;
+	inline static SRWLOCK s_psoPreFilterCacheLock = SRWLOCK_INIT;
+
 	static UINT64 MixCheapValue(UINT64 key, UINT64 value)
 	{
 		key ^= value + 0x9e3779b97f4a7c15ull + (key << 6) + (key >> 2);
@@ -77,15 +82,41 @@ public:
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
 	}
 
+	static UINT64 MakePsoPreFilterKey(
+		ID3D12PipelineState *pipelineState,
+		const DX12IaHashTargetPlan &targetPlan,
+		UINT64 iaViewFingerprint)
+	{
+		UINT64 key = reinterpret_cast<UINT64>(pipelineState);
+		key = MixCheapValue(key, targetPlan.Fingerprint());
+		key = MixCheapValue(key, iaViewFingerprint);
+		return key ? key : 1;
+	}
+
+	static bool TryFindPsoPreFilterCache(UINT64 key)
+	{
+		AcquireSRWLockShared(&s_psoPreFilterCacheLock);
+		bool found = s_psoPreFilterCache.find(key) != s_psoPreFilterCache.end();
+		ReleaseSRWLockShared(&s_psoPreFilterCacheLock);
+		return found;
+	}
+
+	static void StorePsoPreFilterCache(UINT64 key)
+	{
+		AcquireSRWLockExclusive(&s_psoPreFilterCacheLock);
+		s_psoPreFilterCache.insert(key);
+		ReleaseSRWLockExclusive(&s_psoPreFilterCacheLock);
+	}
+
 
 	static void ClearPsoIaNegativeCache()
 	{
 		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
 		s_psoIaNegativeCache.clear();
 		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
-
-		
-
+		AcquireSRWLockExclusive(&s_psoPreFilterCacheLock);
+		s_psoPreFilterCache.clear();
+		ReleaseSRWLockExclusive(&s_psoPreFilterCacheLock);
 	}
 
 	static bool ExecutePresent(
@@ -187,6 +218,7 @@ public:
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		bool hasIaHashState = false;
+		UINT64 psoPreFilterKey = 0;
 		if (targetPlanHasIaTargets) {
 			LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
@@ -207,6 +239,15 @@ public:
 				draw.indexed ? 1u : 0u,
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(iaKeyBegin));
+			// PSO-level pre-filter: skip hash for PSO+layout combos that never matched.
+			psoPreFilterKey = DX12IaReplacementExecutor::MakePsoPreFilterKey(
+				runtimeState.pipelineState, targetPlan, iaCacheKey.iaViewFingerprint);
+			if (DX12IaReplacementExecutor::TryFindPsoPreFilterCache(psoPreFilterKey)
+				&& !drawDecision->targetPlanHasDescriptorTargets) {
+				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
 			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12IaHashStateCacheUtils::TryLoad(
@@ -352,6 +393,7 @@ public:
 				// No match: store both the full negative key and cheap-to-full map.
 				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
 				DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
+				DX12IaReplacementExecutor::StorePsoPreFilterCache(psoPreFilterKey);
 
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
