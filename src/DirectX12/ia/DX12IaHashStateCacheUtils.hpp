@@ -13,8 +13,6 @@ class DX12IaHashStateCacheKey
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	UINT64 reloadGeneration = 0;
-	UINT64 contentGeneration = 0;
-	UINT64 resolveGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	UINT64 iaViewFingerprint = 0;
 	bool indexed = false;
@@ -28,8 +26,6 @@ public:
 	{
 		return pipelineState == other.pipelineState &&
 			reloadGeneration == other.reloadGeneration &&
-			contentGeneration == other.contentGeneration &&
-			resolveGeneration == other.resolveGeneration &&
 			targetPlanFingerprint == other.targetPlanFingerprint &&
 			iaViewFingerprint == other.iaViewFingerprint &&
 			indexed == other.indexed &&
@@ -48,8 +44,6 @@ public:
 	{
 		size_t h = reinterpret_cast<size_t>(k.pipelineState);
 		h ^= k.reloadGeneration + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-		h ^= k.contentGeneration + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-		h ^= k.resolveGeneration + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 		h ^= k.targetPlanFingerprint + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 		h ^= k.iaViewFingerprint + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 		h ^= static_cast<size_t>(k.indexed) * 0xff51afd7ed558ccdull;

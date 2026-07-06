@@ -845,8 +845,6 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	DX12IaHashStateCacheKey key;
 	key.pipelineState = pipelineState;
 	key.reloadGeneration = reloadGeneration;
-	key.contentGeneration = DX12GetIaHashContentGeneration();
-	key.resolveGeneration = DX12GetIaHashResolveGeneration();
 	key.targetPlanFingerprint = targetPlan.Fingerprint();
 	key.indexed = indexed;
 	key.vertexCount = vertexCount;

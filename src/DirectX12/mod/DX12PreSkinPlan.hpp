@@ -166,4 +166,78 @@ public:
 			hash = 1;
 		return hash;
 	}
+
+	// Cross-frame stable fingerprint: uses only fields that survive across frames.
+	// Strips GPU VA, resource pointer, resourceOffset, viewSize, and other per-
+	// frame-volatile fields. The result is safe because different resources with
+	// the same shader binding pattern produce identical PreSkin replacement results.
+	static uint64_t AppendStableDescriptor(uint64_t hash, const DX12DescriptorSummary &descriptor)
+	{
+		hash = HashString(hash, descriptor.kind);
+		hash = HashCombine(hash, descriptor.hasDesc ? 1 : 0);
+		hash = HashCombine(hash, descriptor.viewFormat);
+		hash = HashCombine(hash, descriptor.viewDimension);
+		if (descriptor.hasResourceDesc) {
+			hash = HashCombine(hash, descriptor.resourceDesc.Dimension);
+			hash = HashCombine(hash, descriptor.resourceDesc.Width);
+			hash = HashCombine(hash, descriptor.resourceDesc.Height);
+			hash = HashCombine(hash, descriptor.resourceDesc.DepthOrArraySize);
+			hash = HashCombine(hash, descriptor.resourceDesc.MipLevels);
+			hash = HashCombine(hash, descriptor.resourceDesc.Format);
+			hash = HashCombine(hash, descriptor.resourceDesc.Layout);
+			hash = HashCombine(hash, descriptor.resourceDesc.Flags);
+		}
+		return hash;
+	}
+
+	static uint64_t AppendStableBinding(
+		uint64_t hash,
+		const DX12CurrentComputeUavBinding &binding,
+		uint64_t listSalt)
+	{
+		hash = HashCombine(hash, listSalt);
+		hash = HashCombine(hash, binding.rootParameterIndex);
+		hash = HashCombine(hash, binding.rangeIndex);
+		hash = HashCombine(hash, binding.shaderVisibility);
+		hash = HashCombine(hash, binding.shaderRegister);
+		hash = HashCombine(hash, binding.registerSpace);
+		hash = HashCombine(hash, binding.rootDescriptor ? 1 : 0);
+		if (binding.hasDescriptor) {
+			hash = AppendStableDescriptor(hash, binding.descriptor);
+		}
+		return hash;
+	}
+
+	static uint64_t AppendStableBindingList(
+		uint64_t hash,
+		const std::vector<DX12CurrentComputeUavBinding> &bindings,
+		uint64_t listSalt)
+	{
+		std::vector<DX12CurrentComputeUavBinding> sortedBindings = bindings;
+		std::sort(
+			sortedBindings.begin(),
+			sortedBindings.end(),
+			DX12PreSkinPlanUtils::BindingLess);
+		hash = HashCombine(hash, sortedBindings.size());
+		for (size_t index = 0; index < sortedBindings.size(); ++index) {
+			hash = AppendStableBinding(hash, sortedBindings[index], listSalt);
+		}
+		return hash;
+	}
+
+	static uint64_t BuildCrossFrameStableBindingFingerprint(
+		const std::vector<DX12CurrentComputeUavBinding> &uavs,
+		const std::vector<DX12CurrentComputeUavBinding> &srvs,
+		const std::vector<DX12CurrentComputeUavBinding> &cbvs,
+		const std::vector<DX12CurrentRootConstants> &rootConstants)
+	{
+		uint64_t hash = 0xc5f3e8a17d24906bull;
+		hash = AppendStableBindingList(hash, uavs, 0x5541565full);
+		hash = AppendStableBindingList(hash, srvs, 0x5352565full);
+		hash = AppendStableBindingList(hash, cbvs, 0x4342565full);
+		hash = AppendRootConstants(hash, rootConstants);
+		if (hash == 0)
+			hash = 1;
+		return hash;
+	}
 };

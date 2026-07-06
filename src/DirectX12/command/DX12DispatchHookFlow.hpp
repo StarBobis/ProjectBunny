@@ -493,6 +493,12 @@ public:
 			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
 		if (bindingFingerprint == 0)
 			bindingFingerprint = 1;
+		// Cross-frame stable fingerprint: strips GPU VA / resource ptr so the
+		// same shader+binding pattern matches across frames.
+		UINT64 crossFrameFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
+			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
+		if (crossFrameFingerprint == 0)
+			crossFrameFingerprint = 1;
 		probe->computeBindingSerial = bindingFingerprint;
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
@@ -509,7 +515,7 @@ public:
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModGetCachedPreSkinProbeResult(
-			    commandList, probe->computeShaderHash, bindingFingerprint, &cacheEntry)) {
+			    commandList, probe->computeShaderHash, crossFrameFingerprint, &cacheEntry)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				cacheEntry.applied ? "probe_cache_positive_hit" : "probe_cache_negative_hit",
@@ -551,12 +557,10 @@ public:
 			// Async cache warming: enqueue a copy of the binding data to the
 			// worker thread so it can pre-populate gPreSkinMatchCsInputCache and
 			// related internal caches.  The render thread always runs the full
-			// sync computation below for correctness — the binding fingerprint
-			// includes per-frame fields (GPU VA, resource ptr) that can change
-			// between frames, so skipping on miss would cause Mod flickering.
+			// sync computation below for correctness.
 			gPreSkinAsyncQueue.Enqueue(DX12PreSkinAsyncRequest(
 				probe->computeShaderHash,
-				bindingFingerprint,
+				crossFrameFingerprint,
 				std::vector<DX12CurrentComputeUavBinding>(probe->uavs),
 				std::vector<DX12CurrentComputeUavBinding>(probe->srvs),
 				std::vector<DX12CurrentComputeUavBinding>(probe->cbvs),
