@@ -51,4 +51,17 @@ public:
 	{
 		return NeedsDumpOrHuntingTracking();
 	}
+
+	// Runtime recording (gRuntimeDescriptorByCpuHandle) is a fast cache for
+	// draw-time descriptor queries.  It is only required when capture/dump/hunt
+	// is actively inspecting every descriptor.  During normal Mod operation the
+	// Worker pipeline + EnsureDescriptorHandlesVisible provides equivalent data
+	// via gDescriptorByCpuHandle / gDescriptorHeaps.
+	static bool NeedsRuntimeDescriptorRecording()
+	{
+		return NeedsFrameDumpTracking() ||
+			NeedsShaderDumpTracking() ||
+			DX12RuntimeState::IsHuntingMode() ||
+			NeedsFullDescriptorHistory();
+	}
 };

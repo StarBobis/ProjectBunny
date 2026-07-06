@@ -6,7 +6,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -15,6 +14,7 @@
 #include <vector>
 
 #include "DX12ResourceTrackerPrivate.hpp"
+#include "utils/DX12DescriptorTaskRingBufferUtils.hpp"
 
 enum class DX12DescriptorCollectTaskKind
 {
@@ -64,8 +64,13 @@ public:
 class DX12DescriptorCollectPipeline
 {
 public:
-	inline static std::mutex mutex;
-	inline static std::condition_variable wake;
+	// mapsMutex protects all unordered_maps and active-task tracking.
+	// Queue push/pop is lock-free via taskRingBuffer (below).
+	inline static std::mutex mapsMutex;
+	// Lightweight wake mutex + cv used ONLY for worker sleep/wake.
+	// No data is protected by this lock.
+	inline static std::mutex wakeMutex;
+	inline static std::condition_variable wakeCv;
 	inline static std::condition_variable idle;
 	inline static std::thread worker;
 	inline static std::atomic<bool> started = false;
@@ -76,7 +81,11 @@ public:
 	inline static std::atomic<uint64_t> completedBatches = 0;
 	inline static std::atomic<uint64_t> completedSequence = 0;
 	inline static std::atomic<uint64_t> maxPendingDescriptorWrites = 0;
-	inline static std::deque<std::shared_ptr<DX12DescriptorCollectTask>> queuedTasks;
+	// Lock-free MPSC ring buffer replaces the old std::deque + mutex.
+	// Producers (game threads) push tasks lock-free.
+	// Consumer (worker thread) pops tasks lock-free.
+	// Capacity: 65536 tasks (power of 2, ~8 MB for shared_ptr slots).
+	inline static DX12DescriptorTaskRingBufferUtils<65536> taskRingBuffer;
 	inline static std::unordered_map<uint64_t, std::shared_ptr<DX12DescriptorCollectTask>> queuedTaskById;
 	inline static std::unordered_map<SIZE_T, std::vector<DX12DescriptorPendingTaskRef>> pendingTaskRefsByCpuHandle;
 	inline static std::unordered_map<SIZE_T, DescriptorRecord> pendingDescriptorWrites;
@@ -152,6 +161,10 @@ public:
 		size_t count);
 	static uint64_t RequiredSequenceForTaskLocked(const DX12DescriptorCollectTask &task);
 	static void WaitForSequence(uint64_t targetSequence, const char *reason);
+	// Deprecated: merge optimization removed.  The lock-free ring buffer
+	// makes individual task submission fast enough that batching via merge
+	// is no longer needed.  Consecutive copy ranges are processed as
+	// separate tasks by the worker.
 	static bool TryMergeQueuedCopyTaskLocked(
 		ID3D12Device *device,
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -160,6 +173,14 @@ public:
 		UINT count,
 		DWORD enqueueThreadId);
 	static bool QueueDescriptorBatchLocked(DX12DescriptorCollectBatch *batch);
+	// Pushes a fully-prepared task to the lock-free ring buffer.
+	// The caller must have already called RegisterTaskIndexLocked
+	// and inserted into queuedTaskById under mapsMutex.
+	static bool QueueTaskToRingBuffer(DX12DescriptorCollectTask *task);
+
+	// Original QueueTaskLocked kept for internal compatibility during
+	// transition.  Prepares the task (taskId, sequence, indexedCpuHandles),
+	// registers it in maps under mapsMutex, then pushes to ring buffer.
 	static bool QueueTaskLocked(DX12DescriptorCollectTask *task);
 	static void FlushPendingDescriptorWrites(const char *reason);
 	static bool RetainDescriptorResourcesForAsync(DescriptorRecord *record);

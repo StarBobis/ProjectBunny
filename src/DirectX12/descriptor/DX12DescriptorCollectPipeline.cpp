@@ -98,7 +98,7 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 	Start();
 
 	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
-	std::unique_lock<std::mutex> lock(mutex);
+	std::unique_lock<std::mutex> lock(mapsMutex);
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"DescriptorCollectPipeline",
 		"copy_range_lock_wait",
@@ -169,7 +169,10 @@ void DX12DescriptorCollectPipeline::RecordDescriptorCopyRange(
 		count,
 		DX12OuterTimingProbeUtils::ElapsedUs(queueBegin));
 	lock.unlock();
-	wake.notify_one();
+	{
+		std::lock_guard<std::mutex> lk(wakeMutex);
+		wakeCv.notify_one();
+	}
 	MaybeLogInlineStats(source ? source : "RecordCopyRange");
 }
 
@@ -194,7 +197,7 @@ void DX12DescriptorCollectPipeline::FindPendingDescriptorHandles(
 		return;
 
 	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
-	std::lock_guard<std::mutex> lock(mutex);
+	std::lock_guard<std::mutex> lock(mapsMutex);
 	for (size_t index = 0; index < count; ++index) {
 		const SIZE_T cpuHandle = cpuHandles[index];
 		if (!cpuHandle)
@@ -221,7 +224,7 @@ void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
 	memset(found, 0, count * sizeof(uint8_t));
 
 	LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
-	std::lock_guard<std::mutex> lock(mutex);
+	std::lock_guard<std::mutex> lock(mapsMutex);
 	for (size_t index = 0; index < count; ++index) {
 		const SIZE_T cpuHandle = cpuHandles[index];
 		if (!cpuHandle)
@@ -244,7 +247,7 @@ void DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites(
 void DX12DescriptorCollectPipeline::DrainForSnapshot(const char *reason)
 {
 	{
-		std::lock_guard<std::mutex> lock(mutex);
+		std::lock_guard<std::mutex> lock(mapsMutex);
 		drainCalls++;
 	}
 	FlushPendingDescriptorWrites(reason ? reason : "DrainForSnapshot");
@@ -258,7 +261,10 @@ void DX12DescriptorCollectPipeline::Stop()
 		return;
 
 	stopRequested.store(true, std::memory_order_release);
-	wake.notify_all();
+	{
+		std::lock_guard<std::mutex> lk(wakeMutex);
+		wakeCv.notify_all();
+	}
 	idle.notify_all();
 	if (worker.joinable())
 		worker.join();
@@ -268,12 +274,12 @@ void DX12DescriptorCollectPipeline::Stop()
 		"\"event\":\"Stopped\",\"pendingDescriptorWrites\":%zu,\"activeQueuedTasks\":%llu,\"queuedTasks\":%zu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu",
 		PendingCount(),
 		static_cast<unsigned long long>([]() -> uint64_t {
-			std::lock_guard<std::mutex> lock(mutex);
+			std::lock_guard<std::mutex> lock(mapsMutex);
 			return activeQueuedTasks;
 		}()),
 		static_cast<size_t>([]() -> size_t {
-			std::lock_guard<std::mutex> lock(mutex);
-			return queuedTasks.size();
+			std::lock_guard<std::mutex> lock(mapsMutex);
+			return taskRingBuffer.ApproximateSize();
 		}()),
 		static_cast<unsigned long long>(enqueuedBatches.load(std::memory_order_relaxed)),
 		static_cast<unsigned long long>(completedBatches.load(std::memory_order_relaxed)));
@@ -305,7 +311,7 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *reco
 	if (!RetainDescriptorResourcesForAsync(record))
 		return false;
 
-	std::unique_lock<std::mutex> lock(mutex);
+	std::unique_lock<std::mutex> lock(mapsMutex);
 	RecordDescriptorWriteStats(*record);
 	const uint64_t sequence = NextDescriptorSequence();
 	pendingDescriptorSequences[record->cpuHandle] = sequence;
@@ -331,14 +337,17 @@ bool DX12DescriptorCollectPipeline::EnqueueDescriptorTask(DescriptorRecord *reco
 			QueueDescriptorBatchLocked(&batch);
 	}
 	lock.unlock();
-	wake.notify_one();
+	{
+		std::lock_guard<std::mutex> lk(wakeMutex);
+		wakeCv.notify_one();
+	}
 	return true;
 }
 
 size_t DX12DescriptorCollectPipeline::PendingCount()
 {
-	std::lock_guard<std::mutex> lock(mutex);
-	return pendingDescriptorWrites.size() + queuedTasks.size() +
+	std::lock_guard<std::mutex> lock(mapsMutex);
+	return pendingDescriptorWrites.size() + taskRingBuffer.ApproximateSize() +
 		static_cast<size_t>(activeQueuedTasks);
 }
 
@@ -386,12 +395,12 @@ void DX12DescriptorCollectPipeline::WaitForSequence(uint64_t targetSequence, con
 		std::chrono::steady_clock::now();
 	const uint64_t completedBeforeWait = completedSequence.load(std::memory_order_acquire);
 	{
-		std::unique_lock<std::mutex> lock(mutex);
+		std::unique_lock<std::mutex> lock(mapsMutex);
 		if (completedSequence.load(std::memory_order_acquire) < targetSequence) {
 			idle.wait(lock, [targetSequence]() {
 				return completedSequence.load(std::memory_order_acquire) >= targetSequence ||
 					(pendingDescriptorWrites.empty() &&
-						queuedTasks.empty() &&
+						taskRingBuffer.IsEmpty() &&
 						activeQueuedTasks == 0);
 			});
 		}
@@ -428,74 +437,61 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 
 	for (;;) {
 		std::shared_ptr<DX12DescriptorCollectTask> task;
-		{
-			std::unique_lock<std::mutex> lock(mutex);
-			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
-			wake.wait(lock, []() {
-				return stopRequested.load(std::memory_order_acquire) ||
-					!pendingDescriptorWrites.empty() ||
-					!queuedTasks.empty();
-			});
-			size_t pendingAfterWake = pendingDescriptorWrites.size() +
-				queuedTasks.size() +
-				static_cast<size_t>(activeQueuedTasks);
-			DX12OuterTimingProbeUtils::LogWorkerWait(
-				"DescriptorCollectPipeline",
-				"WorkerWake",
-				"worker_idle",
-				0,
-				completedSequence.load(std::memory_order_acquire),
-				pendingAfterWake,
-				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
-			if (queuedTasks.empty() && !pendingDescriptorWrites.empty() &&
-					!stopRequested.load(std::memory_order_acquire) &&
-					pendingDescriptorWrites.size() < kDescriptorWorkerBatchTarget) {
-				LARGE_INTEGER coalesceBegin = DX12OuterTimingProbeUtils::Now();
-				wake.wait_for(lock, kDescriptorWorkerCoalesceWindow, []() {
-					return stopRequested.load(std::memory_order_acquire) ||
-						!queuedTasks.empty() ||
-						pendingDescriptorWrites.size() >= kDescriptorWorkerBatchTarget;
-				});
-				size_t pendingAfterCoalesce = pendingDescriptorWrites.size() +
-					queuedTasks.size() +
-					static_cast<size_t>(activeQueuedTasks);
-				DX12OuterTimingProbeUtils::LogWorkerWait(
-					"DescriptorCollectPipeline",
-					"WorkerCoalesce",
-					"worker_coalesce",
-					0,
-					completedSequence.load(std::memory_order_acquire),
-					pendingAfterCoalesce,
-					DX12OuterTimingProbeUtils::ElapsedUs(coalesceBegin));
+
+		// Fast path: try the lock-free ring buffer first.
+		task = taskRingBuffer.TryPopWithSpin(100);
+		if (!task) {
+			// Ring empty. Check pending descriptor writes and maybe flush.
+			{
+				std::lock_guard<std::mutex> lock(mapsMutex);
+				if (!pendingDescriptorWrites.empty()) {
+					DX12DescriptorCollectBatch batch;
+					if (TryStealDescriptorBatchLocked(&batch)) {
+						QueueDescriptorBatchLocked(&batch);
+						// Batch tasks were just pushed to the ring buffer.
+						// Fall through to retry pop outside the lock.
+					}
+				}
 			}
-			if (queuedTasks.empty() && !pendingDescriptorWrites.empty()) {
-				DX12DescriptorCollectBatch batch;
-				if (TryStealDescriptorBatchLocked(&batch))
-					QueueDescriptorBatchLocked(&batch);
-			}
-			if (queuedTasks.empty()) {
+
+			// Retry pop after potential flush.
+			task = taskRingBuffer.TryPop();
+			if (!task) {
 				if (stopRequested.load(std::memory_order_acquire))
 					break;
+
+				// Nothing to do. Sleep waiting for producers.
+				{
+					std::unique_lock<std::mutex> lock(wakeMutex);
+					wakeCv.wait_for(lock, std::chrono::milliseconds(1), []() {
+						return stopRequested.load(std::memory_order_acquire);
+					});
+				}
 				continue;
 			}
-			task = queuedTasks.front();
-			queuedTasks.pop_front();
-			if (!task)
-				continue;
+		}
+
+		// Got a task from the ring buffer. Update tracking under maps lock.
+		UINT taskKind = 0;
+		UINT64 sequence = 0;
+		DWORD enqueueThreadId = 0;
+		size_t itemCount = 0;
+		{
+			std::lock_guard<std::mutex> lock(mapsMutex);
 			UnregisterTaskIndexLocked(task.get());
 			queuedTaskById.erase(task->taskId);
 			activeQueuedTasks++;
 			SetActiveTaskLocked(*task);
+			taskKind = static_cast<UINT>(task->kind);
+			sequence = task->sequence;
+			enqueueThreadId = task->enqueueThreadId;
+			if (task->kind == DX12DescriptorCollectTaskKind::DescriptorBatch)
+				itemCount = task->descriptors.size();
+			else if (task->kind == DX12DescriptorCollectTaskKind::CopyRange)
+				itemCount = task->count;
 		}
 
-		const UINT taskKind = static_cast<UINT>(task->kind);
-		const UINT64 sequence = task->sequence;
-		const DWORD enqueueThreadId = task->enqueueThreadId;
-		size_t itemCount = 0;
-		if (task->kind == DX12DescriptorCollectTaskKind::DescriptorBatch)
-			itemCount = task->descriptors.size();
-		else if (task->kind == DX12DescriptorCollectTaskKind::CopyRange)
-			itemCount = task->count;
+		// Process the task (no lock - same as before).
 		LARGE_INTEGER taskBegin = DX12OuterTimingProbeUtils::Now();
 		if (!IsTaskFullyConsumed(*task))
 			ProcessTask(task.get(), "Worker");
@@ -509,8 +505,9 @@ void DX12DescriptorCollectPipeline::WorkerLoop()
 			enqueueThreadId,
 			DX12OuterTimingProbeUtils::ElapsedUs(taskBegin));
 
+		// Update visibility after processing.
 		{
-			std::lock_guard<std::mutex> lock(mutex);
+			std::lock_guard<std::mutex> lock(mapsMutex);
 			if (task->kind == DX12DescriptorCollectTaskKind::DescriptorBatch) {
 				for (size_t index = 0; index < task->indexedCpuHandles.size(); ++index) {
 					const SIZE_T cpuHandle = task->indexedCpuHandles[index];
@@ -659,7 +656,7 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 	uint64_t activeQueuedTasksSnapshot = 0;
 	size_t queuedTasksSnapshot = 0;
 	{
-		std::lock_guard<std::mutex> lock(mutex);
+		std::lock_guard<std::mutex> lock(mapsMutex);
 		descriptorWritesSnapshot = descriptorWrites;
 		descriptorWriteBatchesSnapshot = descriptorWriteBatches;
 		descriptorWriteQueuedSnapshot = descriptorWriteQueued;
@@ -685,7 +682,7 @@ void DX12DescriptorCollectPipeline::LogStats(const char *, uint64_t, size_t)
 		targetedQueuedSkippedLargeCopySnapshot = targetedQueuedSkippedLargeCopy;
 		pendingDescriptorWritesSnapshot = pendingDescriptorWrites.size();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
-		queuedTasksSnapshot = queuedTasks.size();
+		queuedTasksSnapshot = taskRingBuffer.ApproximateSize();
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineStats",
 		"\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"targetedInlineResolveCalls\":%llu,\"targetedInlineResolveBatches\":%llu,\"targetedInlineResolvedWrites\":%llu,\"targetedInlineBlockedActive\":%llu,\"targetedInlineBlockedQueued\":%llu,\"targetedInlineNoPending\":%llu,\"targetedQueuedPromoteCalls\":%llu,\"targetedQueuedPromotedDescriptorBatches\":%llu,\"targetedQueuedPromotedDescriptorRecords\":%llu,\"targetedQueuedPromotedCopyRanges\":%llu,\"targetedQueuedPromotedCopyDescriptors\":%llu,\"targetedQueuedBlockedActive\":%llu,\"targetedQueuedBlockedPrior\":%llu,\"targetedQueuedSkippedLargeCopy\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
@@ -727,7 +724,7 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 	(void)reason;
 	Start();
 	LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
-	std::unique_lock<std::mutex> lock(mutex);
+	std::unique_lock<std::mutex> lock(mapsMutex);
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"DescriptorCollectPipeline",
 		"flush_lock_wait",
@@ -749,14 +746,17 @@ void DX12DescriptorCollectPipeline::FlushPendingDescriptorWrites(const char *rea
 			stolenDescriptorCount,
 			DX12OuterTimingProbeUtils::ElapsedUs(queueBegin));
 	}
-	wake.notify_one();
+	{
+		std::lock_guard<std::mutex> lk(wakeMutex);
+		wakeCv.notify_one();
+	}
 	LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
 	size_t pendingBeforeWait = pendingDescriptorWrites.size() +
-		queuedTasks.size() +
+		taskRingBuffer.ApproximateSize() +
 		static_cast<size_t>(activeQueuedTasks);
 	idle.wait(lock, []() {
 		return pendingDescriptorWrites.empty() &&
-			queuedTasks.empty() &&
+			taskRingBuffer.IsEmpty() &&
 			activeQueuedTasks == 0;
 	});
 	DX12OuterTimingProbeUtils::LogWorkerWait(
@@ -801,7 +801,7 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 	uint64_t targetSequence = 0;
 	{
 		LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
-		std::unique_lock<std::mutex> lock(mutex);
+		std::unique_lock<std::mutex> lock(mapsMutex);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"DescriptorCollectPipeline",
 			"ensure_lock_wait",
@@ -846,9 +846,12 @@ void DX12DescriptorCollectPipeline::EnsureDescriptorWritesVisible(
 			0,
 			count,
 			DX12OuterTimingProbeUtils::ElapsedUs(sequenceBegin));
-		queuedTasksSnapshot = queuedTasks.size();
+		queuedTasksSnapshot = taskRingBuffer.ApproximateSize();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
-		wake.notify_one();
+	}
+	{
+		std::lock_guard<std::mutex> lk(wakeMutex);
+		wakeCv.notify_one();
 	}
 	if (requestedPendingWrites != 0 || resolvedInlineWrites != 0 ||
 			blockedByActiveTask || blockedByQueuedTask ||
@@ -971,7 +974,33 @@ bool DX12DescriptorCollectPipeline::QueueTaskLocked(DX12DescriptorCollectTask *t
 		std::make_shared<DX12DescriptorCollectTask>(std::move(*task));
 	RegisterTaskIndexLocked(queuedTask.get());
 	queuedTaskById[queuedTask->taskId] = queuedTask;
-	queuedTasks.push_back(queuedTask);
+	// Push to lock-free ring buffer. If full (extremely unlikely),
+	// record inline as emergency fallback.
+	if (!taskRingBuffer.TryPush(queuedTask)) {
+		UnregisterTaskIndexLocked(queuedTask.get());
+		queuedTaskById.erase(queuedTask->taskId);
+		if (queuedTask->kind == DX12DescriptorCollectTaskKind::DescriptorBatch) {
+			::RecordDescriptorBatch(&queuedTask->descriptors);
+		} else if (queuedTask->kind == DX12DescriptorCollectTaskKind::CopyRange) {
+			::RecordDescriptorCopyRange(
+				queuedTask->device, queuedTask->type,
+				queuedTask->destStart, queuedTask->srcStart, queuedTask->count);
+		}
+	}
+	return true;
+}
+
+bool DX12DescriptorCollectPipeline::QueueTaskToRingBuffer(DX12DescriptorCollectTask *task)
+{
+	if (!task)
+		return false;
+	std::shared_ptr<DX12DescriptorCollectTask> queuedTask =
+		std::make_shared<DX12DescriptorCollectTask>(std::move(*task));
+	queuedTaskById[queuedTask->taskId] = queuedTask;
+	if (!taskRingBuffer.TryPush(queuedTask)) {
+		queuedTaskById.erase(queuedTask->taskId);
+		return false;
+	}
 	return true;
 }
 
@@ -983,68 +1012,15 @@ bool DX12DescriptorCollectPipeline::TryMergeQueuedCopyTaskLocked(
 	UINT count,
 	DWORD enqueueThreadId)
 {
-	if (!device || count == 0 || queuedTasks.empty())
-		return false;
-	std::shared_ptr<DX12DescriptorCollectTask> pendingCopyTask = queuedTasks.back();
-	if (!pendingCopyTask)
-		return false;
-	DX12DescriptorCollectTask &pendingCopy = *pendingCopyTask;
-	if (pendingCopy.kind != DX12DescriptorCollectTaskKind::CopyRange ||
-			pendingCopy.consumed ||
-			pendingCopy.device != device ||
-			pendingCopy.type != type ||
-			pendingCopy.enqueueThreadId != enqueueThreadId)
-		return false;
-	const UINT increment = device->GetDescriptorHandleIncrementSize(type);
-	if (increment == 0)
-		return false;
-	const SIZE_T expectedDest = pendingCopy.destStart.ptr +
-		static_cast<SIZE_T>(pendingCopy.count) * increment;
-	const SIZE_T expectedSrc = pendingCopy.srcStart.ptr +
-		static_cast<SIZE_T>(pendingCopy.count) * increment;
-	if (destStart.ptr != expectedDest || srcStart.ptr != expectedSrc)
-		return false;
-	const UINT64 merged = static_cast<UINT64>(pendingCopy.count) + count;
-	if (merged > UINT_MAX)
-		return false;
-	UnregisterTaskIndexLocked(&pendingCopy);
-	const uint64_t mergedSequence = NextDescriptorSequence();
-	pendingCopy.sequence = mergedSequence;
-	pendingCopy.count = static_cast<UINT>(merged);
-	TryComputeTrackedCpuHandleRange(
-		device,
-		type,
-		pendingCopy.destStart,
-		pendingCopy.count,
-		&pendingCopy.trackedCpuHandleStart,
-		&pendingCopy.trackedCpuHandleEnd);
-	TryComputeTrackedCpuHandleRange(
-		device,
-		type,
-		pendingCopy.srcStart,
-		pendingCopy.count,
-		&pendingCopy.trackedSrcCpuHandleStart,
-		&pendingCopy.trackedSrcCpuHandleEnd);
-	for (UINT offset = 0; offset < count; ++offset) {
-		const SIZE_T cpuHandle =
-			destStart.ptr + static_cast<SIZE_T>(offset) * increment;
-		pendingDescriptorSequences[cpuHandle] = mergedSequence;
-	}
-	if (increment != 0) {
-		pendingCopy.indexedCpuHandles.clear();
-		pendingCopy.indexedCpuHandles.reserve(pendingCopy.count);
-		for (UINT offset = 0; offset < pendingCopy.count; ++offset) {
-			const SIZE_T cpuHandle =
-				pendingCopy.destStart.ptr + static_cast<SIZE_T>(offset) * increment;
-			if (cpuHandle)
-				pendingCopy.indexedCpuHandles.push_back(cpuHandle);
-		}
-	}
-	RegisterTaskIndexLocked(&pendingCopy);
-	copyRangeMerged++;
-	if (pendingCopy.count > maxMergedCount)
-		maxMergedCount = pendingCopy.count;
-	return true;
+	// Merge optimization removed with lock-free ring buffer.
+	// Individual copy tasks are now submitted separately.
+	(void)device;
+	(void)type;
+	(void)destStart;
+	(void)srcStart;
+	(void)count;
+	(void)enqueueThreadId;
+	return false;
 }
 
 bool DX12DescriptorCollectPipeline::CpuHandleInTrackedRange(
@@ -1553,7 +1529,7 @@ bool DX12DescriptorCollectPipeline::TryPromoteTaskRefLocked(
 			elapsedUs,
 			static_cast<unsigned long long>(task->sequence),
 			static_cast<unsigned long long>(task->taskId),
-			queuedTasks.size());
+			taskRingBuffer.ApproximateSize());
 		return true;
 	}
 	if (task->kind == DX12DescriptorCollectTaskKind::CopyRange) {
@@ -1611,7 +1587,7 @@ bool DX12DescriptorCollectPipeline::TryPromoteTaskRefLocked(
 			elapsedUs,
 			static_cast<unsigned long long>(task->sequence),
 			static_cast<unsigned long long>(task->taskId),
-			queuedTasks.size());
+			taskRingBuffer.ApproximateSize());
 		return true;
 	}
 	return false;
@@ -1848,7 +1824,7 @@ bool DX12DescriptorCollectPipeline::TryResolveRequestedPendingWritesInlineLocked
 		reason ? reason : "",
 		resolvedCpuHandles.size(),
 		elapsedUs,
-		queuedTasks.size(),
+		taskRingBuffer.ApproximateSize(),
 		static_cast<unsigned long long>(activeQueuedTasks),
 		static_cast<unsigned long long>(visibleSequence));
 	return true;
@@ -1888,7 +1864,7 @@ void DX12DescriptorCollectPipeline::MaybeLogInlineStats(const char *reason)
 	uint64_t activeQueuedTasksSnapshot = 0;
 	size_t queuedTasksSnapshot = 0;
 	{
-		std::lock_guard<std::mutex> lock(mutex);
+		std::lock_guard<std::mutex> lock(mapsMutex);
 		const uint64_t total = descriptorWrites + copyRangeCalls + drainCalls;
 		if (total == 0 || total % kDescriptorInlineStatsInterval != 0)
 			return;
@@ -1917,7 +1893,7 @@ void DX12DescriptorCollectPipeline::MaybeLogInlineStats(const char *reason)
 		targetedQueuedSkippedLargeCopySnapshot = targetedQueuedSkippedLargeCopy;
 		pendingDescriptorWritesSnapshot = pendingDescriptorWrites.size();
 		activeQueuedTasksSnapshot = activeQueuedTasks;
-		queuedTasksSnapshot = queuedTasks.size();
+		queuedTasksSnapshot = taskRingBuffer.ApproximateSize();
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorCollectPipelineStats",
 		"\"reason\":\"%s\",\"descriptorWrites\":%llu,\"descriptorWriteBatches\":%llu,\"descriptorWriteQueued\":%llu,\"descriptorWriteReplaced\":%llu,\"copyRangeCalls\":%llu,\"copyRangeMerged\":%llu,\"copiedDescriptors\":%llu,\"drainCalls\":%llu,\"maxMergedCount\":%llu,\"targetedInlineResolveCalls\":%llu,\"targetedInlineResolveBatches\":%llu,\"targetedInlineResolvedWrites\":%llu,\"targetedInlineBlockedActive\":%llu,\"targetedInlineBlockedQueued\":%llu,\"targetedInlineNoPending\":%llu,\"targetedQueuedPromoteCalls\":%llu,\"targetedQueuedPromotedDescriptorBatches\":%llu,\"targetedQueuedPromotedDescriptorRecords\":%llu,\"targetedQueuedPromotedCopyRanges\":%llu,\"targetedQueuedPromotedCopyDescriptors\":%llu,\"targetedQueuedBlockedActive\":%llu,\"targetedQueuedBlockedPrior\":%llu,\"targetedQueuedSkippedLargeCopy\":%llu,\"pendingDescriptorWrites\":%llu,\"queuedTasks\":%zu,\"activeQueuedTasks\":%llu,\"enqueuedBatches\":%llu,\"completedBatches\":%llu,\"completedSequence\":%llu,\"maxPendingDescriptorWrites\":%llu,\"threadId\":%lu",
