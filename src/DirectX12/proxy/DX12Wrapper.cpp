@@ -4793,6 +4793,8 @@ namespace DX12Wrapper
 				mCommandList = commandList;
 			// 对齐 DX11 HackerContext：RuntimeState 嵌入 Wrapper，O(1) 直接成员访问
 			DX12CommandListRuntime::RegisterDirectState(commandList, &mRuntimeState);
+			// Cache device pointer once at construction to eliminate per-draw QI.
+			commandList->GetDevice(IID_PPV_ARGS(&mRuntimeState.device));
 				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12CommandList*>(this));

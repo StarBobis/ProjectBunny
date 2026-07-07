@@ -19,6 +19,13 @@ public:
 	bool skipDraw = false;
 	bool skipDispatch = false;
 	UINT64 skipGeneration = 0;
+
+	// PSO-Create-Time compiled Mod Plan: eliminates per-draw config rediscovery.
+	// Computed when the PSO is first recorded (RecordGraphicsPipelineState).
+	// After mod reload, generation mismatch triggers lazy rebuild on first access.
+	DX12IaHashTargetPlan cachedDrawTargetPlan;
+	UINT64 drawTargetPlanGeneration = 0;
+	bool drawTargetPlanResolved = false;
 };
 
 static std::unordered_map<ID3D12PipelineState*, DX12StoredPso> gPsoRecords;

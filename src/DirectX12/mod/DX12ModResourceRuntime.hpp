@@ -1054,6 +1054,15 @@ static ID3D12Device *AcquireModDevice(ID3D12GraphicsCommandList *commandList)
 	return nullptr;
 }
 
+// Fast path: use pre-cached device pointer to avoid per-call COM QI overhead.
+// The caller must ensure cachedDevice remains valid (device outlives command list per DX12 spec).
+static ID3D12Device *AcquireModDeviceFast(ID3D12GraphicsCommandList *commandList, ID3D12Device *cachedDevice)
+{
+	if (cachedDevice)
+		return cachedDevice;
+	return AcquireModDevice(commandList);
+}
+
 static void BuildLoadedBufferResource(
 	ID3D12Device *device,
 	const std::wstring &name,

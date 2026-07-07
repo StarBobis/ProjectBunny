@@ -621,7 +621,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex,
 	DX12ModIaReplacement *replacement,
-	bool allowNegativeCache)
+	bool allowNegativeCache,
+	ID3D12Device *cachedDevice)
 {
 	if (!replacement)
 		return false;
@@ -665,7 +666,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (configSnapshot.empty())
 		return false;
 
-	ID3D12Device *device = AcquireModDevice(commandList);
+	ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
+	const bool deviceFromCache = (cachedDevice != nullptr);
 	if (!device)
 		return false;
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
@@ -684,7 +686,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	LogShaderOverrideCommandListSnapshotLimited("pre", configSnapshot, *replacement);
 	bool changed = executor.Changed() || replacement->skip || !replacement->draws.empty() ||
 		!replacement->dispatches.empty();
-	device->Release();
+	if (!deviceFromCache)
+		device->Release();
 
 	if (negativeCacheEnabled && !changed && pendingResourceViews.empty())
 		StoreShaderOverrideNegativeCache(negativeCacheKey);
@@ -847,6 +850,14 @@ void DX12ModRecordGraphicsPipelineState(
 	auto existing = gPsoRecords.find(pipelineState);
 	if (existing != gPsoRecords.end())
 		ReleaseStoredPso(&existing->second);
+
+	// Eager PSO config compilation: compute shader overrides and IA target plan
+	// at PSO-create time so draws skip discovery entirely.
+	if (DX12ModHasActiveShaderOverrides()) {
+		std::vector<const Bunny::ShaderOverrideConfig*> configs;
+		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
+	}
+
 	gPsoRecords[pipelineState] = record;
 	ReleaseSRWLockExclusive(&gModLock);
 }

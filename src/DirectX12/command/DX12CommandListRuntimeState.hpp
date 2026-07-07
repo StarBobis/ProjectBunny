@@ -52,6 +52,11 @@ public:
 	// PSO shader override metadata on every command.
 	DX12CompiledDrawDecision drawDecision;
 
+	// Cached device pointer to eliminate per-draw AcquireModDevice QI overhead.
+	// Set during Reset from the command list; device must outlive the command list
+	// per DX12 spec (device -> command list is a parent-child relationship).
+	ID3D12Device *device = nullptr;
+
 	// PreSkin binding collection cache — keyed by computeBindingSerial.
 	// Avoids re-collecting CBV/SRV/UAV/constants on every dispatch when
 	// compute bindings have not changed since the last collection.

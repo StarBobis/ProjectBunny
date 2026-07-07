@@ -27,15 +27,12 @@ inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
 class DX12IaReplacementExecutor
 {
 public:
-	// PSO and IA negative cache for no-match results.
-	// The cache persists across frames and is cleared only on mod reload.
-	inline static std::unordered_set<UINT64> s_psoIaNegativeCache;
-	inline static SRWLOCK s_psoIaNegativeCacheLock = SRWLOCK_INIT;
-
-	// PSO-level pre-filter: keyed by (PSO, targetPlan, iaViewFingerprint).
-	// Checked BEFORE IaHash build; populated when full neg cache misses.
-	inline static std::unordered_set<UINT64> s_psoPreFilterCache;
-	inline static SRWLOCK s_psoPreFilterCacheLock = SRWLOCK_INIT;
+	// Unified PSO+IA fast-reject cache: single lock, single lookup.
+	// Key = Mix(PSO, targetPlan fingerprint, IA view fingerprint).
+	// Replaces the previous two-tier pre-filter + negative cache.
+	// Persists across frames, cleared on mod reload.
+	inline static std::unordered_set<UINT64> s_psoDrawFastRejectCache;
+	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
 
 	static UINT64 MixCheapValue(UINT64 key, UINT64 value)
 	{
@@ -67,56 +64,28 @@ public:
 		return key ? key : 1;
 	}
 
-	static bool TryFindPsoIaNegativeCache(UINT64 key)
+	static bool TryFindPsoDrawFastReject(UINT64 key)
 	{
-		AcquireSRWLockShared(&s_psoIaNegativeCacheLock);
-		bool found = s_psoIaNegativeCache.find(key) != s_psoIaNegativeCache.end();
-		ReleaseSRWLockShared(&s_psoIaNegativeCacheLock);
+		AcquireSRWLockShared(&s_psoDrawFastRejectCacheLock);
+		bool found = s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end();
+		ReleaseSRWLockShared(&s_psoDrawFastRejectCacheLock);
 		return found;
 	}
 
-	static void StorePsoIaNegativeCache(UINT64 key)
+	static void StorePsoDrawFastReject(UINT64 key)
 	{
-		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
-		s_psoIaNegativeCache.insert(key);
-		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
-	}
-
-	static UINT64 MakePsoPreFilterKey(
-		ID3D12PipelineState *pipelineState,
-		const DX12IaHashTargetPlan &targetPlan,
-		UINT64 iaViewFingerprint)
-	{
-		UINT64 key = reinterpret_cast<UINT64>(pipelineState);
-		key = MixCheapValue(key, targetPlan.Fingerprint());
-		key = MixCheapValue(key, iaViewFingerprint);
-		return key ? key : 1;
-	}
-
-	static bool TryFindPsoPreFilterCache(UINT64 key)
-	{
-		AcquireSRWLockShared(&s_psoPreFilterCacheLock);
-		bool found = s_psoPreFilterCache.find(key) != s_psoPreFilterCache.end();
-		ReleaseSRWLockShared(&s_psoPreFilterCacheLock);
-		return found;
-	}
-
-	static void StorePsoPreFilterCache(UINT64 key)
-	{
-		AcquireSRWLockExclusive(&s_psoPreFilterCacheLock);
-		s_psoPreFilterCache.insert(key);
-		ReleaseSRWLockExclusive(&s_psoPreFilterCacheLock);
+		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		s_psoDrawFastRejectCache.insert(key);
+		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
 	}
 
 
-	static void ClearPsoIaNegativeCache()
+
+	static void ClearPsoDrawFastRejectCache()
 	{
-		AcquireSRWLockExclusive(&s_psoIaNegativeCacheLock);
-		s_psoIaNegativeCache.clear();
-		ReleaseSRWLockExclusive(&s_psoIaNegativeCacheLock);
-		AcquireSRWLockExclusive(&s_psoPreFilterCacheLock);
-		s_psoPreFilterCache.clear();
-		ReleaseSRWLockExclusive(&s_psoPreFilterCacheLock);
+		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		s_psoDrawFastRejectCache.clear();
+		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
 	}
 
 	static bool ExecutePresent(
@@ -242,10 +211,12 @@ public:
 				draw.indexed ? 1u : 0u,
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(iaKeyBegin));
-			// PSO-level pre-filter: skip hash for PSO+layout combos that never matched.
-			psoPreFilterKey = DX12IaReplacementExecutor::MakePsoPreFilterKey(
-				runtimeState.pipelineState, targetPlan, iaCacheKey.iaViewFingerprint);
-			if (DX12IaReplacementExecutor::TryFindPsoPreFilterCache(psoPreFilterKey)
+			// Unified fast-reject pre-filter: lightweight key from IA view fingerprint.
+			psoPreFilterKey = reinterpret_cast<UINT64>(runtimeState.pipelineState);
+			psoPreFilterKey = DX12IaReplacementExecutor::MixCheapValue(psoPreFilterKey, targetPlan.Fingerprint());
+			psoPreFilterKey = DX12IaReplacementExecutor::MixCheapValue(psoPreFilterKey, iaCacheKey.iaViewFingerprint);
+			psoPreFilterKey = psoPreFilterKey ? psoPreFilterKey : 1;
+			if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoPreFilterKey)
 				&& !drawDecision->targetPlanHasDescriptorTargets) {
 				DX12Profiling::RecordIaHashStateResult(false);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
@@ -327,7 +298,7 @@ public:
 					1,
 					DX12OuterTimingProbeUtils::ElapsedUs(negKeyBegin));
 				LARGE_INTEGER negLookupBegin = DX12OuterTimingProbeUtils::Now();
-				if (DX12IaReplacementExecutor::TryFindPsoIaNegativeCache(psoIaNegKey)) {
+				if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoIaNegKey)) {
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
 						"pso_ia_negative_hit",
@@ -353,7 +324,8 @@ public:
 				commandList, runtimeState.pipelineState, iaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, &iaReplacement,
-				psoIaNegativeCacheSafe)) {
+				psoIaNegativeCacheSafe,
+			runtimeState.device)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"prepare_shader_override_match",
@@ -395,8 +367,8 @@ public:
 			if (canUsePsoIaNegativeCache) {
 				// No match: store both the full negative key and cheap-to-full map.
 				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
-				DX12IaReplacementExecutor::StorePsoIaNegativeCache(psoIaNegKey);
-				DX12IaReplacementExecutor::StorePsoPreFilterCache(psoPreFilterKey);
+				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoIaNegKey);
+				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoPreFilterKey);
 
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",

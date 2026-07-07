@@ -252,8 +252,10 @@ void DX12CommandListRuntime::Reset(
 	if (!state)
 		return;
 
+	ID3D12Device *cachedDevice = state->device;
 	DX12CommandListTrackingCache oldCache = state->trackingCache;
 	*state = DX12CommandListRuntimeState();
+	state->device = cachedDevice;
 	state->pipelineState = initialState;
 	state->trackingCache = oldCache;
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
