@@ -27,7 +27,7 @@ struct DX12ResourceMapTracking
 
 static thread_local DX12ResourceMapTracking gActiveMap;
 
-// Hooked Map â€?records the mapped pointer for later content capture
+// Hooked Map ï¿½?records the mapped pointer for later content capture
 static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	ID3D12Resource *resource,
 	UINT Subresource,
@@ -57,7 +57,7 @@ static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	return hr;
 }
 
-// Hooked Unmap â€?captures buffer content before unmapping
+// Hooked Unmap ï¿½?captures buffer content before unmapping
 static void STDMETHODCALLTYPE HookedResourceUnmap(
 	ID3D12Resource *resource,
 	UINT Subresource,
@@ -75,7 +75,7 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 			dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
 		}
 		if (dataSize == 0) {
-			// Game wrote entire resource â€?resolve size from resource desc
+			// Game wrote entire resource ï¿½?resolve size from resource desc
 			D3D12_RESOURCE_DESC desc = resource->GetDesc();
 			dataSize = static_cast<size_t>(desc.Width);
 		}
@@ -100,6 +100,12 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resource)
 {
 	if (!resource)
+		return;
+
+	// Map/Unmap hooks are only needed for buffer content capture (Dump feature).
+	// Without an active Dump or Hunt there is nothing to capture, so skip the
+	// GetHeapProperties driver call and VTable patching entirely.
+	if (!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
 		return;
 
 	D3D12_RESOURCE_DESC desc = resource->GetDesc();

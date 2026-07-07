@@ -48,6 +48,7 @@ public:
 		ApiWallBucketCount
 	};
 
+#if defined(_DEBUG)
 	class ApiWallScope
 	{
 	public:
@@ -70,6 +71,13 @@ public:
 				end.QuadPart);
 		}
 	};
+#else
+	class ApiWallScope
+	{
+	public:
+		ApiWallScope(int) {}
+	};
+#endif
 
 	class CpuStageBucket
 	{

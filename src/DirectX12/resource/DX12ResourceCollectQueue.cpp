@@ -31,14 +31,14 @@ bool DX12ResourceCollectQueue::Enqueue(
 	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
+	(void)resource;
 	(void)desc;
 	(void)heapProperties;
 	(void)placedInfo;
 	(void)initialState;
-	dropped.fetch_add(1, std::memory_order_relaxed);
-	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
-		"event=SyncFallback,kind=Resource,resource=%p,reason=no_worker",
-		resource);
+	// Queue worker is bypassed (Start sets started=false). All enqueue
+	// calls are synchronous fallbacks that only log and discard the data.
+	// Skip the logging overhead entirely when no one is interested.
 	return false;
 }
 
