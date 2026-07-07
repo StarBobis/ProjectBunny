@@ -10,7 +10,10 @@
 #include <string>
 
 #include "DX12FrameAnalysis.hpp"
+#include "DX12ResourceDumpBufferTextUtils.hpp"
 #include "DX12ResourceDumpCore.hpp"
+#include "DX12ResourceDumpDedupedNamingUtils.hpp"
+#include "DX12ResourceDumpDdsUtils.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 
 class DX12ResourceDumpFileWriter
@@ -253,24 +256,7 @@ static void WriteDDSHeader(FILE *file, const D3D12_RESOURCE_DESC &desc)
 
 static bool WriteTextureDDSFile(FILE *file, const DumpTask &task, const void *mappedData)
 {
-	if (!file || !mappedData)
-		return false;
-
-	if (task.textureLayouts.size() != task.textureRows.size() ||
-		task.textureLayouts.size() != task.textureRowSizes.size())
-		return false;
-
-	WriteDDSHeader(file, task.desc);
-	const uint8_t *mapped = static_cast<const uint8_t*>(mappedData);
-	for (size_t subresource = 0; subresource < task.textureLayouts.size(); ++subresource) {
-		const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &layout = task.textureLayouts[subresource];
-		const uint8_t *base = mapped + layout.Offset;
-		for (UINT row = 0; row < task.textureRows[subresource]; ++row) {
-			const uint8_t *src = base + static_cast<size_t>(row) * layout.Footprint.RowPitch;
-			fwrite(src, 1, static_cast<size_t>(task.textureRowSizes[subresource]), file);
-		}
-	}
-	return true;
+	return DX12ResourceDumpDdsUtils::WriteTexture2DFile(file, task, mappedData);
 }
 
 static bool WriteBufferFileData(FILE *file, const DumpTask &task, const void *mappedData)
@@ -394,14 +380,7 @@ static bool WriteBufferTextFile(const wchar_t *path, const DumpTask &task, const
 	if (!file)
 		return false;
 
-	const uint8_t *data = static_cast<const uint8_t*>(mappedData) + task.readbackOffset;
-	bool ok = false;
-	if (task.sourceKind == DumpTaskSource::InputAssembler && task.iaBuffer.role == IaBufferRole::IB)
-		ok = WriteIndexBufferTextFile(file, task, data);
-	else if (task.sourceKind == DumpTaskSource::InputAssembler && task.iaBuffer.role == IaBufferRole::VB)
-		ok = WriteVertexBufferTextFile(file, task, data);
-	else
-		ok = WriteGenericBufferTextFile(file, task, data);
+	const bool ok = DX12ResourceDumpBufferTextUtils::WriteBufferTextFile(file, task, mappedData);
 
 	fclose(file);
 	return ok;
@@ -453,10 +432,10 @@ static bool WriteDedupedResourceFile(
 	if (!dedupeDir || !resourceDir || !mappedData)
 		return false;
 
-	const wchar_t *ext = task.isTexture ? L"dds" : L"buf";
 	const uint32_t hash = HashDumpTaskData(task, mappedData);
 	wchar_t dedupeFileName[MAX_PATH];
-	swprintf_s(dedupeFileName, L"%08x.%s", hash, ext);
+	DX12ResourceDumpDedupedNamingUtils::BuildDedupedFileName(
+		task, hash, dedupeFileName, ARRAYSIZE(dedupeFileName));
 	wchar_t dedupePath[MAX_PATH];
 	swprintf_s(dedupePath, L"%s\\%s", dedupeDir, dedupeFileName);
 	if (dedupePathOut) {

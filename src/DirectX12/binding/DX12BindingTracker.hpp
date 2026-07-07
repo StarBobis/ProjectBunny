@@ -55,6 +55,10 @@ public:
 	UINT drawStartIndex = 0;
 	UINT drawIndexCount = 0;
 	INT drawBaseVertex = 0;
+	UINT drawStartInstance = 0;
+	UINT drawInstanceCount = 0;
+	D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+	DX12PsoInputLayoutInfo inputLayout;
 	uint32_t huntHash = 0;
 	bool resolved = false;
 	DX12BufferResourceSummary resource = {};

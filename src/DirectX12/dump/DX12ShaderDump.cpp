@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "DX12BindingTracker.hpp"
@@ -23,6 +24,7 @@
 #include "DX12LogManager.hpp"
 #include "DX12OverlayStatusState.hpp"
 #include "DX12RuntimeState.hpp"
+#include "utils/DX12PsoInputLayoutUtils.hpp"
 
 struct ShaderRecord
 {
@@ -45,6 +47,7 @@ static std::unordered_map<std::string, ShaderRecord> gShaders;
 static std::vector<PsoRecord> gPsos;
 static std::unordered_map<ID3D12PipelineState*, DX12PsoShaderInfo> gPsoShaderInfo;
 static std::unordered_map<UINT64, DX12PsoShaderSummary> gPsoShaderSummaryByIndex;
+static std::unordered_map<UINT64, DX12PsoInputLayoutInfo> gPsoInputLayoutByIndex;
 static UINT64 gPsoSerial = 0;
 static volatile LONG gShaderDumpRunning = 0;
 static volatile LONG gShaderDumpCaptureRequested = 0;
@@ -249,6 +252,52 @@ static void RecordPsoShaderSummaryLocked(const DX12PsoShaderInfo &info)
 	summary.psModel = info.psModel;
 	summary.csModel = info.csModel;
 	gPsoShaderSummaryByIndex[info.psoIndex] = summary;
+}
+
+static UINT AlignInputElementOffset(UINT offset, DXGI_FORMAT format)
+{
+	const UINT alignment = DX12PsoInputLayoutUtils::FormatAlignment(format);
+	if (!alignment || offset % alignment == 0)
+		return offset;
+	return offset + alignment - (offset % alignment);
+}
+
+static void RecordPsoInputLayoutLocked(
+	UINT64 psoIndex, const D3D12_INPUT_LAYOUT_DESC &inputLayout)
+{
+	DX12PsoInputLayoutInfo layout;
+	layout.psoIndex = psoIndex;
+	if (!psoIndex || !inputLayout.pInputElementDescs || !inputLayout.NumElements) {
+		gPsoInputLayoutByIndex[psoIndex] = layout;
+		return;
+	}
+
+	UINT slotOffsets[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+	layout.elements.reserve(inputLayout.NumElements);
+	for (UINT i = 0; i < inputLayout.NumElements; ++i) {
+		const D3D12_INPUT_ELEMENT_DESC &src = inputLayout.pInputElementDescs[i];
+		DX12PsoInputElementInfo dst;
+		dst.semanticName = src.SemanticName ? src.SemanticName : "";
+		dst.semanticIndex = src.SemanticIndex;
+		dst.format = src.Format;
+		dst.inputSlot = src.InputSlot;
+		dst.alignedByteOffset = src.AlignedByteOffset;
+		dst.appendAlignedElement = src.AlignedByteOffset == D3D12_APPEND_ALIGNED_ELEMENT;
+		dst.inputSlotClass = src.InputSlotClass;
+		dst.instanceDataStepRate = src.InstanceDataStepRate;
+
+		const bool validSlot = src.InputSlot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;
+		if (dst.appendAlignedElement)
+			dst.resolvedByteOffset = validSlot ? AlignInputElementOffset(slotOffsets[src.InputSlot], src.Format) : 0;
+		else
+			dst.resolvedByteOffset = src.AlignedByteOffset;
+
+		const UINT size = DX12PsoInputLayoutUtils::FormatSize(src.Format);
+		if (validSlot && size)
+			slotOffsets[src.InputSlot] = dst.resolvedByteOffset + size;
+		layout.elements.push_back(std::move(dst));
+	}
+	gPsoInputLayoutByIndex[psoIndex] = std::move(layout);
 }
 
 static bool GetDumpDirectory(wchar_t *path, size_t pathCount)
@@ -1334,6 +1383,7 @@ void DX12RecordGraphicsPipelineState(
 	RecordShaderLocked(desc->DS, "ds", psoIndex, pso, nullptr);
 	RecordShaderLocked(desc->HS, "hs", psoIndex, pso, nullptr);
 	RecordShaderLocked(desc->GS, "gs", psoIndex, pso, nullptr);
+	RecordPsoInputLayoutLocked(psoIndex, desc->InputLayout);
 	const size_t shadersInPso = pso.shaders.size();
 	gPsos.push_back(std::move(pso));
 	RecordPsoShaderSummaryLocked(info);
@@ -1403,6 +1453,8 @@ void DX12RecordPipelineStateStream(
 	pso.kind = "stream";
 	pso.index = psoIndex;
 	ID3D12RootSignature *rootSignature = nullptr;
+	D3D12_INPUT_LAYOUT_DESC inputLayout = {};
+	bool hasInputLayout = false;
 
 	while (offset + sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) <= desc->SizeInBytes) {
 		D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type =
@@ -1425,6 +1477,9 @@ void DX12RecordPipelineStateStream(
 			RecordShaderLocked(*bytecode, stage, psoIndex, pso, &info);
 		} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE) {
 			rootSignature = *reinterpret_cast<ID3D12RootSignature *const*>(stream + payloadOffset);
+		} else if (type == D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT) {
+			inputLayout = *reinterpret_cast<const D3D12_INPUT_LAYOUT_DESC*>(stream + payloadOffset);
+			hasInputLayout = true;
 		}
 
 		offset = AlignUp(payloadOffset + payloadSize, alignof(void*));
@@ -1432,6 +1487,10 @@ void DX12RecordPipelineStateStream(
 
 	shadersInPso = pso.shaders.size();
 	DX12RecordPsoRootSignature(psoIndex, pso.kind.c_str(), pipelineState, rootSignature);
+	if (hasInputLayout)
+		RecordPsoInputLayoutLocked(psoIndex, inputLayout);
+	else
+		RecordPsoInputLayoutLocked(psoIndex, D3D12_INPUT_LAYOUT_DESC());
 	gPsos.push_back(std::move(pso));
 	RecordPsoShaderSummaryLocked(info);
 	if (pipelineState)
@@ -1478,6 +1537,22 @@ bool DX12GetPsoShaderSummary(UINT64 psoIndex, DX12PsoShaderSummary *summary)
 		return false;
 	}
 	*summary = it->second;
+	ReleaseSRWLockShared(&gDumpLock);
+	return true;
+}
+
+bool DX12GetPsoInputLayout(UINT64 psoIndex, DX12PsoInputLayoutInfo *layout)
+{
+	if (!psoIndex || !layout)
+		return false;
+
+	AcquireSRWLockShared(&gDumpLock);
+	auto it = gPsoInputLayoutByIndex.find(psoIndex);
+	if (it == gPsoInputLayoutByIndex.end()) {
+		ReleaseSRWLockShared(&gDumpLock);
+		return false;
+	}
+	*layout = it->second;
 	ReleaseSRWLockShared(&gDumpLock);
 	return true;
 }

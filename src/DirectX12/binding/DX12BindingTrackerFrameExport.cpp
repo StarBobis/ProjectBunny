@@ -13,6 +13,7 @@
 #include "DX12FrameAnalysis.hpp"
 #include "DX12FrameAnalysisManifest.hpp"
 #include "DX12IaRegion.hpp"
+#include "DX12ShaderDump.hpp"
 #include "utils/DX12JsonUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12LogManager.hpp"
@@ -387,9 +388,19 @@ void DX12BindingFrameExport::AddFrameIaBufferRow(
 	row.stride = ib ? 0 : vb.StrideInBytes;
 	row.slot = slot;
 	row.format = ib ? static_cast<UINT>(event.indexBuffer.Format) : 0;
-	row.drawStartIndex = event.startIndexLocation;
-	row.drawIndexCount = event.indexCountPerInstance;
+	if (ib) {
+		row.drawStartIndex = event.startIndexLocation;
+		row.drawIndexCount = event.indexCountPerInstance;
+	} else {
+		row.drawStartIndex = vb.StrideInBytes ? static_cast<UINT>(region.viewOffset / vb.StrideInBytes) : 0;
+		row.drawIndexCount = vb.StrideInBytes ? static_cast<UINT>(region.size / vb.StrideInBytes) : 0;
+	}
 	row.drawBaseVertex = event.baseVertexLocation;
+	row.drawStartInstance = event.startInstanceLocation;
+	row.drawInstanceCount = event.instanceCount;
+	row.topology = event.primitiveTopology;
+	if (!ib)
+		DX12GetPsoInputLayout(row.psoIndex, &row.inputLayout);
 	row.resource = ib ? event.indexBufferResource : event.vertexBufferResources[slot];
 	row.resolved = DX12BindingFrameExport::ResolveIaBufferResourceSummary(
 		viewGpuVa,
@@ -708,6 +719,10 @@ DX12FrameIaBufferBinding DX12BindingFrameExport::FrameIaBufferFromFlatRow(const 
 	buffer.drawStartIndex = row.drawStartIndex;
 	buffer.drawIndexCount = row.drawIndexCount;
 	buffer.drawBaseVertex = row.drawBaseVertex;
+	buffer.drawStartInstance = row.drawStartInstance;
+	buffer.drawInstanceCount = row.drawInstanceCount;
+	buffer.topology = row.topology;
+	buffer.inputLayout = row.inputLayout;
 	buffer.huntHash = row.huntHash;
 	buffer.resolved = row.resolved;
 	buffer.resource = row.resource;

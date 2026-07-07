@@ -194,7 +194,7 @@ static bool FillDescriptorDumpTask(
 		task->binding.descriptor.resourceOffset = resource.resourceOffset;
 		const UINT64 availableBytes = task->desc.Width > resource.resourceOffset ?
 			task->desc.Width - resource.resourceOffset : 0;
-		task->binding.descriptor.viewSize = availableBytes > 4096 ? 4096 : availableBytes;
+		task->binding.descriptor.viewSize = availableBytes;
 		task->binding.descriptor.currentState = resource.currentState;
 		task->binding.descriptor.hasCurrentState = resource.hasCurrentState;
 	} else {
