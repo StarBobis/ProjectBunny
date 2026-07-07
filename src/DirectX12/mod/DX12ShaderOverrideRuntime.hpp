@@ -640,10 +640,10 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			return false;
 	}
 
-	ID3D12Device *device = AcquireModDevice(commandList);
-	if (!device)
-		return false;
-
+	// Check PSO shader-override config cache FIRST, before acquiring the
+	// device.  Most draws have no matching configs; deferring the
+	// commandList→GetDevice QI (a D3D12 COM call) until we know configs
+	// actually exist eliminates ~400+ unnecessary QI+Release pairs per frame.
 	std::vector<const Bunny::ShaderOverrideConfig*> configs;
 	std::vector<Bunny::ShaderOverrideConfig> configSnapshot;
 	bool cached = false;
@@ -653,10 +653,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		CopyShaderOverrideConfigs(configs, &configSnapshot);
 	ReleaseSRWLockShared(&gModLock);
 
-	if (cached && configSnapshot.empty()) {
-		device->Release();
+	if (cached && configSnapshot.empty())
 		return false;
-	}
 
 	if (!cached) {
 		AcquireSRWLockExclusive(&gModLock);
@@ -664,10 +662,12 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		CopyShaderOverrideConfigs(configs, &configSnapshot);
 		ReleaseSRWLockExclusive(&gModLock);
 	}
-	if (configSnapshot.empty()) {
-		device->Release();
+	if (configSnapshot.empty())
 		return false;
-	}
+
+	ID3D12Device *device = AcquireModDevice(commandList);
+	if (!device)
+		return false;
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
 	DX12CommandListExecutor executor(
 		device, commandList, iaState,
