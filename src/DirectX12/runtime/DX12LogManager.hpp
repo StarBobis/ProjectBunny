@@ -301,10 +301,6 @@ public:
 			return true;
 		if (!strcmp(func, "DX12PresentFirst"))
 			return true;
-		if (!strcmp(func, "DX12FrameTimeline"))
-			return true;
-		if (!strcmp(func, "DX12ApiWallTiming"))
-			return true;
 		if (!strcmp(func, "DX12ResidentMaintenance"))
 			return true;
 		if (!strcmp(func, "DX12HotPathHookGate"))

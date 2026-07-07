@@ -79,50 +79,70 @@ public:
 		ID3D12PipelineState *pipelineState =
 			DX12CommandListRuntime::GetPipelineState(commandList);
 		if (!pipelineState) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: no PSO from runtime state\n");
+#endif
 			return;
 		}
 
 		DX12PsoShaderInfo shaderInfo = {};
 		if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo)) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: GetShaderInfo failed\n");
+#endif
 			return;
 		}
 		if (!shaderInfo.hasCS) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: PSO is not compute\n");
+#endif
 			return;
 		}
 
 		probe->computeShaderHash = shaderInfo.cs;
+#if defined(_DEBUG)
 		DX12LogManager::Text("DX12ExecuteIndirectRuntime: compute PSO cs=%016llx\n",
 			static_cast<unsigned long long>(probe->computeShaderHash));
+#endif
 		if (!DX12ModShouldTrackPreSkinBindingsForCs(probe->computeShaderHash)) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: CS not in pre-skin list\n");
+#endif
 			return;
 		}
 
+#if defined(_DEBUG)
 		DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin CS match\n");
+#endif
 		probe->bindingsFound = DX12BindingTracker::GetCurrentComputeAll(
 			commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
 		if (!probe->bindingsFound) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: no compute bindings found\n");
+#endif
 			return;
 		}
 
+#if defined(_DEBUG)
 		DX12LogManager::Text(
 			"DX12ExecuteIndirectRuntime: bindings found uavs=%zu srvs=%zu cbvs=%zu\n",
 			probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
+#endif
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
 			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
 		if (probe->applied) {
+#if defined(_DEBUG)
 			DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin applied origVtx=%u newVtx=%u\n",
 				probe->originalVertexCount, probe->overrideVertexCount);
+#endif
 			return;
 		}
+#if defined(_DEBUG)
 		DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin matching failed\n");
+#endif
 	}
 
 	static void FinishPreSkinProbe(
