@@ -799,8 +799,8 @@ void DX12BindingResourceExport::GetCurrentFrameResourceBindings(std::vector<DX12
 				rebuiltResolvedBindings++;
 		}
 	}
-	DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(bindings, events);
-	DX12BindingResourceExport::CollectActivePreSkinProducerBindings(bindings);
+	DX12FrameAnalysis::LogJsonFunc("BindingResourcesDiscoveryFallbackSkipped",
+		"\"reason\":\"single_frame_event_scope\",\"hunting_uav_state\":0,\"active_pre_skin\":0");
 	for (const DX12FrameResourceBinding &binding : *bindings) {
 		const char *expectedKind = DX12BindingResourceExport::ExpectedBindingKind(binding);
 		if (!binding.hasDescriptor) {

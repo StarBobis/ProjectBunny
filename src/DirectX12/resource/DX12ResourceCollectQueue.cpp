@@ -13,7 +13,9 @@ static constexpr int64_t kResourceQueueSlowDrainUs = 1000;
 
 void DX12ResourceCollectQueue::Start()
 {
-	started.store(true, std::memory_order_release);
+	started.store(false, std::memory_order_release);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=StartBypassed,mode=synchronous");
 }
 
 
@@ -21,10 +23,77 @@ void DX12ResourceCollectQueue::Stop()
 {
 	started.store(false, std::memory_order_release);
 }
+
+bool DX12ResourceCollectQueue::Enqueue(
+	ID3D12Resource *resource,
+	const D3D12_RESOURCE_DESC *desc,
+	const D3D12_HEAP_PROPERTIES *heapProperties,
+	const PlacedResourceInfo *placedInfo,
+	D3D12_RESOURCE_STATES initialState)
+{
+	(void)desc;
+	(void)heapProperties;
+	(void)placedInfo;
+	(void)initialState;
+	dropped.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=SyncFallback,kind=Resource,resource=%p,reason=no_worker",
+		resource);
+	return false;
+}
+
+bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
+	UINT numBarriers,
+	const D3D12_RESOURCE_BARRIER *barriers,
+	const char *source)
+{
+	(void)barriers;
+	dropped.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=SyncFallback,kind=ResourceBarrier,count=%u,source=%s,reason=no_worker",
+		numBarriers, source ? source : "");
+	return false;
+}
+
+bool DX12ResourceCollectQueue::EnqueueRootSignature(
+	ID3D12RootSignature *rootSignature,
+	UINT nodeMask,
+	const void *blob,
+	SIZE_T blobLength,
+	const char *source)
+{
+	(void)nodeMask;
+	(void)blob;
+	dropped.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=SyncFallback,kind=RootSignature,rootSignature=%p,blobSize=%zu,source=%s,reason=no_worker",
+		rootSignature, blobLength, source ? source : "");
+	return false;
+}
+
+bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
+	UINT64 psoIndex,
+	const char *kind,
+	ID3D12PipelineState *pipelineState,
+	ID3D12RootSignature *rootSignature,
+	const char *source)
+{
+	dropped.fetch_add(1, std::memory_order_relaxed);
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=SyncFallback,kind=PsoRootSignature,pso=%llu,psoKind=%s,pipelineState=%p,rootSignature=%p,source=%s,reason=no_worker",
+		static_cast<unsigned long long>(psoIndex),
+		kind ? kind : "",
+		pipelineState,
+		rootSignature,
+		source ? source : "");
+	return false;
+}
 // STOP_REPLACED
 void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
 {
-	WaitForSubmittedSequence(LastSubmittedSequence(), reason ? reason : "Snapshot");
+	DX12LogManager::JsonFunc("DX12ResourceCollectQueue",
+		"event=DrainBypassed,reason=%s,mode=synchronous",
+		reason ? reason : "Snapshot");
 }
 
 size_t DX12ResourceCollectQueue::PendingCount()

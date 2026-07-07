@@ -547,17 +547,12 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheMiss();
 
-			// Async cache warming: enqueue a copy of the binding data to the
-			// worker thread so it can pre-populate gPreSkinMatchCsInputCache and
-			// related internal caches.  The render thread always runs the full
-			// sync computation below for correctness.
-			gPreSkinAsyncQueue.Enqueue(DX12PreSkinAsyncRequest(
-				probe->computeShaderHash,
-				computeIaFingerprint,
-				std::vector<DX12CurrentComputeUavBinding>(probe->uavs),
-				std::vector<DX12CurrentComputeUavBinding>(probe->srvs),
-				std::vector<DX12CurrentComputeUavBinding>(probe->cbvs),
-				std::vector<DX12CurrentRootConstants>(probe->rootConstants)));
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkin",
+				"async_warmup_bypassed",
+				0,
+				1,
+				0);
 		}
 #if defined(_DEBUG)
 		probe->shouldLog = true;

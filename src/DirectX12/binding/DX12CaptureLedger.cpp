@@ -122,11 +122,6 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
-	if (Events.size() >= MaxCaptureLedgerEvents) {
-		DroppedEvents++;
-		ReleaseSRWLockExclusive(&Lock);
-		return DX12CaptureLedgerRecordResult::Full;
-	}
 	event->serial = ++EventSerial;
 	Events.push_back(std::move(*event));
 	ReleaseSRWLockExclusive(&Lock);
@@ -146,11 +141,6 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindi
 	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::InactiveSession;
-	}
-	if (OutputEvents.size() >= MaxCaptureLedgerOutputEvents) {
-		DroppedOutputEvents++;
-		ReleaseSRWLockExclusive(&Lock);
-		return DX12CaptureLedgerRecordResult::Full;
 	}
 	event->serial = ++OutputEventSerial;
 	for (const OutputBindingEvent &existing : OutputEvents) {

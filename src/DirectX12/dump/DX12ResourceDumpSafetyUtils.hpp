@@ -16,70 +16,14 @@ public:
 			dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 	}
 
-	static UINT64 HuntingResourceCopyBudgetBytes()
-	{
-		return 128ull * 1024ull * 1024ull;
-	}
-
-	static UINT HuntingResourceCopyTaskBudget()
-	{
-		return 1024;
-	}
-
-	static UINT64 MetadataTextureCopyBudgetBytes()
-	{
-		return 192ull * 1024ull * 1024ull;
-	}
-
-	static UINT MetadataTextureCopyTaskBudget()
-	{
-		return 512;
-	}
-
-	static UINT64 MetadataSrvUavBufferCopyBudgetBytes()
-	{
-		return 128ull * 1024ull * 1024ull;
-	}
-
-	static UINT MetadataSrvUavBufferCopyTaskBudget()
-	{
-		return 1024;
-	}
-
-	static UINT64 MetadataCbvBufferCopyBudgetBytes()
-	{
-		return 64ull * 1024ull * 1024ull;
-	}
-
-	static UINT MetadataCbvBufferCopyTaskBudget()
-	{
-		return 512;
-	}
-
-	static size_t FrameResourceDumpTaskBudget()
-	{
-		return 2048;
-	}
-
 	static UINT64 MaxSingleReadbackBytes()
 	{
-		return 256ull * 1024ull * 1024ull;
+		return UINT64_MAX;
 	}
 
 	static UINT MaxTextureSubresourcesForDump()
 	{
-		return 4096;
-	}
-
-	static bool EnableTrackedResourceInventoryDiscovery()
-	{
-		return false;
-	}
-
-	static bool FrameResourceDumpTaskBudgetReached(size_t queuedTasks)
-	{
-		const size_t budget = FrameResourceDumpTaskBudget();
-		return budget > 0 && queuedTasks >= budget;
+		return static_cast<UINT>(~0u);
 	}
 
 	static bool TextureSubresourceCountForDump(
@@ -95,12 +39,10 @@ public:
 		if (desc.SampleDesc.Count == 0 || desc.SampleDesc.Count > 64)
 			return false;
 		const UINT mipLevels = desc.MipLevels ? desc.MipLevels : 1;
-		if (mipLevels > 32)
-			return false;
 		const UINT64 arrayOrDepth = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ?
 			1 : desc.DepthOrArraySize;
 		const UINT64 count = static_cast<UINT64>(mipLevels) * arrayOrDepth;
-		if (count == 0 || count > MaxTextureSubresourcesForDump())
+		if (count == 0 || count > static_cast<UINT64>(MaxTextureSubresourcesForDump()))
 			return false;
 		*subresourceCount = static_cast<UINT>(count);
 		return true;
@@ -166,15 +108,6 @@ public:
 		if (!descriptor.stateTrackedByBarrier)
 			return "descriptor_state_create_only";
 		return "descriptor_discovery_copy_unsafe";
-	}
-
-	static bool ResourceDiscoveryBudgetAllows(
-		UINT queuedTasks, UINT64 queuedBytes, UINT64 nextBytes)
-	{
-		return DiscoveryBudgetAllows(
-			queuedTasks, queuedBytes, nextBytes,
-			HuntingResourceCopyTaskBudget(),
-			HuntingResourceCopyBudgetBytes());
 	}
 
 	static bool DiscoveryBudgetAllows(

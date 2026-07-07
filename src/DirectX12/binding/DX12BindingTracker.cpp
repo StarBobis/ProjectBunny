@@ -1452,16 +1452,7 @@ bool DX12BindingTracker::BuildEvent(
 
 void DX12BindingTracker::StoreEventLocked(const BindingEvent &event)
 {
-	BindingEvent stored = event;
-	DX12BindingTracker::RetainEventIaResources(&stored);
-	stored.serial = 0;
-	const DX12CaptureLedgerRecordResult ledgerResult =
-		DX12CaptureLedger::RecordEvent(&stored);
-	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
-		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate ||
-		ledgerResult == DX12CaptureLedgerRecordResult::InactiveSession)
-		return;
-	DX12BindingTracker::ReleaseEventIaResources(&stored);
+	DX12BindingTracker::RecordTemplateEvent(event.commandList, event);
 }
 
 void DX12BindingTracker::StoreEventLocked(
@@ -1497,11 +1488,7 @@ void DX12BindingTracker::StoreOutputEventLocked(
 		else
 			DX12GetPipelineStateShaderInfo(state.pipelineState, &event.shaderInfo);
 	}
-	const DX12CaptureLedgerRecordResult ledgerResult = DX12CaptureLedger::TryStoreOutputEvent(&event);
-	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
-		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate ||
-		ledgerResult == DX12CaptureLedgerRecordResult::InactiveSession)
-		return;
+	DX12BindingTracker::RecordTemplateOutputEvent(commandList, event);
 }
 
 void DX12BindingTracker::StoreCurrentOutputTargetsLocked(
@@ -1519,18 +1506,179 @@ void DX12BindingTracker::StoreCurrentOutputTargetsLocked(
 			state.depthStencil.ptr, state.drawSerial, captureSessionId);
 }
 
-void DX12BindingTracker::RegisterCommandList(ID3D12GraphicsCommandList *commandList)
+void DX12BindingTracker::ReleaseRecordedEvent(CommandListRecordedEvent *event)
+{
+	if (!event)
+		return;
+	if (event->kind == CommandListRecordedEventKind::Binding)
+		DX12BindingTracker::ReleaseEventIaResources(&event->binding);
+}
+
+void DX12BindingTracker::ReleaseRecordedEventsLocked(
+	BindingShard *shard, ID3D12GraphicsCommandList *commandList)
+{
+	if (!shard || !commandList)
+		return;
+	auto it = shard->recordedEvents.find(commandList);
+	if (it == shard->recordedEvents.end())
+		return;
+	for (CommandListRecordedEvent &event : it->second)
+		DX12BindingTracker::ReleaseRecordedEvent(&event);
+	shard->recordedEvents.erase(it);
+}
+
+void DX12BindingTracker::RecordTemplateEvent(
+	ID3D12GraphicsCommandList *commandList, const BindingEvent &event)
 {
 	if (!commandList)
 		return;
+	CommandListRecordedEvent recorded;
+	recorded.kind = CommandListRecordedEventKind::Binding;
+	recorded.binding = event;
+	recorded.binding.commandList = commandList;
+	recorded.binding.captureSessionId = 0;
+	recorded.binding.serial = 0;
+	DX12BindingTracker::RetainEventIaResources(&recorded.binding);
+	const std::string kind = recorded.binding.kind;
 
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.states.try_emplace(commandList);
-	// Bump generation to invalidate any TLS-cached state pointers
-	// that may be invalidated by unordered_map rehash.
-	shard.generation++;
+	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
+	events.push_back(std::move(recorded));
+	const size_t templateCount = events.size();
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	DX12FrameAnalysis::LogJsonFunc("BindingRecordTemplateEvent",
+		"\"commandList\":\"%p\",\"kind\":\"%s\",\"templates\":%zu",
+		commandList, kind.c_str(), templateCount);
+}
+
+void DX12BindingTracker::RecordTemplateOutputEvent(
+	ID3D12GraphicsCommandList *commandList, const OutputBindingEvent &event)
+{
+	if (!commandList)
+		return;
+	CommandListRecordedEvent recorded;
+	recorded.kind = CommandListRecordedEventKind::Output;
+	recorded.output = event;
+	recorded.output.commandList = commandList;
+	recorded.output.captureSessionId = 0;
+	recorded.output.serial = 0;
+	const std::string kind = recorded.output.kind;
+
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
+	events.push_back(std::move(recorded));
+	const size_t templateCount = events.size();
+	ReleaseSRWLockExclusive(&shard.lock);
+
+	DX12FrameAnalysis::LogJsonFunc("BindingRecordTemplateOutputEvent",
+		"\"commandList\":\"%p\",\"kind\":\"%s\",\"templates\":%zu",
+		commandList, kind.c_str(), templateCount);
+}
+
+void DX12BindingTracker::StoreEventInCaptureLedger(const BindingEvent &event)
+{
+	BindingEvent stored = event;
+	DX12BindingTracker::RetainEventIaResources(&stored);
+	stored.serial = 0;
+	const DX12CaptureLedgerRecordResult ledgerResult =
+		DX12CaptureLedger::RecordEvent(&stored);
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored)
+		return;
+	DX12BindingTracker::ReleaseEventIaResources(&stored);
+	DX12FrameAnalysis::LogJsonFunc("BindingLedgerEventSkipped",
+		"\"commandList\":\"%p\",\"kind\":\"%s\",\"captureSessionId\":%llu,\"result\":%u",
+		stored.commandList,
+		stored.kind.c_str(),
+		static_cast<unsigned long long>(stored.captureSessionId),
+		static_cast<UINT>(ledgerResult));
+}
+
+void DX12BindingTracker::StoreOutputEventInCaptureLedger(const OutputBindingEvent &event)
+{
+	OutputBindingEvent stored = event;
+	stored.serial = 0;
+	const DX12CaptureLedgerRecordResult ledgerResult =
+		DX12CaptureLedger::TryStoreOutputEvent(&stored);
+	if (ledgerResult == DX12CaptureLedgerRecordResult::Stored ||
+		ledgerResult == DX12CaptureLedgerRecordResult::Duplicate)
+		return;
+	DX12FrameAnalysis::LogJsonFunc("BindingLedgerOutputSkipped",
+		"\"commandList\":\"%p\",\"kind\":\"%s\",\"captureSessionId\":%llu,\"result\":%u",
+		stored.commandList,
+		stored.kind.c_str(),
+		static_cast<unsigned long long>(stored.captureSessionId),
+		static_cast<UINT>(ledgerResult));
+}
+
+void DX12BindingTracker::SubmitRecordedEvent(
+	const CommandListRecordedEvent &recorded, UINT64 captureSessionId)
+{
+	if (captureSessionId == 0)
+		return;
+	if (recorded.kind == CommandListRecordedEventKind::Binding) {
+		BindingEvent event = recorded.binding;
+		event.captureSessionId = captureSessionId;
+		event.serial = 0;
+		DX12BindingTracker::StoreEventInCaptureLedger(event);
+		return;
+	}
+	OutputBindingEvent event = recorded.output;
+	event.captureSessionId = captureSessionId;
+	event.serial = 0;
+	DX12BindingTracker::StoreOutputEventInCaptureLedger(event);
+}
+
+void DX12BindingTracker::SubmitCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0)
+		return;
+
+	std::vector<CommandListRecordedEvent> events;
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.recordedEvents.find(commandList);
+	if (it != shard.recordedEvents.end()) {
+		events = it->second;
+		for (CommandListRecordedEvent &event : events) {
+			if (event.kind == CommandListRecordedEventKind::Binding)
+				DX12BindingTracker::RetainEventIaResources(&event.binding);
+		}
+	}
+	ReleaseSRWLockShared(&shard.lock);
+
+	for (const CommandListRecordedEvent &event : events)
+		DX12BindingTracker::SubmitRecordedEvent(event, captureSessionId);
+	for (CommandListRecordedEvent &event : events)
+		DX12BindingTracker::ReleaseRecordedEvent(&event);
+
+	DX12FrameAnalysis::LogJsonFunc("BindingSubmitCommandList",
+		"\"commandList\":\"%p\",\"captureSessionId\":%llu,\"templates\":%zu",
+		commandList,
+		static_cast<unsigned long long>(captureSessionId),
+		events.size());
+}
+
+bool DX12BindingTracker::RegisterCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return false;
+
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	const bool inserted = shard.states.try_emplace(commandList).second;
+	if (inserted) {
+		// Bump generation to invalidate any TLS-cached state pointers
+		// that may be invalidated by unordered_map rehash.
+		shard.generation++;
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+	return inserted;
 }
 
 void DX12BindingTracker::ResetCommandList(
@@ -1544,6 +1692,7 @@ void DX12BindingTracker::ResetCommandList(
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
+	DX12BindingTracker::ReleaseRecordedEventsLocked(&shard, commandList);
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	state = CommandListBindingState();
 	state.pipelineState = initialState;

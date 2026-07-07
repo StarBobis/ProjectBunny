@@ -6,9 +6,6 @@
 
 #include "DX12BindingTrackerState.hpp"
 
-constexpr UINT MaxCaptureLedgerEvents = MaxTrackedEvents * 8;
-constexpr UINT MaxCaptureLedgerOutputEvents = MaxTrackedOutputEvents * 8;
-
 class DX12CaptureLedgerSnapshot
 {
 public:
@@ -25,9 +22,8 @@ enum class DX12CaptureLedgerRecordResult
 {
 	NotActive = 0,
 	Stored = 1,
-	Full = 2,
-	Duplicate = 3,
-	InactiveSession = 4,
+	Duplicate = 2,
+	InactiveSession = 3,
 };
 
 class DX12CaptureLedger

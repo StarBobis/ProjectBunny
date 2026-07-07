@@ -24,12 +24,15 @@ void DX12BindingCollectQueue::Stop()
 //STOP_R
 void DX12BindingCollectQueue::DrainForSnapshot(const char *reason)
 {
-	WaitForIdle(reason ? reason : "Snapshot");
+	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
+		"event=DrainBypassed,reason=%s,mode=synchronous",
+		reason ? reason : "Snapshot");
 }
 
 void DX12BindingCollectQueue::BeginFrameDrain()
 {
-	WaitForIdle("BeginFrame");
+	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
+		"event=DrainBypassed,reason=BeginFrame,mode=synchronous");
 }
 
 bool DX12BindingCollectQueue::EnqueueStateEvent(
@@ -143,31 +146,10 @@ bool DX12BindingCollectQueue::EnqueueTask(DX12BindingCollectTask &&task)
 	if (!task.commandList)
 		return false;
 
-	Start();
-	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
-	task.enqueueThreadId = GetCurrentThreadId();
-	if (task.kind != DX12BindingCollectTaskKind::OutputEvent)
-		DX12BindingTracker::RetainStateIaResourcesForAsync(&task.state);
-	const uint64_t sequence = task.sequence;
-
-	size_t depth = 0;
-	{
-		LARGE_INTEGER lockBegin = DX12OuterTimingProbeUtils::Now();
-		std::lock_guard<std::mutex> lock(mutex);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"BindingCollectQueue",
-			"enqueue_lock_wait",
-			static_cast<UINT>(task.kind),
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(lockBegin));
-		tasks.push_back(std::move(task));
-		depth = tasks.size() + static_cast<size_t>(activeTasks);
-	}
-	enqueued.fetch_add(1, std::memory_order_relaxed);
-	UpdateMaxDepth(depth);
-	LogStats("Enqueue", sequence, depth);
-	wake.notify_one();
-	return true;
+	DX12LogManager::JsonFunc("DX12BindingCollectQueue",
+		"event=SyncFallback,kind=%u,commandList=%p,reason=no_worker",
+		static_cast<UINT>(task.kind), task.commandList);
+	return false;
 }
 
 void DX12BindingCollectQueue::WorkerLoop()

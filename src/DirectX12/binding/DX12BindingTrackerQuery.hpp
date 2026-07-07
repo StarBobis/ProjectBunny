@@ -25,7 +25,7 @@ public:
 		const UINT64 heapAvailable = heap.numDescriptors - firstDescriptor;
 		const UINT64 declaredCount =
 			range.numDescriptors == UINT_MAX ? heapAvailable : range.numDescriptors;
-		const UINT64 boundedCount = min(declaredCount, static_cast<UINT64>(MaxDescriptorsPerRangeDump));
+		const UINT64 boundedCount = min(declaredCount, heapAvailable);
 		return boundedCount > UINT_MAX ? UINT_MAX : static_cast<UINT>(boundedCount);
 	}
 	static const char *HeapTypeName(UINT type)

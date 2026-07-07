@@ -11,6 +11,7 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "binding/DX12CaptureLedger.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
 
@@ -106,7 +107,9 @@ public:
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
 			}
-			if (DX12HuntIsEnabled()) {
+			const bool shouldRegisterSubmitted =
+				DX12HuntIsEnabled() || DX12CaptureLedger::CurrentCaptureSessionId() != 0;
+			if (shouldRegisterSubmitted) {
 				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
 				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(

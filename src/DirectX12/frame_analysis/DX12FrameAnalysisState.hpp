@@ -25,6 +25,7 @@ public:
 	inline static wchar_t path[MAX_PATH] = {};
 	inline static FILE *log = nullptr;
 	inline static unsigned long long lineNo = 0;
+	inline static constexpr UINT CaptureFramesPerDump = 1;
 
 	static bool Begin()
 	{
@@ -101,7 +102,7 @@ public:
 			capturing = true;
 			InterlockedExchange(&captureRequestedFast, 0);
 			InterlockedExchange(&capturingFast, 1);
-			captureFramesRemaining = 3;
+			captureFramesRemaining = CaptureFramesPerDump;
 		}
 		ReleaseSRWLockExclusive(&lock);
 	}

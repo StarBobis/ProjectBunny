@@ -16,9 +16,6 @@
 constexpr UINT MaxRootParameters = 64;
 constexpr UINT MaxVertexBufferSlots = 32;
 constexpr UINT MaxRenderTargetSlots = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
-constexpr UINT MaxTrackedEvents = 20000;
-constexpr UINT MaxTrackedOutputEvents = 4096;
-constexpr UINT MaxDescriptorsPerRangeDump = 256;
 
 class RootTableState
 {
@@ -157,6 +154,20 @@ public:
 	SIZE_T cpuHandle = 0;
 };
 
+enum class CommandListRecordedEventKind
+{
+	Binding,
+	Output,
+};
+
+class CommandListRecordedEvent
+{
+public:
+	CommandListRecordedEventKind kind = CommandListRecordedEventKind::Binding;
+	BindingEvent binding;
+	OutputBindingEvent output;
+};
+
 constexpr size_t kBindingShardCount = 64;
 
 class BindingShard
@@ -164,6 +175,7 @@ class BindingShard
 public:
 	SRWLOCK lock = SRWLOCK_INIT;
 	std::unordered_map<ID3D12GraphicsCommandList*, CommandListBindingState> states;
+	std::unordered_map<ID3D12GraphicsCommandList*, std::vector<CommandListRecordedEvent>> recordedEvents;
 	volatile UINT64 generation = 0;
 };
 

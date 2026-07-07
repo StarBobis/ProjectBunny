@@ -18,8 +18,9 @@ void DX12CommandListLifecycle::Register(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||
 	    DX12ModNeedsPreSkinningUavProbe()) {
-		DX12BindingTracker::RegisterCommandList(commandList);
-		DX12BindingTracker::ResetCommandList(commandList, initialState);
+		const bool inserted = DX12BindingTracker::RegisterCommandList(commandList);
+		if (inserted)
+			DX12BindingTracker::ResetCommandList(commandList, initialState);
 	}
 }
 

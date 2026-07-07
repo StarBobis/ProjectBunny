@@ -19,6 +19,7 @@
 #include "DX12CommandListComputeBindingFlow.hpp"
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12Profiling.hpp"
+#include "binding/DX12BindingTracker.hpp"
 #include "dxgi/DXGIHookRuntime.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
@@ -469,6 +470,7 @@ public:
 		if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
 			DX12CommandListLifecycle::Register(baseList, nullptr);
 			DX12HuntPublishCommandList(baseList);
+			DX12BindingTracker::SubmitCommandList(baseList);
 			baseList->Release();
 		}
 	}

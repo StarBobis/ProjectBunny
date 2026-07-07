@@ -122,7 +122,6 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	std::vector<DumpTask> tasks;
 	std::vector<DumpTask> duplicateTasks;
 	std::vector<DumpTask> skippedTasks;
-	std::vector<DX12ResourceSummary> retainedMetadataResources;
 	std::unordered_map<std::string, size_t> canonicalTaskByKey;
 	UINT duplicates = 0;
 	UINT candidateCbv = 0;
@@ -139,23 +138,15 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	UINT metadataMissingResource = 0;
 	UINT metadataMissingResourceDesc = 0;
 	UINT metadataUnsupportedKindOrDimension = 0;
-	UINT metadataDuplicates = 0;
 	UINT metadataPrepareFailed = 0;
 	UINT metadataBufferCopiesQueued = 0;
 	UINT metadataBufferCopyBudgetSkipped = 0;
 	UINT64 metadataBufferCopyBytesQueued = 0;
-	UINT metadataTextureCopyBudgetSkipped = 0;
 	UINT64 metadataTextureCopyBytesQueued = 0;
 	UINT metadataCbvBufferCopiesQueued = 0;
 	UINT64 metadataCbvBufferCopyBytesQueued = 0;
-	UINT metadataCbvBufferCopyBudgetSkipped = 0;
 	UINT metadataSrvUavBufferCopiesQueued = 0;
 	UINT64 metadataSrvUavBufferCopyBytesQueued = 0;
-	UINT metadataSrvUavBufferCopyBudgetSkipped = 0;
-	UINT64 metadataDescriptorsScanned = 0;
-	UINT64 metadataDescriptorsUnscanned = 0;
-	bool metadataScanStopped = false;
-	const char *metadataStopReason = "";
 	UINT bindingTasksQueued = 0;
 	UINT iaTasksQueued = 0;
 	UINT outputTasksQueued = 0;
@@ -462,312 +453,8 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		}
 	}
 
-	{
-		std::vector<DX12DescriptorSummary> metadataDescriptors;
-		DX12GetResourceMetadataSnapshot(nullptr, &metadataDescriptors, nullptr, nullptr);
-		DX12FrameAnalysis::LogJsonFunc("HuntingMetadataDescriptorsBegin",
-			"\"descriptors\":%zu,\"existingTasks\":%zu,\"duplicates\":%u",
-			metadataDescriptors.size(), tasks.size(), duplicates);
-		UINT64 metadataIndex = 0;
-		for (const DX12DescriptorSummary &descriptor : metadataDescriptors) {
-			metadataIndex++;
-			metadataDescriptorsScanned = metadataIndex;
-			if (DX12ResourceDumpSafetyUtils::FrameResourceDumpTaskBudgetReached(tasks.size())) {
-				metadataScanStopped = true;
-				metadataStopReason = "task_budget_reached";
-				metadataDescriptorsUnscanned =
-					metadataDescriptors.size() >= metadataIndex ?
-					metadataDescriptors.size() - metadataIndex + 1 : 0;
-				DX12FrameAnalysis::LogJsonFunc("HuntingMetadataDescriptorsStopped",
-					"\"reason\":\"%s\",\"index\":%llu,\"descriptors\":%zu,\"tasks\":%zu,\"duplicates\":%u,\"unscanned\":%llu",
-					metadataStopReason,
-					static_cast<unsigned long long>(metadataIndex),
-					metadataDescriptors.size(), tasks.size(), duplicates,
-					static_cast<unsigned long long>(metadataDescriptorsUnscanned));
-				break;
-			}
-			if ((metadataIndex % 4096) == 0) {
-				DX12FrameAnalysis::LogJsonFunc("HuntingMetadataDescriptorsProgress",
-					"\"index\":%llu,\"descriptors\":%zu,\"textureCandidates\":%u,\"bufferCandidates\":%u,\"tasks\":%zu,\"duplicates\":%u,\"bufferCopiesQueued\":%u,\"bufferCopyBytesQueued\":%llu,\"budgetSkipped\":%u",
-					static_cast<unsigned long long>(metadataIndex),
-					metadataDescriptors.size(), metadataTextureCandidates,
-					metadataBufferCandidates, tasks.size(), duplicates,
-					metadataBufferCopiesQueued,
-					static_cast<unsigned long long>(metadataBufferCopyBytesQueued),
-					metadataBufferCopyBudgetSkipped);
-			}
-			if (!descriptor.resource) {
-				metadataMissingResource++;
-				continue;
-			}
-			if (!descriptor.hasResourceDesc) {
-				metadataMissingResourceDesc++;
-				continue;
-			}
-			if (!DX12ResourceDumpSafetyUtils::DescriptorResourceDescLooksDumpable(descriptor)) {
-				metadataUnsupportedKindOrDimension++;
-				continue;
-			}
-
-			const bool isMetadataTexture =
-				DX12ResourceDumpPolicy::IsTextureResourceDimension(descriptor.resourceDesc.Dimension);
-			const bool isMetadataBuffer =
-				descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
-			const bool isDumpableMetadataKind =
-				descriptor.kind == DescriptorKind::CBV ||
-				descriptor.kind == DescriptorKind::SRV ||
-				descriptor.kind == DescriptorKind::UAV ||
-				descriptor.kind == DescriptorKind::RTV ||
-				descriptor.kind == DescriptorKind::DSV;
-			if (!isDumpableMetadataKind || (!isMetadataTexture && !isMetadataBuffer)) {
-				metadataUnsupportedKindOrDimension++;
-				continue;
-			}
-			if (isMetadataTexture)
-				metadataTextureCandidates++;
-			if (isMetadataBuffer) {
-				metadataBufferCandidates++;
-				if (descriptor.kind == DescriptorKind::CBV)
-					metadataCbvBufferCandidates++;
-				else if (descriptor.kind == DescriptorKind::SRV)
-					metadataSrvBufferCandidates++;
-				else if (descriptor.kind == DescriptorKind::UAV)
-					metadataUavBufferCandidates++;
-			}
-
-			char key[160];
-			// Hunting metadata is a resource-discovery pass. Deduplicate at
-			// resource granularity so descriptor-table churn cannot explode into
-			// tens of thousands of duplicate readbacks. Buffers also use
-			// resource granularity here; detailed descriptor counts stay in
-			// log.jsonl while Dump files finish quickly.
-			DX12ResourceDumpNaming::BuildDescriptorResourceDedupeKey(descriptor, key, ARRAYSIZE(key));
-			auto canonicalIt = canonicalTaskByKey.find(key);
-			if (canonicalIt != canonicalTaskByKey.end()) {
-				duplicates++;
-				metadataDuplicates++;
-				continue;
-			}
-
-			DumpTask task;
-			const bool isCbvBuffer = isMetadataBuffer && descriptor.kind == DescriptorKind::CBV;
-			const bool textureBudgetOpen = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-				metadataTextureTasksQueued, metadataTextureCopyBytesQueued, 0,
-				DX12ResourceDumpSafetyUtils::MetadataTextureCopyTaskBudget(),
-				DX12ResourceDumpSafetyUtils::MetadataTextureCopyBudgetBytes());
-			const bool cbvBudgetOpen = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-				metadataCbvBufferCopiesQueued, metadataCbvBufferCopyBytesQueued, 0,
-				DX12ResourceDumpSafetyUtils::MetadataCbvBufferCopyTaskBudget(),
-				DX12ResourceDumpSafetyUtils::MetadataCbvBufferCopyBudgetBytes());
-			const bool srvUavBudgetOpen = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-				metadataSrvUavBufferCopiesQueued, metadataSrvUavBufferCopyBytesQueued, 0,
-				DX12ResourceDumpSafetyUtils::MetadataSrvUavBufferCopyTaskBudget(),
-				DX12ResourceDumpSafetyUtils::MetadataSrvUavBufferCopyBudgetBytes());
-			if ((isMetadataTexture && !textureBudgetOpen) ||
-					(isCbvBuffer && !cbvBudgetOpen) ||
-					(isMetadataBuffer && !isCbvBuffer && !srvUavBudgetOpen)) {
-				if (isMetadataTexture)
-					metadataTextureCopyBudgetSkipped++;
-				else if (isCbvBuffer) {
-					metadataCbvBufferCopyBudgetSkipped++;
-					metadataBufferCopyBudgetSkipped++;
-				} else {
-					metadataSrvUavBufferCopyBudgetSkipped++;
-					metadataBufferCopyBudgetSkipped++;
-				}
-				continue;
-			}
-
-			const bool prepared =
-				DX12ResourceDumpPrepareGuardUtils::TryPrepareHuntingMetadataTask(
-					device, descriptor, isMetadataTexture, &task,
-					&frameReadbackBytes, frameReadbackBudget, metadataIndex);
-			if (prepared) {
-				bool budgetAllows = false;
-				if (isMetadataTexture) {
-					budgetAllows = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-						metadataTextureTasksQueued, metadataTextureCopyBytesQueued, task.copyBytes,
-						DX12ResourceDumpSafetyUtils::MetadataTextureCopyTaskBudget(),
-						DX12ResourceDumpSafetyUtils::MetadataTextureCopyBudgetBytes());
-				} else if (isCbvBuffer) {
-					budgetAllows = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-						metadataCbvBufferCopiesQueued, metadataCbvBufferCopyBytesQueued, task.copyBytes,
-						DX12ResourceDumpSafetyUtils::MetadataCbvBufferCopyTaskBudget(),
-						DX12ResourceDumpSafetyUtils::MetadataCbvBufferCopyBudgetBytes());
-				} else {
-					budgetAllows = DX12ResourceDumpSafetyUtils::DiscoveryBudgetAllows(
-						metadataSrvUavBufferCopiesQueued, metadataSrvUavBufferCopyBytesQueued, task.copyBytes,
-						DX12ResourceDumpSafetyUtils::MetadataSrvUavBufferCopyTaskBudget(),
-						DX12ResourceDumpSafetyUtils::MetadataSrvUavBufferCopyBudgetBytes());
-				}
-				if (!budgetAllows) {
-					task.skipNote = isMetadataTexture ? "metadata_texture_copy_budget_exceeded" :
-						(isCbvBuffer ? "metadata_cbv_buffer_copy_budget_exceeded" :
-						 "metadata_srv_uav_buffer_copy_budget_exceeded");
-					if (isMetadataTexture)
-						metadataTextureCopyBudgetSkipped++;
-					else if (isCbvBuffer) {
-						metadataCbvBufferCopyBudgetSkipped++;
-						metadataBufferCopyBudgetSkipped++;
-					} else {
-						metadataSrvUavBufferCopyBudgetSkipped++;
-						metadataBufferCopyBudgetSkipped++;
-					}
-					if (frameReadbackBytes >= task.copyBytes)
-						frameReadbackBytes -= task.copyBytes;
-					DX12ResourceDumpPrepare::ReleaseTask(&task);
-					task.ready = false;
-					skippedTasks.push_back(std::move(task));
-					continue;
-				}
-				task.binding.descriptorIndex = metadataIndex;
-				task.dedupeKey = key;
-				wchar_t fileName[MAX_PATH];
-				if (!DX12ResourceDumpPrepareGuardUtils::TryBuildFileName(
-						task, fileName, ARRAYSIZE(fileName))) {
-					task.skipNote = "metadata_file_name_failed";
-					if (frameReadbackBytes >= task.copyBytes)
-						frameReadbackBytes -= task.copyBytes;
-					DX12ResourceDumpPrepare::ReleaseTask(&task);
-					task.ready = false;
-					metadataPrepareFailed++;
-					skippedTasks.push_back(std::move(task));
-					continue;
-				}
-				task.fileName = fileName;
-				canonicalTaskByKey.emplace(task.dedupeKey, tasks.size());
-				if (isMetadataBuffer) {
-					metadataBufferCopiesQueued++;
-					metadataBufferCopyBytesQueued += task.copyBytes;
-					metadataBufferTasksQueued++;
-					if (isCbvBuffer) {
-						metadataCbvBufferCopiesQueued++;
-						metadataCbvBufferCopyBytesQueued += task.copyBytes;
-					} else {
-						metadataSrvUavBufferCopiesQueued++;
-						metadataSrvUavBufferCopyBytesQueued += task.copyBytes;
-					}
-				} else {
-					metadataTextureCopyBytesQueued += task.copyBytes;
-					metadataTextureTasksQueued++;
-				}
-				tasks.push_back(std::move(task));
-			} else {
-				task.sourceKind = DumpTaskSource::Descriptor;
-				task.binding.bindSpace = "hunting_metadata";
-				task.binding.descriptorIndex = metadataIndex;
-				task.binding.descriptor = descriptor;
-				task.binding.hasDescriptor = descriptor.resource != nullptr;
-				if (task.skipNote == nullptr)
-					task.skipNote = isMetadataTexture ?
-						"metadata_texture_prepare_failed" :
-						"metadata_buffer_prepare_failed";
-				metadataPrepareFailed++;
-				skippedTasks.push_back(std::move(task));
-			}
-		}
-		DX12FrameAnalysis::LogJsonFunc("HuntingMetadataDescriptorsQueued",
-			"\"descriptors\":%zu,\"scanned\":%llu,\"stopped\":%u,\"stopReason\":\"%s\",\"unscanned\":%llu,\"textureCandidates\":%u,\"bufferCandidates\":%u,\"cbvBufferCandidates\":%u,\"srvBufferCandidates\":%u,\"uavBufferCandidates\":%u,\"tasks\":%zu,\"duplicates\":%u,\"metadataDuplicates\":%u,\"prepareFailed\":%u,\"missingResource\":%u,\"missingResourceDesc\":%u,\"unsupportedKindOrDimension\":%u,\"textureCopyBytesQueued\":%llu,\"textureCopyBudgetSkipped\":%u,\"bufferCopiesQueued\":%u,\"bufferCopyBytesQueued\":%llu,\"bufferCopyBudgetSkipped\":%u,\"cbvBufferCopiesQueued\":%u,\"cbvBufferCopyBytesQueued\":%llu,\"cbvBufferCopyBudgetSkipped\":%u,\"srvUavBufferCopiesQueued\":%u,\"srvUavBufferCopyBytesQueued\":%llu,\"srvUavBufferCopyBudgetSkipped\":%u",
-			metadataDescriptors.size(),
-			static_cast<unsigned long long>(metadataDescriptorsScanned),
-			metadataScanStopped ? 1 : 0,
-			metadataStopReason,
-			static_cast<unsigned long long>(metadataDescriptorsUnscanned),
-			metadataTextureCandidates, metadataBufferCandidates,
-			metadataCbvBufferCandidates, metadataSrvBufferCandidates,
-			metadataUavBufferCandidates, tasks.size(), duplicates, metadataDuplicates,
-			metadataPrepareFailed, metadataMissingResource, metadataMissingResourceDesc,
-			metadataUnsupportedKindOrDimension,
-			static_cast<unsigned long long>(metadataTextureCopyBytesQueued),
-			metadataTextureCopyBudgetSkipped,
-			metadataBufferCopiesQueued,
-			static_cast<unsigned long long>(metadataBufferCopyBytesQueued),
-			metadataBufferCopyBudgetSkipped,
-			metadataCbvBufferCopiesQueued,
-			static_cast<unsigned long long>(metadataCbvBufferCopyBytesQueued),
-			metadataCbvBufferCopyBudgetSkipped,
-			metadataSrvUavBufferCopiesQueued,
-			static_cast<unsigned long long>(metadataSrvUavBufferCopyBytesQueued),
-			metadataSrvUavBufferCopyBudgetSkipped);
-
-		UINT64 resourceIndex = 0;
-		UINT resourceTextureCandidates = 0;
-		UINT resourceBufferCandidates = 0;
-		UINT resourceDuplicates = 0;
-		UINT resourceCopiesQueued = 0;
-		UINT resourceCopyBudgetSkipped = 0;
-		UINT resourceCopyUnsafeSkipped = 0;
-		UINT64 resourceCopyBytesQueued = 0;
-		if (DX12ResourceDumpSafetyUtils::EnableTrackedResourceInventoryDiscovery())
-			DX12GetRetainedTrackedResourceSnapshot(&retainedMetadataResources);
-		for (const DX12ResourceSummary &resource : retainedMetadataResources) {
-			resourceIndex++;
-			if (!resource.resource || !resource.hasResourceDesc ||
-				(resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER &&
-				 !DX12ResourceDumpPolicy::IsTextureResourceDimension(resource.resourceDesc.Dimension)))
-				continue;
-			if (resource.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-				resourceBufferCandidates++;
-			else
-				resourceTextureCandidates++;
-
-			char key[160];
-			DX12ResourceDumpNaming::BuildResourceDedupeKey(resource, key, ARRAYSIZE(key));
-			const DX12FrameResourceBinding binding =
-				DX12ResourceDumpCore::ResourceBindingFromTrackedResource(resource, resourceIndex);
-			auto canonicalIt = canonicalTaskByKey.find(key);
-			if (canonicalIt != canonicalTaskByKey.end()) {
-				duplicates++;
-				resourceDuplicates++;
-				continue;
-			}
-
-			DumpTask task;
-			if (DX12ResourceDumpPrepare::PrepareHuntingResourceTask(
-					device, resource, &task, &frameReadbackBytes, frameReadbackBudget)) {
-				task.sourceKind = DumpTaskSource::Resource;
-				task.binding = binding;
-				task.dedupeKey = key;
-				if (!DX12ResourceDumpSafetyUtils::ResourceDiscoveryBudgetAllows(
-						resourceCopiesQueued, resourceCopyBytesQueued, task.copyBytes)) {
-					task.skipNote = "resource_discovery_copy_budget_exceeded";
-					if (frameReadbackBytes >= task.copyBytes)
-						frameReadbackBytes -= task.copyBytes;
-					DX12ResourceDumpPrepare::ReleaseTask(&task);
-					task.ready = false;
-					resourceCopyBudgetSkipped++;
-					skippedTasks.push_back(std::move(task));
-					continue;
-				}
-				wchar_t fileName[MAX_PATH];
-				DX12ResourceDumpNaming::BuildFileName(task, fileName, ARRAYSIZE(fileName));
-				task.fileName = fileName;
-				canonicalTaskByKey.emplace(task.dedupeKey, tasks.size());
-				resourceCopiesQueued++;
-				resourceCopyBytesQueued += task.copyBytes;
-				resourceTasksQueued++;
-				tasks.push_back(std::move(task));
-			} else {
-				task.sourceKind = DumpTaskSource::Resource;
-				task.binding = binding;
-				if (task.skipNote == nullptr)
-					task.skipNote = "resource_texture_prepare_failed";
-				else if (!strcmp(task.skipNote, "resource_state_unknown") ||
-					!strcmp(task.skipNote, "resource_state_create_only") ||
-					!strcmp(task.skipNote, "resource_discovery_copy_unsafe"))
-					resourceCopyUnsafeSkipped++;
-				skippedTasks.push_back(std::move(task));
-			}
-		}
-		DX12FrameAnalysis::LogJsonFunc("HuntingResourcesQueued",
-			"\"resources\":%zu,\"textureCandidates\":%u,\"bufferCandidates\":%u,\"tasks\":%zu,\"duplicates\":%u,\"resourceDuplicates\":%u,\"resourceCopiesQueued\":%u,\"resourceCopyBytesQueued\":%llu,\"resourceCopyUnsafeSkipped\":%u,\"resourceCopyBudgetSkipped\":%u,\"resourceCopyBudgetBytes\":%llu,\"resourceCopyTaskBudget\":%u,\"retained\":1",
-			retainedMetadataResources.size(), resourceTextureCandidates, resourceBufferCandidates, tasks.size(),
-			duplicates, resourceDuplicates, resourceCopiesQueued,
-			static_cast<unsigned long long>(resourceCopyBytesQueued),
-			resourceCopyUnsafeSkipped, resourceCopyBudgetSkipped,
-			static_cast<unsigned long long>(DX12ResourceDumpSafetyUtils::HuntingResourceCopyBudgetBytes()),
-			DX12ResourceDumpSafetyUtils::HuntingResourceCopyTaskBudget());
-	}
+	DX12FrameAnalysis::LogJsonFunc("ResourceDumpDiscoverySkipped",
+		"\"reason\":\"single_frame_event_scope\",\"metadataDescriptors\":0,\"trackedResources\":0");
 	DX12FrameAnalysis::LogJsonFunc("ResourceDumpTasksQueued",
 		"\"tasks\":%zu,\"binding\":%u,\"ia\":%u,\"output\":%u,\"metadataTexture\":%u,\"metadataBuffer\":%u,\"metadataTextureBytes\":%llu,\"metadataBufferBytes\":%llu,\"metadataCbvBuffer\":%u,\"metadataCbvBufferBytes\":%llu,\"metadataSrvUavBuffer\":%u,\"metadataSrvUavBufferBytes\":%llu,\"resource\":%u,\"duplicates\":%u,\"skippedSoFar\":%zu",
 		tasks.size(), bindingTasksQueued, iaTasksQueued, outputTasksQueued,
@@ -965,7 +652,6 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 
 	DX12ResourceDumpPrepare::ReleaseTasks(&tasks);
 	DX12ResourceDumpPrepare::ReleaseTasks(&skippedTasks);
-	DX12ReleaseTrackedResourceSnapshot(&retainedMetadataResources);
 	device->Release();
 	queue->Release();
 

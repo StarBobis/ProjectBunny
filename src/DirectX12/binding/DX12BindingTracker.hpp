@@ -136,7 +136,7 @@ public:
 class DX12BindingTracker
 {
 public:
-	static void RegisterCommandList(ID3D12GraphicsCommandList *commandList);
+	static bool RegisterCommandList(ID3D12GraphicsCommandList *commandList);
 	static void ResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
 	static void SetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void RecordStateEvent(ID3D12GraphicsCommandList *commandList, const char *kind);
@@ -176,10 +176,18 @@ public:
 	static void DrainPendingEvents(const char *reason);
 	static UINT64 CurrentCaptureSessionId();
 	static UINT64 CaptureFenceSequence();
+	static void SubmitCommandList(ID3D12GraphicsCommandList *commandList);
 	static bool PopulateCaptureEventSource(DX12FrameEventSource *source, UINT64 captureSessionId, const char *reason);
 	static bool PopulateActiveEventSource(DX12FrameEventSource *source, const char *reason);
 
 	static void ReleaseRetainedIaResources(CommandListBindingState *state);
+	static void ReleaseRecordedEvent(CommandListRecordedEvent *event);
+	static void ReleaseRecordedEventsLocked(BindingShard *shard, ID3D12GraphicsCommandList *commandList);
+	static void RecordTemplateEvent(ID3D12GraphicsCommandList *commandList, const BindingEvent &event);
+	static void RecordTemplateOutputEvent(ID3D12GraphicsCommandList *commandList, const OutputBindingEvent &event);
+	static void SubmitRecordedEvent(const CommandListRecordedEvent &recorded, UINT64 captureSessionId);
+	static void StoreEventInCaptureLedger(const BindingEvent &event);
+	static void StoreOutputEventInCaptureLedger(const OutputBindingEvent &event);
 	static void RetainStateIaResourcesForAsync(CommandListBindingState *state);
 	static void RetainEventIaResources(BindingEvent *event);
 	static void ReleaseEventIaResources(BindingEvent *event);

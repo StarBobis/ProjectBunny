@@ -789,11 +789,10 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 	const UINT64 droppedEvents = source.droppedEvents;
 
 	DX12FrameAnalysis::LogJsonFunc("BindingTraceBegin",
-		"\"events\":%zu,\"capture_session_id\":%llu,\"dropped\":%llu,\"maxEvents\":%u",
+		"\"events\":%zu,\"capture_session_id\":%llu,\"dropped\":%llu,\"maxEvents\":0",
 		events.size(),
 		static_cast<unsigned long long>(source.captureSessionId),
-		static_cast<unsigned long long>(droppedEvents),
-		MaxTrackedEvents);
+		static_cast<unsigned long long>(droppedEvents));
 	for (const BindingEvent &event : events) {
 		if (DX12BindingTrackerQuery::IsDrawEvent(event) || DX12BindingTrackerQuery::IsDispatchEvent(event)) {
 			DX12FrameAnalysisManifest::WriteCall(
