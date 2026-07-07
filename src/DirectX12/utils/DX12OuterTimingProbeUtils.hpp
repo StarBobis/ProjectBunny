@@ -451,6 +451,7 @@ public:
 		size_t itemCount,
 		LONG64 us)
 	{
+#if defined(_DEBUG)
 		const LONG64 safeUs = ClampUs(us);
 		AcquireSRWLockExclusive(&CpuStageLock);
 		const LONG index = FindCpuStageBucketLocked(category, stage, kind);
@@ -462,6 +463,13 @@ public:
 			CpuStageBuckets[index].items += static_cast<LONG64>(itemCount);
 		}
 		ReleaseSRWLockExclusive(&CpuStageLock);
+#else
+		(void)category;
+		(void)stage;
+		(void)kind;
+		(void)itemCount;
+		(void)us;
+#endif
 	}
 
 	static void LogCpuStageTimingState(LONG present, LONG64 frameWallUs)
@@ -604,6 +612,7 @@ public:
 
 	static void LogQueueExecuteSlice(const char *stage, ID3D12CommandQueue *queue, UINT numCommandLists, LONG64 us)
 	{
+#if defined(_DEBUG)
 		(void)queue;
 
 		const LONG64 safeUs = ClampUs(us);
@@ -636,6 +645,12 @@ public:
 		} else {
 			AddUs(&QueueOtherUs, safeUs);
 		}
+#else
+		(void)stage;
+		(void)queue;
+		(void)numCommandLists;
+		(void)us;
+#endif
 	}
 
 	static bool IsQueueWallStage(const char *stage)
