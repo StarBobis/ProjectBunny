@@ -113,6 +113,69 @@ static void CopyShaderOverrideConfigs(
 	}
 }
 
+// PSO-Create-Time pre-compiled override plan: snapshots all shader override configs
+// for a PSO so draw-time discovery (lock+lookup+copy+iterate) is eliminated.
+// Populated in RecordGraphicsPipelineState; consumed in PrepareShaderOverrideReplacement.
+class DX12CompiledPsoOverridePlan
+{
+public:
+	bool valid = false;
+	bool alwaysMiss = false;
+	UINT64 generation = 0;
+	std::vector<Bunny::ShaderOverrideConfig> configSnapshot;
+};
+
+static std::unordered_map<ID3D12PipelineState*, DX12CompiledPsoOverridePlan> gPsoOverridePlans;
+static SRWLOCK gPsoOverridePlansLock = SRWLOCK_INIT;
+
+static bool TryLoadCompiledPsoPlan(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	std::vector<Bunny::ShaderOverrideConfig> *configSnapshot,
+	bool *alwaysMiss)
+{
+	if (!configSnapshot || !alwaysMiss)
+		return false;
+	*alwaysMiss = false;
+	configSnapshot->clear();
+	if (!pipelineState)
+		return false;
+
+	AcquireSRWLockShared(&gPsoOverridePlansLock);
+	auto it = gPsoOverridePlans.find(pipelineState);
+	if (it == gPsoOverridePlans.end() || it->second.generation != reloadGeneration) {
+		ReleaseSRWLockShared(&gPsoOverridePlansLock);
+		return false;
+	}
+	*alwaysMiss = it->second.alwaysMiss;
+	if (!it->second.alwaysMiss)
+		*configSnapshot = it->second.configSnapshot;
+	ReleaseSRWLockShared(&gPsoOverridePlansLock);
+	return true;
+}
+
+static void StoreCompiledPsoPlan(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot)
+{
+	// Never store empty plans: PSOs created before mod loads would cache "alwaysMiss"
+	// and never recover when the mod later loads matching configs.
+	if (!pipelineState || configSnapshot.empty())
+		return;
+
+	AcquireSRWLockExclusive(&gPsoOverridePlansLock);
+	gPsoOverridePlans[pipelineState] = {true, false, reloadGeneration, configSnapshot};
+	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
+}
+
+static void ClearCompiledPsoPlans()
+{
+	AcquireSRWLockExclusive(&gPsoOverridePlansLock);
+	gPsoOverridePlans.clear();
+	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
+}
+
 class DX12ShaderOverrideIaTargetPlanUtils
 {
 public:
@@ -641,30 +704,38 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			return false;
 	}
 
-	// Check PSO shader-override config cache FIRST, before acquiring the
-	// device.  Most draws have no matching configs; deferring the
-	// commandList→GetDevice QI (a D3D12 COM call) until we know configs
-	// actually exist eliminates ~400+ unnecessary QI+Release pairs per frame.
-	std::vector<const Bunny::ShaderOverrideConfig*> configs;
+	// 方案D: Try PSO pre-compiled plan first (zero-lock, zero-discovery).
+	// Eliminates per-draw lock+lookup+copy for PSOs recorded after mod loading.
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	std::vector<Bunny::ShaderOverrideConfig> configSnapshot;
-	bool cached = false;
-	AcquireSRWLockShared(&gModLock);
-	cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
-	if (cached)
-		CopyShaderOverrideConfigs(configs, &configSnapshot);
-	ReleaseSRWLockShared(&gModLock);
-
-	if (cached && configSnapshot.empty())
+	bool alwaysMiss = false;
+	const bool compiledPlanHit = TryLoadCompiledPsoPlan(
+		pipelineState, reloadGeneration, &configSnapshot, &alwaysMiss);
+	if (compiledPlanHit && alwaysMiss)
 		return false;
+	bool cached = compiledPlanHit;
 
-	if (!cached) {
-		AcquireSRWLockExclusive(&gModLock);
-		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
-		CopyShaderOverrideConfigs(configs, &configSnapshot);
-		ReleaseSRWLockExclusive(&gModLock);
+	if (!compiledPlanHit) {
+		// Fallback: legacy PSO config cache lookup (first draw after mod reload).
+		std::vector<const Bunny::ShaderOverrideConfig*> configs;
+		AcquireSRWLockShared(&gModLock);
+		cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
+		if (cached)
+			CopyShaderOverrideConfigs(configs, &configSnapshot);
+		ReleaseSRWLockShared(&gModLock);
+
+		if (cached && configSnapshot.empty())
+			return false;
+
+		if (!cached) {
+			AcquireSRWLockExclusive(&gModLock);
+			FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
+			CopyShaderOverrideConfigs(configs, &configSnapshot);
+			ReleaseSRWLockExclusive(&gModLock);
+		}
+		if (configSnapshot.empty())
+			return false;
 	}
-	if (configSnapshot.empty())
-		return false;
 
 	ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
 	const bool deviceFromCache = (cachedDevice != nullptr);
@@ -851,11 +922,14 @@ void DX12ModRecordGraphicsPipelineState(
 	if (existing != gPsoRecords.end())
 		ReleaseStoredPso(&existing->second);
 
-	// Eager PSO config compilation: compute shader overrides and IA target plan
-	// at PSO-create time so draws skip discovery entirely.
+	// 方案D: Eager PSO config compilation + pre-compiled plan store.
+	// Eliminates per-draw lock+lookup+copy for subsequent draws.
 	if (DX12ModHasActiveShaderOverrides()) {
 		std::vector<const Bunny::ShaderOverrideConfig*> configs;
 		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
+		std::vector<Bunny::ShaderOverrideConfig> snapshot;
+		CopyShaderOverrideConfigs(configs, &snapshot);
+		StoreCompiledPsoPlan(pipelineState, gReloadGeneration, snapshot);
 	}
 
 	gPsoRecords[pipelineState] = record;
@@ -879,6 +953,16 @@ void DX12ModRecordComputePipelineState(
 	auto existing = gPsoRecords.find(pipelineState);
 	if (existing != gPsoRecords.end())
 		ReleaseStoredPso(&existing->second);
+
+	// 方案D: Eager PSO config compilation for compute pipelines too.
+	if (DX12ModHasActiveShaderOverrides()) {
+		std::vector<const Bunny::ShaderOverrideConfig*> configs;
+		FindShaderOverridesForPsoLocked(pipelineState, true, &configs);
+		std::vector<Bunny::ShaderOverrideConfig> snapshot;
+		CopyShaderOverrideConfigs(configs, &snapshot);
+		StoreCompiledPsoPlan(pipelineState, gReloadGeneration, snapshot);
+	}
+
 	gPsoRecords[pipelineState] = record;
 	ReleaseSRWLockExclusive(&gModLock);
 }

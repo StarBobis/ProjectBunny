@@ -1437,6 +1437,7 @@ void DX12ModRestoreDrawSrvReplacement(
 void DX12ModClearIaReplacementRuntimeCaches()
 {
 	DX12IaReplacementExecutor::ClearPsoDrawFastRejectCache();
+	ClearCompiledPsoPlans();
 }
 
 
