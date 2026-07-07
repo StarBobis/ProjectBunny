@@ -80,7 +80,12 @@ public:
 		targetPlanResolved = true;
 		targetPlanHasIaTargets = targetPlan.HasIaTargets();
 		targetPlanHasDescriptorTargets = targetPlan.hasDescriptorTargets;
-		negativeCacheSafe = !targetPlanHasDescriptorTargets && !descriptorTrackingNeeded;
+		// Negative draw results are unsafe only when this PSO's own command
+		// lists can observe descriptor contents. A global descriptor-tracking
+		// need from another PSO should not disable IA-only draw miss caching.
+		(void)descriptorTrackingNeeded;
+		negativeCacheSafe = !targetPlanHasDescriptorTargets &&
+			(targetPlan.hasTextureOverrideChecks || !targetPlanHasIaTargets);
 
 		if (!hasShaderOverrides && !hasShaderOverrideSkip) {
 			kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;

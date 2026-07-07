@@ -425,7 +425,6 @@ public:
 	DX12ShaderOverrideNegativeCacheKey key;
 };
 
-static constexpr size_t ShaderOverrideNegativeCacheMaxEntries = 8192;
 static std::unordered_map<UINT64, DX12ShaderOverrideNegativeCacheKey> gShaderOverrideNegativeCache;
 static SRWLOCK gShaderOverrideNegativeCacheLock = SRWLOCK_INIT;
 
@@ -1437,6 +1436,7 @@ void DX12ModRestoreDrawSrvReplacement(
 void DX12ModClearIaReplacementRuntimeCaches()
 {
 	DX12IaReplacementExecutor::ClearPsoDrawFastRejectCache();
+	ClearShaderOverrideNegativeCache();
 	ClearCompiledPsoPlans();
 }
 

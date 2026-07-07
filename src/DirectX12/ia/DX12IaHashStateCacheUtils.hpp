@@ -4,6 +4,7 @@
 #include <d3d12.h>
 
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "DX12IaHashState.hpp"
@@ -68,8 +69,6 @@ public:
 class DX12IaHashStateCacheUtils
 {
 public:
-	static constexpr size_t CacheCapacity = 4096;
-
 	static bool TryLoad(
 		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
 			DX12IaHashStateCacheKeyHash> *entries,
@@ -102,7 +101,7 @@ public:
 		bool hasIaHashState,
 		DX12IaHashState state)
 	{
-		if (!entries || !clock || !evictCursor)
+		if (!entries || !clock)
 			return;
 
 		typename std::unordered_map<DX12IaHashStateCacheKey,
@@ -115,16 +114,8 @@ public:
 			return;
 		}
 
-		// Round-robin clock eviction: O(1) amortized, no full-scan age comparison
-		if (entries->size() >= CacheCapacity) {
-			size_t pos = static_cast<size_t>(*evictCursor) % CacheCapacity;
-			typename std::unordered_map<DX12IaHashStateCacheKey,
-				DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator victim =
-				entries->begin();
-			std::advance(victim, pos);
-			entries->erase(victim);
-			++(*evictCursor);
-		}
+		if (evictCursor)
+			*evictCursor = 0;
 
 		DX12IaHashStateCacheEntry entry;
 		entry.age = ++(*clock);

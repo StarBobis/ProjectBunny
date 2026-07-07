@@ -334,8 +334,6 @@ public:
 		if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) || !shaderInfo.hasCS)
 			return 0;
 		cache[pipelineState] = shaderInfo.cs;
-		if (cache.size() > 512)
-			cache.clear();
 		return shaderInfo.cs;
 	}
 
