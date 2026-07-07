@@ -11,84 +11,15 @@
 #include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
 #include "DXGIHooks.hpp"
+#include "helper/D3D12ProcessGateUtils.hpp"
 #include "helper/D3D12ProxyTargetHelper.hpp"
-#include "util_min.h"
 
 bool D3D12ProxyTargetHelper::VerifyIntendedTarget(HINSTANCE module)
 {
-	wchar_t ourPath[MAX_PATH], exePath[MAX_PATH];
-	wchar_t *ourBase = nullptr, *exeBase = nullptr;
-	HANDLE file = INVALID_HANDLE_VALUE;
-	char *buffer = nullptr;
-	DWORD fileSize = 0, readSize = 0;
-	const char *section = nullptr;
-	char target[MAX_PATH];
-	wchar_t targetW[MAX_PATH];
-	size_t targetLen = 0, exeLen = 0;
-	bool result = false;
-
-	if (!GetModuleFileNameW(module, ourPath, MAX_PATH))
-		return false;
-	if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH))
-		return false;
-
-	ourBase = wcsrchr(ourPath, L'\\');
-	exeBase = wcsrchr(exePath, L'\\');
-	if (!ourBase || !exeBase)
-		return false;
-
-	*(ourBase++) = L'\0';
-	*(exeBase++) = L'\0';
-
-	if (!_wcsicmp(ourPath, exePath))
-		return true;
-	if (wcsstr(ourPath, exePath))
-		return true;
-
-	*(exeBase - 1) = L'\\';
-	wcsncat_s(ourPath, MAX_PATH, L"\\d3dx.ini", _TRUNCATE);
-
-	file = CreateFileW(ourPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (file == INVALID_HANDLE_VALUE)
-		return false;
-
-	fileSize = GetFileSize(file, nullptr);
-	buffer = new char[fileSize + 1];
-	if (!buffer)
-		goto out_close;
-
-	if (!ReadFile(file, buffer, fileSize, &readSize, nullptr) || fileSize != readSize)
-		goto out_free;
-	buffer[fileSize] = '\0';
-
-	section = find_ini_section_lite(buffer, "loader");
-	if (!section)
-		goto out_free;
-	if (!find_ini_setting_lite(section, "target", target, MAX_PATH))
-		goto out_free;
-	if (!MultiByteToWideChar(CP_UTF8, 0, target, -1, targetW, MAX_PATH))
-		goto out_free;
-
-	targetLen = wcslen(targetW);
-	exeLen = wcslen(exePath);
-	if (exeLen < targetLen)
-		goto out_free;
-	if (targetW[0] != L'\\' && exeLen > targetLen && exePath[exeLen - targetLen - 1] != L'\\')
-		goto out_free;
-
-	result = !_wcsicmp(exePath + exeLen - targetLen, targetW);
-	if (result) {
-		HMODULE handle = nullptr;
-		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-			reinterpret_cast<LPCWSTR>(D3D12ProxyTargetHelper::VerifyIntendedTarget), &handle);
-	}
-
-out_free:
-	delete [] buffer;
-out_close:
-	CloseHandle(file);
-	return result;
+	return D3D12ProcessGateUtils::VerifyIntendedTarget(module);
 }
+
+static bool gD3D12ProxyRuntimeInitialized = false;
 
 FARPROC D3D12ProxyRuntime::GetRealProc(const char *name)
 {
@@ -398,6 +329,8 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 {
 	switch (reason) {
 	case DLL_PROCESS_ATTACH:
+	{
+		D3D12ProcessGateDecision decision;
 		DisableThreadLibraryCalls(module);
 
 		// Suppress Debug STL abort() popups — redirect to debugger output.
@@ -413,13 +346,22 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
 #endif
 
-		if (!D3D12ProxyTargetHelper::VerifyIntendedTarget(module))
+		decision = D3D12ProcessGateUtils::Evaluate(module);
+		D3D12ProcessGateUtils::DebugDecision(decision);
+		if (decision.role == D3D12ProcessGateRoleReject)
 			return FALSE;
-		D3D12ProxyRuntime::Initialize(module);
+		if (decision.role == D3D12ProcessGateRoleTargetRuntime) {
+			D3D12ProxyRuntime::Initialize(module);
+			gD3D12ProxyRuntimeInitialized = true;
+		}
 		break;
+	}
 	case DLL_PROCESS_DETACH:
-		DX12Wrapper::Shutdown();
-		D3D12ProxyRuntime::Shutdown();
+		if (gD3D12ProxyRuntimeInitialized) {
+			DX12Wrapper::Shutdown();
+			D3D12ProxyRuntime::Shutdown();
+			gD3D12ProxyRuntimeInitialized = false;
+		}
 		break;
 	}
 	return TRUE;

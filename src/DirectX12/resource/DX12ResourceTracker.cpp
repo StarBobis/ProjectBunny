@@ -726,6 +726,13 @@ void CleanupTrackedResources()
 	DX12BufferResolveCacheUtils::InvalidateAllLocked("cleanup");
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
+
+	if (gD3D12ForDeserialization) {
+		FreeLibrary(gD3D12ForDeserialization);
+		gD3D12ForDeserialization = nullptr;
+		gCreateRootSignatureDeserializer = nullptr;
+		gCreateVersionedRootSignatureDeserializer = nullptr;
+	}
 }
 
 static bool EnsureRootSignatureDeserializerFunctions()
@@ -739,8 +746,6 @@ static bool EnsureRootSignatureDeserializerFunctions()
 			PathAppendW(path, L"d3d12.dll");
 			gD3D12ForDeserialization = LoadLibraryW(path);
 		}
-		if (!gD3D12ForDeserialization)
-			gD3D12ForDeserialization = LoadLibraryW(L"d3d12.dll");
 	}
 
 	if (!gD3D12ForDeserialization)
