@@ -550,6 +550,7 @@ static void ClearActivePreSkinTextureOverridesLocked(
 		MoveActivePreSkinTextureOverrideResourceLocked(&item.second, releaseResources);
 	gActivePreSkinTextureOverrides.clear();
 	gActivePreSkinOutputStates.clear();
+	DX12ModClearPreSkinOutputResizeMap();
 	if (changed)
 		BumpPreSkinActiveGeneration();
 }
@@ -1499,4 +1500,126 @@ void DX12PreSkinAsyncQueue::ProcessRequest(DX12PreSkinAsyncRequest *request)
 		}
 	}
 	ReleaseSRWLockExclusive(&gModLock);
+}
+
+// ── PreSkin DynamicUAV output resize map ──────────────────────────
+// Maps original game-created output UAV resources to resized buffers
+// when the mod vertex count exceeds the original capacity.
+// The IASetVertexBuffers hook reads this map to redirect vb0 reads.
+
+class DX12PreSkinOutputResizeEntry
+{
+public:
+	ID3D12Resource *resizedResource = nullptr;
+	UINT64 originalGpuVa = 0;
+	UINT64 originalByteWidth = 0;
+	UINT64 resizedByteWidth = 0;
+	UINT stride = 0;
+	UINT64 resizedGpuVa = 0;
+	bool uavBarrierPending = true;
+	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+};
+
+static std::unordered_map<UINT64, DX12PreSkinOutputResizeEntry>
+	gPreSkinOutputResizeMap;
+static SRWLOCK gPreSkinOutputResizeLock = SRWLOCK_INIT;
+
+void DX12ModRegisterPreSkinOutputResize(
+	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,
+	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride)
+{
+	if (!originalResource || !resizedResource)
+		return;
+	const UINT64 originalGpuVa = originalResource->GetGPUVirtualAddress();
+	const UINT64 resizedGpuVa = resizedResource->GetGPUVirtualAddress();
+	if (!originalGpuVa || !resizedGpuVa)
+		return;
+	if (!originalByteWidth) {
+		const D3D12_RESOURCE_DESC desc = originalResource->GetDesc();
+		if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+			originalByteWidth = desc.Width;
+	}
+	if (!originalByteWidth || !resizedByteWidth)
+		return;
+	resizedResource->AddRef();
+	ID3D12Resource *oldResource = nullptr;
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	auto oldIt = gPreSkinOutputResizeMap.find(originalGpuVa);
+	if (oldIt != gPreSkinOutputResizeMap.end())
+		oldResource = oldIt->second.resizedResource;
+	DX12PreSkinOutputResizeEntry entry;
+	entry.resizedResource = resizedResource;
+	entry.originalGpuVa = originalGpuVa;
+	entry.originalByteWidth = originalByteWidth;
+	entry.resizedByteWidth = resizedByteWidth;
+	entry.stride = stride;
+	entry.resizedGpuVa = resizedGpuVa;
+	entry.uavBarrierPending = true;
+	entry.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	gPreSkinOutputResizeMap[originalGpuVa] = entry;
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+	if (oldResource)
+		oldResource->Release();
+}
+
+bool DX12ModResolvePreSkinOutputResizeByGpuVa(
+	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding)
+{
+	if (!viewGpuVa || !binding)
+		return false;
+	binding->Clear();
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	DX12PreSkinOutputResizeEntry *entry = nullptr;
+	UINT64 sourceOffset = 0;
+	auto exactIt = gPreSkinOutputResizeMap.find(viewGpuVa);
+	if (exactIt != gPreSkinOutputResizeMap.end()) {
+		entry = &exactIt->second;
+	} else {
+		for (auto &item : gPreSkinOutputResizeMap) {
+			DX12PreSkinOutputResizeEntry &candidate = item.second;
+			if (!candidate.originalGpuVa || !candidate.originalByteWidth)
+				continue;
+			if (viewGpuVa < candidate.originalGpuVa)
+				continue;
+			const UINT64 candidateOffset = viewGpuVa - candidate.originalGpuVa;
+			if (candidateOffset >= candidate.originalByteWidth)
+				continue;
+			entry = &candidate;
+			sourceOffset = candidateOffset;
+			break;
+		}
+	}
+	if (!entry || !entry->resizedResource || sourceOffset >= entry->resizedByteWidth) {
+		ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+		return false;
+	}
+	entry->resizedResource->AddRef();
+	binding->resizedResource = entry->resizedResource;
+	binding->retainedResource = true;
+	binding->originalGpuVa = entry->originalGpuVa;
+	binding->originalByteWidth = entry->originalByteWidth;
+	binding->resizedGpuVa = entry->resizedGpuVa;
+	binding->resizedByteWidth = entry->resizedByteWidth;
+	binding->sourceOffset = sourceOffset;
+	binding->stride = entry->stride;
+	binding->uavBarrierPending = entry->uavBarrierPending;
+	binding->transitionToVertex =
+		entry->state != D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+	binding->stateBefore = entry->state;
+	entry->uavBarrierPending = false;
+	entry->state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+	return true;
+}
+
+void DX12ModClearPreSkinOutputResizeMap()
+{
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	for (auto &item : gPreSkinOutputResizeMap) {
+		if (item.second.resizedResource)
+			item.second.resizedResource->Release();
+		item.second.resizedResource = nullptr;
+	}
+	gPreSkinOutputResizeMap.clear();
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
 }

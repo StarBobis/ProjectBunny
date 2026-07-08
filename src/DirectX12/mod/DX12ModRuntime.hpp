@@ -303,4 +303,53 @@ bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *so
 bool DX12ModAdjustUavDesc(
 	ID3D12Resource *resource, D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, const char *source);
 
+// PreSkin DynamicUAV: register a resized output UAV so IA redirects can bind
+// the larger buffer when vertex count exceeds original buffer capacity.
+class DX12PreSkinOutputResizeBinding
+{
+public:
+	DX12PreSkinOutputResizeBinding() = default;
+	DX12PreSkinOutputResizeBinding(const DX12PreSkinOutputResizeBinding &) = delete;
+	DX12PreSkinOutputResizeBinding &operator=(const DX12PreSkinOutputResizeBinding &) = delete;
+	~DX12PreSkinOutputResizeBinding()
+	{
+		Clear();
+	}
+
+	void Clear()
+	{
+		if (retainedResource && resizedResource)
+			resizedResource->Release();
+		resizedResource = nullptr;
+		retainedResource = false;
+		originalGpuVa = 0;
+		originalByteWidth = 0;
+		resizedGpuVa = 0;
+		resizedByteWidth = 0;
+		sourceOffset = 0;
+		stride = 0;
+		uavBarrierPending = false;
+		transitionToVertex = false;
+		stateBefore = D3D12_RESOURCE_STATE_COMMON;
+	}
+
+	ID3D12Resource *resizedResource = nullptr;
+	bool retainedResource = false;
+	UINT64 originalGpuVa = 0;
+	UINT64 originalByteWidth = 0;
+	UINT64 resizedGpuVa = 0;
+	UINT64 resizedByteWidth = 0;
+	UINT64 sourceOffset = 0;
+	UINT stride = 0;
+	bool uavBarrierPending = false;
+	bool transitionToVertex = false;
+	D3D12_RESOURCE_STATES stateBefore = D3D12_RESOURCE_STATE_COMMON;
+};
+void DX12ModRegisterPreSkinOutputResize(
+	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,
+	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride);
+bool DX12ModResolvePreSkinOutputResizeByGpuVa(
+	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);
+void DX12ModClearPreSkinOutputResizeMap();
+
 

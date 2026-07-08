@@ -11,7 +11,8 @@
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12CommandListStateFlow.hpp"
 #include "DX12DispatchHookFlow.hpp"
-#include "DX12DrawH#include "DX12HookManager.hpp"
+#include "DX12DrawHookFlow.hpp"
+#include "DX12HookManager.hpp"
 #include "DX12HookRegistry.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12IaReplacementDrawExecutor.hpp"
@@ -27,6 +28,7 @@
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "types/DX12HookTypes.hpp"
 #include "ia/DX12IaCommandSignatures.hpp"
+#include "utils/DX12PreSkinIaRedirectUtils.hpp"
 
 // BunnyCmdListHooks - DX11 orig_vtable 对齐 Hook 实现
 // NktHookLib 安装 + BunnyVTableSwap 缓存 trampoline
@@ -297,8 +299,20 @@ static void STDMETHODCALLTYPE Hook_IASetVertexBuffers(ID3D12GraphicsCommandList 
 {
 auto orig = GetOrig<void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, UINT, const D3D12_VERTEX_BUFFER_VIEW*)>(This, Slot::IaSetVertexBuffers);
 if (DX12HotPathState::skipAll) { if (orig) orig(This, start, count, views); return; }
-DX12CommandListStateFlow::CaptureVertexBuffers(This, start, count, views);
-if (orig) orig(This, start, count, views);
+	D3D12_VERTEX_BUFFER_VIEW redirectedViews[
+		D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+	const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
+	if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
+		    This,
+		    start,
+		    count,
+		    views,
+		    redirectedViews,
+		    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+		activeViews = redirectedViews;
+	}
+DX12CommandListStateFlow::CaptureVertexBuffers(This, start, count, activeViews);
+if (orig) orig(This, start, count, activeViews);
 }
 
 static void STDMETHODCALLTYPE Hook_ExecuteIndirect(ID3D12GraphicsCommandList *This,

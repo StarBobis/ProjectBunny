@@ -34,6 +34,7 @@
 #include "DX12RuntimeState.hpp"
 #include "types/DX12CommandListHookSlotTypes.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
+#include "utils/DX12PreSkinIaRedirectUtils.hpp"
 
 using PFN_CREATE_COMMAND_QUEUE = DX12CommandListHookSignatures::CreateCommandQueue;
 using PFN_CREATE_COMMAND_ALLOCATOR = DX12CommandListHookSignatures::CreateCommandAllocator;
@@ -946,11 +947,24 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetVertexBuffers(
 	}
 	DX12_PROFILE_SCOPE(IASetVertexBuffers);
 
-	DX12CommandListStateFlow::CaptureVertexBuffers(commandList, startSlot, count, views);
+	D3D12_VERTEX_BUFFER_VIEW redirectedViews[
+		D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+	const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
+	if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
+		    commandList,
+		    startSlot,
+		    count,
+		    views,
+		    redirectedViews,
+		    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+		activeViews = redirectedViews;
+	}
+	DX12CommandListStateFlow::CaptureVertexBuffers(
+		commandList, startSlot, count, activeViews);
 	PFN_IA_SET_VERTEX_BUFFERS original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
 	if (original)
-		original(commandList, startSlot, count, views);
+		original(commandList, startSlot, count, activeViews);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSOSetTargets(

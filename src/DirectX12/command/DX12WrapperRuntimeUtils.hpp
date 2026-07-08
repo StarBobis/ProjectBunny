@@ -24,6 +24,7 @@
 #include "types/DX12IaDrawInvocation.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
+#include "utils/DX12PreSkinIaRedirectUtils.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 class DX12WrapperRuntimeUtils
@@ -1153,12 +1154,24 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
+		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
+			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
+		if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
+			    commandList,
+			    startSlot,
+			    count,
+			    views,
+			    redirectedViews,
+			    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+			activeViews = redirectedViews;
+		}
 		DX12CommandListStateCapture::VertexBuffers(
-			commandList, runtimeState, startSlot, count, views);
+			commandList, runtimeState, startSlot, count, activeViews);
 		if (original)
-			original(commandList, startSlot, count, views);
+			original(commandList, startSlot, count, activeViews);
 		else
-			commandList->IASetVertexBuffers(startSlot, count, views);
+			commandList->IASetVertexBuffers(startSlot, count, activeViews);
 	}
 
 	static bool ShouldSkipComputeBinding()

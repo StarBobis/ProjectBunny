@@ -1447,6 +1447,142 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			return false;
 		}
 	}
+	// Resize output UAV when mod vertex count exceeds original buffer capacity.
+	// Equivalent to DX11 DynamicUAV: if replacement SRVs have more elements than
+	// the output UAV can hold, create a larger UAV so the CS can write all
+	// vertices without truncation. Also register the resized resource so the
+	// IASetVertexBuffers hook can redirect the VB to it.
+	ID3D12Resource *resizedUavResource = nullptr;
+	ID3D12DescriptorHeap *resizedUavHeap = nullptr;
+	D3D12_CPU_DESCRIPTOR_HANDLE resizedUavCpu = {};
+	bool outputUavResized = false;
+#if defined(_DEBUG)
+	DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
+		"\"status\":\"output_uav_probe\","
+		"\"section\":\"%S\","
+		"\"overrideVc\":%u,"
+		"\"originalVc\":%u,"
+		"\"hasDesc\":%s,"
+		"\"rootDesc\":%s,"
+		"\"kind\":\"%s\","
+		"\"stride\":%u,"
+		"\"currentBytes\":%llu",
+		section ? section : L"",
+		overrideVertexCount,
+		originalVertexCount,
+		uavBinding.hasDescriptor ? "true" : "false",
+		uavBinding.rootDescriptor ? "true" : "false",
+		uavBinding.descriptor.kind.empty() ? "(empty)" : uavBinding.descriptor.kind.c_str(),
+		uavBinding.descriptor.structureByteStride,
+		static_cast<unsigned long long>(
+			DescriptorViewSize(uavBinding.descriptor)));
+#endif
+	if (overrideVertexCount && originalVertexCount &&
+	    overrideVertexCount > originalVertexCount &&
+	    uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
+	    uavBinding.descriptor.kind == "UAV" &&
+	    uavBinding.descriptor.structureByteStride) {
+		const UINT uavStride = uavBinding.descriptor.structureByteStride;
+		const UINT64 requiredByteWidth =
+			static_cast<UINT64>(uavStride) * overrideVertexCount;
+		const UINT64 currentByteWidth = DescriptorViewSize(uavBinding.descriptor);
+		if (requiredByteWidth > currentByteWidth) {
+			D3D12_HEAP_PROPERTIES uavHeapProps = {};
+			uavHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+			uavHeapProps.CreationNodeMask = 1;
+			uavHeapProps.VisibleNodeMask = 1;
+			D3D12_RESOURCE_DESC uavResDesc = {};
+			uavResDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			uavResDesc.Width = requiredByteWidth;
+			uavResDesc.Height = 1;
+			uavResDesc.DepthOrArraySize = 1;
+			uavResDesc.MipLevels = 1;
+			uavResDesc.Format = DXGI_FORMAT_UNKNOWN;
+			uavResDesc.SampleDesc.Count = 1;
+			uavResDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			uavResDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+			HRESULT uavResHr = device->CreateCommittedResource(
+				&uavHeapProps, D3D12_HEAP_FLAG_NONE, &uavResDesc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(&resizedUavResource));
+			if (SUCCEEDED(uavResHr) && resizedUavResource) {
+				D3D12_DESCRIPTOR_HEAP_DESC uavHeapDesc = {};
+				uavHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+				uavHeapDesc.NumDescriptors = 1;
+				uavHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+				HRESULT uavHeapHr = device->CreateDescriptorHeap(
+					&uavHeapDesc, IID_PPV_ARGS(&resizedUavHeap));
+				if (SUCCEEDED(uavHeapHr) && resizedUavHeap) {
+					resizedUavCpu =
+						resizedUavHeap->GetCPUDescriptorHandleForHeapStart();
+					D3D12_UNORDERED_ACCESS_VIEW_DESC newUavDesc = {};
+					newUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+					newUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+					newUavDesc.Buffer.FirstElement = 0;
+					newUavDesc.Buffer.StructureByteStride = uavStride;
+					newUavDesc.Buffer.NumElements = overrideVertexCount;
+					newUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+					device->CreateUnorderedAccessView(
+						resizedUavResource, nullptr, &newUavDesc,
+						resizedUavCpu);
+					// Patch temp heap copy so CS dispatch writes to resized buffer.
+					const TableCopy *uavTable = findTable(uavBinding);
+					if (uavTable) {
+						D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
+						uavDst.ptr += static_cast<SIZE_T>(
+							uavTable->tempOffset +
+							uavBinding.descriptorOffset) *
+							tempIncrement;
+						device->CopyDescriptorsSimple(
+							1, uavDst, resizedUavCpu,
+							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						outputUavResized = true;
+						resizedUavResource->AddRef();
+						temporaryResources.push_back(
+							resizedUavResource);
+						// Register for IASetVertexBuffers redirection
+						// so the draw uses the resized buffer as vb0.
+							DX12ModRegisterPreSkinOutputResize(
+								uavBinding.descriptor.resource,
+								resizedUavResource,
+								currentByteWidth,
+								requiredByteWidth,
+								uavStride);
+#if defined(_DEBUG)
+						DX12LogManager::DebugJsonFunc(
+							"DX12PreSkinningApply",
+							"\"status\":\"output_uav_resized\","
+							"\"section\":\"%S\","
+							"\"triggerHash\":\"%08x\","
+							"\"oldBytes\":%llu,"
+							"\"newBytes\":%llu,"
+							"\"oldVertices\":%u,"
+							"\"newVertices\":%u,"
+							"\"stride\":%u",
+							section ? section : L"",
+							triggerHash,
+							static_cast<unsigned long long>(
+								currentByteWidth),
+							static_cast<unsigned long long>(
+								requiredByteWidth),
+							originalVertexCount,
+							overrideVertexCount,
+							uavStride);
+#endif
+					}
+				}
+			}
+			if (!outputUavResized) {
+				if (resizedUavResource)
+					resizedUavResource->Release();
+				if (resizedUavHeap)
+					resizedUavHeap->Release();
+				resizedUavResource = nullptr;
+				resizedUavHeap = nullptr;
+				resizedUavCpu = {};
+			}
+		}
+	}
 	ID3D12DescriptorHeap *restoreCbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *restoreSamplerHeap = nullptr;
 	DX12BindingTracker::GetCurrentDescriptorHeaps(
@@ -1464,8 +1600,10 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindHeaps);
 	state.originalTable = uavBinding.tableGpuStart;
 	state.originalHeap = uavBinding.tableHeap;
-	state.resource = uavBinding.descriptor.resource;
-	state.byteWidth = DescriptorViewSize(uavBinding.descriptor);
+	state.resource = outputUavResized ? resizedUavResource : uavBinding.descriptor.resource;
+	state.byteWidth = outputUavResized ?
+		(static_cast<UINT64>(uavBinding.descriptor.structureByteStride) * overrideVertexCount) :
+		DescriptorViewSize(uavBinding.descriptor);
 	state.stride = uavBinding.descriptor.structureByteStride;
 	state.hasActiveTextureOverride = state.resource && state.byteWidth && state.stride;
 	if (state.hasActiveTextureOverride) {

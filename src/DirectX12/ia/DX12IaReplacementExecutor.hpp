@@ -16,6 +16,7 @@
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
+#include "utils/DX12PreSkinIaRedirectUtils.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 // Legacy stub - referenced by compiled code but definition was never provided.
@@ -123,7 +124,9 @@ public:
 			return true;
 		}
 
-		const DX12ActiveIaState originalIa = runtimeState.ia;
+		DX12ActiveIaState originalIa = runtimeState.ia;
+		DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
+			commandList, callbacks, &originalIa);
 		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
 		bindingExecutor.Apply(*replacement);
