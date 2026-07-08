@@ -866,6 +866,7 @@ class DX12PreSkinTextureOverrideCandidate
 public:
 	Bunny::TextureOverrideConfig config;
 	uint32_t hash = 0;
+	UINT64 identity = 0;
 	std::wstring resourceName;
 	UINT64 order = 0;
 };

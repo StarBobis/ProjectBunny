@@ -603,7 +603,7 @@ static uint64_t MakePreSkinMatchCsInputCacheKey(
 	const std::vector<DX12CurrentRootConstants> &rootConstants)
 {
 	uint64_t key = HashCombine64(gReloadGeneration, csHash);
-	key = HashCombine64(key, candidate.hash);
+	key = HashCombine64(key, candidate.identity);
 	key = HashCombine64(key, uavViewBytes);
 	key = HashCombine64(key, HashComputeBindingListForProbe(uavs, false));
 	key = HashCombine64(key, HashComputeBindingListForProbe(srvs, true));
@@ -644,10 +644,11 @@ static void LogPreSkinMatchCsProbeLimited(
 	AppendComputeCbvList(cbvs, cbvText, sizeof(cbvText));
 	AppendComputeRootConstantsList(rootConstants, rootText, sizeof(rootText));
 	DX12LogManager::JsonFunc("DX12PreSkinMatchCsProbe",
-		"\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"uavBytes\":%llu,\"matchUavBytes\":%llu,\"inputMatched\":%s,\"uavs\":\"%s\",\"srvs\":\"%s\",\"cbvs\":\"%s\",\"rootConstants\":\"%s\"",
+		"\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"candidateIdentity\":\"%016llx\",\"uavBytes\":%llu,\"matchUavBytes\":%llu,\"inputMatched\":%s,\"uavs\":\"%s\",\"srvs\":\"%s\",\"cbvs\":\"%s\",\"rootConstants\":\"%s\"",
 		static_cast<unsigned long long>(csHash),
 		candidate.config.originalSection.empty() ? candidate.config.section.c_str() : candidate.config.originalSection.c_str(),
 		candidate.hash,
+		static_cast<unsigned long long>(candidate.identity),
 		static_cast<unsigned long long>(uavViewBytes),
 		candidate.config.hasMatchUavBytes ? static_cast<unsigned long long>(candidate.config.matchUavBytes) : 0ull,
 		inputMatched ? "true" : "false", uavText, srvText, cbvText, rootText);

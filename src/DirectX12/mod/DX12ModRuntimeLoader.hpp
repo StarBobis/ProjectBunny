@@ -68,6 +68,49 @@ static bool IsComputePreSkinTextureOverride(const Bunny::TextureOverrideConfig &
 		!config.preSkinCsSrvResources.empty();
 }
 
+class DX12PreSkinCandidateIdentityUtils
+{
+public:
+	static UINT64 HashWideString(UINT64 hash, const std::wstring &value)
+	{
+		std::wstring normalized =
+			Bunny::IniDocumentText::ToLower(Bunny::IniDocumentText::Trim(value));
+		hash = HashCombine64(hash, normalized.size());
+		for (wchar_t ch : normalized)
+			hash = HashCombine64(hash, static_cast<UINT64>(ch));
+		return hash;
+	}
+
+	static UINT64 Build(
+		const Bunny::TextureOverrideConfig &config, uint32_t bucketHash,
+		UINT64 order)
+	{
+		UINT64 identity = 0x84d56f03b18a6c25ull;
+		identity = HashCombine64(identity, bucketHash);
+		identity = HashCombine64(identity, config.hash);
+		identity = HashCombine64(identity, GetPreSkinCsHash(config));
+		identity = HashCombine64(identity, config.hasCsHash ? 1 : 0);
+		identity = HashCombine64(identity, config.hasMatchCs ? 1 : 0);
+		identity = HashCombine64(identity, config.hasMatchPriority ? 1 : 0);
+		identity = HashCombine64(identity, static_cast<UINT64>(config.matchPriority));
+		identity = HashWideString(identity, config.section);
+		identity = HashWideString(identity, config.originalSection);
+		identity = HashWideString(identity, config.sourcePath);
+		identity = HashWideString(identity, config.sourceDir);
+		identity = HashWideString(identity, config.iniNamespace);
+		for (const auto &expected : config.preSkinMatchCsSrvHashes) {
+			identity = HashCombine64(identity, expected.first);
+			identity = HashCombine64(identity, expected.second);
+		}
+		for (const auto &replacement : config.preSkinCsSrvResources) {
+			identity = HashCombine64(identity, replacement.first);
+			identity = HashWideString(identity, replacement.second);
+		}
+		identity = HashCombine64(identity, order);
+		return identity ? identity : 0x6c8e9cf570932bd1ull;
+	}
+};
+
 static void BuildDx12PreSkinTextureOverrideIndex(
 	const Bunny::TextureOverrideMap &textureOverrides,
 	std::vector<DX12PreSkinTextureOverrideCandidate> *preSkinTextureOverrides,
@@ -91,6 +134,8 @@ static void BuildDx12PreSkinTextureOverrideIndex(
 			candidate.config = config;
 			candidate.hash = bucket.first;
 			candidate.order = order++;
+			candidate.identity = DX12PreSkinCandidateIdentityUtils::Build(
+				config, bucket.first, candidate.order);
 			const size_t index = preSkinTextureOverrides->size();
 			preSkinTextureOverrides->push_back(std::move(candidate));
 			(*matchCsTextureOverrideIndex)[GetPreSkinCsHash(config)].push_back(index);
