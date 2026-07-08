@@ -107,6 +107,37 @@ public:
 		wcscat_s(textPath, textPathCount, L".txt");
 	}
 
+	static bool IsHashChar(wchar_t value)
+	{
+		return (value >= L'0' && value <= L'9') ||
+			(value >= L'a' && value <= L'f') ||
+			(value >= L'A' && value <= L'F');
+	}
+
+	static bool IsHashText(const wchar_t *text)
+	{
+		if (!text)
+			return false;
+		for (size_t i = 0; i < 8; ++i) {
+			if (!IsHashChar(text[i]))
+				return false;
+		}
+		return true;
+	}
+
+	static void CopyHashText(const wchar_t *source, char *hash, size_t hashCount)
+	{
+		if (!hash || hashCount == 0)
+			return;
+		hash[0] = '\0';
+		if (!source)
+			return;
+		size_t i = 0;
+		for (; i < hashCount - 1 && i < 8 && source[i]; ++i)
+			hash[i] = static_cast<char>(source[i]);
+		hash[i] = '\0';
+	}
+
 	static void FormatFileHash(const wchar_t *filePath, char *hash, size_t hashCount)
 	{
 		if (!hash || hashCount == 0)
@@ -121,25 +152,21 @@ public:
 		for (const wchar_t *cursor = wcsstr(name, L"-hash"); cursor;
 				cursor = wcsstr(cursor + 1, L"-hash")) {
 			const wchar_t *candidate = cursor + 5;
-			bool valid = true;
-			for (size_t i = 0; i < 8; ++i) {
-				const wchar_t value = candidate[i];
-				if (!((value >= L'0' && value <= L'9') ||
-						(value >= L'a' && value <= L'f') ||
-						(value >= L'A' && value <= L'F'))) {
-					valid = false;
-					break;
-				}
-			}
-			if (valid)
+			if (IsHashText(candidate))
 				hashMarker = candidate;
 		}
 		if (hashMarker) {
-			for (size_t i = 0; i < hashCount - 1 && i < 8; ++i)
-				hash[i] = static_cast<char>(hashMarker[i]);
-			hash[(hashCount - 1) < 8 ? hashCount - 1 : 8] = '\0';
+			CopyHashText(hashMarker, hash, hashCount);
 			return;
 		}
+
+		if (IsHashText(name) && name[8] == L'_' &&
+				IsHashText(name + 9) &&
+				(name[17] == L'-' || name[17] == L'.' || name[17] == L'\0')) {
+			CopyHashText(name + 9, hash, hashCount);
+			return;
+		}
+
 		size_t i = 0;
 		for (; i < hashCount - 1 && i < 8 && name[i] && name[i] != L'-'; ++i)
 			hash[i] = static_cast<char>(name[i]);

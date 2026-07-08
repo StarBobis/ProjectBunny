@@ -164,7 +164,8 @@ public:
 	}
 
 	static void BuildDedupedFileName(
-		const DumpTask &task, uint32_t hash, wchar_t *fileName, size_t fileNameCount)
+		const DumpTask &task, uint32_t huntHash, uint32_t fileHash,
+		wchar_t *fileName, size_t fileNameCount)
 	{
 		if (!fileName || fileNameCount == 0)
 			return;
@@ -174,10 +175,13 @@ public:
 		if (task.isTexture) {
 			wchar_t formatName[96];
 			BuildTextureFormatName(TextureFormatForTask(task), formatName, ARRAYSIZE(formatName));
-			swprintf_s(fileName, fileNameCount, L"%08x-%s.%s",
-				static_cast<UINT>(hash), formatName, extension);
+			swprintf_s(fileName, fileNameCount, L"%08x_%08x-%s.%s",
+				static_cast<UINT>(huntHash),
+				static_cast<UINT>(fileHash),
+				formatName,
+				extension);
 			return;
 		}
-		swprintf_s(fileName, fileNameCount, L"%08x.%s", static_cast<UINT>(hash), extension);
+		swprintf_s(fileName, fileNameCount, L"%08x.%s", static_cast<UINT>(fileHash), extension);
 	}
 };

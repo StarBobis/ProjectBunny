@@ -14,6 +14,7 @@
 #include "DX12ResourceDumpCore.hpp"
 #include "DX12ResourceDumpDedupedNamingUtils.hpp"
 #include "DX12ResourceDumpDdsUtils.hpp"
+#include "DX12ResourceDumpNaming.hpp"
 #include "DX12ResourceDumpTypes.hpp"
 
 class DX12ResourceDumpFileWriter
@@ -424,6 +425,20 @@ static void BuildDedupedRelativePath(const wchar_t *dedupeFileName, wchar_t *pat
 	swprintf_s(path, pathCount, L"deduped\\%s", dedupeFileName);
 }
 
+static uint32_t HuntHashForTask(const DumpTask &task)
+{
+	if (!task.isTexture)
+		return 0;
+	if (task.sourceKind == DumpTaskSource::Output) {
+		DX12FrameResourceBinding outputBinding =
+			DX12ResourceDumpCore::ResourceBindingFromOutputBinding(task.outputBinding);
+		return DX12ResourceDumpNaming::DescriptorHuntHash(outputBinding, task.copyBytes);
+	}
+	if (task.sourceKind == DumpTaskSource::InputAssembler)
+		return 0;
+	return DX12ResourceDumpNaming::DescriptorHuntHash(task.binding, task.copyBytes);
+}
+
 static bool WriteDedupedResourceFile(
 	const wchar_t *dedupeDir, const wchar_t *resourceDir,
 	const DumpTask &task, const void *mappedData,
@@ -432,10 +447,11 @@ static bool WriteDedupedResourceFile(
 	if (!dedupeDir || !resourceDir || !mappedData)
 		return false;
 
-	const uint32_t hash = HashDumpTaskData(task, mappedData);
+	const uint32_t fileHash = HashDumpTaskData(task, mappedData);
+	const uint32_t huntHash = HuntHashForTask(task);
 	wchar_t dedupeFileName[MAX_PATH];
 	DX12ResourceDumpDedupedNamingUtils::BuildDedupedFileName(
-		task, hash, dedupeFileName, ARRAYSIZE(dedupeFileName));
+		task, huntHash, fileHash, dedupeFileName, ARRAYSIZE(dedupeFileName));
 	wchar_t dedupePath[MAX_PATH];
 	swprintf_s(dedupePath, L"%s\\%s", dedupeDir, dedupeFileName);
 	if (dedupePathOut) {

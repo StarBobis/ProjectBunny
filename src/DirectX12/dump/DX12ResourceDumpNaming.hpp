@@ -25,12 +25,49 @@ static const wchar_t *FileNameFromPath(const std::wstring &path)
 	return slash ? slash + 1 : text;
 }
 
+static bool IsHashChar(wchar_t value)
+{
+	return (value >= L'0' && value <= L'9') ||
+		(value >= L'a' && value <= L'f') ||
+		(value >= L'A' && value <= L'F');
+}
+
+static bool IsHashText(const wchar_t *text)
+{
+	if (!text)
+		return false;
+	for (size_t i = 0; i < 8; ++i) {
+		if (!IsHashChar(text[i]))
+			return false;
+	}
+	return true;
+}
+
+static void CopyHashText(const wchar_t *source, char *hash, size_t hashCount)
+{
+	if (!hash || hashCount == 0)
+		return;
+	hash[0] = '\0';
+	if (!source)
+		return;
+	size_t i = 0;
+	for (; i < hashCount - 1 && i < 8 && source[i]; ++i)
+		hash[i] = static_cast<char>(source[i]);
+	hash[i] = '\0';
+}
+
 static void FileHashFromPath(const std::wstring &path, char *hash, size_t hashCount)
 {
 	if (!hash || hashCount == 0)
 		return;
 	hash[0] = '\0';
 	const wchar_t *name = FileNameFromPath(path);
+	if (IsHashText(name) && name[8] == L'_' &&
+			IsHashText(name + 9) &&
+			(name[17] == L'-' || name[17] == L'.' || name[17] == L'\0')) {
+		CopyHashText(name + 9, hash, hashCount);
+		return;
+	}
 	size_t i = 0;
 	for (; i < hashCount - 1 && i < 8 && name[i] && name[i] != L'-'; ++i)
 		hash[i] = static_cast<char>(name[i]);
