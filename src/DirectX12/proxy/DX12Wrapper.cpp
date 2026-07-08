@@ -16,6 +16,7 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12CommandQueueState.hpp"
 #include "DX12ResourceTrackerHookRuntime.hpp"
+#include "DX12ResourceTracker.hpp"
 #include "DX12ResourceStateTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "dxgi/DXGIHookRuntime.hpp"
@@ -5201,11 +5202,13 @@ namespace DX12Wrapper
 				D3D12_TEXTURE_COPY_LOCATION dstStorage = {};
 				D3D12_TEXTURE_COPY_LOCATION srcStorage = {};
 				const D3D12_TEXTURE_COPY_LOCATION *activeDst = pDst;
-				const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
-				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
-				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
-				mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
-			}
+					const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
+					DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
+					DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
+					DX12TrackTextureHashFromCopyTextureRegion(
+						activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+					mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+				}
 
 			void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
 			{

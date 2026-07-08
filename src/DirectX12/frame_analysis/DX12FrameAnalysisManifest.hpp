@@ -345,15 +345,24 @@ public:
 		const UINT64 fallbackGpuVa = descriptor.gpuVirtualAddress ?
 			descriptor.gpuVirtualAddress : binding.gpuVirtualAddress;
 		const UINT64 fallbackSize = descriptor.viewSize ? descriptor.viewSize : copyBytes;
-		const uint32_t viewHash = DX12HashDescriptorBufferView(
+		const uint32_t descriptorHash = DX12HashDescriptorBufferView(
 			binding.hasDescriptor ? &descriptor : nullptr, fallbackGpuVa, fallbackSize);
+		uint32_t contentHash = 0;
+		const bool hasContentHash =
+			desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+			DX12TryGetTextureHash(descriptor.resource, &contentHash);
+		const uint32_t viewHash = hasContentHash ? contentHash : descriptorHash;
 		sprintf_s(hash, sizeof(hash), "%08x", viewHash);
 		char huntHash[16];
 		sprintf_s(huntHash, sizeof(huntHash), "%08x", viewHash);
+		char descriptorHashText[16], contentHashText[16];
+		sprintf_s(descriptorHashText, sizeof(descriptorHashText), "%08x", descriptorHash);
+		sprintf_s(contentHashText, sizeof(contentHashText), "%08x", hasContentHash ? contentHash : 0);
 
 		char vsJson[64], psJson[64], csJson[64];
 		char bindJson[64], kindJson[32], dimJson[32], fmtNameJson[64], statusJson[64], noteJson[128];
-		char hashJson[32], huntHashJson[32], fileHashJson[32], fileJson[512], resourceJson[32];
+		char hashJson[32], huntHashJson[32], fileHashJson[32], descriptorHashJson[32];
+		char contentHashJson[32], hashSourceJson[32], fileJson[512], resourceJson[32];
 		const char *kind = descriptor.kind.empty() && binding.rootDescriptor ?
 			DX12FrameAnalysisManifestFormatUtils::RootDescriptorKindName(binding.rangeType) :
 			descriptor.kind.c_str();
@@ -371,11 +380,15 @@ public:
 		DX12JsonUtils::EscapeString(hashJson, sizeof(hashJson), hash);
 		DX12JsonUtils::EscapeString(huntHashJson, sizeof(huntHashJson), huntHash);
 		DX12JsonUtils::EscapeString(fileHashJson, sizeof(fileHashJson), fileHash);
+		DX12JsonUtils::EscapeString(descriptorHashJson, sizeof(descriptorHashJson), descriptorHashText);
+		DX12JsonUtils::EscapeString(contentHashJson, sizeof(contentHashJson), contentHashText);
+		DX12JsonUtils::EscapeString(hashSourceJson, sizeof(hashSourceJson),
+			hasContentHash ? "content" : "descriptor_fallback");
 		DX12JsonUtils::EscapeWString(fileJson, sizeof(fileJson),
 			DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath));
 		sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", descriptor.resource);
 
-		char buffer[2048];
+		char buffer[3072];
 		sprintf_s(buffer, sizeof(buffer),
 			"\"func\":\"BindResource\","
 			"\"call_index\":%llu,"
@@ -414,7 +427,10 @@ public:
 			"\"note\":%s,"
 			"\"hash\":%s,"
 			"\"hunt_hash\":%s,"
-			"\"file_hash\":%s",
+			"\"file_hash\":%s,"
+			"\"hash_source\":%s,"
+			"\"content_hash\":%s,"
+			"\"descriptor_hash\":%s",
 			static_cast<unsigned long long>(binding.eventSerial),
 			static_cast<unsigned long long>(binding.drawId),
 			static_cast<unsigned long long>(binding.dispatchId),
@@ -451,7 +467,10 @@ public:
 			noteJson,
 			hashJson,
 			huntHashJson,
-			fileHashJson);
+			fileHashJson,
+			hashSourceJson,
+			contentHashJson,
+			descriptorHashJson);
 
 		DX12FrameAnalysis::LogJsonFields(buffer);
 	}

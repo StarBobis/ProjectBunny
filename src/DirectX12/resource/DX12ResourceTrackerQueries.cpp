@@ -1,6 +1,7 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
 #include "../utils/DX12DescriptorHeapShadowUtils.hpp"
+#include "../utils/DX12TextureHashUtils.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 
 bool DX12GetRootSignatureSummary(
@@ -489,6 +490,12 @@ static std::atomic<UINT64> gBufferContentGeneration{1};
 
 bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize)
 {
+	return DX12CacheBufferContentRange(resource, 0, data, dataSize);
+}
+
+bool DX12CacheBufferContentRange(
+	ID3D12Resource *resource, UINT64 resourceOffset, const void *data, size_t dataSize)
+{
 	if (!resource || !data || !dataSize)
 		return false;
 
@@ -499,7 +506,7 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 
 	// Get the GPU VA base directly (available immediately after creation,
 	// unlike GPU VA resolution which may not be ready if tracking is async).
-	entry.gpuVaBase = resource->GetGPUVirtualAddress();
+	entry.gpuVaBase = resource->GetGPUVirtualAddress() + resourceOffset;
 
 	AcquireSRWLockExclusive(&gBufferContentLock);
 	gBufferContentByResource[resource] = std::move(entry);
@@ -508,12 +515,14 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 
 #if defined(_DEBUG)
 	DX12LogManager::DebugJsonFunc("DX12BufferContentCache",
-		"stage=stored,resource=0x%p,bytes=%zu,gpuVaBase=0x%llx",
-		resource, dataSize, static_cast<unsigned long long>(entry.gpuVaBase));
+		"stage=stored,resource=0x%p,offset=%llu,bytes=%zu,gpuVaBase=0x%llx",
+		resource,
+		static_cast<unsigned long long>(resourceOffset),
+		dataSize,
+		static_cast<unsigned long long>(entry.gpuVaBase));
 #endif
 	return true;
 }
-
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	const uint8_t **outData, size_t *outDataSize)
 {
@@ -538,6 +547,10 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	}
 
 	const CachedBufferContent &cached = it->second;
+	if (gpuVirtualAddress < cached.gpuVaBase) {
+		ReleaseSRWLockShared(&gBufferContentLock);
+		return false;
+	}
 	const UINT64 offset = gpuVirtualAddress - cached.gpuVaBase;
 	if (offset + size > cached.dataSize) {
 		ReleaseSRWLockShared(&gBufferContentLock);
@@ -550,12 +563,157 @@ bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	return true;
 }
 
-// ── IA Buffer Hash (Content-Based, like DX11) ──────────────────────────
-// Priority:
-//   1. Content cache hit �?CRC32 of actual buffer bytes (stable, like DX11)
-//   2. Resource resolved  �?hash on RESOURCE_DESC + offset + viewSize (stable)
-//   3. Fallback           �?hash on size + stride + format + slot (NO GPU VA!)
+struct CachedTextureHash
+{
+	uint32_t hash = 0;
+	D3D12_RESOURCE_DESC desc = {};
+	UINT64 generation = 0;
+};
 
+static std::unordered_map<ID3D12Resource*, CachedTextureHash> gTextureHashByResource;
+static SRWLOCK gTextureHashLock = SRWLOCK_INIT;
+static std::atomic<UINT64> gTextureHashGeneration{1};
+
+bool DX12CacheTextureHash(
+	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source)
+{
+	if (!resource || !hash)
+		return false;
+
+	CachedTextureHash entry;
+	entry.hash = hash;
+	if (desc)
+		entry.desc = *desc;
+	entry.generation = gTextureHashGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+
+	AcquireSRWLockExclusive(&gTextureHashLock);
+	gTextureHashByResource[resource] = entry;
+	ReleaseSRWLockExclusive(&gTextureHashLock);
+
+	DX12LogManager::DebugJsonFunc("DX12TextureHashCache",
+		"\"stage\":\"stored\",\"source\":\"%s\",\"resource\":\"%p\",\"hash\":\"%08x\",\"generation\":%llu,\"width\":%llu,\"height\":%u,\"format\":%u",
+		source ? source : "",
+		resource,
+		hash,
+		static_cast<unsigned long long>(entry.generation),
+		desc ? static_cast<unsigned long long>(desc->Width) : 0ull,
+		desc ? desc->Height : 0u,
+		desc ? static_cast<UINT>(desc->Format) : 0u);
+	return true;
+}
+
+bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash)
+{
+	if (!hash)
+		return false;
+	*hash = 0;
+	if (!resource)
+		return false;
+
+	AcquireSRWLockShared(&gTextureHashLock);
+	std::unordered_map<ID3D12Resource*, CachedTextureHash>::iterator it =
+		gTextureHashByResource.find(resource);
+	if (it == gTextureHashByResource.end()) {
+		ReleaseSRWLockShared(&gTextureHashLock);
+		return false;
+	}
+	*hash = it->second.hash;
+	ReleaseSRWLockShared(&gTextureHashLock);
+	return *hash != 0;
+}
+
+void DX12InvalidateTextureHash(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	AcquireSRWLockExclusive(&gTextureHashLock);
+	const size_t erased = gTextureHashByResource.erase(resource);
+	ReleaseSRWLockExclusive(&gTextureHashLock);
+	if (erased) {
+		DX12LogManager::DebugJsonFunc("DX12TextureHashCache",
+			"\"stage\":\"invalidated\",\"resource\":\"%p\",\"erased\":%zu",
+			resource,
+			erased);
+	}
+}
+
+static bool DX12CopyRegionCoversTopMip(
+	const D3D12_RESOURCE_DESC &desc,
+	UINT dstX, UINT dstY, UINT dstZ,
+	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &footprint,
+	const D3D12_BOX *srcBox)
+{
+	if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		return false;
+	if (desc.Width > UINT_MAX || desc.Height == 0)
+		return false;
+	if (dstX != 0 || dstY != 0 || dstZ != 0)
+		return false;
+	if (footprint.Footprint.Width < desc.Width ||
+		footprint.Footprint.Height < desc.Height)
+		return false;
+	if (!srcBox)
+		return true;
+	if (srcBox->left != 0 || srcBox->top != 0 || srcBox->front != 0)
+		return false;
+	if (srcBox->right < desc.Width || srcBox->bottom < desc.Height || srcBox->back < 1)
+		return false;
+	return true;
+}
+
+bool DX12TrackTextureHashFromCopyTextureRegion(
+	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,
+	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
+{
+	if (!dst || !src || !dst->pResource || !src->pResource)
+		return false;
+	if (dst->Type != D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX ||
+		dst->SubresourceIndex != 0 ||
+		src->Type != D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT)
+		return false;
+
+	const D3D12_RESOURCE_DESC desc = dst->pResource->GetDesc();
+	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &footprint = src->PlacedFootprint;
+	if (!DX12CopyRegionCoversTopMip(desc, dstX, dstY, dstZ, footprint, srcBox))
+		return false;
+
+	const UINT rowCount = DX12TextureHashUtils::Texture2DTopMipRowCount(
+		desc.Format, desc.Height);
+	const UINT64 rowBytes = DX12TextureHashUtils::Texture2DTopMipRowBytes(
+		desc.Format, static_cast<UINT>(desc.Width));
+	if (!rowCount || !rowBytes || footprint.Footprint.RowPitch < rowBytes)
+		return false;
+
+	const UINT64 requiredBytes =
+		static_cast<UINT64>(footprint.Footprint.RowPitch) * (rowCount - 1) + rowBytes;
+	const UINT64 sourceGpuVa = src->pResource->GetGPUVirtualAddress() + footprint.Offset;
+	const uint8_t *content = nullptr;
+	size_t contentSize = 0;
+	if (!DX12TryGetBufferContent(sourceGpuVa, requiredBytes, &content, &contentSize)) {
+		DX12LogManager::DebugJsonFunc("DX12TextureHashCache",
+			"\"stage\":\"copy_upload_miss\",\"dst\":\"%p\",\"src\":\"%p\",\"gpu\":\"0x%llx\",\"bytes\":%llu,\"width\":%llu,\"height\":%u,\"format\":%u",
+			dst->pResource,
+			src->pResource,
+			static_cast<unsigned long long>(sourceGpuVa),
+			static_cast<unsigned long long>(requiredBytes),
+			static_cast<unsigned long long>(desc.Width),
+			desc.Height,
+			static_cast<UINT>(desc.Format));
+		return false;
+	}
+
+	uint32_t hash = 0;
+	if (!DX12TextureHashUtils::Texture2DTopMipHashFromRows(
+			desc,
+			content,
+			footprint.Footprint.RowPitch,
+			rowBytes,
+			rowCount,
+			&hash)) {
+		return false;
+	}
+	return DX12CacheTextureHash(dst->pResource, hash, &desc, "copy_texture_region");
+}
 UINT64 DX12GetIaHashContentGeneration()
 {
 	return gBufferContentGeneration.load(std::memory_order_relaxed);

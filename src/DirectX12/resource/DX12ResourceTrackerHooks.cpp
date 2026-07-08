@@ -85,7 +85,7 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 				static_cast<const uint8_t*>(gActiveMap.data);
 			if (pWrittenRange && pWrittenRange->Begin > 0)
 				capturePtr += pWrittenRange->Begin;
-			DX12CacheBufferContent(resource, capturePtr, dataSize);
+			DX12CacheBufferContentRange(resource, pWrittenRange ? pWrittenRange->Begin : 0, capturePtr, dataSize);
 		}
 		gActiveMap = DX12ResourceMapTracking();
 	}

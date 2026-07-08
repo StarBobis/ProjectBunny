@@ -16,6 +16,7 @@
 #include "DX12ResourceDumpDdsUtils.hpp"
 #include "DX12ResourceDumpNaming.hpp"
 #include "DX12ResourceDumpTypes.hpp"
+#include "../utils/DX12TextureHashUtils.hpp"
 
 class DX12ResourceDumpFileWriter
 {
@@ -415,6 +416,51 @@ static uint32_t HashDumpTaskData(const DumpTask &task, const void *mappedData)
 	return DX12ResourceDumpCore::HashBytes(hash, src, static_cast<size_t>(task.copyBytes));
 }
 
+static bool UpdateTextureContentHashFromMappedData(DumpTask *task, const void *mappedData)
+{
+	if (!task || !mappedData || !task->isTexture)
+		return false;
+	if (task->hasContentHash && task->contentHash)
+		return true;
+
+	uint32_t hash = 0;
+	const bool hasTopMipLayout =
+		task->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+		!task->textureLayouts.empty() &&
+		!task->textureRows.empty() &&
+		!task->textureRowSizes.empty();
+	if (hasTopMipLayout) {
+		DX12TextureHashUtils::Texture2DTopMipHashFromPlacedFootprint(
+			task->desc,
+			task->textureLayouts[0],
+			task->textureRows[0],
+			task->textureRowSizes[0],
+			mappedData,
+			&hash);
+	}
+	if (!hash && DX12TryGetTextureHash(task->source, &hash)) {
+		task->contentHash = hash;
+		task->hasContentHash = true;
+		return true;
+	}
+	if (!hash) {
+		DX12LogManager::DebugJsonFunc("DX12TextureHashCache",
+			"\"stage\":\"dump_hash_miss\",\"source\":\"%p\",\"dimension\":%u,\"format\":%u,\"width\":%llu,\"height\":%u,\"layouts\":%zu",
+			task->source,
+			static_cast<UINT>(task->desc.Dimension),
+			static_cast<UINT>(task->desc.Format),
+			static_cast<unsigned long long>(task->desc.Width),
+			task->desc.Height,
+			task->textureLayouts.size());
+		return false;
+	}
+
+	task->contentHash = hash;
+	task->hasContentHash = true;
+	DX12CacheTextureHash(task->source, hash, &task->desc, "dump_readback");
+	return true;
+}
+
 static void BuildDedupedRelativePath(const wchar_t *dedupeFileName, wchar_t *path, size_t pathCount)
 {
 	if (!path || pathCount == 0)
@@ -429,6 +475,11 @@ static uint32_t HuntHashForTask(const DumpTask &task)
 {
 	if (!task.isTexture)
 		return 0;
+	if (task.hasContentHash && task.contentHash)
+		return task.contentHash;
+	uint32_t cachedHash = 0;
+	if (DX12TryGetTextureHash(task.source, &cachedHash))
+		return cachedHash;
 	if (task.sourceKind == DumpTaskSource::Output) {
 		DX12FrameResourceBinding outputBinding =
 			DX12ResourceDumpCore::ResourceBindingFromOutputBinding(task.outputBinding);
@@ -441,17 +492,18 @@ static uint32_t HuntHashForTask(const DumpTask &task)
 
 static bool WriteDedupedResourceFile(
 	const wchar_t *dedupeDir, const wchar_t *resourceDir,
-	const DumpTask &task, const void *mappedData,
+	DumpTask *task, const void *mappedData,
 	std::wstring *dedupePathOut = nullptr)
 {
-	if (!dedupeDir || !resourceDir || !mappedData)
+	if (!dedupeDir || !resourceDir || !task || !mappedData)
 		return false;
 
-	const uint32_t fileHash = HashDumpTaskData(task, mappedData);
-	const uint32_t huntHash = HuntHashForTask(task);
+	UpdateTextureContentHashFromMappedData(task, mappedData);
+	const uint32_t fileHash = HashDumpTaskData(*task, mappedData);
+	const uint32_t huntHash = HuntHashForTask(*task);
 	wchar_t dedupeFileName[MAX_PATH];
 	DX12ResourceDumpDedupedNamingUtils::BuildDedupedFileName(
-		task, huntHash, fileHash, dedupeFileName, ARRAYSIZE(dedupeFileName));
+		*task, huntHash, fileHash, dedupeFileName, ARRAYSIZE(dedupeFileName));
 	wchar_t dedupePath[MAX_PATH];
 	swprintf_s(dedupePath, L"%s\\%s", dedupeDir, dedupeFileName);
 	if (dedupePathOut) {
@@ -464,19 +516,19 @@ static bool WriteDedupedResourceFile(
 		FILE *file = _wfsopen(dedupePath, L"wb", _SH_DENYNO);
 		if (!file)
 			return false;
-		bool ok = task.isTexture ? WriteTextureDDSFile(file, task, mappedData) :
-			WriteBufferFileData(file, task, mappedData);
+		bool ok = task->isTexture ? WriteTextureDDSFile(file, *task, mappedData) :
+			WriteBufferFileData(file, *task, mappedData);
 		fclose(file);
 		if (!ok) {
 			DeleteFileW(dedupePath);
 			return false;
 		}
 	}
-	if (!task.isTexture) {
+	if (!task->isTexture) {
 		wchar_t dedupeTextPath[MAX_PATH];
 		BuildTextFileName(dedupePath, dedupeTextPath, ARRAYSIZE(dedupeTextPath));
 		if (GetFileAttributesW(dedupeTextPath) == INVALID_FILE_ATTRIBUTES)
-			WriteBufferTextFile(dedupeTextPath, task, mappedData);
+			WriteBufferTextFile(dedupeTextPath, *task, mappedData);
 	}
 	return true;
 }
@@ -505,10 +557,10 @@ static bool MapAndWriteTask(
 				static_cast<unsigned long long>(task->copyBytes));
 			return false;
 		}
-		const HRESULT hr = mapResource->Map(0, &range, &mapped);
-		if (SUCCEEDED(hr) && mapped) {
-			ok = WriteDedupedResourceFile(dedupeDir, resourceDir, *task, mapped, dedupePath);
-			D3D12_RANGE emptyRange = { 0, 0 };
+	const HRESULT hr = mapResource->Map(0, &range, &mapped);
+	if (SUCCEEDED(hr) && mapped) {
+		ok = WriteDedupedResourceFile(dedupeDir, resourceDir, task, mapped, dedupePath);
+		D3D12_RANGE emptyRange = { 0, 0 };
 			mapResource->Unmap(0, &emptyRange);
 		} else {
 			task->skipNote = "map_failed";

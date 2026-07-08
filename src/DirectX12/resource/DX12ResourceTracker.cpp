@@ -390,6 +390,9 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	if (canonical != resource)
 		gCanonicalCache.erase(canonical);
 	ReleaseSRWLockExclusive(&gCanonicalCacheLock);
+	DX12InvalidateTextureHash(record.resource);
+	if (canonical != record.resource)
+		DX12InvalidateTextureHash(canonical);
 	record = ResourceRecord();
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)

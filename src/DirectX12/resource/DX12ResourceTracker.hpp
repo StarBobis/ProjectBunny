@@ -28,7 +28,16 @@ uint32_t DX12HashBufferView(
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize);
+bool DX12CacheBufferContentRange(
+	ID3D12Resource *resource, UINT64 resourceOffset, const void *data, size_t dataSize);
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size, const uint8_t **data, size_t *dataSize);
+bool DX12CacheTextureHash(
+	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source);
+bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
+void DX12InvalidateTextureHash(ID3D12Resource *resource);
+bool DX12TrackTextureHashFromCopyTextureRegion(
+	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,
+	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox);
 UINT64 DX12GetIaHashContentGeneration();
 UINT64 DX12GetIaHashResolveGeneration();
 uint32_t DX12HashDescriptorBufferView(

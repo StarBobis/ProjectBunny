@@ -1,4 +1,5 @@
 #include "../utils/DX12VmFrameVariablesUtils.hpp"
+#include "../resource/DX12ResourceTracker.hpp"
 
 static void ReleaseLoadedResourcesLocked()
 {
@@ -472,9 +473,18 @@ static uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBin
 {
 	if (!binding.hasDescriptor || !binding.descriptor.hasResourceDesc)
 		return 0;
-	if (binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
-		return DX12TextureHashUtils::Dx11StyleTexture2DDescHash(
-			binding.descriptor.resourceDesc, 0);
+	if (binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+		uint32_t hash = 0;
+		if (DX12TryGetTextureHash(binding.descriptor.resource, &hash))
+			return hash;
+		DX12LogManager::DebugJsonFunc("DX12TextureHashCache",
+			"\"stage\":\"runtime_hash_miss\",\"resource\":\"%p\",\"dimension\":%u,\"format\":%u,\"width\":%llu,\"height\":%u",
+			binding.descriptor.resource,
+			static_cast<UINT>(binding.descriptor.resourceDesc.Dimension),
+			static_cast<UINT>(binding.descriptor.resourceDesc.Format),
+			static_cast<unsigned long long>(binding.descriptor.resourceDesc.Width),
+			binding.descriptor.resourceDesc.Height);
+	}
 	return 0;
 }
 
