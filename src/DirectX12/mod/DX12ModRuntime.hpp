@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <dxgi.h>
 #include <stdint.h>
 #include <wchar.h>
 
@@ -294,7 +295,7 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists);
-void DX12ModBeginFrame();
+void DX12ModBeginFrame(IDXGISwapChain *swapChain);
 bool DX12ModPreparePresentReplacement(
 	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement);
 bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *source);

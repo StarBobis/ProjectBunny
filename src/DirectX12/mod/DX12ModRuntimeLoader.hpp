@@ -1069,6 +1069,63 @@ static void BuildDx12TextureOverrideSectionIds(
 	}
 }
 
+class DX12ConstantsVmInitializerUtils
+{
+public:
+	static void Initialize(const Bunny::CommandListMap &commandLists)
+	{
+		MigotoCommandVmUtils::ClearGlobals();
+		const Bunny::CommandListConfig *constants = FindConstants(commandLists);
+		if (!constants)
+			return;
+
+		MigotoCommandVmUtils::State state;
+		state.PushLocalScope();
+		for (const Bunny::CommandListAction &action : constants->actions)
+			ApplyAction(&state, action);
+		state.PopLocalScope();
+	}
+
+	static const Bunny::CommandListConfig *FindConstants(
+		const Bunny::CommandListMap &commandLists)
+	{
+		for (const auto &item : commandLists) {
+			if (Bunny::IniDocumentText::ToLower(item.first) == L"constants")
+				return &item.second;
+		}
+		return nullptr;
+	}
+
+	static void ApplyAction(
+		MigotoCommandVmUtils::State *state,
+		const Bunny::CommandListAction &action)
+	{
+		if (!state)
+			return;
+		if (action.kind == Bunny::CommandListActionKind::ControlFlow) {
+			state->ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+			return;
+		}
+		if (!state->Active())
+			return;
+
+		switch (action.kind) {
+		case Bunny::CommandListActionKind::VariableAssignment:
+		case Bunny::CommandListActionKind::PostVariableAssignment:
+			state->Assign(action.key, action.value);
+			break;
+		case Bunny::CommandListActionKind::LocalVariableAssignment:
+			state->DeclareLocal(action.key, action.value);
+			break;
+		case Bunny::CommandListActionKind::SetShaderConstant:
+			state->AssignSymbol(action.key, action.value);
+			break;
+		default:
+			break;
+		}
+	}
+};
+
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
 	std::wstring *statusMessage,
@@ -1081,6 +1138,7 @@ bool DX12ModRuntimeLoad(
 	Bunny::TextureOverrideMap textureOverrides;
 	Bunny::ResourceMap resources;
 	Bunny::CommandListMap commandLists;
+	std::vector<Bunny::MigotoKeyBindingUtils::Binding> keyBindings;
 	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
 	std::unordered_map<std::wstring, bool> textureOverridePreRuntimeEffect;
 	std::unordered_map<std::wstring, bool> textureOverridePostRuntimeEffect;
@@ -1136,10 +1194,12 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoTextureOverrideParser::ParseSections(iniLoad.document, &textureOverrides);
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
+	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
+	DX12ConstantsVmInitializerUtils::Initialize(commandLists);
 
 	DX12LogManager::DebugJsonFunc("DX12ModRuntimeLoadParse",
-		"\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu",
-		shaderOverrides.size(), shaderRegexes.size(), textureOverrides.size(), resources.size(), commandLists.size());
+		"\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"keyBindings\":%zu",
+		shaderOverrides.size(), shaderRegexes.size(), textureOverrides.size(), resources.size(), commandLists.size(), keyBindings.size());
 
 	std::vector<DX12VertexLimitRaiseConfig> vertexLimitRaiseConfigs =
 		CollectVertexLimitRaiseConfigs(textureOverrides);
@@ -1212,6 +1272,7 @@ bool DX12ModRuntimeLoad(
 	gTextureOverrides.swap(textureOverrides);
 	gResources.swap(resources);
 	gCommandLists.swap(commandLists);
+	gKeyBindings.swap(keyBindings);
 	gVlrResourceCandidates.swap(vlrResourceCandidates);
 	gCommandListRuntimeEffect.swap(commandListRuntimeEffect);
 	gTextureOverridePreRuntimeEffect.swap(textureOverridePreRuntimeEffect);

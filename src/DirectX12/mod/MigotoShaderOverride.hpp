@@ -99,10 +99,18 @@ inline void MigotoShaderOverrideParser::ParseSections(
 		config.iniNamespace = section.iniNamespace;
 		bool hasHash = false;
 
-		for (const IniEntry &entry : section.entries) {
-			std::wstring key = IniDocumentText::ToLower(entry.key);
-			if (!entry.hasEquals)
-				continue;
+			for (const IniEntry &entry : section.entries) {
+				CommandListAction rawAction;
+				if (MigotoCommandListParser::ParseActionFromRawLine(entry.rawLine, &rawAction) &&
+					(!entry.hasEquals || rawAction.kind == CommandListActionKind::ControlFlow)) {
+					MigotoCommandListParser::ResolveActionReferences(&rawAction, entry.iniNamespace);
+					config.actions.push_back(rawAction);
+					continue;
+				}
+				if (!entry.hasEquals)
+					continue;
+
+				std::wstring key = IniDocumentText::ToLower(entry.key);
 
 			if (key == L"hash") {
 				uint64_t hash = 0;

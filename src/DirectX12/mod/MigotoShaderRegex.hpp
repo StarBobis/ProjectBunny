@@ -141,13 +141,20 @@ inline void MigotoShaderRegexParser::ParseSections(
 			"\"stage\":\"main_section_found\",\"section\":\"%S\",\"group\":\"%S\",\"entries\":%zu",
 			section.name.c_str(), groupName.c_str(), section.entries.size());
 
-		for (const IniEntry &entry : section.entries) {
-			if (!entry.hasEquals) {
-				DX12LogManager::DebugJsonFunc("MigotoShaderRegexParse",
-					"\"stage\":\"entry_no_equals\",\"section\":\"%S\",\"raw\":\"%S\"",
-					section.name.c_str(), entry.rawLine.c_str());
-				continue;
-			}
+			for (const IniEntry &entry : section.entries) {
+				CommandListAction rawAction;
+				if (MigotoCommandListParser::ParseActionFromRawLine(entry.rawLine, &rawAction) &&
+					(!entry.hasEquals || rawAction.kind == CommandListActionKind::ControlFlow)) {
+					MigotoCommandListParser::ResolveActionReferences(&rawAction, entry.iniNamespace);
+					config.actions.push_back(rawAction);
+					continue;
+				}
+				if (!entry.hasEquals) {
+					DX12LogManager::DebugJsonFunc("MigotoShaderRegexParse",
+						"\"stage\":\"entry_no_equals\",\"section\":\"%S\",\"raw\":\"%S\"",
+						section.name.c_str(), entry.rawLine.c_str());
+					continue;
+				}
 
 			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
 			std::wstring value = IniDocumentText::Trim(entry.value);

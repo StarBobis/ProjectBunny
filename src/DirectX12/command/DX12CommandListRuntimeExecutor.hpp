@@ -76,6 +76,35 @@ static DX12IaHashState EmptyIaHashState()
 class DX12CommandListExecutor
 {
 public:
+	class CommandVmRunScope
+	{
+	public:
+		MigotoCommandVmUtils::State *state = nullptr;
+		size_t branchDepth = 0;
+		bool flushPost = false;
+
+		CommandVmRunScope(MigotoCommandVmUtils::State *vmState, bool flushPostAssignments)
+			: state(vmState),
+			  flushPost(flushPostAssignments)
+		{
+			if (!state)
+				return;
+			branchDepth = state->branches.size();
+			state->PushLocalScope();
+		}
+
+		~CommandVmRunScope()
+		{
+			if (!state)
+				return;
+			if (state->branches.size() > branchDepth)
+				state->branches.resize(branchDepth);
+			if (flushPost)
+				state->FlushPostAssignments();
+			state->PopLocalScope();
+		}
+	};
+
 	DX12CommandListExecutor(
 		ID3D12Device *device,
 		ID3D12GraphicsCommandList *commandList,
@@ -294,6 +323,8 @@ public:
 
 	bool RunCompiledCommandListPlan(const std::wstring &name)
 	{
+		if (!mReplacement)
+			return false;
 		if (!EnterCommandList(name))
 			return true;
 		DX12CompiledCommandListPlan plan;
@@ -332,13 +363,18 @@ public:
 		const Bunny::CommandListConfig &commandList, int depth, bool includePost,
 		const DX12TextureOverrideMatch *thisMatch)
 	{
-		if (!mReplacement || depth > 16)
+		if (depth > 16)
 			return;
 		if (RunCompiledCommandListPlan(commandList.section))
 			return;
 		if (!EnterCommandList(commandList.section))
 			return;
+		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : commandList.actions) {
+			if (ApplyVmAction(action, includePost))
+				continue;
+			if (!mVm.Active())
+				continue;
 			switch (action.kind) {
 			case Bunny::CommandListActionKind::Run: {
 				Bunny::CommandListConfig config;
@@ -347,6 +383,8 @@ public:
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
+				if (!mReplacement)
+					break;
 				std::vector<DX12TextureOverrideMatch> matches;
 				if (FindTargetTextureOverride(action.target, &matches)) {
 					for (const DX12TextureOverrideMatch &match : matches)
@@ -355,24 +393,41 @@ public:
 				break;
 			}
 			case Bunny::CommandListActionKind::HandlingSkip:
-				SetSkip();
+				if (mReplacement)
+					SetSkip();
 				break;
 			case Bunny::CommandListActionKind::SetIndexBuffer:
-				AppendResourceViews(action.resource, std::vector<DX12CompiledVertexResourceBinding>());
+				if (mReplacement)
+					AppendResourceViews(action.resource, std::vector<DX12CompiledVertexResourceBinding>());
 				break;
 			case Bunny::CommandListActionKind::SetVertexBuffer:
-				AppendResourceViews(
-					L"", std::vector<DX12CompiledVertexResourceBinding>{
-						{ action.target.slot, action.resource }});
+				if (mReplacement)
+					AppendResourceViews(
+						L"", std::vector<DX12CompiledVertexResourceBinding>{
+							{ action.target.slot, action.resource }});
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
 			case Bunny::CommandListActionKind::DrawFromCaller:
 			case Bunny::CommandListActionKind::DrawIndexedFromCaller:
-				AppendDraw(action);
+				if (mReplacement)
+					AppendDraw(action);
 				break;
 			case Bunny::CommandListActionKind::Dispatch:
-				AppendDispatch(action);
+				if (mReplacement)
+					AppendDispatch(action);
+				break;
+			case Bunny::CommandListActionKind::ControlFlow:
+			case Bunny::CommandListActionKind::VariableAssignment:
+			case Bunny::CommandListActionKind::PostVariableAssignment:
+			case Bunny::CommandListActionKind::LocalVariableAssignment:
+			case Bunny::CommandListActionKind::ResourceAssignment:
+			case Bunny::CommandListActionKind::SetConstantBuffer:
+			case Bunny::CommandListActionKind::SetShaderResource:
+			case Bunny::CommandListActionKind::SetUnorderedAccessView:
+			case Bunny::CommandListActionKind::SetShader:
+			case Bunny::CommandListActionKind::SetShaderConstant:
+			case Bunny::CommandListActionKind::SetRenderState:
 				break;
 			}
 		}
@@ -383,11 +438,16 @@ public:
 		const std::vector<Bunny::CommandListAction> &actions, int depth, bool includePost,
 		const DX12TextureOverrideMatch *thisMatch)
 	{
-		if (!mReplacement || depth > 16)
+		if (depth > 16)
 			return;
 
-		const bool executeActions = mExecuteCommands || mExecuteDrawActions;
+		const bool executeActions = mReplacement && (mExecuteCommands || mExecuteDrawActions);
+		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : actions) {
+			if (ApplyVmAction(action, includePost))
+				continue;
+			if (!mVm.Active())
+				continue;
 			switch (action.kind) {
 			case Bunny::CommandListActionKind::Run: {
 				if (!mExecuteCommands)
@@ -398,7 +458,7 @@ public:
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
-				if (!mExecuteCommands)
+				if (!mReplacement || !mExecuteCommands)
 					break;
 				std::vector<DX12TextureOverrideMatch> matches;
 				if (FindTargetTextureOverride(action.target, &matches)) {
@@ -412,12 +472,14 @@ public:
 					SetSkip();
 				break;
 			case Bunny::CommandListActionKind::SetIndexBuffer:
-				AppendResourceViews(action.resource, std::vector<DX12CompiledVertexResourceBinding>());
+				if (mReplacement)
+					AppendResourceViews(action.resource, std::vector<DX12CompiledVertexResourceBinding>());
 				break;
 			case Bunny::CommandListActionKind::SetVertexBuffer:
-				AppendResourceViews(
-					L"", std::vector<DX12CompiledVertexResourceBinding>{
-						{ action.target.slot, action.resource }});
+				if (mReplacement)
+					AppendResourceViews(
+						L"", std::vector<DX12CompiledVertexResourceBinding>{
+							{ action.target.slot, action.resource }});
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
@@ -430,7 +492,46 @@ public:
 				if (executeActions)
 					AppendDispatch(action);
 				break;
+			case Bunny::CommandListActionKind::ControlFlow:
+			case Bunny::CommandListActionKind::VariableAssignment:
+			case Bunny::CommandListActionKind::PostVariableAssignment:
+			case Bunny::CommandListActionKind::LocalVariableAssignment:
+			case Bunny::CommandListActionKind::ResourceAssignment:
+			case Bunny::CommandListActionKind::SetConstantBuffer:
+			case Bunny::CommandListActionKind::SetShaderResource:
+			case Bunny::CommandListActionKind::SetUnorderedAccessView:
+			case Bunny::CommandListActionKind::SetShader:
+			case Bunny::CommandListActionKind::SetShaderConstant:
+			case Bunny::CommandListActionKind::SetRenderState:
+				break;
 			}
+		}
+	}
+
+	bool ApplyVmAction(const Bunny::CommandListAction &action, bool includePost)
+	{
+		switch (action.kind) {
+		case Bunny::CommandListActionKind::ControlFlow:
+			mVm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+			return true;
+		case Bunny::CommandListActionKind::VariableAssignment:
+			if (mVm.Active())
+				mVm.Assign(action.key, action.value);
+			return true;
+		case Bunny::CommandListActionKind::PostVariableAssignment:
+			if (includePost && mVm.Active())
+				mVm.QueuePostAssign(action.key, action.value);
+			return true;
+		case Bunny::CommandListActionKind::LocalVariableAssignment:
+			if (mVm.Active())
+				mVm.DeclareLocal(action.key, action.value);
+			return true;
+		case Bunny::CommandListActionKind::SetShaderConstant:
+			if (mVm.Active())
+				mVm.AssignSymbol(action.key, action.value);
+			return true;
+		default:
+			return false;
 		}
 	}
 
@@ -509,6 +610,7 @@ public:
 	bool mExecuteCommands = true;
 	bool mExecuteDrawActions = true;
 	std::vector<std::wstring> mCommandListStack;
+	MigotoCommandVmUtils::State mVm;
 };
 
 static bool RunNamedCommandList(
@@ -528,5 +630,37 @@ static bool RunNamedCommandList(
 		device, commandList, emptyIa, 0, 0, 0, 0, 0, replacement, pendingResourceViews);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
 	return executor.Changed();
+}
+
+static bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
+{
+	if (name.empty())
+		return false;
+	if (!CommandListRuntimeEffect(name))
+		return false;
+
+	DX12IaHashState emptyIa = EmptyIaHashState();
+	DX12CommandListExecutor executor(
+		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, nullptr, nullptr);
+	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, includePost);
+	return true;
+}
+
+static void ProcessDx12KeyBindingsForFrame()
+{
+	std::vector<Bunny::MigotoKeyBindingUtils::RuntimeAction> actions;
+	AcquireSRWLockExclusive(&gModLock);
+	if (gLoaded)
+		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
+	ReleaseSRWLockExclusive(&gModLock);
+
+#if defined(_DEBUG)
+	if (!actions.empty())
+		DX12LogManager::DebugJsonFunc("DX12KeyBindings",
+			"\"actions\":%zu", actions.size());
+#endif
+
+	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
+		RunNamedCommandListVmOnly(action.commandList, action.includePost);
 }
 

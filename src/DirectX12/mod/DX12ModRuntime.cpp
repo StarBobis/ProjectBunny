@@ -27,7 +27,9 @@
 #include "util.h"
 #include "IniDocument.hpp"
 #include "MigotoCommandList.hpp"
+#include "MigotoCommandVmUtils.hpp"
 #include "MigotoIniLoader.hpp"
+#include "MigotoKeyBindingUtils.hpp"
 #include "MigotoResource.hpp"
 #include "DX12PreSkinAsyncUtils.hpp"
 #include "DX12TextureOverrideMatch.hpp"
@@ -65,6 +67,7 @@ static Bunny::ShaderRegexMap gShaderRegexes;
 static Bunny::TextureOverrideMap gTextureOverrides;
 static Bunny::ResourceMap gResources;
 static Bunny::CommandListMap gCommandLists;
+static std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 static std::vector<std::wstring> gVlrResourceCandidates;
 static std::unordered_map<std::wstring, bool> gCommandListRuntimeEffect;
 static std::unordered_map<std::wstring, bool> gTextureOverridePreRuntimeEffect;
@@ -1420,6 +1423,7 @@ DX12PreSkinAsyncQueue gPreSkinAsyncQueue;
 
 #include "DX12ModRuntimeState.hpp"
 #include "DX12IaOverrideMatcher.hpp"
+static void ProcessDx12KeyBindingsForFrame();
 #include "DX12IaResourceRuntime.hpp"
 #include "DX12IaReplacementExecutor.hpp"
 #include "DX12CommandListRuntimeExecutor.hpp"

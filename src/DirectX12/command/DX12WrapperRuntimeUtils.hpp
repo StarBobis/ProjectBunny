@@ -565,7 +565,7 @@ public:
 
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperBeforeModBeginFrame", swapChain, hr);
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12ModBeginFrame();
+		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "mod_begin_frame", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -682,7 +682,7 @@ public:
 
 		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperBeforeModBeginFrame", swapChain, hr);
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12ModBeginFrame();
+		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "mod_begin_frame", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));

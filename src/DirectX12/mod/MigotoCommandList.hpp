@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "IniDocument.hpp"
+#include "MigotoIniCommandListUtils.hpp"
 
 namespace Bunny {
 
@@ -47,7 +48,18 @@ enum class CommandListActionKind
 	DrawIndexed,
 	DrawFromCaller,
 	DrawIndexedFromCaller,
-	Dispatch
+	Dispatch,
+	ControlFlow,
+	VariableAssignment,
+	PostVariableAssignment,
+	LocalVariableAssignment,
+	ResourceAssignment,
+	SetConstantBuffer,
+	SetShaderResource,
+	SetUnorderedAccessView,
+	SetShader,
+	SetShaderConstant,
+	SetRenderState
 };
 
 class CommandListAction
@@ -57,6 +69,9 @@ public:
 	std::wstring commandList;
 	CommandListTarget target;
 	std::wstring resource;
+	std::wstring key;
+	std::wstring value;
+	std::wstring rawLine;
 	std::wstring iniNamespace;
 	uint32_t args[5] = {};
 	uint32_t argCount = 0;
@@ -87,6 +102,7 @@ class MigotoCommandListParser
 {
 public:
 	static bool ParseTarget(const std::wstring &text, CommandListTarget *target);
+	static bool ParseActionFromRawLine(const std::wstring &rawLine, CommandListAction *action);
 	static bool ParseActionFromEntry(
 		const std::wstring &key, const std::wstring &value, CommandListAction *action);
 	static void ParseLinksFromEntry(
@@ -107,78 +123,89 @@ class MigotoCommandListParserText
 public:
 static bool StartsWithI(const std::wstring &value, const wchar_t *prefix)
 {
-	std::wstring lower = IniDocumentText::ToLower(value);
-	std::wstring lowerPrefix = IniDocumentText::ToLower(prefix);
-	return lower.rfind(lowerPrefix, 0) == 0;
+	return MigotoIniCommandListUtils::StartsWithI(value, prefix);
 }
 
 static bool EqualsI(const std::wstring &value, const wchar_t *text)
 {
-	return IniDocumentText::ToLower(value) == IniDocumentText::ToLower(text);
+	return MigotoIniCommandListUtils::EqualsI(value, text);
 }
 
-static bool IsExplicitCommandListSection(const std::wstring &section)
-{
-	return StartsWithI(section, L"CommandList") ||
-		StartsWithI(section, L"BuiltInCommandList") ||
-		EqualsI(section, L"Present") ||
-		EqualsI(section, L"Constants");
-}
+	static bool IsExplicitCommandListSection(const std::wstring &section)
+	{
+		return MigotoIniCommandListUtils::IsExplicitCommandListSection(section);
+	}
 
 static bool ParseVertexBufferTarget(const std::wstring &text, uint32_t *slot)
 {
-	if (!slot || text.size() < 3 || text[0] != L'v' || text[1] != L'b')
-		return false;
-
-	uint32_t parsed = 0;
-	for (size_t i = 2; i < text.size(); ++i) {
-		if (text[i] < L'0' || text[i] > L'9')
-			return false;
-		parsed = parsed * 10 + static_cast<uint32_t>(text[i] - L'0');
-	}
-
-	*slot = parsed;
-	return true;
+	return MigotoIniCommandListUtils::ParseVertexBufferTarget(text, slot);
 }
 
 static bool ParseTargetSlot(const std::wstring &text, size_t start, uint32_t *slot)
 {
-	if (!slot || start >= text.size())
-		return false;
-
-	uint32_t parsed = 0;
-	for (size_t i = start; i < text.size(); ++i) {
-		if (text[i] < L'0' || text[i] > L'9')
-			return false;
-		parsed = parsed * 10 + static_cast<uint32_t>(text[i] - L'0');
-	}
-
-	*slot = parsed;
-	return true;
+	return MigotoIniCommandListUtils::ParseUnsignedSuffix(text, start, slot);
 }
 
 static bool ParseShaderStagePrefix(
 	const std::wstring &text, size_t *prefixLength, CommandListShaderStage *stage)
 {
-	if (!prefixLength || !stage || text.size() < 3 || text[2] != L'-')
+	wchar_t parsedStage = 0;
+	if (!MigotoIniCommandListUtils::ParseShaderStagePrefix(text, prefixLength, &parsedStage))
 		return false;
 
-	if (text[0] == L'v' && text[1] == L's') {
-		*prefixLength = 3;
+	if (parsedStage == L'v') {
 		*stage = CommandListShaderStage::Vertex;
 		return true;
 	}
-	if (text[0] == L'p' && text[1] == L's') {
-		*prefixLength = 3;
+	if (parsedStage == L'p') {
 		*stage = CommandListShaderStage::Pixel;
 		return true;
 	}
-	if (text[0] == L'c' && text[1] == L's') {
-		*prefixLength = 3;
+	if (parsedStage == L'c') {
 		*stage = CommandListShaderStage::Compute;
 		return true;
 	}
 	return false;
+}
+
+static bool StartsWithTokenI(const std::wstring &value, const wchar_t *prefix)
+{
+	return MigotoIniCommandListUtils::StartsWithTokenI(value, prefix);
+}
+
+	static bool IsVariableAssignmentKey(const std::wstring &value)
+	{
+		return MigotoIniCommandListUtils::IsVariableAssignmentKey(value);
+	}
+
+	static bool IsVariableDeclarationKey(const std::wstring &value)
+	{
+		return MigotoIniCommandListUtils::IsVariableDeclarationKey(value);
+	}
+
+static bool IsPostVariableAssignmentKey(const std::wstring &value)
+{
+	return MigotoIniCommandListUtils::IsPostVariableAssignmentKey(value);
+}
+
+static bool IsLocalVariableAssignmentKey(const std::wstring &value)
+{
+	return MigotoIniCommandListUtils::IsLocalVariableAssignmentKey(value);
+}
+
+static bool IsResourceAssignmentKey(const std::wstring &value)
+{
+	return MigotoIniCommandListUtils::IsResourceAssignmentKey(value);
+}
+
+static bool IsShaderConstantKey(const std::wstring &value)
+{
+	return MigotoIniCommandListUtils::IsShaderConstantKey(value);
+}
+
+static bool IsRenderStateKey(const std::wstring &value)
+{
+	return MigotoIniCommandListUtils::IsRenderStateKey(value);
 }
 
 static void AppendRunList(const std::wstring &value, std::vector<std::wstring> *lists);
@@ -318,11 +345,49 @@ inline bool MigotoCommandListParserText::ParseDrawArgs(
 	return true;
 }
 
+inline bool MigotoCommandListParser::ParseActionFromRawLine(
+	const std::wstring &rawLine, CommandListAction *action)
+{
+	if (!action)
+		return false;
+
+	std::wstring trimmed = IniDocumentText::Trim(rawLine);
+	std::wstring lower = IniDocumentText::ToLower(trimmed);
+	if (lower.empty())
+		return false;
+
+	if (MigotoIniCommandListUtils::IsControlFlowRawLine(lower)) {
+		action->kind = CommandListActionKind::ControlFlow;
+		action->key = lower;
+		action->rawLine = trimmed;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsLocalVariableAssignmentKey(lower)) {
+		action->kind = CommandListActionKind::LocalVariableAssignment;
+		action->key = lower;
+		action->rawLine = trimmed;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsVariableDeclarationKey(lower)) {
+		action->kind = CommandListActionKind::VariableAssignment;
+		action->key = lower;
+		action->rawLine = trimmed;
+		return true;
+	}
+
+	return false;
+}
+
 inline bool MigotoCommandListParser::ParseActionFromEntry(
 	const std::wstring &key, const std::wstring &value, CommandListAction *action)
 {
 	if (!action)
 		return false;
+
+	action->key = key;
+	action->value = value;
 
 	if (key == L"run") {
 		action->kind = CommandListActionKind::Run;
@@ -363,14 +428,65 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 		return MigotoCommandListParserText::ParseDrawArgs(value, 3, action);
 	}
 
+	if (key == L"vs" || key == L"ps" || key == L"cs") {
+		action->kind = CommandListActionKind::SetShader;
+		action->resource = value;
+		return !action->resource.empty();
+	}
+
+	if (MigotoCommandListParserText::IsPostVariableAssignmentKey(key)) {
+		action->kind = CommandListActionKind::PostVariableAssignment;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsLocalVariableAssignmentKey(key)) {
+		action->kind = CommandListActionKind::LocalVariableAssignment;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsVariableAssignmentKey(key) ||
+		MigotoCommandListParserText::IsVariableDeclarationKey(key)) {
+		action->kind = CommandListActionKind::VariableAssignment;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsResourceAssignmentKey(key)) {
+		action->kind = CommandListActionKind::ResourceAssignment;
+		action->resource = key;
+		return !value.empty();
+	}
+
+	if (MigotoCommandListParserText::IsShaderConstantKey(key)) {
+		action->kind = CommandListActionKind::SetShaderConstant;
+		return true;
+	}
+
+	if (MigotoCommandListParserText::IsRenderStateKey(key)) {
+		action->kind = CommandListActionKind::SetRenderState;
+		return true;
+	}
+
 	CommandListTarget target;
 	if (MigotoCommandListParser::ParseTarget(key, &target)) {
-		if (target.kind != CommandListTargetKind::IndexBuffer &&
-		    target.kind != CommandListTargetKind::VertexBuffer)
+		switch (target.kind) {
+		case CommandListTargetKind::IndexBuffer:
+			action->kind = CommandListActionKind::SetIndexBuffer;
+			break;
+		case CommandListTargetKind::VertexBuffer:
+			action->kind = CommandListActionKind::SetVertexBuffer;
+			break;
+		case CommandListTargetKind::ConstantBuffer:
+			action->kind = CommandListActionKind::SetConstantBuffer;
+			break;
+		case CommandListTargetKind::ShaderResource:
+			action->kind = CommandListActionKind::SetShaderResource;
+			break;
+		case CommandListTargetKind::UnorderedAccessView:
+			action->kind = CommandListActionKind::SetUnorderedAccessView;
+			break;
+		default:
 			return false;
-		action->kind = target.kind == CommandListTargetKind::IndexBuffer ?
-			CommandListActionKind::SetIndexBuffer :
-			CommandListActionKind::SetVertexBuffer;
+		}
 		action->target = target;
 		action->resource = value;
 		return !action->resource.empty();
@@ -448,12 +564,19 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 		config.sourceDir = section.sourceDir;
 		config.iniNamespace = section.iniNamespace;
 
-		for (const IniEntry &entry : section.entries) {
-			if (!entry.hasEquals)
-				continue;
+			for (const IniEntry &entry : section.entries) {
+				CommandListAction rawAction;
+				if (MigotoCommandListParser::ParseActionFromRawLine(entry.rawLine, &rawAction) &&
+					(!entry.hasEquals || rawAction.kind == CommandListActionKind::ControlFlow)) {
+					MigotoCommandListParser::ResolveActionReferences(&rawAction, entry.iniNamespace);
+					config.actions.push_back(rawAction);
+					continue;
+				}
+				if (!entry.hasEquals)
+					continue;
 
-			std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
-			std::wstring value = IniDocumentText::Trim(entry.value);
+				std::wstring key = IniDocumentText::ToLower(IniDocumentText::Trim(entry.key));
+				std::wstring value = IniDocumentText::Trim(entry.value);
 			CommandListAction action;
 			if (MigotoCommandListParser::ParseActionFromEntry(key, value, &action)) {
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);

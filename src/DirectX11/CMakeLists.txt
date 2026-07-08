@@ -62,6 +62,8 @@ target_link_libraries(DirectX11 PRIVATE
     Dbghelp.lib
 )
 
+target_compile_features(DirectX11 PRIVATE cxx_std_17)
+
 # pcre2 预编译库 — 根据架构和配置选择
 set(PCRE2_DIR "${CMAKE_SOURCE_DIR}/3rdparty/pcre2")
 target_link_libraries(DirectX11 PRIVATE

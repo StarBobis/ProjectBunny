@@ -470,18 +470,21 @@ static void BuildDx12CompiledTextureOverridePlans(
 						plan.draws.push_back(draw);
 						break;
 					}
-					case Bunny::CommandListActionKind::Dispatch:
-					{
-						DX12ModIaReplacement::DispatchCall dispatch;
-						dispatch.groupsX = action.args[0];
-						dispatch.groupsY = action.args[1];
-						dispatch.groupsZ = action.args[2];
-						plan.dispatches.push_back(dispatch);
-						break;
-					}
+						case Bunny::CommandListActionKind::Dispatch:
+						{
+							DX12ModIaReplacement::DispatchCall dispatch;
+							dispatch.groupsX = action.args[0];
+							dispatch.groupsY = action.args[1];
+							dispatch.groupsZ = action.args[2];
+							plan.dispatches.push_back(dispatch);
+							break;
+						}
+						default:
+							plan.hasUnsupportedCommandActions = true;
+							break;
+						}
 					}
 				}
-			}
 			(*compiledPlans)[sectionIdIt->second] = std::move(plan);
 		}
 	}

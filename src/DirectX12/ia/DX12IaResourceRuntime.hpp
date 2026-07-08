@@ -1,3 +1,5 @@
+#include "../utils/DX12VmFrameVariablesUtils.hpp"
+
 static void ReleaseLoadedResourcesLocked()
 {
 	for (auto &item : gLoadedResources) {
@@ -99,7 +101,7 @@ static bool TextureOverrideMatchCsSatisfied(
 	return activePreSkinSections.find(config.section) != activePreSkinSections.end();
 }
 
-void DX12ModBeginFrame()
+void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
 	LARGE_INTEGER t0, t1;
 	QueryPerformanceCounter(&t0);
@@ -114,6 +116,9 @@ void DX12ModBeginFrame()
 		frameIntervalUs = (t0.QuadPart - s_lastFrameTime.QuadPart) * 1000000 / freq.QuadPart;
 	s_lastFrameTime = t0;
 	s_hasLastFrame = true;
+
+	DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
+	ProcessDx12KeyBindingsForFrame();
 
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;

@@ -82,6 +82,8 @@ target_link_libraries(DirectX12 PRIVATE
     Shlwapi.lib
 )
 
+target_compile_features(DirectX12 PRIVATE cxx_std_17)
+
 target_sources(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/proxy/d3d12Wrapper.def
 )
