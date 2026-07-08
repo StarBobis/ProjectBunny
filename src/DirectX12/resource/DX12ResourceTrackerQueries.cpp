@@ -255,12 +255,9 @@ bool DX12ResolveBufferResourceByGpuVa(
 				gBufferResolveFallbackScanHits++;
 			}
 		}
-		// Safety net: bounded linear scan for truly unindexed resources.
-		// Limit iterations to prevent runaway cost in pathological cases.
+		// Safety net: full linear scan for truly unindexed resources.
 		if (!resolved) {
-			static constexpr size_t kMaxFallbackScan = 2048;
-			size_t scanned = 0;
-			for (size_t i = 0; i < gResources.size() && scanned < kMaxFallbackScan; ++i, ++scanned) {
+			for (size_t i = 0; i < gResources.size(); ++i) {
 				const ResourceRecord &resource = gResources[i];
 				if (!resource.resource)
 					continue;

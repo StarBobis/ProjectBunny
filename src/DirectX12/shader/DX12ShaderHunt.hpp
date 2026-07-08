@@ -24,6 +24,7 @@ struct DX12HuntListItem
 };
 
 void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
+void DX12HuntUnregisterCommandList(ID3D12GraphicsCommandList *commandList);
 void DX12HuntObservePipelineState(ID3D12PipelineState *pipelineState);
 void DX12HuntRecordDraw(
 	ID3D12GraphicsCommandList *commandList, bool indexed,

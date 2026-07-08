@@ -3,6 +3,7 @@
 #include "../utils/DX12DescriptorHeapShadowUtils.hpp"
 #include "DX12HookManager.hpp"
 #include "DX12ResourceCollectQueue.hpp"
+#include "DX12ObjectLifetimeTrackerUtils.hpp"
 #include "DX12ResourceTrackerHookCallbacks.hpp"
 #include "DX12ResourceTrackerHookDiagnostics.hpp"
 #include "DX12ResourceTrackerHookRegistry.hpp"
@@ -314,6 +315,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
 	record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
 	InitializeDescriptorHeapRecord(&record);
+	DX12ObjectLifetimeTrackerUtils::InstallDescriptorHeapReleaseTracker(descriptorHeap);
 	descriptorHeap->Release();
 
 	AcquireSRWLockExclusive(&gDescriptorLock);

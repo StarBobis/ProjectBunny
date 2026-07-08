@@ -44,6 +44,7 @@ public:
 	static void TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList);
 
 	static void Register(ID3D12GraphicsCommandList *commandList);
+	static bool Unregister(ID3D12GraphicsCommandList *commandList);
 	static void Reset(DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState);
 	static void Reset(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
 	static DX12CompiledDispatchDecision BuildDispatchDecision(

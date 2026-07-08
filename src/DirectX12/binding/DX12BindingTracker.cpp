@@ -426,10 +426,9 @@ public:
 			? static_cast<UINT>(rootSignature.parameters.size())
 			: MaxRootParameters;
 
-		// Thread-local scratch buffers: eliminate heap allocations in the hot path.
-		static thread_local SIZE_T tlsCpuHandles[256];
-		static thread_local DX12DescriptorSummary tlsDescriptors[256];
-		static thread_local uint8_t tlsFound[256];
+		static thread_local std::vector<SIZE_T> tlsCpuHandles;
+		static thread_local std::vector<DX12DescriptorSummary> tlsDescriptors;
+		static thread_local std::vector<uint8_t> tlsFound;
 
 		for (UINT root = 0; root < maxRoot; ++root) {
 			const RootTableState &table = snapshot.computeTables[root];
@@ -460,19 +459,21 @@ public:
 						else { continue; }
 
 						const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBase, range);
-						UINT cpuHandleCount = 0;
-						for (UINT offset = 0; offset < count && cpuHandleCount < 256; ++offset) {
+						tlsCpuHandles.clear();
+						tlsCpuHandles.reserve(count);
+						for (UINT offset = 0; offset < count; ++offset) {
 							const UINT64 di = tableBase + range.effectiveOffset + offset;
 							if (di >= heap.numDescriptors) break;
 							const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-							tlsCpuHandles[cpuHandleCount] = cpuHandle;
-							cpuHandleCount++;
+							tlsCpuHandles.push_back(cpuHandle);
 						}
+						tlsDescriptors.resize(tlsCpuHandles.size());
+						tlsFound.resize(tlsCpuHandles.size());
 						DX12FindDescriptorSummariesByCpuHandle(
-							tlsCpuHandles, cpuHandleCount,
-							tlsDescriptors, tlsFound,
+							tlsCpuHandles.data(), tlsCpuHandles.size(),
+							tlsDescriptors.data(), tlsFound.data(),
 							completeDescriptorResourceInfo);
-						for (UINT offset = 0; offset < cpuHandleCount; ++offset) {
+						for (UINT offset = 0; offset < tlsCpuHandles.size(); ++offset) {
 							if (!tlsFound[offset] || tlsDescriptors[offset].kind != kind)
 								continue;
 							DX12CurrentComputeUavBinding binding;
@@ -575,7 +576,7 @@ public:
 };
 
 // ============================================================================
-// CollectPreSkinBindings — lightweight replacement for GetCurrentComputeAll
+// CollectPreSkinBindings - lightweight replacement for GetCurrentComputeAll
 // in the PreSkin hot path. Uses a cached root signature summary (parsed once
 // per ID3D12RootSignature*) to iterate descriptor table ranges without
 // re-parsing the blob on every call. Scans multiple descriptors per table
@@ -709,18 +710,15 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	std::vector<DX12CurrentRootConstants> localConstants;
 	bool allRuntimeDescriptorsStable = true;
 
-	const UINT kMaxUavs = 6;
-	const UINT kMaxSrvs = 8;
-	const UINT kMaxScanPerTable = 16; // descriptors to scan per table without root sig
-
-	// Thread-local scratch buffers: eliminate heap allocations in the hot path.
-	// Sized for worst-case: 64 root params × 4 descriptors each = 256 entries.
-	static thread_local SIZE_T tlsCpuHandles[256];
-	static thread_local DX12DescriptorSummary tlsDescriptors[256];
-	static thread_local uint8_t tlsFound[256];
-	static thread_local uint8_t tlsPending[256];
-	static thread_local UINT tlsDescriptorOffsets[256];
-	static thread_local UINT64 tlsDescriptorIndices[256];
+	// Thread-local scratch buffers grow to the actual descriptor workload and
+	// retain capacity across calls. Correctness is bounded by D3D12 metadata,
+	// not by a local fixed-size array.
+	static thread_local std::vector<SIZE_T> tlsCpuHandles;
+	static thread_local std::vector<DX12DescriptorSummary> tlsDescriptors;
+	static thread_local std::vector<uint8_t> tlsFound;
+	static thread_local std::vector<uint8_t> tlsPending;
+	static thread_local std::vector<UINT> tlsDescriptorOffsets;
+	static thread_local std::vector<UINT64> tlsDescriptorIndices;
 
 	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 
@@ -746,30 +744,48 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	// Collect descriptor table bindings.
 	// With root signature: iterate exactly the declared ranges (correct offset/count).
-	// P5: Bulk descriptor lookup — collect ALL CPU handles from ALL ranges first,
+	// P5: Bulk descriptor lookup: collect ALL CPU handles from ALL ranges first,
 	// then issue a SINGLE DX12FindDescriptorSummariesByCpuHandleNoWait call,
 	// then distribute results back to per-range output vectors.
-	// Without root signature: scan up to kMaxScanPerTable descriptors, classify by kind.
+	// Without root signature: scan to the descriptor heap boundary, classify by kind.
 
 	// Per-descriptor metadata for bulk lookup distribution.
 	// Slot i tracks: output vector, kind string, root param index, range metadata, heap data.
-	static thread_local std::vector<DX12CurrentComputeUavBinding> *tlsOutVec[256];
-	static thread_local const char *tlsKind[256];
-	static thread_local UINT tlsRootIndex[256];
-	static thread_local UINT tlsRangeIndex[256];
-	static thread_local UINT tlsRangeShaderVisibility[256];
-	static thread_local UINT tlsRangeBaseShaderRegister[256];
-	static thread_local UINT tlsRangeRegisterSpace[256];
-	static thread_local UINT tlsRangeEffectiveOffset[256];
-	static thread_local UINT tlsCount[256];
-	static thread_local UINT64 tlsTableBaseIndex[256];
-	static thread_local SIZE_T tlsTableCpuStart[256];
-	static thread_local UINT64 tlsTableGpuStart[256];
-	static thread_local UINT tlsTableIncrement[256];
-	static thread_local ID3D12DescriptorHeap *tlsTableHeap[256];
+	static thread_local std::vector<std::vector<DX12CurrentComputeUavBinding>*> tlsOutVec;
+	static thread_local std::vector<const char*> tlsKind;
+	static thread_local std::vector<UINT> tlsRootIndex;
+	static thread_local std::vector<UINT> tlsRangeIndex;
+	static thread_local std::vector<UINT> tlsRangeShaderVisibility;
+	static thread_local std::vector<UINT> tlsRangeBaseShaderRegister;
+	static thread_local std::vector<UINT> tlsRangeRegisterSpace;
+	static thread_local std::vector<UINT> tlsRangeEffectiveOffset;
+	static thread_local std::vector<UINT> tlsCount;
+	static thread_local std::vector<UINT64> tlsTableBaseIndex;
+	static thread_local std::vector<SIZE_T> tlsTableCpuStart;
+	static thread_local std::vector<UINT64> tlsTableGpuStart;
+	static thread_local std::vector<UINT> tlsTableIncrement;
+	static thread_local std::vector<ID3D12DescriptorHeap*> tlsTableHeap;
+
+	tlsCpuHandles.clear();
+	tlsDescriptorOffsets.clear();
+	tlsDescriptorIndices.clear();
+	tlsOutVec.clear();
+	tlsKind.clear();
+	tlsRootIndex.clear();
+	tlsRangeIndex.clear();
+	tlsRangeShaderVisibility.clear();
+	tlsRangeBaseShaderRegister.clear();
+	tlsRangeRegisterSpace.clear();
+	tlsRangeEffectiveOffset.clear();
+	tlsCount.clear();
+	tlsTableBaseIndex.clear();
+	tlsTableCpuStart.clear();
+	tlsTableGpuStart.clear();
+	tlsTableIncrement.clear();
+	tlsTableHeap.clear();
 
 	// Phase 1: Collect all CPU handles from root-signature ranges.
-	UINT totalHandleCount = 0;
+	size_t totalHandleCount = 0;
 	for (UINT root = 0; root < maxRoot; ++root) {
 		const RootTableState &table = snapshot.computeTables[root];
 		if (!table.valid)
@@ -803,14 +819,12 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRange();
-			if (localUavs.size() >= kMaxUavs && localSrvs.size() >= kMaxSrvs && range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
-				continue;
 
 			std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
 			const char *kind = nullptr;
-			if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && localUavs.size() < kMaxUavs) {
+			if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV) {
 				out = &localUavs; kind = "UAV";
-			} else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && localSrvs.size() < kMaxSrvs) {
+			} else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
 				out = &localSrvs; kind = "SRV";
 			} else if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV) {
 				out = &localCbvs; kind = "CBV";
@@ -819,30 +833,29 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			}
 
 			const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(heap, tableBaseIndex, range);
-			for (UINT offset = 0; offset < count && totalHandleCount < 256; ++offset) {
+			for (UINT offset = 0; offset < count; ++offset) {
 				const UINT64 di = tableBaseIndex + range.effectiveOffset + offset;
 				if (di >= heap.numDescriptors)
 					break;
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
 
-				// Store handle and full metadata for Phase 3 distribution.
-				tlsCpuHandles[totalHandleCount] = cpuHandle;
-				tlsDescriptorOffsets[totalHandleCount] = offset;
-				tlsOutVec[totalHandleCount] = out;
-				tlsKind[totalHandleCount] = kind;
-				tlsRootIndex[totalHandleCount] = root;
-				tlsRangeIndex[totalHandleCount] = range.rangeIndex;
-				tlsRangeShaderVisibility[totalHandleCount] = range.shaderVisibility;
-				tlsRangeBaseShaderRegister[totalHandleCount] = range.baseShaderRegister;
-				tlsRangeRegisterSpace[totalHandleCount] = range.registerSpace;
-				tlsRangeEffectiveOffset[totalHandleCount] = range.effectiveOffset;
-				tlsCount[totalHandleCount] = count;
-				tlsTableBaseIndex[totalHandleCount] = tableBaseIndex;
-				tlsTableCpuStart[totalHandleCount] = tableCpuStart;
-				tlsTableGpuStart[totalHandleCount] = tableGpuStart;
-				tlsTableIncrement[totalHandleCount] = heap.increment;
-				tlsTableHeap[totalHandleCount] = heap.heap;
+				tlsCpuHandles.push_back(cpuHandle);
+				tlsDescriptorOffsets.push_back(offset);
+				tlsOutVec.push_back(out);
+				tlsKind.push_back(kind);
+				tlsRootIndex.push_back(root);
+				tlsRangeIndex.push_back(range.rangeIndex);
+				tlsRangeShaderVisibility.push_back(range.shaderVisibility);
+				tlsRangeBaseShaderRegister.push_back(range.baseShaderRegister);
+				tlsRangeRegisterSpace.push_back(range.registerSpace);
+				tlsRangeEffectiveOffset.push_back(range.effectiveOffset);
+				tlsCount.push_back(count);
+				tlsTableBaseIndex.push_back(tableBaseIndex);
+				tlsTableCpuStart.push_back(tableCpuStart);
+				tlsTableGpuStart.push_back(tableGpuStart);
+				tlsTableIncrement.push_back(heap.increment);
+				tlsTableHeap.push_back(heap.heap);
 				totalHandleCount++;
 			}
 		}
@@ -850,18 +863,21 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	// Phase 2: Single bulk descriptor lookup for all root-signature ranges.
 	if (totalHandleCount > 0) {
+		tlsDescriptors.resize(totalHandleCount);
+		tlsFound.resize(totalHandleCount);
+		tlsPending.resize(totalHandleCount);
 		DX12FindDescriptorSummariesByCpuHandleNoWait(
-			tlsCpuHandles,
+			tlsCpuHandles.data(),
 			totalHandleCount,
-			tlsDescriptors,
-			tlsFound,
-			tlsPending,
+			tlsDescriptors.data(),
+			tlsFound.data(),
+			tlsPending.data(),
 			true); // needFullResource=true is the safe superset for UAV+SRV+CBV.
 
 		LONG64 descriptorHits = 0;
 		LONG64 descriptorMisses = 0;
 		LONG64 descriptorPending = 0;
-		for (UINT i = 0; i < totalHandleCount; ++i) {
+		for (size_t i = 0; i < totalHandleCount; ++i) {
 			if (tlsPending[i]) {
 				descriptorPending++;
 				allRuntimeDescriptorsStable = false;
@@ -876,15 +892,11 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			descriptorHits, descriptorMisses, descriptorPending);
 
 		// Phase 3: Distribute results to per-range output vectors.
-		for (UINT i = 0; i < totalHandleCount; ++i) {
+		for (size_t i = 0; i < totalHandleCount; ++i) {
 			if (!tlsFound[i] || tlsDescriptors[i].kind != tlsKind[i])
 				continue;
 
 			std::vector<DX12CurrentComputeUavBinding> *out = tlsOutVec[i];
-			if (out == &localUavs && localUavs.size() >= kMaxUavs)
-				continue;
-			if (out == &localSrvs && localSrvs.size() >= kMaxSrvs)
-				continue;
 
 			DX12CurrentComputeUavBinding binding;
 			binding.rootParameterIndex = tlsRootIndex[i];
@@ -906,7 +918,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		}
 	}
 
-	// Phase 4: Non-root-signature path — scan up to kMaxScanPerTable descriptors.
+	// Phase 4: Non-root-signature path: scan to the descriptor heap boundary.
 	for (UINT root = 0; root < maxRoot; ++root) {
 		const RootTableState &table = snapshot.computeTables[root];
 		if (!table.valid)
@@ -933,34 +945,33 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			continue; // Already handled in Phase 1-3.
 
 		{
-			// No root signature info: scan next descriptors, classify by kind
-			const UINT64 scanEnd = min(tableBaseIndex + kMaxScanPerTable,
-				static_cast<UINT64>(heap.numDescriptors));
-			UINT cpuHandleCount2 = 0;
-			for (UINT64 di = tableBaseIndex; di < scanEnd && cpuHandleCount2 < 256; ++di) {
-				if (localUavs.size() >= kMaxUavs && localSrvs.size() >= kMaxSrvs)
-					break;
-
+			// No root signature info: scan to the descriptor heap boundary, then classify by kind.
+			tlsCpuHandles.clear();
+			tlsDescriptorIndices.clear();
+			for (UINT64 di = tableBaseIndex; di < heap.numDescriptors; ++di) {
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
-				tlsCpuHandles[cpuHandleCount2] = cpuHandle;
-				tlsDescriptorIndices[cpuHandleCount2] = di;
-				cpuHandleCount2++;
+				tlsCpuHandles.push_back(cpuHandle);
+				tlsDescriptorIndices.push_back(di);
 			}
+			const size_t cpuHandleCount2 = tlsCpuHandles.size();
 			if (cpuHandleCount2 == 0)
 				continue;
 
+			tlsDescriptors.resize(cpuHandleCount2);
+			tlsFound.resize(cpuHandleCount2);
+			tlsPending.resize(cpuHandleCount2);
 			DX12FindDescriptorSummariesByCpuHandleNoWait(
-				tlsCpuHandles,
+				tlsCpuHandles.data(),
 				cpuHandleCount2,
-				tlsDescriptors,
-				tlsFound,
-				tlsPending,
+				tlsDescriptors.data(),
+				tlsFound.data(),
+				tlsPending.data(),
 				false);
 			LONG64 descriptorHits = 0;
 			LONG64 descriptorMisses = 0;
 			LONG64 descriptorPending = 0;
-			for (UINT descriptorIndex = 0;
+			for (size_t descriptorIndex = 0;
 				descriptorIndex < cpuHandleCount2;
 				++descriptorIndex) {
 				if (tlsPending[descriptorIndex]) {
@@ -975,7 +986,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			}
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingDescriptorLookupResult(
 				descriptorHits, descriptorMisses, descriptorPending);
-			for (UINT descriptorIndex = 0;
+			for (size_t descriptorIndex = 0;
 				descriptorIndex < cpuHandleCount2;
 				++descriptorIndex) {
 				if (!tlsFound[descriptorIndex])
@@ -991,14 +1002,12 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				binding.descriptorOffset =
 					static_cast<UINT>(tlsDescriptorIndices[descriptorIndex] - tableBaseIndex);
 
-				if (tlsDescriptors[descriptorIndex].kind == "UAV" &&
-					localUavs.size() < kMaxUavs) {
+				if (tlsDescriptors[descriptorIndex].kind == "UAV") {
 					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
 					binding.descriptor = tlsDescriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					localUavs.push_back(std::move(binding));
-				} else if (tlsDescriptors[descriptorIndex].kind == "SRV" &&
-					localSrvs.size() < kMaxSrvs) {
+				} else if (tlsDescriptors[descriptorIndex].kind == "SRV") {
 					binding.descriptor = tlsDescriptors[descriptorIndex];
 					binding.hasDescriptor = true;
 					localSrvs.push_back(std::move(binding));
@@ -1032,9 +1041,9 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			binding.registerSpace = parameter->registerSpace;
 		}
 
-		if (rd.type == D3D12_ROOT_PARAMETER_TYPE_UAV && localUavs.size() < kMaxUavs)
+		if (rd.type == D3D12_ROOT_PARAMETER_TYPE_UAV)
 			localUavs.push_back(std::move(binding));
-		else if (rd.type == D3D12_ROOT_PARAMETER_TYPE_SRV && localSrvs.size() < kMaxSrvs)
+		else if (rd.type == D3D12_ROOT_PARAMETER_TYPE_SRV)
 			localSrvs.push_back(std::move(binding));
 		else if (rd.type == D3D12_ROOT_PARAMETER_TYPE_CBV)
 			localCbvs.push_back(std::move(binding));
@@ -1681,6 +1690,60 @@ bool DX12BindingTracker::RegisterCommandList(ID3D12GraphicsCommandList *commandL
 	return inserted;
 }
 
+bool DX12BindingTracker::UnregisterCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return false;
+
+	bool removedState = false;
+	bool removedEvents = false;
+	size_t recordedEventCount = 0;
+	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	auto eventIt = shard.recordedEvents.find(commandList);
+	if (eventIt != shard.recordedEvents.end()) {
+		recordedEventCount = eventIt->second.size();
+		removedEvents = true;
+	}
+	DX12BindingTracker::ReleaseRecordedEventsLocked(&shard, commandList);
+
+	auto stateIt = shard.states.find(commandList);
+	if (stateIt != shard.states.end()) {
+		DX12BindingTracker::ReleaseRetainedIaResources(&stateIt->second);
+		shard.states.erase(stateIt);
+		removedState = true;
+	}
+	if (removedState || removedEvents)
+		shard.generation++;
+	ReleaseSRWLockExclusive(&shard.lock);
+
+	if (tlsGraphicsTableCache.cl == commandList)
+		tlsGraphicsTableCache.cl = nullptr;
+	if (tlsComputeTableCache.cl == commandList)
+		tlsComputeTableCache.cl = nullptr;
+	if (tlsGraphicsDescCache.cl == commandList)
+		tlsGraphicsDescCache.cl = nullptr;
+	if (tlsComputeDescCache.cl == commandList)
+		tlsComputeDescCache.cl = nullptr;
+	if (tlsDescriptorQueryCache.commandList == commandList)
+		tlsDescriptorQueryCache.commandList = nullptr;
+	if (tlsComputeAllQueryCache.commandList == commandList)
+		tlsComputeAllQueryCache.commandList = nullptr;
+	if (tlsStateCache.commandList == commandList) {
+		tlsStateCache.commandList = nullptr;
+		tlsStateCache.state = nullptr;
+	}
+
+	if (removedState || removedEvents) {
+		DX12LogManager::JsonFunc("DX12BindingTracker",
+			"stage=unregister_command_list,commandList=%p,state=%u,recordedEvents=%zu",
+			commandList,
+			removedState ? 1u : 0u,
+			recordedEventCount);
+	}
+	return removedState || removedEvents;
+}
+
 void DX12BindingTracker::ResetCommandList(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState)
 {
@@ -2092,7 +2155,7 @@ void DX12BindingTracker::SetIndexBuffer(
 		state.indexBuffer = {};
 		state.indexBufferValid = false;
 	}
-	// Resource resolution DEFERRED to draw time — see SetVertexBuffers comment.
+	// Resource resolution DEFERRED to draw time; see SetVertexBuffers comment.
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(true);
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -2155,7 +2218,7 @@ void DX12BindingTracker::SetVertexBuffers(
 		// Resource resolution DEFERRED to draw time (RecordDrawInstanced /
 		// RecordDrawIndexedInstanced). This is a ~90% cost reduction per call:
 		//   Old: ReleaseResolvedIaResource + ResolveAndRetainIaResource
-		//        → DX12ReleaseRetainedResource + DX12ResolveBufferResourceByGpuVa + DX12RetainResource
+		//        -> DX12ReleaseRetainedResource + DX12ResolveBufferResourceByGpuVa + DX12RetainResource
 		//   New: trivial struct copy (D3D12_VERTEX_BUFFER_VIEW = 3x UINT64)
 	}
 	if (anyChanged)
@@ -2471,8 +2534,8 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
-	// 用 computeTables 内容 hash 做 key——bindings 不变 → hash 不变 → 跨 dispatch 命中。
-	// heap 指针每 SetDescriptorHeaps 变化，不能用作 key。
+	// Use computeTables content hash as the cache key: unchanged bindings keep the hash stable across dispatches.
+	// Heap pointers can change on SetDescriptorHeaps, so they are not suitable as the key.
 	UINT64 tableHash = 0;
 	for (UINT r = 0; r < MaxRootParameters; ++r) {
 		const RootTableState &t = snapshot.computeTables[r];
@@ -2574,7 +2637,7 @@ void DX12BindingTracker::RecordDrawInstanced(
 	CommandListBindingState &state = *statePtr;
 	state.drawSerial = drawSerial;
 	// Resolve deferred VB/IB resources before snapshot (they were NOT resolved
-	// eagerly in SetVertexBuffers/SetIndexBuffer — deferred to here for ~90%
+	// eagerly in SetVertexBuffers/SetIndexBuffer; deferred to here for ~90%
 	// per-call cost reduction).
 	ResolveDeferredIaResources(&state);
 	snapshot = state;
@@ -2634,7 +2697,7 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	}
 	CommandListBindingState &state = *statePtr;
 	state.drawSerial = drawSerial;
-	// Resolve deferred VB/IB resources before snapshot — see RecordDrawInstanced.
+	// Resolve deferred VB/IB resources before snapshot; see RecordDrawInstanced.
 	ResolveDeferredIaResources(&state);
 	snapshot = state;
 	ReleaseSRWLockExclusive(&shard.lock);

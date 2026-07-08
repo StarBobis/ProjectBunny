@@ -1,5 +1,7 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
+#include "DX12ObjectLifetimeTrackerUtils.hpp"
+
 #include "DX12BindingCollectQueue.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
@@ -597,6 +599,8 @@ void RecordResource(
 
 	if (record.hasHeapType && record.heapType == D3D12_HEAP_TYPE_READBACK)
 		return;
+
+	DX12ObjectLifetimeTrackerUtils::InstallResourceReleaseTracker(resource);
 
 	record.currentState = initialState;
 	record.hasCurrentState = true;

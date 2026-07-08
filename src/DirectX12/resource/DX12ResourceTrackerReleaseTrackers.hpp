@@ -29,9 +29,11 @@ public:
 	{
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
-			AcquireSRWLockExclusive(&gDescriptorLock);
-			InvalidateDescriptorHeapLocked(mHeap);
-			ReleaseSRWLockExclusive(&gDescriptorLock);
+			if (mInstalled) {
+				AcquireSRWLockExclusive(&gDescriptorLock);
+				InvalidateDescriptorHeapLocked(mHeap);
+				ReleaseSRWLockExclusive(&gDescriptorLock);
+			}
 			delete this;
 		}
 		return static_cast<ULONG>(ref);
@@ -39,6 +41,7 @@ public:
 
 	volatile LONG mRef;
 	ID3D12DescriptorHeap *mHeap;
+	bool mInstalled = false;
 };
 
 class DX12ResourceReleaseTracker : public IUnknown
@@ -68,9 +71,11 @@ public:
 	{
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
-			AcquireSRWLockExclusive(&gResourceLock);
-			InvalidateResourceLocked(mResource);
-			ReleaseSRWLockExclusive(&gResourceLock);
+			if (mInstalled) {
+				AcquireSRWLockExclusive(&gResourceLock);
+				InvalidateResourceLocked(mResource);
+				ReleaseSRWLockExclusive(&gResourceLock);
+			}
 			delete this;
 		}
 		return static_cast<ULONG>(ref);
@@ -78,4 +83,5 @@ public:
 
 	volatile LONG mRef;
 	ID3D12Resource *mResource;
+	bool mInstalled = false;
 };

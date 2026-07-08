@@ -4852,8 +4852,17 @@ namespace DX12Wrapper
 
 		~GraphicsCommandListWrapper()
 		{
-			if (mCommandList)
+			if (mCommandList) {
+				DX12CommandListLifecycle::Unregister(mCommandList);
 				DX12CommandListRuntime::UnregisterDirectState(mCommandList);
+			}
+			if (mRuntimeState.device) {
+				DX12LogManager::JsonFunc("DX12Wrapper",
+					"kind=graphics_command_list,stage=release_cached_device,wrapper=%p,object=%p,device=%p",
+					this, mCommandList, mRuntimeState.device);
+				mRuntimeState.device->Release();
+				mRuntimeState.device = nullptr;
+			}
 		}
 
 		DX12CommandListHookSignatures::DrawInstanced ResolveOriginalDrawInstanced()

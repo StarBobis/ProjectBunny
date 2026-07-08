@@ -24,6 +24,16 @@ void DX12CommandListLifecycle::Register(
 	}
 }
 
+void DX12CommandListLifecycle::Unregister(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+
+	DX12BindingTracker::UnregisterCommandList(commandList);
+	DX12HuntUnregisterCommandList(commandList);
+	DX12CommandListRuntime::Unregister(commandList);
+}
+
 void DX12CommandListLifecycle::Reset(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12PipelineState *initialState)

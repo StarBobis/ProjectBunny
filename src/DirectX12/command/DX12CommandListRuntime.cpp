@@ -242,8 +242,36 @@ void DX12CommandListRuntime::Register(ID3D12GraphicsCommandList *commandList)
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.states.try_emplace(commandList);
+	const bool inserted = shard.states.try_emplace(commandList).second;
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	if (inserted)
+		DX12CommandListRuntime::BumpTrackingGeneration();
+}
+
+bool DX12CommandListRuntime::Unregister(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return false;
+
+	bool removed = false;
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	auto it = shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		shard.states.erase(it);
+		removed = true;
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+
+	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
+	if (removed) {
+		DX12CommandListRuntime::BumpTrackingGeneration();
+		DX12FrameAnalysis::LogJsonFunc("CommandListRuntimeUnregister",
+			"\"commandList\":\"%p\"",
+			commandList);
+	}
+	return removed;
 }
 
 void DX12CommandListRuntime::Reset(

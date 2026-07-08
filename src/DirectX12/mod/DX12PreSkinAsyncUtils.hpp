@@ -11,11 +11,11 @@
 #include "DX12LogManager.hpp"
 #include "DX12PreSkinPlan.hpp"
 
-// Forward declare — DX12ModRuntimeState.hpp provides the full type.
+// Forward declaration; DX12ModRuntimeState.hpp provides the full type.
 class DX12PreSkinDispatchOverride;
 
 // ---------------------------------------------------------------------------
-// DX12PreSkinAsyncRequest — payload for async PreSkinProbe computation.
+// DX12PreSkinAsyncRequest - payload for async PreSkinProbe computation.
 // The render thread populates this on cache miss and the worker thread
 // consumes it to warm the match caches off the critical path.
 // ---------------------------------------------------------------------------
@@ -49,15 +49,13 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// DX12PreSkinAsyncQueue — single-producer, single-consumer queue with a
+// DX12PreSkinAsyncQueue - single-producer, single-consumer queue with a
 // dedicated worker thread that pre-computes PreSkinProbe match results.
 // This eliminates 14-43ms blocking Dispatch calls on cache misses.
 // ---------------------------------------------------------------------------
 class DX12PreSkinAsyncQueue
 {
 public:
-	static constexpr size_t kMaxQueueDepth = 256;
-
 	std::deque<DX12PreSkinAsyncRequest> requests;
 	std::mutex mutex;
 	std::condition_variable wakeCondition;
@@ -89,12 +87,6 @@ public:
 
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-			if (requests.size() >= kMaxQueueDepth) {
-				// Drop oldest request to make room; the next cache miss will
-				// re-enqueue this binding if it is still in use.
-				requests.pop_front();
-				dropped.fetch_add(1);
-			}
 			requests.push_back(std::move(request));
 			UINT64 depth = static_cast<UINT64>(requests.size());
 			UINT64 prevMax = maxDepth.load();

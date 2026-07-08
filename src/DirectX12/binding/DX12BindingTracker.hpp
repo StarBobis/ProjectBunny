@@ -141,6 +141,7 @@ class DX12BindingTracker
 {
 public:
 	static bool RegisterCommandList(ID3D12GraphicsCommandList *commandList);
+	static bool UnregisterCommandList(ID3D12GraphicsCommandList *commandList);
 	static void ResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
 	static void SetPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void RecordStateEvent(ID3D12GraphicsCommandList *commandList, const char *kind);

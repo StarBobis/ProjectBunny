@@ -388,6 +388,27 @@ void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 	ReleaseSRWLockExclusive(&gHuntLock);
 }
 
+void DX12HuntUnregisterCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+
+	bool removed = false;
+	AcquireSRWLockExclusive(&gHuntLock);
+	auto it = gCommandListVisits.find(commandList);
+	if (it != gCommandListVisits.end()) {
+		gCommandListVisits.erase(it);
+		removed = true;
+	}
+	ReleaseSRWLockExclusive(&gHuntLock);
+
+	if (removed) {
+		DX12LogManager::JsonFunc("DX12ShaderHunt",
+			"stage=unregister_command_list,commandList=%p",
+			commandList);
+	}
+}
+
 void DX12HuntObservePipelineState(ID3D12PipelineState *pipelineState)
 {
 	if (!DX12HuntIsEnabled())
