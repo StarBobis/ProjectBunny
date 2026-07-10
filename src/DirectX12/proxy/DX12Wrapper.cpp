@@ -5122,8 +5122,8 @@ namespace DX12Wrapper
 				UINT VertexCountPerInstance, UINT InstanceCount,
 				UINT StartVertexLocation, UINT StartInstanceLocation) override
 			{
-			// Fast-path: skipAll + resolved original -> call driver directly, bypass hook entirely
-			if (DX12HotPathState::skipAll && mOrigDrawInstanced) {
+			// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
+			if ((DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) && mOrigDrawInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawInstanced);
 				mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
@@ -5144,7 +5144,7 @@ namespace DX12Wrapper
 			UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation,
 			INT BaseVertexLocation, UINT StartInstanceLocation) override
 		{
-			if (DX12HotPathState::skipAll && mOrigDrawIndexedInstanced) {
+			if ((DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) && mOrigDrawIndexedInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 				mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
@@ -5164,7 +5164,7 @@ namespace DX12Wrapper
 
 		void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 		{
-			if (DX12HotPathState::skipAll && mOrigDispatch) {
+			if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK) && mOrigDispatch) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDispatch);
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
