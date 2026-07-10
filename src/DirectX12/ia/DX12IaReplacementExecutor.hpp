@@ -291,6 +291,8 @@ public:
 		DX12IaHashTargetPlan targetPlan = drawDecision->targetPlan;
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
+		const bool shaderOverrideNegativeCacheAllowed =
+			drawDecision->shaderOverrideNegativeCacheAllowed;
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
 		if (targetPlanHasIaTargets) {
@@ -432,8 +434,8 @@ public:
 				commandList, runtimeState.pipelineState, iaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, draw.firstInstance, &iaReplacement,
-				psoIaNegativeCacheSafe,
-			runtimeState.device)) {
+				shaderOverrideNegativeCacheAllowed,
+				runtimeState.device)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"prepare_shader_override_match",

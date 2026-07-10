@@ -201,6 +201,28 @@ public:
 class BindingTlsDescriptorQueryCache
 {
 public:
+	static constexpr UINT CacheSlotsPerPipeline = 3;
+	static constexpr UINT CacheSlotCount = CacheSlotsPerPipeline * 2;
+
+	static UINT CacheSlotIndex(bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType)
+	{
+		UINT rangeIndex = UINT_MAX;
+		switch (rangeType) {
+		case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+			rangeIndex = 0;
+			break;
+		case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+			rangeIndex = 1;
+			break;
+		case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+			rangeIndex = 2;
+			break;
+		default:
+			return UINT_MAX;
+		}
+		return (compute ? CacheSlotsPerPipeline : 0) + rangeIndex;
+	}
+
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	bool compute = false;
 	UINT rangeType = UINT_MAX;

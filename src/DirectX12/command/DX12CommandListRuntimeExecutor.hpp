@@ -133,6 +133,9 @@ public:
 		mExecuteDrawActions = executeDrawActions;
 	}
 
+	bool observedDescriptorTarget = false;
+	bool observedDynamicCommandState = false;
+
 	bool Changed() const
 	{
 		return mChanged;
@@ -250,8 +253,13 @@ public:
 
 	bool FindTargetTextureOverride(
 		const Bunny::CommandListTarget &target,
-		std::vector<DX12TextureOverrideMatch> *matches) const
+		std::vector<DX12TextureOverrideMatch> *matches)
 	{
+		if (target.kind == Bunny::CommandListTargetKind::ConstantBuffer ||
+		    target.kind == Bunny::CommandListTargetKind::ShaderResource ||
+		    target.kind == Bunny::CommandListTargetKind::UnorderedAccessView) {
+			observedDescriptorTarget = true;
+		}
 		return ::FindTargetTextureOverride(
 			mCommandList, mIaState, target, mVertexCount, mIndexCount, mInstanceCount,
 			mFirstVertex, mFirstIndex, mFirstInstance, matches);
@@ -513,21 +521,26 @@ public:
 	{
 		switch (action.kind) {
 		case Bunny::CommandListActionKind::ControlFlow:
+			observedDynamicCommandState = true;
 			mVm.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
 			return true;
 		case Bunny::CommandListActionKind::VariableAssignment:
+			observedDynamicCommandState = true;
 			if (mVm.Active())
 				mVm.Assign(action.key, action.value);
 			return true;
 		case Bunny::CommandListActionKind::PostVariableAssignment:
+			observedDynamicCommandState = true;
 			if (includePost && mVm.Active())
 				mVm.QueuePostAssign(action.key, action.value);
 			return true;
 		case Bunny::CommandListActionKind::LocalVariableAssignment:
+			observedDynamicCommandState = true;
 			if (mVm.Active())
 				mVm.DeclareLocal(action.key, action.value);
 			return true;
 		case Bunny::CommandListActionKind::SetShaderConstant:
+			observedDynamicCommandState = true;
 			if (mVm.Active())
 				mVm.AssignSymbol(action.key, action.value);
 			return true;

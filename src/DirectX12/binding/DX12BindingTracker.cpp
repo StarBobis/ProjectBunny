@@ -27,7 +27,8 @@ static thread_local BindingTlsTableCache tlsGraphicsTableCache;
 static thread_local BindingTlsTableCache tlsComputeTableCache;
 static thread_local BindingTlsDescriptorCache tlsGraphicsDescCache;
 static thread_local BindingTlsDescriptorCache tlsComputeDescCache;
-static thread_local BindingTlsDescriptorQueryCache tlsDescriptorQueryCache;
+static thread_local BindingTlsDescriptorQueryCache
+	tlsDescriptorQueryCaches[BindingTlsDescriptorQueryCache::CacheSlotCount];
 static thread_local BindingTlsComputeAllQueryCache tlsComputeAllQueryCache;
 static thread_local BindingTlsStateCache tlsStateCache;
 
@@ -1725,8 +1726,10 @@ bool DX12BindingTracker::UnregisterCommandList(ID3D12GraphicsCommandList *comman
 		tlsGraphicsDescCache.cl = nullptr;
 	if (tlsComputeDescCache.cl == commandList)
 		tlsComputeDescCache.cl = nullptr;
-	if (tlsDescriptorQueryCache.commandList == commandList)
-		tlsDescriptorQueryCache.commandList = nullptr;
+	for (BindingTlsDescriptorQueryCache &queryCache : tlsDescriptorQueryCaches) {
+		if (queryCache.commandList == commandList)
+			queryCache.commandList = nullptr;
+	}
 	if (tlsComputeAllQueryCache.commandList == commandList)
 		tlsComputeAllQueryCache.commandList = nullptr;
 	if (tlsStateCache.commandList == commandList) {
@@ -1767,7 +1770,8 @@ void DX12BindingTracker::ResetCommandList(
 	tlsComputeTableCache.cl = nullptr;
 	tlsGraphicsDescCache.cl = nullptr;
 	tlsComputeDescCache.cl = nullptr;
-	tlsDescriptorQueryCache.commandList = nullptr;
+	for (BindingTlsDescriptorQueryCache &queryCache : tlsDescriptorQueryCaches)
+		queryCache.commandList = nullptr;
 	tlsComputeAllQueryCache.commandList = nullptr;
 	tlsStateCache.commandList = nullptr;
 	tlsStateCache.state = nullptr;
@@ -2460,25 +2464,44 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
-	if (tlsDescriptorQueryCache.commandList == commandList &&
-		tlsDescriptorQueryCache.compute == compute &&
-		tlsDescriptorQueryCache.rangeType == static_cast<UINT>(rangeType) &&
-		tlsDescriptorQueryCache.bindingQuerySerial == bindingQuerySerial &&
-		tlsDescriptorQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
-		tlsDescriptorQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
-		*uavs = tlsDescriptorQueryCache.bindings;
+	const UINT cacheSlot = BindingTlsDescriptorQueryCache::CacheSlotIndex(
+		compute, rangeType);
+	if (cacheSlot == UINT_MAX)
+		return false;
+	BindingTlsDescriptorQueryCache &queryCache = tlsDescriptorQueryCaches[cacheSlot];
+	if (queryCache.commandList == commandList &&
+		queryCache.compute == compute &&
+		queryCache.rangeType == static_cast<UINT>(rangeType) &&
+		queryCache.bindingQuerySerial == bindingQuerySerial &&
+		queryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
+		queryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
+		*uavs = queryCache.bindings;
+	#if defined(_DEBUG)
+		DX12LogManager::DebugJsonFunc("DX12DescriptorQueryCache",
+			"\"stage\":\"hit\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
+			cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
+			static_cast<unsigned long long>(bindingQuerySerial),
+			static_cast<unsigned long long>(cbvSrvUavHeapVersion), uavs->size());
+	#endif
 		return !uavs->empty();
 	}
 
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindings(
 		snapshot, compute, rangeType, descriptorKind, rootDescriptorType, uavs);
-	tlsDescriptorQueryCache.commandList = commandList;
-	tlsDescriptorQueryCache.compute = compute;
-	tlsDescriptorQueryCache.rangeType = static_cast<UINT>(rangeType);
-	tlsDescriptorQueryCache.bindingQuerySerial = bindingQuerySerial;
-	tlsDescriptorQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
-	tlsDescriptorQueryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
-	tlsDescriptorQueryCache.bindings = *uavs;
+	queryCache.commandList = commandList;
+	queryCache.compute = compute;
+	queryCache.rangeType = static_cast<UINT>(rangeType);
+	queryCache.bindingQuerySerial = bindingQuerySerial;
+	queryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+	queryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
+	queryCache.bindings = *uavs;
+	#if defined(_DEBUG)
+	DX12LogManager::DebugJsonFunc("DX12DescriptorQueryCache",
+		"\"stage\":\"miss\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
+		cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
+		static_cast<unsigned long long>(bindingQuerySerial),
+		static_cast<unsigned long long>(cbvSrvUavHeapVersion), uavs->size());
+	#endif
 	return foundAny;
 }
 

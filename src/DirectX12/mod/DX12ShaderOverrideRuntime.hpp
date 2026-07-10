@@ -26,6 +26,10 @@ static bool ShaderModelMatchesRegex(
 
 static constexpr LONG ShaderOverrideHotPathLogLimit = 512;
 static volatile LONG gShaderOverridePsoCacheHitLogCount = 0;
+static volatile LONG gShaderOverrideNegativeCacheHitLogCount = 0;
+static volatile LONG gShaderOverrideNegativeCacheStoreLogCount = 0;
+static volatile LONG gShaderOverrideNegativeCacheDescriptorBlockedLogCount = 0;
+static volatile LONG gShaderOverrideNegativeCacheDynamicBlockedLogCount = 0;
 
 static bool AllowShaderOverrideHotPathLog(volatile LONG *counter)
 {
@@ -432,10 +436,11 @@ static void LogShaderOverrideCommandListSnapshotLimited(
 #endif
 }
 
-static bool ShaderOverrideNegativeCacheEnabled()
+static bool ShaderOverrideNegativeCacheEnabled(
+	bool allowDescriptorIndependentNegativeCache)
 {
-	return DX12ModHasActiveShaderOverrides() &&
-		InterlockedCompareExchange(&gHasShaderDescriptorTextureOverrideTriggers, 0, 0) == 0;
+	return allowDescriptorIndependentNegativeCache &&
+		DX12ModHasActiveShaderOverrides();
 }
 
 static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
@@ -722,7 +727,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	DX12ModIaReplacement *replacement,
-	bool allowNegativeCache,
+	bool allowDescriptorIndependentNegativeCache,
 	ID3D12Device *cachedDevice)
 {
 	if (!replacement)
@@ -731,19 +736,26 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (!commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
 		return false;
 
-	const bool negativeCacheEnabled =
-		allowNegativeCache && ShaderOverrideNegativeCacheEnabled();
+	const bool negativeCacheEnabled = ShaderOverrideNegativeCacheEnabled(
+		allowDescriptorIndependentNegativeCache);
 	DX12ShaderOverrideNegativeCacheKey negativeCacheKey = {};
 	if (negativeCacheEnabled) {
 		negativeCacheKey = MakeShaderOverrideNegativeCacheKey(
 			pipelineState, iaState,
 			vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance);
-		if (TryFindShaderOverrideNegativeCache(negativeCacheKey))
+		if (TryFindShaderOverrideNegativeCache(negativeCacheKey)) {
+#if defined(_DEBUG)
+			if (AllowShaderOverrideHotPathLog(&gShaderOverrideNegativeCacheHitLogCount)) {
+				DX12LogManager::DebugJsonFunc("DX12ShaderOverrideNegativeCache",
+					"\"status\":\"hit\",\"pso\":\"%p\"", pipelineState);
+			}
+#endif
 			return false;
+		}
 	}
 
-	// 方案D: Try PSO pre-compiled plan first (zero-lock, zero-discovery).
+	// Try the precompiled PSO plan first (zero-lock, zero-discovery).
 	// Eliminates per-draw lock+lookup+copy for PSOs recorded after mod loading.
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12ShaderOverrideConfigView configView;
@@ -807,8 +819,36 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (!deviceFromCache)
 		device->Release();
 
-	if (negativeCacheEnabled && !changed && pendingResourceViews.empty())
+	const bool negativeCacheStoreSafe = negativeCacheEnabled && !changed &&
+		pendingResourceViews.empty() && !executor.observedDescriptorTarget &&
+		!executor.observedDynamicCommandState;
+	if (negativeCacheStoreSafe) {
 		StoreShaderOverrideNegativeCache(negativeCacheKey);
+#if defined(_DEBUG)
+		if (AllowShaderOverrideHotPathLog(&gShaderOverrideNegativeCacheStoreLogCount)) {
+			DX12LogManager::DebugJsonFunc("DX12ShaderOverrideNegativeCache",
+				"\"status\":\"store\",\"pso\":\"%p\"", pipelineState);
+		}
+#endif
+	} else if (negativeCacheEnabled && !changed && executor.observedDescriptorTarget) {
+#if defined(_DEBUG)
+		if (AllowShaderOverrideHotPathLog(
+				&gShaderOverrideNegativeCacheDescriptorBlockedLogCount)) {
+			DX12LogManager::DebugJsonFunc("DX12ShaderOverrideNegativeCache",
+				"\"status\":\"descriptor_blocked\",\"pso\":\"%p\"",
+				pipelineState);
+		}
+#endif
+	} else if (negativeCacheEnabled && !changed && executor.observedDynamicCommandState) {
+#if defined(_DEBUG)
+		if (AllowShaderOverrideHotPathLog(
+				&gShaderOverrideNegativeCacheDynamicBlockedLogCount)) {
+			DX12LogManager::DebugJsonFunc("DX12ShaderOverrideNegativeCache",
+				"\"status\":\"dynamic_state_blocked\",\"pso\":\"%p\"",
+				pipelineState);
+		}
+#endif
+	}
 
 	return changed;
 }

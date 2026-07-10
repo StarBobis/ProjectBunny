@@ -29,6 +29,7 @@ public:
 	bool targetPlanHasIaTargets = false;
 	bool targetPlanHasDescriptorTargets = false;
 	bool negativeCacheSafe = false;
+	bool shaderOverrideNegativeCacheAllowed = false;
 	DX12IaHashTargetPlan targetPlan;
 
 	void Reset()
@@ -44,6 +45,7 @@ public:
 		targetPlanHasIaTargets = false;
 		targetPlanHasDescriptorTargets = false;
 		negativeCacheSafe = false;
+		shaderOverrideNegativeCacheAllowed = false;
 		targetPlan = DX12IaHashTargetPlan();
 	}
 
@@ -86,6 +88,10 @@ public:
 		(void)descriptorTrackingNeeded;
 		negativeCacheSafe = !targetPlanHasDescriptorTargets &&
 			(targetPlan.hasTextureOverrideChecks || !targetPlanHasIaTargets);
+		// The interpreter can cache only misses that prove they did not reach a
+		// descriptor target. The outer PSO cache remains descriptor-conservative.
+		shaderOverrideNegativeCacheAllowed =
+			negativeCacheSafe || targetPlan.hasTextureOverrideChecks;
 
 		if (!hasShaderOverrides && !hasShaderOverrideSkip) {
 			kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
