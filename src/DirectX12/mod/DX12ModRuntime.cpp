@@ -10,6 +10,7 @@
 #include <cwctype>
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
