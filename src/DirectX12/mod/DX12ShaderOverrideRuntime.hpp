@@ -442,7 +442,7 @@ static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
 	ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex)
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance)
 {
 	DX12ShaderOverrideNegativeCacheKey key = {};
 	key.reloadGeneration = static_cast<UINT64>(InterlockedCompareExchange64(
@@ -454,6 +454,7 @@ static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
 	key.instanceCount = instanceCount;
 	key.firstVertex = firstVertex;
 	key.firstIndex = firstIndex;
+	key.firstInstance = firstInstance;
 	key.hasIndexBuffer = iaState.hasIndexBuffer;
 	key.indexHash = iaState.hasIndexBuffer ? iaState.indexHash : 0;
 	if (iaState.hasIndexBuffer) {
@@ -483,6 +484,7 @@ static UINT64 HashShaderOverrideNegativeCacheKey(
 	hash = HashCombine64(hash, key.instanceCount);
 	hash = HashCombine64(hash, key.firstVertex);
 	hash = HashCombine64(hash, key.firstIndex);
+	hash = HashCombine64(hash, key.firstInstance);
 	hash = HashCombine64(hash, key.hasIndexBuffer ? 1 : 0);
 	hash = HashCombine64(hash, key.indexHash);
 	hash = HashCombine64(hash, key.indexBufferSize);
@@ -718,7 +720,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex,
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	DX12ModIaReplacement *replacement,
 	bool allowNegativeCache,
 	ID3D12Device *cachedDevice)
@@ -735,7 +737,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (negativeCacheEnabled) {
 		negativeCacheKey = MakeShaderOverrideNegativeCacheKey(
 			pipelineState, iaState,
-			vertexCount, indexCount, instanceCount, firstVertex, firstIndex);
+			vertexCount, indexCount, instanceCount,
+			firstVertex, firstIndex, firstInstance);
 		if (TryFindShaderOverrideNegativeCache(negativeCacheKey))
 			return false;
 	}
@@ -788,7 +791,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	DX12CommandListExecutor executor(
 		device, commandList, iaState,
 		vertexCount, indexCount, instanceCount,
-		firstVertex, firstIndex, replacement, &pendingResourceViews);
+		firstVertex, firstIndex, firstInstance,
+		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
 	for (const Bunny::ShaderOverrideConfig &config : configSnapshot) {
 		executor.RunShaderOverride(config);
@@ -813,7 +817,7 @@ void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex,
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	DX12ModIaReplacement *replacement)
 {
 	if (!replacement || !commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
@@ -834,7 +838,8 @@ void DX12ModRunPostShaderOverrideReplacement(
 		DX12CommandListExecutor executor(
 			device, commandList, iaState,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, replacement, &pendingResourceViews);
+			firstVertex, firstIndex, firstInstance,
+			replacement, &pendingResourceViews);
 		executor.SetExecutionMode(true, true);
 		for (const Bunny::ShaderOverrideConfig &config : configSnapshot) {
 			executor.RunPostShaderOverrideLists(config);

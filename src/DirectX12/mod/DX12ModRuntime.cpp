@@ -32,7 +32,6 @@
 #include "MigotoIniLoader.hpp"
 #include "MigotoKeyBindingUtils.hpp"
 #include "MigotoResource.hpp"
-#include "DX12PreSkinAsyncUtils.hpp"
 #include "DX12TextureOverrideMatch.hpp"
 #include "MigotoShaderOverride.hpp"
 #include "MigotoShaderRegex.hpp"
@@ -385,6 +384,7 @@ public:
 	uint32_t instanceCount = 0;
 	uint32_t firstVertex = 0;
 	uint32_t firstIndex = 0;
+	uint32_t firstInstance = 0;
 	bool hasIndexBuffer = false;
 	uint32_t indexHash = 0;
 	UINT64 indexBufferLocation = 0;
@@ -406,6 +406,7 @@ public:
 			instanceCount == other.instanceCount &&
 			firstVertex == other.firstVertex &&
 			firstIndex == other.firstIndex &&
+			firstInstance == other.firstInstance &&
 			hasIndexBuffer == other.hasIndexBuffer &&
 			indexHash == other.indexHash &&
 			indexBufferLocation == other.indexBufferLocation &&
@@ -751,9 +752,9 @@ static uint64_t HashComputeCbvLayoutList(
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs)
 {
 	uint64_t key = 0xb5316b20a34bf779ull;
-	const size_t maxItems = 8;
-	for (size_t i = 0; i < cbvs.size() && i < maxItems; ++i)
-		key = HashComputeBindingLayout(key, cbvs[i], false);
+	key = HashCombine64(key, cbvs.size());
+	for (const DX12CurrentComputeUavBinding &cbv : cbvs)
+		key = HashComputeBindingLayout(key, cbv, false);
 	return key;
 }
 
@@ -1421,7 +1422,6 @@ enum class DX12PsoKind
 #include "utils/DX12DrawSrvReplacementUtils.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
 
-DX12PreSkinAsyncQueue gPreSkinAsyncQueue;
 #include "DX12PreSkinRuntime.hpp"
 
 #include "DX12ModRuntimeState.hpp"
@@ -1446,63 +1446,6 @@ void DX12ModClearIaReplacementRuntimeCaches()
 	ClearShaderOverrideNegativeCache();
 	ClearCompiledPsoPlans();
 }
-
-
-
-
-// ---------------------------------------------------------------------------
-// DX12PreSkinAsyncQueue::ProcessRequest — worker-thread entry point.
-// Calls the match-only computation and populates the PreSkinUavMatchCache
-// so that the next render-thread Dispatch call hits the cache.
-// ---------------------------------------------------------------------------
-void DX12PreSkinAsyncQueue::ProcessRequest(DX12PreSkinAsyncRequest *request)
-{
-	if (!request || request->computeShaderHash == 0 ||
-		request->computeBindingSerial == 0)
-		return;
-
-	bool matched = false;
-	DX12PreSkinDispatchOverride dispatchOverride;
-	DX12ModComputePreSkinMatchOnly(
-		request->computeShaderHash,
-		request->uavs,
-		request->srvs,
-		request->cbvs,
-		request->rootConstants,
-		&matched,
-		&dispatchOverride);
-
-	// Store the computed result in the PreSkinUavMatchCache so the render
-	// thread finds a cache hit on the next frame.
-	// We use a dummy commandList pointer — the cache key only depends on
-	// reload generation + CS hash + binding fingerprint.
-	UINT64 dummyHash = 0x4f1bbcdc9cb7a2c5ull;
-	dummyHash = HashCombine64(dummyHash, gReloadGeneration);
-	dummyHash = HashCombine64(dummyHash, request->computeShaderHash);
-	dummyHash = HashCombine64(dummyHash, request->computeBindingSerial);
-	UINT64 cacheKey = dummyHash;
-
-	AcquireSRWLockExclusive(&gModLock);
-	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[cacheKey];
-	bool isNewEntry = !entry.valid;
-	entry.computeShaderHash = request->computeShaderHash;
-	entry.computeBindingSerial = request->computeBindingSerial;
-	entry.valid = true;
-	entry.matched = matched;
-	entry.dispatchOverride = dispatchOverride;
-	if (isNewEntry) {
-		gPreSkinUavMatchCacheLru.push_back(cacheKey);
-	}
-	if (gPreSkinUavMatchCache.size() > MaxPreSkinUavMatchCacheEntries) {
-		if (!gPreSkinUavMatchCacheLru.empty()) {
-			UINT64 oldestKey = gPreSkinUavMatchCacheLru.front();
-			gPreSkinUavMatchCacheLru.pop_front();
-			gPreSkinUavMatchCache.erase(oldestKey);
-		}
-	}
-	ReleaseSRWLockExclusive(&gModLock);
-}
-
 // ── PreSkin DynamicUAV output resize map ──────────────────────────
 // Maps original game-created output UAV resources to resized buffers
 // when the mod vertex count exceeds the original capacity.

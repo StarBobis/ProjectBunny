@@ -112,13 +112,9 @@ public:
 			return;
 		}
 
-		if (DX12HuntIsEnabled()) {
-			if (runtimeState)
-				DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
-			else
-				DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
-		}
-		if (DX12ModHasActiveShaderOverrides()) {
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const bool modEnabled = DX12ModHasActiveShaderOverrides();
+		if (huntEnabled || modEnabled) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
 			else
@@ -152,14 +148,11 @@ public:
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
-		if (DX12HuntIsEnabled()) {
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const bool modEnabled = DX12ModHasActiveShaderOverrides();
+		if (huntEnabled)
 			DX12Profiling::RecordIaHuntIaUpdate();
-			if (runtimeState)
-				DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
-			else
-				DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
-		}
-		if (DX12ModHasActiveShaderOverrides()) {
+		if (huntEnabled || modEnabled) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
 			else
@@ -196,14 +189,11 @@ public:
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
-		if (DX12HuntIsEnabled()) {
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const bool modEnabled = DX12ModHasActiveShaderOverrides();
+		if (huntEnabled)
 			DX12Profiling::RecordIaHuntIaUpdate();
-			if (runtimeState)
-				DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
-			else
-				DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
-		}
-		if (DX12ModHasActiveShaderOverrides()) {
+		if (huntEnabled || modEnabled) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
 			else

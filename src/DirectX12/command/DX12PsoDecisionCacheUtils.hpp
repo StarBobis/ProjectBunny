@@ -85,6 +85,7 @@ public:
 	inline static SRWLOCK Lock = SRWLOCK_INIT;
 	inline static UINT64 Clock = 0;
 	inline static UINT64 ReloadGeneration = 0;
+	static constexpr size_t MaxEntriesPerKind = 4096;
 	inline static std::unordered_map<
 		DX12PsoDecisionCacheDispatchKey,
 		DX12PsoDecisionCacheDispatchEntry,
@@ -152,6 +153,12 @@ public:
 		key.activePreSkinProbe = activePreSkinProbe;
 
 		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
+		if (DX12PsoDecisionCacheUtils::DispatchEntries.find(key) ==
+				DX12PsoDecisionCacheUtils::DispatchEntries.end() &&
+			DX12PsoDecisionCacheUtils::DispatchEntries.size() >= MaxEntriesPerKind) {
+			DX12PsoDecisionCacheUtils::DispatchEntries.erase(
+				DX12PsoDecisionCacheUtils::DispatchEntries.begin());
+		}
 		DX12PsoDecisionCacheDispatchEntry &entry =
 			DX12PsoDecisionCacheUtils::DispatchEntries[key];
 		entry.age = ++DX12PsoDecisionCacheUtils::Clock;
@@ -201,6 +208,12 @@ public:
 		key.activeShaderOverrides = activeShaderOverrides;
 
 		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
+		if (DX12PsoDecisionCacheUtils::DrawEntries.find(key) ==
+				DX12PsoDecisionCacheUtils::DrawEntries.end() &&
+			DX12PsoDecisionCacheUtils::DrawEntries.size() >= MaxEntriesPerKind) {
+			DX12PsoDecisionCacheUtils::DrawEntries.erase(
+				DX12PsoDecisionCacheUtils::DrawEntries.begin());
+		}
 		DX12PsoDecisionCacheDrawEntry &entry =
 			DX12PsoDecisionCacheUtils::DrawEntries[key];
 		entry.age = ++DX12PsoDecisionCacheUtils::Clock;

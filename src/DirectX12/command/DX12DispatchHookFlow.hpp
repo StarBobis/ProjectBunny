@@ -12,7 +12,6 @@
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12HotPathState.hpp"
 #include "DX12ModRuntime.hpp"
-#include "DX12PreSkinAsyncUtils.hpp"
 #include "DX12PreSkinPlan.hpp"
 #include "DX12Profiling.hpp"
 #include "DX12RuntimeState.hpp"

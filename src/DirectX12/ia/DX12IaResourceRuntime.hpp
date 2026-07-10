@@ -257,12 +257,17 @@ static bool TryFindCachedIaTextureOverrideLocked(
 static void StoreIaTextureOverrideLookupCacheLocked(
 	const DX12TextureOverrideLookupCacheKey &key, const std::vector<size_t> &candidateIndexes)
 {
-	if (gTextureOverrideLookupCache.size() >= MaxTextureOverrideLookupCacheEntries)
-		gTextureOverrideLookupCache.clear();
 	DX12TextureOverrideLookupCacheEntry entry = {};
 	entry.matched = !candidateIndexes.empty();
 	entry.iaCandidateIndexes = candidateIndexes;
-	gTextureOverrideLookupCache[key] = entry;
+	auto existing = gTextureOverrideLookupCache.find(key);
+	if (existing != gTextureOverrideLookupCache.end()) {
+		existing->second = std::move(entry);
+		return;
+	}
+	if (gTextureOverrideLookupCache.size() >= MaxTextureOverrideLookupCacheEntries)
+		gTextureOverrideLookupCache.erase(gTextureOverrideLookupCache.begin());
+	gTextureOverrideLookupCache.emplace(key, std::move(entry));
 }
 
 static bool FindIaTextureOverridesCachedLocked(
@@ -546,6 +551,7 @@ static void AppendTextureOverrideMatchesByHash(
 	uint32_t instanceCount,
 	uint32_t firstVertex,
 	uint32_t firstIndex,
+	uint32_t firstInstance,
 	std::vector<DX12TextureOverrideMatch> *matches)
 {
 	if (!hash || !matches)
@@ -553,7 +559,7 @@ static void AppendTextureOverrideMatchesByHash(
 	std::vector<Bunny::TextureOverrideConfig> configs;
 	if (!FindTextureOverridesByHash(
 		    hash, vertexCount, indexCount, instanceCount,
-		    firstVertex, firstIndex, 0, &configs))
+		    firstVertex, firstIndex, firstInstance, &configs))
 		return;
 	for (const Bunny::TextureOverrideConfig &config : configs) {
 		DX12TextureOverrideMatch match;
@@ -577,7 +583,7 @@ static bool FindDescriptorTextureOverrides(
 	ID3D12GraphicsCommandList *commandList,
 	const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex,
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	std::vector<DX12TextureOverrideMatch> *matches)
 {
 	if (matches)
@@ -615,11 +621,13 @@ static bool FindDescriptorTextureOverrides(
 #endif
 		AppendTextureOverrideMatchesByHash(
 			resourceHash, resourceHash, descriptorHash, &binding, compute,
-			vertexCount, indexCount, instanceCount, firstVertex, firstIndex, matches);
+			vertexCount, indexCount, instanceCount,
+			firstVertex, firstIndex, firstInstance, matches);
 		if (descriptorHash && descriptorHash != resourceHash) {
 			AppendTextureOverrideMatchesByHash(
 				descriptorHash, resourceHash, descriptorHash, &binding, compute,
-				vertexCount, indexCount, instanceCount, firstVertex, firstIndex, matches);
+				vertexCount, indexCount, instanceCount,
+				firstVertex, firstIndex, firstInstance, matches);
 		}
 	}
 	return matches && !matches->empty();
@@ -881,7 +889,7 @@ static bool FindTargetTextureOverride(
 	ID3D12GraphicsCommandList *commandList,
 	const DX12IaHashState &iaState, const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex,
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	std::vector<DX12TextureOverrideMatch> *matches)
 {
 	if (matches)
@@ -898,7 +906,7 @@ static bool FindTargetTextureOverride(
 		bool found = FindIaTextureOverridesCached(
 			target, iaState.indexHash,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, 0, true, 0, &configs);
+			firstVertex, firstIndex, firstInstance, true, 0, &configs);
 		if (found && matches) {
 			for (const Bunny::TextureOverrideConfig &config : configs) {
 				DX12TextureOverrideMatch match;
@@ -930,7 +938,7 @@ static bool FindTargetTextureOverride(
 		bool found = FindIaTextureOverridesCached(
 			target, slot->hash,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, 0, false, target.slot, &configs);
+			firstVertex, firstIndex, firstInstance, false, target.slot, &configs);
 		if (found && matches) {
 			for (const Bunny::TextureOverrideConfig &config : configs) {
 				DX12TextureOverrideMatch match;
@@ -953,7 +961,7 @@ static bool FindTargetTextureOverride(
 	    target.kind == Bunny::CommandListTargetKind::UnorderedAccessView) {
 		return FindDescriptorTextureOverrides(
 			commandList, target, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, matches);
+			firstVertex, firstIndex, firstInstance, matches);
 	}
 
 	return false;

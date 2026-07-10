@@ -110,7 +110,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaHashState &iaState,
 		uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-		uint32_t firstVertex, uint32_t firstIndex,
+		uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 		DX12ModIaReplacement *replacement,
 		std::vector<DX12PendingResourceViewRequest> *pendingResourceViews = nullptr)
 		: mDevice(device),
@@ -121,6 +121,7 @@ public:
 		  mInstanceCount(instanceCount),
 		  mFirstVertex(firstVertex),
 		  mFirstIndex(firstIndex),
+		  mFirstInstance(firstInstance),
 		  mReplacement(replacement),
 		  mPendingResourceViews(pendingResourceViews)
 	{
@@ -253,7 +254,7 @@ public:
 	{
 		return ::FindTargetTextureOverride(
 			mCommandList, mIaState, target, mVertexCount, mIndexCount, mInstanceCount,
-			mFirstVertex, mFirstIndex, matches);
+			mFirstVertex, mFirstIndex, mFirstInstance, matches);
 	}
 
 	void RunTextureOverride(
@@ -604,6 +605,7 @@ public:
 	uint32_t mInstanceCount = 0;
 	uint32_t mFirstVertex = 0;
 	uint32_t mFirstIndex = 0;
+	uint32_t mFirstInstance = 0;
 	DX12ModIaReplacement *mReplacement = nullptr;
 	std::vector<DX12PendingResourceViewRequest> *mPendingResourceViews = nullptr;
 	bool mChanged = false;
@@ -627,7 +629,8 @@ static bool RunNamedCommandList(
 
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
-		device, commandList, emptyIa, 0, 0, 0, 0, 0, replacement, pendingResourceViews);
+		device, commandList, emptyIa, 0, 0, 0, 0, 0, 0,
+		replacement, pendingResourceViews);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
 	return executor.Changed();
 }
@@ -641,7 +644,7 @@ static bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost
 
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
-		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, nullptr, nullptr);
+		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, 0, nullptr, nullptr);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, includePost);
 	return true;
 }

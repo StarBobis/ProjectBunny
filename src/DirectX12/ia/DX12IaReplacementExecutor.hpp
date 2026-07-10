@@ -25,15 +25,78 @@ inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
 	return false;
 }
 
+class DX12PsoDrawFastRejectKey
+{
+public:
+	ID3D12PipelineState *pipelineState = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 targetPlanFingerprint = 0;
+	UINT64 iaFingerprint = 0;
+	uint32_t fingerprintKind = 0;
+	bool indexed = false;
+	uint32_t vertexCount = 0;
+	uint32_t indexCount = 0;
+	uint32_t instanceCount = 0;
+	uint32_t firstVertex = 0;
+	uint32_t firstIndex = 0;
+	INT baseVertex = 0;
+	uint32_t firstInstance = 0;
+
+	bool operator==(const DX12PsoDrawFastRejectKey &other) const
+	{
+		return pipelineState == other.pipelineState &&
+			reloadGeneration == other.reloadGeneration &&
+			targetPlanFingerprint == other.targetPlanFingerprint &&
+			iaFingerprint == other.iaFingerprint &&
+			fingerprintKind == other.fingerprintKind &&
+			indexed == other.indexed &&
+			vertexCount == other.vertexCount &&
+			indexCount == other.indexCount &&
+			instanceCount == other.instanceCount &&
+			firstVertex == other.firstVertex &&
+			firstIndex == other.firstIndex &&
+			baseVertex == other.baseVertex &&
+			firstInstance == other.firstInstance;
+	}
+};
+
+class DX12PsoDrawFastRejectKeyHash
+{
+public:
+	static size_t Mix(size_t hash, UINT64 value)
+	{
+		hash ^= static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
+			(hash << 6) + (hash >> 2);
+		return hash;
+	}
+
+	size_t operator()(const DX12PsoDrawFastRejectKey &key) const
+	{
+		size_t hash = reinterpret_cast<size_t>(key.pipelineState);
+		hash = Mix(hash, key.reloadGeneration);
+		hash = Mix(hash, key.targetPlanFingerprint);
+		hash = Mix(hash, key.iaFingerprint);
+		hash = Mix(hash, key.fingerprintKind);
+		hash = Mix(hash, key.indexed ? 1 : 0);
+		hash = Mix(hash, key.vertexCount);
+		hash = Mix(hash, key.indexCount);
+		hash = Mix(hash, key.instanceCount);
+		hash = Mix(hash, key.firstVertex);
+		hash = Mix(hash, key.firstIndex);
+		hash = Mix(hash, static_cast<UINT64>(static_cast<INT64>(key.baseVertex)));
+		hash = Mix(hash, key.firstInstance);
+		return hash;
+	}
+};
+
 class DX12IaReplacementExecutor
 {
 public:
-	// Unified PSO+IA fast-reject cache: single lock, single lookup.
-	// Key = Mix(PSO, targetPlan fingerprint, IA view fingerprint).
-	// Replaces the previous two-tier pre-filter + negative cache.
-	// Persists across frames, cleared on mod reload.
-	inline static std::unordered_set<UINT64> s_psoDrawFastRejectCache;
+	inline static std::unordered_set<
+		DX12PsoDrawFastRejectKey,
+		DX12PsoDrawFastRejectKeyHash> s_psoDrawFastRejectCache;
 	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
+	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
 
 	static UINT64 MixCheapValue(UINT64 key, UINT64 value)
 	{
@@ -43,29 +106,59 @@ public:
 		return key;
 	}
 
-	static UINT64 MakePsoIaNegativeKey(
+	static DX12PsoDrawFastRejectKey MakeDrawFastRejectKey(
 		ID3D12PipelineState *pipelineState,
+		UINT64 reloadGeneration,
 		const DX12IaHashTargetPlan &targetPlan,
-		const DX12IaHashState &iaState)
+		UINT64 iaFingerprint,
+		uint32_t fingerprintKind,
+		const DX12IaDrawInvocation &draw)
 	{
-		UINT64 key = reinterpret_cast<UINT64>(pipelineState);
-		key = MixCheapValue(key, targetPlan.Fingerprint());
-		key = MixCheapValue(key, iaState.hasIndexBuffer ? 1ull : 0ull);
-		if (iaState.hasIndexBuffer) {
-			key = MixCheapValue(key, iaState.indexHash);
-			key = MixCheapValue(key, iaState.indexView.SizeInBytes);
-			key = MixCheapValue(key, static_cast<UINT64>(iaState.indexView.Format));
-		}
-		for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
-			key = MixCheapValue(key, static_cast<UINT64>(buffer.slot));
-			key = MixCheapValue(key, buffer.hash);
-			key = MixCheapValue(key, buffer.vertexView.SizeInBytes);
-			key = MixCheapValue(key, buffer.vertexView.StrideInBytes);
-		}
-		return key ? key : 1;
+		DX12PsoDrawFastRejectKey key;
+		key.pipelineState = pipelineState;
+		key.reloadGeneration = reloadGeneration;
+		key.targetPlanFingerprint = targetPlan.Fingerprint();
+		key.iaFingerprint = iaFingerprint;
+		key.fingerprintKind = fingerprintKind;
+		key.indexed = draw.indexed;
+		key.vertexCount = draw.vertexCount;
+		key.indexCount = draw.indexCount;
+		key.instanceCount = draw.instanceCount;
+		key.firstVertex = draw.firstVertex;
+		key.firstIndex = draw.firstIndex;
+		key.baseVertex = draw.baseVertex;
+		key.firstInstance = draw.firstInstance;
+		return key;
 	}
 
-	static bool TryFindPsoDrawFastReject(UINT64 key)
+	static DX12PsoDrawFastRejectKey MakePsoIaNegativeKey(
+		ID3D12PipelineState *pipelineState,
+		UINT64 reloadGeneration,
+		const DX12IaHashTargetPlan &targetPlan,
+		const DX12IaHashState &iaState,
+		const DX12IaDrawInvocation &draw)
+	{
+		UINT64 fingerprint = 0x4a2d8b31c6e9075full;
+		fingerprint = MixCheapValue(fingerprint, iaState.hasIndexBuffer ? 1ull : 0ull);
+		if (iaState.hasIndexBuffer) {
+			fingerprint = MixCheapValue(fingerprint, iaState.indexHash);
+			fingerprint = MixCheapValue(fingerprint, iaState.indexView.BufferLocation);
+			fingerprint = MixCheapValue(fingerprint, iaState.indexView.SizeInBytes);
+			fingerprint = MixCheapValue(
+				fingerprint, static_cast<UINT64>(iaState.indexView.Format));
+		}
+		for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
+			fingerprint = MixCheapValue(fingerprint, static_cast<UINT64>(buffer.slot));
+			fingerprint = MixCheapValue(fingerprint, buffer.hash);
+			fingerprint = MixCheapValue(fingerprint, buffer.vertexView.BufferLocation);
+			fingerprint = MixCheapValue(fingerprint, buffer.vertexView.SizeInBytes);
+			fingerprint = MixCheapValue(fingerprint, buffer.vertexView.StrideInBytes);
+		}
+		return MakeDrawFastRejectKey(
+			pipelineState, reloadGeneration, targetPlan, fingerprint, 1, draw);
+	}
+
+	static bool TryFindPsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
 		AcquireSRWLockShared(&s_psoDrawFastRejectCacheLock);
 		bool found = s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end();
@@ -73,9 +166,15 @@ public:
 		return found;
 	}
 
-	static void StorePsoDrawFastReject(UINT64 key)
+	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
 		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		if (s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end()) {
+			ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+			return;
+		}
+		if (s_psoDrawFastRejectCache.size() >= MaxPsoDrawFastRejectEntries)
+			s_psoDrawFastRejectCache.erase(s_psoDrawFastRejectCache.begin());
 		s_psoDrawFastRejectCache.insert(key);
 		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
 	}
@@ -141,7 +240,7 @@ public:
 		DX12ModRunPostShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,
 			draw.vertexCount, draw.indexCount, draw.instanceCount,
-			draw.firstVertex, draw.firstIndex, replacement);
+			draw.firstVertex, draw.firstIndex, draw.firstInstance, replacement);
 		return true;
 	}
 
@@ -193,7 +292,7 @@ public:
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		bool hasIaHashState = false;
-		UINT64 psoPreFilterKey = 0;
+		DX12PsoDrawFastRejectKey psoPreFilterKey;
 		if (targetPlanHasIaTargets) {
 			LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
@@ -214,11 +313,13 @@ public:
 				draw.indexed ? 1u : 0u,
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(iaKeyBegin));
-			// Unified fast-reject pre-filter: lightweight key from IA view fingerprint.
-			psoPreFilterKey = reinterpret_cast<UINT64>(runtimeState.pipelineState);
-			psoPreFilterKey = DX12IaReplacementExecutor::MixCheapValue(psoPreFilterKey, targetPlan.Fingerprint());
-			psoPreFilterKey = DX12IaReplacementExecutor::MixCheapValue(psoPreFilterKey, iaCacheKey.iaViewFingerprint);
-			psoPreFilterKey = psoPreFilterKey ? psoPreFilterKey : 1;
+			psoPreFilterKey = DX12IaReplacementExecutor::MakeDrawFastRejectKey(
+				runtimeState.pipelineState,
+				drawDecision->reloadGeneration,
+				targetPlan,
+				iaCacheKey.iaViewFingerprint,
+				0,
+				draw);
 			if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoPreFilterKey)
 				&& !drawDecision->targetPlanHasDescriptorTargets) {
 				DX12Profiling::RecordIaHashStateResult(false);
@@ -286,14 +387,18 @@ public:
 		    drawDecision->targetPlanHasDescriptorTargets) {
 			const bool canUsePsoIaNegativeCache =
 				psoIaNegativeCacheSafe && (!targetPlanHasIaTargets || hasIaHashState);
-			UINT64 psoIaNegKey = 0;
+			DX12PsoDrawFastRejectKey psoIaNegKey;
 
 			// PSO and IA negative cache.
 			if (canUsePsoIaNegativeCache) {
 				DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
 				LARGE_INTEGER negKeyBegin = DX12OuterTimingProbeUtils::Now();
 				psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
-					runtimeState.pipelineState, targetPlan, iaState);
+					runtimeState.pipelineState,
+					drawDecision->reloadGeneration,
+					targetPlan,
+					iaState,
+					draw);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"build_pso_ia_negative_key",
@@ -326,7 +431,7 @@ public:
 			if (DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, iaState,
 				vertexCount, indexCount, draw.instanceCount,
-				firstVertex, firstIndex, &iaReplacement,
+				firstVertex, firstIndex, draw.firstInstance, &iaReplacement,
 				psoIaNegativeCacheSafe,
 			runtimeState.device)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
@@ -371,7 +476,8 @@ public:
 				// No match: store both the full negative key and cheap-to-full map.
 				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
 				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoIaNegKey);
-				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoPreFilterKey);
+				if (targetPlanHasIaTargets)
+					DX12IaReplacementExecutor::StorePsoDrawFastReject(psoPreFilterKey);
 
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",

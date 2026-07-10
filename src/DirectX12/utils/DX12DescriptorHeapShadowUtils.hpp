@@ -4,8 +4,8 @@
 // DX12DescriptorHeapShadowUtils
 // ---------------------------------------------------------------------------
 // Replaces the gRuntimeDescriptorByCpuHandle hash map with direct heap-slot
-// array access, and replaces the global gDescriptorLock with per-heap SRWLOCK
-// for descriptor slot operations.
+// array access. A shared structure lock keeps heap indexes stable while
+// per-heap SRWLOCK instances serialize descriptor slot operations.
 //
 // Key insight: gDescriptorHeaps[].slots[] is already a flat array indexed by
 // descriptor heap offset.  The runtime hash map was an unnecessary duplicate
@@ -16,7 +16,7 @@
 
 #include <windows.h>
 #include <d3d12.h>
-#include <atomic>
+#include <memory>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -27,58 +27,70 @@
 class DX12DescriptorHeapShadowUtils
 {
 public:
-	// ---- Per-heap lock array ----
-	static constexpr UINT MAX_HEAP_LOCKS = 128;
-	static SRWLOCK gHeapLocks[MAX_HEAP_LOCKS];
-	static std::atomic<UINT> gHeapLockCount;
+	static SRWLOCK gHeapLocksGuard;
+	static std::vector<std::unique_ptr<SRWLOCK>> gHeapLocks;
 
 	// ---- Initialisation ----
 	static void Initialize()
 	{
-		gHeapLockCount.store(0, std::memory_order_relaxed);
-		for (UINT i = 0; i < MAX_HEAP_LOCKS; ++i) {
-			gHeapLocks[i] = SRWLOCK_INIT;
-		}
+		AcquireSRWLockExclusive(&gHeapLocksGuard);
+		gHeapLocks.clear();
+		ReleaseSRWLockExclusive(&gHeapLocksGuard);
 	}
 
 	static void EnsureHeapLocks(size_t requiredCount)
 	{
-		if (requiredCount > MAX_HEAP_LOCKS)
+		AcquireSRWLockShared(&gHeapLocksGuard);
+		const bool ready = gHeapLocks.size() >= requiredCount;
+		ReleaseSRWLockShared(&gHeapLocksGuard);
+		if (ready)
 			return;
-		UINT current = gHeapLockCount.load(std::memory_order_relaxed);
-		if (current < static_cast<UINT>(requiredCount)) {
-			gHeapLockCount.store(static_cast<UINT>(requiredCount),
-				std::memory_order_relaxed);
+
+		AcquireSRWLockExclusive(&gHeapLocksGuard);
+		while (gHeapLocks.size() < requiredCount) {
+			std::unique_ptr<SRWLOCK> lock = std::make_unique<SRWLOCK>();
+			InitializeSRWLock(lock.get());
+			gHeapLocks.push_back(std::move(lock));
 		}
+		ReleaseSRWLockExclusive(&gHeapLocksGuard);
+	}
+
+	static SRWLOCK *HeapLock(size_t heapIndex)
+	{
+		AcquireSRWLockShared(&gHeapLocksGuard);
+		SRWLOCK *lock = heapIndex < gHeapLocks.size()
+			? gHeapLocks[heapIndex].get() : nullptr;
+		ReleaseSRWLockShared(&gHeapLocksGuard);
+		return lock;
 	}
 
 	// ---- Lock helpers (per-heap) ----
 	static void LockExclusive(size_t heapIndex)
 	{
-		if (heapIndex < MAX_HEAP_LOCKS) {
-			AcquireSRWLockExclusive(&gHeapLocks[heapIndex]);
-		}
+		SRWLOCK *lock = HeapLock(heapIndex);
+		if (lock)
+			AcquireSRWLockExclusive(lock);
 	}
 
 	static void UnlockExclusive(size_t heapIndex)
 	{
-		if (heapIndex < MAX_HEAP_LOCKS) {
-			ReleaseSRWLockExclusive(&gHeapLocks[heapIndex]);
-		}
+		SRWLOCK *lock = HeapLock(heapIndex);
+		if (lock)
+			ReleaseSRWLockExclusive(lock);
 	}
 
 	static void LockShared(size_t heapIndex)
 	{
-		if (heapIndex < MAX_HEAP_LOCKS) {
-			AcquireSRWLockShared(&gHeapLocks[heapIndex]);
-		}
+		SRWLOCK *lock = HeapLock(heapIndex);
+		if (lock)
+			AcquireSRWLockShared(lock);
 	}
 
 	static void UnlockShared(size_t heapIndex)
 	{
-		if (heapIndex < MAX_HEAP_LOCKS) {
-			ReleaseSRWLockShared(&gHeapLocks[heapIndex]);
-		}
+		SRWLOCK *lock = HeapLock(heapIndex);
+		if (lock)
+			ReleaseSRWLockShared(lock);
 	}
 
 	// ---- Handle -> slot resolution ----
@@ -146,8 +158,10 @@ public:
 		size_t heapIndex = 0;
 		UINT slot = 0;
 
-		if (ResolveHeapSlot(cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-				&heapIndex, &slot)) {
+		AcquireSRWLockShared(&gDescriptorLock);
+		const bool heapResolved = ResolveHeapSlot(
+			cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &heapIndex, &slot);
+		if (heapResolved) {
 			EnsureHeapLocks(heapIndex + 1);
 			LockExclusive(heapIndex);
 
@@ -169,7 +183,10 @@ public:
 			}
 
 			UnlockExclusive(heapIndex);
+		}
+		ReleaseSRWLockShared(&gDescriptorLock);
 
+		if (heapResolved) {
 			// Clone to properly AddRef resources for the CPU ledger copy
 			DescriptorRecord ledgerCopy = CloneDescriptorRecord(record);
 			ledgerCopy.cpuHandle = cpuHandle;
@@ -188,8 +205,10 @@ public:
 	{
 		size_t heapIndex = 0;
 		UINT slot = 0;
+		AcquireSRWLockShared(&gDescriptorLock);
 		if (!ResolveHeapSlot(cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
 				&heapIndex, &slot)) {
+			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
 		}
 
@@ -217,6 +236,7 @@ public:
 		}
 
 		UnlockExclusive(heapIndex);
+		ReleaseSRWLockShared(&gDescriptorLock);
 		BumpDescriptorQuerySerial();
 		return true;
 	}
@@ -232,7 +252,9 @@ public:
 
 		size_t heapIndex = 0;
 		UINT slot = 0;
+		AcquireSRWLockShared(&gDescriptorLock);
 		if (!ResolveHeapSlot(cpuHandle, requiredType, &heapIndex, &slot)) {
+			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
 		}
 
@@ -251,6 +273,7 @@ public:
 		}
 
 		UnlockShared(heapIndex);
+		ReleaseSRWLockShared(&gDescriptorLock);
 		return found;
 	}
 
@@ -266,6 +289,7 @@ public:
 			return;
 		}
 
+		AcquireSRWLockShared(&gDescriptorLock);
 		size_t destHeapIndex = 0;
 		UINT destSlot = 0;
 		const bool destResolved = ResolveHeapSlot(
@@ -280,6 +304,7 @@ public:
 		// fall back to per-descriptor lookup via FindLatestDescriptor which
 		// checks both heap slots and the CPU ledger.
 		if (!destResolved || !srcResolved) {
+			ReleaseSRWLockShared(&gDescriptorLock);
 			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
 			return;
 		}
@@ -343,17 +368,11 @@ public:
 				const SIZE_T srcHandle = srcStart.ptr +
 					static_cast<SIZE_T>(i) * srcHeap.increment;
 				DescriptorRecord cpuRecord;
-				bool cpuFound = false;
-				{
-					AcquireSRWLockShared(&gDescriptorLock);
-					std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator it =
-						gDescriptorByCpuHandle.find(srcHandle);
-					if (it != gDescriptorByCpuHandle.end()) {
-						cpuRecord = it->second;
-						cpuFound = true;
-					}
-					ReleaseSRWLockShared(&gDescriptorLock);
-				}
+				const std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator it =
+					gDescriptorByCpuHandle.find(srcHandle);
+				const bool cpuFound = it != gDescriptorByCpuHandle.end();
+				if (cpuFound)
+					cpuRecord = it->second;
 				if (cpuFound) {
 					DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
 						&destHeap.slots[dSlot], cpuRecord, destHandle);
@@ -375,6 +394,7 @@ public:
 		} else {
 			UnlockExclusive(destHeapIndex);
 		}
+		ReleaseSRWLockShared(&gDescriptorLock);
 
 		if (copiedCount > 0) {
 			BumpDescriptorQuerySerial();
@@ -393,6 +413,7 @@ public:
 		(void)type;
 
 		UINT increment = 0;
+		AcquireSRWLockShared(&gDescriptorLock);
 		for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
 			if (gDescriptorHeaps[hi].desc.Type == type &&
 				gDescriptorHeaps[hi].increment > 0) {
@@ -400,6 +421,7 @@ public:
 				break;
 			}
 		}
+		ReleaseSRWLockShared(&gDescriptorLock);
 
 		UINT copiedCount = 0;
 		for (UINT i = 0; i < count; ++i) {
@@ -494,6 +516,6 @@ public:
 };
 
 // Static member definitions (C++17 inline variables)
-inline SRWLOCK DX12DescriptorHeapShadowUtils::gHeapLocks[
-	DX12DescriptorHeapShadowUtils::MAX_HEAP_LOCKS] = {};
-inline std::atomic<UINT> DX12DescriptorHeapShadowUtils::gHeapLockCount{0};
+inline SRWLOCK DX12DescriptorHeapShadowUtils::gHeapLocksGuard = SRWLOCK_INIT;
+inline std::vector<std::unique_ptr<SRWLOCK>>
+	DX12DescriptorHeapShadowUtils::gHeapLocks;

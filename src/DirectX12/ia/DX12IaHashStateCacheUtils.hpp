@@ -69,6 +69,8 @@ public:
 class DX12IaHashStateCacheUtils
 {
 public:
+	static constexpr size_t MaxEntries = 1024;
+
 	static bool TryLoad(
 		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
 			DX12IaHashStateCacheKeyHash> *entries,
@@ -114,8 +116,11 @@ public:
 			return;
 		}
 
-		if (evictCursor)
-			*evictCursor = 0;
+		if (entries->size() >= MaxEntries) {
+			entries->erase(entries->begin());
+			if (evictCursor)
+				++(*evictCursor);
+		}
 
 		DX12IaHashStateCacheEntry entry;
 		entry.age = ++(*clock);
