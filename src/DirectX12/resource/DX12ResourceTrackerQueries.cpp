@@ -792,10 +792,14 @@ uint32_t DX12HashIaBufferView(
 		const IaHashCacheValue &cacheValue = itL1->second;
 		bool invalidated = true;
 		if (cacheValue.contentGeneration == contentGeneration) {
-			AcquireSRWLockShared(&gResourceLock);
-			invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-				cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
-			ReleaseSRWLockShared(&gResourceLock);
+			if (cacheValue.resolveGeneration == resolveGeneration) {
+				invalidated = false;
+			} else {
+				AcquireSRWLockShared(&gResourceLock);
+				invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+					cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+				ReleaseSRWLockShared(&gResourceLock);
+			}
 		}
 		if (!invalidated)
 			return cacheValue.hash;
@@ -816,10 +820,14 @@ uint32_t DX12HashIaBufferView(
 			const IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
 			if (cacheValue.contentGeneration == contentGeneration) {
-				AcquireSRWLockShared(&gResourceLock);
-				invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-					cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
-				ReleaseSRWLockShared(&gResourceLock);
+				if (cacheValue.resolveGeneration == resolveGeneration) {
+					invalidated = false;
+				} else {
+					AcquireSRWLockShared(&gResourceLock);
+					invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+						cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+					ReleaseSRWLockShared(&gResourceLock);
+				}
 			}
 			if (!invalidated) {
 				s_cacheL1[keyL1] = cacheValue;

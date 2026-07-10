@@ -862,8 +862,7 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 
 DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
 	const DX12ActiveIaState &ia,
-	ID3D12PipelineState *pipelineState,
-	UINT64 reloadGeneration,
+	UINT64 iaContentEpoch,
 	const DX12IaHashTargetPlan &targetPlan,
 	bool indexed,
 	UINT vertexCount,
@@ -873,9 +872,10 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	INT baseVertex)
 {
 	DX12IaHashStateCacheKey key;
-	key.pipelineState = pipelineState;
-	key.reloadGeneration = reloadGeneration;
 	key.targetPlanFingerprint = targetPlan.Fingerprint();
+	key.iaContentEpoch = iaContentEpoch;
+	key.bufferContentGeneration = DX12GetIaHashContentGeneration();
+	key.bufferResolveGeneration = DX12GetIaHashResolveGeneration();
 	key.indexed = indexed;
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;
@@ -886,9 +886,12 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 
 	if (targetPlan.RequiresIndexBuffer(indexed)) {
 		key.iaViewFingerprint ^= 0x100000001b3ull;
-		key.iaViewFingerprint ^= ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull;
-		if (ia.hasIndexBuffer) {
-			key.iaViewFingerprint ^= static_cast<UINT64>(ia.indexBuffer.SizeInBytes) +
+			key.iaViewFingerprint ^= ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull;
+			if (ia.hasIndexBuffer) {
+				key.iaViewFingerprint ^= ia.indexBuffer.BufferLocation +
+					0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+					(key.iaViewFingerprint >> 2);
+				key.iaViewFingerprint ^= static_cast<UINT64>(ia.indexBuffer.SizeInBytes) +
 				0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 				(key.iaViewFingerprint >> 2);
 			key.iaViewFingerprint ^= static_cast<UINT64>(ia.indexBuffer.Format) +
@@ -905,6 +908,9 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		key.iaViewFingerprint ^= ia.hasVertexBuffer[slot] ? 0x27d4eb2full : 0x165667b1ull;
 		if (!ia.hasVertexBuffer[slot])
 			continue;
+		key.iaViewFingerprint ^= ia.vertexBuffers[slot].BufferLocation +
+			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
+			(key.iaViewFingerprint >> 2);
 		key.iaViewFingerprint ^= static_cast<UINT64>(ia.vertexBuffers[slot].SizeInBytes) +
 			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 			(key.iaViewFingerprint >> 2);

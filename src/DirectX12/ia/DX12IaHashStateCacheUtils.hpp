@@ -3,19 +3,20 @@
 #include <Windows.h>
 #include <d3d12.h>
 
+#include <list>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include "DX12IaHashState.hpp"
 
 class DX12IaHashStateCacheKey
 {
 public:
-	ID3D12PipelineState *pipelineState = nullptr;
-	UINT64 reloadGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	UINT64 iaViewFingerprint = 0;
+	UINT64 iaContentEpoch = 0;
+	UINT64 bufferContentGeneration = 0;
+	UINT64 bufferResolveGeneration = 0;
 	bool indexed = false;
 	UINT vertexCount = 0;
 	UINT indexCount = 0;
@@ -25,10 +26,11 @@ public:
 
 	bool operator==(const DX12IaHashStateCacheKey &other) const
 	{
-		return pipelineState == other.pipelineState &&
-			reloadGeneration == other.reloadGeneration &&
-			targetPlanFingerprint == other.targetPlanFingerprint &&
+		return targetPlanFingerprint == other.targetPlanFingerprint &&
 			iaViewFingerprint == other.iaViewFingerprint &&
+			iaContentEpoch == other.iaContentEpoch &&
+			bufferContentGeneration == other.bufferContentGeneration &&
+			bufferResolveGeneration == other.bufferResolveGeneration &&
 			indexed == other.indexed &&
 			vertexCount == other.vertexCount &&
 			indexCount == other.indexCount &&
@@ -41,29 +43,67 @@ public:
 class DX12IaHashStateCacheKeyHash
 {
 public:
-	size_t operator()(const DX12IaHashStateCacheKey &k) const
+	static size_t Combine(size_t hash, UINT64 value)
 	{
-		size_t h = reinterpret_cast<size_t>(k.pipelineState);
-		h ^= k.reloadGeneration + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-		h ^= k.targetPlanFingerprint + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-		h ^= k.iaViewFingerprint + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-		h ^= static_cast<size_t>(k.indexed) * 0xff51afd7ed558ccdull;
-		h ^= k.vertexCount * 0xc4ceb9fe1a85ec53ull;
-		h ^= k.indexCount * 0x27d4eb2f165667c5ull;
-		h ^= k.firstVertex * 0x94d049bb133111ebull;
-		h ^= k.firstIndex * 0x9f5b4e1d4c3b2a19ull;
-		h ^= static_cast<size_t>(k.baseVertex) * 0x3c6ef372fe94f82aull;
-		return h;
+		hash ^= static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
+			(hash << 6) + (hash >> 2);
+		return hash;
+	}
+
+	size_t operator()(const DX12IaHashStateCacheKey &key) const
+	{
+		size_t hash = 0x84222325a9582d75ull;
+		hash = Combine(hash, key.targetPlanFingerprint);
+		hash = Combine(hash, key.iaViewFingerprint);
+		hash = Combine(hash, key.iaContentEpoch);
+		hash = Combine(hash, key.bufferContentGeneration);
+		hash = Combine(hash, key.bufferResolveGeneration);
+		hash = Combine(hash, key.indexed ? 1 : 0);
+		hash = Combine(hash, key.vertexCount);
+		hash = Combine(hash, key.indexCount);
+		hash = Combine(hash, key.firstVertex);
+		hash = Combine(hash, key.firstIndex);
+		hash = Combine(hash, static_cast<UINT64>(static_cast<INT64>(key.baseVertex)));
+		return hash;
 	}
 };
 
 class DX12IaHashStateCacheEntry
 {
 public:
-	UINT64 age = 0;
-	DX12IaHashStateCacheKey key;
 	bool hasIaHashState = false;
 	DX12IaHashState state;
+	std::list<DX12IaHashStateCacheKey>::iterator lruPosition;
+};
+
+class DX12IaHashStateCache
+{
+public:
+	DX12IaHashStateCache() = default;
+
+	// Cache contents are derived from runtime state and do not belong in value snapshots.
+	// Dropping them on copy also avoids copying list iterators into the source list.
+	DX12IaHashStateCache(const DX12IaHashStateCache &)
+	{
+	}
+
+	DX12IaHashStateCache &operator=(const DX12IaHashStateCache &other)
+	{
+		if (this != &other) {
+			entries.clear();
+			lruKeys.clear();
+		}
+		return *this;
+	}
+
+	DX12IaHashStateCache(DX12IaHashStateCache &&) noexcept = default;
+	DX12IaHashStateCache &operator=(DX12IaHashStateCache &&) noexcept = default;
+
+	std::list<DX12IaHashStateCacheKey> lruKeys;
+	std::unordered_map<
+		DX12IaHashStateCacheKey,
+		DX12IaHashStateCacheEntry,
+		DX12IaHashStateCacheKeyHash> entries;
 };
 
 class DX12IaHashStateCacheUtils
@@ -72,75 +112,69 @@ public:
 	static constexpr size_t MaxEntries = 1024;
 
 	static bool TryLoad(
-		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
-			DX12IaHashStateCacheKeyHash> *entries,
-		UINT64 *clock,
+		DX12IaHashStateCache *cache,
 		const DX12IaHashStateCacheKey &key,
-		DX12IaHashState *state,
+		const DX12IaHashState **state,
 		bool *hasIaHashState)
 	{
-		if (!entries || !clock || !state || !hasIaHashState)
+		if (!cache || !state || !hasIaHashState)
 			return false;
 
-		typename std::unordered_map<DX12IaHashStateCacheKey,
-			DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator it =
-			entries->find(key);
-		if (it == entries->end())
+		auto found = cache->entries.find(key);
+		if (found == cache->entries.end())
 			return false;
 
-		it->second.age = ++(*clock);
-		*hasIaHashState = it->second.hasIaHashState;
-		*state = it->second.state;
+		cache->lruKeys.splice(
+			cache->lruKeys.begin(), cache->lruKeys, found->second.lruPosition);
+		found->second.lruPosition = cache->lruKeys.begin();
+		*hasIaHashState = found->second.hasIaHashState;
+		*state = &found->second.state;
 		return true;
 	}
 
-	static void Store(
-		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
-			DX12IaHashStateCacheKeyHash> *entries,
-		UINT64 *clock,
-		UINT *evictCursor,
+	static const DX12IaHashState *Store(
+		DX12IaHashStateCache *cache,
 		const DX12IaHashStateCacheKey &key,
 		bool hasIaHashState,
-		DX12IaHashState state)
+		DX12IaHashState state,
+		bool *evicted)
 	{
-		if (!entries || !clock)
-			return;
+		if (evicted)
+			*evicted = false;
+		if (!cache)
+			return nullptr;
 
-		typename std::unordered_map<DX12IaHashStateCacheKey,
-			DX12IaHashStateCacheEntry, DX12IaHashStateCacheKeyHash>::iterator it =
-			entries->find(key);
-		if (it != entries->end()) {
-			it->second.age = ++(*clock);
-			it->second.hasIaHashState = hasIaHashState;
-			it->second.state = std::move(state);
-			return;
+		auto found = cache->entries.find(key);
+		if (found != cache->entries.end()) {
+			cache->lruKeys.splice(
+				cache->lruKeys.begin(), cache->lruKeys, found->second.lruPosition);
+			found->second.lruPosition = cache->lruKeys.begin();
+			found->second.hasIaHashState = hasIaHashState;
+			found->second.state = std::move(state);
+			return &found->second.state;
 		}
 
-		if (entries->size() >= MaxEntries) {
-			entries->erase(entries->begin());
-			if (evictCursor)
-				++(*evictCursor);
+		if (cache->entries.size() >= MaxEntries) {
+			cache->entries.erase(cache->lruKeys.back());
+			cache->lruKeys.pop_back();
+			if (evicted)
+				*evicted = true;
 		}
 
+		cache->lruKeys.push_front(key);
 		DX12IaHashStateCacheEntry entry;
-		entry.age = ++(*clock);
-		entry.key = key;
 		entry.hasIaHashState = hasIaHashState;
 		entry.state = std::move(state);
-		(*entries)[key] = std::move(entry);
+		entry.lruPosition = cache->lruKeys.begin();
+		auto inserted = cache->entries.emplace(key, std::move(entry));
+		return inserted.second ? &inserted.first->second.state : nullptr;
 	}
 
-	static void Clear(
-		std::unordered_map<DX12IaHashStateCacheKey, DX12IaHashStateCacheEntry,
-			DX12IaHashStateCacheKeyHash> *entries,
-		UINT64 *clock,
-		UINT *evictCursor)
+	static void Clear(DX12IaHashStateCache *cache)
 	{
-		if (entries)
-			entries->clear();
-		if (clock)
-			*clock = 0;
-		if (evictCursor)
-			*evictCursor = 0;
+		if (!cache)
+			return;
+		cache->entries.clear();
+		cache->lruKeys.clear();
 	}
 };

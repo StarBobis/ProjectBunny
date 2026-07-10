@@ -4,6 +4,7 @@
 
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "DX12CommandListRuntime.hpp"
 #include "DX12IaReplacementBindingExecutor.hpp"
@@ -281,6 +282,7 @@ public:
 		DX12Profiling::RecordIaDrawOverrideCheck();
 		DX12ModIaReplacement iaReplacement;
 		DX12IaHashState iaState;
+		const DX12IaHashState *activeIaState = &iaState;
 		const uint32_t vertexCount = draw.indexed ? 0 : draw.vertexCount;
 		const uint32_t indexCount = draw.indexed ? draw.indexCount : 0;
 		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
@@ -300,8 +302,7 @@ public:
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
 					runtimeState.ia,
-					runtimeState.pipelineState,
-					drawDecision->reloadGeneration,
+					runtimeState.iaContentEpoch,
 					targetPlan,
 					draw.indexed,
 					draw.vertexCount,
@@ -332,9 +333,8 @@ public:
 			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12IaHashStateCacheUtils::TryLoad(
 					&mutableRuntimeState->iaHashStateCache,
-					&mutableRuntimeState->iaHashStateCacheClock,
 					iaCacheKey,
-					&iaState,
+					&activeIaState,
 					&hasIaHashState)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -358,6 +358,7 @@ public:
 				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargets(
 					runtimeState.ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
 					draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
+				activeIaState = &iaState;
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"build_ia_hash_state",
@@ -366,13 +367,17 @@ public:
 					DX12OuterTimingProbeUtils::ElapsedUs(buildHashBegin));
 				DX12_HOTPATH_TIME_END(DrawBuildIaHash);
 				LARGE_INTEGER storeHashBegin = DX12OuterTimingProbeUtils::Now();
-				DX12IaHashStateCacheUtils::Store(
+				bool cacheEvicted = false;
+				const DX12IaHashState *storedIaState = DX12IaHashStateCacheUtils::Store(
 					&mutableRuntimeState->iaHashStateCache,
-					&mutableRuntimeState->iaHashStateCacheClock,
-					&mutableRuntimeState->iaHashStateCacheCursor,
 					iaCacheKey,
 					hasIaHashState,
-					iaState);
+					std::move(iaState),
+					&cacheEvicted);
+				if (storedIaState)
+					activeIaState = storedIaState;
+				if (cacheEvicted)
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"store_ia_hash_cache",
@@ -399,7 +404,7 @@ public:
 					runtimeState.pipelineState,
 					drawDecision->reloadGeneration,
 					targetPlan,
-					iaState,
+					*activeIaState,
 					draw);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -431,7 +436,7 @@ public:
 			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
 			LARGE_INTEGER prepareBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12ModPrepareShaderOverrideReplacement(
-				commandList, runtimeState.pipelineState, iaState,
+				commandList, runtimeState.pipelineState, *activeIaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, draw.firstInstance, &iaReplacement,
 				shaderOverrideNegativeCacheAllowed,
@@ -446,7 +451,7 @@ public:
 				DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
 				LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
 				if (DX12IaReplacementExecutor::ApplyAndExecute(
-					commandList, draw, iaState, &iaReplacement, runtimeState, callbacks)) {
+					commandList, draw, *activeIaState, &iaReplacement, runtimeState, callbacks)) {
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
 						"apply_and_execute_match",
