@@ -337,36 +337,127 @@ public:
 			    directTargetPlan.HasIaTargets() &&
 			    !directTargetPlan.hasDescriptorTargets &&
 			    !directTargetPlan.requireAllIaBuffers) {
-				DX12IaHashState directIaState;
-				if (DX12CommandListRuntime::BuildIaHashStateForTargets(
-					    runtimeState.ia,
-					    directTargetPlan,
-					    draw.indexed,
-					    draw.vertexCount,
-					    draw.indexCount,
-					    draw.firstVertex,
-					    draw.firstIndex,
-					    draw.baseVertex,
-					    &directIaState) &&
-				    !DX12ModHasAnyDirectIaTextureOverrideCandidate(
-					    directIaState,
-					    directTargetPlan,
-					    draw.indexed,
-					    draw.vertexCount,
-					    draw.indexCount,
-					    draw.instanceCount,
-					    draw.firstVertex,
-					    draw.firstIndex,
-					    draw.firstInstance)) {
+				LARGE_INTEGER directProbeKeyBegin = DX12OuterTimingProbeUtils::Now();
+				const DX12IaHashStateCacheKey directIaCacheKey =
+					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
+						runtimeState.ia,
+						runtimeState.iaContentEpoch,
+						directTargetPlan,
+						draw.indexed,
+						draw.vertexCount,
+						draw.indexCount,
+						draw.firstVertex,
+						draw.firstIndex,
+						draw.baseVertex);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"build_direct_ia_probe_key",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(directProbeKeyBegin));
+				DX12DirectIaProbeCacheKey directProbeCacheKey;
+				directProbeCacheKey.reloadGeneration = drawDecision->reloadGeneration;
+				directProbeCacheKey.iaKey = directIaCacheKey;
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheLookup();
+				LARGE_INTEGER directProbeCacheBegin = DX12OuterTimingProbeUtils::Now();
+				bool hasDirectCandidate = false;
+				if (DX12DirectIaProbeCacheUtils::TryLoad(
+						&mutableRuntimeState->directIaProbeCache,
+						directProbeCacheKey,
+						&hasDirectCandidate)) {
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
-						"skip_direct_ia_probe_miss",
+						hasDirectCandidate ?
+							"direct_ia_probe_cache_positive_hit" :
+							"direct_ia_probe_cache_negative_hit",
 						draw.indexed ? 1u : 0u,
 						1,
-						0);
-					DX12Profiling::RecordIaHashStateResult(false);
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-					return false;
+						DX12OuterTimingProbeUtils::ElapsedUs(directProbeCacheBegin));
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheHit(
+						hasDirectCandidate);
+					if (!hasDirectCandidate) {
+						DX12OuterTimingProbeUtils::LogCpuStage(
+							"IaReplacement",
+							"skip_direct_ia_probe_miss",
+							draw.indexed ? 1u : 0u,
+							1,
+							0);
+						DX12Profiling::RecordIaHashStateResult(false);
+						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+						return false;
+					}
+				} else {
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						"direct_ia_probe_cache_miss",
+						draw.indexed ? 1u : 0u,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(directProbeCacheBegin));
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
+					DX12IaHashState directIaState;
+					LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
+					if (DX12CommandListRuntime::BuildIaHashStateForTargets(
+						    runtimeState.ia,
+						    directTargetPlan,
+						    draw.indexed,
+						    draw.vertexCount,
+						    draw.indexCount,
+						    draw.firstVertex,
+						    draw.firstIndex,
+						    draw.baseVertex,
+						    &directIaState)) {
+						DX12OuterTimingProbeUtils::LogCpuStage(
+							"IaReplacement",
+							"build_direct_ia_probe_state",
+							draw.indexed ? 1u : 0u,
+							1,
+							DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
+						LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
+						hasDirectCandidate = DX12ModHasAnyDirectIaTextureOverrideCandidate(
+							directIaState,
+							directTargetPlan,
+							draw.indexed,
+							draw.vertexCount,
+							draw.indexCount,
+							draw.instanceCount,
+							draw.firstVertex,
+							draw.firstIndex,
+							draw.firstInstance);
+						DX12OuterTimingProbeUtils::LogCpuStage(
+							"IaReplacement",
+							hasDirectCandidate ?
+								"direct_ia_probe_positive_result" :
+								"direct_ia_probe_negative_result",
+							draw.indexed ? 1u : 0u,
+							1,
+							DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
+						bool directProbeCacheEvicted = false;
+						DX12DirectIaProbeCacheUtils::Store(
+							&mutableRuntimeState->directIaProbeCache,
+							directProbeCacheKey,
+							hasDirectCandidate,
+							&directProbeCacheEvicted);
+						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheStore(
+							directProbeCacheEvicted);
+						if (!hasDirectCandidate) {
+							DX12OuterTimingProbeUtils::LogCpuStage(
+								"IaReplacement",
+								"skip_direct_ia_probe_miss",
+								draw.indexed ? 1u : 0u,
+								1,
+								0);
+							DX12Profiling::RecordIaHashStateResult(false);
+							DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+							return false;
+						}
+					} else {
+						DX12OuterTimingProbeUtils::LogCpuStage(
+							"IaReplacement",
+							"build_direct_ia_probe_state_failed",
+							draw.indexed ? 1u : 0u,
+							1,
+							DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
+					}
 				}
 			}
 			if (targetPlanHasIaTargets) {

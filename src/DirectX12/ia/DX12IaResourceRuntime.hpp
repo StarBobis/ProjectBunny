@@ -232,13 +232,18 @@ static const Bunny::TextureOverrideConfig *ConfigFromIaCandidateIndexLocked(size
 
 static bool TryFindCachedIaTextureOverrideLocked(
 	const DX12TextureOverrideLookupCacheKey &key,
+	bool *matched,
 	std::vector<Bunny::TextureOverrideConfig> *configs)
 {
+	if (matched)
+		*matched = false;
 	if (configs)
 		configs->clear();
 	auto cached = gTextureOverrideLookupCache.find(key);
 	if (cached == gTextureOverrideLookupCache.end())
 		return false;
+	if (matched)
+		*matched = cached->second.matched;
 	if (!cached->second.matched)
 		return true;
 	if (configs)
@@ -285,14 +290,15 @@ static bool FindIaTextureOverridesCachedLocked(
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance, preSkinGeneration);
-	if (TryFindCachedIaTextureOverrideLocked(key, configs)) {
+	bool cachedMatched = false;
+	if (TryFindCachedIaTextureOverrideLocked(key, &cachedMatched, configs)) {
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12IaOverrideLookup",
 			"\"stage\":\"cache_hit\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\",\"found\":%s",
 			indexBuffer ? "ib" : "vb", vertexSlot, hash,
-			(configs && !configs->empty()) ? "true" : "false");
+			cachedMatched ? "true" : "false");
 #endif
-		return configs && !configs->empty();
+		return cachedMatched;
 	}
 
 	const std::vector<size_t> *candidateIndexes =
@@ -385,21 +391,21 @@ static bool FindIaTextureOverridesCached(
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance, preSkinGeneration);
-	if (TryFindCachedIaTextureOverrideLocked(key, configs)) {
-		const bool matched = configs && !configs->empty();
+	bool cachedMatched = false;
+	if (TryFindCachedIaTextureOverrideLocked(key, &cachedMatched, configs)) {
 		ReleaseSRWLockShared(&gModLock);
-		return matched;
+		return cachedMatched;
 	}
 	ReleaseSRWLockShared(&gModLock);
 
 	AcquireSRWLockExclusive(&gModLock);
-	const bool matched =
+	const bool resolvedMatched =
 		FindIaTextureOverridesCachedLocked(
 			target, hash, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance, indexBuffer, vertexSlot,
 			activePreSkinSections, preSkinGeneration, configs);
 	ReleaseSRWLockExclusive(&gModLock);
-	return matched;
+	return resolvedMatched;
 }
 
 static const DX12IaBufferHash *FindIaVertexSlot(const DX12IaHashState &iaState, uint32_t slot)

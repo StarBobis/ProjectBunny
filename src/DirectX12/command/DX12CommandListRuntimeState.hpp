@@ -10,6 +10,7 @@
 #include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
 #include "binding/DX12BindingTrackerTypes.hpp"
+#include "ia/DX12DirectIaProbeCacheUtils.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
 
 class DX12CommandListRuntimeState
@@ -21,6 +22,7 @@ public:
 	UINT64 iaEpoch = 1;
 	UINT64 iaContentEpoch = 1;
 	DX12IaHashStateCache iaHashStateCache;
+	DX12DirectIaProbeCache directIaProbeCache;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;

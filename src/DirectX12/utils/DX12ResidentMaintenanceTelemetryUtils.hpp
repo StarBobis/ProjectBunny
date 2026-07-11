@@ -153,6 +153,13 @@ public:
 	inline static volatile LONG DrawDecisionIaHashCacheEvictions = 0;
 	inline static volatile LONG DrawDecisionIaHashCacheNegativeHits = 0;
 	inline static volatile LONG DrawDecisionDescriptorDraws = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheLookups = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheHits = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheMisses = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCachePositiveHits = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheNegativeHits = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheStores = 0;
+	inline static volatile LONG DrawDecisionDirectProbeCacheEvictions = 0;
 
 	static void Inc(volatile LONG *value)
 	{
@@ -725,6 +732,32 @@ public:
 		Inc(&DrawDecisionDescriptorDraws);
 	}
 
+	static void RecordDrawDecisionDirectProbeCacheLookup()
+	{
+		Inc(&DrawDecisionDirectProbeCacheLookups);
+	}
+
+	static void RecordDrawDecisionDirectProbeCacheHit(bool hasDirectCandidate)
+	{
+		Inc(&DrawDecisionDirectProbeCacheHits);
+		if (hasDirectCandidate)
+			Inc(&DrawDecisionDirectProbeCachePositiveHits);
+		else
+			Inc(&DrawDecisionDirectProbeCacheNegativeHits);
+	}
+
+	static void RecordDrawDecisionDirectProbeCacheMiss()
+	{
+		Inc(&DrawDecisionDirectProbeCacheMisses);
+	}
+
+	static void RecordDrawDecisionDirectProbeCacheStore(bool evicted)
+	{
+		Inc(&DrawDecisionDirectProbeCacheStores);
+		if (evicted)
+			Inc(&DrawDecisionDirectProbeCacheEvictions);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -1002,6 +1035,13 @@ public:
 		LONG iaHashCacheEvictions = Take(&DrawDecisionIaHashCacheEvictions);
 		LONG iaHashCacheNegativeHits = Take(&DrawDecisionIaHashCacheNegativeHits);
 		LONG descriptorDraws = Take(&DrawDecisionDescriptorDraws);
+		LONG directProbeCacheLookups = Take(&DrawDecisionDirectProbeCacheLookups);
+		LONG directProbeCacheHits = Take(&DrawDecisionDirectProbeCacheHits);
+		LONG directProbeCacheMisses = Take(&DrawDecisionDirectProbeCacheMisses);
+		LONG directProbeCachePositiveHits = Take(&DrawDecisionDirectProbeCachePositiveHits);
+		LONG directProbeCacheNegativeHits = Take(&DrawDecisionDirectProbeCacheNegativeHits);
+		LONG directProbeCacheStores = Take(&DrawDecisionDirectProbeCacheStores);
+		LONG directProbeCacheEvictions = Take(&DrawDecisionDirectProbeCacheEvictions);
 		if (!cacheHits && !cacheMisses && !psoCacheHits && !psoCacheMisses &&
 			!builds && !noPso &&
 			!noShaderOverride && !noDrawOverride && !needsIaHash &&
@@ -1009,16 +1049,23 @@ public:
 			!fastRejects && !iaHashDraws && !iaHashCacheLookups &&
 			!iaHashCacheHits && !iaHashCacheMisses && !iaHashCacheStores &&
 			!iaHashCacheEvictions &&
-			!iaHashCacheNegativeHits && !descriptorDraws)
+			!iaHashCacheNegativeHits && !descriptorDraws &&
+			!directProbeCacheLookups && !directProbeCacheHits &&
+			!directProbeCacheMisses && !directProbeCachePositiveHits &&
+			!directProbeCacheNegativeHits && !directProbeCacheStores &&
+			!directProbeCacheEvictions)
 			return;
 		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
-			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheEvictions\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld",
+			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheEvictions\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld,\"directProbeCacheLookups\":%ld,\"directProbeCacheHits\":%ld,\"directProbeCacheMisses\":%ld,\"directProbeCachePositiveHits\":%ld,\"directProbeCacheNegativeHits\":%ld,\"directProbeCacheStores\":%ld,\"directProbeCacheEvictions\":%ld",
 			cacheHits, cacheMisses, psoCacheHits, psoCacheMisses, builds, noPso,
 			noShaderOverride, noDrawOverride, needsIaHash,
 			needsDescriptorMatch, needsReplacement, skipOriginal,
 			fastRejects, iaHashDraws, iaHashCacheLookups,
 			iaHashCacheHits, iaHashCacheMisses, iaHashCacheStores, iaHashCacheEvictions,
-			iaHashCacheNegativeHits, descriptorDraws);
+			iaHashCacheNegativeHits, descriptorDraws,
+			directProbeCacheLookups, directProbeCacheHits, directProbeCacheMisses,
+			directProbeCachePositiveHits, directProbeCacheNegativeHits,
+			directProbeCacheStores, directProbeCacheEvictions);
 	}
 
 	static void LogAndReset()
