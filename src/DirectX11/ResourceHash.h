@@ -158,6 +158,28 @@ public:
 			idx = (idx + 1) & mask;
 		}
 	}
+	
+	// Finds value by key (no copy, faster) - const version
+	// Returns nullptr if key not found.
+	// Use this instead of find() on hot paths to avoid deep copies
+	// of the value type (e.g. ResourceHashInfo with std::set members).
+	inline const V* find_ptr(const K& key) const
+	{
+		size_t idx = hasher(key) & mask;
+
+		while (true)
+		{
+			const Entry& e = table[idx];
+
+			if (e.generation != current_generation)
+				return nullptr;
+
+			if (e.key == key)
+				return &e.value;
+
+			idx = (idx + 1) & mask;
+		}
+	}
 
 	// Clears the hash map.
 	// Behavior:

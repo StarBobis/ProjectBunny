@@ -20,6 +20,16 @@
 
 #define DX12_HOTPATH_TIME_ENABLED 1
 
+#if !DX12_HOTPATH_TIME_ENABLED
+
+// Empty inline stubs – compiler eliminates all calls
+__forceinline void DX12HotPathTimeBegin(DX12HotPathStage::Id) {}
+__forceinline void DX12HotPathTimeEnd(DX12HotPathStage::Id) {}
+__forceinline void DX12HotPathTimeLogAndResetAll() {}
+__forceinline void DX12HotPathTimeEnsureFreq() {}
+
+#else
+
 // ── Stage enum ─────────────────────────────────────────────────────
 class DX12HotPathStage
 {
@@ -201,46 +211,30 @@ public:
 		acc.qpcSum.QuadPart += ticks;
 		InterlockedIncrement(&acc.callCount);
 		LONG us = static_cast<LONG>((ticks * 1000000) / tlsFreq.QuadPart);
-		// volatile 读替代 CAS 读 — 此值仅用于日志统计，无需原子性
-		LONG oldMax = acc.maxUs;
-		while (us > oldMax)
-			oldMax = InterlockedCompareExchange(&acc.maxUs, us, oldMax);
+		// non-atomic write: value used only for logging
+		if (us > acc.maxUs)
+			acc.maxUs = us;
 	}
 
 	// ── Snapshot + reset: called at frame end (Present time) ─────────
 	static void LogAndResetAll()
 	{
-		Accumulator snap[DX12HotPathStage::STAGE_COUNT];
-		for (UINT i = 0; i < DX12HotPathStage::STAGE_COUNT; ++i) {
-			snap[i] = tlsAccum[i];
-			tlsAccum[i] = Accumulator{};
-		}
 		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
 
-		// Only log if anything was measured this frame
-		bool anyActive = false;
 		for (UINT i = 0; i < DX12HotPathStage::STAGE_COUNT; ++i) {
-			if (snap[i].callCount > 0) {
-				anyActive = true;
-				break;
-			}
-		}
-		if (!anyActive)
-			return;
-
-		for (UINT i = 0; i < DX12HotPathStage::STAGE_COUNT; ++i) {
-			const Accumulator &acc = snap[i];
-			if (acc.callCount <= 0)
+			LONG calls = tlsAccum[i].callCount;
+			if (calls <= 0)
 				continue;
-			LONG64 totalUs = (acc.qpcSum.QuadPart * 1000000) / tlsFreq.QuadPart;
-			LONG avgUs = static_cast<LONG>(totalUs / acc.callCount);
+			LONG64 totalUs = (tlsAccum[i].qpcSum.QuadPart * 1000000) / tlsFreq.QuadPart;
+			LONG avgUs = static_cast<LONG>(totalUs / calls);
 			DX12LogManager::JsonFunc("DX12HotPathTiming",
 				"\"stage\":\"%s\",\"calls\":%ld,\"totalUs\":%lld,\"avgUs\":%ld,\"maxUs\":%ld",
 				DX12HotPathStage::Name(static_cast<DX12HotPathStage::Id>(i)),
-				acc.callCount,
+				calls,
 				static_cast<long long>(totalUs),
 				avgUs,
-				acc.maxUs);
+				tlsAccum[i].maxUs);
+			tlsAccum[i] = {};
 		}
 	}
 
@@ -273,6 +267,8 @@ public:
 
 #define DX12_HOTPATH_LOG_AND_RESET() \
 	DX12HotPathTimingUtils::LogAndResetAll()
+
+#endif // !DX12_HOTPATH_TIME_ENABLED
 
 #else // !_DEBUG
 
