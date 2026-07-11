@@ -28,9 +28,11 @@ public:
 	bool targetPlanResolved = false;
 	bool targetPlanHasIaTargets = false;
 	bool targetPlanHasDescriptorTargets = false;
+	bool directTargetPlanResolved = false;
 	bool negativeCacheSafe = false;
 	bool shaderOverrideNegativeCacheAllowed = false;
 	DX12IaHashTargetPlan targetPlan;
+	DX12IaHashTargetPlan directTargetPlan;
 
 	void Reset()
 	{
@@ -44,9 +46,11 @@ public:
 		targetPlanResolved = false;
 		targetPlanHasIaTargets = false;
 		targetPlanHasDescriptorTargets = false;
+		directTargetPlanResolved = false;
 		negativeCacheSafe = false;
 		shaderOverrideNegativeCacheAllowed = false;
 		targetPlan = DX12IaHashTargetPlan();
+		directTargetPlan = DX12IaHashTargetPlan();
 	}
 
 	void SetNoopNeverMatches(
@@ -69,6 +73,7 @@ public:
 		bool shaderOverrides,
 		bool shaderOverrideSkip,
 		const DX12IaHashTargetPlan &plan,
+		const DX12IaHashTargetPlan &directPlan,
 		bool descriptorTrackingNeeded)
 	{
 		Reset();
@@ -79,7 +84,9 @@ public:
 		hasShaderOverrides = shaderOverrides;
 		hasShaderOverrideSkip = shaderOverrideSkip;
 		targetPlan = plan;
+		directTargetPlan = directPlan;
 		targetPlanResolved = true;
+		directTargetPlanResolved = true;
 		targetPlanHasIaTargets = targetPlan.HasIaTargets();
 		targetPlanHasDescriptorTargets = targetPlan.hasDescriptorTargets;
 		// Negative draw results are unsafe only when this PSO's own command

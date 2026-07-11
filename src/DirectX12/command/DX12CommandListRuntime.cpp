@@ -431,6 +431,7 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 		decision.SetFromTargetPlan(
 			pipelineState, reloadGeneration,
 			hasShaderOverrides, hasShaderOverrides, false,
+			targetPlan,
 			targetPlan, DX12ModNeedsShaderDescriptorTracking());
 	}
 

@@ -167,6 +167,26 @@ public:
 		return found;
 	}
 
+	static bool HasAnyDirectTextureOverrideCheckTarget(
+		const DX12ActiveIaState &ia,
+		const DX12IaHashTargetPlan &targetPlan,
+		bool indexed)
+	{
+		if (!targetPlan.hasTextureOverrideChecks)
+			return false;
+		if (targetPlan.requireAllIaBuffers)
+			return true;
+		if (targetPlan.hasDescriptorTargets)
+			return true;
+		if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer)
+			return true;
+		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+			if (targetPlan.RequiresVertexBuffer(slot) && ia.hasVertexBuffer[slot])
+				return true;
+		}
+		return false;
+	}
+
 	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
 		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
@@ -291,14 +311,66 @@ public:
 		// Cheap negative cache lookup uses PSO, IA view identity, and draw args
 		// before falling back to stable IA content hashing.
 		DX12IaHashTargetPlan targetPlan = drawDecision->targetPlan;
+		const DX12IaHashTargetPlan &directTargetPlan = drawDecision->directTargetPlan;
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		const bool shaderOverrideNegativeCacheAllowed =
 			drawDecision->shaderOverrideNegativeCacheAllowed;
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
-		if (targetPlanHasIaTargets) {
-			LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
+			if (drawDecision->directTargetPlanResolved &&
+			    directTargetPlan.hasTextureOverrideChecks &&
+			    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
+				    runtimeState.ia, directTargetPlan, draw.indexed)) {
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"skip_missing_direct_check_target",
+				draw.indexed ? 1u : 0u,
+				1,
+				0);
+			DX12Profiling::RecordIaHashStateResult(false);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+			if (drawDecision->directTargetPlanResolved &&
+			    directTargetPlan.hasTextureOverrideChecks &&
+			    directTargetPlan.HasIaTargets() &&
+			    !directTargetPlan.hasDescriptorTargets &&
+			    !directTargetPlan.requireAllIaBuffers) {
+				DX12IaHashState directIaState;
+				if (DX12CommandListRuntime::BuildIaHashStateForTargets(
+					    runtimeState.ia,
+					    directTargetPlan,
+					    draw.indexed,
+					    draw.vertexCount,
+					    draw.indexCount,
+					    draw.firstVertex,
+					    draw.firstIndex,
+					    draw.baseVertex,
+					    &directIaState) &&
+				    !DX12ModHasAnyDirectIaTextureOverrideCandidate(
+					    directIaState,
+					    directTargetPlan,
+					    draw.indexed,
+					    draw.vertexCount,
+					    draw.indexCount,
+					    draw.instanceCount,
+					    draw.firstVertex,
+					    draw.firstIndex,
+					    draw.firstInstance)) {
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						"skip_direct_ia_probe_miss",
+						draw.indexed ? 1u : 0u,
+						1,
+						0);
+					DX12Profiling::RecordIaHashStateResult(false);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
+				}
+			}
+			if (targetPlanHasIaTargets) {
+				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
 					runtimeState.ia,

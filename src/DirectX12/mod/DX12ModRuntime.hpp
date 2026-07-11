@@ -241,6 +241,16 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	DX12ModIaReplacement *replacement,
 	bool allowNegativeCache = true,
 	ID3D12Device *cachedDevice = nullptr);
+bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
+	const DX12IaHashState &iaState,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance);
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,

@@ -304,6 +304,7 @@ public:
 	std::vector<Bunny::ShaderOverrideConfig> regexDrawConfigs;
 	std::vector<Bunny::ShaderOverrideConfig> regexDispatchConfigs;
 	DX12IaHashTargetPlan drawTargetPlan;
+	DX12IaHashTargetPlan drawDirectTargetPlan;
 };
 static std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache> gShaderOverridePsoMatchCache;
 class DX12TextureOverrideLookupCacheKey

@@ -284,12 +284,6 @@ public:
 						textureOverrideTargetsCollected);
 				}
 				break;
-			case Bunny::CommandListActionKind::SetIndexBuffer:
-				targetPlan->RequireIndexBufferView();
-				break;
-			case Bunny::CommandListActionKind::SetVertexBuffer:
-				targetPlan->RequireVertexBuffer(action.target.slot);
-				break;
 			default:
 				break;
 			}
@@ -331,14 +325,15 @@ public:
 		const Bunny::ShaderOverrideConfig &config,
 		std::unordered_set<std::wstring> *commandListStack,
 		DX12IaHashTargetPlan *targetPlan,
-		bool *textureOverrideTargetsCollected)
+		bool *textureOverrideTargetsCollected,
+		bool collectTextureOverrideTargets)
 	{
 		CollectCommandListLinksLocked(
 			config.commandLists, true, 0, commandListStack, targetPlan,
-			textureOverrideTargetsCollected, true);
+			textureOverrideTargetsCollected, collectTextureOverrideTargets);
 		CollectActionsLocked(
 			config.actions, 0, commandListStack, targetPlan,
-			textureOverrideTargetsCollected, true);
+			textureOverrideTargetsCollected, collectTextureOverrideTargets);
 	}
 
 	static void CollectAllTextureOverrideTargetsLocked(
@@ -367,7 +362,8 @@ public:
 	}
 
 	static DX12IaHashTargetPlan BuildDrawPlanLocked(
-		const DX12ShaderOverridePsoMatchCache &cache)
+		const DX12ShaderOverridePsoMatchCache &cache,
+		bool collectTextureOverrideTargets)
 	{
 		DX12IaHashTargetPlan targetPlan;
 		targetPlan.ResetKnown();
@@ -379,12 +375,14 @@ public:
 				continue;
 			CollectShaderOverrideConfigLocked(
 				*config, &commandListStack, &targetPlan,
-				&textureOverrideTargetsCollected);
+				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
+				collectTextureOverrideTargets);
 		}
 		for (const Bunny::ShaderOverrideConfig &config : cache.regexDrawConfigs) {
 			CollectShaderOverrideConfigLocked(
 				config, &commandListStack, &targetPlan,
-				&textureOverrideTargetsCollected);
+				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
+				collectTextureOverrideTargets);
 		}
 		return targetPlan;
 	}
@@ -574,6 +572,21 @@ static bool TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
 	return true;
 }
 
+static bool TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
+	ID3D12PipelineState *pipelineState,
+	DX12IaHashTargetPlan *targetPlan)
+{
+	if (!targetPlan || !pipelineState)
+		return false;
+	std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache>::iterator cached =
+		gShaderOverridePsoMatchCache.find(pipelineState);
+	if (cached == gShaderOverridePsoMatchCache.end() ||
+	    cached->second.generation != gReloadGeneration)
+		return false;
+	*targetPlan = cached->second.drawDirectTargetPlan;
+	return true;
+}
+
 bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
 {
 	if (!pipelineState)
@@ -628,7 +641,9 @@ static void FindShaderOverridesForPsoLocked(
 			&matchCache.regexDrawConfigs, &regexSeen);
 	}
 	matchCache.drawTargetPlan =
-		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache);
+		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache, true);
+	matchCache.drawDirectTargetPlan =
+		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache, false);
 	gShaderOverridePsoMatchCache[pipelineState] = std::move(matchCache);
 	BuildShaderOverrideConfigPointers(
 		&gShaderOverridePsoMatchCache[pipelineState], dispatch, configs);
@@ -679,9 +694,12 @@ bool DX12ModCompileDrawDecision(
 
 	std::vector<const Bunny::ShaderOverrideConfig*> configs;
 	DX12IaHashTargetPlan targetPlan;
+	DX12IaHashTargetPlan directTargetPlan;
 	targetPlan.RequireAll();
+	directTargetPlan.RequireAll();
 	bool cached = false;
 	bool targetPlanResolved = false;
+	bool directTargetPlanResolved = false;
 
 	AcquireSRWLockShared(&gModLock);
 	cached = TryFindCachedShaderOverridesForPsoLocked(
@@ -690,6 +708,9 @@ bool DX12ModCompileDrawDecision(
 		targetPlanResolved =
 			TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
 				pipelineState, &targetPlan);
+		directTargetPlanResolved =
+			TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
+				pipelineState, &directTargetPlan);
 	}
 	ReleaseSRWLockShared(&gModLock);
 
@@ -702,6 +723,9 @@ bool DX12ModCompileDrawDecision(
 			targetPlanResolved =
 				TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
 					pipelineState, &targetPlan);
+			directTargetPlanResolved =
+				TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
+					pipelineState, &directTargetPlan);
 		}
 		ReleaseSRWLockExclusive(&gModLock);
 	}
@@ -709,6 +733,8 @@ bool DX12ModCompileDrawDecision(
 	const bool shaderOverrides = cached ? !configs.empty() : true;
 	if (!targetPlanResolved)
 		targetPlan.RequireAll();
+	if (!directTargetPlanResolved)
+		directTargetPlan = targetPlan;
 
 	const bool shaderOverrideSkip =
 		DX12ModShouldSkipPipelineState(pipelineState, false);
@@ -716,9 +742,78 @@ bool DX12ModCompileDrawDecision(
 		DX12ModNeedsShaderDescriptorTracking();
 	decision->SetFromTargetPlan(
 		pipelineState, reloadGeneration, activeShaderOverrides,
-		shaderOverrides, shaderOverrideSkip, targetPlan,
+		shaderOverrides, shaderOverrideSkip, targetPlan, directTargetPlan,
 		descriptorTrackingNeeded);
 	return true;
+}
+
+bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
+	const DX12IaHashState &iaState,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance)
+{
+	if (!targetPlan.hasTextureOverrideChecks ||
+	    targetPlan.hasDescriptorTargets ||
+	    targetPlan.requireAllIaBuffers ||
+	    !targetPlan.HasIaTargets()) {
+		return true;
+	}
+
+	Bunny::CommandListTarget target;
+	target.stage = Bunny::CommandListShaderStage::Unknown;
+
+	std::vector<Bunny::TextureOverrideConfig> configs;
+	if (targetPlan.RequiresIndexBuffer(indexed) &&
+	    iaState.hasIndexBuffer &&
+	    iaState.indexHash) {
+		target.kind = Bunny::CommandListTargetKind::IndexBuffer;
+		target.slot = 0;
+		if (FindIaTextureOverridesCached(
+			    target,
+			    iaState.indexHash,
+			    vertexCount,
+			    indexCount,
+			    instanceCount,
+			    firstVertex,
+			    firstIndex,
+			    firstInstance,
+			    true,
+			    0,
+			    &configs)) {
+			return true;
+		}
+	}
+
+	for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
+		if (!targetPlan.RequiresVertexBuffer(buffer.slot))
+			continue;
+		if (!buffer.hash)
+			continue;
+
+		target.kind = Bunny::CommandListTargetKind::VertexBuffer;
+		target.slot = buffer.slot;
+		if (FindIaTextureOverridesCached(
+			    target,
+			    buffer.hash,
+			    vertexCount,
+			    indexCount,
+			    instanceCount,
+			    firstVertex,
+			    firstIndex,
+			    firstInstance,
+			    false,
+			    buffer.slot,
+			    &configs)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 bool DX12ModPrepareShaderOverrideReplacement(
