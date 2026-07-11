@@ -59,8 +59,6 @@ public:
 			return;
 		}
 
-		const DX12CommandListTrackingState tracking =
-			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 
@@ -84,7 +82,7 @@ public:
 		}
 
 		LogDrawCall(commandList, draw);
-		if (tracking.recordBindingEvents)
+		if (DX12CommandListStateCapture::ShouldRecordBindingEvents())
 			RecordBindingDraw(commandList, draw);
 		if (huntEnabled) {
 			if (ShouldSkipHuntDraw(commandList, draw))
