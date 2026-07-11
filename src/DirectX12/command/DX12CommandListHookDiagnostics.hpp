@@ -15,9 +15,9 @@
 class DX12CommandListHookDiagnostics
 {
 public:
+#if defined(_DEBUG)
 	static void LogDX12Call(const char *api, const void *object, const char *fmt = nullptr, ...)
 	{
-#if defined(_DEBUG)
 		if (!DX12LogManager::ShouldLogHookCall(api))
 			return;
 
@@ -37,12 +37,10 @@ public:
 		DX12LogManager::DebugJsonFunc("DX12HookCall",
 			"\"api\":%s,\"present\":%ld,\"this\":\"%p\",\"detail\":%s",
 			apiJson, DX12RuntimeState::GetPresentCount(), object, detailJson);
-#else
-		(void)api;
-		(void)object;
-		(void)fmt;
-#endif
 	}
+#else
+	static __forceinline void LogDX12Call(const char *, const void *, const char * = nullptr, ...) {}
+#endif
 
 	static void LogQueueStage(
 		const char *api, const char *stage, ID3D12CommandQueue *queue,
