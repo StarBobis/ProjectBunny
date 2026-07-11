@@ -11,6 +11,7 @@ class DX12CommandListRuntimeTlsCache
 public:
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	DX12CommandListRuntimeShard *shard = nullptr;
+	bool stateIsDirect = false;
 	UINT64 trackingGeneration = 0;
 	DX12CommandListTrackingCache tracking;
 	DX12CommandListRuntimeState *statePtr = nullptr;

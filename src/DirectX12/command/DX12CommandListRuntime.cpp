@@ -13,8 +13,6 @@
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
 volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
 thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
-std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> DX12CommandListRuntime::gDirectStateMap;
-SRWLOCK DX12CommandListRuntime::gDirectStateMapLock = SRWLOCK_INIT;
 
 void DX12CommandListRuntime::RegisterDirectState(
 	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state)
@@ -22,9 +20,11 @@ void DX12CommandListRuntime::RegisterDirectState(
 	if (!commandList || !state)
 		return;
 
-	AcquireSRWLockExclusive(&gDirectStateMapLock);
-	gDirectStateMap[commandList] = state;
-	ReleaseSRWLockExclusive(&gDirectStateMapLock);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	shard.directStates[commandList] = state;
+	ReleaseSRWLockExclusive(&shard.lock);
+	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
 void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *commandList)
@@ -32,9 +32,10 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 	if (!commandList)
 		return;
 
-	AcquireSRWLockExclusive(&gDirectStateMapLock);
-	gDirectStateMap.erase(commandList);
-	ReleaseSRWLockExclusive(&gDirectStateMapLock);
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	shard.directStates.erase(commandList);
+	ReleaseSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
@@ -85,18 +86,23 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 }
 
 void DX12CommandListRuntime::TlsRefreshFromState(
-	DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList)
+	DX12CommandListRuntimeState *state,
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeShard *shard,
+	bool stateIsDirect)
 {
 	if (!state) {
 		Tls.commandList = nullptr;
 		Tls.shard = nullptr;
+		Tls.stateIsDirect = false;
 		Tls.statePtr = nullptr;
 		Tls.trackingGeneration = 0;
 		return;
 	}
 
 	Tls.commandList = commandList;
-	Tls.shard = nullptr;
+	Tls.shard = shard;
+	Tls.stateIsDirect = stateIsDirect;
 	Tls.statePtr = state;
 	Tls.trackingGeneration = TrackingGenerationValue;
 
@@ -109,25 +115,27 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 void DX12CommandListRuntime::TlsRefresh(
 	DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
 {
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator directIt =
+		shard.directStates.find(commandList);
+	if (directIt != shard.directStates.end()) {
+		DX12CommandListRuntime::TlsRefreshFromState(
+			directIt->second, commandList, &shard, true);
+		return;
+	}
+
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
 		shard.states.find(commandList);
 	if (it == shard.states.end()) {
 		Tls.commandList = nullptr;
 		Tls.shard = nullptr;
+		Tls.stateIsDirect = false;
 		Tls.statePtr = nullptr;
 		Tls.trackingGeneration = 0;
 		return;
 	}
 
-	Tls.commandList = commandList;
-	Tls.shard = &shard;
-	Tls.statePtr = &it->second;
-	Tls.trackingGeneration = TrackingGenerationValue;
-
-	DX12CommandListTrackingCache &mapCache = it->second.trackingCache;
-	if (mapCache.generation != TrackingGenerationValue)
-		DX12CommandListRuntime::RefreshTrackingCache(mapCache);
-	Tls.tracking = mapCache;
+	DX12CommandListRuntime::TlsRefreshFromState(
+		&it->second, commandList, &shard, false);
 }
 
 void DX12CommandListRuntime::GetTrackingCacheFast(
@@ -138,24 +146,9 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	if (!commandList)
 		return;
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
 		out = Tls.tracking;
 		return;
-	}
-
-	{
-		DX12CommandListRuntimeState *state = nullptr;
-		AcquireSRWLockShared(&gDirectStateMapLock);
-		std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
-			gDirectStateMap.find(commandList);
-		if (it != gDirectStateMap.end())
-			state = it->second;
-		ReleaseSRWLockShared(&gDirectStateMapLock);
-
-		if (state) {
-			DX12CommandListRuntime::TlsRefreshFromState(state, commandList);
-			out = Tls.tracking;
-			return;
-		}
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
@@ -163,8 +156,16 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);
 	ReleaseSRWLockShared(&shard.lock);
 
-	if (Tls.commandList == commandList)
+	if (Tls.commandList == commandList) {
+		if (Tls.stateIsDirect)
+			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupDirectHit();
+		else
+			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupShardHit();
 		out = Tls.tracking;
+		return;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupMiss();
 }
 
 DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
@@ -187,22 +188,9 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 {
 	if (!commandList)
 		return nullptr;
-	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue)
+	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
 		return Tls.statePtr;
-
-	{
-		DX12CommandListRuntimeState *state = nullptr;
-		AcquireSRWLockShared(&gDirectStateMapLock);
-		std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
-			gDirectStateMap.find(commandList);
-		if (it != gDirectStateMap.end())
-			state = it->second;
-		ReleaseSRWLockShared(&gDirectStateMapLock);
-
-		if (state) {
-			DX12CommandListRuntime::TlsRefreshFromState(state, commandList);
-			return state;
-		}
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
@@ -210,8 +198,15 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
 	DX12CommandListRuntime::TlsRefresh(shard, commandList);
 	ReleaseSRWLockShared(&shard.lock);
 
-	if (Tls.commandList == commandList)
+	if (Tls.commandList == commandList) {
+		if (Tls.stateIsDirect)
+			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupDirectHit();
+		else
+			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupShardHit();
 		return Tls.statePtr;
+	}
+
+	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupMiss();
 	return nullptr;
 }
 
@@ -221,6 +216,7 @@ void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *com
 		return;
 	Tls.commandList = nullptr;
 	Tls.shard = nullptr;
+	Tls.stateIsDirect = false;
 	Tls.statePtr = nullptr;
 	Tls.trackingGeneration = 0;
 }

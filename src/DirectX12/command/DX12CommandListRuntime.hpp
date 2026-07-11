@@ -23,10 +23,6 @@ public:
 	static volatile UINT64 TrackingGenerationValue;
 	static thread_local DX12CommandListRuntimeTlsCache Tls;
 
-	// Direct map for command lists whose runtime state is embedded in a wrapper.
-	static std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> gDirectStateMap;
-	static SRWLOCK gDirectStateMapLock;
-
 	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state);
 	static void UnregisterDirectState(ID3D12GraphicsCommandList *commandList);
 
@@ -36,7 +32,11 @@ public:
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
 	static DX12CommandListTrackingState MakeTrackingState(const DX12CommandListTrackingCache &cache);
 	static DX12CommandListTrackingState GetTrackingState(DX12CommandListRuntimeState *state);
-	static void TlsRefreshFromState(DX12CommandListRuntimeState *state, ID3D12GraphicsCommandList *commandList);
+	static void TlsRefreshFromState(
+		DX12CommandListRuntimeState *state,
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeShard *shard,
+		bool stateIsDirect);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);

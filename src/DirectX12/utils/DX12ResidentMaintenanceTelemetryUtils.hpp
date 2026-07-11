@@ -13,6 +13,10 @@ public:
 	inline static volatile LONG RuntimePsoCalls = 0;
 	inline static volatile LONG RuntimePsoChanged = 0;
 	inline static volatile LONG RuntimePsoNoChange = 0;
+	inline static volatile LONG RuntimeLookupTlsHits = 0;
+	inline static volatile LONG RuntimeLookupDirectHits = 0;
+	inline static volatile LONG RuntimeLookupShardHits = 0;
+	inline static volatile LONG RuntimeLookupMisses = 0;
 
 	inline static volatile LONG GraphicsRootSignatureCalls = 0;
 	inline static volatile LONG GraphicsRootSignatureChanged = 0;
@@ -193,6 +197,26 @@ public:
 			Inc(&RuntimePsoChanged);
 		else
 			Inc(&RuntimePsoNoChange);
+	}
+
+	static void RecordRuntimeLookupTlsHit()
+	{
+		Inc(&RuntimeLookupTlsHits);
+	}
+
+	static void RecordRuntimeLookupDirectHit()
+	{
+		Inc(&RuntimeLookupDirectHits);
+	}
+
+	static void RecordRuntimeLookupShardHit()
+	{
+		Inc(&RuntimeLookupShardHits);
+	}
+
+	static void RecordRuntimeLookupMiss()
+	{
+		Inc(&RuntimeLookupMisses);
 	}
 
 	static void RecordGraphicsRootSignature(bool changed)
@@ -899,6 +923,19 @@ public:
 			static_cast<long long>(runtimeDescriptorCopyMisses));
 	}
 
+	static void LogRuntimeLookup()
+	{
+		LONG tlsHits = Take(&RuntimeLookupTlsHits);
+		LONG directHits = Take(&RuntimeLookupDirectHits);
+		LONG shardHits = Take(&RuntimeLookupShardHits);
+		LONG misses = Take(&RuntimeLookupMisses);
+		if (!tlsHits && !directHits && !shardHits && !misses)
+			return;
+		DX12LogManager::JsonFunc("DX12ResidentMaintenance",
+			"\"category\":\"runtime_lookup\",\"tlsHits\":%ld,\"directHits\":%ld,\"shardHits\":%ld,\"misses\":%ld",
+			tlsHits, directHits, shardHits, misses);
+	}
+
 	static void LogDispatchDecisionState()
 	{
 		LONG cacheHits = Take(&DispatchDecisionCacheHits);
@@ -986,6 +1023,7 @@ public:
 
 	static void LogAndReset()
 	{
+		LogRuntimeLookup();
 		LogPso();
 		LogRootState();
 		LogDescriptorState();

@@ -11,5 +11,6 @@ class DX12CommandListRuntimeShard
 {
 public:
 	SRWLOCK lock = SRWLOCK_INIT;
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> directStates;
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState> states;
 };

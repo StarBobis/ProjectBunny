@@ -64,4 +64,16 @@ public:
 	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
 	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
 	std::vector<DX12CurrentRootConstants> cachedPreSkinConstants;
+	UINT64 cachedPreSkinBindingFingerprintSerial = 0;
+	UINT64 cachedPreSkinBindingFingerprint = 0;
+	UINT64 cachedPreSkinProbeSerial = 0;
+	uint64_t cachedPreSkinProbeCsHash = 0;
+	UINT64 cachedPreSkinProbeReloadGeneration = 0;
+	bool cachedPreSkinProbeResultValid = false;
+	bool cachedPreSkinProbeApplied = false;
+	bool cachedPreSkinProbeDispatchHandlingSkip = false;
+	bool cachedPreSkinProbeDispatchHasDispatch = false;
+	UINT cachedPreSkinProbeGroupsX = 0;
+	UINT cachedPreSkinProbeGroupsY = 0;
+	UINT cachedPreSkinProbeGroupsZ = 0;
 };

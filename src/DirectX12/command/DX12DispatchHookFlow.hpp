@@ -41,6 +41,10 @@ public:
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;
 	std::vector<DX12CurrentRootConstants> rootConstants;
+	const std::vector<DX12CurrentComputeUavBinding> *cachedUavs = nullptr;
+	const std::vector<DX12CurrentComputeUavBinding> *cachedSrvs = nullptr;
+	const std::vector<DX12CurrentComputeUavBinding> *cachedCbvs = nullptr;
+	const std::vector<DX12CurrentRootConstants> *cachedRootConstants = nullptr;
 	bool uavsFound = false;
 	bool srvsFound = false;
 	bool cbvsFound = false;
@@ -226,7 +230,7 @@ public:
 		// Design debt: this keeps old behavior for untracked command lists. The cleaner module seam is
 		// to guarantee runtime state before entering dispatch flow, then remove this fallback entirely.
 		DX12CommandListRuntimeState fallbackState = {};
-		const DX12CommandListRuntimeState *effectiveState = runtimeState;
+		DX12CommandListRuntimeState *effectiveState = runtimeState;
 		if (!effectiveState) {
 #if defined(_DEBUG)
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
@@ -254,12 +258,18 @@ public:
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
 		LARGE_INTEGER prepareProbeBegin = DX12OuterTimingProbeUtils::Now();
-		PreparePreSkinProbe(commandList, *effectiveState, &probe);
+		PreparePreSkinProbe(commandList, effectiveState, &probe);
+		const std::vector<DX12CurrentComputeUavBinding> &probeUavs =
+			probe.cachedUavs ? *probe.cachedUavs : probe.uavs;
+		const std::vector<DX12CurrentComputeUavBinding> &probeSrvs =
+			probe.cachedSrvs ? *probe.cachedSrvs : probe.srvs;
+		const std::vector<DX12CurrentComputeUavBinding> &probeCbvs =
+			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			"dispatch_prepare_probe",
 			0,
-			probe.uavs.size() + probe.srvs.size() + probe.cbvs.size(),
+			probeUavs.size() + probeSrvs.size() + probeCbvs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(prepareProbeBegin));
 		UINT dispatchGroupX = threadGroupCountX;
 		UINT dispatchGroupY = threadGroupCountY;
@@ -287,7 +297,7 @@ public:
 				"PreSkin",
 				"dispatch_finish_probe",
 				0,
-				probe.uavs.size(),
+				probeUavs.size(),
 				DX12OuterTimingProbeUtils::ElapsedUs(finishBegin));
 			return;
 		}
@@ -308,7 +318,7 @@ public:
 			"PreSkin",
 			"dispatch_finish_probe",
 			0,
-			probe.uavs.size(),
+			probeUavs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(finishBegin));
 	}
 
@@ -356,6 +366,10 @@ public:
 		probe.srvs.clear();
 		probe.cbvs.clear();
 		probe.rootConstants.clear();
+		probe.cachedUavs = nullptr;
+		probe.cachedSrvs = nullptr;
+		probe.cachedCbvs = nullptr;
+		probe.cachedRootConstants = nullptr;
 		probe.uavsFound = false;
 		probe.srvsFound = false;
 		probe.cbvsFound = false;
@@ -398,7 +412,7 @@ public:
 
 	static void PreparePreSkinProbe(
 		ID3D12GraphicsCommandList *commandList,
-		const DX12CommandListRuntimeState &runtimeState,
+		DX12CommandListRuntimeState *runtimeState,
 		DX12DispatchPreSkinProbe *probe)
 	{
 		if (!probe || !DX12ModNeedsPreSkinningUavProbe()) {
@@ -413,8 +427,9 @@ public:
 
 		// Match DX11 by reading the precomputed CS hash from RuntimeState.
 		LARGE_INTEGER csHashBegin = DX12OuterTimingProbeUtils::Now();
-		probe->computeShaderHash = runtimeState.cachedCsHashValid ?
-			runtimeState.cachedCsHash : GetCachedCsHash(runtimeState.pipelineState);
+		probe->computeShaderHash = (runtimeState && runtimeState->cachedCsHashValid) ?
+			runtimeState->cachedCsHash :
+			GetCachedCsHash(runtimeState ? runtimeState->pipelineState : nullptr);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			"prepare_get_cs_hash",
@@ -428,6 +443,7 @@ public:
 			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
 			return;
 		}
+		probe->computeBindingSerial = runtimeState ? runtimeState->computeBindingSerial : 0;
 
 		LARGE_INTEGER csConfigBegin = DX12OuterTimingProbeUtils::Now();
 		if (!DX12ModShouldProbePreSkinningForCs(probe->computeShaderHash)) {
@@ -459,42 +475,77 @@ public:
 			// have not changed since the last collection, reuse cached vectors.
 			// Keyed by computeBindingSerial (bumps on every root signature /
 			// descriptor table / root descriptor / root constant change).
-			if (runtimeState.preSkinBindingsCached &&
-				runtimeState.computeBindingSerial == runtimeState.lastPreSkinBindingSerial) {
-				probe->uavs = runtimeState.cachedPreSkinUavs;
-				probe->srvs = runtimeState.cachedPreSkinSrvs;
-				probe->cbvs = runtimeState.cachedPreSkinCbvs;
-				probe->rootConstants = runtimeState.cachedPreSkinConstants;
-				probe->uavsFound = !probe->uavs.empty() || !probe->srvs.empty() ||
-					!probe->cbvs.empty() || !probe->rootConstants.empty();
+			if (runtimeState &&
+				runtimeState->preSkinBindingsCached &&
+				runtimeState->computeBindingSerial == runtimeState->lastPreSkinBindingSerial) {
+				probe->cachedUavs = &runtimeState->cachedPreSkinUavs;
+				probe->cachedSrvs = &runtimeState->cachedPreSkinSrvs;
+				probe->cachedCbvs = &runtimeState->cachedPreSkinCbvs;
+				probe->cachedRootConstants = &runtimeState->cachedPreSkinConstants;
+				probe->uavsFound =
+					!probe->cachedUavs->empty() ||
+					!probe->cachedSrvs->empty() ||
+					!probe->cachedCbvs->empty() ||
+					!probe->cachedRootConstants->empty();
 			} else {
+				probe->cachedUavs = nullptr;
+				probe->cachedSrvs = nullptr;
+				probe->cachedCbvs = nullptr;
+				probe->cachedRootConstants = nullptr;
 				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
 					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
 					&probe->rootConstants);
 			}
+			const std::vector<DX12CurrentComputeUavBinding> &uavs =
+				probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
+			const std::vector<DX12CurrentComputeUavBinding> &srvs =
+				probe->cachedSrvs ? *probe->cachedSrvs : probe->srvs;
+			const std::vector<DX12CurrentComputeUavBinding> &cbvs =
+				probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				"collect_bindings",
 				0,
-				probe->uavs.size() + probe->srvs.size() + probe->cbvs.size(),
+				uavs.size() + srvs.size() + cbvs.size(),
 				DX12OuterTimingProbeUtils::ElapsedUs(collectBegin));
 			DX12_HOTPATH_TIME_END(PreSkinBindQuery);
 		}
-		probe->srvsFound = !probe->srvs.empty();
-		probe->cbvsFound = !probe->cbvs.empty();
-		probe->rootConstantsFound = !probe->rootConstants.empty();
+		const std::vector<DX12CurrentComputeUavBinding> &uavs =
+			probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
+		const std::vector<DX12CurrentComputeUavBinding> &srvs =
+			probe->cachedSrvs ? *probe->cachedSrvs : probe->srvs;
+		const std::vector<DX12CurrentComputeUavBinding> &cbvs =
+			probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
+		const std::vector<DX12CurrentRootConstants> &rootConstants =
+			probe->cachedRootConstants ? *probe->cachedRootConstants : probe->rootConstants;
+		probe->srvsFound = !srvs.empty();
+		probe->cbvsFound = !cbvs.empty();
+		probe->rootConstantsFound = !rootConstants.empty();
 
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
-		UINT64 computeIaFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
-			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants);
-		if (computeIaFingerprint == 0)
-			computeIaFingerprint = 1;
+		UINT64 computeIaFingerprint = 1;
+		if (runtimeState &&
+			runtimeState->cachedPreSkinBindingFingerprintSerial ==
+				runtimeState->computeBindingSerial &&
+			runtimeState->cachedPreSkinBindingFingerprint != 0) {
+			computeIaFingerprint = runtimeState->cachedPreSkinBindingFingerprint;
+		} else {
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
+			computeIaFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
+				uavs, srvs, cbvs, rootConstants);
+			if (computeIaFingerprint == 0)
+				computeIaFingerprint = 1;
+			if (runtimeState) {
+				runtimeState->cachedPreSkinBindingFingerprintSerial =
+					runtimeState->computeBindingSerial;
+				runtimeState->cachedPreSkinBindingFingerprint = computeIaFingerprint;
+			}
+		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			"build_binding_fingerprint",
 			0,
-			probe->uavs.size() + probe->srvs.size() + probe->cbvs.size(),
+			uavs.size() + srvs.size() + cbvs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(fingerprintBegin));
 
 		// Negative hits can skip matching. Positive hits still reapply through
@@ -504,7 +555,49 @@ public:
 		DX12PreSkinProbeCacheEntry cacheEntry;
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
-		if (DX12ModGetCachedPreSkinProbeResult(
+		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+		const auto storeRuntimeProbeCache =
+			[runtimeState, reloadGeneration](
+				uint64_t computeShaderHash,
+				bool applied,
+				const DX12PreSkinDispatchOverride &dispatchOverride) {
+				if (!runtimeState)
+					return;
+				runtimeState->cachedPreSkinProbeSerial =
+					runtimeState->computeBindingSerial;
+				runtimeState->cachedPreSkinProbeCsHash = computeShaderHash;
+				runtimeState->cachedPreSkinProbeReloadGeneration = reloadGeneration;
+				runtimeState->cachedPreSkinProbeResultValid = true;
+				runtimeState->cachedPreSkinProbeApplied = applied;
+				runtimeState->cachedPreSkinProbeDispatchHandlingSkip =
+					dispatchOverride.handlingSkip;
+				runtimeState->cachedPreSkinProbeDispatchHasDispatch =
+					dispatchOverride.hasDispatch;
+				runtimeState->cachedPreSkinProbeGroupsX = dispatchOverride.groupsX;
+				runtimeState->cachedPreSkinProbeGroupsY = dispatchOverride.groupsY;
+				runtimeState->cachedPreSkinProbeGroupsZ = dispatchOverride.groupsZ;
+			};
+		bool runtimeProbeCacheHit = false;
+		if (runtimeState &&
+			runtimeState->cachedPreSkinProbeResultValid &&
+			runtimeState->cachedPreSkinProbeSerial ==
+				runtimeState->computeBindingSerial &&
+			runtimeState->cachedPreSkinProbeCsHash == probe->computeShaderHash &&
+			runtimeState->cachedPreSkinProbeReloadGeneration == reloadGeneration) {
+			cacheEntry.applied = runtimeState->cachedPreSkinProbeApplied;
+			cacheEntry.dispatchOverride.handlingSkip =
+				runtimeState->cachedPreSkinProbeDispatchHandlingSkip;
+			cacheEntry.dispatchOverride.hasDispatch =
+				runtimeState->cachedPreSkinProbeDispatchHasDispatch;
+			cacheEntry.dispatchOverride.groupsX =
+				runtimeState->cachedPreSkinProbeGroupsX;
+			cacheEntry.dispatchOverride.groupsY =
+				runtimeState->cachedPreSkinProbeGroupsY;
+			cacheEntry.dispatchOverride.groupsZ =
+				runtimeState->cachedPreSkinProbeGroupsZ;
+			runtimeProbeCacheHit = true;
+		}
+		if (runtimeProbeCacheHit || DX12ModGetCachedPreSkinProbeResult(
 			    commandList, probe->computeShaderHash, computeIaFingerprint, &cacheEntry)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
@@ -519,6 +612,12 @@ public:
 				cacheEntry.applied ? 1 : 0,
 				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
+			if (!runtimeProbeCacheHit) {
+				storeRuntimeProbeCache(
+					probe->computeShaderHash,
+					cacheEntry.applied,
+					cacheEntry.dispatchOverride);
+			}
 			if (!cacheEntry.applied) {
 				probe->applied = false;
 				QueryPerformanceCounter(&t1);
@@ -556,7 +655,7 @@ public:
 #endif
 #if defined(_DEBUG)
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
-			probe->uavsFound ? 1 : 0, probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
+			probe->uavsFound ? 1 : 0, uavs.size(), srvs.size(), cbvs.size());
 
 		if (!probe->srvsFound) {
 			DX12LogManager::Text("PreparePreSkinProbe: warning no_compute_srvs\n");
@@ -573,17 +672,17 @@ public:
 		LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
-			probe->uavsFound ? probe->uavs : kEmptyComputeBindings,
-			probe->srvs,
-			probe->cbvsFound ? probe->cbvs : kEmptyComputeBindings,
-			probe->rootConstantsFound ? probe->rootConstants : kEmptyRootConstants,
+			probe->uavsFound ? uavs : kEmptyComputeBindings,
+			srvs,
+			probe->cbvsFound ? cbvs : kEmptyComputeBindings,
+			probe->rootConstantsFound ? rootConstants : kEmptyRootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
 			0,
-			probe->uavs.size() + probe->srvs.size() + probe->cbvs.size(),
+			uavs.size() + srvs.size() + cbvs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
 		if (positiveCacheHit && probe->applied && !probe->dispatchOverride.hasDispatch &&
 		    cachedDispatchOverride.hasDispatch) {
@@ -604,6 +703,10 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(storeCacheBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheStore();
 		}
+		storeRuntimeProbeCache(
+			probe->computeShaderHash,
+			probe->applied,
+			probe->dispatchOverride);
 
 		QueryPerformanceCounter(&t1);
 		QueryPerformanceFrequency(&freq);
@@ -625,6 +728,14 @@ public:
 		UINT threadGroupCountZ,
 		const DX12DispatchPreSkinProbe &probe)
 	{
+		const std::vector<DX12CurrentComputeUavBinding> &uavs =
+			probe.cachedUavs ? *probe.cachedUavs : probe.uavs;
+		const std::vector<DX12CurrentComputeUavBinding> &srvs =
+			probe.cachedSrvs ? *probe.cachedSrvs : probe.srvs;
+		const std::vector<DX12CurrentComputeUavBinding> &cbvs =
+			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
+		const std::vector<DX12CurrentRootConstants> &rootConstants =
+			probe.cachedRootConstants ? *probe.cachedRootConstants : probe.rootConstants;
 		if (probe.applied) {
 			LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModRestorePreSkinningUavReplacement(commandList);
@@ -637,12 +748,12 @@ public:
 		}
 		if (probe.uavsFound) {
 			LARGE_INTEGER recordUavBegin = DX12OuterTimingProbeUtils::Now();
-			DX12ModRecordComputeUavs(commandList, probe.uavs);
+			DX12ModRecordComputeUavs(commandList, uavs);
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				"record_compute_uavs",
 				0,
-				probe.uavs.size(),
+				uavs.size(),
 				DX12OuterTimingProbeUtils::ElapsedUs(recordUavBegin));
 		}
 		if (!probe.applied)
@@ -651,10 +762,10 @@ public:
 		DX12_DISPATCH_DEBUG_VERBOSE_LOG(
 			DX12LogManager::DebugJsonFunc("DX12DispatchUavProbe",
 				"\"found\":%s,\"uavs\":%zu,\"srvs\":%zu,\"cbvs\":%zu,\"rootConstants\":%zu,\"preSkinApplied\":%s,\"handlingSkip\":%s,\"explicitDispatch\":%s,\"cs\":\"%016llx\",\"originalGroups\":\"%u,%u,%u\",\"groups\":\"%u,%u,%u\"",
-				probe.uavsFound ? "true" : "false", probe.uavs.size(),
-				probe.srvsFound ? probe.srvs.size() : 0,
-				probe.cbvsFound ? probe.cbvs.size() : 0,
-				probe.rootConstantsFound ? probe.rootConstants.size() : 0,
+				probe.uavsFound ? "true" : "false", uavs.size(),
+				probe.srvsFound ? srvs.size() : 0,
+				probe.cbvsFound ? cbvs.size() : 0,
+				probe.rootConstantsFound ? rootConstants.size() : 0,
 				probe.applied ? "true" : "false",
 				probe.dispatchOverride.handlingSkip ? "true" : "false",
 				probe.dispatchOverride.hasDispatch ? "true" : "false",
