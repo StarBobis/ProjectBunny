@@ -16,6 +16,30 @@
 #include "ia/DX12DirectIaFastRejectCacheUtils.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
 
+// Exact, command-list-local negative result. Unlike the legacy unordered cache,
+// this key uses the IA mutation epoch as the identity of all bound views. The
+// global generations cover writes/resource reuse, so no content-hash result is
+// reused after any dependency can have changed.
+class DX12ResidentDrawNegativeEntry
+{
+public:
+	ID3D12PipelineState *pipelineState = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 contentGeneration = 0;
+	UINT64 resolveGeneration = 0;
+	UINT64 iaEpoch = 0;
+	UINT64 targetPlanFingerprint = 0;
+	UINT vertexCount = 0;
+	UINT indexCount = 0;
+	UINT instanceCount = 0;
+	UINT firstVertex = 0;
+	UINT firstIndex = 0;
+	INT baseVertex = 0;
+	UINT firstInstance = 0;
+	bool indexed = false;
+	bool valid = false;
+};
+
 class DX12CommandListRuntimeState
 {
 public:
@@ -41,6 +65,9 @@ public:
 	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
 	DX12DirectIaProbeCache directIaProbeCache;
 	DX12DirectIaFastRejectCache directIaFastRejectCache;
+	// Small direct-mapped resident cache: the common repeated negative draw is a
+	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
+	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;

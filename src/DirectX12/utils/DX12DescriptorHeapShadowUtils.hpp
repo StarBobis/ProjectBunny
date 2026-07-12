@@ -310,6 +310,28 @@ public:
 		return false;
 	}
 
+	// Lock a slot which has already been resolved by the caller.  Creation hot
+	// paths first consult the lock-free published identity and used to resolve
+	// the same CPU handle a second time on every actual change.  Retiring a heap
+	// is still handled safely by validating IsActive() after acquiring its shard.
+	static bool LockResolvedHeapSlotExclusive(
+		const ResolvedHeapSlot &resolved,
+		ResolvedHeapSlot *out)
+	{
+		if (!out || !resolved.heap || !resolved.heap->stateLocks)
+			return false;
+		SRWLOCK *lock = HeapLock(resolved.heap, resolved.slot);
+		if (!lock)
+			return false;
+		DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(lock);
+		if (!resolved.heap->stateLocks->IsActive()) {
+			ReleaseSRWLockExclusive(lock);
+			return false;
+		}
+		*out = resolved;
+		return true;
+	}
+
 	static void UnlockHeapSlot(const ResolvedHeapSlot &resolved, bool exclusive)
 	{
 		SRWLOCK *lock = HeapLock(resolved.heap, resolved.slot);
@@ -367,21 +389,34 @@ public:
 				*desc, valueId);
 
 		ResolvedHeapSlot resolved;
-		if (ResolveHeapSlotFast(
+		const bool resolvedKnownHeap = ResolveHeapSlotFast(
 				destDescriptor.ptr,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-				&resolved) &&
+				&resolved);
+		// ResolveHeapSlotFast already validates the heap activity immediately
+		// before returning. PublishedSlotValueEquals performs the authoritative
+		// seqlock read, so another activity load here only duplicated an atomic on
+		// every CreateCBV call.
+		if (resolvedKnownHeap &&
 				resolved.heap && resolved.heap->stateLocks &&
-				resolved.heap->stateLocks->IsActive() &&
 				resolved.heap->stateLocks->PublishedSlotValueEquals(
 					resolved.slot, valueId)) {
 			return false;
 		}
-		if (ResolveAndLockHeapSlot(
+		ResolvedHeapSlot locked;
+		bool lockedKnownHeap = resolvedKnownHeap &&
+			LockResolvedHeapSlotExclusive(resolved, &locked);
+		// A heap can retire between the optimistic identity read and its shard
+		// lock. Re-resolve in that rare case instead of misclassifying the handle
+		// as a CPU-ledger-only descriptor.
+		if (!lockedKnownHeap)
+			lockedKnownHeap = ResolveAndLockHeapSlot(
 				destDescriptor.ptr,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
 				true,
-				&resolved)) {
+				&locked);
+		if (lockedKnownHeap) {
+			resolved = locked;
 			DescriptorHeapRecord &heap = *resolved.heap;
 			const bool changed =
 				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
@@ -490,9 +525,11 @@ public:
 		const DescriptorHeapRecord &destinationHeap,
 		UINT destinationSlot)
 	{
-		if (!sourceHeap.stateLocks || !destinationHeap.stateLocks ||
-				!sourceHeap.stateLocks->IsActive() ||
-				!destinationHeap.stateLocks->IsActive())
+		// Both endpoints came from ResolveHeapSlotFast, which has already checked
+		// activity. The identities below are seqlock snapshots; repeating the two
+		// activity atomics for every copied descriptor provided no stronger value
+		// consistency guarantee.
+		if (!sourceHeap.stateLocks || !destinationHeap.stateLocks)
 			return CopyIdentityResult::Unknown;
 		DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
 		DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;

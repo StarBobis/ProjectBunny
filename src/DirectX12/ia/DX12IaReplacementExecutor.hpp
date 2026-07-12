@@ -100,6 +100,58 @@ public:
 	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
 	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
 
+	static size_t ResidentNegativeSlot(const DX12IaDrawInvocation &draw)
+	{
+		UINT64 key = draw.indexed ? 0x9e3779b97f4a7c15ull : 0xc4ceb9fe1a85ec53ull;
+		key ^= static_cast<UINT64>(draw.firstIndex) << 32;
+		key ^= static_cast<UINT64>(draw.indexCount) << 1;
+		key ^= static_cast<UINT64>(draw.firstVertex) << 17;
+		key ^= draw.instanceCount;
+		return static_cast<size_t>((key ^ (key >> 32)) & 15);
+	}
+
+	static bool MatchesResidentNegative(
+		const DX12ResidentDrawNegativeEntry &entry,
+		const DX12CommandListRuntimeState &state,
+		const DX12CompiledDrawDecision &decision,
+		UINT64 contentGeneration,
+		UINT64 resolveGeneration,
+		const DX12IaDrawInvocation &draw)
+	{
+		return entry.valid && entry.pipelineState == state.pipelineState &&
+			entry.reloadGeneration == decision.reloadGeneration &&
+			entry.contentGeneration == contentGeneration &&
+			entry.resolveGeneration == resolveGeneration &&
+			entry.iaEpoch == state.iaEpoch &&
+			entry.targetPlanFingerprint == decision.directTargetPlan.Fingerprint() &&
+			entry.indexed == draw.indexed && entry.vertexCount == draw.vertexCount &&
+			entry.indexCount == draw.indexCount && entry.instanceCount == draw.instanceCount &&
+			entry.firstVertex == draw.firstVertex && entry.firstIndex == draw.firstIndex &&
+			entry.baseVertex == draw.baseVertex && entry.firstInstance == draw.firstInstance;
+	}
+
+	static void StoreResidentNegative(
+		DX12CommandListRuntimeState *state,
+		const DX12CompiledDrawDecision &decision,
+		UINT64 contentGeneration,
+		UINT64 resolveGeneration,
+		const DX12IaDrawInvocation &draw)
+	{
+		DX12ResidentDrawNegativeEntry &entry =
+			state->residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+		entry.pipelineState = state->pipelineState;
+		entry.reloadGeneration = decision.reloadGeneration;
+		entry.contentGeneration = contentGeneration;
+		entry.resolveGeneration = resolveGeneration;
+		entry.iaEpoch = state->iaEpoch;
+		entry.targetPlanFingerprint = decision.directTargetPlan.Fingerprint();
+		entry.vertexCount = draw.vertexCount; entry.indexCount = draw.indexCount;
+		entry.instanceCount = draw.instanceCount; entry.firstVertex = draw.firstVertex;
+		entry.firstIndex = draw.firstIndex; entry.baseVertex = draw.baseVertex;
+		entry.firstInstance = draw.firstInstance; entry.indexed = draw.indexed;
+		entry.valid = true;
+	}
+
 	static UINT64 MixCheapValue(UINT64 key, UINT64 value)
 	{
 		key ^= value + 0x9e3779b97f4a7c15ull + (key << 6) + (key >> 2);
@@ -358,10 +410,20 @@ public:
 			// Reject repeated negative draws from immutable command-list state before
 			// resolving GPU virtual addresses. Global content and resource-lifetime
 			// generations make the shortcut conservative across uploads and reuse.
-			directFastRejectKey = DX12DirectIaFastRejectCacheUtils::MakeKey(
-				drawDecision->reloadGeneration,
-				DX12GetIaHashContentGeneration(),
-				DX12GetIaHashResolveGeneration(),
+				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
+				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
+				DX12ResidentDrawNegativeEntry &residentNegative =
+					mutableRuntimeState->residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+				if (MatchesResidentNegative(residentNegative, *mutableRuntimeState,
+						*drawDecision, contentGeneration, resolveGeneration, draw)) {
+					DX12Profiling::RecordIaHashStateResult(false);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
+				}
+				directFastRejectKey = DX12DirectIaFastRejectCacheUtils::MakeKey(
+					drawDecision->reloadGeneration,
+					contentGeneration,
+					resolveGeneration,
 				runtimeState.ia,
 				directTargetPlan,
 				draw);
@@ -504,6 +566,8 @@ public:
 					}
 
 					if (!hasDirectCandidate) {
+						StoreResidentNegative(mutableRuntimeState, *drawDecision,
+							contentGeneration, resolveGeneration, draw);
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
 								&mutableRuntimeState->directIaFastRejectCache,
