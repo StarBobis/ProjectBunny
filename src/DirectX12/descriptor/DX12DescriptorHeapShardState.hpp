@@ -52,6 +52,28 @@ public:
 		return &locks_[ShardForSlot(slot)].value;
 	}
 
+	void LockAllExclusive()
+	{
+		for (LockCell &cell : locks_)
+			AcquireSRWLockExclusive(&cell.value);
+	}
+
+	void UnlockAllExclusive()
+	{
+		for (size_t i = ShardCount; i > 0; --i)
+			ReleaseSRWLockExclusive(&locks_[i - 1].value);
+	}
+
+	bool IsActive() const
+	{
+		return active_.load(std::memory_order_acquire);
+	}
+
+	void Deactivate()
+	{
+		active_.store(false, std::memory_order_release);
+	}
+
 	const SRWLOCK *LockForSlot(uint32_t slot) const
 	{
 		return &locks_[ShardForSlot(slot)].value;
@@ -84,6 +106,7 @@ public:
 	}
 
 private:
+	std::atomic<bool> active_{true};
 	std::array<LockCell, ShardCount> locks_;
 	std::array<VersionCell, ShardCount> versions_;
 };

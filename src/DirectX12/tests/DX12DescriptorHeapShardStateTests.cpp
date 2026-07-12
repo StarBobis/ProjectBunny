@@ -17,6 +17,7 @@ int main()
 	State state;
 
 	Require(state.ReadVersion() == 64);
+	Require(state.IsActive());
 	Require(state.ReadShardVersion(0) == 1);
 	Require(state.ReadShardVersion(1) == 1);
 	Require(state.LockForSlot(0) == state.LockForSlot(64));
@@ -48,5 +49,9 @@ int main()
 		writer.join();
 	Require(state.ReadVersion() ==
 		64 + static_cast<uint64_t>(WriterCount) * BumpsPerWriter);
+	state.LockAllExclusive();
+	state.Deactivate();
+	state.UnlockAllExclusive();
+	Require(!state.IsActive());
 	return 0;
 }

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -352,7 +353,7 @@ struct PsoRootRecord
 extern SRWLOCK gResourceLock;
 extern SRWLOCK gDescriptorLock;
 extern std::vector<RootSignatureRecord> gRootSignatures;
-extern std::vector<DescriptorHeapRecord> gDescriptorHeaps;
+extern std::deque<DescriptorHeapRecord> gDescriptorHeaps;
 extern std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 extern std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 extern std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;

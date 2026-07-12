@@ -335,19 +335,15 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	++gDescriptorHeapRecordsSeen;
 	auto found = gDescriptorHeapByPtr.find(record.heap);
 	if (found != gDescriptorHeapByPtr.end()) {
-		const size_t heapIndex = found->second;
-		DescriptorHeapRecord &old = gDescriptorHeaps[heapIndex];
+		DescriptorHeapRecord &old = gDescriptorHeaps[found->second];
 		InvalidateDescriptorHeapLocked(old.heap);
-		gDescriptorHeapByPtr[record.heap] = heapIndex;
-		if (record.cpuStart)
-			gDescriptorHeapByCpuStart[record.cpuStart] = heapIndex;
-		gDescriptorHeaps[heapIndex] = std::move(record);
-	} else {
-		gDescriptorHeapByPtr[record.heap] = gDescriptorHeaps.size();
-		if (record.cpuStart)
-			gDescriptorHeapByCpuStart[record.cpuStart] = gDescriptorHeaps.size();
-		gDescriptorHeaps.push_back(std::move(record));
 	}
+	const size_t heapIndex = gDescriptorHeaps.size();
+	gDescriptorHeapByPtr[record.heap] = heapIndex;
+	if (record.cpuStart)
+		gDescriptorHeapByCpuStart[record.cpuStart] = heapIndex;
+	gDescriptorHeaps.push_back(std::move(record));
+	BumpDescriptorQuerySerial();
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }

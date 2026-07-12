@@ -22,7 +22,7 @@ uint32_t HashBytes(uint32_t seed, const void *data, size_t size)
 SRWLOCK gResourceLock = SRWLOCK_INIT;
 SRWLOCK gDescriptorLock = SRWLOCK_INIT;
 std::vector<RootSignatureRecord> gRootSignatures;
-std::vector<DescriptorHeapRecord> gDescriptorHeaps;
+std::deque<DescriptorHeapRecord> gDescriptorHeaps;
 std::unordered_map<ID3D12RootSignature*, size_t> gRootSignatureByPtr;
 std::unordered_map<ID3D12DescriptorHeap*, size_t> gDescriptorHeapByPtr;
 std::map<SIZE_T, size_t> gDescriptorHeapByCpuStart;
@@ -345,8 +345,13 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 		return;
 	DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
 	const SIZE_T cpuStart = record.cpuStart;
-	const UINT increment = record.increment;
-	const UINT numDescriptors = record.desc.NumDescriptors;
+	gDescriptorHeapByCpuStart.erase(cpuStart);
+	gDescriptorHeapByPtr.erase(found);
+	DescriptorHeapRecord::StateLocks *stateLocks = record.stateLocks.get();
+	if (stateLocks)
+		stateLocks->LockAllExclusive();
+	if (stateLocks)
+		stateLocks->Deactivate();
 	// gRuntimeDescriptorByCpuHandle removed - heap slots self-clean via ClearDescriptorHeapLocked
 	ClearDescriptorHeapLocked(&record);
 	record.heap = nullptr;
@@ -355,8 +360,8 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	record.gpuStart = 0;
 	record.increment = 0;
 	DX12DescriptorHeapStateUtils::ResetVersion(&record);
-	gDescriptorHeapByCpuStart.erase(cpuStart);
-	gDescriptorHeapByPtr.erase(found);
+	if (stateLocks)
+		stateLocks->UnlockAllExclusive();
 	BumpDescriptorQuerySerial();
 }
 
