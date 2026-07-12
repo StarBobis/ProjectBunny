@@ -558,7 +558,6 @@ public:
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
-		DX12CommandListRuntime::BumpTrackingGeneration();
 		DXGIHookRuntime::RunPostPresentUi(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "post_original_runtime", swapChain, hr,
@@ -675,7 +674,6 @@ public:
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
-		DX12CommandListRuntime::BumpTrackingGeneration();
 		DXGIHookRuntime::RunPostPresentUi(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "post_original_runtime", swapChain, hr,
@@ -910,7 +908,6 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
-		DX12CommandListRuntime::BumpIaContentEpoch(runtimeState);
 		DX12DispatchHookFlow::ExecuteHook(
 			commandList,
 			runtimeState,

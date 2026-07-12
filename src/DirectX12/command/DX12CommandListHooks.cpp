@@ -692,7 +692,6 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(
 			original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 		return;
 	}
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	PFN_DISPATCH original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch, PFN_DISPATCH, DX12CommandListHookState::OrigDispatch, "Dispatch");
 	DX12_PROFILE_SCOPE(Dispatch);
 	DX12DispatchHookFlow::ExecuteHook(

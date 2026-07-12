@@ -5178,7 +5178,6 @@ namespace DX12Wrapper
 			if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK) && mOrigDispatch) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDispatch);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 				return;
 			}
