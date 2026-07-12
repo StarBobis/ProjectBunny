@@ -8,7 +8,7 @@
 
 #include <vector>
 
-#include "DX12BindingTrackerState.hpp"
+#include "DX12BindingTrackerQuery.hpp"
 
 class DX12PreSkinBindingRootTableCacheKey
 {
@@ -22,6 +22,8 @@ public:
 	UINT heapIncrement = 0;
 	UINT heapNumDescriptors = 0;
 	UINT64 heapVersion = 0;
+	std::vector<UINT> observedSlots;
+	std::vector<UINT64> observedSlotVersions;
 };
 
 class DX12PreSkinBindingRootDescriptorCacheKey
@@ -76,7 +78,10 @@ public:
 class DX12PreSkinBindingCacheUtils
 {
 public:
-	static constexpr size_t CacheCapacity = 64;
+	// The target title presents roughly 100-110 distinct compute binding
+	// patterns per frame. A 64-entry LRU is smaller than that cyclic working set
+	// and therefore evicts every entry immediately before the next-frame reuse.
+	static constexpr size_t CacheCapacity = 256;
 
 	static void MixValue(DX12PreSkinBindingCacheKey *key, UINT64 value)
 	{
@@ -199,13 +204,17 @@ public:
 	static void BuildKey(
 		const CommandListBindingState &snapshot,
 		UINT64 cbvSrvUavHeapVersion,
+		const DX12RootSignatureSummary *rootSignature,
 		DX12PreSkinBindingCacheKey *key)
 	{
 		if (!key)
 			return;
 
+		// A heap-wide version changes for tens of thousands of unrelated copies
+		// every frame. With a parsed root signature, observe only the descriptor
+		// slots that this compute binding can actually consume.
 		DX12PreSkinBindingCacheUtils::InitializeKey(
-			snapshot, cbvSrvUavHeapVersion, key);
+			snapshot, rootSignature ? 0 : cbvSrvUavHeapVersion, key);
 
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
 			const RootTableState &table = snapshot.computeTables[root];
@@ -213,8 +222,55 @@ public:
 				DX12DescriptorHeapSummary heap = {};
 				const bool resolvedHeap = ResolverUtils::ResolveTableHeap(
 					snapshot, table, &heap);
+				DX12DescriptorHeapSummary identityHeap = heap;
+				if (rootSignature)
+					identityHeap.version = 0;
 				DX12PreSkinBindingCacheUtils::AddRootTable(
-					key, root, table, resolvedHeap, heap);
+					key, root, table, resolvedHeap, identityHeap);
+
+				if (resolvedHeap && rootSignature && heap.increment) {
+					const DX12RootParameterSummary *parameter =
+						DX12BindingTrackerQuery::FindRootParameter(*rootSignature, root);
+					if (parameter && parameter->parameterType ==
+							D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
+						DX12PreSkinBindingRootTableCacheKey &tableKey =
+							key->rootTables.back();
+						const UINT64 tableBaseIndex =
+							(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+						for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+							if (range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_UAV &&
+								range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV &&
+								range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_CBV)
+								continue;
+							const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(
+								heap, tableBaseIndex, range);
+							for (UINT offset = 0; offset < count; ++offset) {
+								tableKey.observedSlots.push_back(static_cast<UINT>(
+									tableBaseIndex + range.effectiveOffset + offset));
+							}
+						}
+						tableKey.observedSlotVersions.resize(
+							tableKey.observedSlots.size());
+						if (!ResolverUtils::ReadDescriptorSlotVersions(
+								heap.heap,
+								tableKey.observedSlots.data(),
+								tableKey.observedSlots.size(),
+								tableKey.observedSlotVersions.data())) {
+							tableKey.observedSlots.clear();
+							tableKey.observedSlotVersions.clear();
+							tableKey.heapVersion = heap.version;
+							DX12PreSkinBindingCacheUtils::MixValue(key, heap.version);
+						} else {
+							for (size_t slotIndex = 0;
+									slotIndex < tableKey.observedSlots.size(); ++slotIndex) {
+								DX12PreSkinBindingCacheUtils::MixValue(
+									key, tableKey.observedSlots[slotIndex]);
+								DX12PreSkinBindingCacheUtils::MixValue(
+									key, tableKey.observedSlotVersions[slotIndex]);
+							}
+						}
+					}
+				}
 			}
 
 			const RootDescriptorState &rootDescriptor =
@@ -242,10 +298,12 @@ public:
 			left.resolvedHeap == right.resolvedHeap &&
 			left.heap == right.heap &&
 			left.heapCpuStart == right.heapCpuStart &&
-			left.heapGpuStart == right.heapGpuStart &&
-			left.heapIncrement == right.heapIncrement &&
-			left.heapNumDescriptors == right.heapNumDescriptors &&
-			left.heapVersion == right.heapVersion;
+				left.heapGpuStart == right.heapGpuStart &&
+				left.heapIncrement == right.heapIncrement &&
+				left.heapNumDescriptors == right.heapNumDescriptors &&
+				left.heapVersion == right.heapVersion &&
+				left.observedSlots == right.observedSlots &&
+				left.observedSlotVersions == right.observedSlotVersions;
 	}
 
 	static bool RootDescriptorsEqual(

@@ -49,7 +49,8 @@ public:
 		DX12RuntimeState::SetModule(module);
 		DX12LogManager::Open();
 		DX12Profiling::Init();
-		DX12LogManager::Text("\n*** 3DMigoto DX12 runtime initialized - frame analysis logging ready ***\n");
+		DX12LogManager::Text(
+			"\n*** 3DMigoto DX12 runtime initialized - build direct-hash-key+preskin-slot-v1 ***\n");
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());

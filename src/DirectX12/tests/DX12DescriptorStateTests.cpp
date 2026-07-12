@@ -1,4 +1,5 @@
 #include "DX12ResourceTrackerPrivate.hpp"
+#include "binding/DX12PreSkinBindingCacheUtils.hpp"
 #include "descriptor/DX12DescriptorCopyMemoUtils.hpp"
 
 #include <algorithm>
@@ -480,6 +481,78 @@ static void TestDirectIaProbeCacheDropsDeadGeneration()
 	Require(!(drawVariant == MakeDirectProbeKey(9, 8, 0x44444444, 4)));
 }
 
+class PreSkinSlotIdentityTestResolver
+{
+public:
+	inline static DX12DescriptorHeapSummary heap = {};
+	inline static std::array<UINT64, 64> versions = {};
+
+	static bool ResolveTableHeap(
+		const CommandListBindingState &,
+		const RootTableState &,
+		DX12DescriptorHeapSummary *out)
+	{
+		if (!out)
+			return false;
+		*out = heap;
+		return true;
+	}
+
+	static bool ReadDescriptorSlotVersions(
+		ID3D12DescriptorHeap *, const UINT *slots, size_t count, UINT64 *out)
+	{
+		for (size_t index = 0; index < count; ++index) {
+			if (slots[index] >= versions.size())
+				return false;
+			out[index] = versions[slots[index]];
+		}
+		return true;
+	}
+};
+
+static void TestPreSkinBindingCacheObservesOnlyReferencedSlots()
+{
+	CommandListBindingState snapshot;
+	snapshot.computeRootSignature = reinterpret_cast<ID3D12RootSignature*>(0x1000);
+	snapshot.cbvSrvUavHeap = reinterpret_cast<ID3D12DescriptorHeap*>(0x2000);
+	snapshot.computeTables[0].valid = true;
+	snapshot.computeTables[0].baseDescriptor.ptr = 1100;
+
+	PreSkinSlotIdentityTestResolver::heap = DX12DescriptorHeapSummary();
+	PreSkinSlotIdentityTestResolver::heap.heap = snapshot.cbvSrvUavHeap;
+	PreSkinSlotIdentityTestResolver::heap.gpuStart = 1000;
+	PreSkinSlotIdentityTestResolver::heap.cpuStart = 3000;
+	PreSkinSlotIdentityTestResolver::heap.increment = 10;
+	PreSkinSlotIdentityTestResolver::heap.numDescriptors = 64;
+	PreSkinSlotIdentityTestResolver::heap.version = 100;
+	PreSkinSlotIdentityTestResolver::versions.fill(1);
+
+	DX12RootSignatureSummary rootSignature;
+	DX12RootParameterSummary parameter;
+	parameter.rootParameterIndex = 0;
+	parameter.parameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	DX12RootDescriptorRangeSummary range;
+	range.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range.numDescriptors = 3;
+	range.effectiveOffset = 2;
+	parameter.ranges.push_back(range);
+	rootSignature.parameters.push_back(parameter);
+
+	DX12PreSkinBindingCacheKey first;
+	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
+		snapshot, 100, &rootSignature, &first);
+	DX12PreSkinBindingCacheKey unrelatedHeapWrite;
+	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
+		snapshot, 101, &rootSignature, &unrelatedHeapWrite);
+	Require(DX12PreSkinBindingCacheUtils::KeysEqual(first, unrelatedHeapWrite));
+
+	PreSkinSlotIdentityTestResolver::versions[12]++;
+	DX12PreSkinBindingCacheKey referencedSlotWrite;
+	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
+		snapshot, 102, &rootSignature, &referencedSlotWrite);
+	Require(!DX12PreSkinBindingCacheUtils::KeysEqual(first, referencedSlotWrite));
+}
+
 static void TestDescriptorCopyMemoInvalidatesByObservedShard()
 {
 	DescriptorHeapRecord::StateLocks sourceState(2048);
@@ -621,6 +694,7 @@ int main(int argc, char **argv)
 	TestValuePoolRefcountAndReuse();
 	TestCompactValueMaterializationAndCbvHashEquivalence();
 	TestDirectIaProbeCacheDropsDeadGeneration();
+	TestPreSkinBindingCacheObservesOnlyReferencedSlots();
 	TestDescriptorCopyMemoInvalidatesByObservedShard();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();

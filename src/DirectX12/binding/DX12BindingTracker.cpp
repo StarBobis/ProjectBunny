@@ -62,6 +62,15 @@ static CommandListBindingState* GetOrResolveBindingState(
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
+	static bool ReadDescriptorSlotVersions(
+		ID3D12DescriptorHeap *heap,
+		const UINT *slots,
+		size_t count,
+		UINT64 *versions)
+	{
+		return DX12GetDescriptorSlotVersions(heap, slots, count, versions);
+	}
+
 	static void FillRuntimeTableFromHeapSummary(
 		RootTableState *table,
 		const DX12DescriptorHeapSummary &heap)
@@ -688,6 +697,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
 			descriptorHeapVersionBefore,
+			cachedSummary,
 			&cacheKey);
 		bool cachedFoundAny = false;
 		if (DX12PreSkinBindingCacheUtils::TryLoad(
@@ -1071,6 +1081,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
 			descriptorHeapVersionAfter,
+			cachedSummary,
 			&storeKey);
 		DX12PreSkinBindingCacheUtils::Store(
 			&preSkinBindingCache,
