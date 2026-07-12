@@ -549,28 +549,6 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
-			const CopyIdentityResult identityResult =
-				ComparePublishedSlotIdentities(
-					srcHeap, srcSlot, destHeap, destSlot);
-			if (identityResult != CopyIdentityResult::Unknown) {
-				if (telemetryBatch)
-					telemetryBatch->RecordResults(
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				return;
-			}
 			DescriptorHeapRecord::StateLocks *sourceState =
 				srcHeap.stateLocks.get();
 			DescriptorHeapRecord::StateLocks *destinationState =
@@ -582,6 +560,10 @@ public:
 			const bool canMemo = sourceState && destinationState &&
 				sourceState->IsActive() && destinationState->IsActive() &&
 				destSlot < destHeap.desc.NumDescriptors;
+			// Most copies repeat the same staging-to-visible slot pair on every
+			// frame. Probe its version proof before the seqlock identity reads;
+			// the old order returned from the identity fast path before ever
+			// storing a proof, so the memo could never accelerate those copies.
 			if (canMemo && CopyMemo().TryLoad(
 					memoKey,
 					sourceState->ReadSlotVersion(srcSlot),
@@ -611,6 +593,42 @@ public:
 					telemetryBatch->RecordMemo(false);
 				else
 					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
+			}
+			const CopyIdentityResult identityResult =
+				ComparePublishedSlotIdentities(
+					srcHeap, srcSlot, destHeap, destSlot);
+			if (identityResult != CopyIdentityResult::Unknown) {
+				if (canMemo) {
+					DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
+					DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
+					if (sourceState->ObserveSlotIdentity(srcSlot, &sourceIdentity) &&
+						destinationState->ObserveSlotIdentity(destSlot, &destinationIdentity)) {
+						CopyMemo().Store(
+							memoKey,
+							sourceIdentity.version,
+							destinationIdentity.version,
+							identityResult == CopyIdentityResult::Unchanged ?
+								DX12DescriptorCopyMemo::Result::Unchanged :
+								DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
+					}
+				}
+				if (telemetryBatch)
+					telemetryBatch->RecordResults(
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+				return;
 			}
 			SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot);
 			SRWLOCK *destLock = HeapLock(&destHeap, destSlot);

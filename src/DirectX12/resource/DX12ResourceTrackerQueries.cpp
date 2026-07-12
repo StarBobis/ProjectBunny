@@ -57,22 +57,32 @@ bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignatur
 class DX12BufferResolveRangeUtils
 {
 public:
-static void ApplyLatestResourceStateLocked(DX12BufferResourceSummary *summary)
+// Cache entries retain both the canonical resource pointer and its monotonic
+// identity generation.  That pair is sufficient to prove that a resolved
+// buffer still names the same live D3D12 resource: RecordResource changes the
+// generation whenever its GPU-VA range changes, while InvalidateResourceLocked
+// removes every alias before its slot can be reused.  Do this O(1) validation
+// instead of replaying the global range-invalidation journal for every cache
+// hit.  The journal may contain thousands of unrelated transient resources in
+// one frame, which turned a local IA cache hit into an O(history) operation.
+static bool ApplyLatestResourceStateLocked(DX12BufferResourceSummary *summary)
 {
-	if (!summary || !summary->resource)
-		return;
+	if (!summary || !summary->resource || !summary->resourceGeneration)
+		return false;
 
 	std::unordered_map<ID3D12Resource*, size_t>::iterator found = gResourceByPtr.find(summary->resource);
 	if (found == gResourceByPtr.end() || found->second >= gResources.size())
-		return;
+		return false;
 
 	const ResourceRecord &resource = gResources[found->second];
-	if (!resource.resource)
-		return;
+	if (!resource.resource ||
+		resource.identityGeneration != summary->resourceGeneration)
+		return false;
 
 	summary->currentState = static_cast<UINT>(resource.currentState);
 	summary->hasCurrentState = resource.hasCurrentState;
 	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
+	return true;
 }
 
 static bool FillSummaryFromCacheEntry(
@@ -86,8 +96,7 @@ static bool FillSummaryFromCacheEntry(
 	summary->resourceOffset = gpuVirtualAddress - entry.begin;
 	const UINT64 available = entry.end - gpuVirtualAddress;
 	summary->viewSize = size < available ? size : available;
-	DX12BufferResolveRangeUtils::ApplyLatestResourceStateLocked(summary);
-	return true;
+	return DX12BufferResolveRangeUtils::ApplyLatestResourceStateLocked(summary);
 }
 
 static bool TryResolveSummaryFromResourceRecord(
@@ -189,10 +198,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 		const BufferResolveCacheEntry &entry = localCache.entries[cacheIndex];
 		if (entry.begin && gpuVirtualAddress >= entry.begin && gpuVirtualAddress < entry.end) {
 			AcquireSRWLockShared(&gResourceLock);
-			const bool entryInvalidated =
-				DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-					entry.begin, entry.end, entry.rangeEpoch);
-			const bool cacheResolved = !entryInvalidated &&
+			const bool cacheResolved =
 				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
 					gpuVirtualAddress, size, entry, summary);
 			ReleaseSRWLockShared(&gResourceLock);
@@ -217,10 +223,8 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (cached != gBufferResolveCache.begin()) {
 		--cached;
 		if (gpuVirtualAddress >= cached->second.begin &&
-		    gpuVirtualAddress < cached->second.end) {
-			const bool entryInvalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-				cached->second.begin, cached->second.end, cached->second.rangeEpoch);
-			const bool cacheResolved = !entryInvalidated &&
+			gpuVirtualAddress < cached->second.end) {
+			const bool cacheResolved =
 				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
 					gpuVirtualAddress, size, cached->second, summary);
 			if (cacheResolved) {
