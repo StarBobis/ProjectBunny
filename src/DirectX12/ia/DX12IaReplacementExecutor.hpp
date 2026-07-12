@@ -13,6 +13,7 @@
 #include "DX12Profiling.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12RuntimeState.hpp"
+#include "DX12HotPathState.hpp"
 #include "types/DX12IaDrawInvocation.hpp"
 #include "types/DX12IaReplacementExecutorCallbacks.hpp"
 #include "hotpath/DX12HotPathTimingUtils.hpp"
@@ -280,7 +281,9 @@ public:
 		// shader override metadata on every command.
 		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
 		LARGE_INTEGER psoDecisionBegin = DX12OuterTimingProbeUtils::Now();
-		const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
+		const bool activeShaderOverrides =
+			(DX12HotPathState::HookWorkFlags &
+			 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		DX12CommandListRuntimeState *mutableRuntimeState =
 			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
 		// The runtime deliberately preserves this cache across command-list Reset.

@@ -122,7 +122,8 @@ public:
 		DX12_HOTPATH_TIME_BEGIN(DispatchHookTotal);
 
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
-		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
+		const bool hasShaderOverrides =
+			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const DX12CommandListTrackingState tracking =
@@ -205,8 +206,11 @@ public:
 	{
 		if (!originalDispatch)
 			return;
-		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
-		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
+		const bool hasShaderOverrides =
+			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+		const bool needsPreSkinProbe =
+			(flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		if (InDispatchHookFlow) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
@@ -412,7 +416,8 @@ public:
 		DX12CommandListRuntimeState *runtimeState,
 		DX12DispatchPreSkinProbe *probe)
 	{
-		if (!probe || !DX12ModNeedsPreSkinningUavProbe()) {
+		if (!probe || !(DX12HotPathState::HookWorkFlags &
+			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
 #if defined(_DEBUG)
 			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
 #endif

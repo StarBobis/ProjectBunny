@@ -4835,6 +4835,10 @@ namespace DX12Wrapper
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect,
@@ -4853,6 +4857,10 @@ namespace DX12Wrapper
 			mOrigDispatch = ResolveOriginalDispatch();
 			mOrigSetPipelineState = ResolveOriginalSetPipelineState();
 			mOrigResourceBarrier = ResolveOriginalResourceBarrier();
+			mOrigSetComputeRootSignature = ResolveOriginalSetComputeRootSignature();
+			mOrigSetGraphicsRootSignature = ResolveOriginalSetGraphicsRootSignature();
+			mOrigSetComputeRootDescriptorTable = ResolveOriginalSetComputeRootDescriptorTable();
+			mOrigSetGraphicsRootDescriptorTable = ResolveOriginalSetGraphicsRootDescriptorTable();
 			mOrigIASetIndexBuffer = ResolveOriginalIASetIndexBuffer();
 			mOrigIASetVertexBuffers = ResolveOriginalIASetVertexBuffers();
 			mOrigExecuteIndirect = ResolveOriginalExecuteIndirect();
@@ -4925,6 +4933,34 @@ namespace DX12Wrapper
 				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
 				DX12CommandListHookState::OrigResourceBarrier,
 				"ResourceBarrier");
+		}
+
+		DX12CommandListHookSignatures::SetRootSignature ResolveOriginalSetComputeRootSignature()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<DX12CommandListHookSignatures::SetRootSignature>(
+				mCommandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature,
+				DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
+		}
+
+		DX12CommandListHookSignatures::SetRootSignature ResolveOriginalSetGraphicsRootSignature()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<DX12CommandListHookSignatures::SetRootSignature>(
+				mCommandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature,
+				DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
+		}
+
+		DX12CommandListHookSignatures::SetRootDescriptorTable ResolveOriginalSetComputeRootDescriptorTable()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<DX12CommandListHookSignatures::SetRootDescriptorTable>(
+				mCommandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable,
+				DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
+		}
+
+		DX12CommandListHookSignatures::SetRootDescriptorTable ResolveOriginalSetGraphicsRootDescriptorTable()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<DX12CommandListHookSignatures::SetRootDescriptorTable>(
+				mCommandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable,
+				DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
 		}
 
 		DX12CommandListHookSignatures::IaSetIndexBuffer ResolveOriginalIASetIndexBuffer()
@@ -5315,7 +5351,7 @@ namespace DX12Wrapper
 					mOrigResourceBarrier(mCommandList, NumBarriers, pBarriers);
 					return;
 				}
-				DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, NumBarriers, pBarriers, mOrigResourceBarrier);
+				DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, &mRuntimeState, NumBarriers, pBarriers, mOrigResourceBarrier);
 			}
 
 			void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *pCommandList) override
@@ -5350,7 +5386,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootSignature(mCommandList,
-					&mRuntimeState, DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+					&mRuntimeState, pRootSignature, mOrigSetComputeRootSignature);
 				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
@@ -5358,7 +5394,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootSignature(mCommandList,
-					&mRuntimeState, DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature));
+					&mRuntimeState, pRootSignature, mOrigSetGraphicsRootSignature);
 				DX12_HOTPATH_TIME_END(RootSignatureTotal);
 			}
 
@@ -5367,7 +5403,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
-					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor);
+					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor, mOrigSetComputeRootDescriptorTable);
 				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
@@ -5376,7 +5412,7 @@ namespace DX12Wrapper
 			{
 				DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
 				DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
-					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor);
+					mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor, mOrigSetGraphicsRootDescriptorTable);
 				DX12_HOTPATH_TIME_END(RootDescTableTotal);
 			}
 
@@ -5956,6 +5992,10 @@ namespace DX12Wrapper
 			DX12CommandListHookSignatures::Dispatch mOrigDispatch = nullptr;
 			DX12CommandListHookSignatures::SetPipelineState mOrigSetPipelineState = nullptr;
 			DX12CommandListHookSignatures::ResourceBarrier mOrigResourceBarrier = nullptr;
+			DX12CommandListHookSignatures::SetRootSignature mOrigSetComputeRootSignature = nullptr;
+			DX12CommandListHookSignatures::SetRootSignature mOrigSetGraphicsRootSignature = nullptr;
+			DX12CommandListHookSignatures::SetRootDescriptorTable mOrigSetComputeRootDescriptorTable = nullptr;
+			DX12CommandListHookSignatures::SetRootDescriptorTable mOrigSetGraphicsRootDescriptorTable = nullptr;
 			DX12CommandListHookSignatures::IaSetIndexBuffer mOrigIASetIndexBuffer = nullptr;
 			DX12CommandListHookSignatures::IaSetVertexBuffers mOrigIASetVertexBuffers = nullptr;
 			DX12CommandListHookSignatures::ExecuteIndirect mOrigExecuteIndirect = nullptr;

@@ -8,6 +8,7 @@
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
+#include "DX12HotPathState.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
@@ -290,7 +291,7 @@ void DX12CommandListRuntime::Reset(
 		std::move(state->directIaFastRejectCache);
 	*state = DX12CommandListRuntimeState();
 	state->device = cachedDevice;
-	state->pipelineState = initialState;
+	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
 	state->iaHashStateCache = std::move(persistentIaHashStateCache);
 	state->directIaProbeCache = std::move(persistentDirectIaProbeCache);
@@ -570,6 +571,23 @@ void DX12CommandListRuntime::RememberPipelineState(
 	if (!pipelineState) {
 		state->cachedCsHash = 0;
 		state->cachedCsHashValid = false;
+		state->cachedCsHashResolved = true;
+	}
+
+	// Resolve immutable PSO policy at the state transition, matching DX11's
+	// current-shader model. Draw/dispatch then consume command-list-local state.
+	const UINT64 flags = DX12HotPathState::HookWorkFlags;
+	const bool shaderOverrides =
+		(flags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+	const bool preSkinProbe =
+		(flags & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
+	if (shaderOverrides)
+		DX12CommandListRuntime::CompileDrawDecision(state, true);
+	if (shaderOverrides || preSkinProbe) {
+		DX12CommandListRuntime::CompileDispatchDecision(
+			state, shaderOverrides, preSkinProbe);
+		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
+		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
 		state->cachedCsHashResolved = true;
 	}
 }

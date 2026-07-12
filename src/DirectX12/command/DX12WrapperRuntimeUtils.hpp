@@ -1067,9 +1067,19 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetPipelineState);
 		DX12_HOTPATH_TIME_BEGIN(SetPipelineStateTotal);
+		ID3D12PipelineState *unwrappedPipelineState = nullptr;
+		if (runtimeState && runtimeState->lastWrappedPipelineState == pipelineState) {
+			unwrappedPipelineState = runtimeState->lastUnwrappedPipelineState;
+		} else {
+			unwrappedPipelineState = UnwrapPipelineState(pipelineState);
+			if (runtimeState) {
+				runtimeState->lastWrappedPipelineState = pipelineState;
+				runtimeState->lastUnwrappedPipelineState = unwrappedPipelineState;
+			}
+		}
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateFlow::CapturePipelineState(
-				commandList, runtimeState, UnwrapPipelineState(pipelineState));
+					commandList, runtimeState, unwrappedPipelineState);
 		if (original)
 			original(commandList, activePipelineState);
 		else
@@ -1079,6 +1089,7 @@ public:
 
 	static void ResourceBarrier(
 		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers,
 		DX12CommandListHookSignatures::ResourceBarrier original)
@@ -1086,7 +1097,9 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiResourceBarrier);
 		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
-		std::vector<D3D12_RESOURCE_BARRIER> unwrappedBarriers;
+		std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
+		std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
+			runtimeState ? runtimeState->barrierScratch : localBarriers;
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
 		DX12_HOTPATH_TIME_BEGIN(BarrierUnwrap);
 		UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
@@ -1214,22 +1227,34 @@ public:
 		DX12CommandListRuntimeState *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootSignature(
-			commandList, runtimeState, rootSignature);
+			commandList, runtimeState, rootSignature, nullptr);
 	}
 
 	static void SetComputeRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeState *runtimeState,
-		ID3D12RootSignature *rootSignature)
+		ID3D12RootSignature *rootSignature,
+		DX12CommandListHookSignatures::SetRootSignature original)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootSignature);
+		ID3D12RootSignature *unwrapped = nullptr;
+		if (runtimeState && runtimeState->lastWrappedComputeRootSignature == rootSignature)
+			unwrapped = runtimeState->lastUnwrappedComputeRootSignature;
+		else {
+			unwrapped = UnwrapRootSignature(rootSignature);
+			if (runtimeState) {
+				runtimeState->lastWrappedComputeRootSignature = rootSignature;
+				runtimeState->lastUnwrappedComputeRootSignature = unwrapped;
+			}
+		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootSignature);
 			DX12CommandListComputeBindingFlow::CaptureRootSignature(
-				commandList, runtimeState, rootSignature, false);
+				commandList, runtimeState, unwrapped, false);
 		}
-		commandList->SetComputeRootSignature(rootSignature);
+		if (original) original(commandList, unwrapped);
+		else commandList->SetComputeRootSignature(unwrapped);
 	}
 
 	static void SetGraphicsRootSignature(
@@ -1239,23 +1264,35 @@ public:
 		DX12CommandListRuntimeState *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootSignature(
-			commandList, runtimeState, rootSignature);
+			commandList, runtimeState, rootSignature, nullptr);
 	}
 
 	static void SetGraphicsRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeState *runtimeState,
-		ID3D12RootSignature *rootSignature)
+		ID3D12RootSignature *rootSignature,
+		DX12CommandListHookSignatures::SetRootSignature original)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
-		if (DX12HotPathState::skipAll)
-			commandList->SetGraphicsRootSignature(rootSignature);
+		ID3D12RootSignature *unwrapped = nullptr;
+		if (runtimeState && runtimeState->lastWrappedGraphicsRootSignature == rootSignature)
+			unwrapped = runtimeState->lastUnwrappedGraphicsRootSignature;
+		else {
+			unwrapped = UnwrapRootSignature(rootSignature);
+			if (runtimeState) {
+				runtimeState->lastWrappedGraphicsRootSignature = rootSignature;
+				runtimeState->lastUnwrappedGraphicsRootSignature = unwrapped;
+			}
+		}
+		if (DX12HotPathState::skipAll) {
+			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
+		}
 		else {
 			DX12_PROFILE_SCOPE(SetGraphicsRootSignature);
 			DX12CommandListComputeBindingFlow::CaptureRootSignature(
-				commandList, runtimeState, rootSignature, true);
-			commandList->SetGraphicsRootSignature(rootSignature);
+				commandList, runtimeState, unwrapped, true);
+			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
 		}
 	}
 
@@ -1267,14 +1304,15 @@ public:
 		DX12CommandListRuntimeState *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
-			commandList, runtimeState, rootParameterIndex, baseDescriptor);
+			commandList, runtimeState, rootParameterIndex, baseDescriptor, nullptr);
 	}
 
 	static void SetComputeRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeState *runtimeState,
 		UINT rootParameterIndex,
-		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
+		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptorTable);
@@ -1283,7 +1321,8 @@ public:
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, false);
 		}
-		commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
+		if (original) original(commandList, rootParameterIndex, baseDescriptor);
+		else commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
 	}
 
 	static void SetGraphicsRootDescriptorTable(
@@ -1294,24 +1333,27 @@ public:
 		DX12CommandListRuntimeState *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
-			commandList, runtimeState, rootParameterIndex, baseDescriptor);
+			commandList, runtimeState, rootParameterIndex, baseDescriptor, nullptr);
 	}
 
 	static void SetGraphicsRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeState *runtimeState,
 		UINT rootParameterIndex,
-		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
+		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
 		if (DX12HotPathState::skipAll)
-			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
+			if (original) original(commandList, rootParameterIndex, baseDescriptor);
+			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		else {
 			DX12_PROFILE_SCOPE(SetGraphicsRootDescriptorTable);
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, true);
-			commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
+			if (original) original(commandList, rootParameterIndex, baseDescriptor);
+			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		}
 	}
 

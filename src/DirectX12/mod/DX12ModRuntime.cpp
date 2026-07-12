@@ -913,6 +913,9 @@ public:
 	bool uavInitialized = false;
 	bool uavWritten = false;
 	bool uavValid = false;
+	// UAV validity is frame-local. Store its frame epoch instead of walking the
+	// complete resident-resource map at every Present just to clear two booleans.
+	LONG uavValidPresent = -1;
 	bool uavBarrierPending = false;
 	UINT64 uavByteWidth = 0;
 	UINT uavStride = 0;

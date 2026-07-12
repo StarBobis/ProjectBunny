@@ -146,10 +146,8 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 	AcquireSRWLockExclusive(&gModLock);
-	for (auto &item : gLoadedResources) {
-		item.second.uavWritten = false;
-		item.second.uavValid = false;
-	}
+	// Frame-local UAV state is epoch tagged by the writer. Avoid an O(number of
+	// loaded mod resources) clear under gModLock on every Present.
 	gPreSkinSectionAppliedPresent.clear();
 	MoveExpiredRetiredLoadedResourcesLocked(&expired);
 	ReleaseSRWLockExclusive(&gModLock);
@@ -694,7 +692,8 @@ static void SnapshotIaResourceViewLocked(
 	ReleaseIaResourceViewSnapshot(snapshot);
 	if (!resource)
 		return;
-	if (resource->uavResource && resource->uavValid) {
+	if (resource->uavResource && resource->uavValid &&
+		resource->uavValidPresent == DX12RuntimeState::GetPresentCount()) {
 		snapshot->resource = resource->uavResource;
 		snapshot->metadata = *resource;
 		snapshot->uavBarrierPending = resource->uavBarrierPending;

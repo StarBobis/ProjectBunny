@@ -329,6 +329,28 @@ static void BumpVersion(DescriptorHeapRecord *record, UINT slot)
 	record->stateLocks->PublishSlotValue(slot, valueId);
 }
 
+// Copy hot paths already have the authoritative source identity in hand.  Do
+// not look the destination up again after every copy merely to publish the
+// value that was just stored.
+static void PublishValue(DescriptorHeapRecord *record, UINT slot, UINT64 valueId)
+{
+	if (record && record->stateLocks)
+		record->stateLocks->PublishSlotValue(slot, valueId);
+}
+
+static void PublishRangeValue(
+	DescriptorHeapRecord *record, UINT slot, UINT64 valueId)
+{
+	if (record && record->stateLocks)
+		record->stateLocks->PublishSlotIdentity(slot, valueId);
+}
+
+static void CommitPublishedRange(DescriptorHeapRecord *record)
+{
+	if (record && record->stateLocks)
+		record->stateLocks->BumpHeapVersion();
+}
+
 static UINT64 ReadVersion(const DescriptorHeapRecord &record)
 {
 	return record.stateLocks ? record.stateLocks->ReadVersion() : 0;
@@ -676,8 +698,11 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 	UINT destSlot,
 	const DescriptorHeapRecord &srcHeap,
 	UINT srcSlot,
-	SIZE_T destCpuHandle)
+	SIZE_T destCpuHandle,
+	UINT64 *publishedValueId = nullptr)
 {
+	if (publishedValueId)
+		*publishedValueId = 0;
 	if (!destHeap || destSlot >= destHeap->desc.NumDescriptors ||
 			srcSlot >= srcHeap.desc.NumDescriptors) {
 		return SourceMissingResult(destHeap, destSlot);
@@ -685,6 +710,8 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 
 	const DescriptorSlotBinding *sourceBinding = FindCurrentBinding(srcHeap, srcSlot);
 	if (sourceBinding && sourceBinding->value && destHeap->slots.empty()) {
+		if (publishedValueId)
+			*publishedValueId = sourceBinding->value->value.valueId;
 		bool inserted = false;
 		DescriptorSlotBinding *destBinding =
 			destHeap->currentDescriptors.FindOrInsertDefault(destSlot, &inserted);
@@ -705,6 +732,8 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 	DescriptorRecord source;
 	if (!CopyCurrentRecord(srcHeap, srcSlot, &source))
 		return SourceMissingResult(destHeap, destSlot);
+	if (publishedValueId)
+		*publishedValueId = source.valueId;
 	return StoreCurrentRecordIfChanged(
 		destHeap, destSlot, source, destCpuHandle) ?
 		CopyCurrentSlotResult::Changed : CopyCurrentSlotResult::Unchanged;

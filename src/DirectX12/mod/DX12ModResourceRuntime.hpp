@@ -1537,6 +1537,7 @@ static bool EnsureResourceUavLocked(
 	resource->uavInitialized = false;
 	resource->uavWritten = false;
 	resource->uavValid = false;
+	resource->uavValidPresent = -1;
 	resource->uavByteWidth = 0;
 	resource->uavStride = 0;
 	resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

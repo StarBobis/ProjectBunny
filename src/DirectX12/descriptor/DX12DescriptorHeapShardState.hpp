@@ -120,6 +120,16 @@ public:
 
 	void PublishSlotValue(uint32_t slot, uint64_t valueId)
 	{
+		PublishSlotIdentity(slot, valueId);
+		BumpHeapVersion();
+	}
+
+	// Range copies publish every slot identity, but consumers only require the
+	// heap-wide invalidation token to change once for the completed API call.
+	// Splitting these operations removes one contended atomic RMW per copied
+	// descriptor without weakening per-slot identity validation.
+	void PublishSlotIdentity(uint32_t slot, uint64_t valueId)
+	{
 		VersionPage *page = EnsureVersionPage(slot);
 		if (page) {
 			std::atomic<uint64_t> &slotVersion =
@@ -131,6 +141,10 @@ public:
 				valueId, std::memory_order_release);
 			slotVersion.fetch_add(1, std::memory_order_release);
 		}
+	}
+
+	void BumpHeapVersion()
+	{
 		version_.fetch_add(1, std::memory_order_release);
 	}
 

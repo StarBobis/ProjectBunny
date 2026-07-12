@@ -39,6 +39,8 @@ public:
 	static constexpr UINT64 FLAG_SHADER_DUMP_ACTIVE      = 1ull << 3;
 	static constexpr UINT64 FLAG_PRE_SKIN_PROBE          = 1ull << 4;
 	static constexpr UINT64 FLAG_PRE_SKIN_BINDING_TRACK  = 1ull << 5;
+	static constexpr UINT64 FLAG_SHADER_OVERRIDES         = 1ull << 6;
+	static constexpr UINT64 FLAG_PRESENT_REPLACEMENT      = 1ull << 7;
 
 	// 汇总 mask：一条 if 即可判断是否有 draw / dispatch 级 hook 工作
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -50,8 +52,14 @@ public:
 	static void RebuildHookWorkFlags()
 	{
 		UINT64 flags = 0;
-		if (DX12ModHasActiveShaderOverrides() || DX12ModNeedsPresentReplacement())
+		const bool shaderOverrides = DX12ModHasActiveShaderOverrides();
+		const bool presentReplacement = DX12ModNeedsPresentReplacement();
+		if (shaderOverrides || presentReplacement)
 			flags |= FLAG_NEEDS_MOD_WORK;
+		if (shaderOverrides)
+			flags |= FLAG_SHADER_OVERRIDES;
+		if (presentReplacement)
+			flags |= FLAG_PRESENT_REPLACEMENT;
 		if (DX12HuntIsEnabled())
 			flags |= FLAG_HUNT_ENABLED;
 		if (DX12FrameAnalysisState::IsActive() || DX12FrameAnalysisState::IsCapturing() || DX12FrameAnalysisState::IsCaptureRequested())

@@ -635,22 +635,25 @@ public:
 			UINT alreadyEmpty = 0;
 			DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult copyResult =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationEmpty;
+			UINT64 publishedValueId = 0;
 			if (srcHeap.stateLocks->IsActive() && destHeap.stateLocks->IsActive() &&
 					destSlot < destHeap.desc.NumDescriptors) {
 				copyResult =
 					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
-						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr);
+						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr,
+						&publishedValueId);
 				if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
 					sourceFound = 1;
 					changed = 1;
-					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
+					DX12DescriptorHeapStateUtils::PublishValue(
+						&destHeap, destSlot, publishedValueId);
 				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
 					sourceFound = 1;
 					unchanged = 1;
 				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
 					sourceMissing = 1;
 					erased = 1;
-					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
+					DX12DescriptorHeapStateUtils::PublishValue(&destHeap, destSlot, 0);
 				} else {
 					sourceMissing = 1;
 					alreadyEmpty = 1;
@@ -684,20 +687,31 @@ public:
 		UINT unchangedCount = 0;
 		UINT erasedCount = 0;
 		UINT alreadyEmptyCount = 0;
+		bool rangeVersionCommitted = false;
+		auto invalidateRangeOnce = [&]() {
+			if (!rangeVersionCommitted) {
+				DX12DescriptorHeapStateUtils::CommitPublishedRange(&destHeap);
+				rangeVersionCommitted = true;
+			}
+		};
 		auto accountCopyResult = [&](
 			DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result,
-			UINT dSlot) {
+			UINT dSlot,
+			UINT64 publishedValueId) {
 			if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
 				sourceFoundCount++;
 				changedCount++;
-				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+				invalidateRangeOnce();
+				DX12DescriptorHeapStateUtils::PublishRangeValue(
+					&destHeap, dSlot, publishedValueId);
 			} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
 				sourceFoundCount++;
 				unchangedCount++;
 			} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
 				sourceMissingCount++;
 				erasedCount++;
-				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+				invalidateRangeOnce();
+				DX12DescriptorHeapStateUtils::PublishRangeValue(&destHeap, dSlot, 0);
 			} else {
 				sourceMissingCount++;
 				alreadyEmptyCount++;
@@ -719,7 +733,9 @@ public:
 				sourceMissingCount++;
 				if (DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
 						&destHeap, dSlot)) {
-					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+					invalidateRangeOnce();
+					DX12DescriptorHeapStateUtils::PublishRangeValue(
+						&destHeap, dSlot, 0);
 					erasedCount++;
 				} else {
 					alreadyEmptyCount++;
@@ -732,7 +748,9 @@ public:
 				static_cast<SIZE_T>(i) * destHeap.increment;
 			if (DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
 					&destHeap, dSlot, *source, destHandle)) {
-				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+				invalidateRangeOnce();
+				DX12DescriptorHeapStateUtils::PublishRangeValue(
+					&destHeap, dSlot, source->valueId);
 				changedCount++;
 			} else {
 				unchangedCount++;
@@ -823,11 +841,12 @@ public:
 				const UINT currentDestSlot = destSlot + i;
 				const SIZE_T destHandle = destStart.ptr +
 					static_cast<SIZE_T>(i) * destHeap.increment;
+				UINT64 publishedValueId = 0;
 				accountCopyResult(
 					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 						&destHeap, currentDestSlot, srcHeap, srcSlot + i,
-						destHandle),
-					currentDestSlot);
+						destHandle, &publishedValueId),
+					currentDestSlot, publishedValueId);
 				unlockSlotPair(first, second);
 			}
 		} else {

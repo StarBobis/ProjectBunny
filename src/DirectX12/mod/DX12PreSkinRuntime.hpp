@@ -2157,6 +2157,7 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 			DX12OuterTimingProbeUtils::ElapsedUs(copyBegin));
 		resource->uavWritten = true;
 		resource->uavValid = true;
+		resource->uavValidPresent = DX12RuntimeState::GetPresentCount();
 		applied = true;
 	}
 	LARGE_INTEGER releaseDeviceBegin = DX12OuterTimingProbeUtils::Now();

@@ -106,7 +106,9 @@ public:
 		const DX12CommandListRuntimeState *runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		if (runtimeState && DX12ModNeedsPresentReplacement())
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
+		if (runtimeState &&
+		    (flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			DX12IaReplacementExecutor::ExecutePresent(commandList, *runtimeState, callbacks);
 		if (runtimeState &&
 		    DX12IaReplacementExecutor::HandleDrawOverrides(commandList, draw, *runtimeState, callbacks))
