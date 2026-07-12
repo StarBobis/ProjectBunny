@@ -2985,23 +2985,28 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorChanged();
 }
 
-void DX12BindingTracker::SetRootConstantsLocked(
+bool DX12BindingTracker::SetRootConstantsLocked(
 	RootConstantsState *constants, UINT rootParameterIndex,
 	UINT destOffset, UINT count, const void *values)
 {
 	if (!constants || !values || destOffset >= 64 || count == 0)
-		return;
+		return false;
 	const UINT *src = static_cast<const UINT*>(values);
 	const UINT copyCount = min(count, 64 - destOffset);
+	bool changed = !constants->valid ||
+		constants->rootParameterIndex != rootParameterIndex;
 	constants->valid = true;
 	constants->rootParameterIndex = rootParameterIndex;
 	for (UINT i = 0; i < copyCount; ++i) {
 		const UINT slot = destOffset + i;
+		changed = changed || !constants->valueValid[slot] ||
+			constants->values[slot] != src[i];
 		constants->values[slot] = src[i];
 		constants->valueValid[slot] = true;
 		if (slot + 1 > constants->maxSet)
 			constants->maxSet = slot + 1;
 	}
+	return changed;
 }
 
 void DX12BindingTracker::SetGraphicsRoot32BitConstant(
@@ -3032,8 +3037,9 @@ void DX12BindingTracker::SetGraphicsRoot32BitConstants(
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootConstantsState &constants = state.graphicsRootConstants[rootParameterIndex];
-	DX12BindingTracker::SetRootConstantsLocked(&constants, rootParameterIndex, destOffset, count, values);
-	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	if (DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values))
+		DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -3049,9 +3055,11 @@ void DX12BindingTracker::SetComputeRoot32BitConstants(
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootConstantsState &constants = state.computeRootConstants[rootParameterIndex];
-	DX12BindingTracker::SetRootConstantsLocked(&constants, rootParameterIndex, destOffset, count, values);
-	++state.computeBindingSerial;
-	DX12BindingTracker::BumpBindingQuerySerial(&state);
+	if (DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values)) {
+		++state.computeBindingSerial;
+		DX12BindingTracker::BumpBindingQuerySerial(&state);
+	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
