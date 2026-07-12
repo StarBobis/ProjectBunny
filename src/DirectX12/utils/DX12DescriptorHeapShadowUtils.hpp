@@ -33,9 +33,7 @@ public:
 		if (heapIndex >= gDescriptorHeaps.size() ||
 			!gDescriptorHeaps[heapIndex].stateLocks)
 			return nullptr;
-		const uint32_t shard =
-			DX12SparseDescriptorStore<DescriptorRecord>::ShardForSlot(slot);
-		return &gDescriptorHeaps[heapIndex].stateLocks->shards[shard];
+		return gDescriptorHeaps[heapIndex].stateLocks->LockForSlot(slot);
 	}
 
 	// ---- Lock helpers (per-heap descriptor shard) ----
@@ -148,8 +146,7 @@ public:
 		if (changed) {
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
 				&heap, slot, record, cpuHandle);
-			DX12DescriptorHeapStateUtils::BumpVersion(&heap);
-			BumpDescriptorQuerySerial();
+			DX12DescriptorHeapStateUtils::BumpVersion(&heap, slot);
 		}
 		UnlockExclusive(heapIndex, slot);
 		ReleaseSRWLockShared(&gDescriptorLock);
@@ -190,8 +187,7 @@ public:
 		if (changed) {
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
 				&heap, slot, record, cpuHandle);
-			DX12DescriptorHeapStateUtils::BumpVersion(&heap);
-			BumpDescriptorQuerySerial();
+			DX12DescriptorHeapStateUtils::BumpVersion(&heap, slot);
 		}
 
 		UnlockExclusive(heapIndex, slot);
@@ -290,7 +286,6 @@ public:
 			return source;
 		};
 
-		UINT copiedCount = 0;
 		auto applyDestination = [&](UINT i, const DescriptorRecord *source) {
 			const UINT dSlot = destSlot + i;
 			if (dSlot >= destHeap.desc.NumDescriptors)
@@ -298,10 +293,7 @@ public:
 			if (!source) {
 				if (DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
 						&destHeap, dSlot)) {
-					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap);
-					if (copiedCount == 0)
-						BumpDescriptorQuerySerial();
-					copiedCount++;
+					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
 				}
 				return;
 			}
@@ -316,41 +308,60 @@ public:
 
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
 				&destHeap, dSlot, *source, destHandle);
-			DX12DescriptorHeapStateUtils::BumpVersion(&destHeap);
-			if (copiedCount == 0)
-				BumpDescriptorQuerySerial();
-			copiedCount++;
+			DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+		};
+		struct HeldShardLock
+		{
+			SRWLOCK *lock = nullptr;
+			bool exclusive = false;
+		};
+		auto acquireHeldLock = [](const HeldShardLock &held) {
+			if (!held.lock)
+				return;
+			if (held.exclusive)
+				AcquireSRWLockExclusive(held.lock);
+			else
+				AcquireSRWLockShared(held.lock);
+		};
+		auto releaseHeldLock = [](const HeldShardLock &held) {
+			if (!held.lock)
+				return;
+			if (held.exclusive)
+				ReleaseSRWLockExclusive(held.lock);
+			else
+				ReleaseSRWLockShared(held.lock);
 		};
 		auto lockSlotPair = [&](UINT sSlot, UINT dSlot,
-			SRWLOCK **first, SRWLOCK **second) {
-			*first = nullptr;
-			*second = nullptr;
+			HeldShardLock *first, HeldShardLock *second) {
+			*first = HeldShardLock();
+			*second = HeldShardLock();
 			SRWLOCK *sourceLock = HeapLock(srcHeapIndex, sSlot);
 			SRWLOCK *destLock = HeapLock(destHeapIndex, dSlot);
 			if (sourceLock == destLock) {
-				if (sourceLock)
-					AcquireSRWLockExclusive(sourceLock);
-				*first = sourceLock;
+				first->lock = sourceLock;
+				first->exclusive = true;
+				acquireHeldLock(*first);
 				return;
 			}
 			if (reinterpret_cast<uintptr_t>(sourceLock) <
 					reinterpret_cast<uintptr_t>(destLock)) {
-				*first = sourceLock;
-				*second = destLock;
+				first->lock = sourceLock;
+				first->exclusive = false;
+				second->lock = destLock;
+				second->exclusive = true;
 			} else {
-				*first = destLock;
-				*second = sourceLock;
+				first->lock = destLock;
+				first->exclusive = true;
+				second->lock = sourceLock;
+				second->exclusive = false;
 			}
-			if (*first)
-				AcquireSRWLockExclusive(*first);
-			if (*second)
-				AcquireSRWLockExclusive(*second);
+			acquireHeldLock(*first);
+			acquireHeldLock(*second);
 		};
-		auto unlockSlotPair = [](SRWLOCK *first, SRWLOCK *second) {
-			if (second)
-				ReleaseSRWLockExclusive(second);
-			if (first)
-				ReleaseSRWLockExclusive(first);
+		auto unlockSlotPair = [&](const HeldShardLock &first,
+			const HeldShardLock &second) {
+			releaseHeldLock(second);
+			releaseHeldLock(first);
 		};
 
 		const UINT64 srcEnd = static_cast<UINT64>(srcSlot) + count;
@@ -360,11 +371,12 @@ public:
 			static_cast<UINT64>(srcSlot) < destEnd;
 		if (!overlaps) {
 			// The overwhelmingly common path, especially CopyDescriptorsSimple:
-			// no temporary vector or allocation, and only the two affected shards
-			// are locked rather than serialising the entire million-slot heap.
+			// no temporary vector or allocation. The source is shared/read-only;
+			// only the destination is exclusive, so copies can fan out from one
+			// stable CPU heap without serialising readers.
 			for (UINT i = 0; i < count; ++i) {
-				SRWLOCK *first = nullptr;
-				SRWLOCK *second = nullptr;
+				HeldShardLock first;
+				HeldShardLock second;
 				lockSlotPair(srcSlot + i, destSlot + i, &first, &second);
 				applyDestination(i, findSource(i));
 				unlockSlotPair(first, second);
@@ -488,8 +500,8 @@ public:
 			const bool erased = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
 				&gDescriptorHeaps[heapIndex], slot);
 			if (erased) {
-				DX12DescriptorHeapStateUtils::BumpVersion(&gDescriptorHeaps[heapIndex]);
-				BumpDescriptorQuerySerial();
+				DX12DescriptorHeapStateUtils::BumpVersion(
+					&gDescriptorHeaps[heapIndex], slot);
 			}
 			UnlockExclusive(heapIndex, slot);
 			ReleaseSRWLockShared(&gDescriptorLock);

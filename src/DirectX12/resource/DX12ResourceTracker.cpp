@@ -251,7 +251,7 @@ static void StoreDescriptorAtHeapSlotLocked(
 	heap->occupied[slot] = 1;
 	if (!wasOccupied)
 		heap->liveSlots++;
-	DX12DescriptorHeapStateUtils::BumpVersion(heap);
+	DX12DescriptorHeapStateUtils::BumpVersion(heap, slot);
 }
 
 static size_t LiveDescriptorHeapSlotsLocked()
@@ -1697,7 +1697,7 @@ static void StoreSlotValueLocked(
 	if (!wasOccupied)
 		destHeap->liveSlots++;
 	++gDescriptorCopyRecordsSeen;
-	DX12DescriptorHeapStateUtils::BumpVersion(destHeap);
+	DX12DescriptorHeapStateUtils::BumpVersion(destHeap, destSlot);
 }
 
 static bool SourceHeapSpanReadyLocked(
@@ -1735,7 +1735,7 @@ static void CopySlotSpanValueLocked(
 	destHeap->occupied[destSlot] = 1;
 	if (!wasOccupied)
 		destHeap->liveSlots++;
-	DX12DescriptorHeapStateUtils::BumpVersion(destHeap);
+	DX12DescriptorHeapStateUtils::BumpVersion(destHeap, destSlot);
 }
 
 static bool TryCopyHeapSlotSpanLocked(

@@ -237,6 +237,9 @@ class BindingTlsComputeAllQueryCache
 public:
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	UINT64 computeTableHash = 0;
+	UINT64 bindingQuerySerial = 0;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	UINT64 cbvSrvUavHeapVersion = 0;
 	std::vector<DX12CurrentComputeUavBinding> uavs;
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;

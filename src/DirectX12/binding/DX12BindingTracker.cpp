@@ -681,11 +681,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	static thread_local DX12PreSkinBindingTlsCache preSkinBindingCache;
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
+	const UINT64 descriptorHeapVersionBefore =
+		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	DX12PreSkinBindingCacheKey cacheKey;
 	if (canUseResultCache) {
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
-			DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap),
+			descriptorHeapVersionBefore,
 			&cacheKey);
 		bool cachedFoundAny = false;
 		if (DX12PreSkinBindingCacheUtils::TryLoad(
@@ -697,7 +699,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				constants,
 				&cachedFoundAny)) {
 			const UINT64 descriptorQuerySerialAfterHit = CurrentDescriptorQuerySerial();
-			if (descriptorQuerySerialAfterHit == descriptorQuerySerialBefore) {
+			const UINT64 descriptorHeapVersionAfterHit =
+				DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+			if (descriptorQuerySerialAfterHit == descriptorQuerySerialBefore &&
+				descriptorHeapVersionAfterHit == descriptorHeapVersionBefore) {
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
 				return cachedFoundAny;
 			}
@@ -1054,12 +1059,18 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
+	const UINT64 descriptorHeapVersionAfter =
+		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+	const UINT64 descriptorQuerySerialAfter = CurrentDescriptorQuerySerial();
+	const bool descriptorStateStable =
+		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
+		descriptorQuerySerialAfter == descriptorQuerySerialBefore;
 
-	if (canUseResultCache && allRuntimeDescriptorsStable) {
+	if (canUseResultCache && allRuntimeDescriptorsStable && descriptorStateStable) {
 		DX12PreSkinBindingCacheKey storeKey;
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
-			DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap),
+			descriptorHeapVersionAfter,
 			&storeKey);
 		DX12PreSkinBindingCacheUtils::Store(
 			&preSkinBindingCache,
@@ -1070,7 +1081,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			localConstants,
 			foundAny);
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
-	} else if (!allRuntimeDescriptorsStable) {
+	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
 		DX12LogManager::DebugJsonFunc("DX12PreSkinRuntimeDescriptorSnapshot",
 			"event=skip_cache_unstable,commandList=%p,uavs=%zu,srvs=%zu,cbvs=%zu",
 			commandList,
@@ -1087,13 +1098,15 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	// Store collected bindings in the per-command-list cache so subsequent
 	// dispatches on the same command list with unchanged bindings can reuse
 	// them without re-snapshotting and re-parsing the root signature.
-	if (runtimeState) {
+	if (runtimeState && allRuntimeDescriptorsStable && descriptorStateStable) {
 		runtimeState->lastPreSkinBindingSerial = runtimeState->computeBindingSerial;
 		runtimeState->cachedPreSkinUavs = localUavs;
 		runtimeState->cachedPreSkinSrvs = localSrvs;
 		runtimeState->cachedPreSkinCbvs = localCbvs;
 		runtimeState->cachedPreSkinConstants = localConstants;
 		runtimeState->preSkinBindingsCached = true;
+	} else if (runtimeState) {
+		runtimeState->preSkinBindingsCached = false;
 	}
 
 	return foundAny;
@@ -2476,31 +2489,43 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		queryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
 		queryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
 		*uavs = queryCache.bindings;
+		const UINT64 heapVersionAfterHit = DX12GetDescriptorHeapVersion(
+			snapshot.cbvSrvUavHeap);
+		if (heapVersionAfterHit != cbvSrvUavHeapVersion) {
+			uavs->clear();
+		} else {
 	#if defined(_DEBUG)
-		DX12LogManager::DebugJsonFunc("DX12DescriptorQueryCache",
+			DX12LogManager::DebugJsonFunc("DX12DescriptorQueryCache",
 			"\"stage\":\"hit\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
 			cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
 			static_cast<unsigned long long>(bindingQuerySerial),
 			static_cast<unsigned long long>(cbvSrvUavHeapVersion), uavs->size());
 	#endif
-		return !uavs->empty();
+			return !uavs->empty();
+		}
 	}
 
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindings(
 		snapshot, compute, rangeType, descriptorKind, rootDescriptorType, uavs);
-	queryCache.commandList = commandList;
-	queryCache.compute = compute;
-	queryCache.rangeType = static_cast<UINT>(rangeType);
-	queryCache.bindingQuerySerial = bindingQuerySerial;
-	queryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
-	queryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
-	queryCache.bindings = *uavs;
+	const UINT64 cbvSrvUavHeapVersionAfter = DX12GetDescriptorHeapVersion(
+		snapshot.cbvSrvUavHeap);
+	if (cbvSrvUavHeapVersionAfter == cbvSrvUavHeapVersion) {
+		queryCache.commandList = commandList;
+		queryCache.compute = compute;
+		queryCache.rangeType = static_cast<UINT>(rangeType);
+		queryCache.bindingQuerySerial = bindingQuerySerial;
+		queryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+		queryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersionAfter;
+		queryCache.bindings = *uavs;
+	} else {
+		queryCache.commandList = nullptr;
+	}
 	#if defined(_DEBUG)
 	DX12LogManager::DebugJsonFunc("DX12DescriptorQueryCache",
 		"\"stage\":\"miss\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
 		cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
 		static_cast<unsigned long long>(bindingQuerySerial),
-		static_cast<unsigned long long>(cbvSrvUavHeapVersion), uavs->size());
+		static_cast<unsigned long long>(cbvSrvUavHeapVersionAfter), uavs->size());
 	#endif
 	return foundAny;
 }
@@ -2569,13 +2594,23 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 		tableHash *= 0xff51afd7ed558ccdull;
 	}
 	if (tlsComputeAllQueryCache.commandList == commandList &&
-		tlsComputeAllQueryCache.computeTableHash == tableHash) {
+		tlsComputeAllQueryCache.computeTableHash == tableHash &&
+		tlsComputeAllQueryCache.bindingQuerySerial == bindingQuerySerial &&
+		tlsComputeAllQueryCache.cbvSrvUavHeap == cbvSrvUavHeap &&
+		tlsComputeAllQueryCache.cbvSrvUavHeapVersion == cbvSrvUavHeapVersion) {
 		if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
 		if (srvs) *srvs = tlsComputeAllQueryCache.srvs;
 		if (cbvs) *cbvs = tlsComputeAllQueryCache.cbvs;
 		if (constants) *constants = tlsComputeAllQueryCache.constants;
-		return (uavs && !uavs->empty()) || (srvs && !srvs->empty()) ||
-			(cbvs && !cbvs->empty()) || (constants && !constants->empty());
+		if (DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap) ==
+				cbvSrvUavHeapVersion) {
+			return (uavs && !uavs->empty()) || (srvs && !srvs->empty()) ||
+				(cbvs && !cbvs->empty()) || (constants && !constants->empty());
+		}
+		if (uavs) uavs->clear();
+		if (srvs) srvs->clear();
+		if (cbvs) cbvs->clear();
+		if (constants) constants->clear();
 	}
 
 	std::vector<DX12CurrentComputeUavBinding> cachedUavs;
@@ -2586,16 +2621,25 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
 	DX12_HOTPATH_TIME_END(BindCollect);
-	tlsComputeAllQueryCache.commandList = commandList;
-	tlsComputeAllQueryCache.computeTableHash = tableHash;
-	tlsComputeAllQueryCache.uavs = cachedUavs;
-	tlsComputeAllQueryCache.srvs = cachedSrvs;
-	tlsComputeAllQueryCache.cbvs = cachedCbvs;
-	tlsComputeAllQueryCache.constants = cachedConstants;
-	if (uavs) *uavs = tlsComputeAllQueryCache.uavs;
-	if (srvs) *srvs = tlsComputeAllQueryCache.srvs;
-	if (cbvs) *cbvs = tlsComputeAllQueryCache.cbvs;
-	if (constants) *constants = tlsComputeAllQueryCache.constants;
+	const UINT64 cbvSrvUavHeapVersionAfter = DX12GetDescriptorHeapVersion(
+		snapshot.cbvSrvUavHeap);
+	if (cbvSrvUavHeapVersionAfter == cbvSrvUavHeapVersion) {
+		tlsComputeAllQueryCache.commandList = commandList;
+		tlsComputeAllQueryCache.computeTableHash = tableHash;
+		tlsComputeAllQueryCache.bindingQuerySerial = bindingQuerySerial;
+		tlsComputeAllQueryCache.cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
+		tlsComputeAllQueryCache.cbvSrvUavHeapVersion = cbvSrvUavHeapVersionAfter;
+		tlsComputeAllQueryCache.uavs = cachedUavs;
+		tlsComputeAllQueryCache.srvs = cachedSrvs;
+		tlsComputeAllQueryCache.cbvs = cachedCbvs;
+		tlsComputeAllQueryCache.constants = cachedConstants;
+	} else {
+		tlsComputeAllQueryCache.commandList = nullptr;
+	}
+	if (uavs) *uavs = cachedUavs;
+	if (srvs) *srvs = cachedSrvs;
+	if (cbvs) *cbvs = cachedCbvs;
+	if (constants) *constants = cachedConstants;
 	return foundAny;
 }
 

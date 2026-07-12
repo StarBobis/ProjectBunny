@@ -112,6 +112,15 @@ if(BUILD_TESTING)
 	target_compile_features(DX12SparseDescriptorStoreTests PRIVATE cxx_std_17)
 	add_test(NAME DX12SparseDescriptorStoreTests COMMAND DX12SparseDescriptorStoreTests)
 
+	add_executable(DX12DescriptorHeapShardStateTests
+		tests/DX12DescriptorHeapShardStateTests.cpp
+	)
+	target_include_directories(DX12DescriptorHeapShardStateTests PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/descriptor
+	)
+	target_compile_features(DX12DescriptorHeapShardStateTests PRIVATE cxx_std_17)
+	add_test(NAME DX12DescriptorHeapShardStateTests COMMAND DX12DescriptorHeapShardStateTests)
+
     add_executable(DX12PreSkinCacheIdentityTests
         tests/DX12PreSkinCacheIdentityTests.cpp
     )

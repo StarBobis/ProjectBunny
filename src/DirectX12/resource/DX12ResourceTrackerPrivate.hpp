@@ -27,6 +27,7 @@
 #include "DX12RuntimeState.hpp"
 #include "crc32c.h"
 #include "utils/DX12ResourceTrackingPolicyUtils.hpp"
+#include "DX12DescriptorHeapShardState.hpp"
 #include "DX12SparseDescriptorStore.hpp"
 
 struct RootSignatureRecord
@@ -103,17 +104,8 @@ struct DescriptorHeapRecord
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
-	volatile LONG64 version = 1;
-	struct StateLocks
-	{
-		SRWLOCK shards[DX12SparseDescriptorStore<DescriptorRecord>::ShardCount];
-
-		StateLocks()
-		{
-			for (SRWLOCK &lock : shards)
-				InitializeSRWLock(&lock);
-		}
-	};
+	using StateLocks = DX12DescriptorHeapShardState<
+		DX12SparseDescriptorStore<DescriptorRecord>::ShardCount>;
 	// Lock striping follows the heap record when gDescriptorHeaps grows or
 	// reuses a slot. Sequential descriptor slots land in different shards.
 	std::unique_ptr<StateLocks> stateLocks;
@@ -130,30 +122,21 @@ class DX12DescriptorHeapStateUtils
 public:
 static void ResetVersion(DescriptorHeapRecord *record)
 {
-	if (!record)
+	if (!record || !record->stateLocks)
 		return;
-	InterlockedExchange64(&record->version, 1);
+	record->stateLocks->ResetVersions();
 }
 
-static void BumpVersion(DescriptorHeapRecord *record)
+static void BumpVersion(DescriptorHeapRecord *record, UINT slot)
 {
-	if (!record)
+	if (!record || !record->stateLocks)
 		return;
-	LONG64 current = InterlockedCompareExchange64(&record->version, 0, 0);
-	for (;;) {
-		const LONG64 next = current < 0 || current == LLONG_MAX ? 1 : current + 1;
-		const LONG64 observed = InterlockedCompareExchange64(
-			&record->version, next, current);
-		if (observed == current)
-			return;
-		current = observed;
-	}
+	record->stateLocks->BumpVersion(slot);
 }
 
 static UINT64 ReadVersion(const DescriptorHeapRecord &record)
 {
-	return static_cast<UINT64>(InterlockedCompareExchange64(
-		const_cast<volatile LONG64*>(&record.version), 0, 0));
+	return record.stateLocks ? record.stateLocks->ReadVersion() : 0;
 }
 
 static void FillSummary(const DescriptorHeapRecord &record, DX12DescriptorHeapSummary *summary)
