@@ -934,6 +934,43 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	return key;
 }
 
+DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
+	DX12CommandListRuntimeState *state,
+	UINT cacheSlot,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	UINT vertexCount,
+	UINT indexCount,
+	UINT firstVertex,
+	UINT firstIndex,
+	INT baseVertex)
+{
+	if (!state)
+		return DX12IaHashStateCacheKey();
+	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
+	const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
+	const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
+	DX12IaHashStateCacheKey key;
+	DX12IaHashKeyPrefixCacheEntry &entry =
+		state->iaHashKeyPrefixes[cacheSlot % state->iaHashKeyPrefixes.size()];
+	if (!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+			entry, state->iaEpoch, targetPlanFingerprint, indexed,
+			globalContentGeneration, globalResolveGeneration, &key)) {
+		key = BuildIaHashStateCacheKeyForTargets(
+			state->ia, state->iaContentEpoch, targetPlan, indexed,
+			0, 0, 0, 0, 0);
+		DX12IaHashKeyPrefixCacheUtils::Store(
+			&entry, state->iaEpoch, targetPlanFingerprint, indexed,
+			globalContentGeneration, globalResolveGeneration, key);
+	}
+	key.vertexCount = vertexCount;
+	key.indexCount = indexCount;
+	key.firstVertex = firstVertex;
+	key.firstIndex = firstIndex;
+	key.baseVertex = baseVertex;
+	return key;
+}
+
 ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 	ID3D12GraphicsCommandList *commandList)
 {

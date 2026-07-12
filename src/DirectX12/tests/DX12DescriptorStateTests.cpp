@@ -667,6 +667,33 @@ static void TestIaTargetPlanReuseRequiresIdenticalIaInputs()
 	Require(!full.HasSameIaHashTargets(direct));
 }
 
+static void TestIaHashKeyPrefixCacheInvalidation()
+{
+	DX12IaHashKeyPrefixCacheEntry entry;
+	DX12IaHashStateCacheKey prefix;
+	prefix.targetPlanFingerprint = 17;
+	prefix.iaViewFingerprint = 23;
+	prefix.bufferContentGeneration = 31;
+	prefix.bufferResolveGeneration = 37;
+	DX12IaHashKeyPrefixCacheUtils::Store(
+		&entry, 5, 17, true, 101, 103, prefix);
+
+	DX12IaHashStateCacheKey loaded;
+	Require(DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 5, 17, true, 101, 103, &loaded));
+	Require(loaded == prefix);
+	Require(!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 6, 17, true, 101, 103, &loaded));
+	Require(!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 5, 19, true, 101, 103, &loaded));
+	Require(!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 5, 17, false, 101, 103, &loaded));
+	Require(!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 5, 17, true, 102, 103, &loaded));
+	Require(!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+		entry, 5, 17, true, 101, 104, &loaded));
+}
+
 class DescriptorArenaTestRef
 {
 public:
@@ -801,6 +828,7 @@ int main(int argc, char **argv)
 	TestPreSkinBindingCacheValidatesRootDescriptorRanges();
 	TestDescriptorCopyMemoInvalidatesByObservedShard();
 	TestIaTargetPlanReuseRequiresIdenticalIaInputs();
+	TestIaHashKeyPrefixCacheInvalidation();
 	TestDescriptorArenaGrowthAndUniqueOwnership();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();

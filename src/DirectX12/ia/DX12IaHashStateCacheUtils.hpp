@@ -24,7 +24,7 @@ public:
 	UINT firstIndex = 0;
 	INT baseVertex = 0;
 
-	bool operator==(const DX12IaHashStateCacheKey &other) const
+	__forceinline bool operator==(const DX12IaHashStateCacheKey &other) const
 	{
 		return targetPlanFingerprint == other.targetPlanFingerprint &&
 			iaViewFingerprint == other.iaViewFingerprint &&
@@ -43,14 +43,14 @@ public:
 class DX12IaHashStateCacheKeyHash
 {
 public:
-	static size_t Combine(size_t hash, UINT64 value)
+	static __forceinline size_t Combine(size_t hash, UINT64 value)
 	{
 		hash ^= static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
 			(hash << 6) + (hash >> 2);
 		return hash;
 	}
 
-	size_t operator()(const DX12IaHashStateCacheKey &key) const
+	__forceinline size_t operator()(const DX12IaHashStateCacheKey &key) const
 	{
 		size_t hash = 0x84222325a9582d75ull;
 		hash = Combine(hash, key.targetPlanFingerprint);
@@ -74,6 +74,61 @@ public:
 	bool hasIaHashState = false;
 	DX12IaHashState state;
 	std::list<DX12IaHashStateCacheKey>::iterator lruPosition;
+};
+
+class DX12IaHashKeyPrefixCacheEntry
+{
+public:
+	bool valid = false;
+	bool indexed = false;
+	UINT64 iaEpoch = 0;
+	UINT64 targetPlanFingerprint = 0;
+	UINT64 globalContentGeneration = 0;
+	UINT64 globalResolveGeneration = 0;
+	DX12IaHashStateCacheKey prefix;
+};
+
+class DX12IaHashKeyPrefixCacheUtils
+{
+public:
+	static __forceinline bool TryLoad(
+		const DX12IaHashKeyPrefixCacheEntry &entry,
+		UINT64 iaEpoch,
+		UINT64 targetPlanFingerprint,
+		bool indexed,
+		UINT64 globalContentGeneration,
+		UINT64 globalResolveGeneration,
+		DX12IaHashStateCacheKey *key)
+	{
+		if (!key || !entry.valid || entry.iaEpoch != iaEpoch ||
+				entry.targetPlanFingerprint != targetPlanFingerprint ||
+				entry.indexed != indexed ||
+				entry.globalContentGeneration != globalContentGeneration ||
+				entry.globalResolveGeneration != globalResolveGeneration)
+			return false;
+		*key = entry.prefix;
+		return true;
+	}
+
+	static __forceinline void Store(
+		DX12IaHashKeyPrefixCacheEntry *entry,
+		UINT64 iaEpoch,
+		UINT64 targetPlanFingerprint,
+		bool indexed,
+		UINT64 globalContentGeneration,
+		UINT64 globalResolveGeneration,
+		const DX12IaHashStateCacheKey &prefix)
+	{
+		if (!entry)
+			return;
+		entry->iaEpoch = iaEpoch;
+		entry->targetPlanFingerprint = targetPlanFingerprint;
+		entry->indexed = indexed;
+		entry->globalContentGeneration = globalContentGeneration;
+		entry->globalResolveGeneration = globalResolveGeneration;
+		entry->prefix = prefix;
+		entry->valid = true;
+	}
 };
 
 class DX12IaHashStateCache
@@ -114,7 +169,7 @@ public:
 	// before the next frame reuses it, turning a resident cache into a churn loop.
 	static constexpr size_t MaxEntries = 4096;
 
-	static bool TryLoad(
+	static __forceinline bool TryLoad(
 		DX12IaHashStateCache *cache,
 		const DX12IaHashStateCacheKey &key,
 		const DX12IaHashState **state,

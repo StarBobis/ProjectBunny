@@ -375,9 +375,9 @@ public:
 				// hit does not require re-hashing the same draw region first.
 				LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
 				const DX12IaHashStateCacheKey directHashCacheKey =
-					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
-						runtimeState.ia,
-						runtimeState.iaContentEpoch,
+					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
+						mutableRuntimeState,
+						0,
 						directTargetPlan,
 						draw.indexed,
 						draw.vertexCount,
@@ -532,9 +532,9 @@ public:
 			if (targetPlanHasIaTargets && !reusedDirectIaState) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
-				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
-					runtimeState.ia,
-					runtimeState.iaContentEpoch,
+				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
+					mutableRuntimeState,
+					1,
 					targetPlan,
 					draw.indexed,
 					draw.vertexCount,

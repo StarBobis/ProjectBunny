@@ -3,6 +3,7 @@
 #include <d3d12.h>
 
 #include <cstdint>
+#include <array>
 #include <vector>
 
 #include "DX12ActiveIaState.hpp"
@@ -24,6 +25,10 @@ public:
 	UINT64 iaEpoch = 1;
 	UINT64 iaContentEpoch = 1;
 	DX12IaHashStateCache iaHashStateCache;
+	// Direct-target and full-target key prefixes. These avoid repeating GPUVA
+	// resource resolution while IA bindings and global content/lifetime epochs
+	// remain unchanged.
+	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
 	DX12DirectIaProbeCache directIaProbeCache;
 	DX12DirectIaFastRejectCache directIaFastRejectCache;
 	DX12CommandListTrackingCache trackingCache;
