@@ -1831,6 +1831,56 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 			summaries, found, count);
 }
 
+void DX12FindDescriptorSummariesByHeapSlot(
+	ID3D12DescriptorHeap *heap,
+	const UINT *slots,
+	size_t count,
+	DX12DescriptorSummary *summaries,
+	uint8_t *found,
+	bool completeResourceInfo)
+{
+	if (!heap || !slots || !summaries || !found || count == 0)
+		return;
+
+	memset(found, 0, count * sizeof(uint8_t));
+	AcquireSRWLockShared(&gDescriptorLock);
+	std::unordered_map<ID3D12DescriptorHeap*, size_t>::const_iterator heapIt =
+		gDescriptorHeapByPtr.find(heap);
+	if (heapIt != gDescriptorHeapByPtr.end() &&
+			heapIt->second < gDescriptorHeaps.size()) {
+		const size_t heapIndex = heapIt->second;
+		DescriptorHeapRecord &record = gDescriptorHeaps[heapIndex];
+		if (record.heap == heap) {
+			for (size_t i = 0; i < count; ++i) {
+				summaries[i] = DX12DescriptorSummary();
+				const UINT slot = slots[i];
+				if (slot >= record.desc.NumDescriptors)
+					continue;
+				SRWLOCK *slotLock =
+					DX12DescriptorHeapShadowUtils::HeapLock(heapIndex, slot);
+				if (slotLock)
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(slotLock);
+				DescriptorRecord recordCopy;
+				const bool copied =
+					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+						record, slot, &recordCopy);
+				if (slotLock)
+					ReleaseSRWLockShared(slotLock);
+				if (!copied)
+					continue;
+				FillDescriptorSummary(
+					&summaries[i], recordCopy, false, false, false);
+				found[i] = 1;
+			}
+		}
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+
+	if (completeResourceInfo)
+		DX12DescriptorQueryBatchUtils::CompleteResourceInfoForFoundSummaries(
+			summaries, found, count);
+}
+
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary)
 {

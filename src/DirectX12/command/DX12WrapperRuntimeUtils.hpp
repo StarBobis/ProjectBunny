@@ -1178,7 +1178,8 @@ public:
 			    count,
 			    views,
 			    redirectedViews,
-			    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+			    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+			    runtimeState ? &runtimeState->ia : nullptr)) {
 			activeViews = redirectedViews;
 		}
 		DX12CommandListStateCapture::VertexBuffers(

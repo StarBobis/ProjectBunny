@@ -18,5 +18,8 @@ public:
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
 	bool vertexBufferResolved[32] = {};
 	DX12BufferResourceSummary vertexBufferResources[32] = {};
+	bool preSkinRedirectNegativeValid[32] = {};
+	UINT64 preSkinRedirectNegativeGeneration[32] = {};
+	D3D12_VERTEX_BUFFER_VIEW preSkinRedirectNegativeSource[32] = {};
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };

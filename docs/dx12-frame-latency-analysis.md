@@ -666,3 +666,48 @@ submit 时直接看 summary 决定是否需要进一步处理。这一步收益�
 - root table 绑定阶段的 heap/table 反复解析减少 40% 到 80%。
 - 正常 Mod fast path 中，即使 BindingTracker/capture 被跳过，也能维护 DX11-style 当前 descriptor table 状态。
 - texture override / pre-skin 前置查询预计降低 5% 到 15%；如果当前帧 descriptor table 解析占比较高，总帧 CPU 延迟预计提升 3% 到 8%。
+
+### 2026-07-13 实施记录：PreSkin descriptor 查询改为 heap-slot 直读
+
+继续沿用 DX11-style wrapper current-state 思路：既然 wrapper/runtime 已经知道当前 CBV/SRV/UAV heap 和 root table base index，就不应该在 PreSkin 收集阶段再把 slot 还原成 CPU handle，然后重新解析“这个 CPU handle 属于哪个 heap/slot”。
+
+改动内容：
+
+- `DX12ResourceTracker` 新增 `DX12FindDescriptorSummariesByHeapSlot`，输入为 `ID3D12DescriptorHeap* + slot[]`，直接从 descriptor heap 的当前 slot store 复制 descriptor summary。
+- `DX12BindingTracker::CollectPreSkinBindings` 在 root signature 路径下优先批量走 heap-slot 查询；只有多 heap、无 heap 或 slot 超出 `UINT` 时才退回旧 CPU handle 批量查询。
+- 无 root signature 的扫描路径也优先按 heap-slot 扫描，避免每个 slot 重新做 CPU handle -> heap slot 定位。
+- 查询仍然保留 `completeResourceInfo` 补全逻辑，因此 SRV/CBV/UAV 的 resource desc、buffer GPU VA 信息仍按原语义补齐。
+
+安全边界：
+
+- 不移除 descriptor tracking，不跳过 descriptor 内容读取，因此不会导致贴图替换或 PreSkin 依赖的 UAV/SRV/CBV 识别失效。
+- 不移除内容 hash，不改变模型替换的 IA hash 输入。
+- slot 查询只是把“已知 heap + 已知 slot”的信息直接传给 tracker，避免第二次解析身份；descriptor 内容来源仍是原来的 heap slot store。
+
+预计效果：
+
+- PreSkin `collect_bindings` 中 CPU handle 反解 heap/slot 的成本预计下降 60% 到 95%。
+- 对上次日志中 `PreSkin/collect_bindings` 约 11.477ms 的热点，预计下降 25% 到 55%，约减少 2.9ms 到 6.3ms。
+- 对 `Dispatch` / `dispatch_prepare_probe` 的间接影响预计提升 8% 到 20%，取决于当前帧 PreSkin cache miss 率。
+
+### 2026-07-13 实施记录：IASetVertexBuffers 增加 PreSkin resize negative cache
+
+`IASetVertexBuffers` 仍会为每个 VB view 调用 `DX12ModResolvePreSkinOutputResizeByGpuVa`，而绝大多数 view 并不会命中 PreSkin resized output。现在把“同一 slot、同一 view、同一 resize map generation 下未命中”的结果放进 `DX12ActiveIaState`。
+
+改动内容：
+
+- `DX12ActiveIaState` 新增每 slot 的 PreSkin VB redirect negative cache。
+- `DX12ModRuntime` 新增 PreSkin output resize generation，注册/清空 resize map 时递增。
+- `DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews` 在 generation 和 view 完全一致时跳过重复 map 查询。
+
+安全边界：
+
+- 只缓存 negative miss，不缓存 retained resource 指针，因此没有资源释放/悬空引用风险。
+- 一旦有新的 resized output 注册或清空，generation 改变，旧 negative cache 自动失效。
+- 命中 resized output 的路径仍然调用原 resolver 获取 binding，并照常执行 UAV/transition barrier，不跳过必要同步。
+
+预计效果：
+
+- 普通无 PreSkin resize 命中的 VB 绑定，`DX12ModResolvePreSkinOutputResizeByGpuVa` 调用预计下降 50% 到 90%。
+- 对上次日志中 `IASetVertexBuffers` 约 10.275ms 的热点，预计下降 15% 到 35%，约减少 1.5ms 到 3.6ms。
+- 本轮综合预计减少当前 166ms 观测帧约 4.4ms 到 9.9ms CPU 时间，理论帧率从约 6.0 FPS 提升到约 6.2 到 6.4 FPS；如果 PreSkin cache miss/IASet 重复率更高，收益会更明显。

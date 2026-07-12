@@ -52,27 +52,50 @@ public:
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views,
 		D3D12_VERTEX_BUFFER_VIEW *redirectedViews,
-		UINT redirectedCapacity)
+		UINT redirectedCapacity,
+		DX12ActiveIaState *activeIa = nullptr)
 	{
 		if (!views || !redirectedViews || !count || count > redirectedCapacity)
 			return false;
 		bool anyRedirected = false;
 		for (UINT i = 0; i < count; ++i)
 			redirectedViews[i] = views[i];
+		const UINT64 resizeGeneration = DX12ModGetPreSkinOutputResizeGeneration();
 		for (UINT i = 0; i < count; ++i) {
 			const D3D12_VERTEX_BUFFER_VIEW &sourceView = views[i];
 			if (!sourceView.BufferLocation || !sourceView.SizeInBytes)
 				continue;
+			const UINT slot = startSlot + i;
+			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT &&
+					activeIa->preSkinRedirectNegativeValid[slot] &&
+					activeIa->preSkinRedirectNegativeGeneration[slot] ==
+						resizeGeneration) {
+				const D3D12_VERTEX_BUFFER_VIEW &cached =
+					activeIa->preSkinRedirectNegativeSource[slot];
+				if (cached.BufferLocation == sourceView.BufferLocation &&
+						cached.SizeInBytes == sourceView.SizeInBytes &&
+						cached.StrideInBytes == sourceView.StrideInBytes)
+					continue;
+			}
 			DX12PreSkinOutputResizeBinding binding;
 			if (!DX12ModResolvePreSkinOutputResizeByGpuVa(
-				    sourceView.BufferLocation, &binding))
+				    sourceView.BufferLocation, &binding)) {
+				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
+					activeIa->preSkinRedirectNegativeValid[slot] = true;
+					activeIa->preSkinRedirectNegativeGeneration[slot] =
+						resizeGeneration;
+					activeIa->preSkinRedirectNegativeSource[slot] = sourceView;
+				}
 				continue;
+			}
 			const UINT64 availableBytes =
 				binding.resizedByteWidth > binding.sourceOffset
 					? binding.resizedByteWidth - binding.sourceOffset
 					: 0;
 			if (!availableBytes)
 				continue;
+			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+				activeIa->preSkinRedirectNegativeValid[slot] = false;
 			const UINT64 redirectedGpuVa =
 				binding.resizedGpuVa + binding.sourceOffset;
 			ApplyReadBarriers(commandList, binding);
@@ -135,7 +158,8 @@ public:
 				    runCount,
 				    activeIa->vertexBuffers + runStart,
 				    redirected,
-				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT))
+				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+				    activeIa))
 				continue;
 			for (UINT i = 0; i < runCount; ++i)
 				activeIa->vertexBuffers[runStart + i] = redirected[i];

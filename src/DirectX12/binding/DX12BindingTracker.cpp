@@ -728,6 +728,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	static thread_local std::vector<uint8_t> tlsPending;
 	static thread_local std::vector<UINT> tlsDescriptorOffsets;
 	static thread_local std::vector<UINT64> tlsDescriptorIndices;
+	static thread_local std::vector<UINT> tlsDescriptorSlots;
 
 	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 
@@ -778,6 +779,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	tlsCpuHandles.clear();
 	tlsDescriptorOffsets.clear();
 	tlsDescriptorIndices.clear();
+	tlsDescriptorSlots.clear();
 	tlsOutVec.clear();
 	tlsKind.clear();
 	tlsRootIndex.clear();
@@ -795,6 +797,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	// Phase 1: Collect all CPU handles from root-signature ranges.
 	size_t totalHandleCount = 0;
+	ID3D12DescriptorHeap *slotLookupHeap = nullptr;
+	bool canUseSlotLookup = true;
 	for (UINT root = 0; root < maxRoot; ++root) {
 		const RootTableState &table = snapshot.computeTables[root];
 		if (!table.valid)
@@ -848,8 +852,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 					break;
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
+				if (!heap.heap || di > static_cast<UINT64>(UINT_MAX)) {
+					canUseSlotLookup = false;
+				} else if (!slotLookupHeap) {
+					slotLookupHeap = heap.heap;
+				} else if (slotLookupHeap != heap.heap) {
+					canUseSlotLookup = false;
+				}
 
 				tlsCpuHandles.push_back(cpuHandle);
+				tlsDescriptorSlots.push_back(static_cast<UINT>(di));
 				tlsDescriptorOffsets.push_back(offset);
 				tlsOutVec.push_back(out);
 				tlsKind.push_back(kind);
@@ -875,13 +887,24 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		tlsDescriptors.resize(totalHandleCount);
 		tlsFound.resize(totalHandleCount);
 		tlsPending.resize(totalHandleCount);
-		DX12FindDescriptorSummariesByCpuHandleNoWait(
-			tlsCpuHandles.data(),
-			totalHandleCount,
-			tlsDescriptors.data(),
-			tlsFound.data(),
-			tlsPending.data(),
-			true); // needFullResource=true is the safe superset for UAV+SRV+CBV.
+		if (canUseSlotLookup && slotLookupHeap) {
+			memset(tlsPending.data(), 0, totalHandleCount * sizeof(uint8_t));
+			DX12FindDescriptorSummariesByHeapSlot(
+				slotLookupHeap,
+				tlsDescriptorSlots.data(),
+				totalHandleCount,
+				tlsDescriptors.data(),
+				tlsFound.data(),
+				true); // needFullResource=true is the safe superset for UAV+SRV+CBV.
+		} else {
+			DX12FindDescriptorSummariesByCpuHandleNoWait(
+				tlsCpuHandles.data(),
+				totalHandleCount,
+				tlsDescriptors.data(),
+				tlsFound.data(),
+				tlsPending.data(),
+				true); // needFullResource=true is the safe superset for UAV+SRV+CBV.
+		}
 
 		LONG64 descriptorHits = 0;
 		LONG64 descriptorMisses = 0;
@@ -957,11 +980,15 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			// No root signature info: scan to the descriptor heap boundary, then classify by kind.
 			tlsCpuHandles.clear();
 			tlsDescriptorIndices.clear();
+			tlsDescriptorSlots.clear();
 			for (UINT64 di = tableBaseIndex; di < heap.numDescriptors; ++di) {
+				if (di > static_cast<UINT64>(UINT_MAX))
+					break;
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
 				tlsCpuHandles.push_back(cpuHandle);
 				tlsDescriptorIndices.push_back(di);
+				tlsDescriptorSlots.push_back(static_cast<UINT>(di));
 			}
 			const size_t cpuHandleCount2 = tlsCpuHandles.size();
 			if (cpuHandleCount2 == 0)
@@ -970,13 +997,24 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			tlsDescriptors.resize(cpuHandleCount2);
 			tlsFound.resize(cpuHandleCount2);
 			tlsPending.resize(cpuHandleCount2);
-			DX12FindDescriptorSummariesByCpuHandleNoWait(
-				tlsCpuHandles.data(),
-				cpuHandleCount2,
-				tlsDescriptors.data(),
-				tlsFound.data(),
-				tlsPending.data(),
-				false);
+			if (heap.heap) {
+				memset(tlsPending.data(), 0, cpuHandleCount2 * sizeof(uint8_t));
+				DX12FindDescriptorSummariesByHeapSlot(
+					heap.heap,
+					tlsDescriptorSlots.data(),
+					cpuHandleCount2,
+					tlsDescriptors.data(),
+					tlsFound.data(),
+					false);
+			} else {
+				DX12FindDescriptorSummariesByCpuHandleNoWait(
+					tlsCpuHandles.data(),
+					cpuHandleCount2,
+					tlsDescriptors.data(),
+					tlsFound.data(),
+					tlsPending.data(),
+					false);
+			}
 			LONG64 descriptorHits = 0;
 			LONG64 descriptorMisses = 0;
 			LONG64 descriptorPending = 0;
