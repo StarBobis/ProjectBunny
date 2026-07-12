@@ -485,6 +485,11 @@ static UINT64 CurrentPreSkinActiveGeneration()
 		reinterpret_cast<volatile LONG64*>(&gPreSkinActiveGeneration), 0, 0));
 }
 
+UINT64 DX12ModGetPreSkinActiveGenerationFast()
+{
+	return CurrentPreSkinActiveGeneration();
+}
+
 static UINT64 SnapshotActivePreSkinSections(std::unordered_set<std::wstring> *sections)
 {
 	if (!sections)

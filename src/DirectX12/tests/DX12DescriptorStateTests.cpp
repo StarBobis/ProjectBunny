@@ -435,19 +435,18 @@ static void TestCompactValueMaterializationAndCbvHashEquivalence()
 }
 
 static DX12DirectIaProbeCacheKey MakeDirectProbeKey(
-	UINT64 iaContentEpoch, UINT firstIndex)
+	UINT64 reloadGeneration, UINT64 preSkinGeneration,
+	uint32_t vertexHash, UINT firstIndex)
 {
-	DX12DirectIaProbeCacheKey key;
-	key.reloadGeneration = 9;
-	key.iaKey.targetPlanFingerprint = 123;
-	key.iaKey.iaViewFingerprint = 456;
-	key.iaKey.iaContentEpoch = iaContentEpoch;
-	key.iaKey.bufferContentGeneration = 12;
-	key.iaKey.bufferResolveGeneration = 34;
-	key.iaKey.indexed = true;
-	key.iaKey.indexCount = 100;
-	key.iaKey.firstIndex = firstIndex;
-	return key;
+	DX12IaHashState state;
+	DX12IaBufferHash buffer;
+	buffer.slot = 0;
+	buffer.hash = vertexHash;
+	state.vertexBuffers.push_back(buffer);
+	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
+		100, 2, firstIndex, -3, 7);
+	return DX12DirectIaProbeCacheUtils::MakeKey(
+		reloadGeneration, preSkinGeneration, 123, state, draw);
 }
 
 static void TestDirectIaProbeCacheDropsDeadGeneration()
@@ -455,18 +454,30 @@ static void TestDirectIaProbeCacheDropsDeadGeneration()
 	DX12DirectIaProbeCache cache;
 	bool evicted = false;
 	DX12DirectIaProbeCacheUtils::Store(
-		&cache, MakeDirectProbeKey(7, 1), false, &evicted);
+		&cache, MakeDirectProbeKey(9, 7, 0x11111111, 1), false, &evicted);
 	Require(!evicted);
 	DX12DirectIaProbeCacheUtils::Store(
-		&cache, MakeDirectProbeKey(7, 2), true, &evicted);
+		&cache, MakeDirectProbeKey(9, 7, 0x22222222, 2), true, &evicted);
 	Require(cache.entries.size() == 2);
 
+	// Different IA content hashes are entries in the same scope. The old cache
+	// incorrectly treated each resource's generation as a global scope and
+	// discarded the whole working set whenever bindings changed.
 	DX12DirectIaProbeCacheUtils::Store(
-		&cache, MakeDirectProbeKey(8, 3), false, &evicted);
+		&cache, MakeDirectProbeKey(9, 7, 0x33333333, 3), false, &evicted);
+	Require(cache.entries.size() == 3);
+
+	DX12DirectIaProbeCacheUtils::Store(
+		&cache, MakeDirectProbeKey(9, 8, 0x44444444, 4), false, &evicted);
 	Require(!evicted);
 	Require(cache.entries.size() == 1);
 	Require(cache.lruKeys.size() == 1);
-	Require(cache.scopeIaContentEpoch == 8);
+	Require(cache.scopePreSkinGeneration == 8);
+
+	DX12DirectIaProbeCacheKey drawVariant =
+		MakeDirectProbeKey(9, 8, 0x44444444, 4);
+	drawVariant.instanceCount++;
+	Require(!(drawVariant == MakeDirectProbeKey(9, 8, 0x44444444, 4)));
 }
 
 static void TestDescriptorCopyMemoInvalidatesByObservedShard()

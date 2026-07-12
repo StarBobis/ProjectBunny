@@ -828,7 +828,7 @@ uint32_t DX12HashIaBufferView(
 	IaHashKeyL1 keyL1 = { gpuVirtualAddress, size, stride, format, slot };
 	std::unordered_map<IaHashKeyL1, IaHashCacheValue, IaHashKeyL1Hasher>::iterator itL1 = s_cacheL1.find(keyL1);
 	if (itL1 != s_cacheL1.end()) {
-		const IaHashCacheValue &cacheValue = itL1->second;
+		IaHashCacheValue &cacheValue = itL1->second;
 		bool invalidated = true;
 		const UINT64 currentContentGeneration = cacheValue.resource ?
 			DX12GetBufferContentGenerationForResource(cacheValue.resource) :
@@ -841,6 +841,8 @@ uint32_t DX12HashIaBufferView(
 				invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
 					cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
 				ReleaseSRWLockShared(&gResourceLock);
+				if (!invalidated)
+					cacheValue.resolveGeneration = resolveGeneration;
 			}
 		}
 		if (!invalidated)
@@ -859,7 +861,7 @@ uint32_t DX12HashIaBufferView(
 		std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher>::iterator itL2 = s_cacheL2.find(keyL2);
 		if (itL2 != s_cacheL2.end()) {
 			// L2 鍛戒腑 鈫?鎻愬崌鍒?L1锛堜笅娆＄浉鍚?gpuVa 鐩存帴鍛戒腑锛?
-			const IaHashCacheValue &cacheValue = itL2->second;
+			IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
 			const UINT64 currentContentGeneration = cacheValue.resource ?
 				DX12GetBufferContentGenerationForResource(cacheValue.resource) :
@@ -872,6 +874,8 @@ uint32_t DX12HashIaBufferView(
 					invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
 						cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
 					ReleaseSRWLockShared(&gResourceLock);
+					if (!invalidated)
+						cacheValue.resolveGeneration = resolveGeneration;
 				}
 			}
 			if (!invalidated) {
