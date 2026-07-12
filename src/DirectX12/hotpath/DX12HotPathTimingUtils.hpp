@@ -6,6 +6,7 @@
 
 #include "DX12LogManager.hpp"
 #include "utils/DX12CreateTimingTelemetryUtils.hpp"
+#include "utils/DX12DescriptorShadowTelemetryUtils.hpp"
 #include "utils/DX12ResidentMaintenanceTelemetryUtils.hpp"
 
 // ── Hot-path stage timing ───────────────────────────────────────────
@@ -221,6 +222,7 @@ public:
 	static void LogAndResetAll()
 	{
 		DX12CreateTimingTelemetryUtils::LogAndReset();
+		DX12DescriptorShadowTelemetryUtils::LogAndReset();
 		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
 
 		for (UINT i = 0; i < DX12HotPathStage::STAGE_COUNT; ++i) {

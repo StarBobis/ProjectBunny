@@ -18,7 +18,12 @@ public:
 	// Sequential descriptor slots are deliberately spread across shards. The
 	// caller supplies one lock per shard, so unrelated Create*View and copy
 	// operations on the same million-entry heap no longer serialize.
-	static constexpr uint32_t ShardCount = 64;
+	// Real games can issue tens of thousands of Create*View calls and several
+	// thousand descriptor copies per frame from multiple recording threads.
+	// With only 64 shards, unrelated slots repeatedly queued behind the same
+	// SRWLOCK and unordered_map even though the API operations were independent.
+	// 1024 keeps the store sparse while reducing that false contention by 16x.
+	static constexpr uint32_t ShardCount = 1024;
 
 	static constexpr uint32_t ShardForSlot(uint32_t slot)
 	{

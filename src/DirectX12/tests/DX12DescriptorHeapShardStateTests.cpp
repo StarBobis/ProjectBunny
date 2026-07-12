@@ -13,14 +13,14 @@ static void Require(bool condition)
 
 int main()
 {
-	using State = DX12DescriptorHeapShardState<64>;
+	using State = DX12DescriptorHeapShardState<1024>;
 	State state;
 
-	Require(state.ReadVersion() == 64);
+	Require(state.ReadVersion() == 1024);
 	Require(state.IsActive());
 	Require(state.ReadShardVersion(0) == 1);
 	Require(state.ReadShardVersion(1) == 1);
-	Require(state.LockForSlot(0) == state.LockForSlot(64));
+	Require(state.LockForSlot(0) == state.LockForSlot(1024));
 	Require(state.LockForSlot(0) != state.LockForSlot(1));
 	Require(reinterpret_cast<uintptr_t>(state.LockForSlot(1)) -
 		reinterpret_cast<uintptr_t>(state.LockForSlot(0)) >= State::CacheLineBytes);
@@ -28,13 +28,13 @@ int main()
 	state.BumpVersion(1);
 	Require(state.ReadShardVersion(0) == 1);
 	Require(state.ReadShardVersion(1) == 2);
-	Require(state.ReadVersion() == 65);
-	state.BumpVersion(65);
+	Require(state.ReadVersion() == 1025);
+	state.BumpVersion(1025);
 	Require(state.ReadShardVersion(1) == 3);
-	Require(state.ReadVersion() == 66);
+	Require(state.ReadVersion() == 1026);
 
 	state.ResetVersions();
-	Require(state.ReadVersion() == 64);
+	Require(state.ReadVersion() == 1024);
 
 	constexpr uint32_t WriterCount = 8;
 	constexpr uint32_t BumpsPerWriter = 4096;
@@ -48,7 +48,7 @@ int main()
 	for (std::thread &writer : writers)
 		writer.join();
 	Require(state.ReadVersion() ==
-		64 + static_cast<uint64_t>(WriterCount) * BumpsPerWriter);
+		1024 + static_cast<uint64_t>(WriterCount) * BumpsPerWriter);
 	state.LockAllExclusive();
 	state.Deactivate();
 	state.UnlockAllExclusive();

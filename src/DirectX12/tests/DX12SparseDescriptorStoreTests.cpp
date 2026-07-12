@@ -15,7 +15,7 @@ static void Require(bool condition)
 int main()
 {
 	DX12SparseDescriptorStore<unsigned long long> store;
-	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 64,
+	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 1024,
 		"descriptor state lock striping changed unexpectedly");
 	Require(store.Empty());
 
@@ -50,12 +50,12 @@ int main()
 
 	// Slots in different and repeated shards remain one logical store.
 	store.Store(0, 100);
-	store.Store(64, 164);
-	store.Store(65, 165);
+	store.Store(1024, 2024);
+	store.Store(1025, 2025);
 	Require(store.Size() == 6);
 	Require(*store.Find(0) == 100);
-	Require(*store.Find(64) == 164);
-	Require(*store.Find(65) == 165);
+	Require(*store.Find(1024) == 2024);
+	Require(*store.Find(1025) == 2025);
 	store.Clear();
 	Require(store.Empty());
 

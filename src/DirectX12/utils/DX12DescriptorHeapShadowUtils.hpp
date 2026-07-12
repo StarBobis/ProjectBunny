@@ -23,6 +23,7 @@
 #include <string>
 
 #include "../resource/DX12ResourceTrackerPrivate.hpp"
+#include "DX12DescriptorShadowTelemetryUtils.hpp"
 
 class DX12DescriptorHeapShadowUtils
 {
@@ -46,7 +47,10 @@ public:
 
 	struct HeapResolveTlsCache
 	{
-		static constexpr size_t EntryCount = 8;
+		// Descriptor creation/copy worker threads can rotate across considerably
+		// more than eight CPU heaps. Keep the active heap working set thread-local
+		// so handle resolution does not fall back to gDescriptorLock/map lookup.
+		static constexpr size_t EntryCount = 32;
 		std::array<HeapResolveCacheEntry, EntryCount> entries;
 		size_t next = 0;
 	};
@@ -72,7 +76,7 @@ public:
 	{
 		SRWLOCK *lock = HeapLock(heapIndex, slot);
 		if (lock)
-			AcquireSRWLockExclusive(lock);
+			DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(lock);
 	}
 
 	static void UnlockExclusive(size_t heapIndex, UINT slot)
@@ -86,7 +90,7 @@ public:
 	{
 		SRWLOCK *lock = HeapLock(heapIndex, slot);
 		if (lock)
-			AcquireSRWLockShared(lock);
+			DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(lock);
 	}
 
 	static void UnlockShared(size_t heapIndex, UINT slot)
@@ -171,10 +175,12 @@ public:
 			return true;
 		}
 
-		AcquireSRWLockShared(&gDescriptorLock);
+		DX12DescriptorShadowTelemetryUtils::RecordResolveMiss();
+		DX12DescriptorShadowTelemetryUtils::AcquireGlobalShared(&gDescriptorLock);
 		size_t heapIndex = 0;
 		UINT slot = 0;
 		if (!ResolveHeapSlot(cpuHandle, requiredType, &heapIndex, &slot)) {
+			DX12DescriptorShadowTelemetryUtils::RecordResolveFailure();
 			ReleaseSRWLockShared(&gDescriptorLock);
 			return false;
 		}
@@ -210,9 +216,9 @@ public:
 			if (!lock)
 				return false;
 			if (exclusive)
-				AcquireSRWLockExclusive(lock);
+				DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(lock);
 			else
-				AcquireSRWLockShared(lock);
+				DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(lock);
 			if (resolved.heap->stateLocks->IsActive()) {
 				*out = resolved;
 				return true;
@@ -374,6 +380,7 @@ public:
 		// fall back to per-descriptor lookup via FindLatestDescriptor which
 		// checks both heap slots and the CPU ledger.
 		if (!hasDestination || !hasSource) {
+			DX12DescriptorShadowTelemetryUtils::RecordFallback(count);
 			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
 			return;
 		}
@@ -422,13 +429,13 @@ public:
 			SRWLOCK *lock = nullptr;
 			bool exclusive = false;
 		};
-		auto acquireHeldLock = [](const HeldShardLock &held) {
+			auto acquireHeldLock = [](const HeldShardLock &held) {
 			if (!held.lock)
 				return;
 			if (held.exclusive)
-				AcquireSRWLockExclusive(held.lock);
+				DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(held.lock);
 			else
-				AcquireSRWLockShared(held.lock);
+				DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(held.lock);
 		};
 		auto releaseHeldLock = [](const HeldShardLock &held) {
 			if (!held.lock)
@@ -502,7 +509,7 @@ public:
 			for (UINT i = 0; i < count; ++i) {
 				SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot + i);
 				if (sourceLock)
-					AcquireSRWLockShared(sourceLock);
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(sourceLock);
 				if (!srcHeap.stateLocks->IsActive()) {
 					if (sourceLock)
 						ReleaseSRWLockShared(sourceLock);
@@ -523,7 +530,7 @@ public:
 			for (UINT i = 0; i < count; ++i) {
 				SRWLOCK *destLock = HeapLock(&destHeap, destSlot + i);
 				if (destLock)
-					AcquireSRWLockExclusive(destLock);
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(destLock);
 				if (!destHeap.stateLocks->IsActive()) {
 					if (destLock)
 						ReleaseSRWLockExclusive(destLock);
@@ -549,7 +556,7 @@ public:
 		(void)type;
 
 		UINT increment = 0;
-		AcquireSRWLockShared(&gDescriptorLock);
+		DX12DescriptorShadowTelemetryUtils::AcquireGlobalShared(&gDescriptorLock);
 		for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
 			if (gDescriptorHeaps[hi].desc.Type == type &&
 				gDescriptorHeaps[hi].increment > 0) {
@@ -602,7 +609,7 @@ public:
 		}
 
 		// Tier 2: try CPU ledger (global shared lock)
-		AcquireSRWLockShared(&gDescriptorLock);
+		DX12DescriptorShadowTelemetryUtils::AcquireGlobalShared(&gDescriptorLock);
 		std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator found =
 			gDescriptorByCpuHandle.find(cpuHandle);
 		if (found != gDescriptorByCpuHandle.end()) {
@@ -631,7 +638,7 @@ public:
 			return erased;
 		}
 
-		AcquireSRWLockExclusive(&gDescriptorLock);
+		DX12DescriptorShadowTelemetryUtils::AcquireGlobalExclusive(&gDescriptorLock);
 		auto found = gDescriptorByCpuHandle.find(cpuHandle);
 		if (found == gDescriptorByCpuHandle.end()) {
 			ReleaseSRWLockExclusive(&gDescriptorLock);
@@ -670,7 +677,7 @@ public:
 			return;
 		}
 
-		AcquireSRWLockExclusive(&gDescriptorLock);
+		DX12DescriptorShadowTelemetryUtils::AcquireGlobalExclusive(&gDescriptorLock);
 		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
 			gDescriptorByCpuHandle.find(record.cpuHandle);
 		if (found != gDescriptorByCpuHandle.end()) {
