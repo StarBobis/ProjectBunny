@@ -467,13 +467,18 @@ public:
 		if (!commandList)
 			return;
 
-		ID3D12GraphicsCommandList *baseList = nullptr;
-		if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-			DX12CommandListLifecycle::Register(baseList, nullptr);
+		ID3D12GraphicsCommandList *baseList =
+			reinterpret_cast<ID3D12GraphicsCommandList*>(commandList);
+		DX12CommandListRuntimeState *runtimeState =
+			DX12CommandListRuntime::GetDirectStatePtr(baseList);
+		if (!runtimeState)
+			return;
+		(void)runtimeState;
+
+		if (DX12HuntIsEnabled())
 			DX12HuntPublishCommandList(baseList);
+		if (DX12CaptureLedger::CurrentCaptureSessionId() != 0)
 			DX12BindingTracker::SubmitCommandList(baseList);
-			baseList->Release();
-		}
 	}
 
 	static HRESULT PresentDirect(

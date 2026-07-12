@@ -40,6 +40,21 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
+DX12CommandListRuntimeState *DX12CommandListRuntime::GetDirectStatePtr(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return nullptr;
+
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
+		shard.directStates.find(commandList);
+	DX12CommandListRuntimeState *state = it != shard.directStates.end() ? it->second : nullptr;
+	ReleaseSRWLockShared(&shard.lock);
+	return state;
+}
+
 DX12CommandListRuntimeShard &DX12CommandListRuntime::ShardFor(ID3D12GraphicsCommandList *commandList)
 {
 	uintptr_t key = reinterpret_cast<uintptr_t>(commandList);
