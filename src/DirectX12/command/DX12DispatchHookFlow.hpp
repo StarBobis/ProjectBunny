@@ -126,6 +126,21 @@ public:
 			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
+		// No-candidate compute PSOs are resident state, just like DX11's current
+		// shader. Bypass tracking-state lookup and all decision/cache machinery.
+		if (runtimeState &&
+			flagsWord == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
+				DX12HotPathState::FLAG_SHADER_OVERRIDES) &&
+			runtimeState->dispatchDecision.resolved &&
+			runtimeState->dispatchDecision.pipelineState == runtimeState->pipelineState &&
+			runtimeState->dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
+			runtimeState->dispatchDecision.MatchesGlobals(true, false) &&
+			!runtimeState->dispatchDecision.NeedsShaderOverrideWork()) {
+			DX12_PROFILE_FAST_FORWARD();
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
+			return;
+		}
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		if (DX12Profiling::ShouldCollectCounters() || hasShaderOverrides || needsPreSkinProbe)

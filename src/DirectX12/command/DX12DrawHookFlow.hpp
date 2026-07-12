@@ -59,6 +59,24 @@ public:
 			return;
 		}
 
+		// DX11-style resident PSO rejection: when shader overrides are the only
+		// enabled draw feature, a PSO proven unable to match must not enter the
+		// generic draw interpreter (counters, logging, IA keys, or cache layers).
+		// Reload generation keeps the shortcut conservative across hot reloads.
+		if (runtimeState &&
+			flagsWord == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
+				DX12HotPathState::FLAG_SHADER_OVERRIDES) &&
+			runtimeState->drawDecision.resolved &&
+			runtimeState->drawDecision.pipelineState == runtimeState->pipelineState &&
+			runtimeState->drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
+			runtimeState->drawDecision.MatchesGlobals(true) &&
+			runtimeState->drawDecision.CanFastReject()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			DX12_HOTPATH_TIME_END(DrawHookTotal);
+			return;
+		}
+
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 

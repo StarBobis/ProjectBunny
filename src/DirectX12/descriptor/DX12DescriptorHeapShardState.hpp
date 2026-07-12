@@ -135,11 +135,19 @@ public:
 			std::atomic<uint64_t> &slotVersion =
 				page->versions[slot & (VersionPageSize - 1)];
 			// Odd means a publication is in progress. Readers only accept the
-			// value when the same even version brackets the Value ID load.
-			slotVersion.fetch_add(1, std::memory_order_acq_rel);
+			// value when the same even version brackets the Value ID load. Slot
+			// writers are serialized by the owning shard lock, so the second
+			// contended atomic RMW formerly used here bought no correctness. An
+			// exchange starts publication and the release store completes it.
+			const uint64_t previous = slotVersion.fetch_or(
+				1ull, std::memory_order_acq_rel);
 			page->valueIds[slot & (VersionPageSize - 1)].store(
-				valueId, std::memory_order_release);
-			slotVersion.fetch_add(1, std::memory_order_release);
+				valueId, std::memory_order_relaxed);
+			// Versions are initialized even and only one writer owns this slot.
+			// Advancing from the previous even generation preserves cache-key
+			// invalidation, including wraparound's even parity.
+			slotVersion.store((previous + 2ull) & ~1ull,
+				std::memory_order_release);
 		}
 	}
 

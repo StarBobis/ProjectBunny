@@ -23,7 +23,13 @@ class DX12SparseDescriptorStore
 {
 public:
 	// Kept in sync with the owning heap's lock striping contract.
-	static constexpr uint32_t ShardCount = 1024;
+	// Descriptor writes are short and command recording normally has only a
+	// handful of producer threads.  1024 cache-line-sized locks gave every heap
+	// a 64 KiB lock working set; sequential descriptor rings consequently
+	// touched a different cache line for virtually every CopyDescriptors slot.
+	// 64 stripes still provide substantially more concurrency than the wrapper
+	// can use while keeping the complete lock set in a small L1/L2 footprint.
+	static constexpr uint32_t ShardCount = 64;
 	static constexpr uint32_t PageSize = 256;
 
 	static_assert((ShardCount & (ShardCount - 1)) == 0,

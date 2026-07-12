@@ -5170,7 +5170,17 @@ namespace DX12Wrapper
 				UINT StartVertexLocation, UINT StartInstanceLocation) override
 			{
 			// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
-			if ((DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) && mOrigDrawInstanced) {
+				const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+				const bool residentDrawReject =
+					(drawFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
+						DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+					mRuntimeState.drawDecision.resolved &&
+					mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
+					mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
+					mRuntimeState.drawDecision.MatchesGlobals(true) &&
+					mRuntimeState.drawDecision.CanFastReject();
+				if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+					residentDrawReject) && mOrigDrawInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawInstanced);
 				mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
@@ -5191,7 +5201,17 @@ namespace DX12Wrapper
 			UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation,
 			INT BaseVertexLocation, UINT StartInstanceLocation) override
 		{
-			if ((DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) && mOrigDrawIndexedInstanced) {
+			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+			const bool residentDrawReject =
+				(drawFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
+					DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+				mRuntimeState.drawDecision.resolved &&
+				mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
+				mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
+				mRuntimeState.drawDecision.MatchesGlobals(true) &&
+				mRuntimeState.drawDecision.CanFastReject();
+			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+				residentDrawReject) && mOrigDrawIndexedInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 				mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
@@ -5211,7 +5231,17 @@ namespace DX12Wrapper
 
 		void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 		{
-			if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK) && mOrigDispatch) {
+			const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
+			const bool residentDispatchReject =
+				(dispatchFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
+					DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+				mRuntimeState.dispatchDecision.resolved &&
+				mRuntimeState.dispatchDecision.pipelineState == mRuntimeState.pipelineState &&
+				mRuntimeState.dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
+				mRuntimeState.dispatchDecision.MatchesGlobals(true, false) &&
+				!mRuntimeState.dispatchDecision.NeedsShaderOverrideWork();
+			if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
+				residentDispatchReject) && mOrigDispatch) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDispatch);
 				mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
