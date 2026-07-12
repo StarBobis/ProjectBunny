@@ -344,6 +344,32 @@ DX12 的状态维护不是可以整体移除的问题。真正的问题是：正
 
 粗略预期：如果能把 resource invalidation / descriptor shadow / IA tracking 按 Mod 能力精确收缩，正常 Mod 模式 CPU 热点可能从数百 ms 级下降一个数量级。该数字目前是方向性估计，需后续用日志验证。
 
+### 2026-07-13 下一步方向：IA resolve 贴近 wrapper current state
+
+submit 阶段改为 wrapper direct-state 后，下一步应把资源缓存也尽量贴近 wrapper 当前状态。
+
+当前 IA state 只保存 VB/IB view，draw 构建 IA hash key 时仍通过 GPU VA 走全局 `DX12ResolveBufferResourceByGpuVa`。这会让大量 draw 重复执行 GPU VA -> resource summary 的全局查找。
+
+计划改法：
+
+- `DX12ActiveIaState` 增加 index/vertex buffer 的 resolved summary 缓存。
+- `IASetIndexBuffer` / `IASetVertexBuffers` 更新 view 时，同步尝试解析一次 resource summary。
+- draw 构建 IA hash key 时，若 cached view 与当前 view 一致且 summary 带 `resourceGeneration`，直接复用缓存。
+- 如果缓存不存在或不匹配，保留原 `DX12ResolveBufferResourceByGpuVa` 路径。
+
+安全边界：
+
+- 不移除内容 hash。
+- 不改变模型替换匹配逻辑。
+- 不把 unresolved 结果当作 resolved 使用。
+- resource release / GPU VA reuse 仍依赖 `resourceGeneration`、content generation 和原 fallback 路径保证保守失效。
+
+预期效果：
+
+- 大量 draw 共用相同 VB/IB 时，IA resolve 查找从 draw 次数级下降到 IASet 次数级。
+- 预计 IA resolve/hash key 准备阶段降低 30% 到 70%。
+- 总帧延迟预计提升 5% 到 20%，实际取决于当前帧中 IA resolve 占比。
+
 ## 明显设计问题
 
 以下是当前阶段认为比较明显的设计错误或设计债。

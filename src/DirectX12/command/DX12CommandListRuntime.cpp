@@ -670,6 +670,13 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 		return;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	state->ia.indexBufferResolved = false;
+	state->ia.indexBufferResource = DX12BufferResourceSummary();
+	if (newValid && state->ia.indexBuffer.BufferLocation && state->ia.indexBuffer.SizeInBytes)
+		state->ia.indexBufferResolved = DX12ResolveBufferResourceByGpuVa(
+			state->ia.indexBuffer.BufferLocation,
+			state->ia.indexBuffer.SizeInBytes,
+			&state->ia.indexBufferResource);
 	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
@@ -721,6 +728,13 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
 		ia.vertexBuffers[slot] = newView;
+		ia.vertexBufferResolved[slot] = false;
+		ia.vertexBufferResources[slot] = DX12BufferResourceSummary();
+		if (newValid && newView.BufferLocation && newView.SizeInBytes)
+			ia.vertexBufferResolved[slot] = DX12ResolveBufferResourceByGpuVa(
+				newView.BufferLocation,
+				newView.SizeInBytes,
+				&ia.vertexBufferResources[slot]);
 		changedAny = true;
 	}
 	if (changedAny)
@@ -892,11 +906,9 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	key.firstIndex = firstIndex;
 	key.baseVertex = baseVertex;
 	key.iaViewFingerprint = 0x84222325a9582d75ull;
-	auto combineObservation = [&key](UINT64 gpuVa, UINT64 size, UINT64 salt) {
-		DX12BufferResourceSummary summary;
-		if (gpuVa && size &&
-				DX12ResolveBufferResourceByGpuVa(gpuVa, size, &summary) &&
-				summary.resource && summary.resourceGeneration) {
+	auto combineResolvedObservation = [&key](
+		const DX12BufferResourceSummary &summary, UINT64 salt) {
+		if (summary.resource && summary.resourceGeneration) {
 			key.bufferContentGeneration =
 				DX12IaHashStateCacheKeyHash::Combine(
 					key.bufferContentGeneration,
@@ -905,6 +917,19 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 				DX12IaHashStateCacheKeyHash::Combine(
 					key.bufferResolveGeneration,
 					summary.resourceGeneration ^ salt);
+			return true;
+		}
+		return false;
+	};
+	auto combineObservation = [&key, &combineResolvedObservation](
+		UINT64 gpuVa, UINT64 size, UINT64 salt,
+		const DX12BufferResourceSummary *cachedSummary) {
+		if (cachedSummary && combineResolvedObservation(*cachedSummary, salt))
+			return;
+		DX12BufferResourceSummary summary;
+		if (gpuVa && size &&
+				DX12ResolveBufferResourceByGpuVa(gpuVa, size, &summary) &&
+				combineResolvedObservation(summary, salt)) {
 			return;
 		}
 		// Unresolved views retain conservative global invalidation. Resolved views
@@ -927,7 +952,8 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 				combineObservation(
 					ia.indexBuffer.BufferLocation,
 					ia.indexBuffer.SizeInBytes,
-					0x100000001b3ull);
+					0x100000001b3ull,
+					ia.indexBufferResolved ? &ia.indexBufferResource : nullptr);
 				key.iaViewFingerprint ^= ia.indexBuffer.BufferLocation +
 					0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 					(key.iaViewFingerprint >> 2);
@@ -951,7 +977,8 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		combineObservation(
 			ia.vertexBuffers[slot].BufferLocation,
 			ia.vertexBuffers[slot].SizeInBytes,
-			static_cast<UINT64>(slot + 1) * 0x9e3779b97f4a7c15ull);
+			static_cast<UINT64>(slot + 1) * 0x9e3779b97f4a7c15ull,
+			ia.vertexBufferResolved[slot] ? &ia.vertexBufferResources[slot] : nullptr);
 		key.iaViewFingerprint ^= ia.vertexBuffers[slot].BufferLocation +
 			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 			(key.iaViewFingerprint >> 2);
