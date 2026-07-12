@@ -38,7 +38,7 @@ public:
 		}
 	};
 
-	bool TryLoad(
+	__forceinline bool TryLoad(
 		const Key &key,
 		uint64_t sourceVersion,
 		uint64_t destinationVersion,
@@ -58,7 +58,7 @@ public:
 		return false;
 	}
 
-	void Store(
+	__forceinline void Store(
 		const Key &key,
 		uint64_t sourceVersion,
 		uint64_t destinationVersion,
@@ -117,7 +117,7 @@ private:
 		uint8_t nextVictim = 0;
 	};
 
-	static uint64_t Mix(uint64_t value)
+	static __forceinline uint64_t Mix(uint64_t value)
 	{
 		value ^= value >> 33;
 		value *= 0xff51afd7ed558ccdull;
@@ -127,7 +127,7 @@ private:
 		return value;
 	}
 
-	static size_t SetIndex(const Key &key)
+	static __forceinline size_t SetIndex(const Key &key)
 	{
 		uint64_t hash = Mix(static_cast<uint64_t>(
 			reinterpret_cast<uintptr_t>(key.sourceHeap)));

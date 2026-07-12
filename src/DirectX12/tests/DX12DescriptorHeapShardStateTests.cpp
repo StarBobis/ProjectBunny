@@ -34,12 +34,16 @@ int main()
 	State::SlotIdentity identity;
 	Require(observedState.ObserveSlotIdentity(17, &identity));
 	Require(identity.version == 2 && identity.valueId == 0);
+	Require(!observedState.PublishedSlotValueEquals(17, 0x12345678));
 	observedState.PublishSlotValue(17, 0x12345678);
 	Require(observedState.ObserveSlotIdentity(17, &identity));
 	Require(identity.version == 4 && identity.valueId == 0x12345678);
+	Require(observedState.PublishedSlotValueEquals(17, 0x12345678));
+	Require(!observedState.PublishedSlotValueEquals(17, 0x87654321));
 	observedState.ResetVersions();
 	Require(observedState.ObserveSlotIdentity(17, &identity));
 	Require(identity.version == 2 && identity.valueId == 0);
+	Require(!observedState.PublishedSlotValueEquals(17, 0x12345678));
 
 	State publicationState(32);
 	constexpr uint64_t PublicationCount = 100000;

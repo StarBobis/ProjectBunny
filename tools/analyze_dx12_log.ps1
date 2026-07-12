@@ -1,6 +1,7 @@
 param(
     [string]$Path = 'D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12_log.jsonl',
     [int]$FrameCount = 120,
+    [int]$SkipLastFrames = 0,
     [long]$MaxFrameIntervalUs = 0
 )
 
@@ -11,6 +12,8 @@ class Dx12FrameSample {
     [hashtable]$StageTotals = @{}
     [hashtable]$CpuStageTotals = @{}
     [hashtable]$CpuStageCalls = @{}
+    [hashtable]$ApiStageTotals = @{}
+    [hashtable]$ApiStageCalls = @{}
 }
 
 class Dx12LogAnalysisUtils {
@@ -36,7 +39,7 @@ class Dx12LogAnalysisUtils {
         return ('#' * $filled) + ('.' * ($Width - $filled))
     }
 
-    static [void] Analyze([string]$LogPath, [int]$RequestedFrames, [long]$MaximumFrameIntervalUs) {
+    static [void] Analyze([string]$LogPath, [int]$RequestedFrames, [int]$SkippedLastFrames, [long]$MaximumFrameIntervalUs) {
         if (!(Test-Path -LiteralPath $LogPath)) {
             throw "DX12 log not found: $LogPath"
         }
@@ -98,13 +101,40 @@ class Dx12LogAnalysisUtils {
                 $currentFrame.CpuStageCalls[$key] =
                     [long]$currentFrame.CpuStageCalls[$key] +
                     [Dx12LogAnalysisUtils]::ReadInteger($payload, 'calls')
+                continue
+            }
+
+            if ($category -eq 'DX12CreateTiming' -and $null -ne $currentFrame) {
+                $api = [Dx12LogAnalysisUtils]::ReadString($payload, 'api')
+                $stage = [Dx12LogAnalysisUtils]::ReadString($payload, 'stage')
+                if ($api.Length -eq 0 -or $stage.Length -eq 0) {
+                    continue
+                }
+                $key = $api + '/' + $stage
+                if (!$currentFrame.ApiStageTotals.ContainsKey($key)) {
+                    $currentFrame.ApiStageTotals[$key] = [long]0
+                    $currentFrame.ApiStageCalls[$key] = [long]0
+                }
+                $currentFrame.ApiStageTotals[$key] =
+                    [long]$currentFrame.ApiStageTotals[$key] +
+                    [Dx12LogAnalysisUtils]::ReadInteger($payload, 'totalUs')
+                $currentFrame.ApiStageCalls[$key] =
+                    [long]$currentFrame.ApiStageCalls[$key] +
+                    [Dx12LogAnalysisUtils]::ReadInteger($payload, 'calls')
             }
         }
 
-        $validFrames = @($frames | Where-Object {
+        $eligibleFrames = @($frames | Where-Object {
             $_.FrameIntervalUs -gt 0 -and
                 ($MaximumFrameIntervalUs -le 0 -or $_.FrameIntervalUs -le $MaximumFrameIntervalUs)
-        } | Select-Object -Last $RequestedFrames)
+        })
+        $takeCount = [math]::Min($RequestedFrames, [math]::Max(0, $eligibleFrames.Count - $SkippedLastFrames))
+        $startIndex = $eligibleFrames.Count - $SkippedLastFrames - $takeCount
+        $validFrames = if ($takeCount -gt 0) {
+            @($eligibleFrames[$startIndex..($startIndex + $takeCount - 1)])
+        } else {
+            @()
+        }
         if ($validFrames.Count -eq 0) {
             throw 'No valid frame timing samples were found in the requested interval range.'
         }
@@ -115,6 +145,8 @@ class Dx12LogAnalysisUtils {
         $stageTotals = @{}
         $cpuStageTotals = @{}
         $cpuStageCalls = @{}
+        $apiStageTotals = @{}
+        $apiStageCalls = @{}
         foreach ($frame in $validFrames) {
             $aggregateFrameUs += $frame.FrameIntervalUs
             $aggregatePresentWaitUs += $frame.PresentWaitUs
@@ -139,6 +171,16 @@ class Dx12LogAnalysisUtils {
                 $cpuStageCalls[$stage] =
                     [long]$cpuStageCalls[$stage] + [long]$frame.CpuStageCalls[$stage]
             }
+            foreach ($stage in $frame.ApiStageTotals.Keys) {
+                if (!$apiStageTotals.ContainsKey($stage)) {
+                    $apiStageTotals[$stage] = [long]0
+                    $apiStageCalls[$stage] = [long]0
+                }
+                $apiStageTotals[$stage] =
+                    [long]$apiStageTotals[$stage] + [long]$frame.ApiStageTotals[$stage]
+                $apiStageCalls[$stage] =
+                    [long]$apiStageCalls[$stage] + [long]$frame.ApiStageCalls[$stage]
+            }
         }
 
         $averageFrameUs = [double]$aggregateFrameUs / $validFrames.Count
@@ -161,7 +203,7 @@ class Dx12LogAnalysisUtils {
         } else {
             'no upper interval filter'
         }
-        [Console]::WriteLine(('Samples: {0} (last valid frames, {1})' -f $validFrames.Count, $intervalDescription))
+        [Console]::WriteLine(('Samples: {0} (skip last {1} valid frames, {2})' -f $validFrames.Count, $SkippedLastFrames, $intervalDescription))
         [Console]::WriteLine(('Frame total: {0:N3} ms ({1:N0} us)' -f $averageFrameMs, $averageFrameUs))
         [Console]::WriteLine(('Frame interval: {0:N3} ms ({1:N0} us)' -f $averageFrameMs, $averageFrameUs))
         [Console]::WriteLine(('Present wait: {0:N3} ms ({1:N0} us), {2:N2}%' -f ($averagePresentWaitUs / 1000.0), $averagePresentWaitUs, (100.0 * $averagePresentWaitUs / $averageFrameUs)))
@@ -194,7 +236,20 @@ class Dx12LogAnalysisUtils {
             $bar = [Dx12LogAnalysisUtils]::MakeBar($percentage, 24)
             [Console]::WriteLine(('{0,-48} {1,10:N0} {2,12:N2} {3,12:N1} {4,8:N2}%  {5}' -f $entry.Key, $calls, $averageCallUs, $averageStageUs, $percentage, $bar))
         }
+
+        [Console]::WriteLine('')
+        [Console]::WriteLine('Wrapper API stage totals:')
+        [Console]::WriteLine(('{0,-48} {1,10} {2,12} {3,12} {4,9}  {5}' -f 'API/Stage', 'Calls', 'Avg us/call', 'Avg us/frame', 'Frame %', 'Chart'))
+        $sortedApiStages = $apiStageTotals.GetEnumerator() | Sort-Object Value -Descending
+        foreach ($entry in $sortedApiStages) {
+            $averageStageUs = [double]$entry.Value / $validFrames.Count
+            $calls = [long]$apiStageCalls[$entry.Key]
+            $averageCallUs = if ($calls -gt 0) { [double]$entry.Value / $calls } else { 0.0 }
+            $percentage = 100.0 * $averageStageUs / $averageFrameUs
+            $bar = [Dx12LogAnalysisUtils]::MakeBar($percentage, 24)
+            [Console]::WriteLine(('{0,-48} {1,10:N0} {2,12:N2} {3,12:N1} {4,8:N2}%  {5}' -f $entry.Key, $calls, $averageCallUs, $averageStageUs, $percentage, $bar))
+        }
     }
 }
 
-[Dx12LogAnalysisUtils]::Analyze($Path, $FrameCount, $MaxFrameIntervalUs)
+[Dx12LogAnalysisUtils]::Analyze($Path, $FrameCount, $SkipLastFrames, $MaxFrameIntervalUs)

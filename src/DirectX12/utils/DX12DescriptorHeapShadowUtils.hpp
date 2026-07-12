@@ -367,6 +367,16 @@ public:
 				*desc, valueId);
 
 		ResolvedHeapSlot resolved;
+		if (ResolveHeapSlotFast(
+				destDescriptor.ptr,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+				&resolved) &&
+				resolved.heap && resolved.heap->stateLocks &&
+				resolved.heap->stateLocks->IsActive() &&
+				resolved.heap->stateLocks->PublishedSlotValueEquals(
+					resolved.slot, valueId)) {
+			return false;
+		}
 		if (ResolveAndLockHeapSlot(
 				destDescriptor.ptr,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,

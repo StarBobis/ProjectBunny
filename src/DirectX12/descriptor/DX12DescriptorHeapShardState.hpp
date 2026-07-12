@@ -167,6 +167,19 @@ public:
 		return true;
 	}
 
+	// Creation hooks frequently publish the same compact descriptor value to the
+	// same slot thousands of times per frame.  Reject those writes from the
+	// seqlock publication itself before taking the destination shard exclusively
+	// or touching the sparse descriptor store.
+	bool PublishedSlotValueEquals(uint32_t slot, uint64_t valueId) const
+	{
+		if (valueId == 0)
+			return false;
+		SlotIdentity identity;
+		return ObserveSlotIdentity(slot, &identity) &&
+			identity.valueId == valueId;
+	}
+
 	uint64_t ReadSlotVersion(uint32_t slot) const
 	{
 		if (!versionPages_ || slot >= maxSlots_)
