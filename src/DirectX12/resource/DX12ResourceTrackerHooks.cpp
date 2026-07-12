@@ -483,6 +483,10 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	UINT srcRange = 0;
 	UINT destOffset = 0;
 	UINT srcOffset = 0;
+	const UINT increment = device ?
+		device->GetDescriptorHandleIncrementSize(descriptorHeapsType) : 0;
+	if (!increment)
+		return;
 	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
 		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
 		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
@@ -498,15 +502,12 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		}
 
 		const UINT count = min(destRangeSize - destOffset, srcRangeSize - srcOffset);
-		const UINT increment = device ? device->GetDescriptorHandleIncrementSize(descriptorHeapsType) : 0;
-		if (increment) {
-			D3D12_CPU_DESCRIPTOR_HANDLE dest = destDescriptorRangeStarts[destRange];
-			D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
-			dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
-			src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-				descriptorHeapsType, dest, src, count);
-		}
+		D3D12_CPU_DESCRIPTOR_HANDLE dest = destDescriptorRangeStarts[destRange];
+		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
+		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
+		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
+		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+			descriptorHeapsType, dest, src, count);
 		destOffset += count;
 		srcOffset += count;
 	}

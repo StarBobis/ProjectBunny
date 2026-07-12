@@ -52,7 +52,6 @@ public:
 		// so handle resolution does not fall back to gDescriptorLock/map lookup.
 		static constexpr size_t EntryCount = 32;
 		std::array<HeapResolveCacheEntry, EntryCount> entries;
-		size_t next = 0;
 	};
 
 	static SRWLOCK *HeapLock(DescriptorHeapRecord *heap, UINT slot)
@@ -157,21 +156,32 @@ public:
 		if (!cpuHandle || !out)
 			return false;
 		static thread_local HeapResolveTlsCache cache;
-		for (const HeapResolveCacheEntry &entry : cache.entries) {
-			if (!entry.heap || !entry.heap->stateLocks ||
-				!entry.heap->stateLocks->IsActive() ||
-				entry.cpuStart == 0 || entry.increment == 0 ||
+		for (size_t index = 0; index < cache.entries.size(); ++index) {
+			HeapResolveCacheEntry &entry = cache.entries[index];
+			// Reject non-candidates using plain TLS data first. IsActive() is an
+			// acquire atomic and was previously paid for every entry in the
+			// 32-element cache, twice per descriptor copy.
+			if (!entry.heap || entry.cpuStart == 0 || entry.increment == 0 ||
 				cpuHandle < entry.cpuStart ||
 				(requiredType != D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES &&
 					entry.type != requiredType))
 				continue;
 			const SIZE_T offset = cpuHandle - entry.cpuStart;
-			const UINT64 slot = offset / entry.increment;
-			if (slot >= entry.numDescriptors)
+			const UINT64 rangeBytes = static_cast<UINT64>(entry.increment) *
+				static_cast<UINT64>(entry.numDescriptors);
+			if (static_cast<UINT64>(offset) >= rangeBytes ||
+				!entry.heap->stateLocks ||
+				!entry.heap->stateLocks->IsActive())
 				continue;
+			const UINT64 slot = offset / entry.increment;
 			out->heap = entry.heap;
 			out->heapIndex = entry.heapIndex;
 			out->slot = static_cast<UINT>(slot);
+			// Descriptor traffic normally alternates between one staging heap and
+			// one shader-visible heap. Promote the hit so that pattern resolves in
+			// one or two probes instead of scanning all cached heaps under /Od.
+			if (index != 0)
+				std::swap(cache.entries[0], cache.entries[index]);
 			return true;
 		}
 
@@ -185,8 +195,12 @@ public:
 			return false;
 		}
 		DescriptorHeapRecord *heap = &gDescriptorHeaps[heapIndex];
-		HeapResolveCacheEntry &entry =
-			cache.entries[cache.next++ % HeapResolveTlsCache::EntryCount];
+		static_assert(HeapResolveTlsCache::EntryCount >= 2,
+			"heap resolve cache needs one MRU and at least one victim");
+		for (size_t index = HeapResolveTlsCache::EntryCount - 1;
+				index > 0; --index)
+			cache.entries[index] = cache.entries[index - 1];
+		HeapResolveCacheEntry &entry = cache.entries[0];
 		entry.heap = heap;
 		entry.heapIndex = heapIndex;
 		entry.cpuStart = heap->cpuStart;
