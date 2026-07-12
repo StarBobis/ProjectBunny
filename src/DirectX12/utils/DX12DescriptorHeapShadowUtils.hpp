@@ -143,6 +143,70 @@ public:
 	}
 
 	// ---- Unified descriptor recording ----
+	// Atomically applies a Create*View result to both the heap mirror and CPU
+	// ledger. This avoids a separate read/check lock followed by two write
+	// locks during scene-load descriptor bursts.
+	static bool RecordCreatedDescriptorIfChanged(DescriptorRecord &&record)
+	{
+		if (!record.cpuHandle || record.valueId == 0) {
+			ReleaseDescriptorRecordResources(&record);
+			return false;
+		}
+
+		const SIZE_T cpuHandle = record.cpuHandle;
+		DescriptorRecord ledgerRecord = CloneDescriptorRecord(record);
+		bool changed = false;
+
+		AcquireSRWLockExclusive(&gDescriptorLock);
+		size_t heapIndex = 0;
+		UINT slot = 0;
+		const bool heapResolved = ResolveHeapSlot(
+			cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &heapIndex, &slot);
+		if (heapResolved) {
+			EnsureHeapLocks(heapIndex + 1);
+			LockExclusive(heapIndex);
+
+			DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+			if (slot < heap.slots.size() && slot < heap.occupied.size()) {
+				DescriptorRecord &existing = heap.slots[slot];
+				const bool slotMatches = heap.occupied[slot] != 0 &&
+					DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
+						existing, record, cpuHandle);
+				if (!slotMatches) {
+					if (existing.ownsResource && existing.resource)
+						existing.resource->Release();
+					if (existing.ownsCounterResource && existing.counterResource)
+						existing.counterResource->Release();
+					DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+						&existing, record, cpuHandle);
+					heap.occupied[slot] = 1;
+					DX12DescriptorHeapStateUtils::BumpVersion(&heap);
+					changed = true;
+				}
+			}
+
+			UnlockExclusive(heapIndex);
+		}
+
+		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
+			gDescriptorByCpuHandle.find(cpuHandle);
+		const bool ledgerMatches = found != gDescriptorByCpuHandle.end() &&
+			found->second.valueId == record.valueId;
+		if (!ledgerMatches) {
+			if (found != gDescriptorByCpuHandle.end())
+				ReleaseDescriptorRecordResources(&found->second);
+			gDescriptorByCpuHandle[cpuHandle] = std::move(ledgerRecord);
+			changed = true;
+		} else {
+			ReleaseDescriptorRecordResources(&ledgerRecord);
+		}
+
+		ReleaseDescriptorRecordResources(&record);
+		if (changed)
+			BumpDescriptorQuerySerial();
+		ReleaseSRWLockExclusive(&gDescriptorLock);
+		return changed;
+	}
 
 	// Unified entry point for Create*View hooks.
 	// Tries heap-slot fast path first; falls back to CPU ledger if the handle
@@ -345,41 +409,44 @@ public:
 				destHeap.occupied.resize(dSlot + 1, 0);
 			}
 
-			if (dSlot < destHeap.slots.size()) {
-				DescriptorRecord &oldDest = destHeap.slots[dSlot];
-				if (oldDest.ownsResource && oldDest.resource) {
-					oldDest.resource->Release();
-				}
-				if (oldDest.ownsCounterResource && oldDest.counterResource) {
-					oldDest.counterResource->Release();
-				}
-			}
-
 			const SIZE_T destHandle = destStart.ptr +
 				static_cast<SIZE_T>(i) * destHeap.increment;
 
+			const DescriptorRecord *source = nullptr;
+			DescriptorRecord cpuRecord;
 			if (sSlot < srcHeap.occupied.size() && srcHeap.occupied[sSlot] &&
 				sSlot < srcHeap.slots.size()) {
-				// Fast: direct array copy
-				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-					&destHeap.slots[dSlot], srcHeap.slots[sSlot], destHandle);
+				// Fast: direct array lookup.
+				source = &srcHeap.slots[sSlot];
 			} else {
-				// Source slot not occupied — try CPU ledger
+				// Source slot not occupied - try CPU ledger.
 				const SIZE_T srcHandle = srcStart.ptr +
 					static_cast<SIZE_T>(i) * srcHeap.increment;
-				DescriptorRecord cpuRecord;
 				const std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator it =
 					gDescriptorByCpuHandle.find(srcHandle);
-				const bool cpuFound = it != gDescriptorByCpuHandle.end();
-				if (cpuFound)
-					cpuRecord = it->second;
-				if (cpuFound) {
-					DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-						&destHeap.slots[dSlot], cpuRecord, destHandle);
-				} else {
+				if (it == gDescriptorByCpuHandle.end()) {
 					continue;
 				}
+				cpuRecord = it->second;
+				source = &cpuRecord;
 			}
+
+			const bool destOccupied = dSlot < destHeap.occupied.size() &&
+				destHeap.occupied[dSlot] != 0;
+			if (destOccupied && DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
+					destHeap.slots[dSlot], *source, destHandle)) {
+				continue;
+			}
+
+			DescriptorRecord &oldDest = destHeap.slots[dSlot];
+			if (oldDest.ownsResource && oldDest.resource) {
+				oldDest.resource->Release();
+			}
+			if (oldDest.ownsCounterResource && oldDest.counterResource) {
+				oldDest.counterResource->Release();
+			}
+			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+				&destHeap.slots[dSlot], *source, destHandle);
 			destHeap.occupied[dSlot] = 1;
 			copiedCount++;
 		}
@@ -432,12 +499,18 @@ public:
 
 			DescriptorRecord srcRecord;
 			if (FindLatestDescriptor(srcHandle, &srcRecord)) {
+				if (DescriptorValueUnchanged(destHandle, srcRecord.valueId)) {
+					ReleaseDescriptorRecordResources(&srcRecord);
+					continue;
+				}
 				srcRecord.cpuHandle = destHandle;
-				WriteDescriptorToSlot(destHandle, std::move(srcRecord));
-				// Clone to properly AddRef resources for the CPU ledger copy
+				// Retain the ledger value before the slot writer consumes or
+				// releases its input on an out-of-bounds destination.
 				DescriptorRecord ledgerCopy = CloneDescriptorRecord(srcRecord);
+				WriteDescriptorToSlot(destHandle, std::move(srcRecord));
 				ledgerCopy.cpuHandle = destHandle;
 				WriteToCpuLedger(std::move(ledgerCopy));
+				ReleaseDescriptorRecordResources(&srcRecord);
 				copiedCount++;
 			}
 		}

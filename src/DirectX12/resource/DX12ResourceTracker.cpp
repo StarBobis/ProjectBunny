@@ -283,7 +283,7 @@ static void ClearCpuDescriptorLedgerLocked()
 	for (std::unordered_map<SIZE_T, DescriptorRecord>::value_type &entry : gDescriptorByCpuHandle)
 		ReleaseDescriptorRecordResources(&entry.second);
 	gDescriptorByCpuHandle.clear();
-	// gRuntimeDescriptorByCpuHandle removed â€?heap slots are the single source of truth
+	// gRuntimeDescriptorByCpuHandle removed - heap slots are the single source of truth
 }
 
 static DescriptorRecord CloneRuntimeDescriptorRecord(const DescriptorRecord &record)
@@ -335,7 +335,7 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	const SIZE_T cpuStart = record.cpuStart;
 	const UINT increment = record.increment;
 	const UINT numDescriptors = record.desc.NumDescriptors;
-	// gRuntimeDescriptorByCpuHandle removed â€?heap slots self-clean via ClearDescriptorHeapLocked
+	// gRuntimeDescriptorByCpuHandle removed - heap slots self-clean via ClearDescriptorHeapLocked
 	ClearDescriptorHeapLocked(&record);
 	record.heap = nullptr;
 	record.desc = D3D12_DESCRIPTOR_HEAP_DESC();
@@ -711,7 +711,7 @@ void CleanupTrackedResources()
 {
 	DX12BindingCollectQueue::Stop();
 	DX12ResourceCollectQueue::Stop();
-	// DX12DescriptorCollectPipeline::Stop() removed â€?pipeline was dead code
+	// DX12DescriptorCollectPipeline::Stop() removed - pipeline was dead code
 	AcquireSRWLockExclusive(&gResourceLock);
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps)
@@ -1364,21 +1364,32 @@ bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
 	if (!cpuHandle || valueId == 0)
 		return false;
 
-	bool unchanged = false;
+	bool heapResolved = false;
+	bool slotMatches = false;
 	AcquireSRWLockShared(&gDescriptorLock);
-	DescriptorSlotLocation location = {};
-	if (DescriptorSlotForHandleLocked(cpuHandle, &location)) {
-		const DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-		const DescriptorRecord *slot = DescriptorHeapSlot(&heap, location.slot);
-		unchanged = slot && slot->valueId == valueId;
+	size_t heapIndex = 0;
+	UINT slotIndex = 0;
+	heapResolved = DX12DescriptorHeapShadowUtils::ResolveHeapSlot(
+			cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+			&heapIndex, &slotIndex);
+	if (heapResolved) {
+		DX12DescriptorHeapShadowUtils::EnsureHeapLocks(heapIndex + 1);
+		DX12DescriptorHeapShadowUtils::LockShared(heapIndex);
+		if (heapIndex < gDescriptorHeaps.size()) {
+			const DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+			const DescriptorRecord *slot = DescriptorHeapSlot(&heap, slotIndex);
+			slotMatches = slot && slot->valueId == valueId;
+		}
+		DX12DescriptorHeapShadowUtils::UnlockShared(heapIndex);
 	}
-	if (!unchanged) {
-		auto found = gDescriptorByCpuHandle.find(cpuHandle);
-		unchanged = found != gDescriptorByCpuHandle.end() &&
-			found->second.valueId == valueId;
-	}
+	const auto found = gDescriptorByCpuHandle.find(cpuHandle);
+	const bool ledgerMatches = found != gDescriptorByCpuHandle.end() &&
+		found->second.valueId == valueId;
 	ReleaseSRWLockShared(&gDescriptorLock);
-	return unchanged;
+
+	// Create*View writes both stores when the handle belongs to a known heap.
+	// Skipping is safe only when it would leave exactly the same final state.
+	return heapResolved ? (slotMatches && ledgerMatches) : ledgerMatches;
 }
 
 static void RecordDescriptorAtSlotLocked(
@@ -1874,7 +1885,7 @@ void RecordRuntimeDescriptorCopyRange(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
 	UINT count)
 {
-	(void)device; // No longer needed â€?ShadowUtils resolves handles via gDescriptorHeapByCpuStart
+	(void)device; // No longer needed - ShadowUtils resolves handles via gDescriptorHeapByCpuStart
 	DX12DescriptorHeapShadowUtils::CopyDescriptorRange(type, destStart, srcStart, count);
 }
 
@@ -1972,5 +1983,5 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 
 
 
-// RecordDescriptorMerged removed â€?dead code.  Hooks now call
+// RecordDescriptorMerged removed - dead code.  Hooks now call
 // DX12DescriptorHeapShadowUtils::RecordDescriptor directly.

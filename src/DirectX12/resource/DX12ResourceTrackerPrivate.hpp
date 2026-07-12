@@ -165,7 +165,8 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 
 static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
 {
-	return dest.valueId == src.valueId && dest.cpuHandle == destCpuHandle;
+	return src.valueId != 0 && dest.valueId == src.valueId &&
+		dest.cpuHandle == destCpuHandle;
 }
 };
 
