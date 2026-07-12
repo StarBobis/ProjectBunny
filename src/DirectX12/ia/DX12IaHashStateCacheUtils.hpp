@@ -169,6 +169,16 @@ public:
 	// before the next frame reuses it, turning a resident cache into a churn loop.
 	static constexpr size_t MaxEntries = 4096;
 
+	// Command lists recorded on the same CPU thread commonly reference identical
+	// immutable IA regions. The full key already carries view identity, resource
+	// lifetime/content generations, target plan, and draw range, so cache ownership
+	// does not need to be restricted to one command list.
+	static DX12IaHashStateCache &ThreadCache()
+	{
+		static thread_local DX12IaHashStateCache cache;
+		return cache;
+	}
+
 	static __forceinline bool TryLoad(
 		DX12IaHashStateCache *cache,
 		const DX12IaHashStateCacheKey &key,

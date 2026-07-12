@@ -694,6 +694,36 @@ static void TestIaHashKeyPrefixCacheInvalidation()
 		entry, 5, 17, true, 101, 104, &loaded));
 }
 
+static void TestIaHashThreadCacheSharesGenerationSafeEntries()
+{
+	DX12IaHashStateCache &cache = DX12IaHashStateCacheUtils::ThreadCache();
+	DX12IaHashStateCacheUtils::Clear(&cache);
+	DX12IaHashStateCacheKey key;
+	key.targetPlanFingerprint = 11;
+	key.iaViewFingerprint = 13;
+	key.bufferContentGeneration = 17;
+	key.bufferResolveGeneration = 19;
+	key.vertexCount = 23;
+	DX12IaHashState state;
+	state.hasIndexBuffer = true;
+	state.indexHash = 29;
+	bool evicted = false;
+	Require(DX12IaHashStateCacheUtils::Store(
+		&cache, key, true, std::move(state), &evicted) != nullptr);
+	Require(!evicted);
+
+	const DX12IaHashState *loaded = nullptr;
+	bool foundState = false;
+	Require(DX12IaHashStateCacheUtils::TryLoad(
+		&DX12IaHashStateCacheUtils::ThreadCache(), key, &loaded, &foundState));
+	Require(foundState && loaded && loaded->indexHash == 29);
+	DX12IaHashStateCacheKey changedGeneration = key;
+	changedGeneration.bufferContentGeneration++;
+	Require(!DX12IaHashStateCacheUtils::TryLoad(
+		&cache, changedGeneration, &loaded, &foundState));
+	DX12IaHashStateCacheUtils::Clear(&cache);
+}
+
 class DescriptorArenaTestRef
 {
 public:
@@ -829,6 +859,7 @@ int main(int argc, char **argv)
 	TestDescriptorCopyMemoInvalidatesByObservedShard();
 	TestIaTargetPlanReuseRequiresIdenticalIaInputs();
 	TestIaHashKeyPrefixCacheInvalidation();
+	TestIaHashThreadCacheSharesGenerationSafeEntries();
 	TestDescriptorArenaGrowthAndUniqueOwnership();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();

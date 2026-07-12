@@ -283,6 +283,8 @@ public:
 		const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
 		DX12CommandListRuntimeState *mutableRuntimeState =
 			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+		DX12IaHashStateCache *iaHashStateCache =
+			&DX12IaHashStateCacheUtils::ThreadCache();
 		const DX12CompiledDrawDecision *drawDecision =
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
@@ -387,7 +389,7 @@ public:
 						draw.baseVertex);
 				bool directHashFound = false;
 				const bool directHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
-					&mutableRuntimeState->iaHashStateCache,
+					iaHashStateCache,
 					directHashCacheKey,
 					&directIaStateView,
 					&directHashFound);
@@ -405,7 +407,7 @@ public:
 					bool directHashCacheEvicted = false;
 					const DX12IaHashState *storedDirectState =
 						DX12IaHashStateCacheUtils::Store(
-							&mutableRuntimeState->iaHashStateCache,
+							iaHashStateCache,
 							directHashCacheKey,
 							directHashFound,
 							std::move(directIaState),
@@ -564,7 +566,7 @@ public:
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
 			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
 			if (DX12IaHashStateCacheUtils::TryLoad(
-					&mutableRuntimeState->iaHashStateCache,
+					iaHashStateCache,
 					iaCacheKey,
 					&activeIaState,
 					&hasIaHashState)) {
@@ -601,7 +603,7 @@ public:
 				LARGE_INTEGER storeHashBegin = DX12OuterTimingProbeUtils::Now();
 				bool cacheEvicted = false;
 				const DX12IaHashState *storedIaState = DX12IaHashStateCacheUtils::Store(
-					&mutableRuntimeState->iaHashStateCache,
+					iaHashStateCache,
 					iaCacheKey,
 					hasIaHashState,
 					std::move(iaState),
