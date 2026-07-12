@@ -216,7 +216,7 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 			if (slot >= record->slots.size() || !binding.value)
 				return;
 			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-				&record->slots[slot], binding.value->record,
+				&record->slots[slot], binding.value->value,
 				record->cpuStart + static_cast<SIZE_T>(slot) * record->increment);
 			record->occupied[slot] = 1;
 		});
@@ -474,39 +474,6 @@ UINT64 Fnv1a64(const void *data, size_t size)
 	return hash;
 }
 
-static UINT64 HashDescriptorValue(const DescriptorRecord &record)
-{
-	UINT64 hash = 14695981039346656037ull;
-	auto append = [&hash](const void *data, size_t size) {
-		const uint8_t *bytes = static_cast<const uint8_t*>(data);
-		for (size_t i = 0; i < size; ++i) {
-			hash ^= bytes[i];
-			hash *= 1099511628211ull;
-		}
-	};
-	append(&record.kindId, sizeof(record.kindId));
-	append(&record.resource, sizeof(record.resource));
-	append(&record.counterResource, sizeof(record.counterResource));
-	append(&record.gpuVirtualAddress, sizeof(record.gpuVirtualAddress));
-	append(&record.resourceOffset, sizeof(record.resourceOffset));
-	append(&record.viewSize, sizeof(record.viewSize));
-	append(&record.hasDesc, sizeof(record.hasDesc));
-	if (record.kindId == DescriptorKind::CBV_ID) {
-		append(&record.cbv, sizeof(record.cbv));
-	} else if (record.kindId == DescriptorKind::SRV_ID) {
-		append(&record.srv, sizeof(record.srv));
-	} else if (record.kindId == DescriptorKind::UAV_ID) {
-		append(&record.uav, sizeof(record.uav));
-	} else if (record.kindId == DescriptorKind::RTV_ID) {
-		append(&record.rtv, sizeof(record.rtv));
-	} else if (record.kindId == DescriptorKind::DSV_ID) {
-		append(&record.dsv, sizeof(record.dsv));
-	} else if (record.kindId == DescriptorKind::Sampler_ID) {
-		append(&record.sampler, sizeof(record.sampler));
-	}
-	return hash ? hash : 1;
-}
-
 void ReleaseDescriptorRecordResources(DescriptorRecord *record)
 {
 	if (!record)
@@ -543,7 +510,7 @@ void PrepareDescriptorValueId(DescriptorRecord *record)
 	if (!record)
 		return;
 	if (record->valueId == 0)
-		record->valueId = HashDescriptorValue(*record);
+		record->valueId = DX12DescriptorValueHashUtils::HashRecord(*record);
 }
 
 D3D12_RESOURCE_DESC ResourceDescFromDesc1(const D3D12_RESOURCE_DESC1 *desc)
@@ -1458,7 +1425,7 @@ static void RecordDescriptorAtSlotLocked(
 	DescriptorRecord &&record, const DescriptorSlotLocation &location)
 {
 	if (record.valueId == 0)
-		record.valueId = HashDescriptorValue(record);
+		record.valueId = DX12DescriptorValueHashUtils::HashRecord(record);
 	DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
 	if (!EnsureDescriptorHeapStorageLocked(&heap)) {
 		ReleaseDescriptorRecordResources(&record);
@@ -1482,7 +1449,7 @@ static void RecordDescriptorAtSlotLocked(
 static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied)
 {
 	if (record.valueId == 0)
-		record.valueId = HashDescriptorValue(record);
+		record.valueId = DX12DescriptorValueHashUtils::HashRecord(record);
 
 	DescriptorSlotLocation location = {};
 	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {

@@ -337,6 +337,51 @@ public:
 		return changed;
 	}
 
+	// CBVs dominate descriptor creation in the target workload. Build the same
+	// content hash as the generic DescriptorRecord path, but keep the hot path
+	// free of std::string construction and full-record materialization.
+	static bool RecordCreatedConstantBufferViewIfChanged(
+		const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
+		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
+	{
+		if (!desc || !destDescriptor.ptr)
+			return false;
+		const UINT64 valueId =
+			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
+		const DX12DescriptorValue value =
+			DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
+				*desc, valueId);
+
+		ResolvedHeapSlot resolved;
+		if (ResolveAndLockHeapSlot(
+				destDescriptor.ptr,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+				true,
+				&resolved)) {
+			DescriptorHeapRecord &heap = *resolved.heap;
+			const bool changed =
+				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
+					&heap, resolved.slot, value, destDescriptor.ptr);
+			if (changed)
+				DX12DescriptorHeapStateUtils::BumpVersion(
+					&heap, resolved.slot);
+			UnlockHeapSlot(resolved, true);
+			return changed;
+		}
+
+		// Handles outside known heaps retain the legacy CPU-ledger behavior.
+		DescriptorRecord record;
+		SetDescriptorKind(&record, DescriptorKind::CBV_ID);
+		record.valueId = valueId;
+		record.cpuHandle = destDescriptor.ptr;
+		record.cbv = *desc;
+		record.hasDesc = true;
+		record.gpuVirtualAddress = desc->BufferLocation;
+		record.viewSize = desc->SizeInBytes;
+		WriteToCpuLedger(std::move(record));
+		return true;
+	}
+
 	// Unified entry point for Create*View hooks.
 	// Tries heap-slot fast path first; falls back to CPU ledger if the handle
 	// is not in any known descriptor heap.
@@ -570,14 +615,11 @@ public:
 			}
 		};
 
-		auto findSource = [&](UINT i) -> const DescriptorRecord* {
+		auto copySource = [&](UINT i, DescriptorRecord *source) -> bool {
 			const UINT sSlot = srcSlot + i;
-			if (sSlot >= srcHeap.desc.NumDescriptors)
-				return nullptr;
-
-			const DescriptorRecord *source =
-				DX12DescriptorSlotArrayUtils::FindCurrentRecord(srcHeap, sSlot);
-			return source;
+			return sSlot < srcHeap.desc.NumDescriptors &&
+				DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+					srcHeap, sSlot, source);
 		};
 
 			auto applyDestination = [&](UINT i, const DescriptorRecord *source) {
@@ -700,15 +742,15 @@ public:
 						ReleaseSRWLockShared(sourceLock);
 					return;
 				}
-				const DescriptorRecord *source = findSource(i);
-				if (!source) {
+				DescriptorRecord source;
+				if (!copySource(i, &source)) {
 					if (sourceLock)
 						ReleaseSRWLockShared(sourceLock);
 					continue;
 				}
 				snapshot[i].occupied = true;
 				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-					&snapshot[i].value, *source, source->cpuHandle);
+					&snapshot[i].value, source, source.cpuHandle);
 				if (sourceLock)
 					ReleaseSRWLockShared(sourceLock);
 			}

@@ -68,7 +68,10 @@ public:
 class DX12DirectIaProbeCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 1024;
+	// A normal frame in the target title reaches roughly 1.3k distinct probes.
+	// Keep the complete command-local working set so late draws can reuse early
+	// negative results instead of evicting and rebuilding them in the same epoch.
+	static constexpr size_t MaxEntries = 4096;
 
 	static bool TryLoad(
 		DX12DirectIaProbeCache *cache,

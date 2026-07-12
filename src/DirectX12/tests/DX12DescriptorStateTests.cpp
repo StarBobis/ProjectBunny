@@ -1,6 +1,8 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -78,6 +80,19 @@ static DescriptorRecord MakeRecord(UINT64 valueId, UINT token)
 	record.srv.Texture2D.MipLevels = 1 + token % 4;
 	record.srv.Texture2D.PlaneSlice = token % 2;
 	record.srv.Texture2D.ResourceMinLODClamp = static_cast<float>(token) / 8.0f;
+	return record;
+}
+
+static DescriptorRecord MakeConstantBufferViewRecord(
+	const D3D12_CONSTANT_BUFFER_VIEW_DESC &desc)
+{
+	DescriptorRecord record;
+	record.kind = "CBV";
+	record.kindId = DescriptorKind::CBV_ID;
+	record.cbv = desc;
+	record.hasDesc = true;
+	record.gpuVirtualAddress = desc.BufferLocation;
+	record.viewSize = desc.SizeInBytes;
 	return record;
 }
 
@@ -163,7 +178,10 @@ static void TestStoreMaterializeAndUnchanged()
 	Require(binding && binding->value);
 	DX12DescriptorValueNode *firstValue = binding->value;
 	Require(ReferenceCount(firstValue) == 1);
-	RequireSameDescriptorValue(firstValue->record, original, 0);
+	DescriptorRecord firstMaterialized;
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&firstMaterialized, firstValue->value, 0);
+	RequireSameDescriptorValue(firstMaterialized, original, 0);
 	RequireValueAt(heap, 2, original);
 
 	DescriptorRecord sameIdentity = MakeRecord(101, 99);
@@ -373,7 +391,8 @@ static void TestValuePoolRefcountAndReuse()
 	DX12DescriptorValueNode *node = DX12DescriptorValuePool::Acquire();
 	Require(node != nullptr);
 	Require(ReferenceCount(node) == 1);
-	node->record = MakeRecord(9001, 90);
+	DX12DescriptorSlotArrayUtils::CopyDescriptorValue(
+		&node->value, MakeRecord(9001, 90));
 	DX12DescriptorValuePool::Retain(node);
 	Require(ReferenceCount(node) == 2);
 	DX12DescriptorValuePool::Release(node);
@@ -384,22 +403,88 @@ static void TestValuePoolRefcountAndReuse()
 	DX12DescriptorValueNode *reused = DX12DescriptorValuePool::Acquire();
 	Require(reused == node);
 	Require(ReferenceCount(reused) == 1);
-	Require(reused->record.kind.empty());
-	Require(reused->record.valueId == 0);
-	Require(reused->record.resource == nullptr);
-	Require(reused->record.counterResource == nullptr);
-	Require(!reused->record.ownsResource);
-	Require(!reused->record.ownsCounterResource);
+	Require(reused->value.valueId == 0);
+	Require(!reused->value.extended);
 	DX12DescriptorValuePool::Release(reused);
 	Require(ReferenceCount(reused) == 0);
 }
 
-int main()
+static void TestCompactValueMaterializationAndCbvHashEquivalence()
+{
+	D3D12_CONSTANT_BUFFER_VIEW_DESC desc = {};
+	desc.BufferLocation = 0x1234567800ull;
+	desc.SizeInBytes = 4096;
+	DescriptorRecord record = MakeConstantBufferViewRecord(desc);
+	const UINT64 genericHash =
+		DX12DescriptorValueHashUtils::HashRecord(record);
+	const UINT64 fastHash =
+		DX12DescriptorValueHashUtils::HashConstantBufferView(desc);
+	Require(genericHash != 0);
+	Require(genericHash == fastHash);
+	record.valueId = genericHash;
+
+	DX12DescriptorValue compact;
+	DX12DescriptorSlotArrayUtils::CopyDescriptorValue(&compact, record);
+	Require(sizeof(DX12DescriptorValue) < sizeof(DescriptorRecord));
+	Require(!compact.extended);
+	DescriptorRecord materialized;
+	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+		&materialized, compact, 0xfeed0000);
+	RequireSameDescriptorValue(materialized, record, 0xfeed0000);
+}
+
+static void RunConstantBufferViewBenchmark()
+{
+	constexpr UINT SlotCount = 8192;
+	constexpr UINT Iterations = 25000;
+	auto run = [=](bool compact) {
+		DescriptorHeapRecord heap;
+		InitializeSparseHeap(&heap, SlotCount, 0x100000);
+		const auto begin = std::chrono::steady_clock::now();
+		for (UINT i = 0; i < Iterations; ++i) {
+			D3D12_CONSTANT_BUFFER_VIEW_DESC desc = {};
+			desc.BufferLocation = 0x40000000ull +
+				static_cast<UINT64>(i) * 256;
+			desc.SizeInBytes = 4096;
+			const UINT64 valueId =
+				DX12DescriptorValueHashUtils::HashConstantBufferView(desc);
+			const UINT slot = i % SlotCount;
+			if (compact) {
+				const DX12DescriptorValue value =
+					DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
+						desc, valueId);
+				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
+					&heap, slot, value, SlotHandle(heap, slot));
+			} else {
+				DescriptorRecord record = MakeConstantBufferViewRecord(desc);
+				record.valueId = valueId;
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&heap, slot, record, SlotHandle(heap, slot));
+			}
+		}
+		const auto elapsed = std::chrono::duration_cast<
+			std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - begin).count();
+		ClearAndRequireReleased(&heap);
+		return elapsed;
+	};
+	const long long genericUs = run(false);
+	const long long compactUs = run(true);
+	std::printf(
+		"cbv_generic_us=%lld cbv_compact_us=%lld value_size=%zu record_size=%zu node_size=%zu\n",
+		genericUs, compactUs, sizeof(DX12DescriptorValue),
+		sizeof(DescriptorRecord), sizeof(DX12DescriptorValueNode));
+}
+
+int main(int argc, char **argv)
 {
 	TestStoreMaterializeAndUnchanged();
 	TestCrossHeapCopyOverwriteAndErase();
 	TestSparseAndDenseDifferentialPaths();
 	TestOverlappingRangeSnapshotSemantics();
 	TestValuePoolRefcountAndReuse();
+	TestCompactValueMaterializationAndCbvHashEquivalence();
+	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
+		RunConstantBufferViewBenchmark();
 	return 0;
 }

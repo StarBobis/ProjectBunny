@@ -365,17 +365,8 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
 	const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	if (!desc)
-		return;
-	DescriptorRecord record;
-	SetDescriptorKind(&record, DescriptorKind::CBV_ID);
-	record.cpuHandle = destDescriptor.ptr;
-	record.cbv = *desc;
-	record.hasDesc = true;
-	record.gpuVirtualAddress = desc->BufferLocation;
-	record.viewSize = desc->SizeInBytes;
-	PrepareDescriptorValueId(&record);
-	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
+	DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(
+		desc, destDescriptor);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(

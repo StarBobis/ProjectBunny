@@ -1275,7 +1275,7 @@ static void BuildResourceMetadataSnapshot(
 					static_cast<SIZE_T>(slot) * heap.increment;
 				heapDescriptors.push_back(DescriptorRecord());
 				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-					&heapDescriptors.back(), binding.value->record,
+					&heapDescriptors.back(), binding.value->value,
 					cpuHandle);
 				heapDescriptorHandles.insert(cpuHandle);
 			});

@@ -98,6 +98,128 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 	bool hasDesc = false;
 };
 
+struct DX12ExtendedDescriptorValue : public DX12DescriptorViewPayload
+{
+	ID3D12Resource *resource = nullptr;
+	ID3D12Resource *counterResource = nullptr;
+	D3D12_RESOURCE_DESC resourceDesc = {};
+	bool hasResourceDesc = false;
+	UINT resourceHeapType = 0;
+	bool hasResourceHeapType = false;
+	UINT64 gpuVirtualAddress = 0;
+	UINT64 resourceOffset = 0;
+	UINT64 viewSize = 0;
+	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
+	bool hasCurrentState = false;
+	bool stateTrackedByBarrier = false;
+	bool hasDesc = false;
+};
+
+// Immutable descriptor payload kept by normal Mod-mode Descriptor State.
+// CBVs are overwhelmingly dominant and need only 40 bytes here. Rich metadata
+// is allocated only for SRV/UAV/RTV/DSV/sampler values, while slot identity,
+// presentation strings and snapshot ownership are materialized on query.
+struct DX12DescriptorValue
+{
+	UINT kindId = 0;
+	UINT64 valueId = 0;
+	D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {};
+	std::unique_ptr<DX12ExtendedDescriptorValue> extended;
+
+	DX12DescriptorValue() = default;
+	DX12DescriptorValue(DX12DescriptorValue &&) noexcept = default;
+	DX12DescriptorValue &operator=(DX12DescriptorValue &&) noexcept = default;
+
+	DX12DescriptorValue(const DX12DescriptorValue &other)
+		: kindId(other.kindId), valueId(other.valueId), cbv(other.cbv)
+	{
+		if (other.extended)
+			extended = std::make_unique<DX12ExtendedDescriptorValue>(
+				*other.extended);
+	}
+
+	DX12DescriptorValue &operator=(const DX12DescriptorValue &other)
+	{
+		if (this == &other)
+			return *this;
+		kindId = other.kindId;
+		valueId = other.valueId;
+		cbv = other.cbv;
+		if (other.extended)
+			extended = std::make_unique<DX12ExtendedDescriptorValue>(
+				*other.extended);
+		else
+			extended.reset();
+		return *this;
+	}
+};
+
+class DX12DescriptorValueHashUtils
+{
+private:
+	static void Append(UINT64 *hash, const void *data, size_t size)
+	{
+		const uint8_t *bytes = static_cast<const uint8_t*>(data);
+		for (size_t i = 0; i < size; ++i) {
+			*hash ^= bytes[i];
+			*hash *= 1099511628211ull;
+		}
+	}
+
+	static UINT64 Finish(UINT64 hash)
+	{
+		return hash ? hash : 1;
+	}
+
+public:
+	static UINT64 HashRecord(const DescriptorRecord &record)
+	{
+		UINT64 hash = 14695981039346656037ull;
+		Append(&hash, &record.kindId, sizeof(record.kindId));
+		Append(&hash, &record.resource, sizeof(record.resource));
+		Append(&hash, &record.counterResource, sizeof(record.counterResource));
+		Append(&hash, &record.gpuVirtualAddress, sizeof(record.gpuVirtualAddress));
+		Append(&hash, &record.resourceOffset, sizeof(record.resourceOffset));
+		Append(&hash, &record.viewSize, sizeof(record.viewSize));
+		Append(&hash, &record.hasDesc, sizeof(record.hasDesc));
+		if (record.kindId == DescriptorKind::CBV_ID)
+			Append(&hash, &record.cbv, sizeof(record.cbv));
+		else if (record.kindId == DescriptorKind::SRV_ID)
+			Append(&hash, &record.srv, sizeof(record.srv));
+		else if (record.kindId == DescriptorKind::UAV_ID)
+			Append(&hash, &record.uav, sizeof(record.uav));
+		else if (record.kindId == DescriptorKind::RTV_ID)
+			Append(&hash, &record.rtv, sizeof(record.rtv));
+		else if (record.kindId == DescriptorKind::DSV_ID)
+			Append(&hash, &record.dsv, sizeof(record.dsv));
+		else if (record.kindId == DescriptorKind::Sampler_ID)
+			Append(&hash, &record.sampler, sizeof(record.sampler));
+		return Finish(hash);
+	}
+
+	static UINT64 HashConstantBufferView(
+		const D3D12_CONSTANT_BUFFER_VIEW_DESC &desc)
+	{
+		UINT64 hash = 14695981039346656037ull;
+		const UINT kindId = DescriptorKind::CBV_ID;
+		ID3D12Resource *const resource = nullptr;
+		ID3D12Resource *const counterResource = nullptr;
+		const UINT64 gpuVirtualAddress = desc.BufferLocation;
+		const UINT64 resourceOffset = 0;
+		const UINT64 viewSize = desc.SizeInBytes;
+		const bool hasDesc = true;
+		Append(&hash, &kindId, sizeof(kindId));
+		Append(&hash, &resource, sizeof(resource));
+		Append(&hash, &counterResource, sizeof(counterResource));
+		Append(&hash, &gpuVirtualAddress, sizeof(gpuVirtualAddress));
+		Append(&hash, &resourceOffset, sizeof(resourceOffset));
+		Append(&hash, &viewSize, sizeof(viewSize));
+		Append(&hash, &hasDesc, sizeof(hasDesc));
+		Append(&hash, &desc, sizeof(desc));
+		return Finish(hash);
+	}
+};
+
 // Normal Mod mode stores one immutable Descriptor Value and lets every copied
 // Descriptor State reference it. CopyDescriptors then moves a pointer-sized
 // binding instead of duplicating the full DescriptorRecord payload.
@@ -105,7 +227,7 @@ struct alignas(MEMORY_ALLOCATION_ALIGNMENT) DX12DescriptorValueNode
 {
 	SLIST_ENTRY freeEntry = {};
 	volatile LONG references = 0;
-	DescriptorRecord record;
+	DX12DescriptorValue value;
 };
 
 class DX12DescriptorValuePool
@@ -147,7 +269,7 @@ public:
 	{
 		if (!node || InterlockedDecrement(&node->references) != 0)
 			return;
-		node->record = DescriptorRecord();
+		node->value = DX12DescriptorValue();
 		InterlockedPushEntrySList(FreeList(), &node->freeEntry);
 	}
 };
@@ -290,6 +412,115 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 	dest->hasDesc = src.hasDesc;
 }
 
+static void CopyDescriptorValue(
+	DX12DescriptorValue *dest, const DescriptorRecord &src)
+{
+	if (!dest)
+		return;
+	dest->kindId = src.kindId;
+	dest->valueId = src.valueId;
+	if (src.kindId == DescriptorKind::CBV_ID) {
+		dest->cbv = src.cbv;
+		dest->extended.reset();
+		return;
+	}
+	dest->cbv = {};
+	dest->extended = std::make_unique<DX12ExtendedDescriptorValue>();
+	DX12ExtendedDescriptorValue &extended = *dest->extended;
+	static_cast<DX12DescriptorViewPayload &>(extended) = src;
+	extended.resource = src.resource;
+	extended.counterResource = src.counterResource;
+	extended.resourceDesc = src.resourceDesc;
+	extended.hasResourceDesc = src.hasResourceDesc;
+	extended.resourceHeapType = src.resourceHeapType;
+	extended.hasResourceHeapType = src.hasResourceHeapType;
+	extended.gpuVirtualAddress = src.gpuVirtualAddress;
+	extended.resourceOffset = src.resourceOffset;
+	extended.viewSize = src.viewSize;
+	extended.currentState = src.currentState;
+	extended.hasCurrentState = src.hasCurrentState;
+	extended.stateTrackedByBarrier = src.stateTrackedByBarrier;
+	extended.hasDesc = src.hasDesc;
+}
+
+static void CopyRecordValueForSlot(
+	DescriptorRecord *dest,
+	const DX12DescriptorValue &src,
+	SIZE_T destCpuHandle)
+{
+	if (!dest)
+		return;
+	const char *kind = "";
+	switch (src.kindId) {
+	case DescriptorKind::CBV_ID: kind = "CBV"; break;
+	case DescriptorKind::SRV_ID: kind = "SRV"; break;
+	case DescriptorKind::UAV_ID: kind = "UAV"; break;
+	case DescriptorKind::RTV_ID: kind = "RTV"; break;
+	case DescriptorKind::DSV_ID: kind = "DSV"; break;
+	case DescriptorKind::Sampler_ID: kind = "Sampler"; break;
+	}
+	if (dest->kind != kind)
+		dest->kind = kind;
+	dest->kindId = src.kindId;
+	dest->valueId = src.valueId;
+	dest->cpuHandle = destCpuHandle;
+	dest->resource = nullptr;
+	dest->ownsResource = false;
+	dest->counterResource = nullptr;
+	dest->ownsCounterResource = false;
+	dest->resourceDesc = {};
+	dest->hasResourceDesc = false;
+	dest->resourceHeapType = 0;
+	dest->hasResourceHeapType = false;
+	dest->gpuVirtualAddress = 0;
+	dest->resourceOffset = 0;
+	dest->viewSize = 0;
+	dest->currentState = D3D12_RESOURCE_STATE_COMMON;
+	dest->hasCurrentState = false;
+	dest->stateTrackedByBarrier = false;
+	dest->hasDesc = false;
+	if (src.kindId == DescriptorKind::CBV_ID) {
+		static_cast<DX12DescriptorViewPayload &>(*dest) =
+			DX12DescriptorViewPayload();
+		dest->cbv = src.cbv;
+		dest->gpuVirtualAddress = src.cbv.BufferLocation;
+		dest->viewSize = src.cbv.SizeInBytes;
+		dest->hasDesc = true;
+		return;
+	}
+	if (!src.extended) {
+		static_cast<DX12DescriptorViewPayload &>(*dest) =
+			DX12DescriptorViewPayload();
+		return;
+	}
+	const DX12ExtendedDescriptorValue &extended = *src.extended;
+	static_cast<DX12DescriptorViewPayload &>(*dest) = extended;
+	dest->resource = extended.resource;
+	dest->counterResource = extended.counterResource;
+	dest->resourceDesc = extended.resourceDesc;
+	dest->hasResourceDesc = extended.hasResourceDesc;
+	dest->resourceHeapType = extended.resourceHeapType;
+	dest->hasResourceHeapType = extended.hasResourceHeapType;
+	dest->gpuVirtualAddress = extended.gpuVirtualAddress;
+	dest->resourceOffset = extended.resourceOffset;
+	dest->viewSize = extended.viewSize;
+	dest->currentState = extended.currentState;
+	dest->hasCurrentState = extended.hasCurrentState;
+	dest->stateTrackedByBarrier = extended.stateTrackedByBarrier;
+	dest->hasDesc = extended.hasDesc;
+}
+
+static DX12DescriptorValue MakeConstantBufferViewValue(
+	const D3D12_CONSTANT_BUFFER_VIEW_DESC &desc,
+	UINT64 valueId)
+{
+	DX12DescriptorValue value;
+	value.kindId = DescriptorKind::CBV_ID;
+	value.valueId = valueId;
+	value.cbv = desc;
+	return value;
+}
+
 static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
 {
 	return src.valueId != 0 && dest.valueId == src.valueId &&
@@ -302,18 +533,6 @@ static const DescriptorSlotBinding *FindCurrentBinding(
 	return heap.currentDescriptors.Find(slot);
 }
 
-static const DescriptorRecord *FindCurrentRecord(
-	const DescriptorHeapRecord &heap, UINT slot)
-{
-	const DescriptorSlotBinding *binding = FindCurrentBinding(heap, slot);
-	if (binding && binding->value)
-		return &binding->value->record;
-	if (slot < heap.occupied.size() && heap.occupied[slot] &&
-		slot < heap.slots.size())
-		return &heap.slots[slot];
-	return nullptr;
-}
-
 static bool CopyCurrentRecord(
 	const DescriptorHeapRecord &heap, UINT slot, DescriptorRecord *record)
 {
@@ -322,7 +541,7 @@ static bool CopyCurrentRecord(
 	const DescriptorSlotBinding *binding = FindCurrentBinding(heap, slot);
 	if (binding && binding->value) {
 		CopyRecordValueForSlot(
-			record, binding->value->record,
+			record, binding->value->value,
 			heap.cpuStart + static_cast<SIZE_T>(slot) * heap.increment);
 		return true;
 	}
@@ -381,10 +600,48 @@ static bool StoreCurrentRecordIfChanged(
 	DescriptorSlotBinding *stored =
 		heap->currentDescriptors.FindOrInsertDefault(slot, &inserted);
 	if (!inserted && stored->value && source.valueId != 0 &&
-			stored->value->record.valueId == source.valueId)
+			stored->value->value.valueId == source.valueId)
 		return false;
 	DX12DescriptorValueNode *newValue = DX12DescriptorValuePool::Acquire();
-	CopyRecordValueForSlot(&newValue->record, source, 0);
+	CopyDescriptorValue(&newValue->value, source);
+	DX12DescriptorValueNode *oldValue = stored->value;
+	stored->value = newValue;
+	DX12DescriptorValuePool::Release(oldValue);
+	if (inserted)
+		IncrementLiveSlots(heap);
+	return true;
+}
+
+static bool StoreCurrentValueIfChanged(
+	DescriptorHeapRecord *heap,
+	UINT slot,
+	const DX12DescriptorValue &source,
+	SIZE_T destCpuHandle)
+{
+	if (!heap || slot >= heap->desc.NumDescriptors || source.valueId == 0)
+		return false;
+	if (!heap->slots.empty() && slot < heap->slots.size() &&
+			slot < heap->occupied.size()) {
+		const bool wasOccupied = heap->occupied[slot] != 0;
+		if (wasOccupied && heap->slots[slot].valueId == source.valueId &&
+				heap->slots[slot].cpuHandle == destCpuHandle)
+			return false;
+		CopyRecordValueForSlot(
+			&heap->slots[slot], source, destCpuHandle);
+		heap->occupied[slot] = 1;
+		if (!wasOccupied)
+			IncrementLiveSlots(heap);
+		return true;
+	}
+
+	bool inserted = false;
+	DescriptorSlotBinding *stored =
+		heap->currentDescriptors.FindOrInsertDefault(slot, &inserted);
+	if (!inserted && stored->value &&
+			stored->value->value.valueId == source.valueId)
+		return false;
+	DX12DescriptorValueNode *newValue = DX12DescriptorValuePool::Acquire();
+	newValue->value = source;
 	DX12DescriptorValueNode *oldValue = stored->value;
 	stored->value = newValue;
 	DX12DescriptorValuePool::Release(oldValue);
@@ -420,8 +677,8 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 			destHeap->currentDescriptors.FindOrInsertDefault(destSlot, &inserted);
 		if (!inserted && destBinding->value &&
 				(destBinding->value == sourceBinding->value ||
-				 destBinding->value->record.valueId ==
-					sourceBinding->value->record.valueId))
+				 destBinding->value->value.valueId ==
+					sourceBinding->value->value.valueId))
 			return CopyCurrentSlotResult::Unchanged;
 		DX12DescriptorValuePool::Retain(sourceBinding->value);
 		DX12DescriptorValueNode *oldValue = destBinding->value;
@@ -432,11 +689,11 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 		return CopyCurrentSlotResult::Changed;
 	}
 
-	const DescriptorRecord *source = FindCurrentRecord(srcHeap, srcSlot);
-	if (!source)
+	DescriptorRecord source;
+	if (!CopyCurrentRecord(srcHeap, srcSlot, &source))
 		return SourceMissingResult(destHeap, destSlot);
 	return StoreCurrentRecordIfChanged(
-		destHeap, destSlot, *source, destCpuHandle) ?
+		destHeap, destSlot, source, destCpuHandle) ?
 		CopyCurrentSlotResult::Changed : CopyCurrentSlotResult::Unchanged;
 }
 
