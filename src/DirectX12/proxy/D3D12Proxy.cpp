@@ -342,6 +342,15 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 		D3D12ProcessGateDecision decision;
 		DisableThreadLibraryCalls(module);
 
+		decision = D3D12ProcessGateUtils::Evaluate(module);
+		D3D12ProcessGateUtils::DebugDecision(decision);
+		if (decision.role != D3D12ProcessGateRoleTargetRuntime) {
+			// Global CBT hook injection can load this DLL into shell/launcher
+			// processes.  Match DX11's harmless-pass-through behavior for those
+			// processes: keep CBTProc callable, but do not initialize D3D12 hooks.
+			break;
+		}
+
 		// Suppress Debug STL abort() popups — redirect to debugger output.
 		// The MSVC Debug STL (_ITERATOR_DEBUG_LEVEL=2) calls abort() on
 		// container misuse (e.g. vector out-of-bounds). This does not
@@ -355,14 +364,8 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
 #endif
 
-		decision = D3D12ProcessGateUtils::Evaluate(module);
-		D3D12ProcessGateUtils::DebugDecision(decision);
-		if (decision.role == D3D12ProcessGateRoleReject)
-			return FALSE;
-		if (decision.role == D3D12ProcessGateRoleTargetRuntime) {
-			D3D12ProxyRuntime::Initialize(module);
-			gD3D12ProxyRuntimeInitialized = true;
-		}
+		D3D12ProxyRuntime::Initialize(module);
+		gD3D12ProxyRuntimeInitialized = true;
 		break;
 	}
 	case DLL_PROCESS_DETACH:

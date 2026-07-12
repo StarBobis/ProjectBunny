@@ -27,6 +27,7 @@ public:
 	wchar_t processDirectory[MAX_PATH] = {};
 	wchar_t configPath[MAX_PATH] = {};
 	wchar_t target[MAX_PATH] = {};
+	wchar_t loader[MAX_PATH] = {};
 };
 
 class D3D12ProcessGateUtils
@@ -47,16 +48,17 @@ public:
 			return decision;
 		}
 
-		if (ReadConfiguredTarget(&decision)) {
+		if (ReadLoaderConfig(&decision)) {
 			if (MatchesConfiguredTarget(decision.processPath, decision.target)) {
 				decision.allowed = true;
 				decision.role = D3D12ProcessGateRoleTargetRuntime;
 				CopyReason(&decision, L"matched configured loader target");
-			} else if (IsSameDirectory(decision.moduleDirectory, decision.processDirectory) &&
-					IsBootstrapProcess(decision.processPath)) {
+			} else if (MatchesConfiguredLoader(decision.processPath, decision.loader) ||
+					(IsSameDirectory(decision.moduleDirectory, decision.processDirectory) &&
+						IsBootstrapProcess(decision.processPath))) {
 				decision.allowed = true;
 				decision.role = D3D12ProcessGateRoleBootstrapOnly;
-				CopyReason(&decision, L"same directory bootstrap process");
+				CopyReason(&decision, L"matched configured loader bootstrap");
 			} else {
 				CopyReason(&decision, L"rejected by configured loader target");
 			}
@@ -101,7 +103,7 @@ public:
 		return true;
 	}
 
-	static bool ReadConfiguredTarget(D3D12ProcessGateDecision *decision)
+	static bool ReadLoaderConfig(D3D12ProcessGateDecision *decision)
 	{
 		HANDLE file = INVALID_HANDLE_VALUE;
 		DWORD fileSize = 0;
@@ -109,7 +111,9 @@ public:
 		char *buffer = nullptr;
 		const char *section = nullptr;
 		char targetUtf8[MAX_PATH] = {};
-		bool found = false;
+		char loaderUtf8[MAX_PATH] = {};
+		bool foundTarget = false;
+		bool foundLoader = false;
 
 		if (!decision)
 			return false;
@@ -133,19 +137,23 @@ public:
 		section = find_ini_section_lite(buffer, "loader");
 		if (!section)
 			goto out_free;
-		if (!find_ini_setting_lite(section, "target", targetUtf8, MAX_PATH))
-			goto out_free;
-		if (!MultiByteToWideChar(CP_UTF8, 0, targetUtf8, -1, decision->target, MAX_PATH))
-			goto out_free;
+		if (find_ini_setting_lite(section, "target", targetUtf8, MAX_PATH) &&
+				MultiByteToWideChar(CP_UTF8, 0, targetUtf8, -1, decision->target, MAX_PATH)) {
+			TrimQuotes(decision->target);
+			foundTarget = decision->target[0] != L'\0';
+		}
 
-		TrimQuotes(decision->target);
-		found = decision->target[0] != L'\0';
+		if (find_ini_setting_lite(section, "loader", loaderUtf8, MAX_PATH) &&
+				MultiByteToWideChar(CP_UTF8, 0, loaderUtf8, -1, decision->loader, MAX_PATH)) {
+			TrimQuotes(decision->loader);
+			foundLoader = decision->loader[0] != L'\0';
+		}
 
 	out_free:
 		delete [] buffer;
 	out_close:
 		CloseHandle(file);
-		return found;
+		return foundTarget || foundLoader;
 	}
 
 	static bool MatchesConfiguredTarget(const wchar_t *processPath, const wchar_t *target)
@@ -174,6 +182,22 @@ public:
 		if (!left || !right)
 			return false;
 		return _wcsicmp(left, right) == 0;
+	}
+
+	static bool MatchesConfiguredLoader(const wchar_t *processPath, const wchar_t *loader)
+	{
+		const wchar_t *baseName = nullptr;
+
+		if (!processPath || !loader || loader[0] == L'\0')
+			return false;
+
+		baseName = wcsrchr(processPath, L'\\');
+		if (baseName)
+			baseName++;
+		else
+			baseName = processPath;
+
+		return _wcsicmp(baseName, loader) == 0;
 	}
 
 	static bool IsBootstrapProcess(const wchar_t *processPath)
@@ -229,13 +253,14 @@ public:
 	{
 		wchar_t line[1024] = {};
 		swprintf_s(line, 1024,
-			L"[Bunny-D3D12Gate] %s role=%s: pid=%lu process=%s module=%s target=%s config=%s reason=%s\n",
+			L"[Bunny-D3D12Gate] %s role=%s: pid=%lu process=%s module=%s target=%s loader=%s config=%s reason=%s\n",
 			decision.allowed ? L"allow" : L"deny",
 			RoleName(decision.role),
 			GetCurrentProcessId(),
 			decision.processPath,
 			decision.modulePath,
 			decision.target,
+			decision.loader,
 			decision.configPath,
 			decision.reason);
 		OutputDebugStringW(line);
