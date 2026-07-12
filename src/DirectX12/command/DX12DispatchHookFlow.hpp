@@ -469,6 +469,28 @@ public:
 		if (runtimeState)
 			runtimeState->computeBindingSerial = probe->computeBindingSerial;
 
+		// Most candidate dispatches are repeated with no compute-binding or IA
+		// mutation between them. A proven negative result is therefore reusable
+		// before descriptor summaries are materialized. Positive results still go
+		// through the exact-location path so replacement commands target the
+		// currently bound descriptor table.
+		const UINT64 earlyReloadGeneration = DX12ModGetReloadGenerationFast();
+		if (runtimeState &&
+			runtimeState->cachedPreSkinProbeResultValid &&
+			!runtimeState->cachedPreSkinProbeApplied &&
+			runtimeState->cachedPreSkinProbeCsHash == probe->computeShaderHash &&
+			runtimeState->cachedPreSkinProbeReloadGeneration == earlyReloadGeneration &&
+			runtimeState->cachedPreSkinProbeBindingSerial == probe->computeBindingSerial &&
+			runtimeState->cachedPreSkinProbeIaContentEpoch == runtimeState->iaContentEpoch) {
+			probe->applied = false;
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkin", "probe_cache_early_negative_hit", 0, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(t0));
+			return;
+		}
+
 		if (!probe->uavsFound) {
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
@@ -545,8 +567,11 @@ public:
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
 		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+		const UINT64 probeBindingSerial = probe->computeBindingSerial;
+		const UINT64 probeIaContentEpoch = runtimeState ? runtimeState->iaContentEpoch : 0;
 		const auto storeRuntimeProbeCache =
-			[runtimeState, reloadGeneration, computeIaFingerprint](
+			[runtimeState, reloadGeneration, computeIaFingerprint,
+			 probeBindingSerial, probeIaContentEpoch](
 				uint64_t computeShaderHash,
 				bool applied,
 				const DX12PreSkinDispatchOverride &dispatchOverride) {
@@ -556,6 +581,8 @@ public:
 					computeIaFingerprint;
 				runtimeState->cachedPreSkinProbeCsHash = computeShaderHash;
 				runtimeState->cachedPreSkinProbeReloadGeneration = reloadGeneration;
+				runtimeState->cachedPreSkinProbeBindingSerial = probeBindingSerial;
+				runtimeState->cachedPreSkinProbeIaContentEpoch = probeIaContentEpoch;
 				runtimeState->cachedPreSkinProbeResultValid = true;
 				runtimeState->cachedPreSkinProbeApplied = applied;
 				runtimeState->cachedPreSkinProbeDispatchHandlingSkip =

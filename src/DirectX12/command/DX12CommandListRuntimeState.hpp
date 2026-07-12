@@ -73,6 +73,8 @@ public:
 	UINT64 cachedPreSkinProbeFingerprint = 0;
 	uint64_t cachedPreSkinProbeCsHash = 0;
 	UINT64 cachedPreSkinProbeReloadGeneration = 0;
+	UINT64 cachedPreSkinProbeBindingSerial = 0;
+	UINT64 cachedPreSkinProbeIaContentEpoch = 0;
 	bool cachedPreSkinProbeResultValid = false;
 	bool cachedPreSkinProbeApplied = false;
 	bool cachedPreSkinProbeDispatchHandlingSkip = false;
