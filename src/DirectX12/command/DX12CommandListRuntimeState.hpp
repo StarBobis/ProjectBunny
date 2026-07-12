@@ -114,6 +114,18 @@ public:
 	// PreSkin probe cache keyed by the stable dependency-aware fingerprint.
 	// Exact binding dependencies live in the shared PreSkin binding cache.
 	// Runtime state only retains the final Mod probe result.
+	bool cachedPreSkinBindingsValid = false;
+	bool cachedPreSkinBindingsFoundAny = false;
+	UINT64 cachedPreSkinBindingsSerial = 0;
+	UINT64 cachedPreSkinBindingsDependencyFingerprint = 0;
+	ID3D12DescriptorHeap *cachedPreSkinBindingsHeap = nullptr;
+	std::vector<UINT> cachedPreSkinObservedSlots;
+	std::vector<UINT64> cachedPreSkinObservedSlotVersions;
+	std::vector<UINT64> cachedPreSkinObservedSlotValueIds;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinUavs;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
+	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
+	std::vector<DX12CurrentRootConstants> cachedPreSkinRootConstants;
 	UINT64 cachedPreSkinDependencyFingerprint = 0;
 	UINT64 cachedPreSkinBindingFingerprint = 0;
 	UINT64 cachedPreSkinProbeFingerprint = 0;

@@ -711,3 +711,34 @@ submit 时直接看 summary 决定是否需要进一步处理。这一步收益�
 - 普通无 PreSkin resize 命中的 VB 绑定，`DX12ModResolvePreSkinOutputResizeByGpuVa` 调用预计下降 50% 到 90%。
 - 对上次日志中 `IASetVertexBuffers` 约 10.275ms 的热点，预计下降 15% 到 35%，约减少 1.5ms 到 3.6ms。
 - 本轮综合预计减少当前 166ms 观测帧约 4.4ms 到 9.9ms CPU 时间，理论帧率从约 6.0 FPS 提升到约 6.2 到 6.4 FPS；如果 PreSkin cache miss/IASet 重复率更高，收益会更明显。
+
+### 2026-07-13 实施记录：PreSkin 绑定缓存从“大 key 结果缓存”改为 wrapper current-state 结果缓存
+
+继续向 DX11 风格靠拢。上一版 DX12 虽然已经有 wrapper current-state，但 `CollectPreSkinBindings` 仍然是“查询时现拼 cache key，再决定是否复用查询结果”的模式。这样缓存的其实是“查询场景”，而不是“当前 command list 的最终 compute 绑定结果”。
+
+本轮改动：
+
+- `DX12CommandListRuntimeState` 新增 PreSkin 当前结果缓存：直接保存当前 command list 最近一次解析出的 `UAV/SRV/CBV/root constants`。
+- 同时保存这份结果依赖的最小 descriptor slot identity：`heap + observed slots + slot versions/value ids`。
+- `DX12BindingTracker::CollectPreSkinBindings` 现在先读取 runtime current-state 缓存：
+  - 先比对 `computeBindingSerial`
+  - 再校验依赖 slot identity 是否未变化
+  - 命中则直接返回缓存的最终绑定结果，不再 `SnapshotBindingState + 展开 root table + 重新收集 descriptor`
+- 只有 cache miss 时，才回退到现有收集逻辑；收集稳定后再把新结果写回 runtime current-state。
+
+这和 DX11 的一致点：
+
+- 查询阶段优先消费“当前态上的最终绑定结果”，而不是重新解析一遍绑定来源。
+- 失效跟着绑定变化走，而不是每次查询重新构造一份大而易抖动的 key。
+
+这和 DX11 的必要差异：
+
+- DX11 绑定的是最终对象指针，天然稳定。
+- DX12 root descriptor table 绑定的是 heap slot 入口，所以仍必须保留最小的 slot identity 校验；否则 descriptor copy 后会错误复用旧结果。
+- 这部分校验是 DX12 机制成本，不属于 Dump/Hunting 那类可以直接剥离的第二层成本。
+
+预期效果：
+
+- `CollectPreSkinBindings` 的 cache hit 路径预计减少 70% 到 95% 的查询开销。
+- 如果当前 workload 的 PreSkin dispatch 在相邻 draw/dispatch 间大量复用相同 compute 绑定，`collect_bindings` 热点预计再下降 30% 到 60%。
+- 对 `dispatch_prepare_probe` 的连带收益预计 15% 到 35%。

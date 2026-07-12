@@ -59,6 +59,118 @@ static CommandListBindingState* GetOrResolveBindingState(
 	return &state;
 }
 
+static UINT64 MixPreSkinDependencyFingerprint(UINT64 fingerprint, UINT64 value)
+{
+	return fingerprint ^ (value + 0x9e3779b97f4a7c15ull +
+		(fingerprint << 6) + (fingerprint >> 2));
+}
+
+static UINT64 BuildRuntimePreSkinDependencyFingerprint(
+	UINT64 computeBindingSerial,
+	ID3D12DescriptorHeap *heap,
+	const UINT64 *slotVersions,
+	const UINT64 *slotValueIds,
+	size_t slotCount)
+{
+	UINT64 fingerprint = 14695981039346656037ull;
+	fingerprint = MixPreSkinDependencyFingerprint(fingerprint, computeBindingSerial);
+	fingerprint = MixPreSkinDependencyFingerprint(
+		fingerprint,
+		static_cast<UINT64>(reinterpret_cast<uintptr_t>(heap)));
+	for (size_t index = 0; index < slotCount; ++index) {
+		fingerprint = MixPreSkinDependencyFingerprint(fingerprint, slotVersions[index]);
+		fingerprint = MixPreSkinDependencyFingerprint(fingerprint, slotValueIds[index]);
+	}
+	return fingerprint ? fingerprint : 1;
+}
+
+static bool TryLoadRuntimePreSkinBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	UINT64 computeBindingSerial,
+	std::vector<DX12CurrentComputeUavBinding> *uavs,
+	std::vector<DX12CurrentComputeUavBinding> *srvs,
+	std::vector<DX12CurrentComputeUavBinding> *cbvs,
+	std::vector<DX12CurrentRootConstants> *constants,
+	UINT64 *dependencyFingerprint,
+	bool *foundAny)
+{
+	if (!runtimeState || !runtimeState->cachedPreSkinBindingsValid ||
+			runtimeState->cachedPreSkinBindingsSerial != computeBindingSerial ||
+			runtimeState->cachedPreSkinBindingsHeap != runtimeState->cbvSrvUavHeap)
+		return false;
+
+	const size_t observedCount = runtimeState->cachedPreSkinObservedSlots.size();
+	if (observedCount != runtimeState->cachedPreSkinObservedSlotVersions.size() ||
+			observedCount != runtimeState->cachedPreSkinObservedSlotValueIds.size())
+		return false;
+
+	if (observedCount) {
+		if (!runtimeState->cachedPreSkinBindingsHeap)
+			return false;
+		std::vector<UINT64> currentSlotVersions(observedCount);
+		std::vector<UINT64> currentSlotValueIds(observedCount);
+		if (!DX12GetDescriptorSlotIdentities(
+				runtimeState->cachedPreSkinBindingsHeap,
+				runtimeState->cachedPreSkinObservedSlots.data(),
+				observedCount,
+				currentSlotVersions.data(),
+				currentSlotValueIds.data()))
+			return false;
+		for (size_t index = 0; index < observedCount; ++index) {
+			if (currentSlotVersions[index] !=
+					runtimeState->cachedPreSkinObservedSlotVersions[index] ||
+					currentSlotValueIds[index] !=
+					runtimeState->cachedPreSkinObservedSlotValueIds[index]) {
+				return false;
+			}
+		}
+	}
+
+	if (uavs)
+		*uavs = runtimeState->cachedPreSkinUavs;
+	if (srvs)
+		*srvs = runtimeState->cachedPreSkinSrvs;
+	if (cbvs)
+		*cbvs = runtimeState->cachedPreSkinCbvs;
+	if (constants)
+		*constants = runtimeState->cachedPreSkinRootConstants;
+	if (dependencyFingerprint)
+		*dependencyFingerprint = runtimeState->cachedPreSkinBindingsDependencyFingerprint;
+	if (foundAny)
+		*foundAny = runtimeState->cachedPreSkinBindingsFoundAny;
+	return true;
+}
+
+static void StoreRuntimePreSkinBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	UINT64 computeBindingSerial,
+	UINT64 dependencyFingerprint,
+	bool foundAny,
+	const std::vector<UINT> &observedSlots,
+	const std::vector<UINT64> &observedSlotVersions,
+	const std::vector<UINT64> &observedSlotValueIds,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs,
+	const std::vector<DX12CurrentComputeUavBinding> &srvs,
+	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
+	const std::vector<DX12CurrentRootConstants> &constants)
+{
+	if (!runtimeState)
+		return;
+	runtimeState->cachedPreSkinBindingsValid = true;
+	runtimeState->cachedPreSkinBindingsFoundAny = foundAny;
+	runtimeState->cachedPreSkinBindingsSerial = computeBindingSerial;
+	runtimeState->cachedPreSkinBindingsDependencyFingerprint =
+		dependencyFingerprint;
+	runtimeState->cachedPreSkinBindingsHeap = runtimeState->cbvSrvUavHeap;
+	runtimeState->cachedPreSkinObservedSlots = observedSlots;
+	runtimeState->cachedPreSkinObservedSlotVersions = observedSlotVersions;
+	runtimeState->cachedPreSkinObservedSlotValueIds = observedSlotValueIds;
+	runtimeState->cachedPreSkinUavs = uavs;
+	runtimeState->cachedPreSkinSrvs = srvs;
+	runtimeState->cachedPreSkinCbvs = cbvs;
+	runtimeState->cachedPreSkinRootConstants = constants;
+}
+
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
@@ -615,6 +727,27 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	if (cbvs) cbvs->clear();
 	if (constants) constants->clear();
 
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const UINT64 computeBindingSerial =
+		DX12BindingTracker::GetComputeBindingSerial(commandList);
+	bool cachedFoundAny = false;
+	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheCall();
+	if (runtimeState && computeBindingSerial &&
+			TryLoadRuntimePreSkinBindings(
+				runtimeState,
+				computeBindingSerial,
+				uavs,
+				srvs,
+				cbvs,
+				constants,
+				dependencyFingerprint,
+				&cachedFoundAny)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+		return cachedFoundAny;
+	}
+	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
+
 	CommandListBindingState snapshot;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
@@ -622,8 +755,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		return false;
 	}
 	DX12_HOTPATH_TIME_END(BindSnapshot);
-
-	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheCall();
 
 	// Cache root signature summary per ID3D12RootSignature* pointer.
 	// Parse the blob once, reuse across all dispatches with the same signature.
@@ -641,7 +772,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
 	DX12RootSignatureSummary rootSignatureSummary;
 	const DX12RootSignatureSummary *cachedSummary = nullptr;
-	bool canUseResultCache = true;
 	if (computeRootSig) {
 		AcquireSRWLockShared(&s_rootSigCacheLock);
 		std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::const_iterator sigIt =
@@ -670,54 +800,21 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				}
 				ReleaseSRWLockExclusive(&s_rootSigCacheLock);
 				cachedSummary = &rootSignatureSummary;
-			} else {
-				canUseResultCache = false;
 			}
 		}
 	}
-
-	static thread_local DX12PreSkinBindingTlsCache preSkinBindingCache;
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
 	const UINT64 descriptorHeapVersionBefore =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
-	const UINT64 bufferResolveEpochBefore = DX12GetIaHashResolveGeneration();
-	DX12PreSkinBindingCacheKey cacheKey;
-	if (canUseResultCache) {
-		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
-			snapshot,
-			descriptorHeapVersionBefore,
-			bufferResolveEpochBefore,
-			cachedSummary,
-			&cacheKey);
-		bool cachedFoundAny = false;
-		if (DX12PreSkinBindingCacheUtils::TryLoad(
-				&preSkinBindingCache,
-				cacheKey,
-				uavs,
-				srvs,
-				cbvs,
-				constants,
-				&cachedFoundAny,
-				DX12BufferResolveValidationUtils::IsRangeStillValid)) {
-			const UINT64 descriptorQuerySerialAfterHit = CurrentDescriptorQuerySerial();
-			const UINT64 descriptorHeapVersionAfterHit =
-				DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
-			if (descriptorQuerySerialAfterHit == descriptorQuerySerialBefore &&
-				descriptorHeapVersionAfterHit == descriptorHeapVersionBefore) {
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
-				if (dependencyFingerprint)
-					*dependencyFingerprint = cacheKey.fingerprint;
-				return cachedFoundAny;
-			}
-		}
-	}
-	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
 
 	std::vector<DX12CurrentComputeUavBinding> localUavs;
 	std::vector<DX12CurrentComputeUavBinding> localSrvs;
 	std::vector<DX12CurrentComputeUavBinding> localCbvs;
 	std::vector<DX12CurrentRootConstants> localConstants;
 	bool allRuntimeDescriptorsStable = true;
+	bool canStoreRuntimeBindings = runtimeState && computeBindingSerial != 0;
+	ID3D12DescriptorHeap *observedSlotHeap = nullptr;
+	std::vector<UINT> observedSlots;
 
 	// Thread-local scratch buffers grow to the actual descriptor workload and
 	// retain capacity across calls. Correctness is bounded by D3D12 metadata,
@@ -859,6 +956,17 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				} else if (slotLookupHeap != heap.heap) {
 					canUseSlotLookup = false;
 				}
+				if (canStoreRuntimeBindings) {
+					if (!heap.heap || di > static_cast<UINT64>(UINT_MAX)) {
+						canStoreRuntimeBindings = false;
+					} else if (!observedSlotHeap) {
+						observedSlotHeap = heap.heap;
+					} else if (observedSlotHeap != heap.heap) {
+						canStoreRuntimeBindings = false;
+					}
+					if (canStoreRuntimeBindings)
+						observedSlots.push_back(static_cast<UINT>(di));
+				}
 
 				tlsCpuHandles.push_back(cpuHandle);
 				tlsDescriptorSlots.push_back(static_cast<UINT>(di));
@@ -986,6 +1094,17 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 					break;
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
+				if (canStoreRuntimeBindings) {
+					if (!heap.heap) {
+						canStoreRuntimeBindings = false;
+					} else if (!observedSlotHeap) {
+						observedSlotHeap = heap.heap;
+					} else if (observedSlotHeap != heap.heap) {
+						canStoreRuntimeBindings = false;
+					}
+					if (canStoreRuntimeBindings)
+						observedSlots.push_back(static_cast<UINT>(di));
+				}
 				tlsCpuHandles.push_back(cpuHandle);
 				tlsDescriptorIndices.push_back(di);
 				tlsDescriptorSlots.push_back(static_cast<UINT>(di));
@@ -1106,26 +1225,44 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const bool descriptorStateStable =
 		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
 		descriptorQuerySerialAfter == descriptorQuerySerialBefore;
-
-	if (canUseResultCache && allRuntimeDescriptorsStable && descriptorStateStable) {
-		DX12PreSkinBindingCacheKey storeKey;
-		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
-			snapshot,
-			descriptorHeapVersionAfter,
-			DX12GetIaHashResolveGeneration(),
-			cachedSummary,
-			&storeKey);
-		DX12PreSkinBindingCacheUtils::Store(
-			&preSkinBindingCache,
-			storeKey,
-			localUavs,
-			localSrvs,
-			localCbvs,
-			localConstants,
-			foundAny);
-		if (dependencyFingerprint)
-			*dependencyFingerprint = storeKey.fingerprint;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
+	if (canStoreRuntimeBindings && allRuntimeDescriptorsStable && descriptorStateStable) {
+		std::vector<UINT64> observedSlotVersions(observedSlots.size());
+		std::vector<UINT64> observedSlotValueIds(observedSlots.size());
+		bool observedSlotsValid = true;
+		if (!observedSlots.empty()) {
+			observedSlotsValid =
+				observedSlotHeap &&
+				DX12GetDescriptorSlotIdentities(
+					observedSlotHeap,
+					observedSlots.data(),
+					observedSlots.size(),
+					observedSlotVersions.data(),
+					observedSlotValueIds.data());
+		}
+		if (observedSlotsValid) {
+			const UINT64 runtimeDependencyFingerprint =
+				BuildRuntimePreSkinDependencyFingerprint(
+					computeBindingSerial,
+					observedSlotHeap,
+					observedSlotVersions.data(),
+					observedSlotValueIds.data(),
+					observedSlots.size());
+			StoreRuntimePreSkinBindings(
+				runtimeState,
+				computeBindingSerial,
+				runtimeDependencyFingerprint,
+				foundAny,
+				observedSlots,
+				observedSlotVersions,
+				observedSlotValueIds,
+				localUavs,
+				localSrvs,
+				localCbvs,
+				localConstants);
+			if (dependencyFingerprint)
+				*dependencyFingerprint = runtimeDependencyFingerprint;
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
+		}
 	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
 		DX12LogManager::DebugJsonFunc("DX12PreSkinRuntimeDescriptorSnapshot",
 			"event=skip_cache_unstable,commandList=%p,uavs=%zu,srvs=%zu,cbvs=%zu",
