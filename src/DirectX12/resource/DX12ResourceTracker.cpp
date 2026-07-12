@@ -42,6 +42,7 @@ std::map<UINT64, size_t> gBufferResourceByGpuVa;
 std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 std::atomic<UINT64> gBufferResolveGeneration{1};
+std::atomic<UINT64> gResourceIdentityGeneration{1};
 std::atomic<UINT64> gDescriptorQuerySerial{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
@@ -182,7 +183,8 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
 	record->currentDescriptors.Initialize(record->desc.NumDescriptors);
-	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>();
+	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>(
+		record->desc.NumDescriptors);
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(record, 0);
 	DX12DescriptorHeapStateUtils::ResetVersion(record);
 }
@@ -438,8 +440,11 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		gCanonicalCache.erase(canonical);
 	ReleaseSRWLockExclusive(&gCanonicalCacheLock);
 	DX12InvalidateTextureHash(record.resource);
+	DX12InvalidateBufferContent(record.resource);
 	if (canonical != record.resource)
 		DX12InvalidateTextureHash(canonical);
+	if (canonical != record.resource)
+		DX12InvalidateBufferContent(canonical);
 	record = ResourceRecord();
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)
@@ -673,6 +678,12 @@ void RecordResource(
 		ResourceRecord &existing = gResources[found->second];
 		oldRecord = existing;
 		hadOldRecord = true;
+		const bool sameIdentityRange =
+			DX12BufferResolveCacheUtils::SameBufferRange(existing, record);
+		record.identityGeneration = sameIdentityRange ?
+			existing.identityGeneration :
+			gResourceIdentityGeneration.fetch_add(
+				1, std::memory_order_relaxed) + 1;
 		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress) {
 			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
 			gBufferResourceByGpuVaComplete.erase(existing.gpuVirtualAddress);
@@ -695,6 +706,8 @@ void RecordResource(
 			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = found->second;
 		}
 	} else {
+		record.identityGeneration = gResourceIdentityGeneration.fetch_add(
+			1, std::memory_order_relaxed) + 1;
 		size_t index = 0;
 		if (!gFreeResourceSlots.empty()) {
 			index = gFreeResourceSlots.back();

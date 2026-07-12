@@ -51,6 +51,7 @@ public:
 		if (this != &other) {
 			entries.clear();
 			lruKeys.clear();
+			hasScope = false;
 		}
 		return *this;
 	}
@@ -63,6 +64,11 @@ public:
 		DX12DirectIaProbeCacheKey,
 		DX12DirectIaProbeCacheEntry,
 		DX12DirectIaProbeCacheKeyHash> entries;
+	bool hasScope = false;
+	UINT64 scopeReloadGeneration = 0;
+	UINT64 scopeIaContentEpoch = 0;
+	UINT64 scopeBufferContentGeneration = 0;
+	UINT64 scopeBufferResolveGeneration = 0;
 };
 
 class DX12DirectIaProbeCacheUtils
@@ -80,6 +86,7 @@ public:
 	{
 		if (!cache || !hasDirectCandidate)
 			return false;
+		PrepareScope(cache, key);
 
 		auto found = cache->entries.find(key);
 		if (found == cache->entries.end())
@@ -102,6 +109,7 @@ public:
 			*evicted = false;
 		if (!cache)
 			return;
+		PrepareScope(cache, key);
 
 		auto found = cache->entries.find(key);
 		if (found != cache->entries.end()) {
@@ -132,5 +140,35 @@ public:
 			return;
 		cache->entries.clear();
 		cache->lruKeys.clear();
+		cache->hasScope = false;
+	}
+
+private:
+	static void PrepareScope(
+		DX12DirectIaProbeCache *cache,
+		const DX12DirectIaProbeCacheKey &key)
+	{
+		if (!cache)
+			return;
+		const bool sameScope = cache->hasScope &&
+			cache->scopeReloadGeneration == key.reloadGeneration &&
+			cache->scopeIaContentEpoch == key.iaKey.iaContentEpoch &&
+			cache->scopeBufferContentGeneration ==
+				key.iaKey.bufferContentGeneration &&
+			cache->scopeBufferResolveGeneration ==
+				key.iaKey.bufferResolveGeneration;
+		if (sameScope)
+			return;
+		// Entries from another content epoch can never match this key. Remove
+		// them as one generation rather than letting dead keys evict live probes.
+		cache->entries.clear();
+		cache->lruKeys.clear();
+		cache->hasScope = true;
+		cache->scopeReloadGeneration = key.reloadGeneration;
+		cache->scopeIaContentEpoch = key.iaKey.iaContentEpoch;
+		cache->scopeBufferContentGeneration =
+			key.iaKey.bufferContentGeneration;
+		cache->scopeBufferResolveGeneration =
+			key.iaKey.bufferResolveGeneration;
 	}
 };

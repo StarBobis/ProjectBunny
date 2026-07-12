@@ -1,4 +1,5 @@
 #include "DX12ResourceTrackerPrivate.hpp"
+#include "descriptor/DX12DescriptorCopyMemoUtils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -433,6 +434,84 @@ static void TestCompactValueMaterializationAndCbvHashEquivalence()
 	RequireSameDescriptorValue(materialized, record, 0xfeed0000);
 }
 
+static DX12DirectIaProbeCacheKey MakeDirectProbeKey(
+	UINT64 iaContentEpoch, UINT firstIndex)
+{
+	DX12DirectIaProbeCacheKey key;
+	key.reloadGeneration = 9;
+	key.iaKey.targetPlanFingerprint = 123;
+	key.iaKey.iaViewFingerprint = 456;
+	key.iaKey.iaContentEpoch = iaContentEpoch;
+	key.iaKey.bufferContentGeneration = 12;
+	key.iaKey.bufferResolveGeneration = 34;
+	key.iaKey.indexed = true;
+	key.iaKey.indexCount = 100;
+	key.iaKey.firstIndex = firstIndex;
+	return key;
+}
+
+static void TestDirectIaProbeCacheDropsDeadGeneration()
+{
+	DX12DirectIaProbeCache cache;
+	bool evicted = false;
+	DX12DirectIaProbeCacheUtils::Store(
+		&cache, MakeDirectProbeKey(7, 1), false, &evicted);
+	Require(!evicted);
+	DX12DirectIaProbeCacheUtils::Store(
+		&cache, MakeDirectProbeKey(7, 2), true, &evicted);
+	Require(cache.entries.size() == 2);
+
+	DX12DirectIaProbeCacheUtils::Store(
+		&cache, MakeDirectProbeKey(8, 3), false, &evicted);
+	Require(!evicted);
+	Require(cache.entries.size() == 1);
+	Require(cache.lruKeys.size() == 1);
+	Require(cache.scopeIaContentEpoch == 8);
+}
+
+static void TestDescriptorCopyMemoInvalidatesByObservedShard()
+{
+	DescriptorHeapRecord::StateLocks sourceState(2048);
+	DescriptorHeapRecord::StateLocks destinationState(2048);
+	DX12DescriptorCopyMemo memo;
+	const DX12DescriptorCopyMemo::Key key = {
+		reinterpret_cast<void*>(0x1000),
+		reinterpret_cast<void*>(0x2000),
+		7,
+		11
+	};
+	memo.Store(
+		key,
+		sourceState.ReadSlotVersion(key.sourceSlot),
+		destinationState.ReadSlotVersion(key.destinationSlot),
+		DX12DescriptorCopyMemo::Result::Unchanged);
+
+	DX12DescriptorCopyMemo::Result result;
+	Require(memo.TryLoad(
+		key,
+		sourceState.ReadSlotVersion(key.sourceSlot),
+		destinationState.ReadSlotVersion(key.destinationSlot),
+		&result));
+	Require(result == DX12DescriptorCopyMemo::Result::Unchanged);
+
+	// Even another slot sharing the same lock shard does not invalidate the
+	// exact source/destination proof.
+	sourceState.BumpVersion(
+		key.sourceSlot + DescriptorHeapRecord::StateLocks::ShardCount);
+	Require(memo.TryLoad(
+		key,
+		sourceState.ReadSlotVersion(key.sourceSlot),
+		destinationState.ReadSlotVersion(key.destinationSlot),
+		&result));
+
+	sourceState.BumpVersion(key.sourceSlot);
+	Require(!memo.TryLoad(
+		key,
+		sourceState.ReadSlotVersion(key.sourceSlot),
+		destinationState.ReadSlotVersion(key.destinationSlot),
+		&result));
+}
+
 static void RunConstantBufferViewBenchmark()
 {
 	constexpr UINT SlotCount = 8192;
@@ -474,6 +553,52 @@ static void RunConstantBufferViewBenchmark()
 		"cbv_generic_us=%lld cbv_compact_us=%lld value_size=%zu record_size=%zu node_size=%zu\n",
 		genericUs, compactUs, sizeof(DX12DescriptorValue),
 		sizeof(DescriptorRecord), sizeof(DX12DescriptorValueNode));
+
+	constexpr UINT CopyPairCount = 65000;
+	DX12DescriptorCopyMemo memo;
+	DescriptorHeapRecord::StateLocks sourceState(CopyPairCount);
+	DescriptorHeapRecord::StateLocks destinationState(CopyPairCount);
+	const void *sourceHeap = reinterpret_cast<void*>(0x100000);
+	const void *destinationHeap = reinterpret_cast<void*>(0x200000);
+	const auto memoStoreBegin = std::chrono::steady_clock::now();
+	for (UINT slot = 0; slot < CopyPairCount; ++slot) {
+		const DX12DescriptorCopyMemo::Key key = {
+			sourceHeap, destinationHeap, slot, slot
+		};
+		memo.Store(
+			key,
+			sourceState.ReadSlotVersion(slot),
+			destinationState.ReadSlotVersion(slot),
+			DX12DescriptorCopyMemo::Result::Unchanged);
+	}
+	const auto memoStoreEnd = std::chrono::steady_clock::now();
+	UINT memoHits = 0;
+	const auto memoLookupBegin = std::chrono::steady_clock::now();
+	for (UINT slot = 0; slot < CopyPairCount; ++slot) {
+		const DX12DescriptorCopyMemo::Key key = {
+			sourceHeap, destinationHeap, slot, slot
+		};
+		DX12DescriptorCopyMemo::Result result;
+		if (memo.TryLoad(
+				key,
+				sourceState.ReadSlotVersion(slot),
+				destinationState.ReadSlotVersion(slot),
+				&result))
+			++memoHits;
+	}
+	const auto memoLookupEnd = std::chrono::steady_clock::now();
+	std::printf(
+		"copy_memo_pairs=%u copy_memo_hits=%u copy_memo_store_us=%lld copy_memo_lookup_us=%lld\n",
+		CopyPairCount,
+		memoHits,
+		static_cast<long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				memoStoreEnd - memoStoreBegin).count()),
+		static_cast<long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				memoLookupEnd - memoLookupBegin).count()));
+	std::fflush(stdout);
+	Require(memoHits > CopyPairCount * 3 / 4);
 }
 
 int main(int argc, char **argv)
@@ -484,6 +609,8 @@ int main(int argc, char **argv)
 	TestOverlappingRangeSnapshotSemantics();
 	TestValuePoolRefcountAndReuse();
 	TestCompactValueMaterializationAndCbvHashEquivalence();
+	TestDirectIaProbeCacheDropsDeadGeneration();
+	TestDescriptorCopyMemoInvalidatesByObservedShard();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();
 	return 0;

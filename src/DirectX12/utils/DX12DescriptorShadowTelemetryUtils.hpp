@@ -38,6 +38,8 @@ public:
 	inline static volatile LONG64 copyUnchangedSlots = 0;
 	inline static volatile LONG64 copyErasedSlots = 0;
 	inline static volatile LONG64 copyAlreadyEmptySlots = 0;
+	inline static volatile LONG64 copyMemoHits = 0;
+	inline static volatile LONG64 copyMemoMisses = 0;
 
 	static LONG64 Frequency()
 	{
@@ -168,6 +170,11 @@ public:
 			InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
 	}
 
+	static void RecordCopyMemo(bool hit)
+	{
+		InterlockedIncrement64(hit ? &copyMemoHits : &copyMemoMisses);
+	}
+
 	// Commits one API call's locally accumulated descriptor-copy counters.
 	// CopyDescriptors commonly exposes 8-10 single-slot ranges per call; doing
 	// every counter update atomically per slot made the diagnostics themselves
@@ -178,7 +185,8 @@ public:
 		LONG64 resolvedRanges, LONG64 sameHeapRanges, LONG64 overlapRanges,
 		LONG64 sourceFound, LONG64 sourceMissing,
 		LONG64 changed, LONG64 unchanged,
-		LONG64 erased, LONG64 alreadyEmpty)
+		LONG64 erased, LONG64 alreadyEmpty,
+		LONG64 memoHits, LONG64 memoMisses)
 	{
 		if (rangeCalls) InterlockedExchangeAdd64(&copyRangeCalls, rangeCalls);
 		if (slots) InterlockedExchangeAdd64(&copySlots, slots);
@@ -193,6 +201,8 @@ public:
 		if (unchanged) InterlockedExchangeAdd64(&copyUnchangedSlots, unchanged);
 		if (erased) InterlockedExchangeAdd64(&copyErasedSlots, erased);
 		if (alreadyEmpty) InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
+		if (memoHits) InterlockedExchangeAdd64(&copyMemoHits, memoHits);
+		if (memoMisses) InterlockedExchangeAdd64(&copyMemoMisses, memoMisses);
 	}
 
 	static void LogAndReset()
@@ -239,6 +249,8 @@ public:
 		const LONG64 unchanged = InterlockedExchange64(&copyUnchangedSlots, 0);
 		const LONG64 erased = InterlockedExchange64(&copyErasedSlots, 0);
 		const LONG64 alreadyEmpty = InterlockedExchange64(&copyAlreadyEmptySlots, 0);
+		const LONG64 memoHits = InterlockedExchange64(&copyMemoHits, 0);
+		const LONG64 memoMisses = InterlockedExchange64(&copyMemoMisses, 0);
 		if (heapSharedContentions == 0 && heapExclusiveContentions == 0 &&
 			globalSharedContentions == 0 && globalExclusiveContentions == 0 &&
 			misses == 0 && failures == 0 && fallbacks == 0 && ranges == 0)
@@ -254,6 +266,7 @@ public:
 			"\"copySourceMissingSlots\":%lld,\"copyChangedSlots\":%lld,"
 			"\"copyUnchangedSlots\":%lld,\"copyErasedSlots\":%lld,"
 			"\"copyAlreadyEmptySlots\":%lld,"
+			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,"
 			"\"heapSharedContentions\":%lld,\"heapSharedWaitUs\":%lld,\"heapSharedMaxUs\":%lld,"
 			"\"heapExclusiveContentions\":%lld,\"heapExclusiveWaitUs\":%lld,\"heapExclusiveMaxUs\":%lld,"
 			"\"globalSharedContentions\":%lld,\"globalSharedWaitUs\":%lld,\"globalSharedMaxUs\":%lld,"
@@ -276,6 +289,8 @@ public:
 			static_cast<long long>(unchanged),
 			static_cast<long long>(erased),
 			static_cast<long long>(alreadyEmpty),
+			static_cast<long long>(memoHits),
+			static_cast<long long>(memoMisses),
 			static_cast<long long>(heapSharedContentions),
 			static_cast<long long>(heapSharedTicks * 1000000 / frequency),
 			static_cast<long long>(heapSharedMaxTicks * 1000000 / frequency),
@@ -321,9 +336,10 @@ public:
 	static void RecordFallback(UINT) {}
 	static void RecordCopyRange(UINT, bool, bool, bool) {}
 	static void RecordCopyResults(UINT, UINT, UINT, UINT, UINT, UINT) {}
+	static void RecordCopyMemo(bool) {}
 	static void RecordCopyBatch(
 		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64,
-		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64) {}
+		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64) {}
 	static void LogAndReset() {}
 };
 

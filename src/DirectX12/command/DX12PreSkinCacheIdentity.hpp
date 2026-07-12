@@ -44,9 +44,10 @@ public:
 		std::uint64_t bindingFingerprint,
 		std::uint64_t iaContentEpoch)
 	{
-		std::uint64_t fingerprint = bindingFingerprint;
-		fingerprint ^= iaContentEpoch + 0x9e3779b97f4a7c15ull +
-			(fingerprint << 6) + (fingerprint >> 2);
-		return fingerprint ? fingerprint : 1;
+		// PreSkin candidate selection depends on CS identity and the stable
+		// Binding State fingerprint. Dispatch/Copy activity does not alter that
+		// plan; positive hits still execute replacement commands every dispatch.
+		(void)iaContentEpoch;
+		return bindingFingerprint ? bindingFingerprint : 1;
 	}
 };

@@ -843,9 +843,13 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 {
 	DX12IaHashStateCacheKey key;
 	key.targetPlanFingerprint = targetPlan.Fingerprint();
-	key.iaContentEpoch = iaContentEpoch;
-	key.bufferContentGeneration = DX12GetIaHashContentGeneration();
-	key.bufferResolveGeneration = DX12GetIaHashResolveGeneration();
+	// IA hashes depend on either captured CPU content (covered by the observed
+	// resource content generation below) or immutable resource/view metadata.
+	// A command-list-wide Dispatch/Copy epoch cannot change either cache input.
+	(void)iaContentEpoch;
+	key.iaContentEpoch = 0;
+	key.bufferContentGeneration = 0xcbf29ce484222325ull;
+	key.bufferResolveGeneration = 0x84222325a9582d75ull;
 	key.indexed = indexed;
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;
@@ -853,11 +857,41 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	key.firstIndex = firstIndex;
 	key.baseVertex = baseVertex;
 	key.iaViewFingerprint = 0x84222325a9582d75ull;
+	auto combineObservation = [&key](UINT64 gpuVa, UINT64 size, UINT64 salt) {
+		DX12BufferResourceSummary summary;
+		if (gpuVa && size &&
+				DX12ResolveBufferResourceByGpuVa(gpuVa, size, &summary) &&
+				summary.resource && summary.resourceGeneration) {
+			key.bufferContentGeneration =
+				DX12IaHashStateCacheKeyHash::Combine(
+					key.bufferContentGeneration,
+					DX12GetBufferContentGenerationForResource(summary.resource) ^ salt);
+			key.bufferResolveGeneration =
+				DX12IaHashStateCacheKeyHash::Combine(
+					key.bufferResolveGeneration,
+					summary.resourceGeneration ^ salt);
+			return;
+		}
+		// Unresolved views retain conservative global invalidation. Resolved views
+		// no longer inherit unrelated resource/content churn.
+		key.bufferContentGeneration =
+			DX12IaHashStateCacheKeyHash::Combine(
+				key.bufferContentGeneration,
+				DX12GetIaHashContentGeneration() ^ salt);
+		key.bufferResolveGeneration =
+			DX12IaHashStateCacheKeyHash::Combine(
+				key.bufferResolveGeneration,
+				DX12GetIaHashResolveGeneration() ^ salt);
+	};
 
 	if (targetPlan.RequiresIndexBuffer(indexed)) {
 		key.iaViewFingerprint ^= 0x100000001b3ull;
 			key.iaViewFingerprint ^= ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull;
 			if (ia.hasIndexBuffer) {
+				combineObservation(
+					ia.indexBuffer.BufferLocation,
+					ia.indexBuffer.SizeInBytes,
+					0x100000001b3ull);
 				key.iaViewFingerprint ^= ia.indexBuffer.BufferLocation +
 					0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 					(key.iaViewFingerprint >> 2);
@@ -878,6 +912,10 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		key.iaViewFingerprint ^= ia.hasVertexBuffer[slot] ? 0x27d4eb2full : 0x165667b1ull;
 		if (!ia.hasVertexBuffer[slot])
 			continue;
+		combineObservation(
+			ia.vertexBuffers[slot].BufferLocation,
+			ia.vertexBuffers[slot].SizeInBytes,
+			static_cast<UINT64>(slot + 1) * 0x9e3779b97f4a7c15ull);
 		key.iaViewFingerprint ^= ia.vertexBuffers[slot].BufferLocation +
 			0x9e3779b97f4a7c15ull + (key.iaViewFingerprint << 6) +
 			(key.iaViewFingerprint >> 2);

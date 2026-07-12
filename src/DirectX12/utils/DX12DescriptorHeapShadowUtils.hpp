@@ -24,6 +24,7 @@
 
 #include "../resource/DX12ResourceTrackerPrivate.hpp"
 #include "DX12DescriptorShadowTelemetryUtils.hpp"
+#include "descriptor/DX12DescriptorCopyMemoUtils.hpp"
 
 class DX12DescriptorHeapShadowUtils
 {
@@ -69,6 +70,8 @@ public:
 		LONG64 unchanged = 0;
 		LONG64 erased = 0;
 		LONG64 alreadyEmpty = 0;
+		LONG64 memoHits = 0;
+		LONG64 memoMisses = 0;
 
 		void RecordRange(UINT count, bool resolved, bool sameHeap, bool overlaps)
 		{
@@ -78,6 +81,11 @@ public:
 			if (resolved) ++resolvedRanges;
 			if (sameHeap) ++sameHeapRanges;
 			if (overlaps) ++overlapRanges;
+		}
+
+		void RecordMemo(bool hit)
+		{
+			if (hit) ++memoHits; else ++memoMisses;
 		}
 
 		void RecordResults(
@@ -98,7 +106,7 @@ public:
 				rangeCalls, slots, singleRanges, multiRanges,
 				resolvedRanges, sameHeapRanges, overlapRanges,
 				sourceFound, sourceMissing, changed, unchanged,
-				erased, alreadyEmpty);
+				erased, alreadyEmpty, memoHits, memoMisses);
 		}
 	};
 
@@ -106,6 +114,12 @@ public:
 	{
 		return heap && heap->stateLocks ?
 			heap->stateLocks->LockForSlot(slot) : nullptr;
+	}
+
+	static DX12DescriptorCopyMemo &CopyMemo()
+	{
+		static thread_local DX12DescriptorCopyMemo memo;
+		return memo;
 	}
 
 	// gDescriptorLock must be held while resolving this pointer. The lock object
@@ -506,6 +520,47 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
+			DescriptorHeapRecord::StateLocks *sourceState =
+				srcHeap.stateLocks.get();
+			DescriptorHeapRecord::StateLocks *destinationState =
+				destHeap.stateLocks.get();
+			const DX12DescriptorCopyMemo::Key memoKey = {
+				&srcHeap, &destHeap, srcSlot, destSlot
+			};
+			DX12DescriptorCopyMemo::Result memoResult;
+			const bool canMemo = sourceState && destinationState &&
+				sourceState->IsActive() && destinationState->IsActive() &&
+				destSlot < destHeap.desc.NumDescriptors;
+			if (canMemo && CopyMemo().TryLoad(
+					memoKey,
+					sourceState->ReadSlotVersion(srcSlot),
+					destinationState->ReadSlotVersion(destSlot),
+					&memoResult)) {
+				if (telemetryBatch)
+					telemetryBatch->RecordMemo(true);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				if (memoResult == DX12DescriptorCopyMemo::Result::Unchanged) {
+					if (telemetryBatch)
+						telemetryBatch->RecordResults(1, 0, 0, 1, 0, 0);
+					else
+						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+							1, 0, 0, 1, 0, 0);
+				} else {
+					if (telemetryBatch)
+						telemetryBatch->RecordResults(0, 1, 0, 0, 0, 1);
+					else
+						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+							0, 1, 0, 0, 0, 1);
+				}
+				return;
+			}
+			if (canMemo) {
+				if (telemetryBatch)
+					telemetryBatch->RecordMemo(false);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
+			}
 			SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot);
 			SRWLOCK *destLock = HeapLock(&destHeap, destSlot);
 			bool sourceShared = false;
@@ -545,19 +600,23 @@ public:
 			UINT unchanged = 0;
 			UINT erased = 0;
 			UINT alreadyEmpty = 0;
+			DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult copyResult =
+				DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationEmpty;
+			bool completedCopy = false;
 			if (srcHeap.stateLocks->IsActive() && destHeap.stateLocks->IsActive() &&
 					destSlot < destHeap.desc.NumDescriptors) {
-				const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
+				copyResult =
 					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr);
-				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
+				completedCopy = true;
+				if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
 					sourceFound = 1;
 					changed = 1;
 					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
-				} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
 					sourceFound = 1;
 					unchanged = 1;
-				} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
 					sourceMissing = 1;
 					erased = 1;
 					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
@@ -565,6 +624,18 @@ public:
 					sourceMissing = 1;
 					alreadyEmpty = 1;
 				}
+			}
+			if (completedCopy) {
+				const DX12DescriptorCopyMemo::Result nextResult =
+					(copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
+					 copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) ?
+					DX12DescriptorCopyMemo::Result::Unchanged :
+					DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty;
+				CopyMemo().Store(
+					memoKey,
+					sourceState->ReadSlotVersion(srcSlot),
+					destinationState->ReadSlotVersion(destSlot),
+					nextResult);
 			}
 
 			if (sourceFirst) {

@@ -744,6 +744,7 @@ static CopyCurrentSlotResult SourceMissingResult(
 struct ResourceRecord
 {
 	ID3D12Resource *resource = nullptr;
+	UINT64 identityGeneration = 0;
 	D3D12_RESOURCE_DESC desc = {};
 	D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
 	bool hasHeapType = false;
@@ -838,6 +839,7 @@ extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
 extern std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 extern std::atomic<UINT64> gBufferResolveGeneration;
+extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;
 extern bool gCleanupRegistered;
 extern UINT64 gResourcesRecordedFromCreate;
@@ -985,7 +987,8 @@ static UINT64 BumpInvalidationEpochLocked()
 	gBufferResolveInvalidationEpoch++;
 	if (!gBufferResolveInvalidationEpoch)
 		gBufferResolveInvalidationEpoch = 1;
-	gBufferResolveInvalidationEpochAtomic.store(gBufferResolveInvalidationEpoch, std::memory_order_relaxed);
+	gBufferResolveInvalidationEpochAtomic.store(
+		gBufferResolveInvalidationEpoch, std::memory_order_relaxed);
 	gBufferResolveGeneration.fetch_add(1, std::memory_order_relaxed);
 	return gBufferResolveInvalidationEpoch;
 }
@@ -1036,7 +1039,8 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 		return stats;
 	}
 
-	const UINT64 invalidationEpoch = DX12BufferResolveCacheUtils::BumpInvalidationEpochLocked();
+	const UINT64 invalidationEpoch =
+		DX12BufferResolveCacheUtils::BumpInvalidationEpochLocked();
 	if (oldHasRange)
 		DX12BufferResolveCacheUtils::AppendInvalidatedRangeLocked(
 			invalidationEpoch,

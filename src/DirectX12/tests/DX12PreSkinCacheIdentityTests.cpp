@@ -50,7 +50,7 @@ int main()
 		DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(fingerprint, 21);
 	Require(firstDispatch ==
 		DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(fingerprint, 21));
-	Require(firstDispatch !=
+	Require(firstDispatch ==
 		DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(fingerprint, 22));
 
 	const DX12PreSkinOutputResizeCacheIdentity resize = {

@@ -136,6 +136,9 @@ class DX12BufferResourceSummary
 {
 public:
 	ID3D12Resource *resource = nullptr;
+	// Monotonic Resource Identity generation. Unlike a COM pointer, this token
+	// changes when an address is reused or the tracked GPUVA range changes.
+	UINT64 resourceGeneration = 0;
 	D3D12_RESOURCE_DESC resourceDesc = {};
 	bool hasResourceDesc = false;
 	UINT resourceHeapType = 0;
