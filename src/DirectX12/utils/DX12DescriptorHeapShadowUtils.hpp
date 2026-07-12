@@ -384,6 +384,8 @@ public:
 		// fall back to per-descriptor lookup via FindLatestDescriptor which
 		// checks both heap slots and the CPU ledger.
 		if (!hasDestination || !hasSource) {
+			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
+				count, false, false, false);
 			DX12DescriptorShadowTelemetryUtils::RecordFallback(count);
 			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
 			return;
@@ -393,6 +395,107 @@ public:
 		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
 		const UINT destSlot = destResolved.slot;
 		const UINT srcSlot = srcResolved.slot;
+		const UINT64 srcEnd = static_cast<UINT64>(srcSlot) + count;
+		const UINT64 destEnd = static_cast<UINT64>(destSlot) + count;
+		const bool sameHeap = &destHeap == &srcHeap;
+		const bool overlaps = sameHeap &&
+			static_cast<UINT64>(destSlot) < srcEnd &&
+			static_cast<UINT64>(srcSlot) < destEnd;
+		DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
+			count, true, sameHeap, overlaps);
+
+		// CopyDescriptorsSimple is commonly used for one descriptor at a time.
+		// Keep that case out of the generic range lambdas/loop: under Debug /Od
+		// their call machinery is measurable across thousands of calls per frame.
+		if (count == 1) {
+			SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot);
+			SRWLOCK *destLock = HeapLock(&destHeap, destSlot);
+			bool sourceShared = false;
+			bool destExclusive = false;
+			bool oneExclusive = false;
+			bool sourceFirst = false;
+			if (sourceLock == destLock) {
+				if (sourceLock) {
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(sourceLock);
+					oneExclusive = true;
+				}
+			} else if (reinterpret_cast<uintptr_t>(sourceLock) <
+					reinterpret_cast<uintptr_t>(destLock)) {
+				sourceFirst = true;
+				if (sourceLock) {
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(sourceLock);
+					sourceShared = true;
+				}
+				if (destLock) {
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(destLock);
+					destExclusive = true;
+				}
+			} else {
+				if (destLock) {
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(destLock);
+					destExclusive = true;
+				}
+				if (sourceLock) {
+					DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(sourceLock);
+					sourceShared = true;
+				}
+			}
+
+			UINT sourceFound = 0;
+			UINT sourceMissing = 0;
+			UINT changed = 0;
+			UINT unchanged = 0;
+			UINT erased = 0;
+			UINT alreadyEmpty = 0;
+			if (srcHeap.stateLocks->IsActive() && destHeap.stateLocks->IsActive() &&
+					destSlot < destHeap.desc.NumDescriptors) {
+				const DescriptorRecord *source = srcSlot < srcHeap.desc.NumDescriptors ?
+					DX12DescriptorSlotArrayUtils::FindCurrentRecord(srcHeap, srcSlot) : nullptr;
+				if (source) {
+					sourceFound = 1;
+					if (DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+							&destHeap, destSlot, *source, destStart.ptr)) {
+						DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
+						changed = 1;
+					} else {
+						unchanged = 1;
+					}
+				} else {
+					sourceMissing = 1;
+					if (DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+							&destHeap, destSlot)) {
+						DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
+						erased = 1;
+					} else {
+						alreadyEmpty = 1;
+					}
+				}
+			}
+
+			if (sourceFirst) {
+				if (destExclusive)
+					ReleaseSRWLockExclusive(destLock);
+				if (sourceShared)
+					ReleaseSRWLockShared(sourceLock);
+			} else {
+				if (sourceShared)
+					ReleaseSRWLockShared(sourceLock);
+				if (destExclusive)
+					ReleaseSRWLockExclusive(destLock);
+			}
+			if (oneExclusive)
+				ReleaseSRWLockExclusive(sourceLock);
+			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+				sourceFound, sourceMissing, changed, unchanged, erased, alreadyEmpty);
+			return;
+		}
+
+		UINT sourceFoundCount = 0;
+		UINT sourceMissingCount = 0;
+		UINT changedCount = 0;
+		UINT unchangedCount = 0;
+		UINT erasedCount = 0;
+		UINT alreadyEmptyCount = 0;
 
 		auto findSource = [&](UINT i) -> const DescriptorRecord* {
 			const UINT sSlot = srcSlot + i;
@@ -404,23 +507,32 @@ public:
 			return source;
 		};
 
-		auto applyDestination = [&](UINT i, const DescriptorRecord *source) {
+			auto applyDestination = [&](UINT i, const DescriptorRecord *source) {
 			const UINT dSlot = destSlot + i;
 			if (dSlot >= destHeap.desc.NumDescriptors)
 				return;
 			if (!source) {
+				sourceMissingCount++;
 				if (DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
 						&destHeap, dSlot)) {
 					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+					erasedCount++;
+				} else {
+					alreadyEmptyCount++;
 				}
 				return;
 			}
+			sourceFoundCount++;
 
 			const SIZE_T destHandle = destStart.ptr +
 				static_cast<SIZE_T>(i) * destHeap.increment;
 			if (DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&destHeap, dSlot, *source, destHandle))
+					&destHeap, dSlot, *source, destHandle)) {
 				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+				changedCount++;
+			} else {
+				unchangedCount++;
+			}
 		};
 		struct HeldShardLock
 		{
@@ -476,11 +588,6 @@ public:
 			releaseHeldLock(first);
 		};
 
-		const UINT64 srcEnd = static_cast<UINT64>(srcSlot) + count;
-		const UINT64 destEnd = static_cast<UINT64>(destSlot) + count;
-		const bool overlaps = &destHeap == &srcHeap &&
-			static_cast<UINT64>(destSlot) < srcEnd &&
-			static_cast<UINT64>(srcSlot) < destEnd;
 		if (!overlaps) {
 			// The overwhelmingly common path, especially CopyDescriptorsSimple:
 			// no temporary vector or allocation. The source is shared/read-only;
@@ -540,6 +647,9 @@ public:
 					ReleaseSRWLockExclusive(destLock);
 			}
 		}
+		DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+			sourceFoundCount, sourceMissingCount,
+			changedCount, unchangedCount, erasedCount, alreadyEmptyCount);
 	}
 
 	// Per-descriptor fallback when bulk heap-slot resolution fails.

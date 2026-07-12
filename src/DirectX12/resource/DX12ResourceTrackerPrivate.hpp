@@ -189,13 +189,34 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 {
 	if (!dest)
 		return;
-	*dest = src;
+	// Descriptor copies dominate some DX12 games. DescriptorRecord's generated
+	// assignment unconditionally assigns std::string even though a slot almost
+	// always keeps the same descriptor kind (especially CBV). Copy the POD-like
+	// payload explicitly and only touch the string when its value really changes.
+	static_cast<DX12DescriptorViewPayload &>(*dest) = src;
+	if (dest->kind != src.kind)
+		dest->kind = src.kind;
+	dest->kindId = src.kindId;
+	dest->valueId = src.valueId;
 	dest->cpuHandle = destCpuHandle;
+	dest->resource = src.resource;
 	// Descriptor heap slots mirror descriptor values. Ownership stays with the
 	// CPU descriptor ledger/resource tracker, so slot copies do not multiply
 	// COM references.
 	dest->ownsResource = false;
+	dest->counterResource = src.counterResource;
 	dest->ownsCounterResource = false;
+	dest->resourceDesc = src.resourceDesc;
+	dest->hasResourceDesc = src.hasResourceDesc;
+	dest->resourceHeapType = src.resourceHeapType;
+	dest->hasResourceHeapType = src.hasResourceHeapType;
+	dest->gpuVirtualAddress = src.gpuVirtualAddress;
+	dest->resourceOffset = src.resourceOffset;
+	dest->viewSize = src.viewSize;
+	dest->currentState = src.currentState;
+	dest->hasCurrentState = src.hasCurrentState;
+	dest->stateTrackedByBarrier = src.stateTrackedByBarrier;
+	dest->hasDesc = src.hasDesc;
 }
 
 static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
