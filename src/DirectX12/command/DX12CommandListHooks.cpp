@@ -908,6 +908,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteBundle(
 	PFN_EXECUTE_BUNDLE original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteBundle, PFN_EXECUTE_BUNDLE, DX12CommandListHookState::OrigExecuteBundle, "ExecuteBundle");
 	if (original)
 		original(commandList, bundle);
+	DX12CommandListLifecycle::InvalidateAfterExecuteBundle(commandList);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorderedAccessView(

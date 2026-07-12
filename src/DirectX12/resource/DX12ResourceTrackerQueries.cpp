@@ -4,6 +4,8 @@
 #include "../utils/DX12TextureHashUtils.hpp"
 #include "DX12ResourceCollectQueue.hpp"
 
+#include <unordered_set>
+
 bool DX12GetRootSignatureSummary(
 	ID3D12RootSignature *rootSignature, DX12RootSignatureSummary *summary)
 {
@@ -1246,30 +1248,52 @@ static void BuildResourceMetadataSnapshot(
 	// instead of adding synchronization cost to normal Mod descriptor writes.
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	std::vector<const DescriptorRecord*> liveDescriptors;
+	std::vector<DescriptorRecord> heapDescriptors;
+	std::unordered_set<SIZE_T> heapDescriptorHandles;
 	size_t liveDescriptorCount = 0;
-	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
-		liveDescriptorCount += heap.liveSlots;
-	liveDescriptors.reserve(liveDescriptorCount + gDescriptorByCpuHandle.size());
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		liveDescriptorCount += static_cast<size_t>(
+			DX12DescriptorSlotArrayUtils::ReadLiveSlots(&heap));
+	}
+	liveDescriptors.reserve(liveDescriptorCount + gDescriptorByCpuHandle.size());
+	heapDescriptors.reserve(liveDescriptorCount);
+	heapDescriptorHandles.reserve(liveDescriptorCount);
+	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		DescriptorHeapRecord::StateLocks *stateLocks = heap.stateLocks.get();
+		if (stateLocks)
+			stateLocks->LockAllExclusive();
+		if (stateLocks && !stateLocks->IsActive()) {
+			stateLocks->UnlockAllExclusive();
+			continue;
+		}
 		heap.currentDescriptors.ForEach(
-			[&liveDescriptors](uint32_t, const DescriptorRecord &record) {
-				liveDescriptors.push_back(&record);
+			[&heapDescriptors, &heapDescriptorHandles](
+				uint32_t, const DescriptorSlotBinding &binding) {
+				if (!binding.value)
+					return;
+				heapDescriptors.push_back(DescriptorRecord());
+				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+					&heapDescriptors.back(), binding.value->record,
+					binding.cpuHandle);
+				heapDescriptorHandles.insert(binding.cpuHandle);
 			});
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
-			if (heap.occupied[slot])
-				liveDescriptors.push_back(&heap.slots[slot]);
-		}
-	}
-	for (const std::pair<const SIZE_T, DescriptorRecord> &entry : gDescriptorByCpuHandle) {
-		DescriptorSlotLocation ledgerLocation = {};
-		if (ResolveDescriptorSlotForCpuHandleLocked(
-				entry.first, nullptr, &ledgerLocation, nullptr) &&
-				ledgerLocation.heapIndex < gDescriptorHeaps.size()) {
-			const DescriptorHeapRecord &heap = gDescriptorHeaps[ledgerLocation.heapIndex];
-			if (DX12DescriptorSlotArrayUtils::FindCurrentRecord(
-					heap, ledgerLocation.slot))
+			if (!heap.occupied[slot])
 				continue;
+			heapDescriptors.push_back(DescriptorRecord());
+			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+				&heapDescriptors.back(), heap.slots[slot],
+				heap.slots[slot].cpuHandle);
+			heapDescriptorHandles.insert(heap.slots[slot].cpuHandle);
 		}
+		if (stateLocks)
+			stateLocks->UnlockAllExclusive();
+	}
+	for (const DescriptorRecord &record : heapDescriptors)
+		liveDescriptors.push_back(&record);
+	for (const std::pair<const SIZE_T, DescriptorRecord> &entry : gDescriptorByCpuHandle) {
+		if (heapDescriptorHandles.find(entry.first) != heapDescriptorHandles.end())
+			continue;
 		liveDescriptors.push_back(&entry.second);
 	}
 

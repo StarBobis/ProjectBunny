@@ -121,6 +121,20 @@ if(BUILD_TESTING)
 	target_compile_features(DX12DescriptorHeapShardStateTests PRIVATE cxx_std_17)
 	add_test(NAME DX12DescriptorHeapShardStateTests COMMAND DX12DescriptorHeapShardStateTests)
 
+	add_executable(DX12DescriptorStateTests
+		tests/DX12DescriptorStateTests.cpp
+	)
+	target_include_directories(DX12DescriptorStateTests PRIVATE
+		$<TARGET_PROPERTY:DirectX12,INCLUDE_DIRECTORIES>
+	)
+	target_compile_definitions(DX12DescriptorStateTests PRIVATE
+		UNICODE
+		_UNICODE
+		MIGOTO_DX=12
+	)
+	target_compile_features(DX12DescriptorStateTests PRIVATE cxx_std_17)
+	add_test(NAME DX12DescriptorStateTests COMMAND DX12DescriptorStateTests)
+
     add_executable(DX12PreSkinCacheIdentityTests
         tests/DX12PreSkinCacheIdentityTests.cpp
     )

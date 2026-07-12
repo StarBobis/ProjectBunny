@@ -5323,6 +5323,7 @@ namespace DX12Wrapper
 			{
 			DX12_HOTPATH_TIME_BEGIN(ExecuteBundleTotal);
 				mCommandList->ExecuteBundle(DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList));
+				DX12CommandListLifecycle::InvalidateAfterExecuteBundle(mCommandList);
 			DX12_HOTPATH_TIME_END(ExecuteBundleTotal);
 			}
 

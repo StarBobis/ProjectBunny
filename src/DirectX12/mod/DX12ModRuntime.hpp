@@ -93,6 +93,7 @@ public:
 		  draws(other.draws),
 		  dispatches(other.dispatches),
 		  drawSrvPatches(other.drawSrvPatches),
+		  drawSrvApplyState(other.drawSrvApplyState),
 		  retainedDescriptorHeaps(other.retainedDescriptorHeaps)
 	{
 		for (ID3D12Resource *resource : other.retainedResources)
@@ -112,6 +113,7 @@ public:
 		  draws(std::move(other.draws)),
 		  dispatches(std::move(other.dispatches)),
 		  drawSrvPatches(std::move(other.drawSrvPatches)),
+		  drawSrvApplyState(std::move(other.drawSrvApplyState)),
 		  retainedResources(std::move(other.retainedResources)),
 		  retainedDescriptorHeaps(std::move(other.retainedDescriptorHeaps))
 	{
@@ -135,6 +137,7 @@ public:
 		draws = other.draws;
 		dispatches = other.dispatches;
 		drawSrvPatches = other.drawSrvPatches;
+		drawSrvApplyState = other.drawSrvApplyState;
 		retainedDescriptorHeaps = other.retainedDescriptorHeaps;
 		for (ID3D12Resource *resource : other.retainedResources)
 			RetainResource(resource);
@@ -158,6 +161,7 @@ public:
 		draws = std::move(other.draws);
 		dispatches = std::move(other.dispatches);
 		drawSrvPatches = std::move(other.drawSrvPatches);
+		drawSrvApplyState = std::move(other.drawSrvApplyState);
 		retainedResources = std::move(other.retainedResources);
 		retainedDescriptorHeaps = std::move(other.retainedDescriptorHeaps);
 		other.retainedResources.clear();
@@ -220,16 +224,25 @@ public:
 	class DrawSrvTablePatch
 	{
 	public:
+		DX12CurrentShaderResourceBinding binding;
+		D3D12_CPU_DESCRIPTOR_HANDLE replacementCpu = {};
+		DXGI_FORMAT replacementViewFormat = DXGI_FORMAT_UNKNOWN;
+		std::wstring resourceName;
+		std::string source;
 		bool compute = false;
 		UINT rootParameterIndex = 0;
 		D3D12_GPU_DESCRIPTOR_HANDLE originalTable = {};
-		ID3D12DescriptorHeap *originalCbvSrvUavHeap = nullptr;
-		ID3D12DescriptorHeap *originalSamplerHeap = nullptr;
-		ID3D12DescriptorHeap *patchHeap = nullptr;
-		D3D12_CPU_DESCRIPTOR_HANDLE saveSlotCpu = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE targetCpu = {};
 	};
 	std::vector<DrawSrvTablePatch> drawSrvPatches;
+	class DrawSrvApplyState
+	{
+	public:
+		bool applied = false;
+		ID3D12DescriptorHeap *patchHeap = nullptr;
+		CommandListBindingState originalBindings;
+	};
+	DrawSrvApplyState drawSrvApplyState;
 	std::vector<ID3D12Resource*> retainedResources;
 	std::vector<ID3D12DescriptorHeap*> retainedDescriptorHeaps;
 };
@@ -241,6 +254,10 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	DX12ModIaReplacement *replacement,
 	bool allowNegativeCache = true,
 	ID3D12Device *cachedDevice = nullptr);
+bool DX12ModApplyDrawSrvReplacement(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement,
+	bool executeOriginalDraw);
 bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	const DX12IaHashState &iaState,
 	const DX12IaHashTargetPlan &targetPlan,

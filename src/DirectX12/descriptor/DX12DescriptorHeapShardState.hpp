@@ -26,15 +26,8 @@ public:
 		SRWLOCK value = SRWLOCK_INIT;
 	};
 
-	struct alignas(CacheLineBytes) VersionCell
-	{
-		std::atomic<uint64_t> value{1};
-	};
-
 	static_assert(sizeof(LockCell) % CacheLineBytes == 0,
 		"descriptor locks must not share cache lines");
-	static_assert(sizeof(VersionCell) % CacheLineBytes == 0,
-		"descriptor versions must not share cache lines");
 
 	DX12DescriptorHeapShardState()
 	{
@@ -81,32 +74,24 @@ public:
 
 	void ResetVersions()
 	{
-		for (VersionCell &cell : versions_)
-			cell.value.store(1, std::memory_order_release);
+		version_.store(1, std::memory_order_release);
 	}
 
-	void BumpVersion(uint32_t slot)
+	void BumpVersion(uint32_t)
 	{
-		versions_[ShardForSlot(slot)].value.fetch_add(
-			1, std::memory_order_release);
+		version_.fetch_add(1, std::memory_order_release);
 	}
 
 	uint64_t ReadVersion() const
 	{
-		uint64_t aggregate = 0;
-		for (const VersionCell &cell : versions_)
-			aggregate += cell.value.load(std::memory_order_acquire);
-		return aggregate;
-	}
-
-	uint64_t ReadShardVersion(uint32_t slot) const
-	{
-		return versions_[ShardForSlot(slot)].value.load(
-			std::memory_order_acquire);
+		return version_.load(std::memory_order_acquire);
 	}
 
 private:
 	std::atomic<bool> active_{true};
 	std::array<LockCell, ShardCount> locks_;
-	std::array<VersionCell, ShardCount> versions_;
+	// Consumers only need a non-zero token that changes after any Descriptor
+	// State write. Keeping 1024 per-shard counters made every cache validation
+	// read 1024 cache lines; one heap-wide token makes that hot read O(1).
+	alignas(CacheLineBytes) std::atomic<uint64_t> version_{1};
 };

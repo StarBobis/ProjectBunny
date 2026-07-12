@@ -156,8 +156,7 @@ static void ClearDescriptorHeapSlotLocked(DescriptorHeapRecord *heap, UINT slot)
 	ReleaseDescriptorRecordResources(&record);
 	record = DescriptorRecord();
 	heap->occupied[slot] = 0;
-	if (heap->liveSlots > 0)
-		heap->liveSlots--;
+	DX12DescriptorSlotArrayUtils::DecrementLiveSlots(heap);
 }
 
 static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
@@ -172,10 +171,10 @@ static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
 	}
 	heap->slots.clear();
 	heap->occupied.clear();
-	heap->currentDescriptors.Clear();
+	DX12DescriptorSlotArrayUtils::ClearSparseRecords(heap);
 	heap->slotHistory.clear();
 	heap->slotHistoryEpochs.clear();
-	heap->liveSlots = 0;
+	DX12DescriptorSlotArrayUtils::SetLiveSlots(heap, 0);
 }
 
 void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
@@ -183,7 +182,7 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
 	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>();
-	record->liveSlots = 0;
+	DX12DescriptorSlotArrayUtils::SetLiveSlots(record, 0);
 	DX12DescriptorHeapStateUtils::ResetVersion(record);
 }
 
@@ -191,8 +190,19 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return false;
-	if (!record->slots.empty())
-		return record->slots.size() == record->desc.NumDescriptors;
+	DescriptorHeapRecord::StateLocks *stateLocks = record->stateLocks.get();
+	if (stateLocks)
+		stateLocks->LockAllExclusive();
+	if (stateLocks && !stateLocks->IsActive()) {
+		stateLocks->UnlockAllExclusive();
+		return false;
+	}
+	if (!record->slots.empty()) {
+		const bool ready = record->slots.size() == record->desc.NumDescriptors;
+		if (stateLocks)
+			stateLocks->UnlockAllExclusive();
+		return ready;
+	}
 	// Allocate descriptor slots only after a real tracking need appears. Games
 	// can create million-entry heaps during normal Mod mode; keeping only heap
 	// boundaries until Mod/Dump needs the slots avoids turning capacity into CPU
@@ -201,15 +211,18 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	record->occupied.assign(record->desc.NumDescriptors, 0);
 	const size_t sparseCount = record->currentDescriptors.Size();
 	record->currentDescriptors.ForEach(
-		[record](uint32_t slot, const DescriptorRecord &descriptor) {
-			if (slot >= record->slots.size())
+		[record](uint32_t slot, const DescriptorSlotBinding &binding) {
+			if (slot >= record->slots.size() || !binding.value)
 				return;
 			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-				&record->slots[slot], descriptor, descriptor.cpuHandle);
+				&record->slots[slot], binding.value->record, binding.cpuHandle);
 			record->occupied[slot] = 1;
 		});
-	record->currentDescriptors.Clear();
-	record->liveSlots = sparseCount;
+	DX12DescriptorSlotArrayUtils::ClearSparseRecords(record);
+	DX12DescriptorSlotArrayUtils::SetLiveSlots(
+		record, static_cast<LONG64>(sparseCount));
+	if (stateLocks)
+		stateLocks->UnlockAllExclusive();
 	return true;
 }
 
@@ -255,7 +268,7 @@ static void StoreDescriptorAtHeapSlotLocked(
 	ReleaseDescriptorRecordResources(&record);
 	heap->occupied[slot] = 1;
 	if (!wasOccupied)
-		heap->liveSlots++;
+		DX12DescriptorSlotArrayUtils::IncrementLiveSlots(heap);
 	DX12DescriptorHeapStateUtils::BumpVersion(heap, slot);
 }
 
@@ -263,7 +276,8 @@ static size_t LiveDescriptorHeapSlotsLocked()
 {
 	size_t live = 0;
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
-		live += heap.liveSlots;
+		live += static_cast<size_t>(
+			DX12DescriptorSlotArrayUtils::ReadLiveSlots(&heap));
 	return live;
 }
 
@@ -272,7 +286,8 @@ static size_t LiveShaderVisibleDescriptorHeapSlotsLocked()
 	size_t live = 0;
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
 		if (DescriptorHeapIsShaderVisible(heap))
-			live += heap.liveSlots;
+			live += static_cast<size_t>(
+				DX12DescriptorSlotArrayUtils::ReadLiveSlots(&heap));
 	}
 	return live;
 }
@@ -765,8 +780,16 @@ void CleanupTrackedResources()
 	// DX12DescriptorCollectPipeline::Stop() removed - pipeline was dead code
 	AcquireSRWLockExclusive(&gResourceLock);
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	for (DescriptorHeapRecord &heap : gDescriptorHeaps)
+	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		DescriptorHeapRecord::StateLocks *stateLocks = heap.stateLocks.get();
+		if (stateLocks)
+			stateLocks->LockAllExclusive();
+		if (stateLocks)
+			stateLocks->Deactivate();
 		ClearDescriptorHeapLocked(&heap);
+		if (stateLocks)
+			stateLocks->UnlockAllExclusive();
+	}
 	ClearCpuDescriptorLedgerLocked();
 	gRootSignatures.clear();
 	gDescriptorHeaps.clear();
@@ -1590,7 +1613,15 @@ void DX12PrimeDescriptorHistoryForHunting()
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
 		// Hunting history uses the dense compatibility adapter. Materialise the
 		// current sparse state once when hunting is actually requested.
-		EnsureDescriptorHeapStorageLocked(&heap);
+		if (!EnsureDescriptorHeapStorageLocked(&heap))
+			continue;
+		DescriptorHeapRecord::StateLocks *stateLocks = heap.stateLocks.get();
+		if (stateLocks)
+			stateLocks->LockAllExclusive();
+		if (stateLocks && !stateLocks->IsActive()) {
+			stateLocks->UnlockAllExclusive();
+			continue;
+		}
 		const UINT slotCount = static_cast<UINT>(
 			min(heap.slots.size(), heap.occupied.size()));
 		for (UINT slot = 0; slot < slotCount; ++slot) {
@@ -1605,6 +1636,8 @@ void DX12PrimeDescriptorHistoryForHunting()
 			AppendDescriptorHistoryLocked(&heap, slot, *record);
 			primed++;
 		}
+		if (stateLocks)
+			stateLocks->UnlockAllExclusive();
 	}
 	DX12LogManager::JsonFunc("DX12DescriptorHistoryPrime",
 		"heaps=%zu,occupied=%zu,primed=%zu,epoch=%llu,historyEntries=%zu",
@@ -1735,7 +1768,7 @@ static void StoreSlotValueLocked(
 		&destHeap->slots[destSlot], source, destCpuHandle);
 	destHeap->occupied[destSlot] = 1;
 	if (!wasOccupied)
-		destHeap->liveSlots++;
+		DX12DescriptorSlotArrayUtils::IncrementLiveSlots(destHeap);
 	++gDescriptorCopyRecordsSeen;
 	DX12DescriptorHeapStateUtils::BumpVersion(destHeap, destSlot);
 }
@@ -1774,7 +1807,7 @@ static void CopySlotSpanValueLocked(
 		&destHeap->slots[destSlot], source, destCpuHandle);
 	destHeap->occupied[destSlot] = 1;
 	if (!wasOccupied)
-		destHeap->liveSlots++;
+		DX12DescriptorSlotArrayUtils::IncrementLiveSlots(destHeap);
 	DX12DescriptorHeapStateUtils::BumpVersion(destHeap, destSlot);
 }
 

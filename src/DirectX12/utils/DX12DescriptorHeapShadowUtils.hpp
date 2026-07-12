@@ -329,13 +329,10 @@ public:
 		if (!ResolveAndLockHeapSlot(
 				cpuHandle, requiredType, false, &resolved))
 			return false;
-		const DescriptorRecord *current =
-			DX12DescriptorSlotArrayUtils::FindCurrentRecord(
-				*resolved.heap, resolved.slot);
-		if (current)
-			*outRecord = *current;
+		const bool found =
+			DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+				*resolved.heap, resolved.slot, outRecord);
 		UnlockHeapSlot(resolved, false);
-		const bool found = current != nullptr;
 		return found;
 	}
 
@@ -352,13 +349,11 @@ public:
 		if (!ResolveHeapSlot(cpuHandle, requiredType, &heapIndex, &slot))
 			return false;
 		LockShared(heapIndex, slot);
-		const DescriptorRecord *current =
-			DX12DescriptorSlotArrayUtils::FindCurrentRecord(
-				gDescriptorHeaps[heapIndex], slot);
-		if (current)
-			*outRecord = *current;
+		const bool found =
+			DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+				gDescriptorHeaps[heapIndex], slot, outRecord);
 		UnlockShared(heapIndex, slot);
-		return current != nullptr;
+		return found;
 	}
 
 	// ---- Copy range (heap-slot fast path + CPU ledger fallback) ----
@@ -449,26 +444,23 @@ public:
 			UINT alreadyEmpty = 0;
 			if (srcHeap.stateLocks->IsActive() && destHeap.stateLocks->IsActive() &&
 					destSlot < destHeap.desc.NumDescriptors) {
-				const DescriptorRecord *source = srcSlot < srcHeap.desc.NumDescriptors ?
-					DX12DescriptorSlotArrayUtils::FindCurrentRecord(srcHeap, srcSlot) : nullptr;
-				if (source) {
+				const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
+					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
+						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr);
+				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
 					sourceFound = 1;
-					if (DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-							&destHeap, destSlot, *source, destStart.ptr)) {
-						DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
-						changed = 1;
-					} else {
-						unchanged = 1;
-					}
+					changed = 1;
+					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
+				} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+					sourceFound = 1;
+					unchanged = 1;
+				} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+					sourceMissing = 1;
+					erased = 1;
+					DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
 				} else {
 					sourceMissing = 1;
-					if (DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
-							&destHeap, destSlot)) {
-						DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, destSlot);
-						erased = 1;
-					} else {
-						alreadyEmpty = 1;
-					}
+					alreadyEmpty = 1;
 				}
 			}
 
@@ -496,6 +488,25 @@ public:
 		UINT unchangedCount = 0;
 		UINT erasedCount = 0;
 		UINT alreadyEmptyCount = 0;
+		auto accountCopyResult = [&](
+			DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result,
+			UINT dSlot) {
+			if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
+				sourceFoundCount++;
+				changedCount++;
+				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+			} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+				sourceFoundCount++;
+				unchangedCount++;
+			} else if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+				sourceMissingCount++;
+				erasedCount++;
+				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+			} else {
+				sourceMissingCount++;
+				alreadyEmptyCount++;
+			}
+		};
 
 		auto findSource = [&](UINT i) -> const DescriptorRecord* {
 			const UINT sSlot = srcSlot + i;
@@ -602,7 +613,14 @@ public:
 					unlockSlotPair(first, second);
 					return;
 				}
-				applyDestination(i, findSource(i));
+				const UINT currentDestSlot = destSlot + i;
+				const SIZE_T destHandle = destStart.ptr +
+					static_cast<SIZE_T>(i) * destHeap.increment;
+				accountCopyResult(
+					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
+						&destHeap, currentDestSlot, srcHeap, srcSlot + i,
+						destHandle),
+					currentDestSlot);
 				unlockSlotPair(first, second);
 			}
 		} else {

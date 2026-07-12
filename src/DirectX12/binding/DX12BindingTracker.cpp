@@ -1839,9 +1839,20 @@ void DX12BindingTracker::SetGraphicsRootSignature(
 		return;
 	}
 	state.graphicsRootSignature = rootSignature;
+	// D3D12 root arguments become stale when the root signature changes. Keep
+	// Binding State subject to the same rule so a table from the previous root
+	// signature can never be matched or replayed against the new layout.
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		state.graphicsTables[root] = RootTableState();
+		state.graphicsRootDescriptors[root] = RootDescriptorState();
+		state.graphicsRootConstants[root] = RootConstantsState();
+	}
+	state.graphicsTableValidCount = 0;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(true);
 	ReleaseSRWLockExclusive(&shard.lock);
+	tlsGraphicsTableCache.cl = nullptr;
+	tlsGraphicsDescCache.cl = nullptr;
 }
 
 void DX12BindingTracker::SetComputeRootSignature(
@@ -1865,10 +1876,18 @@ void DX12BindingTracker::SetComputeRootSignature(
 		return;
 	}
 	state.computeRootSignature = rootSignature;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		state.computeTables[root] = RootTableState();
+		state.computeRootDescriptors[root] = RootDescriptorState();
+		state.computeRootConstants[root] = RootConstantsState();
+	}
+	state.computeTableValidCount = 0;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(true);
 	ReleaseSRWLockExclusive(&shard.lock);
+	tlsComputeTableCache.cl = nullptr;
+	tlsComputeDescCache.cl = nullptr;
 }
 
 void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList, const char *kind)

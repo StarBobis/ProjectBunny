@@ -65,7 +65,7 @@ void DX12CommandListLifecycle::ClearState(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "clear_state");
-	if (DX12ModNeedsPreSkinningUavProbe())
+	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
 		DX12BindingTracker::ResetCommandList(commandList, pipelineState);
 	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
@@ -73,6 +73,28 @@ void DX12CommandListLifecycle::ClearState(
 		DX12CommandListRuntime::ResetIa(commandList);
 	if (DX12HuntIsEnabled())
 		DX12HuntResetCommandList(commandList, pipelineState);
+}
+
+void DX12CommandListLifecycle::InvalidateAfterExecuteBundle(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+
+	// A bundle may leave root, descriptor, PSO and IA state in the parent, but
+	// its independently recorded state cannot be reconstructed by the parent
+	// tracker without replaying the bundle stream. Mark the parent unknown so a
+	// later Mod never mirrors stale tables or matches stale IA/PSO state.
+	const DX12CommandListTrackingState tracking =
+		DX12CommandListStateCapture::GetTrackingState(commandList);
+	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
+		DX12BindingTracker::ResetCommandList(commandList, nullptr);
+	if (tracking.trackPsoState)
+		DX12CommandListRuntime::RememberPipelineState(commandList, nullptr);
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
+		DX12CommandListRuntime::ResetIa(commandList);
+	if (tracking.trackPsoState || tracking.trackHuntIa)
+		DX12HuntResetCommandList(commandList, nullptr);
 }
 
 

@@ -1629,6 +1629,23 @@ static void ProcessDx12KeyBindingsForFrame();
 #include "DX12ShaderOverrideRuntime.hpp"
 
 
+bool DX12ModApplyDrawSrvReplacement(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement,
+	bool executeOriginalDraw)
+{
+	if (!commandList || !replacement || replacement->drawSrvPatches.empty())
+		return false;
+	ID3D12Device *device = AcquireModDevice(commandList);
+	if (!device)
+		return false;
+	const bool applied = DX12DrawSrvReplacementUtils::ApplyPending(
+		device, commandList, replacement, executeOriginalDraw);
+	device->Release();
+	return applied;
+}
+
+
 void DX12ModRestoreDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	DX12ModIaReplacement *replacement)

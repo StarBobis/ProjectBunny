@@ -98,6 +98,66 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 	bool hasDesc = false;
 };
 
+// Normal Mod mode stores one immutable Descriptor Value and lets every copied
+// Descriptor State reference it. CopyDescriptors then moves a pointer-sized
+// binding instead of duplicating the full DescriptorRecord payload.
+struct alignas(MEMORY_ALLOCATION_ALIGNMENT) DX12DescriptorValueNode
+{
+	SLIST_ENTRY freeEntry = {};
+	volatile LONG references = 0;
+	DescriptorRecord record;
+};
+
+class DX12DescriptorValuePool
+{
+private:
+	static BOOL CALLBACK InitializeFreeList(
+		PINIT_ONCE, PVOID parameter, PVOID*)
+	{
+		InitializeSListHead(static_cast<PSLIST_HEADER>(parameter));
+		return TRUE;
+	}
+
+	static PSLIST_HEADER FreeList()
+	{
+		alignas(MEMORY_ALLOCATION_ALIGNMENT) static SLIST_HEADER freeList;
+		static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+		InitOnceExecuteOnce(&once, InitializeFreeList, &freeList, nullptr);
+		return &freeList;
+	}
+
+public:
+	static DX12DescriptorValueNode *Acquire()
+	{
+		PSLIST_ENTRY entry = InterlockedPopEntrySList(FreeList());
+		DX12DescriptorValueNode *node = entry ?
+			CONTAINING_RECORD(entry, DX12DescriptorValueNode, freeEntry) :
+			new DX12DescriptorValueNode();
+		InterlockedExchange(&node->references, 1);
+		return node;
+	}
+
+	static void Retain(DX12DescriptorValueNode *node)
+	{
+		if (node)
+			InterlockedIncrement(&node->references);
+	}
+
+	static void Release(DX12DescriptorValueNode *node)
+	{
+		if (!node || InterlockedDecrement(&node->references) != 0)
+			return;
+		node->record = DescriptorRecord();
+		InterlockedPushEntrySList(FreeList(), &node->freeEntry);
+	}
+};
+
+struct DescriptorSlotBinding
+{
+	DX12DescriptorValueNode *value = nullptr;
+	SIZE_T cpuHandle = 0;
+};
+
 struct DescriptorHeapRecord
 {
 	ID3D12DescriptorHeap *heap = nullptr;
@@ -106,13 +166,13 @@ struct DescriptorHeapRecord
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
 	using StateLocks = DX12DescriptorHeapShardState<
-		DX12SparseDescriptorStore<DescriptorRecord>::ShardCount>;
+		DX12SparseDescriptorStore<DescriptorSlotBinding>::ShardCount>;
 	// Lock striping follows the heap record when gDescriptorHeaps grows or
 	// reuses a slot. Sequential descriptor slots land in different shards.
 	std::unique_ptr<StateLocks> stateLocks;
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
-	DX12SparseDescriptorStore<DescriptorRecord> currentDescriptors;
+	DX12SparseDescriptorStore<DescriptorSlotBinding> currentDescriptors;
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	volatile LONG64 liveSlots = 0;
@@ -165,6 +225,18 @@ struct DescriptorSlotLocation
 class DX12DescriptorSlotArrayUtils
 {
 public:
+static LONG64 ReadLiveSlots(const DescriptorHeapRecord *heap)
+{
+	return heap ? InterlockedCompareExchange64(
+		const_cast<volatile LONG64*>(&heap->liveSlots), 0, 0) : 0;
+}
+
+static void SetLiveSlots(DescriptorHeapRecord *heap, LONG64 value)
+{
+	if (heap)
+		InterlockedExchange64(&heap->liveSlots, value);
+}
+
 static void IncrementLiveSlots(DescriptorHeapRecord *heap)
 {
 	if (heap)
@@ -175,7 +247,7 @@ static void DecrementLiveSlots(DescriptorHeapRecord *heap)
 {
 	if (!heap)
 		return;
-	LONG64 current = InterlockedCompareExchange64(&heap->liveSlots, 0, 0);
+	LONG64 current = ReadLiveSlots(heap);
 	while (current > 0) {
 		const LONG64 observed = InterlockedCompareExchange64(
 			&heap->liveSlots, current - 1, current);
@@ -225,30 +297,41 @@ static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const Descriptor
 		dest.cpuHandle == destCpuHandle;
 }
 
+static const DescriptorSlotBinding *FindCurrentBinding(
+	const DescriptorHeapRecord &heap, UINT slot)
+{
+	return heap.currentDescriptors.Find(slot);
+}
+
 static const DescriptorRecord *FindCurrentRecord(
 	const DescriptorHeapRecord &heap, UINT slot)
 {
-	const DescriptorRecord *current = heap.currentDescriptors.Find(slot);
-	if (current)
-		return current;
+	const DescriptorSlotBinding *binding = FindCurrentBinding(heap, slot);
+	if (binding && binding->value)
+		return &binding->value->record;
 	if (slot < heap.occupied.size() && heap.occupied[slot] &&
 		slot < heap.slots.size())
 		return &heap.slots[slot];
 	return nullptr;
 }
 
-static DescriptorRecord *FindCurrentRecord(
-	DescriptorHeapRecord *heap, UINT slot)
+static bool CopyCurrentRecord(
+	const DescriptorHeapRecord &heap, UINT slot, DescriptorRecord *record)
 {
-	if (!heap)
-		return nullptr;
-	DescriptorRecord *current = heap->currentDescriptors.Find(slot);
-	if (current)
-		return current;
-	if (slot < heap->occupied.size() && heap->occupied[slot] &&
-		slot < heap->slots.size())
-		return &heap->slots[slot];
-	return nullptr;
+	if (!record)
+		return false;
+	const DescriptorSlotBinding *binding = FindCurrentBinding(heap, slot);
+	if (binding && binding->value) {
+		CopyRecordValueForSlot(
+			record, binding->value->record, binding->cpuHandle);
+		return true;
+	}
+	if (slot < heap.occupied.size() && heap.occupied[slot] &&
+			slot < heap.slots.size()) {
+		CopyRecordValueForSlot(record, heap.slots[slot], heap.slots[slot].cpuHandle);
+		return true;
+	}
+	return false;
 }
 
 static void StoreCurrentRecord(
@@ -259,10 +342,10 @@ static void StoreCurrentRecord(
 {
 	if (!heap || slot >= heap->desc.NumDescriptors)
 		return;
-	DescriptorRecord stored;
-	CopyRecordValueForSlot(&stored, source, destCpuHandle);
 	if (!heap->slots.empty() && slot < heap->slots.size() &&
 			slot < heap->occupied.size()) {
+		DescriptorRecord stored;
+		CopyRecordValueForSlot(&stored, source, destCpuHandle);
 		const bool wasOccupied = heap->occupied[slot] != 0;
 		heap->slots[slot] = std::move(stored);
 		heap->occupied[slot] = 1;
@@ -270,8 +353,7 @@ static void StoreCurrentRecord(
 			IncrementLiveSlots(heap);
 		return;
 	}
-	if (heap->currentDescriptors.Store(slot, std::move(stored)))
-		IncrementLiveSlots(heap);
+	StoreCurrentRecordIfChanged(heap, slot, source, destCpuHandle);
 }
 
 static bool StoreCurrentRecordIfChanged(
@@ -296,14 +378,69 @@ static bool StoreCurrentRecordIfChanged(
 	}
 
 	bool inserted = false;
-	DescriptorRecord *stored =
+	DescriptorSlotBinding *stored =
 		heap->currentDescriptors.FindOrInsertDefault(slot, &inserted);
-	if (!inserted && SameRecordValueAtSlot(*stored, source, destCpuHandle))
+	if (!inserted && stored->value && source.valueId != 0 &&
+			stored->value->record.valueId == source.valueId &&
+			stored->cpuHandle == destCpuHandle)
 		return false;
-	CopyRecordValueForSlot(stored, source, destCpuHandle);
+	DX12DescriptorValueNode *newValue = DX12DescriptorValuePool::Acquire();
+	CopyRecordValueForSlot(&newValue->record, source, 0);
+	DX12DescriptorValueNode *oldValue = stored->value;
+	stored->value = newValue;
+	stored->cpuHandle = destCpuHandle;
+	DX12DescriptorValuePool::Release(oldValue);
 	if (inserted)
 		IncrementLiveSlots(heap);
 	return true;
+}
+
+enum class CopyCurrentSlotResult
+{
+	SourceMissingDestinationEmpty,
+	SourceMissingDestinationErased,
+	Changed,
+	Unchanged
+};
+
+static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
+	DescriptorHeapRecord *destHeap,
+	UINT destSlot,
+	const DescriptorHeapRecord &srcHeap,
+	UINT srcSlot,
+	SIZE_T destCpuHandle)
+{
+	if (!destHeap || destSlot >= destHeap->desc.NumDescriptors ||
+			srcSlot >= srcHeap.desc.NumDescriptors) {
+		return SourceMissingResult(destHeap, destSlot);
+	}
+
+	const DescriptorSlotBinding *sourceBinding = FindCurrentBinding(srcHeap, srcSlot);
+	if (sourceBinding && sourceBinding->value && destHeap->slots.empty()) {
+		bool inserted = false;
+		DescriptorSlotBinding *destBinding =
+			destHeap->currentDescriptors.FindOrInsertDefault(destSlot, &inserted);
+		if (!inserted && destBinding->value &&
+				destBinding->value->record.valueId ==
+					sourceBinding->value->record.valueId &&
+				destBinding->cpuHandle == destCpuHandle)
+			return CopyCurrentSlotResult::Unchanged;
+		DX12DescriptorValuePool::Retain(sourceBinding->value);
+		DX12DescriptorValueNode *oldValue = destBinding->value;
+		destBinding->value = sourceBinding->value;
+		destBinding->cpuHandle = destCpuHandle;
+		DX12DescriptorValuePool::Release(oldValue);
+		if (inserted)
+			IncrementLiveSlots(destHeap);
+		return CopyCurrentSlotResult::Changed;
+	}
+
+	const DescriptorRecord *source = FindCurrentRecord(srcHeap, srcSlot);
+	if (!source)
+		return SourceMissingResult(destHeap, destSlot);
+	return StoreCurrentRecordIfChanged(
+		destHeap, destSlot, *source, destCpuHandle) ?
+		CopyCurrentSlotResult::Changed : CopyCurrentSlotResult::Unchanged;
 }
 
 static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
@@ -319,10 +456,34 @@ static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
 		DecrementLiveSlots(heap);
 		return true;
 	}
+	DescriptorSlotBinding *binding = heap->currentDescriptors.Find(slot);
+	DX12DescriptorValueNode *oldValue = binding ? binding->value : nullptr;
 	const bool erased = heap->currentDescriptors.Erase(slot);
+	if (erased)
+		DX12DescriptorValuePool::Release(oldValue);
 	if (erased)
 		DecrementLiveSlots(heap);
 	return erased;
+}
+
+static void ClearSparseRecords(DescriptorHeapRecord *heap)
+{
+	if (!heap)
+		return;
+	heap->currentDescriptors.ForEach(
+		[](uint32_t, const DescriptorSlotBinding &binding) {
+			DX12DescriptorValuePool::Release(binding.value);
+		});
+	heap->currentDescriptors.Clear();
+}
+
+private:
+static CopyCurrentSlotResult SourceMissingResult(
+	DescriptorHeapRecord *destHeap, UINT destSlot)
+{
+	return EraseCurrentRecord(destHeap, destSlot) ?
+		CopyCurrentSlotResult::SourceMissingDestinationErased :
+		CopyCurrentSlotResult::SourceMissingDestinationEmpty;
 }
 };
 

@@ -7,6 +7,7 @@
 #include "DX12BindingTracker.hpp"
 #include "DX12CommandListComputeBindingFlow.hpp"
 #include "DX12CommandListFlowDiagnostics.hpp"
+#include "DX12CommandListLifecycle.hpp"
 #include "DX12CommandListRuntime.hpp"
 #include "DX12CommandListStateCapture.hpp"
 #include "DX12CommandListStateFlow.hpp"
@@ -94,7 +95,7 @@ if (!DX12HotPathState::skipAll) {
 auto tracking = DX12CommandListStateCapture::GetTrackingState(This);
 if (tracking.recordBindingEvents)
 DX12BindingTracker::RecordStateEvent(This, "clear_state");
-if (DX12ModNeedsPreSkinningUavProbe())
+if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
 DX12BindingTracker::ResetCommandList(This, pipelineState);
 if (tracking.trackPsoState)
 DX12CommandListRuntime::RememberPipelineState(This, pipelineState);
@@ -185,6 +186,8 @@ auto orig = GetOrig<void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12G
 if (!DX12HotPathState::skipAll)
 DX12CommandListFlowDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ExecuteBundle", This, " bundle=%p", bundle);
 if (orig) orig(This, bundle);
+if (!DX12HotPathState::skipAll)
+DX12CommandListLifecycle::InvalidateAfterExecuteBundle(This);
 }
 
 static void STDMETHODCALLTYPE Hook_SetDescriptorHeaps(ID3D12GraphicsCommandList *This, UINT count, ID3D12DescriptorHeap *const *heaps)

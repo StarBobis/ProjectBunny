@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <d3d12.h>
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@ class DX12DrawSrvPatchTable
 {
 public:
 	bool compute = false;
+	bool sampler = false;
 	UINT rootParameterIndex = 0;
 	SIZE_T cpuStart = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = {};
@@ -197,81 +199,488 @@ public:
 		return 1;
 	}
 
-	// Write replacement SRVs directly into the game's shader-visible heap.
-	// NO save, NO restore — exactly like DX11 PSSetShaderResources.
-	// The game's next SetGraphicsRootDescriptorTable call naturally
-	// overwrites our modification with the original descriptor.
-	static bool ApplyRequests(
-		ID3D12Device *device,
-		ID3D12GraphicsCommandList *commandList,
+	static bool QueueRequests(
 		const std::vector<DX12DrawSrvPatchRequest> &requests,
 		DX12ModIaReplacement *replacement)
 	{
-		if (!device || !commandList || !replacement || requests.empty())
+		if (!replacement || requests.empty())
 			return false;
-
 		for (const DX12DrawSrvPatchRequest &request : requests) {
 			if (!request.resource)
 				continue;
-
 			D3D12_CPU_DESCRIPTOR_HANDLE replacementCpu = request.replacementCpu.ptr ?
 				request.replacementCpu : request.resource->drawSrvCpu;
 			if (!replacementCpu.ptr)
 				continue;
+			const uint64_t key = BindingKey(request.binding, request.compute);
+			DX12ModIaReplacement::DrawSrvTablePatch *queued = nullptr;
+			for (DX12ModIaReplacement::DrawSrvTablePatch &existing :
+					replacement->drawSrvPatches) {
+				if (BindingKey(existing.binding, existing.compute) == key) {
+					queued = &existing;
+					break;
+				}
+			}
+			if (!queued) {
+				replacement->drawSrvPatches.push_back(
+					DX12ModIaReplacement::DrawSrvTablePatch());
+				queued = &replacement->drawSrvPatches.back();
+			}
+			queued->binding = request.binding;
+			queued->replacementCpu = replacementCpu;
+			queued->replacementViewFormat = request.replacementViewFormat;
+			queued->resourceName = request.resource->name;
+			queued->source = request.source ? request.source : "";
+			queued->compute = request.compute;
+			queued->rootParameterIndex = request.binding.rootParameterIndex;
+			queued->originalTable = request.binding.tableGpuStart;
+		}
+		return !replacement->drawSrvPatches.empty();
+	}
 
-			D3D12_CPU_DESCRIPTOR_HANDLE targetCpu = {};
-			targetCpu.ptr = request.binding.tableCpuStart +
-				static_cast<SIZE_T>(request.binding.descriptorOffset) *
-				request.binding.descriptorIncrement;
-			if (!targetCpu.ptr)
+	static bool ResolveTableHeap(
+		const RootTableState &table,
+		D3D12_DESCRIPTOR_HEAP_TYPE type,
+		DX12DescriptorHeapSummary *heap)
+	{
+		if (!heap || !table.valid)
+			return false;
+		*heap = DX12DescriptorHeapSummary();
+		if (table.runtimeHeapResolved &&
+				table.runtimeHeapType == static_cast<UINT>(type) &&
+				table.runtimeHeapIncrement && table.runtimeHeapGpuStart) {
+			heap->heap = table.runtimeHeap;
+			heap->type = table.runtimeHeapType;
+			heap->numDescriptors = table.runtimeHeapNumDescriptors;
+			heap->cpuStart = table.runtimeHeapCpuStart;
+			heap->gpuStart = table.runtimeHeapGpuStart;
+			heap->increment = table.runtimeHeapIncrement;
+			return true;
+		}
+		return DX12FindDescriptorHeapByGpuHandle(
+			table.baseDescriptor, type, heap) && heap->increment != 0;
+	}
+
+	static UINT DescriptorCountForTable(
+		const DX12RootParameterSummary &parameter,
+		const DX12DescriptorHeapSummary &heap,
+		UINT64 tableBaseIndex,
+		D3D12_DESCRIPTOR_HEAP_TYPE type)
+	{
+		UINT64 required = 0;
+		for (const DX12RootDescriptorRangeSummary &range : parameter.ranges) {
+			const bool sampler =
+				range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+			if (sampler != (type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER))
 				continue;
+			const UINT64 first = tableBaseIndex + range.effectiveOffset;
+			if (first >= heap.numDescriptors)
+				continue;
+			const UINT64 available = heap.numDescriptors - first;
+			const UINT64 declared = range.numDescriptors == UINT_MAX ?
+				available : range.numDescriptors;
+			const UINT64 count = (std::min)(declared, available);
+			required = (std::max)(required,
+				static_cast<UINT64>(range.effectiveOffset) + count);
+		}
+		return required > UINT_MAX ? UINT_MAX : static_cast<UINT>(required);
+	}
 
-			device->CopyDescriptorsSimple(
-				1, targetCpu, replacementCpu,
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	static bool RequestMatchesSrvLayout(
+		const DX12ModIaReplacement::DrawSrvTablePatch &request,
+		const DX12RootSignatureSummary &rootSignature)
+	{
+		for (const DX12RootParameterSummary &parameter :
+				rootSignature.parameters) {
+			if (parameter.rootParameterIndex != request.binding.rootParameterIndex ||
+					parameter.parameterType !=
+						D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+				continue;
+			for (const DX12RootDescriptorRangeSummary &range : parameter.ranges) {
+				if (range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
+						request.binding.descriptorOffset < range.effectiveOffset)
+					continue;
+				const UINT64 relative = static_cast<UINT64>(
+					request.binding.descriptorOffset - range.effectiveOffset);
+				if (range.numDescriptors != UINT_MAX &&
+						relative >= range.numDescriptors)
+					continue;
+				const UINT64 shaderRegister =
+					static_cast<UINT64>(range.baseShaderRegister) + relative;
+				if (shaderRegister > UINT_MAX ||
+						static_cast<UINT>(shaderRegister) !=
+							request.binding.shaderRegister ||
+						range.registerSpace != request.binding.registerSpace ||
+						(request.binding.rangeIndex != UINT_MAX &&
+							range.rangeIndex != request.binding.rangeIndex))
+					continue;
+				return true;
+			}
+			return false;
+		}
+		return false;
+	}
 
+	static bool AppendPatchTables(
+		const CommandListBindingState &snapshot,
+		const DX12RootSignatureSummary &rootSignature,
+		bool compute,
+		std::vector<DX12DrawSrvPatchTable> *tables,
+		UINT *totalDescriptors)
+	{
+		if (!tables || !totalDescriptors)
+			return false;
+		static constexpr UINT MaxMirroredDescriptors = 65536;
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			const RootTableState &state = compute ?
+				snapshot.computeTables[root] : snapshot.graphicsTables[root];
+			if (!state.valid)
+				continue;
+			const DX12RootParameterSummary *parameter = nullptr;
+			for (const DX12RootParameterSummary &candidate :
+					rootSignature.parameters) {
+				if (candidate.rootParameterIndex == root) {
+					parameter = &candidate;
+					break;
+				}
+			}
+			if (!parameter || parameter->parameterType !=
+					D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
+					parameter->ranges.empty()) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=root_parameter,pipeline=%s,root=%u",
+					compute ? "compute" : "graphics", root);
+#endif
+				return false;
+			}
+			bool hasSampler = false;
+			bool hasResource = false;
+			for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_range,pipeline=%s,root=%u,range=%u,type=%u,"
+					"numDescriptors=%u,effectiveOffset=%u,baseRegister=%u,space=%u",
+					compute ? "compute" : "graphics", root, range.rangeIndex,
+					range.rangeType, range.numDescriptors, range.effectiveOffset,
+					range.baseShaderRegister, range.registerSpace);
+#endif
+				if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+					hasSampler = true;
+				else
+					hasResource = true;
+			}
+			if (hasSampler == hasResource) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=mixed_or_empty,pipeline=%s,root=%u,"
+					"sampler=%s,resource=%s",
+					compute ? "compute" : "graphics", root,
+					hasSampler ? "true" : "false",
+					hasResource ? "true" : "false");
+#endif
+				return false;
+			}
+			const D3D12_DESCRIPTOR_HEAP_TYPE type = hasSampler ?
+				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER :
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			DX12DescriptorHeapSummary heap = {};
+			ID3D12DescriptorHeap *boundHeap = hasSampler ?
+				snapshot.samplerHeap : snapshot.cbvSrvUavHeap;
+			if (!ResolveTableHeap(state, type, &heap) ||
+					!boundHeap || heap.heap != boundHeap || !heap.cpuStart ||
+					state.baseDescriptor.ptr < heap.gpuStart) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=heap,pipeline=%s,root=%u,"
+					"resolvedHeap=%p,boundHeap=%p,cpuStart=0x%zx,gpuStart=0x%llx,table=0x%llx",
+					compute ? "compute" : "graphics", root, heap.heap, boundHeap,
+					heap.cpuStart, static_cast<unsigned long long>(heap.gpuStart),
+					static_cast<unsigned long long>(state.baseDescriptor.ptr));
+#endif
+				return false;
+			}
+			const UINT64 tableDelta = state.baseDescriptor.ptr - heap.gpuStart;
+			if (tableDelta % heap.increment != 0) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=alignment,pipeline=%s,root=%u,"
+					"delta=%llu,increment=%u",
+					compute ? "compute" : "graphics", root,
+					static_cast<unsigned long long>(tableDelta), heap.increment);
+#endif
+				return false;
+			}
+			const UINT64 tableBaseIndex = tableDelta / heap.increment;
+			if (tableBaseIndex >= heap.numDescriptors) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=base_index,pipeline=%s,root=%u,"
+					"tableBaseIndex=%llu,heapDescriptors=%u",
+					compute ? "compute" : "graphics", root,
+					static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors);
+#endif
+				return false;
+			}
+			const UINT count = DescriptorCountForTable(
+				*parameter, heap, tableBaseIndex, type);
+			if (!count) {
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_plan_fail,reason=empty_count,pipeline=%s,root=%u,"
+					"tableBaseIndex=%llu,heapDescriptors=%u",
+					compute ? "compute" : "graphics", root,
+					static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors);
+#endif
+				return false;
+			}
+			DX12DrawSrvPatchTable table;
+			table.compute = compute;
+			table.rootParameterIndex = root;
+			table.sampler = hasSampler;
+			table.cpuStart = heap.cpuStart +
+				static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
+			table.gpuStart = state.baseDescriptor;
+			table.heap = heap.heap;
+			table.increment = heap.increment;
+			table.count = count;
+			if (!hasSampler) {
+				if (*totalDescriptors > MaxMirroredDescriptors ||
+						count > MaxMirroredDescriptors - *totalDescriptors) {
+#if defined(_DEBUG)
+					DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+						"stage=table_plan_fail,reason=mirror_limit,pipeline=%s,root=%u,"
+						"tableBaseIndex=%llu,heapDescriptors=%u,count=%u,total=%u,limit=%u",
+						compute ? "compute" : "graphics", root,
+						static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors,
+						count, *totalDescriptors, MaxMirroredDescriptors);
+#endif
+					return false;
+				}
+				table.tempOffset = *totalDescriptors;
+				*totalDescriptors += count;
+			}
+			tables->push_back(table);
 #if defined(_DEBUG)
 			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
-				"stage=slot_patched,source=%s,bindSpace=%s,slot=%u,root=%u,offset=%u,"
-				"resource=%S,resourceFormat=%u,originalViewFormat=%u,"
-				"replacementViewFormat=%u,originalViewDimension=%u,"
-				"hasSrvDesc=%s,hasResourceDesc=%s,"
-				"resourceDescFormat=%u,resourceDescDimension=%u,resourceDescMips=%u,"
-				"originalMipStart=%u,originalMipLevels=%u,"
-				"componentMapping=%u,currentState=%u,cpu=0x%zx",
-				request.source ? request.source : "",
-				request.compute ? "compute" : "graphics",
-				request.binding.shaderRegister,
-				request.binding.rootParameterIndex,
-				request.binding.descriptorOffset,
-				request.resource->name.c_str(),
-				static_cast<UINT>(request.resource->drawSrvFormat),
-				request.binding.descriptor.viewFormat,
-				static_cast<UINT>(request.replacementViewFormat),
-				request.binding.descriptor.viewDimension,
-				request.binding.descriptor.hasSrvDesc ? "true" : "false",
-				request.binding.descriptor.hasResourceDesc ? "true" : "false",
-				request.binding.descriptor.hasResourceDesc ?
-					static_cast<UINT>(request.binding.descriptor.resourceDesc.Format) : 0,
-				request.binding.descriptor.hasResourceDesc ?
-					static_cast<UINT>(request.binding.descriptor.resourceDesc.Dimension) : 0,
-				request.binding.descriptor.hasResourceDesc ?
-					static_cast<UINT>(request.binding.descriptor.resourceDesc.MipLevels) : 0,
-				request.binding.descriptor.hasSrvDesc ?
-					request.binding.descriptor.srvDesc.Texture2D.MostDetailedMip : 0,
-				request.binding.descriptor.hasSrvDesc ?
-					request.binding.descriptor.srvDesc.Texture2D.MipLevels : 0,
-				request.binding.descriptor.hasSrvDesc ?
-					request.binding.descriptor.srvDesc.Shader4ComponentMapping : 0,
-				request.binding.descriptor.currentState,
-				targetCpu.ptr);
+				"stage=table_plan,pipeline=%s,root=%u,sampler=%s,"
+				"tableBaseIndex=%llu,heapDescriptors=%u,count=%u,tempOffset=%u,total=%u",
+				compute ? "compute" : "graphics", root,
+				hasSampler ? "true" : "false",
+				static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors,
+				count, table.tempOffset, *totalDescriptors);
 #endif
 		}
+		return true;
+	}
 
+	static bool BuildPatchTables(
+		const CommandListBindingState &snapshot,
+		const DX12RootSignatureSummary &rootSignature,
+		std::vector<DX12DrawSrvPatchTable> *tables,
+		UINT *totalDescriptors)
+	{
+		if (!tables || !totalDescriptors)
+			return false;
+		tables->clear();
+		*totalDescriptors = 0;
+		if (!AppendPatchTables(
+				snapshot, rootSignature, false, tables, totalDescriptors))
+			return false;
+		return !tables->empty() && *totalDescriptors != 0;
+	}
+
+	// Descriptor contents are read by the GPU at execution time, not captured by
+	// Draw*. Mirror every active graphics table into a command-list-lived heap,
+	// patch that mirror, and temporarily bind it for the draw. This prevents the
+	// game's descriptor ring from overwriting the replacement before submission.
+	static bool ApplyPending(
+		ID3D12Device *device,
+		ID3D12GraphicsCommandList *commandList,
+		DX12ModIaReplacement *replacement,
+		bool executeOriginalDraw)
+	{
+		if (!device || !commandList || !replacement ||
+				replacement->drawSrvPatches.empty())
+			return false;
+		if (replacement->drawSrvApplyState.applied) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=table_patch_fail,reason=already_applied");
+			return false;
+		}
+		if (commandList->GetType() == D3D12_COMMAND_LIST_TYPE_BUNDLE) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=table_patch_fail,reason=bundle_requires_parent_replay");
+			return false;
+		}
+		CommandListBindingState snapshot;
+		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=table_patch_fail,reason=binding_snapshot");
+			return false;
+		}
+		bool needsGraphicsTables = executeOriginalDraw || !replacement->draws.empty();
+		bool needsComputeTables = !replacement->dispatches.empty();
+		for (const DX12ModIaReplacement::DrawSrvTablePatch &request :
+				replacement->drawSrvPatches) {
+			if (request.compute)
+				needsComputeTables = true;
+			else
+				needsGraphicsTables = true;
+		}
+		std::vector<DX12DrawSrvPatchTable> tables;
+		UINT totalDescriptors = 0;
+		DX12RootSignatureSummary graphicsRootSignature;
+		DX12RootSignatureSummary computeRootSignature;
+		bool hasGraphicsRootSignature = false;
+		bool hasComputeRootSignature = false;
+		if (needsGraphicsTables && snapshot.graphicsTableValidCount) {
+			if (!snapshot.graphicsRootSignature ||
+					!DX12GetRootSignatureSummary(
+						snapshot.graphicsRootSignature, &graphicsRootSignature) ||
+					!AppendPatchTables(snapshot, graphicsRootSignature, false,
+						&tables, &totalDescriptors)) {
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_patch_fail,reason=graphics_root_signature");
+				return false;
+			}
+			hasGraphicsRootSignature = true;
+		}
+		if (needsComputeTables && snapshot.computeTableValidCount) {
+			if (!snapshot.computeRootSignature ||
+					!DX12GetRootSignatureSummary(
+						snapshot.computeRootSignature, &computeRootSignature) ||
+					!AppendPatchTables(snapshot, computeRootSignature, true,
+						&tables, &totalDescriptors)) {
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_patch_fail,reason=compute_root_signature");
+				return false;
+			}
+			hasComputeRootSignature = true;
+		}
+		if (tables.empty() || !totalDescriptors) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=table_patch_fail,reason=table_plan");
+			return false;
+		}
+		for (const DX12ModIaReplacement::DrawSrvTablePatch &request :
+				replacement->drawSrvPatches) {
+			const DX12RootSignatureSummary *requestRootSignature =
+				request.compute ?
+					(hasComputeRootSignature ? &computeRootSignature : nullptr) :
+					(hasGraphicsRootSignature ? &graphicsRootSignature : nullptr);
+			if (!requestRootSignature ||
+					!RequestMatchesSrvLayout(request, *requestRootSignature)) {
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_patch_fail,reason=request_layout,bindSpace=%s,"
+					"root=%u,range=%u,slot=%u,space=%u,offset=%u",
+					request.compute ? "compute" : "graphics",
+					request.binding.rootParameterIndex,
+					request.binding.rangeIndex,
+					request.binding.shaderRegister,
+					request.binding.registerSpace,
+					request.binding.descriptorOffset);
+				return false;
+			}
+			bool found = false;
+			for (const DX12DrawSrvPatchTable &table : tables) {
+				if (table.sampler ||
+						table.compute != request.compute ||
+						table.rootParameterIndex != request.binding.rootParameterIndex ||
+						table.gpuStart.ptr != request.binding.tableGpuStart.ptr)
+					continue;
+				if (request.binding.descriptorOffset >= table.count)
+					return false;
+				found = true;
+				break;
+			}
+			if (!found || !request.replacementCpu.ptr) {
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=table_patch_fail,reason=request_table,root=%u,offset=%u",
+					request.binding.rootParameterIndex,
+					request.binding.descriptorOffset);
+				return false;
+			}
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE tempCpuBase = {};
+		D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
+		UINT tempIncrement = 0;
+		ID3D12DescriptorHeap *tempHeap = nullptr;
+		if (!EnsurePreSkinDescriptorRingLocked(
+				device, commandList, totalDescriptors,
+				&tempCpuBase, &tempGpuBase, &tempIncrement, &tempHeap)) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=table_patch_fail,reason=descriptor_ring,count=%u",
+				totalDescriptors);
+			return false;
+		}
+		// Persist the only authoritative restore snapshot before issuing any
+		// command-list state mutation. Restore never asks Binding State for a
+		// second, potentially stale snapshot.
+		replacement->drawSrvApplyState.originalBindings = snapshot;
+		replacement->drawSrvApplyState.patchHeap = tempHeap;
+
+		DX12InternalReplayScope internalReplay;
+		for (const DX12DrawSrvPatchTable &table : tables) {
+			if (table.sampler)
+				continue;
+			D3D12_CPU_DESCRIPTOR_HANDLE source = {};
+			source.ptr = table.cpuStart;
+			D3D12_CPU_DESCRIPTOR_HANDLE destination = tempCpuBase;
+			destination.ptr += static_cast<SIZE_T>(table.tempOffset) * tempIncrement;
+			device->CopyDescriptorsSimple(
+				table.count, destination, source,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		}
+		for (DX12ModIaReplacement::DrawSrvTablePatch &request :
+				replacement->drawSrvPatches) {
+			for (const DX12DrawSrvPatchTable &table : tables) {
+				if (table.sampler ||
+						table.compute != request.compute ||
+						table.rootParameterIndex != request.binding.rootParameterIndex ||
+						table.gpuStart.ptr != request.binding.tableGpuStart.ptr)
+					continue;
+				D3D12_CPU_DESCRIPTOR_HANDLE destination = tempCpuBase;
+				destination.ptr += static_cast<SIZE_T>(
+					table.tempOffset + request.binding.descriptorOffset) * tempIncrement;
+				device->CopyDescriptorsSimple(
+					1, destination, request.replacementCpu,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				request.targetCpu = destination;
+#if defined(_DEBUG)
+				DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+					"stage=slot_patched,mode=mirrored_table,source=%s,"
+					"slot=%u,root=%u,offset=%u,resource=%S,cpu=0x%zx",
+					request.source.c_str(), request.binding.shaderRegister,
+					request.binding.rootParameterIndex,
+					request.binding.descriptorOffset,
+					request.resourceName.c_str(), destination.ptr);
+#endif
+				break;
+			}
+		}
+		replacement->drawSrvApplyState.applied = true;
+		ID3D12DescriptorHeap *heaps[2] = { tempHeap, snapshot.samplerHeap };
+		commandList->SetDescriptorHeaps(snapshot.samplerHeap ? 2 : 1, heaps);
+		for (const DX12DrawSrvPatchTable &table : tables) {
+			D3D12_GPU_DESCRIPTOR_HANDLE tableGpu = table.gpuStart;
+			if (!table.sampler) {
+				tableGpu = tempGpuBase;
+				tableGpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
+			}
+			if (table.compute)
+				commandList->SetComputeRootDescriptorTable(
+					table.rootParameterIndex, tableGpu);
+			else
+				commandList->SetGraphicsRootDescriptorTable(
+					table.rootParameterIndex, tableGpu);
+		}
 #if defined(_DEBUG)
 		DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
-			"stage=descriptors_patched,requests=%zu,present=%ld",
-			requests.size(),
+			"stage=descriptors_patched,mode=mirrored_tables,requests=%zu,"
+			"tables=%zu,descriptors=%u,present=%ld",
+			replacement->drawSrvPatches.size(), tables.size(), totalDescriptors,
 			DX12RuntimeState::GetPresentCount());
 #endif
 		return true;
@@ -286,6 +695,14 @@ public:
 	{
 		if (!device || !commandList || !replacement)
 			return false;
+		// A bundle cannot switch to a private descriptor heap unless its parent
+		// direct list binds that exact heap. Defer support to ExecuteBundle replay;
+		// do not record uploads or an incompatible SetDescriptorHeaps in a bundle.
+		if (commandList->GetType() == D3D12_COMMAND_LIST_TYPE_BUNDLE) {
+			DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+				"stage=slot_patch_fail,reason=bundle_requires_parent_replay");
+			return false;
+		}
 		if (config.drawPsSrvResources.empty() &&
 		    config.drawVsSrvResources.empty() &&
 		    config.drawReplaceThisResource.empty())
@@ -331,17 +748,46 @@ public:
 			}
 		}
 
-		return DX12DrawSrvReplacementUtils::ApplyRequests(
-			device, commandList, requests, replacement);
+		return DX12DrawSrvReplacementUtils::QueueRequests(requests, replacement);
 	}
 
-	// No-op: we no longer save/restore. The game's next
-	// SetGraphicsRootDescriptorTable naturally overwrites our patch.
 	static void Restore(
 		ID3D12GraphicsCommandList *commandList,
 		DX12ModIaReplacement *replacement)
 	{
-		(void)commandList;
-		(void)replacement;
+		if (!replacement)
+			return;
+		DX12ModIaReplacement::DrawSrvApplyState &state =
+			replacement->drawSrvApplyState;
+		if (!commandList || !state.applied || !state.patchHeap) {
+			replacement->drawSrvPatches.clear();
+			state = DX12ModIaReplacement::DrawSrvApplyState();
+			return;
+		}
+		const CommandListBindingState &snapshot = state.originalBindings;
+		DX12InternalReplayScope internalReplay;
+		ID3D12DescriptorHeap *heaps[2] = {};
+		UINT heapCount = 0;
+		if (snapshot.cbvSrvUavHeap)
+			heaps[heapCount++] = snapshot.cbvSrvUavHeap;
+		if (snapshot.samplerHeap)
+			heaps[heapCount++] = snapshot.samplerHeap;
+		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			if (snapshot.graphicsTables[root].valid)
+				commandList->SetGraphicsRootDescriptorTable(
+					root, snapshot.graphicsTables[root].baseDescriptor);
+			if (snapshot.computeTables[root].valid)
+				commandList->SetComputeRootDescriptorTable(
+					root, snapshot.computeTables[root].baseDescriptor);
+		}
+#if defined(_DEBUG)
+		DX12LogManager::JsonFunc("DX12DrawSrvReplacement",
+			"stage=descriptor_tables_restored,requests=%zu,snapshot=saved,present=%ld",
+			replacement->drawSrvPatches.size(),
+			DX12RuntimeState::GetPresentCount());
+#endif
+		replacement->drawSrvPatches.clear();
+		state = DX12ModIaReplacement::DrawSrvApplyState();
 	}
 };

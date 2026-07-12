@@ -9,5 +9,6 @@ public:
 	static void Unregister(ID3D12GraphicsCommandList *commandList);
 	static void Reset(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
 	static void ClearState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
+	static void InvalidateAfterExecuteBundle(ID3D12GraphicsCommandList *commandList);
 };
 

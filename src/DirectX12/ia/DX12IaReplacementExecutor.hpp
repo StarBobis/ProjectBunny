@@ -222,6 +222,7 @@ public:
 		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
 		bindingExecutor.Apply(replacement);
+		DX12ModApplyDrawSrvReplacement(commandList, &replacement, false);
 		DX12IaDrawInvocation noDraw = {};
 		drawExecutor.ExecuteReplacementDraws(replacement, noDraw);
 		bindingExecutor.Restore(replacement, originalIa);
@@ -250,6 +251,8 @@ public:
 		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
 		bindingExecutor.Apply(*replacement);
+		DX12ModApplyDrawSrvReplacement(
+			commandList, replacement, !replacement->skip);
 
 		if (!replacement->skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
