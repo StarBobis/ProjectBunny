@@ -322,11 +322,14 @@ public:
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
 		DX12IaHashState directIaState;
+		const DX12IaHashState *directIaStateView = &directIaState;
 		bool reusedDirectIaState = false;
-			if (drawDecision->directTargetPlanResolved &&
-			    directTargetPlan.hasTextureOverrideChecks &&
-			    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
-				    runtimeState.ia, directTargetPlan, draw.indexed)) {
+		DX12DirectIaFastRejectCacheKey directFastRejectKey;
+		bool directFastRejectKeyValid = false;
+		if (drawDecision->directTargetPlanResolved &&
+		    directTargetPlan.hasTextureOverrideChecks &&
+		    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
+			    runtimeState.ia, directTargetPlan, draw.indexed)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"IaReplacement",
 				"skip_missing_direct_check_target",
@@ -334,19 +337,62 @@ public:
 				1,
 				0);
 			DX12Profiling::RecordIaHashStateResult(false);
+			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			return false;
+		}
+		if (drawDecision->directTargetPlanResolved &&
+		    directTargetPlan.hasTextureOverrideChecks &&
+		    directTargetPlan.HasIaTargets() &&
+		    !directTargetPlan.hasDescriptorTargets &&
+		    !directTargetPlan.requireAllIaBuffers) {
+			// Reject repeated negative draws from immutable command-list state before
+			// resolving GPU virtual addresses. Global content and resource-lifetime
+			// generations make the shortcut conservative across uploads and reuse.
+			directFastRejectKey = DX12DirectIaFastRejectCacheUtils::MakeKey(
+				drawDecision->reloadGeneration,
+				DX12GetIaHashContentGeneration(),
+				DX12GetIaHashResolveGeneration(),
+				runtimeState.ia,
+				directTargetPlan,
+				draw);
+			directFastRejectKeyValid = true;
+			if (DX12DirectIaFastRejectCacheUtils::Contains(
+					mutableRuntimeState->directIaFastRejectCache,
+					directFastRejectKey)) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"direct_ia_fast_reject_cache_hit",
+					draw.indexed ? 1u : 0u,
+					1,
+					0);
+				DX12Profiling::RecordIaHashStateResult(false);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
-			if (drawDecision->directTargetPlanResolved &&
-			    directTargetPlan.hasTextureOverrideChecks &&
-			    directTargetPlan.HasIaTargets() &&
-			    !directTargetPlan.hasDescriptorTargets &&
-			    !directTargetPlan.requireAllIaBuffers) {
-				// Build the region hashes first. They are the actual inputs to the
-				// TextureOverride lookup, so they form a complete cache identity without
-				// resolving every IA GPUVA a second time merely to build a probe key.
+
+				// The direct probe and the full override path consume the same stable IA
+				// hash state. Cache it before building the probe key so a negative probe
+				// hit does not require re-hashing the same draw region first.
 				LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
-				if (DX12CommandListRuntime::BuildIaHashStateForTargets(
+				const DX12IaHashStateCacheKey directHashCacheKey =
+					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
+						runtimeState.ia,
+						runtimeState.iaContentEpoch,
+						directTargetPlan,
+						draw.indexed,
+						draw.vertexCount,
+						draw.indexCount,
+						draw.firstVertex,
+						draw.firstIndex,
+						draw.baseVertex);
+				bool directHashFound = false;
+				const bool directHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
+					&mutableRuntimeState->iaHashStateCache,
+					directHashCacheKey,
+					&directIaStateView,
+					&directHashFound);
+				if (!directHashCacheHit) {
+					directHashFound = DX12CommandListRuntime::BuildIaHashStateForTargets(
 						runtimeState.ia,
 						directTargetPlan,
 						draw.indexed,
@@ -355,21 +401,37 @@ public:
 						draw.firstVertex,
 						draw.firstIndex,
 						draw.baseVertex,
-						&directIaState)) {
+						&directIaState);
+					bool directHashCacheEvicted = false;
+					const DX12IaHashState *storedDirectState =
+						DX12IaHashStateCacheUtils::Store(
+							&mutableRuntimeState->iaHashStateCache,
+							directHashCacheKey,
+							directHashFound,
+							std::move(directIaState),
+							&directHashCacheEvicted);
+					if (storedDirectState)
+						directIaStateView = storedDirectState;
+					if (directHashCacheEvicted)
+						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
+				}
+				if (directHashFound) {
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
-						"build_direct_ia_probe_state",
+						directHashCacheHit ?
+							"direct_ia_probe_state_cache_hit" :
+							"build_direct_ia_probe_state",
 						draw.indexed ? 1u : 0u,
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
 
 					LARGE_INTEGER directProbeKeyBegin = DX12OuterTimingProbeUtils::Now();
 					const DX12DirectIaProbeCacheKey directProbeCacheKey =
-						DX12DirectIaProbeCacheUtils::MakeKey(
-							drawDecision->reloadGeneration,
-							directTargetPlan.Fingerprint(),
-							directIaState,
-							draw);
+							DX12DirectIaProbeCacheUtils::MakeKey(
+								drawDecision->reloadGeneration,
+								directTargetPlan.Fingerprint(),
+								*directIaStateView,
+								draw);
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
 						"build_direct_ia_probe_key",
@@ -403,8 +465,8 @@ public:
 							DX12OuterTimingProbeUtils::ElapsedUs(directProbeCacheBegin));
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
 						LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
-						hasDirectCandidate = DX12ModHasAnyDirectIaTextureOverrideCandidate(
-							directIaState,
+							hasDirectCandidate = DX12ModHasAnyDirectIaTextureOverrideCandidate(
+								*directIaStateView,
 							directTargetPlan,
 							draw.indexed,
 							draw.vertexCount,
@@ -432,6 +494,11 @@ public:
 					}
 
 					if (!hasDirectCandidate) {
+						if (directFastRejectKeyValid) {
+							DX12DirectIaFastRejectCacheUtils::Store(
+								&mutableRuntimeState->directIaFastRejectCache,
+								directFastRejectKey);
+						}
 						DX12OuterTimingProbeUtils::LogCpuStage(
 							"IaReplacement",
 							"skip_direct_ia_probe_miss",
@@ -443,7 +510,7 @@ public:
 						return false;
 					}
 					if (targetPlan.HasSameIaHashTargets(directTargetPlan)) {
-						activeIaState = &directIaState;
+						activeIaState = directIaStateView;
 						hasIaHashState = true;
 						reusedDirectIaState = true;
 						DX12OuterTimingProbeUtils::LogCpuStage(
@@ -461,7 +528,7 @@ public:
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
 				}
-			}
+		}
 			if (targetPlanHasIaTargets && !reusedDirectIaState) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =

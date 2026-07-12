@@ -89,6 +89,12 @@ bool DX12GetDescriptorSlotVersions(
 	const UINT *slots,
 	size_t count,
 	UINT64 *versions);
+bool DX12GetDescriptorSlotIdentities(
+	ID3D12DescriptorHeap *heap,
+	const UINT *slots,
+	size_t count,
+	UINT64 *versions,
+	UINT64 *valueIds);
 bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	SIZE_T cpuHandle, UINT64 epoch, DX12DescriptorSummary *summary);
 bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(

@@ -109,7 +109,10 @@ public:
 class DX12IaHashStateCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 1024;
+	// The measured title cycles through roughly 1,450 IA draw identities per
+	// frame. A 1,024-entry LRU evicts the front of that working set immediately
+	// before the next frame reuses it, turning a resident cache into a churn loop.
+	static constexpr size_t MaxEntries = 4096;
 
 	static bool TryLoad(
 		DX12IaHashStateCache *cache,

@@ -144,6 +144,15 @@ if(BUILD_TESTING)
     )
     target_compile_features(DX12PreSkinCacheIdentityTests PRIVATE cxx_std_17)
     add_test(NAME DX12PreSkinCacheIdentityTests COMMAND DX12PreSkinCacheIdentityTests)
+
+    add_executable(DX12DirectIaFastRejectCacheTests
+        tests/DX12DirectIaFastRejectCacheTests.cpp
+    )
+    target_include_directories(DX12DirectIaFastRejectCacheTests PRIVATE
+        $<TARGET_PROPERTY:DirectX12,INCLUDE_DIRECTORIES>
+    )
+    target_compile_features(DX12DirectIaFastRejectCacheTests PRIVATE cxx_std_17)
+    add_test(NAME DX12DirectIaFastRejectCacheTests COMMAND DX12DirectIaFastRejectCacheTests)
 endif()
 
 

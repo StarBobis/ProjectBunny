@@ -1697,6 +1697,48 @@ bool DX12GetDescriptorSlotVersions(
 	return foundHeap;
 }
 
+bool DX12GetDescriptorSlotIdentities(
+	ID3D12DescriptorHeap *heap,
+	const UINT *slots,
+	size_t count,
+	UINT64 *versions,
+	UINT64 *valueIds)
+{
+	if (!heap || (!slots && count) || (!versions && count) || (!valueIds && count))
+		return false;
+	for (size_t index = 0; index < count; ++index) {
+		versions[index] = 0;
+		valueIds[index] = 0;
+	}
+
+	bool foundHeap = false;
+	AcquireSRWLockShared(&gDescriptorLock);
+	std::unordered_map<ID3D12DescriptorHeap*, size_t>::const_iterator found =
+		gDescriptorHeapByPtr.find(heap);
+	if (found != gDescriptorHeapByPtr.end() &&
+			found->second < gDescriptorHeaps.size()) {
+		const DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
+		if (record.heap == heap && record.stateLocks) {
+			foundHeap = true;
+			for (size_t index = 0; index < count; ++index) {
+				if (slots[index] >= record.desc.NumDescriptors) {
+					foundHeap = false;
+					break;
+				}
+				DescriptorHeapRecord::StateLocks::SlotIdentity identity;
+				if (!record.stateLocks->ObserveSlotIdentity(slots[index], &identity)) {
+					foundHeap = false;
+					break;
+				}
+				versions[index] = identity.version;
+				valueIds[index] = identity.valueId;
+			}
+		}
+	}
+	ReleaseSRWLockShared(&gDescriptorLock);
+	return foundHeap;
+}
+
 void BumpDescriptorQuerySerial()
 {
 	UINT64 current = gDescriptorQuerySerial.load(std::memory_order_relaxed);

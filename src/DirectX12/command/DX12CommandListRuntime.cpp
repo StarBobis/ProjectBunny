@@ -286,12 +286,15 @@ void DX12CommandListRuntime::Reset(
 		std::move(state->iaHashStateCache);
 	DX12DirectIaProbeCache persistentDirectIaProbeCache =
 		std::move(state->directIaProbeCache);
+	DX12DirectIaFastRejectCache persistentDirectIaFastRejectCache =
+		std::move(state->directIaFastRejectCache);
 	*state = DX12CommandListRuntimeState();
 	state->device = cachedDevice;
 	state->pipelineState = initialState;
 	state->trackingCache = oldCache;
 	state->iaHashStateCache = std::move(persistentIaHashStateCache);
 	state->directIaProbeCache = std::move(persistentDirectIaProbeCache);
+	state->directIaFastRejectCache = std::move(persistentDirectIaFastRejectCache);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
 }
@@ -488,12 +491,18 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 	    state->dispatchDecision.reloadGeneration == reloadGeneration &&
 	    state->dispatchDecision.MatchesGlobals(hasShaderOverrides, needsPreSkinProbe)) {
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheHit();
+		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
+		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
+		state->cachedCsHashResolved = true;
 		return &state->dispatchDecision;
 	}
 
 	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheMiss();
 	DX12CommandListRuntime::CompileDispatchDecision(
 		state, hasShaderOverrides, needsPreSkinProbe);
+	state->cachedCsHash = state->dispatchDecision.computeShaderHash;
+	state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
+	state->cachedCsHashResolved = true;
 	return &state->dispatchDecision;
 }
 
@@ -547,39 +556,22 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	const bool changed = state->pipelineState != pipelineState;
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePso(changed);
-	if (!changed && state->cachedCsHashResolved &&
-	    state->dispatchDecision.resolved &&
-	    state->dispatchDecision.pipelineState == pipelineState &&
-	    state->drawDecision.resolved &&
-	    state->drawDecision.pipelineState == pipelineState)
+	if (!changed)
 		return;
 
-	if (changed) {
-		state->cachedReplacementPsoKey = nullptr;
-		state->cachedReplacementPso = nullptr;
-		state->cachedCsHashValid = false;
-		state->cachedCsHashResolved = false;
-		state->cachedCsHash = 0;
-		state->dispatchDecision.Reset();
-		state->drawDecision.Reset();
-	}
+	state->cachedReplacementPsoKey = nullptr;
+	state->cachedReplacementPso = nullptr;
+	state->cachedCsHashValid = false;
+	state->cachedCsHashResolved = false;
+	state->cachedCsHash = 0;
+	state->dispatchDecision.Reset();
+	state->drawDecision.Reset();
 	state->pipelineState = pipelineState;
-	if (!state->cachedCsHashResolved && pipelineState) {
-		DX12PsoShaderInfo shaderInfo = {};
-		if (DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo)) {
-			state->cachedCsHash = shaderInfo.hasCS ? shaderInfo.cs : 0;
-			state->cachedCsHashValid = shaderInfo.hasCS;
-			state->cachedCsHashResolved = true;
-		}
-	} else if (!pipelineState) {
+	if (!pipelineState) {
 		state->cachedCsHash = 0;
 		state->cachedCsHashValid = false;
 		state->cachedCsHashResolved = true;
 	}
-	const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
-	DX12CommandListRuntime::CompileDispatchDecision(
-		state, activeShaderOverrides, DX12ModNeedsPreSkinningUavProbe());
-	DX12CommandListRuntime::CompileDrawDecision(state, activeShaderOverrides);
 }
 
 void DX12CommandListRuntime::RememberPipelineState(

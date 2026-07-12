@@ -12,6 +12,7 @@
 #include "DX12PreSkinCacheIdentity.hpp"
 #include "binding/DX12BindingTrackerTypes.hpp"
 #include "ia/DX12DirectIaProbeCacheUtils.hpp"
+#include "ia/DX12DirectIaFastRejectCacheUtils.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
 
 class DX12CommandListRuntimeState
@@ -24,6 +25,7 @@ public:
 	UINT64 iaContentEpoch = 1;
 	DX12IaHashStateCache iaHashStateCache;
 	DX12DirectIaProbeCache directIaProbeCache;
+	DX12DirectIaFastRejectCache directIaFastRejectCache;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;

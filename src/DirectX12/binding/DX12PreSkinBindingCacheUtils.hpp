@@ -24,6 +24,7 @@ public:
 	UINT64 heapVersion = 0;
 	std::vector<UINT> observedSlots;
 	std::vector<UINT64> observedSlotVersions;
+	std::vector<UINT64> observedSlotValueIds;
 };
 
 class DX12PreSkinBindingRootDescriptorCacheKey
@@ -258,22 +259,33 @@ public:
 						}
 						tableKey.observedSlotVersions.resize(
 							tableKey.observedSlots.size());
-						if (!ResolverUtils::ReadDescriptorSlotVersions(
+						tableKey.observedSlotValueIds.resize(
+							tableKey.observedSlots.size());
+						if (!ResolverUtils::ReadDescriptorSlotIdentities(
 								heap.heap,
 								tableKey.observedSlots.data(),
 								tableKey.observedSlots.size(),
-								tableKey.observedSlotVersions.data())) {
+								tableKey.observedSlotVersions.data(),
+								tableKey.observedSlotValueIds.data())) {
 							tableKey.observedSlots.clear();
 							tableKey.observedSlotVersions.clear();
+							tableKey.observedSlotValueIds.clear();
 							tableKey.heapVersion = heap.version;
 							DX12PreSkinBindingCacheUtils::MixValue(key, heap.version);
 						} else {
 							for (size_t slotIndex = 0;
 									slotIndex < tableKey.observedSlots.size(); ++slotIndex) {
+								// A stable Descriptor Value ID survives repeated copies of the
+								// same value. Fall back to the mutation version only when the
+								// slot has no authoritative current value.
+								if (tableKey.observedSlotValueIds[slotIndex])
+									tableKey.observedSlotVersions[slotIndex] = 0;
 								DX12PreSkinBindingCacheUtils::MixValue(
 									key, tableKey.observedSlots[slotIndex]);
 								DX12PreSkinBindingCacheUtils::MixValue(
 									key, tableKey.observedSlotVersions[slotIndex]);
+								DX12PreSkinBindingCacheUtils::MixValue(
+									key, tableKey.observedSlotValueIds[slotIndex]);
 							}
 						}
 					}
@@ -309,8 +321,9 @@ public:
 				left.heapIncrement == right.heapIncrement &&
 				left.heapNumDescriptors == right.heapNumDescriptors &&
 				left.heapVersion == right.heapVersion &&
-				left.observedSlots == right.observedSlots &&
-				left.observedSlotVersions == right.observedSlotVersions;
+			left.observedSlots == right.observedSlots &&
+				left.observedSlotVersions == right.observedSlotVersions &&
+				left.observedSlotValueIds == right.observedSlotValueIds;
 	}
 
 	static bool RootDescriptorsEqual(

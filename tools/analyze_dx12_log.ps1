@@ -9,6 +9,8 @@ class Dx12FrameSample {
     [long]$PresentWaitUs = 0
     [long]$ModBeginFrameUs = 0
     [hashtable]$StageTotals = @{}
+    [hashtable]$CpuStageTotals = @{}
+    [hashtable]$CpuStageCalls = @{}
 }
 
 class Dx12LogAnalysisUtils {
@@ -74,6 +76,28 @@ class Dx12LogAnalysisUtils {
                     continue
                 }
                 $currentFrame.StageTotals[$stage] = [Dx12LogAnalysisUtils]::ReadInteger($payload, 'totalUs')
+                continue
+            }
+
+            if ($category -eq 'DX12CpuStageTiming' -and $null -ne $currentFrame) {
+                $component = [Dx12LogAnalysisUtils]::ReadString($payload, 'category')
+                $stage = [Dx12LogAnalysisUtils]::ReadString($payload, 'stage')
+                if ($component.Length -eq 0 -or $stage.Length -eq 0) {
+                    continue
+                }
+                $key = $component + '/' + $stage
+                if (!$currentFrame.CpuStageTotals.ContainsKey($key)) {
+                    $currentFrame.CpuStageTotals[$key] = [long]0
+                }
+                $currentFrame.CpuStageTotals[$key] =
+                    [long]$currentFrame.CpuStageTotals[$key] +
+                    [Dx12LogAnalysisUtils]::ReadInteger($payload, 'totalUs')
+                if (!$currentFrame.CpuStageCalls.ContainsKey($key)) {
+                    $currentFrame.CpuStageCalls[$key] = [long]0
+                }
+                $currentFrame.CpuStageCalls[$key] =
+                    [long]$currentFrame.CpuStageCalls[$key] +
+                    [Dx12LogAnalysisUtils]::ReadInteger($payload, 'calls')
             }
         }
 
@@ -89,6 +113,8 @@ class Dx12LogAnalysisUtils {
         [long]$aggregatePresentWaitUs = 0
         [long]$aggregateModBeginFrameUs = 0
         $stageTotals = @{}
+        $cpuStageTotals = @{}
+        $cpuStageCalls = @{}
         foreach ($frame in $validFrames) {
             $aggregateFrameUs += $frame.FrameIntervalUs
             $aggregatePresentWaitUs += $frame.PresentWaitUs
@@ -98,6 +124,20 @@ class Dx12LogAnalysisUtils {
                     $stageTotals[$stage] = [long]0
                 }
                 $stageTotals[$stage] = [long]$stageTotals[$stage] + [long]$frame.StageTotals[$stage]
+            }
+            foreach ($stage in $frame.CpuStageTotals.Keys) {
+                if (!$cpuStageTotals.ContainsKey($stage)) {
+                    $cpuStageTotals[$stage] = [long]0
+                }
+                $cpuStageTotals[$stage] =
+                    [long]$cpuStageTotals[$stage] + [long]$frame.CpuStageTotals[$stage]
+            }
+            foreach ($stage in $frame.CpuStageCalls.Keys) {
+                if (!$cpuStageCalls.ContainsKey($stage)) {
+                    $cpuStageCalls[$stage] = [long]0
+                }
+                $cpuStageCalls[$stage] =
+                    [long]$cpuStageCalls[$stage] + [long]$frame.CpuStageCalls[$stage]
             }
         }
 
@@ -140,6 +180,19 @@ class Dx12LogAnalysisUtils {
             $percentage = 100.0 * $averageStageUs / $averageFrameUs
             $bar = [Dx12LogAnalysisUtils]::MakeBar($percentage, 24)
             [Console]::WriteLine(('{0,-28} {1,12:N0} {2,12:N1} {3,8:N2}%  {4}' -f $entry.Key, $entry.Value, $averageStageUs, $percentage, $bar))
+        }
+
+        [Console]::WriteLine('')
+        [Console]::WriteLine('CPU sub-stage totals:')
+        [Console]::WriteLine(('{0,-48} {1,10} {2,12} {3,12} {4,9}  {5}' -f 'Component/Stage', 'Calls', 'Avg us/call', 'Avg us/frame', 'Frame %', 'Chart'))
+        $sortedCpuStages = $cpuStageTotals.GetEnumerator() | Sort-Object Value -Descending
+        foreach ($entry in $sortedCpuStages) {
+            $averageStageUs = [double]$entry.Value / $validFrames.Count
+            $calls = if ($cpuStageCalls.ContainsKey($entry.Key)) { [long]$cpuStageCalls[$entry.Key] } else { 0 }
+            $averageCallUs = if ($calls -gt 0) { [double]$entry.Value / $calls } else { 0.0 }
+            $percentage = 100.0 * $averageStageUs / $averageFrameUs
+            $bar = [Dx12LogAnalysisUtils]::MakeBar($percentage, 24)
+            [Console]::WriteLine(('{0,-48} {1,10:N0} {2,12:N2} {3,12:N1} {4,8:N2}%  {5}' -f $entry.Key, $calls, $averageCallUs, $averageStageUs, $percentage, $bar))
         }
     }
 }

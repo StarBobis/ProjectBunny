@@ -62,13 +62,15 @@ static CommandListBindingState* GetOrResolveBindingState(
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
-	static bool ReadDescriptorSlotVersions(
+	static bool ReadDescriptorSlotIdentities(
 		ID3D12DescriptorHeap *heap,
 		const UINT *slots,
 		size_t count,
-		UINT64 *versions)
+		UINT64 *versions,
+		UINT64 *valueIds)
 	{
-		return DX12GetDescriptorSlotVersions(heap, slots, count, versions);
+		return DX12GetDescriptorSlotIdentities(
+			heap, slots, count, versions, valueIds);
 	}
 
 	static void FillRuntimeTableFromHeapSummary(

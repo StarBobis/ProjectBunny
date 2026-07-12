@@ -491,6 +491,7 @@ class PreSkinSlotIdentityTestResolver
 public:
 	inline static DX12DescriptorHeapSummary heap = {};
 	inline static std::array<UINT64, 64> versions = {};
+	inline static std::array<UINT64, 64> valueIds = {};
 
 	static bool ResolveTableHeap(
 		const CommandListBindingState &,
@@ -503,13 +504,15 @@ public:
 		return true;
 	}
 
-	static bool ReadDescriptorSlotVersions(
-		ID3D12DescriptorHeap *, const UINT *slots, size_t count, UINT64 *out)
+	static bool ReadDescriptorSlotIdentities(
+		ID3D12DescriptorHeap *, const UINT *slots, size_t count,
+		UINT64 *outVersions, UINT64 *outValueIds)
 	{
 		for (size_t index = 0; index < count; ++index) {
 			if (slots[index] >= versions.size())
 				return false;
-			out[index] = versions[slots[index]];
+			outVersions[index] = versions[slots[index]];
+			outValueIds[index] = valueIds[slots[index]];
 		}
 		return true;
 	}
@@ -531,6 +534,7 @@ static void TestPreSkinBindingCacheObservesOnlyReferencedSlots()
 	PreSkinSlotIdentityTestResolver::heap.numDescriptors = 64;
 	PreSkinSlotIdentityTestResolver::heap.version = 100;
 	PreSkinSlotIdentityTestResolver::versions.fill(1);
+	PreSkinSlotIdentityTestResolver::valueIds.fill(1000);
 
 	DX12RootSignatureSummary rootSignature;
 	DX12RootParameterSummary parameter;
@@ -552,6 +556,12 @@ static void TestPreSkinBindingCacheObservesOnlyReferencedSlots()
 	Require(DX12PreSkinBindingCacheUtils::KeysEqual(first, unrelatedHeapWrite));
 
 	PreSkinSlotIdentityTestResolver::versions[12]++;
+	DX12PreSkinBindingCacheKey repeatedCopy;
+	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
+		snapshot, 102, 1, &rootSignature, &repeatedCopy);
+	Require(DX12PreSkinBindingCacheUtils::KeysEqual(first, repeatedCopy));
+
+	PreSkinSlotIdentityTestResolver::valueIds[12]++;
 	DX12PreSkinBindingCacheKey referencedSlotWrite;
 	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
 		snapshot, 102, 1, &rootSignature, &referencedSlotWrite);
