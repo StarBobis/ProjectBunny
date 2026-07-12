@@ -171,6 +171,13 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
+		if (runtimeState) {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				runtimeState, graphics, rootParameterIndex, baseDescriptor);
+		} else {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				commandList, graphics, rootParameterIndex, baseDescriptor);
+		}
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		const bool skipTrackedCapture = graphics ?

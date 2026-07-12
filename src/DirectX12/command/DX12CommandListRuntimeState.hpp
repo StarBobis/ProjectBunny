@@ -11,7 +11,7 @@
 #include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
 #include "DX12PreSkinCacheIdentity.hpp"
-#include "binding/DX12BindingTrackerTypes.hpp"
+#include "binding/DX12BindingTrackerState.hpp"
 #include "ia/DX12DirectIaProbeCacheUtils.hpp"
 #include "ia/DX12DirectIaFastRejectCacheUtils.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
@@ -72,6 +72,15 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	bool runtimeCbvSrvUavHeapResolved = false;
+	DX12DescriptorHeapSummary runtimeCbvSrvUavHeap = {};
+	bool runtimeSamplerHeapResolved = false;
+	DX12DescriptorHeapSummary runtimeSamplerHeap = {};
+	UINT64 bindingQuerySerial = 1;
+	UINT graphicsRootTableValidCount = 0;
+	UINT computeRootTableValidCount = 0;
+	RootTableState graphicsRootTables[MaxRootParameters] = {};
+	RootTableState computeRootTables[MaxRootParameters] = {};
 
 	// Per-PSO override cache aligned with HotPathState generation.
 	volatile LONG psoHasOverridesGeneration = -1;

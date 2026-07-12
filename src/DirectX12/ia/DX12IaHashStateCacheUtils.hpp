@@ -95,6 +95,21 @@ public:
 class DX12IaHashKeyPrefixCacheUtils
 {
 public:
+	static __forceinline bool TryLoadStable(
+		const DX12IaHashKeyPrefixCacheEntry &entry,
+		UINT64 iaEpoch,
+		UINT64 targetPlanFingerprint,
+		bool indexed,
+		DX12IaHashStateCacheKey *key)
+	{
+		if (!key || !entry.valid || entry.iaEpoch != iaEpoch ||
+				entry.targetPlanFingerprint != targetPlanFingerprint ||
+				entry.indexed != indexed || entry.usesGlobalFallback)
+			return false;
+		*key = entry.prefix;
+		return true;
+	}
+
 	static __forceinline bool TryLoad(
 		const DX12IaHashKeyPrefixCacheEntry &entry,
 		UINT64 iaEpoch,

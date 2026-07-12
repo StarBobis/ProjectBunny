@@ -1309,16 +1309,49 @@ bool DX12BindingTracker::SnapshotBindingState(
 		return false;
 
 	bool found = false;
+	UINT64 serial = 0;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		*snapshot = it->second;
-		if (bindingQuerySerial)
-			*bindingQuerySerial = it->second.bindingQuerySerial;
+		serial = it->second.bindingQuerySerial;
 		found = true;
 	}
 	ReleaseSRWLockShared(&shard.lock);
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (runtimeState) {
+		if (!found) {
+			*snapshot = CommandListBindingState();
+			found = true;
+		}
+		snapshot->cbvSrvUavHeap = runtimeState->cbvSrvUavHeap;
+		snapshot->samplerHeap = runtimeState->samplerHeap;
+		snapshot->runtimeCbvSrvUavHeapResolved =
+			runtimeState->runtimeCbvSrvUavHeapResolved;
+		snapshot->runtimeCbvSrvUavHeap =
+			runtimeState->runtimeCbvSrvUavHeap;
+		snapshot->runtimeSamplerHeapResolved =
+			runtimeState->runtimeSamplerHeapResolved;
+		snapshot->runtimeSamplerHeap =
+			runtimeState->runtimeSamplerHeap;
+		snapshot->graphicsTableValidCount =
+			runtimeState->graphicsRootTableValidCount;
+		snapshot->computeTableValidCount =
+			runtimeState->computeRootTableValidCount;
+		memcpy(
+			snapshot->graphicsTables,
+			runtimeState->graphicsRootTables,
+			sizeof(snapshot->graphicsTables));
+		memcpy(
+			snapshot->computeTables,
+			runtimeState->computeRootTables,
+			sizeof(snapshot->computeTables));
+		serial ^= runtimeState->bindingQuerySerial;
+	}
+	if (bindingQuerySerial)
+		*bindingQuerySerial = serial ? serial : 1;
 	return found;
 }
 

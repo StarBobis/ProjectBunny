@@ -1216,6 +1216,16 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
 		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
+		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
+		ID3D12DescriptorHeap *sampler = nullptr;
+		DX12CommandListComputeBindingFlow::ResolveDescriptorHeaps(
+			count, heaps, &cbvSrvUav, &sampler);
+		if (runtimeState)
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				runtimeState, cbvSrvUav, sampler);
+		else
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				commandList, cbvSrvUav, sampler);
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetDescriptorHeaps);
 			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
@@ -1321,6 +1331,13 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptorTable);
+		if (runtimeState) {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				runtimeState, false, rootParameterIndex, baseDescriptor);
+		} else {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				commandList, false, rootParameterIndex, baseDescriptor);
+		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12_PROFILE_SCOPE(SetComputeRootDescriptorTable);
 			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
@@ -1350,6 +1367,13 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
+		if (runtimeState) {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				runtimeState, true, rootParameterIndex, baseDescriptor);
+		} else {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				commandList, true, rootParameterIndex, baseDescriptor);
+		}
 		if (DX12HotPathState::skipAll)
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);

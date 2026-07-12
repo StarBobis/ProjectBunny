@@ -922,18 +922,14 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		return false;
 	};
 	auto combineObservation = [&key, &combineResolvedObservation](
-		UINT64 gpuVa, UINT64 size, UINT64 salt,
+		UINT64 salt,
 		const DX12BufferResourceSummary *cachedSummary) {
 		if (cachedSummary && combineResolvedObservation(*cachedSummary, salt))
 			return;
-		DX12BufferResourceSummary summary;
-		if (gpuVa && size &&
-				DX12ResolveBufferResourceByGpuVa(gpuVa, size, &summary) &&
-				combineResolvedObservation(summary, salt)) {
-			return;
-		}
 		// Unresolved views retain conservative global invalidation. Resolved views
-		// no longer inherit unrelated resource/content churn.
+		// no longer inherit unrelated resource/content churn. Draw-time key building
+		// deliberately consumes wrapper IA state only; GPU VA resolution happens when
+		// the IA binding changes, matching DX11-style current-state ownership.
 		key.usesGlobalFallback = true;
 		key.bufferContentGeneration =
 			DX12IaHashStateCacheKeyHash::Combine(
@@ -950,8 +946,6 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 			key.iaViewFingerprint ^= ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull;
 			if (ia.hasIndexBuffer) {
 				combineObservation(
-					ia.indexBuffer.BufferLocation,
-					ia.indexBuffer.SizeInBytes,
 					0x100000001b3ull,
 					ia.indexBufferResolved ? &ia.indexBufferResource : nullptr);
 				key.iaViewFingerprint ^= ia.indexBuffer.BufferLocation +
@@ -975,8 +969,6 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		if (!ia.hasVertexBuffer[slot])
 			continue;
 		combineObservation(
-			ia.vertexBuffers[slot].BufferLocation,
-			ia.vertexBuffers[slot].SizeInBytes,
 			static_cast<UINT64>(slot + 1) * 0x9e3779b97f4a7c15ull,
 			ia.vertexBufferResolved[slot] ? &ia.vertexBufferResources[slot] : nullptr);
 		key.iaViewFingerprint ^= ia.vertexBuffers[slot].BufferLocation +
@@ -1009,20 +1001,23 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	if (!state)
 		return DX12IaHashStateCacheKey();
 	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
-	const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
-	const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
 	DX12IaHashStateCacheKey key;
 	DX12IaHashKeyPrefixCacheEntry &entry =
 		state->iaHashKeyPrefixes[cacheSlot % state->iaHashKeyPrefixes.size()];
-	if (!DX12IaHashKeyPrefixCacheUtils::TryLoad(
-			entry, state->iaEpoch, targetPlanFingerprint, indexed,
-			globalContentGeneration, globalResolveGeneration, &key)) {
-		key = BuildIaHashStateCacheKeyForTargets(
-			state->ia, state->iaContentEpoch, targetPlan, indexed,
-			0, 0, 0, 0, 0);
-		DX12IaHashKeyPrefixCacheUtils::Store(
-			&entry, state->iaEpoch, targetPlanFingerprint, indexed,
-			globalContentGeneration, globalResolveGeneration, key);
+	if (!DX12IaHashKeyPrefixCacheUtils::TryLoadStable(
+			entry, state->iaEpoch, targetPlanFingerprint, indexed, &key)) {
+		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
+		const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
+		if (!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+				entry, state->iaEpoch, targetPlanFingerprint, indexed,
+				globalContentGeneration, globalResolveGeneration, &key)) {
+			key = BuildIaHashStateCacheKeyForTargets(
+				state->ia, state->iaContentEpoch, targetPlan, indexed,
+				0, 0, 0, 0, 0);
+			DX12IaHashKeyPrefixCacheUtils::Store(
+				&entry, state->iaEpoch, targetPlanFingerprint, indexed,
+				globalContentGeneration, globalResolveGeneration, key);
+		}
 	}
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;
@@ -1073,6 +1068,97 @@ const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
 	return DX12CommandListRuntime::GetStatePtrFast(commandList);
 }
 
+static void DX12RuntimeClearRootTables(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		state->graphicsRootTables[root] = RootTableState();
+		state->computeRootTables[root] = RootTableState();
+	}
+	state->graphicsRootTableValidCount = 0;
+	state->computeRootTableValidCount = 0;
+}
+
+static bool DX12RuntimeResolveHeapSummary(
+	ID3D12DescriptorHeap *heap,
+	D3D12_DESCRIPTOR_HEAP_TYPE type,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (!heap || !summary)
+		return false;
+	*summary = DX12DescriptorHeapSummary();
+	return DX12FindDescriptorHeapByPtr(heap, summary) &&
+		summary->heap == heap &&
+		summary->type == static_cast<UINT>(type) &&
+		summary->increment != 0;
+}
+
+static void DX12RuntimeFillRootTableFromHeap(
+	RootTableState *table,
+	const DX12DescriptorHeapSummary &heap)
+{
+	if (!table || !table->valid ||
+			heap.increment == 0 || heap.gpuStart == 0 ||
+			table->baseDescriptor.ptr < heap.gpuStart) {
+		return;
+	}
+
+	const UINT64 tableBaseIndex =
+		(table->baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+	if (tableBaseIndex >= heap.numDescriptors)
+		return;
+
+	table->runtimeHeapResolved = true;
+	table->runtimeHeap = heap.heap;
+	table->runtimeHeapType = heap.type;
+	table->runtimeHeapCpuStart = heap.cpuStart;
+	table->runtimeHeapGpuStart = heap.gpuStart;
+	table->runtimeHeapIncrement = heap.increment;
+	table->runtimeHeapNumDescriptors = heap.numDescriptors;
+	table->runtimeHeapVersion = heap.version;
+	table->runtimeTableBaseIndex = tableBaseIndex;
+	table->runtimeTableCpuStart =
+		heap.cpuStart + static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
+	table->runtimeTableGpuStart =
+		heap.gpuStart + tableBaseIndex * heap.increment;
+}
+
+static void DX12RuntimeResolveRootTable(
+	DX12CommandListRuntimeState *state,
+	RootTableState *table)
+{
+	if (!state || !table || !table->valid)
+		return;
+	table->runtimeHeapResolved = false;
+	table->runtimeHeap = nullptr;
+	table->runtimeHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	table->runtimeHeapCpuStart = 0;
+	table->runtimeHeapGpuStart = 0;
+	table->runtimeHeapIncrement = 0;
+	table->runtimeHeapNumDescriptors = 0;
+	table->runtimeHeapVersion = 0;
+	table->runtimeTableBaseIndex = 0;
+	table->runtimeTableCpuStart = 0;
+	table->runtimeTableGpuStart = 0;
+
+	if (state->runtimeCbvSrvUavHeapResolved &&
+			state->runtimeCbvSrvUavHeap.heap == state->cbvSrvUavHeap &&
+			table->baseDescriptor.ptr >= state->runtimeCbvSrvUavHeap.gpuStart) {
+		DX12RuntimeFillRootTableFromHeap(table, state->runtimeCbvSrvUavHeap);
+	}
+}
+
+static void DX12RuntimeBumpBindingQuerySerial(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	if (state->bindingQuerySerial == UINT64_MAX)
+		state->bindingQuerySerial = 1;
+	else
+		++state->bindingQuerySerial;
+}
+
 void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12CommandListRuntimeState *state,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
@@ -1080,8 +1166,27 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 {
 	if (!state)
 		return;
+	const bool changed =
+		state->cbvSrvUavHeap != cbvSrvUavHeap ||
+		state->samplerHeap != samplerHeap;
 	state->cbvSrvUavHeap = cbvSrvUavHeap;
 	state->samplerHeap = samplerHeap;
+	state->runtimeCbvSrvUavHeapResolved =
+		DX12RuntimeResolveHeapSummary(
+			cbvSrvUavHeap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			&state->runtimeCbvSrvUavHeap);
+	if (!state->runtimeCbvSrvUavHeapResolved)
+		state->runtimeCbvSrvUavHeap = DX12DescriptorHeapSummary();
+	state->runtimeSamplerHeapResolved =
+		DX12RuntimeResolveHeapSummary(
+			samplerHeap, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+			&state->runtimeSamplerHeap);
+	if (!state->runtimeSamplerHeapResolved)
+		state->runtimeSamplerHeap = DX12DescriptorHeapSummary();
+	if (changed) {
+		DX12RuntimeClearRootTables(state);
+		DX12RuntimeBumpBindingQuerySerial(state);
+	}
 }
 
 void DX12CommandListRuntime::SetDescriptorHeaps(
@@ -1104,6 +1209,68 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 		shard.states.find(commandList);
 	if (it != shard.states.end())
 		DX12CommandListRuntime::SetDescriptorHeaps(&it->second, cbvSrvUavHeap, samplerHeap);
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberRootDescriptorTable(
+	DX12CommandListRuntimeState *state,
+	bool graphics,
+	UINT rootParameterIndex,
+	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters)
+		return;
+	RootTableState &table = graphics ?
+		state->graphicsRootTables[rootParameterIndex] :
+		state->computeRootTables[rootParameterIndex];
+	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
+		if (!table.runtimeHeapResolved)
+			DX12RuntimeResolveRootTable(state, &table);
+		return;
+	}
+	if (!table.valid) {
+		if (graphics)
+			++state->graphicsRootTableValidCount;
+		else
+			++state->computeRootTableValidCount;
+	}
+	table = RootTableState();
+	table.valid = true;
+	table.rootParameterIndex = rootParameterIndex;
+	table.baseDescriptor = baseDescriptor;
+	DX12RuntimeResolveRootTable(state, &table);
+	if (!graphics) {
+		state->computeBindingSerial++;
+		if (!state->computeBindingSerial)
+			state->computeBindingSerial = 1;
+	}
+	DX12RuntimeBumpBindingQuerySerial(state);
+}
+
+void DX12CommandListRuntime::RememberRootDescriptorTable(
+	ID3D12GraphicsCommandList *commandList,
+	bool graphics,
+	UINT rootParameterIndex,
+	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberRootDescriptorTable(
+			state, graphics, rootParameterIndex, baseDescriptor);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberRootDescriptorTable(
+			&it->second, graphics, rootParameterIndex, baseDescriptor);
+	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 

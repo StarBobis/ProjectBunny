@@ -621,3 +621,48 @@ submit 时直接看 summary 决定是否需要进一步处理。这一步收益�
 - `DX12ModHasActiveShaderOverrides()` 是否导致了不必要的 IA tracking？
 - `ExecuteCommandLists` 中 `RegisterSubmittedCommandListDirect` 的 QI/lifecycle/hunt/binding submit 占比是多少？
 - descriptor create/copy 的 wrapper 层提前 fast return 是否能保证不影响 texture override？
+
+### 2026-07-13 实施记录：IA key 构建改为只消费 wrapper 缓存
+
+上一轮 IASet 缓存改动已经证明有效：日志里没有看到 `BufferResolveBackwardScanHit` / `BufferResolveFallbackScanHit`，说明 IA 缓存已经避免了 draw 侧反复 GPU VA 解析。但代码里仍保留了一个第二层成本漏点：`BuildIaHashStateCacheKeyForTargets` 在 wrapper IA summary 未命中时，会在 draw 热路径再次调用 `DX12ResolveBufferResourceByGpuVa`。
+
+本次改动把这条路径改成 DX11-style current state 模型：
+
+- `IASetIndexBuffer` / `IASetVertexBuffers` 负责在绑定变化时解析一次 GPU VA -> resource summary。
+- draw 阶段构建 IA hash key 只消费 `DX12ActiveIaState` 中已缓存的 summary。
+- 如果绑定时没有解析到资源，draw 阶段不再二次动态解析，而是标记 `usesGlobalFallback`，继续用全局 content/resolve generation 保守失效。
+- `DX12IaHashKeyPrefixCacheUtils` 增加 stable prefix 命中路径：当 prefix 不依赖 global fallback 时，cache hit 不再读取全局 generation。
+
+安全边界：
+
+- 不移除 IA 内容 hash，也不改变模型/贴图替换的匹配输入。
+- 已解析资源仍然使用 resource generation + content generation 保证资源释放、重用、内容变化后的失效。
+- 未解析资源不会被错当成已解析资源；只是退回保守 generation key，最多降低 cache 命中率，不会复用错误 hash。
+
+预计效果：
+
+- `BuildIaHashStateCacheKeyForTargets` 的 draw 热路径 GPU VA resolve 调用降低 100%。
+- stable IA prefix cache 命中时，全局 generation 读取降低 100%。
+- 对当前观测到的 `build_direct_ia_probe_state` 热点，预计 key 准备阶段开销下降 20% 到 45%；总帧 CPU 延迟预计提升 3% 到 10%，具体取决于当前帧中 IA hash cache miss 与 direct probe miss 占比。
+
+### 2026-07-13 实施记录：descriptor table current-state 下沉到 wrapper runtime
+
+继续按 DX11-style wrapper current state 方向推进。本次把 descriptor heap 和 root descriptor table 的当前绑定身份下沉到 `DX12CommandListRuntimeState`，也就是 `GraphicsCommandListWrapper::mRuntimeState`：
+
+- `SetDescriptorHeaps` 入口无论是否跳过 BindingTracker/capture，都会先更新 wrapper runtime 的当前 CBV/SRV/UAV heap、sampler heap，以及对应 `DX12DescriptorHeapSummary`。
+- heap 变化时，wrapper runtime 中的 graphics/compute root table current-state 会失效清空，避免旧 table 绑定跨 heap 复用。
+- `SetGraphicsRootDescriptorTable` / `SetComputeRootDescriptorTable` 入口无论是否进入 capture，都会先更新 wrapper runtime 的 root table current-state。
+- root table 更新时直接用当前 heap summary 计算 table base index、CPU/GPU start、heap version 等 resolved identity。
+- `DX12BindingTracker::SnapshotBindingState` 保留原有 BindingTracker 快照，但会把 wrapper runtime 的 heap/table current-state 合并进去，让现有查询逻辑优先消费 wrapper 入口已经解析好的 table identity。
+
+安全边界：
+
+- 不改变 descriptor 内容查询和贴图替换匹配逻辑；descriptor summary 仍由 descriptor tracker 按 CPU handle/slot/epoch 查询。
+- 新增缓存只保存当前绑定身份：heap、heap version、table base index、CPU/GPU start。
+- heap 切换会清空 table current-state；descriptor 内容变化仍依赖 descriptor heap version / descriptor epoch 失效。
+
+预计效果：
+
+- root table 绑定阶段的 heap/table 反复解析减少 40% 到 80%。
+- 正常 Mod fast path 中，即使 BindingTracker/capture 被跳过，也能维护 DX11-style 当前 descriptor table 状态。
+- texture override / pre-skin 前置查询预计降低 5% 到 15%；如果当前帧 descriptor table 解析占比较高，总帧 CPU 延迟预计提升 3% 到 8%。
