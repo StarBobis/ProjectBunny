@@ -7,6 +7,7 @@
 #include "D3D12ProxySignatures.hpp"
 #include "D3D12ProxyState.hpp"
 #include "DX12Wrapper.hpp"
+#include "utils/DX12CreateTimingTelemetryUtils.hpp"
 #include "DX12DeviceHooks.hpp"
 #include "DX12Runtime.hpp"
 #include "DX12LogManager.hpp"
@@ -130,6 +131,7 @@ void D3D12ProxyRuntime::UnloadRealD3D12()
 extern "C" HRESULT WINAPI D3D12CreateDevice(
 	IUnknown *adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void **device)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyDeviceCreate, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigCreateDevice)
 		return E_FAIL;
@@ -144,6 +146,7 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 
 extern "C" HRESULT WINAPI D3D12GetDebugInterface(REFIID riid, void **debug)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12GetDebugInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetDebugInterface)
@@ -160,6 +163,7 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 	const D3D12_ROOT_SIGNATURE_DESC *desc, D3D_ROOT_SIGNATURE_VERSION version,
 	ID3DBlob **blob, ID3DBlob **errorBlob)
 {
+	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12SerializeRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeRootSignature)
@@ -173,6 +177,7 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12CreateRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateRootSignatureDeserializer)
@@ -189,6 +194,7 @@ extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 extern "C" HRESULT WINAPI D3D12SerializeVersionedRootSignature(
 	const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc, ID3DBlob **blob, ID3DBlob **errorBlob)
 {
+	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12SerializeVersionedRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeVersionedRootSignature)
@@ -201,6 +207,7 @@ extern "C" HRESULT WINAPI D3D12SerializeVersionedRootSignature(
 extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12CreateVersionedRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer)
@@ -217,6 +224,7 @@ extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 extern "C" HRESULT WINAPI D3D12EnableExperimentalFeatures(
 	UINT numFeatures, const IID *featureIIDs, void *configurationStructs, UINT *configurationStructSizes)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12EnableExperimentalFeatures,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigEnableExperimentalFeatures)
@@ -230,6 +238,7 @@ extern "C" HRESULT WINAPI D3D12EnableExperimentalFeatures(
 
 extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **object)
 {
+	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	DX12LogManager::DebugJsonFunc("DX12HookCall", "api=D3D12GetInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetInterface)

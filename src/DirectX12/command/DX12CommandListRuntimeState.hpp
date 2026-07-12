@@ -9,6 +9,7 @@
 #include "DX12CompiledDispatchDecision.hpp"
 #include "DX12CompiledDrawDecision.hpp"
 #include "DX12CommandListTrackingCache.hpp"
+#include "DX12PreSkinCacheIdentity.hpp"
 #include "binding/DX12BindingTrackerTypes.hpp"
 #include "ia/DX12DirectIaProbeCacheUtils.hpp"
 #include "ia/DX12IaHashStateCacheUtils.hpp"
@@ -62,13 +63,14 @@ public:
 	// compute bindings have not changed since the last collection.
 	UINT64 lastPreSkinBindingSerial = 0;
 	bool preSkinBindingsCached = false;
+	DX12PreSkinBindingCacheIdentity cachedPreSkinBindingIdentity;
 	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinUavs;
 	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
 	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
 	std::vector<DX12CurrentRootConstants> cachedPreSkinConstants;
 	UINT64 cachedPreSkinBindingFingerprintSerial = 0;
 	UINT64 cachedPreSkinBindingFingerprint = 0;
-	UINT64 cachedPreSkinProbeSerial = 0;
+	UINT64 cachedPreSkinProbeFingerprint = 0;
 	uint64_t cachedPreSkinProbeCsHash = 0;
 	UINT64 cachedPreSkinProbeReloadGeneration = 0;
 	bool cachedPreSkinProbeResultValid = false;

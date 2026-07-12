@@ -45,6 +45,32 @@ public:
 		ApiResolveSubresource,
 		ApiClearUnorderedAccessView,
 		ApiOtherCommandList,
+		ApiDeviceCommandCreate,
+		ApiDevicePsoCreate,
+		ApiDeviceDescriptorHeapCreate,
+		ApiDeviceRootSignatureCreate,
+		ApiDeviceCreateCbv,
+		ApiDeviceCreateSrv,
+		ApiDeviceCreateUav,
+		ApiDeviceCreateRtv,
+		ApiDeviceCreateDsv,
+		ApiDeviceCreateSampler,
+		ApiDeviceCopyDescriptors,
+		ApiDeviceCopyDescriptorsSimple,
+		ApiDeviceResourceCreate,
+		ApiDeviceHeapCreate,
+		ApiDeviceResidency,
+		ApiDeviceFenceCreate,
+		ApiDeviceQueryHeapCreate,
+		ApiDeviceCommandSignatureCreate,
+		ApiDevicePipelineLibraryCreate,
+		ApiDeviceMisc,
+		ApiResourceMap,
+		ApiResourceUnmap,
+		ApiResourceReadWrite,
+		ApiResourceQuery,
+		ApiDeviceQuery,
+		ApiObjectLifetime,
 		ApiWallBucketCount
 	};
 
@@ -59,7 +85,7 @@ public:
 		{
 			bucket = value;
 			begin = DX12OuterTimingProbeUtils::Now();
-			DX12OuterTimingProbeUtils::LogApiScopeBegin(begin.QuadPart);
+			DX12OuterTimingProbeUtils::LogApiScopeBegin(bucket, begin.QuadPart);
 		}
 
 		~ApiWallScope()
@@ -147,6 +173,13 @@ public:
 	inline static volatile LONG64 ApiScopeFirstBeginQpc = 0;
 	inline static volatile LONG64 ApiScopeLastEndQpc = 0;
 	inline static volatile LONG64 ApiScopeMaxGapUs = 0;
+	inline static volatile LONG ApiScopeFirstBucket = ApiOtherCommandList;
+	inline static volatile LONG ApiScopeLastBucket = ApiOtherCommandList;
+	inline static volatile LONG ApiScopeLastThreadId = 0;
+	inline static volatile LONG ApiScopeMaxGapBeforeBucket = ApiOtherCommandList;
+	inline static volatile LONG ApiScopeMaxGapAfterBucket = ApiOtherCommandList;
+	inline static volatile LONG ApiScopeMaxGapBeforeThreadId = 0;
+	inline static volatile LONG ApiScopeMaxGapAfterThreadId = 0;
 
 	inline static SRWLOCK CpuStageLock = SRWLOCK_INIT;
 	inline static CpuStageBucket CpuStageBuckets[160] = {};
@@ -279,6 +312,32 @@ public:
 		case ApiCopyTiles: return "CopyTiles";
 		case ApiResolveSubresource: return "ResolveSubresource";
 		case ApiClearUnorderedAccessView: return "ClearUnorderedAccessView";
+		case ApiDeviceCommandCreate: return "DeviceCommandCreate";
+		case ApiDevicePsoCreate: return "DevicePsoCreate";
+		case ApiDeviceDescriptorHeapCreate: return "DeviceDescriptorHeapCreate";
+		case ApiDeviceRootSignatureCreate: return "DeviceRootSignatureCreate";
+		case ApiDeviceCreateCbv: return "DeviceCreateCBV";
+		case ApiDeviceCreateSrv: return "DeviceCreateSRV";
+		case ApiDeviceCreateUav: return "DeviceCreateUAV";
+		case ApiDeviceCreateRtv: return "DeviceCreateRTV";
+		case ApiDeviceCreateDsv: return "DeviceCreateDSV";
+		case ApiDeviceCreateSampler: return "DeviceCreateSampler";
+		case ApiDeviceCopyDescriptors: return "DeviceCopyDescriptors";
+		case ApiDeviceCopyDescriptorsSimple: return "DeviceCopyDescriptorsSimple";
+		case ApiDeviceResourceCreate: return "DeviceResourceCreate";
+		case ApiDeviceHeapCreate: return "DeviceHeapCreate";
+		case ApiDeviceResidency: return "DeviceResidency";
+		case ApiDeviceFenceCreate: return "DeviceFenceCreate";
+		case ApiDeviceQueryHeapCreate: return "DeviceQueryHeapCreate";
+		case ApiDeviceCommandSignatureCreate: return "DeviceCommandSignatureCreate";
+		case ApiDevicePipelineLibraryCreate: return "DevicePipelineLibraryCreate";
+		case ApiDeviceMisc: return "DeviceMisc";
+		case ApiResourceMap: return "ResourceMap";
+		case ApiResourceUnmap: return "ResourceUnmap";
+		case ApiResourceReadWrite: return "ResourceReadWrite";
+		case ApiResourceQuery: return "ResourceQuery";
+		case ApiDeviceQuery: return "DeviceQuery";
+		case ApiObjectLifetime: return "ObjectLifetime";
 		default: return "OtherCommandList";
 		}
 	}
@@ -307,7 +366,7 @@ public:
 		}
 	}
 
-	static void LogApiScopeBegin(LONGLONG beginQpc)
+	static void LogApiScopeBegin(int bucket, LONGLONG beginQpc)
 	{
 		const LONG64 activeDepth = InterlockedIncrement64(&ApiScopeActiveDepth);
 		if (activeDepth > 1) {
@@ -315,14 +374,33 @@ public:
 			return;
 		}
 		InterlockedIncrement64(&ApiScopeCalls);
-		InterlockedCompareExchange64(
+		const LONG64 firstBegin = InterlockedCompareExchange64(
 			&ApiScopeFirstBeginQpc,
 			static_cast<LONG64>(beginQpc),
 			0);
+		if (firstBegin == 0)
+			InterlockedExchange(&ApiScopeFirstBucket, bucket);
 		const LONG64 previousEndQpc =
 			InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
-		if (previousEndQpc > 0 && beginQpc > previousEndQpc)
-			MaxUs(&ApiScopeMaxGapUs, DeltaUs(previousEndQpc, beginQpc));
+		if (previousEndQpc > 0 && beginQpc > previousEndQpc) {
+			const LONG64 gapUs = DeltaUs(previousEndQpc, beginQpc);
+			LONG64 observed = InterlockedCompareExchange64(&ApiScopeMaxGapUs, 0, 0);
+			while (gapUs > observed) {
+				const LONG64 previous = InterlockedCompareExchange64(
+					&ApiScopeMaxGapUs, gapUs, observed);
+				if (previous == observed) {
+					InterlockedExchange(&ApiScopeMaxGapBeforeBucket,
+						InterlockedCompareExchange(&ApiScopeLastBucket, 0, 0));
+					InterlockedExchange(&ApiScopeMaxGapAfterBucket, bucket);
+					InterlockedExchange(&ApiScopeMaxGapBeforeThreadId,
+						InterlockedCompareExchange(&ApiScopeLastThreadId, 0, 0));
+					InterlockedExchange(&ApiScopeMaxGapAfterThreadId,
+						static_cast<LONG>(GetCurrentThreadId()));
+					break;
+				}
+				observed = previous;
+			}
+		}
 	}
 
 	static void LogApiScopeEnd(int bucket, LONGLONG beginQpc, LONGLONG endQpc)
@@ -331,7 +409,18 @@ public:
 		const LONG64 activeDepth = InterlockedCompareExchange64(&ApiScopeActiveDepth, 0, 0);
 		if (activeDepth <= 1) {
 			AddUs(&ApiScopeTotalUs, elapsedUs);
-			MaxQpc(&ApiScopeLastEndQpc, endQpc);
+			LONG64 observed = InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
+			while (endQpc > observed) {
+				const LONG64 previous = InterlockedCompareExchange64(
+					&ApiScopeLastEndQpc, endQpc, observed);
+				if (previous == observed) {
+					InterlockedExchange(&ApiScopeLastBucket, bucket);
+					InterlockedExchange(&ApiScopeLastThreadId,
+						static_cast<LONG>(GetCurrentThreadId()));
+					break;
+				}
+				observed = previous;
+			}
 		}
 		LogApiWallSlice(bucket, elapsedUs);
 		InterlockedDecrement64(&ApiScopeActiveDepth);
@@ -383,6 +472,15 @@ public:
 		const LONG64 firstBeginQpc = TakeLong64(&ApiScopeFirstBeginQpc);
 		const LONG64 lastEndQpc = TakeLong64(&ApiScopeLastEndQpc);
 		const LONG64 maxGapUs = TakeLong64(&ApiScopeMaxGapUs);
+		const LONG firstBucket = InterlockedExchange(&ApiScopeFirstBucket, ApiOtherCommandList);
+		const LONG lastBucket = InterlockedExchange(&ApiScopeLastBucket, ApiOtherCommandList);
+		const LONG maxGapBeforeBucket = InterlockedExchange(
+			&ApiScopeMaxGapBeforeBucket, ApiOtherCommandList);
+		const LONG maxGapAfterBucket = InterlockedExchange(
+			&ApiScopeMaxGapAfterBucket, ApiOtherCommandList);
+		const LONG maxGapBeforeThreadId = TakeLong(&ApiScopeMaxGapBeforeThreadId);
+		const LONG maxGapAfterThreadId = TakeLong(&ApiScopeMaxGapAfterThreadId);
+		TakeLong(&ApiScopeLastThreadId);
 
 		const LONG64 apiSpanUs =
 			(firstBeginQpc > 0 && lastEndQpc > firstBeginQpc) ?
@@ -403,6 +501,9 @@ public:
 		DX12LogManager::JsonFunc("DX12CpuTimelineCoverage",
 			"\"present\":%ld,\"apiScopeCalls\":%lld,\"apiScopeNestedCalls\":%lld,"
 			"\"apiScopeTotalUs\":%lld,\"apiScopeSpanUs\":%lld,\"apiScopeMaxGapUs\":%lld,"
+			"\"apiScopeFirstBucket\":\"%s\",\"apiScopeLastBucket\":\"%s\","
+			"\"apiScopeMaxGapBeforeBucket\":\"%s\",\"apiScopeMaxGapAfterBucket\":\"%s\","
+			"\"apiScopeMaxGapBeforeThreadId\":%ld,\"apiScopeMaxGapAfterThreadId\":%ld,"
 			"\"apiBeforeFirstScopeUs\":%lld,\"apiAfterLastScopeUs\":%lld,"
 			"\"apiFirstBeginToPresentUs\":%lld,\"apiLastEndToPresentUs\":%lld,"
 			"\"frameWallUs\":%lld,\"presentWallUs\":%lld,\"frameMinusApiTotalUs\":%lld,"
@@ -413,6 +514,12 @@ public:
 			static_cast<long long>(totalUs),
 			static_cast<long long>(apiSpanUs),
 			static_cast<long long>(maxGapUs),
+			ApiWallBucketName(firstBucket),
+			ApiWallBucketName(lastBucket),
+			ApiWallBucketName(maxGapBeforeBucket),
+			ApiWallBucketName(maxGapAfterBucket),
+			maxGapBeforeThreadId,
+			maxGapAfterThreadId,
 			static_cast<long long>(beforeFirstApiUs),
 			static_cast<long long>(afterLastApiUs),
 			static_cast<long long>(firstBeginToPresentUs),

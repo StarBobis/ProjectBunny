@@ -14,6 +14,7 @@
 #include "DX12ModRuntime.hpp"
 #include "DX12PreSkinPlan.hpp"
 #include "DX12Profiling.hpp"
+#include "DX12ResourceTracker.hpp"
 #include "DX12RuntimeState.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
@@ -203,12 +204,6 @@ public:
 	{
 		if (!originalDispatch)
 			return;
-		// Bump the compute binding serial once per dispatch instead of once per
-		// binding call.
-		if (runtimeState)
-			DX12CommandListRuntime::BumpComputeBindingSerial(runtimeState);
-		else
-			DX12CommandListRuntime::BumpComputeBindingSerial(commandList);
 		const bool hasShaderOverrides = DX12ModHasActiveShaderOverrides();
 		const bool needsPreSkinProbe = DX12ModNeedsPreSkinningUavProbe();
 		if (InDispatchHookFlow) {
@@ -467,6 +462,28 @@ public:
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(csConfigBegin));
 
+		DX12PreSkinBindingCacheIdentity bindingIdentity;
+		bindingIdentity.bindingSerial =
+			DX12BindingTracker::GetComputeBindingSerial(commandList);
+		bindingIdentity.descriptorHeapVersion =
+			(runtimeState && runtimeState->cbvSrvUavHeap) ?
+			DX12GetDescriptorHeapVersion(runtimeState->cbvSrvUavHeap) :
+			DX12PreSkinCacheIdentityUtils::NoDescriptorHeapVersion;
+		bindingIdentity.bufferResolveGeneration =
+			DX12GetIaHashResolveGeneration();
+		if (runtimeState) {
+			runtimeState->computeBindingSerial = bindingIdentity.bindingSerial;
+			if (runtimeState->preSkinBindingsCached &&
+			    !DX12PreSkinCacheIdentityUtils::CanReuseBindings(
+				    true,
+				    runtimeState->cachedPreSkinBindingIdentity,
+				    bindingIdentity)) {
+				runtimeState->preSkinBindingsCached = false;
+				runtimeState->cachedPreSkinBindingFingerprint = 0;
+				runtimeState->cachedPreSkinProbeResultValid = false;
+			}
+		}
+
 		if (!probe->uavsFound) {
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
@@ -476,8 +493,10 @@ public:
 			// Keyed by computeBindingSerial (bumps on every root signature /
 			// descriptor table / root descriptor / root constant change).
 			if (runtimeState &&
-				runtimeState->preSkinBindingsCached &&
-				runtimeState->computeBindingSerial == runtimeState->lastPreSkinBindingSerial) {
+				DX12PreSkinCacheIdentityUtils::CanReuseBindings(
+					runtimeState->preSkinBindingsCached,
+					runtimeState->cachedPreSkinBindingIdentity,
+					bindingIdentity)) {
 				probe->cachedUavs = &runtimeState->cachedPreSkinUavs;
 				probe->cachedSrvs = &runtimeState->cachedPreSkinSrvs;
 				probe->cachedCbvs = &runtimeState->cachedPreSkinCbvs;
@@ -495,6 +514,8 @@ public:
 				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
 					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
 					&probe->rootConstants);
+				if (runtimeState && runtimeState->preSkinBindingsCached)
+					runtimeState->cachedPreSkinBindingIdentity = bindingIdentity;
 			}
 			const std::vector<DX12CurrentComputeUavBinding> &uavs =
 				probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
@@ -525,13 +546,14 @@ public:
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
 		UINT64 computeIaFingerprint = 1;
 		if (runtimeState &&
+			runtimeState->cachedPreSkinBindingIdentity == bindingIdentity &&
 			runtimeState->cachedPreSkinBindingFingerprintSerial ==
 				runtimeState->computeBindingSerial &&
 			runtimeState->cachedPreSkinBindingFingerprint != 0) {
 			computeIaFingerprint = runtimeState->cachedPreSkinBindingFingerprint;
 		} else {
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
-			computeIaFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
+			computeIaFingerprint = DX12PreSkinPlanUtils::BuildStableBindingFingerprint(
 				uavs, srvs, cbvs, rootConstants);
 			if (computeIaFingerprint == 0)
 				computeIaFingerprint = 1;
@@ -541,6 +563,9 @@ public:
 				runtimeState->cachedPreSkinBindingFingerprint = computeIaFingerprint;
 			}
 		}
+		computeIaFingerprint = DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
+			computeIaFingerprint,
+			runtimeState ? runtimeState->iaContentEpoch : 0);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			"build_binding_fingerprint",
@@ -557,14 +582,14 @@ public:
 		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
 		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 		const auto storeRuntimeProbeCache =
-			[runtimeState, reloadGeneration](
+			[runtimeState, reloadGeneration, computeIaFingerprint](
 				uint64_t computeShaderHash,
 				bool applied,
 				const DX12PreSkinDispatchOverride &dispatchOverride) {
 				if (!runtimeState)
 					return;
-				runtimeState->cachedPreSkinProbeSerial =
-					runtimeState->computeBindingSerial;
+				runtimeState->cachedPreSkinProbeFingerprint =
+					computeIaFingerprint;
 				runtimeState->cachedPreSkinProbeCsHash = computeShaderHash;
 				runtimeState->cachedPreSkinProbeReloadGeneration = reloadGeneration;
 				runtimeState->cachedPreSkinProbeResultValid = true;
@@ -580,8 +605,8 @@ public:
 		bool runtimeProbeCacheHit = false;
 		if (runtimeState &&
 			runtimeState->cachedPreSkinProbeResultValid &&
-			runtimeState->cachedPreSkinProbeSerial ==
-				runtimeState->computeBindingSerial &&
+			runtimeState->cachedPreSkinProbeFingerprint ==
+				computeIaFingerprint &&
 			runtimeState->cachedPreSkinProbeCsHash == probe->computeShaderHash &&
 			runtimeState->cachedPreSkinProbeReloadGeneration == reloadGeneration) {
 			cacheEntry.applied = runtimeState->cachedPreSkinProbeApplied;

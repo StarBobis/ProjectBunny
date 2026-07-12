@@ -284,6 +284,7 @@ static void ClearPreSkinRuntimeState()
 	AcquireSRWLockExclusive(&gPreSkinDescriptorRingLock);
 	ReleasePreSkinDescriptorRingLocked(&releaseBatch);
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
+	ClearPreSkinOutputResizeCache();
 	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
 

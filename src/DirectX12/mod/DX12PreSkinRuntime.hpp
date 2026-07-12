@@ -1455,6 +1455,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Resource *resizedUavResource = nullptr;
 	ID3D12DescriptorHeap *resizedUavHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE resizedUavCpu = {};
+	D3D12_RESOURCE_STATES resizedUavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	bool resizedUavCacheHit = false;
 	bool outputUavResized = false;
 #if defined(_DEBUG)
 	DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
@@ -1487,90 +1489,68 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			static_cast<UINT64>(uavStride) * overrideVertexCount;
 		const UINT64 currentByteWidth = DescriptorViewSize(uavBinding.descriptor);
 		if (requiredByteWidth > currentByteWidth) {
-			D3D12_HEAP_PROPERTIES uavHeapProps = {};
-			uavHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-			uavHeapProps.CreationNodeMask = 1;
-			uavHeapProps.VisibleNodeMask = 1;
-			D3D12_RESOURCE_DESC uavResDesc = {};
-			uavResDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-			uavResDesc.Width = requiredByteWidth;
-			uavResDesc.Height = 1;
-			uavResDesc.DepthOrArraySize = 1;
-			uavResDesc.MipLevels = 1;
-			uavResDesc.Format = DXGI_FORMAT_UNKNOWN;
-			uavResDesc.SampleDesc.Count = 1;
-			uavResDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-			uavResDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-			HRESULT uavResHr = device->CreateCommittedResource(
-				&uavHeapProps, D3D12_HEAP_FLAG_NONE, &uavResDesc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-				IID_PPV_ARGS(&resizedUavResource));
-			if (SUCCEEDED(uavResHr) && resizedUavResource) {
-				D3D12_DESCRIPTOR_HEAP_DESC uavHeapDesc = {};
-				uavHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-				uavHeapDesc.NumDescriptors = 1;
-				uavHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-				HRESULT uavHeapHr = device->CreateDescriptorHeap(
-					&uavHeapDesc, IID_PPV_ARGS(&resizedUavHeap));
-				if (SUCCEEDED(uavHeapHr) && resizedUavHeap) {
-					resizedUavCpu =
-						resizedUavHeap->GetCPUDescriptorHandleForHeapStart();
-					D3D12_UNORDERED_ACCESS_VIEW_DESC newUavDesc = {};
-					newUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-					newUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-					newUavDesc.Buffer.FirstElement = 0;
-					newUavDesc.Buffer.StructureByteStride = uavStride;
-					newUavDesc.Buffer.NumElements = overrideVertexCount;
-					newUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-					device->CreateUnorderedAccessView(
-						resizedUavResource, nullptr, &newUavDesc,
-						resizedUavCpu);
-					// Patch temp heap copy so CS dispatch writes to resized buffer.
-					const TableCopy *uavTable = findTable(uavBinding);
-					if (uavTable) {
-						D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
-						uavDst.ptr += static_cast<SIZE_T>(
-							uavTable->tempOffset +
-							uavBinding.descriptorOffset) *
-							tempIncrement;
-						device->CopyDescriptorsSimple(
-							1, uavDst, resizedUavCpu,
-							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-						outputUavResized = true;
-						resizedUavResource->AddRef();
-						temporaryResources.push_back(
-							resizedUavResource);
-						// Register for IASetVertexBuffers redirection
-						// so the draw uses the resized buffer as vb0.
-							DX12ModRegisterPreSkinOutputResize(
-								uavBinding.descriptor.resource,
-								resizedUavResource,
-								currentByteWidth,
-								requiredByteWidth,
-								uavStride);
-#if defined(_DEBUG)
-						DX12LogManager::DebugJsonFunc(
-							"DX12PreSkinningApply",
-							"\"status\":\"output_uav_resized\","
-							"\"section\":\"%S\","
-							"\"triggerHash\":\"%08x\","
-							"\"oldBytes\":%llu,"
-							"\"newBytes\":%llu,"
-							"\"oldVertices\":%u,"
-							"\"newVertices\":%u,"
-							"\"stride\":%u",
-							section ? section : L"",
-							triggerHash,
-							static_cast<unsigned long long>(
-								currentByteWidth),
-							static_cast<unsigned long long>(
-								requiredByteWidth),
-							originalVertexCount,
-							overrideVertexCount,
-							uavStride);
-#endif
-					}
+			const TableCopy *uavTable = findTable(uavBinding);
+			if (uavTable && AcquirePreSkinOutputResizeCacheEntry(
+				device, uavBinding.descriptor.resource,
+				requiredByteWidth, uavStride, overrideVertexCount,
+				&resizedUavResource, &resizedUavHeap, &resizedUavCpu,
+				&resizedUavState, &resizedUavCacheHit)) {
+				if (resizedUavState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+					D3D12_RESOURCE_BARRIER barrier = {};
+					barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+					barrier.Transition.pResource = resizedUavResource;
+					barrier.Transition.StateBefore = resizedUavState;
+					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+					barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+					commandList->ResourceBarrier(1, &barrier);
 				}
+				SetPreSkinOutputResizeCacheState(
+					resizedUavResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
+				uavDst.ptr += static_cast<SIZE_T>(
+					uavTable->tempOffset + uavBinding.descriptorOffset) *
+					tempIncrement;
+				device->CopyDescriptorsSimple(
+					1, uavDst, resizedUavCpu,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				outputUavResized = true;
+				// The acquired resource reference follows this command list through
+				// the existing delayed-retirement path. The cache keeps a separate
+				// base reference for reuse by later frames.
+				temporaryResources.push_back(resizedUavResource);
+				if (resizedUavHeap) {
+					resizedUavHeap->Release();
+					resizedUavHeap = nullptr;
+				}
+				// Register for IASetVertexBuffers redirection so the draw uses the
+				// resized buffer as vb0.
+				DX12ModRegisterPreSkinOutputResize(
+					uavBinding.descriptor.resource,
+					resizedUavResource,
+					currentByteWidth,
+					requiredByteWidth,
+					uavStride);
+#if defined(_DEBUG)
+				DX12LogManager::DebugJsonFunc(
+					"DX12PreSkinningApply",
+					"\"status\":\"output_uav_resized\","
+					"\"section\":\"%S\","
+					"\"triggerHash\":\"%08x\","
+					"\"oldBytes\":%llu,"
+					"\"newBytes\":%llu,"
+					"\"oldVertices\":%u,"
+					"\"newVertices\":%u,"
+					"\"stride\":%u,"
+					"\"cache\":\"%s\"",
+					section ? section : L"",
+					triggerHash,
+					static_cast<unsigned long long>(currentByteWidth),
+					static_cast<unsigned long long>(requiredByteWidth),
+					originalVertexCount,
+					overrideVertexCount,
+					uavStride,
+					resizedUavCacheHit ? "hit" : "miss");
+#endif
 			}
 			if (!outputUavResized) {
 				if (resizedUavResource)

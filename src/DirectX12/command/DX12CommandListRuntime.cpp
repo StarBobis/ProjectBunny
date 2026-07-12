@@ -781,33 +781,6 @@ void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *comma
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntime::BumpComputeBindingSerial(DX12CommandListRuntimeState *state)
-{
-	if (!state)
-		return;
-	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&state->computeBindingSerial));
-}
-
-void DX12CommandListRuntime::BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return;
-
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
-	if (state) {
-		DX12CommandListRuntime::BumpComputeBindingSerial(state);
-		return;
-	}
-
-	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
-		shard.states.find(commandList);
-	if (it != shard.states.end())
-		DX12CommandListRuntime::BumpComputeBindingSerial(&it->second);
-	ReleaseSRWLockShared(&shard.lock);
-}
-
 bool DX12CommandListRuntime::BuildIaHashState(
 	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
 	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)

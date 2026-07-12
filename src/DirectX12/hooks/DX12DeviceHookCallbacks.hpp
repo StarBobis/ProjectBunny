@@ -13,6 +13,7 @@
 #include "hooks/DX12DeviceHookTypes.hpp"
 #include "hooks/DX12DeviceHooksForward.hpp"
 #include "types/DX12DeviceHookSlotTypes.hpp"
+#include "utils/DX12CreateTimingTelemetryUtils.hpp"
 
 class DX12DeviceHookCallbacks
 {
@@ -54,27 +55,37 @@ public:
 			return CreateGraphicsPipelineStateOriginal(device, desc, riid, pipelineState);
 		DX12GraphicsPsoReplacement replacement;
 		const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc = desc;
-		if (desc) {
-			replacement.desc = *desc;
-			if (DX12ModReplaceShaderBytecode("vs", desc->VS, &replacement.vs, &replacement.vsBytes)) {
-				replacement.desc.VS = replacement.vs;
-				replacement.changed = true;
+		{
+			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Prepare);
+			if (desc) {
+				replacement.desc = *desc;
+				if (DX12ModReplaceShaderBytecode("vs", desc->VS, &replacement.vs, &replacement.vsBytes)) {
+					replacement.desc.VS = replacement.vs;
+					replacement.changed = true;
+				}
+				if (DX12ModReplaceShaderBytecode("ps", desc->PS, &replacement.ps, &replacement.psBytes)) {
+					replacement.desc.PS = replacement.ps;
+					replacement.changed = true;
+				}
+				if (replacement.changed)
+					activeDesc = &replacement.desc;
 			}
-			if (DX12ModReplaceShaderBytecode("ps", desc->PS, &replacement.ps, &replacement.psBytes)) {
-				replacement.desc.PS = replacement.ps;
-				replacement.changed = true;
-			}
-			if (replacement.changed)
-				activeDesc = &replacement.desc;
 		}
 
-		HRESULT hr = CreateGraphicsPipelineStateOriginal(device, activeDesc, riid, pipelineState);
-		if (SUCCEEDED(hr) && activeDesc) {
-			ID3D12PipelineState *created =
-				pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
-			if (desc)
-				DX12ModRecordGraphicsPipelineState(device, created, desc);
-			DX12RecordGraphicsPipelineState(created, activeDesc);
+		HRESULT hr = E_FAIL;
+		{
+			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Original);
+			hr = CreateGraphicsPipelineStateOriginal(device, activeDesc, riid, pipelineState);
+		}
+		{
+			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Record);
+			if (SUCCEEDED(hr) && activeDesc) {
+				ID3D12PipelineState *created =
+					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
+				if (desc)
+					DX12ModRecordGraphicsPipelineState(device, created, desc);
+				DX12RecordGraphicsPipelineState(created, activeDesc);
+			}
 		}
 		return hr;
 	}
@@ -90,22 +101,32 @@ public:
 			return CreateComputePipelineStateOriginal(device, desc, riid, pipelineState);
 		DX12ComputePsoReplacement replacement;
 		const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc = desc;
-		if (desc) {
-			replacement.desc = *desc;
-			if (DX12ModReplaceShaderBytecode("cs", desc->CS, &replacement.cs, &replacement.csBytes)) {
-				replacement.desc.CS = replacement.cs;
-				replacement.changed = true;
-				activeDesc = &replacement.desc;
+		{
+			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Prepare);
+			if (desc) {
+				replacement.desc = *desc;
+				if (DX12ModReplaceShaderBytecode("cs", desc->CS, &replacement.cs, &replacement.csBytes)) {
+					replacement.desc.CS = replacement.cs;
+					replacement.changed = true;
+					activeDesc = &replacement.desc;
+				}
 			}
 		}
 
-		HRESULT hr = CreateComputePipelineStateOriginal(device, activeDesc, riid, pipelineState);
-		if (SUCCEEDED(hr) && activeDesc) {
-			ID3D12PipelineState *created =
-				pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
-			if (desc)
-				DX12ModRecordComputePipelineState(device, created, desc);
-			DX12RecordComputePipelineState(created, activeDesc);
+		HRESULT hr = E_FAIL;
+		{
+			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Original);
+			hr = CreateComputePipelineStateOriginal(device, activeDesc, riid, pipelineState);
+		}
+		{
+			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Record);
+			if (SUCCEEDED(hr) && activeDesc) {
+				ID3D12PipelineState *created =
+					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
+				if (desc)
+					DX12ModRecordComputePipelineState(device, created, desc);
+				DX12RecordComputePipelineState(created, activeDesc);
+			}
 		}
 		return hr;
 	}
@@ -123,10 +144,17 @@ public:
 			"ID3D12Device2::CreatePipelineState");
 		if (DX12InternalReplayState::IsActive())
 			return original ? original(device, desc, riid, pipelineState) : E_FAIL;
-		HRESULT hr = original ? original(device, desc, riid, pipelineState) : E_FAIL;
-		if (SUCCEEDED(hr) && desc)
-			DX12RecordPipelineStateStream(
-				pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr, desc);
+		HRESULT hr = E_FAIL;
+		{
+			DX12_CREATE_TIMING_SCOPE(PsoStreamHook, Original);
+			hr = original ? original(device, desc, riid, pipelineState) : E_FAIL;
+		}
+		{
+			DX12_CREATE_TIMING_SCOPE(PsoStreamHook, Record);
+			if (SUCCEEDED(hr) && desc)
+				DX12RecordPipelineStateStream(
+					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr, desc);
+		}
 		return hr;
 	}
 

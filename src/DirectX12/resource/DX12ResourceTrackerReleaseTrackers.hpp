@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12ResourceTrackerPrivate.hpp"
+#include "utils/DX12CreateTimingTelemetryUtils.hpp"
 
 class DX12DescriptorHeapReleaseTracker : public IUnknown
 {
@@ -30,6 +31,7 @@ public:
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
 			if (mInstalled) {
+				DX12_CREATE_TIMING_SCOPE(DescriptorHeapInvalidate, Record);
 				AcquireSRWLockExclusive(&gDescriptorLock);
 				InvalidateDescriptorHeapLocked(mHeap);
 				ReleaseSRWLockExclusive(&gDescriptorLock);
@@ -72,6 +74,7 @@ public:
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
 			if (mInstalled) {
+				DX12_CREATE_TIMING_SCOPE(ResourceInvalidate, Record);
 				AcquireSRWLockExclusive(&gResourceLock);
 				InvalidateResourceLocked(mResource);
 				ReleaseSRWLockExclusive(&gResourceLock);

@@ -81,8 +81,6 @@ public:
 	static void BumpIaEpoch(DX12CommandListRuntimeState *state);
 	static void BumpIaContentEpoch(DX12CommandListRuntimeState *state);
 	static void BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList);
-	static void BumpComputeBindingSerial(DX12CommandListRuntimeState *state);
-	static void BumpComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, UINT64 iaContentEpoch, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);

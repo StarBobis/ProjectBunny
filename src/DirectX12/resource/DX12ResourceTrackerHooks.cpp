@@ -15,6 +15,7 @@
 #include "types/DX12ResourceTrackerPrivateDataGuids.hpp"
 #include "types/DX12ResourceTrackerHookSlotTypes.hpp"
 #include "types/DX12ResourceHookSlotTypes.hpp"
+#include "utils/DX12CreateTimingTelemetryUtils.hpp"
 
 // ── Buffer Content Capture via Map/Unmap hooks ───────────────────────
 // Like DX11: capture UPLOAD buffer data at Unmap time so Tier 1
@@ -41,18 +42,25 @@ static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	if (!original)
 		return E_FAIL;
 
-	HRESULT hr = original(resource, Subresource, pReadRange, ppData);
-	if (SUCCEEDED(hr) && ppData && *ppData) {
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Original);
+		hr = original(resource, Subresource, pReadRange, ppData);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
+		if (SUCCEEDED(hr) && ppData && *ppData) {
 		// Safety: only track UPLOAD/READBACK buffers (our hook may fire
 		// on other resource types if the driver shares vtables).
-		D3D12_HEAP_PROPERTIES heapProps = {};
-		D3D12_HEAP_FLAGS heapFlags = {};
-		if (SUCCEEDED(resource->GetHeapProperties(&heapProps, &heapFlags)) &&
-		    (heapProps.Type == D3D12_HEAP_TYPE_UPLOAD ||
-		     heapProps.Type == D3D12_HEAP_TYPE_READBACK)) {
-			gActiveMap.resource = resource;
-			gActiveMap.data = *ppData;
-			gActiveMap.subresource = Subresource;
+			D3D12_HEAP_PROPERTIES heapProps = {};
+			D3D12_HEAP_FLAGS heapFlags = {};
+			if (SUCCEEDED(resource->GetHeapProperties(&heapProps, &heapFlags)) &&
+			    (heapProps.Type == D3D12_HEAP_TYPE_UPLOAD ||
+			     heapProps.Type == D3D12_HEAP_TYPE_READBACK)) {
+				gActiveMap.resource = resource;
+				gActiveMap.data = *ppData;
+				gActiveMap.subresource = Subresource;
+			}
 		}
 	}
 	return hr;
@@ -64,10 +72,12 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 	UINT Subresource,
 	const D3D12_RANGE *pWrittenRange)
 {
-	// Capture content if this resource was previously mapped AND tracked
-	if (gActiveMap.resource == resource &&
-	    gActiveMap.subresource == Subresource &&
-	    gActiveMap.data) {
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
+		// Capture content if this resource was previously mapped AND tracked
+		if (gActiveMap.resource == resource &&
+		    gActiveMap.subresource == Subresource &&
+		    gActiveMap.data) {
 		// Determine written size:
 		// D3D12_RANGE: Begin=0, End=0 means entire subresource
 		// D3D12_RANGE: nullptr means nothing written (unlikely for uploads)
@@ -87,14 +97,17 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 				capturePtr += pWrittenRange->Begin;
 			DX12CacheBufferContentRange(resource, pWrittenRange ? pWrittenRange->Begin : 0, capturePtr, dataSize);
 		}
-		gActiveMap = DX12ResourceMapTracking();
+			gActiveMap = DX12ResourceMapTracking();
+		}
 	}
 
 	// Call original Unmap
 	using UnmapFn = void(STDMETHODCALLTYPE *)(ID3D12Resource*, UINT, const D3D12_RANGE*);
 	UnmapFn original = reinterpret_cast<UnmapFn>(DX12ResourceTrackerHookState::ResourceOriginals.Unmap);
-	if (original)
+	if (original) {
+		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Original);
 		original(resource, Subresource, pWrittenRange);
+	}
 }
 
 // ── Resource VTable Hook Installation ─────────────────────────────────
@@ -624,10 +637,20 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDescript
 		device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateDescriptorHeap, DX12ResourceTrackerHookState::OrigCreateDescriptorHeap, "ID3D12Device::CreateDescriptorHeap");
 	if (DX12InternalReplayState::IsActive())
 		return original ? original(device, desc, riid, heap) : E_FAIL;
-	HRESULT hr = original ? original(device, desc, riid, heap) : E_FAIL;
-	DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(hr, device, desc, heap);
-	if (SUCCEEDED(hr) && heap && *heap)
-		DX12Wrapper::WrapD3D12DescriptorHeapResult(riid, heap);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorHeapHook, Original);
+		hr = original ? original(device, desc, riid, heap) : E_FAIL;
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorHeapHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(hr, device, desc, heap);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorHeapHook, Wrap);
+		if (SUCCEEDED(hr) && heap && *heap)
+			DX12Wrapper::WrapD3D12DescriptorHeapResult(riid, heap);
+	}
 	return hr;
 }
 
@@ -640,8 +663,15 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateRootSign
 		device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CreateRootSignature, DX12ResourceTrackerHookState::OrigCreateRootSignature, "ID3D12Device::CreateRootSignature");
 	if (DX12InternalReplayState::IsActive())
 		return original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
-	HRESULT hr = original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
-	DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(hr, nodeMask, blob, blobLength, rootSignature);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(RootSignatureHook, Original);
+		hr = original ? original(device, nodeMask, blob, blobLength, riid, rootSignature) : E_FAIL;
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(RootSignatureHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(hr, nodeMask, blob, blobLength, rootSignature);
+	}
 	return hr;
 }
 
@@ -658,8 +688,14 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateConstantBuf
 		original(device, desc, destDescriptor);
 		return;
 	}
-	original(device, desc, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(desc, destDescriptor);
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorCbvHook, Original);
+		original(device, desc, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorCbvHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(desc, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateShaderResourceView(
@@ -675,8 +711,14 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateShaderResou
 		original(device, resource, desc, destDescriptor);
 		return;
 	}
-	original(device, resource, desc, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(resource, desc, destDescriptor);
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorSrvHook, Original);
+		original(device, resource, desc, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorSrvHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(resource, desc, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAccessView(
@@ -693,10 +735,21 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAc
 		return;
 	}
 	D3D12_UNORDERED_ACCESS_VIEW_DESC adjustedDesc = {};
-	const D3D12_UNORDERED_ACCESS_VIEW_DESC *descToUse =
-		DX12ResourceTrackerHookRuntime::PrepareUavDesc(resource, desc, &adjustedDesc, "CreateUnorderedAccessView");
-	original(device, resource, counterResource, descToUse, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(resource, counterResource, descToUse, destDescriptor);
+	const D3D12_UNORDERED_ACCESS_VIEW_DESC *descToUse = desc;
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorUavHook, Prepare);
+		descToUse = DX12ResourceTrackerHookRuntime::PrepareUavDesc(
+			resource, desc, &adjustedDesc, "CreateUnorderedAccessView");
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorUavHook, Original);
+		original(device, resource, counterResource, descToUse, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorUavHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
+			resource, counterResource, descToUse, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateRenderTargetView(
@@ -712,8 +765,14 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateRenderTarge
 		original(device, resource, desc, destDescriptor);
 		return;
 	}
-	original(device, resource, desc, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(resource, desc, destDescriptor);
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorRtvHook, Original);
+		original(device, resource, desc, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorRtvHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(resource, desc, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDepthStencilView(
@@ -729,8 +788,14 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateDepthStenci
 		original(device, resource, desc, destDescriptor);
 		return;
 	}
-	original(device, resource, desc, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(resource, desc, destDescriptor);
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorDsvHook, Original);
+		original(device, resource, desc, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(DescriptorDsvHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(resource, desc, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateSampler(
@@ -746,8 +811,14 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateSampler(
 		original(device, desc, destDescriptor);
 		return;
 	}
-	original(device, desc, destDescriptor);
-	DX12ResourceTrackerHookRuntime::RecordCreatedSampler(desc, destDescriptor);
+	{
+		DX12_CREATE_TIMING_SCOPE(SamplerHook, Original);
+		original(device, desc, destDescriptor);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(SamplerHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedSampler(desc, destDescriptor);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors(
@@ -768,12 +839,18 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors(
 			srcDescriptorRangeSizes, descriptorHeapsType);
 		return;
 	}
-	original(device, numDestDescriptorRanges, destDescriptorRangeStarts,
-		destDescriptorRangeSizes, numSrcDescriptorRanges, srcDescriptorRangeStarts,
-		srcDescriptorRangeSizes, descriptorHeapsType);
-	DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
-		device, numDestDescriptorRanges, destDescriptorRangeStarts, destDescriptorRangeSizes,
-		numSrcDescriptorRanges, srcDescriptorRangeStarts, srcDescriptorRangeSizes, descriptorHeapsType);
+	{
+		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsHook, Original);
+		original(device, numDestDescriptorRanges, destDescriptorRangeStarts,
+			destDescriptorRangeSizes, numSrcDescriptorRanges, srcDescriptorRangeStarts,
+			srcDescriptorRangeSizes, descriptorHeapsType);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
+			device, numDestDescriptorRanges, destDescriptorRangeStarts, destDescriptorRangeSizes,
+			numSrcDescriptorRanges, srcDescriptorRangeStarts, srcDescriptorRangeSizes, descriptorHeapsType);
+	}
 }
 
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSimple(
@@ -790,10 +867,16 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSi
 			srcDescriptorRangeStart, descriptorHeapsType);
 		return;
 	}
-	original(device, numDescriptors, destDescriptorRangeStart,
-		srcDescriptorRangeStart, descriptorHeapsType);
-	DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
-		device, numDescriptors, destDescriptorRangeStart, srcDescriptorRangeStart, descriptorHeapsType);
+	{
+		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleHook, Original);
+		original(device, numDescriptors, destDescriptorRangeStart,
+			srcDescriptorRangeStart, descriptorHeapsType);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
+			device, numDescriptors, destDescriptorRangeStart, srcDescriptorRangeStart, descriptorHeapsType);
+	}
 }
 
 HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommittedResource(
@@ -811,22 +894,37 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 		return original(device, heapProperties, heapFlags, desc,
 			initialState, optimizedClearValue, riid, resource);
 	D3D12_RESOURCE_DESC adjustedDesc = {};
-	const D3D12_RESOURCE_DESC *descToUse =
-		DX12ResourceTrackerHookRuntime::PrepareResourceDesc(desc, &adjustedDesc, "CreateCommittedResource");
+	const D3D12_RESOURCE_DESC *descToUse = desc;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Prepare);
+		descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
+			desc, &adjustedDesc, "CreateCommittedResource");
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "OriginalBegin", device, S_OK,
 		descToUse, heapProperties, initialState, resource);
-	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
-		initialState, optimizedClearValue, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Original);
+		hr = original(device, heapProperties, heapFlags, descToUse,
+			initialState, optimizedClearValue, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, nullptr, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource(
+			hr, resource, descToUse, heapProperties, nullptr, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateCommittedResource", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -846,19 +944,30 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "OriginalBegin", device, S_OK,
 		desc, nullptr, initialState, resource);
-	HRESULT hr = original(device, heap, heapOffset, desc,
-		initialState, optimizedClearValue, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Original);
+		hr = original(device, heap, heapOffset, desc,
+			initialState, optimizedClearValue, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	const PlacedResourceInfo placedInfo =
-		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, &placedInfo, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Record);
+		const PlacedResourceInfo placedInfo =
+			DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource(
+			hr, resource, desc, nullptr, &placedInfo, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreatePlacedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -878,17 +987,28 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "OriginalBegin", device, S_OK,
 		desc, nullptr, initialState, resource);
-	HRESULT hr = original(device, desc, initialState,
-		optimizedClearValue, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Original);
+		hr = original(device, desc, initialState,
+			optimizedClearValue, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, nullptr, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource(
+			hr, resource, desc, nullptr, nullptr, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device::CreateReservedResource", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -902,9 +1022,16 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateFence(
 		DX12ResourceTrackerHookState::OrigCreateFence, "ID3D12Device::CreateFence");
 	if (!original)
 		return E_FAIL;
-	HRESULT hr = original(device, initialValue, flags, riid, fence);
-	if (SUCCEEDED(hr) && fence && *fence)
-		DX12Wrapper::WrapD3D12FenceResult(riid, fence);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(FenceHook, Original);
+		hr = original(device, initialValue, flags, riid, fence);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(FenceHook, Wrap);
+		if (SUCCEEDED(hr) && fence && *fence)
+			DX12Wrapper::WrapD3D12FenceResult(riid, fence);
+	}
 	return hr;
 }
 
@@ -923,22 +1050,37 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 		return original(device, heapProperties, heapFlags, desc,
 			initialState, optimizedClearValue, protectedSession, riid, resource);
 	D3D12_RESOURCE_DESC adjustedDesc = {};
-	const D3D12_RESOURCE_DESC *descToUse =
-		DX12ResourceTrackerHookRuntime::PrepareResourceDesc(desc, &adjustedDesc, "CreateCommittedResource1");
+	const D3D12_RESOURCE_DESC *descToUse = desc;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Prepare);
+		descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
+			desc, &adjustedDesc, "CreateCommittedResource1");
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "OriginalBegin", device, S_OK,
 		descToUse, heapProperties, initialState, resource);
-	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
-		initialState, optimizedClearValue, protectedSession, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Original);
+		hr = original(device, heapProperties, heapFlags, descToUse,
+			initialState, optimizedClearValue, protectedSession, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, descToUse, heapProperties, nullptr, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource(
+			hr, resource, descToUse, heapProperties, nullptr, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateCommittedResource1", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -958,17 +1100,28 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "OriginalBegin", device, S_OK,
 		desc, nullptr, initialState, resource);
-	HRESULT hr = original(device, desc, initialState,
-		optimizedClearValue, protectedSession, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Original);
+		hr = original(device, desc, initialState,
+			optimizedClearValue, protectedSession, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource(hr, resource, desc, nullptr, nullptr, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource(
+			hr, resource, desc, nullptr, nullptr, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
 		"ID3D12Device4::CreateReservedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -987,22 +1140,37 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 		return original(device, heapProperties, heapFlags, desc,
 			initialState, optimizedClearValue, protectedSession, riid, resource);
 	D3D12_RESOURCE_DESC1 adjustedDesc = {};
-	const D3D12_RESOURCE_DESC1 *descToUse =
-		DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(desc, &adjustedDesc, "CreateCommittedResource2");
+	const D3D12_RESOURCE_DESC1 *descToUse = desc;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Prepare);
+		descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
+			desc, &adjustedDesc, "CreateCommittedResource2");
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "OriginalBegin", device, S_OK,
 		descToUse, heapProperties, initialState, resource);
-	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
-		initialState, optimizedClearValue, protectedSession, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Original);
+		hr = original(device, heapProperties, heapFlags, descToUse,
+			initialState, optimizedClearValue, protectedSession, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "OriginalEnd", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, descToUse, heapProperties, nullptr, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
+			hr, resource, descToUse, heapProperties, nullptr, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreateCommittedResource2", "HookReturn", device, hr,
 		descToUse, heapProperties, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -1022,19 +1190,30 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "OriginalBegin", device, S_OK,
 		desc, nullptr, initialState, resource);
-	HRESULT hr = original(device, heap, heapOffset, desc,
-		initialState, optimizedClearValue, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Original);
+		hr = original(device, heap, heapOffset, desc,
+			initialState, optimizedClearValue, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "OriginalEnd", device, hr,
 		desc, nullptr, initialState, resource);
-	const PlacedResourceInfo placedInfo =
-		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1(hr, resource, desc, nullptr, &placedInfo, initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Record);
+		const PlacedResourceInfo placedInfo =
+			DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
+			hr, resource, desc, nullptr, &placedInfo, initialState);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device8::CreatePlacedResource1", "HookReturn", device, hr,
 		desc, nullptr, initialState, resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -1055,24 +1234,38 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateCommitte
 			initialLayout, optimizedClearValue, protectedSession, numCastableFormats,
 			castableFormats, riid, resource);
 	D3D12_RESOURCE_DESC1 adjustedDesc = {};
-	const D3D12_RESOURCE_DESC1 *descToUse =
-		DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(desc, &adjustedDesc, "CreateCommittedResource3");
+	const D3D12_RESOURCE_DESC1 *descToUse = desc;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Prepare);
+		descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
+			desc, &adjustedDesc, "CreateCommittedResource3");
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreateCommittedResource3", "OriginalBegin", device, S_OK,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	HRESULT hr = original(device, heapProperties, heapFlags, descToUse,
-		initialLayout, optimizedClearValue, protectedSession, numCastableFormats,
-		castableFormats, riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Original);
+		hr = original(device, heapProperties, heapFlags, descToUse,
+			initialLayout, optimizedClearValue, protectedSession, numCastableFormats,
+			castableFormats, riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreateCommittedResource3", "OriginalEnd", device, hr,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
-		hr, resource, descToUse, heapProperties, nullptr, initialLayout);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
+			hr, resource, descToUse, heapProperties, nullptr, initialLayout);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreateCommittedResource3", "HookReturn", device, hr,
 		descToUse, heapProperties, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceCommittedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -1094,21 +1287,31 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreatePlacedRe
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "OriginalBegin", device, S_OK,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	HRESULT hr = original(device, heap, heapOffset, desc,
-		initialLayout, optimizedClearValue, numCastableFormats, castableFormats,
-		riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Original);
+		hr = original(device, heap, heapOffset, desc,
+			initialLayout, optimizedClearValue, numCastableFormats, castableFormats,
+			riid, resource);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "OriginalEnd", device, hr,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	const PlacedResourceInfo placedInfo =
-		DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
-		hr, resource, desc, nullptr, &placedInfo, initialLayout);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Record);
+		const PlacedResourceInfo placedInfo =
+			DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, heapOffset);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
+			hr, resource, desc, nullptr, &placedInfo, initialLayout);
+	}
 	DX12ResourceTrackerHookRuntime::LogResourceCreateStage1(
 		"ID3D12Device10::CreatePlacedResource2", "HookReturn", device, hr,
 		desc, nullptr, DX12ResourceStateTracker::FromBarrierLayout(initialLayout), resource);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourcePlacedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 
@@ -1127,13 +1330,23 @@ HRESULT STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateReserved
 		return original(device, desc, initialLayout,
 			optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
 			riid, resource);
-	HRESULT hr = original(device, desc, initialLayout,
-		optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
-		riid, resource);
-	DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
-		hr, resource, desc, nullptr, nullptr, initialLayout);
-	if (SUCCEEDED(hr) && resource && *resource)
-		DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Original);
+		hr = original(device, desc, initialLayout,
+			optimizedClearValue, protectedSession, numCastableFormats, castableFormats,
+			riid, resource);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Record);
+		DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
+			hr, resource, desc, nullptr, nullptr, initialLayout);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceReservedHook, Wrap);
+		if (SUCCEEDED(hr) && resource && *resource)
+			DX12Wrapper::WrapD3D12ResourceResult(riid, resource);
+	}
 	return hr;
 }
 

@@ -24,6 +24,7 @@
 #include "DX12IaReplacementExecutor.hpp"
 #include "DX12ModRuntime.hpp"
 #include "DX12Profiling.hpp"
+#include "utils/DX12CreateTimingTelemetryUtils.hpp"
 #include "DX12ResourceTracker.hpp"
 #include "DX12ShaderDump.hpp"
 #include "DX12ShaderHunt.hpp"
@@ -279,12 +280,19 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCreateCommandQueue
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12Device::CreateCommandQueue", device, " type=%d flags=0x%x",
 		desc ? static_cast<int>(desc->Type) : -1,
 		desc ? static_cast<UINT>(desc->Flags) : 0);
-	HRESULT hr = DX12CommandListHookState::OrigCreateCommandQueue(device, desc, riid, commandQueue);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandQueueHook, Original);
+		hr = DX12CommandListHookState::OrigCreateCommandQueue(device, desc, riid, commandQueue);
+	}
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandQueue",
 		"\"hr\":\"0x%lx\",\"queue\":\"%p\"",
 		hr, commandQueue ? *commandQueue : nullptr);
-	if (SUCCEEDED(hr) && commandQueue && *commandQueue)
-		DX12CommandListHookCallbacks::RegisterCommandQueue(static_cast<IUnknown*>(*commandQueue));
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandQueueHook, Wrap);
+		if (SUCCEEDED(hr) && commandQueue && *commandQueue)
+			DX12CommandListHookCallbacks::RegisterCommandQueue(static_cast<IUnknown*>(*commandQueue));
+	}
 	return hr;
 }
 
@@ -293,12 +301,19 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCreateCommandAlloc
 {
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12Device::CreateCommandAllocator", device, " type=%d",
 		static_cast<int>(type));
-	HRESULT hr = DX12CommandListHookState::OrigCreateCommandAllocator(device, type, riid, allocator);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandAllocatorHook, Original);
+		hr = DX12CommandListHookState::OrigCreateCommandAllocator(device, type, riid, allocator);
+	}
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandAllocator",
 		"\"hr\":\"0x%lx\",\"allocator\":\"%p\"",
 		hr, allocator ? *allocator : nullptr);
-	if (SUCCEEDED(hr) && allocator && *allocator)
-		DX12Wrapper::WrapD3D12CommandAllocatorResult(riid, allocator);
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandAllocatorHook, Wrap);
+		if (SUCCEEDED(hr) && allocator && *allocator)
+			DX12Wrapper::WrapD3D12CommandAllocatorResult(riid, allocator);
+	}
 	return hr;
 }
 
@@ -310,13 +325,21 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCreateCommandList(
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12Device::CreateCommandList", device,
 		" nodeMask=%u type=%d allocator=%p initialPso=%p",
 		nodeMask, static_cast<int>(type), allocator, initialState);
-	HRESULT hr = DX12CommandListHookState::OrigCreateCommandList(device, nodeMask, type, allocator, initialState, riid, commandList);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandListHook, Original);
+		hr = DX12CommandListHookState::OrigCreateCommandList(
+			device, nodeMask, type, allocator, initialState, riid, commandList);
+	}
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandList",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
-	if (SUCCEEDED(hr) && commandList && *commandList) {
-		DX12CommandListHookRegistry::ForgetRegisteredCommandListPointer(*commandList);
-		DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), initialState);
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandListHook, Record);
+		if (SUCCEEDED(hr) && commandList && *commandList) {
+			DX12CommandListHookRegistry::ForgetRegisteredCommandListPointer(*commandList);
+			DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), initialState);
+		}
 	}
 	return hr;
 }
@@ -328,13 +351,21 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCreateCommandList1
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12Device4::CreateCommandList1", device,
 		" nodeMask=%u type=%d flags=0x%x",
 		nodeMask, static_cast<int>(type), static_cast<UINT>(flags));
-	HRESULT hr = DX12CommandListHookState::OrigCreateCommandList1(device, nodeMask, type, flags, riid, commandList);
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandListHook, Original);
+		hr = DX12CommandListHookState::OrigCreateCommandList1(
+			device, nodeMask, type, flags, riid, commandList);
+	}
 	DX12FrameAnalysis::LogJsonFunc("ID3D12Device4::CreateCommandList1",
 		"\"hr\":\"0x%lx\",\"commandList\":\"%p\"",
 		hr, commandList ? *commandList : nullptr);
-	if (SUCCEEDED(hr) && commandList && *commandList) {
-		DX12CommandListHookRegistry::ForgetRegisteredCommandListPointer(*commandList);
-		DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), nullptr);
+	{
+		DX12_CREATE_TIMING_SCOPE(CommandListHook, Record);
+		if (SUCCEEDED(hr) && commandList && *commandList) {
+			DX12CommandListHookRegistry::ForgetRegisteredCommandListPointer(*commandList);
+			DX12CommandListHookCallbacks::RegisterCommandList(static_cast<IUnknown*>(*commandList), nullptr);
+		}
 	}
 	return hr;
 }
