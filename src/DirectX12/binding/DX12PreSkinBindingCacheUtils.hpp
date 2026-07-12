@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include <vector>
+#include <unordered_map>
 
 #include "DX12BindingTrackerQuery.hpp"
 
@@ -75,6 +76,7 @@ class DX12PreSkinBindingTlsCache
 public:
 	UINT64 clock = 0;
 	std::vector<DX12PreSkinBindingCacheEntry> entries;
+	std::unordered_multimap<UINT64, size_t> fingerprintIndex;
 };
 
 class DX12PreSkinBindingCacheUtils
@@ -411,7 +413,12 @@ public:
 	{
 		if (!cache)
 			return false;
-		for (size_t index = 0; index < cache->entries.size(); ++index) {
+		const auto candidates = cache->fingerprintIndex.equal_range(key.fingerprint);
+		for (auto candidate = candidates.first;
+				candidate != candidates.second; ++candidate) {
+			const size_t index = candidate->second;
+			if (index >= cache->entries.size())
+				continue;
 			DX12PreSkinBindingCacheEntry &entry = cache->entries[index];
 			if (!entry.valid ||
 					!DX12PreSkinBindingCacheUtils::KeysEqual(entry.key, key) ||
@@ -443,12 +450,13 @@ public:
 			return;
 
 		DX12PreSkinBindingCacheEntry *target = nullptr;
+		size_t targetIndex = 0;
 		if (cache->entries.size() < DX12PreSkinBindingCacheUtils::CacheCapacity) {
 			DX12PreSkinBindingCacheEntry entry;
 			cache->entries.push_back(entry);
-			target = &cache->entries[cache->entries.size() - 1];
+			targetIndex = cache->entries.size() - 1;
+			target = &cache->entries[targetIndex];
 		} else {
-			size_t targetIndex = 0;
 			UINT64 oldestAge = cache->entries[0].age;
 			for (size_t index = 1; index < cache->entries.size(); ++index) {
 				if (cache->entries[index].age < oldestAge) {
@@ -457,6 +465,15 @@ public:
 				}
 			}
 			target = &cache->entries[targetIndex];
+			const auto oldMappings =
+				cache->fingerprintIndex.equal_range(target->key.fingerprint);
+			for (auto mapping = oldMappings.first;
+					mapping != oldMappings.second;) {
+				if (mapping->second == targetIndex)
+					mapping = cache->fingerprintIndex.erase(mapping);
+				else
+					++mapping;
+			}
 		}
 
 		target->valid = true;
@@ -467,5 +484,6 @@ public:
 		target->srvs = srvs;
 		target->cbvs = cbvs;
 		target->constants = constants;
+		cache->fingerprintIndex.emplace(key.fingerprint, targetIndex);
 	}
 };

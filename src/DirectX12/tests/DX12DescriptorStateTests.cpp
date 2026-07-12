@@ -724,6 +724,39 @@ static void TestIaHashThreadCacheSharesGenerationSafeEntries()
 	DX12IaHashStateCacheUtils::Clear(&cache);
 }
 
+static void TestPreSkinBindingCacheFingerprintIndexHandlesCollisionsAndEviction()
+{
+	DX12PreSkinBindingTlsCache cache;
+	std::vector<DX12CurrentComputeUavBinding> bindings;
+	std::vector<DX12CurrentRootConstants> constants;
+	DX12PreSkinBindingCacheKey first;
+	first.fingerprint = 101;
+	first.computeRootSignature = reinterpret_cast<ID3D12RootSignature*>(1);
+	DX12PreSkinBindingCacheKey collision = first;
+	collision.computeRootSignature = reinterpret_cast<ID3D12RootSignature*>(2);
+	DX12PreSkinBindingCacheUtils::Store(
+		&cache, first, bindings, bindings, bindings, constants, false);
+	DX12PreSkinBindingCacheUtils::Store(
+		&cache, collision, bindings, bindings, bindings, constants, true);
+	bool foundAny = false;
+	Require(DX12PreSkinBindingCacheUtils::TryLoad(
+		&cache, first, nullptr, nullptr, nullptr, nullptr, &foundAny));
+	Require(!foundAny);
+	Require(DX12PreSkinBindingCacheUtils::TryLoad(
+		&cache, collision, nullptr, nullptr, nullptr, nullptr, &foundAny));
+	Require(foundAny);
+
+	for (size_t index = cache.entries.size();
+			index <= DX12PreSkinBindingCacheUtils::CacheCapacity; ++index) {
+		DX12PreSkinBindingCacheKey key;
+		key.fingerprint = 1000 + index;
+		DX12PreSkinBindingCacheUtils::Store(
+			&cache, key, bindings, bindings, bindings, constants, false);
+	}
+	Require(cache.entries.size() == DX12PreSkinBindingCacheUtils::CacheCapacity);
+	Require(cache.fingerprintIndex.size() == cache.entries.size());
+}
+
 class DescriptorArenaTestRef
 {
 public:
@@ -860,6 +893,7 @@ int main(int argc, char **argv)
 	TestIaTargetPlanReuseRequiresIdenticalIaInputs();
 	TestIaHashKeyPrefixCacheInvalidation();
 	TestIaHashThreadCacheSharesGenerationSafeEntries();
+	TestPreSkinBindingCacheFingerprintIndexHandlesCollisionsAndEviction();
 	TestDescriptorArenaGrowthAndUniqueOwnership();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();

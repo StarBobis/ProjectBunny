@@ -48,7 +48,12 @@ class Dx12LogAnalysisUtils {
         [Dx12FrameSample]$currentFrame = $null
         [long]$pendingPresentWaitUs = 0
 
-        foreach ($line in [System.IO.File]::ReadLines($LogPath)) {
+        $fileShare = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = [System.IO.FileStream]::new(
+            $LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $fileShare)
+        $reader = [System.IO.StreamReader]::new($stream)
+        try {
+        while ($null -ne ($line = $reader.ReadLine())) {
             $parts = $line -split "`t", 3
             if ($parts.Count -ne 3) {
                 continue
@@ -122,6 +127,10 @@ class Dx12LogAnalysisUtils {
                     [long]$currentFrame.ApiStageCalls[$key] +
                     [Dx12LogAnalysisUtils]::ReadInteger($payload, 'calls')
             }
+        }
+        } finally {
+            $reader.Dispose()
+            $stream.Dispose()
         }
 
         $eligibleFrames = @($frames | Where-Object {
