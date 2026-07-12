@@ -26,6 +26,7 @@ static void InitializeSparseHeap(
 	heap->desc.NumDescriptors = descriptorCount;
 	heap->cpuStart = cpuStart;
 	heap->increment = 32;
+	heap->currentDescriptors.Initialize(descriptorCount);
 }
 
 static SIZE_T SlotHandle(const DescriptorHeapRecord &heap, UINT slot)

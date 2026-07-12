@@ -155,7 +155,6 @@ public:
 struct DescriptorSlotBinding
 {
 	DX12DescriptorValueNode *value = nullptr;
-	SIZE_T cpuHandle = 0;
 };
 
 struct DescriptorHeapRecord
@@ -323,7 +322,8 @@ static bool CopyCurrentRecord(
 	const DescriptorSlotBinding *binding = FindCurrentBinding(heap, slot);
 	if (binding && binding->value) {
 		CopyRecordValueForSlot(
-			record, binding->value->record, binding->cpuHandle);
+			record, binding->value->record,
+			heap.cpuStart + static_cast<SIZE_T>(slot) * heap.increment);
 		return true;
 	}
 	if (slot < heap.occupied.size() && heap.occupied[slot] &&
@@ -381,14 +381,12 @@ static bool StoreCurrentRecordIfChanged(
 	DescriptorSlotBinding *stored =
 		heap->currentDescriptors.FindOrInsertDefault(slot, &inserted);
 	if (!inserted && stored->value && source.valueId != 0 &&
-			stored->value->record.valueId == source.valueId &&
-			stored->cpuHandle == destCpuHandle)
+			stored->value->record.valueId == source.valueId)
 		return false;
 	DX12DescriptorValueNode *newValue = DX12DescriptorValuePool::Acquire();
 	CopyRecordValueForSlot(&newValue->record, source, 0);
 	DX12DescriptorValueNode *oldValue = stored->value;
 	stored->value = newValue;
-	stored->cpuHandle = destCpuHandle;
 	DX12DescriptorValuePool::Release(oldValue);
 	if (inserted)
 		IncrementLiveSlots(heap);
@@ -421,14 +419,13 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 		DescriptorSlotBinding *destBinding =
 			destHeap->currentDescriptors.FindOrInsertDefault(destSlot, &inserted);
 		if (!inserted && destBinding->value &&
-				destBinding->value->record.valueId ==
-					sourceBinding->value->record.valueId &&
-				destBinding->cpuHandle == destCpuHandle)
+				(destBinding->value == sourceBinding->value ||
+				 destBinding->value->record.valueId ==
+					sourceBinding->value->record.valueId))
 			return CopyCurrentSlotResult::Unchanged;
 		DX12DescriptorValuePool::Retain(sourceBinding->value);
 		DX12DescriptorValueNode *oldValue = destBinding->value;
 		destBinding->value = sourceBinding->value;
-		destBinding->cpuHandle = destCpuHandle;
 		DX12DescriptorValuePool::Release(oldValue);
 		if (inserted)
 			IncrementLiveSlots(destHeap);

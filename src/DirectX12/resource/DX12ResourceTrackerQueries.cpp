@@ -1267,15 +1267,17 @@ static void BuildResourceMetadataSnapshot(
 			continue;
 		}
 		heap.currentDescriptors.ForEach(
-			[&heapDescriptors, &heapDescriptorHandles](
-				uint32_t, const DescriptorSlotBinding &binding) {
+			[&heapDescriptors, &heapDescriptorHandles, &heap](
+				uint32_t slot, const DescriptorSlotBinding &binding) {
 				if (!binding.value)
 					return;
+				const SIZE_T cpuHandle = heap.cpuStart +
+					static_cast<SIZE_T>(slot) * heap.increment;
 				heapDescriptors.push_back(DescriptorRecord());
 				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
 					&heapDescriptors.back(), binding.value->record,
-					binding.cpuHandle);
-				heapDescriptorHandles.insert(binding.cpuHandle);
+					cpuHandle);
+				heapDescriptorHandles.insert(cpuHandle);
 			});
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
 			if (!heap.occupied[slot])

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static void Require(bool condition)
@@ -15,9 +16,11 @@ static void Require(bool condition)
 int main()
 {
 	DX12SparseDescriptorStore<unsigned long long> store;
+	store.Initialize(4096);
 	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 1024,
 		"descriptor state lock striping changed unexpectedly");
 	Require(store.Empty());
+	Require(store.AllocatedPageCount() == 0);
 
 	store.Store(1, 11);
 	store.Store(4, 44);
@@ -37,6 +40,7 @@ int main()
 	Require(created && inserted && *created == 0);
 	*created = 99;
 	Require(store.Find(99) && *store.Find(99) == 99);
+	Require(store.AllocatedPageCount() == 1);
 
 	// Snapshot-before-write is the production CopyDescriptors overlap rule.
 	store.Store(2, 22);
@@ -63,12 +67,15 @@ int main()
 	Require(*store.Find(0) == 100);
 	Require(*store.Find(1024) == 2024);
 	Require(*store.Find(1025) == 2025);
+	Require(store.AllocatedPageCount() == 2);
 	store.Clear();
 	Require(store.Empty());
+	Require(store.AllocatedPageCount() == 0);
 
 	// Production supplies one lock for each store shard. Exercise the same
 	// contract with concurrent writers targeting one logical descriptor heap.
 	DX12SparseDescriptorStore<unsigned long long> concurrent;
+	concurrent.Initialize(8 * 4096);
 	std::array<std::mutex,
 		DX12SparseDescriptorStore<unsigned long long>::ShardCount> locks;
 	std::vector<std::thread> writers;
@@ -91,5 +98,23 @@ int main()
 		const uint32_t slot = writer * ValuesPerWriter + ValuesPerWriter - 1;
 		Require(concurrent.Find(slot) && *concurrent.Find(slot) == slot + 1ull);
 	}
+
+	// Heap records are moved into the global deque. Page ownership and stable
+	// values must follow both move construction and move assignment.
+	DX12SparseDescriptorStore<unsigned long long> moveSource;
+	moveSource.Initialize(1024);
+	moveSource.Store(511, 0x511);
+	DX12SparseDescriptorStore<unsigned long long> moveConstructed(
+		std::move(moveSource));
+	Require(moveSource.Empty());
+	Require(moveConstructed.Find(511) &&
+		*moveConstructed.Find(511) == 0x511);
+	DX12SparseDescriptorStore<unsigned long long> moveAssigned;
+	moveAssigned.Initialize(1024);
+	moveAssigned.Store(1, 1);
+	moveAssigned = std::move(moveConstructed);
+	Require(moveConstructed.Empty());
+	Require(moveAssigned.Size() == 1);
+	Require(moveAssigned.Find(511) && *moveAssigned.Find(511) == 0x511);
 	return 0;
 }

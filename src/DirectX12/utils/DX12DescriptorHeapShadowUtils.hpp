@@ -54,6 +54,54 @@ public:
 		std::array<HeapResolveCacheEntry, EntryCount> entries;
 	};
 
+	struct CopyTelemetryBatch
+	{
+		LONG64 rangeCalls = 0;
+		LONG64 slots = 0;
+		LONG64 singleRanges = 0;
+		LONG64 multiRanges = 0;
+		LONG64 resolvedRanges = 0;
+		LONG64 sameHeapRanges = 0;
+		LONG64 overlapRanges = 0;
+		LONG64 sourceFound = 0;
+		LONG64 sourceMissing = 0;
+		LONG64 changed = 0;
+		LONG64 unchanged = 0;
+		LONG64 erased = 0;
+		LONG64 alreadyEmpty = 0;
+
+		void RecordRange(UINT count, bool resolved, bool sameHeap, bool overlaps)
+		{
+			++rangeCalls;
+			slots += count;
+			if (count == 1) ++singleRanges; else ++multiRanges;
+			if (resolved) ++resolvedRanges;
+			if (sameHeap) ++sameHeapRanges;
+			if (overlaps) ++overlapRanges;
+		}
+
+		void RecordResults(
+			UINT found, UINT missing, UINT changedCount, UINT unchangedCount,
+			UINT erasedCount, UINT alreadyEmptyCount)
+		{
+			sourceFound += found;
+			sourceMissing += missing;
+			changed += changedCount;
+			unchanged += unchangedCount;
+			erased += erasedCount;
+			alreadyEmpty += alreadyEmptyCount;
+		}
+
+		void Flush() const
+		{
+			DX12DescriptorShadowTelemetryUtils::RecordCopyBatch(
+				rangeCalls, slots, singleRanges, multiRanges,
+				resolvedRanges, sameHeapRanges, overlapRanges,
+				sourceFound, sourceMissing, changed, unchanged,
+				erased, alreadyEmpty);
+		}
+	};
+
 	static SRWLOCK *HeapLock(DescriptorHeapRecord *heap, UINT slot)
 	{
 		return heap && heap->stateLocks ?
@@ -180,7 +228,10 @@ public:
 			// Descriptor traffic normally alternates between one staging heap and
 			// one shader-visible heap. Promote the hit so that pattern resolves in
 			// one or two probes instead of scanning all cached heaps under /Od.
-			if (index != 0)
+			// Entry 0/1 normally form the stable destination/source heap pair.
+			// Swapping an index-1 hit made alternating CopyDescriptors traffic
+			// exchange both cache records twice for every copied slot.
+			if (index > 1)
 				std::swap(cache.entries[0], cache.entries[index]);
 			return true;
 		}
@@ -362,7 +413,8 @@ public:
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
 		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		UINT count)
+		UINT count,
+		CopyTelemetryBatch *telemetryBatch = nullptr)
 	{
 		if (count == 0) {
 			return;
@@ -379,8 +431,11 @@ public:
 		// fall back to per-descriptor lookup via FindLatestDescriptor which
 		// checks both heap slots and the CPU ledger.
 		if (!hasDestination || !hasSource) {
-			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-				count, false, false, false);
+			if (telemetryBatch)
+				telemetryBatch->RecordRange(count, false, false, false);
+			else
+				DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
+					count, false, false, false);
 			DX12DescriptorShadowTelemetryUtils::RecordFallback(count);
 			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
 			return;
@@ -396,8 +451,11 @@ public:
 		const bool overlaps = sameHeap &&
 			static_cast<UINT64>(destSlot) < srcEnd &&
 			static_cast<UINT64>(srcSlot) < destEnd;
-		DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-			count, true, sameHeap, overlaps);
+		if (telemetryBatch)
+			telemetryBatch->RecordRange(count, true, sameHeap, overlaps);
+		else
+			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
+				count, true, sameHeap, overlaps);
 
 		// CopyDescriptorsSimple is commonly used for one descriptor at a time.
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
@@ -477,8 +535,12 @@ public:
 			}
 			if (oneExclusive)
 				ReleaseSRWLockExclusive(sourceLock);
-			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-				sourceFound, sourceMissing, changed, unchanged, erased, alreadyEmpty);
+			if (telemetryBatch)
+				telemetryBatch->RecordResults(
+					sourceFound, sourceMissing, changed, unchanged, erased, alreadyEmpty);
+			else
+				DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+					sourceFound, sourceMissing, changed, unchanged, erased, alreadyEmpty);
 			return;
 		}
 
@@ -665,9 +727,14 @@ public:
 					ReleaseSRWLockExclusive(destLock);
 			}
 		}
-		DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-			sourceFoundCount, sourceMissingCount,
-			changedCount, unchangedCount, erasedCount, alreadyEmptyCount);
+		if (telemetryBatch)
+			telemetryBatch->RecordResults(
+				sourceFoundCount, sourceMissingCount,
+				changedCount, unchangedCount, erasedCount, alreadyEmptyCount);
+		else
+			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+				sourceFoundCount, sourceMissingCount,
+				changedCount, unchangedCount, erasedCount, alreadyEmptyCount);
 	}
 
 	// Per-descriptor fallback when bulk heap-slot resolution fails.

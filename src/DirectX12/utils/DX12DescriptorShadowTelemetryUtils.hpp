@@ -168,6 +168,33 @@ public:
 			InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
 	}
 
+	// Commits one API call's locally accumulated descriptor-copy counters.
+	// CopyDescriptors commonly exposes 8-10 single-slot ranges per call; doing
+	// every counter update atomically per slot made the diagnostics themselves
+	// part of the hot path while preserving no additional information.
+	static void RecordCopyBatch(
+		LONG64 rangeCalls, LONG64 slots,
+		LONG64 singleRanges, LONG64 multiRanges,
+		LONG64 resolvedRanges, LONG64 sameHeapRanges, LONG64 overlapRanges,
+		LONG64 sourceFound, LONG64 sourceMissing,
+		LONG64 changed, LONG64 unchanged,
+		LONG64 erased, LONG64 alreadyEmpty)
+	{
+		if (rangeCalls) InterlockedExchangeAdd64(&copyRangeCalls, rangeCalls);
+		if (slots) InterlockedExchangeAdd64(&copySlots, slots);
+		if (singleRanges) InterlockedExchangeAdd64(&copySingleRangeCalls, singleRanges);
+		if (multiRanges) InterlockedExchangeAdd64(&copyMultiRangeCalls, multiRanges);
+		if (resolvedRanges) InterlockedExchangeAdd64(&copyResolvedRangeCalls, resolvedRanges);
+		if (sameHeapRanges) InterlockedExchangeAdd64(&copySameHeapRangeCalls, sameHeapRanges);
+		if (overlapRanges) InterlockedExchangeAdd64(&copyOverlapRangeCalls, overlapRanges);
+		if (sourceFound) InterlockedExchangeAdd64(&copySourceFoundSlots, sourceFound);
+		if (sourceMissing) InterlockedExchangeAdd64(&copySourceMissingSlots, sourceMissing);
+		if (changed) InterlockedExchangeAdd64(&copyChangedSlots, changed);
+		if (unchanged) InterlockedExchangeAdd64(&copyUnchangedSlots, unchanged);
+		if (erased) InterlockedExchangeAdd64(&copyErasedSlots, erased);
+		if (alreadyEmpty) InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
+	}
+
 	static void LogAndReset()
 	{
 		const LONG64 frequency = Frequency();
@@ -294,6 +321,9 @@ public:
 	static void RecordFallback(UINT) {}
 	static void RecordCopyRange(UINT, bool, bool, bool) {}
 	static void RecordCopyResults(UINT, UINT, UINT, UINT, UINT, UINT) {}
+	static void RecordCopyBatch(
+		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64,
+		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64) {}
 	static void LogAndReset() {}
 };
 

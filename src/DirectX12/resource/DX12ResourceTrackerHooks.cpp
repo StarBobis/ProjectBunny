@@ -483,6 +483,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	UINT srcRange = 0;
 	UINT destOffset = 0;
 	UINT srcOffset = 0;
+	DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
 	const UINT increment = device ?
 		device->GetDescriptorHandleIncrementSize(descriptorHeapsType) : 0;
 	if (!increment)
@@ -507,10 +508,11 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-			descriptorHeapsType, dest, src, count);
+			descriptorHeapsType, dest, src, count, &copyTelemetry);
 		destOffset += count;
 		srcOffset += count;
 	}
+	copyTelemetry.Flush();
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(

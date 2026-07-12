@@ -181,6 +181,7 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
+	record->currentDescriptors.Initialize(record->desc.NumDescriptors);
 	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>();
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(record, 0);
 	DX12DescriptorHeapStateUtils::ResetVersion(record);
@@ -215,7 +216,8 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 			if (slot >= record->slots.size() || !binding.value)
 				return;
 			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-				&record->slots[slot], binding.value->record, binding.cpuHandle);
+				&record->slots[slot], binding.value->record,
+				record->cpuStart + static_cast<SIZE_T>(slot) * record->increment);
 			record->occupied[slot] = 1;
 		});
 	DX12DescriptorSlotArrayUtils::ClearSparseRecords(record);
