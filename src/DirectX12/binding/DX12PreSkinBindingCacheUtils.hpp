@@ -131,7 +131,8 @@ public:
 		UINT rootParameterIndex,
 		const RootTableState &table,
 		bool resolvedHeap,
-		const DX12DescriptorHeapSummary &heap)
+		const DX12DescriptorHeapSummary &heap,
+		bool normalizeRingLocation)
 	{
 		if (!key)
 			return;
@@ -151,12 +152,15 @@ public:
 
 		key->rootTables.push_back(tableKey);
 		DX12PreSkinBindingCacheUtils::MixValue(key, rootParameterIndex);
-		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.baseDescriptorPtr);
+		if (!normalizeRingLocation)
+			DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.baseDescriptorPtr);
 		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.resolvedHeap ? 1 : 0);
 		DX12PreSkinBindingCacheUtils::MixPointer(key, tableKey.heap);
-		DX12PreSkinBindingCacheUtils::MixValue(
-			key, static_cast<UINT64>(tableKey.heapCpuStart));
-		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapGpuStart);
+		if (!normalizeRingLocation) {
+			DX12PreSkinBindingCacheUtils::MixValue(
+				key, static_cast<UINT64>(tableKey.heapCpuStart));
+			DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapGpuStart);
+		}
 		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapIncrement);
 		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapNumDescriptors);
 		DX12PreSkinBindingCacheUtils::MixValue(key, tableKey.heapVersion);
@@ -236,7 +240,8 @@ public:
 				if (rootSignature)
 					identityHeap.version = 0;
 				DX12PreSkinBindingCacheUtils::AddRootTable(
-					key, root, table, resolvedHeap, identityHeap);
+					key, root, table, resolvedHeap, identityHeap,
+					rootSignature != nullptr);
 
 				if (resolvedHeap && rootSignature && heap.increment) {
 					const DX12RootParameterSummary *parameter =
@@ -282,8 +287,8 @@ public:
 								// slot has no authoritative current value.
 								if (tableKey.observedSlotValueIds[slotIndex])
 									tableKey.observedSlotVersions[slotIndex] = 0;
-								DX12PreSkinBindingCacheUtils::MixValue(
-									key, tableKey.observedSlots[slotIndex]);
+								// Ring slot/location is transient. Value identity is the
+								// semantic dependency and survives descriptor-ring rotation.
 								DX12PreSkinBindingCacheUtils::MixValue(
 									key, tableKey.observedSlotVersions[slotIndex]);
 								DX12PreSkinBindingCacheUtils::MixValue(
@@ -314,16 +319,18 @@ public:
 		const DX12PreSkinBindingRootTableCacheKey &left,
 		const DX12PreSkinBindingRootTableCacheKey &right)
 	{
+		const bool contentAddressed = !left.observedSlotValueIds.empty() &&
+			!right.observedSlotValueIds.empty();
 		return left.rootParameterIndex == right.rootParameterIndex &&
-			left.baseDescriptorPtr == right.baseDescriptorPtr &&
+			(contentAddressed || left.baseDescriptorPtr == right.baseDescriptorPtr) &&
 			left.resolvedHeap == right.resolvedHeap &&
 			left.heap == right.heap &&
-			left.heapCpuStart == right.heapCpuStart &&
-				left.heapGpuStart == right.heapGpuStart &&
+			(contentAddressed || left.heapCpuStart == right.heapCpuStart) &&
+				(contentAddressed || left.heapGpuStart == right.heapGpuStart) &&
 				left.heapIncrement == right.heapIncrement &&
 				left.heapNumDescriptors == right.heapNumDescriptors &&
 				left.heapVersion == right.heapVersion &&
-			left.observedSlots == right.observedSlots &&
+			(contentAddressed || left.observedSlots == right.observedSlots) &&
 				left.observedSlotVersions == right.observedSlotVersions &&
 				left.observedSlotValueIds == right.observedSlotValueIds;
 	}
@@ -382,6 +389,34 @@ public:
 
 	using BufferRangeValidator = bool (*)(UINT64, UINT64, UINT64);
 
+	static void RebaseBindings(
+		std::vector<DX12CurrentComputeUavBinding> *bindings,
+		const DX12PreSkinBindingCacheKey &key)
+	{
+		if (!bindings)
+			return;
+		for (DX12CurrentComputeUavBinding &binding : *bindings) {
+			if (binding.rootDescriptor)
+				continue;
+			for (const DX12PreSkinBindingRootTableCacheKey &table : key.rootTables) {
+				if (table.rootParameterIndex != binding.rootParameterIndex ||
+					!table.resolvedHeap || !table.heapIncrement)
+					continue;
+				const UINT64 baseIndex =
+					(table.baseDescriptorPtr - table.heapGpuStart) / table.heapIncrement;
+				binding.tableHeap = table.heap;
+				binding.tableCpuStart = table.heapCpuStart +
+					static_cast<SIZE_T>(baseIndex) * table.heapIncrement;
+				binding.tableGpuStart.ptr = table.baseDescriptorPtr;
+				binding.descriptorIncrement = table.heapIncrement;
+				if (binding.hasDescriptor)
+					binding.descriptor.cpuHandle = binding.tableCpuStart +
+						static_cast<SIZE_T>(binding.descriptorOffset) * table.heapIncrement;
+				break;
+			}
+		}
+	}
+
 	static bool RootDescriptorRangesStillValid(
 		const DX12PreSkinBindingCacheKey &cached,
 		const DX12PreSkinBindingCacheKey &current,
@@ -430,6 +465,9 @@ public:
 			if (uavs) *uavs = entry.uavs;
 			if (srvs) *srvs = entry.srvs;
 			if (cbvs) *cbvs = entry.cbvs;
+			DX12PreSkinBindingCacheUtils::RebaseBindings(uavs, key);
+			DX12PreSkinBindingCacheUtils::RebaseBindings(srvs, key);
+			DX12PreSkinBindingCacheUtils::RebaseBindings(cbvs, key);
 			if (constants) *constants = entry.constants;
 			if (foundAny) *foundAny = entry.foundAny;
 			return true;
