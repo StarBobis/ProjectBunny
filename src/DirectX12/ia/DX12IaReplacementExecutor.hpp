@@ -283,8 +283,13 @@ public:
 		const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
 		DX12CommandListRuntimeState *mutableRuntimeState =
 			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+		// The runtime deliberately preserves this cache across command-list Reset.
+		// Using a second TLS cache here defeated that ownership model, mixed entries
+		// from unrelated command lists, and forced every draw through a much larger
+		// LRU. Keep hash state resident with the command list whose IA generations
+		// form the key, matching DX11's context-local binding state.
 		DX12IaHashStateCache *iaHashStateCache =
-			&DX12IaHashStateCacheUtils::ThreadCache();
+			&mutableRuntimeState->iaHashStateCache;
 		const DX12CompiledDrawDecision *drawDecision =
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);

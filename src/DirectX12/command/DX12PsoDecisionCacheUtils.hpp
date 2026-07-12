@@ -68,43 +68,41 @@ public:
 class DX12PsoDecisionCacheDispatchEntry
 {
 public:
-	UINT64 age = 0;
 	DX12CompiledDispatchDecision decision;
 };
 
 class DX12PsoDecisionCacheDrawEntry
 {
 public:
-	UINT64 age = 0;
 	DX12CompiledDrawDecision decision;
 };
 
 class DX12PsoDecisionCacheUtils
 {
 public:
-	inline static SRWLOCK Lock = SRWLOCK_INIT;
-	inline static UINT64 Clock = 0;
-	inline static UINT64 ReloadGeneration = 0;
+	// Decisions are immutable for a reload generation. Command-list recording is
+	// already thread-affine, so a process-wide LRU only serialized otherwise
+	// independent recording threads on every draw/dispatch cache hit. Keep the
+	// resident PSO decisions in thread-local generation arenas instead: reads are
+	// lock-free and a generation change discards the complete arena in O(1).
+	inline static thread_local UINT64 ReloadGeneration = 0;
 	static constexpr size_t MaxEntriesPerKind = 4096;
-	inline static std::unordered_map<
+	inline static thread_local std::unordered_map<
 		DX12PsoDecisionCacheDispatchKey,
 		DX12PsoDecisionCacheDispatchEntry,
 		DX12PsoDecisionCacheDispatchKeyHash> DispatchEntries;
-	inline static std::unordered_map<
+	inline static thread_local std::unordered_map<
 		DX12PsoDecisionCacheDrawKey,
 		DX12PsoDecisionCacheDrawEntry,
 		DX12PsoDecisionCacheDrawKeyHash> DrawEntries;
 
 	static void ClearIfReloadChanged(UINT64 reloadGeneration)
 	{
-		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 		if (DX12PsoDecisionCacheUtils::ReloadGeneration != reloadGeneration) {
 			DX12PsoDecisionCacheUtils::ReloadGeneration = reloadGeneration;
-			DX12PsoDecisionCacheUtils::Clock = 0;
 			DX12PsoDecisionCacheUtils::DispatchEntries.clear();
 			DX12PsoDecisionCacheUtils::DrawEntries.clear();
 		}
-		ReleaseSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 	}
 
 	static bool TryLoadDispatch(
@@ -123,20 +121,16 @@ public:
 		key.activeShaderOverrides = activeShaderOverrides;
 		key.activePreSkinProbe = activePreSkinProbe;
 
-		bool found = false;
-		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 		std::unordered_map<
 			DX12PsoDecisionCacheDispatchKey,
 			DX12PsoDecisionCacheDispatchEntry,
 			DX12PsoDecisionCacheDispatchKeyHash>::iterator it =
 			DX12PsoDecisionCacheUtils::DispatchEntries.find(key);
 		if (it != DX12PsoDecisionCacheUtils::DispatchEntries.end()) {
-			it->second.age = ++DX12PsoDecisionCacheUtils::Clock;
 			*decision = it->second.decision;
-			found = true;
+			return true;
 		}
-		ReleaseSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
-		return found;
+		return false;
 	}
 
 	static void StoreDispatch(
@@ -152,7 +146,6 @@ public:
 		key.activeShaderOverrides = activeShaderOverrides;
 		key.activePreSkinProbe = activePreSkinProbe;
 
-		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 		if (DX12PsoDecisionCacheUtils::DispatchEntries.find(key) ==
 				DX12PsoDecisionCacheUtils::DispatchEntries.end() &&
 			DX12PsoDecisionCacheUtils::DispatchEntries.size() >= MaxEntriesPerKind) {
@@ -161,9 +154,7 @@ public:
 		}
 		DX12PsoDecisionCacheDispatchEntry &entry =
 			DX12PsoDecisionCacheUtils::DispatchEntries[key];
-		entry.age = ++DX12PsoDecisionCacheUtils::Clock;
 		entry.decision = decision;
-		ReleaseSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 	}
 
 	static bool TryLoadDraw(
@@ -180,20 +171,16 @@ public:
 		key.reloadGeneration = reloadGeneration;
 		key.activeShaderOverrides = activeShaderOverrides;
 
-		bool found = false;
-		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 		std::unordered_map<
 			DX12PsoDecisionCacheDrawKey,
 			DX12PsoDecisionCacheDrawEntry,
 			DX12PsoDecisionCacheDrawKeyHash>::iterator it =
 			DX12PsoDecisionCacheUtils::DrawEntries.find(key);
 		if (it != DX12PsoDecisionCacheUtils::DrawEntries.end()) {
-			it->second.age = ++DX12PsoDecisionCacheUtils::Clock;
 			*decision = it->second.decision;
-			found = true;
+			return true;
 		}
-		ReleaseSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
-		return found;
+		return false;
 	}
 
 	static void StoreDraw(
@@ -207,7 +194,6 @@ public:
 		key.reloadGeneration = reloadGeneration;
 		key.activeShaderOverrides = activeShaderOverrides;
 
-		AcquireSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 		if (DX12PsoDecisionCacheUtils::DrawEntries.find(key) ==
 				DX12PsoDecisionCacheUtils::DrawEntries.end() &&
 			DX12PsoDecisionCacheUtils::DrawEntries.size() >= MaxEntriesPerKind) {
@@ -216,8 +202,6 @@ public:
 		}
 		DX12PsoDecisionCacheDrawEntry &entry =
 			DX12PsoDecisionCacheUtils::DrawEntries[key];
-		entry.age = ++DX12PsoDecisionCacheUtils::Clock;
 		entry.decision = decision;
-		ReleaseSRWLockExclusive(&DX12PsoDecisionCacheUtils::Lock);
 	}
 };
