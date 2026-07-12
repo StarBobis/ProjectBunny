@@ -559,6 +559,41 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
+			// A completed copy makes this exact source/destination pair a proven
+			// no-op until either slot is published again.  Consult the slot-version
+			// memo before loading both published value IDs or taking shard locks.
+			// This is the normal steady-state path for descriptor rings: the game
+			// repeatedly copies stable staging descriptors into stable visible slots.
+			DX12DescriptorCopyMemo::Key memoKey = {
+				&srcHeap, &destHeap, srcSlot, destSlot
+			};
+			const UINT64 sourceVersion =
+				srcHeap.stateLocks->ReadSlotVersion(srcSlot);
+			const UINT64 destinationVersion =
+				destHeap.stateLocks->ReadSlotVersion(destSlot);
+			DX12DescriptorCopyMemo::Result memoResult;
+			if (CopyMemo().TryLoad(
+					memoKey, sourceVersion, destinationVersion, &memoResult)) {
+				if (telemetryBatch)
+					telemetryBatch->RecordMemo(true);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				const bool unchanged =
+					memoResult == DX12DescriptorCopyMemo::Result::Unchanged;
+				if (telemetryBatch)
+					telemetryBatch->RecordResults(
+						unchanged ? 1 : 0, unchanged ? 0 : 1,
+						0, unchanged ? 1 : 0, 0, unchanged ? 0 : 1);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						unchanged ? 1 : 0, unchanged ? 0 : 1,
+						0, unchanged ? 1 : 0, 0, unchanged ? 0 : 1);
+				return;
+			}
+			if (telemetryBatch)
+				telemetryBatch->RecordMemo(false);
+			else
+				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
 			// Source descriptor rings commonly republish a slot with a new version
 			// even when its value already matches the visible destination. Version-
 			// keyed memoization therefore misses and performs a large random TLS cache
@@ -568,6 +603,11 @@ public:
 				ComparePublishedSlotIdentities(
 					srcHeap, srcSlot, destHeap, destSlot);
 			if (identityResult != CopyIdentityResult::Unknown) {
+				CopyMemo().Store(
+					memoKey, sourceVersion, destinationVersion,
+					identityResult == CopyIdentityResult::Unchanged ?
+						DX12DescriptorCopyMemo::Result::Unchanged :
+						DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
 				if (telemetryBatch)
 					telemetryBatch->RecordResults(
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
@@ -667,6 +707,23 @@ public:
 			else
 				DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
 					sourceFound, sourceMissing, changed, unchanged, erased, alreadyEmpty);
+			// Store the post-copy versions. Even a changed destination is now an
+			// exact copy and can skip all shadow work on the next identical call.
+			if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
+					copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+				CopyMemo().Store(
+					memoKey,
+					srcHeap.stateLocks->ReadSlotVersion(srcSlot),
+					destHeap.stateLocks->ReadSlotVersion(destSlot),
+					DX12DescriptorCopyMemo::Result::Unchanged);
+			} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationEmpty ||
+					copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+				CopyMemo().Store(
+					memoKey,
+					srcHeap.stateLocks->ReadSlotVersion(srcSlot),
+					destHeap.stateLocks->ReadSlotVersion(destSlot),
+					DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
+			}
 			return;
 		}
 
