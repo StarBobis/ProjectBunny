@@ -10,6 +10,7 @@
 #include <cstring>
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <map>
 #include <memory>
 #include <string>
@@ -102,17 +103,26 @@ struct DescriptorHeapRecord
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
-	UINT64 version = 1;
-	// The lock follows the heap record when gDescriptorHeaps grows or reuses a
-	// slot. Keeping it here removes a second global lock-table lookup from every
-	// Create*View and CopyDescriptors call.
-	std::unique_ptr<SRWLOCK> stateLock;
+	volatile LONG64 version = 1;
+	struct StateLocks
+	{
+		SRWLOCK shards[DX12SparseDescriptorStore<DescriptorRecord>::ShardCount];
+
+		StateLocks()
+		{
+			for (SRWLOCK &lock : shards)
+				InitializeSRWLock(&lock);
+		}
+	};
+	// Lock striping follows the heap record when gDescriptorHeaps grows or
+	// reuses a slot. Sequential descriptor slots land in different shards.
+	std::unique_ptr<StateLocks> stateLocks;
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
 	DX12SparseDescriptorStore<DescriptorRecord> currentDescriptors;
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
-	size_t liveSlots = 0;
+	volatile LONG64 liveSlots = 0;
 };
 
 class DX12DescriptorHeapStateUtils
@@ -122,14 +132,28 @@ static void ResetVersion(DescriptorHeapRecord *record)
 {
 	if (!record)
 		return;
-	record->version = 1;
+	InterlockedExchange64(&record->version, 1);
 }
 
 static void BumpVersion(DescriptorHeapRecord *record)
 {
 	if (!record)
 		return;
-	record->version = record->version == UINT64_MAX ? 1 : record->version + 1;
+	LONG64 current = InterlockedCompareExchange64(&record->version, 0, 0);
+	for (;;) {
+		const LONG64 next = current < 0 || current == LLONG_MAX ? 1 : current + 1;
+		const LONG64 observed = InterlockedCompareExchange64(
+			&record->version, next, current);
+		if (observed == current)
+			return;
+		current = observed;
+	}
+}
+
+static UINT64 ReadVersion(const DescriptorHeapRecord &record)
+{
+	return static_cast<UINT64>(InterlockedCompareExchange64(
+		const_cast<volatile LONG64*>(&record.version), 0, 0));
 }
 
 static void FillSummary(const DescriptorHeapRecord &record, DX12DescriptorHeapSummary *summary)
@@ -144,7 +168,7 @@ static void FillSummary(const DescriptorHeapRecord &record, DX12DescriptorHeapSu
 	summary->cpuStart = record.cpuStart;
 	summary->gpuStart = record.gpuStart;
 	summary->increment = record.increment;
-	summary->version = record.version;
+	summary->version = ReadVersion(record);
 }
 };
 
@@ -157,6 +181,26 @@ struct DescriptorSlotLocation
 class DX12DescriptorSlotArrayUtils
 {
 public:
+static void IncrementLiveSlots(DescriptorHeapRecord *heap)
+{
+	if (heap)
+		InterlockedIncrement64(&heap->liveSlots);
+}
+
+static void DecrementLiveSlots(DescriptorHeapRecord *heap)
+{
+	if (!heap)
+		return;
+	LONG64 current = InterlockedCompareExchange64(&heap->liveSlots, 0, 0);
+	while (current > 0) {
+		const LONG64 observed = InterlockedCompareExchange64(
+			&heap->liveSlots, current - 1, current);
+		if (observed == current)
+			return;
+		current = observed;
+	}
+}
+
 static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecord &src, SIZE_T destCpuHandle)
 {
 	if (!dest)
@@ -218,11 +262,11 @@ static void StoreCurrentRecord(
 		heap->slots[slot] = std::move(stored);
 		heap->occupied[slot] = 1;
 		if (!wasOccupied)
-			heap->liveSlots++;
+			IncrementLiveSlots(heap);
 		return;
 	}
-	heap->currentDescriptors.Store(slot, std::move(stored));
-	heap->liveSlots = heap->currentDescriptors.Size();
+	if (heap->currentDescriptors.Store(slot, std::move(stored)))
+		IncrementLiveSlots(heap);
 }
 
 static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
@@ -235,13 +279,12 @@ static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
 			return false;
 		heap->slots[slot] = DescriptorRecord();
 		heap->occupied[slot] = 0;
-		if (heap->liveSlots > 0)
-			heap->liveSlots--;
+		DecrementLiveSlots(heap);
 		return true;
 	}
 	const bool erased = heap->currentDescriptors.Erase(slot);
 	if (erased)
-		heap->liveSlots = heap->currentDescriptors.Size();
+		DecrementLiveSlots(heap);
 	return erased;
 }
 };

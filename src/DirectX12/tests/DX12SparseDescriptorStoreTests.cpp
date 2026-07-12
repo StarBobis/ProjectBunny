@@ -1,6 +1,9 @@
 #include "DX12SparseDescriptorStore.hpp"
 
+#include <array>
 #include <cstdlib>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 static void Require(bool condition)
@@ -12,6 +15,8 @@ static void Require(bool condition)
 int main()
 {
 	DX12SparseDescriptorStore<unsigned long long> store;
+	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 64,
+		"descriptor state lock striping changed unexpectedly");
 	Require(store.Empty());
 
 	store.Store(1, 11);
@@ -42,7 +47,42 @@ int main()
 
 	Require(store.Erase(3));
 	Require(!store.Erase(3));
+
+	// Slots in different and repeated shards remain one logical store.
+	store.Store(0, 100);
+	store.Store(64, 164);
+	store.Store(65, 165);
+	Require(store.Size() == 6);
+	Require(*store.Find(0) == 100);
+	Require(*store.Find(64) == 164);
+	Require(*store.Find(65) == 165);
 	store.Clear();
 	Require(store.Empty());
+
+	// Production supplies one lock for each store shard. Exercise the same
+	// contract with concurrent writers targeting one logical descriptor heap.
+	DX12SparseDescriptorStore<unsigned long long> concurrent;
+	std::array<std::mutex,
+		DX12SparseDescriptorStore<unsigned long long>::ShardCount> locks;
+	std::vector<std::thread> writers;
+	constexpr unsigned WriterCount = 8;
+	constexpr unsigned ValuesPerWriter = 4096;
+	for (unsigned writer = 0; writer < WriterCount; ++writer) {
+		writers.emplace_back([writer, &concurrent, &locks, ValuesPerWriter]() {
+			for (unsigned i = 0; i < ValuesPerWriter; ++i) {
+				const uint32_t slot = writer * ValuesPerWriter + i;
+				const uint32_t shard = concurrent.ShardForSlot(slot);
+				std::lock_guard<std::mutex> guard(locks[shard]);
+				concurrent.Store(slot, slot + 1ull);
+			}
+		});
+	}
+	for (std::thread &writer : writers)
+		writer.join();
+	Require(concurrent.Size() == WriterCount * ValuesPerWriter);
+	for (unsigned writer = 0; writer < WriterCount; ++writer) {
+		const uint32_t slot = writer * ValuesPerWriter + ValuesPerWriter - 1;
+		Require(concurrent.Find(slot) && *concurrent.Find(slot) == slot + 1ull);
+	}
 	return 0;
 }

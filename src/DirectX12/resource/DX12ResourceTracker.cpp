@@ -177,8 +177,7 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
-	record->stateLock = std::make_unique<SRWLOCK>();
-	InitializeSRWLock(record->stateLock.get());
+	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>();
 	record->liveSlots = 0;
 	DX12DescriptorHeapStateUtils::ResetVersion(record);
 }
@@ -1604,7 +1603,7 @@ UINT64 DX12GetDescriptorHeapVersion(ID3D12DescriptorHeap *heap)
 		found->second < gDescriptorHeaps.size()) {
 		const DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
 		if (record.heap == heap)
-			version = record.version;
+				version = DX12DescriptorHeapStateUtils::ReadVersion(record);
 	}
 	ReleaseSRWLockShared(&gDescriptorLock);
 	return version;

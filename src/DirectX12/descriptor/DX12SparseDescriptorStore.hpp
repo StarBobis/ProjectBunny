@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -14,6 +15,16 @@ template <typename Value>
 class DX12SparseDescriptorStore
 {
 public:
+	// Sequential descriptor slots are deliberately spread across shards. The
+	// caller supplies one lock per shard, so unrelated Create*View and copy
+	// operations on the same million-entry heap no longer serialize.
+	static constexpr uint32_t ShardCount = 64;
+
+	static constexpr uint32_t ShardForSlot(uint32_t slot)
+	{
+		return slot & (ShardCount - 1);
+	}
+
 	struct SnapshotEntry
 	{
 		bool occupied = false;
@@ -22,24 +33,28 @@ public:
 
 	const Value *Find(uint32_t slot) const
 	{
-		auto found = values_.find(slot);
-		return found == values_.end() ? nullptr : &found->second;
+		const Map &values = values_[ShardForSlot(slot)];
+		auto found = values.find(slot);
+		return found == values.end() ? nullptr : &found->second;
 	}
 
 	Value *Find(uint32_t slot)
 	{
-		auto found = values_.find(slot);
-		return found == values_.end() ? nullptr : &found->second;
+		Map &values = values_[ShardForSlot(slot)];
+		auto found = values.find(slot);
+		return found == values.end() ? nullptr : &found->second;
 	}
 
-	void Store(uint32_t slot, Value value)
+	bool Store(uint32_t slot, Value value)
 	{
-		values_.insert_or_assign(slot, std::move(value));
+		Map &values = values_[ShardForSlot(slot)];
+		auto result = values.insert_or_assign(slot, std::move(value));
+		return result.second;
 	}
 
 	bool Erase(uint32_t slot)
 	{
-		return values_.erase(slot) != 0;
+		return values_[ShardForSlot(slot)].erase(slot) != 0;
 	}
 
 	void SnapshotRange(
@@ -63,25 +78,36 @@ public:
 	template <typename Visitor>
 	void ForEach(Visitor visitor) const
 	{
-		for (const auto &entry : values_)
-			visitor(entry.first, entry.second);
+		for (const Map &values : values_) {
+			for (const auto &entry : values)
+				visitor(entry.first, entry.second);
+		}
 	}
 
 	size_t Size() const
 	{
-		return values_.size();
+		size_t size = 0;
+		for (const Map &values : values_)
+			size += values.size();
+		return size;
 	}
 
 	bool Empty() const
 	{
-		return values_.empty();
+		for (const Map &values : values_) {
+			if (!values.empty())
+				return false;
+		}
+		return true;
 	}
 
 	void Clear()
 	{
-		values_.clear();
+		for (Map &values : values_)
+			values.clear();
 	}
 
 private:
-	std::unordered_map<uint32_t, Value> values_;
+	using Map = std::unordered_map<uint32_t, Value>;
+	std::array<Map, ShardCount> values_;
 };
