@@ -33,6 +33,11 @@ std::vector<ResourceRecord> gResources;
 std::vector<size_t> gFreeResourceSlots;
 size_t gLiveResourceCount = 0;
 std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
+// Reverse ownership for gResourceByPtr. Resource invalidation used to scan
+// every live pointer (roughly 20k in the target game) to find the one or two
+// aliases for a released resource. Keep those aliases at their owning index
+// so release is O(alias count), not O(all live resources).
+static std::vector<std::vector<ID3D12Resource*>> gResourceAliasesByIndex;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
 std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
@@ -395,11 +400,19 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
 		gBufferResourceByGpuVaComplete.erase(record.gpuVirtualAddress);
 	}
-	for (auto it = gResourceByPtr.begin(); it != gResourceByPtr.end();) {
-		if (it->second == index)
-			it = gResourceByPtr.erase(it);
-		else
-			++it;
+	if (index < gResourceAliasesByIndex.size()) {
+		for (ID3D12Resource *alias : gResourceAliasesByIndex[index]) {
+			auto aliasFound = gResourceByPtr.find(alias);
+			if (aliasFound != gResourceByPtr.end() &&
+				aliasFound->second == index)
+				gResourceByPtr.erase(aliasFound);
+		}
+		gResourceAliasesByIndex[index].clear();
+	} else {
+		// Compatibility fallback for records created before the reverse index.
+		gResourceByPtr.erase(resource);
+		if (canonical != resource)
+			gResourceByPtr.erase(canonical);
 	}
 	// Invalidate canonical cache entries for this resource
 	AcquireSRWLockExclusive(&gCanonicalCacheLock);
@@ -672,6 +685,7 @@ void RecordResource(
 	ResourceRecord oldRecord = {};
 	bool hadOldRecord = false;
 	if (found != gResourceByPtr.end()) {
+		const size_t index = found->second;
 		ResourceRecord &existing = gResources[found->second];
 		oldRecord = existing;
 		hadOldRecord = true;
@@ -680,8 +694,18 @@ void RecordResource(
 			gBufferResourceByGpuVaComplete.erase(existing.gpuVirtualAddress);
 		}
 		gResources[found->second] = record;
-		gResourceByPtr[resource] = found->second;
-		gResourceByPtr[canonical] = found->second;
+		auto addAlias = [index](ID3D12Resource *alias) {
+			if (!alias)
+				return;
+			gResourceByPtr[alias] = index;
+			if (index >= gResourceAliasesByIndex.size())
+				gResourceAliasesByIndex.resize(index + 1);
+			auto &aliases = gResourceAliasesByIndex[index];
+			if (std::find(aliases.begin(), aliases.end(), alias) == aliases.end())
+				aliases.push_back(alias);
+		};
+		addAlias(resource);
+		addAlias(canonical);
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
 			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = found->second;
@@ -697,8 +721,18 @@ void RecordResource(
 			gResources.push_back(record);
 		}
 		gLiveResourceCount++;
-		gResourceByPtr[resource] = index;
-		gResourceByPtr[canonical] = index;
+		if (index >= gResourceAliasesByIndex.size())
+			gResourceAliasesByIndex.resize(index + 1);
+		auto addAlias = [index](ID3D12Resource *alias) {
+			if (!alias)
+				return;
+			gResourceByPtr[alias] = index;
+			auto &aliases = gResourceAliasesByIndex[index];
+			if (std::find(aliases.begin(), aliases.end(), alias) == aliases.end())
+				aliases.push_back(alias);
+		};
+		addAlias(resource);
+		addAlias(canonical);
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = index;
 			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = index;
@@ -745,6 +779,7 @@ void CleanupTrackedResources()
 	gFreeResourceSlots.clear();
 	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
+	gResourceAliasesByIndex.clear();
 	gBufferResourceByGpuVa.clear();
 	gBufferResourceByGpuVaComplete.clear();
 	DX12BufferResolveCacheUtils::InvalidateAllLocked("cleanup");

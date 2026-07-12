@@ -30,6 +30,13 @@ int main()
 	store.Store(1, 12);
 	Require(store.Size() == 2);
 	Require(*store.Find(1) == 12);
+	bool inserted = false;
+	unsigned long long *existing = store.FindOrInsertDefault(1, &inserted);
+	Require(existing && !inserted && *existing == 12);
+	unsigned long long *created = store.FindOrInsertDefault(99, &inserted);
+	Require(created && inserted && *created == 0);
+	*created = 99;
+	Require(store.Find(99) && *store.Find(99) == 99);
 
 	// Snapshot-before-write is the production CopyDescriptors overlap rule.
 	store.Store(2, 22);
@@ -52,7 +59,7 @@ int main()
 	store.Store(0, 100);
 	store.Store(1024, 2024);
 	store.Store(1025, 2025);
-	Require(store.Size() == 6);
+	Require(store.Size() == 7);
 	Require(*store.Find(0) == 100);
 	Require(*store.Find(1024) == 2024);
 	Require(*store.Find(1025) == 2025);

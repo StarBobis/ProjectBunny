@@ -253,6 +253,38 @@ static void StoreCurrentRecord(
 		IncrementLiveSlots(heap);
 }
 
+static bool StoreCurrentRecordIfChanged(
+	DescriptorHeapRecord *heap,
+	UINT slot,
+	const DescriptorRecord &source,
+	SIZE_T destCpuHandle)
+{
+	if (!heap || slot >= heap->desc.NumDescriptors)
+		return false;
+	if (!heap->slots.empty() && slot < heap->slots.size() &&
+			slot < heap->occupied.size()) {
+		const bool wasOccupied = heap->occupied[slot] != 0;
+		if (wasOccupied && SameRecordValueAtSlot(
+				heap->slots[slot], source, destCpuHandle))
+			return false;
+		CopyRecordValueForSlot(&heap->slots[slot], source, destCpuHandle);
+		heap->occupied[slot] = 1;
+		if (!wasOccupied)
+			IncrementLiveSlots(heap);
+		return true;
+	}
+
+	bool inserted = false;
+	DescriptorRecord *stored =
+		heap->currentDescriptors.FindOrInsertDefault(slot, &inserted);
+	if (!inserted && SameRecordValueAtSlot(*stored, source, destCpuHandle))
+		return false;
+	CopyRecordValueForSlot(stored, source, destCpuHandle);
+	if (inserted)
+		IncrementLiveSlots(heap);
+	return true;
+}
+
 static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
 {
 	if (!heap)

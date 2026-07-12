@@ -50,6 +50,18 @@ public:
 		return found == values.end() ? nullptr : &found->second;
 	}
 
+	// Returns the existing value or inserts one default value with a single
+	// hash-table probe. Callers already serialize the owning shard, so the
+	// returned node remains stable for the duration of the operation.
+	Value *FindOrInsertDefault(uint32_t slot, bool *inserted)
+	{
+		Map &values = values_[ShardForSlot(slot)];
+		auto result = values.try_emplace(slot);
+		if (inserted)
+			*inserted = result.second;
+		return &result.first->second;
+	}
+
 	bool Store(uint32_t slot, Value value)
 	{
 		Map &values = values_[ShardForSlot(slot)];

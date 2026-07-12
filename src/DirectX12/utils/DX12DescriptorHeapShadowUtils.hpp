@@ -275,16 +275,11 @@ public:
 		}
 
 		DescriptorHeapRecord &heap = *resolved.heap;
-		const DescriptorRecord *existing =
-			DX12DescriptorSlotArrayUtils::FindCurrentRecord(heap, resolved.slot);
-		const bool changed = !existing ||
-			!DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
-				*existing, record, cpuHandle);
-		if (changed) {
-			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
+		const bool changed =
+			DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
 				&heap, resolved.slot, record, cpuHandle);
+		if (changed)
 			DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
-		}
 		UnlockHeapSlot(resolved, true);
 
 		ReleaseDescriptorRecordResources(&record);
@@ -310,16 +305,11 @@ public:
 		}
 
 		DescriptorHeapRecord &heap = *resolved.heap;
-		const DescriptorRecord *existing =
-			DX12DescriptorSlotArrayUtils::FindCurrentRecord(heap, resolved.slot);
-		const bool changed = !existing ||
-			!DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
-				*existing, record, cpuHandle);
-		if (changed) {
-			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
+		const bool changed =
+			DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
 				&heap, resolved.slot, record, cpuHandle);
+		if (changed)
 			DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
-		}
 
 		UnlockHeapSlot(resolved, true);
 		ReleaseDescriptorRecordResources(&record);
@@ -428,15 +418,9 @@ public:
 
 			const SIZE_T destHandle = destStart.ptr +
 				static_cast<SIZE_T>(i) * destHeap.increment;
-			const DescriptorRecord *existing =
-				DX12DescriptorSlotArrayUtils::FindCurrentRecord(destHeap, dSlot);
-			if (existing && DX12DescriptorSlotArrayUtils::SameRecordValueAtSlot(
-					*existing, *source, destHandle))
-				return;
-
-			DX12DescriptorSlotArrayUtils::StoreCurrentRecord(
-				&destHeap, dSlot, *source, destHandle);
-			DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
+			if (DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&destHeap, dSlot, *source, destHandle))
+				DX12DescriptorHeapStateUtils::BumpVersion(&destHeap, dSlot);
 		};
 		struct HeldShardLock
 		{
