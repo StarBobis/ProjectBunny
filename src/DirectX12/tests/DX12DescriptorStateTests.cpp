@@ -596,6 +596,18 @@ static void TestDescriptorCopyMemoInvalidatesByObservedShard()
 		&result));
 }
 
+static void TestIaTargetPlanReuseRequiresIdenticalIaInputs()
+{
+	DX12IaHashTargetPlan direct;
+	direct.ResetKnown();
+	direct.RequireVertexBuffer(3);
+	DX12IaHashTargetPlan full = direct;
+	full.RequireDescriptorTarget();
+	Require(full.HasSameIaHashTargets(direct));
+	full.RequireVertexBuffer(4);
+	Require(!full.HasSameIaHashTargets(direct));
+}
+
 static void RunConstantBufferViewBenchmark()
 {
 	constexpr UINT SlotCount = 8192;
@@ -682,7 +694,10 @@ static void RunConstantBufferViewBenchmark()
 			std::chrono::duration_cast<std::chrono::microseconds>(
 				memoLookupEnd - memoLookupBegin).count()));
 	std::fflush(stdout);
-	Require(memoHits > CopyPairCount * 3 / 4);
+	// A frame-sized descriptor ring must survive in the memo.  Falling back for
+	// conflict-evicted entries turns tens of thousands of semantically unchanged
+	// copies back into slot locking and sparse-store traffic every frame.
+	Require(memoHits > CopyPairCount * 99 / 100);
 }
 
 int main(int argc, char **argv)
@@ -696,6 +711,7 @@ int main(int argc, char **argv)
 	TestDirectIaProbeCacheDropsDeadGeneration();
 	TestPreSkinBindingCacheObservesOnlyReferencedSlots();
 	TestDescriptorCopyMemoInvalidatesByObservedShard();
+	TestIaTargetPlanReuseRequiresIdenticalIaInputs();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();
 	return 0;

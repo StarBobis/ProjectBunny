@@ -157,6 +157,16 @@ struct DX12DescriptorValue
 class DX12DescriptorValueHashUtils
 {
 private:
+	static UINT64 Mix(UINT64 value)
+	{
+		value ^= value >> 30;
+		value *= 0xbf58476d1ce4e5b9ull;
+		value ^= value >> 27;
+		value *= 0x94d049bb133111ebull;
+		value ^= value >> 31;
+		return value;
+	}
+
 	static void Append(UINT64 *hash, const void *data, size_t size)
 	{
 		const uint8_t *bytes = static_cast<const uint8_t*>(data);
@@ -174,6 +184,11 @@ private:
 public:
 	static UINT64 HashRecord(const DescriptorRecord &record)
 	{
+		// CBVs contain only BufferLocation and SizeInBytes. They account for
+		// tens of thousands of descriptor writes per frame, so avoid feeding
+		// their duplicated fields through the Debug /Od byte-at-a-time path.
+		if (record.kindId == DescriptorKind::CBV_ID && record.hasDesc)
+			return HashConstantBufferView(record.cbv);
 		UINT64 hash = 14695981039346656037ull;
 		Append(&hash, &record.kindId, sizeof(record.kindId));
 		Append(&hash, &record.resource, sizeof(record.resource));
@@ -200,23 +215,11 @@ public:
 	static UINT64 HashConstantBufferView(
 		const D3D12_CONSTANT_BUFFER_VIEW_DESC &desc)
 	{
-		UINT64 hash = 14695981039346656037ull;
-		const UINT kindId = DescriptorKind::CBV_ID;
-		ID3D12Resource *const resource = nullptr;
-		ID3D12Resource *const counterResource = nullptr;
-		const UINT64 gpuVirtualAddress = desc.BufferLocation;
-		const UINT64 resourceOffset = 0;
-		const UINT64 viewSize = desc.SizeInBytes;
-		const bool hasDesc = true;
-		Append(&hash, &kindId, sizeof(kindId));
-		Append(&hash, &resource, sizeof(resource));
-		Append(&hash, &counterResource, sizeof(counterResource));
-		Append(&hash, &gpuVirtualAddress, sizeof(gpuVirtualAddress));
-		Append(&hash, &resourceOffset, sizeof(resourceOffset));
-		Append(&hash, &viewSize, sizeof(viewSize));
-		Append(&hash, &hasDesc, sizeof(hasDesc));
-		Append(&hash, &desc, sizeof(desc));
-		return Finish(hash);
+		const UINT64 location = Mix(
+			desc.BufferLocation ^ 0x4342565f49445f31ull);
+		const UINT64 size = Mix(
+			static_cast<UINT64>(desc.SizeInBytes) ^ 0x9e3779b97f4a7c15ull);
+		return Finish(location ^ size);
 	}
 };
 

@@ -94,10 +94,11 @@ public:
 
 private:
 	// The captured game presents roughly 65k distinct single-slot copy pairs per
-	// frame. Keep twice that many two-way cells so a complete frame survives to
-	// the next frame without turning lookup into a long associative scan.
+	// frame. Two ways still conflict-evicted about 10% of a frame-sized trace,
+	// turning proven no-op copies back into locking/sparse-store traffic on the
+	// next frame. Four ways retain the working set while keeping lookup bounded.
 	static constexpr size_t SetCount = 65536;
-	static constexpr size_t Ways = 2;
+	static constexpr size_t Ways = 4;
 	static_assert((SetCount & (SetCount - 1)) == 0,
 		"copy memo set count must be a power of two");
 

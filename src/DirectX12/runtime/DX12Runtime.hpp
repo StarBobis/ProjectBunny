@@ -50,7 +50,7 @@ public:
 		DX12LogManager::Open();
 		DX12Profiling::Init();
 		DX12LogManager::Text(
-			"\n*** 3DMigoto DX12 runtime initialized - build direct-hash-key+preskin-slot-v1 ***\n");
+			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());

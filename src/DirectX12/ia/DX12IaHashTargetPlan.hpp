@@ -88,6 +88,19 @@ public:
 		return false;
 	}
 
+	bool HasSameIaHashTargets(const DX12IaHashTargetPlan &other) const
+	{
+		if (requireAllIaBuffers != other.requireAllIaBuffers ||
+			requireIndexBuffer != other.requireIndexBuffer ||
+			requireIndexBufferView != other.requireIndexBufferView)
+			return false;
+		for (UINT slot = 0; slot < 32; ++slot) {
+			if (requireVertexBuffers[slot] != other.requireVertexBuffers[slot])
+				return false;
+		}
+		return true;
+	}
+
 	UINT64 Fingerprint() const
 	{
 		UINT64 key = requireAllIaBuffers ? 0xf17a11b7a11b7a11ull : 0x27a7b125f00d1234ull;

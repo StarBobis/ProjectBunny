@@ -321,6 +321,8 @@ public:
 			drawDecision->shaderOverrideNegativeCacheAllowed;
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
+		DX12IaHashState directIaState;
+		bool reusedDirectIaState = false;
 			if (drawDecision->directTargetPlanResolved &&
 			    directTargetPlan.hasTextureOverrideChecks &&
 			    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
@@ -343,7 +345,6 @@ public:
 				// Build the region hashes first. They are the actual inputs to the
 				// TextureOverride lookup, so they form a complete cache identity without
 				// resolving every IA GPUVA a second time merely to build a probe key.
-				DX12IaHashState directIaState;
 				LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
 				if (DX12CommandListRuntime::BuildIaHashStateForTargets(
 						runtimeState.ia,
@@ -442,6 +443,17 @@ public:
 						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 						return false;
 					}
+					if (targetPlan.HasSameIaHashTargets(directTargetPlan)) {
+						activeIaState = &directIaState;
+						hasIaHashState = true;
+						reusedDirectIaState = true;
+						DX12OuterTimingProbeUtils::LogCpuStage(
+							"IaReplacement",
+							"reuse_direct_ia_state",
+							draw.indexed ? 1u : 0u,
+							1,
+							0);
+					}
 				} else {
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
@@ -451,7 +463,7 @@ public:
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
 				}
 			}
-			if (targetPlanHasIaTargets) {
+			if (targetPlanHasIaTargets && !reusedDirectIaState) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargets(
@@ -542,7 +554,8 @@ public:
 			}
 			DX12Profiling::RecordIaHashStateResult(hasIaHashState);
 		} else {
-			DX12Profiling::RecordIaHashStateResult(false);
+			DX12Profiling::RecordIaHashStateResult(
+				targetPlanHasIaTargets && reusedDirectIaState);
 		}
 		if (hasIaHashState || !targetPlanHasIaTargets ||
 		    drawDecision->targetPlanHasDescriptorTargets) {
