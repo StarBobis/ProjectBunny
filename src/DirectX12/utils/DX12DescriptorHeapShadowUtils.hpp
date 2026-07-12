@@ -559,69 +559,15 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
-			DescriptorHeapRecord::StateLocks *sourceState =
-				srcHeap.stateLocks.get();
-			DescriptorHeapRecord::StateLocks *destinationState =
-				destHeap.stateLocks.get();
-			const DX12DescriptorCopyMemo::Key memoKey = {
-				&srcHeap, &destHeap, srcSlot, destSlot
-			};
-			DX12DescriptorCopyMemo::Result memoResult;
-			const bool canMemo = sourceState && destinationState &&
-				sourceState->IsActive() && destinationState->IsActive() &&
-				destSlot < destHeap.desc.NumDescriptors;
-			// Most copies repeat the same staging-to-visible slot pair on every
-			// frame. Probe its version proof before the seqlock identity reads;
-			// the old order returned from the identity fast path before ever
-			// storing a proof, so the memo could never accelerate those copies.
-			if (canMemo && CopyMemo().TryLoad(
-					memoKey,
-					sourceState->ReadSlotVersion(srcSlot),
-					destinationState->ReadSlotVersion(destSlot),
-					&memoResult)) {
-				if (telemetryBatch)
-					telemetryBatch->RecordMemo(true);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-				if (memoResult == DX12DescriptorCopyMemo::Result::Unchanged) {
-					if (telemetryBatch)
-						telemetryBatch->RecordResults(1, 0, 0, 1, 0, 0);
-					else
-						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-							1, 0, 0, 1, 0, 0);
-				} else {
-					if (telemetryBatch)
-						telemetryBatch->RecordResults(0, 1, 0, 0, 0, 1);
-					else
-						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-							0, 1, 0, 0, 0, 1);
-				}
-				return;
-			}
-			if (canMemo) {
-				if (telemetryBatch)
-					telemetryBatch->RecordMemo(false);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
-			}
+			// Source descriptor rings commonly republish a slot with a new version
+			// even when its value already matches the visible destination. Version-
+			// keyed memoization therefore misses and performs a large random TLS cache
+			// lookup precisely where the published value IDs can prove the copy is a
+			// no-op directly. The seqlock comparison is the authoritative proof.
 			const CopyIdentityResult identityResult =
 				ComparePublishedSlotIdentities(
 					srcHeap, srcSlot, destHeap, destSlot);
 			if (identityResult != CopyIdentityResult::Unknown) {
-				if (canMemo) {
-					DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
-					DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
-					if (sourceState->ObserveSlotIdentity(srcSlot, &sourceIdentity) &&
-						destinationState->ObserveSlotIdentity(destSlot, &destinationIdentity)) {
-						CopyMemo().Store(
-							memoKey,
-							sourceIdentity.version,
-							destinationIdentity.version,
-							identityResult == CopyIdentityResult::Unchanged ?
-								DX12DescriptorCopyMemo::Result::Unchanged :
-								DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
-					}
-				}
 				if (telemetryBatch)
 					telemetryBatch->RecordResults(
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
@@ -681,13 +627,11 @@ public:
 			UINT alreadyEmpty = 0;
 			DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult copyResult =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationEmpty;
-			bool completedCopy = false;
 			if (srcHeap.stateLocks->IsActive() && destHeap.stateLocks->IsActive() &&
 					destSlot < destHeap.desc.NumDescriptors) {
 				copyResult =
 					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr);
-				completedCopy = true;
 				if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
 					sourceFound = 1;
 					changed = 1;
@@ -704,19 +648,6 @@ public:
 					alreadyEmpty = 1;
 				}
 			}
-			if (completedCopy) {
-				const DX12DescriptorCopyMemo::Result nextResult =
-					(copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
-					 copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) ?
-					DX12DescriptorCopyMemo::Result::Unchanged :
-					DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty;
-				CopyMemo().Store(
-					memoKey,
-					sourceState->ReadSlotVersion(srcSlot),
-					destinationState->ReadSlotVersion(destSlot),
-					nextResult);
-			}
-
 			if (sourceFirst) {
 				if (destExclusive)
 					ReleaseSRWLockExclusive(destLock);
