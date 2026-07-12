@@ -47,6 +47,7 @@ class DX12PreSkinBindingCacheKey
 {
 public:
 	UINT64 fingerprint = 0;
+	UINT64 bufferResolveEpoch = 0;
 	ID3D12RootSignature *computeRootSignature = nullptr;
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	UINT64 cbvSrvUavHeapVersion = 0;
@@ -101,6 +102,7 @@ public:
 	static void InitializeKey(
 		const CommandListBindingState &snapshot,
 		UINT64 cbvSrvUavHeapVersion,
+		UINT64 bufferResolveEpoch,
 		DX12PreSkinBindingCacheKey *key)
 	{
 		if (!key)
@@ -111,6 +113,7 @@ public:
 		key->computeRootSignature = snapshot.computeRootSignature;
 		key->cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 		key->cbvSrvUavHeapVersion = cbvSrvUavHeapVersion;
+		key->bufferResolveEpoch = bufferResolveEpoch;
 		key->rootTables.reserve(snapshot.computeTableValidCount);
 		key->rootDescriptors.reserve(MaxRootParameters);
 		key->rootConstants.reserve(MaxRootParameters);
@@ -204,6 +207,7 @@ public:
 	static void BuildKey(
 		const CommandListBindingState &snapshot,
 		UINT64 cbvSrvUavHeapVersion,
+		UINT64 bufferResolveEpoch,
 		const DX12RootSignatureSummary *rootSignature,
 		DX12PreSkinBindingCacheKey *key)
 	{
@@ -214,7 +218,10 @@ public:
 		// every frame. With a parsed root signature, observe only the descriptor
 		// slots that this compute binding can actually consume.
 		DX12PreSkinBindingCacheUtils::InitializeKey(
-			snapshot, rootSignature ? 0 : cbvSrvUavHeapVersion, key);
+			snapshot,
+			rootSignature ? 0 : cbvSrvUavHeapVersion,
+			bufferResolveEpoch,
+			key);
 
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
 			const RootTableState &table = snapshot.computeTables[root];
@@ -358,6 +365,27 @@ public:
 		return true;
 	}
 
+	using BufferRangeValidator = bool (*)(UINT64, UINT64, UINT64);
+
+	static bool RootDescriptorRangesStillValid(
+		const DX12PreSkinBindingCacheKey &cached,
+		const DX12PreSkinBindingCacheKey &current,
+		BufferRangeValidator validator)
+	{
+		if (cached.bufferResolveEpoch == current.bufferResolveEpoch ||
+				cached.rootDescriptors.empty())
+			return true;
+		if (!validator)
+			return false;
+		for (const DX12PreSkinBindingRootDescriptorCacheKey &descriptor :
+				cached.rootDescriptors) {
+			if (!descriptor.address || !validator(
+					cached.bufferResolveEpoch, descriptor.address, 1))
+				return false;
+		}
+		return true;
+	}
+
 	static bool TryLoad(
 		DX12PreSkinBindingTlsCache *cache,
 		const DX12PreSkinBindingCacheKey &key,
@@ -365,15 +393,19 @@ public:
 		std::vector<DX12CurrentComputeUavBinding> *srvs,
 		std::vector<DX12CurrentComputeUavBinding> *cbvs,
 		std::vector<DX12CurrentRootConstants> *constants,
-		bool *foundAny)
+		bool *foundAny,
+		BufferRangeValidator bufferRangeValidator = nullptr)
 	{
 		if (!cache)
 			return false;
 		for (size_t index = 0; index < cache->entries.size(); ++index) {
 			DX12PreSkinBindingCacheEntry &entry = cache->entries[index];
 			if (!entry.valid ||
-				!DX12PreSkinBindingCacheUtils::KeysEqual(entry.key, key))
+					!DX12PreSkinBindingCacheUtils::KeysEqual(entry.key, key) ||
+					!DX12PreSkinBindingCacheUtils::RootDescriptorRangesStillValid(
+						entry.key, key, bufferRangeValidator))
 				continue;
+			entry.key.bufferResolveEpoch = key.bufferResolveEpoch;
 			entry.age = ++cache->clock;
 			if (uavs) *uavs = entry.uavs;
 			if (srvs) *srvs = entry.srvs;

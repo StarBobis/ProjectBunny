@@ -11,7 +11,6 @@ class DX12DirectIaProbeCacheKey
 {
 public:
 	UINT64 reloadGeneration = 0;
-	UINT64 preSkinGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	bool indexed = false;
 	bool hasIndexBuffer = false;
@@ -29,7 +28,6 @@ public:
 	bool operator==(const DX12DirectIaProbeCacheKey &other) const
 	{
 		return reloadGeneration == other.reloadGeneration &&
-			preSkinGeneration == other.preSkinGeneration &&
 			targetPlanFingerprint == other.targetPlanFingerprint &&
 			indexed == other.indexed &&
 			hasIndexBuffer == other.hasIndexBuffer &&
@@ -59,7 +57,6 @@ public:
 	{
 		size_t hash = 0x84222325a9582d75ull;
 		hash = Combine(hash, key.reloadGeneration);
-		hash = Combine(hash, key.preSkinGeneration);
 		hash = Combine(hash, key.targetPlanFingerprint);
 		hash = Combine(hash, key.indexed ? 1 : 0);
 		hash = Combine(hash, key.hasIndexBuffer ? 1 : 0);
@@ -117,7 +114,6 @@ public:
 		DX12DirectIaProbeCacheKeyHash> entries;
 	bool hasScope = false;
 	UINT64 scopeReloadGeneration = 0;
-	UINT64 scopePreSkinGeneration = 0;
 };
 
 class DX12DirectIaProbeCacheUtils
@@ -127,14 +123,12 @@ public:
 
 	static DX12DirectIaProbeCacheKey MakeKey(
 		UINT64 reloadGeneration,
-		UINT64 preSkinGeneration,
 		UINT64 targetPlanFingerprint,
 		const DX12IaHashState &state,
 		const DX12IaDrawInvocation &draw)
 	{
 		DX12DirectIaProbeCacheKey key;
 		key.reloadGeneration = reloadGeneration;
-		key.preSkinGeneration = preSkinGeneration;
 		key.targetPlanFingerprint = targetPlanFingerprint;
 		key.indexed = draw.indexed;
 		key.hasIndexBuffer = state.hasIndexBuffer;
@@ -227,14 +221,12 @@ private:
 		if (!cache)
 			return;
 		const bool sameScope = cache->hasScope &&
-			cache->scopeReloadGeneration == key.reloadGeneration &&
-			cache->scopePreSkinGeneration == key.preSkinGeneration;
+			cache->scopeReloadGeneration == key.reloadGeneration;
 		if (sameScope)
 			return;
 		cache->entries.clear();
 		cache->lruKeys.clear();
 		cache->hasScope = true;
 		cache->scopeReloadGeneration = key.reloadGeneration;
-		cache->scopePreSkinGeneration = key.preSkinGeneration;
 	}
 };

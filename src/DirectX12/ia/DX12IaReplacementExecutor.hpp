@@ -367,7 +367,6 @@ public:
 					const DX12DirectIaProbeCacheKey directProbeCacheKey =
 						DX12DirectIaProbeCacheUtils::MakeKey(
 							drawDecision->reloadGeneration,
-							DX12ModGetPreSkinActiveGenerationFast(),
 							directTargetPlan.Fingerprint(),
 							directIaState,
 							draw);

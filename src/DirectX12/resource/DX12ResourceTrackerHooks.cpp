@@ -479,6 +479,20 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		device->GetDescriptorHandleIncrementSize(descriptorHeapsType) : 0;
 	if (!increment)
 		return;
+	D3D12_CPU_DESCRIPTOR_HANDLE pendingDest = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE pendingSrc = {};
+	UINT pendingCount = 0;
+	auto flushPendingRange = [&]() {
+		if (!pendingCount)
+			return;
+		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+			descriptorHeapsType,
+			pendingDest,
+			pendingSrc,
+			pendingCount,
+			&copyTelemetry);
+		pendingCount = 0;
+	};
 	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
 		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
 		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
@@ -498,11 +512,24 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-			descriptorHeapsType, dest, src, count, &copyTelemetry);
+		const SIZE_T pendingBytes =
+			static_cast<SIZE_T>(pendingCount) * increment;
+		const bool contiguous = pendingCount != 0 &&
+			dest.ptr == pendingDest.ptr + pendingBytes &&
+			src.ptr == pendingSrc.ptr + pendingBytes &&
+			count <= UINT_MAX - pendingCount;
+		if (contiguous) {
+			pendingCount += count;
+		} else {
+			flushPendingRange();
+			pendingDest = dest;
+			pendingSrc = src;
+			pendingCount = count;
+		}
 		destOffset += count;
 		srcOffset += count;
 	}
+	flushPendingRange();
 	copyTelemetry.Flush();
 }
 

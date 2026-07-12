@@ -316,7 +316,17 @@ static void BumpVersion(DescriptorHeapRecord *record, UINT slot)
 {
 	if (!record || !record->stateLocks)
 		return;
-	record->stateLocks->BumpVersion(slot);
+	UINT64 valueId = 0;
+	if (!record->slots.empty() && slot < record->slots.size() &&
+			slot < record->occupied.size() && record->occupied[slot]) {
+		valueId = record->slots[slot].valueId;
+	} else {
+		const DescriptorSlotBinding *binding =
+			record->currentDescriptors.Find(slot);
+		if (binding && binding->value)
+			valueId = binding->value->value.valueId;
+	}
+	record->stateLocks->PublishSlotValue(slot, valueId);
 }
 
 static UINT64 ReadVersion(const DescriptorHeapRecord &record)

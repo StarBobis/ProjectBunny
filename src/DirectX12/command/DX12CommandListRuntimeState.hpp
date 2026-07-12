@@ -58,17 +58,10 @@ public:
 	// per DX12 spec (device -> command list is a parent-child relationship).
 	ID3D12Device *device = nullptr;
 
-	// PreSkin binding collection cache — keyed by computeBindingSerial.
-	// Avoids re-collecting CBV/SRV/UAV/constants on every dispatch when
-	// compute bindings have not changed since the last collection.
-	UINT64 lastPreSkinBindingSerial = 0;
-	bool preSkinBindingsCached = false;
-	DX12PreSkinBindingCacheIdentity cachedPreSkinBindingIdentity;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinUavs;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
-	std::vector<DX12CurrentRootConstants> cachedPreSkinConstants;
-	UINT64 cachedPreSkinBindingFingerprintSerial = 0;
+	// PreSkin probe cache keyed by the stable dependency-aware fingerprint.
+	// Exact binding dependencies live in the shared PreSkin binding cache.
+	// Runtime state only retains the final Mod probe result.
+	UINT64 cachedPreSkinDependencyFingerprint = 0;
 	UINT64 cachedPreSkinBindingFingerprint = 0;
 	UINT64 cachedPreSkinProbeFingerprint = 0;
 	uint64_t cachedPreSkinProbeCsHash = 0;

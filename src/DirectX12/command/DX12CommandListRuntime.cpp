@@ -278,10 +278,20 @@ void DX12CommandListRuntime::Reset(
 
 	ID3D12Device *cachedDevice = state->device;
 	DX12CommandListTrackingCache oldCache = state->trackingCache;
+	// IA caches describe immutable content and candidate results rather than a
+	// single recording. Their keys already carry the required generations, so
+	// preserve the working set across command-list Reset like DX11's resident
+	// HackerContext state.
+	DX12IaHashStateCache persistentIaHashStateCache =
+		std::move(state->iaHashStateCache);
+	DX12DirectIaProbeCache persistentDirectIaProbeCache =
+		std::move(state->directIaProbeCache);
 	*state = DX12CommandListRuntimeState();
 	state->device = cachedDevice;
 	state->pipelineState = initialState;
 	state->trackingCache = oldCache;
+	state->iaHashStateCache = std::move(persistentIaHashStateCache);
+	state->directIaProbeCache = std::move(persistentDirectIaProbeCache);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
 }

@@ -170,7 +170,13 @@ public:
 	static bool GetCurrentShaderResourceBindings(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, std::vector<DX12CurrentShaderResourceBinding> *bindings);
 	static bool GetCurrentComputeRootConstants(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentRootConstants> *constants);
 	static bool GetCurrentComputeAll(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *uavs, std::vector<DX12CurrentComputeUavBinding> *srvs, std::vector<DX12CurrentComputeUavBinding> *cbvs, std::vector<DX12CurrentRootConstants> *constants);
-	static bool CollectPreSkinBindings(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *uavs, std::vector<DX12CurrentComputeUavBinding> *srvs, std::vector<DX12CurrentComputeUavBinding> *cbvs, std::vector<DX12CurrentRootConstants> *constants);
+	static bool CollectPreSkinBindings(
+		ID3D12GraphicsCommandList *commandList,
+		std::vector<DX12CurrentComputeUavBinding> *uavs,
+		std::vector<DX12CurrentComputeUavBinding> *srvs,
+		std::vector<DX12CurrentComputeUavBinding> *cbvs,
+		std::vector<DX12CurrentRootConstants> *constants,
+		UINT64 *dependencyFingerprint = nullptr);
 	static UINT64 GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static UINT64 GetBindingQuerySerial(ID3D12GraphicsCommandList *commandList);
 	static bool GetCurrentDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);

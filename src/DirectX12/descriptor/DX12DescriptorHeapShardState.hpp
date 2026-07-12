@@ -107,17 +107,64 @@ public:
 			if (!page)
 				continue;
 			for (std::atomic<uint64_t> &slotVersion : page->versions)
-				slotVersion.store(1, std::memory_order_release);
+				slotVersion.store(2, std::memory_order_release);
+			for (std::atomic<uint64_t> &valueId : page->valueIds)
+				valueId.store(0, std::memory_order_release);
 		}
 	}
 
 	void BumpVersion(uint32_t slot)
 	{
+		PublishSlotValue(slot, 0);
+	}
+
+	void PublishSlotValue(uint32_t slot, uint64_t valueId)
+	{
 		VersionPage *page = EnsureVersionPage(slot);
-		if (page)
-			page->versions[slot & (VersionPageSize - 1)].fetch_add(
-				1, std::memory_order_release);
+		if (page) {
+			std::atomic<uint64_t> &slotVersion =
+				page->versions[slot & (VersionPageSize - 1)];
+			// Odd means a publication is in progress. Readers only accept the
+			// value when the same even version brackets the Value ID load.
+			slotVersion.fetch_add(1, std::memory_order_acq_rel);
+			page->valueIds[slot & (VersionPageSize - 1)].store(
+				valueId, std::memory_order_release);
+			slotVersion.fetch_add(1, std::memory_order_release);
+		}
 		version_.fetch_add(1, std::memory_order_release);
+	}
+
+	struct SlotIdentity
+	{
+		uint64_t version = 0;
+		uint64_t valueId = 0;
+	};
+
+	bool ObserveSlotIdentity(uint32_t slot, SlotIdentity *identity) const
+	{
+		if (!identity || !versionPages_ || slot >= maxSlots_)
+			return false;
+		VersionPage *page = versionPages_[slot / VersionPageSize].load(
+			std::memory_order_acquire);
+		if (!page) {
+			identity->version = 2;
+			identity->valueId = 0;
+			return true;
+		}
+		const uint32_t offset = slot & (VersionPageSize - 1);
+		const uint64_t before = page->versions[offset].load(
+			std::memory_order_acquire);
+		if ((before & 1) != 0)
+			return false;
+		const uint64_t valueId = page->valueIds[offset].load(
+			std::memory_order_acquire);
+		const uint64_t after = page->versions[offset].load(
+			std::memory_order_acquire);
+		if (before != after || (after & 1) != 0)
+			return false;
+		identity->version = after;
+		identity->valueId = valueId;
+		return true;
 	}
 
 	uint64_t ReadSlotVersion(uint32_t slot) const
@@ -128,7 +175,7 @@ public:
 			std::memory_order_acquire);
 		return page ?
 			page->versions[slot & (VersionPageSize - 1)].load(
-				std::memory_order_acquire) : 1;
+				std::memory_order_acquire) : 2;
 	}
 
 	uint64_t ReadVersion() const
@@ -144,11 +191,14 @@ private:
 	struct VersionPage
 	{
 		std::array<std::atomic<uint64_t>, VersionPageSize> versions;
+		std::array<std::atomic<uint64_t>, VersionPageSize> valueIds;
 
 		VersionPage()
 		{
 			for (std::atomic<uint64_t> &version : versions)
-				version.store(1, std::memory_order_relaxed);
+				version.store(2, std::memory_order_relaxed);
+			for (std::atomic<uint64_t> &valueId : valueIds)
+				valueId.store(0, std::memory_order_relaxed);
 		}
 	};
 

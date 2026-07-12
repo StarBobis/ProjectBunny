@@ -30,6 +30,35 @@ int main()
 
 	state.ResetVersions();
 	Require(state.ReadVersion() == 1);
+	State observedState(2048);
+	State::SlotIdentity identity;
+	Require(observedState.ObserveSlotIdentity(17, &identity));
+	Require(identity.version == 2 && identity.valueId == 0);
+	observedState.PublishSlotValue(17, 0x12345678);
+	Require(observedState.ObserveSlotIdentity(17, &identity));
+	Require(identity.version == 4 && identity.valueId == 0x12345678);
+	observedState.ResetVersions();
+	Require(observedState.ObserveSlotIdentity(17, &identity));
+	Require(identity.version == 2 && identity.valueId == 0);
+
+	State publicationState(32);
+	constexpr uint64_t PublicationCount = 100000;
+	std::atomic<bool> publicationComplete{false};
+	std::thread publisher(
+		[&publicationState, &publicationComplete, PublicationCount]() {
+		for (uint64_t valueId = 1; valueId <= PublicationCount; ++valueId)
+			publicationState.PublishSlotValue(3, valueId);
+		publicationComplete.store(true, std::memory_order_release);
+	});
+	while (!publicationComplete.load(std::memory_order_acquire)) {
+		State::SlotIdentity publishedIdentity;
+		if (!publicationState.ObserveSlotIdentity(3, &publishedIdentity))
+			continue;
+		Require((publishedIdentity.version & 1) == 0);
+		Require(publishedIdentity.valueId ==
+			(publishedIdentity.version - 2) / 2);
+	}
+	publisher.join();
 
 	constexpr uint32_t WriterCount = 8;
 	constexpr uint32_t BumpsPerWriter = 4096;

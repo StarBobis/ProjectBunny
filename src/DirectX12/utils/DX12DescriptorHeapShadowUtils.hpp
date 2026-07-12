@@ -467,6 +467,35 @@ public:
 	}
 
 	// ---- Copy range (heap-slot fast path + CPU ledger fallback) ----
+	enum class CopyIdentityResult : uint8_t
+	{
+		Unknown,
+		Unchanged,
+		SourceMissingDestinationEmpty
+	};
+
+	static CopyIdentityResult ComparePublishedSlotIdentities(
+		const DescriptorHeapRecord &sourceHeap,
+		UINT sourceSlot,
+		const DescriptorHeapRecord &destinationHeap,
+		UINT destinationSlot)
+	{
+		if (!sourceHeap.stateLocks || !destinationHeap.stateLocks ||
+				!sourceHeap.stateLocks->IsActive() ||
+				!destinationHeap.stateLocks->IsActive())
+			return CopyIdentityResult::Unknown;
+		DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
+		DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
+		if (!sourceHeap.stateLocks->ObserveSlotIdentity(
+				sourceSlot, &sourceIdentity) ||
+				!destinationHeap.stateLocks->ObserveSlotIdentity(
+					destinationSlot, &destinationIdentity) ||
+				sourceIdentity.valueId != destinationIdentity.valueId)
+			return CopyIdentityResult::Unknown;
+		return sourceIdentity.valueId ?
+			CopyIdentityResult::Unchanged :
+			CopyIdentityResult::SourceMissingDestinationEmpty;
+	}
 
 	static void CopyDescriptorRange(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -520,6 +549,28 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
+			const CopyIdentityResult identityResult =
+				ComparePublishedSlotIdentities(
+					srcHeap, srcSlot, destHeap, destSlot);
+			if (identityResult != CopyIdentityResult::Unknown) {
+				if (telemetryBatch)
+					telemetryBatch->RecordResults(
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+						0,
+						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+				return;
+			}
 			DescriptorHeapRecord::StateLocks *sourceState =
 				srcHeap.stateLocks.get();
 			DescriptorHeapRecord::StateLocks *destinationState =
@@ -780,6 +831,20 @@ public:
 			// only the destination is exclusive, so copies can fan out from one
 			// stable CPU heap without serialising readers.
 			for (UINT i = 0; i < count; ++i) {
+				const CopyIdentityResult identityResult =
+					ComparePublishedSlotIdentities(
+						srcHeap, srcSlot + i, destHeap, destSlot + i);
+				if (identityResult == CopyIdentityResult::Unchanged) {
+					++sourceFoundCount;
+					++unchangedCount;
+					continue;
+				}
+				if (identityResult ==
+						CopyIdentityResult::SourceMissingDestinationEmpty) {
+					++sourceMissingCount;
+					++alreadyEmptyCount;
+					continue;
+				}
 				HeldShardLock first;
 				HeldShardLock second;
 				lockSlotPair(srcSlot + i, destSlot + i, &first, &second);

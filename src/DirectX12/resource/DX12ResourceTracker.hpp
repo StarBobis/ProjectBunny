@@ -42,6 +42,12 @@ bool DX12TrackTextureHashFromCopyTextureRegion(
 	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox);
 UINT64 DX12GetIaHashContentGeneration();
 UINT64 DX12GetIaHashResolveGeneration();
+class DX12BufferResolveValidationUtils
+{
+public:
+	static bool IsRangeStillValid(
+		UINT64 observedEpoch, UINT64 gpuVirtualAddress, UINT64 size);
+};
 uint32_t DX12HashDescriptorBufferView(
 	const DX12DescriptorSummary *descriptor, UINT64 fallbackGpuVirtualAddress,
 	UINT64 fallbackSize);

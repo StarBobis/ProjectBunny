@@ -761,6 +761,27 @@ UINT64 DX12GetIaHashResolveGeneration()
 	return gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
 }
 
+bool DX12BufferResolveValidationUtils::IsRangeStillValid(
+	UINT64 observedEpoch, UINT64 gpuVirtualAddress, UINT64 size)
+{
+	if (!gpuVirtualAddress || !size)
+		return false;
+	const UINT64 currentEpoch = DX12GetIaHashResolveGeneration();
+	if (currentEpoch == observedEpoch)
+		return true;
+	const UINT64 available = UINT64_MAX - gpuVirtualAddress;
+	const UINT64 rangeSize = (std::min)(size, available);
+	if (!rangeSize)
+		return false;
+	AcquireSRWLockShared(&gResourceLock);
+	const bool invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+		gpuVirtualAddress,
+		gpuVirtualAddress + rangeSize,
+		observedEpoch);
+	ReleaseSRWLockShared(&gResourceLock);
+	return !invalidated;
+}
+
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
 {
@@ -780,6 +801,7 @@ uint32_t DX12HashIaBufferView(
 		uint32_t hash = 0;
 		UINT64 resolveGeneration = 0;
 		UINT64 contentGeneration = 0;
+		UINT64 observedGlobalContentGeneration = 0;
 		UINT64 gpuVa = 0;
 		UINT64 size = 0;
 		ID3D12Resource *resource = nullptr;
@@ -830,10 +852,14 @@ uint32_t DX12HashIaBufferView(
 	if (itL1 != s_cacheL1.end()) {
 		IaHashCacheValue &cacheValue = itL1->second;
 		bool invalidated = true;
-		const UINT64 currentContentGeneration = cacheValue.resource ?
-			DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-			globalContentGeneration;
+		const UINT64 currentContentGeneration =
+			cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+				cacheValue.contentGeneration :
+				(cacheValue.resource ?
+					DX12GetBufferContentGenerationForResource(cacheValue.resource) :
+					globalContentGeneration);
 		if (cacheValue.contentGeneration == currentContentGeneration) {
+			cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 			if (cacheValue.resolveGeneration == resolveGeneration) {
 				invalidated = false;
 			} else {
@@ -863,10 +889,14 @@ uint32_t DX12HashIaBufferView(
 			// L2 鍛戒腑 鈫?鎻愬崌鍒?L1锛堜笅娆＄浉鍚?gpuVa 鐩存帴鍛戒腑锛?
 			IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
-			const UINT64 currentContentGeneration = cacheValue.resource ?
-				DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-				globalContentGeneration;
+			const UINT64 currentContentGeneration =
+				cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+					cacheValue.contentGeneration :
+					(cacheValue.resource ?
+						DX12GetBufferContentGenerationForResource(cacheValue.resource) :
+						globalContentGeneration);
 			if (cacheValue.contentGeneration == currentContentGeneration) {
+				cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 				if (cacheValue.resolveGeneration == resolveGeneration) {
 					invalidated = false;
 				} else {
@@ -907,6 +937,7 @@ uint32_t DX12HashIaBufferView(
 		contentCacheValue.hash = hash;
 		contentCacheValue.resolveGeneration = resolveGeneration;
 		contentCacheValue.contentGeneration = contentGeneration;
+		contentCacheValue.observedGlobalContentGeneration = globalContentGeneration;
 		contentCacheValue.gpuVa = gpuVirtualAddress;
 		contentCacheValue.size = size;
 		contentCacheValue.resource = resolved ? summary.resource : nullptr;
@@ -984,6 +1015,7 @@ uint32_t DX12HashIaBufferView(
 	cacheValue.hash = hash;
 	cacheValue.resolveGeneration = resolveGeneration;
 	cacheValue.contentGeneration = contentGeneration;
+	cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 	cacheValue.gpuVa = gpuVirtualAddress;
 	cacheValue.size = size;
 	cacheValue.resource = resolved ? summary.resource : nullptr;
@@ -1778,40 +1810,14 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 		return;
 
 	memset(found, 0, count * sizeof(uint8_t));
-	std::vector<DescriptorRecord> pendingRecords;
-	std::vector<uint8_t> pendingDirect;
-	std::vector<uint8_t> pendingRaw;
-	if (pending) {
-		pendingRaw.resize(count);
-		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed 鈥?was dead code
+	if (pending)
 		memset(pending, 0, count * sizeof(uint8_t));
-	}
-	if (pending) {
-		pendingRecords.resize(count);
-		pendingDirect.resize(count);
-		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed 鈥?was dead code
-	}
 
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (size_t i = 0; i < count; ++i) {
 		summaries[i] = DX12DescriptorSummary();
-		if (pending && pendingDirect.size() == count && pendingDirect[i]) {
-			FillDescriptorSummary(
-				&summaries[i],
-				pendingRecords[i],
-				false,
-				false,
-				false);
-			found[i] = 1;
-			pending[i] = 0;
-			continue;
-		}
 		if (DX12DescriptorQueryBatchUtils::FillLightSummaryLocked(cpuHandles[i], &summaries[i])) {
 			found[i] = 1;
-			if (pending)
-				pending[i] = 0;
-		} else if (pending && pendingRaw.size() == count && pendingRaw[i]) {
-			pending[i] = 1;
 		}
 	}
 	ReleaseSRWLockShared(&gDescriptorLock);
@@ -1819,8 +1825,6 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 	if (completeResourceInfo)
 		DX12DescriptorQueryBatchUtils::CompleteResourceInfoForFoundSummaries(
 			summaries, found, count);
-	for (size_t i = 0; i < pendingRecords.size(); ++i)
-		ReleaseDescriptorRecordResources(&pendingRecords[i]);
 }
 
 bool FindDescriptorSummaryByCpuHandleAtEpoch(

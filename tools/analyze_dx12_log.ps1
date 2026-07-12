@@ -1,7 +1,7 @@
 param(
     [string]$Path = 'D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12_log.jsonl',
     [int]$FrameCount = 120,
-    [long]$MaxFrameIntervalUs = 100000
+    [long]$MaxFrameIntervalUs = 0
 )
 
 class Dx12FrameSample {
@@ -78,7 +78,8 @@ class Dx12LogAnalysisUtils {
         }
 
         $validFrames = @($frames | Where-Object {
-            $_.FrameIntervalUs -gt 0 -and $_.FrameIntervalUs -le $MaximumFrameIntervalUs
+            $_.FrameIntervalUs -gt 0 -and
+                ($MaximumFrameIntervalUs -le 0 -or $_.FrameIntervalUs -le $MaximumFrameIntervalUs)
         } | Select-Object -Last $RequestedFrames)
         if ($validFrames.Count -eq 0) {
             throw 'No valid frame timing samples were found in the requested interval range.'
@@ -107,12 +108,28 @@ class Dx12LogAnalysisUtils {
         $estimatedFps = 1000000.0 / $averageFrameUs
 
         [Console]::WriteLine(('DX12 frame report: {0}' -f $LogPath))
-        [Console]::WriteLine(('Samples: {0} (last valid frames, interval <= {1} us)' -f $validFrames.Count, $MaximumFrameIntervalUs))
+        $intervals = @($validFrames | ForEach-Object { $_.FrameIntervalUs } | Sort-Object)
+        $percentile = {
+            param([double]$p)
+            $index = [math]::Min($intervals.Count - 1,
+                [math]::Max(0, [int][math]::Ceiling($p * $intervals.Count) - 1))
+            return [long]$intervals[$index]
+        }
+
+        $intervalDescription = if ($MaximumFrameIntervalUs -gt 0) {
+            'interval <= {0} us' -f $MaximumFrameIntervalUs
+        } else {
+            'no upper interval filter'
+        }
+        [Console]::WriteLine(('Samples: {0} (last valid frames, {1})' -f $validFrames.Count, $intervalDescription))
         [Console]::WriteLine(('Frame total: {0:N3} ms ({1:N0} us)' -f $averageFrameMs, $averageFrameUs))
         [Console]::WriteLine(('Frame interval: {0:N3} ms ({1:N0} us)' -f $averageFrameMs, $averageFrameUs))
         [Console]::WriteLine(('Present wait: {0:N3} ms ({1:N0} us), {2:N2}%' -f ($averagePresentWaitUs / 1000.0), $averagePresentWaitUs, (100.0 * $averagePresentWaitUs / $averageFrameUs)))
         [Console]::WriteLine(('Mod begin frame: {0:N3} ms ({1:N0} us), {2:N2}%' -f ($averageModBeginFrameUs / 1000.0), $averageModBeginFrameUs, (100.0 * $averageModBeginFrameUs / $averageFrameUs)))
         [Console]::WriteLine(('Expected FPS: {0:N2}' -f $estimatedFps))
+        [Console]::WriteLine(('Distribution: min {0:N0} us | P50 {1:N0} us | P90 {2:N0} us | P95 {3:N0} us | P99 {4:N0} us | max {5:N0} us' -f
+            $intervals[0], (& $percentile 0.50), (& $percentile 0.90),
+            (& $percentile 0.95), (& $percentile 0.99), $intervals[-1]))
         [Console]::WriteLine('')
         [Console]::WriteLine('Inclusive hot-path totals (nested stages can overlap):')
         [Console]::WriteLine(('{0,-28} {1,12} {2,12} {3,9}  {4}' -f 'Stage', 'Total us', 'Avg us/frame', 'Frame %', 'Chart'))

@@ -600,27 +600,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	std::vector<DX12CurrentComputeUavBinding> *uavs,
 	std::vector<DX12CurrentComputeUavBinding> *srvs,
 	std::vector<DX12CurrentComputeUavBinding> *cbvs,
-	std::vector<DX12CurrentRootConstants> *constants)
+	std::vector<DX12CurrentRootConstants> *constants,
+	UINT64 *dependencyFingerprint)
 {
+	if (dependencyFingerprint)
+		*dependencyFingerprint = 0;
 	if (!commandList)
 		return false;
-
-	// Per-command-list PreSkin binding cache: when compute bindings have not
-	// changed since the last collection, reuse cached vectors.  Keyed by
-	// computeBindingSerial which bumps on every root signature / descriptor
-	// table / root descriptor / root constant change.
-	DX12CommandListRuntimeState *runtimeState =
-		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	if (runtimeState && runtimeState->preSkinBindingsCached) {
-		UINT64 currentSerial = runtimeState->computeBindingSerial;
-		if (currentSerial == runtimeState->lastPreSkinBindingSerial) {
-			if (uavs) *uavs = runtimeState->cachedPreSkinUavs;
-			if (srvs) *srvs = runtimeState->cachedPreSkinSrvs;
-			if (cbvs) *cbvs = runtimeState->cachedPreSkinCbvs;
-			if (constants) *constants = runtimeState->cachedPreSkinConstants;
-			return !uavs->empty() || !srvs->empty() || !cbvs->empty() || !constants->empty();
-		}
-	}
 
 	if (uavs) uavs->clear();
 	if (srvs) srvs->clear();
@@ -692,11 +678,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
 	const UINT64 descriptorHeapVersionBefore =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+	const UINT64 bufferResolveEpochBefore = DX12GetIaHashResolveGeneration();
 	DX12PreSkinBindingCacheKey cacheKey;
 	if (canUseResultCache) {
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
 			descriptorHeapVersionBefore,
+			bufferResolveEpochBefore,
 			cachedSummary,
 			&cacheKey);
 		bool cachedFoundAny = false;
@@ -707,13 +695,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				srvs,
 				cbvs,
 				constants,
-				&cachedFoundAny)) {
+				&cachedFoundAny,
+				DX12BufferResolveValidationUtils::IsRangeStillValid)) {
 			const UINT64 descriptorQuerySerialAfterHit = CurrentDescriptorQuerySerial();
 			const UINT64 descriptorHeapVersionAfterHit =
 				DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 			if (descriptorQuerySerialAfterHit == descriptorQuerySerialBefore &&
 				descriptorHeapVersionAfterHit == descriptorHeapVersionBefore) {
 				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+				if (dependencyFingerprint)
+					*dependencyFingerprint = cacheKey.fingerprint;
 				return cachedFoundAny;
 			}
 		}
@@ -1081,6 +1072,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
 			snapshot,
 			descriptorHeapVersionAfter,
+			DX12GetIaHashResolveGeneration(),
 			cachedSummary,
 			&storeKey);
 		DX12PreSkinBindingCacheUtils::Store(
@@ -1091,6 +1083,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			localCbvs,
 			localConstants,
 			foundAny);
+		if (dependencyFingerprint)
+			*dependencyFingerprint = storeKey.fingerprint;
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
 	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
 		DX12LogManager::DebugJsonFunc("DX12PreSkinRuntimeDescriptorSnapshot",
@@ -1105,20 +1099,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	if (srvs) *srvs = localSrvs;
 	if (cbvs) *cbvs = localCbvs;
 	if (constants) *constants = localConstants;
-
-	// Store collected bindings in the per-command-list cache so subsequent
-	// dispatches on the same command list with unchanged bindings can reuse
-	// them without re-snapshotting and re-parsing the root signature.
-	if (runtimeState && allRuntimeDescriptorsStable && descriptorStateStable) {
-		runtimeState->lastPreSkinBindingSerial = runtimeState->computeBindingSerial;
-		runtimeState->cachedPreSkinUavs = localUavs;
-		runtimeState->cachedPreSkinSrvs = localSrvs;
-		runtimeState->cachedPreSkinCbvs = localCbvs;
-		runtimeState->cachedPreSkinConstants = localConstants;
-		runtimeState->preSkinBindingsCached = true;
-	} else if (runtimeState) {
-		runtimeState->preSkinBindingsCached = false;
-	}
 
 	return foundAny;
 }

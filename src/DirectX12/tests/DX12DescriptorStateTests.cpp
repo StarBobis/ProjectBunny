@@ -1,6 +1,7 @@
 #include "DX12ResourceTrackerPrivate.hpp"
 #include "binding/DX12PreSkinBindingCacheUtils.hpp"
 #include "descriptor/DX12DescriptorCopyMemoUtils.hpp"
+#include "utils/DX12DescriptorArenaUtils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -447,10 +448,10 @@ static DX12DirectIaProbeCacheKey MakeDirectProbeKey(
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 		100, 2, firstIndex, -3, 7);
 	return DX12DirectIaProbeCacheUtils::MakeKey(
-		reloadGeneration, preSkinGeneration, 123, state, draw);
+		reloadGeneration, 123, state, draw);
 }
 
-static void TestDirectIaProbeCacheDropsDeadGeneration()
+static void TestDirectIaProbeCacheRetainsIndependentPreSkinGenerations()
 {
 	DX12DirectIaProbeCache cache;
 	bool evicted = false;
@@ -471,9 +472,13 @@ static void TestDirectIaProbeCacheDropsDeadGeneration()
 	DX12DirectIaProbeCacheUtils::Store(
 		&cache, MakeDirectProbeKey(9, 8, 0x44444444, 4), false, &evicted);
 	Require(!evicted);
-	Require(cache.entries.size() == 1);
-	Require(cache.lruKeys.size() == 1);
-	Require(cache.scopePreSkinGeneration == 8);
+	Require(cache.entries.size() == 4);
+	Require(cache.lruKeys.size() == 4);
+	bool oldGenerationCandidate = true;
+	Require(DX12DirectIaProbeCacheUtils::TryLoad(
+		&cache, MakeDirectProbeKey(9, 7, 0x11111111, 1),
+		&oldGenerationCandidate));
+	Require(!oldGenerationCandidate);
 
 	DX12DirectIaProbeCacheKey drawVariant =
 		MakeDirectProbeKey(9, 8, 0x44444444, 4);
@@ -540,17 +545,61 @@ static void TestPreSkinBindingCacheObservesOnlyReferencedSlots()
 
 	DX12PreSkinBindingCacheKey first;
 	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
-		snapshot, 100, &rootSignature, &first);
+		snapshot, 100, 1, &rootSignature, &first);
 	DX12PreSkinBindingCacheKey unrelatedHeapWrite;
 	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
-		snapshot, 101, &rootSignature, &unrelatedHeapWrite);
+		snapshot, 101, 1, &rootSignature, &unrelatedHeapWrite);
 	Require(DX12PreSkinBindingCacheUtils::KeysEqual(first, unrelatedHeapWrite));
 
 	PreSkinSlotIdentityTestResolver::versions[12]++;
 	DX12PreSkinBindingCacheKey referencedSlotWrite;
 	DX12PreSkinBindingCacheUtils::BuildKey<PreSkinSlotIdentityTestResolver>(
-		snapshot, 102, &rootSignature, &referencedSlotWrite);
+		snapshot, 102, 1, &rootSignature, &referencedSlotWrite);
 	Require(!DX12PreSkinBindingCacheUtils::KeysEqual(first, referencedSlotWrite));
+}
+
+static bool gPreSkinRootDescriptorRangeValid = true;
+
+static bool ValidatePreSkinRootDescriptorRange(
+	UINT64 observedEpoch, UINT64 gpuVirtualAddress, UINT64 size)
+{
+	Require(observedEpoch != 0);
+	Require(gpuVirtualAddress == 0x4000);
+	Require(size == 1);
+	return gPreSkinRootDescriptorRangeValid;
+}
+
+static void TestPreSkinBindingCacheValidatesRootDescriptorRanges()
+{
+	DX12PreSkinBindingTlsCache cache;
+	DX12PreSkinBindingCacheKey storedKey;
+	storedKey.fingerprint = 7;
+	storedKey.bufferResolveEpoch = 10;
+	DX12PreSkinBindingRootDescriptorCacheKey rootDescriptor;
+	rootDescriptor.rootParameterIndex = 2;
+	rootDescriptor.type = D3D12_ROOT_PARAMETER_TYPE_SRV;
+	rootDescriptor.address = 0x4000;
+	storedKey.rootDescriptors.push_back(rootDescriptor);
+
+	std::vector<DX12CurrentComputeUavBinding> bindings;
+	std::vector<DX12CurrentRootConstants> constants;
+	DX12PreSkinBindingCacheUtils::Store(
+		&cache, storedKey, bindings, bindings, bindings, constants, false);
+
+	DX12PreSkinBindingCacheKey currentKey = storedKey;
+	currentKey.bufferResolveEpoch = 11;
+	bool foundAny = true;
+	gPreSkinRootDescriptorRangeValid = true;
+	Require(DX12PreSkinBindingCacheUtils::TryLoad(
+		&cache, currentKey, &bindings, &bindings, &bindings, &constants,
+		&foundAny, ValidatePreSkinRootDescriptorRange));
+	Require(!foundAny);
+
+	currentKey.bufferResolveEpoch = 12;
+	gPreSkinRootDescriptorRangeValid = false;
+	Require(!DX12PreSkinBindingCacheUtils::TryLoad(
+		&cache, currentKey, &bindings, &bindings, &bindings, &constants,
+		&foundAny, ValidatePreSkinRootDescriptorRange));
 }
 
 static void TestDescriptorCopyMemoInvalidatesByObservedShard()
@@ -606,6 +655,35 @@ static void TestIaTargetPlanReuseRequiresIdenticalIaInputs()
 	Require(full.HasSameIaHashTargets(direct));
 	full.RequireVertexBuffer(4);
 	Require(!full.HasSameIaHashTargets(direct));
+}
+
+class DescriptorArenaTestRef
+{
+public:
+	LONG references = 1;
+
+	ULONG Release()
+	{
+		return static_cast<ULONG>(InterlockedDecrement(&references));
+	}
+};
+
+static void TestDescriptorArenaGrowthAndUniqueOwnership()
+{
+	Require(DX12DescriptorArenaUtils::NextCapacity(
+		0, 0, 18, 4096, 1000000) == 4096);
+	Require(DX12DescriptorArenaUtils::NextCapacity(
+		4096, 4090, 18, 4096, 1000000) == 8192);
+	Require(DX12DescriptorArenaUtils::NextCapacity(
+		8192, 8180, 32, 4096, 1000000) == 16384);
+
+	DescriptorArenaTestRef object;
+	std::vector<DescriptorArenaTestRef*> owned;
+	Require(DX12DescriptorArenaUtils::AppendUniqueOwned(&owned, &object));
+	InterlockedIncrement(&object.references);
+	Require(!DX12DescriptorArenaUtils::AppendUniqueOwned(&owned, &object));
+	Require(object.references == 1);
+	Require(owned.size() == 1);
 }
 
 static void RunConstantBufferViewBenchmark()
@@ -708,10 +786,12 @@ int main(int argc, char **argv)
 	TestOverlappingRangeSnapshotSemantics();
 	TestValuePoolRefcountAndReuse();
 	TestCompactValueMaterializationAndCbvHashEquivalence();
-	TestDirectIaProbeCacheDropsDeadGeneration();
+	TestDirectIaProbeCacheRetainsIndependentPreSkinGenerations();
 	TestPreSkinBindingCacheObservesOnlyReferencedSlots();
+	TestPreSkinBindingCacheValidatesRootDescriptorRanges();
 	TestDescriptorCopyMemoInvalidatesByObservedShard();
 	TestIaTargetPlanReuseRequiresIdenticalIaInputs();
+	TestDescriptorArenaGrowthAndUniqueOwnership();
 	if (argc > 1 && std::strcmp(argv[1], "--benchmark") == 0)
 		RunConstantBufferViewBenchmark();
 	return 0;

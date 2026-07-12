@@ -37,6 +37,7 @@
 #include "MigotoShaderOverride.hpp"
 #include "MigotoShaderRegex.hpp"
 #include "MigotoTextureOverride.hpp"
+#include "utils/DX12DescriptorArenaUtils.hpp"
 #include "utils/DX12OuterTimingProbeUtils.hpp"
 
 static DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
@@ -994,7 +995,7 @@ public:
 	ID3D12Resource *resource = nullptr;
 	LONG retirePresent = 0;
 };
-static std::vector<DX12RetiredPreSkinResource> gRetiredPreSkinResources;
+static std::deque<DX12RetiredPreSkinResource> gRetiredPreSkinResources;
 static constexpr LONG PreSkinRetiredObjectPresentDelay = 120;
 
 class DX12PreSkinOutputResizeCacheEntry
@@ -1215,8 +1216,9 @@ public:
 
 static SRWLOCK gPreSkinDescriptorRingLock = SRWLOCK_INIT;
 static DX12PreSkinDescriptorRing gPreSkinDescriptorRing;
-static std::vector<DX12RetiredPreSkinDescriptorHeap> gRetiredPreSkinDescriptorHeaps;
+static std::deque<DX12RetiredPreSkinDescriptorHeap> gRetiredPreSkinDescriptorHeaps;
 static constexpr UINT PreSkinDescriptorRingInitialCapacity = 4096;
+static constexpr UINT PreSkinDescriptorRingMaximumCapacity = 1000000;
 
 class DX12PreSkinPendingSubmission
 
@@ -1287,12 +1289,10 @@ static void MovePendingPreSkinSubmission(
 {
 	if (!source || !target)
 		return;
-	target->resources.insert(target->resources.end(),
-		source->resources.begin(), source->resources.end());
-	target->descriptorHeaps.insert(target->descriptorHeaps.end(),
-		source->descriptorHeaps.begin(), source->descriptorHeaps.end());
-	source->resources.clear();
-	source->descriptorHeaps.clear();
+	DX12DescriptorArenaUtils::MoveUniqueOwned(
+		&source->resources, &target->resources);
+	DX12DescriptorArenaUtils::MoveUniqueOwned(
+		&source->descriptorHeaps, &target->descriptorHeaps);
 }
 
 static void MovePendingPreSkinSubmissionToReleaseBatch(
@@ -1301,12 +1301,10 @@ static void MovePendingPreSkinSubmissionToReleaseBatch(
 {
 	if (!source || !batch)
 		return;
-	batch->resources.insert(batch->resources.end(),
-		source->resources.begin(), source->resources.end());
-	batch->descriptorHeaps.insert(batch->descriptorHeaps.end(),
-		source->descriptorHeaps.begin(), source->descriptorHeaps.end());
-	source->resources.clear();
-	source->descriptorHeaps.clear();
+	DX12DescriptorArenaUtils::MoveUniqueOwned(
+		&source->resources, &batch->resources);
+	DX12DescriptorArenaUtils::MoveUniqueOwned(
+		&source->descriptorHeaps, &batch->descriptorHeaps);
 }
 
 static void CleanupRetiredPreSkinObjectsLocked(
@@ -1315,26 +1313,24 @@ static void CleanupRetiredPreSkinObjectsLocked(
 	if (!releaseBatch)
 		return;
 	const LONG present = DX12RuntimeState::GetPresentCount();
-	auto resourceIt = gRetiredPreSkinResources.begin();
-	while (resourceIt != gRetiredPreSkinResources.end()) {
-		if (present - resourceIt->retirePresent < PreSkinRetiredObjectPresentDelay) {
-			++resourceIt;
-			continue;
-		}
-		if (resourceIt->resource)
-			releaseBatch->resources.push_back(resourceIt->resource);
-		resourceIt = gRetiredPreSkinResources.erase(resourceIt);
+	while (!gRetiredPreSkinResources.empty()) {
+		const DX12RetiredPreSkinResource &retired =
+			gRetiredPreSkinResources.front();
+		if (present - retired.retirePresent < PreSkinRetiredObjectPresentDelay)
+			break;
+		if (retired.resource)
+			releaseBatch->resources.push_back(retired.resource);
+		gRetiredPreSkinResources.pop_front();
 	}
 
-	auto heapIt = gRetiredPreSkinDescriptorHeaps.begin();
-	while (heapIt != gRetiredPreSkinDescriptorHeaps.end()) {
-		if (present - heapIt->retirePresent < PreSkinRetiredObjectPresentDelay) {
-			++heapIt;
-			continue;
-		}
-		if (heapIt->heap)
-			releaseBatch->descriptorHeaps.push_back(heapIt->heap);
-		heapIt = gRetiredPreSkinDescriptorHeaps.erase(heapIt);
+	while (!gRetiredPreSkinDescriptorHeaps.empty()) {
+		const DX12RetiredPreSkinDescriptorHeap &retired =
+			gRetiredPreSkinDescriptorHeaps.front();
+		if (present - retired.retirePresent < PreSkinRetiredObjectPresentDelay)
+			break;
+		if (retired.heap)
+			releaseBatch->descriptorHeaps.push_back(retired.heap);
+		gRetiredPreSkinDescriptorHeaps.pop_front();
 	}
 }
 
@@ -1362,7 +1358,8 @@ static void RetirePreSkinResource(ID3D12Resource *resource)
 	if (!resource)
 		return;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
-	gPendingPreSkinSubmissions[nullptr].resources.push_back(resource);
+	DX12DescriptorArenaUtils::AppendUniqueOwned(
+		&gPendingPreSkinSubmissions[nullptr].resources, resource);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1373,7 +1370,8 @@ static void RetirePreSkinResourceForCommandList(
 		return;
 	IUnknown *identity = PreSkinCommandListIdentity(commandList);
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
-	gPendingPreSkinSubmissions[identity].resources.push_back(resource);
+	DX12DescriptorArenaUtils::AppendUniqueOwned(
+		&gPendingPreSkinSubmissions[identity].resources, resource);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1391,18 +1389,24 @@ static void RetirePreSkinDescriptorHeap(ID3D12DescriptorHeap *heap)
 	if (!heap)
 		return;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
-	gPendingPreSkinSubmissions[nullptr].descriptorHeaps.push_back(heap);
+	DX12DescriptorArenaUtils::AppendUniqueOwned(
+		&gPendingPreSkinSubmissions[nullptr].descriptorHeaps, heap);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
-static void RetirePreSkinDescriptorHeapForCommandList(
+static void RetainPreSkinDescriptorHeapForCommandList(
 	ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *heap)
 {
 	if (!heap)
 		return;
 	IUnknown *identity = PreSkinCommandListIdentity(commandList);
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
-	gPendingPreSkinSubmissions[identity].descriptorHeaps.push_back(heap);
+	std::vector<ID3D12DescriptorHeap*> &heaps =
+		gPendingPreSkinSubmissions[identity].descriptorHeaps;
+	if (std::find(heaps.begin(), heaps.end(), heap) == heaps.end()) {
+		heap->AddRef();
+		heaps.push_back(heap);
+	}
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1518,15 +1522,12 @@ static bool EnsurePreSkinDescriptorRingLocked(
 				gPreSkinDescriptorRing.increment;
 			gPreSkinDescriptorRing.offset += requiredDescriptors;
 			usedHeap = gPreSkinDescriptorRing.heap;
-			if (usedHeap)
-				usedHeap->AddRef();
 			*cpuBase = cpu;
 			*gpuBase = gpu;
 			*increment = gPreSkinDescriptorRing.increment;
 			*heapOut = usedHeap;
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
-			if (usedHeap)
-				RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
+			RetainPreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
 			DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
 				"status=reuse,required=%u,capacity=%u,offset=%u,present=%ld",
@@ -1537,9 +1538,15 @@ static bool EnsurePreSkinDescriptorRingLocked(
 #endif
 			return true;
 		}
-		capacityToCreate = (std::max)(
-			PreSkinDescriptorRingInitialCapacity, requiredDescriptors);
+		capacityToCreate = DX12DescriptorArenaUtils::NextCapacity(
+			gPreSkinDescriptorRing.capacity,
+			gPreSkinDescriptorRing.offset,
+			requiredDescriptors,
+			PreSkinDescriptorRingInitialCapacity,
+			PreSkinDescriptorRingMaximumCapacity);
 		ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
+		if (!capacityToCreate)
+			return false;
 
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -1581,7 +1588,6 @@ static bool EnsurePreSkinDescriptorRingLocked(
 		gPreSkinDescriptorRing.device = device;
 		gPreSkinDescriptorRing.heap = newHeap;
 		usedHeap = newHeap;
-		usedHeap->AddRef();
 		gPreSkinDescriptorRing.capacity = capacityToCreate;
 		gPreSkinDescriptorRing.offset = requiredDescriptors;
 		gPreSkinDescriptorRing.increment =
@@ -1597,8 +1603,7 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			RetirePreSkinDescriptorHeap(oldHeap);
 		if (oldDevice)
 			oldDevice->Release();
-		if (usedHeap)
-			RetirePreSkinDescriptorHeapForCommandList(commandList, usedHeap);
+		RetainPreSkinDescriptorHeapForCommandList(commandList, usedHeap);
 #if defined(_DEBUG)
 		DX12LogManager::DebugJsonFunc("DX12PreSkinDescriptorRing",
 			"status=created,capacity=%u,required=%u,elapsedUs=%lld,present=%ld",
