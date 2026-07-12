@@ -103,6 +103,15 @@ set_target_msvc_options(DirectX12)
 set_target_common_definitions(DirectX12)
 
 if(BUILD_TESTING)
+	add_executable(DX12SparseDescriptorStoreTests
+		tests/DX12SparseDescriptorStoreTests.cpp
+	)
+	target_include_directories(DX12SparseDescriptorStoreTests PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/descriptor
+	)
+	target_compile_features(DX12SparseDescriptorStoreTests PRIVATE cxx_std_17)
+	add_test(NAME DX12SparseDescriptorStoreTests COMMAND DX12SparseDescriptorStoreTests)
+
     add_executable(DX12PreSkinCacheIdentityTests
         tests/DX12PreSkinCacheIdentityTests.cpp
     )

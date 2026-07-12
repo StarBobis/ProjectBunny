@@ -167,6 +167,7 @@ static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
 	}
 	heap->slots.clear();
 	heap->occupied.clear();
+	heap->currentDescriptors.Clear();
 	heap->slotHistory.clear();
 	heap->slotHistoryEpochs.clear();
 	heap->liveSlots = 0;
@@ -176,6 +177,8 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
+	record->stateLock = std::make_unique<SRWLOCK>();
+	InitializeSRWLock(record->stateLock.get());
 	record->liveSlots = 0;
 	DX12DescriptorHeapStateUtils::ResetVersion(record);
 }
@@ -192,7 +195,17 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	// work and memory pressure.
 	record->slots.resize(record->desc.NumDescriptors);
 	record->occupied.assign(record->desc.NumDescriptors, 0);
-	record->liveSlots = 0;
+	const size_t sparseCount = record->currentDescriptors.Size();
+	record->currentDescriptors.ForEach(
+		[record](uint32_t slot, const DescriptorRecord &descriptor) {
+			if (slot >= record->slots.size())
+				return;
+			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+				&record->slots[slot], descriptor, descriptor.cpuHandle);
+			record->occupied[slot] = 1;
+		});
+	record->currentDescriptors.Clear();
+	record->liveSlots = sparseCount;
 	return true;
 }
 
@@ -1364,32 +1377,17 @@ bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
 	if (!cpuHandle || valueId == 0)
 		return false;
 
-	bool heapResolved = false;
-	bool slotMatches = false;
+	DescriptorRecord current;
+	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlot(
+			cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &current))
+		return current.valueId == valueId;
+
 	AcquireSRWLockShared(&gDescriptorLock);
-	size_t heapIndex = 0;
-	UINT slotIndex = 0;
-	heapResolved = DX12DescriptorHeapShadowUtils::ResolveHeapSlot(
-			cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-			&heapIndex, &slotIndex);
-	if (heapResolved) {
-		DX12DescriptorHeapShadowUtils::EnsureHeapLocks(heapIndex + 1);
-		DX12DescriptorHeapShadowUtils::LockShared(heapIndex);
-		if (heapIndex < gDescriptorHeaps.size()) {
-			const DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
-			const DescriptorRecord *slot = DescriptorHeapSlot(&heap, slotIndex);
-			slotMatches = slot && slot->valueId == valueId;
-		}
-		DX12DescriptorHeapShadowUtils::UnlockShared(heapIndex);
-	}
 	const auto found = gDescriptorByCpuHandle.find(cpuHandle);
 	const bool ledgerMatches = found != gDescriptorByCpuHandle.end() &&
 		found->second.valueId == valueId;
 	ReleaseSRWLockShared(&gDescriptorLock);
-
-	// Create*View writes both stores when the handle belongs to a known heap.
-	// Skipping is safe only when it would leave exactly the same final state.
-	return heapResolved ? (slotMatches && ledgerMatches) : ledgerMatches;
+	return ledgerMatches;
 }
 
 static void RecordDescriptorAtSlotLocked(
@@ -1551,6 +1549,9 @@ void DX12PrimeDescriptorHistoryForHunting()
 	size_t occupied = 0;
 	size_t primed = 0;
 	for (DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		// Hunting history uses the dense compatibility adapter. Materialise the
+		// current sparse state once when hunting is actually requested.
+		EnsureDescriptorHeapStorageLocked(&heap);
 		const UINT slotCount = static_cast<UINT>(
 			min(heap.slots.size(), heap.occupied.size()));
 		for (UINT slot = 0; slot < slotCount; ++slot) {

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "DX12RuntimeState.hpp"
 #include "crc32c.h"
 #include "utils/DX12ResourceTrackingPolicyUtils.hpp"
+#include "DX12SparseDescriptorStore.hpp"
 
 struct RootSignatureRecord
 {
@@ -101,8 +103,13 @@ struct DescriptorHeapRecord
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
 	UINT64 version = 1;
+	// The lock follows the heap record when gDescriptorHeaps grows or reuses a
+	// slot. Keeping it here removes a second global lock-table lookup from every
+	// Create*View and CopyDescriptors call.
+	std::unique_ptr<SRWLOCK> stateLock;
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
+	DX12SparseDescriptorStore<DescriptorRecord> currentDescriptors;
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	size_t liveSlots = 0;
@@ -167,6 +174,75 @@ static bool SameRecordValueAtSlot(const DescriptorRecord &dest, const Descriptor
 {
 	return src.valueId != 0 && dest.valueId == src.valueId &&
 		dest.cpuHandle == destCpuHandle;
+}
+
+static const DescriptorRecord *FindCurrentRecord(
+	const DescriptorHeapRecord &heap, UINT slot)
+{
+	const DescriptorRecord *current = heap.currentDescriptors.Find(slot);
+	if (current)
+		return current;
+	if (slot < heap.occupied.size() && heap.occupied[slot] &&
+		slot < heap.slots.size())
+		return &heap.slots[slot];
+	return nullptr;
+}
+
+static DescriptorRecord *FindCurrentRecord(
+	DescriptorHeapRecord *heap, UINT slot)
+{
+	if (!heap)
+		return nullptr;
+	DescriptorRecord *current = heap->currentDescriptors.Find(slot);
+	if (current)
+		return current;
+	if (slot < heap->occupied.size() && heap->occupied[slot] &&
+		slot < heap->slots.size())
+		return &heap->slots[slot];
+	return nullptr;
+}
+
+static void StoreCurrentRecord(
+	DescriptorHeapRecord *heap,
+	UINT slot,
+	const DescriptorRecord &source,
+	SIZE_T destCpuHandle)
+{
+	if (!heap || slot >= heap->desc.NumDescriptors)
+		return;
+	DescriptorRecord stored;
+	CopyRecordValueForSlot(&stored, source, destCpuHandle);
+	if (!heap->slots.empty() && slot < heap->slots.size() &&
+			slot < heap->occupied.size()) {
+		const bool wasOccupied = heap->occupied[slot] != 0;
+		heap->slots[slot] = std::move(stored);
+		heap->occupied[slot] = 1;
+		if (!wasOccupied)
+			heap->liveSlots++;
+		return;
+	}
+	heap->currentDescriptors.Store(slot, std::move(stored));
+	heap->liveSlots = heap->currentDescriptors.Size();
+}
+
+static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
+{
+	if (!heap)
+		return false;
+	if (!heap->slots.empty() && slot < heap->slots.size() &&
+			slot < heap->occupied.size()) {
+		if (!heap->occupied[slot])
+			return false;
+		heap->slots[slot] = DescriptorRecord();
+		heap->occupied[slot] = 0;
+		if (heap->liveSlots > 0)
+			heap->liveSlots--;
+		return true;
+	}
+	const bool erased = heap->currentDescriptors.Erase(slot);
+	if (erased)
+		heap->liveSlots = heap->currentDescriptors.Size();
+	return erased;
 }
 };
 

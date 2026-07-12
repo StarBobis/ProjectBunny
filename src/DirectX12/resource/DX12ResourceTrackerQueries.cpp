@@ -238,7 +238,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (!resolved) {
-		// Fallback: first try gBufferResourceByGpuVaComplete �?a secondary index
+		// Fallback: first try gBufferResourceByGpuVaComplete 鈥?a secondary index
 		// that mirrors all buffer resources with valid GPU VA that were missed by
 		// the primary gBufferResourceByGpuVa index (e.g. reserved resources with
 		// delayed VA assignment, or resources created before hook activation).
@@ -472,7 +472,7 @@ uint32_t DX12HashBufferView(
 	return hash;
 }
 
-// ── Buffer Content Cache ──────────────────────────────────────────────
+// 鈹€鈹€ Buffer Content Cache 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 // Like DX11: cache the actual buffer bytes so IA hashes are based on
 // CONTENT (CRC32 of data), not GPU virtual address.
 // Keyed by GPU VA base of the resource so sub-regions resolve correctly.
@@ -730,10 +730,10 @@ uint32_t DX12HashIaBufferView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
-	// ── DX11 对齐: 双级 TLS 缓存 ──────────────────────────────────
-	// L1: gpuVa-based key �?快速捕捉时间局部性（同一 gpuVa 重复出现�?
-	// L2: resource-based key �?稳定捕捉 buffer 级复用（同一 buffer 不同 offset�?
-	//     对齐 DX11 �?(ID3D11Buffer*, offset, size) 模式�?
+	// 鈹€鈹€ DX11 瀵归綈: 鍙岀骇 TLS 缂撳瓨 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+	// L1: gpuVa-based key 鈥?蹇€熸崟鎹夋椂闂村眬閮ㄦ€э紙鍚屼竴 gpuVa 閲嶅鍑虹幇锛?
+	// L2: resource-based key 鈥?绋冲畾鎹曟崏 buffer 绾у鐢紙鍚屼竴 buffer 涓嶅悓 offset锛?
+	//     瀵归綈 DX11 鐨?(ID3D11Buffer*, offset, size) 妯″紡銆?
 	// Resource-generation invalidation:
 	// - GPUVA index/resource lifetime changes bump gBufferResolveGeneration.
 	// - CPU-upload content changes bump gBufferContentGeneration.
@@ -807,7 +807,7 @@ uint32_t DX12HashIaBufferView(
 	}
 
 	// -- L2 lookup (resource-based, stable across draws) --
-	// 对齐 DX11: �?(resource, offset, viewSize) 替代 gpuVa
+	// 瀵归綈 DX11: 鐢?(resource, offset, viewSize) 鏇夸唬 gpuVa
 	DX12BufferResourceSummary summary = {};
 	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary);
 	if (resolved && summary.resource) {
@@ -816,7 +816,7 @@ uint32_t DX12HashIaBufferView(
 			stride, format, slot };
 		std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher>::iterator itL2 = s_cacheL2.find(keyL2);
 		if (itL2 != s_cacheL2.end()) {
-			// L2 命中 �?提升�?L1（下次相�?gpuVa 直接命中�?
+			// L2 鍛戒腑 鈫?鎻愬崌鍒?L1锛堜笅娆＄浉鍚?gpuVa 鐩存帴鍛戒腑锛?
 			const IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
 			if (cacheValue.contentGeneration == contentGeneration) {
@@ -837,10 +837,10 @@ uint32_t DX12HashIaBufferView(
 		}
 	}
 
-	// -- 两级缓存�?miss �?计算 hash --
+	// -- 涓ょ骇缂撳瓨閮?miss 鈫?璁＄畻 hash --
 	uint32_t hash = 0;
 
-	// ── Tier 1: Content-based CRC32 (matches DX11 behavior) ──────────
+	// 鈹€鈹€ Tier 1: Content-based CRC32 (matches DX11 behavior) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	const uint8_t *contentData = nullptr;
 	size_t contentSize = 0;
 	if (DX12TryGetBufferContent(gpuVirtualAddress, size, &contentData, &contentSize))
@@ -879,7 +879,7 @@ uint32_t DX12HashIaBufferView(
 		return hash;
 	}
 
-	// ── Tier 2/3: Metadata-based hash ───────────────────────────────
+	// 鈹€鈹€ Tier 2/3: Metadata-based hash 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'A');
 	hash = HashBytes(hash, &tag, sizeof(tag));
 
@@ -926,7 +926,7 @@ uint32_t DX12HashIaBufferView(
 	hash = HashBytes(hash, &format, sizeof(format));
 	hash = HashBytes(hash, &slot, sizeof(slot));
 
-	// 写入双级缓存
+	// 鍐欏叆鍙岀骇缂撳瓨
 	IaHashCacheValue cacheValue;
 	cacheValue.hash = hash;
 	cacheValue.resolveGeneration = resolveGeneration;
@@ -1204,7 +1204,7 @@ void DX12GetResourceMetadataSnapshot(
 	std::vector<DX12PsoRootSummary> *psoRoots,
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
-	// DX12DescriptorCollectPipeline::DrainForSnapshot removed �?was dead code
+	// DX12DescriptorCollectPipeline::DrainForSnapshot removed 鈥?was dead code
 	MetadataSnapshotCache &cache = tMetadataSnapshotCache;
 	if (cache.enabled && !cache.building) {
 		if (!cache.populated) {
@@ -1241,13 +1241,20 @@ static void BuildResourceMetadataSnapshot(
 	std::vector<DX12DescriptorHeapSummary> *descriptorHeaps)
 {
 	AcquireSRWLockShared(&gResourceLock);
-	AcquireSRWLockShared(&gDescriptorLock);
+	// Snapshot pointers must remain stable while sparse heap maps can rehash.
+	// This path is frame-analysis only, so take a coherent exclusive snapshot
+	// instead of adding synchronization cost to normal Mod descriptor writes.
+	AcquireSRWLockExclusive(&gDescriptorLock);
 	std::vector<const DescriptorRecord*> liveDescriptors;
 	size_t liveDescriptorCount = 0;
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
 		liveDescriptorCount += heap.liveSlots;
 	liveDescriptors.reserve(liveDescriptorCount + gDescriptorByCpuHandle.size());
 	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
+		heap.currentDescriptors.ForEach(
+			[&liveDescriptors](uint32_t, const DescriptorRecord &record) {
+				liveDescriptors.push_back(&record);
+			});
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
 			if (heap.occupied[slot])
 				liveDescriptors.push_back(&heap.slots[slot]);
@@ -1259,9 +1266,8 @@ static void BuildResourceMetadataSnapshot(
 				entry.first, nullptr, &ledgerLocation, nullptr) &&
 				ledgerLocation.heapIndex < gDescriptorHeaps.size()) {
 			const DescriptorHeapRecord &heap = gDescriptorHeaps[ledgerLocation.heapIndex];
-			if (ledgerLocation.slot < heap.occupied.size() &&
-					ledgerLocation.slot < heap.slots.size() &&
-					heap.occupied[ledgerLocation.slot])
+			if (DX12DescriptorSlotArrayUtils::FindCurrentRecord(
+					heap, ledgerLocation.slot))
 				continue;
 		}
 		liveDescriptors.push_back(&entry.second);
@@ -1464,7 +1470,7 @@ static void BuildResourceMetadataSnapshot(
 			"\"kind\":\"heaps\",\"count\":%zu", descriptorHeaps->size());
 	}
 
-	ReleaseSRWLockShared(&gDescriptorLock);
+	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockShared(&gResourceLock);
 	DX12FrameAnalysis::LogJsonFunc("MetadataSnapshotComplete", nullptr);
 }
@@ -1539,7 +1545,7 @@ static bool FillLightSummaryLocked(SIZE_T cpuHandle, DX12DescriptorSummary *summ
 		return false;
 
 	DescriptorRecord shadowRecord;
-	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlot(
+	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlotLocked(
 			cpuHandle,
 			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
 			&shadowRecord)) {
@@ -1699,13 +1705,13 @@ void DX12FindDescriptorSummariesByCpuHandleNoWait(
 	std::vector<uint8_t> pendingRaw;
 	if (pending) {
 		pendingRaw.resize(count);
-		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed �?was dead code
+		// DX12DescriptorCollectPipeline::FindPendingDescriptorHandles removed 鈥?was dead code
 		memset(pending, 0, count * sizeof(uint8_t));
 	}
 	if (pending) {
 		pendingRecords.resize(count);
 		pendingDirect.resize(count);
-		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed �?was dead code
+		// DX12DescriptorCollectPipeline::CopyPendingDescriptorWrites removed 鈥?was dead code
 	}
 
 	AcquireSRWLockShared(&gDescriptorLock);
