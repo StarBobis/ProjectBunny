@@ -59,9 +59,9 @@ public:
 	UINT64 iaEpoch = 1;
 	UINT64 iaContentEpoch = 1;
 	DX12IaHashStateCache iaHashStateCache;
-	// Direct-target and full-target key prefixes. These avoid repeating GPUVA
-	// resource resolution while IA bindings and global content/lifetime epochs
-	// remain unchanged.
+	// Direct-target and full-target key prefixes. Resolved IA resources carry
+	// their own content/lifetime generations; global epochs are only consulted
+	// for unresolved fallback keys.
 	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
 	DX12DirectIaProbeCache directIaProbeCache;
 	DX12DirectIaFastRejectCache directIaFastRejectCache;

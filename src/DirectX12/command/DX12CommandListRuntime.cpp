@@ -894,6 +894,7 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		}
 		// Unresolved views retain conservative global invalidation. Resolved views
 		// no longer inherit unrelated resource/content churn.
+		key.usesGlobalFallback = true;
 		key.bufferContentGeneration =
 			DX12IaHashStateCacheKeyHash::Combine(
 				key.bufferContentGeneration,

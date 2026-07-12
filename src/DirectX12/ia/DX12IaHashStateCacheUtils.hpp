@@ -17,6 +17,7 @@ public:
 	UINT64 iaContentEpoch = 0;
 	UINT64 bufferContentGeneration = 0;
 	UINT64 bufferResolveGeneration = 0;
+	bool usesGlobalFallback = false;
 	bool indexed = false;
 	UINT vertexCount = 0;
 	UINT indexCount = 0;
@@ -31,6 +32,7 @@ public:
 			iaContentEpoch == other.iaContentEpoch &&
 			bufferContentGeneration == other.bufferContentGeneration &&
 			bufferResolveGeneration == other.bufferResolveGeneration &&
+			usesGlobalFallback == other.usesGlobalFallback &&
 			indexed == other.indexed &&
 			vertexCount == other.vertexCount &&
 			indexCount == other.indexCount &&
@@ -58,6 +60,7 @@ public:
 		hash = Combine(hash, key.iaContentEpoch);
 		hash = Combine(hash, key.bufferContentGeneration);
 		hash = Combine(hash, key.bufferResolveGeneration);
+		hash = Combine(hash, key.usesGlobalFallback ? 1 : 0);
 		hash = Combine(hash, key.indexed ? 1 : 0);
 		hash = Combine(hash, key.vertexCount);
 		hash = Combine(hash, key.indexCount);
@@ -85,6 +88,7 @@ public:
 	UINT64 targetPlanFingerprint = 0;
 	UINT64 globalContentGeneration = 0;
 	UINT64 globalResolveGeneration = 0;
+	bool usesGlobalFallback = false;
 	DX12IaHashStateCacheKey prefix;
 };
 
@@ -96,15 +100,17 @@ public:
 		UINT64 iaEpoch,
 		UINT64 targetPlanFingerprint,
 		bool indexed,
-		UINT64 globalContentGeneration,
-		UINT64 globalResolveGeneration,
-		DX12IaHashStateCacheKey *key)
+			UINT64 globalContentGeneration,
+			UINT64 globalResolveGeneration,
+			DX12IaHashStateCacheKey *key)
 	{
 		if (!key || !entry.valid || entry.iaEpoch != iaEpoch ||
 				entry.targetPlanFingerprint != targetPlanFingerprint ||
-				entry.indexed != indexed ||
-				entry.globalContentGeneration != globalContentGeneration ||
-				entry.globalResolveGeneration != globalResolveGeneration)
+				entry.indexed != indexed)
+			return false;
+		if (entry.usesGlobalFallback &&
+				(entry.globalContentGeneration != globalContentGeneration ||
+				 entry.globalResolveGeneration != globalResolveGeneration))
 			return false;
 		*key = entry.prefix;
 		return true;
@@ -126,6 +132,7 @@ public:
 		entry->indexed = indexed;
 		entry->globalContentGeneration = globalContentGeneration;
 		entry->globalResolveGeneration = globalResolveGeneration;
+		entry->usesGlobalFallback = prefix.usesGlobalFallback;
 		entry->prefix = prefix;
 		entry->valid = true;
 	}
