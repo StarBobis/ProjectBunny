@@ -742,3 +742,29 @@ submit 时直接看 summary 决定是否需要进一步处理。这一步收益�
 - `CollectPreSkinBindings` 的 cache hit 路径预计减少 70% 到 95% 的查询开销。
 - 如果当前 workload 的 PreSkin dispatch 在相邻 draw/dispatch 间大量复用相同 compute 绑定，`collect_bindings` 热点预计再下降 30% 到 60%。
 - 对 `dispatch_prepare_probe` 的连带收益预计 15% 到 35%。
+
+### 2026-07-13 实施记录：wrapper runtime state 拆分为 raw state / resolved state
+
+为了继续把旧设计改成 DX11 风格的 wrapper current-state，本轮没有再往 `DX12CommandListRuntimeState` 顶层平铺更多缓存字段，而是先把“原始绑定态”和“派生消费态”拆开。
+
+结构调整：
+
+- `DX12CommandListRuntimeState`
+  - 继续保存 raw current state：PSO、IA、descriptor heaps、root tables、root descriptors、root constants、serial 等。
+- `DX12ResolvedDrawRuntimeState`
+  - 收拢 draw 热路复用状态：`iaHashStateCache`、`iaHashKeyPrefixes`、`directIaProbeCache`、`directIaFastRejectCache`、`residentDrawNegativeCache`。
+- `DX12ResolvedComputeRuntimeState`
+  - 收拢 compute / PreSkin 复用状态：当前解析后的 `UAV/SRV/CBV/root constants`、依赖 slot identity、binding fingerprint、probe cache。
+
+这一步的意义不是立即降低某一个 API 的大毫秒值，而是统一后续优化的着力点：
+
+- raw state 负责在绑定时更新。
+- resolved state 负责在使用时直接消费。
+- draw / PreSkin 不再各自往 runtime 顶层塞一套孤立缓存字段。
+
+这更接近 DX11 的架构习惯：context 自身维护当前态，热点逻辑消费 current-state 的派生结果，而不是每条路径都在查询时临时拼装。
+
+预期效果：
+
+- 本轮结构化整理本身预计只有 0% 到 3% 的直接性能收益。
+- 但它会显著降低后续继续下沉 `DrawIndexedInstanced` / `build_direct_ia_probe_state` / `IASetVertexBuffers effective state` 的实现成本和风险。

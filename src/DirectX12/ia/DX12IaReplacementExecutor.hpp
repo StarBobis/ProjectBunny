@@ -100,6 +100,35 @@ public:
 	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
 	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
 
+	static bool TryLoadResolvedIaHashBuild(
+		DX12ResolvedDrawRuntimeState::CachedIaHashBuildEntry *entry,
+		const DX12IaHashStateCacheKey &key,
+		const DX12IaHashState **state,
+		bool *hasIaHashState)
+	{
+		if (!entry || !entry->valid || !state || !hasIaHashState)
+			return false;
+		if (!(entry->key == key))
+			return false;
+		*state = &entry->state;
+		*hasIaHashState = entry->hasState;
+		return true;
+	}
+
+	static void StoreResolvedIaHashBuild(
+		DX12ResolvedDrawRuntimeState::CachedIaHashBuildEntry *entry,
+		const DX12IaHashStateCacheKey &key,
+		bool hasIaHashState,
+		const DX12IaHashState &state)
+	{
+		if (!entry)
+			return;
+		entry->valid = true;
+		entry->hasState = hasIaHashState;
+		entry->key = key;
+		entry->state = state;
+	}
+
 	static size_t ResidentNegativeSlot(const DX12IaDrawInvocation &draw)
 	{
 		UINT64 key = draw.indexed ? 0x9e3779b97f4a7c15ull : 0xc4ceb9fe1a85ec53ull;
@@ -138,7 +167,7 @@ public:
 		const DX12IaDrawInvocation &draw)
 	{
 		DX12ResidentDrawNegativeEntry &entry =
-			state->residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+			state->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
 		entry.pipelineState = state->pipelineState;
 		entry.reloadGeneration = decision.reloadGeneration;
 		entry.contentGeneration = contentGeneration;
@@ -344,7 +373,7 @@ public:
 		// LRU. Keep hash state resident with the command list whose IA generations
 		// form the key, matching DX11's context-local binding state.
 		DX12IaHashStateCache *iaHashStateCache =
-			&mutableRuntimeState->iaHashStateCache;
+			&mutableRuntimeState->resolvedDraw.iaHashStateCache;
 		const DX12CompiledDrawDecision *drawDecision =
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
@@ -413,7 +442,7 @@ public:
 				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
 				DX12ResidentDrawNegativeEntry &residentNegative =
-					mutableRuntimeState->residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
 				if (MatchesResidentNegative(residentNegative, *mutableRuntimeState,
 						*drawDecision, contentGeneration, resolveGeneration, draw)) {
 					DX12Profiling::RecordIaHashStateResult(false);
@@ -429,7 +458,7 @@ public:
 				draw);
 			directFastRejectKeyValid = true;
 			if (DX12DirectIaFastRejectCacheUtils::Contains(
-					mutableRuntimeState->directIaFastRejectCache,
+					mutableRuntimeState->resolvedDraw.directIaFastRejectCache,
 					directFastRejectKey)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -458,11 +487,18 @@ public:
 						draw.firstIndex,
 						draw.baseVertex);
 				bool directHashFound = false;
-				const bool directHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
-					iaHashStateCache,
+				bool directHashCacheHit = TryLoadResolvedIaHashBuild(
+					&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
 					directHashCacheKey,
 					&directIaStateView,
 					&directHashFound);
+				if (!directHashCacheHit) {
+					directHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
+						iaHashStateCache,
+						directHashCacheKey,
+						&directIaStateView,
+						&directHashFound);
+				}
 				if (!directHashCacheHit) {
 					directHashFound = DX12CommandListRuntime::BuildIaHashStateForTargets(
 						runtimeState.ia,
@@ -484,8 +520,21 @@ public:
 							&directHashCacheEvicted);
 					if (storedDirectState)
 						directIaStateView = storedDirectState;
+					if (directIaStateView) {
+						StoreResolvedIaHashBuild(
+							&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
+							directHashCacheKey,
+							directHashFound,
+							*directIaStateView);
+					}
 					if (directHashCacheEvicted)
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
+				} else if (directIaStateView) {
+					StoreResolvedIaHashBuild(
+						&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
+						directHashCacheKey,
+						directHashFound,
+						*directIaStateView);
 				}
 				if (directHashFound) {
 					DX12OuterTimingProbeUtils::LogCpuStage(
@@ -515,7 +564,7 @@ public:
 					LARGE_INTEGER directProbeCacheBegin = DX12OuterTimingProbeUtils::Now();
 					bool hasDirectCandidate = false;
 					if (DX12DirectIaProbeCacheUtils::TryLoad(
-							&mutableRuntimeState->directIaProbeCache,
+							&mutableRuntimeState->resolvedDraw.directIaProbeCache,
 							directProbeCacheKey,
 							&hasDirectCandidate)) {
 						DX12OuterTimingProbeUtils::LogCpuStage(
@@ -557,7 +606,7 @@ public:
 							DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
 						bool directProbeCacheEvicted = false;
 						DX12DirectIaProbeCacheUtils::Store(
-							&mutableRuntimeState->directIaProbeCache,
+							&mutableRuntimeState->resolvedDraw.directIaProbeCache,
 							directProbeCacheKey,
 							hasDirectCandidate,
 							&directProbeCacheEvicted);
@@ -570,7 +619,7 @@ public:
 							contentGeneration, resolveGeneration, draw);
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
-								&mutableRuntimeState->directIaFastRejectCache,
+								&mutableRuntimeState->resolvedDraw.directIaFastRejectCache,
 								directFastRejectKey);
 						}
 						DX12OuterTimingProbeUtils::LogCpuStage(
@@ -637,11 +686,19 @@ public:
 			}
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
 			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
-			if (DX12IaHashStateCacheUtils::TryLoad(
+			bool iaHashCacheHit = TryLoadResolvedIaHashBuild(
+				&mutableRuntimeState->resolvedDraw.lastFullIaHashBuild,
+				iaCacheKey,
+				&activeIaState,
+				&hasIaHashState);
+			if (!iaHashCacheHit) {
+				iaHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
 					iaHashStateCache,
 					iaCacheKey,
 					&activeIaState,
-					&hasIaHashState)) {
+					&hasIaHashState);
+			}
+			if (iaHashCacheHit) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"ia_hash_cache_hit",
@@ -650,6 +707,13 @@ public:
 					DX12OuterTimingProbeUtils::ElapsedUs(iaCacheBegin));
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheHit(
 					hasIaHashState);
+				if (activeIaState) {
+					StoreResolvedIaHashBuild(
+						&mutableRuntimeState->resolvedDraw.lastFullIaHashBuild,
+						iaCacheKey,
+						hasIaHashState,
+						*activeIaState);
+				}
 			} else {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -682,6 +746,13 @@ public:
 					&cacheEvicted);
 				if (storedIaState)
 					activeIaState = storedIaState;
+				if (activeIaState) {
+					StoreResolvedIaHashBuild(
+						&mutableRuntimeState->resolvedDraw.lastFullIaHashBuild,
+						iaCacheKey,
+						hasIaHashState,
+						*activeIaState);
+				}
 				if (cacheEvicted)
 					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
 				DX12OuterTimingProbeUtils::LogCpuStage(

@@ -94,50 +94,50 @@ static bool TryLoadRuntimePreSkinBindings(
 	UINT64 *dependencyFingerprint,
 	bool *foundAny)
 {
-	if (!runtimeState || !runtimeState->cachedPreSkinBindingsValid ||
-			runtimeState->cachedPreSkinBindingsSerial != computeBindingSerial ||
-			runtimeState->cachedPreSkinBindingsHeap != runtimeState->cbvSrvUavHeap)
+	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
+			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial ||
+			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap)
 		return false;
 
-	const size_t observedCount = runtimeState->cachedPreSkinObservedSlots.size();
-	if (observedCount != runtimeState->cachedPreSkinObservedSlotVersions.size() ||
-			observedCount != runtimeState->cachedPreSkinObservedSlotValueIds.size())
+	const size_t observedCount = runtimeState->resolvedCompute.observedSlots.size();
+	if (observedCount != runtimeState->resolvedCompute.observedSlotVersions.size() ||
+			observedCount != runtimeState->resolvedCompute.observedSlotValueIds.size())
 		return false;
 
 	if (observedCount) {
-		if (!runtimeState->cachedPreSkinBindingsHeap)
+		if (!runtimeState->resolvedCompute.bindingsHeap)
 			return false;
 		std::vector<UINT64> currentSlotVersions(observedCount);
 		std::vector<UINT64> currentSlotValueIds(observedCount);
 		if (!DX12GetDescriptorSlotIdentities(
-				runtimeState->cachedPreSkinBindingsHeap,
-				runtimeState->cachedPreSkinObservedSlots.data(),
+				runtimeState->resolvedCompute.bindingsHeap,
+				runtimeState->resolvedCompute.observedSlots.data(),
 				observedCount,
 				currentSlotVersions.data(),
 				currentSlotValueIds.data()))
 			return false;
 		for (size_t index = 0; index < observedCount; ++index) {
 			if (currentSlotVersions[index] !=
-					runtimeState->cachedPreSkinObservedSlotVersions[index] ||
+					runtimeState->resolvedCompute.observedSlotVersions[index] ||
 					currentSlotValueIds[index] !=
-					runtimeState->cachedPreSkinObservedSlotValueIds[index]) {
+					runtimeState->resolvedCompute.observedSlotValueIds[index]) {
 				return false;
 			}
 		}
 	}
 
 	if (uavs)
-		*uavs = runtimeState->cachedPreSkinUavs;
+		*uavs = runtimeState->resolvedCompute.uavs;
 	if (srvs)
-		*srvs = runtimeState->cachedPreSkinSrvs;
+		*srvs = runtimeState->resolvedCompute.srvs;
 	if (cbvs)
-		*cbvs = runtimeState->cachedPreSkinCbvs;
+		*cbvs = runtimeState->resolvedCompute.cbvs;
 	if (constants)
-		*constants = runtimeState->cachedPreSkinRootConstants;
+		*constants = runtimeState->resolvedCompute.rootConstants;
 	if (dependencyFingerprint)
-		*dependencyFingerprint = runtimeState->cachedPreSkinBindingsDependencyFingerprint;
+		*dependencyFingerprint = runtimeState->resolvedCompute.bindingsDependencyFingerprint;
 	if (foundAny)
-		*foundAny = runtimeState->cachedPreSkinBindingsFoundAny;
+		*foundAny = runtimeState->resolvedCompute.bindingsFoundAny;
 	return true;
 }
 
@@ -156,19 +156,19 @@ static void StoreRuntimePreSkinBindings(
 {
 	if (!runtimeState)
 		return;
-	runtimeState->cachedPreSkinBindingsValid = true;
-	runtimeState->cachedPreSkinBindingsFoundAny = foundAny;
-	runtimeState->cachedPreSkinBindingsSerial = computeBindingSerial;
-	runtimeState->cachedPreSkinBindingsDependencyFingerprint =
+	runtimeState->resolvedCompute.bindingsValid = true;
+	runtimeState->resolvedCompute.bindingsFoundAny = foundAny;
+	runtimeState->resolvedCompute.bindingsSerial = computeBindingSerial;
+	runtimeState->resolvedCompute.bindingsDependencyFingerprint =
 		dependencyFingerprint;
-	runtimeState->cachedPreSkinBindingsHeap = runtimeState->cbvSrvUavHeap;
-	runtimeState->cachedPreSkinObservedSlots = observedSlots;
-	runtimeState->cachedPreSkinObservedSlotVersions = observedSlotVersions;
-	runtimeState->cachedPreSkinObservedSlotValueIds = observedSlotValueIds;
-	runtimeState->cachedPreSkinUavs = uavs;
-	runtimeState->cachedPreSkinSrvs = srvs;
-	runtimeState->cachedPreSkinCbvs = cbvs;
-	runtimeState->cachedPreSkinRootConstants = constants;
+	runtimeState->resolvedCompute.bindingsHeap = runtimeState->cbvSrvUavHeap;
+	runtimeState->resolvedCompute.observedSlots = observedSlots;
+	runtimeState->resolvedCompute.observedSlotVersions = observedSlotVersions;
+	runtimeState->resolvedCompute.observedSlotValueIds = observedSlotValueIds;
+	runtimeState->resolvedCompute.uavs = uavs;
+	runtimeState->resolvedCompute.srvs = srvs;
+	runtimeState->resolvedCompute.cbvs = cbvs;
+	runtimeState->resolvedCompute.rootConstants = constants;
 }
 
 class DX12BindingTrackerQueryCacheUtils

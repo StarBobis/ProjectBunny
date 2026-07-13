@@ -496,12 +496,12 @@ public:
 		// currently bound descriptor table.
 		const UINT64 earlyReloadGeneration = DX12ModGetReloadGenerationFast();
 		if (runtimeState &&
-			runtimeState->cachedPreSkinProbeResultValid &&
-			!runtimeState->cachedPreSkinProbeApplied &&
-			runtimeState->cachedPreSkinProbeCsHash == probe->computeShaderHash &&
-			runtimeState->cachedPreSkinProbeReloadGeneration == earlyReloadGeneration &&
-			runtimeState->cachedPreSkinProbeBindingSerial == probe->computeBindingSerial &&
-			runtimeState->cachedPreSkinProbeIaContentEpoch == runtimeState->iaContentEpoch) {
+			runtimeState->resolvedCompute.probeResultValid &&
+			!runtimeState->resolvedCompute.probeApplied &&
+			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
+			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
+			runtimeState->resolvedCompute.probeBindingSerial == probe->computeBindingSerial &&
+			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch) {
 			probe->applied = false;
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
@@ -553,10 +553,10 @@ public:
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
 		UINT64 computeIaFingerprint = 0;
 		if (runtimeState && probe->bindingDependencyFingerprint &&
-				runtimeState->cachedPreSkinDependencyFingerprint ==
+				runtimeState->resolvedCompute.bindingFingerprintDependency ==
 					probe->bindingDependencyFingerprint &&
-				runtimeState->cachedPreSkinBindingFingerprint) {
-			computeIaFingerprint = runtimeState->cachedPreSkinBindingFingerprint;
+				runtimeState->resolvedCompute.bindingFingerprint) {
+			computeIaFingerprint = runtimeState->resolvedCompute.bindingFingerprint;
 		} else {
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
 			computeIaFingerprint = DX12PreSkinPlanUtils::BuildStableBindingFingerprint(
@@ -564,9 +564,9 @@ public:
 			if (computeIaFingerprint == 0)
 				computeIaFingerprint = 1;
 			if (runtimeState && probe->bindingDependencyFingerprint) {
-				runtimeState->cachedPreSkinDependencyFingerprint =
+				runtimeState->resolvedCompute.bindingFingerprintDependency =
 					probe->bindingDependencyFingerprint;
-				runtimeState->cachedPreSkinBindingFingerprint = computeIaFingerprint;
+				runtimeState->resolvedCompute.bindingFingerprint = computeIaFingerprint;
 			}
 		}
 		computeIaFingerprint = DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
@@ -597,40 +597,40 @@ public:
 				const DX12PreSkinDispatchOverride &dispatchOverride) {
 				if (!runtimeState)
 					return;
-				runtimeState->cachedPreSkinProbeFingerprint =
+				runtimeState->resolvedCompute.probeFingerprint =
 					computeIaFingerprint;
-				runtimeState->cachedPreSkinProbeCsHash = computeShaderHash;
-				runtimeState->cachedPreSkinProbeReloadGeneration = reloadGeneration;
-				runtimeState->cachedPreSkinProbeBindingSerial = probeBindingSerial;
-				runtimeState->cachedPreSkinProbeIaContentEpoch = probeIaContentEpoch;
-				runtimeState->cachedPreSkinProbeResultValid = true;
-				runtimeState->cachedPreSkinProbeApplied = applied;
-				runtimeState->cachedPreSkinProbeDispatchHandlingSkip =
+				runtimeState->resolvedCompute.probeCsHash = computeShaderHash;
+				runtimeState->resolvedCompute.probeReloadGeneration = reloadGeneration;
+				runtimeState->resolvedCompute.probeBindingSerial = probeBindingSerial;
+				runtimeState->resolvedCompute.probeIaContentEpoch = probeIaContentEpoch;
+				runtimeState->resolvedCompute.probeResultValid = true;
+				runtimeState->resolvedCompute.probeApplied = applied;
+				runtimeState->resolvedCompute.probeDispatchHandlingSkip =
 					dispatchOverride.handlingSkip;
-				runtimeState->cachedPreSkinProbeDispatchHasDispatch =
+				runtimeState->resolvedCompute.probeDispatchHasDispatch =
 					dispatchOverride.hasDispatch;
-				runtimeState->cachedPreSkinProbeGroupsX = dispatchOverride.groupsX;
-				runtimeState->cachedPreSkinProbeGroupsY = dispatchOverride.groupsY;
-				runtimeState->cachedPreSkinProbeGroupsZ = dispatchOverride.groupsZ;
+				runtimeState->resolvedCompute.probeGroupsX = dispatchOverride.groupsX;
+				runtimeState->resolvedCompute.probeGroupsY = dispatchOverride.groupsY;
+				runtimeState->resolvedCompute.probeGroupsZ = dispatchOverride.groupsZ;
 			};
 		bool runtimeProbeCacheHit = false;
 		if (runtimeState &&
-			runtimeState->cachedPreSkinProbeResultValid &&
-			runtimeState->cachedPreSkinProbeFingerprint ==
+			runtimeState->resolvedCompute.probeResultValid &&
+			runtimeState->resolvedCompute.probeFingerprint ==
 				computeIaFingerprint &&
-			runtimeState->cachedPreSkinProbeCsHash == probe->computeShaderHash &&
-			runtimeState->cachedPreSkinProbeReloadGeneration == reloadGeneration) {
-			cacheEntry.applied = runtimeState->cachedPreSkinProbeApplied;
+			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
+			runtimeState->resolvedCompute.probeReloadGeneration == reloadGeneration) {
+			cacheEntry.applied = runtimeState->resolvedCompute.probeApplied;
 			cacheEntry.dispatchOverride.handlingSkip =
-				runtimeState->cachedPreSkinProbeDispatchHandlingSkip;
+				runtimeState->resolvedCompute.probeDispatchHandlingSkip;
 			cacheEntry.dispatchOverride.hasDispatch =
-				runtimeState->cachedPreSkinProbeDispatchHasDispatch;
+				runtimeState->resolvedCompute.probeDispatchHasDispatch;
 			cacheEntry.dispatchOverride.groupsX =
-				runtimeState->cachedPreSkinProbeGroupsX;
+				runtimeState->resolvedCompute.probeGroupsX;
 			cacheEntry.dispatchOverride.groupsY =
-				runtimeState->cachedPreSkinProbeGroupsY;
+				runtimeState->resolvedCompute.probeGroupsY;
 			cacheEntry.dispatchOverride.groupsZ =
-				runtimeState->cachedPreSkinProbeGroupsZ;
+				runtimeState->resolvedCompute.probeGroupsZ;
 			runtimeProbeCacheHit = true;
 		}
 		if (runtimeProbeCacheHit || DX12ModGetCachedPreSkinProbeResult(

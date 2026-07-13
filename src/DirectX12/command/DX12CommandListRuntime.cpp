@@ -298,19 +298,13 @@ void DX12CommandListRuntime::Reset(
 	// single recording. Their keys already carry the required generations, so
 	// preserve the working set across command-list Reset like DX11's resident
 	// HackerContext state.
-	DX12IaHashStateCache persistentIaHashStateCache =
-		std::move(state->iaHashStateCache);
-	DX12DirectIaProbeCache persistentDirectIaProbeCache =
-		std::move(state->directIaProbeCache);
-	DX12DirectIaFastRejectCache persistentDirectIaFastRejectCache =
-		std::move(state->directIaFastRejectCache);
+	DX12ResolvedDrawRuntimeState persistentResolvedDraw =
+		std::move(state->resolvedDraw);
 	*state = DX12CommandListRuntimeState();
 	state->device = cachedDevice;
 	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
-	state->iaHashStateCache = std::move(persistentIaHashStateCache);
-	state->directIaProbeCache = std::move(persistentDirectIaProbeCache);
-	state->directIaFastRejectCache = std::move(persistentDirectIaFastRejectCache);
+	state->resolvedDraw = std::move(persistentResolvedDraw);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
 }
@@ -1003,7 +997,8 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
 	DX12IaHashStateCacheKey key;
 	DX12IaHashKeyPrefixCacheEntry &entry =
-		state->iaHashKeyPrefixes[cacheSlot % state->iaHashKeyPrefixes.size()];
+		state->resolvedDraw.iaHashKeyPrefixes[
+			cacheSlot % state->resolvedDraw.iaHashKeyPrefixes.size()];
 	if (!DX12IaHashKeyPrefixCacheUtils::TryLoadStable(
 			entry, state->iaEpoch, targetPlanFingerprint, indexed, &key)) {
 		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();

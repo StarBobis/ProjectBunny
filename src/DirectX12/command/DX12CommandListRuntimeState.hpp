@@ -40,6 +40,64 @@ public:
 	bool valid = false;
 };
 
+class DX12ResolvedDrawRuntimeState
+{
+public:
+	class CachedIaHashBuildEntry
+	{
+	public:
+		bool valid = false;
+		bool hasState = false;
+		DX12IaHashStateCacheKey key;
+		DX12IaHashState state;
+	};
+
+	DX12IaHashStateCache iaHashStateCache;
+	// Direct-target and full-target key prefixes. Resolved IA resources carry
+	// their own content/lifetime generations; global epochs are only consulted
+	// for unresolved fallback keys.
+	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
+	CachedIaHashBuildEntry lastDirectIaHashBuild;
+	CachedIaHashBuildEntry lastFullIaHashBuild;
+	DX12DirectIaProbeCache directIaProbeCache;
+	DX12DirectIaFastRejectCache directIaFastRejectCache;
+	// Small direct-mapped resident cache: the common repeated negative draw is a
+	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
+	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
+};
+
+class DX12ResolvedComputeRuntimeState
+{
+public:
+	bool bindingsValid = false;
+	bool bindingsFoundAny = false;
+	UINT64 bindingsSerial = 0;
+	UINT64 bindingsDependencyFingerprint = 0;
+	ID3D12DescriptorHeap *bindingsHeap = nullptr;
+	std::vector<UINT> observedSlots;
+	std::vector<UINT64> observedSlotVersions;
+	std::vector<UINT64> observedSlotValueIds;
+	std::vector<DX12CurrentComputeUavBinding> uavs;
+	std::vector<DX12CurrentComputeUavBinding> srvs;
+	std::vector<DX12CurrentComputeUavBinding> cbvs;
+	std::vector<DX12CurrentRootConstants> rootConstants;
+
+	UINT64 bindingFingerprintDependency = 0;
+	UINT64 bindingFingerprint = 0;
+	UINT64 probeFingerprint = 0;
+	uint64_t probeCsHash = 0;
+	UINT64 probeReloadGeneration = 0;
+	UINT64 probeBindingSerial = 0;
+	UINT64 probeIaContentEpoch = 0;
+	bool probeResultValid = false;
+	bool probeApplied = false;
+	bool probeDispatchHandlingSkip = false;
+	bool probeDispatchHasDispatch = false;
+	UINT probeGroupsX = 0;
+	UINT probeGroupsY = 0;
+	UINT probeGroupsZ = 0;
+};
+
 class DX12CommandListRuntimeState
 {
 public:
@@ -58,16 +116,7 @@ public:
 	DX12ActiveIaState ia;
 	UINT64 iaEpoch = 1;
 	UINT64 iaContentEpoch = 1;
-	DX12IaHashStateCache iaHashStateCache;
-	// Direct-target and full-target key prefixes. Resolved IA resources carry
-	// their own content/lifetime generations; global epochs are only consulted
-	// for unresolved fallback keys.
-	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
-	DX12DirectIaProbeCache directIaProbeCache;
-	DX12DirectIaFastRejectCache directIaFastRejectCache;
-	// Small direct-mapped resident cache: the common repeated negative draw is a
-	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
-	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
+	DX12ResolvedDrawRuntimeState resolvedDraw;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
@@ -111,33 +160,5 @@ public:
 	// per DX12 spec (device -> command list is a parent-child relationship).
 	ID3D12Device *device = nullptr;
 
-	// PreSkin probe cache keyed by the stable dependency-aware fingerprint.
-	// Exact binding dependencies live in the shared PreSkin binding cache.
-	// Runtime state only retains the final Mod probe result.
-	bool cachedPreSkinBindingsValid = false;
-	bool cachedPreSkinBindingsFoundAny = false;
-	UINT64 cachedPreSkinBindingsSerial = 0;
-	UINT64 cachedPreSkinBindingsDependencyFingerprint = 0;
-	ID3D12DescriptorHeap *cachedPreSkinBindingsHeap = nullptr;
-	std::vector<UINT> cachedPreSkinObservedSlots;
-	std::vector<UINT64> cachedPreSkinObservedSlotVersions;
-	std::vector<UINT64> cachedPreSkinObservedSlotValueIds;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinUavs;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinSrvs;
-	std::vector<DX12CurrentComputeUavBinding> cachedPreSkinCbvs;
-	std::vector<DX12CurrentRootConstants> cachedPreSkinRootConstants;
-	UINT64 cachedPreSkinDependencyFingerprint = 0;
-	UINT64 cachedPreSkinBindingFingerprint = 0;
-	UINT64 cachedPreSkinProbeFingerprint = 0;
-	uint64_t cachedPreSkinProbeCsHash = 0;
-	UINT64 cachedPreSkinProbeReloadGeneration = 0;
-	UINT64 cachedPreSkinProbeBindingSerial = 0;
-	UINT64 cachedPreSkinProbeIaContentEpoch = 0;
-	bool cachedPreSkinProbeResultValid = false;
-	bool cachedPreSkinProbeApplied = false;
-	bool cachedPreSkinProbeDispatchHandlingSkip = false;
-	bool cachedPreSkinProbeDispatchHasDispatch = false;
-	UINT cachedPreSkinProbeGroupsX = 0;
-	UINT cachedPreSkinProbeGroupsY = 0;
-	UINT cachedPreSkinProbeGroupsZ = 0;
+	DX12ResolvedComputeRuntimeState resolvedCompute;
 };
