@@ -1,0 +1,479 @@
+#pragma once
+
+#include <Windows.h>
+#include <d3d12.h>
+#include <dxgiformat.h>
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+
+#include "DX12BindingTracker.hpp"
+#include "DX12FrameAnalysis.hpp"
+#include "DX12JsonUtils.hpp"
+#include "DX12FrameAnalysisManifestFormatUtils.hpp"
+#include "DX12ResourceTracker.hpp"
+#include "DX12ShaderDump.hpp"
+
+class DX12FrameAnalysisManifest
+{
+public:
+	static void WriteCall(
+		const char *functionName, UINT64 eventSerial, UINT64 drawId, UINT64 dispatchId,
+		ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
+		const DX12PsoShaderInfo &shaderInfo, D3D12_PRIMITIVE_TOPOLOGY topology,
+		UINT vertexCountPerInstance, UINT indexCountPerInstance, UINT startVertexLocation,
+		UINT startIndexLocation, INT baseVertexLocation, UINT instanceCount,
+		UINT startInstanceLocation, UINT threadGroupCountX, UINT threadGroupCountY,
+		UINT threadGroupCountZ, bool indexBufferValid,
+		D3D12_GPU_VIRTUAL_ADDRESS indexBufferGpuVa, UINT indexBufferSize,
+		DXGI_FORMAT indexBufferFormat)
+	{
+		char vs[32], ps[32], cs[32];
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			shaderInfo.vs, shaderInfo.hasVS, vs, ARRAYSIZE(vs));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			shaderInfo.ps, shaderInfo.hasPS, ps, ARRAYSIZE(ps));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			shaderInfo.cs, shaderInfo.hasCS, cs, ARRAYSIZE(cs));
+
+		char functionJson[64], vsJson[64], psJson[64], csJson[64], topologyJson[32];
+		char cmdlistJson[32], psoJson[32];
+		DX12JsonUtils::EscapeString(functionJson, sizeof(functionJson),
+			DX12FrameAnalysisManifestFormatUtils::ApiFunctionName(functionName));
+		DX12JsonUtils::EscapeString(vsJson, sizeof(vsJson), vs);
+		DX12JsonUtils::EscapeString(psJson, sizeof(psJson), ps);
+		DX12JsonUtils::EscapeString(csJson, sizeof(csJson), cs);
+		DX12JsonUtils::EscapeString(topologyJson, sizeof(topologyJson),
+			DX12FrameAnalysisManifestFormatUtils::TopologyName(topology));
+		sprintf_s(cmdlistJson, sizeof(cmdlistJson), "\"%p\"", commandList);
+		sprintf_s(psoJson, sizeof(psoJson), "\"%p\"", pipelineState);
+
+		char buffer[3072];
+		if (dispatchId) {
+			sprintf_s(buffer, sizeof(buffer),
+				"\"func\":%s,"
+				"\"type\":\"call.dispatch\","
+				"\"call_index\":%llu,"
+				"\"cmdlist\":%s,"
+				"\"pipeline_state\":%s,"
+				"\"pso\":%llu,"
+				"\"cs\":%s,"
+				"\"groups_x\":%u,"
+				"\"groups_y\":%u,"
+				"\"groups_z\":%u",
+				functionJson,
+				static_cast<unsigned long long>(eventSerial),
+				cmdlistJson,
+				psoJson,
+				static_cast<unsigned long long>(shaderInfo.psoIndex),
+				csJson,
+				threadGroupCountX,
+				threadGroupCountY,
+				threadGroupCountZ);
+		} else {
+			sprintf_s(buffer, sizeof(buffer),
+				"\"func\":%s,"
+				"\"type\":\"call.draw\","
+				"\"call_index\":%llu,"
+				"\"draw_id\":%llu,"
+				"\"cmdlist\":%s,"
+				"\"pipeline_state\":%s,"
+				"\"pso\":%llu,"
+				"\"cs\":%s,"
+				"\"vs\":%s,"
+				"\"ps\":%s,"
+				"\"topology\":%s,"
+				"\"vertex_count\":%u,"
+				"\"index_count\":%u,"
+				"\"start_vertex\":%u,"
+				"\"start_index\":%u,"
+				"\"base_vertex\":%d,"
+				"\"instance_count\":%u,"
+				"\"start_instance\":%u,"
+				"\"ib_gpu\":\"0x%llx\","
+				"\"ib_bytes\":%u,"
+				"\"ib_fmt\":%u",
+				functionJson,
+				static_cast<unsigned long long>(eventSerial),
+				static_cast<unsigned long long>(drawId),
+				cmdlistJson,
+				psoJson,
+				static_cast<unsigned long long>(shaderInfo.psoIndex),
+				csJson,
+				vsJson,
+				psJson,
+				topologyJson,
+				vertexCountPerInstance,
+				indexCountPerInstance,
+				startVertexLocation,
+				startIndexLocation,
+				baseVertexLocation,
+				instanceCount,
+				startInstanceLocation,
+				static_cast<unsigned long long>(indexBufferValid ? indexBufferGpuVa : 0),
+				indexBufferValid ? indexBufferSize : 0,
+				indexBufferValid ? static_cast<UINT>(indexBufferFormat) : 0);
+		}
+
+		DX12FrameAnalysis::LogJsonFields(buffer);
+	}
+
+	static void WriteFileDump(
+		const wchar_t *filePath, bool isTexture, UINT64 bytes, const char *status,
+		const char *note)
+	{
+		char hash[16];
+		wchar_t textPath[MAX_PATH];
+		DX12FrameAnalysisManifestFormatUtils::FormatFileHash(filePath, hash, ARRAYSIZE(hash));
+		textPath[0] = L'\0';
+		if (!isTexture) {
+			const wchar_t *name = DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath);
+			const wchar_t *dot = name ? wcsrchr(name, L'.') : nullptr;
+			if (dot) {
+				const size_t prefixLength = static_cast<size_t>(dot - name);
+				wcsncpy_s(textPath, ARRAYSIZE(textPath), name, prefixLength);
+			} else if (name) {
+				wcsncpy_s(textPath, ARRAYSIZE(textPath), name, _TRUNCATE);
+			}
+			wcscat_s(textPath, ARRAYSIZE(textPath), L".txt");
+		}
+
+		char statusJson[64], kindJson[16], hashJson[32], noteJson[128];
+		char fileJson[512], textJson[512];
+		DX12JsonUtils::EscapeString(statusJson, sizeof(statusJson), status);
+		DX12JsonUtils::EscapeString(kindJson, sizeof(kindJson), isTexture ? "texture" : "buffer");
+		DX12JsonUtils::EscapeString(hashJson, sizeof(hashJson), hash);
+		DX12JsonUtils::EscapeString(noteJson, sizeof(noteJson), note);
+		DX12JsonUtils::EscapeWString(fileJson, sizeof(fileJson),
+			DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath));
+		if (isTexture) {
+			strcpy_s(textJson, sizeof(textJson), "null");
+		} else {
+			DX12JsonUtils::EscapeWString(textJson, sizeof(textJson), textPath);
+		}
+
+		char buffer[1024];
+		sprintf_s(buffer, sizeof(buffer),
+			"\"func\":\"FileDump\","
+			"\"status\":%s,"
+			"\"kind\":%s,"
+			"\"file\":%s,"
+			"\"text\":%s,"
+			"\"hash\":%s,"
+			"\"bytes\":%llu,"
+			"\"note\":%s",
+			statusJson,
+			kindJson,
+			fileJson,
+			textJson,
+			hashJson,
+			static_cast<unsigned long long>(bytes),
+			noteJson);
+
+		DX12FrameAnalysis::LogJsonFields(buffer);
+	}
+
+	static void WriteIaBinding(
+		const DX12FrameIaBufferBinding &buffer,
+		const D3D12_RESOURCE_DESC &desc, UINT64 sourceOffset, UINT64 copyBytes,
+		D3D12_RESOURCE_STATES sourceState, bool hasCurrentState,
+		const wchar_t *filePath)
+	{
+		char vs[32], ps[32], cs[32], hash[16];
+		char huntHash[16];
+		char fileHash[16];
+		char producerCs[32];
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			buffer.shaderInfo.vs, buffer.shaderInfo.hasVS, vs, ARRAYSIZE(vs));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			buffer.shaderInfo.ps, buffer.shaderInfo.hasPS, ps, ARRAYSIZE(ps));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			buffer.shaderInfo.cs, buffer.shaderInfo.hasCS, cs, ARRAYSIZE(cs));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+			buffer.producerShaderInfo.cs, buffer.producerShaderInfo.hasCS,
+			producerCs, ARRAYSIZE(producerCs));
+		if (!buffer.producerShaderInfo.hasCS && buffer.producerPsoIndex) {
+			DX12PsoShaderSummary producerSummary = {};
+			if (DX12GetPsoShaderSummary(buffer.producerPsoIndex, &producerSummary)) {
+				DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(
+					producerSummary.cs, producerSummary.hasCS,
+					producerCs, ARRAYSIZE(producerCs));
+			}
+		}
+		DX12FrameAnalysisManifestFormatUtils::FormatFileHash(
+			filePath, fileHash, ARRAYSIZE(fileHash));
+		sprintf_s(huntHash, sizeof(huntHash), "%08x", buffer.huntHash);
+		sprintf_s(hash, sizeof(hash), "%08x", buffer.huntHash);
+
+		char vsJson[64], psJson[64], csJson[64], producerCsJson[64];
+		char roleJson[32], dimJson[32], fmtNameJson[64], skinSourceJson[64];
+		char producerBindJson[64], hashJson[32], huntHashJson[32], fileHashJson[32];
+		char fileJson[512], resourceJson[32];
+		DX12JsonUtils::EscapeString(vsJson, sizeof(vsJson), vs);
+		DX12JsonUtils::EscapeString(psJson, sizeof(psJson), ps);
+		DX12JsonUtils::EscapeString(csJson, sizeof(csJson), cs);
+		DX12JsonUtils::EscapeString(producerCsJson, sizeof(producerCsJson), producerCs);
+		DX12JsonUtils::EscapeString(roleJson, sizeof(roleJson), buffer.role.c_str());
+		DX12JsonUtils::EscapeString(dimJson, sizeof(dimJson),
+			DX12FrameAnalysisManifestFormatUtils::ResourceDimensionName(desc.Dimension));
+		DX12JsonUtils::EscapeString(fmtNameJson, sizeof(fmtNameJson),
+			DX12FrameAnalysisManifestFormatUtils::DxgiFormatName(buffer.format));
+		DX12JsonUtils::EscapeString(skinSourceJson, sizeof(skinSourceJson),
+			buffer.skinningClass.empty() ? "unknown" : buffer.skinningClass.c_str());
+		DX12JsonUtils::EscapeString(producerBindJson, sizeof(producerBindJson),
+			buffer.producerBindSpace.empty() ? "-" : buffer.producerBindSpace.c_str());
+		DX12JsonUtils::EscapeString(hashJson, sizeof(hashJson), hash);
+		DX12JsonUtils::EscapeString(huntHashJson, sizeof(huntHashJson), huntHash);
+		DX12JsonUtils::EscapeString(fileHashJson, sizeof(fileHashJson), fileHash);
+		DX12JsonUtils::EscapeWString(fileJson, sizeof(fileJson),
+			DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath));
+		sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", buffer.resource.resource);
+
+		char buffer2[3072];
+		const bool ib = buffer.role == "IB";
+		sprintf_s(buffer2, sizeof(buffer2),
+			"\"func\":\"BindIA\","
+			"\"call_index\":%llu,"
+			"\"pso\":%llu,"
+			"\"vs\":%s,"
+			"\"ps\":%s,"
+			"\"cs\":%s,"
+			"\"role\":%s,"
+			"\"slot\":%u,"
+			"\"resource\":%s,"
+			"\"dim\":%s,"
+			"\"gpu\":\"0x%llx\","
+			"\"offset\":%llu,"
+			"\"bytes\":%llu,"
+			"\"file_offset\":%llu,"
+			"\"file_bytes\":%llu,"
+			"\"view_gpu\":\"0x%llx\","
+			"\"view_offset\":%llu,"
+			"\"view_bytes\":%llu,"
+			"\"draw_gpu\":\"0x%llx\","
+			"\"draw_offset\":%llu,"
+			"\"draw_bytes\":%llu,"
+			"\"dump_scope\":\"%s\","
+			"\"dump_is_draw_slice\":%s,"
+			"\"stride\":%u,"
+			"\"fmt\":%u,"
+			"\"fmt_name\":%s,"
+			"\"start_index\":%u,"
+			"\"index_count\":%u,"
+			"\"base_vertex\":%d,"
+			"\"state\":\"0x%x\","
+			"\"state_known\":%s,"
+			"\"skin_source\":%s,"
+			"\"producer_call_index\":%llu,"
+			"\"producer_pso\":%llu,"
+			"\"producer_cs\":%s,"
+			"\"producer_bind\":%s,"
+			"\"producer_root\":%u,"
+			"\"producer_reg\":%u,"
+			"\"file\":%s,"
+			"\"hunt_hash\":%s,"
+			"\"hash\":%s,"
+			"\"file_hash\":%s",
+			static_cast<unsigned long long>(buffer.eventSerial),
+			static_cast<unsigned long long>(buffer.psoIndex),
+			vsJson,
+			psJson,
+			csJson,
+			roleJson,
+			buffer.slot,
+			resourceJson,
+			dimJson,
+			static_cast<unsigned long long>(buffer.gpuVa),
+			static_cast<unsigned long long>(buffer.viewOffset),
+			static_cast<unsigned long long>(buffer.viewSize),
+			static_cast<unsigned long long>(sourceOffset),
+			static_cast<unsigned long long>(copyBytes),
+			static_cast<unsigned long long>(buffer.viewGpuVa),
+			static_cast<unsigned long long>(buffer.viewOffset),
+			static_cast<unsigned long long>(buffer.viewSize),
+			static_cast<unsigned long long>(buffer.drawGpuVa ? buffer.drawGpuVa : buffer.viewGpuVa),
+			static_cast<unsigned long long>(buffer.drawOffset),
+			static_cast<unsigned long long>(buffer.drawSize ? buffer.drawSize : copyBytes),
+			"full_view",
+			"false",
+			buffer.stride,
+			buffer.format,
+			fmtNameJson,
+			buffer.drawStartIndex,
+			buffer.drawIndexCount,
+			buffer.drawBaseVertex,
+			static_cast<UINT>(sourceState),
+			hasCurrentState ? "true" : "false",
+			skinSourceJson,
+			static_cast<unsigned long long>(buffer.producerEventSerial),
+			static_cast<unsigned long long>(buffer.producerPsoIndex),
+			producerCsJson,
+			producerBindJson,
+			buffer.producerRootParameterIndex,
+			buffer.producerShaderRegister,
+			fileJson,
+			huntHashJson,
+			hashJson,
+			fileHashJson);
+
+		DX12FrameAnalysis::LogJsonFields(buffer2);
+	}
+
+	static void WriteResourceBinding(
+		const DX12FrameResourceBinding &binding,
+		const D3D12_RESOURCE_DESC &desc, UINT64 sourceOffset, UINT64 copyBytes,
+		D3D12_RESOURCE_STATES sourceState, bool hasCurrentState,
+		const wchar_t *filePath, const char *status = "", const char *note = "")
+	{
+		DX12PsoShaderSummary shaders;
+		const bool hasShaders = DX12GetPsoShaderSummary(binding.psoIndex, &shaders);
+		char vs[32], ps[32], cs[32], hash[16];
+		char fileHash[16];
+		const bool hasVS = binding.shaderInfo.hasVS || (hasShaders && shaders.hasVS);
+		const bool hasPS = binding.shaderInfo.hasPS || (hasShaders && shaders.hasPS);
+		const bool hasCS = binding.shaderInfo.hasCS || (hasShaders && shaders.hasCS);
+		const UINT64 vsHash = binding.shaderInfo.hasVS ? binding.shaderInfo.vs : shaders.vs;
+		const UINT64 psHash = binding.shaderInfo.hasPS ? binding.shaderInfo.ps : shaders.ps;
+		const UINT64 csHash = binding.shaderInfo.hasCS ? binding.shaderInfo.cs : shaders.cs;
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(vsHash, hasVS, vs, ARRAYSIZE(vs));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(psHash, hasPS, ps, ARRAYSIZE(ps));
+		DX12FrameAnalysisManifestFormatUtils::FormatShaderHash(csHash, hasCS, cs, ARRAYSIZE(cs));
+		DX12FrameAnalysisManifestFormatUtils::FormatFileHash(
+			filePath, fileHash, ARRAYSIZE(fileHash));
+
+		const DX12DescriptorSummary &descriptor = binding.descriptor;
+		const UINT64 fallbackGpuVa = descriptor.gpuVirtualAddress ?
+			descriptor.gpuVirtualAddress : binding.gpuVirtualAddress;
+		const UINT64 fallbackSize = descriptor.viewSize ? descriptor.viewSize : copyBytes;
+		const uint32_t descriptorHash = DX12HashDescriptorBufferView(
+			binding.hasDescriptor ? &descriptor : nullptr, fallbackGpuVa, fallbackSize);
+		uint32_t contentHash = 0;
+		const bool hasContentHash =
+			desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+			DX12TryGetTextureHash(descriptor.resource, &contentHash);
+		const uint32_t viewHash = hasContentHash ? contentHash : descriptorHash;
+		sprintf_s(hash, sizeof(hash), "%08x", viewHash);
+		char huntHash[16];
+		sprintf_s(huntHash, sizeof(huntHash), "%08x", viewHash);
+		char descriptorHashText[16], contentHashText[16];
+		sprintf_s(descriptorHashText, sizeof(descriptorHashText), "%08x", descriptorHash);
+		sprintf_s(contentHashText, sizeof(contentHashText), "%08x", hasContentHash ? contentHash : 0);
+
+		char vsJson[64], psJson[64], csJson[64];
+		char bindJson[64], kindJson[32], dimJson[32], fmtNameJson[64], statusJson[64], noteJson[128];
+		char hashJson[32], huntHashJson[32], fileHashJson[32], descriptorHashJson[32];
+		char contentHashJson[32], hashSourceJson[32], fileJson[512], resourceJson[32];
+		const char *kind = descriptor.kind.empty() && binding.rootDescriptor ?
+			DX12FrameAnalysisManifestFormatUtils::RootDescriptorKindName(binding.rangeType) :
+			descriptor.kind.c_str();
+		DX12JsonUtils::EscapeString(vsJson, sizeof(vsJson), vs);
+		DX12JsonUtils::EscapeString(psJson, sizeof(psJson), ps);
+		DX12JsonUtils::EscapeString(csJson, sizeof(csJson), cs);
+		DX12JsonUtils::EscapeString(bindJson, sizeof(bindJson), binding.bindSpace.c_str());
+		DX12JsonUtils::EscapeString(kindJson, sizeof(kindJson), kind);
+		DX12JsonUtils::EscapeString(dimJson, sizeof(dimJson),
+			DX12FrameAnalysisManifestFormatUtils::ResourceDimensionName(desc.Dimension));
+		DX12JsonUtils::EscapeString(fmtNameJson, sizeof(fmtNameJson),
+			DX12FrameAnalysisManifestFormatUtils::DxgiFormatName(static_cast<UINT>(desc.Format)));
+		DX12JsonUtils::EscapeString(statusJson, sizeof(statusJson), status);
+		DX12JsonUtils::EscapeString(noteJson, sizeof(noteJson), note);
+		DX12JsonUtils::EscapeString(hashJson, sizeof(hashJson), hash);
+		DX12JsonUtils::EscapeString(huntHashJson, sizeof(huntHashJson), huntHash);
+		DX12JsonUtils::EscapeString(fileHashJson, sizeof(fileHashJson), fileHash);
+		DX12JsonUtils::EscapeString(descriptorHashJson, sizeof(descriptorHashJson), descriptorHashText);
+		DX12JsonUtils::EscapeString(contentHashJson, sizeof(contentHashJson), contentHashText);
+		DX12JsonUtils::EscapeString(hashSourceJson, sizeof(hashSourceJson),
+			hasContentHash ? "content" : "descriptor_fallback");
+		DX12JsonUtils::EscapeWString(fileJson, sizeof(fileJson),
+			DX12FrameAnalysisManifestFormatUtils::DedupedFileName(filePath));
+		sprintf_s(resourceJson, sizeof(resourceJson), "\"%p\"", descriptor.resource);
+
+		char buffer[3072];
+		sprintf_s(buffer, sizeof(buffer),
+			"\"func\":\"BindResource\","
+			"\"call_index\":%llu,"
+			"\"draw_id\":%llu,"
+			"\"dispatch_id\":%llu,"
+			"\"pso\":%llu,"
+			"\"vs\":%s,"
+			"\"ps\":%s,"
+			"\"cs\":%s,"
+			"\"bind\":%s,"
+			"\"root\":%u,"
+			"\"range\":%u,"
+			"\"reg\":%u,"
+			"\"space\":%u,"
+			"\"desc\":%llu,"
+			"\"kind\":%s,"
+			"\"resource\":%s,"
+			"\"dim\":%s,"
+			"\"width\":%llu,"
+			"\"height\":%u,"
+			"\"fmt\":%u,"
+			"\"fmt_name\":%s,"
+			"\"view_dimension\":%u,"
+			"\"first_element\":%llu,"
+			"\"num_elements\":%u,"
+			"\"structure_byte_stride\":%u,"
+			"\"buffer_view_offset\":%llu,"
+			"\"buffer_view_bytes\":%llu,"
+			"\"gpu\":\"0x%llx\","
+			"\"offset\":%llu,"
+			"\"bytes\":%llu,"
+			"\"state\":\"0x%x\","
+			"\"state_known\":%s,"
+			"\"file\":%s,"
+			"\"status\":%s,"
+			"\"note\":%s,"
+			"\"hash\":%s,"
+			"\"hunt_hash\":%s,"
+			"\"file_hash\":%s,"
+			"\"hash_source\":%s,"
+			"\"content_hash\":%s,"
+			"\"descriptor_hash\":%s",
+			static_cast<unsigned long long>(binding.eventSerial),
+			static_cast<unsigned long long>(binding.drawId),
+			static_cast<unsigned long long>(binding.dispatchId),
+			static_cast<unsigned long long>(binding.psoIndex),
+			vsJson,
+			psJson,
+			csJson,
+			bindJson,
+			binding.rootParameterIndex,
+			binding.rangeIndex,
+			binding.shaderRegister,
+			binding.registerSpace,
+			static_cast<unsigned long long>(binding.descriptorIndex),
+			kindJson,
+			resourceJson,
+			dimJson,
+			static_cast<unsigned long long>(desc.Width),
+			desc.Height,
+			static_cast<UINT>(desc.Format),
+			fmtNameJson,
+			descriptor.viewDimension,
+			static_cast<unsigned long long>(descriptor.firstElement),
+			descriptor.numElements,
+			descriptor.structureByteStride,
+			static_cast<unsigned long long>(descriptor.bufferViewOffset),
+			static_cast<unsigned long long>(descriptor.bufferViewBytes),
+			static_cast<unsigned long long>(descriptor.gpuVirtualAddress),
+			static_cast<unsigned long long>(sourceOffset),
+			static_cast<unsigned long long>(copyBytes),
+			static_cast<UINT>(sourceState),
+			hasCurrentState ? "true" : "false",
+			fileJson,
+			statusJson,
+			noteJson,
+			hashJson,
+			huntHashJson,
+			fileHashJson,
+			hashSourceJson,
+			contentHashJson,
+			descriptorHashJson);
+
+		DX12FrameAnalysis::LogJsonFields(buffer);
+	}
+};
+
+
