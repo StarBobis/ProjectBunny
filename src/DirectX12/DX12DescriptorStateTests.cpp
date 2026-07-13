@@ -8,11 +8,15 @@
 #include <cstring>
 #include <vector>
 
-static void Require(bool condition)
+static void RequireImpl(bool condition, int line)
 {
-	if (!condition)
+	if (!condition) {
+		std::fprintf(stderr, "requirement failed at line %d\n", line);
 		std::abort();
+	}
 }
+
+#define Require(condition) RequireImpl((condition), __LINE__)
 
 static LONG ReferenceCount(DX12DescriptorValueNode *node)
 {
@@ -673,6 +677,7 @@ static void TestIaHashKeyPrefixCacheInvalidation()
 	prefix.iaViewFingerprint = 23;
 	prefix.bufferContentGeneration = 31;
 	prefix.bufferResolveGeneration = 37;
+	prefix.usesGlobalFallback = true;
 	DX12IaHashKeyPrefixCacheUtils::Store(
 		&entry, 5, 17, true, 101, 103, prefix);
 
