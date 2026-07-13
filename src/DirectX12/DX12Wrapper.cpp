@@ -1,6 +1,7 @@
 #include "DX12Integration.hpp"
 
 #include <atomic>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -17,6 +18,7 @@ namespace DX12Wrapper
 		class WrapperBase;
 
 		SRWLOCK gWrapperLock = SRWLOCK_INIT;
+		std::recursive_mutex gWrapperCreationMutex;
 		std::unordered_map<IUnknown*, WrapperBase*> gIdentityMap;
 		std::unordered_map<IUnknown*, WrapperBase*> gWrapperMap;
 
@@ -490,13 +492,7 @@ namespace DX12Wrapper
 			{
 				DX12_CREATE_TIMING_SCOPE(WrapperLifetime, Record);
 				AcquireSRWLockExclusive(&gWrapperLock);
-				for (size_t i = 0; i < mWrapperPointers.size(); ++i)
-					gWrapperMap.erase(mWrapperPointers[i]);
-				if (mIdentity) {
-					std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gIdentityMap.find(mIdentity);
-					if (it != gIdentityMap.end() && it->second == this)
-						gIdentityMap.erase(it);
-				}
+				RemoveRegistryEntriesLocked();
 				ReleaseSRWLockExclusive(&gWrapperLock);
 
 				if (mIdentity) {
@@ -507,6 +503,43 @@ namespace DX12Wrapper
 					mObject->Release();
 					mObject = nullptr;
 				}
+			}
+
+			void RemoveRegistryEntriesLocked()
+			{
+				for (size_t i = 0; i < mWrapperPointers.size(); ++i)
+					gWrapperMap.erase(mWrapperPointers[i]);
+				if (mIdentity) {
+					std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gIdentityMap.find(mIdentity);
+					if (it != gIdentityMap.end() && it->second == this)
+						gIdentityMap.erase(it);
+				}
+			}
+
+			ULONG ReleaseWithRegistry(std::atomic<long> &references)
+			{
+				AcquireSRWLockExclusive(&gWrapperLock);
+				const ULONG ref = static_cast<ULONG>(--references);
+				if (!ref)
+					RemoveRegistryEntriesLocked();
+				ReleaseSRWLockExclusive(&gWrapperLock);
+				if (!ref)
+					delete this;
+				return ref;
+			}
+
+			bool RetainForLookupLocked()
+			{
+				if (mWrapperPointers.empty() || !mWrapperPointers[0])
+					return false;
+				mWrapperPointers[0]->AddRef();
+				return true;
+			}
+
+			void ReleaseLookupReference()
+			{
+				if (!mWrapperPointers.empty() && mWrapperPointers[0])
+					mWrapperPointers[0]->Release();
 			}
 
 			IUnknown *GetObject()
@@ -533,6 +566,8 @@ namespace DX12Wrapper
 				AcquireSRWLockShared(&gWrapperLock);
 				std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gIdentityMap.find(identity);
 				WrapperBase *wrapper = it != gIdentityMap.end() ? it->second : nullptr;
+				if (wrapper && !wrapper->RetainForLookupLocked())
+					wrapper = nullptr;
 				ReleaseSRWLockShared(&gWrapperLock);
 				identity->Release();
 				return wrapper;
@@ -546,14 +581,45 @@ namespace DX12Wrapper
 				AcquireSRWLockShared(&gWrapperLock);
 				std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gWrapperMap.find(object);
 				WrapperBase *wrapper = it != gWrapperMap.end() ? it->second : nullptr;
+				if (wrapper && !wrapper->RetainForLookupLocked())
+					wrapper = nullptr;
 				ReleaseSRWLockShared(&gWrapperLock);
 				return wrapper;
+			}
+
+			static IUnknown *UnwrapObject(IUnknown *object)
+			{
+				if (!object)
+					return nullptr;
+
+				AcquireSRWLockShared(&gWrapperLock);
+				std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gWrapperMap.find(object);
+				IUnknown *result = it != gWrapperMap.end() ? it->second->mObject : object;
+				ReleaseSRWLockShared(&gWrapperLock);
+				return result;
 			}
 
 		public:
 			IUnknown *mObject = nullptr;
 			IUnknown *mIdentity = nullptr;
 			std::vector<IUnknown*> mWrapperPointers;
+		};
+
+		class ScopedWrapperReference
+		{
+		public:
+			explicit ScopedWrapperReference(WrapperBase *wrapper) : mWrapper(wrapper) {}
+			~ScopedWrapperReference()
+			{
+				if (mWrapper)
+					mWrapper->ReleaseLookupReference();
+			}
+
+			ScopedWrapperReference(const ScopedWrapperReference&) = delete;
+			ScopedWrapperReference &operator=(const ScopedWrapperReference&) = delete;
+
+		private:
+			WrapperBase *mWrapper = nullptr;
 		};
 
 		class DebugInterfaceWrapper final :
@@ -625,10 +691,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			void STDMETHODCALLTYPE EnableDebugLayer() override
@@ -777,10 +840,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			void STDMETHODCALLTYPE SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT enablement) override
@@ -874,10 +934,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetAutoBreadcrumbsOutput(D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT *pOutput) override
@@ -991,10 +1048,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			void STDMETHODCALLTYPE EnableShaderInstrumentation(BOOL enable) override
@@ -1095,10 +1149,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetSDKVersion(UINT sdkVersion, LPCSTR sdkPath) override
@@ -1179,10 +1230,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			void STDMETHODCALLTYPE Present(ID3D12Resource *resource, UINT subresource, HWND window) override
@@ -1259,10 +1307,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			void STDMETHODCALLTYPE TrackWrite(UINT subresource, const D3D12_RANGE *writtenRange) override
@@ -1325,10 +1370,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetMessageCountLimit(UINT64 messageCountLimit) override
@@ -1599,10 +1641,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetFeatureMask(D3D12_DEBUG_FEATURE mask) override
@@ -1714,10 +1753,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			BOOL STDMETHODCALLTYPE AssertResourceState(
@@ -1814,10 +1850,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			BOOL STDMETHODCALLTYPE AssertResourceState(
@@ -1940,10 +1973,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE InitializeFromGlobalState() override
@@ -2099,10 +2129,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID Name, UINT DataSize, const void *pData) override
@@ -2477,10 +2504,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID Name, UINT DataSize, const void *pData) override
@@ -2884,10 +2908,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3057,10 +3078,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3160,10 +3178,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3316,10 +3331,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3437,10 +3449,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3603,10 +3612,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3702,10 +3708,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3798,10 +3801,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3891,10 +3891,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -3985,10 +3982,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4076,10 +4070,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4185,10 +4176,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4307,10 +4295,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4426,10 +4411,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4574,10 +4556,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -4722,10 +4701,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -5143,10 +5119,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -6096,6 +6069,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(allocator);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					CommandAllocatorWrapper *wrapper = dynamic_cast<CommandAllocatorWrapper*>(existing);
 					if (!wrapper) {
@@ -6126,6 +6101,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(fence);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					FenceWrapper *wrapper = dynamic_cast<FenceWrapper*>(existing);
 					if (!wrapper) {
@@ -6167,6 +6144,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(heap);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					DescriptorHeapWrapper *wrapper = dynamic_cast<DescriptorHeapWrapper*>(existing);
 					if (!wrapper) {
@@ -6208,6 +6187,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(resource);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					ResourceWrapper *wrapper = dynamic_cast<ResourceWrapper*>(existing);
 					if (!wrapper) {
@@ -6249,6 +6230,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(queue);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					CommandQueueWrapper *wrapper = dynamic_cast<CommandQueueWrapper*>(existing);
 					if (!wrapper) {
@@ -6279,6 +6262,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(commandList);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					GraphicsCommandListWrapper *wrapper = dynamic_cast<GraphicsCommandListWrapper*>(existing);
 					if (!wrapper) {
@@ -6320,6 +6305,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(heap);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					HeapWrapper *wrapper = dynamic_cast<HeapWrapper*>(existing);
 					if (!wrapper) {
@@ -6361,6 +6348,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(pipelineState);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					PipelineStateWrapper *wrapper = dynamic_cast<PipelineStateWrapper*>(existing);
 					if (!wrapper) {
@@ -6402,6 +6391,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(rootSignature);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					RootSignatureWrapper *wrapper = dynamic_cast<RootSignatureWrapper*>(existing);
 					if (!wrapper) {
@@ -6443,6 +6434,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(queryHeap);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					QueryHeapWrapper *wrapper = dynamic_cast<QueryHeapWrapper*>(existing);
 					if (!wrapper) {
@@ -6484,6 +6477,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(commandSignature);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					CommandSignatureWrapper *wrapper = dynamic_cast<CommandSignatureWrapper*>(existing);
 					if (!wrapper) {
@@ -6525,6 +6520,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(tracker);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					LifetimeTrackerWrapper *wrapper = dynamic_cast<LifetimeTrackerWrapper*>(existing);
 					if (!wrapper) {
@@ -6566,6 +6563,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(session);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					ProtectedResourceSessionWrapper *wrapper =
 						dynamic_cast<ProtectedResourceSessionWrapper*>(existing);
@@ -6608,6 +6607,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(metaCommand);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					MetaCommandWrapper *wrapper = dynamic_cast<MetaCommandWrapper*>(existing);
 					if (!wrapper) {
@@ -6649,6 +6650,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(stateObject);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					StateObjectWrapper *wrapper = dynamic_cast<StateObjectWrapper*>(existing);
 					if (!wrapper) {
@@ -6690,6 +6693,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(library);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					PipelineLibraryWrapper *wrapper = dynamic_cast<PipelineLibraryWrapper*>(existing);
 					if (!wrapper) {
@@ -6731,6 +6736,8 @@ namespace DX12Wrapper
 					return false;
 
 				WrapperBase *existing = WrapperBase::FindByIdentity(session);
+
+				ScopedWrapperReference existingReference(existing);
 				if (existing) {
 					ShaderCacheSessionWrapper *wrapper = dynamic_cast<ShaderCacheSessionWrapper*>(existing);
 					if (!wrapper) {
@@ -6925,10 +6932,7 @@ namespace DX12Wrapper
 
 			ULONG STDMETHODCALLTYPE Release() override
 			{
-				const ULONG ref = static_cast<ULONG>(--mRefCount);
-				if (!ref)
-					delete this;
-				return ref;
+				return ReleaseWithRegistry(mRefCount);
 			}
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
@@ -8498,6 +8502,8 @@ namespace DX12Wrapper
 				return false;
 
 			WrapperBase *existing = WrapperBase::FindByIdentity(object);
+
+			ScopedWrapperReference existingReference(existing);
 			if (existing) {
 				TWrapper *wrapper = dynamic_cast<TWrapper*>(existing);
 				if (!wrapper)
@@ -8519,6 +8525,7 @@ namespace DX12Wrapper
 
 			IUnknown *originalObject = static_cast<IUnknown*>(*object);
 			WrapperBase *existingByPointer = WrapperBase::FindByWrapperPointer(originalObject);
+			ScopedWrapperReference existingByPointerReference(existingByPointer);
 			if (existingByPointer) {
 				TWrapper *existingWrapper = dynamic_cast<TWrapper*>(existingByPointer);
 				if (!existingWrapper)
@@ -8538,6 +8545,8 @@ namespace DX12Wrapper
 				return false;
 
 			WrapperBase *existingByIdentity = WrapperBase::FindByIdentity(queried);
+
+			ScopedWrapperReference existingByIdentityReference(existingByIdentity);
 			if (existingByIdentity) {
 				TWrapper *existingWrapper = dynamic_cast<TWrapper*>(existingByIdentity);
 				if (existingWrapper) {
@@ -8569,6 +8578,7 @@ namespace DX12Wrapper
 
 	bool WrapD3D12DeviceResult(REFIID riid, void **device)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!device || !*device)
 			return false;
 
@@ -8669,6 +8679,8 @@ namespace DX12Wrapper
 			return false;
 
 		WrapperBase *existing = WrapperBase::FindByIdentity(baseDevice);
+
+		ScopedWrapperReference existingReference(existing);
 		if (existing) {
 			D3D12DeviceWrapper *wrapper = dynamic_cast<D3D12DeviceWrapper*>(existing);
 			if (!wrapper) {
@@ -8704,81 +8716,97 @@ namespace DX12Wrapper
 
 	bool WrapD3D12CommandAllocatorResult(REFIID riid, void **allocator)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapCommandAllocator(riid, allocator);
 	}
 
 	bool WrapD3D12FenceResult(REFIID riid, void **fence)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapFence(riid, fence);
 	}
 
 	bool WrapD3D12DescriptorHeapResult(REFIID riid, void **heap)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapDescriptorHeap(riid, heap);
 	}
 
 	bool WrapD3D12ResourceResult(REFIID riid, void **resource)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapResource(riid, resource);
 	}
 
 	bool WrapD3D12HeapResult(REFIID riid, void **heap)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapHeap(riid, heap);
 	}
 
 	bool WrapD3D12PipelineStateResult(REFIID riid, void **pipelineState)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapPipelineState(riid, pipelineState);
 	}
 
 	bool WrapD3D12RootSignatureResult(REFIID riid, void **rootSignature)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapRootSignature(riid, rootSignature);
 	}
 
 	bool WrapD3D12QueryHeapResult(REFIID riid, void **queryHeap)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapQueryHeap(riid, queryHeap);
 	}
 
 	bool WrapD3D12CommandSignatureResult(REFIID riid, void **commandSignature)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapCommandSignature(riid, commandSignature);
 	}
 
 	bool WrapD3D12LifetimeTrackerResult(REFIID riid, void **tracker)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapLifetimeTracker(riid, tracker);
 	}
 
 	bool WrapD3D12ProtectedResourceSessionResult(REFIID riid, void **session)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapProtectedResourceSession(riid, session);
 	}
 
 	bool WrapD3D12MetaCommandResult(REFIID riid, void **metaCommand)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapMetaCommand(riid, metaCommand);
 	}
 
 	bool WrapD3D12StateObjectResult(REFIID riid, void **stateObject)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapStateObject(riid, stateObject);
 	}
 
 	bool WrapD3D12PipelineLibraryResult(REFIID riid, void **library)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapPipelineLibrary(riid, library);
 	}
 
 	bool WrapD3D12ShaderCacheSessionResult(REFIID riid, void **session)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapShaderCacheSession(riid, session);
 	}
 
 	bool WrapD3D12DebugInterfaceResult(REFIID riid, void **object)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object ||
 			(!IsD3D12DebugInterfaceIid(riid) && !IsD3D12DredSettingsIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
@@ -8803,6 +8831,7 @@ namespace DX12Wrapper
 
 	bool WrapD3D12AuxiliaryResult(REFIID riid, void **object)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object)
 			return false;
 
@@ -8872,6 +8901,7 @@ namespace DX12Wrapper
 
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object || (!IsEqualIID(riid, __uuidof(ID3D12DeviceFactory)) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
@@ -8892,6 +8922,7 @@ namespace DX12Wrapper
 
 	bool WrapDXGIFactoryResult(REFIID riid, void **factory)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!factory || !*factory || (!IsDxgiFactoryIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
@@ -8901,6 +8932,8 @@ namespace DX12Wrapper
 			return false;
 
 		WrapperBase *existing = WrapperBase::FindByIdentity(baseFactory);
+
+		ScopedWrapperReference existingReference(existing);
 		if (existing) {
 			FactoryWrapper *wrapper = dynamic_cast<FactoryWrapper*>(existing);
 			if (!wrapper) {
@@ -8933,6 +8966,7 @@ namespace DX12Wrapper
 
 	bool WrapDXGISwapChainResult(REFIID riid, void **swapChain)
 	{
+		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!swapChain || !*swapChain || (!IsDxgiSwapChainIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
@@ -8942,6 +8976,8 @@ namespace DX12Wrapper
 			return false;
 
 		WrapperBase *existing = WrapperBase::FindByIdentity(baseSwapChain);
+
+		ScopedWrapperReference existingReference(existing);
 		if (existing) {
 			SwapChainWrapper *wrapper = dynamic_cast<SwapChainWrapper*>(existing);
 			if (!wrapper) {
@@ -8974,29 +9010,7 @@ namespace DX12Wrapper
 
 	IUnknown *Unwrap(IUnknown *object)
 	{
-		if (!object)
-			return nullptr;
-
-		// Thread-local 8-entry ring-buffer cache: repeated unwraps of
-		// commonly interleaved wrapped pointers (PSO, root signature,
-		// resources) bypass the SRW lock + hashmap lookup entirely.
-		static thread_local IUnknown *tlsCachedWrapperPtr[8] = {};
-		static thread_local IUnknown *tlsCachedRealPtr[8] = {};
-		static thread_local uint32_t tlsCacheIndex = 0;
-
-		for (uint32_t i = 0; i < 8; ++i)
-		{
-			if (object == tlsCachedWrapperPtr[i])
-				return tlsCachedRealPtr[i];
-		}
-
-		WrapperBase *wrapper = WrapperBase::FindByWrapperPointer(object);
-		IUnknown *result = wrapper ? wrapper->GetObject() : object;
-
-		tlsCachedWrapperPtr[tlsCacheIndex] = object;
-		tlsCachedRealPtr[tlsCacheIndex] = result;
-		tlsCacheIndex = (tlsCacheIndex + 1) & 7;
-		return result;
+		return WrapperBase::UnwrapObject(object);
 	}
 
 void Shutdown()

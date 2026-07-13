@@ -40,6 +40,7 @@ enum UiControlId
 };
 
 static SRWLOCK gUiLock = SRWLOCK_INIT;
+static SRWLOCK gThreadLock = SRWLOCK_INIT;
 static HWND gGameWindow = nullptr;
 static HWND gOverlayWindow = nullptr;
 static HWND gStatusLabel = nullptr;
@@ -463,8 +464,17 @@ static DWORD WINAPI UiThreadProc(void*)
 
 static void EnsureUiThread()
 {
-	if (InterlockedCompareExchange(&gThreadStarted, 1, 0) != 0)
+	AcquireSRWLockExclusive(&gThreadLock);
+	if (InterlockedCompareExchange(&gThreadStarted, 1, 0) != 0) {
+		ReleaseSRWLockExclusive(&gThreadLock);
 		return;
+	}
+	if (gUiThread) {
+		WaitForSingleObject(gUiThread, INFINITE);
+		CloseHandle(gUiThread);
+		gUiThread = nullptr;
+		gUiThreadId = 0;
+	}
 	InterlockedExchange(&gShutdownRequested, 0);
 	gUiThread = CreateThread(nullptr, 0, UiThreadProc, nullptr, 0, &gUiThreadId);
 	if (!gUiThread) {
@@ -472,6 +482,7 @@ static void EnsureUiThread()
 		InterlockedExchange(&gThreadStarted, 0);
 		DX12LogManager::JsonFunc("DX12NativeOverlay", "event=thread_create_failed");
 	}
+	ReleaseSRWLockExclusive(&gThreadLock);
 }
 
 bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
@@ -491,15 +502,17 @@ void DX12NativeOverlayInvalidate(IDXGISwapChain*)
 
 void DX12NativeOverlayShutdown()
 {
+	AcquireSRWLockExclusive(&gThreadLock);
 	InterlockedExchange(&gShutdownRequested, 1);
 	if (gUiThreadId)
 		PostThreadMessageW(gUiThreadId, WM_QUIT, 0, 0);
 	if (gUiThread) {
-		WaitForSingleObject(gUiThread, 1000);
+		WaitForSingleObject(gUiThread, INFINITE);
 		CloseHandle(gUiThread);
 		gUiThread = nullptr;
 	}
 	gUiThreadId = 0;
+	ReleaseSRWLockExclusive(&gThreadLock);
 	SetSharedGameWindow(nullptr);
 	SetSharedOverlayWindow(nullptr);
 }

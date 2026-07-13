@@ -625,6 +625,90 @@ static bool TryBuildFileName(const DumpTask &task, wchar_t *fileName, size_t fil
 class DX12ResourceDumpGpuCopy
 {
 public:
+class RetiredCopy
+{
+public:
+	ID3D12Fence *fence = nullptr;
+	ID3D12Device *device = nullptr;
+	HANDLE eventHandle = nullptr;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	ID3D12CommandAllocator *allocator = nullptr;
+	ID3D12Resource *source = nullptr;
+	ID3D12Resource *readback = nullptr;
+};
+
+inline static SRWLOCK RetiredCopyLock = SRWLOCK_INIT;
+inline static std::vector<RetiredCopy> RetiredCopies;
+
+static void ReleaseRetiredCopy(RetiredCopy *copy)
+{
+	if (!copy)
+		return;
+	if (copy->eventHandle)
+		CloseHandle(copy->eventHandle);
+	if (copy->fence)
+		copy->fence->Release();
+	if (copy->device)
+		copy->device->Release();
+	if (copy->commandList)
+		copy->commandList->Release();
+	if (copy->allocator)
+		copy->allocator->Release();
+	if (copy->source)
+		DX12ReleaseRetainedResource(copy->source);
+	if (copy->readback)
+		copy->readback->Release();
+	*copy = RetiredCopy();
+}
+
+static void DrainRetiredCopies()
+{
+	AcquireSRWLockExclusive(&RetiredCopyLock);
+	for (size_t i = 0; i < RetiredCopies.size();) {
+		const UINT64 completed = RetiredCopies[i].fence ?
+			RetiredCopies[i].fence->GetCompletedValue() : 0;
+		const bool deviceRemoved = RetiredCopies[i].device &&
+			FAILED(RetiredCopies[i].device->GetDeviceRemovedReason());
+		if (completed < 1 && completed != UINT64_MAX && !deviceRemoved) {
+			++i;
+			continue;
+		}
+		ReleaseRetiredCopy(&RetiredCopies[i]);
+		RetiredCopies[i] = RetiredCopies.back();
+		RetiredCopies.pop_back();
+	}
+	ReleaseSRWLockExclusive(&RetiredCopyLock);
+}
+
+static void RetireCopy(
+	DumpTask *task,
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12CommandAllocator *allocator,
+	ID3D12Fence *fence,
+	HANDLE eventHandle,
+	ID3D12Device *device)
+{
+	RetiredCopy copy;
+	copy.fence = fence;
+	copy.device = device;
+	if (copy.device)
+		copy.device->AddRef();
+	copy.eventHandle = eventHandle;
+	copy.commandList = commandList;
+	copy.allocator = allocator;
+	if (task) {
+		copy.source = task->sourceRetained ? task->source : nullptr;
+		copy.readback = task->readback;
+		task->source = nullptr;
+		task->sourceRetained = false;
+		task->readback = nullptr;
+		task->keepReadbackAlive = false;
+	}
+	AcquireSRWLockExclusive(&RetiredCopyLock);
+	RetiredCopies.push_back(copy);
+	ReleaseSRWLockExclusive(&RetiredCopyLock);
+}
+
 static DWORD CopyFenceTimeoutMs()
 {
 	return 2000;
@@ -668,8 +752,17 @@ static void WriteResourceBarrier(
 	commandList->ResourceBarrier(1, &barrier);
 }
 
-static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device, DWORD *waitResultOut = nullptr)
+static bool WaitForFence(
+	ID3D12CommandQueue *queue,
+	ID3D12Device *device,
+	DWORD *waitResultOut = nullptr,
+	ID3D12Fence **pendingFenceOut = nullptr,
+	HANDLE *pendingEventOut = nullptr)
 {
+	if (pendingFenceOut)
+		*pendingFenceOut = nullptr;
+	if (pendingEventOut)
+		*pendingEventOut = nullptr;
 	ID3D12Fence *fence = nullptr;
 	HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 	if (FAILED(hr) || !fence)
@@ -738,8 +831,6 @@ static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device, DWORD 
 		S_OK,
 		DX12OuterTimingProbeUtils::ElapsedUs(completedBegin));
 
-	CloseHandle(eventHandle);
-	fence->Release();
 	if (waitResultOut)
 		*waitResultOut = waitResult;
 
@@ -754,6 +845,13 @@ static bool WaitForFence(ID3D12CommandQueue *queue, ID3D12Device *device, DWORD 
 			static_cast<unsigned long long>(completedValue),
 			CopyFenceTimeoutMs());
 	}
+	if (ok || !pendingFenceOut || !pendingEventOut) {
+		CloseHandle(eventHandle);
+		fence->Release();
+	} else {
+		*pendingFenceOut = fence;
+		*pendingEventOut = eventHandle;
+	}
 	return ok;
 }
 
@@ -763,6 +861,7 @@ static bool ExecuteCopyTask(
 {
 	if (!device || !queue || !task || !task->ready || !task->readback)
 		return false;
+	DrainRetiredCopies();
 	task->copied = false;
 
 	ID3D12CommandAllocator *allocator = nullptr;
@@ -844,6 +943,8 @@ static bool ExecuteCopyTask(
 	ID3D12CommandList *lists[] = { commandList };
 	bool ok = false;
 	DWORD waitResult = WAIT_FAILED;
+	ID3D12Fence *pendingFence = nullptr;
+	HANDLE pendingEvent = nullptr;
 	__try {
 		LARGE_INTEGER executeBegin = DX12OuterTimingProbeUtils::Now();
 		queue->ExecuteCommandLists(1, lists);
@@ -852,7 +953,8 @@ static bool ExecuteCopyTask(
 			queue,
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(executeBegin));
-		ok = DX12ResourceDumpGpuCopy::WaitForFence(queue, device, &waitResult);
+		ok = DX12ResourceDumpGpuCopy::WaitForFence(
+			queue, device, &waitResult, &pendingFence, &pendingEvent);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		task->skipNote = "copy_execute_exception";
@@ -894,13 +996,19 @@ static bool ExecuteCopyTask(
 			removedHr,
 			WaitResultName(waitResult));
 		if (deviceRemoved) {
+			if (pendingEvent)
+				CloseHandle(pendingEvent);
+			if (pendingFence)
+				pendingFence->Release();
 			commandList->Release();
 			allocator->Release();
 		} else {
-			task->keepReadbackAlive = true;
+			ID3D12Resource *retiredSource = task->source;
+			RetireCopy(
+				task, commandList, allocator, pendingFence, pendingEvent, device);
 			DX12FrameAnalysis::LogJsonFunc("ResourceCopyObjectsRetained",
 				"\"reason\":\"gpu_work_not_completed\",\"source\":\"%p\",\"bytes\":%llu",
-				task->source, static_cast<unsigned long long>(task->copyBytes));
+				retiredSource, static_cast<unsigned long long>(task->copyBytes));
 		}
 		return false;
 	}
@@ -2695,6 +2803,9 @@ public:
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive())
 			return swapChain->Present(syncInterval, flags);
+		if (flags & DXGI_PRESENT_TEST)
+			return swapChain->Present(syncInterval, flags);
+		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present", swapChain, syncInterval, flags);
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -2764,6 +2875,12 @@ public:
 			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
 		DXGIHookDiagnostics::LogPresentStage("Present", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
+		if (FAILED(hr)) {
+			DX12Profiling::EndFrame();
+			DX12_HOTPATH_LOG_AND_RESET();
+			DX12OuterTimingProbeUtils::LogPresentLeave("Present", swapChain, hr);
+			return hr;
+		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
@@ -2810,6 +2927,9 @@ public:
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive())
 			return swapChain->Present1(syncInterval, flags, presentParameters);
+		if (flags & DXGI_PRESENT_TEST)
+			return swapChain->Present1(syncInterval, flags, presentParameters);
+		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present1", swapChain, syncInterval, flags);
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -2877,6 +2997,12 @@ public:
 			"Present1", "original_present", swapChain, hr, presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present1", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
+		if (FAILED(hr)) {
+			DX12Profiling::EndFrame();
+			DX12_HOTPATH_LOG_AND_RESET();
+			DX12OuterTimingProbeUtils::LogPresentLeave("Present1", swapChain, hr);
+			return hr;
+		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
@@ -3392,6 +3518,9 @@ public:
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive())
 			return swapChain->Present(syncInterval, flags);
+		if (flags & DXGI_PRESENT_TEST)
+			return swapChain->Present(syncInterval, flags);
+		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("PresentWrapper", swapChain, syncInterval, flags);
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -3462,6 +3591,13 @@ public:
 			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperAfterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
+		if (FAILED(hr)) {
+			DX12Profiling::EndFrame();
+			DX12_HOTPATH_TIME_END(PresentTotal);
+			DX12_HOTPATH_LOG_AND_RESET();
+			DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+			return hr;
+		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
@@ -3509,6 +3645,9 @@ public:
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive())
 			return swapChain->Present1(syncInterval, flags, presentParameters);
+		if (flags & DXGI_PRESENT_TEST)
+			return swapChain->Present1(syncInterval, flags, presentParameters);
+		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present1Wrapper", swapChain, syncInterval, flags);
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -3578,6 +3717,12 @@ public:
 			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
 		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperAfterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
+		if (FAILED(hr)) {
+			DX12Profiling::EndFrame();
+			DX12_HOTPATH_LOG_AND_RESET();
+			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+			return hr;
+		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		DX12HuntOnPresent();
