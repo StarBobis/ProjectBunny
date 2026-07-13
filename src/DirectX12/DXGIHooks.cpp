@@ -1,5 +1,6 @@
-#include "DX12Integration.hpp"
 
+
+#include "DX12Integration.hpp"
 #include "DX12Infrastructure.hpp"
 #include "DX12Foundation.hpp"
 
@@ -8,7 +9,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **fa
 	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory", nullptr);
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory ?
 		DXGIHookState::OrigCreateDXGIFactory(riid, factory) : DXGI_ERROR_INVALID_CALL;
-	DX12LogManager::JsonFunc("CreateDXGIFactory",
+	DX12LogManager::Fields("CreateDXGIFactory",
 		"riid=%p,hr=0x%lx,factory=%p",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))
@@ -21,7 +22,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory1(REFIID riid, void **f
 	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory1", nullptr);
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory1 ?
 		DXGIHookState::OrigCreateDXGIFactory1(riid, factory) : DXGI_ERROR_INVALID_CALL;
-	DX12LogManager::JsonFunc("CreateDXGIFactory1",
+	DX12LogManager::Fields("CreateDXGIFactory1",
 		"riid=%p,hr=0x%lx,factory=%p",
 		&riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))
@@ -34,7 +35,7 @@ HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory2(UINT flags, REFIID ri
 	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory2", nullptr);
 	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory2 ?
 		DXGIHookState::OrigCreateDXGIFactory2(flags, riid, factory) : DXGI_ERROR_INVALID_CALL;
-	DX12LogManager::JsonFunc("CreateDXGIFactory2",
+	DX12LogManager::Fields("CreateDXGIFactory2",
 		"flags=0x%x,riid=%p,hr=0x%lx,factory=%p",
 		flags, &riid, hr, factory ? *factory : nullptr);
 	if (SUCCEEDED(hr))

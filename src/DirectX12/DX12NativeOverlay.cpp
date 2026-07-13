@@ -1,10 +1,11 @@
-#include "DX12FeatureInterfaces.hpp"
 
+
+
+#include "DX12FeatureInterfaces.hpp"
 #include <CommCtrl.h>
 #include <dwmapi.h>
 #include <stdint.h>
 #include <vector>
-
 #include "DX12Foundation.hpp"
 #include "DX12RuntimeInterfaces.hpp"
 #include "DX12Integration.hpp"
@@ -444,7 +445,7 @@ static DWORD WINAPI UiThreadProc(void*)
 	}
 
 	SetSharedOverlayWindow(hwnd);
-	DX12LogManager::JsonFunc("DX12NativeOverlay",
+	DX12LogManager::Fields("DX12NativeOverlay",
 		"event=thread_started,hwnd=%p", hwnd);
 	FollowGameWindow();
 
@@ -457,7 +458,7 @@ static DWORD WINAPI UiThreadProc(void*)
 
 	if (IsWindow(hwnd))
 		DestroyWindow(hwnd);
-	DX12LogManager::JsonFunc("DX12NativeOverlay", "event=thread_stopped");
+	DX12LogManager::Fields("DX12NativeOverlay", "event=thread_stopped");
 	InterlockedExchange(&gThreadStarted, 0);
 	return 0;
 }
@@ -480,7 +481,7 @@ static void EnsureUiThread()
 	if (!gUiThread) {
 		gUiThreadId = 0;
 		InterlockedExchange(&gThreadStarted, 0);
-		DX12LogManager::JsonFunc("DX12NativeOverlay", "event=thread_create_failed");
+		DX12LogManager::Fields("DX12NativeOverlay", "event=thread_create_failed");
 	}
 	ReleaseSRWLockExclusive(&gThreadLock);
 }

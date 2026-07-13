@@ -1,0 +1,29 @@
+#pragma once
+
+#include <Windows.h>
+#include <Shlwapi.h>
+#include <d3d12.h>
+#include <dxgi.h>
+#include <dxgi1_4.h>
+#include <dxgi1_6.h>
+#include <share.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+#include <ctime>
+#include <cwchar>
+#include <deque>
+#include <list>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
