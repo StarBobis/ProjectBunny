@@ -1,4 +1,4 @@
-#include "DX12SparseDescriptorStore.hpp"
+#include "DX12Infrastructure.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -17,7 +17,7 @@ int main()
 {
 	DX12SparseDescriptorStore<unsigned long long> store;
 	store.Initialize(4096);
-	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 1024,
+	static_assert(DX12SparseDescriptorStore<unsigned long long>::ShardCount == 64,
 		"descriptor state lock striping changed unexpectedly");
 	Require(store.Empty());
 	Require(store.AllocatedPageCount() == 0);

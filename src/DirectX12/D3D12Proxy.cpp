@@ -1,19 +1,12 @@
-#include "D3D12ProxyRuntime.hpp"
+#include "DX12Infrastructure.hpp"
 
 #include <Shlwapi.h>
 #include <crtdbg.h>
 #include <stdlib.h>
 
-#include "D3D12ProxySignatures.hpp"
-#include "D3D12ProxyState.hpp"
-#include "DX12Wrapper.hpp"
-#include "DX12CreateTimingTelemetryUtils.hpp"
-#include "DX12DeviceHooks.hpp"
-#include "DX12Runtime.hpp"
-#include "DX12LogManager.hpp"
-#include "DXGIHooks.hpp"
-#include "D3D12ProcessGateUtils.hpp"
-#include "D3D12ProxyTargetHelper.hpp"
+#include "DX12Integration.hpp"
+#include "DX12RuntimeInterfaces.hpp"
+#include "DX12Foundation.hpp"
 
 bool D3D12ProxyTargetHelper::VerifyIntendedTarget(HINSTANCE module)
 {
@@ -378,5 +371,3 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 	}
 	return TRUE;
 }
-
-

@@ -1,16 +1,13 @@
-#include "DX12NativeOverlay.hpp"
+#include "DX12FeatureInterfaces.hpp"
 
 #include <CommCtrl.h>
 #include <dwmapi.h>
 #include <stdint.h>
 #include <vector>
 
-#include "DX12Profiling.hpp"
-#include "DX12ShaderDump.hpp"
-#include "DX12ShaderHunt.hpp"
-#include "DX12OverlayStatusState.hpp"
-#include "DX12RuntimeState.hpp"
-#include "DX12UiActions.hpp"
+#include "DX12Foundation.hpp"
+#include "DX12RuntimeInterfaces.hpp"
+#include "DX12Integration.hpp"
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
 static constexpr UINT kOverlayClientWidth = 860;
@@ -514,5 +511,3 @@ bool DX12NativeOverlayIsOverlayWindow(HWND hwnd)
 	ReleaseSRWLockShared(&gUiLock);
 	return result;
 }
-
-

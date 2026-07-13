@@ -2,39 +2,21 @@
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
-    # Proxy entry point
+    # Proxy and presentation integration
     D3D12Proxy.cpp
     DX12Wrapper.cpp
-
-    # Resource tracking
-    DX12ResourceCollectQueue.cpp
-    DX12ResourceTracker.cpp
-    DX12ResourceTrackerHooks.cpp
-    DX12ResourceTrackerQueries.cpp
-
-    # Binding/descriptor tracking
-    DX12CaptureLedger.cpp
-    DX12BindingCollectQueue.cpp
-    DX12BindingTracker.cpp
-    DX12BindingTrackerFrameExport.cpp
-    DX12BindingTrackerResourceExport.cpp
-
-    # Command list hooks & runtime
-    DX12CommandListHooks.cpp
-    DX12CommandListRuntime.cpp
-    DX12CommandListLifecycle.cpp
-    DX12CommandListCommandRecorder.cpp
-    DX12CommandListStateCapture.cpp
-
-    # DXGI/Present hooks
     DXGIHooks.cpp
+
+    # Tracking and command execution modules
+    DX12ResourceTracking.cpp
+    DX12BindingTracking.cpp
+    DX12CommandLists.cpp
 
     # UI
     DX12NativeOverlay.cpp
 
     # Shader dump & hunt
-    DX12ShaderDump.cpp
-    DX12ShaderHunt.cpp
+    DX12ShaderTools.cpp
 
     # Mod runtime
     DX12ModRuntime.cpp
@@ -134,4 +116,20 @@ if(BUILD_TESTING)
     )
     target_compile_features(DX12DirectIaFastRejectCacheTests PRIVATE cxx_std_17)
     add_test(NAME DX12DirectIaFastRejectCacheTests COMMAND DX12DirectIaFastRejectCacheTests)
+
+    set(DX12_TEST_TARGETS
+        DX12SparseDescriptorStoreTests
+        DX12DescriptorHeapShardStateTests
+        DX12DescriptorStateTests
+        DX12PreSkinCacheIdentityTests
+        DX12DirectIaFastRejectCacheTests
+    )
+    foreach(DX12_TEST_TARGET IN LISTS DX12_TEST_TARGETS)
+        target_include_directories(${DX12_TEST_TARGET} PRIVATE
+            $<TARGET_PROPERTY:DirectX12,INCLUDE_DIRECTORIES>
+        )
+        if(MSVC)
+            target_compile_options(${DX12_TEST_TARGET} PRIVATE /utf-8)
+        endif()
+    endforeach()
 endif()

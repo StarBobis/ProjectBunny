@@ -1,4 +1,4 @@
-#include "DX12Wrapper.hpp"
+#include "DX12Integration.hpp"
 
 #include <atomic>
 #include <unordered_map>
@@ -6,22 +6,9 @@
 
 #include <d3d12sdklayers.h>
 
-#include "DX12CommandListHookRegistry.hpp"
-#include "DX12CommandListHookSlotTypes.hpp"
-#include "DX12CommandListHookState.hpp"
-#include "DX12DeviceHookTypes.hpp"
-#include "DX12HotPathState.hpp"
-#include "DX12LogManager.hpp"
-#include "DX12WrapperRuntimeUtils.hpp"
-#include "DX12ModRuntime.hpp"
-#include "DX12CommandQueueState.hpp"
-#include "DX12ResourceTrackerHookRuntime.hpp"
-#include "DX12ResourceTracker.hpp"
-#include "DX12ResourceStateTracker.hpp"
-#include "DX12ShaderDump.hpp"
-#include "DXGIHookRuntime.hpp"
-#include "DX12CreateTimingTelemetryUtils.hpp"
-#include "DX12OuterTimingProbeUtils.hpp"
+#include "DX12Infrastructure.hpp"
+#include "DX12RuntimeInterfaces.hpp"
+#include "DX12Foundation.hpp"
 
 namespace DX12Wrapper
 {

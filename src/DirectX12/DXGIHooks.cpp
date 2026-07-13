@@ -1,11 +1,7 @@
-#include "DXGIHooks.hpp"
+#include "DX12Integration.hpp"
 
-#include "DX12HookManager.hpp"
-#include "DX12LogManager.hpp"
-#include "DX12Wrapper.hpp"
-#include "DXGIHookCallbacks.hpp"
-#include "DXGIHookDiagnostics.hpp"
-#include "DXGIHookState.hpp"
+#include "DX12Infrastructure.hpp"
+#include "DX12Foundation.hpp"
 
 HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **factory)
 {

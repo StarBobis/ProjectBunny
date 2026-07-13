@@ -1,5 +1,5 @@
-#include "DX12PreSkinCacheIdentity.hpp"
-#include "DX12PreSkinOutputResizeCacheIdentity.hpp"
+#include "DX12Foundation.hpp"
+#include "DX12FeatureInterfaces.hpp"
 
 #include <cstdlib>
 #include <map>

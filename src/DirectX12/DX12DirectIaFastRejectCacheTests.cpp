@@ -1,4 +1,4 @@
-#include "DX12DirectIaFastRejectCacheUtils.hpp"
+#include "DX12Foundation.hpp"
 
 #include <cstdlib>
 

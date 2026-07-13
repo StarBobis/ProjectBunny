@@ -1,7 +1,5 @@
-#include "DX12ResourceTrackerPrivate.hpp"
-#include "DX12PreSkinBindingCacheUtils.hpp"
-#include "DX12DescriptorCopyMemoUtils.hpp"
-#include "DX12DescriptorArenaUtils.hpp"
+#include "DX12Infrastructure.hpp"
+#include "DX12FeatureInterfaces.hpp"
 
 #include <algorithm>
 #include <chrono>
