@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "DirectX12/DX12RuntimeInterfaces.hpp"
+#include "DirectX12/Presentation/DX12UiRuntime.hpp"
 #include "MigotoCommandVmUtils.hpp"
 
 namespace Bunny {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DX12FeatureInterfaces.hpp"
+#include "Resources/DX12ResourceFileIO.hpp"
 
 class DX12ResourceDumpPrepare
 {

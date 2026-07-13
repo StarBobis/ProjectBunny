@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DX12RuntimeInterfaces.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
 #include <d3d11.h>
 
 bool DX12NativeOverlayRender(IDXGISwapChain *swapChain);

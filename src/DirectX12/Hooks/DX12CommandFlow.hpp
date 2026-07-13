@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DX12Foundation.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
 #include "Nektra/NktHookLib.h"
 #include "util_min.h"
 #include "crc32c.h"

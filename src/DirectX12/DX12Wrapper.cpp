@@ -1,12 +1,12 @@
-#include "DX12Integration.hpp"
+#include "Mods/DX12ConfigResources.hpp"
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <d3d12sdklayers.h>
-#include "DX12Infrastructure.hpp"
-#include "DX12RuntimeInterfaces.hpp"
-#include "DX12Foundation.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
 #include "Implementation/DX12WrapperCore.inl"
 #include "Implementation/DX12DxgiAndObjectWrappers.inl"
 #include "Implementation/DX12CommandListWrapper.inl"

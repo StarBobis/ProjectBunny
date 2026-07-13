@@ -1,9 +1,9 @@
-#include "DX12FeatureInterfaces.hpp"
+#include "Resources/DX12ResourceFileIO.hpp"
 #include <chrono>
-#include "DX12Foundation.hpp"
-#include "DX12Integration.hpp"
-#include "DX12Infrastructure.hpp"
-#include "DX12RuntimeInterfaces.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
+#include "Mods/DX12ConfigResources.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
 #include <unordered_set>
 #include "Implementation/DX12ResourceTrackingCore.inl"
 #include "Implementation/DX12ResourceHooks.inl"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DX12Infrastructure.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
 
 // ---------------------------------------------------------------------------
 // DX12DescriptorHeapShadowUtils

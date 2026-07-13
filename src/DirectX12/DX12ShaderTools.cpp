@@ -1,8 +1,8 @@
-#include "DX12FeatureInterfaces.hpp"
-#include "DX12Foundation.hpp"
-#include "DX12Infrastructure.hpp"
-#include "DX12Integration.hpp"
-#include "DX12RuntimeInterfaces.hpp"
+#include "Resources/DX12ResourceFileIO.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Mods/DX12ConfigResources.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
 
 #include <Windows.h>
 #include <Shlwapi.h>

@@ -1,8 +1,8 @@
 
 
-#include "DX12Integration.hpp"
-#include "DX12Infrastructure.hpp"
-#include "DX12Foundation.hpp"
+#include "Mods/DX12ConfigResources.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
 
 HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **factory)
 {

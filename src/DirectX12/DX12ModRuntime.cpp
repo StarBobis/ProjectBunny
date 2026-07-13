@@ -1,4 +1,4 @@
-#include "DX12Foundation.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
 #include <Shlwapi.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,13 +16,13 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "DX12RuntimeInterfaces.hpp"
-#include "DX12FeatureInterfaces.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
+#include "Resources/DX12ResourceFileIO.hpp"
 #include "util.h"
 #include "MigotoCommandVmUtils.hpp"
-#include "DX12Integration.hpp"
+#include "Mods/DX12ConfigResources.hpp"
 #include "MigotoKeyBindingUtils.hpp"
-#include "DX12Infrastructure.hpp"
+#include "Tracking/DX12ResourceInfrastructure.hpp"
 #include <Windows.h>
 #include <d3d12.h>
 #include "Implementation/DX12ModState.inl"
