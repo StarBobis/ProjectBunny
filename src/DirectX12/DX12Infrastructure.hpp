@@ -9,7 +9,7 @@
 #line 1 "DX12CreateTimingTelemetryUtils.hpp"
 #include <Windows.h>
 
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 
 
 class DX12CreateTimingTelemetryUtils
@@ -329,7 +329,7 @@ public:
 #line 1 "DX12DescriptorShadowTelemetryUtils.hpp"
 #include <Windows.h>
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 
 
 class DX12DescriptorShadowTelemetryUtils
@@ -962,7 +962,7 @@ public:
 #include <vector>
 
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
 #else
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do {} while (0)
@@ -1186,7 +1186,7 @@ public:
 		DX12CommandListRuntimeState fallbackState = {};
 		DX12CommandListRuntimeState *effectiveState = runtimeState;
 		if (!effectiveState) {
-#if defined(_DEBUG)
+		#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
 #endif
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
@@ -1345,7 +1345,7 @@ public:
 		UINT64 computeBindingSerial,
 		size_t uavCount)
 	{
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		if (reason && (!strcmp(reason, "uav_filter_miss") ||
 		    !strcmp(reason, "cached_no_uav_match") ||
 		    !strcmp(reason, "cs_not_configured"))) {
@@ -1372,14 +1372,13 @@ public:
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
 			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
-#endif
+	#endif
 			return;
 		}
 
-		LARGE_INTEGER t0, t1, freq;
-		QueryPerformanceCounter(&t0);
+		LARGE_INTEGER t0 = DX12OuterTimingProbeUtils::Now();
 
 		// Match DX11 by reading the precomputed CS hash from RuntimeState.
 		LARGE_INTEGER csHashBegin = DX12OuterTimingProbeUtils::Now();
@@ -1393,7 +1392,7 @@ public:
 			probe->computeShaderHash ? 1 : 0,
 			DX12OuterTimingProbeUtils::ElapsedUs(csHashBegin));
 		if (!probe->computeShaderHash) {
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
 #endif
 			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
@@ -1409,7 +1408,7 @@ public:
 				0,
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(csConfigBegin));
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: exit cs not configured\n");
 #endif
 			LogPreSkinDispatchProbeReason(
@@ -1582,7 +1581,7 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(
 				cacheEntry.applied);
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
 				cacheEntry.applied ? 1 : 0,
 				static_cast<unsigned long long>(computeIaFingerprint));
@@ -1595,17 +1594,17 @@ public:
 			}
 			if (!cacheEntry.applied) {
 				probe->applied = false;
-				QueryPerformanceCounter(&t1);
-				QueryPerformanceFrequency(&freq);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 				DX12LogManager::JsonFunc("DX12Perf",
 					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit\",\"us\":%lld",
 					static_cast<unsigned long long>(probe->computeShaderHash),
-					static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
+					static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
+	#endif
 				return;
 			}
 			positiveCacheHit = true;
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
 				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
@@ -1625,10 +1624,10 @@ public:
 				1,
 				0);
 		}
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		probe->shouldLog = true;
-#endif
-#if defined(_DEBUG)
+	#endif
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 			probe->uavsFound ? 1 : 0, uavs.size(), srvs.size(), cbvs.size());
 
@@ -1639,7 +1638,7 @@ public:
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
 #endif
 		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
@@ -1683,14 +1682,14 @@ public:
 			probe->applied,
 			probe->dispatchOverride);
 
-		QueryPerformanceCounter(&t1);
-		QueryPerformanceFrequency(&freq);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::JsonFunc("DX12Perf",
 			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"%s\",\"us\":%lld",
 			static_cast<unsigned long long>(probe->computeShaderHash),
 			probe->applied ? "true" : "false",
 			positiveCacheHit ? "positive_reapply" : "miss",
-			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart));
+			static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
+	#endif
 	}
 
 	static void FinishPreSkinProbe(
@@ -2108,7 +2107,7 @@ public:
 			if (!redirectedViews[i].StrideInBytes && binding.stride)
 				redirectedViews[i].StrideInBytes = binding.stride;
 			anyRedirected = true;
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::DebugJsonFunc("DX12PreSkinningApply",
 				"\"status\":\"vb_redirected\","
 				"\"slot\":%u,"
@@ -5092,12 +5091,14 @@ public:
 		RegisterSubmittedCommandListFn registerSubmittedCommandList)
 	{
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		volatile LONG &firstExecuteLog = DX12CommandQueueExecutionState::FirstExecuteLog;
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"enter\",\"queue\":\"%p\",\"count\":%u,\"skipAll\":%ld,\"internalReplay\":%s",
 				queue, numCommandLists, DX12HotPathState::skipAll,
 				DX12InternalReplayState::IsActive() ? "true" : "false");
+	#endif
 
 		// 每帧刷新 flags word：确保 draw/dispatch 热路径使用最新状态
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -5112,10 +5113,12 @@ public:
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "BeforeOriginalSkip");
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
+	#endif
 				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				original(queue, numCommandLists, commandLists);
 				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
@@ -5125,10 +5128,12 @@ public:
 					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "AfterOriginalSkip");
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
 					DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
+	#endif
 			}
 			const bool shouldRegisterSubmitted =
 				DX12HuntIsEnabled() || DX12CaptureLedger::CurrentCaptureSessionId() != 0;
@@ -5180,11 +5185,13 @@ public:
 			return;
 		}
 
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
-#if defined(_DEBUG)
+	#endif
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		ULONGLONG startTick = GetTickCount64();
@@ -5196,11 +5203,13 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
 			DX12LogManager::JsonFuncFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
-#if defined(_DEBUG)
+	#endif
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		ULONGLONG originalEndTick = GetTickCount64();
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
@@ -5222,7 +5231,7 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterNotify", queue, numCommandLists,
 			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);

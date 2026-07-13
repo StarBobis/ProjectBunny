@@ -742,6 +742,9 @@ std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 std::atomic<UINT64> gBufferResolveGeneration{1};
 std::atomic<UINT64> gResourceIdentityGeneration{1};
 std::atomic<UINT64> gDescriptorQuerySerial{1};
+static SRWLOCK gCpuMappableResourceLock = SRWLOCK_INIT;
+static std::unordered_set<ID3D12Resource*> gCpuMappableResources;
+static std::atomic<UINT64> gCpuMappableResourceGeneration{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
 UINT64 gDescriptorRecordsSeen = 0;
@@ -762,6 +765,27 @@ UINT64 gBufferResolveGlobalHits = 0;
 UINT64 gBufferResolveBackwardScanHits = 0;
 UINT64 gBufferResolveMisses = 0;
 UINT64 gBufferResolveFallbackScanHits = 0;
+
+static void RegisterCpuMappableResource(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	AcquireSRWLockExclusive(&gCpuMappableResourceLock);
+	if (gCpuMappableResources.insert(resource).second)
+		gCpuMappableResourceGeneration.fetch_add(1, std::memory_order_release);
+	ReleaseSRWLockExclusive(&gCpuMappableResourceLock);
+}
+
+static void UnregisterCpuMappableResource(ID3D12Resource *resource, ID3D12Resource *canonical)
+{
+	AcquireSRWLockExclusive(&gCpuMappableResourceLock);
+	bool removed = resource && gCpuMappableResources.erase(resource) != 0;
+	if (canonical && canonical != resource)
+		removed = gCpuMappableResources.erase(canonical) != 0 || removed;
+	if (removed)
+		gCpuMappableResourceGeneration.fetch_add(1, std::memory_order_release);
+	ReleaseSRWLockExclusive(&gCpuMappableResourceLock);
+}
 UINT64 gBufferResolveGenerationResets = 0;
 UINT64 gBufferResolveRangeInvalidations = 0;
 UINT64 gBufferResolveRangeInvalidationEntries = 0;
@@ -1092,6 +1116,7 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	if (!resource)
 		return;
 	ID3D12Resource *canonical = CanonicalResource(resource);
+	UnregisterCpuMappableResource(resource, canonical);
 	auto found = gResourceByPtr.find(canonical);
 	if (found == gResourceByPtr.end())
 		found = gResourceByPtr.find(resource);
@@ -2834,6 +2859,35 @@ struct DX12ResourceMapTracking
 
 static thread_local DX12ResourceMapTracking gActiveMap;
 
+struct DX12CpuMappableLookupCache
+{
+	ID3D12Resource *resource = nullptr;
+	UINT64 generation = 0;
+	bool eligible = false;
+};
+
+static thread_local DX12CpuMappableLookupCache gCpuMappableLookupCache;
+
+static bool IsCpuMappableTrackedResource(ID3D12Resource *resource)
+{
+	const UINT64 generation =
+		gCpuMappableResourceGeneration.load(std::memory_order_acquire);
+	if (gCpuMappableLookupCache.resource == resource &&
+		gCpuMappableLookupCache.generation == generation) {
+		return gCpuMappableLookupCache.eligible;
+	}
+
+	AcquireSRWLockShared(&gCpuMappableResourceLock);
+	const bool eligible = gCpuMappableResources.find(resource) != gCpuMappableResources.end();
+	const UINT64 resolvedGeneration =
+		gCpuMappableResourceGeneration.load(std::memory_order_relaxed);
+	ReleaseSRWLockShared(&gCpuMappableResourceLock);
+	gCpuMappableLookupCache.resource = resource;
+	gCpuMappableLookupCache.generation = resolvedGeneration;
+	gCpuMappableLookupCache.eligible = eligible;
+	return eligible;
+}
+
 // Hooked Map ??records the mapped pointer for later content capture
 static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	ID3D12Resource *resource,
@@ -2854,18 +2908,10 @@ static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	}
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
-		if (SUCCEEDED(hr) && ppData && *ppData) {
-		// Safety: only track UPLOAD/READBACK buffers (our hook may fire
-		// on other resource types if the driver shares vtables).
-			D3D12_HEAP_PROPERTIES heapProps = {};
-			D3D12_HEAP_FLAGS heapFlags = {};
-			if (SUCCEEDED(resource->GetHeapProperties(&heapProps, &heapFlags)) &&
-			    (heapProps.Type == D3D12_HEAP_TYPE_UPLOAD ||
-			     heapProps.Type == D3D12_HEAP_TYPE_READBACK)) {
-				gActiveMap.resource = resource;
-				gActiveMap.data = *ppData;
-				gActiveMap.subresource = Subresource;
-			}
+		if (SUCCEEDED(hr) && ppData && *ppData && IsCpuMappableTrackedResource(resource)) {
+			gActiveMap.resource = resource;
+			gActiveMap.data = *ppData;
+			gActiveMap.subresource = Subresource;
 		}
 	}
 	return hr;
@@ -2883,24 +2929,26 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 		if (gActiveMap.resource == resource &&
 		    gActiveMap.subresource == Subresource &&
 		    gActiveMap.data) {
-		// Determine written size:
-		// D3D12_RANGE: Begin=0, End=0 means entire subresource
-		// D3D12_RANGE: nullptr means nothing written (unlikely for uploads)
-		size_t dataSize = 0;
-		if (pWrittenRange) {
-			dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
-		}
-		if (dataSize == 0) {
-			// Game wrote entire resource ??resolve size from resource desc
-			D3D12_RESOURCE_DESC desc = resource->GetDesc();
-			dataSize = static_cast<size_t>(desc.Width);
-		}
-		if (dataSize > 0) {
-			const uint8_t *capturePtr =
-				static_cast<const uint8_t*>(gActiveMap.data);
-			if (pWrittenRange && pWrittenRange->Begin > 0)
-				capturePtr += pWrittenRange->Begin;
-			DX12CacheBufferContentRange(resource, pWrittenRange ? pWrittenRange->Begin : 0, capturePtr, dataSize);
+		// A null range means the whole subresource may have changed. An empty
+		// range explicitly means no CPU writes and must not trigger a full copy.
+		const bool hasWrites = !pWrittenRange || pWrittenRange->End > pWrittenRange->Begin;
+		if (hasWrites) {
+			size_t dataSize = 0;
+			if (pWrittenRange) {
+				dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
+			} else {
+				D3D12_RESOURCE_DESC desc = resource->GetDesc();
+				dataSize = static_cast<size_t>(desc.Width);
+			}
+			if (dataSize > 0) {
+				const uint8_t *capturePtr =
+					static_cast<const uint8_t*>(gActiveMap.data);
+				if (pWrittenRange && pWrittenRange->Begin > 0)
+					capturePtr += pWrittenRange->Begin;
+				DX12CacheBufferContentRange(
+					resource, pWrittenRange ? pWrittenRange->Begin : 0,
+					capturePtr, dataSize);
+			}
 		}
 			gActiveMap = DX12ResourceMapTracking();
 		}
@@ -2940,6 +2988,7 @@ void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resour
 	if (heapProps.Type != D3D12_HEAP_TYPE_UPLOAD &&
 	    heapProps.Type != D3D12_HEAP_TYPE_READBACK)
 		return;
+	RegisterCpuMappableResource(resource);
 
 	// Install Map/Unmap hooks on this resource (one-shot)
 	DX12VTableHook hooks[] = {

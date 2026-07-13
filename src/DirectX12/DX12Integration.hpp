@@ -639,6 +639,7 @@ public:
 
 inline static SRWLOCK RetiredCopyLock = SRWLOCK_INIT;
 inline static std::vector<RetiredCopy> RetiredCopies;
+inline static std::atomic<size_t> RetiredCopyCount{0};
 
 static void ReleaseRetiredCopy(RetiredCopy *copy)
 {
@@ -663,6 +664,8 @@ static void ReleaseRetiredCopy(RetiredCopy *copy)
 
 static void DrainRetiredCopies()
 {
+	if (RetiredCopyCount.load(std::memory_order_acquire) == 0)
+		return;
 	AcquireSRWLockExclusive(&RetiredCopyLock);
 	for (size_t i = 0; i < RetiredCopies.size();) {
 		const UINT64 completed = RetiredCopies[i].fence ?
@@ -677,6 +680,7 @@ static void DrainRetiredCopies()
 		RetiredCopies[i] = RetiredCopies.back();
 		RetiredCopies.pop_back();
 	}
+	RetiredCopyCount.store(RetiredCopies.size(), std::memory_order_release);
 	ReleaseSRWLockExclusive(&RetiredCopyLock);
 }
 
@@ -706,6 +710,7 @@ static void RetireCopy(
 	}
 	AcquireSRWLockExclusive(&RetiredCopyLock);
 	RetiredCopies.push_back(copy);
+	RetiredCopyCount.store(RetiredCopies.size(), std::memory_order_release);
 	ReleaseSRWLockExclusive(&RetiredCopyLock);
 }
 
@@ -2862,17 +2867,17 @@ public:
 			"Present", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present", "beforeOriginal", swapChain);
-		LARGE_INTEGER tPresent0, tPresent1, freq;
-		QueryPerformanceCounter(&tPresent0);
+		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
-		QueryPerformanceCounter(&tPresent1);
-		QueryPerformanceFrequency(&freq);
+		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::JsonFunc("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
-			static_cast<long long>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			static_cast<long long>(presentUs));
+	#endif
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "original_present", swapChain, hr,
-			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 		if (FAILED(hr)) {
@@ -2985,14 +2990,13 @@ public:
 			"Present1", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present1", "beforeOriginal", swapChain);
-		LARGE_INTEGER tPresent0, tPresent1, freq;
-		QueryPerformanceCounter(&tPresent0);
+		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
-		QueryPerformanceCounter(&tPresent1);
-		QueryPerformanceFrequency(&freq);
-		LONG64 presentUs = (tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart;
+		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::JsonFunc("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld", static_cast<long long>(presentUs));
+	#endif
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "original_present", swapChain, hr, presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present1", "afterOriginal", swapChain, hr);
@@ -3576,19 +3580,17 @@ public:
 			"PresentWrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperBeforeOriginal", swapChain);
-		LARGE_INTEGER tPresent0;
-		LARGE_INTEGER tPresent1;
-		LARGE_INTEGER freq;
-		QueryPerformanceCounter(&tPresent0);
+		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
-		QueryPerformanceCounter(&tPresent1);
-		QueryPerformanceFrequency(&freq);
+		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::JsonFunc("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
-			static_cast<long long>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			static_cast<long long>(presentUs));
+	#endif
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "original_present", swapChain, hr,
-			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperAfterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 		if (FAILED(hr)) {
@@ -3702,19 +3704,17 @@ public:
 			"Present1Wrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperBeforeOriginal", swapChain);
-		LARGE_INTEGER tPresent0;
-		LARGE_INTEGER tPresent1;
-		LARGE_INTEGER freq;
-		QueryPerformanceCounter(&tPresent0);
+		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
-		QueryPerformanceCounter(&tPresent1);
-		QueryPerformanceFrequency(&freq);
+		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12LogManager::JsonFunc("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
-			static_cast<long long>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			static_cast<long long>(presentUs));
+	#endif
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "original_present", swapChain, hr,
-			static_cast<LONG64>((tPresent1.QuadPart - tPresent0.QuadPart) * 1000000 / freq.QuadPart));
+			presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperAfterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 		if (FAILED(hr)) {
@@ -3870,6 +3870,16 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
+		if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+			DX12_PROFILE_FAST_FORWARD();
+			if (original)
+				original(commandList, vertexCountPerInstance, instanceCount,
+					startVertexLocation, startInstanceLocation);
+			else
+				DirectDrawInstanced(commandList, vertexCountPerInstance, instanceCount,
+					startVertexLocation, startInstanceLocation);
+			return;
+		}
 		// Use pre-hook original as callback to bypass vtable hook.
 		// Falls back to DirectDrawInstanced (hooked vtable) only if original is null.
 		DX12IaReplacementExecutorCallbacks callbacks;
@@ -3919,6 +3929,16 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
+		if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+			DX12_PROFILE_FAST_FORWARD();
+			if (original)
+				original(commandList, indexCountPerInstance, instanceCount,
+					startIndexLocation, baseVertexLocation, startInstanceLocation);
+			else
+				DirectDrawIndexedInstanced(commandList, indexCountPerInstance, instanceCount,
+					startIndexLocation, baseVertexLocation, startInstanceLocation);
+			return;
+		}
 		DX12IaReplacementExecutorCallbacks callbacks;
 		callbacks.drawInstanced = DirectDrawInstanced;
 		callbacks.drawIndexedInstanced = original ? reinterpret_cast<DX12IaCommandSignatures::DrawIndexedInstanced>(original) : DirectDrawIndexedInstanced;
@@ -3960,6 +3980,14 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
+		if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
+			DX12_PROFILE_FAST_FORWARD();
+			if (original)
+				original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			else
+				DirectDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
 		DX12DispatchHookFlow::ExecuteHook(
 			commandList,
 			runtimeState,
@@ -4006,12 +4034,12 @@ public:
 			DX12OuterTimingProbeUtils::ApiQueueSignal);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
 		const UINT64 completedBefore =
-			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
+			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
 		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = original ? original(queue, unwrappedFence, value) :
 			queue->Signal(unwrappedFence, value);
 		const UINT64 completedAfter =
-			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
+			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
 		DX12OuterTimingProbeUtils::LogQueueFenceSlice(
 			"Signal",
 			"original",
@@ -4035,12 +4063,12 @@ public:
 			DX12OuterTimingProbeUtils::ApiQueueWait);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
 		const UINT64 completedBefore =
-			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
+			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
 		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		HRESULT hr = original ? original(queue, unwrappedFence, value) :
 			queue->Wait(unwrappedFence, value);
 		const UINT64 completedAfter =
-			DX12OuterTimingProbeUtils::FenceCompletedValue(unwrappedFence);
+			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
 		DX12OuterTimingProbeUtils::LogQueueFenceSlice(
 			"Wait",
 			"original",

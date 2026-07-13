@@ -19,6 +19,7 @@ namespace DX12Wrapper
 
 		SRWLOCK gWrapperLock = SRWLOCK_INIT;
 		std::recursive_mutex gWrapperCreationMutex;
+		std::atomic<UINT64> gWrapperRegistryGeneration{1};
 		std::unordered_map<IUnknown*, WrapperBase*> gIdentityMap;
 		std::unordered_map<IUnknown*, WrapperBase*> gWrapperMap;
 
@@ -483,8 +484,10 @@ namespace DX12Wrapper
 				mIdentity = registerIdentity ? GetIdentity(object) : nullptr;
 
 				AcquireSRWLockExclusive(&gWrapperLock);
-				if (mIdentity)
+				if (mIdentity) {
 					gIdentityMap[mIdentity] = this;
+					gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
+				}
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
 
@@ -507,13 +510,18 @@ namespace DX12Wrapper
 
 			void RemoveRegistryEntriesLocked()
 			{
+				bool removed = false;
 				for (size_t i = 0; i < mWrapperPointers.size(); ++i)
-					gWrapperMap.erase(mWrapperPointers[i]);
+					removed = gWrapperMap.erase(mWrapperPointers[i]) != 0 || removed;
 				if (mIdentity) {
 					std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gIdentityMap.find(mIdentity);
-					if (it != gIdentityMap.end() && it->second == this)
+					if (it != gIdentityMap.end() && it->second == this) {
 						gIdentityMap.erase(it);
+						removed = true;
+					}
 				}
+				if (removed)
+					gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
 			}
 
 			ULONG ReleaseWithRegistry(std::atomic<long> &references)
@@ -554,6 +562,7 @@ namespace DX12Wrapper
 				AcquireSRWLockExclusive(&gWrapperLock);
 				gWrapperMap[wrapperPointer] = this;
 				mWrapperPointers.push_back(wrapperPointer);
+				gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
 
@@ -592,10 +601,33 @@ namespace DX12Wrapper
 				if (!object)
 					return nullptr;
 
+				struct UnwrapCacheEntry
+				{
+					IUnknown *wrapper = nullptr;
+					IUnknown *object = nullptr;
+					UINT64 generation = 0;
+				};
+				static thread_local UnwrapCacheEntry cache[8];
+				static thread_local UINT cacheIndex = 0;
+
+				const UINT64 generation =
+					gWrapperRegistryGeneration.load(std::memory_order_acquire);
+				for (const UnwrapCacheEntry &entry : cache) {
+					if (entry.wrapper == object && entry.generation == generation)
+						return entry.object;
+				}
+
 				AcquireSRWLockShared(&gWrapperLock);
 				std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gWrapperMap.find(object);
 				IUnknown *result = it != gWrapperMap.end() ? it->second->mObject : object;
+				const UINT64 resolvedGeneration =
+					gWrapperRegistryGeneration.load(std::memory_order_relaxed);
 				ReleaseSRWLockShared(&gWrapperLock);
+
+				cache[cacheIndex].wrapper = object;
+				cache[cacheIndex].object = result;
+				cache[cacheIndex].generation = resolvedGeneration;
+				cacheIndex = (cacheIndex + 1) & 7;
 				return result;
 			}
 
@@ -3228,11 +3260,11 @@ namespace DX12Wrapper
 			HRESULT STDMETHODCALLTYPE SetEventOnCompletion(UINT64 Value, HANDLE hEvent) override
 			{
 				const UINT64 completedBefore =
-					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+					DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
 				LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 				HRESULT hr = mFence->SetEventOnCompletion(Value, hEvent);
 				const UINT64 completedAfter =
-					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+					DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
 				DX12OuterTimingProbeUtils::LogFenceSlice(
 					"SetEventOnCompletion",
 					"wrapper",
@@ -3248,11 +3280,11 @@ namespace DX12Wrapper
 			HRESULT STDMETHODCALLTYPE Signal(UINT64 Value) override
 			{
 				const UINT64 completedBefore =
-					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+					DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
 				LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 				HRESULT hr = mFence->Signal(Value);
 				const UINT64 completedAfter =
-					DX12OuterTimingProbeUtils::FenceCompletedValue(mFence);
+					DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
 				DX12OuterTimingProbeUtils::LogFenceSlice(
 					"Signal",
 					"wrapper",

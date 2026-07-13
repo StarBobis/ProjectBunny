@@ -5425,13 +5425,22 @@ public:
 
 	static void Inc(volatile LONG *value)
 	{
+	#if defined(DX12_ENABLE_DETAILED_TIMING)
 		InterlockedIncrement(value);
+	#else
+		(void)value;
+	#endif
 	}
 
 	static void Add64(volatile LONG64 *value, LONG64 amount)
 	{
+	#if defined(DX12_ENABLE_DETAILED_TIMING)
 		if (amount)
 			InterlockedExchangeAdd64(value, amount);
+	#else
+		(void)value;
+		(void)amount;
+	#endif
 	}
 
 	static LONG Take(volatile LONG *value)
@@ -7507,7 +7516,9 @@ public:
 	static LARGE_INTEGER Now()
 	{
 		LARGE_INTEGER value = {};
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		QueryPerformanceCounter(&value);
+	#endif
 		return value;
 	}
 
@@ -7521,8 +7532,13 @@ public:
 
 	static LONG64 ElapsedUs(const LARGE_INTEGER &begin)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		const LARGE_INTEGER end = Now();
 		return DeltaUs(begin.QuadPart, end.QuadPart);
+	#else
+		(void)begin;
+		return 0;
+	#endif
 	}
 
 	static UINT64 FenceCompletedValue(ID3D12Fence *fence)
@@ -7530,6 +7546,16 @@ public:
 		if (!fence)
 			return 0;
 		return fence->GetCompletedValue();
+	}
+
+	static UINT64 TimingFenceCompletedValue(ID3D12Fence *fence)
+	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+		return FenceCompletedValue(fence);
+	#else
+		(void)fence;
+		return 0;
+	#endif
 	}
 
 	static LONG64 ClampUs(LONG64 us)
@@ -7948,6 +7974,7 @@ public:
 
 	static void LogPresentEnter(const char *api, IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)api;
 		(void)swapChain;
 		(void)syncInterval;
@@ -7966,10 +7993,17 @@ public:
 		InterlockedExchange64(&CurrentOutsideBetweenPresentsUs, outsideUs);
 		InterlockedExchange64(&CurrentPresentEnterQpc, now.QuadPart);
 		InterlockedIncrement(&PresentEnterCalls);
+	#else
+		(void)api;
+		(void)swapChain;
+		(void)syncInterval;
+		(void)flags;
+	#endif
 	}
 
 	static void LogPresentLeave(const char *api, IDXGISwapChain *swapChain, HRESULT hr)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		const LARGE_INTEGER now = Now();
 		const LONGLONG enter = InterlockedCompareExchange64(&CurrentPresentEnterQpc, 0, 0);
 		const LONGLONG previousLeave = InterlockedCompareExchange64(&LastPresentLeaveQpc, 0, 0);
@@ -7990,10 +8024,16 @@ public:
 			previousLeave,
 			now.QuadPart);
 		InterlockedExchange64(&LastPresentLeaveQpc, now.QuadPart);
+	#else
+		(void)api;
+		(void)swapChain;
+		(void)hr;
+	#endif
 	}
 
 	static void LogPresentSlice(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr, LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)api;
 		(void)swapChain;
 		(void)hr;
@@ -8021,11 +8061,18 @@ public:
 		} else {
 			AddUs(&PresentOtherUs, safeUs);
 		}
+	#else
+		(void)api;
+		(void)stage;
+		(void)swapChain;
+		(void)hr;
+		(void)us;
+	#endif
 	}
 
 	static void LogQueueExecuteSlice(const char *stage, ID3D12CommandQueue *queue, UINT numCommandLists, LONG64 us)
 	{
-#if defined(_DEBUG)
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)queue;
 
 		const LONG64 safeUs = ClampUs(us);
@@ -8086,6 +8133,7 @@ public:
 		HRESULT hr,
 		LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)stage;
 		(void)queue;
 		(void)fence;
@@ -8101,6 +8149,17 @@ public:
 		} else if (StageEquals(api, "Wait")) {
 			AddUs(&QueueWaitUs, safeUs);
 		}
+	#else
+		(void)api;
+		(void)stage;
+		(void)queue;
+		(void)fence;
+		(void)value;
+		(void)completedBefore;
+		(void)completedAfter;
+		(void)hr;
+		(void)us;
+	#endif
 	}
 
 	static void LogFenceSlice(
@@ -8113,6 +8172,7 @@ public:
 		HRESULT hr,
 		LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)api;
 		(void)stage;
 		(void)fence;
@@ -8123,10 +8183,21 @@ public:
 
 		InterlockedIncrement64(&FenceCalls);
 		AddUs(&FenceTotalUs, us);
+	#else
+		(void)api;
+		(void)stage;
+		(void)fence;
+		(void)value;
+		(void)completedBefore;
+		(void)completedAfter;
+		(void)hr;
+		(void)us;
+	#endif
 	}
 
 	static void LogEventWaitSlice(const char *api, const char *stage, HANDLE eventHandle, DWORD waitMs, DWORD waitResult, DWORD lastError, LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)api;
 		(void)stage;
 		(void)eventHandle;
@@ -8136,10 +8207,20 @@ public:
 
 		InterlockedIncrement64(&EventWaitCalls);
 		AddUs(&EventWaitTotalUs, us);
+	#else
+		(void)api;
+		(void)stage;
+		(void)eventHandle;
+		(void)waitMs;
+		(void)waitResult;
+		(void)lastError;
+		(void)us;
+	#endif
 	}
 
 	static void LogWorkerTask(const char *queueName, const char *stage, UINT taskKind, UINT64 sequence, size_t batchSize, size_t pending, DWORD enqueueThreadId, LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)taskKind;
 		(void)sequence;
 		(void)batchSize;
@@ -8149,10 +8230,21 @@ public:
 		InterlockedIncrement64(&WorkerTaskCalls);
 		AddUs(&WorkerTaskUs, us);
 		LogCpuStage(queueName, stage, taskKind, batchSize, us);
+	#else
+		(void)queueName;
+		(void)stage;
+		(void)taskKind;
+		(void)sequence;
+		(void)batchSize;
+		(void)pending;
+		(void)enqueueThreadId;
+		(void)us;
+	#endif
 	}
 
 	static void LogWorkerWait(const char *queueName, const char *reason, const char *mode, UINT64 targetSequence, UINT64 completedSequence, size_t pending, LONG64 us)
 	{
+	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		(void)queueName;
 		(void)reason;
 		(void)targetSequence;
@@ -8167,6 +8259,15 @@ public:
 		} else {
 			AddUs(&WorkerDrainWaitUs, safeUs);
 		}
+	#else
+		(void)queueName;
+		(void)reason;
+		(void)mode;
+		(void)targetSequence;
+		(void)completedSequence;
+		(void)pending;
+		(void)us;
+	#endif
 	}
 
 	static LONG64 EstimatedQueueTotalUs(LONG64 queueWrapperTotalUs, LONG64 queueFlowTotalUs)
