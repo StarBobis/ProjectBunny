@@ -18,6 +18,8 @@ UINT64 DX12CaptureLedger::DroppedEvents = 0;
 UINT64 DX12CaptureLedger::DroppedOutputEvents = 0;
 std::vector<BindingEvent> DX12CaptureLedger::Events;
 std::vector<OutputBindingEvent> DX12CaptureLedger::OutputEvents;
+std::unordered_set<DX12CaptureOutputKey, DX12CaptureOutputKeyHash>
+	DX12CaptureLedger::OutputKeys;
 
 void DX12CaptureLedger::BeginCapture(UINT64 present)
 {
@@ -25,6 +27,7 @@ void DX12CaptureLedger::BeginCapture(UINT64 present)
 	DX12CaptureLedger::ReleaseEventsLocked();
 	Events.clear();
 	OutputEvents.clear();
+	OutputKeys.clear();
 	DroppedEvents = 0;
 	DroppedOutputEvents = 0;
 	EventSerial = 0;
@@ -70,6 +73,7 @@ void DX12CaptureLedger::Clear()
 	DX12CaptureLedger::ReleaseEventsLocked();
 	Events.clear();
 	OutputEvents.clear();
+	OutputKeys.clear();
 	DroppedEvents = 0;
 	DroppedOutputEvents = 0;
 	EventSerial = 0;
@@ -147,20 +151,22 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindi
 		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
 	event->serial = ++OutputEventSerial;
-	for (const OutputBindingEvent &existing : OutputEvents) {
-		const bool sameResolvedDraw =
-			event->drawId != 0 && existing.drawId == event->drawId;
-		if (existing.commandList == event->commandList &&
-			existing.cpuHandle == event->cpuHandle &&
-			existing.kind == event->kind &&
-			existing.slot == event->slot &&
-			sameResolvedDraw &&
-			existing.dispatchId == event->dispatchId) {
+	DX12CaptureOutputKey key;
+	if (event->drawId != 0) {
+		key.commandList = event->commandList;
+		key.cpuHandle = event->cpuHandle;
+		key.kind = event->kind;
+		key.slot = event->slot;
+		key.drawId = event->drawId;
+		key.dispatchId = event->dispatchId;
+		if (OutputKeys.find(key) != OutputKeys.end()) {
 			ReleaseSRWLockExclusive(&Lock);
 			return DX12CaptureLedgerRecordResult::Duplicate;
 		}
 	}
 	OutputEvents.push_back(std::move(*event));
+	if (key.drawId != 0)
+		OutputKeys.insert(std::move(key));
 	ReleaseSRWLockExclusive(&Lock);
 	return DX12CaptureLedgerRecordResult::Stored;
 }
@@ -249,14 +255,12 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	UINT64 descriptorEpoch,
 	UINT64 captureSessionId)
 {
-	DX12BindingCollectTask task;
-	task.kind = DX12BindingCollectTaskKind::StateEvent;
-	task.commandList = commandList;
-	task.state = state;
-	task.descriptorEpoch = descriptorEpoch;
-	task.captureSessionId = captureSessionId;
-	task.eventKind = kind;
-	return EnqueueTask(std::move(task));
+	(void)commandList;
+	(void)state;
+	(void)kind;
+	(void)descriptorEpoch;
+	(void)captureSessionId;
+	return false;
 }
 
 bool DX12BindingCollectQueue::EnqueueDrawEvent(
@@ -273,22 +277,19 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	INT baseVertexLocation,
 	UINT startInstanceLocation)
 {
-	DX12BindingCollectTask task;
-	task.kind = DX12BindingCollectTaskKind::DrawEvent;
-	task.commandList = commandList;
-	task.state = state;
-	task.descriptorEpoch = descriptorEpoch;
-	task.captureSessionId = captureSessionId;
-	task.eventKind = kind;
-	task.vertexCountPerInstance = vertexCountPerInstance;
-	task.indexCountPerInstance = indexCountPerInstance;
-	task.instanceCount = instanceCount;
-	task.startVertexLocation = startVertexLocation;
-	task.startIndexLocation = startIndexLocation;
-	task.baseVertexLocation = baseVertexLocation;
-	task.startInstanceLocation = startInstanceLocation;
-	task.drawId = state.drawSerial;
-	return EnqueueTask(std::move(task));
+	(void)commandList;
+	(void)state;
+	(void)kind;
+	(void)descriptorEpoch;
+	(void)captureSessionId;
+	(void)vertexCountPerInstance;
+	(void)indexCountPerInstance;
+	(void)instanceCount;
+	(void)startVertexLocation;
+	(void)startIndexLocation;
+	(void)baseVertexLocation;
+	(void)startInstanceLocation;
+	return false;
 }
 
 bool DX12BindingCollectQueue::EnqueueDispatchEvent(
@@ -300,17 +301,14 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	UINT threadGroupCountY,
 	UINT threadGroupCountZ)
 {
-	DX12BindingCollectTask task;
-	task.kind = DX12BindingCollectTaskKind::DispatchEvent;
-	task.commandList = commandList;
-	task.state = state;
-	task.descriptorEpoch = descriptorEpoch;
-	task.captureSessionId = captureSessionId;
-	task.eventKind = "dispatch";
-	task.threadGroupCountX = threadGroupCountX;
-	task.threadGroupCountY = threadGroupCountY;
-	task.threadGroupCountZ = threadGroupCountZ;
-	return EnqueueTask(std::move(task));
+	(void)commandList;
+	(void)state;
+	(void)descriptorEpoch;
+	(void)captureSessionId;
+	(void)threadGroupCountX;
+	(void)threadGroupCountY;
+	(void)threadGroupCountZ;
+	return false;
 }
 
 bool DX12BindingCollectQueue::EnqueueOutputEvent(
@@ -322,16 +320,14 @@ bool DX12BindingCollectQueue::EnqueueOutputEvent(
 	UINT64 drawId,
 	UINT64 captureSessionId)
 {
-	DX12BindingCollectTask task;
-	task.kind = DX12BindingCollectTaskKind::OutputEvent;
-	task.commandList = commandList;
-	task.state = state;
-	task.captureSessionId = captureSessionId;
-	task.eventKind = kind;
-	task.slot = slot;
-	task.cpuHandle = cpuHandle;
-	task.drawId = drawId;
-	return EnqueueTask(std::move(task));
+	(void)commandList;
+	(void)state;
+	(void)kind;
+	(void)slot;
+	(void)cpuHandle;
+	(void)drawId;
+	(void)captureSessionId;
+	return false;
 }
 
 size_t DX12BindingCollectQueue::PendingCount()

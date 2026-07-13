@@ -679,14 +679,15 @@ public:
 
 // ── Hot-path stage timing ───────────────────────────────────────────
 // Thread-local accumulators. QPC-based. Logged per-frame at Present.
-// Only active in _DEBUG. Zero overhead in release (empty inline stubs).
+// Detailed per-call QPC timing is opt-in, including in debug builds.
+// Define DX12_ENABLE_DETAILED_TIMING when collecting timing diagnostics.
 //
 // Usage:
 //   DX12_HOTPATH_TIME_BEGIN(DrawHook);
 //   ... work ...
 //   DX12_HOTPATH_TIME_END(DrawHook);
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 
 #define DX12_HOTPATH_TIME_ENABLED 1
 
@@ -2622,7 +2623,7 @@ public:
 				draw);
 			directFastRejectKeyValid = true;
 			if (DX12DirectIaFastRejectCacheUtils::Contains(
-					mutableRuntimeState->resolvedDraw.directIaFastRejectCache,
+					&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
 					directFastRejectKey)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -2783,7 +2784,7 @@ public:
 							contentGeneration, resolveGeneration, draw);
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
-								&mutableRuntimeState->resolvedDraw.directIaFastRejectCache,
+								&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
 								std::move(directFastRejectKey));
 						}
 						DX12OuterTimingProbeUtils::LogCpuStage(
@@ -4122,6 +4123,8 @@ public:
 #line 1 "DX12CaptureLedger.hpp"
 #include <Windows.h>
 
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 
@@ -4145,6 +4148,49 @@ enum class DX12CaptureLedgerRecordResult
 	InactiveSession = 3,
 };
 
+class DX12CaptureOutputKey
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	SIZE_T cpuHandle = 0;
+	std::string kind;
+	UINT slot = 0;
+	UINT64 drawId = 0;
+	UINT64 dispatchId = 0;
+
+	bool operator==(const DX12CaptureOutputKey &other) const
+	{
+		return commandList == other.commandList &&
+			cpuHandle == other.cpuHandle &&
+			kind == other.kind &&
+			slot == other.slot &&
+			drawId == other.drawId &&
+			dispatchId == other.dispatchId;
+	}
+};
+
+class DX12CaptureOutputKeyHash
+{
+public:
+	size_t operator()(const DX12CaptureOutputKey &key) const
+	{
+		size_t hash = std::hash<void*>()(
+			static_cast<void*>(key.commandList));
+		hash = Mix(hash, key.cpuHandle);
+		hash = Mix(hash, std::hash<std::string>()(key.kind));
+		hash = Mix(hash, key.slot);
+		hash = Mix(hash, key.drawId);
+		return Mix(hash, key.dispatchId);
+	}
+
+private:
+	static size_t Mix(size_t hash, UINT64 value)
+	{
+		return hash ^ (static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
+			(hash << 6) + (hash >> 2));
+	}
+};
+
 class DX12CaptureLedger
 {
 public:
@@ -4159,6 +4205,8 @@ public:
 	static UINT64 DroppedOutputEvents;
 	static std::vector<BindingEvent> Events;
 	static std::vector<OutputBindingEvent> OutputEvents;
+	static std::unordered_set<DX12CaptureOutputKey, DX12CaptureOutputKeyHash>
+		OutputKeys;
 
 	static void BeginCapture(UINT64 present);
 	static void EndCapture();

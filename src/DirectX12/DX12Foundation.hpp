@@ -3072,8 +3072,11 @@ public:
 
 	DX12DirectIaFastRejectCache &operator=(const DX12DirectIaFastRejectCache &other)
 	{
-		if (this != &other)
+		if (this != &other) {
 			entries.clear();
+			hasScope = false;
+			scopeReloadGeneration = 0;
+		}
 		return *this;
 	}
 
@@ -3083,12 +3086,20 @@ public:
 	std::unordered_set<
 		DX12DirectIaFastRejectCacheKey,
 		DX12DirectIaFastRejectCacheKeyHash> entries;
+	bool hasScope = false;
+	UINT64 scopeReloadGeneration = 0;
 };
 
 class DX12DirectIaFastRejectCacheUtils
 {
 public:
 	static constexpr size_t MaxEntries = 4096;
+
+	static DX12DirectIaFastRejectCache &ThreadCache()
+	{
+		static thread_local DX12DirectIaFastRejectCache cache;
+		return cache;
+	}
 
 	static UINT64 MixViewValue(UINT64 fingerprint, UINT64 value)
 	{
@@ -3160,10 +3171,13 @@ public:
 	}
 
 	static bool Contains(
-		const DX12DirectIaFastRejectCache &cache,
+		DX12DirectIaFastRejectCache *cache,
 		const DX12DirectIaFastRejectCacheKey &key)
 	{
-		return cache.entries.find(key) != cache.entries.end();
+		if (!cache)
+			return false;
+		PrepareScope(cache, key.reloadGeneration);
+		return cache->entries.find(key) != cache->entries.end();
 	}
 
 	static bool Store(
@@ -3172,6 +3186,7 @@ public:
 	{
 		if (!cache)
 			return false;
+		PrepareScope(cache, key.reloadGeneration);
 		if (cache->entries.size() >= MaxEntries)
 			cache->entries.erase(cache->entries.begin());
 		return cache->entries.insert(std::move(key)).second;
@@ -3179,8 +3194,24 @@ public:
 
 	static void Clear(DX12DirectIaFastRejectCache *cache)
 	{
-		if (cache)
+		if (cache) {
 			cache->entries.clear();
+			cache->hasScope = false;
+			cache->scopeReloadGeneration = 0;
+		}
+	}
+
+private:
+	static void PrepareScope(
+		DX12DirectIaFastRejectCache *cache,
+		UINT64 reloadGeneration)
+	{
+		if (cache->hasScope &&
+				cache->scopeReloadGeneration == reloadGeneration)
+			return;
+		cache->entries.clear();
+		cache->hasScope = true;
+		cache->scopeReloadGeneration = reloadGeneration;
 	}
 };
 
@@ -3507,7 +3538,6 @@ public:
 	CachedIaHashBuildEntry lastDirectIaHashBuild;
 	CachedIaHashBuildEntry lastFullIaHashBuild;
 	DX12DirectIaProbeCache directIaProbeCache;
-	DX12DirectIaFastRejectCache directIaFastRejectCache;
 	// Small direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
 	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
@@ -7350,7 +7380,7 @@ public:
 		ApiWallBucketCount
 	};
 
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 	class ApiWallScope
 	{
 	public:
@@ -7834,7 +7864,7 @@ public:
 		size_t itemCount,
 		LONG64 us)
 	{
-#if defined(_DEBUG)
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		const LONG64 safeUs = ClampUs(us);
 		AcquireSRWLockExclusive(&CpuStageLock);
 		const LONG index = FindCpuStageBucketLocked(category, stage, kind);
