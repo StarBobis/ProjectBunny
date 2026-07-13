@@ -845,14 +845,25 @@ static bool TryLoadRuntimePreSkinBindings(
 	if (observedCount) {
 		if (!runtimeState->resolvedCompute.bindingsHeap)
 			return false;
-		std::vector<UINT64> currentSlotVersions(observedCount);
-		std::vector<UINT64> currentSlotValueIds(observedCount);
+		constexpr size_t StackIdentityCount = 64;
+		std::array<UINT64, StackIdentityCount> stackSlotVersions;
+		std::array<UINT64, StackIdentityCount> stackSlotValueIds;
+		std::vector<UINT64> heapSlotVersions;
+		std::vector<UINT64> heapSlotValueIds;
+		UINT64 *currentSlotVersions = stackSlotVersions.data();
+		UINT64 *currentSlotValueIds = stackSlotValueIds.data();
+		if (observedCount > StackIdentityCount) {
+			heapSlotVersions.resize(observedCount);
+			heapSlotValueIds.resize(observedCount);
+			currentSlotVersions = heapSlotVersions.data();
+			currentSlotValueIds = heapSlotValueIds.data();
+		}
 		if (!DX12GetDescriptorSlotIdentities(
 				runtimeState->resolvedCompute.bindingsHeap,
 				runtimeState->resolvedCompute.observedSlots.data(),
 				observedCount,
-				currentSlotVersions.data(),
-				currentSlotValueIds.data()))
+				currentSlotVersions,
+				currentSlotValueIds))
 			return false;
 		for (size_t index = 0; index < observedCount; ++index) {
 			if (currentSlotVersions[index] !=

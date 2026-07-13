@@ -4786,6 +4786,15 @@ namespace DX12Wrapper
 		class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, public WrapperBase
 		{
 		public:
+			template <typename Interface>
+			class CachedCommandListInterface
+			{
+			public:
+				Interface *pointer = nullptr;
+				HRESULT result = E_NOINTERFACE;
+				bool queried = false;
+			};
+
 			explicit GraphicsCommandListWrapper(ID3D12GraphicsCommandList *commandList)
 				: WrapperBase(commandList)
 			{
@@ -4859,6 +4868,16 @@ namespace DX12Wrapper
 
 		~GraphicsCommandListWrapper()
 		{
+			ReleaseCachedCommandListInterface(&mCommandList1Interface);
+			ReleaseCachedCommandListInterface(&mCommandList2Interface);
+			ReleaseCachedCommandListInterface(&mCommandList3Interface);
+			ReleaseCachedCommandListInterface(&mCommandList4Interface);
+			ReleaseCachedCommandListInterface(&mCommandList5Interface);
+			ReleaseCachedCommandListInterface(&mCommandList6Interface);
+			ReleaseCachedCommandListInterface(&mCommandList7Interface);
+			ReleaseCachedCommandListInterface(&mCommandList8Interface);
+			ReleaseCachedCommandListInterface(&mCommandList9Interface);
+			ReleaseCachedCommandListInterface(&mCommandList10Interface);
 			if (mCommandList) {
 				DX12CommandListLifecycle::Unregister(mCommandList);
 				DX12CommandListRuntime::UnregisterDirectState(mCommandList);
@@ -4980,54 +4999,87 @@ namespace DX12Wrapper
 				"ExecuteIndirect");
 		}
 
+			template <typename Interface>
+			HRESULT QueryCachedCommandListInterface(
+				CachedCommandListInterface<Interface> *cached,
+				Interface **commandList)
+			{
+				if (!commandList)
+					return E_POINTER;
+				*commandList = nullptr;
+				// COM requires an object's supported interface set to remain stable.
+				// Keep one cached reference and preserve the caller's AddRef contract.
+				if (!cached->queried) {
+					cached->queried = true;
+					cached->result = mCommandList->QueryInterface(
+						__uuidof(Interface),
+						reinterpret_cast<void**>(&cached->pointer));
+				}
+				if (FAILED(cached->result))
+					return cached->result;
+				cached->pointer->AddRef();
+				*commandList = cached->pointer;
+				return S_OK;
+			}
+
+			template <typename Interface>
+			static void ReleaseCachedCommandListInterface(
+				CachedCommandListInterface<Interface> *cached)
+			{
+				if (cached->pointer) {
+					cached->pointer->Release();
+					cached->pointer = nullptr;
+				}
+			}
+
 			HRESULT QueryCommandList1(ID3D12GraphicsCommandList1 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList1Interface, commandList);
 			}
 
 			HRESULT QueryCommandList2(ID3D12GraphicsCommandList2 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList2Interface, commandList);
 			}
 
 			HRESULT QueryCommandList3(ID3D12GraphicsCommandList3 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList3Interface, commandList);
 			}
 
 			HRESULT QueryCommandList4(ID3D12GraphicsCommandList4 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList4Interface, commandList);
 			}
 
 			HRESULT QueryCommandList5(ID3D12GraphicsCommandList5 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList5Interface, commandList);
 			}
 
 			HRESULT QueryCommandList6(ID3D12GraphicsCommandList6 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList6Interface, commandList);
 			}
 
 			HRESULT QueryCommandList7(ID3D12GraphicsCommandList7 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList7Interface, commandList);
 			}
 
 			HRESULT QueryCommandList8(ID3D12GraphicsCommandList8 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList8Interface, commandList);
 			}
 
 			HRESULT QueryCommandList9(ID3D12GraphicsCommandList9 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList9Interface, commandList);
 			}
 
 			HRESULT QueryCommandList10(ID3D12GraphicsCommandList10 **commandList)
 			{
-				return mCommandList->QueryInterface(IID_PPV_ARGS(commandList));
+				return QueryCachedCommandListInterface(&mCommandList10Interface, commandList);
 			}
 
 			void *GetGraphicsCommandListWrapperInterface(REFIID riid)
@@ -6016,6 +6068,16 @@ namespace DX12Wrapper
 			DX12CommandListHookSignatures::IaSetIndexBuffer mOrigIASetIndexBuffer = nullptr;
 			DX12CommandListHookSignatures::IaSetVertexBuffers mOrigIASetVertexBuffers = nullptr;
 			DX12CommandListHookSignatures::ExecuteIndirect mOrigExecuteIndirect = nullptr;
+			CachedCommandListInterface<ID3D12GraphicsCommandList1> mCommandList1Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList2> mCommandList2Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList3> mCommandList3Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList4> mCommandList4Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList5> mCommandList5Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList6> mCommandList6Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList7> mCommandList7Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList8> mCommandList8Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList9> mCommandList9Interface;
+			CachedCommandListInterface<ID3D12GraphicsCommandList10> mCommandList10Interface;
 			// 对齐 DX11 HackerContext：RuntimeState 嵌入 Wrapper，消除 sharded map 查找
 			DX12CommandListRuntimeState mRuntimeState;
 		};

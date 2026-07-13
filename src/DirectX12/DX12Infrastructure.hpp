@@ -2784,7 +2784,7 @@ public:
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
 								&mutableRuntimeState->resolvedDraw.directIaFastRejectCache,
-								directFastRejectKey);
+								std::move(directFastRejectKey));
 						}
 						DX12OuterTimingProbeUtils::LogCpuStage(
 							"IaReplacement",

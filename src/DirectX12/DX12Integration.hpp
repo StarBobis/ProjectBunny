@@ -3265,13 +3265,18 @@ public:
 		UINT numCommandLists,
 		ID3D12CommandList *const *commandLists)
 	{
-		std::vector<ID3D12CommandList*> unwrapped;
+		ID3D12CommandList *stackUnwrapped[8];
+		std::vector<ID3D12CommandList*> heapUnwrapped;
 		ID3D12CommandList *const *activeCommandLists = commandLists;
 		if (commandLists && numCommandLists) {
-			unwrapped.resize(numCommandLists);
+			ID3D12CommandList **unwrapped = stackUnwrapped;
+			if (numCommandLists > ARRAYSIZE(stackUnwrapped)) {
+				heapUnwrapped.resize(numCommandLists);
+				unwrapped = heapUnwrapped.data();
+			}
 			for (UINT i = 0; i < numCommandLists; ++i)
 				unwrapped[i] = UnwrapCommandList(commandLists[i]);
-			activeCommandLists = unwrapped.data();
+			activeCommandLists = unwrapped;
 		}
 		DirectQueueExecuteCommandLists(queue, numCommandLists, activeCommandLists);
 	}

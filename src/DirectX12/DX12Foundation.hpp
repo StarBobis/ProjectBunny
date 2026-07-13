@@ -2995,29 +2995,41 @@ public:
 
 	bool operator==(const DX12DirectIaFastRejectCacheKey &other) const
 	{
-		return reloadGeneration == other.reloadGeneration &&
-			targetPlanFingerprint == other.targetPlanFingerprint &&
-			iaViewFingerprint == other.iaViewFingerprint &&
-			contentGeneration == other.contentGeneration &&
-			resolveGeneration == other.resolveGeneration &&
-			requiresIndexBuffer == other.requiresIndexBuffer &&
-			requiredVertexMask == other.requiredVertexMask &&
-			hasIndexBuffer == other.hasIndexBuffer &&
-			indexBufferLocation == other.indexBufferLocation &&
-			indexBufferSize == other.indexBufferSize &&
-			indexBufferFormat == other.indexBufferFormat &&
-			vertexBufferMask == other.vertexBufferMask &&
-			vertexBufferLocations == other.vertexBufferLocations &&
-			vertexBufferSizes == other.vertexBufferSizes &&
-			vertexBufferStrides == other.vertexBufferStrides &&
-			indexed == other.indexed &&
-			vertexCount == other.vertexCount &&
-			indexCount == other.indexCount &&
-			instanceCount == other.instanceCount &&
-			firstVertex == other.firstVertex &&
-			firstIndex == other.firstIndex &&
-			baseVertex == other.baseVertex &&
-			firstInstance == other.firstInstance;
+		if (reloadGeneration != other.reloadGeneration ||
+			targetPlanFingerprint != other.targetPlanFingerprint ||
+			iaViewFingerprint != other.iaViewFingerprint ||
+			contentGeneration != other.contentGeneration ||
+			resolveGeneration != other.resolveGeneration ||
+			requiresIndexBuffer != other.requiresIndexBuffer ||
+			requiredVertexMask != other.requiredVertexMask ||
+			hasIndexBuffer != other.hasIndexBuffer ||
+			indexBufferLocation != other.indexBufferLocation ||
+			indexBufferSize != other.indexBufferSize ||
+			indexBufferFormat != other.indexBufferFormat ||
+			vertexBufferMask != other.vertexBufferMask ||
+			indexed != other.indexed ||
+			vertexCount != other.vertexCount ||
+			indexCount != other.indexCount ||
+			instanceCount != other.instanceCount ||
+			firstVertex != other.firstVertex ||
+			firstIndex != other.firstIndex ||
+			baseVertex != other.baseVertex ||
+			firstInstance != other.firstInstance)
+			return false;
+
+		// MakeKey leaves non-required slots zeroed; only required slots belong to
+		// the logical key, so avoid comparing three complete 32-element arrays.
+		UINT32 slots = requiredVertexMask;
+		while (slots) {
+			unsigned long slot = 0;
+			_BitScanForward(&slot, slots);
+			if (vertexBufferLocations[slot] != other.vertexBufferLocations[slot] ||
+					vertexBufferSizes[slot] != other.vertexBufferSizes[slot] ||
+					vertexBufferStrides[slot] != other.vertexBufferStrides[slot])
+				return false;
+			slots &= slots - 1;
+		}
+		return true;
 	}
 };
 
@@ -3084,36 +3096,6 @@ public:
 			(fingerprint << 6) + (fingerprint >> 2));
 	}
 
-	static UINT64 BuildViewFingerprint(
-		const DX12ActiveIaState &ia,
-		const DX12IaHashTargetPlan &targetPlan,
-		bool indexed)
-	{
-		UINT64 fingerprint = 0x84222325a9582d75ull;
-		if (targetPlan.RequiresIndexBuffer(indexed)) {
-			fingerprint = MixViewValue(fingerprint, ia.hasIndexBuffer ? 1 : 0);
-			if (ia.hasIndexBuffer) {
-				fingerprint = MixViewValue(fingerprint, ia.indexBuffer.BufferLocation);
-				fingerprint = MixViewValue(fingerprint, ia.indexBuffer.SizeInBytes);
-				fingerprint = MixViewValue(fingerprint, ia.indexBuffer.Format);
-			}
-		}
-		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
-			if (!targetPlan.RequiresVertexBuffer(slot))
-				continue;
-			fingerprint = MixViewValue(fingerprint, slot + 1);
-			fingerprint = MixViewValue(
-				fingerprint, ia.hasVertexBuffer[slot] ? 1 : 0);
-			if (!ia.hasVertexBuffer[slot])
-				continue;
-			const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
-			fingerprint = MixViewValue(fingerprint, view.BufferLocation);
-			fingerprint = MixViewValue(fingerprint, view.SizeInBytes);
-			fingerprint = MixViewValue(fingerprint, view.StrideInBytes);
-		}
-		return fingerprint;
-	}
-
 	static DX12DirectIaFastRejectCacheKey MakeKey(
 		UINT64 reloadGeneration,
 		UINT64 contentGeneration,
@@ -3125,10 +3107,22 @@ public:
 		DX12DirectIaFastRejectCacheKey key;
 		key.reloadGeneration = reloadGeneration;
 		key.targetPlanFingerprint = targetPlan.Fingerprint();
-		key.iaViewFingerprint = BuildViewFingerprint(ia, targetPlan, draw.indexed);
 		key.contentGeneration = contentGeneration;
 		key.resolveGeneration = resolveGeneration;
 		key.requiresIndexBuffer = targetPlan.RequiresIndexBuffer(draw.indexed);
+		UINT64 viewFingerprint = 0x84222325a9582d75ull;
+		if (key.requiresIndexBuffer) {
+			viewFingerprint = MixViewValue(
+				viewFingerprint, ia.hasIndexBuffer ? 1 : 0);
+			if (ia.hasIndexBuffer) {
+				viewFingerprint = MixViewValue(
+					viewFingerprint, ia.indexBuffer.BufferLocation);
+				viewFingerprint = MixViewValue(
+					viewFingerprint, ia.indexBuffer.SizeInBytes);
+				viewFingerprint = MixViewValue(
+					viewFingerprint, ia.indexBuffer.Format);
+			}
+		}
 		key.hasIndexBuffer = key.requiresIndexBuffer && ia.hasIndexBuffer;
 		if (key.hasIndexBuffer) {
 			key.indexBufferLocation = ia.indexBuffer.BufferLocation;
@@ -3139,13 +3133,21 @@ public:
 			if (!targetPlan.RequiresVertexBuffer(slot))
 				continue;
 			key.requiredVertexMask |= 1u << slot;
+			viewFingerprint = MixViewValue(viewFingerprint, slot + 1);
+			viewFingerprint = MixViewValue(
+				viewFingerprint, ia.hasVertexBuffer[slot] ? 1 : 0);
 			if (!ia.hasVertexBuffer[slot])
 				continue;
+			const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
 			key.vertexBufferMask |= 1u << slot;
-			key.vertexBufferLocations[slot] = ia.vertexBuffers[slot].BufferLocation;
-			key.vertexBufferSizes[slot] = ia.vertexBuffers[slot].SizeInBytes;
-			key.vertexBufferStrides[slot] = ia.vertexBuffers[slot].StrideInBytes;
+			key.vertexBufferLocations[slot] = view.BufferLocation;
+			key.vertexBufferSizes[slot] = view.SizeInBytes;
+			key.vertexBufferStrides[slot] = view.StrideInBytes;
+			viewFingerprint = MixViewValue(viewFingerprint, view.BufferLocation);
+			viewFingerprint = MixViewValue(viewFingerprint, view.SizeInBytes);
+			viewFingerprint = MixViewValue(viewFingerprint, view.StrideInBytes);
 		}
+		key.iaViewFingerprint = viewFingerprint;
 		key.indexed = draw.indexed;
 		key.vertexCount = draw.vertexCount;
 		key.indexCount = draw.indexCount;
@@ -3166,13 +3168,13 @@ public:
 
 	static bool Store(
 		DX12DirectIaFastRejectCache *cache,
-		const DX12DirectIaFastRejectCacheKey &key)
+		DX12DirectIaFastRejectCacheKey key)
 	{
 		if (!cache)
 			return false;
 		if (cache->entries.size() >= MaxEntries)
 			cache->entries.erase(cache->entries.begin());
-		return cache->entries.insert(key).second;
+		return cache->entries.insert(std::move(key)).second;
 	}
 
 	static void Clear(DX12DirectIaFastRejectCache *cache)
