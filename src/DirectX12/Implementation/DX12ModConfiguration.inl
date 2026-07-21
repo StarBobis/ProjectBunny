@@ -644,6 +644,13 @@ static void BuildDx12VlrResourceCandidates(
 	const Bunny::ResourceMap &resources,
 	const std::unordered_map<std::wstring, std::vector<std::wstring>> &explicitMatchCsResourceSections,
 	std::vector<std::wstring> *resourceCandidates);
+static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+BuildDx12CommandExecutionRuntimeSnapshot(
+	const Bunny::CommandListMap &commandLists,
+	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
+	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans);
 
 static bool CommandListHasRuntimeEffect(
 	const std::wstring &name,
@@ -1115,6 +1122,42 @@ static void BuildDx12TextureOverrideSectionIds(
 	}
 }
 
+static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+BuildDx12CommandExecutionRuntimeSnapshot(
+	const Bunny::CommandListMap &commandLists,
+	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
+	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans)
+{
+	std::shared_ptr<DX12CommandExecutionRuntimeSnapshot> snapshot =
+		std::make_shared<DX12CommandExecutionRuntimeSnapshot>();
+	snapshot->commandListRuntimeEffect = commandListRuntimeEffect;
+	for (const auto &item : commandLists) {
+		snapshot->commandLists.emplace(
+			item.first,
+			std::make_shared<const Bunny::CommandListConfig>(item.second));
+	}
+	for (const auto &item : compiledCommandListPlans) {
+		if (item.second.unsupported)
+			continue;
+		snapshot->compiledCommandListPlans.emplace(
+			item.first,
+			std::make_shared<const DX12CompiledCommandListPlan>(item.second));
+	}
+	for (const auto &item : textureOverrideSectionIds) {
+		if (!item.second)
+			continue;
+		auto planIt = compiledTextureOverridePlans.find(item.second);
+		if (planIt == compiledTextureOverridePlans.end())
+			continue;
+		snapshot->compiledTextureOverridePlans.emplace(
+			item.first,
+			std::make_shared<const DX12CompiledTextureOverridePlan>(planIt->second));
+	}
+	return snapshot;
+}
+
 class DX12ConstantsVmInitializerUtils
 {
 public:
@@ -1191,6 +1234,7 @@ bool DX12ModRuntimeLoad(
 	std::unordered_map<std::wstring, uint32_t> textureOverrideSectionIds;
 	std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> compiledTextureOverridePlans;
 	std::unordered_map<std::wstring, DX12CompiledCommandListPlan> compiledCommandListPlans;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> commandExecutionRuntimeSnapshot;
 	bool presentRuntimeEffect = false;
 	std::vector<DX12IaTextureOverrideCandidate> iaTextureOverrides;
 	std::unordered_map<uint32_t, std::vector<size_t>> iaIndexTextureOverrideIndex;
@@ -1302,6 +1346,12 @@ bool DX12ModRuntimeLoad(
 	BuildDx12CompiledTextureOverridePlans(
 		textureOverrides, textureOverrideSectionIds, compiledCommandListPlans,
 		&compiledTextureOverridePlans);
+	commandExecutionRuntimeSnapshot = BuildDx12CommandExecutionRuntimeSnapshot(
+		commandLists,
+		commandListRuntimeEffect,
+		textureOverrideSectionIds,
+		compiledCommandListPlans,
+		compiledTextureOverridePlans);
 	BuildDx12PreSkinTextureOverrideIndex(
 		textureOverrides,
 		&preSkinTextureOverrides,
@@ -1334,6 +1384,10 @@ bool DX12ModRuntimeLoad(
 	DX12ModClearIaReplacementRuntimeCaches();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
 	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
+	std::atomic_store_explicit(
+		&gCommandExecutionRuntimeSnapshot,
+		commandExecutionRuntimeSnapshot,
+		std::memory_order_release);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);
 	gPreSkinUavHashTextureOverrideIndex.swap(preSkinUavHashTextureOverrideIndex);
 	gPreSkinMatchCsTextureOverrideIndex.swap(preSkinMatchCsTextureOverrideIndex);

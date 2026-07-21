@@ -1,70 +1,60 @@
-static bool CommandListRuntimeEffectLocked(const std::wstring &name)
+static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+LoadCommandExecutionRuntimeSnapshot()
 {
-	auto it = gCommandListRuntimeEffect.find(name);
-	return it == gCommandListRuntimeEffect.end() || it->second;
+	return std::atomic_load_explicit(
+		&gCommandExecutionRuntimeSnapshot,
+		std::memory_order_acquire);
+}
+
+static bool CommandListRuntimeEffectLocked(
+	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const std::wstring &name)
+{
+	if (!snapshot)
+		return true;
+	auto it = snapshot->commandListRuntimeEffect.find(name);
+	return it == snapshot->commandListRuntimeEffect.end() || it->second;
 }
 
 static bool CommandListRuntimeEffect(const std::wstring &name)
 {
-	AcquireSRWLockShared(&gModLock);
-	const bool effect = CommandListRuntimeEffectLocked(name);
-	ReleaseSRWLockShared(&gModLock);
-	return effect;
+	return CommandListRuntimeEffectLocked(
+		LoadCommandExecutionRuntimeSnapshot(), name);
 }
 
-static bool SnapshotCommandListConfig(
-	const std::wstring &name, Bunny::CommandListConfig *config)
+static std::shared_ptr<const Bunny::CommandListConfig>
+SnapshotCommandListConfig(const std::wstring &name)
 {
-	if (!config)
-		return false;
-	AcquireSRWLockShared(&gModLock);
-	auto it = gCommandLists.find(name);
-	if (it == gCommandLists.end()) {
-		ReleaseSRWLockShared(&gModLock);
-		return false;
-	}
-	*config = it->second;
-	ReleaseSRWLockShared(&gModLock);
-	return true;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (!snapshot)
+		return nullptr;
+	auto it = snapshot->commandLists.find(name);
+	return it == snapshot->commandLists.end() ? nullptr : it->second;
 }
 
-static bool SnapshotCompiledTextureOverridePlan(
-	const Bunny::TextureOverrideConfig &config,
-	DX12CompiledTextureOverridePlan *plan)
+static std::shared_ptr<const DX12CompiledTextureOverridePlan>
+SnapshotCompiledTextureOverridePlan(const Bunny::TextureOverrideConfig &config)
 {
-	if (!plan)
-		return false;
-	AcquireSRWLockShared(&gModLock);
-	auto sectionIdIt = gTextureOverrideSectionIds.find(config.section);
-	if (sectionIdIt == gTextureOverrideSectionIds.end() || !sectionIdIt->second) {
-		ReleaseSRWLockShared(&gModLock);
-		return false;
-	}
-	auto planIt = gCompiledTextureOverridePlans.find(sectionIdIt->second);
-	if (planIt == gCompiledTextureOverridePlans.end()) {
-		ReleaseSRWLockShared(&gModLock);
-		return false;
-	}
-	*plan = planIt->second;
-	ReleaseSRWLockShared(&gModLock);
-	return true;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (!snapshot)
+		return nullptr;
+	auto planIt = snapshot->compiledTextureOverridePlans.find(config.section);
+	return planIt == snapshot->compiledTextureOverridePlans.end() ?
+		nullptr : planIt->second;
 }
 
-static bool SnapshotCompiledCommandListPlan(
-	const std::wstring &name,
-	DX12CompiledCommandListPlan *plan)
+static std::shared_ptr<const DX12CompiledCommandListPlan>
+SnapshotCompiledCommandListPlan(const std::wstring &name)
 {
-	if (!plan)
-		return false;
-	AcquireSRWLockShared(&gModLock);
-	auto planIt = gCompiledCommandListPlans.find(name);
-	if (planIt == gCompiledCommandListPlans.end() || planIt->second.unsupported) {
-		ReleaseSRWLockShared(&gModLock);
-		return false;
-	}
-	*plan = planIt->second;
-	ReleaseSRWLockShared(&gModLock);
-	return true;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (!snapshot)
+		return nullptr;
+	auto planIt = snapshot->compiledCommandListPlans.find(name);
+	return planIt == snapshot->compiledCommandListPlans.end() ?
+		nullptr : planIt->second;
 }
 
 static DX12IaHashState EmptyIaHashState()
@@ -280,7 +270,11 @@ public:
 			}
 		}
 
-		if (!RunCompiledTextureOverridePlan(config)) {
+		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
+			SnapshotCompiledTextureOverridePlan(config);
+		const DX12CompiledTextureOverridePlan *compiledPlanView =
+			compiledPlan.get();
+		if (!(compiledPlanView && RunCompiledTextureOverridePlan(*compiledPlanView))) {
 			RunTextureOverrideActions(config, depth, includePost, &match);
 		}
 
@@ -300,16 +294,25 @@ public:
 			}
 		}
 
-		if (DX12DrawSrvReplacementUtils::ApplyConfig(
-			    mDevice, mCommandList, config, &match, mReplacement))
+		const bool needsGraphicsSrvBindings = compiledPlanView ?
+			!compiledPlanView->drawSrvResources.empty() :
+			(!config.drawPsSrvResources.empty() ||
+			 !config.drawVsSrvResources.empty());
+		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvBindings =
+			needsGraphicsSrvBindings ? GetGraphicsSrvBindings() : nullptr;
+		const bool drawSrvChanged = compiledPlanView ?
+			DX12DrawSrvReplacementUtils::ApplyCompiledPlan(
+				mDevice, mCommandList, *compiledPlanView, &match, mReplacement,
+				graphicsSrvBindings) :
+			DX12DrawSrvReplacementUtils::ApplyConfig(
+				mDevice, mCommandList, config, &match, mReplacement,
+				graphicsSrvBindings);
+		if (drawSrvChanged)
 			MarkChanged();
 	}
 
-	bool RunCompiledTextureOverridePlan(const Bunny::TextureOverrideConfig &config)
+	bool RunCompiledTextureOverridePlan(const DX12CompiledTextureOverridePlan &plan)
 	{
-		DX12CompiledTextureOverridePlan plan;
-		if (!SnapshotCompiledTextureOverridePlan(config, &plan))
-			return false;
 		if (plan.hasUnsupportedCommandActions)
 			return false;
 
@@ -336,12 +339,13 @@ public:
 			return false;
 		if (!EnterCommandList(name))
 			return true;
-		DX12CompiledCommandListPlan plan;
-		if (!SnapshotCompiledCommandListPlan(name, &plan)) {
+		const std::shared_ptr<const DX12CompiledCommandListPlan> plan =
+			SnapshotCompiledCommandListPlan(name);
+		if (!plan) {
 			LeaveCommandList();
 			return false;
 		}
-		ExecuteCompiledCommandListPlan(plan);
+		ExecuteCompiledCommandListPlan(*plan);
 		LeaveCommandList();
 		return true;
 	}
@@ -359,6 +363,18 @@ public:
 			mReplacement->dispatches.push_back(dispatch);
 			MarkChanged();
 		}
+	}
+
+	const std::vector<DX12CurrentShaderResourceBinding> *GetGraphicsSrvBindings()
+	{
+		if (!mCommandList)
+			return nullptr;
+		if (!mGraphicsSrvBindingsResolved) {
+			mGraphicsSrvBindingsResolved = true;
+			DX12DrawSrvReplacementUtils::CollectSrvBindings(
+				mCommandList, false, &mGraphicsSrvBindings);
+		}
+		return &mGraphicsSrvBindings;
 	}
 
 	void RunTextureOverrideActions(
@@ -386,9 +402,10 @@ public:
 				continue;
 			switch (action.kind) {
 			case Bunny::CommandListActionKind::Run: {
-				Bunny::CommandListConfig config;
-				if (SnapshotCommandListConfig(action.commandList, &config))
-					RunCommandList(config, depth + 1, includePost, thisMatch);
+				const std::shared_ptr<const Bunny::CommandListConfig> config =
+					SnapshotCommandListConfig(action.commandList);
+				if (config)
+					RunCommandList(*config, depth + 1, includePost, thisMatch);
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
@@ -461,9 +478,10 @@ public:
 			case Bunny::CommandListActionKind::Run: {
 				if (!mExecuteCommands)
 					break;
-				Bunny::CommandListConfig config;
-				if (SnapshotCommandListConfig(action.commandList, &config))
-					RunCommandList(config, depth + 1, includePost, thisMatch);
+				const std::shared_ptr<const Bunny::CommandListConfig> config =
+					SnapshotCommandListConfig(action.commandList);
+				if (config)
+					RunCommandList(*config, depth + 1, includePost, thisMatch);
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
@@ -561,18 +579,20 @@ public:
 				continue;
 			if (RunCompiledCommandListPlan(list))
 				continue;
-			Bunny::CommandListConfig config;
-			if (SnapshotCommandListConfig(list, &config))
-				RunCommandList(config, depth + 1, false, thisMatch);
+			const std::shared_ptr<const Bunny::CommandListConfig> config =
+				SnapshotCommandListConfig(list);
+			if (config)
+				RunCommandList(*config, depth + 1, false, thisMatch);
 		}
 		for (const std::wstring &list : links.main) {
 			if (!CommandListRuntimeEffect(list))
 				continue;
 			if (RunCompiledCommandListPlan(list))
 				continue;
-			Bunny::CommandListConfig config;
-			if (SnapshotCommandListConfig(list, &config))
-				RunCommandList(config, depth + 1, includePost, thisMatch);
+			const std::shared_ptr<const Bunny::CommandListConfig> config =
+				SnapshotCommandListConfig(list);
+			if (config)
+				RunCommandList(*config, depth + 1, includePost, thisMatch);
 		}
 		if (includePost) {
 			for (const std::wstring &list : links.post) {
@@ -580,9 +600,10 @@ public:
 					continue;
 				if (RunCompiledCommandListPlan(list))
 					continue;
-				Bunny::CommandListConfig config;
-				if (SnapshotCommandListConfig(list, &config))
-					RunCommandList(config, depth + 1, true, thisMatch);
+				const std::shared_ptr<const Bunny::CommandListConfig> config =
+					SnapshotCommandListConfig(list);
+				if (config)
+					RunCommandList(*config, depth + 1, true, thisMatch);
 			}
 		}
 	}
@@ -624,7 +645,9 @@ public:
 	bool mChanged = false;
 	bool mExecuteCommands = true;
 	bool mExecuteDrawActions = true;
+	bool mGraphicsSrvBindingsResolved = false;
 	std::vector<std::wstring> mCommandListStack;
+	std::vector<DX12CurrentShaderResourceBinding> mGraphicsSrvBindings;
 	MigotoCommandVmUtils::State mVm;
 };
 

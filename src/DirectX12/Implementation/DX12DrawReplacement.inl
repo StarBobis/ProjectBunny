@@ -673,7 +673,8 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const Bunny::TextureOverrideConfig &config,
 		const DX12TextureOverrideMatch *match,
-		DX12ModIaReplacement *replacement)
+		DX12ModIaReplacement *replacement,
+		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvs = nullptr)
 	{
 		if (!device || !commandList || !replacement)
 			return false;
@@ -690,31 +691,42 @@ public:
 		    config.drawReplaceThisResource.empty())
 			return false;
 
-		std::vector<DX12CurrentShaderResourceBinding> graphicsSrvs;
-		DX12DrawSrvReplacementUtils::CollectSrvBindings(commandList, false, &graphicsSrvs);
+		std::vector<DX12CurrentShaderResourceBinding> localGraphicsSrvs;
+		const std::vector<DX12CurrentShaderResourceBinding> *bindingsView =
+			graphicsSrvs;
+		const bool needsGraphicsBindings =
+			!config.drawPsSrvResources.empty() ||
+			!config.drawVsSrvResources.empty();
+		if (needsGraphicsBindings && !bindingsView) {
+			DX12DrawSrvReplacementUtils::CollectSrvBindings(
+				commandList, false, &localGraphicsSrvs);
+			bindingsView = &localGraphicsSrvs;
+		}
 
 		std::vector<DX12DrawSrvPatchRequest> requests;
 		for (std::map<uint32_t, std::wstring>::const_iterator it = config.drawPsSrvResources.begin();
 		     it != config.drawPsSrvResources.end(); ++it) {
 			UINT added = DX12DrawSrvReplacementUtils::AddSlotRequestsFromBindings(
-				device, commandList, graphicsSrvs, false, it->first, it->second,
+				device, commandList, *bindingsView, false, it->first, it->second,
 				true, "ps-t", &requests);
 			if (!added) {
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=ps-t,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
-					it->first, it->second.c_str(), graphicsSrvs.size());
+					it->first, it->second.c_str(),
+					bindingsView ? bindingsView->size() : 0);
 			}
 		}
 
 		for (std::map<uint32_t, std::wstring>::const_iterator it = config.drawVsSrvResources.begin();
 		     it != config.drawVsSrvResources.end(); ++it) {
 			UINT added = DX12DrawSrvReplacementUtils::AddSlotRequestsFromBindings(
-				device, commandList, graphicsSrvs, false, it->first, it->second,
+				device, commandList, *bindingsView, false, it->first, it->second,
 				false, "vs-t", &requests);
 			if (!added) {
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=vs-t,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
-					it->first, it->second.c_str(), graphicsSrvs.size());
+					it->first, it->second.c_str(),
+					bindingsView ? bindingsView->size() : 0);
 			}
 		}
 
@@ -726,7 +738,64 @@ public:
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=this,reason=no_matched_target,hash=%08x,resource=%S,graphicsCount=%zu",
 					static_cast<uint32_t>(config.hash),
-					config.drawReplaceThisResource.c_str(), graphicsSrvs.size());
+					config.drawReplaceThisResource.c_str(),
+					bindingsView ? bindingsView->size() : 0);
+			}
+		}
+
+		return DX12DrawSrvReplacementUtils::QueueRequests(requests, replacement);
+	}
+
+	static bool ApplyCompiledPlan(
+		ID3D12Device *device,
+		ID3D12GraphicsCommandList *commandList,
+		const DX12CompiledTextureOverridePlan &plan,
+		const DX12TextureOverrideMatch *match,
+		DX12ModIaReplacement *replacement,
+		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvs = nullptr)
+	{
+		if (!device || !commandList || !replacement)
+			return false;
+		if (plan.drawSrvResources.empty() &&
+		    plan.drawReplaceThisResource.empty())
+			return false;
+
+		std::vector<DX12CurrentShaderResourceBinding> localGraphicsSrvs;
+		const std::vector<DX12CurrentShaderResourceBinding> *bindingsView =
+			graphicsSrvs;
+		if (!plan.drawSrvResources.empty() && !bindingsView) {
+			DX12DrawSrvReplacementUtils::CollectSrvBindings(
+				commandList, false, &localGraphicsSrvs);
+			bindingsView = &localGraphicsSrvs;
+		}
+
+		std::vector<DX12DrawSrvPatchRequest> requests;
+		for (const DX12CompiledDrawSrvResourceBinding &binding :
+				plan.drawSrvResources) {
+			const char *source = binding.pixelStage ? "ps-t" : "vs-t";
+			UINT added = DX12DrawSrvReplacementUtils::AddSlotRequestsFromBindings(
+				device, commandList, *bindingsView, false,
+				binding.slot, binding.resource,
+				binding.pixelStage, source, &requests);
+			if (!added) {
+				DX12LogManager::Fields("DX12DrawSrvReplacement",
+					"stage=slot_patch_fail,source=%s,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
+					source,
+					binding.slot,
+					binding.resource.c_str(),
+					bindingsView ? bindingsView->size() : 0);
+			}
+		}
+
+		if (!plan.drawReplaceThisResource.empty()) {
+			UINT added = DX12DrawSrvReplacementUtils::AddThisRequestFromMatch(
+				device, commandList, match,
+				plan.drawReplaceThisResource, &requests);
+			if (!added) {
+				DX12LogManager::Fields("DX12DrawSrvReplacement",
+					"stage=slot_patch_fail,source=this,reason=no_matched_target,resource=%S,graphicsCount=%zu",
+					plan.drawReplaceThisResource.c_str(),
+					bindingsView ? bindingsView->size() : 0);
 			}
 		}
 

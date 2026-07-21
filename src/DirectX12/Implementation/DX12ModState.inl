@@ -126,6 +126,16 @@ public:
 	std::wstring resource;
 };
 
+class DX12CompiledDrawSrvResourceBinding
+
+{
+
+public:
+	uint32_t slot = 0;
+	std::wstring resource;
+	bool pixelStage = true;
+};
+
 class DX12PendingResourceViewRequest
 
 {
@@ -169,6 +179,8 @@ public:
 	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
 	std::vector<DX12ModIaReplacement::DrawCall> draws;
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
+	std::vector<DX12CompiledDrawSrvResourceBinding> drawSrvResources;
+	std::wstring drawReplaceThisResource;
 };
 static std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> gCompiledTextureOverridePlans;
 
@@ -185,6 +197,22 @@ public:
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
 };
 static std::unordered_map<std::wstring, DX12CompiledCommandListPlan> gCompiledCommandListPlans;
+
+class DX12CommandExecutionRuntimeSnapshot
+
+{
+
+public:
+	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
+	std::unordered_map<std::wstring, std::shared_ptr<const Bunny::CommandListConfig>>
+		commandLists;
+	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledCommandListPlan>>
+		compiledCommandListPlans;
+	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledTextureOverridePlan>>
+		compiledTextureOverridePlans;
+};
+static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+	gCommandExecutionRuntimeSnapshot;
 
 class DX12VertexLimitRaiseConfig
 

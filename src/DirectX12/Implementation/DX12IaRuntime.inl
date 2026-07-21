@@ -92,6 +92,22 @@ static std::vector<DX12CompiledVertexResourceBinding> CompileVertexResourceBindi
 	return bindings;
 }
 
+static void AppendCompiledDrawSrvResourceBindings(
+	std::vector<DX12CompiledDrawSrvResourceBinding> *bindings,
+	const std::map<uint32_t, std::wstring> &resources,
+	bool pixelStage)
+{
+	if (!bindings)
+		return;
+	for (const auto &item : resources) {
+		DX12CompiledDrawSrvResourceBinding binding;
+		binding.slot = item.first;
+		binding.resource = item.second;
+		binding.pixelStage = pixelStage;
+		bindings->push_back(std::move(binding));
+	}
+}
+
 static bool TextureOverrideMatchesIaBinding(
 	const Bunny::TextureOverrideConfig &config, bool indexBuffer, uint32_t vertexSlot)
 {
@@ -413,6 +429,14 @@ static void BuildDx12CompiledTextureOverridePlans(
 
 			DX12CompiledTextureOverridePlan plan;
 			plan.hasActions = !config.actions.empty();
+			plan.drawSrvResources.reserve(
+				config.drawPsSrvResources.size() +
+				config.drawVsSrvResources.size());
+			AppendCompiledDrawSrvResourceBindings(
+				&plan.drawSrvResources, config.drawPsSrvResources, true);
+			AppendCompiledDrawSrvResourceBindings(
+				&plan.drawSrvResources, config.drawVsSrvResources, false);
+			plan.drawReplaceThisResource = config.drawReplaceThisResource;
 			if (config.actions.empty())
 			{
 				plan.handlingSkip = config.handlingSkip;
