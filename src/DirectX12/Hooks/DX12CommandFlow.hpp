@@ -1415,10 +1415,9 @@ public:
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(csConfigBegin));
 
-		probe->computeBindingSerial =
+		probe->computeBindingSerial = runtimeState ?
+			runtimeState->computeBindingSerial :
 			DX12BindingTracker::GetComputeBindingSerial(commandList);
-		if (runtimeState)
-			runtimeState->computeBindingSerial = probe->computeBindingSerial;
 
 		// Most candidate dispatches are repeated with no compute-binding or IA
 		// mutation between them. A proven negative result is therefore reusable

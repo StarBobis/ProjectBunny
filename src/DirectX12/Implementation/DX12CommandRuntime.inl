@@ -1210,6 +1210,15 @@ static void DX12RuntimeBumpBindingQuerySerial(DX12CommandListRuntimeState *state
 		++state->bindingQuerySerial;
 }
 
+static void DX12RuntimeBumpComputeBindingSerial(DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	++state->computeBindingSerial;
+	if (!state->computeBindingSerial)
+		state->computeBindingSerial = 1;
+}
+
 void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12CommandListRuntimeState *state,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
@@ -1260,6 +1269,53 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 		shard.states.find(commandList);
 	if (it != shard.states.end())
 		DX12CommandListRuntime::SetDescriptorHeaps(&it->second, cbvSrvUavHeap, samplerHeap);
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberComputeRootSignature(
+	DX12CommandListRuntimeState *state,
+	ID3D12RootSignature *rootSignature)
+{
+	if (!state)
+		return;
+	if (state->computeRootSignature == rootSignature)
+		return;
+
+	state->computeRootSignature = rootSignature;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		state->computeRootTables[root] = RootTableState();
+		state->computeRootDescriptors[root] = RootDescriptorState();
+		state->computeRootConstants[root] = RootConstantsState();
+	}
+	state->computeRootTableValidCount = 0;
+	DX12RuntimeBumpComputeBindingSerial(state);
+	DX12RuntimeBumpBindingQuerySerial(state);
+}
+
+void DX12CommandListRuntime::RememberComputeRootSignature(
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12RootSignature *rootSignature)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberComputeRootSignature(
+			state, rootSignature);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberComputeRootSignature(
+			&it->second, rootSignature);
+	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
@@ -1321,6 +1377,111 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberRootDescriptorTable(
 			&it->second, graphics, rootParameterIndex, baseDescriptor);
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberComputeRootDescriptor(
+	DX12CommandListRuntimeState *state,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters)
+		return;
+
+	RootDescriptorState &descriptor =
+		state->computeRootDescriptors[rootParameterIndex];
+	const bool newValid = address != 0;
+	if (descriptor.valid == newValid &&
+		descriptor.rootParameterIndex == rootParameterIndex &&
+		descriptor.type == type &&
+		descriptor.address == address) {
+		return;
+	}
+
+	descriptor.valid = newValid;
+	descriptor.rootParameterIndex = rootParameterIndex;
+	descriptor.type = type;
+	descriptor.address = address;
+	DX12RuntimeBumpComputeBindingSerial(state);
+	DX12RuntimeBumpBindingQuerySerial(state);
+}
+
+void DX12CommandListRuntime::RememberComputeRootDescriptor(
+	ID3D12GraphicsCommandList *commandList,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberComputeRootDescriptor(
+			state, rootParameterIndex, type, address);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberComputeRootDescriptor(
+			&it->second, rootParameterIndex, type, address);
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
+	DX12CommandListRuntimeState *state,
+	UINT rootParameterIndex,
+	UINT destOffset,
+	UINT count,
+	const void *values)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters)
+		return;
+
+	RootConstantsState &constants =
+		state->computeRootConstants[rootParameterIndex];
+	if (DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values)) {
+		DX12RuntimeBumpComputeBindingSerial(state);
+		DX12RuntimeBumpBindingQuerySerial(state);
+	}
+}
+
+void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
+	ID3D12GraphicsCommandList *commandList,
+	UINT rootParameterIndex,
+	UINT destOffset,
+	UINT count,
+	const void *values)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberComputeRoot32BitConstants(
+			state, rootParameterIndex, destOffset, count, values);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberComputeRoot32BitConstants(
+			&it->second, rootParameterIndex, destOffset, count, values);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }

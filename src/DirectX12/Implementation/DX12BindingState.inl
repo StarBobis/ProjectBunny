@@ -144,6 +144,39 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.rootConstants = constants;
 }
 
+static bool BuildRuntimeComputeSnapshot(
+	const DX12CommandListRuntimeState *runtimeState,
+	CommandListBindingState *snapshot)
+{
+	if (!runtimeState || !snapshot)
+		return false;
+
+	*snapshot = CommandListBindingState();
+	snapshot->pipelineState = runtimeState->pipelineState;
+	snapshot->computeRootSignature = runtimeState->computeRootSignature;
+	snapshot->cbvSrvUavHeap = runtimeState->cbvSrvUavHeap;
+	snapshot->samplerHeap = runtimeState->samplerHeap;
+	snapshot->runtimeCbvSrvUavHeapResolved =
+		runtimeState->runtimeCbvSrvUavHeapResolved;
+	snapshot->runtimeCbvSrvUavHeap = runtimeState->runtimeCbvSrvUavHeap;
+	snapshot->runtimeSamplerHeapResolved =
+		runtimeState->runtimeSamplerHeapResolved;
+	snapshot->runtimeSamplerHeap = runtimeState->runtimeSamplerHeap;
+	snapshot->computeBindingSerial = runtimeState->computeBindingSerial;
+	snapshot->bindingQuerySerial = runtimeState->bindingQuerySerial;
+	snapshot->computeTableValidCount = runtimeState->computeRootTableValidCount;
+	memcpy(snapshot->computeTables,
+		runtimeState->computeRootTables,
+		sizeof(snapshot->computeTables));
+	memcpy(snapshot->computeRootDescriptors,
+		runtimeState->computeRootDescriptors,
+		sizeof(snapshot->computeRootDescriptors));
+	memcpy(snapshot->computeRootConstants,
+		runtimeState->computeRootConstants,
+		sizeof(snapshot->computeRootConstants));
+	return true;
+}
+
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
@@ -702,7 +735,14 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	DX12CommandListRuntimeState *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const DX12CommandListTrackingState tracking =
+		runtimeState ?
+		DX12CommandListRuntime::GetTrackingState(runtimeState) :
+		DX12CommandListTrackingState();
+	const bool preferRuntimeSnapshot = runtimeState && !tracking.trackBindings;
 	const UINT64 computeBindingSerial =
+		runtimeState ?
+		runtimeState->computeBindingSerial :
 		DX12BindingTracker::GetComputeBindingSerial(commandList);
 	bool cachedFoundAny = false;
 	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheCall();
@@ -723,7 +763,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	CommandListBindingState snapshot;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
+	const bool snapshotReady = preferRuntimeSnapshot ?
+		BuildRuntimeComputeSnapshot(runtimeState, &snapshot) :
+		DX12BindingTracker::SnapshotBindingState(commandList, &snapshot);
+	if (!snapshotReady) {
 		DX12_HOTPATH_TIME_END(BindSnapshot);
 		return false;
 	}

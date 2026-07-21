@@ -1671,10 +1671,12 @@ public:
 
 	static bool ShouldSkipComputeBinding()
 	{
-		// A single HookWorkFlags bit test avoids a function call.
-		// to DX12ModNeedsPreSkinningBindingTracking() per binding call.
+		// Probe-only PreSkin still needs the live compute state, but it can use
+		// the lightweight runtime resident path instead of the heavy tracker.
 		return DX12HotPathState::skipAll &&
-			!(DX12HotPathState::HookWorkFlags & DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK);
+			!(DX12HotPathState::HookWorkFlags &
+				(DX12HotPathState::FLAG_PRE_SKIN_PROBE |
+				 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK));
 	}
 
 	static bool ShouldSkipGraphicsBinding()

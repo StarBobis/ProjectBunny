@@ -1398,8 +1398,11 @@ public:
 	UINT64 bindingQuerySerial = 1;
 	UINT graphicsRootTableValidCount = 0;
 	UINT computeRootTableValidCount = 0;
+	ID3D12RootSignature *computeRootSignature = nullptr;
 	RootTableState graphicsRootTables[MaxRootParameters] = {};
 	RootTableState computeRootTables[MaxRootParameters] = {};
+	RootDescriptorState computeRootDescriptors[MaxRootParameters] = {};
+	RootConstantsState computeRootConstants[MaxRootParameters] = {};
 
 	// Per-PSO override cache aligned with HotPathState generation.
 	volatile LONG psoHasOverridesGeneration = -1;
@@ -1537,8 +1540,14 @@ public:
 	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);
 	static void SetDescriptorHeaps(DX12CommandListRuntimeState *state, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static void SetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
+	static void RememberComputeRootSignature(DX12CommandListRuntimeState *state, ID3D12RootSignature *rootSignature);
+	static void RememberComputeRootSignature(ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature);
 	static void RememberRootDescriptorTable(DX12CommandListRuntimeState *state, bool graphics, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
 	static void RememberRootDescriptorTable(ID3D12GraphicsCommandList *commandList, bool graphics, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
+	static void RememberComputeRootDescriptor(DX12CommandListRuntimeState *state, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void RememberComputeRootDescriptor(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void RememberComputeRoot32BitConstants(DX12CommandListRuntimeState *state, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
+	static void RememberComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 	static bool GetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 };
 
@@ -1977,6 +1986,17 @@ public:
 	{
 		return HasAnyFlag(
 			flags,
+			FLAG_PRE_SKIN_PROBE |
+			FLAG_PRE_SKIN_BINDING_TRACK |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
+	static bool NeedsComputeResidentBindingState(UINT64 flags)
+	{
+		return HasAnyFlag(
+			flags,
+			FLAG_PRE_SKIN_PROBE |
 			FLAG_PRE_SKIN_BINDING_TRACK |
 			FLAG_FRAME_ANALYSIS_ACTIVE |
 			FLAG_SHADER_DUMP_ACTIVE);

@@ -829,7 +829,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 				const bool skipComputeBinding =
 					DX12HotPathState::skipAll &&
-					!DX12HotPathState::NeedsPreSkinBindingTracking(flags);
+					!(flags &
+						(DX12HotPathState::FLAG_PRE_SKIN_PROBE |
+						 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK));
 				if (!skipComputeBinding) {
 					DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 						mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);

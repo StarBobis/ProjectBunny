@@ -167,12 +167,14 @@ class DX12CommandListComputeBindingHookCallbacks
 {
 public:
 	// As in DX11, skipAll forwards hooks without tracking work.
-	// PreSkin compute binding tracking bypasses that shortcut when required.
+	// Probe-only PreSkin still needs the live compute state, but it can use
+	// the lightweight runtime resident path instead of the heavy tracker.
 	static bool ShouldSkipComputeBinding()
 	{
 		return DX12HotPathState::skipAll &&
-			!DX12HotPathState::NeedsPreSkinBindingTracking(
-				DX12HotPathState::HookWorkFlags);
+			!(DX12HotPathState::HookWorkFlags &
+				(DX12HotPathState::FLAG_PRE_SKIN_PROBE |
+				 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK));
 	}
 
 	static bool ShouldSkipGraphicsBinding()
