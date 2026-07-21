@@ -651,13 +651,11 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 		return;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	// Keep Mod-mode resident IA state lightweight: the current view must stay
+	// resident across unrelated PSOs, but GPUVA->resource resolution is only
+	// needed when a later draw actually builds an IA-targeted override key.
 	state->ia.indexBufferResolved = false;
 	state->ia.indexBufferResource = DX12BufferResourceSummary();
-	if (newValid && state->ia.indexBuffer.BufferLocation && state->ia.indexBuffer.SizeInBytes)
-		state->ia.indexBufferResolved = DX12ResolveBufferResourceByGpuVa(
-			state->ia.indexBuffer.BufferLocation,
-			state->ia.indexBuffer.SizeInBytes,
-			&state->ia.indexBufferResource);
 	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
@@ -709,13 +707,10 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
 		ia.vertexBuffers[slot] = newView;
+		// See RememberIndexBuffer: resident Mod state keeps the live view here and
+		// resolves the backing resource lazily only for IA-targeted override work.
 		ia.vertexBufferResolved[slot] = false;
 		ia.vertexBufferResources[slot] = DX12BufferResourceSummary();
-		if (newValid && newView.BufferLocation && newView.SizeInBytes)
-			ia.vertexBufferResolved[slot] = DX12ResolveBufferResourceByGpuVa(
-				newView.BufferLocation,
-				newView.SizeInBytes,
-				&ia.vertexBufferResources[slot]);
 		changedAny = true;
 	}
 	if (changedAny)
@@ -809,6 +804,68 @@ void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *comma
 	if (it != shard.states.end())
 		DX12CommandListRuntime::BumpIaContentEpoch(&it->second);
 	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+static bool EnsureResolvedIndexBufferForTargets(
+	DX12CommandListRuntimeState *state,
+	bool indexed,
+	const DX12IaHashTargetPlan &targetPlan)
+{
+	if (!state || !targetPlan.RequiresIndexBuffer(indexed) ||
+	    !state->ia.hasIndexBuffer || state->ia.indexBufferResolved)
+		return false;
+	const D3D12_INDEX_BUFFER_VIEW &view = state->ia.indexBuffer;
+	if (!view.BufferLocation || !view.SizeInBytes)
+		return false;
+	DX12BufferResourceSummary summary = {};
+	if (!DX12ResolveBufferResourceByGpuVa(
+			view.BufferLocation,
+			view.SizeInBytes,
+			&summary))
+		return false;
+	state->ia.indexBufferResource = summary;
+	state->ia.indexBufferResolved = true;
+	return true;
+}
+
+static bool EnsureResolvedVertexBuffersForTargets(
+	DX12CommandListRuntimeState *state,
+	const DX12IaHashTargetPlan &targetPlan)
+{
+	if (!state)
+		return false;
+	bool resolvedAny = false;
+	for (UINT slot = 0; slot < ARRAYSIZE(state->ia.vertexBuffers); ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot) ||
+		    !state->ia.hasVertexBuffer[slot] ||
+		    state->ia.vertexBufferResolved[slot])
+			continue;
+		const D3D12_VERTEX_BUFFER_VIEW &view = state->ia.vertexBuffers[slot];
+		if (!view.BufferLocation || !view.SizeInBytes)
+			continue;
+		DX12BufferResourceSummary summary = {};
+		if (!DX12ResolveBufferResourceByGpuVa(
+				view.BufferLocation,
+				view.SizeInBytes,
+				&summary))
+			continue;
+		state->ia.vertexBufferResources[slot] = summary;
+		state->ia.vertexBufferResolved[slot] = true;
+		resolvedAny = true;
+	}
+	return resolvedAny;
+}
+
+static bool EnsureResolvedIaResourcesForTargets(
+	DX12CommandListRuntimeState *state,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed)
+{
+	const bool resolvedIndex =
+		EnsureResolvedIndexBufferForTargets(state, indexed, targetPlan);
+	const bool resolvedVertex =
+		EnsureResolvedVertexBuffersForTargets(state, targetPlan);
+	return resolvedIndex || resolvedVertex;
 }
 
 bool DX12CommandListRuntime::BuildIaHashState(
@@ -908,9 +965,9 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		if (cachedSummary && combineResolvedObservation(*cachedSummary, salt))
 			return;
 		// Unresolved views retain conservative global invalidation. Resolved views
-		// no longer inherit unrelated resource/content churn. Draw-time key building
-		// deliberately consumes wrapper IA state only; GPU VA resolution happens when
-		// the IA binding changes, matching DX11-style current-state ownership.
+		// no longer inherit unrelated resource/content churn. We keep IA binds
+		// lightweight in Mod mode and only resolve GPU VA ownership when a draw
+		// actually reaches IA-targeted override evaluation.
 		key.usesGlobalFallback = true;
 		key.bufferContentGeneration =
 			DX12IaHashStateCacheKeyHash::Combine(
@@ -982,11 +1039,14 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	if (!state)
 		return DX12IaHashStateCacheKey();
 	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
+	const bool resolvedAny =
+		EnsureResolvedIaResourcesForTargets(state, targetPlan, indexed);
 	DX12IaHashStateCacheKey key;
 	DX12IaHashKeyPrefixCacheEntry &entry =
 		state->resolvedDraw.iaHashKeyPrefixes[
 			cacheSlot % state->resolvedDraw.iaHashKeyPrefixes.size()];
-	if (!DX12IaHashKeyPrefixCacheUtils::TryLoadStable(
+	if (!resolvedAny &&
+	    !DX12IaHashKeyPrefixCacheUtils::TryLoadStable(
 			entry, state->iaEpoch, targetPlanFingerprint, indexed, &key)) {
 		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
 		const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
@@ -1000,6 +1060,15 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 				&entry, state->iaEpoch, targetPlanFingerprint, indexed,
 				globalContentGeneration, globalResolveGeneration, key);
 		}
+	} else if (resolvedAny) {
+		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
+		const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
+		key = BuildIaHashStateCacheKeyForTargets(
+			state->ia, state->iaContentEpoch, targetPlan, indexed,
+			0, 0, 0, 0, 0);
+		DX12IaHashKeyPrefixCacheUtils::Store(
+			&entry, state->iaEpoch, targetPlanFingerprint, indexed,
+			globalContentGeneration, globalResolveGeneration, key);
 	}
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;
