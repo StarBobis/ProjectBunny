@@ -27,6 +27,10 @@ static UINT64 gPsoSerial = 0;
 static volatile LONG gShaderDumpRunning = 0;
 static volatile LONG gShaderDumpCaptureRequested = 0;
 static volatile LONG gShaderDumpCapturing = 0;
+static volatile LONG gShaderDumpStateFlags = 0;
+static constexpr LONG DX12_SHADER_DUMP_STATE_CAPTURE_REQUESTED = 1 << 0;
+static constexpr LONG DX12_SHADER_DUMP_STATE_CAPTURING = 1 << 1;
+static constexpr LONG DX12_SHADER_DUMP_STATE_RUNNING = 1 << 2;
 
 typedef HRESULT(WINAPI *PFN_D3D_DISASSEMBLE)(
 	LPCVOID, SIZE_T, UINT, LPCSTR, ID3DBlob**);

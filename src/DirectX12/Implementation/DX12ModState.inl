@@ -218,6 +218,7 @@ static std::unordered_set<uint64_t> gPreSkinMatchCsHashes;
 // Adaptive idle counter: after N consecutive frames with zero active pre-skin
 // overrides, binding tracking can be skipped to save ~1500+ lock acquisitions/frame.
 static volatile LONG gPreSkinBindingIdleFrames = 0;
+static volatile LONG gHasActivePreSkinTextureOverridesFast = 0;
 static constexpr LONG kPreSkinBindingIdleMax = 60;
 class DX12PreSkinUavMatchCacheEntry
 {
@@ -518,6 +519,7 @@ static void ClearActivePreSkinTextureOverridesLocked(
 		MoveActivePreSkinTextureOverrideResourceLocked(&item.second, releaseResources);
 	gActivePreSkinTextureOverrides.clear();
 	gActivePreSkinOutputStates.clear();
+	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
 	DX12ModClearPreSkinOutputResizeMap();
 	if (changed)
 		BumpPreSkinActiveGeneration();
@@ -536,6 +538,7 @@ static void StoreActivePreSkinTextureOverrideLocked(
 	    !ActivePreSkinResourceReferencedLocked(section, oldResource))
 		gActivePreSkinOutputStates.erase(oldResource);
 	DX12ActivePreSkinTextureOverride stored = active;
+	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 1);
 	gActivePreSkinTextureOverrides[section] = stored;
 	if (stored.outputResource) {
 		DX12ActivePreSkinOutputState &state =

@@ -1528,8 +1528,9 @@ public:
 				? rs->cachedReplacementPso : pipelineState;
 		}
 
-		if (DX12HotPathState::skipBindings && DX12HuntIsEnabled() &&
-		    !DX12ModHasActiveShaderOverrides()) {
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::skipBindings &&
+		    DX12HotPathState::NeedsHuntOnlyPipelineObservation(flags)) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (runtimeState)
 				DX12CommandListRuntime::RememberPipelineState(runtimeState, pipelineState);
@@ -1598,9 +1599,8 @@ public:
 			return;
 		}
 
-		const bool huntEnabled = DX12HuntIsEnabled();
-		const bool modEnabled = DX12ModHasActiveShaderOverrides();
-		if (huntEnabled || modEnabled) {
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
 			else
@@ -1634,11 +1634,10 @@ public:
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
-		const bool huntEnabled = DX12HuntIsEnabled();
-		const bool modEnabled = DX12ModHasActiveShaderOverrides();
-		if (huntEnabled)
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
 			DX12Profiling::RecordIaHuntIaUpdate();
-		if (huntEnabled || modEnabled) {
+		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
 			else
@@ -1675,11 +1674,10 @@ public:
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
-		const bool huntEnabled = DX12HuntIsEnabled();
-		const bool modEnabled = DX12ModHasActiveShaderOverrides();
-		if (huntEnabled)
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
 			DX12Profiling::RecordIaHuntIaUpdate();
-		if (huntEnabled || modEnabled) {
+		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
 			else

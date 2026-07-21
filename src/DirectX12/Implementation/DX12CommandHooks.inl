@@ -170,7 +170,9 @@ public:
 	// PreSkin compute binding tracking bypasses that shortcut when required.
 	static bool ShouldSkipComputeBinding()
 	{
-		return DX12HotPathState::skipAll && !DX12ModNeedsPreSkinningBindingTracking();
+		return DX12HotPathState::skipAll &&
+			!DX12HotPathState::NeedsPreSkinBindingTracking(
+				DX12HotPathState::HookWorkFlags);
 	}
 
 	static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(

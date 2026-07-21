@@ -1421,37 +1421,33 @@ void DX12CommandListCommandRecorder::RecordExecuteIndirect(
 
 bool DX12CommandListStateCapture::ShouldTrackBindings()
 {
-	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy() ||
+	const bool frameCapture = DX12FrameAnalysis::IsCapturing();
+	const bool shaderDumpActive = DX12ShaderDumpIsBusy();
+	return frameCapture || shaderDumpActive ||
 		DX12ModNeedsPreSkinningUavProbe() ||
 		DX12ModNeedsShaderDescriptorTracking();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackIaBindings()
 {
-	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsBusy();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackPipelineStateBindings()
 {
-	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsBusy();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackResourceStates()
 {
 	return DX12FrameAnalysis::IsCapturing() ||
-		DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() ||
 		DX12ShaderDumpIsBusy() ||
 		DX12RuntimeState::IsHuntingMode();
 }
 
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()
 {
-	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy();
+	return DX12FrameAnalysis::IsCapturing() || DX12ShaderDumpIsBusy();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackHuntIa()
@@ -1461,10 +1457,10 @@ bool DX12CommandListStateCapture::ShouldTrackHuntIa()
 
 bool DX12CommandListStateCapture::ShouldTrackPsoState()
 {
+	const bool shaderDumpActive = DX12ShaderDumpIsBusy();
 	return DX12HuntIsEnabled() || DX12ModHasActiveShaderOverrides() ||
 		DX12ModNeedsPreSkinningUavProbe() ||
-		DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsCapturingFrame() ||
-		DX12ShaderDumpIsBusy();
+		shaderDumpActive;
 }
 
 DX12CommandListTrackingState DX12CommandListStateCapture::MakeTrackingState()
@@ -1901,7 +1897,7 @@ void DX12CommandListStateCapture::IndexBuffer(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetIndexBuffer(commandList, view);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
+	if (DX12HotPathState::NeedsResidentIaState(DX12HotPathState::HookWorkFlags)) {
 		if (runtimeState)
 			DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
 		else
@@ -1929,7 +1925,7 @@ void DX12CommandListStateCapture::VertexBuffers(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (tracking.trackIaBindings)
 		DX12BindingTracker::SetVertexBuffers(commandList, startSlot, count, views);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
+	if (DX12HotPathState::NeedsResidentIaState(DX12HotPathState::HookWorkFlags)) {
 		if (runtimeState)
 			DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
 		else

@@ -241,6 +241,23 @@ struct ShaderDumpThreadArgs
 	std::vector<PsoRecord> psos;
 };
 
+static void DX12RefreshShaderDumpStateFlags()
+{
+	LONG flags = 0;
+	if (InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 0) != 0)
+		flags |= DX12_SHADER_DUMP_STATE_CAPTURE_REQUESTED;
+	if (InterlockedCompareExchange(&gShaderDumpCapturing, 0, 0) != 0)
+		flags |= DX12_SHADER_DUMP_STATE_CAPTURING;
+	if (InterlockedCompareExchange(&gShaderDumpRunning, 0, 0) != 0)
+		flags |= DX12_SHADER_DUMP_STATE_RUNNING;
+	InterlockedExchange(&gShaderDumpStateFlags, flags);
+}
+
+static LONG DX12ReadShaderDumpStateFlags()
+{
+	return InterlockedCompareExchange(&gShaderDumpStateFlags, 0, 0);
+}
+
 static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
 {
 	ShaderDumpThreadArgs *args = static_cast<ShaderDumpThreadArgs*>(param);
@@ -254,6 +271,7 @@ static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
 	}
 	delete args;
 	InterlockedExchange(&gShaderDumpRunning, 0);
+	DX12RefreshShaderDumpStateFlags();
 	DX12HotPathState::Update();
 	return 0;
 }
@@ -267,19 +285,22 @@ void DX12RequestShaderDump()
 	}
 
 	InterlockedExchange(&gShaderDumpCaptureRequested, 1);
+	DX12RefreshShaderDumpStateFlags();
 	DX12HotPathState::Update();
 	DX12OverlayStatusState::SetStatus(L"F9 armed: waiting for next frame");
 }
 
 bool DX12ShaderDumpIsCaptureRequested()
 {
-	return InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 0) != 0;
+	return (DX12ReadShaderDumpStateFlags() &
+		DX12_SHADER_DUMP_STATE_CAPTURE_REQUESTED) != 0;
 }
 
 void DX12ShaderDumpBeginCapture()
 {
 	if (InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 1) == 1) {
 		InterlockedExchange(&gShaderDumpCapturing, 1);
+		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 capturing next frame shaders");
 	}
@@ -288,6 +309,7 @@ void DX12ShaderDumpBeginCapture()
 bool DX12ShaderDumpEndCapture()
 {
 	if (InterlockedCompareExchange(&gShaderDumpCapturing, 0, 1) == 1) {
+		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();
 		return true;
 	}
@@ -296,14 +318,13 @@ bool DX12ShaderDumpEndCapture()
 
 bool DX12ShaderDumpIsCapturingFrame()
 {
-	return InterlockedCompareExchange(&gShaderDumpCapturing, 0, 0) != 0;
+	return (DX12ReadShaderDumpStateFlags() &
+		DX12_SHADER_DUMP_STATE_CAPTURING) != 0;
 }
 
 bool DX12ShaderDumpIsBusy()
 {
-	return InterlockedCompareExchange(&gShaderDumpCaptureRequested, 0, 0) != 0 ||
-		InterlockedCompareExchange(&gShaderDumpCapturing, 0, 0) != 0 ||
-		InterlockedCompareExchange(&gShaderDumpRunning, 0, 0) != 0;
+	return DX12ReadShaderDumpStateFlags() != 0;
 }
 
 void DX12DumpCapturedFrameShaders()
@@ -312,6 +333,7 @@ void DX12DumpCapturedFrameShaders()
 		DX12OverlayStatusState::SetStatus(L"F9 shader dump still running");
 		return;
 	}
+	DX12RefreshShaderDumpStateFlags();
 	DX12HotPathState::Update();
 
 	std::vector<DX12PsoShaderInfo> frameInfos;
@@ -319,6 +341,7 @@ void DX12DumpCapturedFrameShaders()
 	ShaderDumpThreadArgs *args = new (std::nothrow) ShaderDumpThreadArgs();
 	if (!args) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 shader dump failed: out of memory");
 		return;
@@ -329,6 +352,7 @@ void DX12DumpCapturedFrameShaders()
 	if (args->shaders.empty() && args->psos.empty()) {
 		delete args;
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();
 		DX12OverlayStatusState::SetStatus(L"F9 not ready: no frame shaders captured");
 		return;
@@ -338,6 +362,7 @@ void DX12DumpCapturedFrameShaders()
 	HANDLE thread = CreateThread(nullptr, 0, DX12ShaderDumpThreadProc, args, 0, nullptr);
 	if (!thread) {
 		InterlockedExchange(&gShaderDumpRunning, 0);
+		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();
 		delete args;
 		DX12LogManager::Text("F9 shader dump failed: CreateThread error=%lu\n", GetLastError());

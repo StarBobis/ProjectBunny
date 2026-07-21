@@ -207,16 +207,12 @@ class DX12ResourceTrackingPolicyUtils
 public:
 	static bool NeedsFrameDumpTracking()
 	{
-		return DX12FrameAnalysisState::IsActive() ||
-			DX12FrameAnalysisState::IsCaptureRequested() ||
-			DX12FrameAnalysisState::IsCapturing();
+		return DX12FrameAnalysisState::IsActive();
 	}
 
 	static bool NeedsShaderDumpTracking()
 	{
-		return DX12ShaderDumpIsCaptureRequested() ||
-			DX12ShaderDumpIsCapturingFrame() ||
-			DX12ShaderDumpIsBusy();
+		return DX12ShaderDumpIsBusy();
 	}
 
 	static bool NeedsDumpOrHuntingTracking()
@@ -252,8 +248,7 @@ public:
 	{
 		return NeedsFrameDumpTracking() ||
 			NeedsShaderDumpTracking() ||
-			DX12RuntimeState::IsHuntingMode() ||
-			NeedsFullDescriptorHistory();
+			DX12RuntimeState::IsHuntingMode();
 	}
 };
 

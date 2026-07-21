@@ -2380,15 +2380,13 @@ bool DX12ModHasShaderOverride(uint64_t hash)
 
 bool DX12ModHasActiveShaderOverrides()
 {
-	return (gHasShaderOverrides != 0 || gHasShaderRegexes != 0) &&
-		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+	return (DX12ModGetHotPathFlags() & DX12_MOD_HOT_SHADER_OVERRIDES) != 0;
 }
 
 bool DX12ModNeedsShaderDescriptorTracking()
 {
-	return (gHasShaderDescriptorTextureOverrideTriggers != 0 ||
-		gHasDrawSrvTextureReplacementOverrides != 0) &&
-		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+	return (DX12ModGetHotPathFlags() &
+		DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK) != 0;
 }
 
 bool DX12ModHasActiveTextureOverrides()
@@ -2408,16 +2406,14 @@ bool DX12ModHasAnyActiveOverrides()
 
 bool DX12ModNeedsPresentReplacement()
 {
-	return gHasPresentRuntimeEffect != 0 &&
-		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+	return (DX12ModGetHotPathFlags() &
+		DX12_MOD_HOT_PRESENT_REPLACEMENT) != 0;
 }
 
 bool DX12ModNeedsPreSkinningUavProbe()
 {
-	return gHasTextureOverrides != 0 &&
-		gHasShaderTriggeredTextureOverrides != 0 &&
-		gHasPreSkinTextureOverrideCandidates != 0 &&
-		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+	return (DX12ModGetHotPathFlags() &
+		DX12_MOD_HOT_PRE_SKIN_PROBE) != 0;
 }
 
 // Returns true when pre-skin binding tracking is actively needed.
@@ -2426,11 +2422,8 @@ bool DX12ModNeedsPreSkinningUavProbe()
 // Note: idle counter is reset when a matching pre-skin CS dispatch is probed.
 bool DX12ModNeedsPreSkinningBindingTracking()
 {
-	if (gHasPreSkinTextureOverrideCandidates == 0)
-		return false;
-	if (!DX12ModHasActivePreSkinTextureOverrides())
-		return gPreSkinBindingIdleFrames < kPreSkinBindingIdleMax;
-	return true;
+	return (DX12ModGetHotPathFlags() &
+		DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK) != 0;
 }
 
 bool DX12ModHasActivePreSkinTextureOverrides()
@@ -2443,6 +2436,40 @@ bool DX12ModHasActivePreSkinTextureOverrides()
 	active = !gActivePreSkinTextureOverrides.empty();
 	ReleaseSRWLockShared(&gPreSkinLock);
 	return active;
+}
+
+UINT32 DX12ModGetHotPathFlags()
+{
+	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)
+		return 0;
+
+	UINT32 flags = 0;
+	const bool hasShaderOverrides =
+		gHasShaderOverrides != 0 || gHasShaderRegexes != 0;
+	const bool hasTextureOverrides =
+		gHasTextureOverrides != 0 &&
+		gHasShaderTriggeredTextureOverrides != 0;
+
+	if (hasShaderOverrides)
+		flags |= DX12_MOD_HOT_SHADER_OVERRIDES;
+	if (gHasPresentRuntimeEffect != 0)
+		flags |= DX12_MOD_HOT_PRESENT_REPLACEMENT;
+	if (hasTextureOverrides &&
+	    gHasPreSkinTextureOverrideCandidates != 0) {
+		flags |= DX12_MOD_HOT_PRE_SKIN_PROBE;
+		const bool hasActivePreSkinOverrides =
+			InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) != 0;
+		if (hasActivePreSkinOverrides ||
+		    InterlockedCompareExchange(&gPreSkinBindingIdleFrames, 0, 0) <
+				kPreSkinBindingIdleMax) {
+			flags |= DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK;
+		}
+	}
+	if (gHasShaderDescriptorTextureOverrideTriggers != 0 ||
+	    gHasDrawSrvTextureReplacementOverrides != 0) {
+		flags |= DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK;
+	}
+	return flags;
 }
 
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)

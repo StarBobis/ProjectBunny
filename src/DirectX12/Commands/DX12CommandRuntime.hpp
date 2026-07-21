@@ -1604,13 +1604,31 @@ public:
 	inline static bool capturing = false;
 	inline static bool dumpPending = false;
 	inline static UINT captureFramesRemaining = 0;
-	inline static volatile LONG activeFast = 0;
-	inline static volatile LONG captureRequestedFast = 0;
-	inline static volatile LONG capturingFast = 0;
+	inline static volatile LONG fastStateFlags = 0;
 	inline static wchar_t path[MAX_PATH] = {};
 	inline static FILE *log = nullptr;
 	inline static unsigned long long lineNo = 0;
 	inline static constexpr UINT CaptureFramesPerDump = 1;
+	static constexpr LONG FLAG_ACTIVE = 1 << 0;
+	static constexpr LONG FLAG_CAPTURE_REQUESTED = 1 << 1;
+	static constexpr LONG FLAG_CAPTURING = 1 << 2;
+
+	static void PublishFastStateLocked()
+	{
+		LONG flags = 0;
+		if (active)
+			flags |= FLAG_ACTIVE;
+		if (captureRequested)
+			flags |= FLAG_CAPTURE_REQUESTED;
+		if (capturing)
+			flags |= FLAG_CAPTURING;
+		InterlockedExchange(&fastStateFlags, flags);
+	}
+
+	static LONG GetFastFlags()
+	{
+		return InterlockedCompareExchange(&fastStateFlags, 0, 0);
+	}
 
 	static bool Begin()
 	{
@@ -1645,9 +1663,7 @@ public:
 		capturing = false;
 		dumpPending = false;
 		captureFramesRemaining = 0;
-		InterlockedExchange(&activeFast, 1);
-		InterlockedExchange(&captureRequestedFast, 0);
-		InterlockedExchange(&capturingFast, 0);
+		PublishFastStateLocked();
 		ReleaseSRWLockExclusive(&lock);
 
 		DX12LogManager::Text("Frame analysis directory: %S\n", modulePath);
@@ -1662,9 +1678,7 @@ public:
 		capturing = false;
 		dumpPending = false;
 		captureFramesRemaining = 0;
-		InterlockedExchange(&activeFast, 0);
-		InterlockedExchange(&captureRequestedFast, 0);
-		InterlockedExchange(&capturingFast, 0);
+		PublishFastStateLocked();
 		CloseLogLocked();
 		ReleaseSRWLockExclusive(&lock);
 	}
@@ -1674,7 +1688,7 @@ public:
 		AcquireSRWLockExclusive(&lock);
 		if (active && !capturing && !dumpPending) {
 			captureRequested = true;
-			InterlockedExchange(&captureRequestedFast, 1);
+			PublishFastStateLocked();
 		}
 		ReleaseSRWLockExclusive(&lock);
 	}
@@ -1685,9 +1699,8 @@ public:
 		if (active && captureRequested && !capturing && !dumpPending) {
 			captureRequested = false;
 			capturing = true;
-			InterlockedExchange(&captureRequestedFast, 0);
-			InterlockedExchange(&capturingFast, 1);
 			captureFramesRemaining = CaptureFramesPerDump;
+			PublishFastStateLocked();
 		}
 		ReleaseSRWLockExclusive(&lock);
 	}
@@ -1704,7 +1717,7 @@ public:
 			capturing = false;
 			dumpPending = true;
 			captureFramesRemaining = 0;
-			InterlockedExchange(&capturingFast, 0);
+			PublishFastStateLocked();
 			ReleaseSRWLockExclusive(&lock);
 			return true;
 		}
@@ -1714,17 +1727,17 @@ public:
 
 	static bool IsActive()
 	{
-		return InterlockedCompareExchange(&activeFast, 0, 0) != 0;
+		return (GetFastFlags() & FLAG_ACTIVE) != 0;
 	}
 
 	static bool IsCaptureRequested()
 	{
-		return InterlockedCompareExchange(&captureRequestedFast, 0, 0) != 0;
+		return (GetFastFlags() & FLAG_CAPTURE_REQUESTED) != 0;
 	}
 
 	static bool IsCapturing()
 	{
-		return InterlockedCompareExchange(&capturingFast, 0, 0) != 0;
+		return (GetFastFlags() & FLAG_CAPTURING) != 0;
 	}
 
 	static bool GetPath(wchar_t *outPath, size_t pathCount)
@@ -1797,6 +1810,15 @@ bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsPreSkinningBindingTracking();
 bool DX12ModNeedsShaderDescriptorTracking();
+enum DX12ModHotPathFlagBits : UINT32
+{
+	DX12_MOD_HOT_SHADER_OVERRIDES = 1u << 0,
+	DX12_MOD_HOT_PRESENT_REPLACEMENT = 1u << 1,
+	DX12_MOD_HOT_PRE_SKIN_PROBE = 1u << 2,
+	DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK = 1u << 3,
+	DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK = 1u << 4
+};
+UINT32 DX12ModGetHotPathFlags();
 
 class DX12HotPathState
 {
@@ -1829,76 +1851,151 @@ public:
 	static constexpr UINT64 MASK_DISPATCH_WORK =
 		MASK_DRAW_WORK | FLAG_PRE_SKIN_PROBE;
 
+	class SourceState
+	{
+	public:
+		bool huntEnabled = false;
+		bool frameAnalysisActive = false;
+		bool shaderDumpActive = false;
+		bool shaderOverrides = false;
+		bool presentReplacement = false;
+		bool preSkinProbe = false;
+		bool preSkinBindingTrack = false;
+		bool shaderDescriptorTrack = false;
+
+		static SourceState Capture()
+		{
+			SourceState state;
+			state.huntEnabled = DX12HuntNeedsHotPath();
+			state.frameAnalysisActive = DX12FrameAnalysisState::IsActive();
+			state.shaderDumpActive = DX12ShaderDumpIsBusy();
+			const UINT32 modFlags = DX12ModGetHotPathFlags();
+			state.shaderOverrides =
+				(modFlags & DX12_MOD_HOT_SHADER_OVERRIDES) != 0;
+			state.presentReplacement =
+				(modFlags & DX12_MOD_HOT_PRESENT_REPLACEMENT) != 0;
+			state.preSkinProbe =
+				(modFlags & DX12_MOD_HOT_PRE_SKIN_PROBE) != 0;
+			state.preSkinBindingTrack =
+				(modFlags & DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK) != 0;
+			state.shaderDescriptorTrack =
+				(modFlags & DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK) != 0;
+			return state;
+		}
+
+		UINT64 BuildHookWorkFlags() const
+		{
+			UINT64 flags = 0;
+			if (shaderOverrides || presentReplacement)
+				flags |= FLAG_NEEDS_MOD_WORK;
+			if (shaderOverrides)
+				flags |= FLAG_SHADER_OVERRIDES;
+			if (presentReplacement)
+				flags |= FLAG_PRESENT_REPLACEMENT;
+			if (huntEnabled)
+				flags |= FLAG_HUNT_ENABLED;
+			if (frameAnalysisActive)
+				flags |= FLAG_FRAME_ANALYSIS_ACTIVE;
+			if (shaderDumpActive)
+				flags |= FLAG_SHADER_DUMP_ACTIVE;
+			if (preSkinProbe)
+				flags |= FLAG_PRE_SKIN_PROBE;
+			if (preSkinBindingTrack)
+				flags |= FLAG_PRE_SKIN_BINDING_TRACK;
+			return flags;
+		}
+
+		bool HasAnyWork() const
+		{
+			return huntEnabled ||
+				frameAnalysisActive ||
+				shaderDumpActive ||
+				shaderOverrides ||
+				presentReplacement ||
+				preSkinProbe ||
+				preSkinBindingTrack ||
+				shaderDescriptorTrack;
+		}
+
+		bool NeedsHeavyTracking() const
+		{
+			return huntEnabled || shaderDumpActive;
+		}
+
+		bool NeedsRecordWork() const
+		{
+			return huntEnabled || shaderOverrides || presentReplacement;
+		}
+
+		bool NeedsBindingState() const
+		{
+			return NeedsHeavyTracking() || preSkinBindingTrack;
+		}
+
+		bool NeedsGraphicsBindingState() const
+		{
+			return NeedsHeavyTracking() || shaderDescriptorTrack;
+		}
+
+		const char *ModeName() const
+		{
+			return huntEnabled ? "Hunting" : "Mod";
+		}
+	};
+
+	static bool HasAnyFlag(UINT64 flags, UINT64 mask)
+	{
+		return (flags & mask) != 0;
+	}
+
+	static bool NeedsResidentIaState(UINT64 flags)
+	{
+		return HasAnyFlag(flags, FLAG_HUNT_ENABLED | FLAG_SHADER_OVERRIDES);
+	}
+
+	static bool NeedsHuntOnlyPipelineObservation(UINT64 flags)
+	{
+		return HasAnyFlag(flags, FLAG_HUNT_ENABLED) &&
+			!HasAnyFlag(flags, FLAG_SHADER_OVERRIDES);
+	}
+
+	static bool NeedsPreSkinBindingTracking(UINT64 flags)
+	{
+		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);
+	}
+
 	static void RebuildHookWorkFlags()
 	{
-		UINT64 flags = 0;
-		const bool shaderOverrides = DX12ModHasActiveShaderOverrides();
-		const bool presentReplacement = DX12ModNeedsPresentReplacement();
-		if (shaderOverrides || presentReplacement)
-			flags |= FLAG_NEEDS_MOD_WORK;
-		if (shaderOverrides)
-			flags |= FLAG_SHADER_OVERRIDES;
-		if (presentReplacement)
-			flags |= FLAG_PRESENT_REPLACEMENT;
-		if (DX12HuntIsEnabled())
-			flags |= FLAG_HUNT_ENABLED;
-		if (DX12FrameAnalysisState::IsActive() || DX12FrameAnalysisState::IsCapturing() || DX12FrameAnalysisState::IsCaptureRequested())
-			flags |= FLAG_FRAME_ANALYSIS_ACTIVE;
-		if (DX12ShaderDumpIsCapturingFrame() || DX12ShaderDumpIsCaptureRequested() || DX12ShaderDumpIsBusy())
-			flags |= FLAG_SHADER_DUMP_ACTIVE;
-		if (DX12ModNeedsPreSkinningUavProbe())
-			flags |= FLAG_PRE_SKIN_PROBE;
-		if (DX12ModNeedsPreSkinningBindingTracking())
-			flags |= FLAG_PRE_SKIN_BINDING_TRACK;
-
+		const SourceState source = SourceState::Capture();
+		const UINT64 flags = source.BuildHookWorkFlags();
 		InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&HookWorkFlags), static_cast<LONG64>(flags));
 	}
 
 	static void Update()
 	{
-		if (skipAll &&
-			!DX12FrameAnalysisState::IsActive() &&
-			!DX12FrameAnalysisState::IsCapturing() &&
-			!DX12FrameAnalysisState::IsCaptureRequested() &&
-			!DX12ShaderDumpIsCapturingFrame() &&
-			!DX12ShaderDumpIsCaptureRequested() &&
-			!DX12ShaderDumpIsBusy() &&
-			!DX12HuntNeedsHotPath() &&
-			!DX12ModHasActiveShaderOverrides() &&
-			!DX12ModNeedsPresentReplacement() &&
-			!DX12ModNeedsPreSkinningUavProbe() &&
-			!DX12ModNeedsPreSkinningBindingTracking())
+		const SourceState source = SourceState::Capture();
+		if (skipAll && !source.HasAnyWork())
 			return;
-
-		const bool huntingMode = DX12RuntimeState::IsHuntingMode();
-		const bool needsHeavyTracking =
-			huntingMode ||
-			DX12ShaderDumpIsCapturingFrame() ||
-			DX12ShaderDumpIsBusy();
 
 		// As in DX11, skipAll controls draw, state, and copy hooks.
 		// PreSkin only needs dispatch hooks and compute binding tracking;
 		// skipBindings and the dispatch-specific check handle that case.
-		const bool needsRecordWork =
-			huntingMode ||
-			DX12ModHasActiveShaderOverrides() ||
-			DX12ModNeedsPresentReplacement();
-		const bool needsBindingState =
-			needsHeavyTracking ||
-			DX12ModNeedsPreSkinningBindingTracking();
-		const bool needsGraphicsBindingState =
-			needsHeavyTracking ||
-			DX12ModNeedsShaderDescriptorTracking();
-
-		const LONG skipAll = (needsHeavyTracking || needsRecordWork) ? 0 : 1;
-		const LONG skipBindings = needsBindingState ? 0 : 1;
-		const LONG skipGraphicsBindings = needsGraphicsBindingState ? 0 : 1;
-		const LONG trackResourceMetadata = needsHeavyTracking ? 1 : 0;
+		const LONG skipAll =
+			(source.NeedsHeavyTracking() || source.NeedsRecordWork()) ? 0 : 1;
+		const LONG skipBindings = source.NeedsBindingState() ? 0 : 1;
+		const LONG skipGraphicsBindings =
+			source.NeedsGraphicsBindingState() ? 0 : 1;
+		const LONG trackResourceMetadata =
+			source.NeedsHeavyTracking() ? 1 : 0;
+		const UINT64 flags = source.BuildHookWorkFlags();
 
 		InterlockedExchange(&DX12HotPathState::skipAll, skipAll);
 		InterlockedExchange(&DX12HotPathState::skipBindings, skipBindings);
 		InterlockedExchange(&DX12HotPathState::skipGraphicsBindings, skipGraphicsBindings);
 		InterlockedExchange(&DX12HotPathState::trackResourceMetadata, trackResourceMetadata);
+		InterlockedExchange64(
+			reinterpret_cast<volatile LONG64*>(&HookWorkFlags),
+			static_cast<LONG64>(flags));
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |
@@ -1912,17 +2009,14 @@ public:
 			DX12CommandListRuntime::BumpTrackingGeneration();
 			DX12LogManager::Fields("DX12HotPathState",
 				"\"mode\":\"%s\",\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
-				huntingMode ? "Hunting" : "Mod",
+				source.ModeName(),
 				skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata);
 		}
-
-		// Refresh the flags word used by the single hot-path branch.
-		RebuildHookWorkFlags();
 	}
 
 	static bool HooksNeeded()
 	{
 		return InterlockedCompareExchange(&skipAll, 0, 0) == 0 ||
-			DX12HuntNeedsHotPath();
+			HasAnyFlag(HookWorkFlags, FLAG_HUNT_ENABLED);
 	}
 };
