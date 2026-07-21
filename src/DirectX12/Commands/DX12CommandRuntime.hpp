@@ -1816,7 +1816,8 @@ enum DX12ModHotPathFlagBits : UINT32
 	DX12_MOD_HOT_PRESENT_REPLACEMENT = 1u << 1,
 	DX12_MOD_HOT_PRE_SKIN_PROBE = 1u << 2,
 	DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK = 1u << 3,
-	DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK = 1u << 4
+	DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK = 1u << 4,
+	DX12_MOD_HOT_IA_RESIDENT_STATE = 1u << 5
 };
 UINT32 DX12ModGetHotPathFlags();
 
@@ -1843,6 +1844,7 @@ public:
 	static constexpr UINT64 FLAG_PRE_SKIN_BINDING_TRACK  = 1ull << 5;
 	static constexpr UINT64 FLAG_SHADER_OVERRIDES         = 1ull << 6;
 	static constexpr UINT64 FLAG_PRESENT_REPLACEMENT      = 1ull << 7;
+	static constexpr UINT64 FLAG_IA_RESIDENT_STATE        = 1ull << 8;
 
 	// Combined masks allow one branch for draw or dispatch hook work.
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -1862,6 +1864,7 @@ public:
 		bool preSkinProbe = false;
 		bool preSkinBindingTrack = false;
 		bool shaderDescriptorTrack = false;
+		bool iaResidentState = false;
 
 		static SourceState Capture()
 		{
@@ -1880,6 +1883,8 @@ public:
 				(modFlags & DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK) != 0;
 			state.shaderDescriptorTrack =
 				(modFlags & DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK) != 0;
+			state.iaResidentState =
+				(modFlags & DX12_MOD_HOT_IA_RESIDENT_STATE) != 0;
 			return state;
 		}
 
@@ -1902,6 +1907,8 @@ public:
 				flags |= FLAG_PRE_SKIN_PROBE;
 			if (preSkinBindingTrack)
 				flags |= FLAG_PRE_SKIN_BINDING_TRACK;
+			if (iaResidentState)
+				flags |= FLAG_IA_RESIDENT_STATE;
 			return flags;
 		}
 
@@ -1914,7 +1921,8 @@ public:
 				presentReplacement ||
 				preSkinProbe ||
 				preSkinBindingTrack ||
-				shaderDescriptorTrack;
+				shaderDescriptorTrack ||
+				iaResidentState;
 		}
 
 		bool NeedsHeavyTracking() const
@@ -1950,7 +1958,7 @@ public:
 
 	static bool NeedsResidentIaState(UINT64 flags)
 	{
-		return HasAnyFlag(flags, FLAG_HUNT_ENABLED | FLAG_SHADER_OVERRIDES);
+		return HasAnyFlag(flags, FLAG_HUNT_ENABLED | FLAG_IA_RESIDENT_STATE);
 	}
 
 	static bool NeedsHuntOnlyPipelineObservation(UINT64 flags)

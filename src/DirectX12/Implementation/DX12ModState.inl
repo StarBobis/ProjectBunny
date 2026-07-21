@@ -178,6 +178,11 @@ public:
 	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
 	std::vector<DX12ModIaReplacement::DrawCall> draws;
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
+
+	bool NeedsResidentIaState() const
+	{
+		return !indexResource.empty() || !vertexResources.empty();
+	}
 };
 static std::unordered_map<std::wstring, DX12CompiledCommandListPlan> gCompiledCommandListPlans;
 
@@ -199,6 +204,14 @@ public:
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
 	std::vector<DX12CompiledDrawSrvResourceBinding> drawSrvResources;
 	std::wstring drawReplaceThisResource;
+
+	bool NeedsResidentIaState() const
+	{
+		return !indexResource.empty() ||
+			!vertexResources.empty() ||
+			(hasPreCommandListPlan && preCommandListPlan.NeedsResidentIaState()) ||
+			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
+	}
 };
 static std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> gCompiledTextureOverridePlans;
 
@@ -211,6 +224,12 @@ public:
 	bool hasPostCommandListPlan = false;
 	DX12CompiledCommandListPlan mainPlan;
 	DX12CompiledCommandListPlan postCommandListPlan;
+
+	bool NeedsResidentIaState() const
+	{
+		return mainPlan.NeedsResidentIaState() ||
+			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
+	}
 };
 
 class DX12CommandExecutionRuntimeSnapshot
@@ -254,6 +273,7 @@ static volatile LONG gHasShaderRegexes = 0;
 static volatile LONG gHasTextureOverrides = 0;
 static volatile LONG gHasShaderDescriptorTextureOverrideTriggers = 0;
 static volatile LONG gHasDrawSrvTextureReplacementOverrides = 0;
+static volatile LONG gHasIaResidentStateRequirements = 0;
 static volatile LONG gHasPreSkinTextureOverrideCandidates = 0;
 static volatile LONG gHasShaderTriggeredTextureOverrides = 0;
 static volatile LONG gHasPresentRuntimeEffect = 0;
