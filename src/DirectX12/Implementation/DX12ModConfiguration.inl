@@ -629,6 +629,11 @@ static void BuildDx12CompiledTextureOverridePlans(
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> *compiledPlans);
+static void BuildDx12CompiledShaderOverridePlans(
+	const Bunny::ShaderOverrideMap &shaderOverrides,
+	const Bunny::ShaderRegexMap &shaderRegexes,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> *compiledPlans);
 static void BuildDx12CompiledCommandListPlans(
 	const Bunny::CommandListMap &commandLists,
 	std::unordered_map<std::wstring, DX12CompiledCommandListPlan> *compiledPlans);
@@ -1128,7 +1133,8 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
-	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans)
+	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans,
+	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &compiledShaderOverridePlans)
 {
 	std::shared_ptr<DX12CommandExecutionRuntimeSnapshot> snapshot =
 		std::make_shared<DX12CommandExecutionRuntimeSnapshot>();
@@ -1154,6 +1160,11 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 		snapshot->compiledTextureOverridePlans.emplace(
 			item.first,
 			std::make_shared<const DX12CompiledTextureOverridePlan>(planIt->second));
+	}
+	for (const auto &item : compiledShaderOverridePlans) {
+		snapshot->compiledShaderOverridePlans.emplace(
+			item.first,
+			std::make_shared<const DX12CompiledShaderOverridePlan>(item.second));
 	}
 	return snapshot;
 }
@@ -1233,6 +1244,7 @@ bool DX12ModRuntimeLoad(
 	std::unordered_map<std::wstring, bool> textureOverridePostRuntimeEffect;
 	std::unordered_map<std::wstring, uint32_t> textureOverrideSectionIds;
 	std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> compiledTextureOverridePlans;
+	std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> compiledShaderOverridePlans;
 	std::unordered_map<std::wstring, DX12CompiledCommandListPlan> compiledCommandListPlans;
 	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> commandExecutionRuntimeSnapshot;
 	bool presentRuntimeEffect = false;
@@ -1346,12 +1358,16 @@ bool DX12ModRuntimeLoad(
 	BuildDx12CompiledTextureOverridePlans(
 		textureOverrides, textureOverrideSectionIds, compiledCommandListPlans,
 		&compiledTextureOverridePlans);
+	BuildDx12CompiledShaderOverridePlans(
+		shaderOverrides, shaderRegexes, compiledCommandListPlans,
+		&compiledShaderOverridePlans);
 	commandExecutionRuntimeSnapshot = BuildDx12CommandExecutionRuntimeSnapshot(
 		commandLists,
 		commandListRuntimeEffect,
 		textureOverrideSectionIds,
 		compiledCommandListPlans,
-		compiledTextureOverridePlans);
+		compiledTextureOverridePlans,
+		compiledShaderOverridePlans);
 	BuildDx12PreSkinTextureOverrideIndex(
 		textureOverrides,
 		&preSkinTextureOverrides,

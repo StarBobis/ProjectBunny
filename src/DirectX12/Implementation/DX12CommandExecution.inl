@@ -57,6 +57,18 @@ SnapshotCompiledCommandListPlan(const std::wstring &name)
 		nullptr : planIt->second;
 }
 
+static std::shared_ptr<const DX12CompiledShaderOverridePlan>
+SnapshotCompiledShaderOverridePlan(const std::wstring &section)
+{
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (!snapshot)
+		return nullptr;
+	auto planIt = snapshot->compiledShaderOverridePlans.find(section);
+	return planIt == snapshot->compiledShaderOverridePlans.end() ?
+		nullptr : planIt->second;
+}
+
 static DX12IaHashState EmptyIaHashState()
 {
 	DX12IaHashState state = {};
@@ -159,6 +171,12 @@ public:
 	{
 		if (!mReplacement)
 			return;
+		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
+			SnapshotCompiledShaderOverridePlan(config.section);
+		if (compiledPlan && !compiledPlan->unsupported) {
+			RunCompiledShaderOverridePlan(*compiledPlan);
+			return;
+		}
 		if (config.handlingSkip)
 			SetSkip();
 		RunCommandListLinks(config.commandLists, 0, false, nullptr);
@@ -177,6 +195,12 @@ public:
 	void RunPostShaderOverrideLists(
 		const Bunny::ShaderOverrideConfig &config)
 	{
+		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
+			SnapshotCompiledShaderOverridePlan(config.section);
+		if (compiledPlan && !compiledPlan->unsupported) {
+			RunCompiledShaderOverridePostPlan(*compiledPlan);
+			return;
+		}
 		Bunny::CommandListLinks postLinks;
 		postLinks.main = config.commandLists.post;
 		RunCommandListLinks(postLinks, 0, true, nullptr);
@@ -262,34 +286,40 @@ public:
 		if (!mReplacement || depth > 16 || !config)
 			return;
 
-		if (mExecuteCommands) {
-			for (const std::wstring &list : config->commandLists.pre) {
-				Bunny::CommandListLinks links;
-				links.main.push_back(list);
-				RunCommandListLinks(links, depth + 1, false, &match);
-			}
-		}
-
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
 			SnapshotCompiledTextureOverridePlan(*config);
 		const DX12CompiledTextureOverridePlan *compiledPlanView =
 			compiledPlan.get();
-		if (!(compiledPlanView && RunCompiledTextureOverridePlan(*compiledPlanView))) {
-			RunTextureOverrideActions(*config, depth, includePost, &match);
-		}
-
-		if (mExecuteCommands) {
-			for (const std::wstring &list : config->commandLists.main) {
-				Bunny::CommandListLinks links;
-				links.main.push_back(list);
-				RunCommandListLinks(links, depth + 1, false, &match);
-			}
-
-			if (includePost) {
-				for (const std::wstring &list : config->commandLists.post) {
+		const bool compiledTextureOverride =
+			compiledPlanView && !compiledPlanView->hasUnsupportedCommandActions;
+		if (compiledTextureOverride) {
+			if (compiledPlanView->hasPreCommandListPlan)
+				ExecuteCompiledCommandListPlan(compiledPlanView->preCommandListPlan);
+			RunCompiledTextureOverridePlan(*compiledPlanView);
+			if (includePost && compiledPlanView->hasPostCommandListPlan)
+				ExecuteCompiledCommandListPlan(compiledPlanView->postCommandListPlan);
+		} else {
+			if (mExecuteCommands) {
+				for (const std::wstring &list : config->commandLists.pre) {
 					Bunny::CommandListLinks links;
 					links.main.push_back(list);
-					RunCommandListLinks(links, depth + 1, true, &match);
+					RunCommandListLinks(links, depth + 1, false, &match);
+				}
+			}
+			RunTextureOverrideActions(*config, depth, includePost, &match);
+			if (mExecuteCommands) {
+				for (const std::wstring &list : config->commandLists.main) {
+					Bunny::CommandListLinks links;
+					links.main.push_back(list);
+					RunCommandListLinks(links, depth + 1, false, &match);
+				}
+
+				if (includePost) {
+					for (const std::wstring &list : config->commandLists.post) {
+						Bunny::CommandListLinks links;
+						links.main.push_back(list);
+						RunCommandListLinks(links, depth + 1, true, &match);
+					}
 				}
 			}
 		}
@@ -313,9 +343,6 @@ public:
 
 	bool RunCompiledTextureOverridePlan(const DX12CompiledTextureOverridePlan &plan)
 	{
-		if (plan.hasUnsupportedCommandActions)
-			return false;
-
 		AppendResourceViews(plan.indexResource, plan.vertexResources);
 		const bool executeActions = mExecuteCommands || mExecuteDrawActions;
 		if (executeActions && plan.handlingSkip)
@@ -331,6 +358,20 @@ public:
 			}
 		}
 		return true;
+	}
+
+	void RunCompiledShaderOverridePlan(const DX12CompiledShaderOverridePlan &plan)
+	{
+		if (plan.unsupported)
+			return;
+		ExecuteCompiledCommandListPlan(plan.mainPlan);
+	}
+
+	void RunCompiledShaderOverridePostPlan(const DX12CompiledShaderOverridePlan &plan)
+	{
+		if (plan.unsupported || !plan.hasPostCommandListPlan)
+			return;
+		ExecuteCompiledCommandListPlan(plan.postCommandListPlan);
 	}
 
 	bool RunCompiledCommandListPlan(const std::wstring &name)
@@ -858,6 +899,7 @@ public:
 	bool alwaysMiss = false;
 	UINT64 generation = 0;
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> configSnapshot;
+	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
 };
 
 static std::unordered_map<ID3D12PipelineState*, DX12CompiledPsoOverridePlan> gPsoOverridePlans;
@@ -867,12 +909,14 @@ static bool TryLoadCompiledPsoPlan(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> *configSnapshot,
+	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> *compiledPlanSnapshot,
 	bool *alwaysMiss)
 {
-	if (!configSnapshot || !alwaysMiss)
+	if (!configSnapshot || !compiledPlanSnapshot || !alwaysMiss)
 		return false;
 	*alwaysMiss = false;
 	configSnapshot->reset();
+	compiledPlanSnapshot->reset();
 	if (!pipelineState)
 		return false;
 
@@ -883,10 +927,36 @@ static bool TryLoadCompiledPsoPlan(
 		return false;
 	}
 	*alwaysMiss = it->second.alwaysMiss;
-	if (!it->second.alwaysMiss)
+	if (!it->second.alwaysMiss) {
 		*configSnapshot = it->second.configSnapshot;
+		*compiledPlanSnapshot = it->second.compiledPlanSnapshot;
+	}
 	ReleaseSRWLockShared(&gPsoOverridePlansLock);
 	return true;
+}
+
+static std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>>
+BuildCompiledShaderOverridePlanSnapshot(
+	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot)
+{
+	if (configSnapshot.empty())
+		return nullptr;
+	std::shared_ptr<std::vector<DX12CompiledShaderOverridePlan>> compiledPlans =
+		std::make_shared<std::vector<DX12CompiledShaderOverridePlan>>();
+	compiledPlans->reserve(configSnapshot.size());
+	for (const Bunny::ShaderOverrideConfig &config : configSnapshot) {
+		DX12CompiledShaderOverridePlan plan;
+		BuildCompiledShaderOverridePlanFromParts(
+			config.handlingSkip,
+			config.commandLists,
+			config.actions,
+			gCompiledCommandListPlans,
+			&plan);
+		if (plan.unsupported)
+			return nullptr;
+		compiledPlans->push_back(std::move(plan));
+	}
+	return compiledPlans;
 }
 
 static void StoreCompiledPsoPlan(
@@ -905,6 +975,8 @@ static void StoreCompiledPsoPlan(
 	plan.alwaysMiss = false;
 	plan.generation = reloadGeneration;
 	plan.configSnapshot = std::make_shared<const std::vector<Bunny::ShaderOverrideConfig>>(configSnapshot);
+	plan.compiledPlanSnapshot =
+		BuildCompiledShaderOverridePlanSnapshot(configSnapshot);
 	gPsoOverridePlans[pipelineState] = plan;
 	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
 }
@@ -1558,9 +1630,11 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12ShaderOverrideConfigView configView;
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> compiledSnapshot;
+	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
 	bool alwaysMiss = false;
 	bool compiledPlanHit = TryLoadCompiledPsoPlan(
-		pipelineState, reloadGeneration, &compiledSnapshot, &alwaysMiss);
+		pipelineState, reloadGeneration,
+		&compiledSnapshot, &compiledPlanSnapshot, &alwaysMiss);
 	if (compiledPlanHit && alwaysMiss)
 		return false;
 	if (compiledPlanHit) {
@@ -1604,8 +1678,12 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		firstVertex, firstIndex, firstInstance,
 		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
-	for (const Bunny::ShaderOverrideConfig &config : configSnapshot) {
-		executor.RunShaderOverride(config);
+	if (compiledPlanSnapshot && !compiledPlanSnapshot->empty()) {
+		for (const DX12CompiledShaderOverridePlan &plan : *compiledPlanSnapshot)
+			executor.RunCompiledShaderOverridePlan(plan);
+	} else {
+		for (const Bunny::ShaderOverrideConfig &config : configSnapshot)
+			executor.RunShaderOverride(config);
 	}
 	const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
 		device, commandList, iaState, pendingResourceViews, replacement);
@@ -1665,12 +1743,23 @@ void DX12ModRunPostShaderOverrideReplacement(
 	if (!device)
 		return;
 
-	std::vector<const Bunny::ShaderOverrideConfig*> configs;
 	std::vector<Bunny::ShaderOverrideConfig> configSnapshot;
-	AcquireSRWLockExclusive(&gModLock);
-	FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
-	CopyShaderOverrideConfigs(configs, &configSnapshot);
-	ReleaseSRWLockExclusive(&gModLock);
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> compiledSnapshot;
+	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
+	bool alwaysMiss = false;
+	const bool compiledPlanHit = TryLoadCompiledPsoPlan(
+		pipelineState, reloadGeneration,
+		&compiledSnapshot, &compiledPlanSnapshot, &alwaysMiss);
+	if (compiledPlanHit && compiledSnapshot)
+		configSnapshot.assign(compiledSnapshot->begin(), compiledSnapshot->end());
+	else {
+		std::vector<const Bunny::ShaderOverrideConfig*> configs;
+		AcquireSRWLockExclusive(&gModLock);
+		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
+		CopyShaderOverrideConfigs(configs, &configSnapshot);
+		ReleaseSRWLockExclusive(&gModLock);
+	}
 	if (!configSnapshot.empty()) {
 		std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
 		DX12CommandListExecutor executor(
@@ -1679,8 +1768,12 @@ void DX12ModRunPostShaderOverrideReplacement(
 			firstVertex, firstIndex, firstInstance,
 			replacement, &pendingResourceViews);
 		executor.SetExecutionMode(true, true);
-		for (const Bunny::ShaderOverrideConfig &config : configSnapshot) {
-			executor.RunPostShaderOverrideLists(config);
+		if (compiledPlanSnapshot && !compiledPlanSnapshot->empty()) {
+			for (const DX12CompiledShaderOverridePlan &plan : *compiledPlanSnapshot)
+				executor.RunCompiledShaderOverridePostPlan(plan);
+		} else {
+			for (const Bunny::ShaderOverrideConfig &config : configSnapshot)
+				executor.RunPostShaderOverrideLists(config);
 		}
 		const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
 			device, commandList, iaState, pendingResourceViews, replacement);

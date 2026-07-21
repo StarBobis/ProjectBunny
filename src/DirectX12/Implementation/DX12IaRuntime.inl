@@ -321,6 +321,26 @@ static void AppendCompiledCommandListPlan(
 	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
 }
 
+static bool AppendCompiledCommandListLinksPlan(
+	const std::vector<std::wstring> &links,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	DX12CompiledCommandListPlan *dst)
+{
+	if (!dst)
+		return false;
+	bool appended = false;
+	for (const std::wstring &link : links) {
+		auto commandPlan = compiledCommandListPlans.find(link);
+		if (commandPlan == compiledCommandListPlans.end() ||
+		    commandPlan->second.unsupported) {
+			return false;
+		}
+		AppendCompiledCommandListPlan(dst, commandPlan->second);
+		appended = true;
+	}
+	return appended;
+}
+
 static void AppendCompiledCommandListToTexturePlan(
 	DX12CompiledTextureOverridePlan *dst, const DX12CompiledCommandListPlan &src)
 {
@@ -333,6 +353,77 @@ static void AppendCompiledCommandListToTexturePlan(
 		SetCompiledVertexResourceBinding(&dst->vertexResources, item.slot, item.resource);
 	dst->draws.insert(dst->draws.end(), src.draws.begin(), src.draws.end());
 	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
+}
+
+static bool AppendCompiledCommandListLinksToTexturePlan(
+	const std::vector<std::wstring> &links,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	DX12CompiledTextureOverridePlan *dst)
+{
+	if (!dst)
+		return false;
+	bool appended = false;
+	for (const std::wstring &link : links) {
+		auto commandPlan = compiledCommandListPlans.find(link);
+		if (commandPlan == compiledCommandListPlans.end() ||
+		    commandPlan->second.unsupported) {
+			return false;
+		}
+		AppendCompiledCommandListToTexturePlan(dst, commandPlan->second);
+		appended = true;
+	}
+	return appended;
+}
+
+static void BuildCompiledShaderOverridePlanFromParts(
+	bool handlingSkip,
+	const Bunny::CommandListLinks &commandLists,
+	const std::vector<Bunny::CommandListAction> &actions,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	DX12CompiledShaderOverridePlan *plan)
+{
+	if (!plan)
+		return;
+	*plan = DX12CompiledShaderOverridePlan();
+	plan->mainPlan.handlingSkip = handlingSkip;
+	if (!commandLists.pre.empty() &&
+	    !AppendCompiledCommandListLinksPlan(
+			commandLists.pre, compiledCommandListPlans, &plan->mainPlan)) {
+		plan->unsupported = true;
+		return;
+	}
+	if (!commandLists.main.empty() &&
+	    !AppendCompiledCommandListLinksPlan(
+			commandLists.main, compiledCommandListPlans, &plan->mainPlan)) {
+		plan->unsupported = true;
+		return;
+	}
+	for (const Bunny::CommandListAction &action : actions) {
+		if (action.kind == Bunny::CommandListActionKind::Run) {
+			auto commandPlan = compiledCommandListPlans.find(action.commandList);
+			if (commandPlan == compiledCommandListPlans.end() ||
+			    commandPlan->second.unsupported) {
+				plan->unsupported = true;
+				return;
+			}
+			AppendCompiledCommandListPlan(&plan->mainPlan, commandPlan->second);
+			continue;
+		}
+		if (action.kind == Bunny::CommandListActionKind::CheckTextureOverride ||
+		    !AppendActionToCompiledPlan(action, &plan->mainPlan)) {
+			plan->unsupported = true;
+			return;
+		}
+	}
+	if (!commandLists.post.empty()) {
+		plan->hasPostCommandListPlan = true;
+		if (!AppendCompiledCommandListLinksPlan(
+				commandLists.post, compiledCommandListPlans,
+				&plan->postCommandListPlan)) {
+			plan->unsupported = true;
+			return;
+		}
+	}
 }
 
 static bool CompileCommandListPlanRecursive(
@@ -439,6 +530,17 @@ static void BuildDx12CompiledTextureOverridePlans(
 			AppendCompiledDrawSrvResourceBindings(
 				&plan.drawSrvResources, config.drawVsSrvResources, false);
 			plan.drawReplaceThisResource = config.drawReplaceThisResource;
+
+			if (!config.commandLists.pre.empty()) {
+				plan.hasPreCommandListPlan = true;
+				if (!AppendCompiledCommandListLinksPlan(
+						config.commandLists.pre,
+						compiledCommandListPlans,
+						&plan.preCommandListPlan)) {
+					plan.hasUnsupportedCommandActions = true;
+				}
+			}
+
 			if (config.actions.empty())
 			{
 				plan.handlingSkip = config.handlingSkip;
@@ -496,23 +598,77 @@ static void BuildDx12CompiledTextureOverridePlans(
 						plan.draws.push_back(draw);
 						break;
 					}
-						case Bunny::CommandListActionKind::Dispatch:
-						{
-							DX12ModIaReplacement::DispatchCall dispatch;
-							dispatch.groupsX = action.args[0];
-							dispatch.groupsY = action.args[1];
-							dispatch.groupsZ = action.args[2];
-							plan.dispatches.push_back(dispatch);
-							break;
-						}
-						default:
-							plan.hasUnsupportedCommandActions = true;
-							break;
-						}
+					case Bunny::CommandListActionKind::Dispatch:
+					{
+						DX12ModIaReplacement::DispatchCall dispatch;
+						dispatch.groupsX = action.args[0];
+						dispatch.groupsY = action.args[1];
+						dispatch.groupsZ = action.args[2];
+						plan.dispatches.push_back(dispatch);
+						break;
 					}
+					default:
+						plan.hasUnsupportedCommandActions = true;
+						break;
+					}
+
+					if (plan.hasUnsupportedCommandActions)
+						break;
 				}
+			}
+
+			if (!plan.hasUnsupportedCommandActions &&
+			    !config.commandLists.main.empty() &&
+			    !AppendCompiledCommandListLinksToTexturePlan(
+					config.commandLists.main,
+					compiledCommandListPlans,
+					&plan)) {
+				plan.hasUnsupportedCommandActions = true;
+			}
+			if (!plan.hasUnsupportedCommandActions &&
+			    !config.commandLists.post.empty()) {
+				plan.hasPostCommandListPlan = true;
+				if (!AppendCompiledCommandListLinksPlan(
+						config.commandLists.post,
+						compiledCommandListPlans,
+						&plan.postCommandListPlan)) {
+					plan.hasUnsupportedCommandActions = true;
+				}
+			}
+
 			(*compiledPlans)[sectionIdIt->second] = std::move(plan);
 		}
+	}
+}
+
+static void BuildDx12CompiledShaderOverridePlans(
+	const Bunny::ShaderOverrideMap &shaderOverrides,
+	const Bunny::ShaderRegexMap &shaderRegexes,
+	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
+	std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> *compiledPlans)
+{
+	if (!compiledPlans)
+		return;
+	compiledPlans->clear();
+	for (const auto &item : shaderOverrides) {
+		DX12CompiledShaderOverridePlan plan;
+		BuildCompiledShaderOverridePlanFromParts(
+			item.second.handlingSkip,
+			item.second.commandLists,
+			item.second.actions,
+			compiledCommandListPlans,
+			&plan);
+		(*compiledPlans)[item.second.section] = std::move(plan);
+	}
+	for (const auto &item : shaderRegexes) {
+		DX12CompiledShaderOverridePlan plan;
+		BuildCompiledShaderOverridePlanFromParts(
+			item.second.handlingSkip,
+			item.second.commandLists,
+			item.second.actions,
+			compiledCommandListPlans,
+			&plan);
+		(*compiledPlans)[item.second.section] = std::move(plan);
 	}
 }
 

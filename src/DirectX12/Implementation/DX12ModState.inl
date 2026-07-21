@@ -167,23 +167,6 @@ public:
 	std::wstring resource;
 };
 
-class DX12CompiledTextureOverridePlan
-
-{
-
-public:
-	bool hasActions = false;
-	bool hasUnsupportedCommandActions = false;
-	bool handlingSkip = false;
-	std::wstring indexResource;
-	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
-	std::vector<DX12ModIaReplacement::DrawCall> draws;
-	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
-	std::vector<DX12CompiledDrawSrvResourceBinding> drawSrvResources;
-	std::wstring drawReplaceThisResource;
-};
-static std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> gCompiledTextureOverridePlans;
-
 class DX12CompiledCommandListPlan
 
 {
@@ -198,6 +181,38 @@ public:
 };
 static std::unordered_map<std::wstring, DX12CompiledCommandListPlan> gCompiledCommandListPlans;
 
+class DX12CompiledTextureOverridePlan
+
+{
+
+public:
+	bool hasActions = false;
+	bool hasUnsupportedCommandActions = false;
+	bool hasPreCommandListPlan = false;
+	bool hasPostCommandListPlan = false;
+	bool handlingSkip = false;
+	DX12CompiledCommandListPlan preCommandListPlan;
+	DX12CompiledCommandListPlan postCommandListPlan;
+	std::wstring indexResource;
+	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
+	std::vector<DX12ModIaReplacement::DrawCall> draws;
+	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
+	std::vector<DX12CompiledDrawSrvResourceBinding> drawSrvResources;
+	std::wstring drawReplaceThisResource;
+};
+static std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> gCompiledTextureOverridePlans;
+
+class DX12CompiledShaderOverridePlan
+
+{
+
+public:
+	bool unsupported = false;
+	bool hasPostCommandListPlan = false;
+	DX12CompiledCommandListPlan mainPlan;
+	DX12CompiledCommandListPlan postCommandListPlan;
+};
+
 class DX12CommandExecutionRuntimeSnapshot
 
 {
@@ -210,6 +225,8 @@ public:
 		compiledCommandListPlans;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledTextureOverridePlan>>
 		compiledTextureOverridePlans;
+	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledShaderOverridePlan>>
+		compiledShaderOverridePlans;
 };
 static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 	gCommandExecutionRuntimeSnapshot;
