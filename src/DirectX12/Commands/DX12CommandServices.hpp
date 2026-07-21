@@ -60,10 +60,13 @@ public:
 		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
 		ID3D12DescriptorHeap *sampler = nullptr;
 		ResolveDescriptorHeaps(count, heaps, &cbvSrvUav, &sampler);
-		if (runtimeState)
-			DX12CommandListRuntime::SetDescriptorHeaps(runtimeState, cbvSrvUav, sampler);
-		else
-			DX12CommandListRuntime::SetDescriptorHeaps(commandList, cbvSrvUav, sampler);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsAnyResidentDescriptorState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::SetDescriptorHeaps(runtimeState, cbvSrvUav, sampler);
+			else
+				DX12CommandListRuntime::SetDescriptorHeaps(commandList, cbvSrvUav, sampler);
+		}
 
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
@@ -124,7 +127,7 @@ public:
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		const bool skipTrackedCapture = graphics ?
 			DX12HotPathState::skipGraphicsBindings :
-			(DX12HotPathState::skipBindings && !tracking.trackBindings);
+			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -166,18 +169,24 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		if (runtimeState) {
-			DX12CommandListRuntime::RememberRootDescriptorTable(
-				runtimeState, graphics, rootParameterIndex, baseDescriptor);
-		} else {
-			DX12CommandListRuntime::RememberRootDescriptorTable(
-				commandList, graphics, rootParameterIndex, baseDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentTable = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsComputeResidentDescriptorState(flags);
+		if (needsResidentTable) {
+			if (runtimeState) {
+				DX12CommandListRuntime::RememberRootDescriptorTable(
+					runtimeState, graphics, rootParameterIndex, baseDescriptor);
+			} else {
+				DX12CommandListRuntime::RememberRootDescriptorTable(
+					commandList, graphics, rootParameterIndex, baseDescriptor);
+			}
 		}
 		const DX12CommandListTrackingState tracking =
 			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 		const bool skipTrackedCapture = graphics ?
 			DX12HotPathState::skipGraphicsBindings :
-			(DX12HotPathState::skipBindings && !tracking.trackBindings);
+			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;

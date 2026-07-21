@@ -1845,6 +1845,7 @@ public:
 	static constexpr UINT64 FLAG_SHADER_OVERRIDES         = 1ull << 6;
 	static constexpr UINT64 FLAG_PRESENT_REPLACEMENT      = 1ull << 7;
 	static constexpr UINT64 FLAG_IA_RESIDENT_STATE        = 1ull << 8;
+	static constexpr UINT64 FLAG_SHADER_DESCRIPTOR_TRACK  = 1ull << 9;
 
 	// Combined masks allow one branch for draw or dispatch hook work.
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -1909,6 +1910,8 @@ public:
 				flags |= FLAG_PRE_SKIN_BINDING_TRACK;
 			if (iaResidentState)
 				flags |= FLAG_IA_RESIDENT_STATE;
+			if (shaderDescriptorTrack)
+				flags |= FLAG_SHADER_DESCRIPTOR_TRACK;
 			return flags;
 		}
 
@@ -1959,6 +1962,30 @@ public:
 	static bool NeedsResidentIaState(UINT64 flags)
 	{
 		return HasAnyFlag(flags, FLAG_HUNT_ENABLED | FLAG_IA_RESIDENT_STATE);
+	}
+
+	static bool NeedsGraphicsResidentDescriptorState(UINT64 flags)
+	{
+		return HasAnyFlag(
+			flags,
+			FLAG_SHADER_DESCRIPTOR_TRACK |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
+	static bool NeedsComputeResidentDescriptorState(UINT64 flags)
+	{
+		return HasAnyFlag(
+			flags,
+			FLAG_PRE_SKIN_BINDING_TRACK |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
+	static bool NeedsAnyResidentDescriptorState(UINT64 flags)
+	{
+		return NeedsGraphicsResidentDescriptorState(flags) ||
+			NeedsComputeResidentDescriptorState(flags);
 	}
 
 	static bool NeedsHuntOnlyPipelineObservation(UINT64 flags)
