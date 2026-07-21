@@ -44,12 +44,24 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Dispatch,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetPipelineState,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstant,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstants,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView,
+					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers,
 					DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect,
@@ -66,12 +78,24 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			mOrigDrawInstanced = ResolveOriginalDrawInstanced();
 			mOrigDrawIndexedInstanced = ResolveOriginalDrawIndexedInstanced();
 			mOrigDispatch = ResolveOriginalDispatch();
+			mOrigIASetPrimitiveTopology = ResolveOriginalIASetPrimitiveTopology();
 			mOrigSetPipelineState = ResolveOriginalSetPipelineState();
 			mOrigResourceBarrier = ResolveOriginalResourceBarrier();
+			mOrigSetDescriptorHeaps = ResolveOriginalSetDescriptorHeaps();
 			mOrigSetComputeRootSignature = ResolveOriginalSetComputeRootSignature();
 			mOrigSetGraphicsRootSignature = ResolveOriginalSetGraphicsRootSignature();
 			mOrigSetComputeRootDescriptorTable = ResolveOriginalSetComputeRootDescriptorTable();
 			mOrigSetGraphicsRootDescriptorTable = ResolveOriginalSetGraphicsRootDescriptorTable();
+			mOrigSetComputeRoot32BitConstant = ResolveOriginalSetComputeRoot32BitConstant();
+			mOrigSetGraphicsRoot32BitConstant = ResolveOriginalSetGraphicsRoot32BitConstant();
+			mOrigSetComputeRoot32BitConstants = ResolveOriginalSetComputeRoot32BitConstants();
+			mOrigSetGraphicsRoot32BitConstants = ResolveOriginalSetGraphicsRoot32BitConstants();
+			mOrigSetComputeRootConstantBufferView = ResolveOriginalSetComputeRootConstantBufferView();
+			mOrigSetGraphicsRootConstantBufferView = ResolveOriginalSetGraphicsRootConstantBufferView();
+			mOrigSetComputeRootShaderResourceView = ResolveOriginalSetComputeRootShaderResourceView();
+			mOrigSetGraphicsRootShaderResourceView = ResolveOriginalSetGraphicsRootShaderResourceView();
+			mOrigSetComputeRootUnorderedAccessView = ResolveOriginalSetComputeRootUnorderedAccessView();
+			mOrigSetGraphicsRootUnorderedAccessView = ResolveOriginalSetGraphicsRootUnorderedAccessView();
 			mOrigIASetIndexBuffer = ResolveOriginalIASetIndexBuffer();
 			mOrigIASetVertexBuffers = ResolveOriginalIASetVertexBuffers();
 			mOrigExecuteIndirect = ResolveOriginalExecuteIndirect();
@@ -136,6 +160,16 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				"Dispatch");
 		}
 
+		DX12CommandListHookSignatures::IaSetPrimitiveTopology ResolveOriginalIASetPrimitiveTopology()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::IaSetPrimitiveTopology>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology,
+				DX12CommandListHookState::OrigIASetPrimitiveTopology,
+				"IASetPrimitiveTopology");
+		}
+
 		DX12CommandListHookSignatures::SetPipelineState ResolveOriginalSetPipelineState()
 		{
 			return DX12CommandListHookRegistry::GetCommandListOriginal<
@@ -154,6 +188,16 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ResourceBarrier,
 				DX12CommandListHookState::OrigResourceBarrier,
 				"ResourceBarrier");
+		}
+
+		DX12CommandListHookSignatures::SetDescriptorHeaps ResolveOriginalSetDescriptorHeaps()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetDescriptorHeaps>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetDescriptorHeaps,
+				DX12CommandListHookState::OrigSetDescriptorHeaps,
+				"SetDescriptorHeaps");
 		}
 
 		DX12CommandListHookSignatures::SetRootSignature ResolveOriginalSetComputeRootSignature()
@@ -182,6 +226,106 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			return DX12CommandListHookRegistry::GetCommandListOriginal<DX12CommandListHookSignatures::SetRootDescriptorTable>(
 				mCommandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable,
 				DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
+		}
+
+		DX12CommandListHookSignatures::SetRoot32BitConstant ResolveOriginalSetComputeRoot32BitConstant()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRoot32BitConstant>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstant,
+				DX12CommandListHookState::OrigSetComputeRoot32BitConstant,
+				"SetComputeRoot32BitConstant");
+		}
+
+		DX12CommandListHookSignatures::SetRoot32BitConstant ResolveOriginalSetGraphicsRoot32BitConstant()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRoot32BitConstant>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant,
+				DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant,
+				"SetGraphicsRoot32BitConstant");
+		}
+
+		DX12CommandListHookSignatures::SetRoot32BitConstants ResolveOriginalSetComputeRoot32BitConstants()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRoot32BitConstants>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRoot32BitConstants,
+				DX12CommandListHookState::OrigSetComputeRoot32BitConstants,
+				"SetComputeRoot32BitConstants");
+		}
+
+		DX12CommandListHookSignatures::SetRoot32BitConstants ResolveOriginalSetGraphicsRoot32BitConstants()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRoot32BitConstants>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants,
+				DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants,
+				"SetGraphicsRoot32BitConstants");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetComputeRootConstantBufferView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootConstantBufferView,
+				DX12CommandListHookState::OrigSetComputeRootConstantBufferView,
+				"SetComputeRootConstantBufferView");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetGraphicsRootConstantBufferView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView,
+				DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView,
+				"SetGraphicsRootConstantBufferView");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetComputeRootShaderResourceView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootShaderResourceView,
+				DX12CommandListHookState::OrigSetComputeRootShaderResourceView,
+				"SetComputeRootShaderResourceView");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetGraphicsRootShaderResourceView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView,
+				DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView,
+				"SetGraphicsRootShaderResourceView");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetComputeRootUnorderedAccessView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView,
+				DX12CommandListHookState::OrigSetComputeRootUnorderedAccessView,
+				"SetComputeRootUnorderedAccessView");
+		}
+
+		DX12CommandListHookSignatures::SetRootGpuVa ResolveOriginalSetGraphicsRootUnorderedAccessView()
+		{
+			return DX12CommandListHookRegistry::GetCommandListOriginal<
+				DX12CommandListHookSignatures::SetRootGpuVa>(
+				mCommandList,
+				DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView,
+				DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView,
+				"SetGraphicsRootUnorderedAccessView");
 		}
 
 		DX12CommandListHookSignatures::IaSetIndexBuffer ResolveOriginalIASetIndexBuffer()
@@ -579,8 +723,21 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) override
 			{
 				DX12_HOTPATH_TIME_BEGIN(IaSetTopologyTotal);
-				DX12WrapperRuntimeUtils::IASetPrimitiveTopology(
-					mCommandList, &mRuntimeState, PrimitiveTopology);
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiIASetPrimitiveTopology);
+				if (DX12HotPathState::skipAll) {
+					if (mOrigIASetPrimitiveTopology)
+						mOrigIASetPrimitiveTopology(mCommandList, PrimitiveTopology);
+					else
+						mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
+				} else {
+					DX12CommandListStateFlow::CapturePrimitiveTopology(
+						mCommandList, &mRuntimeState, PrimitiveTopology);
+					if (mOrigIASetPrimitiveTopology)
+						mOrigIASetPrimitiveTopology(mCommandList, PrimitiveTopology);
+					else
+						mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
+				}
 				DX12_HOTPATH_TIME_END(IaSetTopologyTotal);
 			}
 
@@ -645,6 +802,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 			void STDMETHODCALLTYPE SetDescriptorHeaps(UINT NumDescriptorHeaps, ID3D12DescriptorHeap *const *ppDescriptorHeaps) override
 			{
+				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+					DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
 				// Four heaps fit on the stack; larger calls use heap storage.
 				ID3D12DescriptorHeap *stackUnwrapped[4];
 				ID3D12DescriptorHeap *const *activeHeaps = ppDescriptorHeaps;
@@ -659,8 +818,29 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						dest[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
 					activeHeaps = dest;
 				}
-				DX12WrapperRuntimeUtils::SetDescriptorHeaps(
-					mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);
+				ID3D12DescriptorHeap *cbvSrvUav = nullptr;
+				ID3D12DescriptorHeap *sampler = nullptr;
+				DX12CommandListComputeBindingFlow::ResolveDescriptorHeaps(
+					NumDescriptorHeaps, activeHeaps, &cbvSrvUav, &sampler);
+				const UINT64 flags = DX12HotPathState::HookWorkFlags;
+				if (DX12HotPathState::NeedsAnyResidentDescriptorState(flags))
+					DX12CommandListRuntime::SetDescriptorHeaps(
+						&mRuntimeState, cbvSrvUav, sampler);
+
+				const bool skipComputeBinding =
+					DX12HotPathState::skipAll &&
+					!DX12HotPathState::NeedsPreSkinBindingTracking(flags);
+				if (!skipComputeBinding) {
+					DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
+						mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);
+				}
+
+				if (mOrigSetDescriptorHeaps)
+					mOrigSetDescriptorHeaps(
+						mCommandList, NumDescriptorHeaps, activeHeaps);
+				else
+					mCommandList->SetDescriptorHeaps(
+						NumDescriptorHeaps, activeHeaps);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootSignature(ID3D12RootSignature *pRootSignature) override
@@ -702,7 +882,21 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
-				mCommandList->SetComputeRoot32BitConstant(RootParameterIndex, SrcData, DestOffsetIn32BitValues);
+				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, SrcData,
+					DestOffsetIn32BitValues, false);
+				if (mOrigSetComputeRoot32BitConstant)
+					mOrigSetComputeRoot32BitConstant(
+						mCommandList,
+						RootParameterIndex,
+						SrcData,
+						DestOffsetIn32BitValues);
+				else
+					mCommandList->SetComputeRoot32BitConstant(
+						RootParameterIndex,
+						SrcData,
+						DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRoot32BitConstant(
@@ -710,7 +904,21 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-				mCommandList->SetGraphicsRoot32BitConstant(RootParameterIndex, SrcData, DestOffsetIn32BitValues);
+				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, SrcData,
+					DestOffsetIn32BitValues, true);
+				if (mOrigSetGraphicsRoot32BitConstant)
+					mOrigSetGraphicsRoot32BitConstant(
+						mCommandList,
+						RootParameterIndex,
+						SrcData,
+						DestOffsetIn32BitValues);
+				else
+					mCommandList->SetGraphicsRoot32BitConstant(
+						RootParameterIndex,
+						SrcData,
+						DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRoot32BitConstants(
@@ -718,8 +926,23 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
-				mCommandList->SetComputeRoot32BitConstants(
-					RootParameterIndex, Num32BitValuesToSet, pSrcData, DestOffsetIn32BitValues);
+				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, Num32BitValuesToSet,
+					pSrcData, DestOffsetIn32BitValues, false);
+				if (mOrigSetComputeRoot32BitConstants)
+					mOrigSetComputeRoot32BitConstants(
+						mCommandList,
+						RootParameterIndex,
+						Num32BitValuesToSet,
+						pSrcData,
+						DestOffsetIn32BitValues);
+				else
+					mCommandList->SetComputeRoot32BitConstants(
+						RootParameterIndex,
+						Num32BitValuesToSet,
+						pSrcData,
+						DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRoot32BitConstants(
@@ -727,55 +950,124 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-				mCommandList->SetGraphicsRoot32BitConstants(
-					RootParameterIndex, Num32BitValuesToSet, pSrcData, DestOffsetIn32BitValues);
+				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, Num32BitValuesToSet,
+					pSrcData, DestOffsetIn32BitValues, true);
+				if (mOrigSetGraphicsRoot32BitConstants)
+					mOrigSetGraphicsRoot32BitConstants(
+						mCommandList,
+						RootParameterIndex,
+						Num32BitValuesToSet,
+						pSrcData,
+						DestOffsetIn32BitValues);
+				else
+					mCommandList->SetGraphicsRoot32BitConstants(
+						RootParameterIndex,
+						Num32BitValuesToSet,
+						pSrcData,
+						DestOffsetIn32BitValues);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeCBVTotal);
-				DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
+					BufferLocation, false,
+					"ID3D12GraphicsCommandList::SetComputeRootConstantBufferView");
+				if (mOrigSetComputeRootConstantBufferView)
+					mOrigSetComputeRootConstantBufferView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetComputeRootConstantBufferView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeCBVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsCBVTotal);
-				DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
+					BufferLocation, true,
+					"ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView");
+				if (mOrigSetGraphicsRootConstantBufferView)
+					mOrigSetGraphicsRootConstantBufferView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetGraphicsRootConstantBufferView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsCBVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeSRVTotal);
-				DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
+					BufferLocation, false,
+					"ID3D12GraphicsCommandList::SetComputeRootShaderResourceView");
+				if (mOrigSetComputeRootShaderResourceView)
+					mOrigSetComputeRootShaderResourceView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetComputeRootShaderResourceView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeSRVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsSRVTotal);
-				DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
+					BufferLocation, true,
+					"ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView");
+				if (mOrigSetGraphicsRootShaderResourceView)
+					mOrigSetGraphicsRootShaderResourceView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetGraphicsRootShaderResourceView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsSRVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeUAVTotal);
-				DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
+					BufferLocation, false,
+					"ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView");
+				if (mOrigSetComputeRootUnorderedAccessView)
+					mOrigSetComputeRootUnorderedAccessView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetComputeRootUnorderedAccessView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetComputeUAVTotal);
 			}
 
 			void STDMETHODCALLTYPE SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsUAVTotal);
-				DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
-					mCommandList, &mRuntimeState, RootParameterIndex, BufferLocation);
+				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+					mCommandList, &mRuntimeState,
+					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
+					BufferLocation, true,
+					"ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView");
+				if (mOrigSetGraphicsRootUnorderedAccessView)
+					mOrigSetGraphicsRootUnorderedAccessView(
+						mCommandList, RootParameterIndex, BufferLocation);
+				else
+					mCommandList->SetGraphicsRootUnorderedAccessView(
+						RootParameterIndex, BufferLocation);
 			DX12_HOTPATH_TIME_END(SetGraphicsUAVTotal);
 			}
 
@@ -1271,12 +1563,24 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			DX12CommandListHookSignatures::DrawInstanced mOrigDrawInstanced = nullptr;
 			DX12CommandListHookSignatures::DrawIndexedInstanced mOrigDrawIndexedInstanced = nullptr;
 			DX12CommandListHookSignatures::Dispatch mOrigDispatch = nullptr;
+			DX12CommandListHookSignatures::IaSetPrimitiveTopology mOrigIASetPrimitiveTopology = nullptr;
 			DX12CommandListHookSignatures::SetPipelineState mOrigSetPipelineState = nullptr;
 			DX12CommandListHookSignatures::ResourceBarrier mOrigResourceBarrier = nullptr;
+			DX12CommandListHookSignatures::SetDescriptorHeaps mOrigSetDescriptorHeaps = nullptr;
 			DX12CommandListHookSignatures::SetRootSignature mOrigSetComputeRootSignature = nullptr;
 			DX12CommandListHookSignatures::SetRootSignature mOrigSetGraphicsRootSignature = nullptr;
 			DX12CommandListHookSignatures::SetRootDescriptorTable mOrigSetComputeRootDescriptorTable = nullptr;
 			DX12CommandListHookSignatures::SetRootDescriptorTable mOrigSetGraphicsRootDescriptorTable = nullptr;
+			DX12CommandListHookSignatures::SetRoot32BitConstant mOrigSetComputeRoot32BitConstant = nullptr;
+			DX12CommandListHookSignatures::SetRoot32BitConstant mOrigSetGraphicsRoot32BitConstant = nullptr;
+			DX12CommandListHookSignatures::SetRoot32BitConstants mOrigSetComputeRoot32BitConstants = nullptr;
+			DX12CommandListHookSignatures::SetRoot32BitConstants mOrigSetGraphicsRoot32BitConstants = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetComputeRootConstantBufferView = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetGraphicsRootConstantBufferView = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetComputeRootShaderResourceView = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetGraphicsRootShaderResourceView = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetComputeRootUnorderedAccessView = nullptr;
+			DX12CommandListHookSignatures::SetRootGpuVa mOrigSetGraphicsRootUnorderedAccessView = nullptr;
 			DX12CommandListHookSignatures::IaSetIndexBuffer mOrigIASetIndexBuffer = nullptr;
 			DX12CommandListHookSignatures::IaSetVertexBuffers mOrigIASetVertexBuffers = nullptr;
 			DX12CommandListHookSignatures::ExecuteIndirect mOrigExecuteIndirect = nullptr;
