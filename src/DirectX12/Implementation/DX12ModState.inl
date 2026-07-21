@@ -36,7 +36,7 @@ static std::unordered_map<std::wstring, uint32_t> gTextureOverrideSectionIds;
 class DX12IaTextureOverrideCandidate
 {
 public:
-	Bunny::TextureOverrideConfig config;
+	const Bunny::TextureOverrideConfig *config = nullptr;
 	UINT64 order = 0;
 	uint32_t sectionId = 0;
 	bool preRuntimeEffect = true;
@@ -853,7 +853,7 @@ class DX12UavHashTextureOverrideMatch
 {
 
 public:
-	Bunny::TextureOverrideConfig config;
+	const Bunny::TextureOverrideConfig *config = nullptr;
 	uint32_t hash = 0;
 	std::wstring resourceName;
 	std::vector<DX12PreSkinSrvReplacementBinding> srvReplacements;
@@ -864,7 +864,7 @@ class DX12PreSkinTextureOverrideCandidate
 {
 
 public:
-	Bunny::TextureOverrideConfig config;
+	const Bunny::TextureOverrideConfig *config = nullptr;
 	uint32_t hash = 0;
 	UINT64 identity = 0;
 	std::wstring resourceName;

@@ -145,7 +145,7 @@ public:
 		const Bunny::TextureOverrideConfig &config, bool includePost)
 	{
 		DX12TextureOverrideMatch match;
-		match.config = config;
+		match.config = &config;
 		RunTextureOverride(match, 0, includePost);
 	}
 
@@ -258,12 +258,12 @@ public:
 	void RunTextureOverride(
 		const DX12TextureOverrideMatch &match, int depth, bool includePost)
 	{
-		const Bunny::TextureOverrideConfig &config = match.config;
-		if (!mReplacement || depth > 16)
+		const Bunny::TextureOverrideConfig *config = match.config;
+		if (!mReplacement || depth > 16 || !config)
 			return;
 
 		if (mExecuteCommands) {
-			for (const std::wstring &list : config.commandLists.pre) {
+			for (const std::wstring &list : config->commandLists.pre) {
 				Bunny::CommandListLinks links;
 				links.main.push_back(list);
 				RunCommandListLinks(links, depth + 1, false, &match);
@@ -271,22 +271,22 @@ public:
 		}
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
-			SnapshotCompiledTextureOverridePlan(config);
+			SnapshotCompiledTextureOverridePlan(*config);
 		const DX12CompiledTextureOverridePlan *compiledPlanView =
 			compiledPlan.get();
 		if (!(compiledPlanView && RunCompiledTextureOverridePlan(*compiledPlanView))) {
-			RunTextureOverrideActions(config, depth, includePost, &match);
+			RunTextureOverrideActions(*config, depth, includePost, &match);
 		}
 
 		if (mExecuteCommands) {
-			for (const std::wstring &list : config.commandLists.main) {
+			for (const std::wstring &list : config->commandLists.main) {
 				Bunny::CommandListLinks links;
 				links.main.push_back(list);
 				RunCommandListLinks(links, depth + 1, false, &match);
 			}
 
 			if (includePost) {
-				for (const std::wstring &list : config.commandLists.post) {
+				for (const std::wstring &list : config->commandLists.post) {
 					Bunny::CommandListLinks links;
 					links.main.push_back(list);
 					RunCommandListLinks(links, depth + 1, true, &match);
@@ -296,8 +296,8 @@ public:
 
 		const bool needsGraphicsSrvBindings = compiledPlanView ?
 			!compiledPlanView->drawSrvResources.empty() :
-			(!config.drawPsSrvResources.empty() ||
-			 !config.drawVsSrvResources.empty());
+			(!config->drawPsSrvResources.empty() ||
+			 !config->drawVsSrvResources.empty());
 		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvBindings =
 			needsGraphicsSrvBindings ? GetGraphicsSrvBindings() : nullptr;
 		const bool drawSrvChanged = compiledPlanView ?
@@ -305,7 +305,7 @@ public:
 				mDevice, mCommandList, *compiledPlanView, &match, mReplacement,
 				graphicsSrvBindings) :
 			DX12DrawSrvReplacementUtils::ApplyConfig(
-				mDevice, mCommandList, config, &match, mReplacement,
+				mDevice, mCommandList, *config, &match, mReplacement,
 				graphicsSrvBindings);
 		if (drawSrvChanged)
 			MarkChanged();

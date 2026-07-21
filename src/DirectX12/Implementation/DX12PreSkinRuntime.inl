@@ -444,8 +444,8 @@ static bool FindUavHashTextureOverrideLocked(
 			continue;
 		const DX12PreSkinTextureOverrideCandidate &candidate =
 			gPreSkinTextureOverrides[index];
-		const Bunny::TextureOverrideConfig &config = candidate.config;
-		if (config.hasMatchCs || config.vertexBufferResources.empty())
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config || config->hasMatchCs || config->vertexBufferResources.empty())
 			continue;
 		if (match) {
 			match->config = config;
@@ -645,11 +645,14 @@ static void LogPreSkinMatchCsProbeLimited(
 	DX12LogManager::Fields("DX12PreSkinMatchCsProbe",
 		"\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"candidateIdentity\":\"%016llx\",\"uavBytes\":%llu,\"matchUavBytes\":%llu,\"inputMatched\":%s,\"uavs\":\"%s\",\"srvs\":\"%s\",\"cbvs\":\"%s\",\"rootConstants\":\"%s\"",
 		static_cast<unsigned long long>(csHash),
-		candidate.config.originalSection.empty() ? candidate.config.section.c_str() : candidate.config.originalSection.c_str(),
+		(candidate.config && candidate.config->originalSection.empty()) ?
+			candidate.config->section.c_str() :
+			(candidate.config ? candidate.config->originalSection.c_str() : L""),
 		candidate.hash,
 		static_cast<unsigned long long>(candidate.identity),
 		static_cast<unsigned long long>(uavViewBytes),
-		candidate.config.hasMatchUavBytes ? static_cast<unsigned long long>(candidate.config.matchUavBytes) : 0ull,
+		(candidate.config && candidate.config->hasMatchUavBytes) ?
+			static_cast<unsigned long long>(candidate.config->matchUavBytes) : 0ull,
 		inputMatched ? "true" : "false", uavText, srvText, cbvText, rootText);
 #endif
 }
@@ -908,8 +911,9 @@ static bool FindMatchCsTextureOverrideLocked(
 			continue;
 		const DX12PreSkinTextureOverrideCandidate &candidate =
 			gPreSkinTextureOverrides[index];
-		const Bunny::TextureOverrideConfig &config = candidate.config;
-		if (!IsComputePreSkinTextureOverride(config) || GetPreSkinCsHash(config) != csHash)
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config || !IsComputePreSkinTextureOverride(*config) ||
+		    GetPreSkinCsHash(*config) != csHash)
 			continue;
 		const uint64_t inputKey = MakePreSkinMatchCsInputCacheKey(
 			csHash, candidate, 0, uavs, srvs, cbvs, rootConstants);
@@ -918,7 +922,7 @@ static bool FindMatchCsTextureOverrideLocked(
 		if (cachedInput != gPreSkinMatchCsInputCache.end()) {
 			inputMatched = cachedInput->second;
 		} else {
-			inputMatched = MatchComputeInputSrvsTextureOverrideLocked(srvs, config);
+			inputMatched = MatchComputeInputSrvsTextureOverrideLocked(srvs, *config);
 			if (gPreSkinMatchCsInputCache.size() > 4096)
 				gPreSkinMatchCsInputCache.clear();
 			gPreSkinMatchCsInputCache[inputKey] = inputMatched;
@@ -930,7 +934,7 @@ static bool FindMatchCsTextureOverrideLocked(
 			match->config = config;
 			match->hash = candidate.hash;
 			BuildPreSkinSrvReplacementBindingsTextureOverrideLocked(
-				srvs, config, &match->srvReplacements);
+				srvs, *config, &match->srvReplacements);
 		}
 		return true;
 	}
@@ -979,7 +983,9 @@ static void LogPreSkinMatchCsOutputProbeLimited(
 	DX12LogManager::DebugFields("DX12PreSkinMatchCsOutput",
 		"\"status\":\"no_uav_output\",\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"uavs\":%zu,\"uavList\":\"%s\"",
 		static_cast<unsigned long long>(csHash),
-		match.config.originalSection.empty() ? match.config.section.c_str() : match.config.originalSection.c_str(),
+		(match.config && match.config->originalSection.empty()) ?
+			match.config->section.c_str() :
+			(match.config ? match.config->originalSection.c_str() : L""),
 		match.hash, uavs.size(), uavText);
 #else
 	(void)csHash;
@@ -1894,8 +1900,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		0,
 		uavs.size() + srvs.size() + cbvs.size(),
 		DX12OuterTimingProbeUtils::ElapsedUs(matchCsBegin));
-	if (hashMatched)
-		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(hashMatch.config);
+	if (hashMatched && hashMatch.config)
+		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(*hashMatch.config);
 	if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
 		LARGE_INTEGER vlrMatchBegin = DX12OuterTimingProbeUtils::Now();
 		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
@@ -1920,19 +1926,19 @@ bool DX12ModApplyPreSkinningUavReplacement(
 #if defined(_DEBUG)
 			DX12LogManager::DebugFields("DX12PreSkinningApply",
 				"\"status\":\"skip_missing_explicit_dispatch\",\"section\":\"%S\",\"handlingSkip\":%s",
-				hashMatch.config.section.c_str(),
-				hashMatch.config.handlingSkip ? "true" : "false");
+				hashMatch.config ? hashMatch.config->section.c_str() : L"",
+				(hashMatch.config && hashMatch.config->handlingSkip) ? "true" : "false");
 #endif
 		} else {
 			if (!hashMatch.srvReplacements.empty()) {
 				LARGE_INTEGER patchBegin = DX12OuterTimingProbeUtils::Now();
 				applied = ApplyPreSkinDescriptorTablePatchLocked(
 					device, commandList, hashBinding, producer,
-					hashMatch.config, hashMatch.srvReplacements,
+					*hashMatch.config, hashMatch.srvReplacements,
 					srvs, cbvs, rootConstants,
-					hashMatch.config.originalSection.empty() ?
-						hashMatch.config.section.c_str() :
-						hashMatch.config.originalSection.c_str(),
+					hashMatch.config->originalSection.empty() ?
+						hashMatch.config->section.c_str() :
+						hashMatch.config->originalSection.c_str(),
 					hashMatch.hash, originalVertexCount, overrideVertexCount);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"PreSkinRuntime",
@@ -1943,7 +1949,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 			}
 			if (applied) {
 				LARGE_INTEGER dispatchOverrideBegin = DX12OuterTimingProbeUtils::Now();
-				FillPreSkinDispatchOverrideFromConfig(hashMatch.config, dispatchOverride);
+				FillPreSkinDispatchOverrideFromConfig(*hashMatch.config, dispatchOverride);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"PreSkinRuntime",
 					"fill_dispatch_override",
@@ -2304,8 +2310,8 @@ bool DX12ModComputePreSkinMatchOnly(
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
 		uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
-	if (hashMatched)
-		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(hashMatch.config);
+	if (hashMatched && hashMatch.config)
+		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(*hashMatch.config);
 	if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
 		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
 			FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
@@ -2319,7 +2325,7 @@ bool DX12ModComputePreSkinMatchOnly(
 		// MatchCs path: populate dispatch override from the matched config.
 		// VLR path sets matched=true but does not populate dispatchOverride;
 		// the apply phase handles VLR via resource loading and UAV setup.
-		FillPreSkinDispatchOverrideFromConfig(hashMatch.config, outDispatchOverride);
+		FillPreSkinDispatchOverrideFromConfig(*hashMatch.config, outDispatchOverride);
 	}
 	return matched;
 }

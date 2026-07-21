@@ -6,7 +6,7 @@
 class DX12TextureOverrideMatch
 {
 public:
-	Bunny::TextureOverrideConfig config;
+	const Bunny::TextureOverrideConfig *config = nullptr;
 	bool hasThisSrvTarget = false;
 	bool compute = false;
 	DX12CurrentShaderResourceBinding thisSrvBinding;

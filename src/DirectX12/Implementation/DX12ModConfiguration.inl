@@ -131,7 +131,7 @@ static void BuildDx12PreSkinTextureOverrideIndex(
 				continue;
 
 			DX12PreSkinTextureOverrideCandidate candidate;
-			candidate.config = config;
+			candidate.config = &config;
 			candidate.hash = bucket.first;
 			candidate.order = order++;
 			candidate.identity = DX12PreSkinCandidateIdentityUtils::Build(
