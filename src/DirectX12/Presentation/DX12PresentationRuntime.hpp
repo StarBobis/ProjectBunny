@@ -1677,6 +1677,13 @@ public:
 			!(DX12HotPathState::HookWorkFlags & DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK);
 	}
 
+	static bool ShouldSkipGraphicsBinding()
+	{
+		// Graphics root tracking is only needed for heavy capture modes or
+		// descriptor-aware Mod work. Plain shader replacement can forward calls.
+		return DX12HotPathState::skipGraphicsBindings != 0;
+	}
+
 	static void SetDescriptorHeaps(
 		ID3D12GraphicsCommandList *commandList,
 		UINT count,
@@ -1784,7 +1791,7 @@ public:
 				runtimeState->lastUnwrappedGraphicsRootSignature = unwrapped;
 			}
 		}
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
 		}
 		else {
@@ -1864,7 +1871,7 @@ public:
 					commandList, true, rootParameterIndex, baseDescriptor);
 			}
 		}
-		if (DX12HotPathState::skipAll)
+		if (ShouldSkipGraphicsBinding())
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		else {
@@ -1922,7 +1929,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootConstantBufferView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-		if (!DX12HotPathState::skipAll) {
+		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
 		}
@@ -1976,7 +1983,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootShaderResourceView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-		if (!DX12HotPathState::skipAll) {
+		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
 		}
@@ -2030,7 +2037,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootUnorderedAccessView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-		if (!DX12HotPathState::skipAll) {
+		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
 		}

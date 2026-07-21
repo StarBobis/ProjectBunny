@@ -175,6 +175,11 @@ public:
 				DX12HotPathState::HookWorkFlags);
 	}
 
+	static bool ShouldSkipGraphicsBinding()
+	{
+		return DX12HotPathState::skipGraphicsBindings != 0;
+	}
+
 	static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
 		ID3D12GraphicsCommandList *commandList, UINT count,
 		ID3D12DescriptorHeap *const *heaps)
@@ -223,7 +228,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootSignature);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_SIGNATURE original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
 			if (original)
@@ -267,7 +272,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootDescriptorTable);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_DESCRIPTOR_TABLE original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
 			if (original)
@@ -307,7 +312,7 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_32BIT_CONSTANT original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant, PFN_SET_ROOT_32BIT_CONSTANT, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstant, "SetGraphicsRoot32BitConstant");
 			if (original)
@@ -349,7 +354,7 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_32BIT_CONSTANTS original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants, PFN_SET_ROOT_32BIT_CONSTANTS, DX12CommandListHookState::OrigSetGraphicsRoot32BitConstants, "SetGraphicsRoot32BitConstants");
 			if (original)
@@ -392,7 +397,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootConstantBufferView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_GPU_VA original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootConstantBufferView, "SetGraphicsRootConstantBufferView");
 			if (original)
@@ -436,7 +441,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootShaderResourceView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-		if (DX12HotPathState::skipAll) {
+		if (ShouldSkipGraphicsBinding()) {
 			PFN_SET_ROOT_GPU_VA original =
 				DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootShaderResourceView, "SetGraphicsRootShaderResourceView");
 			if (original)

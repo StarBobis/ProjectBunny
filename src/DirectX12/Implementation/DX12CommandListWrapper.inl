@@ -882,10 +882,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
-				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, SrcData,
-					DestOffsetIn32BitValues, false);
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, SrcData,
+						DestOffsetIn32BitValues, false);
+				}
 				if (mOrigSetComputeRoot32BitConstant)
 					mOrigSetComputeRoot32BitConstant(
 						mCommandList,
@@ -904,10 +906,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, SrcData,
-					DestOffsetIn32BitValues, true);
+				if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, SrcData,
+						DestOffsetIn32BitValues, true);
+				}
 				if (mOrigSetGraphicsRoot32BitConstant)
 					mOrigSetGraphicsRoot32BitConstant(
 						mCommandList,
@@ -926,10 +930,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
-				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, Num32BitValuesToSet,
-					pSrcData, DestOffsetIn32BitValues, false);
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, Num32BitValuesToSet,
+						pSrcData, DestOffsetIn32BitValues, false);
+				}
 				if (mOrigSetComputeRoot32BitConstants)
 					mOrigSetComputeRoot32BitConstants(
 						mCommandList,
@@ -950,10 +956,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
-				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, Num32BitValuesToSet,
-					pSrcData, DestOffsetIn32BitValues, true);
+				if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, Num32BitValuesToSet,
+						pSrcData, DestOffsetIn32BitValues, true);
+				}
 				if (mOrigSetGraphicsRoot32BitConstants)
 					mOrigSetGraphicsRoot32BitConstants(
 						mCommandList,
@@ -972,11 +980,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeCBVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
-					BufferLocation, false,
-					"ID3D12GraphicsCommandList::SetComputeRootConstantBufferView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
+						BufferLocation, false,
+						"ID3D12GraphicsCommandList::SetComputeRootConstantBufferView");
+				}
 				if (mOrigSetComputeRootConstantBufferView)
 					mOrigSetComputeRootConstantBufferView(
 						mCommandList, RootParameterIndex, BufferLocation);
@@ -989,11 +999,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsCBVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
-					BufferLocation, true,
-					"ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV,
+						BufferLocation, true,
+						"ID3D12GraphicsCommandList::SetGraphicsRootConstantBufferView");
+				}
 				if (mOrigSetGraphicsRootConstantBufferView)
 					mOrigSetGraphicsRootConstantBufferView(
 						mCommandList, RootParameterIndex, BufferLocation);
@@ -1006,11 +1018,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeSRVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
-					BufferLocation, false,
-					"ID3D12GraphicsCommandList::SetComputeRootShaderResourceView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
+						BufferLocation, false,
+						"ID3D12GraphicsCommandList::SetComputeRootShaderResourceView");
+				}
 				if (mOrigSetComputeRootShaderResourceView)
 					mOrigSetComputeRootShaderResourceView(
 						mCommandList, RootParameterIndex, BufferLocation);
@@ -1023,11 +1037,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsSRVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
-					BufferLocation, true,
-					"ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV,
+						BufferLocation, true,
+						"ID3D12GraphicsCommandList::SetGraphicsRootShaderResourceView");
+				}
 				if (mOrigSetGraphicsRootShaderResourceView)
 					mOrigSetGraphicsRootShaderResourceView(
 						mCommandList, RootParameterIndex, BufferLocation);
@@ -1040,11 +1056,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetComputeUAVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
-					BufferLocation, false,
-					"ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
+						BufferLocation, false,
+						"ID3D12GraphicsCommandList::SetComputeRootUnorderedAccessView");
+				}
 				if (mOrigSetComputeRootUnorderedAccessView)
 					mOrigSetComputeRootUnorderedAccessView(
 						mCommandList, RootParameterIndex, BufferLocation);
@@ -1057,11 +1075,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetGraphicsUAVTotal);
-				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-					mCommandList, &mRuntimeState,
-					RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
-					BufferLocation, true,
-					"ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView");
+				if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
+					DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+						mCommandList, &mRuntimeState,
+						RootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV,
+						BufferLocation, true,
+						"ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView");
+				}
 				if (mOrigSetGraphicsRootUnorderedAccessView)
 					mOrigSetGraphicsRootUnorderedAccessView(
 						mCommandList, RootParameterIndex, BufferLocation);
