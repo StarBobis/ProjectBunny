@@ -1,0 +1,95 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Debug (x64)",
+            "description": "Debug build for x64 using Ninja",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/x64/debug",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release (x64)",
+            "description": "Release build for x64 using Ninja",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/x64/release",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "debug-win32",
+            "displayName": "Debug (Win32)",
+            "description": "Debug build for Win32 using Ninja",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/Win32/debug",
+            "architecture": {
+                "value": "Win32",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release-win32",
+            "displayName": "Release (Win32)",
+            "description": "Release build for Win32 using Ninja",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/Win32/release",
+            "architecture": {
+                "value": "Win32",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "msvc-debug-x64",
+            "displayName": "Debug (x64) MSBuild",
+            "description": "Debug build for x64 using MSBuild",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/msvc-x64-debug",
+            "architecture": "x64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "msvc-release-x64",
+            "displayName": "Release (x64) MSBuild",
+            "description": "Release build for x64 using MSBuild",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/msvc-x64-release",
+            "architecture": "x64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default",
+            "displayName": "Build Debug (x64)"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "displayName": "Build Release (x64)"
+        }
+    ]
+}

@@ -1,0 +1,81 @@
+{
+    "configurations": [
+        {
+            "name": "Win64",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/src/common",
+                "${workspaceFolder}/src/DirectX11",
+                "${workspaceFolder}/src/DirectXGI",
+                "${workspaceFolder}/src/BinaryDecompiler",
+                "${workspaceFolder}/src/BinaryDecompiler/include",
+                "${workspaceFolder}/src/BinaryDecompiler/internal_includes",
+                "${workspaceFolder}/src/HLSLDecompiler",
+                "${workspaceFolder}/src/D3D_Shaders",
+                "${workspaceFolder}/src/D3DCompiler",
+                "${workspaceFolder}/3rdparty",
+                "${workspaceFolder}/3rdparty/DirectXTK/Inc",
+                "${workspaceFolder}/3rdparty/crc32c-hw-1.0.5/include",
+                "${workspaceFolder}/3rdparty/pcre2",
+                "${workspaceFolder}/3rdparty/Nektra"
+            ],
+            "defines": [
+                "WIN32",
+                "_WINDOWS",
+                "_USRDLL",
+                "MIGOTO_DX=11",
+                "CRC32C_STATIC=1",
+                "PCRE2_STATIC",
+                "PCRE2_CODE_UNIT_WIDTH=8",
+                "_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1",
+                "_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1",
+                "_UNICODE",
+                "UNICODE",
+                "_DEBUG"
+            ],
+            "compilerPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "windows-msvc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools"
+        },
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/src/common",
+                "${workspaceFolder}/src/DirectX11",
+                "${workspaceFolder}/src/BinaryDecompiler",
+                "${workspaceFolder}/src/BinaryDecompiler/include",
+                "${workspaceFolder}/src/BinaryDecompiler/internal_includes",
+                "${workspaceFolder}/src/HLSLDecompiler",
+                "${workspaceFolder}/src/D3D_Shaders",
+                "${workspaceFolder}/3rdparty",
+                "${workspaceFolder}/3rdparty/DirectXTK/Inc",
+                "${workspaceFolder}/3rdparty/crc32c-hw-1.0.5/include",
+                "${workspaceFolder}/3rdparty/pcre2",
+                "${workspaceFolder}/3rdparty/Nektra"
+            ],
+            "defines": [
+                "WIN32",
+                "_WINDOWS",
+                "_USRDLL",
+                "MIGOTO_DX=11",
+                "CRC32C_STATIC=1",
+                "PCRE2_STATIC",
+                "PCRE2_CODE_UNIT_WIDTH=8",
+                "_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1",
+                "_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES_COUNT=1",
+                "_UNICODE",
+                "UNICODE",
+                "_DEBUG"
+            ],
+            "compilerPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx86\\x86\\cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "windows-msvc-x86",
+            "configurationProvider": "ms-vscode.cmake-tools"
+        }
+    ],
+    "version": 4
+}

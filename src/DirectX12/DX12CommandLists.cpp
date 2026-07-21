@@ -1,0 +1,9 @@
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Mods/DX12ConfigResources.hpp"
+#include <d3d12.h>
+#include <unordered_set>
+#include "Mods/DX12ModInterfaces.hpp"
+#include "Presentation/DX12UiRuntime.hpp"
+#include "Resources/DX12ResourceFileIO.hpp"
+#include "Implementation/DX12CommandHooks.inl"
+#include "Implementation/DX12CommandRuntime.inl"

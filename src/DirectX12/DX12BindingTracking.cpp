@@ -1,0 +1,14 @@
+#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "Mods/DX12ModInterfaces.hpp"
+#include <chrono>
+#include "Resources/DX12ResourceFileIO.hpp"
+#include <stdio.h>
+#include <string.h>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include "Presentation/DX12UiRuntime.hpp"
+#include "Implementation/DX12BindingEventQueue.inl"
+#include "Implementation/DX12BindingState.inl"
+#include "Implementation/DX12BindingExports.inl"

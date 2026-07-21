@@ -1,0 +1,46 @@
+{
+  "GameId": "004",
+  "Games": [
+    {
+      "GameId": "001",
+      "TargetExe": "C:\\SteamLibrary\\steamapps\\common\\StellarBladeDemo\\SB\\Binaries\\Win64\\SB-Win64-Shipping.exe",
+      "WorkingDirectory": "",
+      "LaunchArguments": "",
+      "CopyToTargetDirectoryPath": "",
+      "CopyToTargetDirectory": false,
+      "LaunchGame": false
+    },
+    {
+      "GameId": "002",
+      "TargetExe": "D:\\Softs\\miHoYo Launcher\\games\\ZenlessZoneZero Game\\ZenlessZoneZero.exe",
+      "WorkingDirectory": "",
+      "LaunchArguments": "-use-d3d12",
+      "CopyToTargetDirectoryPath": "",
+      "CopyToTargetDirectory": false,
+      "LaunchGame": false
+    },
+    {
+      "GameId": "003",
+      "TargetExe": "",
+      "WorkingDirectory": "",
+      "LaunchArguments": "",
+      "CopyToTargetDirectoryPath": "D:\\Dev\\ssmt4\\src-tauri\\resources\\DX12\\",
+      "CopyToTargetDirectory": true,
+      "LaunchGame": false,
+      "Notice": "Copies d3d12.dll to the local DX12 resource directory after build."
+    },
+    {
+      "GameId": "004",
+      "TargetExe": "",
+      "WorkingDirectory": "",
+      "LaunchArguments": "",
+      "CopyToTargetDirectoryPath": "D:\\Dev\\ssmt4\\src-tauri\\resources\\DX12\\",
+      "ExtraCopyToTargetDirectoryPaths": [
+        "D:\\SSMTCacheFolder\\3Dmigoto\\ZZMIDX12"
+      ],
+      "CopyToTargetDirectory": true,
+      "LaunchGame": false,
+      "Notice": "Copies d3d12.dll to the local DX12 resource directory and the ZZMIDX12 test directory after build."
+    }
+  ]
+}

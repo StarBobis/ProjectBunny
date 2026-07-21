@@ -1,0 +1,78 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake Build (Debug|x64)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-File",
+                "${workspaceFolder}\\scripts\\build-cmake.ps1",
+                "-Configuration", "Debug",
+                "-Platform", "x64"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [ "$msCompile" ],
+            "detail": "CMake build all (Debug x64)"
+        },
+        {
+            "label": "CMake Build (Release|x64)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-File",
+                "${workspaceFolder}\\scripts\\build-cmake.ps1",
+                "-Configuration", "Release",
+                "-Platform", "x64"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [ "$msCompile" ],
+            "detail": "CMake build all (Release x64)"
+        },
+        {
+            "label": "CMake Build (Debug|Win32)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-File",
+                "${workspaceFolder}\\scripts\\build-cmake.ps1",
+                "-Configuration", "Debug",
+                "-Platform", "Win32"
+            ],
+            "group": "build",
+            "problemMatcher": [ "$msCompile" ],
+            "detail": "CMake build all (Debug Win32)"
+        },
+        {
+            "label": "CMake Build (Release|Win32)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-File",
+                "${workspaceFolder}\\scripts\\build-cmake.ps1",
+                "-Configuration", "Release",
+                "-Platform", "Win32"
+            ],
+            "group": "build",
+            "problemMatcher": [ "$msCompile" ],
+            "detail": "CMake build all (Release Win32)"
+        },
+        {
+            "label": "CMake Clean All",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "Remove-Item '${workspaceFolder}\\build' -Recurse -Force -ErrorAction SilentlyContinue; Write-Host 'Cleaned'"
+            ],
+            "group": "none",
+            "detail": "Clean CMake build cache"
+        }
+    ]
+}

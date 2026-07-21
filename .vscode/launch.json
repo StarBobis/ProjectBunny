@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to Game (x64)",
+            "type": "cppvsdbg",
+            "request": "attach",
+            "processId": "${command:pickProcess}",
+            "symbolSearchPath": "${workspaceFolder}\\x64\\Release",
+            "detail": "附加到已运行的游戏进程来调试 d3d11.dll"
+        },
+        {
+            "name": "Launch Injector (x64 Debug)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\x64\\Debug\\3DMigoto Loader.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "externalTerminal",
+            "detail": "启动 3DMigoto Loader (Injector)"
+        },
+        {
+            "name": "Launch Injector (x64 Release)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}\\x64\\Release\\3DMigoto Loader.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "externalTerminal",
+            "detail": "启动 3DMigoto Loader (Injector)"
+        }
+    ]
+}

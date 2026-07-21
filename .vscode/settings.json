@@ -1,0 +1,20 @@
+﻿{
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+    "C_Cpp.default.compilerPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\cl.exe",
+    "C_Cpp.default.cppStandard": "c++14",
+    "C_Cpp.default.cStandard": "c17",
+    "files.associations": {
+        "*.c": "c",
+        "*.cpp": "cpp",
+        "*.h": "c",
+        "*.hlsl": "hlsl",
+        "*.asm": "asm"
+    },
+    "search.exclude": {
+        "x64/**": true,
+        "x32/**": true,
+        "3rdparty/DirectXTK/**": true,
+        "build/**": true
+    }
+}
