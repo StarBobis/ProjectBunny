@@ -77,6 +77,24 @@ static bool ApplyLatestResourceStateLocked(DX12BufferResourceSummary *summary)
 	return true;
 }
 
+static bool ResourceIdentityMatchesTrackedResource(
+	ID3D12Resource *resource, UINT64 resourceGeneration)
+{
+	if (!resource || !resourceGeneration)
+		return false;
+
+	AcquireSRWLockShared(&gResourceLock);
+	std::unordered_map<ID3D12Resource*, size_t>::iterator found =
+		gResourceByPtr.find(resource);
+	const bool matches =
+		found != gResourceByPtr.end() &&
+		found->second < gResources.size() &&
+		gResources[found->second].resource != nullptr &&
+		gResources[found->second].identityGeneration == resourceGeneration;
+	ReleaseSRWLockShared(&gResourceLock);
+	return matches;
+}
+
 static bool FillSummaryFromCacheEntry(
 	UINT64 gpuVirtualAddress, UINT64 size,
 	const BufferResolveCacheEntry &entry,
@@ -800,6 +818,7 @@ uint32_t DX12HashIaBufferView(
 		UINT64 gpuVa = 0;
 		UINT64 size = 0;
 		ID3D12Resource *resource = nullptr;
+		UINT64 resourceGeneration = 0;
 	};
 
 	// -- L1 key (gpuVa-based) --
@@ -847,23 +866,31 @@ uint32_t DX12HashIaBufferView(
 	if (itL1 != s_cacheL1.end()) {
 		IaHashCacheValue &cacheValue = itL1->second;
 		bool invalidated = true;
-		const UINT64 currentContentGeneration =
-			cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
-				cacheValue.contentGeneration :
-				(cacheValue.resource ?
-					DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-					globalContentGeneration);
-		if (cacheValue.contentGeneration == currentContentGeneration) {
-			cacheValue.observedGlobalContentGeneration = globalContentGeneration;
-			if (cacheValue.resolveGeneration == resolveGeneration) {
-				invalidated = false;
-			} else {
-				AcquireSRWLockShared(&gResourceLock);
-				invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-					cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
-				ReleaseSRWLockShared(&gResourceLock);
-				if (!invalidated)
-					cacheValue.resolveGeneration = resolveGeneration;
+		const bool hasTrackedResourceIdentity =
+			cacheValue.resource != nullptr && cacheValue.resourceGeneration != 0;
+		if (!hasTrackedResourceIdentity ||
+		    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
+			    cacheValue.resource, cacheValue.resourceGeneration)) {
+			const UINT64 currentContentGeneration =
+				cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+					cacheValue.contentGeneration :
+					(cacheValue.resource ?
+						DX12GetBufferContentGenerationForResource(cacheValue.resource) :
+						globalContentGeneration);
+			if (cacheValue.contentGeneration == currentContentGeneration) {
+				cacheValue.observedGlobalContentGeneration = globalContentGeneration;
+				if (hasTrackedResourceIdentity) {
+					invalidated = false;
+				} else if (cacheValue.resolveGeneration == resolveGeneration) {
+					invalidated = false;
+				} else {
+					AcquireSRWLockShared(&gResourceLock);
+					invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+						cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+					ReleaseSRWLockShared(&gResourceLock);
+					if (!invalidated)
+						cacheValue.resolveGeneration = resolveGeneration;
+				}
 			}
 		}
 		if (!invalidated)
@@ -883,23 +910,31 @@ uint32_t DX12HashIaBufferView(
 		if (itL2 != s_cacheL2.end()) {
 			IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
-			const UINT64 currentContentGeneration =
-				cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
-					cacheValue.contentGeneration :
-					(cacheValue.resource ?
-						DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-						globalContentGeneration);
-			if (cacheValue.contentGeneration == currentContentGeneration) {
-				cacheValue.observedGlobalContentGeneration = globalContentGeneration;
-				if (cacheValue.resolveGeneration == resolveGeneration) {
-					invalidated = false;
-				} else {
-					AcquireSRWLockShared(&gResourceLock);
-					invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
-						cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
-					ReleaseSRWLockShared(&gResourceLock);
-					if (!invalidated)
-						cacheValue.resolveGeneration = resolveGeneration;
+			const bool hasTrackedResourceIdentity =
+				cacheValue.resource != nullptr && cacheValue.resourceGeneration != 0;
+			if (!hasTrackedResourceIdentity ||
+			    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
+				    cacheValue.resource, cacheValue.resourceGeneration)) {
+				const UINT64 currentContentGeneration =
+					cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+						cacheValue.contentGeneration :
+						(cacheValue.resource ?
+							DX12GetBufferContentGenerationForResource(cacheValue.resource) :
+							globalContentGeneration);
+				if (cacheValue.contentGeneration == currentContentGeneration) {
+					cacheValue.observedGlobalContentGeneration = globalContentGeneration;
+					if (hasTrackedResourceIdentity) {
+						invalidated = false;
+					} else if (cacheValue.resolveGeneration == resolveGeneration) {
+						invalidated = false;
+					} else {
+						AcquireSRWLockShared(&gResourceLock);
+						invalidated = DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+							cacheValue.gpuVa, cacheValue.gpuVa + cacheValue.size, cacheValue.resolveGeneration);
+						ReleaseSRWLockShared(&gResourceLock);
+						if (!invalidated)
+							cacheValue.resolveGeneration = resolveGeneration;
+					}
 				}
 			}
 			if (!invalidated) {
@@ -934,6 +969,8 @@ uint32_t DX12HashIaBufferView(
 		contentCacheValue.gpuVa = gpuVirtualAddress;
 		contentCacheValue.size = size;
 		contentCacheValue.resource = resolved ? summary.resource : nullptr;
+		contentCacheValue.resourceGeneration =
+			resolved ? summary.resourceGeneration : 0;
 		s_cacheL1[keyL1] = contentCacheValue;
 		if (resolved && summary.resource) {
 			IaHashKeyL2 keyL2 = { summary.resource,
@@ -1011,6 +1048,8 @@ uint32_t DX12HashIaBufferView(
 	cacheValue.gpuVa = gpuVirtualAddress;
 	cacheValue.size = size;
 	cacheValue.resource = resolved ? summary.resource : nullptr;
+	cacheValue.resourceGeneration =
+		resolved ? summary.resourceGeneration : 0;
 	s_cacheL1[keyL1] = cacheValue;
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,

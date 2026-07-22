@@ -23,9 +23,107 @@ public:
 	UINT tempOffset = 0;
 };
 
+class DX12DrawSrvRootPlanTemplate
+{
+public:
+	bool valid = false;
+	bool sampler = false;
+	bool dynamicCount = false;
+	UINT fixedCount = 0;
+};
+
+class DX12DrawSrvSignaturePlanTemplate
+{
+public:
+	ID3D12RootSignature *rootSignature = nullptr;
+	UINT64 rootSignatureHash = 0;
+	DX12DrawSrvRootPlanTemplate roots[MaxRootParameters] = {};
+};
+
 class DX12DrawSrvReplacementUtils
 {
 public:
+	static DX12DrawSrvSignaturePlanTemplate BuildSignaturePlanTemplate(
+		const DX12RootSignatureSummary &rootSignature)
+	{
+		DX12DrawSrvSignaturePlanTemplate plan;
+		plan.rootSignature = rootSignature.rootSignature;
+		plan.rootSignatureHash = rootSignature.hash;
+		for (const DX12RootParameterSummary &parameter :
+				rootSignature.parameters) {
+			if (parameter.rootParameterIndex >= MaxRootParameters)
+				continue;
+			DX12DrawSrvRootPlanTemplate &rootPlan =
+				plan.roots[parameter.rootParameterIndex];
+			if (parameter.parameterType !=
+					D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
+					parameter.ranges.empty()) {
+				rootPlan = DX12DrawSrvRootPlanTemplate();
+				continue;
+			}
+			bool hasSampler = false;
+			bool hasResource = false;
+			bool dynamicCount = false;
+			UINT64 fixedCount = 0;
+			for (const DX12RootDescriptorRangeSummary &range :
+					parameter.ranges) {
+				if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+					hasSampler = true;
+				else
+					hasResource = true;
+				if (range.numDescriptors == UINT_MAX) {
+					dynamicCount = true;
+					continue;
+				}
+				const UINT64 count =
+					static_cast<UINT64>(range.effectiveOffset) + range.numDescriptors;
+				fixedCount = (std::max)(fixedCount, count);
+			}
+			if (hasSampler == hasResource)
+				continue;
+			rootPlan.valid = dynamicCount || fixedCount != 0;
+			rootPlan.sampler = hasSampler;
+			rootPlan.dynamicCount = dynamicCount;
+			rootPlan.fixedCount = fixedCount > UINT_MAX ?
+				UINT_MAX : static_cast<UINT>(fixedCount);
+		}
+		return plan;
+	}
+
+	static bool GetSignaturePlanTemplate(
+		const DX12RootSignatureSummary &rootSignature,
+		DX12DrawSrvSignaturePlanTemplate *plan)
+	{
+		if (!plan || !rootSignature.rootSignature)
+			return false;
+
+		static SRWLOCK s_planCacheLock = SRWLOCK_INIT;
+		static std::unordered_map<ID3D12RootSignature*,
+			DX12DrawSrvSignaturePlanTemplate> s_planCache;
+
+		AcquireSRWLockShared(&s_planCacheLock);
+		auto found = s_planCache.find(rootSignature.rootSignature);
+		if (found != s_planCache.end() &&
+		    found->second.rootSignatureHash == rootSignature.hash) {
+			*plan = found->second;
+			ReleaseSRWLockShared(&s_planCacheLock);
+			return true;
+		}
+		ReleaseSRWLockShared(&s_planCacheLock);
+
+		DX12DrawSrvSignaturePlanTemplate built =
+			DX12DrawSrvReplacementUtils::BuildSignaturePlanTemplate(
+				rootSignature);
+
+		AcquireSRWLockExclusive(&s_planCacheLock);
+		DX12DrawSrvSignaturePlanTemplate &stored =
+			s_planCache[rootSignature.rootSignature];
+		stored = built;
+		*plan = stored;
+		ReleaseSRWLockExclusive(&s_planCacheLock);
+		return true;
+	}
+
 	static bool ShaderVisibilityMatchesPixel(UINT visibility, bool compute)
 	{
 		if (compute)
@@ -268,6 +366,72 @@ public:
 		return required > UINT_MAX ? UINT_MAX : static_cast<UINT>(required);
 	}
 
+	static const DX12RootParameterSummary *FindRootParameterSummary(
+		const DX12RootSignatureSummary &rootSignature,
+		UINT rootParameterIndex)
+	{
+		for (const DX12RootParameterSummary &candidate :
+				rootSignature.parameters) {
+			if (candidate.rootParameterIndex == rootParameterIndex)
+				return &candidate;
+		}
+		return nullptr;
+	}
+
+	static bool ResolvePatchTableLocation(
+		const CommandListBindingState &snapshot,
+		const RootTableState &state,
+		D3D12_DESCRIPTOR_HEAP_TYPE type,
+		DX12DescriptorHeapSummary *heap,
+		UINT64 *tableBaseIndex,
+		SIZE_T *tableCpuStart)
+	{
+		if (!heap || !tableBaseIndex || !tableCpuStart || !state.valid)
+			return false;
+		*heap = DX12DescriptorHeapSummary();
+		*tableBaseIndex = 0;
+		*tableCpuStart = 0;
+
+		ID3D12DescriptorHeap *boundHeap =
+			type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ?
+				snapshot.samplerHeap : snapshot.cbvSrvUavHeap;
+		if (state.runtimeHeapResolved &&
+		    state.runtimeHeapType == static_cast<UINT>(type) &&
+		    state.runtimeHeapIncrement != 0 &&
+		    state.runtimeHeap != nullptr &&
+		    state.runtimeHeap == boundHeap &&
+		    state.runtimeTableBaseIndex < state.runtimeHeapNumDescriptors) {
+			heap->heap = state.runtimeHeap;
+			heap->type = state.runtimeHeapType;
+			heap->numDescriptors = state.runtimeHeapNumDescriptors;
+			heap->cpuStart = state.runtimeHeapCpuStart;
+			heap->gpuStart = state.runtimeHeapGpuStart;
+			heap->increment = state.runtimeHeapIncrement;
+			heap->version = state.runtimeHeapVersion;
+			*tableBaseIndex = state.runtimeTableBaseIndex;
+			*tableCpuStart = state.runtimeTableCpuStart;
+			return true;
+		}
+
+		if (!ResolveTableHeap(state, type, heap) ||
+		    !boundHeap ||
+		    heap->heap != boundHeap ||
+		    !heap->cpuStart ||
+		    state.baseDescriptor.ptr < heap->gpuStart) {
+			return false;
+		}
+		const UINT64 tableDelta = state.baseDescriptor.ptr - heap->gpuStart;
+		if (tableDelta % heap->increment != 0)
+			return false;
+		*tableBaseIndex = tableDelta / heap->increment;
+		if (*tableBaseIndex >= heap->numDescriptors)
+			return false;
+		*tableCpuStart =
+			heap->cpuStart +
+			static_cast<SIZE_T>(*tableBaseIndex) * heap->increment;
+		return true;
+	}
+
 	static bool RequestMatchesSrvLayout(
 		const DX12ModIaReplacement::DrawSrvTablePatch &request,
 		const DX12RootSignatureSummary &rootSignature)
@@ -313,22 +477,18 @@ public:
 		if (!tables || !totalDescriptors)
 			return false;
 		static constexpr UINT MaxMirroredDescriptors = 65536;
+		DX12DrawSrvSignaturePlanTemplate cachedPlan;
+		if (!DX12DrawSrvReplacementUtils::GetSignaturePlanTemplate(
+				rootSignature, &cachedPlan))
+			return false;
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
 			const RootTableState &state = compute ?
 				snapshot.computeTables[root] : snapshot.graphicsTables[root];
 			if (!state.valid)
 				continue;
-			const DX12RootParameterSummary *parameter = nullptr;
-			for (const DX12RootParameterSummary &candidate :
-					rootSignature.parameters) {
-				if (candidate.rootParameterIndex == root) {
-					parameter = &candidate;
-					break;
-				}
-			}
-			if (!parameter || parameter->parameterType !=
-					D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
-					parameter->ranges.empty()) {
+			const DX12DrawSrvRootPlanTemplate &rootPlan =
+				cachedPlan.roots[root];
+			if (!rootPlan.valid) {
 #if defined(_DEBUG)
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=table_plan_fail,reason=root_parameter,pipeline=%s,root=%u",
@@ -336,76 +496,50 @@ public:
 #endif
 				return false;
 			}
-			bool hasSampler = false;
-			bool hasResource = false;
-			for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_range,pipeline=%s,root=%u,range=%u,type=%u,"
-					"numDescriptors=%u,effectiveOffset=%u,baseRegister=%u,space=%u",
-					compute ? "compute" : "graphics", root, range.rangeIndex,
-					range.rangeType, range.numDescriptors, range.effectiveOffset,
-					range.baseShaderRegister, range.registerSpace);
-#endif
-				if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
-					hasSampler = true;
-				else
-					hasResource = true;
-			}
-			if (hasSampler == hasResource) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=mixed_or_empty,pipeline=%s,root=%u,"
-					"sampler=%s,resource=%s",
-					compute ? "compute" : "graphics", root,
-					hasSampler ? "true" : "false",
-					hasResource ? "true" : "false");
-#endif
-				return false;
-			}
-			const D3D12_DESCRIPTOR_HEAP_TYPE type = hasSampler ?
+			const D3D12_DESCRIPTOR_HEAP_TYPE type = rootPlan.sampler ?
 				D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER :
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 			DX12DescriptorHeapSummary heap = {};
-			ID3D12DescriptorHeap *boundHeap = hasSampler ?
-				snapshot.samplerHeap : snapshot.cbvSrvUavHeap;
-			if (!ResolveTableHeap(state, type, &heap) ||
-					!boundHeap || heap.heap != boundHeap || !heap.cpuStart ||
-					state.baseDescriptor.ptr < heap.gpuStart) {
+			UINT64 tableBaseIndex = 0;
+			SIZE_T tableCpuStart = 0;
+			if (!ResolvePatchTableLocation(
+					snapshot, state, type,
+					&heap, &tableBaseIndex, &tableCpuStart)) {
 #if defined(_DEBUG)
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=table_plan_fail,reason=heap,pipeline=%s,root=%u,"
 					"resolvedHeap=%p,boundHeap=%p,cpuStart=0x%zx,gpuStart=0x%llx,table=0x%llx",
-					compute ? "compute" : "graphics", root, heap.heap, boundHeap,
+					compute ? "compute" : "graphics", root, heap.heap,
+					type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ?
+						snapshot.samplerHeap : snapshot.cbvSrvUavHeap,
 					heap.cpuStart, static_cast<unsigned long long>(heap.gpuStart),
 					static_cast<unsigned long long>(state.baseDescriptor.ptr));
 #endif
 				return false;
 			}
-			const UINT64 tableDelta = state.baseDescriptor.ptr - heap.gpuStart;
-			if (tableDelta % heap.increment != 0) {
+			UINT count = 0;
+			if (rootPlan.dynamicCount) {
+				const DX12RootParameterSummary *parameter =
+					DX12DrawSrvReplacementUtils::FindRootParameterSummary(
+						rootSignature, root);
+				if (!parameter) {
 #if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=alignment,pipeline=%s,root=%u,"
-					"delta=%llu,increment=%u",
-					compute ? "compute" : "graphics", root,
-					static_cast<unsigned long long>(tableDelta), heap.increment);
+					DX12LogManager::Fields("DX12DrawSrvReplacement",
+						"stage=table_plan_fail,reason=root_parameter,pipeline=%s,root=%u",
+						compute ? "compute" : "graphics", root);
 #endif
-				return false;
+					return false;
+				}
+				count = DescriptorCountForTable(
+					*parameter, heap, tableBaseIndex, type);
+			} else if (tableBaseIndex < heap.numDescriptors) {
+				const UINT64 available = heap.numDescriptors - tableBaseIndex;
+				const UINT64 clampedCount = (std::min)(
+					static_cast<UINT64>(rootPlan.fixedCount),
+					available);
+				count = clampedCount > UINT_MAX ?
+					UINT_MAX : static_cast<UINT>(clampedCount);
 			}
-			const UINT64 tableBaseIndex = tableDelta / heap.increment;
-			if (tableBaseIndex >= heap.numDescriptors) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=base_index,pipeline=%s,root=%u,"
-					"tableBaseIndex=%llu,heapDescriptors=%u",
-					compute ? "compute" : "graphics", root,
-					static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors);
-#endif
-				return false;
-			}
-			const UINT count = DescriptorCountForTable(
-				*parameter, heap, tableBaseIndex, type);
 			if (!count) {
 #if defined(_DEBUG)
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
@@ -419,14 +553,13 @@ public:
 			DX12DrawSrvPatchTable table;
 			table.compute = compute;
 			table.rootParameterIndex = root;
-			table.sampler = hasSampler;
-			table.cpuStart = heap.cpuStart +
-				static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
+			table.sampler = rootPlan.sampler;
+			table.cpuStart = tableCpuStart;
 			table.gpuStart = state.baseDescriptor;
 			table.heap = heap.heap;
 			table.increment = heap.increment;
 			table.count = count;
-			if (!hasSampler) {
+			if (!rootPlan.sampler) {
 				if (*totalDescriptors > MaxMirroredDescriptors ||
 						count > MaxMirroredDescriptors - *totalDescriptors) {
 #if defined(_DEBUG)
@@ -448,7 +581,7 @@ public:
 				"stage=table_plan,pipeline=%s,root=%u,sampler=%s,"
 				"tableBaseIndex=%llu,heapDescriptors=%u,count=%u,tempOffset=%u,total=%u",
 				compute ? "compute" : "graphics", root,
-				hasSampler ? "true" : "false",
+				rootPlan.sampler ? "true" : "false",
 				static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors,
 				count, table.tempOffset, *totalDescriptors);
 #endif
