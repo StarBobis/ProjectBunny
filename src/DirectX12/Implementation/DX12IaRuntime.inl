@@ -266,13 +266,31 @@ static bool AppendActionToCompiledPlan(
 	{
 	case Bunny::CommandListActionKind::HandlingSkip:
 		plan->handlingSkip = true;
+		{
+			DX12CompiledCommandListPlan::Op op;
+			op.kind = DX12CompiledCommandListPlan::Op::Kind::HandlingSkip;
+			plan->ops.push_back(std::move(op));
+		}
 		return true;
 	case Bunny::CommandListActionKind::SetIndexBuffer:
 		plan->indexResource = action.resource;
+		{
+			DX12CompiledCommandListPlan::Op op;
+			op.kind = DX12CompiledCommandListPlan::Op::Kind::SetIndexBuffer;
+			op.resource = action.resource;
+			plan->ops.push_back(std::move(op));
+		}
 		return true;
 	case Bunny::CommandListActionKind::SetVertexBuffer:
 		SetCompiledVertexResourceBinding(
 			&plan->vertexResources, action.target.slot, action.resource);
+		{
+			DX12CompiledCommandListPlan::Op op;
+			op.kind = DX12CompiledCommandListPlan::Op::Kind::SetVertexBuffer;
+			op.target = action.target;
+			op.resource = action.resource;
+			plan->ops.push_back(std::move(op));
+		}
 		return true;
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
@@ -291,6 +309,12 @@ static bool AppendActionToCompiledPlan(
 			draw.baseVertex = draw.indexed ? static_cast<INT>(action.args[2]) : 0;
 		}
 		plan->draws.push_back(draw);
+		{
+			DX12CompiledCommandListPlan::Op op;
+			op.kind = DX12CompiledCommandListPlan::Op::Kind::Draw;
+			op.draw = draw;
+			plan->ops.push_back(std::move(op));
+		}
 		return true;
 	}
 	case Bunny::CommandListActionKind::Dispatch:
@@ -300,6 +324,20 @@ static bool AppendActionToCompiledPlan(
 		dispatch.groupsY = action.args[1];
 		dispatch.groupsZ = action.args[2];
 		plan->dispatches.push_back(dispatch);
+		{
+			DX12CompiledCommandListPlan::Op op;
+			op.kind = DX12CompiledCommandListPlan::Op::Kind::Dispatch;
+			op.dispatch = dispatch;
+			plan->ops.push_back(std::move(op));
+		}
+		return true;
+	}
+	case Bunny::CommandListActionKind::CheckTextureOverride:
+	{
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::CheckTextureOverride;
+		op.target = action.target;
+		plan->ops.push_back(std::move(op));
 		return true;
 	}
 	default:
@@ -319,6 +357,7 @@ static void AppendCompiledCommandListPlan(
 		SetCompiledVertexResourceBinding(&dst->vertexResources, item.slot, item.resource);
 	dst->draws.insert(dst->draws.end(), src.draws.begin(), src.draws.end());
 	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
+	dst->ops.insert(dst->ops.end(), src.ops.begin(), src.ops.end());
 }
 
 static bool AppendCompiledCommandListLinksPlan(
@@ -409,8 +448,7 @@ static void BuildCompiledShaderOverridePlanFromParts(
 			AppendCompiledCommandListPlan(&plan->mainPlan, commandPlan->second);
 			continue;
 		}
-		if (action.kind == Bunny::CommandListActionKind::CheckTextureOverride ||
-		    !AppendActionToCompiledPlan(action, &plan->mainPlan)) {
+		if (!AppendActionToCompiledPlan(action, &plan->mainPlan)) {
 			plan->unsupported = true;
 			return;
 		}
@@ -469,8 +507,7 @@ static bool CompileCommandListPlanRecursive(
 			AppendCompiledCommandListPlan(&plan, childPlan);
 			continue;
 		}
-		if (action.kind == Bunny::CommandListActionKind::CheckTextureOverride ||
-			!AppendActionToCompiledPlan(action, &plan))
+		if (!AppendActionToCompiledPlan(action, &plan))
 		{
 			plan.unsupported = true;
 			break;

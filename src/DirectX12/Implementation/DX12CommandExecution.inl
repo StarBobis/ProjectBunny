@@ -214,7 +214,7 @@ public:
 		if (compiledTextureOverride) {
 			if (compiledPlanView->hasPostCommandListPlan)
 				ExecuteCompiledCommandListPlan(
-					compiledPlanView->postCommandListPlan);
+					compiledPlanView->postCommandListPlan, 0, true);
 			return;
 		}
 
@@ -344,11 +344,13 @@ public:
 			compiledPlanView && !compiledPlanView->hasUnsupportedCommandActions;
 		if (compiledTextureOverride) {
 			if (compiledPlanView->hasPreCommandListPlan)
-				ExecuteCompiledCommandListPlan(compiledPlanView->preCommandListPlan);
+				ExecuteCompiledCommandListPlan(
+					compiledPlanView->preCommandListPlan, depth + 1, false);
 			RunCompiledTextureOverridePlan(*compiledPlanView);
 			if (includePost && match.postRuntimeEffect &&
 			    compiledPlanView->hasPostCommandListPlan)
-				ExecuteCompiledCommandListPlan(compiledPlanView->postCommandListPlan);
+				ExecuteCompiledCommandListPlan(
+					compiledPlanView->postCommandListPlan, depth + 1, true);
 		} else {
 			if (mExecuteCommands) {
 				for (const std::wstring &list : config->commandLists.pre) {
@@ -415,17 +417,18 @@ public:
 	{
 		if (plan.unsupported)
 			return;
-		ExecuteCompiledCommandListPlan(plan.mainPlan);
+		ExecuteCompiledCommandListPlan(plan.mainPlan, 0, false);
 	}
 
 	void RunCompiledShaderOverridePostPlan(const DX12CompiledShaderOverridePlan &plan)
 	{
 		if (plan.unsupported || !plan.hasPostCommandListPlan)
 			return;
-		ExecuteCompiledCommandListPlan(plan.postCommandListPlan);
+		ExecuteCompiledCommandListPlan(plan.postCommandListPlan, 0, true);
 	}
 
-	bool RunCompiledCommandListPlan(const std::wstring &name)
+	bool RunCompiledCommandListPlan(
+		const std::wstring &name, int depth, bool includePost)
 	{
 		if (!mReplacement)
 			return false;
@@ -437,13 +440,54 @@ public:
 			LeaveCommandList();
 			return false;
 		}
-		ExecuteCompiledCommandListPlan(*plan);
+		ExecuteCompiledCommandListPlan(*plan, depth, includePost);
 		LeaveCommandList();
 		return true;
 	}
 
-	void ExecuteCompiledCommandListPlan(const DX12CompiledCommandListPlan &plan)
+	void ExecuteCompiledCommandListPlan(
+		const DX12CompiledCommandListPlan &plan, int depth, bool includePost)
 	{
+		if (!plan.ops.empty()) {
+			for (const DX12CompiledCommandListPlan::Op &op : plan.ops) {
+				switch (op.kind) {
+				case DX12CompiledCommandListPlan::Op::Kind::HandlingSkip:
+					SetSkip();
+					break;
+				case DX12CompiledCommandListPlan::Op::Kind::SetIndexBuffer:
+					AppendResourceViews(
+						op.resource,
+						std::vector<DX12CompiledVertexResourceBinding>());
+					break;
+				case DX12CompiledCommandListPlan::Op::Kind::SetVertexBuffer:
+					AppendResourceViews(
+						L"",
+						std::vector<DX12CompiledVertexResourceBinding>{
+							{ op.target.slot, op.resource }});
+					break;
+				case DX12CompiledCommandListPlan::Op::Kind::Draw:
+					mReplacement->draws.push_back(op.draw);
+					MarkChanged();
+					break;
+				case DX12CompiledCommandListPlan::Op::Kind::Dispatch:
+					mReplacement->dispatches.push_back(op.dispatch);
+					MarkChanged();
+					break;
+				case DX12CompiledCommandListPlan::Op::Kind::CheckTextureOverride:
+					if (!mExecuteCommands)
+						break;
+					{
+						std::vector<DX12TextureOverrideMatch> matches;
+						if (FindTargetTextureOverride(op.target, &matches)) {
+							for (const DX12TextureOverrideMatch &match : matches)
+								RunTextureOverride(match, depth + 1, includePost);
+						}
+					}
+					break;
+				}
+			}
+			return;
+		}
 		AppendResourceViews(plan.indexResource, plan.vertexResources);
 		if (plan.handlingSkip)
 			SetSkip();
@@ -482,7 +526,7 @@ public:
 	{
 		if (depth > 16)
 			return;
-		if (RunCompiledCommandListPlan(commandList.section))
+		if (RunCompiledCommandListPlan(commandList.section, depth, includePost))
 			return;
 		if (!EnterCommandList(commandList.section))
 			return;
@@ -669,7 +713,7 @@ public:
 		for (const std::wstring &list : links.pre) {
 			if (!CommandListRuntimeEffect(list))
 				continue;
-			if (RunCompiledCommandListPlan(list))
+			if (RunCompiledCommandListPlan(list, depth + 1, false))
 				continue;
 			const std::shared_ptr<const Bunny::CommandListConfig> config =
 				SnapshotCommandListConfig(list);
@@ -679,7 +723,7 @@ public:
 		for (const std::wstring &list : links.main) {
 			if (!CommandListRuntimeEffect(list))
 				continue;
-			if (RunCompiledCommandListPlan(list))
+			if (RunCompiledCommandListPlan(list, depth + 1, includePost))
 				continue;
 			const std::shared_ptr<const Bunny::CommandListConfig> config =
 				SnapshotCommandListConfig(list);
@@ -690,7 +734,7 @@ public:
 			for (const std::wstring &list : links.post) {
 				if (!CommandListRuntimeEffect(list))
 					continue;
-				if (RunCompiledCommandListPlan(list))
+				if (RunCompiledCommandListPlan(list, depth + 1, true))
 					continue;
 				const std::shared_ptr<const Bunny::CommandListConfig> config =
 					SnapshotCommandListConfig(list);

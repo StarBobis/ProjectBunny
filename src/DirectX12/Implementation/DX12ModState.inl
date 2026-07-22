@@ -172,12 +172,33 @@ class DX12CompiledCommandListPlan
 {
 
 public:
+	class Op
+	{
+	public:
+		enum class Kind
+		{
+			HandlingSkip,
+			SetIndexBuffer,
+			SetVertexBuffer,
+			Draw,
+			Dispatch,
+			CheckTextureOverride
+		};
+
+		Kind kind = Kind::HandlingSkip;
+		Bunny::CommandListTarget target;
+		std::wstring resource;
+		DX12ModIaReplacement::DrawCall draw;
+		DX12ModIaReplacement::DispatchCall dispatch;
+	};
+
 	bool unsupported = false;
 	bool handlingSkip = false;
 	std::wstring indexResource;
 	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
 	std::vector<DX12ModIaReplacement::DrawCall> draws;
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
+	std::vector<Op> ops;
 
 	bool NeedsResidentIaState() const
 	{
