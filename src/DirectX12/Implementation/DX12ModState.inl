@@ -216,8 +216,10 @@ public:
 	bool hasUnsupportedCommandActions = false;
 	bool hasPreCommandListPlan = false;
 	bool hasPostCommandListPlan = false;
+	bool hasMainActionPlan = false;
 	bool handlingSkip = false;
 	DX12CompiledCommandListPlan preCommandListPlan;
+	DX12CompiledCommandListPlan mainActionPlan;
 	DX12CompiledCommandListPlan postCommandListPlan;
 	std::wstring indexResource;
 	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
@@ -230,6 +232,7 @@ public:
 	{
 		return !indexResource.empty() ||
 			!vertexResources.empty() ||
+			(hasMainActionPlan && mainActionPlan.NeedsResidentIaState()) ||
 			(hasPreCommandListPlan && preCommandListPlan.NeedsResidentIaState()) ||
 			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
 	}
@@ -259,6 +262,8 @@ class DX12CommandExecutionRuntimeSnapshot
 
 public:
 	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
+	std::unordered_map<std::wstring, bool> commandListPreRuntimeEffect;
+	std::unordered_map<std::wstring, bool> commandListPostRuntimeEffect;
 	std::unordered_map<std::wstring, std::shared_ptr<const Bunny::CommandListConfig>>
 		commandLists;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledCommandListPlan>>

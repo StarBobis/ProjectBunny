@@ -394,6 +394,39 @@ static void AppendCompiledCommandListToTexturePlan(
 	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
 }
 
+static void AppendLegacyTextureOverrideStateToPlan(
+	const Bunny::TextureOverrideConfig &config,
+	DX12CompiledCommandListPlan *plan)
+{
+	if (!plan)
+		return;
+
+	if (config.handlingSkip) {
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::HandlingSkip;
+		plan->handlingSkip = true;
+		plan->ops.push_back(std::move(op));
+	}
+
+	if (!config.indexBufferResource.empty()) {
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::SetIndexBuffer;
+		op.resource = config.indexBufferResource;
+		plan->indexResource = config.indexBufferResource;
+		plan->ops.push_back(std::move(op));
+	}
+
+	for (const auto &item : config.vertexBufferResources) {
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::SetVertexBuffer;
+		op.target.kind = Bunny::CommandListTargetKind::VertexBuffer;
+		op.target.slot = item.first;
+		op.resource = item.second;
+		SetCompiledVertexResourceBinding(&plan->vertexResources, item.first, item.second);
+		plan->ops.push_back(std::move(op));
+	}
+}
+
 static bool AppendCompiledCommandListLinksToTexturePlan(
 	const std::vector<std::wstring> &links,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
@@ -578,90 +611,63 @@ static void BuildDx12CompiledTextureOverridePlans(
 				}
 			}
 
-			if (config.actions.empty())
-			{
+			const bool hasMainRuntimeWork =
+				!config.actions.empty() ||
+				!config.commandLists.main.empty();
+			if (!hasMainRuntimeWork) {
 				plan.handlingSkip = config.handlingSkip;
 				plan.indexResource = config.indexBufferResource;
 				plan.vertexResources =
 					CompileVertexResourceBindings(config.vertexBufferResources);
-			}
-			else
-			{
-				for (const Bunny::CommandListAction &action : config.actions)
-				{
-					switch (action.kind)
-					{
-					case Bunny::CommandListActionKind::Run:
-					{
-						auto commandPlan = compiledCommandListPlans.find(action.commandList);
-						if (commandPlan == compiledCommandListPlans.end() ||
-							commandPlan->second.unsupported)
-						{
-							plan.hasUnsupportedCommandActions = true;
+			} else {
+				plan.hasMainActionPlan = true;
+				if (config.actions.empty()) {
+					AppendLegacyTextureOverrideStateToPlan(config, &plan.mainActionPlan);
+				} else {
+					for (const Bunny::CommandListAction &action : config.actions) {
+						switch (action.kind) {
+						case Bunny::CommandListActionKind::Run: {
+							auto commandPlan = compiledCommandListPlans.find(action.commandList);
+							if (commandPlan == compiledCommandListPlans.end() ||
+								commandPlan->second.unsupported) {
+								plan.hasUnsupportedCommandActions = true;
+								break;
+							}
+							AppendCompiledCommandListPlan(
+								&plan.mainActionPlan, commandPlan->second);
 							break;
 						}
-						AppendCompiledCommandListToTexturePlan(&plan, commandPlan->second);
-						break;
-					}
-					case Bunny::CommandListActionKind::CheckTextureOverride:
-						plan.hasUnsupportedCommandActions = true;
-						break;
-					case Bunny::CommandListActionKind::HandlingSkip:
-						plan.handlingSkip = true;
-						break;
-					case Bunny::CommandListActionKind::SetIndexBuffer:
-						plan.indexResource = action.resource;
-						break;
-					case Bunny::CommandListActionKind::SetVertexBuffer:
-						SetCompiledVertexResourceBinding(
-							&plan.vertexResources, action.target.slot, action.resource);
-						break;
-					case Bunny::CommandListActionKind::Draw:
-					case Bunny::CommandListActionKind::DrawIndexed:
-					case Bunny::CommandListActionKind::DrawFromCaller:
-					case Bunny::CommandListActionKind::DrawIndexedFromCaller:
-					{
-						DX12ModIaReplacement::DrawCall draw;
-						draw.indexed = (action.kind == Bunny::CommandListActionKind::DrawIndexed ||
-										action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
-						draw.fromCaller = (action.kind == Bunny::CommandListActionKind::DrawFromCaller ||
-										   action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
-						if (!draw.fromCaller)
-						{
-							draw.count = action.args[0];
-							draw.start = action.args[1];
-							draw.baseVertex = draw.indexed ? static_cast<INT>(action.args[2]) : 0;
+						default:
+							if (!AppendActionToCompiledPlan(action, &plan.mainActionPlan))
+								plan.hasUnsupportedCommandActions = true;
+							break;
 						}
-						plan.draws.push_back(draw);
-						break;
-					}
-					case Bunny::CommandListActionKind::Dispatch:
-					{
-						DX12ModIaReplacement::DispatchCall dispatch;
-						dispatch.groupsX = action.args[0];
-						dispatch.groupsY = action.args[1];
-						dispatch.groupsZ = action.args[2];
-						plan.dispatches.push_back(dispatch);
-						break;
-					}
-					default:
-						plan.hasUnsupportedCommandActions = true;
-						break;
-					}
 
-					if (plan.hasUnsupportedCommandActions)
-						break;
+						if (plan.hasUnsupportedCommandActions)
+							break;
+					}
+				}
+
+				if (!plan.hasUnsupportedCommandActions &&
+				    !config.commandLists.main.empty() &&
+				    !AppendCompiledCommandListLinksPlan(
+						config.commandLists.main,
+						compiledCommandListPlans,
+						&plan.mainActionPlan)) {
+					plan.hasUnsupportedCommandActions = true;
+				}
+
+				if (!plan.hasUnsupportedCommandActions) {
+					plan.handlingSkip = plan.mainActionPlan.handlingSkip;
+					plan.indexResource = plan.mainActionPlan.indexResource;
+					plan.vertexResources = plan.mainActionPlan.vertexResources;
+					plan.draws = plan.mainActionPlan.draws;
+					plan.dispatches = plan.mainActionPlan.dispatches;
+				} else {
+					plan.hasMainActionPlan = false;
 				}
 			}
 
-			if (!plan.hasUnsupportedCommandActions &&
-			    !config.commandLists.main.empty() &&
-			    !AppendCompiledCommandListLinksToTexturePlan(
-					config.commandLists.main,
-					compiledCommandListPlans,
-					&plan)) {
-				plan.hasUnsupportedCommandActions = true;
-			}
 			if (!plan.hasUnsupportedCommandActions &&
 			    !config.commandLists.post.empty()) {
 				plan.hasPostCommandListPlan = true;

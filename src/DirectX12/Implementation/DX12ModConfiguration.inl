@@ -653,6 +653,8 @@ static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 BuildDx12CommandExecutionRuntimeSnapshot(
 	const Bunny::CommandListMap &commandLists,
 	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &commandListPreRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &commandListPostRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans);
@@ -1264,6 +1266,124 @@ static void BuildDx12RuntimeEffectIndexes(
 	}
 }
 
+static bool AnyRuntimeEffectInMap(
+	const std::unordered_map<std::wstring, bool> &effects)
+{
+	for (const auto &item : effects) {
+		if (item.second)
+			return true;
+	}
+	return false;
+}
+
+static bool CommandListHasPhaseRuntimeEffect(
+	const std::wstring &name,
+	bool includePost,
+	const Bunny::CommandListMap &commandLists,
+	std::unordered_map<std::wstring, bool> *effectCache,
+	std::set<std::wstring> *visiting,
+	bool anyTextureOverridePreEffect,
+	bool anyTextureOverridePostEffect);
+
+static bool CommandListActionHasPhaseRuntimeEffect(
+	const Bunny::CommandListAction &action,
+	bool includePost,
+	const Bunny::CommandListMap &commandLists,
+	std::unordered_map<std::wstring, bool> *effectCache,
+	std::set<std::wstring> *visiting,
+	bool anyTextureOverridePreEffect,
+	bool anyTextureOverridePostEffect)
+{
+	switch (action.kind) {
+	case Bunny::CommandListActionKind::Run:
+		return CommandListHasPhaseRuntimeEffect(
+			action.commandList, includePost, commandLists, effectCache, visiting,
+			anyTextureOverridePreEffect, anyTextureOverridePostEffect);
+	case Bunny::CommandListActionKind::CheckTextureOverride:
+		return includePost ? anyTextureOverridePostEffect :
+			anyTextureOverridePreEffect;
+	case Bunny::CommandListActionKind::HandlingSkip:
+	case Bunny::CommandListActionKind::SetIndexBuffer:
+	case Bunny::CommandListActionKind::SetVertexBuffer:
+	case Bunny::CommandListActionKind::Draw:
+	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawFromCaller:
+	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
+	case Bunny::CommandListActionKind::Dispatch:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool CommandListHasPhaseRuntimeEffect(
+	const std::wstring &name,
+	bool includePost,
+	const Bunny::CommandListMap &commandLists,
+	std::unordered_map<std::wstring, bool> *effectCache,
+	std::set<std::wstring> *visiting,
+	bool anyTextureOverridePreEffect,
+	bool anyTextureOverridePostEffect)
+{
+	if (!effectCache || !visiting)
+		return true;
+
+	auto cached = effectCache->find(name);
+	if (cached != effectCache->end())
+		return cached->second;
+	if (!visiting->insert(name).second)
+		return true;
+
+	bool effect = false;
+	auto it = commandLists.find(name);
+	if (it != commandLists.end()) {
+		for (const Bunny::CommandListAction &action : it->second.actions) {
+			if (CommandListActionHasPhaseRuntimeEffect(
+				    action, includePost, commandLists, effectCache, visiting,
+				    anyTextureOverridePreEffect, anyTextureOverridePostEffect)) {
+				effect = true;
+				break;
+			}
+		}
+	}
+	visiting->erase(name);
+	(*effectCache)[name] = effect;
+	return effect;
+}
+
+static void BuildDx12CommandListPhaseRuntimeEffectIndexes(
+	const Bunny::CommandListMap &commandLists,
+	const std::unordered_map<std::wstring, bool> &textureOverridePreEffect,
+	const std::unordered_map<std::wstring, bool> &textureOverridePostEffect,
+	std::unordered_map<std::wstring, bool> *commandListPreEffect,
+	std::unordered_map<std::wstring, bool> *commandListPostEffect)
+{
+	if (!commandListPreEffect || !commandListPostEffect)
+		return;
+
+	commandListPreEffect->clear();
+	commandListPostEffect->clear();
+	const bool anyTextureOverridePreRuntimeEffect =
+		AnyRuntimeEffectInMap(textureOverridePreEffect);
+	const bool anyTextureOverridePostRuntimeEffect =
+		AnyRuntimeEffectInMap(textureOverridePostEffect);
+
+	for (const auto &item : commandLists) {
+		std::set<std::wstring> visiting;
+		CommandListHasPhaseRuntimeEffect(
+			item.first, false, commandLists, commandListPreEffect, &visiting,
+			anyTextureOverridePreRuntimeEffect,
+			anyTextureOverridePostRuntimeEffect);
+	}
+	for (const auto &item : commandLists) {
+		std::set<std::wstring> visiting;
+		CommandListHasPhaseRuntimeEffect(
+			item.first, true, commandLists, commandListPostEffect, &visiting,
+			anyTextureOverridePreRuntimeEffect,
+			anyTextureOverridePostRuntimeEffect);
+	}
+}
+
 static bool LookupRuntimeEffect(
 	const std::unordered_map<std::wstring, bool> &effects,
 	const std::wstring &section)
@@ -1294,6 +1414,8 @@ static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 BuildDx12CommandExecutionRuntimeSnapshot(
 	const Bunny::CommandListMap &commandLists,
 	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &commandListPreRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &commandListPostRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans,
@@ -1302,6 +1424,8 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 	std::shared_ptr<DX12CommandExecutionRuntimeSnapshot> snapshot =
 		std::make_shared<DX12CommandExecutionRuntimeSnapshot>();
 	snapshot->commandListRuntimeEffect = commandListRuntimeEffect;
+	snapshot->commandListPreRuntimeEffect = commandListPreRuntimeEffect;
+	snapshot->commandListPostRuntimeEffect = commandListPostRuntimeEffect;
 	for (const auto &item : commandLists) {
 		snapshot->commandLists.emplace(
 			item.first,
@@ -1403,6 +1527,8 @@ bool DX12ModRuntimeLoad(
 	Bunny::CommandListMap commandLists;
 	std::vector<Bunny::MigotoKeyBindingUtils::Binding> keyBindings;
 	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
+	std::unordered_map<std::wstring, bool> commandListPreRuntimeEffect;
+	std::unordered_map<std::wstring, bool> commandListPostRuntimeEffect;
 	std::unordered_map<std::wstring, bool> textureOverridePreRuntimeEffect;
 	std::unordered_map<std::wstring, bool> textureOverridePostRuntimeEffect;
 	std::unordered_map<std::wstring, uint32_t> textureOverrideSectionIds;
@@ -1503,6 +1629,12 @@ bool DX12ModRuntimeLoad(
 		&commandListRuntimeEffect,
 		&textureOverridePreRuntimeEffect,
 		&textureOverridePostRuntimeEffect);
+	BuildDx12CommandListPhaseRuntimeEffectIndexes(
+		commandLists,
+		textureOverridePreRuntimeEffect,
+		textureOverridePostRuntimeEffect,
+		&commandListPreRuntimeEffect,
+		&commandListPostRuntimeEffect);
 	{
 		std::set<std::wstring> visiting;
 		presentRuntimeEffect =
@@ -1536,6 +1668,8 @@ bool DX12ModRuntimeLoad(
 	commandExecutionRuntimeSnapshot = BuildDx12CommandExecutionRuntimeSnapshot(
 		commandLists,
 		commandListRuntimeEffect,
+		commandListPreRuntimeEffect,
+		commandListPostRuntimeEffect,
 		textureOverrideSectionIds,
 		compiledCommandListPlans,
 		compiledTextureOverridePlans,
