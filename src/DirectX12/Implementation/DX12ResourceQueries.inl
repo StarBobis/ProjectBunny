@@ -1221,6 +1221,7 @@ uint32_t DX12HashIaBufferView(
 		UINT64 size = 0;
 		ID3D12Resource *resource = nullptr;
 		UINT64 resourceGeneration = 0;
+		bool tracksContent = false;
 	};
 
 	// -- L1 key (gpuVa-based) --
@@ -1256,8 +1257,67 @@ uint32_t DX12HashIaBufferView(
 		}
 	};
 
+	struct IaHashKeyL3Resolved {
+		UINT dimension; UINT64 width; UINT height; UINT depthOrArraySize;
+		UINT mipLevels; UINT resourceFormat; UINT sampleCount; UINT sampleQuality;
+		UINT layout; UINT flags; UINT heapType;
+		UINT64 resourceOffset; UINT64 viewSize;
+		UINT str; UINT fmt; UINT sl;
+		bool operator==(const IaHashKeyL3Resolved &o) const {
+			return dimension == o.dimension &&
+				width == o.width &&
+				height == o.height &&
+				depthOrArraySize == o.depthOrArraySize &&
+				mipLevels == o.mipLevels &&
+				resourceFormat == o.resourceFormat &&
+				sampleCount == o.sampleCount &&
+				sampleQuality == o.sampleQuality &&
+				layout == o.layout &&
+				flags == o.flags &&
+				heapType == o.heapType &&
+				resourceOffset == o.resourceOffset &&
+				viewSize == o.viewSize &&
+				str == o.str &&
+				fmt == o.fmt &&
+				sl == o.sl;
+		}
+	};
+	struct IaHashKeyL3ResolvedHasher {
+		size_t operator()(const IaHashKeyL3Resolved &k) const {
+			size_t hash = 0x84222325a9582d75ull;
+			auto mix = [&hash](UINT64 value) {
+				hash ^= static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
+					(hash << 6) + (hash >> 2);
+			};
+			mix(k.dimension);
+			mix(k.width);
+			mix(k.height);
+			mix(k.depthOrArraySize);
+			mix(k.mipLevels);
+			mix(k.resourceFormat);
+			mix(k.sampleCount);
+			mix(k.sampleQuality);
+			mix(k.layout);
+			mix(k.flags);
+			mix(k.heapType);
+			mix(k.resourceOffset);
+			mix(k.viewSize);
+			mix(k.str);
+			mix(k.fmt);
+			mix(k.sl);
+			return hash;
+		}
+	};
+
 	static thread_local std::unordered_map<IaHashKeyL1, IaHashCacheValue, IaHashKeyL1Hasher> s_cacheL1;
 	static thread_local std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher> s_cacheL2;
+	static thread_local std::unordered_map<
+		IaHashKeyL3Resolved,
+		uint32_t,
+		IaHashKeyL3ResolvedHasher> s_cacheL3Resolved;
+	static constexpr size_t MaxL1Entries = 32768;
+	static constexpr size_t MaxL2Entries = 32768;
+	static constexpr size_t MaxL3ResolvedEntries = 65536;
 	const UINT64 resolveGeneration = gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
 	const UINT64 globalContentGeneration =
 		gBufferContentGeneration.load(std::memory_order_relaxed);
@@ -1273,14 +1333,16 @@ uint32_t DX12HashIaBufferView(
 		if (!hasTrackedResourceIdentity ||
 		    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
 			    cacheValue.resource, cacheValue.resourceGeneration)) {
-			const UINT64 currentContentGeneration =
-				cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+			const UINT64 currentContentGeneration = cacheValue.tracksContent ?
+				(cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
 					cacheValue.contentGeneration :
 					(cacheValue.resource ?
 						DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-						globalContentGeneration);
+						globalContentGeneration)) :
+				cacheValue.contentGeneration;
 			if (cacheValue.contentGeneration == currentContentGeneration) {
-				cacheValue.observedGlobalContentGeneration = globalContentGeneration;
+				if (cacheValue.tracksContent)
+					cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 				if (hasTrackedResourceIdentity) {
 					invalidated = false;
 				} else if (cacheValue.resolveGeneration == resolveGeneration) {
@@ -1317,14 +1379,16 @@ uint32_t DX12HashIaBufferView(
 			if (!hasTrackedResourceIdentity ||
 			    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
 				    cacheValue.resource, cacheValue.resourceGeneration)) {
-				const UINT64 currentContentGeneration =
-					cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
+				const UINT64 currentContentGeneration = cacheValue.tracksContent ?
+					(cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
 						cacheValue.contentGeneration :
 						(cacheValue.resource ?
 							DX12GetBufferContentGenerationForResource(cacheValue.resource) :
-							globalContentGeneration);
+							globalContentGeneration)) :
+					cacheValue.contentGeneration;
 				if (cacheValue.contentGeneration == currentContentGeneration) {
-					cacheValue.observedGlobalContentGeneration = globalContentGeneration;
+					if (cacheValue.tracksContent)
+						cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 					if (hasTrackedResourceIdentity) {
 						invalidated = false;
 					} else if (cacheValue.resolveGeneration == resolveGeneration) {
@@ -1369,15 +1433,19 @@ uint32_t DX12HashIaBufferView(
 		contentCacheValue.size = size;
 		contentCacheValue.resource = summary.resource;
 		contentCacheValue.resourceGeneration = summary.resourceGeneration;
+		contentCacheValue.tracksContent = true;
 		s_cacheL1[keyL1] = contentCacheValue;
 		IaHashKeyL2 keyL2 = { summary.resource,
 			summary.resourceOffset, summary.viewSize,
 			stride, format, slot };
 		s_cacheL2[keyL2] = contentCacheValue;
-		if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
+		if (s_cacheL1.size() > MaxL1Entries ||
+		    s_cacheL2.size() > MaxL2Entries) {
 			s_cacheL1.clear();
 			s_cacheL2.clear();
 		}
+		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
+			s_cacheL3Resolved.clear();
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaHashResolve",
 			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
@@ -1410,6 +1478,7 @@ uint32_t DX12HashIaBufferView(
 		contentCacheValue.resource = resolved ? summary.resource : nullptr;
 		contentCacheValue.resourceGeneration =
 			resolved ? summary.resourceGeneration : 0;
+		contentCacheValue.tracksContent = true;
 		s_cacheL1[keyL1] = contentCacheValue;
 		if (resolved && summary.resource) {
 			IaHashKeyL2 keyL2 = { summary.resource,
@@ -1417,10 +1486,13 @@ uint32_t DX12HashIaBufferView(
 				stride, format, slot };
 			s_cacheL2[keyL2] = contentCacheValue;
 		}
-		if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
+		if (s_cacheL1.size() > MaxL1Entries ||
+		    s_cacheL2.size() > MaxL2Entries) {
 			s_cacheL1.clear();
 			s_cacheL2.clear();
 		}
+		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
+			s_cacheL3Resolved.clear();
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaHashResolve",
 			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
@@ -1438,19 +1510,47 @@ uint32_t DX12HashIaBufferView(
 
 	if (resolved && summary.hasResourceDesc) {
 		const D3D12_RESOURCE_DESC &desc = summary.resourceDesc;
-		hash = HashBytes(hash, &desc.Dimension, sizeof(desc.Dimension));
-		hash = HashBytes(hash, &desc.Width, sizeof(desc.Width));
-		hash = HashBytes(hash, &desc.Height, sizeof(desc.Height));
-		hash = HashBytes(hash, &desc.DepthOrArraySize, sizeof(desc.DepthOrArraySize));
-		hash = HashBytes(hash, &desc.MipLevels, sizeof(desc.MipLevels));
-		hash = HashBytes(hash, &desc.Format, sizeof(desc.Format));
-		hash = HashBytes(hash, &desc.SampleDesc.Count, sizeof(desc.SampleDesc.Count));
-		hash = HashBytes(hash, &desc.SampleDesc.Quality, sizeof(desc.SampleDesc.Quality));
-		hash = HashBytes(hash, &desc.Layout, sizeof(desc.Layout));
-		hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
-		hash = HashBytes(hash, &summary.resourceHeapType, sizeof(summary.resourceHeapType));
-		hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
-		hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
+		IaHashKeyL3Resolved keyL3 = {
+			static_cast<UINT>(desc.Dimension),
+			desc.Width,
+			desc.Height,
+			desc.DepthOrArraySize,
+			desc.MipLevels,
+			static_cast<UINT>(desc.Format),
+			desc.SampleDesc.Count,
+			desc.SampleDesc.Quality,
+			static_cast<UINT>(desc.Layout),
+			static_cast<UINT>(desc.Flags),
+			summary.resourceHeapType,
+			summary.resourceOffset,
+			summary.viewSize,
+			stride,
+			format,
+			slot
+		};
+		std::unordered_map<
+			IaHashKeyL3Resolved,
+			uint32_t,
+			IaHashKeyL3ResolvedHasher>::iterator itL3 =
+			s_cacheL3Resolved.find(keyL3);
+		if (itL3 != s_cacheL3Resolved.end()) {
+			hash = itL3->second;
+		} else {
+			hash = HashBytes(hash, &desc.Dimension, sizeof(desc.Dimension));
+			hash = HashBytes(hash, &desc.Width, sizeof(desc.Width));
+			hash = HashBytes(hash, &desc.Height, sizeof(desc.Height));
+			hash = HashBytes(hash, &desc.DepthOrArraySize, sizeof(desc.DepthOrArraySize));
+			hash = HashBytes(hash, &desc.MipLevels, sizeof(desc.MipLevels));
+			hash = HashBytes(hash, &desc.Format, sizeof(desc.Format));
+			hash = HashBytes(hash, &desc.SampleDesc.Count, sizeof(desc.SampleDesc.Count));
+			hash = HashBytes(hash, &desc.SampleDesc.Quality, sizeof(desc.SampleDesc.Quality));
+			hash = HashBytes(hash, &desc.Layout, sizeof(desc.Layout));
+			hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
+			hash = HashBytes(hash, &summary.resourceHeapType, sizeof(summary.resourceHeapType));
+			hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
+			hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
+			s_cacheL3Resolved[keyL3] = hash;
+		}
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaHashResolve",
 			"stage=resolved,gpuVa=0x%llx,size=%llu,"
@@ -1489,6 +1589,7 @@ uint32_t DX12HashIaBufferView(
 	cacheValue.resource = resolved ? summary.resource : nullptr;
 	cacheValue.resourceGeneration =
 		resolved ? summary.resourceGeneration : 0;
+	cacheValue.tracksContent = false;
 	s_cacheL1[keyL1] = cacheValue;
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,
@@ -1496,10 +1597,13 @@ uint32_t DX12HashIaBufferView(
 			stride, format, slot };
 		s_cacheL2[keyL2] = cacheValue;
 	}
-	if (s_cacheL1.size() > 8192 || s_cacheL2.size() > 8192) {
+	if (s_cacheL1.size() > MaxL1Entries ||
+	    s_cacheL2.size() > MaxL2Entries) {
 		s_cacheL1.clear();
 		s_cacheL2.clear();
 	}
+	if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
+		s_cacheL3Resolved.clear();
 	return hash;
 }
 

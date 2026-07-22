@@ -1484,8 +1484,31 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				UINT SrcRowPitch, UINT SrcDepthPitch) override
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceReadWriteWrapper, Original);
-				return mResource->WriteToSubresource(
+				HRESULT hr = mResource->WriteToSubresource(
 					DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+				if (SUCCEEDED(hr) && pSrcData) {
+					const D3D12_RESOURCE_DESC desc = mResource->GetDesc();
+					if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					    DstSubresource == 0) {
+						UINT64 offset = 0;
+						UINT64 bytes = desc.Width;
+						if (pDstBox) {
+							offset = pDstBox->left;
+							bytes = pDstBox->right > pDstBox->left ?
+								static_cast<UINT64>(pDstBox->right - pDstBox->left) : 0;
+						}
+						if (bytes != 0) {
+							DX12CacheBufferContentRange(
+								mResource,
+								offset,
+								pSrcData,
+								static_cast<size_t>(bytes));
+						} else {
+							DX12InvalidateBufferContent(mResource);
+						}
+					}
+				}
+				return hr;
 			}
 
 			HRESULT STDMETHODCALLTYPE ReadFromSubresource(

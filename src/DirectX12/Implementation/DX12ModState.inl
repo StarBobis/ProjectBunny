@@ -441,7 +441,7 @@ static std::unordered_map<
 	DX12TextureOverrideLookupCacheKey,
 	DX12TextureOverrideLookupCacheEntry,
 	DX12TextureOverrideLookupCacheKeyHash> gTextureOverrideLookupCache;
-static constexpr size_t MaxTextureOverrideLookupCacheEntries = 8192;
+static constexpr size_t MaxTextureOverrideLookupCacheEntries = 32768;
 
 class DX12ShaderOverrideNegativeCacheKey
 

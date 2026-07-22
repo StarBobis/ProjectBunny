@@ -657,7 +657,7 @@ public:
 class DX12DirectIaProbeCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 4096;
+	static constexpr size_t MaxEntries = 16384;
 
 	static DX12DirectIaProbeCacheKey MakeKey(
 		UINT64 reloadGeneration,
@@ -899,7 +899,7 @@ public:
 class DX12DirectIaFastRejectCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 4096;
+	static constexpr size_t MaxEntries = 16384;
 
 	static DX12DirectIaFastRejectCache &ThreadCache()
 	{
@@ -1204,7 +1204,7 @@ public:
 	// The measured title cycles through roughly 1,450 IA draw identities per
 	// frame. A 1,024-entry LRU evicts the front of that working set immediately
 	// before the next frame reuses it, turning a resident cache into a churn loop.
-	static constexpr size_t MaxEntries = 4096;
+	static constexpr size_t MaxEntries = 16384;
 
 	// Command lists recorded on the same CPU thread commonly reference identical
 	// immutable IA regions. The full key already carries view identity, resource
