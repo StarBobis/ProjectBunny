@@ -550,30 +550,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			DX12_HOTPATH_TIME_BEGIN(ResetCmdListTotal);
 				HRESULT hr = DX12WrapperRuntimeUtils::ResetCommandList(
 					mCommandList, &mRuntimeState, pAllocator, pInitialState, mOrigReset);
-				if (SUCCEEDED(hr)) {
-					DX12IaReplacementExecutorCallbacks callbacks;
-					callbacks.drawInstanced = mOrigDrawInstanced ?
-						reinterpret_cast<DX12IaCommandSignatures::DrawInstanced>(mOrigDrawInstanced) :
-						DX12WrapperRuntimeUtils::DirectDrawInstanced;
-					callbacks.drawIndexedInstanced = mOrigDrawIndexedInstanced ?
-						reinterpret_cast<DX12IaCommandSignatures::DrawIndexedInstanced>(mOrigDrawIndexedInstanced) :
-						DX12WrapperRuntimeUtils::DirectDrawIndexedInstanced;
-					callbacks.dispatch = mOrigDispatch ?
-						reinterpret_cast<DX12DispatchHookFlowDispatch::Fn>(mOrigDispatch) :
-						DX12WrapperRuntimeUtils::DirectDispatch;
-					callbacks.setIndexBuffer = mOrigIASetIndexBuffer ?
-						reinterpret_cast<DX12IaCommandSignatures::SetIndexBuffer>(mOrigIASetIndexBuffer) :
-						DX12WrapperRuntimeUtils::DirectSetIndexBuffer;
-					callbacks.setVertexBuffers = mOrigIASetVertexBuffers ?
-						reinterpret_cast<DX12IaCommandSignatures::SetVertexBuffers>(mOrigIASetVertexBuffers) :
-						DX12WrapperRuntimeUtils::DirectSetVertexBuffers;
-					callbacks.recordReplacementDraw =
-						DX12CommandListHookDiagnostics::RecordIaReplacementDrawExecute;
-					callbacks.recordReplacementDispatch =
-						DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
-					DX12WrapperRuntimeUtils::TryExecutePresentReplacementOnReset(
-						mCommandList, &mRuntimeState, callbacks);
-				}
 				return hr;
 			DX12_HOTPATH_TIME_END(ResetCmdListTotal);
 			}

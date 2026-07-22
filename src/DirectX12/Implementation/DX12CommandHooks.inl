@@ -902,18 +902,13 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 #if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterLifecycle", commandList, S_OK, GetTickCount64() - stageTick);
 		stageTick = GetTickCount64();
-		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "beforePresentRuntime", commandList);
+		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "skipPresentRuntime", commandList);
 #endif
-		if (needsPresentResetWork) {
-			DX12CommandListRuntimeState *runtimeState =
-				DX12CommandListRuntime::GetStatePtrFast(commandList);
-			if (runtimeState) {
-				const DX12IaReplacementExecutorCallbacks &iaCallbacks =
-					DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
-				DX12WrapperRuntimeUtils::TryExecutePresentReplacementOnReset(
-					commandList, runtimeState, iaCallbacks);
-			}
-		}
+		(void)needsPresentResetWork;
+		// Do not claim Present replacement work from Reset. Engines commonly
+		// reset direct command lists well before those lists are actually used,
+		// and the first far-ahead Reset would otherwise consume the current
+		// Present token and push the effect out by many frames.
 #if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterPresentRuntime", commandList, S_OK, GetTickCount64() - stageTick);
 	}
