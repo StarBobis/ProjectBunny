@@ -359,18 +359,14 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 	if (FAILED(hr) || !blob || !blobLength || !rootSignature || !*rootSignature)
 		return;
 
-	if (!DX12ResourceCollectQueue::EnqueueRootSignature(
-			static_cast<ID3D12RootSignature*>(*rootSignature),
-			nodeMask,
-			blob,
-			blobLength,
-			"CreateRootSignature")) {
-		DX12RecordRootSignatureImmediate(
-			static_cast<ID3D12RootSignature*>(*rootSignature),
-			nodeMask,
-			blob,
-			blobLength);
-	}
+	// DX11 keeps shader metadata resident immediately after creation. Mirror that
+	// behavior for DX12 root signatures so pre-skin dispatches never fall back to
+	// descriptor-heap scans while waiting for an async parser to catch up.
+	DX12RecordRootSignatureImmediate(
+		static_cast<ID3D12RootSignature*>(*rootSignature),
+		nodeMask,
+		blob,
+		blobLength);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(

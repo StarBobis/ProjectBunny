@@ -2882,22 +2882,9 @@ void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature)
 {
-	if (DX12ResourceCollectQueue::EnqueuePsoRootSignature(
-			psoIndex,
-			kind,
-			pipelineState,
-			rootSignature,
-			"DX12RecordPsoRootSignature")) {
-		return;
-	}
-
-	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=PsoRootSignatureImmediate,pso=%llu,kind=%s,pipelineState=%p,rootSignature=%p,threadId=%lu",
-		static_cast<unsigned long long>(psoIndex),
-		kind ? kind : "",
-		pipelineState,
-		rootSignature,
-		GetCurrentThreadId());
+	// Hot-path dispatch decisions depend on PSO->root-signature identity. Keep
+	// that mapping synchronous at PSO creation time instead of letting queue
+	// latency leak into per-dispatch binding collection.
 	DX12RecordPsoRootSignatureImmediate(psoIndex, kind, pipelineState, rootSignature);
 }
 

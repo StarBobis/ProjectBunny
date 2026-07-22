@@ -927,6 +927,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	ReleaseSRWLockExclusive(&s_rootSigCacheLock);
 
 	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
+	if (!computeRootSig && snapshot.pipelineState) {
+		DX12PsoShaderInfo shaderInfo = {};
+		ID3D12RootSignature *psoRootSignature = nullptr;
+		if (DX12GetPipelineStateShaderInfo(snapshot.pipelineState, &shaderInfo) &&
+			shaderInfo.psoIndex &&
+			DX12GetPsoRootSignature(shaderInfo.psoIndex, &psoRootSignature) &&
+			psoRootSignature) {
+			computeRootSig = psoRootSignature;
+		}
+	}
 	DX12RootSignatureSummary rootSignatureSummary;
 	const DX12RootSignatureSummary *cachedSummary = nullptr;
 	if (computeRootSig) {
@@ -960,6 +970,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			}
 		}
 	}
+	const bool hasParsedRootSignatureSummary =
+		cachedSummary && cachedSummary->parsed;
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
 	const UINT64 descriptorHeapVersionBefore =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
@@ -987,8 +999,9 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 
 	// Root-signature-driven iteration: use declared parameter count as upper bound.
-	// D3D12 guarantees root parameters are indexed 0..NumParameters-1.
-	const UINT maxRoot = cachedSummary
+	// If metadata is temporarily unavailable, keep the cheap root descriptor /
+	// constant paths alive, but never turn that miss into an O(heap_size) scan.
+	const UINT maxRoot = hasParsedRootSignatureSummary
 		? static_cast<UINT>(cachedSummary->parameters.size())
 		: MaxRootParameters;
 
@@ -1073,10 +1086,14 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			continue;
 
 		const DX12RootParameterSummary *parameter =
-			cachedSummary ? DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) : nullptr;
+			hasParsedRootSignatureSummary ?
+				DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) :
+				nullptr;
 
 		if (!parameter || parameter->parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
-			// Non-root-signature path deferred to Phase 4 below.
+			// Without parsed root-signature metadata, do not speculate about the
+			// descriptor table extent. DX11-style fast rejection is preferable to
+			// scanning an arbitrary portion of the heap on the dispatch hot path.
 			continue;
 		}
 
@@ -1215,135 +1232,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		}
 	}
 
-	// Phase 4: Non-root-signature path: scan to the descriptor heap boundary.
-	for (UINT root = 0; root < maxRoot; ++root) {
-		const RootTableState &table = snapshot.computeTables[root];
-		if (!table.valid)
-			continue;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootTable();
-
-		DX12DescriptorHeapSummary heap = {};
-		if (!DX12BindingTrackerQueryCacheUtils::ResolveRuntimeTableHeap(snapshot, table, &heap)) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRuntimeTable(false);
-			allRuntimeDescriptorsStable = false;
-			continue;
-		}
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRuntimeTable(
-			table.runtimeHeapResolved);
-
-		const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-		if (tableBaseIndex >= heap.numDescriptors)
-			continue;
-
-		const DX12RootParameterSummary *parameter =
-			cachedSummary ? DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) : nullptr;
-
-		if (parameter && parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
-			continue; // Already handled in Phase 1-3.
-
-		{
-			// No root signature info: scan to the descriptor heap boundary, then classify by kind.
-			tlsCpuHandles.clear();
-			tlsDescriptorIndices.clear();
-			tlsDescriptorSlots.clear();
-			for (UINT64 di = tableBaseIndex; di < heap.numDescriptors; ++di) {
-				if (di > static_cast<UINT64>(UINT_MAX))
-					break;
-				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingLightDescriptorLookup();
-				if (canStoreRuntimeBindings) {
-					if (!heap.heap) {
-						canStoreRuntimeBindings = false;
-					} else if (!observedSlotHeap) {
-						observedSlotHeap = heap.heap;
-					} else if (observedSlotHeap != heap.heap) {
-						canStoreRuntimeBindings = false;
-					}
-					if (canStoreRuntimeBindings)
-						observedSlots.push_back(static_cast<UINT>(di));
-				}
-				tlsCpuHandles.push_back(cpuHandle);
-				tlsDescriptorIndices.push_back(di);
-				tlsDescriptorSlots.push_back(static_cast<UINT>(di));
-			}
-			const size_t cpuHandleCount2 = tlsCpuHandles.size();
-			if (cpuHandleCount2 == 0)
-				continue;
-
-			tlsDescriptors.resize(cpuHandleCount2);
-			tlsFound.resize(cpuHandleCount2);
-			tlsPending.resize(cpuHandleCount2);
-			if (heap.heap) {
-				memset(tlsPending.data(), 0, cpuHandleCount2 * sizeof(uint8_t));
-				DX12FindDescriptorSummariesByHeapSlot(
-					heap.heap,
-					tlsDescriptorSlots.data(),
-					cpuHandleCount2,
-					tlsDescriptors.data(),
-					tlsFound.data(),
-					false);
-			} else {
-				DX12FindDescriptorSummariesByCpuHandleNoWait(
-					tlsCpuHandles.data(),
-					cpuHandleCount2,
-					tlsDescriptors.data(),
-					tlsFound.data(),
-					tlsPending.data(),
-					false);
-			}
-			LONG64 descriptorHits = 0;
-			LONG64 descriptorMisses = 0;
-			LONG64 descriptorPending = 0;
-			for (size_t descriptorIndex = 0;
-				descriptorIndex < cpuHandleCount2;
-				++descriptorIndex) {
-				if (tlsPending[descriptorIndex]) {
-					descriptorPending++;
-					allRuntimeDescriptorsStable = false;
-				} else if (tlsFound[descriptorIndex]) {
-					descriptorHits++;
-				} else {
-					descriptorMisses++;
-					allRuntimeDescriptorsStable = false;
-				}
-			}
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingDescriptorLookupResult(
-				descriptorHits, descriptorMisses, descriptorPending);
-			for (size_t descriptorIndex = 0;
-				descriptorIndex < cpuHandleCount2;
-				++descriptorIndex) {
-				if (!tlsFound[descriptorIndex])
-					continue;
-
-				DX12CurrentComputeUavBinding binding;
-				binding.rootParameterIndex = root;
-				binding.descriptorIncrement = heap.increment;
-				binding.tableCopyCount = 1;
-				binding.tableCpuStart = tlsCpuHandles[descriptorIndex];
-				binding.tableGpuStart = table.baseDescriptor;
-				binding.tableHeap = heap.heap;
-				binding.descriptorOffset =
-					static_cast<UINT>(tlsDescriptorIndices[descriptorIndex] - tableBaseIndex);
-
-				if (tlsDescriptors[descriptorIndex].kind == "UAV") {
-					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
-					binding.descriptor = tlsDescriptors[descriptorIndex];
-					binding.hasDescriptor = true;
-					localUavs.push_back(std::move(binding));
-				} else if (tlsDescriptors[descriptorIndex].kind == "SRV") {
-					binding.descriptor = tlsDescriptors[descriptorIndex];
-					binding.hasDescriptor = true;
-					localSrvs.push_back(std::move(binding));
-				} else if (tlsDescriptors[descriptorIndex].kind == "CBV") {
-					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
-					binding.descriptor = tlsDescriptors[descriptorIndex];
-					binding.hasDescriptor = true;
-					localCbvs.push_back(std::move(binding));
-				}
-			}
-		}
-	}
-
 	// Collect root descriptors (bare GPU VA, no heap needed)
 	for (UINT root = 0; root < maxRoot; ++root) {
 		const RootDescriptorState &rd = snapshot.computeRootDescriptors[root];
@@ -1352,7 +1240,9 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootDescriptor();
 
 		const DX12RootParameterSummary *parameter =
-			cachedSummary ? DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) : nullptr;
+			hasParsedRootSignatureSummary ?
+				DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root) :
+				nullptr;
 
 		DX12CurrentComputeUavBinding binding;
 		binding.rootParameterIndex = root;
