@@ -878,6 +878,24 @@ public:
 		return callbacks;
 	}
 
+	static bool TryExecutePresentReplacementOnReset(
+		ID3D12GraphicsCommandList *commandList,
+		DX12CommandListRuntimeState *runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList || !runtimeState)
+			return false;
+		if (!(DX12HotPathState::HookWorkFlags &
+			DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
+			return false;
+		if (DX12InternalReplayState::IsActive())
+			return false;
+		if (commandList->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
+			return false;
+		return DX12IaReplacementExecutor::ExecutePresent(
+			commandList, *runtimeState, callbacks);
+	}
+
 	static void RegisterSubmittedCommandListDirect(IUnknown *commandList)
 	{
 		if (!commandList)

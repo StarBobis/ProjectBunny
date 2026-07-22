@@ -866,7 +866,10 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 	DX12_PROFILE_FUNCTION(ResetCommandList);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiResetCommandList);
-	if (DX12HotPathState::skipAll) {
+	const UINT64 flags = DX12HotPathState::HookWorkFlags;
+	const bool needsPresentResetWork =
+		(flags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) != 0;
+	if (DX12HotPathState::skipAll && !needsPresentResetWork) {
 		PFN_RESET_COMMAND_LIST original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
 		return original ? original(commandList, allocator, initialState) : E_FAIL;
@@ -898,6 +901,21 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 		DX12CommandListLifecycle::Reset(commandList, initialState);
 #if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterLifecycle", commandList, S_OK, GetTickCount64() - stageTick);
+		stageTick = GetTickCount64();
+		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "beforePresentRuntime", commandList);
+#endif
+		if (needsPresentResetWork) {
+			DX12CommandListRuntimeState *runtimeState =
+				DX12CommandListRuntime::GetStatePtrFast(commandList);
+			if (runtimeState) {
+				const DX12IaReplacementExecutorCallbacks &iaCallbacks =
+					DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
+				DX12WrapperRuntimeUtils::TryExecutePresentReplacementOnReset(
+					commandList, runtimeState, iaCallbacks);
+			}
+		}
+#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterPresentRuntime", commandList, S_OK, GetTickCount64() - stageTick);
 	}
 	DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "end", commandList, hr, GetTickCount64() - startTick);
 #else

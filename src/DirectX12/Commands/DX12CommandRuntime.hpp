@@ -1910,7 +1910,7 @@ public:
 		UINT64 BuildHookWorkFlags() const
 		{
 			UINT64 flags = 0;
-			if (shaderOverrides || presentReplacement)
+			if (shaderOverrides)
 				flags |= FLAG_NEEDS_MOD_WORK;
 			if (shaderOverrides)
 				flags |= FLAG_SHADER_OVERRIDES;
@@ -1953,7 +1953,7 @@ public:
 
 		bool NeedsRecordWork() const
 		{
-			return huntEnabled || shaderOverrides || presentReplacement;
+			return huntEnabled || shaderOverrides;
 		}
 
 		bool NeedsBindingState() const
