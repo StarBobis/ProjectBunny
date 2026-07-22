@@ -655,7 +655,13 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
 	const std::unordered_map<std::wstring, bool> &commandListPreRuntimeEffect,
 	const std::unordered_map<std::wstring, bool> &commandListPostRuntimeEffect,
+	const Bunny::TextureOverrideMap &textureOverrides,
+	const std::unordered_map<std::wstring, bool> &textureOverridePreRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &textureOverridePostRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
+	const std::vector<DX12IaTextureOverrideCandidate> &iaTextureOverrides,
+	const std::unordered_map<uint32_t, std::vector<size_t>> &iaIndexTextureOverrideIndex,
+	const std::unordered_map<UINT64, std::vector<size_t>> &iaMergedVertexTextureOverrideIndex,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans);
 
@@ -1416,7 +1422,13 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
 	const std::unordered_map<std::wstring, bool> &commandListPreRuntimeEffect,
 	const std::unordered_map<std::wstring, bool> &commandListPostRuntimeEffect,
+	const Bunny::TextureOverrideMap &textureOverrides,
+	const std::unordered_map<std::wstring, bool> &textureOverridePreRuntimeEffect,
+	const std::unordered_map<std::wstring, bool> &textureOverridePostRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
+	const std::vector<DX12IaTextureOverrideCandidate> &iaTextureOverrides,
+	const std::unordered_map<uint32_t, std::vector<size_t>> &iaIndexTextureOverrideIndex,
+	const std::unordered_map<UINT64, std::vector<size_t>> &iaMergedVertexTextureOverrideIndex,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans,
 	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &compiledShaderOverridePlans)
@@ -1430,6 +1442,85 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 		snapshot->commandLists.emplace(
 			item.first,
 			std::make_shared<const Bunny::CommandListConfig>(item.second));
+	}
+	auto makeTriggered = [](
+		const std::shared_ptr<const Bunny::TextureOverrideConfig> &config,
+		uint32_t sectionId,
+		bool preRuntimeEffect,
+		bool postRuntimeEffect,
+		bool indexBuffer,
+		uint32_t vertexSlot) {
+		DX12TriggeredTextureOverride triggered;
+		triggered.config = config.get();
+		triggered.sectionId = sectionId;
+		triggered.preRuntimeEffect = preRuntimeEffect;
+		triggered.postRuntimeEffect = postRuntimeEffect;
+		triggered.indexBuffer = indexBuffer;
+		triggered.vertexSlot = vertexSlot;
+		triggered.executeCommands = true;
+		triggered.executeDrawActions = true;
+		return triggered;
+	};
+	for (const auto &bucket : textureOverrides) {
+		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
+			auto sectionId = textureOverrideSectionIds.find(config.section);
+			if (sectionId == textureOverrideSectionIds.end() || !sectionId->second)
+				continue;
+			std::shared_ptr<const Bunny::TextureOverrideConfig> configSnapshot =
+				std::make_shared<const Bunny::TextureOverrideConfig>(config);
+			snapshot->textureOverridesBySectionId[sectionId->second] = configSnapshot;
+			snapshot->textureOverridesByHash[config.hash].push_back(
+				makeTriggered(
+					configSnapshot,
+					sectionId->second,
+					LookupRuntimeEffect(textureOverridePreRuntimeEffect, config.section),
+					LookupRuntimeEffect(textureOverridePostRuntimeEffect, config.section),
+					false,
+					0));
+		}
+	}
+	auto appendTriggeredByIndexes =
+		[snapshot, &makeTriggered](
+			const std::vector<DX12IaTextureOverrideCandidate> &candidates,
+			const std::vector<size_t> &indexes,
+			bool indexBuffer,
+			uint32_t vertexSlot,
+			std::vector<DX12TriggeredTextureOverride> *out) {
+			if (!out)
+				return;
+			for (size_t index : indexes) {
+				if (index >= candidates.size())
+					continue;
+				const DX12IaTextureOverrideCandidate &candidate = candidates[index];
+				if (!candidate.sectionId)
+					continue;
+				auto config = snapshot->textureOverridesBySectionId.find(candidate.sectionId);
+				if (config == snapshot->textureOverridesBySectionId.end())
+					continue;
+				out->push_back(makeTriggered(
+					config->second,
+					candidate.sectionId,
+					candidate.preRuntimeEffect,
+					candidate.postRuntimeEffect,
+					indexBuffer,
+					vertexSlot));
+			}
+		};
+	for (const auto &item : iaIndexTextureOverrideIndex) {
+		appendTriggeredByIndexes(
+			iaTextureOverrides,
+			item.second,
+			true,
+			0,
+			&snapshot->iaIndexTriggeredTextureOverrides[item.first]);
+	}
+	for (const auto &item : iaMergedVertexTextureOverrideIndex) {
+		appendTriggeredByIndexes(
+			iaTextureOverrides,
+			item.second,
+			false,
+			static_cast<uint32_t>(item.first & 0xffffffffull),
+			&snapshot->iaMergedVertexTriggeredTextureOverrides[item.first]);
 	}
 	for (const auto &item : compiledCommandListPlans) {
 		if (item.second.unsupported)
@@ -1670,7 +1761,13 @@ bool DX12ModRuntimeLoad(
 		commandListRuntimeEffect,
 		commandListPreRuntimeEffect,
 		commandListPostRuntimeEffect,
+		textureOverrides,
+		textureOverridePreRuntimeEffect,
+		textureOverridePostRuntimeEffect,
 		textureOverrideSectionIds,
+		iaTextureOverrides,
+		iaIndexTextureOverrideIndex,
+		iaMergedVertexTextureOverrideIndex,
 		compiledCommandListPlans,
 		compiledTextureOverridePlans,
 		compiledShaderOverridePlans);
@@ -1693,6 +1790,8 @@ bool DX12ModRuntimeLoad(
 	gKeyBindings.swap(keyBindings);
 	gVlrResourceCandidates.swap(vlrResourceCandidates);
 	gCommandListRuntimeEffect.swap(commandListRuntimeEffect);
+	gCommandListPreRuntimeEffect.swap(commandListPreRuntimeEffect);
+	gCommandListPostRuntimeEffect.swap(commandListPostRuntimeEffect);
 	gTextureOverridePreRuntimeEffect.swap(textureOverridePreRuntimeEffect);
 	gTextureOverridePostRuntimeEffect.swap(textureOverridePostRuntimeEffect);
 	gTextureOverrideSectionIds.swap(textureOverrideSectionIds);

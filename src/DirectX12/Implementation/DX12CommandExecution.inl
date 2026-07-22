@@ -195,6 +195,8 @@ public:
 	{
 		if (!mReplacement)
 			return;
+		for (const std::wstring &list : config.commandLists.post)
+			mReplacement->AddPostCommandList(list);
 		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
 			SnapshotCompiledShaderOverridePlan(config.section);
 		if (compiledPlan && !compiledPlan->unsupported) {
@@ -1126,8 +1128,8 @@ public:
 	static bool CommandListRuntimeEffectLocked(const std::wstring &name)
 	{
 		std::unordered_map<std::wstring, bool>::const_iterator found =
-			gCommandListRuntimeEffect.find(name);
-		return found == gCommandListRuntimeEffect.end() || found->second;
+			gCommandListPreRuntimeEffect.find(name);
+		return found == gCommandListPreRuntimeEffect.end() || found->second;
 	}
 
 	static void RequireTargetLocked(
@@ -1235,10 +1237,11 @@ public:
 		std::unordered_set<std::wstring> *commandListStack,
 		DX12IaHashTargetPlan *targetPlan,
 		bool *textureOverrideTargetsCollected,
-		bool collectTextureOverrideTargets)
+		bool collectTextureOverrideTargets,
+		bool includePostLinks)
 	{
 		CollectCommandListLinksLocked(
-			config.commandLists, true, 0, commandListStack, targetPlan,
+			config.commandLists, includePostLinks, 0, commandListStack, targetPlan,
 			textureOverrideTargetsCollected, collectTextureOverrideTargets);
 		CollectActionsLocked(
 			config.actions, 0, commandListStack, targetPlan,
@@ -1285,13 +1288,15 @@ public:
 			CollectShaderOverrideConfigLocked(
 				*config, &commandListStack, &targetPlan,
 				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
-				collectTextureOverrideTargets);
+				collectTextureOverrideTargets,
+				false);
 		}
 		for (const Bunny::ShaderOverrideConfig &config : cache.regexDrawConfigs) {
 			CollectShaderOverrideConfigLocked(
 				config, &commandListStack, &targetPlan,
 				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
-				collectTextureOverrideTargets);
+				collectTextureOverrideTargets,
+				false);
 		}
 		return targetPlan;
 	}
@@ -1873,65 +1878,30 @@ void DX12ModRunPostShaderOverrideReplacement(
 {
 	if (!replacement || !commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
 		return;
+	if (replacement->postCommandLists.empty() &&
+	    replacement->queuedPostTextureOverrides.empty())
+		return;
 
 	ID3D12Device *device = AcquireModDevice(commandList);
 	if (!device)
 		return;
 
-	std::vector<Bunny::ShaderOverrideConfig> configSnapshot;
-	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> compiledSnapshot;
-	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
-	bool alwaysMiss = false;
-	const bool compiledPlanHit = TryLoadCompiledPsoPlan(
-		pipelineState, reloadGeneration,
-		&compiledSnapshot, &compiledPlanSnapshot, &alwaysMiss);
-	if (compiledPlanHit && compiledSnapshot)
-		configSnapshot.assign(compiledSnapshot->begin(), compiledSnapshot->end());
-	else {
-		std::vector<const Bunny::ShaderOverrideConfig*> configs;
-		AcquireSRWLockExclusive(&gModLock);
-		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
-		CopyShaderOverrideConfigs(configs, &configSnapshot);
-		ReleaseSRWLockExclusive(&gModLock);
-	}
-	if (!configSnapshot.empty()) {
-		std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
-		DX12CommandListExecutor executor(
-			device, commandList, iaState,
-			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance,
-			replacement, &pendingResourceViews);
-		executor.SetExecutionMode(true, true);
-		if (compiledPlanSnapshot && !compiledPlanSnapshot->empty()) {
-			for (const DX12CompiledShaderOverridePlan &plan : *compiledPlanSnapshot)
-				executor.RunCompiledShaderOverridePostPlan(plan);
-		} else {
-			for (const Bunny::ShaderOverrideConfig &config : configSnapshot)
-				executor.RunPostShaderOverrideLists(config);
-		}
-		const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
-			device, commandList, iaState, pendingResourceViews, replacement);
-		if (resourcesChanged)
-			executor.MarkExternalChange();
-		LogShaderOverrideCommandListSnapshotLimited("post", configSnapshot, *replacement);
-	}
-	if (!replacement->queuedPostTextureOverrides.empty()) {
-		std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
-		DX12CommandListExecutor executor(
-			device, commandList, iaState,
-			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance,
-			replacement, &pendingResourceViews);
-		executor.SetExecutionMode(true, true);
-		for (const DX12ModIaReplacement::QueuedTextureOverridePost &queued :
-		     replacement->queuedPostTextureOverrides)
-			executor.RunQueuedPostTextureOverride(queued);
-		const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
-			device, commandList, iaState, pendingResourceViews, replacement);
-		if (resourcesChanged)
-			executor.MarkExternalChange();
-	}
+	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
+	DX12CommandListExecutor executor(
+		device, commandList, iaState,
+		vertexCount, indexCount, instanceCount,
+		firstVertex, firstIndex, firstInstance,
+		replacement, &pendingResourceViews);
+	executor.SetExecutionMode(true, true);
+	for (const std::wstring &list : replacement->postCommandLists)
+		executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { list }, {} }, true);
+	for (const DX12ModIaReplacement::QueuedTextureOverridePost &queued :
+	     replacement->queuedPostTextureOverrides)
+		executor.RunQueuedPostTextureOverride(queued);
+	const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
+		device, commandList, iaState, pendingResourceViews, replacement);
+	if (resourcesChanged)
+		executor.MarkExternalChange();
 	device->Release();
 }
 

@@ -1904,6 +1904,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetComputeRootConstantBufferView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12CommandListStateCapture::ComputeRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
@@ -1931,6 +1942,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootConstantBufferView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
+		}
 		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_CBV, bufferLocation);
@@ -1958,6 +1980,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetComputeRootShaderResourceView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12CommandListStateCapture::ComputeRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
@@ -1985,6 +2018,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootShaderResourceView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
+		}
 		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_SRV, bufferLocation);
@@ -2012,6 +2056,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetComputeRootUnorderedAccessView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberComputeRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12CommandListStateCapture::ComputeRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
@@ -2039,6 +2094,17 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootUnorderedAccessView);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+			if (runtimeState)
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					runtimeState, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+			else
+				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+					commandList, rootParameterIndex,
+					D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);
+		}
 		if (!ShouldSkipGraphicsBinding()) {
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, bufferLocation);

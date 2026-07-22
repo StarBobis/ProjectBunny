@@ -30,6 +30,8 @@ static Bunny::CommandListMap gCommandLists;
 static std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 static std::vector<std::wstring> gVlrResourceCandidates;
 static std::unordered_map<std::wstring, bool> gCommandListRuntimeEffect;
+static std::unordered_map<std::wstring, bool> gCommandListPreRuntimeEffect;
+static std::unordered_map<std::wstring, bool> gCommandListPostRuntimeEffect;
 static std::unordered_map<std::wstring, bool> gTextureOverridePreRuntimeEffect;
 static std::unordered_map<std::wstring, bool> gTextureOverridePostRuntimeEffect;
 static std::unordered_map<std::wstring, uint32_t> gTextureOverrideSectionIds;
@@ -59,6 +61,7 @@ public:
 	DX12TriggeredTextureOverride(const DX12TriggeredTextureOverride &other)
 		: config(other.config),
 		  sectionId(other.sectionId),
+		  preRuntimeEffect(other.preRuntimeEffect),
 		  postRuntimeEffect(other.postRuntimeEffect),
 		  indexBuffer(other.indexBuffer),
 		  vertexSlot(other.vertexSlot),
@@ -69,6 +72,7 @@ public:
 	DX12TriggeredTextureOverride(DX12TriggeredTextureOverride &&other) noexcept
 		: config(other.config),
 		  sectionId(other.sectionId),
+		  preRuntimeEffect(other.preRuntimeEffect),
 		  postRuntimeEffect(other.postRuntimeEffect),
 		  indexBuffer(other.indexBuffer),
 		  vertexSlot(other.vertexSlot),
@@ -82,6 +86,7 @@ public:
 			return *this;
 		config = other.config;
 		sectionId = other.sectionId;
+		preRuntimeEffect = other.preRuntimeEffect;
 		postRuntimeEffect = other.postRuntimeEffect;
 		indexBuffer = other.indexBuffer;
 		vertexSlot = other.vertexSlot;
@@ -95,6 +100,7 @@ public:
 			return *this;
 		config = other.config;
 		sectionId = other.sectionId;
+		preRuntimeEffect = other.preRuntimeEffect;
 		postRuntimeEffect = other.postRuntimeEffect;
 		indexBuffer = other.indexBuffer;
 		vertexSlot = other.vertexSlot;
@@ -104,6 +110,7 @@ public:
 	}
 	const Bunny::TextureOverrideConfig *config = nullptr;
 	uint32_t sectionId = 0;
+	bool preRuntimeEffect = true;
 	bool postRuntimeEffect = true;
 	bool indexBuffer = false;
 	uint32_t vertexSlot = 0;
@@ -266,6 +273,14 @@ public:
 	std::unordered_map<std::wstring, bool> commandListPostRuntimeEffect;
 	std::unordered_map<std::wstring, std::shared_ptr<const Bunny::CommandListConfig>>
 		commandLists;
+	std::unordered_map<uint32_t, std::shared_ptr<const Bunny::TextureOverrideConfig>>
+		textureOverridesBySectionId;
+	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
+		textureOverridesByHash;
+	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
+		iaIndexTriggeredTextureOverrides;
+	std::unordered_map<UINT64, std::vector<DX12TriggeredTextureOverride>>
+		iaMergedVertexTriggeredTextureOverrides;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledCommandListPlan>>
 		compiledCommandListPlans;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledTextureOverridePlan>>

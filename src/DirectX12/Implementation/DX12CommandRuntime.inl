@@ -1292,6 +1292,52 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
+void DX12CommandListRuntime::RememberGraphicsRootSignature(
+	DX12CommandListRuntimeState *state,
+	ID3D12RootSignature *rootSignature)
+{
+	if (!state)
+		return;
+	if (state->graphicsRootSignature == rootSignature)
+		return;
+
+	state->graphicsRootSignature = rootSignature;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		state->graphicsRootTables[root] = RootTableState();
+		state->graphicsRootDescriptors[root] = RootDescriptorState();
+		state->graphicsRootConstants[root] = RootConstantsState();
+	}
+	state->graphicsRootTableValidCount = 0;
+	DX12RuntimeBumpBindingQuerySerial(state);
+}
+
+void DX12CommandListRuntime::RememberGraphicsRootSignature(
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12RootSignature *rootSignature)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberGraphicsRootSignature(
+			state, rootSignature);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberGraphicsRootSignature(
+			&it->second, rootSignature);
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
 void DX12CommandListRuntime::RememberComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12RootSignature *rootSignature)
@@ -1381,6 +1427,61 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
+void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+	DX12CommandListRuntimeState *state,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters)
+		return;
+
+	RootDescriptorState &descriptor =
+		state->graphicsRootDescriptors[rootParameterIndex];
+	const bool newValid = address != 0;
+	if (descriptor.valid == newValid &&
+		descriptor.rootParameterIndex == rootParameterIndex &&
+		descriptor.type == type &&
+		descriptor.address == address) {
+		return;
+	}
+
+	descriptor.valid = newValid;
+	descriptor.rootParameterIndex = rootParameterIndex;
+	descriptor.type = type;
+	descriptor.address = address;
+	DX12RuntimeBumpBindingQuerySerial(state);
+}
+
+void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+	ID3D12GraphicsCommandList *commandList,
+	UINT rootParameterIndex,
+	D3D12_ROOT_PARAMETER_TYPE type,
+	D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+			state, rootParameterIndex, type, address);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberGraphicsRootDescriptor(
+			&it->second, rootParameterIndex, type, address);
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
 void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	DX12CommandListRuntimeState *state,
 	UINT rootParameterIndex,
@@ -1433,6 +1534,54 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberComputeRootDescriptor(
 			&it->second, rootParameterIndex, type, address);
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+}
+
+void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
+	DX12CommandListRuntimeState *state,
+	UINT rootParameterIndex,
+	UINT destOffset,
+	UINT count,
+	const void *values)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters)
+		return;
+
+	RootConstantsState &constants =
+		state->graphicsRootConstants[rootParameterIndex];
+	if (DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values)) {
+		DX12RuntimeBumpBindingQuerySerial(state);
+	}
+}
+
+void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
+	ID3D12GraphicsCommandList *commandList,
+	UINT rootParameterIndex,
+	UINT destOffset,
+	UINT count,
+	const void *values)
+{
+	if (!commandList)
+		return;
+
+	DX12CommandListRuntimeState *state =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (state) {
+		DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
+			state, rootParameterIndex, destOffset, count, values);
+		return;
+	}
+
+	DX12CommandListRuntimeShard &shard =
+		DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+		shard.states.find(commandList);
+	if (it != shard.states.end()) {
+		DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
+			&it->second, rootParameterIndex, destOffset, count, values);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
 }
@@ -1586,10 +1735,7 @@ void DX12CommandListLifecycle::ClearState(
 		DX12BindingTracker::RecordStateEvent(commandList, "clear_state");
 	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
 		DX12BindingTracker::ResetCommandList(commandList, pipelineState);
-	if (tracking.trackPsoState)
-		DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
-	if (tracking.trackHuntIa)
-		DX12CommandListRuntime::ResetIa(commandList);
+	DX12CommandListRuntime::Reset(commandList, pipelineState);
 	if (DX12HuntIsEnabled())
 		DX12HuntResetCommandList(commandList, pipelineState);
 }
@@ -1608,10 +1754,7 @@ void DX12CommandListLifecycle::InvalidateAfterExecuteBundle(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
 		DX12BindingTracker::ResetCommandList(commandList, nullptr);
-	if (tracking.trackPsoState)
-		DX12CommandListRuntime::RememberPipelineState(commandList, nullptr);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
-		DX12CommandListRuntime::ResetIa(commandList);
+	DX12CommandListRuntime::Reset(commandList, nullptr);
 	if (tracking.trackPsoState || tracking.trackHuntIa)
 		DX12HuntResetCommandList(commandList, nullptr);
 }
@@ -1654,8 +1797,7 @@ bool DX12CommandListStateCapture::ShouldTrackBindings()
 	const bool frameCapture = DX12FrameAnalysis::IsCapturing();
 	const bool shaderDumpActive = DX12ShaderDumpIsBusy();
 	return frameCapture || shaderDumpActive ||
-		DX12ModNeedsPreSkinningUavProbe() ||
-		DX12ModNeedsShaderDescriptorTracking();
+		DX12ModNeedsPreSkinningUavProbe();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackIaBindings()

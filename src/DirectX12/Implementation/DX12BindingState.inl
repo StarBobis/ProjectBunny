@@ -144,7 +144,7 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.rootConstants = constants;
 }
 
-static bool BuildRuntimeComputeSnapshot(
+static bool BuildRuntimeBindingSnapshot(
 	const DX12CommandListRuntimeState *runtimeState,
 	CommandListBindingState *snapshot)
 {
@@ -153,6 +153,7 @@ static bool BuildRuntimeComputeSnapshot(
 
 	*snapshot = CommandListBindingState();
 	snapshot->pipelineState = runtimeState->pipelineState;
+	snapshot->graphicsRootSignature = runtimeState->graphicsRootSignature;
 	snapshot->computeRootSignature = runtimeState->computeRootSignature;
 	snapshot->cbvSrvUavHeap = runtimeState->cbvSrvUavHeap;
 	snapshot->samplerHeap = runtimeState->samplerHeap;
@@ -164,16 +165,43 @@ static bool BuildRuntimeComputeSnapshot(
 	snapshot->runtimeSamplerHeap = runtimeState->runtimeSamplerHeap;
 	snapshot->computeBindingSerial = runtimeState->computeBindingSerial;
 	snapshot->bindingQuerySerial = runtimeState->bindingQuerySerial;
+	snapshot->graphicsTableValidCount = runtimeState->graphicsRootTableValidCount;
 	snapshot->computeTableValidCount = runtimeState->computeRootTableValidCount;
+	memcpy(snapshot->graphicsTables,
+		runtimeState->graphicsRootTables,
+		sizeof(snapshot->graphicsTables));
 	memcpy(snapshot->computeTables,
 		runtimeState->computeRootTables,
 		sizeof(snapshot->computeTables));
+	memcpy(snapshot->graphicsRootDescriptors,
+		runtimeState->graphicsRootDescriptors,
+		sizeof(snapshot->graphicsRootDescriptors));
 	memcpy(snapshot->computeRootDescriptors,
 		runtimeState->computeRootDescriptors,
 		sizeof(snapshot->computeRootDescriptors));
+	memcpy(snapshot->graphicsRootConstants,
+		runtimeState->graphicsRootConstants,
+		sizeof(snapshot->graphicsRootConstants));
 	memcpy(snapshot->computeRootConstants,
 		runtimeState->computeRootConstants,
 		sizeof(snapshot->computeRootConstants));
+	snapshot->primitiveTopology = runtimeState->ia.primitiveTopology;
+	if (runtimeState->ia.hasIndexBuffer) {
+		snapshot->indexBuffer = runtimeState->ia.indexBuffer;
+		snapshot->indexBufferValid = true;
+		snapshot->indexBufferResource = runtimeState->ia.indexBufferResource;
+		snapshot->indexBufferResolved = runtimeState->ia.indexBufferResolved;
+	}
+	for (UINT slot = 0; slot < ARRAYSIZE(runtimeState->ia.vertexBuffers); ++slot) {
+		if (!runtimeState->ia.hasVertexBuffer[slot])
+			continue;
+		snapshot->vertexBuffers[slot] = runtimeState->ia.vertexBuffers[slot];
+		snapshot->vertexBufferValid[slot] = true;
+		snapshot->vertexBufferResources[slot] =
+			runtimeState->ia.vertexBufferResources[slot];
+		snapshot->vertexBufferResolved[slot] =
+			runtimeState->ia.vertexBufferResolved[slot];
+	}
 	return true;
 }
 
@@ -533,6 +561,119 @@ public:
 		return !outBindings->empty();
 	}
 
+	static bool CollectDescriptorBindingsByRegister(
+		const CommandListBindingState &snapshot,
+		bool compute,
+		D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
+		UINT shaderRegister,
+		UINT registerSpace,
+		const char *descriptorKind,
+		D3D12_ROOT_PARAMETER_TYPE rootDescriptorType,
+		std::vector<DX12CurrentComputeUavBinding> *outBindings)
+	{
+		if (!outBindings)
+			return false;
+
+		outBindings->clear();
+		BindingEvent event;
+		BuildEventForQuery(snapshot, compute, &event);
+		DX12RootSignatureSummary rootSignature;
+		const bool hasRootSignature =
+			DX12BindingTrackerQuery::GetRootSignatureForEvent(
+				event, compute, &rootSignature);
+		if (!hasRootSignature) {
+			std::vector<DX12CurrentComputeUavBinding> allBindings;
+			if (!CollectDescriptorBindings(
+					snapshot, compute, rangeType, descriptorKind,
+					rootDescriptorType, &allBindings))
+				return false;
+			for (const DX12CurrentComputeUavBinding &binding : allBindings) {
+				if (binding.shaderRegister != shaderRegister ||
+				    binding.registerSpace != registerSpace)
+					continue;
+				outBindings->push_back(binding);
+			}
+			return !outBindings->empty();
+		}
+
+		const bool completeDescriptorResourceInfo =
+			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV ||
+			rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			const RootTableState &table = compute ?
+				snapshot.computeTables[root] : snapshot.graphicsTables[root];
+			const DX12RootParameterSummary *parameter =
+				DX12BindingTrackerQuery::FindRootParameter(rootSignature, root);
+			if (table.valid && parameter &&
+			    parameter->parameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
+				for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
+					if (range.rangeType != rangeType ||
+					    range.registerSpace != registerSpace ||
+					    shaderRegister < range.baseShaderRegister)
+						continue;
+					DX12DescriptorHeapSummary heap = {};
+					if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
+							snapshot, table, &heap))
+						continue;
+					const UINT64 tableBaseIndex =
+						(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+					const UINT count = DX12BindingTrackerQuery::DescriptorCountForRange(
+						heap, tableBaseIndex, range);
+					const UINT offset = shaderRegister - range.baseShaderRegister;
+					if (offset >= count)
+						continue;
+					const UINT64 descriptorIndex =
+						tableBaseIndex + range.effectiveOffset + offset;
+					if (descriptorIndex >= heap.numDescriptors)
+						continue;
+					const SIZE_T cpuHandle =
+						heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
+					DX12DescriptorSummary descriptor = {};
+					const bool foundDescriptor = completeDescriptorResourceInfo ?
+						DX12FindDescriptorSummaryByCpuHandle(cpuHandle, &descriptor) :
+						DX12FindDescriptorSummaryByCpuHandleLight(cpuHandle, &descriptor);
+					if (!foundDescriptor || descriptor.kind != descriptorKind)
+						continue;
+					DX12CurrentComputeUavBinding binding;
+					binding.rootParameterIndex = root;
+					binding.rangeIndex = range.rangeIndex;
+					binding.shaderVisibility = range.shaderVisibility;
+					binding.shaderRegister = shaderRegister;
+					binding.registerSpace = registerSpace;
+					binding.descriptorOffset = range.effectiveOffset + offset;
+					binding.descriptorIncrement = heap.increment;
+					binding.tableCopyCount = count;
+					binding.tableCpuStart =
+						heap.cpuStart + static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
+					binding.tableGpuStart.ptr =
+						heap.gpuStart + tableBaseIndex * heap.increment;
+					binding.tableHeap = heap.heap;
+					binding.descriptor = descriptor;
+					binding.hasDescriptor = true;
+					outBindings->push_back(std::move(binding));
+				}
+			}
+
+			const RootDescriptorState &rootDescriptor = compute ?
+				snapshot.computeRootDescriptors[root] : snapshot.graphicsRootDescriptors[root];
+			if (!rootDescriptor.valid || rootDescriptor.type != rootDescriptorType || !parameter)
+				continue;
+			if (parameter->shaderRegister != shaderRegister ||
+			    parameter->registerSpace != registerSpace)
+				continue;
+			DX12CurrentComputeUavBinding binding;
+			binding.rootParameterIndex = root;
+			binding.shaderVisibility = parameter->shaderVisibility;
+			binding.shaderRegister = parameter->shaderRegister;
+			binding.registerSpace = parameter->registerSpace;
+			binding.rootDescriptor = true;
+			binding.gpuVirtualAddress = rootDescriptor.address;
+			outBindings->push_back(std::move(binding));
+		}
+
+		return !outBindings->empty();
+	}
+
 	static bool CollectComputeAll(
 		const CommandListBindingState &snapshot,
 		std::vector<DX12CurrentComputeUavBinding> *uavs,
@@ -764,7 +905,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	CommandListBindingState snapshot;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
 	const bool snapshotReady = preferRuntimeSnapshot ?
-		BuildRuntimeComputeSnapshot(runtimeState, &snapshot) :
+		BuildRuntimeBindingSnapshot(runtimeState, &snapshot) :
 		DX12BindingTracker::SnapshotBindingState(commandList, &snapshot);
 	if (!snapshotReady) {
 		DX12_HOTPATH_TIME_END(BindSnapshot);
@@ -1499,6 +1640,22 @@ bool DX12BindingTracker::SnapshotBindingState(
 	if (!commandList || !snapshot)
 		return false;
 
+	const DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const DX12CommandListTrackingState tracking =
+		runtimeState ?
+			DX12CommandListRuntime::GetTrackingState(
+				const_cast<DX12CommandListRuntimeState*>(runtimeState)) :
+			DX12CommandListTrackingState();
+	if (runtimeState && !tracking.trackBindings) {
+		if (!BuildRuntimeBindingSnapshot(runtimeState, snapshot))
+			return false;
+		if (bindingQuerySerial)
+			*bindingQuerySerial =
+				snapshot->bindingQuerySerial ? snapshot->bindingQuerySerial : 1;
+		return true;
+	}
+
 	bool found = false;
 	UINT64 serial = 0;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
@@ -1510,36 +1667,59 @@ bool DX12BindingTracker::SnapshotBindingState(
 		found = true;
 	}
 	ReleaseSRWLockShared(&shard.lock);
-	const DX12CommandListRuntimeState *runtimeState =
-		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (runtimeState) {
-		if (!found) {
-			*snapshot = CommandListBindingState();
-			found = true;
+		CommandListBindingState runtimeSnapshot;
+		if (BuildRuntimeBindingSnapshot(runtimeState, &runtimeSnapshot)) {
+			if (!found) {
+				*snapshot = runtimeSnapshot;
+				serial = runtimeSnapshot.bindingQuerySerial;
+				found = true;
+			} else {
+				snapshot->graphicsRootSignature =
+					runtimeSnapshot.graphicsRootSignature;
+				snapshot->computeRootSignature =
+					runtimeSnapshot.computeRootSignature;
+				snapshot->cbvSrvUavHeap = runtimeSnapshot.cbvSrvUavHeap;
+				snapshot->samplerHeap = runtimeSnapshot.samplerHeap;
+				snapshot->runtimeCbvSrvUavHeapResolved =
+					runtimeSnapshot.runtimeCbvSrvUavHeapResolved;
+				snapshot->runtimeCbvSrvUavHeap =
+					runtimeSnapshot.runtimeCbvSrvUavHeap;
+				snapshot->runtimeSamplerHeapResolved =
+					runtimeSnapshot.runtimeSamplerHeapResolved;
+				snapshot->runtimeSamplerHeap =
+					runtimeSnapshot.runtimeSamplerHeap;
+				snapshot->graphicsTableValidCount =
+					runtimeSnapshot.graphicsTableValidCount;
+				snapshot->computeTableValidCount =
+					runtimeSnapshot.computeTableValidCount;
+				memcpy(
+					snapshot->graphicsTables,
+					runtimeSnapshot.graphicsTables,
+					sizeof(snapshot->graphicsTables));
+				memcpy(
+					snapshot->computeTables,
+					runtimeSnapshot.computeTables,
+					sizeof(snapshot->computeTables));
+				memcpy(
+					snapshot->graphicsRootDescriptors,
+					runtimeSnapshot.graphicsRootDescriptors,
+					sizeof(snapshot->graphicsRootDescriptors));
+				memcpy(
+					snapshot->computeRootDescriptors,
+					runtimeSnapshot.computeRootDescriptors,
+					sizeof(snapshot->computeRootDescriptors));
+				memcpy(
+					snapshot->graphicsRootConstants,
+					runtimeSnapshot.graphicsRootConstants,
+					sizeof(snapshot->graphicsRootConstants));
+				memcpy(
+					snapshot->computeRootConstants,
+					runtimeSnapshot.computeRootConstants,
+					sizeof(snapshot->computeRootConstants));
+				serial ^= runtimeSnapshot.bindingQuerySerial;
+			}
 		}
-		snapshot->cbvSrvUavHeap = runtimeState->cbvSrvUavHeap;
-		snapshot->samplerHeap = runtimeState->samplerHeap;
-		snapshot->runtimeCbvSrvUavHeapResolved =
-			runtimeState->runtimeCbvSrvUavHeapResolved;
-		snapshot->runtimeCbvSrvUavHeap =
-			runtimeState->runtimeCbvSrvUavHeap;
-		snapshot->runtimeSamplerHeapResolved =
-			runtimeState->runtimeSamplerHeapResolved;
-		snapshot->runtimeSamplerHeap =
-			runtimeState->runtimeSamplerHeap;
-		snapshot->graphicsTableValidCount =
-			runtimeState->graphicsRootTableValidCount;
-		snapshot->computeTableValidCount =
-			runtimeState->computeRootTableValidCount;
-		memcpy(
-			snapshot->graphicsTables,
-			runtimeState->graphicsRootTables,
-			sizeof(snapshot->graphicsTables));
-		memcpy(
-			snapshot->computeTables,
-			runtimeState->computeRootTables,
-			sizeof(snapshot->computeTables));
-		serial ^= runtimeState->bindingQuerySerial;
 	}
 	if (bindingQuerySerial)
 		*bindingQuerySerial = serial ? serial : 1;
@@ -2909,6 +3089,49 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindings(
 	return DX12BindingTracker::GetCurrentDescriptors(
 		commandList, compute, rangeType, descriptorKind,
 		rootDescriptorType, bindings);
+}
+
+bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
+	ID3D12GraphicsCommandList *commandList,
+	bool compute,
+	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
+	UINT shaderRegister,
+	UINT registerSpace,
+	std::vector<DX12CurrentShaderResourceBinding> *bindings)
+{
+	const char *descriptorKind = nullptr;
+	D3D12_ROOT_PARAMETER_TYPE rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	switch (rangeType) {
+	case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+		descriptorKind = "CBV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		break;
+	case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+		descriptorKind = "SRV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		break;
+	case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+		descriptorKind = "UAV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+		break;
+	default:
+		if (bindings)
+			bindings->clear();
+		return false;
+	}
+
+	CommandListBindingState snapshot;
+	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
+		return false;
+	return DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindingsByRegister(
+		snapshot,
+		compute,
+		rangeType,
+		shaderRegister,
+		registerSpace,
+		descriptorKind,
+		rootDescriptorType,
+		bindings);
 }
 
 bool DX12BindingTracker::GetCurrentDescriptorHeaps(
