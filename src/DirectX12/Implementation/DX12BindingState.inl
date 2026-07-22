@@ -2058,6 +2058,12 @@ void DX12BindingTracker::SubmitCommandList(ID3D12GraphicsCommandList *commandLis
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	if (captureSessionId == 0)
 		return;
+	const UINT64 targetSequence = DX12BindingCollectQueue::LastSubmittedSequence();
+	if (targetSequence != 0) {
+		DX12BindingCollectQueue::WaitForSubmittedSequence(
+			targetSequence,
+			"SubmitCommandList");
+	}
 
 	std::vector<CommandListRecordedEvent> events;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);

@@ -359,11 +359,18 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 	if (FAILED(hr) || !blob || !blobLength || !rootSignature || !*rootSignature)
 		return;
 
-	DX12RecordRootSignatureImmediate(
-		static_cast<ID3D12RootSignature*>(*rootSignature),
-		nodeMask,
-		blob,
-		blobLength);
+	if (!DX12ResourceCollectQueue::EnqueueRootSignature(
+			static_cast<ID3D12RootSignature*>(*rootSignature),
+			nodeMask,
+			blob,
+			blobLength,
+			"CreateRootSignature")) {
+		DX12RecordRootSignatureImmediate(
+			static_cast<ID3D12RootSignature*>(*rootSignature),
+			nodeMask,
+			blob,
+			blobLength);
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
@@ -566,7 +573,14 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 		return;
 	}
 	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
-	RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
+	if (!DX12ResourceCollectQueue::Enqueue(
+			d3dResource,
+			desc,
+			heapProperties,
+			placedInfo,
+			initialState)) {
+		RecordResource(d3dResource, desc, heapProperties, placedInfo, initialState);
+	}
 	// Install Map/Unmap hooks for buffer content capture
 	// Covers ALL creation paths (CreateCommittedResource, CreatePlacedResource,
 	// CreateReservedResource, and all _1/_2/_3 variants).
@@ -1349,6 +1363,7 @@ void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 	if (!gCleanupRegistered) {
 		atexit(CleanupTrackedResources);
 		gCleanupRegistered = true;
+		DX12BindingCollectQueue::Start();
 		DX12ResourceCollectQueue::Start();
 		DX12LogManager::Text("DX12 persistent resource and descriptor tracking enabled (wrapper mode)\n");
 	}

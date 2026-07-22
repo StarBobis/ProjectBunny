@@ -617,8 +617,8 @@ public:
 	HANDLE eventHandle = nullptr;
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	ID3D12CommandAllocator *allocator = nullptr;
-	ID3D12Resource *source = nullptr;
-	ID3D12Resource *readback = nullptr;
+	std::vector<ID3D12Resource*> sources;
+	std::vector<ID3D12Resource*> readbacks;
 };
 
 inline static SRWLOCK RetiredCopyLock = SRWLOCK_INIT;
@@ -639,10 +639,16 @@ static void ReleaseRetiredCopy(RetiredCopy *copy)
 		copy->commandList->Release();
 	if (copy->allocator)
 		copy->allocator->Release();
-	if (copy->source)
-		DX12ReleaseRetainedResource(copy->source);
-	if (copy->readback)
-		copy->readback->Release();
+	for (ID3D12Resource *source : copy->sources) {
+		if (source)
+			DX12ReleaseRetainedResource(source);
+	}
+	for (ID3D12Resource *readback : copy->readbacks) {
+		if (readback)
+			readback->Release();
+	}
+	copy->sources.clear();
+	copy->readbacks.clear();
 	*copy = RetiredCopy();
 }
 
@@ -685,8 +691,8 @@ static void RetireCopy(
 	copy.commandList = commandList;
 	copy.allocator = allocator;
 	if (task) {
-		copy.source = task->sourceRetained ? task->source : nullptr;
-		copy.readback = task->readback;
+		copy.sources.push_back(task->sourceRetained ? task->source : nullptr);
+		copy.readbacks.push_back(task->readback);
 		task->source = nullptr;
 		task->sourceRetained = false;
 		task->readback = nullptr;
@@ -694,6 +700,40 @@ static void RetireCopy(
 	}
 	AcquireSRWLockExclusive(&RetiredCopyLock);
 	RetiredCopies.push_back(copy);
+	RetiredCopyCount.store(RetiredCopies.size(), std::memory_order_release);
+	ReleaseSRWLockExclusive(&RetiredCopyLock);
+}
+
+static void RetireCopyBatch(
+	const std::vector<DumpTask*> &tasks,
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12CommandAllocator *allocator,
+	ID3D12Fence *fence,
+	HANDLE eventHandle,
+	ID3D12Device *device)
+{
+	RetiredCopy copy;
+	copy.fence = fence;
+	copy.device = device;
+	if (copy.device)
+		copy.device->AddRef();
+	copy.eventHandle = eventHandle;
+	copy.commandList = commandList;
+	copy.allocator = allocator;
+	copy.sources.reserve(tasks.size());
+	copy.readbacks.reserve(tasks.size());
+	for (DumpTask *task : tasks) {
+		if (!task)
+			continue;
+		copy.sources.push_back(task->sourceRetained ? task->source : nullptr);
+		copy.readbacks.push_back(task->readback);
+		task->source = nullptr;
+		task->sourceRetained = false;
+		task->readback = nullptr;
+		task->keepReadbackAlive = false;
+	}
+	AcquireSRWLockExclusive(&RetiredCopyLock);
+	RetiredCopies.push_back(std::move(copy));
 	RetiredCopyCount.store(RetiredCopies.size(), std::memory_order_release);
 	ReleaseSRWLockExclusive(&RetiredCopyLock);
 }
@@ -1009,14 +1049,234 @@ static bool ExecuteCopyTask(
 	return true;
 }
 
-static size_t ExecuteReadbackCopyTasks(
-	ID3D12Device *device, ID3D12CommandQueue *queue, std::vector<DumpTask> *tasks,
-	bool *readbackOkOut)
+static bool TryExecuteCopyBatch(
+	ID3D12Device *device,
+	ID3D12CommandQueue *queue,
+	const std::vector<DumpTask*> &eligibleTasks,
+	bool *readbackOkOut,
+	bool *batchAbortedOut,
+	size_t *copiedOut)
 {
 	if (readbackOkOut)
 		*readbackOkOut = true;
+	if (batchAbortedOut)
+		*batchAbortedOut = false;
+	if (copiedOut)
+		*copiedOut = 0;
+	if (!device || !queue || eligibleTasks.size() <= 1)
+		return false;
+
+	DrainRetiredCopies();
+
+	ID3D12CommandAllocator *allocator = nullptr;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	HRESULT hr = S_OK;
+	if (!DX12ResourceDumpGpuCopy::DeviceRemoved(device, &hr)) {
+		hr = device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			IID_PPV_ARGS(&allocator));
+		if (SUCCEEDED(hr)) {
+			hr = device->CreateCommandList(
+				0,
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				allocator,
+				nullptr,
+				IID_PPV_ARGS(&commandList));
+		}
+	}
+
+	if (FAILED(hr) || !allocator || !commandList) {
+		if (commandList)
+			commandList->Release();
+		if (allocator)
+			allocator->Release();
+		return false;
+	}
+
+	bool recorded = true;
+	for (DumpTask *task : eligibleTasks) {
+		if (!task || !task->source || !task->readback) {
+			recorded = false;
+			break;
+		}
+		__try {
+			if (task->needsBarrier) {
+				DX12ResourceDumpGpuCopy::WriteResourceBarrier(
+					commandList,
+					task->source,
+					task->sourceState,
+					D3D12_RESOURCE_STATE_COPY_SOURCE);
+			}
+
+			if (task->isTexture) {
+				for (UINT subresource = 0;
+					 subresource < task->textureLayouts.size();
+					 ++subresource) {
+					D3D12_TEXTURE_COPY_LOCATION src = {};
+					src.pResource = task->source;
+					src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+					src.SubresourceIndex = subresource;
+					D3D12_TEXTURE_COPY_LOCATION dst = {};
+					dst.pResource = task->readback;
+					dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+					dst.PlacedFootprint = task->textureLayouts[subresource];
+					commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+				}
+			} else {
+				commandList->CopyBufferRegion(
+					task->readback,
+					0,
+					task->source,
+					task->sourceOffset,
+					task->copyBytes);
+			}
+
+			if (task->needsBarrier) {
+				DX12ResourceDumpGpuCopy::WriteResourceBarrier(
+					commandList,
+					task->source,
+					D3D12_RESOURCE_STATE_COPY_SOURCE,
+					task->sourceState);
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			recorded = false;
+		}
+		if (!recorded)
+			break;
+	}
+
+	if (!recorded) {
+		commandList->Release();
+		allocator->Release();
+		return false;
+	}
+
+	hr = commandList->Close();
+	if (FAILED(hr)) {
+		commandList->Release();
+		allocator->Release();
+		return false;
+	}
+
+	ID3D12CommandList *lists[] = { commandList };
+	DWORD waitResult = WAIT_FAILED;
+	ID3D12Fence *pendingFence = nullptr;
+	HANDLE pendingEvent = nullptr;
+	bool executed = false;
+	__try {
+		LARGE_INTEGER executeBegin = DX12OuterTimingProbeUtils::Now();
+		queue->ExecuteCommandLists(1, lists);
+		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+			"dump_copy_execute_batch",
+			queue,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(executeBegin));
+		executed = DX12ResourceDumpGpuCopy::WaitForFence(
+			queue,
+			device,
+			&waitResult,
+			&pendingFence,
+			&pendingEvent);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		executed = false;
+	}
+
+	if (executed) {
+		commandList->Release();
+		allocator->Release();
+		for (DumpTask *task : eligibleTasks) {
+			task->copied = true;
+			task->skipNote = nullptr;
+		}
+		if (copiedOut)
+			*copiedOut = eligibleTasks.size();
+		DX12FrameAnalysis::LogJsonFunc(
+			"ResourceCopyResultDetail",
+			"\"mode\":\"batched\",\"eligible\":%zu,\"copied\":%zu,\"failed\":0",
+			eligibleTasks.size(),
+			eligibleTasks.size());
+		return true;
+	}
+
+	HRESULT removedHr = S_OK;
+	const bool deviceRemoved =
+		DX12ResourceDumpGpuCopy::DeviceRemoved(device, &removedHr);
+	const bool timedOut = waitResult == WAIT_TIMEOUT;
+	const char *failureNote = deviceRemoved ?
+		"copy_aborted_device_removed" :
+		(timedOut ? "copy_aborted_wait_timeout" : "copy_execute_failed");
+	for (DumpTask *task : eligibleTasks) {
+		if (!task->skipNote)
+			task->skipNote = failureNote;
+	}
+	if (readbackOkOut)
+		*readbackOkOut = false;
+	if (batchAbortedOut)
+		*batchAbortedOut = deviceRemoved || timedOut;
+
+	if (deviceRemoved) {
+		if (pendingEvent)
+			CloseHandle(pendingEvent);
+		if (pendingFence)
+			pendingFence->Release();
+		commandList->Release();
+		allocator->Release();
+	} else {
+		RetireCopyBatch(
+			eligibleTasks,
+			commandList,
+			allocator,
+			pendingFence,
+			pendingEvent,
+			device);
+		DX12FrameAnalysis::LogJsonFunc(
+			"ResourceCopyObjectsRetained",
+			"\"reason\":\"gpu_work_not_completed\",\"tasks\":%zu,\"mode\":\"batched\"",
+			eligibleTasks.size());
+	}
+
+	DX12FrameAnalysis::LogJsonFunc(
+		"ResourceCopyResultDetail",
+		"\"mode\":\"batched\",\"eligible\":%zu,\"copied\":0,\"failed\":%zu",
+		eligibleTasks.size(),
+		eligibleTasks.size());
+	return true;
+}
+
+static size_t ExecuteReadbackCopyTasks(
+	ID3D12Device *device, ID3D12CommandQueue *queue, std::vector<DumpTask> *tasks,
+	bool *readbackOkOut, bool *batchAbortedOut)
+{
+	if (readbackOkOut)
+		*readbackOkOut = true;
+	if (batchAbortedOut)
+		*batchAbortedOut = false;
 	if (!tasks)
 		return 0;
+
+	std::vector<DumpTask*> eligibleTasks;
+	eligibleTasks.reserve(tasks->size());
+	for (DumpTask &task : *tasks) {
+		if (!task.directMap && task.ready && task.readback) {
+			task.copied = false;
+			eligibleTasks.push_back(&task);
+		}
+	}
+	if (eligibleTasks.empty())
+		return DX12ResourceDumpPrepare::CountCopiedTasks(*tasks);
+
+	size_t batchCopied = 0;
+	if (TryExecuteCopyBatch(
+			device,
+			queue,
+			eligibleTasks,
+			readbackOkOut,
+			batchAbortedOut,
+			&batchCopied)) {
+		return batchCopied;
+	}
 
 	size_t eligible = 0;
 	size_t copied = 0;
@@ -1041,6 +1301,8 @@ static size_t ExecuteReadbackCopyTasks(
 				if (!pending.directMap && pending.ready && pending.readback)
 					pending.skipNote = abortNote;
 			}
+			if (batchAbortedOut)
+				*batchAbortedOut = true;
 			DX12FrameAnalysis::LogJsonFunc("ResourceCopyBatchAborted",
 				"\"reason\":\"%s\",\"deviceHr\":\"0x%lx\",\"copied\":%zu,\"eligibleSeen\":%zu,\"tasks\":%zu",
 				abortNote, removedHr, copied, eligible, tasks->size());
@@ -1550,31 +1812,20 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	std::unordered_map<std::string, std::wstring> dedupePathByKey;
 	std::unordered_map<std::string, const char*> dedupeFailureReasonByKey;
 	std::unordered_set<std::wstring> loggedFileDumps;
+	copiedTasks = static_cast<UINT>(DX12ResourceDumpGpuCopy::ExecuteReadbackCopyTasks(
+		device,
+		queue,
+		&tasks,
+		&readbackCopyOk,
+		&copyBatchAborted));
 	for (DumpTask &task : tasks) {
 		bool ok = task.directMap || task.copied;
 		if (task.directMap)
 			directMapTasks++;
-		if (!ok && task.ready && task.readback && !copyBatchAborted) {
-			ok = DX12ResourceDumpGpuCopy::ExecuteCopyTask(device, queue, &task);
-			if (ok)
-				copiedTasks++;
-			else {
-				copyFailedTasks++;
-				readbackCopyOk = false;
-				HRESULT removedHr = S_OK;
-				const bool deviceRemoved = DX12ResourceDumpGpuCopy::DeviceRemoved(device, &removedHr);
-				const bool timedOut = task.skipNote && !strcmp(task.skipNote, "copy_wait_timeout");
-				if (deviceRemoved || timedOut) {
-					copyBatchAborted = true;
-					const char *abortNote = deviceRemoved ?
-						"copy_aborted_device_removed" : "copy_aborted_wait_timeout";
-					DX12FrameAnalysis::LogJsonFunc("ResourceCopyBatchAborted",
-						"\"reason\":\"%s\",\"deviceHr\":\"0x%lx\",\"copied\":%u,\"copyFailed\":%u,\"tasks\":%zu",
-						abortNote, removedHr, copiedTasks, copyFailedTasks, tasks.size());
-				}
-			}
-		} else if (!ok && copyBatchAborted && !task.skipNote) {
-			task.skipNote = "copy_aborted";
+		else if (task.ready && task.readback && !task.copied)
+			copyFailedTasks++;
+		if (!ok && !task.skipNote) {
+			task.skipNote = copyBatchAborted ? "copy_aborted" : "copy_execute_failed";
 		}
 		std::wstring dedupePath;
 		if (ok) {

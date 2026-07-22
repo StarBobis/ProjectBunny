@@ -7,15 +7,37 @@ static constexpr int64_t kResourceQueueSlowDrainUs = 1000;
 
 void DX12ResourceCollectQueue::Start()
 {
-	started.store(false, std::memory_order_release);
+	bool expected = false;
+	if (!started.compare_exchange_strong(
+			expected,
+			true,
+			std::memory_order_acq_rel,
+			std::memory_order_acquire)) {
+		return;
+	}
+
+	stopRequested.store(false, std::memory_order_release);
+	if (worker.joinable())
+		worker.join();
+	worker = std::thread(&DX12ResourceCollectQueue::WorkerLoop);
 	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=StartBypassed,mode=synchronous");
+		"event=Start,mode=async");
 }
 
 
 void DX12ResourceCollectQueue::Stop()
 {
-	started.store(false, std::memory_order_release);
+	const bool wasStarted =
+		started.exchange(false, std::memory_order_acq_rel);
+	if (!wasStarted && !worker.joinable())
+		return;
+
+	stopRequested.store(true, std::memory_order_release);
+	wake.notify_all();
+	idle.notify_all();
+	if (worker.joinable())
+		worker.join();
+	stopRequested.store(false, std::memory_order_release);
 }
 
 bool DX12ResourceCollectQueue::Enqueue(
@@ -25,15 +47,53 @@ bool DX12ResourceCollectQueue::Enqueue(
 	const PlacedResourceInfo *placedInfo,
 	D3D12_RESOURCE_STATES initialState)
 {
-	(void)resource;
-	(void)desc;
-	(void)heapProperties;
-	(void)placedInfo;
-	(void)initialState;
-	// Queue worker is bypassed (Start sets started=false). All enqueue
-	// calls are synchronous fallbacks that only log and discard the data.
-	// Skip the logging overhead entirely when no one is interested.
-	return false;
+	if (!resource || !started.load(std::memory_order_acquire))
+		return false;
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::Resource;
+	task.resource = resource;
+	task.initialState = initialState;
+	task.enqueueThreadId = GetCurrentThreadId();
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	const UINT64 sequence = task.sequence;
+	if (desc) {
+		task.desc = *desc;
+		task.hasDesc = true;
+	}
+	if (heapProperties) {
+		task.heapProperties = *heapProperties;
+		task.hasHeapProperties = true;
+	}
+	if (placedInfo) {
+		task.placedInfo = *placedInfo;
+		task.hasPlacedInfo = true;
+	}
+	if (!DX12ResourceSnapshotUtils::TryAddRef(resource)) {
+		addRefFailed.fetch_add(1, std::memory_order_relaxed);
+		return false;
+	}
+	task.retainedResource = true;
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (!started.load(std::memory_order_acquire) ||
+			stopRequested.load(std::memory_order_acquire)) {
+			DX12ResourceSnapshotUtils::Release(task.resource);
+			task.resource = nullptr;
+			task.retainedResource = false;
+			return false;
+		}
+		tasks.push_back(std::move(task));
+		depth = tasks.size() + static_cast<size_t>(activeTasks);
+	}
+
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("Enqueue", sequence, depth);
+	wake.notify_one();
+	return true;
 }
 
 bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
@@ -41,12 +101,43 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 	const D3D12_RESOURCE_BARRIER *barriers,
 	const char *source)
 {
-	(void)barriers;
-	dropped.fetch_add(1, std::memory_order_relaxed);
-	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=SyncFallback,kind=ResourceBarrier,count=%u,source=%s,reason=no_worker",
-		numBarriers, source ? source : "");
-	return false;
+	if (!numBarriers || !barriers || !started.load(std::memory_order_acquire))
+		return false;
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::ResourceBarrier;
+	task.source = source;
+	task.enqueueThreadId = GetCurrentThreadId();
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	const UINT64 sequence = task.sequence;
+	task.barriers.assign(barriers, barriers + numBarriers);
+	bool retainedAll = true;
+	for (D3D12_RESOURCE_BARRIER &barrier : task.barriers) {
+		if (!TryAddRefBarrierResources(&barrier))
+			retainedAll = false;
+	}
+	if (!retainedAll)
+		addRefFailed.fetch_add(1, std::memory_order_relaxed);
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (!started.load(std::memory_order_acquire) ||
+			stopRequested.load(std::memory_order_acquire)) {
+			for (D3D12_RESOURCE_BARRIER &barrier : task.barriers)
+				ReleaseBarrierResources(&barrier);
+			task.barriers.clear();
+			return false;
+		}
+		tasks.push_back(std::move(task));
+		depth = tasks.size() + static_cast<size_t>(activeTasks);
+	}
+
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("Enqueue", sequence, depth);
+	wake.notify_one();
+	return true;
 }
 
 bool DX12ResourceCollectQueue::EnqueueRootSignature(
@@ -56,13 +147,41 @@ bool DX12ResourceCollectQueue::EnqueueRootSignature(
 	SIZE_T blobLength,
 	const char *source)
 {
-	(void)nodeMask;
-	(void)blob;
-	dropped.fetch_add(1, std::memory_order_relaxed);
-	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=SyncFallback,kind=RootSignature,rootSignature=%p,blobSize=%zu,source=%s,reason=no_worker",
-		rootSignature, blobLength, source ? source : "");
-	return false;
+	if (!rootSignature || !blob || !blobLength ||
+		!started.load(std::memory_order_acquire)) {
+		return false;
+	}
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::RootSignature;
+	task.rootSignature = rootSignature;
+	task.rootSignature->AddRef();
+	task.rootSignatureNodeMask = nodeMask;
+	task.rootSignatureBlob.assign(
+		static_cast<const uint8_t*>(blob),
+		static_cast<const uint8_t*>(blob) + blobLength);
+	task.source = source;
+	task.enqueueThreadId = GetCurrentThreadId();
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	const UINT64 sequence = task.sequence;
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (!started.load(std::memory_order_acquire) ||
+			stopRequested.load(std::memory_order_acquire)) {
+			ReleaseTaskRootSignature(&task);
+			return false;
+		}
+		tasks.push_back(std::move(task));
+		depth = tasks.size() + static_cast<size_t>(activeTasks);
+	}
+
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("Enqueue", sequence, depth);
+	wake.notify_one();
+	return true;
 }
 
 bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
@@ -72,22 +191,46 @@ bool DX12ResourceCollectQueue::EnqueuePsoRootSignature(
 	ID3D12RootSignature *rootSignature,
 	const char *source)
 {
-	dropped.fetch_add(1, std::memory_order_relaxed);
-	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=SyncFallback,kind=PsoRootSignature,pso=%llu,psoKind=%s,pipelineState=%p,rootSignature=%p,source=%s,reason=no_worker",
-		static_cast<unsigned long long>(psoIndex),
-		kind ? kind : "",
-		pipelineState,
-		rootSignature,
-		source ? source : "");
-	return false;
+	if (!psoIndex || !started.load(std::memory_order_acquire))
+		return false;
+
+	DX12ResourceCollectTask task;
+	task.kind = DX12ResourceCollectTaskKind::PsoRootSignature;
+	task.psoIndex = psoIndex;
+	task.psoKind = kind ? kind : "";
+	task.pipelineState = pipelineState;
+	task.rootSignature = rootSignature;
+	task.source = source;
+	task.enqueueThreadId = GetCurrentThreadId();
+	task.sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+	const UINT64 sequence = task.sequence;
+	if (task.pipelineState)
+		task.pipelineState->AddRef();
+	if (task.rootSignature)
+		task.rootSignature->AddRef();
+
+	size_t depth = 0;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		if (!started.load(std::memory_order_acquire) ||
+			stopRequested.load(std::memory_order_acquire)) {
+			ReleaseTaskPsoRootSignature(&task);
+			return false;
+		}
+		tasks.push_back(std::move(task));
+		depth = tasks.size() + static_cast<size_t>(activeTasks);
+	}
+
+	enqueued.fetch_add(1, std::memory_order_relaxed);
+	UpdateMaxDepth(depth);
+	LogStats("Enqueue", sequence, depth);
+	wake.notify_one();
+	return true;
 }
-// STOP_REPLACED
+
 void DX12ResourceCollectQueue::DrainForSnapshot(const char *reason)
 {
-	DX12LogManager::Fields("DX12ResourceCollectQueue",
-		"event=DrainBypassed,reason=%s,mode=synchronous",
-		reason ? reason : "Snapshot");
+	WaitForIdle(reason ? reason : "Snapshot");
 }
 
 size_t DX12ResourceCollectQueue::PendingCount()
@@ -2739,6 +2882,15 @@ void DX12RecordPsoRootSignature(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature)
 {
+	if (DX12ResourceCollectQueue::EnqueuePsoRootSignature(
+			psoIndex,
+			kind,
+			pipelineState,
+			rootSignature,
+			"DX12RecordPsoRootSignature")) {
+		return;
+	}
+
 	DX12LogManager::Fields("DX12ResourceCollectQueue",
 		"event=PsoRootSignatureImmediate,pso=%llu,kind=%s,pipelineState=%p,rootSignature=%p,threadId=%lu",
 		static_cast<unsigned long long>(psoIndex),
@@ -2773,6 +2925,13 @@ void DX12RecordPsoRootSignatureImmediate(
 }
 void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers)
 {
+	if (DX12ResourceCollectQueue::EnqueueResourceBarriers(
+			numBarriers,
+			barriers,
+			"DX12RecordResourceBarrier")) {
+		return;
+	}
+
 	if (!barriers || numBarriers == 0)
 		return;
 
