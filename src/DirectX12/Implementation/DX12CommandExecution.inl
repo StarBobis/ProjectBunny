@@ -1549,10 +1549,13 @@ static void FindShaderOverridesForPsoLocked(
 			info.ps, info.psModel,
 			&matchCache.regexDrawConfigs, &regexSeen);
 	}
-	matchCache.drawTargetPlan =
-		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache, true);
 	matchCache.drawDirectTargetPlan =
 		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache, false);
+	// Keep the draw-decision miss path focused on the first-step CTO targets.
+	// Nested TextureOverride CTOs are now executed by the compiled command-list op
+	// stream on actual matches, so globally unioning every reachable TO target
+	// here only inflates descriptor/IA requirements for negative draws.
+	matchCache.drawTargetPlan = matchCache.drawDirectTargetPlan;
 	gShaderOverridePsoMatchCache[pipelineState] = std::move(matchCache);
 	BuildShaderOverrideConfigPointers(
 		&gShaderOverridePsoMatchCache[pipelineState], dispatch, configs);
