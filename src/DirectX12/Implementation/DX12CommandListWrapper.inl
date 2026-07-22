@@ -683,9 +683,24 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				ID3D12Resource *dstResource =
+					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer);
+				ID3D12Resource *srcResource =
+					DX12WrapperRuntimeUtils::UnwrapResource(pSrcBuffer);
 				mCommandList->CopyBufferRegion(
-					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer), DstOffset,
-					DX12WrapperRuntimeUtils::UnwrapResource(pSrcBuffer), SrcOffset, NumBytes);
+					dstResource,
+					DstOffset,
+					srcResource,
+					SrcOffset,
+					NumBytes);
+				if (!DX12CopyBufferContentRange(
+						dstResource,
+						DstOffset,
+						srcResource,
+						SrcOffset,
+						NumBytes)) {
+					DX12InvalidateBufferContent(dstResource);
+				}
 			}
 
 			void STDMETHODCALLTYPE CopyTextureRegion(
@@ -712,9 +727,22 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				DX12OuterTimingProbeUtils::ApiCopyResource);
 			DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 			DX12_HOTPATH_TIME_BEGIN(CopyResourceOpTotal);
+				ID3D12Resource *dstResource =
+					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource);
+				ID3D12Resource *srcResource =
+					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource);
 				mCommandList->CopyResource(
-					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource),
-					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource));
+					dstResource,
+					srcResource);
+				if (dstResource && srcResource) {
+					const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
+					const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
+					if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					    srcDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+					    !DX12CopyBufferContent(dstResource, srcResource)) {
+						DX12InvalidateBufferContent(dstResource);
+					}
+				}
 			DX12_HOTPATH_TIME_END(CopyResourceOpTotal);
 			}
 
