@@ -195,6 +195,7 @@ struct PlacedResourceInfo
 };
 
 bool DX12ModHasActiveShaderOverrides();
+bool DX12ModHasActiveTextureOverrides();
 bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsShaderDescriptorTracking();
@@ -220,6 +221,11 @@ public:
 		return DX12RuntimeState::IsHuntingMode() ||
 			NeedsFrameDumpTracking() ||
 			NeedsShaderDumpTracking();
+	}
+
+	static bool NeedsIaContentTracking()
+	{
+		return DX12ModHasActiveTextureOverrides();
 	}
 
 	static bool NeedsDescriptorTracking()

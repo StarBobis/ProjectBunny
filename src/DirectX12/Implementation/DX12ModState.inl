@@ -49,6 +49,10 @@ static std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverride
 static std::unordered_map<UINT64, std::vector<size_t>> gIaVertexTextureOverrideIndex;
 static std::unordered_map<uint32_t, std::vector<size_t>> gIaAnyVertexTextureOverrideIndex;
 static std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverrideIndex;
+static std::vector<size_t> gIaIndexTextureOverridePrefilterIndex;
+static std::unordered_map<uint32_t, std::vector<size_t>> gIaVertexTextureOverridePrefilterIndex;
+static std::vector<size_t> gIaAnyVertexTextureOverridePrefilterIndex;
+static std::unordered_map<uint32_t, std::vector<size_t>> gIaMergedVertexTextureOverridePrefilterIndex;
 
 // The hash-level negative cache records tuples with no global candidates.
 // It is draw-context independent and therefore has a higher hit rate.

@@ -1017,6 +1017,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyBufferRegion(
 		dstBuffer, static_cast<unsigned long long>(dstOffset), srcBuffer,
 		static_cast<unsigned long long>(srcOffset), static_cast<unsigned long long>(numBytes));
 	DX12CommandListHookState::OrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
+	if (!DX12CopyBufferContentRange(
+			dstBuffer,
+			dstOffset,
+			srcBuffer,
+			srcOffset,
+			numBytes)) {
+		DX12InvalidateBufferContent(dstBuffer);
+	}
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
@@ -1050,6 +1058,15 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyResource(
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
 		" dst=%p src=%p", dstResource, srcResource);
 	DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
+	if (dstResource && srcResource) {
+		const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
+		const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
+		if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+		    srcDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+		    !DX12CopyBufferContent(dstResource, srcResource)) {
+			DX12InvalidateBufferContent(dstResource);
+		}
+	}
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTiles(

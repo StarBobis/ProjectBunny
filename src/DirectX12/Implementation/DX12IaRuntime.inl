@@ -148,11 +148,19 @@ static void BuildDx12IaTextureOverrideIndex(
 	std::unordered_map<uint32_t, std::vector<size_t>> *indexTextureOverrideIndex,
 	std::unordered_map<UINT64, std::vector<size_t>> *vertexTextureOverrideIndex,
 	std::unordered_map<uint32_t, std::vector<size_t>> *anyVertexTextureOverrideIndex,
-	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverrideIndex)
+	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverrideIndex,
+	std::vector<size_t> *indexTextureOverridePrefilterIndex,
+	std::unordered_map<uint32_t, std::vector<size_t>> *vertexTextureOverridePrefilterIndex,
+	std::vector<size_t> *anyVertexTextureOverridePrefilterIndex,
+	std::unordered_map<uint32_t, std::vector<size_t>> *mergedVertexTextureOverridePrefilterIndex)
 {
 	if (!iaTextureOverrides || !indexTextureOverrideIndex ||
 		!vertexTextureOverrideIndex || !anyVertexTextureOverrideIndex ||
-		!mergedVertexTextureOverrideIndex)
+		!mergedVertexTextureOverrideIndex ||
+		!indexTextureOverridePrefilterIndex ||
+		!vertexTextureOverridePrefilterIndex ||
+		!anyVertexTextureOverridePrefilterIndex ||
+		!mergedVertexTextureOverridePrefilterIndex)
 		return;
 
 	iaTextureOverrides->clear();
@@ -160,6 +168,10 @@ static void BuildDx12IaTextureOverrideIndex(
 	vertexTextureOverrideIndex->clear();
 	anyVertexTextureOverrideIndex->clear();
 	mergedVertexTextureOverrideIndex->clear();
+	indexTextureOverridePrefilterIndex->clear();
+	vertexTextureOverridePrefilterIndex->clear();
+	anyVertexTextureOverridePrefilterIndex->clear();
+	mergedVertexTextureOverridePrefilterIndex->clear();
 	UINT64 order = 0;
 	for (const auto &bucket : textureOverrides)
 	{
@@ -178,8 +190,10 @@ static void BuildDx12IaTextureOverrideIndex(
 			const size_t index = iaTextureOverrides->size();
 			iaTextureOverrides->push_back(std::move(candidate));
 
-			if (TextureOverrideMatchesIaBinding(config, true, 0))
+			if (TextureOverrideMatchesIaBinding(config, true, 0)) {
 				(*indexTextureOverrideIndex)[config.hash].push_back(index);
+				indexTextureOverridePrefilterIndex->push_back(index);
+			}
 
 			bool indexedSpecificVertexSlot = false;
 			for (const auto &slotResource : config.vertexBufferResources)
@@ -187,12 +201,14 @@ static void BuildDx12IaTextureOverrideIndex(
 				if (!TextureOverrideMatchesIaBinding(config, false, slotResource.first))
 					continue;
 				(*vertexTextureOverrideIndex)[MakeIaVertexIndexKey(config.hash, slotResource.first)].push_back(index);
+				(*vertexTextureOverridePrefilterIndex)[slotResource.first].push_back(index);
 				indexedSpecificVertexSlot = true;
 			}
 			if (!indexedSpecificVertexSlot &&
 				TextureOverrideMatchesIaBinding(config, false, 0))
 			{
 				(*anyVertexTextureOverrideIndex)[config.hash].push_back(index);
+				anyVertexTextureOverridePrefilterIndex->push_back(index);
 			}
 		}
 	}
@@ -224,6 +240,10 @@ static void BuildDx12IaTextureOverrideIndex(
 		sortCandidates(&bucket.second);
 	for (auto &bucket : *anyVertexTextureOverrideIndex)
 		sortCandidates(&bucket.second);
+	sortCandidates(indexTextureOverridePrefilterIndex);
+	for (auto &bucket : *vertexTextureOverridePrefilterIndex)
+		sortCandidates(&bucket.second);
+	sortCandidates(anyVertexTextureOverridePrefilterIndex);
 
 	for (const auto &bucket : *vertexTextureOverrideIndex)
 	{
@@ -234,6 +254,20 @@ static void BuildDx12IaTextureOverrideIndex(
 			merged.insert(merged.end(), anySlot->second.begin(), anySlot->second.end());
 		sortCandidates(&merged);
 		(*mergedVertexTextureOverrideIndex)[bucket.first] = std::move(merged);
+	}
+
+	for (const auto &bucket : *vertexTextureOverridePrefilterIndex)
+	{
+		std::vector<size_t> merged = bucket.second;
+		if (!anyVertexTextureOverridePrefilterIndex->empty()) {
+			merged.insert(
+				merged.end(),
+				anyVertexTextureOverridePrefilterIndex->begin(),
+				anyVertexTextureOverridePrefilterIndex->end());
+		}
+		sortCandidates(&merged);
+		(*mergedVertexTextureOverridePrefilterIndex)[bucket.first] =
+			std::move(merged);
 	}
 }
 
@@ -253,6 +287,24 @@ static const std::vector<size_t> *FindIaTextureOverrideCandidatesLocked(
 
 	auto anySlot = gIaAnyVertexTextureOverrideIndex.find(hash);
 	return anySlot != gIaAnyVertexTextureOverrideIndex.end() ? &anySlot->second : nullptr;
+}
+
+static const std::vector<size_t> *FindIaTextureOverridePrefilterCandidatesLocked(
+	bool indexBuffer, uint32_t vertexSlot)
+{
+	if (indexBuffer)
+		return &gIaIndexTextureOverridePrefilterIndex;
+
+	auto merged = gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
+	if (merged != gIaMergedVertexTextureOverridePrefilterIndex.end())
+		return &merged->second;
+
+	if (!gIaAnyVertexTextureOverridePrefilterIndex.empty())
+		return &gIaAnyVertexTextureOverridePrefilterIndex;
+
+	auto specific = gIaVertexTextureOverridePrefilterIndex.find(vertexSlot);
+	return specific != gIaVertexTextureOverridePrefilterIndex.end() ?
+		&specific->second : nullptr;
 }
 
 static bool AppendActionToCompiledPlan(
@@ -1463,6 +1515,47 @@ static bool FindTextureOverridesByHash(
 	return configs && !configs->empty();
 }
 
+static bool HasPotentialIaTextureOverrideCandidateLocked(
+	bool indexBuffer,
+	uint32_t vertexSlot,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance,
+	const std::unordered_set<std::wstring> &activePreSkinSections)
+{
+	const std::vector<size_t> *candidateIndexes =
+		FindIaTextureOverridePrefilterCandidatesLocked(indexBuffer, vertexSlot);
+	if (!candidateIndexes || candidateIndexes->empty())
+		return false;
+
+	for (size_t index : *candidateIndexes) {
+		if (index >= gIaTextureOverrides.size())
+			continue;
+		const DX12IaTextureOverrideCandidate &candidate = gIaTextureOverrides[index];
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config)
+			continue;
+		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections))
+			continue;
+		if (!TextureOverrideMatchesIaBinding(*config, indexBuffer, vertexSlot))
+			continue;
+		if (!TextureOverrideMatchesDrawContext(
+				*config,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance))
+			continue;
+		return true;
+	}
+	return false;
+}
+
 static void AppendTextureOverrideMatchesByHash(
 	uint32_t hash,
 	uint32_t resourceHash,
@@ -1909,6 +2002,62 @@ static bool FindTargetTextureOverride(
 		return FindDescriptorTextureOverrides(
 			commandList, target, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance, matches);
+	}
+
+	return false;
+}
+
+bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance)
+{
+	if (!targetPlan.hasTextureOverrideChecks ||
+	    targetPlan.hasDescriptorTargets ||
+	    targetPlan.requireAllIaBuffers ||
+	    !targetPlan.HasIaTargets()) {
+		return true;
+	}
+
+	std::unordered_set<std::wstring> activePreSkinSections;
+	SnapshotActivePreSkinSections(&activePreSkinSections);
+
+	if (targetPlan.RequiresIndexBuffer(indexed) &&
+	    ia.hasIndexBuffer &&
+	    HasPotentialIaTextureOverrideCandidateLocked(
+			true,
+			0,
+			vertexCount,
+			indexCount,
+			instanceCount,
+			firstVertex,
+			firstIndex,
+			firstInstance,
+			activePreSkinSections)) {
+		return true;
+	}
+
+	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot) || !ia.hasVertexBuffer[slot])
+			continue;
+		if (HasPotentialIaTextureOverrideCandidateLocked(
+				false,
+				slot,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance,
+				activePreSkinSections)) {
+			return true;
+		}
 	}
 
 	return false;

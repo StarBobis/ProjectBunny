@@ -308,6 +308,16 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	uint32_t firstVertex,
 	uint32_t firstIndex,
 	uint32_t firstInstance);
+bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance);
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
@@ -678,6 +688,15 @@ uint32_t DX12HashIaBufferView(
 bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize);
 bool DX12CacheBufferContentRange(
 	ID3D12Resource *resource, UINT64 resourceOffset, const void *data, size_t dataSize);
+bool DX12CopyBufferContentRange(
+	ID3D12Resource *dstResource,
+	UINT64 dstOffset,
+	ID3D12Resource *srcResource,
+	UINT64 srcOffset,
+	UINT64 numBytes);
+bool DX12CopyBufferContent(
+	ID3D12Resource *dstResource,
+	ID3D12Resource *srcResource);
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size, const uint8_t **data, size_t *dataSize);
 UINT64 DX12GetBufferContentGenerationForResource(ID3D12Resource *resource);
 void DX12InvalidateBufferContent(ID3D12Resource *resource);

@@ -2598,6 +2598,44 @@ public:
 				return false;
 			}
 
+			LARGE_INTEGER directPrefilterBegin =
+				DX12OuterTimingProbeUtils::Now();
+			const bool hasPotentialDirectCandidate =
+				DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
+					runtimeState.ia,
+					directTargetPlan,
+					draw.indexed,
+					draw.vertexCount,
+					draw.indexCount,
+					draw.instanceCount,
+					draw.firstVertex,
+					draw.firstIndex,
+					draw.firstInstance);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				hasPotentialDirectCandidate ?
+					"direct_ia_prefilter_positive" :
+					"direct_ia_prefilter_negative",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(directPrefilterBegin));
+			if (!hasPotentialDirectCandidate) {
+				StoreResidentNegative(
+					mutableRuntimeState,
+					*drawDecision,
+					contentGeneration,
+					resolveGeneration,
+					draw);
+				if (directFastRejectKeyValid) {
+					DX12DirectIaFastRejectCacheUtils::Store(
+						&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
+						directFastRejectKey);
+				}
+				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+
 				// The direct probe and the full override path consume the same stable IA
 				// hash state. Cache it before building the probe key so a negative probe
 				// hit does not require re-hashing the same draw region first.

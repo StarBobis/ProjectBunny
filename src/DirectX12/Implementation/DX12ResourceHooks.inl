@@ -120,10 +120,10 @@ void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resour
 	if (!resource)
 		return;
 
-	// Map/Unmap hooks are only needed for buffer content capture (Dump feature).
-	// Without an active Dump or Hunt there is nothing to capture, so skip the
-	// GetHeapProperties driver call and VTable patching entirely.
-	if (!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+	// DX11 keeps CPU-side buffer content for region hashing; DX12 needs the same
+	// data when IA texture overrides are active, not only during dump/hunt.
+	if (!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+	    !DX12ResourceTrackingPolicyUtils::NeedsIaContentTracking())
 		return;
 
 	D3D12_RESOURCE_DESC desc = resource->GetDesc();
