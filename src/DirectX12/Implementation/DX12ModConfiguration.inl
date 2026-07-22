@@ -1246,6 +1246,9 @@ static void BuildDx12RuntimeEffectIndexes(
 	for (const auto &bucket : textureOverrides) {
 		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
 			const bool preEffect =
+				!config.drawPsSrvResources.empty() ||
+				!config.drawVsSrvResources.empty() ||
+				!config.drawReplaceThisResource.empty() ||
 				CommandListLinksHaveRuntimeEffect(
 					config.commandLists.pre, commandLists, commandListEffect) ||
 				CommandListLinksHaveRuntimeEffect(

@@ -1374,6 +1374,10 @@ static void AppendTextureOverrideMatchesByHash(
 			continue;
 		DX12TextureOverrideMatch match;
 		match.config = config;
+		match.preRuntimeEffect =
+			LookupRuntimeEffect(gTextureOverridePreRuntimeEffect, config->section);
+		match.postRuntimeEffect =
+			LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
 		match.matchedHash = hash;
 		match.resourceHash = resourceHash;
 		match.descriptorHash = descriptorHash;
@@ -1724,6 +1728,10 @@ static bool FindTargetTextureOverride(
 					continue;
 				DX12TextureOverrideMatch match;
 				match.config = config;
+				match.preRuntimeEffect =
+					LookupRuntimeEffect(gTextureOverridePreRuntimeEffect, config->section);
+				match.postRuntimeEffect =
+					LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
 				match.matchedHash = iaState.indexHash;
 				matches->push_back(match);
 			}
@@ -1758,6 +1766,10 @@ static bool FindTargetTextureOverride(
 					continue;
 				DX12TextureOverrideMatch match;
 				match.config = config;
+				match.preRuntimeEffect =
+					LookupRuntimeEffect(gTextureOverridePreRuntimeEffect, config->section);
+				match.postRuntimeEffect =
+					LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
 				match.matchedHash = slot->hash;
 				matches->push_back(match);
 			}

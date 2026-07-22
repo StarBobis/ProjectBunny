@@ -183,13 +183,57 @@ public:
 		RunActions(config.actions, 0, false, nullptr);
 	}
 
-	void RunPostTextureOverrideLists(
-		const Bunny::TextureOverrideConfig &config, bool postRuntimeEffect)
+	void QueuePostTextureOverride(
+		const DX12TextureOverrideMatch &match)
 	{
-		if (!postRuntimeEffect)
+		if (!mReplacement || !match.config || !match.postRuntimeEffect)
 			return;
-		for (const std::wstring &list : config.commandLists.post)
-			mReplacement->AddPostCommandList(list);
+		DX12ModIaReplacement::QueuedTextureOverridePost queued;
+		queued.config = match.config;
+		queued.hasThisSrvTarget = match.hasThisSrvTarget;
+		queued.compute = match.compute;
+		queued.thisSrvBinding = match.thisSrvBinding;
+		queued.matchedHash = match.matchedHash;
+		queued.resourceHash = match.resourceHash;
+		queued.descriptorHash = match.descriptorHash;
+		mReplacement->AddQueuedPostTextureOverride(queued);
+	}
+
+	void RunQueuedPostTextureOverride(
+		const DX12ModIaReplacement::QueuedTextureOverridePost &queued)
+	{
+		if (!queued.config)
+			return;
+
+		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
+			SnapshotCompiledTextureOverridePlan(*queued.config);
+		const DX12CompiledTextureOverridePlan *compiledPlanView =
+			compiledPlan.get();
+		const bool compiledTextureOverride =
+			compiledPlanView && !compiledPlanView->hasUnsupportedCommandActions;
+		if (compiledTextureOverride) {
+			if (compiledPlanView->hasPostCommandListPlan)
+				ExecuteCompiledCommandListPlan(
+					compiledPlanView->postCommandListPlan);
+			return;
+		}
+
+		if (queued.config->commandLists.post.empty())
+			return;
+
+		DX12TextureOverrideMatch match;
+		match.config = queued.config;
+		match.preRuntimeEffect = true;
+		match.postRuntimeEffect = true;
+		match.hasThisSrvTarget = queued.hasThisSrvTarget;
+		match.compute = queued.compute;
+		match.thisSrvBinding = queued.thisSrvBinding;
+		match.matchedHash = queued.matchedHash;
+		match.resourceHash = queued.resourceHash;
+		match.descriptorHash = queued.descriptorHash;
+		Bunny::CommandListLinks postLinks;
+		postLinks.main = queued.config->commandLists.post;
+		RunCommandListLinks(postLinks, 0, true, &match);
 	}
 
 	void RunPostShaderOverrideLists(
@@ -285,6 +329,12 @@ public:
 		const Bunny::TextureOverrideConfig *config = match.config;
 		if (!mReplacement || depth > 16 || !config)
 			return;
+		if (!includePost)
+			QueuePostTextureOverride(match);
+
+		const bool runPrePhase = includePost || match.preRuntimeEffect;
+		if (!runPrePhase)
+			return;
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
 			SnapshotCompiledTextureOverridePlan(*config);
@@ -296,7 +346,8 @@ public:
 			if (compiledPlanView->hasPreCommandListPlan)
 				ExecuteCompiledCommandListPlan(compiledPlanView->preCommandListPlan);
 			RunCompiledTextureOverridePlan(*compiledPlanView);
-			if (includePost && compiledPlanView->hasPostCommandListPlan)
+			if (includePost && match.postRuntimeEffect &&
+			    compiledPlanView->hasPostCommandListPlan)
 				ExecuteCompiledCommandListPlan(compiledPlanView->postCommandListPlan);
 		} else {
 			if (mExecuteCommands) {
@@ -314,7 +365,7 @@ public:
 					RunCommandListLinks(links, depth + 1, false, &match);
 				}
 
-				if (includePost) {
+				if (includePost && match.postRuntimeEffect) {
 					for (const std::wstring &list : config->commandLists.post) {
 						Bunny::CommandListLinks links;
 						links.main.push_back(list);
@@ -1780,6 +1831,22 @@ void DX12ModRunPostShaderOverrideReplacement(
 		if (resourcesChanged)
 			executor.MarkExternalChange();
 		LogShaderOverrideCommandListSnapshotLimited("post", configSnapshot, *replacement);
+	}
+	if (!replacement->queuedPostTextureOverrides.empty()) {
+		std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
+		DX12CommandListExecutor executor(
+			device, commandList, iaState,
+			vertexCount, indexCount, instanceCount,
+			firstVertex, firstIndex, firstInstance,
+			replacement, &pendingResourceViews);
+		executor.SetExecutionMode(true, true);
+		for (const DX12ModIaReplacement::QueuedTextureOverridePost &queued :
+		     replacement->queuedPostTextureOverrides)
+			executor.RunQueuedPostTextureOverride(queued);
+		const bool resourcesChanged = ApplyPendingResourceViewsForCommandList(
+			device, commandList, iaState, pendingResourceViews, replacement);
+		if (resourcesChanged)
+			executor.MarkExternalChange();
 	}
 	device->Release();
 }

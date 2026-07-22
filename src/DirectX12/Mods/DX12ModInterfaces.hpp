@@ -2,6 +2,10 @@
 
 #include "Commands/DX12CommandServices.hpp"
 
+namespace Bunny {
+class TextureOverrideConfig;
+}
+
 bool DX12ModRuntimeLoad(
 	const wchar_t *configPath,
 	std::wstring *statusMessage = nullptr,
@@ -79,6 +83,7 @@ public:
 		  indexBuffer(other.indexBuffer),
 		  vertexBufferStartSlot(other.vertexBufferStartSlot),
 		  vertexBuffers(other.vertexBuffers),
+		  queuedPostTextureOverrides(other.queuedPostTextureOverrides),
 		  postCommandLists(other.postCommandLists),
 		  draws(other.draws),
 		  dispatches(other.dispatches),
@@ -99,6 +104,7 @@ public:
 		  indexBuffer(other.indexBuffer),
 		  vertexBufferStartSlot(other.vertexBufferStartSlot),
 		  vertexBuffers(std::move(other.vertexBuffers)),
+		  queuedPostTextureOverrides(std::move(other.queuedPostTextureOverrides)),
 		  postCommandLists(std::move(other.postCommandLists)),
 		  draws(std::move(other.draws)),
 		  dispatches(std::move(other.dispatches)),
@@ -123,6 +129,7 @@ public:
 		indexBuffer = other.indexBuffer;
 		vertexBufferStartSlot = other.vertexBufferStartSlot;
 		vertexBuffers = other.vertexBuffers;
+		queuedPostTextureOverrides = other.queuedPostTextureOverrides;
 		postCommandLists = other.postCommandLists;
 		draws = other.draws;
 		dispatches = other.dispatches;
@@ -147,6 +154,7 @@ public:
 		indexBuffer = other.indexBuffer;
 		vertexBufferStartSlot = other.vertexBufferStartSlot;
 		vertexBuffers = std::move(other.vertexBuffers);
+		queuedPostTextureOverrides = std::move(other.queuedPostTextureOverrides);
 		postCommandLists = std::move(other.postCommandLists);
 		draws = std::move(other.draws);
 		dispatches = std::move(other.dispatches);
@@ -173,6 +181,47 @@ public:
 			return;
 		postCommandLists.push_back(list);
 	}
+	class QueuedTextureOverridePost
+	{
+	public:
+		const Bunny::TextureOverrideConfig *config = nullptr;
+		bool hasThisSrvTarget = false;
+		bool compute = false;
+		DX12CurrentShaderResourceBinding thisSrvBinding;
+		uint32_t matchedHash = 0;
+		uint32_t resourceHash = 0;
+		uint32_t descriptorHash = 0;
+	};
+	void AddQueuedPostTextureOverride(const QueuedTextureOverridePost &queued)
+	{
+		if (!queued.config)
+			return;
+		for (const QueuedTextureOverridePost &existing : queuedPostTextureOverrides) {
+			if (existing.config != queued.config ||
+			    existing.hasThisSrvTarget != queued.hasThisSrvTarget ||
+			    existing.compute != queued.compute ||
+			    existing.matchedHash != queued.matchedHash ||
+			    existing.resourceHash != queued.resourceHash ||
+			    existing.descriptorHash != queued.descriptorHash) {
+				continue;
+			}
+			if (!existing.hasThisSrvTarget)
+				return;
+			if (existing.thisSrvBinding.rootParameterIndex ==
+			        queued.thisSrvBinding.rootParameterIndex &&
+			    existing.thisSrvBinding.shaderRegister ==
+			        queued.thisSrvBinding.shaderRegister &&
+			    existing.thisSrvBinding.registerSpace ==
+			        queued.thisSrvBinding.registerSpace &&
+			    existing.thisSrvBinding.descriptorOffset ==
+			        queued.thisSrvBinding.descriptorOffset &&
+			    existing.thisSrvBinding.tableGpuStart.ptr ==
+			        queued.thisSrvBinding.tableGpuStart.ptr) {
+				return;
+			}
+		}
+		queuedPostTextureOverrides.push_back(queued);
+	}
 	void ClearRetainedResources()
 	{
 		for (ID3D12Resource *resource : retainedResources) {
@@ -192,10 +241,11 @@ public:
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
 	UINT vertexBufferStartSlot = 0;
 	std::vector<D3D12_VERTEX_BUFFER_VIEW> vertexBuffers;
+	std::vector<QueuedTextureOverridePost> queuedPostTextureOverrides;
 	std::vector<std::wstring> postCommandLists;
 	class DrawCall
 	{
-	public:
+public:
 		bool indexed = false;
 		UINT count = 0;
 		UINT start = 0;
