@@ -248,11 +248,10 @@ public:
 			heap.gpuStart + tableBaseIndex * heap.increment;
 	}
 
-	static void RefreshRuntimeTable(
-		const CommandListBindingState &snapshot,
+	static void InvalidateRuntimeTable(
 		RootTableState *table)
 	{
-		if (!table || !table->valid)
+		if (!table)
 			return;
 
 		table->runtimeHeapResolved = false;
@@ -266,6 +265,16 @@ public:
 		table->runtimeTableBaseIndex = 0;
 		table->runtimeTableCpuStart = 0;
 		table->runtimeTableGpuStart = 0;
+	}
+
+	static void RefreshRuntimeTable(
+		const CommandListBindingState &snapshot,
+		RootTableState *table)
+	{
+		if (!table || !table->valid)
+			return;
+
+		DX12BindingTrackerQueryCacheUtils::InvalidateRuntimeTable(table);
 
 		DX12DescriptorHeapSummary heap = {};
 		if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
@@ -2244,34 +2253,11 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
-	DX12DescriptorHeapSummary cbvSrvUavSummary = {};
-	bool cbvSrvUavResolved = false;
-	if (cbvSrvUavHeap) {
-		cbvSrvUavResolved =
-			DX12FindDescriptorHeapByPtr(cbvSrvUavHeap, &cbvSrvUavSummary) &&
-			cbvSrvUavSummary.type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
-			cbvSrvUavSummary.increment != 0;
-	}
-	DX12DescriptorHeapSummary samplerSummary = {};
-	bool samplerResolved = false;
-	if (samplerHeap) {
-		samplerResolved =
-			DX12FindDescriptorHeapByPtr(samplerHeap, &samplerSummary) &&
-			samplerSummary.type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER &&
-			samplerSummary.increment != 0;
-	}
-
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	if (state.cbvSrvUavHeap == cbvSrvUavHeap &&
 	    state.samplerHeap == samplerHeap) {
-		DX12BindingTrackerQueryCacheUtils::StoreRuntimeHeapSummaries(
-			&state,
-			&cbvSrvUavSummary,
-			cbvSrvUavResolved,
-			&samplerSummary,
-			samplerResolved);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsNoChange();
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
@@ -2290,12 +2276,15 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	}
 	state.cbvSrvUavHeap = cbvSrvUavHeap;
 	state.samplerHeap = samplerHeap;
+	// Keep the hot path to pointer swaps only. Heap summaries are resolved
+	// lazily by the query path when a capture or replacement actually needs to
+	// inspect descriptor contents.
 	DX12BindingTrackerQueryCacheUtils::StoreRuntimeHeapSummaries(
 		&state,
-		&cbvSrvUavSummary,
-		cbvSrvUavResolved,
-		&samplerSummary,
-		samplerResolved);
+		nullptr,
+		false,
+		nullptr,
+		false);
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -2333,8 +2322,6 @@ void DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	CommandListBindingState &state = shard.states[commandList];
 	RootTableState &stateTable = state.graphicsTables[rootParameterIndex];
 	if (stateTable.valid && stateTable.baseDescriptor.ptr == baseDescriptor.ptr) {
-		if (!stateTable.runtimeHeapResolved)
-			DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(state, &stateTable);
 		ReleaseSRWLockExclusive(&shard.lock);
 		if (tlsGraphicsTableCache.cl != commandList) {
 			memset(tlsGraphicsTableCache.valid, 0, sizeof(tlsGraphicsTableCache.valid));
@@ -2348,10 +2335,10 @@ void DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	}
 	if (!stateTable.valid)
 		++state.graphicsTableValidCount;
+	stateTable = RootTableState();
 	stateTable.valid = true;
 	stateTable.rootParameterIndex = rootParameterIndex;
 	stateTable.baseDescriptor = baseDescriptor;
-	DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(state, &stateTable);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	if (tlsGraphicsTableCache.cl != commandList) {
@@ -2384,8 +2371,6 @@ void DX12BindingTracker::SetComputeRootDescriptorTable(
 	CommandListBindingState &state = shard.states[commandList];
 	RootTableState &table = state.computeTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
-		if (!table.runtimeHeapResolved)
-			DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(state, &table);
 		ReleaseSRWLockExclusive(&shard.lock);
 		if (tlsComputeTableCache.cl != commandList) {
 			memset(tlsComputeTableCache.valid, 0, sizeof(tlsComputeTableCache.valid));
@@ -2399,10 +2384,10 @@ void DX12BindingTracker::SetComputeRootDescriptorTable(
 	}
 	if (!table.valid)
 		++state.computeTableValidCount;
+	table = RootTableState();
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
-	DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(state, &table);
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);

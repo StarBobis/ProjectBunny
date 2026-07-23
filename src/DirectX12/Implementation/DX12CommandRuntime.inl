@@ -1131,6 +1131,16 @@ static void DX12RuntimeClearRootTables(DX12CommandListRuntimeState *state)
 	state->computeRootTableValidCount = 0;
 }
 
+static void DX12RuntimeInvalidateHeapSummary(
+	bool *resolved,
+	DX12DescriptorHeapSummary *summary)
+{
+	if (resolved)
+		*resolved = false;
+	if (summary)
+		*summary = DX12DescriptorHeapSummary();
+}
+
 static bool DX12RuntimeResolveHeapSummary(
 	ID3D12DescriptorHeap *heap,
 	D3D12_DESCRIPTOR_HEAP_TYPE type,
@@ -1175,11 +1185,10 @@ static void DX12RuntimeFillRootTableFromHeap(
 		heap.gpuStart + tableBaseIndex * heap.increment;
 }
 
-static void DX12RuntimeResolveRootTable(
-	DX12CommandListRuntimeState *state,
+static void DX12RuntimeInvalidateRootTableResolution(
 	RootTableState *table)
 {
-	if (!state || !table || !table->valid)
+	if (!table)
 		return;
 	table->runtimeHeapResolved = false;
 	table->runtimeHeap = nullptr;
@@ -1192,6 +1201,15 @@ static void DX12RuntimeResolveRootTable(
 	table->runtimeTableBaseIndex = 0;
 	table->runtimeTableCpuStart = 0;
 	table->runtimeTableGpuStart = 0;
+}
+
+static void DX12RuntimeResolveRootTable(
+	DX12CommandListRuntimeState *state,
+	RootTableState *table)
+{
+	if (!state || !table || !table->valid)
+		return;
+	DX12RuntimeInvalidateRootTableResolution(table);
 
 	if (state->runtimeCbvSrvUavHeapResolved &&
 			state->runtimeCbvSrvUavHeap.heap == state->cbvSrvUavHeap &&
@@ -1229,24 +1247,22 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	const bool changed =
 		state->cbvSrvUavHeap != cbvSrvUavHeap ||
 		state->samplerHeap != samplerHeap;
+	if (!changed)
+		return;
+
 	state->cbvSrvUavHeap = cbvSrvUavHeap;
 	state->samplerHeap = samplerHeap;
-	state->runtimeCbvSrvUavHeapResolved =
-		DX12RuntimeResolveHeapSummary(
-			cbvSrvUavHeap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			&state->runtimeCbvSrvUavHeap);
-	if (!state->runtimeCbvSrvUavHeapResolved)
-		state->runtimeCbvSrvUavHeap = DX12DescriptorHeapSummary();
-	state->runtimeSamplerHeapResolved =
-		DX12RuntimeResolveHeapSummary(
-			samplerHeap, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-			&state->runtimeSamplerHeap);
-	if (!state->runtimeSamplerHeapResolved)
-		state->runtimeSamplerHeap = DX12DescriptorHeapSummary();
-	if (changed) {
-		DX12RuntimeClearRootTables(state);
-		DX12RuntimeBumpBindingQuerySerial(state);
-	}
+	// Match DX11's "bind now, resolve later" policy: descriptor heap identity is
+	// the hot-path state we need to preserve, while heap summaries can be filled
+	// lazily the moment a draw actually needs descriptor inspection.
+	DX12RuntimeInvalidateHeapSummary(
+		&state->runtimeCbvSrvUavHeapResolved,
+		&state->runtimeCbvSrvUavHeap);
+	DX12RuntimeInvalidateHeapSummary(
+		&state->runtimeSamplerHeapResolved,
+		&state->runtimeSamplerHeap);
+	DX12RuntimeClearRootTables(state);
+	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
 void DX12CommandListRuntime::SetDescriptorHeaps(
@@ -1377,8 +1393,6 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 		state->graphicsRootTables[rootParameterIndex] :
 		state->computeRootTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
-		if (!table.runtimeHeapResolved)
-			DX12RuntimeResolveRootTable(state, &table);
 		return;
 	}
 	if (!table.valid) {
@@ -1391,7 +1405,6 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
-	DX12RuntimeResolveRootTable(state, &table);
 	if (!graphics) {
 		state->computeBindingSerial++;
 		if (!state->computeBindingSerial)
