@@ -3163,39 +3163,27 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 	UINT registerSpace,
 	std::vector<DX12CurrentShaderResourceBinding> *bindings)
 {
-	const char *descriptorKind = nullptr;
-	D3D12_ROOT_PARAMETER_TYPE rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-	switch (rangeType) {
-	case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
-		descriptorKind = "CBV";
-		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		break;
-	case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
-		descriptorKind = "SRV";
-		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-		break;
-	case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
-		descriptorKind = "UAV";
-		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-		break;
-	default:
-		if (bindings)
-			bindings->clear();
+	if (!bindings)
 		return false;
-	}
+	bindings->clear();
 
-	CommandListBindingState snapshot;
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
+	if (!DX12BindingTracker::GetCurrentShaderResourceBindings(
+		    commandList, compute, rangeType, bindings))
 		return false;
-	return DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindingsByRegister(
-		snapshot,
-		compute,
-		rangeType,
-		shaderRegister,
-		registerSpace,
-		descriptorKind,
-		rootDescriptorType,
-		bindings);
+
+	size_t writeIndex = 0;
+	for (size_t readIndex = 0; readIndex < bindings->size(); ++readIndex) {
+		DX12CurrentShaderResourceBinding &binding = (*bindings)[readIndex];
+		if (binding.shaderRegister != shaderRegister ||
+		    binding.registerSpace != registerSpace)
+			continue;
+		if (writeIndex != readIndex)
+			(*bindings)[writeIndex] = std::move(binding);
+		++writeIndex;
+	}
+	bindings->resize(writeIndex);
+
+	return !bindings->empty();
 }
 
 bool DX12BindingTracker::GetCurrentDescriptorHeaps(
