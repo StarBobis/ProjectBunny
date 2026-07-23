@@ -1432,6 +1432,11 @@ static void StoreShaderOverrideNegativeCache(
 {
 	const UINT64 hash = HashShaderOverrideNegativeCacheKey(key);
 	AcquireSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
+	auto existing = gShaderOverrideNegativeCache.find(hash);
+	if (existing == gShaderOverrideNegativeCache.end() &&
+	    gShaderOverrideNegativeCache.size() >= MaxShaderOverrideNegativeCacheEntries) {
+		gShaderOverrideNegativeCache.clear();
+	}
 	gShaderOverrideNegativeCache[hash] = key;
 	ReleaseSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
 }

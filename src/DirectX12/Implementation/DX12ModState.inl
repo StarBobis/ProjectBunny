@@ -505,6 +505,7 @@ public:
 
 static std::unordered_map<UINT64, DX12ShaderOverrideNegativeCacheKey> gShaderOverrideNegativeCache;
 static SRWLOCK gShaderOverrideNegativeCacheLock = SRWLOCK_INIT;
+static constexpr size_t MaxShaderOverrideNegativeCacheEntries = 16384;
 
 class DX12ComputeUavProducer
 

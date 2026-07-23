@@ -626,6 +626,8 @@ public:
 class DX12DirectIaProbeCache
 {
 public:
+	static constexpr size_t MaxEntries = 16384;
+
 	DX12DirectIaProbeCache() = default;
 
 	DX12DirectIaProbeCache(const DX12DirectIaProbeCache &)
@@ -757,8 +759,17 @@ public:
 			found->second.hasDirectCandidate = hasDirectCandidate;
 			return;
 		}
+		if (cache->entries.size() >= DX12DirectIaProbeCache::MaxEntries &&
+		    !cache->lruKeys.empty()) {
+			const DX12DirectIaProbeCacheKey &oldest = cache->lruKeys.back();
+			cache->entries.erase(oldest);
+			cache->lruKeys.pop_back();
+			if (evicted)
+				*evicted = true;
+		}
 		DX12ResidentCacheGrowthUtils::EnsureBudget(
-			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
+			&cache->growthBudget, &cache->entries,
+			(std::min)(cache->entries.size() + 1, DX12DirectIaProbeCache::MaxEntries));
 
 		cache->lruKeys.push_front(key);
 		DX12DirectIaProbeCacheEntry entry;
@@ -895,6 +906,8 @@ public:
 class DX12DirectIaFastRejectCache
 {
 public:
+	static constexpr size_t MaxEntries = 16384;
+
 	DX12DirectIaFastRejectCache() = default;
 
 	DX12DirectIaFastRejectCache(const DX12DirectIaFastRejectCache &)
@@ -1018,8 +1031,13 @@ public:
 		if (!cache)
 			return false;
 		PrepareScope(cache, key.reloadGeneration);
+		if (cache->entries.size() >= DX12DirectIaFastRejectCache::MaxEntries &&
+		    !cache->entries.empty()) {
+			cache->entries.erase(cache->entries.begin());
+		}
 		DX12ResidentCacheGrowthUtils::EnsureBudget(
-			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
+			&cache->growthBudget, &cache->entries,
+			(std::min)(cache->entries.size() + 1, DX12DirectIaFastRejectCache::MaxEntries));
 		return cache->entries.insert(std::move(key)).second;
 	}
 
@@ -1199,6 +1217,8 @@ public:
 class DX12IaHashStateCache
 {
 public:
+	static constexpr size_t MaxEntries = 16384;
+
 	DX12IaHashStateCache() = default;
 
 	// Cache contents are derived from runtime state and do not belong in value snapshots.
@@ -1282,8 +1302,17 @@ public:
 			found->second.state = std::move(state);
 			return &found->second.state;
 		}
+		if (cache->entries.size() >= DX12IaHashStateCache::MaxEntries &&
+		    !cache->lruKeys.empty()) {
+			const DX12IaHashStateCacheKey &oldest = cache->lruKeys.back();
+			cache->entries.erase(oldest);
+			cache->lruKeys.pop_back();
+			if (evicted)
+				*evicted = true;
+		}
 		DX12ResidentCacheGrowthUtils::EnsureBudget(
-			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
+			&cache->growthBudget, &cache->entries,
+			(std::min)(cache->entries.size() + 1, DX12IaHashStateCache::MaxEntries));
 
 		cache->lruKeys.push_front(key);
 		DX12IaHashStateCacheEntry entry;
