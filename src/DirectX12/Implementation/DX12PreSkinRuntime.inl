@@ -2553,18 +2553,20 @@ static void UpdatePreSkinningUavMatchCacheLocked(
 	entry.matched = matched;
 	if (dispatchOverride)
 		entry.dispatchOverride = *dispatchOverride;
-	if (isNewEntry) {
-		gPreSkinUavMatchCacheLru.push_back(cacheKey);
-	}
-	if (gPreSkinUavMatchCache.size() > MaxPreSkinUavMatchCacheEntries) {
-		// LRU eviction: remove oldest entry instead of full clear.
-		// A full clear causes repeated cold misses over many frames.
-		// Evicting one entry keeps hot entries cached, maintaining >95% hit rate.
-		if (!gPreSkinUavMatchCacheLru.empty()) {
-			UINT64 oldestKey = gPreSkinUavMatchCacheLru.front();
-			gPreSkinUavMatchCacheLru.pop_front();
-			gPreSkinUavMatchCache.erase(oldestKey);
+	if (isNewEntry && gPreSkinUavMatchCache.size() > gPreSkinUavMatchCacheGrowthBudget) {
+		size_t nextBudget = gPreSkinUavMatchCacheGrowthBudget ?
+			gPreSkinUavMatchCacheGrowthBudget :
+			MaxPreSkinUavMatchCacheEntries;
+		while (nextBudget < gPreSkinUavMatchCache.size()) {
+			const size_t doubled = nextBudget * 2;
+			if (doubled <= nextBudget) {
+				nextBudget = gPreSkinUavMatchCache.size();
+				break;
+			}
+			nextBudget = doubled;
 		}
+		gPreSkinUavMatchCache.reserve(nextBudget);
+		gPreSkinUavMatchCacheGrowthBudget = nextBudget;
 	}
 }
 

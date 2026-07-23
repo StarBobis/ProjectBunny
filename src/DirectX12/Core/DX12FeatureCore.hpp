@@ -226,14 +226,45 @@ public:
 	UINT64 clock = 0;
 	std::vector<DX12PreSkinBindingCacheEntry> entries;
 	std::unordered_multimap<UINT64, size_t> fingerprintIndex;
+	size_t growthBudget = 256;
+};
+
+class DX12FeatureCacheGrowthUtils
+{
+public:
+	static size_t NextBudget(size_t currentBudget, size_t minRequired)
+	{
+		size_t next = currentBudget ? currentBudget : 256;
+		while (next < minRequired) {
+			const size_t doubled = next * 2;
+			if (doubled <= next) {
+				next = minRequired;
+				break;
+			}
+			next = doubled;
+		}
+		return next;
+	}
+
+	template <class AssocContainer>
+	static void EnsureBudget(
+		size_t *budget,
+		AssocContainer *entries,
+		size_t minRequired)
+	{
+		if (!budget || !entries || minRequired <= *budget)
+			return;
+		const size_t next = NextBudget(*budget, minRequired);
+		entries->reserve(next);
+		*budget = next;
+	}
 };
 
 class DX12PreSkinBindingCacheUtils
 {
 public:
-	// The target title presents roughly 100-110 distinct compute binding
-	// patterns per frame. A 64-entry LRU is smaller than that cyclic working set
-	// and therefore evicts every entry immediately before the next-frame reuse.
+	// Start at the measured working set, then grow when a title exceeds it
+	// instead of thrashing through LRU eviction every frame.
 	static constexpr size_t CacheCapacity = 256;
 
 	static void MixValue(DX12PreSkinBindingCacheKey *key, UINT64 value)
@@ -638,29 +669,35 @@ public:
 
 		DX12PreSkinBindingCacheEntry *target = nullptr;
 		size_t targetIndex = 0;
-		if (cache->entries.size() < DX12PreSkinBindingCacheUtils::CacheCapacity) {
-			DX12PreSkinBindingCacheEntry entry;
-			cache->entries.push_back(entry);
+		const auto existingMappings =
+			cache->fingerprintIndex.equal_range(key.fingerprint);
+		for (auto mapping = existingMappings.first;
+				mapping != existingMappings.second; ++mapping) {
+			const size_t index = mapping->second;
+			if (index >= cache->entries.size())
+				continue;
+			DX12PreSkinBindingCacheEntry &entry = cache->entries[index];
+			if (!entry.valid ||
+					!DX12PreSkinBindingCacheUtils::KeysEqual(entry.key, key))
+				continue;
+			target = &entry;
+			targetIndex = index;
+			break;
+		}
+		const bool hasExistingEntry = target != nullptr;
+		if (!target) {
+			const size_t required = cache->entries.size() + 1;
+			if (required > cache->growthBudget) {
+				const size_t nextBudget =
+					DX12FeatureCacheGrowthUtils::NextBudget(
+						cache->growthBudget, required);
+				cache->entries.reserve(nextBudget);
+				cache->fingerprintIndex.reserve(nextBudget * 2);
+				cache->growthBudget = nextBudget;
+			}
+			cache->entries.push_back(DX12PreSkinBindingCacheEntry());
 			targetIndex = cache->entries.size() - 1;
 			target = &cache->entries[targetIndex];
-		} else {
-			UINT64 oldestAge = cache->entries[0].age;
-			for (size_t index = 1; index < cache->entries.size(); ++index) {
-				if (cache->entries[index].age < oldestAge) {
-					oldestAge = cache->entries[index].age;
-					targetIndex = index;
-				}
-			}
-			target = &cache->entries[targetIndex];
-			const auto oldMappings =
-				cache->fingerprintIndex.equal_range(target->key.fingerprint);
-			for (auto mapping = oldMappings.first;
-					mapping != oldMappings.second;) {
-				if (mapping->second == targetIndex)
-					mapping = cache->fingerprintIndex.erase(mapping);
-				else
-					++mapping;
-			}
 		}
 
 		target->valid = true;
@@ -671,7 +708,8 @@ public:
 		target->srvs = srvs;
 		target->cbvs = cbvs;
 		target->constants = constants;
-		cache->fingerprintIndex.emplace(key.fingerprint, targetIndex);
+		if (!hasExistingEntry)
+			cache->fingerprintIndex.emplace(key.fingerprint, targetIndex);
 	}
 };
 
@@ -786,7 +824,9 @@ public:
 	// resident PSO decisions in thread-local generation arenas instead: reads are
 	// lock-free and a generation change discards the complete arena in O(1).
 	inline static thread_local UINT64 ReloadGeneration = 0;
-	static constexpr size_t MaxEntriesPerKind = 4096;
+	static constexpr size_t InitialEntriesPerKind = 4096;
+	inline static thread_local size_t DispatchGrowthBudget = InitialEntriesPerKind;
+	inline static thread_local size_t DrawGrowthBudget = InitialEntriesPerKind;
 	inline static thread_local std::unordered_map<
 		DX12PsoDecisionCacheDispatchKey,
 		DX12PsoDecisionCacheDispatchEntry,
@@ -847,10 +887,11 @@ public:
 		key.activePreSkinProbe = activePreSkinProbe;
 
 		if (DX12PsoDecisionCacheUtils::DispatchEntries.find(key) ==
-				DX12PsoDecisionCacheUtils::DispatchEntries.end() &&
-			DX12PsoDecisionCacheUtils::DispatchEntries.size() >= MaxEntriesPerKind) {
-			DX12PsoDecisionCacheUtils::DispatchEntries.erase(
-				DX12PsoDecisionCacheUtils::DispatchEntries.begin());
+				DX12PsoDecisionCacheUtils::DispatchEntries.end()) {
+			DX12FeatureCacheGrowthUtils::EnsureBudget(
+				&DX12PsoDecisionCacheUtils::DispatchGrowthBudget,
+				&DX12PsoDecisionCacheUtils::DispatchEntries,
+				DX12PsoDecisionCacheUtils::DispatchEntries.size() + 1);
 		}
 		DX12PsoDecisionCacheDispatchEntry &entry =
 			DX12PsoDecisionCacheUtils::DispatchEntries[key];
@@ -895,10 +936,11 @@ public:
 		key.activeShaderOverrides = activeShaderOverrides;
 
 		if (DX12PsoDecisionCacheUtils::DrawEntries.find(key) ==
-				DX12PsoDecisionCacheUtils::DrawEntries.end() &&
-			DX12PsoDecisionCacheUtils::DrawEntries.size() >= MaxEntriesPerKind) {
-			DX12PsoDecisionCacheUtils::DrawEntries.erase(
-				DX12PsoDecisionCacheUtils::DrawEntries.begin());
+				DX12PsoDecisionCacheUtils::DrawEntries.end()) {
+			DX12FeatureCacheGrowthUtils::EnsureBudget(
+				&DX12PsoDecisionCacheUtils::DrawGrowthBudget,
+				&DX12PsoDecisionCacheUtils::DrawEntries,
+				DX12PsoDecisionCacheUtils::DrawEntries.size() + 1);
 		}
 		DX12PsoDecisionCacheDrawEntry &entry =
 			DX12PsoDecisionCacheUtils::DrawEntries[key];

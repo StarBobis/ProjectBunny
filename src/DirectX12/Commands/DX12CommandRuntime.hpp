@@ -650,15 +650,45 @@ public:
 		DX12DirectIaProbeCacheKey,
 		DX12DirectIaProbeCacheEntry,
 		DX12DirectIaProbeCacheKeyHash> entries;
+	size_t growthBudget = 16384;
 	bool hasScope = false;
 	UINT64 scopeReloadGeneration = 0;
+};
+
+class DX12ResidentCacheGrowthUtils
+{
+public:
+	static size_t NextBudget(size_t currentBudget, size_t minRequired)
+	{
+		size_t next = currentBudget ? currentBudget : 256;
+		while (next < minRequired) {
+			const size_t doubled = next * 2;
+			if (doubled <= next) {
+				next = minRequired;
+				break;
+			}
+			next = doubled;
+		}
+		return next;
+	}
+
+	template <class AssocContainer>
+	static void EnsureBudget(
+		size_t *budget,
+		AssocContainer *entries,
+		size_t minRequired)
+	{
+		if (!budget || !entries || minRequired <= *budget)
+			return;
+		const size_t next = NextBudget(*budget, minRequired);
+		entries->reserve(next);
+		*budget = next;
+	}
 };
 
 class DX12DirectIaProbeCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 16384;
-
 	static DX12DirectIaProbeCacheKey MakeKey(
 		UINT64 reloadGeneration,
 		UINT64 targetPlanFingerprint,
@@ -727,13 +757,8 @@ public:
 			found->second.hasDirectCandidate = hasDirectCandidate;
 			return;
 		}
-
-		if (cache->entries.size() >= MaxEntries) {
-			cache->entries.erase(cache->lruKeys.back());
-			cache->lruKeys.pop_back();
-			if (evicted)
-				*evicted = true;
-		}
+		DX12ResidentCacheGrowthUtils::EnsureBudget(
+			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
 
 		cache->lruKeys.push_front(key);
 		DX12DirectIaProbeCacheEntry entry;
@@ -892,6 +917,7 @@ public:
 	std::unordered_set<
 		DX12DirectIaFastRejectCacheKey,
 		DX12DirectIaFastRejectCacheKeyHash> entries;
+	size_t growthBudget = 16384;
 	bool hasScope = false;
 	UINT64 scopeReloadGeneration = 0;
 };
@@ -899,8 +925,6 @@ public:
 class DX12DirectIaFastRejectCacheUtils
 {
 public:
-	static constexpr size_t MaxEntries = 16384;
-
 	static DX12DirectIaFastRejectCache &ThreadCache()
 	{
 		static thread_local DX12DirectIaFastRejectCache cache;
@@ -993,8 +1017,8 @@ public:
 		if (!cache)
 			return false;
 		PrepareScope(cache, key.reloadGeneration);
-		if (cache->entries.size() >= MaxEntries)
-			cache->entries.erase(cache->entries.begin());
+		DX12ResidentCacheGrowthUtils::EnsureBudget(
+			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
 		return cache->entries.insert(std::move(key)).second;
 	}
 
@@ -1196,16 +1220,12 @@ public:
 		DX12IaHashStateCacheKey,
 		DX12IaHashStateCacheEntry,
 		DX12IaHashStateCacheKeyHash> entries;
+	size_t growthBudget = 16384;
 };
 
 class DX12IaHashStateCacheUtils
 {
 public:
-	// The measured title cycles through roughly 1,450 IA draw identities per
-	// frame. A 1,024-entry LRU evicts the front of that working set immediately
-	// before the next frame reuses it, turning a resident cache into a churn loop.
-	static constexpr size_t MaxEntries = 16384;
-
 	// Command lists recorded on the same CPU thread commonly reference identical
 	// immutable IA regions. The full key already carries view identity, resource
 	// lifetime/content generations, target plan, and draw range, so cache ownership
@@ -1258,13 +1278,8 @@ public:
 			found->second.state = std::move(state);
 			return &found->second.state;
 		}
-
-		if (cache->entries.size() >= MaxEntries) {
-			cache->entries.erase(cache->lruKeys.back());
-			cache->lruKeys.pop_back();
-			if (evicted)
-				*evicted = true;
-		}
+		DX12ResidentCacheGrowthUtils::EnsureBudget(
+			&cache->growthBudget, &cache->entries, cache->entries.size() + 1);
 
 		cache->lruKeys.push_front(key);
 		DX12IaHashStateCacheEntry entry;

@@ -345,6 +345,7 @@ public:
 static std::unordered_map<UINT64, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
 static std::deque<UINT64> gPreSkinUavMatchCacheLru;
 static constexpr size_t MaxPreSkinUavMatchCacheEntries = 4096;
+static size_t gPreSkinUavMatchCacheGrowthBudget = MaxPreSkinUavMatchCacheEntries;
 
 
 static UINT64 MakePreSkinUavMatchCacheKey(
