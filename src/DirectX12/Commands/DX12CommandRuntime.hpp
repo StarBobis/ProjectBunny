@@ -1368,6 +1368,21 @@ public:
 	UINT probeGroupsZ = 0;
 };
 
+class DX12ResolvedDescriptorQueryRuntimeState
+{
+public:
+	bool valid = false;
+	bool foundAny = false;
+	bool compute = false;
+	UINT rangeType = UINT_MAX;
+	UINT64 bindingQuerySerial = 0;
+	ID3D12DescriptorHeap *bindingsHeap = nullptr;
+	std::vector<UINT> observedSlots;
+	std::vector<UINT64> observedSlotVersions;
+	std::vector<UINT64> observedSlotValueIds;
+	std::vector<DX12CurrentComputeUavBinding> bindings;
+};
+
 class DX12CommandListRuntimeState
 {
 public:
@@ -1438,6 +1453,9 @@ public:
 	ID3D12Device *device = nullptr;
 
 	DX12ResolvedComputeRuntimeState resolvedCompute;
+	// Resident descriptor-query results, keyed by command-list binding serial and
+	// validated against tracked slot identities like DX11's context-local state.
+	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6> resolvedDescriptorQueries;
 };
 
 

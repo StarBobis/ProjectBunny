@@ -144,6 +144,108 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.rootConstants = constants;
 }
 
+static bool TryLoadRuntimeDescriptorBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	bool compute,
+	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
+	UINT64 bindingQuerySerial,
+	std::vector<DX12CurrentComputeUavBinding> *bindings,
+	bool *foundAny)
+{
+	if (!runtimeState || !bindings)
+		return false;
+
+	const UINT cacheSlot =
+		BindingTlsDescriptorQueryCache::CacheSlotIndex(compute, rangeType);
+	if (cacheSlot == UINT_MAX ||
+			cacheSlot >= runtimeState->resolvedDescriptorQueries.size())
+		return false;
+
+	DX12ResolvedDescriptorQueryRuntimeState &cache =
+		runtimeState->resolvedDescriptorQueries[cacheSlot];
+	if (!cache.valid ||
+			cache.compute != compute ||
+			cache.rangeType != static_cast<UINT>(rangeType) ||
+			cache.bindingQuerySerial != bindingQuerySerial ||
+			cache.bindingsHeap != runtimeState->cbvSrvUavHeap)
+		return false;
+
+	const size_t observedCount = cache.observedSlots.size();
+	if (observedCount != cache.observedSlotVersions.size() ||
+			observedCount != cache.observedSlotValueIds.size())
+		return false;
+
+	if (observedCount) {
+		if (!cache.bindingsHeap)
+			return false;
+		constexpr size_t StackIdentityCount = 64;
+		std::array<UINT64, StackIdentityCount> stackSlotVersions;
+		std::array<UINT64, StackIdentityCount> stackSlotValueIds;
+		std::vector<UINT64> heapSlotVersions;
+		std::vector<UINT64> heapSlotValueIds;
+		UINT64 *currentSlotVersions = stackSlotVersions.data();
+		UINT64 *currentSlotValueIds = stackSlotValueIds.data();
+		if (observedCount > StackIdentityCount) {
+			heapSlotVersions.resize(observedCount);
+			heapSlotValueIds.resize(observedCount);
+			currentSlotVersions = heapSlotVersions.data();
+			currentSlotValueIds = heapSlotValueIds.data();
+		}
+		if (!DX12GetDescriptorSlotIdentities(
+				cache.bindingsHeap,
+				cache.observedSlots.data(),
+				observedCount,
+				currentSlotVersions,
+				currentSlotValueIds))
+			return false;
+		for (size_t index = 0; index < observedCount; ++index) {
+			if (currentSlotVersions[index] != cache.observedSlotVersions[index] ||
+					currentSlotValueIds[index] != cache.observedSlotValueIds[index]) {
+				return false;
+			}
+		}
+	}
+
+	*bindings = cache.bindings;
+	if (foundAny)
+		*foundAny = cache.foundAny;
+	return true;
+}
+
+static void StoreRuntimeDescriptorBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	bool compute,
+	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
+	UINT64 bindingQuerySerial,
+	bool foundAny,
+	const std::vector<UINT> &observedSlots,
+	const std::vector<UINT64> &observedSlotVersions,
+	const std::vector<UINT64> &observedSlotValueIds,
+	const std::vector<DX12CurrentComputeUavBinding> &bindings)
+{
+	if (!runtimeState)
+		return;
+
+	const UINT cacheSlot =
+		BindingTlsDescriptorQueryCache::CacheSlotIndex(compute, rangeType);
+	if (cacheSlot == UINT_MAX ||
+			cacheSlot >= runtimeState->resolvedDescriptorQueries.size())
+		return;
+
+	DX12ResolvedDescriptorQueryRuntimeState &cache =
+		runtimeState->resolvedDescriptorQueries[cacheSlot];
+	cache.valid = true;
+	cache.foundAny = foundAny;
+	cache.compute = compute;
+	cache.rangeType = static_cast<UINT>(rangeType);
+	cache.bindingQuerySerial = bindingQuerySerial;
+	cache.bindingsHeap = runtimeState->cbvSrvUavHeap;
+	cache.observedSlots = observedSlots;
+	cache.observedSlotVersions = observedSlotVersions;
+	cache.observedSlotValueIds = observedSlotValueIds;
+	cache.bindings = bindings;
+}
+
 static bool BuildRuntimeBindingSnapshot(
 	const DX12CommandListRuntimeState *runtimeState,
 	CommandListBindingState *snapshot)
@@ -443,12 +545,18 @@ public:
 		D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
 		const char *descriptorKind,
 		D3D12_ROOT_PARAMETER_TYPE rootDescriptorType,
-		std::vector<DX12CurrentComputeUavBinding> *outBindings)
+		std::vector<DX12CurrentComputeUavBinding> *outBindings,
+		ID3D12DescriptorHeap **observedSlotHeap = nullptr,
+		std::vector<UINT> *observedSlots = nullptr)
 	{
 		if (!outBindings)
 			return false;
 
 		outBindings->clear();
+		if (observedSlotHeap)
+			*observedSlotHeap = nullptr;
+		if (observedSlots)
+			observedSlots->clear();
 		BindingEvent event;
 		BuildEventForQuery(snapshot, compute, &event);
 		DX12RootSignatureSummary rootSignature;
@@ -479,12 +587,16 @@ public:
 						std::vector<SIZE_T> cpuHandles;
 						std::vector<DX12DescriptorSummary> descriptors;
 						std::vector<uint8_t> found;
+						if (observedSlotHeap && heap.heap && !*observedSlotHeap)
+							*observedSlotHeap = heap.heap;
 						cpuHandles.reserve(count);
 						for (UINT offset = 0; offset < count; ++offset) {
 							const UINT64 descriptorIndex =
 								tableBaseIndex + range.effectiveOffset + offset;
 							if (descriptorIndex >= heap.numDescriptors)
 								break;
+							if (observedSlots)
+								observedSlots->push_back(static_cast<UINT>(descriptorIndex));
 							const SIZE_T cpuHandle =
 								heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
 							cpuHandles.push_back(cpuHandle);
@@ -523,6 +635,10 @@ public:
 							snapshot, table, &heap)) {
 						const UINT64 descriptorIndex =
 							(table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
+						if (observedSlotHeap && heap.heap && !*observedSlotHeap)
+							*observedSlotHeap = heap.heap;
+						if (observedSlots && descriptorIndex < heap.numDescriptors)
+							observedSlots->push_back(static_cast<UINT>(descriptorIndex));
 						const SIZE_T cpuHandle =
 							heap.cpuStart + static_cast<SIZE_T>(descriptorIndex) * heap.increment;
 						DX12DescriptorSummary descriptor = {};
@@ -2767,10 +2883,38 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		return false;
 
 	uavs->clear();
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const DX12CommandListTrackingState tracking =
+		runtimeState ?
+			DX12CommandListRuntime::GetTrackingState(runtimeState) :
+			DX12CommandListTrackingState();
+	const bool preferRuntimeSnapshot = runtimeState && !tracking.trackBindings;
+	if (preferRuntimeSnapshot) {
+		const UINT64 runtimeBindingQuerySerial =
+			runtimeState->bindingQuerySerial ? runtimeState->bindingQuerySerial : 1;
+		bool cachedFoundAny = false;
+		if (TryLoadRuntimeDescriptorBindings(
+				runtimeState,
+				compute,
+				rangeType,
+				runtimeBindingQuerySerial,
+				uavs,
+				&cachedFoundAny)) {
+			return cachedFoundAny;
+		}
+	}
+
 	CommandListBindingState snapshot;
 	UINT64 bindingQuerySerial = 0;
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial))
+	const bool snapshotReady = preferRuntimeSnapshot ?
+		BuildRuntimeBindingSnapshot(runtimeState, &snapshot) :
+		DX12BindingTracker::SnapshotBindingState(
+			commandList, &snapshot, &bindingQuerySerial);
+	if (!snapshotReady)
 		return false;
+	if (preferRuntimeSnapshot)
+		bindingQuerySerial = snapshot.bindingQuerySerial ? snapshot.bindingQuerySerial : 1;
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
@@ -2802,8 +2946,17 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		}
 	}
 
+	ID3D12DescriptorHeap *observedSlotHeap = nullptr;
+	std::vector<UINT> observedSlots;
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindings(
-		snapshot, compute, rangeType, descriptorKind, rootDescriptorType, uavs);
+		snapshot,
+		compute,
+		rangeType,
+		descriptorKind,
+		rootDescriptorType,
+		uavs,
+		&observedSlotHeap,
+		&observedSlots);
 	const UINT64 cbvSrvUavHeapVersionAfter = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
 	if (cbvSrvUavHeapVersionAfter == cbvSrvUavHeapVersion) {
@@ -2816,6 +2969,36 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		queryCache.bindings = *uavs;
 	} else {
 		queryCache.commandList = nullptr;
+	}
+	if (preferRuntimeSnapshot &&
+			runtimeState &&
+			bindingQuerySerial != 0 &&
+			cbvSrvUavHeapVersionAfter == cbvSrvUavHeapVersion) {
+		std::vector<UINT64> observedSlotVersions(observedSlots.size());
+		std::vector<UINT64> observedSlotValueIds(observedSlots.size());
+		bool observedSlotsValid = true;
+		if (!observedSlots.empty()) {
+			observedSlotsValid =
+				observedSlotHeap &&
+				DX12GetDescriptorSlotIdentities(
+					observedSlotHeap,
+					observedSlots.data(),
+					observedSlots.size(),
+					observedSlotVersions.data(),
+					observedSlotValueIds.data());
+		}
+		if (observedSlotsValid) {
+			StoreRuntimeDescriptorBindings(
+				runtimeState,
+				compute,
+				rangeType,
+				bindingQuerySerial,
+				foundAny,
+				observedSlots,
+				observedSlotVersions,
+				observedSlotValueIds,
+				*uavs);
+		}
 	}
 	#if defined(_DEBUG)
 	DX12LogManager::DebugFields("DX12DescriptorQueryCache",
