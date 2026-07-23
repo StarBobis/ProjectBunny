@@ -3198,6 +3198,35 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 		return false;
 	}
 
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const DX12CommandListTrackingState tracking =
+		runtimeState ?
+			DX12CommandListRuntime::GetTrackingState(runtimeState) :
+			DX12CommandListTrackingState();
+	if (runtimeState && !tracking.trackBindings) {
+		std::vector<DX12CurrentComputeUavBinding> cachedBindings;
+		if (!DX12BindingTracker::GetCurrentDescriptors(
+				commandList,
+				compute,
+				rangeType,
+				descriptorKind,
+				rootDescriptorType,
+				&cachedBindings)) {
+			return false;
+		}
+
+		bindings->reserve(cachedBindings.size());
+		for (const DX12CurrentComputeUavBinding &binding : cachedBindings) {
+			if (binding.shaderRegister != shaderRegister ||
+			    binding.registerSpace != registerSpace) {
+				continue;
+			}
+			bindings->push_back(binding);
+		}
+		return !bindings->empty();
+	}
+
 	CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, nullptr))
 		return false;
