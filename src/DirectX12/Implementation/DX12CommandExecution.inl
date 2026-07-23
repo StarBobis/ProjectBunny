@@ -131,6 +131,28 @@ public:
 		}
 	};
 
+	class BoolScope
+	{
+	public:
+		BoolScope(bool *flag, bool value)
+			: target(flag),
+			  saved(flag ? *flag : false)
+		{
+			if (target)
+				*target = value;
+		}
+
+		~BoolScope()
+		{
+			if (target)
+				*target = saved;
+		}
+
+	private:
+		bool *target = nullptr;
+		bool saved = false;
+	};
+
 	DX12CommandListExecutor(
 		ID3D12Device *device,
 		ID3D12GraphicsCommandList *commandList,
@@ -157,6 +179,11 @@ public:
 	{
 		mExecuteCommands = executeCommands;
 		mExecuteDrawActions = executeDrawActions;
+	}
+
+	void SetSkipDirectDescriptorTargets(bool skip)
+	{
+		mSkipDirectDescriptorTargets = skip;
 	}
 
 	bool observedDescriptorTarget = false;
@@ -195,6 +222,9 @@ public:
 	{
 		if (!mReplacement)
 			return;
+		BoolScope directDescriptorSkipScope(
+			&mSkipDirectDescriptorTargetsActive,
+			mSkipDirectDescriptorTargets);
 		for (const std::wstring &list : config.commandLists.post)
 			mReplacement->AddPostCommandList(list);
 		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
@@ -339,9 +369,13 @@ public:
 		const Bunny::CommandListTarget &target,
 		std::vector<DX12TextureOverrideMatch> *matches)
 	{
-		if (target.kind == Bunny::CommandListTargetKind::ConstantBuffer ||
-		    target.kind == Bunny::CommandListTargetKind::ShaderResource ||
-		    target.kind == Bunny::CommandListTargetKind::UnorderedAccessView) {
+		const bool descriptorTarget =
+			target.kind == Bunny::CommandListTargetKind::ConstantBuffer ||
+			target.kind == Bunny::CommandListTargetKind::ShaderResource ||
+			target.kind == Bunny::CommandListTargetKind::UnorderedAccessView;
+		if (descriptorTarget) {
+			if (mSkipDirectDescriptorTargetsActive)
+				return false;
 			observedDescriptorTarget = true;
 		}
 		return ::FindTargetTextureOverride(
@@ -355,6 +389,9 @@ public:
 		const Bunny::TextureOverrideConfig *config = match.config;
 		if (!mReplacement || depth > 16 || !config)
 			return;
+		BoolScope directDescriptorSkipScope(
+			&mSkipDirectDescriptorTargetsActive,
+			false);
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
 			SnapshotCompiledTextureOverridePlan(*config);
@@ -447,6 +484,9 @@ public:
 	{
 		if (plan.unsupported)
 			return;
+		BoolScope directDescriptorSkipScope(
+			&mSkipDirectDescriptorTargetsActive,
+			mSkipDirectDescriptorTargets);
 		ExecuteCompiledCommandListPlan(plan.mainPlan, 0, false);
 	}
 
@@ -819,6 +859,8 @@ public:
 	bool mChanged = false;
 	bool mExecuteCommands = true;
 	bool mExecuteDrawActions = true;
+	bool mSkipDirectDescriptorTargets = false;
+	bool mSkipDirectDescriptorTargetsActive = false;
 	bool mGraphicsSrvBindingsResolved = false;
 	std::vector<std::wstring> mCommandListStack;
 	std::vector<DX12CurrentShaderResourceBinding> mGraphicsSrvBindings;
@@ -1831,7 +1873,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	DX12ModIaReplacement *replacement,
 	bool allowDescriptorIndependentNegativeCache,
-	ID3D12Device *cachedDevice)
+	ID3D12Device *cachedDevice,
+	bool skipDirectDescriptorTargets)
 {
 	if (!replacement)
 		return false;
@@ -1911,6 +1954,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		firstVertex, firstIndex, firstInstance,
 		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
+	executor.SetSkipDirectDescriptorTargets(skipDirectDescriptorTargets);
 	if (compiledPlanSnapshot && !compiledPlanSnapshot->empty()) {
 		for (const DX12CompiledShaderOverridePlan &plan : *compiledPlanSnapshot)
 			executor.RunCompiledShaderOverridePlan(plan);
@@ -1929,6 +1973,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		device->Release();
 
 	const bool negativeCacheStoreSafe = negativeCacheEnabled && !changed &&
+		!skipDirectDescriptorTargets &&
 		pendingResourceViews.empty() && !executor.observedDescriptorTarget &&
 		!executor.observedDynamicCommandState;
 	if (negativeCacheStoreSafe) {

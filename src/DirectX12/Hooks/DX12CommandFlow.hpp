@@ -2276,6 +2276,8 @@ public:
 		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
 		UINT64 resolveGeneration,
+		UINT64 graphicsDescriptorQuerySerial,
+		UINT64 descriptorQuerySerial,
 		const DX12IaDrawInvocation &draw)
 	{
 		return entry.valid && entry.pipelineState == state.pipelineState &&
@@ -2284,6 +2286,8 @@ public:
 			entry.contentGeneration == contentGeneration &&
 			entry.resolveGeneration == resolveGeneration &&
 			entry.iaEpoch == state.iaEpoch &&
+			entry.graphicsDescriptorQuerySerial == graphicsDescriptorQuerySerial &&
+			entry.descriptorQuerySerial == descriptorQuerySerial &&
 			entry.targetPlanFingerprint == decision.directTargetPlan.Fingerprint() &&
 			entry.indexed == draw.indexed && entry.vertexCount == draw.vertexCount &&
 			entry.indexCount == draw.indexCount && entry.instanceCount == draw.instanceCount &&
@@ -2297,6 +2301,8 @@ public:
 		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
 		UINT64 resolveGeneration,
+		UINT64 graphicsDescriptorQuerySerial,
+		UINT64 descriptorQuerySerial,
 		const DX12IaDrawInvocation &draw)
 	{
 		DX12ResidentDrawNegativeEntry &entry =
@@ -2307,6 +2313,8 @@ public:
 		entry.contentGeneration = contentGeneration;
 		entry.resolveGeneration = resolveGeneration;
 		entry.iaEpoch = state->iaEpoch;
+		entry.graphicsDescriptorQuerySerial = graphicsDescriptorQuerySerial;
+		entry.descriptorQuerySerial = descriptorQuerySerial;
 		entry.targetPlanFingerprint = decision.directTargetPlan.Fingerprint();
 		entry.vertexCount = draw.vertexCount; entry.indexCount = draw.indexCount;
 		entry.instanceCount = draw.instanceCount; entry.firstVertex = draw.firstVertex;
@@ -2563,6 +2571,10 @@ public:
 		bool directFastRejectKeyValid = false;
 		bool directDescriptorCandidateKnown = false;
 		bool hasDirectDescriptorCandidate = false;
+		UINT64 directGraphicsDescriptorQuerySerial = 0;
+		UINT64 directDescriptorQuerySerial = 0;
+		UINT64 directDescriptorContentGeneration = 0;
+		UINT64 directDescriptorResolveGeneration = 0;
 		if (drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
@@ -2580,7 +2592,33 @@ public:
 		if (drawDecision->directTextureChecksOnly &&
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasDescriptorTargets &&
-		    !directTargetPlan.descriptorTargets.empty()) {
+		    !directTargetPlan.descriptorTargets.empty() &&
+		    !directTargetPlan.requireAllIaBuffers) {
+			directGraphicsDescriptorQuerySerial =
+				runtimeState.graphicsDescriptorQuerySerial ?
+					runtimeState.graphicsDescriptorQuerySerial : 1;
+			directDescriptorQuerySerial = CurrentDescriptorQuerySerial();
+			if (directTargetPlan.HasIaTargets()) {
+				directDescriptorContentGeneration = DX12GetIaHashContentGeneration();
+				directDescriptorResolveGeneration = DX12GetIaHashResolveGeneration();
+				DX12ResidentDrawNegativeEntry &residentNegative =
+					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[
+						ResidentNegativeSlot(draw)];
+				if (MatchesResidentNegative(
+						residentNegative,
+						*mutableRuntimeState,
+						*drawDecision,
+						preSkinGeneration,
+						directDescriptorContentGeneration,
+						directDescriptorResolveGeneration,
+						directGraphicsDescriptorQuerySerial,
+						directDescriptorQuerySerial,
+						draw)) {
+					DX12Profiling::RecordIaHashStateResult(false);
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
+				}
+			}
 			LARGE_INTEGER directDescriptorBegin =
 				DX12OuterTimingProbeUtils::Now();
 			hasDirectDescriptorCandidate =
@@ -2604,6 +2642,15 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
 			if (!directTargetPlan.HasIaTargets() &&
 			    !hasDirectDescriptorCandidate) {
+				StoreResidentNegative(
+					mutableRuntimeState,
+					*drawDecision,
+					preSkinGeneration,
+					0,
+					0,
+					directGraphicsDescriptorQuerySerial,
+					directDescriptorQuerySerial,
+					draw);
 				DX12Profiling::RecordIaHashStateResult(false);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
@@ -2624,7 +2671,8 @@ public:
 					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
 				if (MatchesResidentNegative(residentNegative, *mutableRuntimeState,
 						*drawDecision, preSkinGeneration,
-						contentGeneration, resolveGeneration, draw)) {
+						contentGeneration, resolveGeneration,
+						0, 0, draw)) {
 					DX12Profiling::RecordIaHashStateResult(false);
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
@@ -2680,6 +2728,8 @@ public:
 					preSkinGeneration,
 					contentGeneration,
 					resolveGeneration,
+					0,
+					0,
 					draw);
 				if (directFastRejectKeyValid) {
 					DX12DirectIaFastRejectCacheUtils::Store(
@@ -2842,7 +2892,8 @@ public:
 					if (!hasDirectCandidate) {
 						StoreResidentNegative(mutableRuntimeState, *drawDecision,
 							preSkinGeneration,
-							contentGeneration, resolveGeneration, draw);
+							contentGeneration, resolveGeneration,
+							0, 0, draw);
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
 								&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
@@ -2908,6 +2959,15 @@ public:
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(mixedPrefilterBegin));
 			if (!hasPotentialDirectIaCandidate) {
+				StoreResidentNegative(
+					mutableRuntimeState,
+					*drawDecision,
+					preSkinGeneration,
+					directDescriptorContentGeneration,
+					directDescriptorResolveGeneration,
+					directGraphicsDescriptorQuerySerial,
+					directDescriptorQuerySerial,
+					draw);
 				DX12Profiling::RecordIaHashStateResult(false);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
@@ -3038,6 +3098,10 @@ public:
 		    drawDecision->targetPlanHasDescriptorTargets) {
 			const bool canUsePsoIaNegativeCache =
 				psoIaNegativeCacheSafe && (!targetPlanHasIaTargets || hasIaHashState);
+			const bool skipDirectDescriptorTargets =
+				drawDecision->directTextureChecksOnly &&
+				directDescriptorCandidateKnown &&
+				!hasDirectDescriptorCandidate;
 			DX12PsoDrawFastRejectKey psoIaNegKey;
 
 			// PSO and IA negative cache.
@@ -3085,7 +3149,8 @@ public:
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, draw.firstInstance, &iaReplacement,
 				shaderOverrideNegativeCacheAllowed,
-				runtimeState.device)) {
+				runtimeState.device,
+				skipDirectDescriptorTargets)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"prepare_shader_override_match",
@@ -3137,6 +3202,17 @@ public:
 					draw.indexed ? 1u : 0u,
 					1,
 					DX12OuterTimingProbeUtils::ElapsedUs(negStoreBegin));
+			}
+			if (skipDirectDescriptorTargets) {
+				StoreResidentNegative(
+					mutableRuntimeState,
+					*drawDecision,
+					preSkinGeneration,
+					directDescriptorContentGeneration,
+					directDescriptorResolveGeneration,
+					directGraphicsDescriptorQuerySerial,
+					directDescriptorQuerySerial,
+					draw);
 			}
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;

@@ -1383,6 +1383,8 @@ public:
 	UINT64 contentGeneration = 0;
 	UINT64 resolveGeneration = 0;
 	UINT64 iaEpoch = 0;
+	UINT64 graphicsDescriptorQuerySerial = 0;
+	UINT64 descriptorQuerySerial = 0;
 	UINT64 targetPlanFingerprint = 0;
 	UINT vertexCount = 0;
 	UINT indexCount = 0;

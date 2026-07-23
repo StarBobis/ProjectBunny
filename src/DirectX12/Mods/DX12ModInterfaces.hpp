@@ -295,7 +295,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
 	DX12ModIaReplacement *replacement,
 	bool allowNegativeCache = true,
-	ID3D12Device *cachedDevice = nullptr);
+	ID3D12Device *cachedDevice = nullptr,
+	bool skipDirectDescriptorTargets = false);
 bool DX12ModApplyDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	DX12ModIaReplacement *replacement,
