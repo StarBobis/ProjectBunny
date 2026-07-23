@@ -569,7 +569,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 		return;
 	}
 	ID3D12Resource *d3dResource = static_cast<ID3D12Resource*>(*resource);
-	if (!DX12ResourceCollectQueue::Enqueue(
+	// DX11 keeps newly created mod-relevant resources visible to replacement
+	// lookups immediately. Keep DX12 aligned in normal Mod mode and reserve the
+	// async queue for the heavier dump/hunt metadata path.
+	const bool useAsyncTracking =
+		DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata();
+	if (!useAsyncTracking || !DX12ResourceCollectQueue::Enqueue(
 			d3dResource,
 			desc,
 			heapProperties,
