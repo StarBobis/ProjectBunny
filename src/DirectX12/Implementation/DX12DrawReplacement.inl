@@ -142,13 +142,100 @@ public:
 
 	static bool BindingCanBePatched(const DX12CurrentShaderResourceBinding &binding)
 	{
-		return binding.hasDescriptor &&
-			!binding.rootDescriptor &&
+		return !binding.rootDescriptor &&
 			binding.tableCpuStart != 0 &&
 			binding.tableGpuStart.ptr != 0 &&
 			binding.descriptorIncrement != 0 &&
-			binding.tableHeap != nullptr &&
-			binding.descriptor.kind == "SRV";
+			binding.tableHeap != nullptr;
+	}
+
+	static bool CollectSrvBindingsFromRuntimeLayout(
+		ID3D12GraphicsCommandList *commandList,
+		bool compute,
+		std::vector<DX12CurrentShaderResourceBinding> *bindings)
+	{
+		if (!bindings)
+			return false;
+		bindings->clear();
+		if (!commandList)
+			return false;
+
+		CommandListBindingState snapshot;
+		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
+			return false;
+
+		ID3D12RootSignature *rootSignature =
+			compute ? snapshot.computeRootSignature : snapshot.graphicsRootSignature;
+		if (!rootSignature)
+			return false;
+
+		DX12RootSignatureSummary rootSignatureSummary;
+		if (!DX12GetRootSignatureSummary(rootSignature, &rootSignatureSummary) ||
+		    !rootSignatureSummary.parsed) {
+			return false;
+		}
+
+		for (const DX12RootParameterSummary &parameter :
+				rootSignatureSummary.parameters) {
+			if (parameter.parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
+			    parameter.rootParameterIndex >= MaxRootParameters) {
+				continue;
+			}
+
+			const RootTableState &table =
+				compute ?
+					snapshot.computeTables[parameter.rootParameterIndex] :
+					snapshot.graphicsTables[parameter.rootParameterIndex];
+			if (!table.valid)
+				continue;
+
+			DX12DescriptorHeapSummary heap;
+			UINT64 tableBaseIndex = 0;
+			SIZE_T tableCpuStart = 0;
+			if (!ResolvePatchTableLocation(
+					snapshot,
+					table,
+					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+					&heap,
+					&tableBaseIndex,
+					&tableCpuStart)) {
+				continue;
+			}
+
+			const UINT tableCopyCount = DescriptorCountForTable(
+				parameter,
+				heap,
+				tableBaseIndex,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			for (const DX12RootDescriptorRangeSummary &range : parameter.ranges) {
+				if (range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+					continue;
+				const UINT64 first = tableBaseIndex + range.effectiveOffset;
+				if (first >= heap.numDescriptors)
+					continue;
+				const UINT64 available = heap.numDescriptors - first;
+				const UINT64 declared = range.numDescriptors == UINT_MAX ?
+					available : range.numDescriptors;
+				const UINT count = static_cast<UINT>((std::min)(declared, available));
+				for (UINT offset = 0; offset < count; ++offset) {
+					DX12CurrentShaderResourceBinding binding;
+					binding.rootParameterIndex = parameter.rootParameterIndex;
+					binding.rangeIndex = range.rangeIndex;
+					binding.shaderVisibility = range.shaderVisibility;
+					binding.shaderRegister = range.baseShaderRegister + offset;
+					binding.registerSpace = range.registerSpace;
+					binding.descriptorOffset = range.effectiveOffset + offset;
+					binding.descriptorIncrement = heap.increment;
+					binding.tableCopyCount = tableCopyCount;
+					binding.tableCpuStart = tableCpuStart;
+					binding.tableGpuStart = table.baseDescriptor;
+					binding.tableHeap = heap.heap;
+					bindings->push_back(std::move(binding));
+				}
+			}
+		}
+
+		return !bindings->empty();
 	}
 
 	static void CollectSrvBindings(
@@ -161,6 +248,18 @@ public:
 		bindings->clear();
 		if (!commandList)
 			return;
+		if (!DX12ModNeedsShaderDescriptorTracking() &&
+		    DX12DrawSrvReplacementUtils::CollectSrvBindingsFromRuntimeLayout(
+				commandList, compute, bindings)) {
+#if defined(_DEBUG)
+			DX12LogManager::Fields("DX12DrawSrvReplacement",
+				"stage=collect_srvs_runtime,bindSpace=%s,count=%zu,present=%ld",
+				compute ? "compute" : "graphics",
+				bindings->size(),
+				DX12RuntimeState::GetPresentCount());
+#endif
+			return;
+		}
 		DX12BindingTracker::GetCurrentShaderResourceBindings(
 			commandList, compute, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, bindings);
 #if defined(_DEBUG)

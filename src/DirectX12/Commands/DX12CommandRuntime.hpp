@@ -1911,7 +1911,8 @@ enum DX12ModHotPathFlagBits : UINT32
 	DX12_MOD_HOT_PRE_SKIN_PROBE = 1u << 2,
 	DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK = 1u << 3,
 	DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK = 1u << 4,
-	DX12_MOD_HOT_IA_RESIDENT_STATE = 1u << 5
+	DX12_MOD_HOT_IA_RESIDENT_STATE = 1u << 5,
+	DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT = 1u << 6
 };
 UINT32 DX12ModGetHotPathFlags();
 
@@ -1940,6 +1941,7 @@ public:
 	static constexpr UINT64 FLAG_PRESENT_REPLACEMENT      = 1ull << 7;
 	static constexpr UINT64 FLAG_IA_RESIDENT_STATE        = 1ull << 8;
 	static constexpr UINT64 FLAG_SHADER_DESCRIPTOR_TRACK  = 1ull << 9;
+	static constexpr UINT64 FLAG_DRAW_SRV_SLOT_REPLACEMENT = 1ull << 10;
 
 	// Combined masks allow one branch for draw or dispatch hook work.
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -1960,6 +1962,7 @@ public:
 		bool preSkinBindingTrack = false;
 		bool shaderDescriptorTrack = false;
 		bool iaResidentState = false;
+		bool drawSrvSlotReplacement = false;
 
 		static SourceState Capture()
 		{
@@ -1980,6 +1983,8 @@ public:
 				(modFlags & DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK) != 0;
 			state.iaResidentState =
 				(modFlags & DX12_MOD_HOT_IA_RESIDENT_STATE) != 0;
+			state.drawSrvSlotReplacement =
+				(modFlags & DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT) != 0;
 			return state;
 		}
 
@@ -2006,6 +2011,8 @@ public:
 				flags |= FLAG_IA_RESIDENT_STATE;
 			if (shaderDescriptorTrack)
 				flags |= FLAG_SHADER_DESCRIPTOR_TRACK;
+			if (drawSrvSlotReplacement)
+				flags |= FLAG_DRAW_SRV_SLOT_REPLACEMENT;
 			return flags;
 		}
 
@@ -2019,7 +2026,8 @@ public:
 				preSkinProbe ||
 				preSkinBindingTrack ||
 				shaderDescriptorTrack ||
-				iaResidentState;
+				iaResidentState ||
+				drawSrvSlotReplacement;
 		}
 
 		bool NeedsHeavyTracking() const
@@ -2036,7 +2044,8 @@ public:
 		{
 			return shaderOverrides ||
 				shaderDescriptorTrack ||
-				iaResidentState;
+				iaResidentState ||
+				drawSrvSlotReplacement;
 		}
 
 		bool NeedsBindingState() const
@@ -2046,7 +2055,8 @@ public:
 
 		bool NeedsGraphicsBindingState() const
 		{
-			return NeedsHeavyTracking() || shaderDescriptorTrack;
+			return NeedsHeavyTracking() || shaderDescriptorTrack ||
+				drawSrvSlotReplacement;
 		}
 
 		const char *ModeName() const
@@ -2069,6 +2079,7 @@ public:
 	{
 		return HasAnyFlag(
 			flags,
+			FLAG_DRAW_SRV_SLOT_REPLACEMENT |
 			FLAG_SHADER_DESCRIPTOR_TRACK |
 			FLAG_FRAME_ANALYSIS_ACTIVE |
 			FLAG_SHADER_DUMP_ACTIVE);
