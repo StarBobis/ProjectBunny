@@ -2140,6 +2140,33 @@ public:
 			!HasAnyFlag(flags, FLAG_SHADER_OVERRIDES);
 	}
 
+	static bool AllowsResidentDrawFastReject(UINT64 flags)
+	{
+		// DX11-style resident fast reject is safe whenever shader overrides are
+		// active but no draw-time diagnostic/present flow needs the interpreter.
+		return HasAnyFlag(flags, FLAG_SHADER_OVERRIDES) &&
+			!HasAnyFlag(
+				flags,
+				FLAG_HUNT_ENABLED |
+				FLAG_FRAME_ANALYSIS_ACTIVE |
+				FLAG_SHADER_DUMP_ACTIVE |
+				FLAG_PRESENT_REPLACEMENT);
+	}
+
+	static bool AllowsResidentDispatchFastReject(UINT64 flags)
+	{
+		// Compute fast reject must stay disabled while pre-skin probing is live,
+		// but graphics-only resident mod bits should not force every dispatch back
+		// through the generic interpreter.
+		return HasAnyFlag(flags, FLAG_SHADER_OVERRIDES) &&
+			!HasAnyFlag(
+				flags,
+				FLAG_HUNT_ENABLED |
+				FLAG_FRAME_ANALYSIS_ACTIVE |
+				FLAG_SHADER_DUMP_ACTIVE |
+				FLAG_PRE_SKIN_PROBE);
+	}
+
 	static bool NeedsPreSkinBindingTracking(UINT64 flags)
 	{
 		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);

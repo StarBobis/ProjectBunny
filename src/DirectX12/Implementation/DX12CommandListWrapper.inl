@@ -568,12 +568,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
 				const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 				const bool residentDrawReject =
-					(drawFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
-						DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+					DX12HotPathState::AllowsResidentDrawFastReject(drawFlags) &&
 					mRuntimeState.drawDecision.resolved &&
 					mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
 					mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-					mRuntimeState.drawDecision.MatchesGlobals(true) &&
+					mRuntimeState.drawDecision.MatchesGlobals(
+						(drawFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
 					mRuntimeState.drawDecision.CanFastReject();
 				if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
 					residentDrawReject) && mOrigDrawInstanced) {
@@ -599,12 +599,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 			const bool residentDrawReject =
-				(drawFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
-					DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+				DX12HotPathState::AllowsResidentDrawFastReject(drawFlags) &&
 				mRuntimeState.drawDecision.resolved &&
 				mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
 				mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-				mRuntimeState.drawDecision.MatchesGlobals(true) &&
+				mRuntimeState.drawDecision.MatchesGlobals(
+					(drawFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
 				mRuntimeState.drawDecision.CanFastReject();
 			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
 				residentDrawReject) && mOrigDrawIndexedInstanced) {
@@ -629,12 +629,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
 			const bool residentDispatchReject =
-				(dispatchFlags == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
-					DX12HotPathState::FLAG_SHADER_OVERRIDES)) &&
+				DX12HotPathState::AllowsResidentDispatchFastReject(dispatchFlags) &&
 				mRuntimeState.dispatchDecision.resolved &&
 				mRuntimeState.dispatchDecision.pipelineState == mRuntimeState.pipelineState &&
 				mRuntimeState.dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-				mRuntimeState.dispatchDecision.MatchesGlobals(true, false) &&
+				mRuntimeState.dispatchDecision.MatchesGlobals(
+					(dispatchFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0,
+					(dispatchFlags & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0) &&
 				!mRuntimeState.dispatchDecision.NeedsShaderOverrideWork();
 			if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
 				residentDispatchReject) && mOrigDispatch) {

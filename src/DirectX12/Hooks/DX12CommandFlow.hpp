@@ -1061,12 +1061,12 @@ public:
 		// No-candidate compute PSOs are resident state, just like DX11's current
 		// shader. Bypass tracking-state lookup and all decision/cache machinery.
 		if (runtimeState &&
-			flagsWord == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
-				DX12HotPathState::FLAG_SHADER_OVERRIDES) &&
+			DX12HotPathState::AllowsResidentDispatchFastReject(flagsWord) &&
 			runtimeState->dispatchDecision.resolved &&
 			runtimeState->dispatchDecision.pipelineState == runtimeState->pipelineState &&
 			runtimeState->dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-			runtimeState->dispatchDecision.MatchesGlobals(true, false) &&
+			runtimeState->dispatchDecision.MatchesGlobals(
+				hasShaderOverrides, needsPreSkinProbe) &&
 			!runtimeState->dispatchDecision.NeedsShaderOverrideWork()) {
 			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
@@ -3125,16 +3125,18 @@ public:
 		}
 
 		// DX11-style resident PSO rejection: when shader overrides are the only
-		// enabled draw feature, a PSO proven unable to match must not enter the
-		// generic draw interpreter (counters, logging, IA keys, or cache layers).
-		// Reload generation keeps the shortcut conservative across hot reloads.
+		// draw-driven feature for this PSO, a state proven unable to match must
+		// not enter the generic draw interpreter (counters, logging, IA keys, or
+		// cache layers). Reload generation keeps the shortcut conservative across
+		// hot reloads while still allowing global resident descriptor/IA features
+		// to coexist with the fast reject.
 		if (runtimeState &&
-			flagsWord == (DX12HotPathState::FLAG_NEEDS_MOD_WORK |
-				DX12HotPathState::FLAG_SHADER_OVERRIDES) &&
+			DX12HotPathState::AllowsResidentDrawFastReject(flagsWord) &&
 			runtimeState->drawDecision.resolved &&
 			runtimeState->drawDecision.pipelineState == runtimeState->pipelineState &&
 			runtimeState->drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-			runtimeState->drawDecision.MatchesGlobals(true) &&
+			runtimeState->drawDecision.MatchesGlobals(
+				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
 			runtimeState->drawDecision.CanFastReject()) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
