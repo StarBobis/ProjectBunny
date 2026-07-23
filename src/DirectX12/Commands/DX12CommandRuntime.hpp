@@ -1466,6 +1466,8 @@ public:
 	bool runtimeSamplerHeapResolved = false;
 	DX12DescriptorHeapSummary runtimeSamplerHeap = {};
 	UINT64 bindingQuerySerial = 1;
+	UINT64 graphicsDescriptorQuerySerial = 1;
+	UINT64 computeDescriptorQuerySerial = 1;
 	UINT graphicsRootTableValidCount = 0;
 	UINT computeRootTableValidCount = 0;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
@@ -1507,8 +1509,8 @@ public:
 	ID3D12Device *device = nullptr;
 
 	DX12ResolvedComputeRuntimeState resolvedCompute;
-	// Resident descriptor-query results, keyed by command-list binding serial and
-	// validated against tracked slot identities like DX11's context-local state.
+	// Resident descriptor-query results, keyed by descriptor-only serials so
+	// unrelated root-constant churn does not invalidate SRV slot lookups.
 	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6> resolvedDescriptorQueries;
 };
 

@@ -246,6 +246,18 @@ static void StoreRuntimeDescriptorBindings(
 	cache.bindings = bindings;
 }
 
+static UINT64 GetRuntimeDescriptorQuerySerial(
+	const DX12CommandListRuntimeState *runtimeState,
+	bool compute)
+{
+	if (!runtimeState)
+		return 0;
+	const UINT64 serial = compute ?
+		runtimeState->computeDescriptorQuerySerial :
+		runtimeState->graphicsDescriptorQuerySerial;
+	return serial ? serial : 1;
+}
+
 static bool BuildRuntimeBindingSnapshot(
 	const DX12CommandListRuntimeState *runtimeState,
 	CommandListBindingState *snapshot)
@@ -2892,7 +2904,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	const bool preferRuntimeSnapshot = runtimeState && !tracking.trackBindings;
 	if (preferRuntimeSnapshot) {
 		const UINT64 runtimeBindingQuerySerial =
-			runtimeState->bindingQuerySerial ? runtimeState->bindingQuerySerial : 1;
+			GetRuntimeDescriptorQuerySerial(runtimeState, compute);
 		bool cachedFoundAny = false;
 		if (TryLoadRuntimeDescriptorBindings(
 				runtimeState,
@@ -2914,7 +2926,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	if (!snapshotReady)
 		return false;
 	if (preferRuntimeSnapshot)
-		bindingQuerySerial = snapshot.bindingQuerySerial ? snapshot.bindingQuerySerial : 1;
+		bindingQuerySerial = GetRuntimeDescriptorQuerySerial(runtimeState, compute);
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
@@ -3167,23 +3179,38 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 		return false;
 	bindings->clear();
 
-	if (!DX12BindingTracker::GetCurrentShaderResourceBindings(
-		    commandList, compute, rangeType, bindings))
+	const char *descriptorKind = nullptr;
+	D3D12_ROOT_PARAMETER_TYPE rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	switch (rangeType) {
+	case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+		descriptorKind = "CBV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		break;
+	case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+		descriptorKind = "SRV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		break;
+	case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+		descriptorKind = "UAV";
+		rootDescriptorType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+		break;
+	default:
+		return false;
+	}
+
+	CommandListBindingState snapshot;
+	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, nullptr))
 		return false;
 
-	size_t writeIndex = 0;
-	for (size_t readIndex = 0; readIndex < bindings->size(); ++readIndex) {
-		DX12CurrentShaderResourceBinding &binding = (*bindings)[readIndex];
-		if (binding.shaderRegister != shaderRegister ||
-		    binding.registerSpace != registerSpace)
-			continue;
-		if (writeIndex != readIndex)
-			(*bindings)[writeIndex] = std::move(binding);
-		++writeIndex;
-	}
-	bindings->resize(writeIndex);
-
-	return !bindings->empty();
+	return DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindingsByRegister(
+		snapshot,
+		compute,
+		rangeType,
+		shaderRegister,
+		registerSpace,
+		descriptorKind,
+		rootDescriptorType,
+		bindings);
 }
 
 bool DX12BindingTracker::GetCurrentDescriptorHeaps(

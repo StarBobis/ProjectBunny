@@ -1329,6 +1329,32 @@ static void DX12RuntimeBumpBindingQuerySerial(DX12CommandListRuntimeState *state
 		++state->bindingQuerySerial;
 }
 
+static void DX12RuntimeBumpDescriptorQuerySerial(UINT64 *serial)
+{
+	if (!serial)
+		return;
+	if (*serial == UINT64_MAX)
+		*serial = 1;
+	else
+		++(*serial);
+}
+
+static void DX12RuntimeBumpGraphicsDescriptorQuerySerial(
+	DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	DX12RuntimeBumpDescriptorQuerySerial(&state->graphicsDescriptorQuerySerial);
+}
+
+static void DX12RuntimeBumpComputeDescriptorQuerySerial(
+	DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	DX12RuntimeBumpDescriptorQuerySerial(&state->computeDescriptorQuerySerial);
+}
+
 static void DX12RuntimeBumpComputeBindingSerial(DX12CommandListRuntimeState *state)
 {
 	if (!state)
@@ -1363,6 +1389,8 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 		&state->runtimeSamplerHeapResolved,
 		&state->runtimeSamplerHeap);
 	DX12RuntimeClearRootTables(state);
+	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
+	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
@@ -1406,6 +1434,7 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	}
 	state->computeRootTableValidCount = 0;
 	DX12RuntimeBumpComputeBindingSerial(state);
+	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
@@ -1425,6 +1454,7 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 		state->graphicsRootConstants[root] = RootConstantsState();
 	}
 	state->graphicsRootTableValidCount = 0;
+	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
@@ -1510,6 +1540,9 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 		state->computeBindingSerial++;
 		if (!state->computeBindingSerial)
 			state->computeBindingSerial = 1;
+		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	} else {
+		DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	}
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
@@ -1564,6 +1597,7 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
+	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
@@ -1620,6 +1654,7 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	descriptor.type = type;
 	descriptor.address = address;
 	DX12RuntimeBumpComputeBindingSerial(state);
+	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
