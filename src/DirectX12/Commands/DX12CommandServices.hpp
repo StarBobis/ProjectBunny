@@ -248,7 +248,7 @@ public:
 	{
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
-			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		if (needsResidentBinding) {
 			if (graphics) {
@@ -313,7 +313,7 @@ public:
 	{
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
-			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		if (needsResidentBinding) {
 			if (graphics) {
@@ -382,7 +382,7 @@ public:
 	{
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
-			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		if (needsResidentBinding) {
 			if (graphics) {

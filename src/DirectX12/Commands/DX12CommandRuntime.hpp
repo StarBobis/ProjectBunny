@@ -2067,6 +2067,18 @@ public:
 			FLAG_SHADER_DUMP_ACTIVE);
 	}
 
+	static bool NeedsGraphicsResidentRootValueState(UINT64 flags)
+	{
+		// DX11-style Mod matching for graphics texture replacement only needs the
+		// live descriptor heaps/tables/root signature. Mirroring graphics root
+		// descriptors and root constants on every API call is only required for
+		// capture/debug flows that inspect the full binding state.
+		return HasAnyFlag(
+			flags,
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
 	static bool NeedsComputeResidentDescriptorState(UINT64 flags)
 	{
 		return HasAnyFlag(
