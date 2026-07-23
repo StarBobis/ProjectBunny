@@ -1143,7 +1143,10 @@ public:
 		case Bunny::CommandListTargetKind::ConstantBuffer:
 		case Bunny::CommandListTargetKind::ShaderResource:
 		case Bunny::CommandListTargetKind::UnorderedAccessView:
-			targetPlan->RequireDescriptorTarget();
+			targetPlan->RequireDescriptorTarget(
+				static_cast<uint32_t>(target.kind),
+				static_cast<uint32_t>(target.stage),
+				target.slot);
 			break;
 		default:
 			targetPlan->RequireAll();
@@ -1157,7 +1160,8 @@ public:
 		std::unordered_set<std::wstring> *commandListStack,
 		DX12IaHashTargetPlan *targetPlan,
 		bool *textureOverrideTargetsCollected,
-		bool collectTextureOverrideTargets);
+		bool collectTextureOverrideTargets,
+		bool *hasDirectNonTextureEffect);
 
 	static void CollectActionsLocked(
 		const std::vector<Bunny::CommandListAction> &actions,
@@ -1165,7 +1169,8 @@ public:
 		std::unordered_set<std::wstring> *commandListStack,
 		DX12IaHashTargetPlan *targetPlan,
 		bool *textureOverrideTargetsCollected,
-		bool collectTextureOverrideTargets)
+		bool collectTextureOverrideTargets,
+		bool *hasDirectNonTextureEffect)
 	{
 		if (!targetPlan || depth > 16)
 			return;
@@ -1176,7 +1181,8 @@ public:
 				CollectCommandListLocked(
 					action.commandList, depth + 1, commandListStack,
 					targetPlan, textureOverrideTargetsCollected,
-					collectTextureOverrideTargets);
+					collectTextureOverrideTargets,
+					hasDirectNonTextureEffect);
 				break;
 			case Bunny::CommandListActionKind::CheckTextureOverride:
 				RequireTargetLocked(action.target, targetPlan);
@@ -1190,6 +1196,8 @@ public:
 				}
 				break;
 			default:
+				if (hasDirectNonTextureEffect)
+					*hasDirectNonTextureEffect = true;
 				break;
 			}
 		}
@@ -1202,7 +1210,8 @@ public:
 		std::unordered_set<std::wstring> *commandListStack,
 		DX12IaHashTargetPlan *targetPlan,
 		bool *textureOverrideTargetsCollected,
-		bool collectTextureOverrideTargets)
+		bool collectTextureOverrideTargets,
+		bool *hasDirectNonTextureEffect)
 	{
 		if (!targetPlan || depth > 16)
 			return;
@@ -1210,19 +1219,22 @@ public:
 		for (const std::wstring &name : links.pre) {
 			CollectCommandListLocked(
 				name, depth + 1, commandListStack, targetPlan,
-				textureOverrideTargetsCollected, collectTextureOverrideTargets);
+				textureOverrideTargetsCollected, collectTextureOverrideTargets,
+				hasDirectNonTextureEffect);
 		}
 		for (const std::wstring &name : links.main) {
 			CollectCommandListLocked(
 				name, depth + 1, commandListStack, targetPlan,
-				textureOverrideTargetsCollected, collectTextureOverrideTargets);
+				textureOverrideTargetsCollected, collectTextureOverrideTargets,
+				hasDirectNonTextureEffect);
 		}
 		if (!includePost)
 			return;
 		for (const std::wstring &name : links.post) {
 			CollectCommandListLocked(
 				name, depth + 1, commandListStack, targetPlan,
-				textureOverrideTargetsCollected, collectTextureOverrideTargets);
+				textureOverrideTargetsCollected, collectTextureOverrideTargets,
+				hasDirectNonTextureEffect);
 		}
 	}
 
@@ -1232,14 +1244,17 @@ public:
 		DX12IaHashTargetPlan *targetPlan,
 		bool *textureOverrideTargetsCollected,
 		bool collectTextureOverrideTargets,
-		bool includePostLinks)
+		bool includePostLinks,
+		bool *hasDirectNonTextureEffect)
 	{
 		CollectCommandListLinksLocked(
 			config.commandLists, includePostLinks, 0, commandListStack, targetPlan,
-			textureOverrideTargetsCollected, collectTextureOverrideTargets);
+			textureOverrideTargetsCollected, collectTextureOverrideTargets,
+			hasDirectNonTextureEffect);
 		CollectActionsLocked(
 			config.actions, 0, commandListStack, targetPlan,
-			textureOverrideTargetsCollected, collectTextureOverrideTargets);
+			textureOverrideTargetsCollected, collectTextureOverrideTargets,
+			hasDirectNonTextureEffect);
 	}
 
 	static void CollectAllTextureOverrideTargetsLocked(
@@ -1259,17 +1274,18 @@ public:
 				const Bunny::TextureOverrideConfig &config = configs[index];
 				CollectCommandListLinksLocked(
 					config.commandLists, true, 0, commandListStack,
-					targetPlan, textureOverrideTargetsCollected, false);
+					targetPlan, textureOverrideTargetsCollected, false, nullptr);
 				CollectActionsLocked(
 					config.actions, 0, commandListStack, targetPlan,
-					textureOverrideTargetsCollected, false);
+					textureOverrideTargetsCollected, false, nullptr);
 			}
 		}
 	}
 
 	static DX12IaHashTargetPlan BuildDrawPlanLocked(
 		const DX12ShaderOverridePsoMatchCache &cache,
-		bool collectTextureOverrideTargets)
+		bool collectTextureOverrideTargets,
+		bool *hasDirectNonTextureEffect = nullptr)
 	{
 		DX12IaHashTargetPlan targetPlan;
 		targetPlan.ResetKnown();
@@ -1283,14 +1299,16 @@ public:
 				*config, &commandListStack, &targetPlan,
 				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
 				collectTextureOverrideTargets,
-				false);
+				false,
+				hasDirectNonTextureEffect);
 		}
 		for (const Bunny::ShaderOverrideConfig &config : cache.regexDrawConfigs) {
 			CollectShaderOverrideConfigLocked(
 				config, &commandListStack, &targetPlan,
 				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
 				collectTextureOverrideTargets,
-				false);
+				false,
+				hasDirectNonTextureEffect);
 		}
 		return targetPlan;
 	}
@@ -1302,7 +1320,8 @@ inline void DX12ShaderOverrideIaTargetPlanUtils::CollectCommandListLocked(
 	std::unordered_set<std::wstring> *commandListStack,
 	DX12IaHashTargetPlan *targetPlan,
 	bool *textureOverrideTargetsCollected,
-	bool collectTextureOverrideTargets)
+	bool collectTextureOverrideTargets,
+	bool *hasDirectNonTextureEffect)
 {
 	if (!targetPlan || name.empty() || depth > 16)
 		return;
@@ -1318,7 +1337,8 @@ inline void DX12ShaderOverrideIaTargetPlanUtils::CollectCommandListLocked(
 	if (found != gCommandLists.end()) {
 		CollectActionsLocked(
 			found->second.actions, depth + 1, commandListStack, targetPlan,
-			textureOverrideTargetsCollected, collectTextureOverrideTargets);
+			textureOverrideTargetsCollected, collectTextureOverrideTargets,
+			hasDirectNonTextureEffect);
 	}
 
 	if (commandListStack)
@@ -1500,6 +1520,21 @@ static bool TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
 	return true;
 }
 
+static bool TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
+	ID3D12PipelineState *pipelineState,
+	bool *directTextureChecksOnly)
+{
+	if (!directTextureChecksOnly || !pipelineState)
+		return false;
+	std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache>::iterator cached =
+		gShaderOverridePsoMatchCache.find(pipelineState);
+	if (cached == gShaderOverridePsoMatchCache.end() ||
+	    cached->second.generation != gReloadGeneration)
+		return false;
+	*directTextureChecksOnly = cached->second.drawDirectTextureChecksOnly;
+	return true;
+}
+
 bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
 {
 	if (!pipelineState)
@@ -1553,8 +1588,13 @@ static void FindShaderOverridesForPsoLocked(
 			info.ps, info.psModel,
 			&matchCache.regexDrawConfigs, &regexSeen);
 	}
+	bool drawDirectHasNonTextureEffect = false;
 	matchCache.drawDirectTargetPlan =
-		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(matchCache, false);
+		DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(
+			matchCache,
+			false,
+			&drawDirectHasNonTextureEffect);
+	matchCache.drawDirectTextureChecksOnly = !drawDirectHasNonTextureEffect;
 	// Keep the draw-decision miss path focused on the first-step CTO targets.
 	// Nested TextureOverride CTOs are now executed by the compiled command-list op
 	// stream on actual matches, so globally unioning every reachable TO target
@@ -1616,6 +1656,7 @@ bool DX12ModCompileDrawDecision(
 	bool cached = false;
 	bool targetPlanResolved = false;
 	bool directTargetPlanResolved = false;
+	bool directTextureChecksOnly = false;
 
 	AcquireSRWLockShared(&gModLock);
 	cached = TryFindCachedShaderOverridesForPsoLocked(
@@ -1627,6 +1668,8 @@ bool DX12ModCompileDrawDecision(
 		directTargetPlanResolved =
 			TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
 				pipelineState, &directTargetPlan);
+		TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
+			pipelineState, &directTextureChecksOnly);
 	}
 	ReleaseSRWLockShared(&gModLock);
 
@@ -1642,6 +1685,8 @@ bool DX12ModCompileDrawDecision(
 			directTargetPlanResolved =
 				TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
 					pipelineState, &directTargetPlan);
+			TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
+				pipelineState, &directTextureChecksOnly);
 		}
 		ReleaseSRWLockExclusive(&gModLock);
 	}
@@ -1659,6 +1704,7 @@ bool DX12ModCompileDrawDecision(
 	decision->SetFromTargetPlan(
 		pipelineState, reloadGeneration, activeShaderOverrides,
 		shaderOverrides, shaderOverrideSkip, targetPlan, directTargetPlan,
+		directTextureChecksOnly,
 		descriptorTrackingNeeded);
 	return true;
 }
@@ -1726,7 +1772,50 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 				    nullptr)) {
 				return true;
 			}
+	}
+	return false;
+}
+
+bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
+	ID3D12GraphicsCommandList *commandList,
+	const DX12IaHashTargetPlan &targetPlan,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance)
+{
+	if (!commandList ||
+	    !targetPlan.hasTextureOverrideChecks ||
+	    !targetPlan.hasDescriptorTargets ||
+	    targetPlan.descriptorTargets.empty()) {
+		return false;
+	}
+
+	std::vector<DX12TextureOverrideMatch> matches;
+	for (const DX12IaHashTargetPlan::DescriptorTarget &descriptorTarget :
+	     targetPlan.descriptorTargets) {
+		Bunny::CommandListTarget target;
+		target.kind = static_cast<Bunny::CommandListTargetKind>(
+			descriptorTarget.kind);
+		target.stage = static_cast<Bunny::CommandListShaderStage>(
+			descriptorTarget.stage);
+		target.slot = descriptorTarget.slot;
+		if (FindDescriptorTextureOverrides(
+				commandList,
+				target,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance,
+				&matches)) {
+			return true;
 		}
+	}
+
 	return false;
 }
 

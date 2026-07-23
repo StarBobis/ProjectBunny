@@ -161,12 +161,21 @@ public:
 class DX12IaHashTargetPlan
 {
 public:
+	class DescriptorTarget
+	{
+	public:
+		uint32_t kind = 0;
+		uint32_t stage = 0;
+		uint32_t slot = 0;
+	};
+
 	bool requireAllIaBuffers = true;
 	bool requireIndexBuffer = false;
 	bool requireIndexBufferView = false;
 	bool requireVertexBuffers[32] = {};
 	bool hasDescriptorTargets = false;
 	bool hasTextureOverrideChecks = false;
+	std::vector<DescriptorTarget> descriptorTargets;
 
 	void ResetKnown()
 	{
@@ -175,6 +184,7 @@ public:
 		requireIndexBufferView = false;
 		hasDescriptorTargets = false;
 		hasTextureOverrideChecks = false;
+		descriptorTargets.clear();
 		for (UINT slot = 0; slot < 32; ++slot)
 			requireVertexBuffers[slot] = false;
 	}
@@ -184,6 +194,7 @@ public:
 		requireAllIaBuffers = true;
 		requireIndexBuffer = true;
 		requireIndexBufferView = true;
+		descriptorTargets.clear();
 		for (UINT slot = 0; slot < 32; ++slot)
 			requireVertexBuffers[slot] = true;
 	}
@@ -210,10 +221,24 @@ public:
 		requireVertexBuffers[slot] = true;
 	}
 
-	void RequireDescriptorTarget()
+	void RequireDescriptorTarget(
+		uint32_t kind,
+		uint32_t stage,
+		uint32_t slot)
 	{
 		hasDescriptorTargets = true;
 		hasTextureOverrideChecks = true;
+		for (const DescriptorTarget &target : descriptorTargets) {
+			if (target.kind == kind &&
+			    target.stage == stage &&
+			    target.slot == slot)
+				return;
+		}
+		DescriptorTarget target;
+		target.kind = kind;
+		target.stage = stage;
+		target.slot = slot;
+		descriptorTargets.push_back(target);
 	}
 
 	bool RequiresIndexBufferHash(bool indexed) const
@@ -297,6 +322,7 @@ public:
 	bool targetPlanHasIaTargets = false;
 	bool targetPlanHasDescriptorTargets = false;
 	bool directTargetPlanResolved = false;
+	bool directTextureChecksOnly = false;
 	bool negativeCacheSafe = false;
 	bool shaderOverrideNegativeCacheAllowed = false;
 	DX12IaHashTargetPlan targetPlan;
@@ -315,6 +341,7 @@ public:
 		targetPlanHasIaTargets = false;
 		targetPlanHasDescriptorTargets = false;
 		directTargetPlanResolved = false;
+		directTextureChecksOnly = false;
 		negativeCacheSafe = false;
 		shaderOverrideNegativeCacheAllowed = false;
 		targetPlan = DX12IaHashTargetPlan();
@@ -342,6 +369,7 @@ public:
 		bool shaderOverrideSkip,
 		const DX12IaHashTargetPlan &plan,
 		const DX12IaHashTargetPlan &directPlan,
+		bool directChecksOnly,
 		bool descriptorTrackingNeeded)
 	{
 		Reset();
@@ -357,6 +385,7 @@ public:
 		directTargetPlanResolved = true;
 		targetPlanHasIaTargets = targetPlan.HasIaTargets();
 		targetPlanHasDescriptorTargets = targetPlan.hasDescriptorTargets;
+		directTextureChecksOnly = directChecksOnly;
 		// Negative draw results are unsafe only when this PSO's own command
 		// lists can observe descriptor contents. A global descriptor-tracking
 		// need from another PSO should not disable IA-only draw miss caching.

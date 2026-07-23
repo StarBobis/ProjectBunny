@@ -310,6 +310,15 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	uint32_t firstVertex,
 	uint32_t firstIndex,
 	uint32_t firstInstance);
+bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
+	ID3D12GraphicsCommandList *commandList,
+	const DX12IaHashTargetPlan &targetPlan,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance);
 bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,

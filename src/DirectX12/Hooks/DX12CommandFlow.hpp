@@ -2561,6 +2561,8 @@ public:
 		bool reusedDirectIaState = false;
 		DX12DirectIaFastRejectCacheKey directFastRejectKey;
 		bool directFastRejectKeyValid = false;
+		bool directDescriptorCandidateKnown = false;
+		bool hasDirectDescriptorCandidate = false;
 		if (drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
@@ -2575,7 +2577,40 @@ public:
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
-		if (drawDecision->directTargetPlanResolved &&
+		if (drawDecision->directTextureChecksOnly &&
+		    drawDecision->directTargetPlanResolved &&
+		    directTargetPlan.hasDescriptorTargets &&
+		    !directTargetPlan.descriptorTargets.empty()) {
+			LARGE_INTEGER directDescriptorBegin =
+				DX12OuterTimingProbeUtils::Now();
+			hasDirectDescriptorCandidate =
+				DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
+					commandList,
+					directTargetPlan,
+					draw.vertexCount,
+					draw.indexCount,
+					draw.instanceCount,
+					draw.firstVertex,
+					draw.firstIndex,
+					draw.firstInstance);
+			directDescriptorCandidateKnown = true;
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				hasDirectDescriptorCandidate ?
+					"direct_descriptor_prefilter_positive" :
+					"direct_descriptor_prefilter_negative",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+			if (!directTargetPlan.HasIaTargets() &&
+			    !hasDirectDescriptorCandidate) {
+				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+		}
+		if (drawDecision->directTextureChecksOnly &&
+		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    directTargetPlan.HasIaTargets() &&
 		    !directTargetPlan.hasDescriptorTargets &&
@@ -2843,7 +2878,42 @@ public:
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
 				}
 		}
-			if (targetPlanHasIaTargets && !reusedDirectIaState) {
+		if (drawDecision->directTextureChecksOnly &&
+		    drawDecision->directTargetPlanResolved &&
+		    directTargetPlan.hasTextureOverrideChecks &&
+		    directTargetPlan.hasDescriptorTargets &&
+		    directTargetPlan.HasIaTargets() &&
+		    !directTargetPlan.requireAllIaBuffers &&
+		    directDescriptorCandidateKnown &&
+		    !hasDirectDescriptorCandidate) {
+			LARGE_INTEGER mixedPrefilterBegin =
+				DX12OuterTimingProbeUtils::Now();
+			const bool hasPotentialDirectIaCandidate =
+				DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
+					runtimeState.ia,
+					directTargetPlan,
+					draw.indexed,
+					draw.vertexCount,
+					draw.indexCount,
+					draw.instanceCount,
+					draw.firstVertex,
+					draw.firstIndex,
+					draw.firstInstance);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				hasPotentialDirectIaCandidate ?
+					"mixed_direct_prefilter_ia_positive" :
+					"mixed_direct_prefilter_ia_negative",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(mixedPrefilterBegin));
+			if (!hasPotentialDirectIaCandidate) {
+				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+		}
+		if (targetPlanHasIaTargets && !reusedDirectIaState) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
