@@ -1685,7 +1685,7 @@ void DX12CommandListLifecycle::Register(
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||
-	    DX12ModNeedsPreSkinningUavProbe()) {
+	    DX12ModNeedsPreSkinningBindingTracking()) {
 		const bool inserted = DX12BindingTracker::RegisterCommandList(commandList);
 		if (inserted)
 			DX12BindingTracker::ResetCommandList(commandList, initialState);
@@ -1712,7 +1712,7 @@ void DX12CommandListLifecycle::Reset(
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||
-	    DX12ModNeedsPreSkinningUavProbe())
+	    DX12ModNeedsPreSkinningBindingTracking())
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
 	if (tracking.trackPsoState)
 		DX12CommandListRuntime::RememberPipelineState(commandList, initialState);
@@ -1733,7 +1733,7 @@ void DX12CommandListLifecycle::ClearState(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "clear_state");
-	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
+	if (tracking.trackBindings || DX12ModNeedsPreSkinningBindingTracking())
 		DX12BindingTracker::ResetCommandList(commandList, pipelineState);
 	DX12CommandListRuntime::Reset(commandList, pipelineState);
 	if (DX12HuntIsEnabled())
@@ -1752,7 +1752,7 @@ void DX12CommandListLifecycle::InvalidateAfterExecuteBundle(
 	// later Mod never mirrors stale tables or matches stale IA/PSO state.
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.trackBindings || DX12ModNeedsPreSkinningUavProbe())
+	if (tracking.trackBindings || DX12ModNeedsPreSkinningBindingTracking())
 		DX12BindingTracker::ResetCommandList(commandList, nullptr);
 	DX12CommandListRuntime::Reset(commandList, nullptr);
 	if (tracking.trackPsoState || tracking.trackHuntIa)
@@ -1797,7 +1797,7 @@ bool DX12CommandListStateCapture::ShouldTrackBindings()
 	const bool frameCapture = DX12FrameAnalysis::IsCapturing();
 	const bool shaderDumpActive = DX12ShaderDumpIsBusy();
 	return frameCapture || shaderDumpActive ||
-		DX12ModNeedsPreSkinningUavProbe();
+		DX12ModNeedsPreSkinningBindingTracking();
 }
 
 bool DX12CommandListStateCapture::ShouldTrackIaBindings()
