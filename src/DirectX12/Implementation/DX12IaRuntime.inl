@@ -1459,13 +1459,17 @@ static bool DescriptorBindingMatchesTarget(
 
 static uint32_t HashDescriptorBinding(
 	ID3D12GraphicsCommandList *commandList,
+	ID3D12Device *cachedDevice,
 	const DX12CurrentShaderResourceBinding &binding)
 {
 	if (binding.hasDescriptor) {
-		ID3D12Device *device = AcquireModDevice(commandList);
+		ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
+		const bool deviceFromCache = (cachedDevice != nullptr);
+		if (!device)
+			return 0;
 		const uint32_t hash =
 			DX12TextureHashUtils::DescriptorHuntHash(device, binding);
-		if (device)
+		if (!deviceFromCache)
 			device->Release();
 		return hash;
 	}
@@ -1500,6 +1504,160 @@ static uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBin
 			binding.descriptor.resourceDesc.Height);
 	}
 	return 0;
+}
+
+class DX12DescriptorTextureOverrideCandidateCacheKey
+{
+public:
+	UINT64 reloadGeneration = 0;
+	const void *commandListIdentity = nullptr;
+	uint32_t targetKind = 0;
+	uint32_t shaderStage = 0;
+	uint32_t slot = 0;
+	UINT64 bindingFingerprint = 0;
+
+	bool operator==(const DX12DescriptorTextureOverrideCandidateCacheKey &other) const
+	{
+		return reloadGeneration == other.reloadGeneration &&
+			commandListIdentity == other.commandListIdentity &&
+			targetKind == other.targetKind &&
+			shaderStage == other.shaderStage &&
+			slot == other.slot &&
+			bindingFingerprint == other.bindingFingerprint;
+	}
+};
+
+class DX12DescriptorTextureOverrideCandidateCacheKeyHash
+{
+public:
+	size_t operator()(const DX12DescriptorTextureOverrideCandidateCacheKey &key) const
+	{
+		UINT64 hash = 0x7fb5d329728ea185ull;
+		hash = HashCombine64(hash, key.reloadGeneration);
+		hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(key.commandListIdentity));
+		hash = HashCombine64(hash, key.targetKind);
+		hash = HashCombine64(hash, key.shaderStage);
+		hash = HashCombine64(hash, key.slot);
+		hash = HashCombine64(hash, key.bindingFingerprint);
+		return static_cast<size_t>(hash ^ (hash >> 32));
+	}
+};
+
+static UINT64 HashDescriptorBindingCandidateFingerprint(
+	UINT64 hash,
+	const DX12CurrentShaderResourceBinding &binding,
+	uint32_t resourceHash)
+{
+	hash = HashCombine64(hash, binding.shaderVisibility);
+	hash = HashCombine64(hash, binding.rootParameterIndex);
+	hash = HashCombine64(hash, binding.shaderRegister);
+	hash = HashCombine64(hash, binding.registerSpace);
+	hash = HashCombine64(hash, binding.descriptorOffset);
+	hash = HashCombine64(hash, binding.descriptorIncrement);
+	hash = HashCombine64(hash, binding.tableCpuStart);
+	hash = HashCombine64(hash, binding.tableGpuStart.ptr);
+	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(binding.tableHeap));
+	hash = HashCombine64(hash, binding.rootDescriptor ? 1ull : 0ull);
+	hash = HashCombine64(hash, binding.gpuVirtualAddress);
+	hash = HashCombine64(hash, resourceHash);
+	if (!binding.hasDescriptor)
+		return hash;
+
+	const DX12DescriptorSummary &descriptor = binding.descriptor;
+	hash = HashCombine64(hash, descriptor.cpuHandle);
+	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(descriptor.resource));
+	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(descriptor.counterResource));
+	hash = HashCombine64(hash, descriptor.gpuVirtualAddress);
+	hash = HashCombine64(hash, descriptor.resourceOffset);
+	hash = HashCombine64(hash, descriptor.viewSize);
+	hash = HashCombine64(hash, descriptor.viewFormat);
+	hash = HashCombine64(hash, descriptor.viewDimension);
+	hash = HashCombine64(hash, descriptor.firstElement);
+	hash = HashCombine64(hash, descriptor.numElements);
+	hash = HashCombine64(hash, descriptor.structureByteStride);
+	hash = HashCombine64(hash, descriptor.bufferViewOffset);
+	hash = HashCombine64(hash, descriptor.bufferViewBytes);
+	for (char ch : descriptor.kind)
+		hash = HashCombine64(hash, static_cast<unsigned char>(ch));
+	return hash;
+}
+
+static void AppendTextureOverrideCandidateMatchesByHash(
+	const DX12CommandExecutionRuntimeSnapshot &snapshot,
+	uint32_t hash,
+	uint32_t resourceHash,
+	uint32_t descriptorHash,
+	const DX12CurrentShaderResourceBinding *binding,
+	bool compute,
+	std::vector<DX12TextureOverrideMatch> *matches)
+{
+	if (!hash || !matches)
+		return;
+	auto bucket = snapshot.textureOverridesByHash.find(hash);
+	if (bucket == snapshot.textureOverridesByHash.end())
+		return;
+
+	for (const DX12TriggeredTextureOverride &triggered : bucket->second) {
+		const Bunny::TextureOverrideConfig *config = triggered.config;
+		if (!config)
+			continue;
+		DX12TextureOverrideMatch match;
+		match.config = config;
+		match.preRuntimeEffect = triggered.preRuntimeEffect;
+		match.postRuntimeEffect = triggered.postRuntimeEffect;
+		match.matchedHash = hash;
+		match.resourceHash = resourceHash;
+		match.descriptorHash = descriptorHash;
+		if (binding) {
+			match.hasThisSrvTarget =
+				binding->hasDescriptor &&
+				binding->descriptor.kind == DescriptorKind::SRV &&
+				!binding->rootDescriptor;
+			match.compute = compute;
+			match.thisSrvBinding = *binding;
+		}
+		matches->push_back(match);
+	}
+}
+
+static bool FilterDescriptorTextureOverrideCandidates(
+	const std::vector<DX12TextureOverrideMatch> &candidates,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance,
+	std::vector<DX12TextureOverrideMatch> *matches)
+{
+	if (matches)
+		matches->clear();
+	if (candidates.empty())
+		return false;
+
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
+	bool found = false;
+	for (const DX12TextureOverrideMatch &candidate : candidates) {
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config)
+			continue;
+		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections))
+			continue;
+		if (!TextureOverrideMatchesDrawContext(
+				*config,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance))
+			continue;
+		if (matches)
+			matches->push_back(candidate);
+		found = true;
+	}
+	return found;
 }
 
 static bool FindTextureOverridesByHashLocked(
@@ -1663,6 +1821,9 @@ static bool FindDescriptorTextureOverrides(
 	if (!commandList)
 		return false;
 
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
 	std::vector<DX12CurrentShaderResourceBinding> bindings;
 	const bool compute = TargetStageIsCompute(target.stage);
 	if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
@@ -1674,11 +1835,67 @@ static bool FindDescriptorTextureOverrides(
 		    &bindings))
 		return false;
 
-	for (const DX12CurrentShaderResourceBinding &binding : bindings) {
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	static thread_local UINT64 tlsDescriptorCandidateCacheGeneration = 0;
+	static thread_local std::unordered_map<
+		DX12DescriptorTextureOverrideCandidateCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12DescriptorTextureOverrideCandidateCacheKeyHash> tlsDescriptorCandidateCache;
+	if (tlsDescriptorCandidateCacheGeneration != reloadGeneration) {
+		tlsDescriptorCandidateCache.clear();
+		tlsDescriptorCandidateCacheGeneration = reloadGeneration;
+	}
+
+	DX12DescriptorTextureOverrideCandidateCacheKey cacheKey = {};
+	cacheKey.reloadGeneration = reloadGeneration;
+	cacheKey.commandListIdentity =
+		runtimeState && runtimeState->commandListIdentity ?
+			runtimeState->commandListIdentity :
+			commandList;
+	cacheKey.targetKind = static_cast<uint32_t>(target.kind);
+	cacheKey.shaderStage = static_cast<uint32_t>(target.stage);
+	cacheKey.slot = target.slot;
+
+	std::vector<uint32_t> resourceHashes(bindings.size(), 0);
+	UINT64 bindingFingerprint = 0x9d2f6c71b3a5e4d1ull;
+	size_t relevantBindings = 0;
+	for (size_t index = 0; index < bindings.size(); ++index) {
+		const DX12CurrentShaderResourceBinding &binding = bindings[index];
 		if (!DescriptorBindingMatchesTarget(binding, target))
 			continue;
-		const uint32_t resourceHash = HashDescriptorBindingResource(binding);
-		const uint32_t descriptorHash = HashDescriptorBinding(commandList, binding);
+		resourceHashes[index] = HashDescriptorBindingResource(binding);
+		bindingFingerprint = HashDescriptorBindingCandidateFingerprint(
+			bindingFingerprint, binding, resourceHashes[index]);
+		++relevantBindings;
+	}
+	cacheKey.bindingFingerprint = HashCombine64(bindingFingerprint, relevantBindings);
+
+	auto cachedCandidates = tlsDescriptorCandidateCache.find(cacheKey);
+	if (cachedCandidates != tlsDescriptorCandidateCache.end()) {
+		return FilterDescriptorTextureOverrideCandidates(
+			cachedCandidates->second,
+			vertexCount,
+			indexCount,
+			instanceCount,
+			firstVertex,
+			firstIndex,
+			firstInstance,
+			matches);
+	}
+
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadTextureOverrideRuntimeSnapshot();
+	if (!snapshot)
+		return false;
+
+	std::vector<DX12TextureOverrideMatch> candidates;
+	for (size_t index = 0; index < bindings.size(); ++index) {
+		const DX12CurrentShaderResourceBinding &binding = bindings[index];
+		if (!DescriptorBindingMatchesTarget(binding, target))
+			continue;
+		const uint32_t resourceHash = resourceHashes[index];
+		const uint32_t descriptorHash =
+			HashDescriptorBinding(commandList, cachedDevice, binding);
 #if defined(_DEBUG)
 		DX12LogManager::Fields("DX12DrawSrvReplacement",
 			"stage=this_candidate,targetSlot=%u,bindSpace=%s,slot=%u,root=%u,offset=%u,resourceHash=%08x,descriptorHash=%08x,resource=0x%p,dimension=%u,resourceFormat=%u,viewFormat=%u,width=%llu,height=%u",
@@ -1696,18 +1913,39 @@ static bool FindDescriptorTextureOverrides(
 			binding.descriptor.hasResourceDesc ? static_cast<unsigned long long>(binding.descriptor.resourceDesc.Width) : 0ull,
 			binding.descriptor.hasResourceDesc ? binding.descriptor.resourceDesc.Height : 0);
 #endif
-		AppendTextureOverrideMatchesByHash(
-			resourceHash, resourceHash, descriptorHash, &binding, compute,
-			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance, matches);
+		AppendTextureOverrideCandidateMatchesByHash(
+			*snapshot,
+			resourceHash,
+			resourceHash,
+			descriptorHash,
+			&binding,
+			compute,
+			&candidates);
 		if (descriptorHash && descriptorHash != resourceHash) {
-			AppendTextureOverrideMatchesByHash(
-				descriptorHash, resourceHash, descriptorHash, &binding, compute,
-				vertexCount, indexCount, instanceCount,
-				firstVertex, firstIndex, firstInstance, matches);
+			AppendTextureOverrideCandidateMatchesByHash(
+				*snapshot,
+				descriptorHash,
+				resourceHash,
+				descriptorHash,
+				&binding,
+				compute,
+				&candidates);
 		}
 	}
-	return matches && !matches->empty();
+
+	if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+		tlsDescriptorCandidateCache.clear();
+	tlsDescriptorCandidateCache.emplace(cacheKey, candidates);
+
+	return FilterDescriptorTextureOverrideCandidates(
+		candidates,
+		vertexCount,
+		indexCount,
+		instanceCount,
+		firstVertex,
+		firstIndex,
+		firstInstance,
+		matches);
 }
 
 class DX12IaResourceViewSnapshot
