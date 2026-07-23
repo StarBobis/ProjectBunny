@@ -279,6 +279,7 @@ static void ClearPreSkinRuntimeState()
 			releaseBatch.descriptorHeaps.push_back(retired.heap);
 	}
 	gRetiredPreSkinDescriptorHeaps.clear();
+	InterlockedExchange(&gHasPendingPreSkinSubmissionWorkFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 
 	AcquireSRWLockExclusive(&gPreSkinDescriptorRingLock);

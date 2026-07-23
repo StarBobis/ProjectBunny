@@ -1339,6 +1339,18 @@ public:
 
 static SRWLOCK gPreSkinRetireLock = SRWLOCK_INIT;
 static std::unordered_map<IUnknown*, DX12PreSkinPendingSubmission> gPendingPreSkinSubmissions;
+static volatile LONG gHasPendingPreSkinSubmissionWorkFast = 0;
+
+static void PublishPendingPreSkinSubmissionWorkLocked()
+{
+	const bool hasWork =
+		!gPendingPreSkinSubmissions.empty() ||
+		!gRetiredPreSkinResources.empty() ||
+		!gRetiredPreSkinDescriptorHeaps.empty();
+	InterlockedExchange(
+		&gHasPendingPreSkinSubmissionWorkFast,
+		hasWork ? 1 : 0);
+}
 
 static void ReleasePreSkinDescriptorRestores(
 	std::vector<DX12PreSkinReplacementState::DescriptorRestore> *restores)
@@ -1435,11 +1447,10 @@ static IUnknown *PreSkinCommandListIdentity(IUnknown *commandList)
 {
 	if (!commandList)
 		return nullptr;
-	IUnknown *identity = nullptr;
-	if (FAILED(commandList->QueryInterface(IID_PPV_ARGS(&identity))) || !identity)
-		return commandList;
-	identity->Release();
-	return identity;
+	ID3D12GraphicsCommandList *baseList =
+		reinterpret_cast<ID3D12GraphicsCommandList*>(commandList);
+	IUnknown *identity = DX12CommandListRuntime::GetCommandListIdentity(baseList);
+	return identity ? identity : commandList;
 }
 
 static void RequeuePendingPreSkinSubmissionLocked(DX12PreSkinPendingSubmission *pending)
@@ -1457,6 +1468,7 @@ static void RetirePreSkinResource(ID3D12Resource *resource)
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
 	DX12DescriptorArenaUtils::AppendUniqueOwned(
 		&gPendingPreSkinSubmissions[nullptr].resources, resource);
+	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1469,6 +1481,7 @@ static void RetirePreSkinResourceForCommandList(
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
 	DX12DescriptorArenaUtils::AppendUniqueOwned(
 		&gPendingPreSkinSubmissions[identity].resources, resource);
+	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1488,6 +1501,7 @@ static void RetirePreSkinDescriptorHeap(ID3D12DescriptorHeap *heap)
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
 	DX12DescriptorArenaUtils::AppendUniqueOwned(
 		&gPendingPreSkinSubmissions[nullptr].descriptorHeaps, heap);
+	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1504,6 +1518,7 @@ static void RetainPreSkinDescriptorHeapForCommandList(
 		heap->AddRef();
 		heaps.push_back(heap);
 	}
+	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
@@ -1538,6 +1553,7 @@ void DX12ModNotifyCommandListsSubmitted(
 	}
 
 	if (pending.resources.empty() && pending.descriptorHeaps.empty()) {
+		PublishPendingPreSkinSubmissionWorkLocked();
 		ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 		ReleasePreSkinReleaseBatch(&releaseBatch);
 		return;
@@ -1555,6 +1571,7 @@ void DX12ModNotifyCommandListsSubmitted(
 			continue;
 		gRetiredPreSkinDescriptorHeaps.push_back({ heap, retirePresent });
 	}
+	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	DX12LogManager::DebugFields("DX12PreSkinRetireSubmit",
 		"present=%ld,queue=%p,commandLists=%u,resources=%zu,descriptorHeaps=%zu,delay=%ld",
@@ -1562,6 +1579,14 @@ void DX12ModNotifyCommandListsSubmitted(
 		pending.resources.size(), pending.descriptorHeaps.size(),
 		PreSkinRetiredObjectPresentDelay);
 	ReleasePreSkinReleaseBatch(&releaseBatch);
+}
+
+bool DX12ModNeedsCommandListSubmissionNotifications()
+{
+	return InterlockedCompareExchange(
+		&gHasPendingPreSkinSubmissionWorkFast,
+		0,
+		0) != 0;
 }
 static void ReleasePreSkinDescriptorRingLocked(DX12PreSkinReleaseBatch *releaseBatch)
 {

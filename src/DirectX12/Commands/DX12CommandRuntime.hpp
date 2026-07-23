@@ -1372,6 +1372,7 @@ class DX12CommandListRuntimeState
 {
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
+	IUnknown *commandListIdentity = nullptr;
 	// Wrapper-side object translation cache. These pointers are only compared;
 	// ownership remains with the application/wrapper objects.
 	ID3D12PipelineState *lastWrappedPipelineState = nullptr;
@@ -1478,6 +1479,7 @@ public:
 	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state);
 	static void UnregisterDirectState(ID3D12GraphicsCommandList *commandList);
 	static DX12CommandListRuntimeState *GetDirectStatePtr(ID3D12GraphicsCommandList *commandList);
+	static IUnknown *GetCommandListIdentity(ID3D12GraphicsCommandList *commandList);
 
 	static UINT64 TrackingGeneration();
 	static void BumpTrackingGeneration();

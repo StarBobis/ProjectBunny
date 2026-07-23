@@ -900,6 +900,11 @@ public:
 	{
 		if (!commandList)
 			return;
+		const bool huntEnabled = DX12HuntIsEnabled();
+		const bool captureActive =
+			DX12CaptureLedger::CurrentCaptureSessionId() != 0;
+		if (!huntEnabled && !captureActive)
+			return;
 
 		ID3D12GraphicsCommandList *baseList =
 			reinterpret_cast<ID3D12GraphicsCommandList*>(commandList);
@@ -909,9 +914,9 @@ public:
 			return;
 		(void)runtimeState;
 
-		if (DX12HuntIsEnabled())
+		if (huntEnabled)
 			DX12HuntPublishCommandList(baseList);
-		if (DX12CaptureLedger::CurrentCaptureSessionId() != 0)
+		if (captureActive)
 			DX12BindingTracker::SubmitCommandList(baseList);
 	}
 

@@ -543,12 +543,20 @@ void DX12CommandListHookCallbacks::RegisterSubmittedCommandList(IUnknown *comman
 {
 	if (!commandList)
 		return;
+	const bool huntEnabled = DX12HuntIsEnabled();
+	const bool captureActive =
+		DX12CaptureLedger::CurrentCaptureSessionId() != 0;
+	if (!huntEnabled && !captureActive)
+		return;
 
 	DX12CommandListHooks::HookCommandList(commandList);
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
 		DX12CommandListHookCallbacks::RegisterCommandListBase(baseList, nullptr);
-		DX12HuntPublishCommandList(baseList);
+		if (huntEnabled)
+			DX12HuntPublishCommandList(baseList);
+		if (captureActive)
+			DX12BindingTracker::SubmitCommandList(baseList);
 		baseList->Release();
 	}
 }

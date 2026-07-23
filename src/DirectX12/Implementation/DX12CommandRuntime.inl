@@ -22,7 +22,15 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	shard.directStates.erase(commandList);
+	auto it = shard.directStates.find(commandList);
+	if (it != shard.directStates.end()) {
+		DX12CommandListRuntimeState *state = it->second;
+		if (state && state->commandListIdentity) {
+			state->commandListIdentity->Release();
+			state->commandListIdentity = nullptr;
+		}
+		shard.directStates.erase(it);
+	}
 	ReleaseSRWLockExclusive(&shard.lock);
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
@@ -40,6 +48,63 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetDirectStatePtr(
 	DX12CommandListRuntimeState *state = it != shard.directStates.end() ? it->second : nullptr;
 	ReleaseSRWLockShared(&shard.lock);
 	return state;
+}
+
+IUnknown *DX12CommandListRuntime::GetCommandListIdentity(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return nullptr;
+
+	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	DX12CommandListRuntimeState *state = nullptr;
+	auto directIt = shard.directStates.find(commandList);
+	if (directIt != shard.directStates.end()) {
+		state = directIt->second;
+	} else {
+		auto it = shard.states.find(commandList);
+		if (it != shard.states.end())
+			state = &it->second;
+	}
+	if (state && state->commandListIdentity) {
+		IUnknown *identity = state->commandListIdentity;
+		ReleaseSRWLockShared(&shard.lock);
+		return identity;
+	}
+	ReleaseSRWLockShared(&shard.lock);
+
+	IUnknown *resolvedIdentity = nullptr;
+	if (FAILED(commandList->QueryInterface(IID_PPV_ARGS(&resolvedIdentity))) ||
+		!resolvedIdentity) {
+		return commandList;
+	}
+
+	IUnknown *borrowedIdentity = resolvedIdentity;
+	AcquireSRWLockExclusive(&shard.lock);
+	state = nullptr;
+	directIt = shard.directStates.find(commandList);
+	if (directIt != shard.directStates.end()) {
+		state = directIt->second;
+	} else {
+		auto it = shard.states.find(commandList);
+		if (it != shard.states.end())
+			state = &it->second;
+	}
+	if (state) {
+		if (!state->commandListIdentity) {
+			state->commandListIdentity = resolvedIdentity;
+			borrowedIdentity = resolvedIdentity;
+			resolvedIdentity = nullptr;
+		} else {
+			borrowedIdentity = state->commandListIdentity;
+		}
+	}
+	ReleaseSRWLockExclusive(&shard.lock);
+
+	if (resolvedIdentity)
+		resolvedIdentity->Release();
+	return borrowedIdentity;
 }
 
 DX12CommandListRuntimeShard &DX12CommandListRuntime::ShardFor(ID3D12GraphicsCommandList *commandList)
@@ -258,6 +323,10 @@ bool DX12CommandListRuntime::Unregister(ID3D12GraphicsCommandList *commandList)
 	AcquireSRWLockExclusive(&shard.lock);
 	auto it = shard.states.find(commandList);
 	if (it != shard.states.end()) {
+		if (it->second.commandListIdentity) {
+			it->second.commandListIdentity->Release();
+			it->second.commandListIdentity = nullptr;
+		}
 		shard.states.erase(it);
 		removed = true;
 	}
@@ -280,6 +349,7 @@ void DX12CommandListRuntime::Reset(
 		return;
 
 	ID3D12Device *cachedDevice = state->device;
+	IUnknown *cachedCommandListIdentity = state->commandListIdentity;
 	DX12CommandListTrackingCache oldCache = state->trackingCache;
 	// IA caches describe immutable content and candidate results rather than a
 	// single recording. Their keys already carry the required generations, so
@@ -289,6 +359,7 @@ void DX12CommandListRuntime::Reset(
 		std::move(state->resolvedDraw);
 	*state = DX12CommandListRuntimeState();
 	state->device = cachedDevice;
+	state->commandListIdentity = cachedCommandListIdentity;
 	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
 	state->resolvedDraw = std::move(persistentResolvedDraw);

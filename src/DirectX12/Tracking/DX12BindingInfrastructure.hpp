@@ -1211,6 +1211,11 @@ public:
 		// Refresh work flags so draw and dispatch use current state.
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12HotPathState::RebuildHookWorkFlags();
+		const bool shouldNotifySubmitted =
+			DX12ModNeedsCommandListSubmissionNotifications();
+		const bool shouldRegisterSubmitted =
+			DX12HuntIsEnabled() ||
+			DX12CaptureLedger::CurrentCaptureSessionId() != 0;
 		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
 			"rebuild_work_flags",
 			queue,
@@ -1243,8 +1248,15 @@ public:
 						queue, numCommandLists);
 	#endif
 			}
-			const bool shouldRegisterSubmitted =
-				DX12HuntIsEnabled() || DX12CaptureLedger::CurrentCaptureSessionId() != 0;
+			if (shouldNotifySubmitted) {
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
+				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+					"mod_notify_submitted_skip",
+					queue,
+					numCommandLists,
+					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+			}
 			if (shouldRegisterSubmitted) {
 				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
@@ -1322,22 +1334,26 @@ public:
 			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
-		DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"mod_notify_submitted",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DX12_HOTPATH_TIME_END(ExecuteCLNotify);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"register_submitted",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		if (shouldNotifySubmitted) {
+			DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
+			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
+			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+				"mod_notify_submitted",
+				queue,
+				numCommandLists,
+				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+			DX12_HOTPATH_TIME_END(ExecuteCLNotify);
+		}
+		if (shouldRegisterSubmitted) {
+			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
+			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
+				"register_submitted",
+				queue,
+				numCommandLists,
+				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		}
 #if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterNotify", queue, numCommandLists,
