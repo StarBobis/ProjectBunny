@@ -989,13 +989,25 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		return false;
 	*state = DX12IaHashState();
 	state->vertexBuffers.reserve(8);
-
-	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
-		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
+	(void)vertexCount;
+	(void)indexCount;
+	(void)firstVertex;
+	(void)firstIndex;
+	(void)baseVertex;
 
 	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
+		// DX11 resident mod matching keys CheckTextureOverride IB/VB tests by the
+		// bound buffer/view identity plus tracked content, then uses draw-context
+		// filters like match_first_index to narrow the match. Using the whole bound
+		// view here keeps the hash stable across repeated draws and avoids
+		// re-hashing a new draw subrange every call.
 		const uint32_t indexHash = targetPlan.RequiresIndexBufferHash(indexed) ?
-			DX12IaRegion::HashIndexBufferView(ia.indexBuffer, draw) : 0;
+			DX12HashIaBufferView(
+				ia.indexBuffer.BufferLocation,
+				ia.indexBuffer.SizeInBytes,
+				0,
+				static_cast<UINT>(ia.indexBuffer.Format),
+				0) : 0;
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
@@ -1007,7 +1019,12 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		if (!targetPlan.RequiresVertexBuffer(slot))
 			continue;
 		const uint32_t vertexHash =
-			DX12IaRegion::HashVertexBufferView(slot, ia.vertexBuffers[slot], draw);
+			DX12HashIaBufferView(
+				ia.vertexBuffers[slot].BufferLocation,
+				ia.vertexBuffers[slot].SizeInBytes,
+				ia.vertexBuffers[slot].StrideInBytes,
+				0,
+				slot);
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = vertexHash;
