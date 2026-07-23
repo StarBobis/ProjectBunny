@@ -299,6 +299,14 @@ void DX12CommandListRuntime::BumpTrackingGeneration()
 	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&TrackingGenerationValue));
 }
 
+void DX12ModRefreshRuntimeStateAfterReload()
+{
+	// Match DX11's immediate post-reload visibility: update hot-path gates and
+	// invalidate per-command-list tracking caches without waiting for Present.
+	DX12HotPathState::Update();
+	DX12CommandListRuntime::BumpTrackingGeneration();
+}
+
 void DX12ResolvedDrawRuntimeStateUtils::Clear(
 	DX12ResolvedDrawRuntimeState *state)
 {

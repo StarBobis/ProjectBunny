@@ -713,7 +713,7 @@ public:
 	static void RequestHuntResetSelection() { Request(DX12UiActionBits::HuntReset); }
 	static void RequestFrameAnalysis() { Request(DX12UiActionBits::FrameAnalysis); }
 	static void RequestShaderDump() { Request(DX12UiActionBits::ShaderDump); }
-	static void RequestModReload() { Request(DX12UiActionBits::ModReload); }
+	static void RequestModReload() { DX12Input::RequestModReload(); }
 	static void RequestProfilingToggle() { Request(DX12UiActionBits::Profiling); }
 
 	static bool Consume()

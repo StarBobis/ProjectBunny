@@ -194,6 +194,7 @@ public:
 		DX12LogManager::Fields("DX12ModRuntimeReload",
 			"\"status\":\"done_sync\",\"result\":\"%s\",\"elapsedMs\":%lu",
 			ok ? "ok" : "failed", elapsed);
+		DX12ModRefreshRuntimeStateAfterReload();
 		InterlockedExchange(&ReloadInProgress, 0);
 	}
 
@@ -206,11 +207,8 @@ public:
 		}
 
 		DX12OverlayStatusState::SetStatus(L"Reload running");
-		// DX11 applies config reload on the render thread during Present, so the
-		// new resident Mod state is visible on the very next frame. Running DX12
-		// reload asynchronously adds an extra Present-sized latency bubble before
-		// HotPathState is refreshed, which is what makes normal Mod mode feel
-		// ~200 ms late compared with DX11.
+		// Keep DX11-style semantics: the reload and resident runtime refresh happen
+		// as one operation instead of waiting for a later Present tick.
 		CompleteReload();
 	}
 };
