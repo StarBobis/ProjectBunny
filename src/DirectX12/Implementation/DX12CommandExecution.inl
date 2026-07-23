@@ -403,19 +403,13 @@ public:
 			}
 		}
 
-		const bool needsGraphicsSrvBindings = compiledPlanView ?
-			!compiledPlanView->drawSrvResources.empty() :
-			(!config->drawPsSrvResources.empty() ||
-			 !config->drawVsSrvResources.empty());
-		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvBindings =
-			needsGraphicsSrvBindings ? GetGraphicsSrvBindings() : nullptr;
 		const bool drawSrvChanged = compiledPlanView ?
 			DX12DrawSrvReplacementUtils::ApplyCompiledPlan(
 				mDevice, mCommandList, *compiledPlanView, &match, mReplacement,
-				graphicsSrvBindings) :
+				nullptr) :
 			DX12DrawSrvReplacementUtils::ApplyConfig(
 				mDevice, mCommandList, *config, &match, mReplacement,
-				graphicsSrvBindings);
+				nullptr);
 		if (drawSrvChanged)
 			MarkChanged();
 	}
