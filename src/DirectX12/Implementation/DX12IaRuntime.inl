@@ -999,6 +999,43 @@ static bool TextureOverrideMatchCsSatisfied(
 	return activePreSkinSections.find(config.section) != activePreSkinSections.end();
 }
 
+static bool TextureOverrideDependsOnActivePreSkin(
+	const Bunny::TextureOverrideConfig &config)
+{
+	return config.hasMatchCs || config.hasCsHash;
+}
+
+static const std::unordered_set<std::wstring> &EmptyActivePreSkinSections()
+{
+	static const std::unordered_set<std::wstring> empty;
+	return empty;
+}
+
+static bool IaCandidateIndexesDependOnActivePreSkin(
+	const std::vector<size_t> &candidateIndexes)
+{
+	for (size_t index : candidateIndexes) {
+		if (index >= gIaTextureOverrides.size())
+			continue;
+		const DX12IaTextureOverrideCandidate &candidate = gIaTextureOverrides[index];
+		if (candidate.config &&
+		    TextureOverrideDependsOnActivePreSkin(*candidate.config))
+			return true;
+	}
+	return false;
+}
+
+static bool IaTriggeredCandidatesDependOnActivePreSkin(
+	const std::vector<DX12TriggeredTextureOverride> &candidateTriggers)
+{
+	for (const DX12TriggeredTextureOverride &triggered : candidateTriggers) {
+		if (triggered.config &&
+		    TextureOverrideDependsOnActivePreSkin(*triggered.config))
+			return true;
+	}
+	return false;
+}
+
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
 	LARGE_INTEGER t0, t1;
@@ -1206,10 +1243,22 @@ static bool FindIaTextureOverridesCachedLocked(
 {
 	if (configs)
 		configs->clear();
+	const std::vector<size_t> *candidateIndexes =
+		FindIaTextureOverrideCandidatesLocked(hash, indexBuffer, vertexSlot);
+	const bool dependsOnActivePreSkin =
+		candidateIndexes &&
+		IaCandidateIndexesDependOnActivePreSkin(*candidateIndexes);
+	const UINT64 effectivePreSkinGeneration =
+		dependsOnActivePreSkin ? preSkinGeneration : 0;
+	const std::unordered_set<std::wstring> &effectiveActivePreSkinSections =
+		dependsOnActivePreSkin ?
+			activePreSkinSections :
+			EmptyActivePreSkinSections();
 	const DX12TextureOverrideLookupCacheKey key =
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance, preSkinGeneration);
+			firstVertex, firstIndex, firstInstance,
+			effectivePreSkinGeneration);
 	bool cachedMatched = false;
 	if (TryFindCachedIaTextureOverrideLocked(key, &cachedMatched, configs)) {
 #if defined(_DEBUG)
@@ -1220,9 +1269,6 @@ static bool FindIaTextureOverridesCachedLocked(
 #endif
 		return cachedMatched;
 	}
-
-	const std::vector<size_t> *candidateIndexes =
-		FindIaTextureOverrideCandidatesLocked(hash, indexBuffer, vertexSlot);
 	if (!candidateIndexes || candidateIndexes->empty()) {
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaOverrideLookup",
@@ -1250,7 +1296,8 @@ static bool FindIaTextureOverridesCachedLocked(
 		const Bunny::TextureOverrideConfig *config = candidate.config;
 		if (!config)
 			continue;
-		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections)) {
+		if (!TextureOverrideMatchCsSatisfied(
+				*config, effectiveActivePreSkinSections)) {
 			filteredByMatchCs++;
 			continue;
 		}
@@ -1310,9 +1357,15 @@ static bool FindIaTextureOverridesCached(
 		tlsIaTriggeredCacheGeneration = reloadGeneration;
 	}
 
+	const std::vector<DX12TriggeredTextureOverride> *candidateTriggers =
+		FindIaTriggeredTextureOverrideCandidates(
+			*snapshot, hash, indexBuffer, vertexSlot);
 	UINT64 preSkinGeneration = 0;
 	const std::unordered_set<std::wstring> &activePreSkinSections =
-		GetActivePreSkinSectionsSnapshot(&preSkinGeneration);
+		(candidateTriggers &&
+		 IaTriggeredCandidatesDependOnActivePreSkin(*candidateTriggers)) ?
+			GetActivePreSkinSectionsSnapshot(&preSkinGeneration) :
+			EmptyActivePreSkinSections();
 	const DX12TextureOverrideLookupCacheKey key =
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
@@ -1330,9 +1383,6 @@ static bool FindIaTextureOverridesCached(
 		return !cached->second.empty();
 	}
 
-	const std::vector<DX12TriggeredTextureOverride> *candidateTriggers =
-		FindIaTriggeredTextureOverrideCandidates(
-			*snapshot, hash, indexBuffer, vertexSlot);
 	if (!candidateTriggers || candidateTriggers->empty()) {
 		tlsIaTriggeredCache.emplace(key, std::vector<DX12TriggeredTextureOverride>());
 		return false;
