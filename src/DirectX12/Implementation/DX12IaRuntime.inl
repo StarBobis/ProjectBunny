@@ -1870,13 +1870,19 @@ static bool HasPotentialIaTextureOverrideCandidateLocked(
 	uint32_t instanceCount,
 	uint32_t firstVertex,
 	uint32_t firstIndex,
-	uint32_t firstInstance,
-	const std::unordered_set<std::wstring> &activePreSkinSections)
+	uint32_t firstInstance)
 {
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(indexBuffer, vertexSlot);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
+
+	const bool dependsOnActivePreSkin =
+		IaCandidateIndexesDependOnActivePreSkin(*candidateIndexes);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		dependsOnActivePreSkin ?
+			GetActivePreSkinSectionsSnapshot() :
+			EmptyActivePreSkinSections();
 
 	for (size_t index : *candidateIndexes) {
 		if (index >= gIaTextureOverrides.size())
@@ -2532,9 +2538,6 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 		return true;
 	}
 
-	const std::unordered_set<std::wstring> &activePreSkinSections =
-		GetActivePreSkinSectionsSnapshot();
-
 	if (targetPlan.RequiresIndexBuffer(indexed) &&
 	    ia.hasIndexBuffer &&
 	    HasPotentialIaTextureOverrideCandidateLocked(
@@ -2545,8 +2548,7 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 			instanceCount,
 			firstVertex,
 			firstIndex,
-			firstInstance,
-			activePreSkinSections)) {
+			firstInstance)) {
 		return true;
 	}
 
@@ -2561,8 +2563,7 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 				instanceCount,
 				firstVertex,
 				firstIndex,
-				firstInstance,
-				activePreSkinSections)) {
+				firstInstance)) {
 			return true;
 		}
 	}

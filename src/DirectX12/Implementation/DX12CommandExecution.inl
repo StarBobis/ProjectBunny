@@ -355,12 +355,6 @@ public:
 		const Bunny::TextureOverrideConfig *config = match.config;
 		if (!mReplacement || depth > 16 || !config)
 			return;
-		if (!includePost)
-			QueuePostTextureOverride(match);
-
-		const bool runPrePhase = includePost || match.preRuntimeEffect;
-		if (!runPrePhase)
-			return;
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
 			SnapshotCompiledTextureOverridePlan(*config);
@@ -368,15 +362,33 @@ public:
 			compiledPlan.get();
 		const bool compiledTextureOverride =
 			compiledPlanView && !compiledPlanView->hasUnsupportedCommandActions;
+		if (includePost) {
+			if (!match.postRuntimeEffect)
+				return;
+			if (compiledTextureOverride) {
+				if (compiledPlanView->hasPostCommandListPlan) {
+					ExecuteCompiledCommandListPlan(
+						compiledPlanView->postCommandListPlan, depth + 1, true);
+				}
+			} else {
+				for (const std::wstring &list : config->commandLists.post) {
+					Bunny::CommandListLinks links;
+					links.main.push_back(list);
+					RunCommandListLinks(links, depth + 1, true, &match);
+				}
+			}
+			return;
+		}
+
+		QueuePostTextureOverride(match);
+		if (!match.preRuntimeEffect)
+			return;
+
 		if (compiledTextureOverride) {
 			if (compiledPlanView->hasPreCommandListPlan)
 				ExecuteCompiledCommandListPlan(
 					compiledPlanView->preCommandListPlan, depth + 1, false);
 			RunCompiledTextureOverridePlan(*compiledPlanView, depth, includePost);
-			if (includePost && match.postRuntimeEffect &&
-			    compiledPlanView->hasPostCommandListPlan)
-				ExecuteCompiledCommandListPlan(
-					compiledPlanView->postCommandListPlan, depth + 1, true);
 		} else {
 			if (mExecuteCommands) {
 				for (const std::wstring &list : config->commandLists.pre) {
@@ -393,13 +405,6 @@ public:
 					RunCommandListLinks(links, depth + 1, false, &match);
 				}
 
-				if (includePost && match.postRuntimeEffect) {
-					for (const std::wstring &list : config->commandLists.post) {
-						Bunny::CommandListLinks links;
-						links.main.push_back(list);
-						RunCommandListLinks(links, depth + 1, true, &match);
-					}
-				}
 			}
 		}
 

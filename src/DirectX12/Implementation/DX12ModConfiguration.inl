@@ -1767,7 +1767,6 @@ bool DX12ModRuntimeLoad(
 		&compiledShaderOverridePlans);
 	bool hasIaResidentStateRequirements =
 		hasShaderIaTextureOverrideTriggers ||
-		CompiledTextureOverridePlansNeedResidentIaState(compiledTextureOverridePlans) ||
 		CompiledShaderOverridePlansNeedResidentIaState(compiledShaderOverridePlans);
 	commandExecutionRuntimeSnapshot = BuildDx12CommandExecutionRuntimeSnapshot(
 		commandLists,

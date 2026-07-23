@@ -2470,7 +2470,8 @@ UINT32 DX12ModGetHotPathFlags()
 			flags |= DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK;
 		}
 	}
-	if (gHasDrawSrvTextureReplacementOverrides != 0)
+	if (hasTextureOverrides &&
+	    gHasDrawSrvTextureReplacementOverrides != 0)
 		flags |= DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT;
 	if (gHasShaderDescriptorTextureOverrideTriggers != 0) {
 		flags |= DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK;
