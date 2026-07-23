@@ -2436,7 +2436,7 @@ void DX12RecordRootSignatureImmediate(
 
 void DX12PrimeDescriptorHistoryForHunting()
 {
-	if (!DX12RuntimeState::IsHuntingMode())
+	if (!DX12HuntNeedsHotPath())
 		return;
 
 	AcquireSRWLockExclusive(&gDescriptorLock);

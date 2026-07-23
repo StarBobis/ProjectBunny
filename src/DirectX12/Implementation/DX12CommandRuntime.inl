@@ -1988,7 +1988,7 @@ bool DX12CommandListStateCapture::ShouldTrackResourceStates()
 {
 	return DX12FrameAnalysis::IsCapturing() ||
 		DX12ShaderDumpIsBusy() ||
-		DX12RuntimeState::IsHuntingMode();
+		DX12HuntNeedsHotPath();
 }
 
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()

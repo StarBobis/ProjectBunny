@@ -202,6 +202,7 @@ bool DX12ModNeedsShaderDescriptorTracking();
 bool DX12ShaderDumpIsCaptureRequested();
 bool DX12ShaderDumpIsCapturingFrame();
 bool DX12ShaderDumpIsBusy();
+bool DX12HuntNeedsHotPath();
 
 class DX12ResourceTrackingPolicyUtils
 {
@@ -218,7 +219,7 @@ public:
 
 	static bool NeedsDumpOrHuntingTracking()
 	{
-		return DX12RuntimeState::IsHuntingMode() ||
+		return DX12HuntNeedsHotPath() ||
 			NeedsFrameDumpTracking() ||
 			NeedsShaderDumpTracking();
 	}
@@ -254,7 +255,7 @@ public:
 	{
 		return NeedsFrameDumpTracking() ||
 			NeedsShaderDumpTracking() ||
-			DX12RuntimeState::IsHuntingMode();
+			DX12HuntNeedsHotPath();
 	}
 };
 
