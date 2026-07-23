@@ -179,10 +179,10 @@ class DX12Input
 public:
 	inline static volatile LONG ReloadInProgress = 0;
 
-	static DWORD WINAPI ReloadThread(void*)
+	static void CompleteReload()
 	{
 		const DWORD start = GetTickCount();
-		DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"thread_begin\"");
+		DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"begin_sync\"");
 		const bool ok = DX12ModRuntimeReload();
 		const DWORD elapsed = GetTickCount() - start;
 		if (ok) {
@@ -192,10 +192,9 @@ public:
 			DX12OverlayStatusState::SetTemporary(status, 3000);
 		}
 		DX12LogManager::Fields("DX12ModRuntimeReload",
-			"\"status\":\"thread_done\",\"result\":\"%s\",\"elapsedMs\":%lu",
+			"\"status\":\"done_sync\",\"result\":\"%s\",\"elapsedMs\":%lu",
 			ok ? "ok" : "failed", elapsed);
 		InterlockedExchange(&ReloadInProgress, 0);
-		return 0;
 	}
 
 	static void RequestModReload()
@@ -207,15 +206,11 @@ public:
 		}
 
 		DX12OverlayStatusState::SetStatus(L"Reload running");
-		HANDLE thread = CreateThread(nullptr, 0, ReloadThread, nullptr, 0, nullptr);
-		if (thread) {
-			CloseHandle(thread);
-			return;
-		}
-
-		InterlockedExchange(&ReloadInProgress, 0);
-		DX12LogManager::Fields("DX12ModRuntimeReload",
-			"\"status\":\"failed\",\"reason\":\"create_thread\",\"error\":%lu", GetLastError());
-		DX12OverlayStatusState::SetError(L"Reload failed: cannot start thread");
+		// DX11 applies config reload on the render thread during Present, so the
+		// new resident Mod state is visible on the very next frame. Running DX12
+		// reload asynchronously adds an extra Present-sized latency bubble before
+		// HotPathState is refreshed, which is what makes normal Mod mode feel
+		// ~200 ms late compared with DX11.
+		CompleteReload();
 	}
 };
