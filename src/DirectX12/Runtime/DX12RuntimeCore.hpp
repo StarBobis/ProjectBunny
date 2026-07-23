@@ -87,6 +87,7 @@ class DX12RuntimeState
 public:
 	inline static HINSTANCE module = nullptr;
 	inline static volatile LONG presentCount = 0;
+	inline static volatile LONG drawCacheSceneSerial = 1;
 	inline static volatile LONG runtimeMode = static_cast<LONG>(DX12RuntimeMode::Mod);
 	inline static volatile LONG perFrameTotalDraws = 0;
 	inline static volatile LONG perFrameTotalDispatches = 0;
@@ -109,6 +110,16 @@ public:
 	static LONG GetPresentCount()
 	{
 		return InterlockedCompareExchange(&presentCount, 0, 0);
+	}
+
+	static LONG GetDrawCacheSceneSerial()
+	{
+		return InterlockedCompareExchange(&drawCacheSceneSerial, 0, 0);
+	}
+
+	static LONG BumpDrawCacheSceneSerial()
+	{
+		return InterlockedIncrement(&drawCacheSceneSerial);
 	}
 
 	static DX12RuntimeMode GetRuntimeMode()

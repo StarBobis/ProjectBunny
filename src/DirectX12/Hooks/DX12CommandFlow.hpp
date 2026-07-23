@@ -2225,7 +2225,23 @@ public:
 		DX12PsoDrawFastRejectKey,
 		DX12PsoDrawFastRejectKeyHash> s_psoDrawFastRejectCache;
 	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
+	inline static volatile LONG s_psoDrawFastRejectSceneSerial = 0;
 	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
+
+	static void EnsurePsoDrawFastRejectScene()
+	{
+		const LONG sceneSerial = DX12RuntimeState::GetDrawCacheSceneSerial();
+		if (InterlockedCompareExchange(
+				&s_psoDrawFastRejectSceneSerial, 0, 0) == sceneSerial)
+			return;
+		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		if (InterlockedCompareExchange(
+				&s_psoDrawFastRejectSceneSerial, 0, 0) != sceneSerial) {
+			s_psoDrawFastRejectCache.clear();
+			InterlockedExchange(&s_psoDrawFastRejectSceneSerial, sceneSerial);
+		}
+		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+	}
 
 	static bool TryLoadResolvedIaHashBuild(
 		DX12ResolvedDrawRuntimeState::CachedIaHashBuildEntry *entry,
@@ -2370,6 +2386,7 @@ public:
 
 	static bool TryFindPsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
+		EnsurePsoDrawFastRejectScene();
 		AcquireSRWLockShared(&s_psoDrawFastRejectCacheLock);
 		bool found = s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end();
 		ReleaseSRWLockShared(&s_psoDrawFastRejectCacheLock);
@@ -2398,6 +2415,7 @@ public:
 
 	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
+		EnsurePsoDrawFastRejectScene();
 		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
 		if (s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end()) {
 			ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
@@ -2494,6 +2512,8 @@ public:
 			 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		DX12CommandListRuntimeState *mutableRuntimeState =
 			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+		DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
+			&mutableRuntimeState->resolvedDraw);
 		// The runtime deliberately preserves this cache across command-list Reset.
 		// Using a second TLS cache here defeated that ownership model, mixed entries
 		// from unrelated command lists, and forced every draw through a much larger
@@ -2732,6 +2752,8 @@ public:
 							&mutableRuntimeState->resolvedDraw.directIaProbeCache,
 							directProbeCacheKey,
 							&hasDirectCandidate)) {
+						DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
+							&mutableRuntimeState->resolvedDraw, true);
 						DX12OuterTimingProbeUtils::LogCpuStage(
 							"IaReplacement",
 							hasDirectCandidate ?
@@ -2743,6 +2765,8 @@ public:
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheHit(
 							hasDirectCandidate);
 					} else {
+						DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
+							&mutableRuntimeState->resolvedDraw, false);
 						DX12OuterTimingProbeUtils::LogCpuStage(
 							"IaReplacement",
 							"direct_ia_probe_cache_miss",
@@ -2864,6 +2888,8 @@ public:
 					&hasIaHashState);
 			}
 			if (iaHashCacheHit) {
+				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
+					&mutableRuntimeState->resolvedDraw, true);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"ia_hash_cache_hit",
@@ -2880,6 +2906,8 @@ public:
 						*activeIaState);
 				}
 			} else {
+				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
+					&mutableRuntimeState->resolvedDraw, false);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"ia_hash_cache_miss",

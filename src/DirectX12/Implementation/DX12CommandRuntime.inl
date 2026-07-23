@@ -299,6 +299,75 @@ void DX12CommandListRuntime::BumpTrackingGeneration()
 	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&TrackingGenerationValue));
 }
 
+size_t DX12ResolvedDrawRuntimeStateUtils::ApproximateEntryCount(
+	const DX12ResolvedDrawRuntimeState &state)
+{
+	return state.iaHashStateCache.entries.size() +
+		state.directIaProbeCache.entries.size();
+}
+
+void DX12ResolvedDrawRuntimeStateUtils::Clear(
+	DX12ResolvedDrawRuntimeState *state)
+{
+	if (!state)
+		return;
+	DX12IaHashStateCacheUtils::Clear(&state->iaHashStateCache);
+	DX12DirectIaProbeCacheUtils::Clear(&state->directIaProbeCache);
+	state->iaHashKeyPrefixes = {};
+	state->lastDirectIaHashBuild = {};
+	state->lastFullIaHashBuild = {};
+	state->residentDrawNegativeCache = {};
+	state->presentCacheHits = 0;
+	state->presentCacheMisses = 0;
+	state->presentSceneReset = false;
+}
+
+void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
+	DX12ResolvedDrawRuntimeState *state)
+{
+	if (!state)
+		return;
+	const LONG sceneSerial = DX12RuntimeState::GetDrawCacheSceneSerial();
+	if (state->sceneSerial != sceneSerial) {
+		DX12ResolvedDrawRuntimeStateUtils::Clear(state);
+		state->sceneSerial = sceneSerial;
+	}
+	const LONG present = DX12RuntimeState::GetPresentCount();
+	if (state->presentObserved != present) {
+		state->presentObserved = present;
+		state->presentCacheHits = 0;
+		state->presentCacheMisses = 0;
+		state->presentSceneReset = false;
+	}
+}
+
+void DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
+	DX12ResolvedDrawRuntimeState *state,
+	bool hit)
+{
+	if (!state)
+		return;
+	DX12ResolvedDrawRuntimeStateUtils::EnsureScene(state);
+	if (hit) {
+		++state->presentCacheHits;
+		return;
+	}
+	++state->presentCacheMisses;
+	if (state->presentSceneReset)
+		return;
+	const size_t workingSet =
+		DX12ResolvedDrawRuntimeStateUtils::ApproximateEntryCount(*state);
+	if (state->presentCacheHits <= 2 &&
+			state->presentCacheMisses >= 64 &&
+			workingSet >= 4096) {
+		const LONG sceneSerial = DX12RuntimeState::BumpDrawCacheSceneSerial();
+		DX12ResolvedDrawRuntimeStateUtils::Clear(state);
+		state->sceneSerial = sceneSerial;
+		state->presentObserved = DX12RuntimeState::GetPresentCount();
+		state->presentSceneReset = true;
+	}
+}
+
 void DX12CommandListRuntime::Register(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)

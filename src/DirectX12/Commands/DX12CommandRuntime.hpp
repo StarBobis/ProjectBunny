@@ -918,6 +918,7 @@ public:
 		DX12DirectIaFastRejectCacheKey,
 		DX12DirectIaFastRejectCacheKeyHash> entries;
 	size_t growthBudget = 16384;
+	LONG sceneSerial = 0;
 	bool hasScope = false;
 	UINT64 scopeReloadGeneration = 0;
 };
@@ -1036,11 +1037,14 @@ private:
 		DX12DirectIaFastRejectCache *cache,
 		UINT64 reloadGeneration)
 	{
+		const LONG sceneSerial = DX12RuntimeState::GetDrawCacheSceneSerial();
 		if (cache->hasScope &&
-				cache->scopeReloadGeneration == reloadGeneration)
+				cache->scopeReloadGeneration == reloadGeneration &&
+				cache->sceneSerial == sceneSerial)
 			return;
 		cache->entries.clear();
 		cache->hasScope = true;
+		cache->sceneSerial = sceneSerial;
 		cache->scopeReloadGeneration = reloadGeneration;
 	}
 };
@@ -1349,6 +1353,23 @@ public:
 	// Small direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
 	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
+	LONG sceneSerial = 0;
+	LONG presentObserved = -1;
+	UINT presentCacheHits = 0;
+	UINT presentCacheMisses = 0;
+	bool presentSceneReset = false;
+};
+
+class DX12ResolvedDrawRuntimeStateUtils
+{
+public:
+	static size_t ApproximateEntryCount(
+		const DX12ResolvedDrawRuntimeState &state);
+	static void Clear(DX12ResolvedDrawRuntimeState *state);
+	static void EnsureScene(DX12ResolvedDrawRuntimeState *state);
+	static void NoteLookup(
+		DX12ResolvedDrawRuntimeState *state,
+		bool hit);
 };
 
 class DX12ResolvedComputeRuntimeState
