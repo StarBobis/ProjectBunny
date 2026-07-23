@@ -2159,6 +2159,7 @@ class DX12PsoDrawFastRejectKey
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	UINT64 iaFingerprint = 0;
 	uint32_t fingerprintKind = 0;
@@ -2175,6 +2176,7 @@ public:
 	{
 		return pipelineState == other.pipelineState &&
 			reloadGeneration == other.reloadGeneration &&
+			preSkinGeneration == other.preSkinGeneration &&
 			targetPlanFingerprint == other.targetPlanFingerprint &&
 			iaFingerprint == other.iaFingerprint &&
 			fingerprintKind == other.fingerprintKind &&
@@ -2203,6 +2205,7 @@ public:
 	{
 		size_t hash = reinterpret_cast<size_t>(key.pipelineState);
 		hash = Mix(hash, key.reloadGeneration);
+		hash = Mix(hash, key.preSkinGeneration);
 		hash = Mix(hash, key.targetPlanFingerprint);
 		hash = Mix(hash, key.iaFingerprint);
 		hash = Mix(hash, key.fingerprintKind);
@@ -2270,12 +2273,14 @@ public:
 		const DX12ResidentDrawNegativeEntry &entry,
 		const DX12CommandListRuntimeState &state,
 		const DX12CompiledDrawDecision &decision,
+		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
 		UINT64 resolveGeneration,
 		const DX12IaDrawInvocation &draw)
 	{
 		return entry.valid && entry.pipelineState == state.pipelineState &&
 			entry.reloadGeneration == decision.reloadGeneration &&
+			entry.preSkinGeneration == preSkinGeneration &&
 			entry.contentGeneration == contentGeneration &&
 			entry.resolveGeneration == resolveGeneration &&
 			entry.iaEpoch == state.iaEpoch &&
@@ -2289,6 +2294,7 @@ public:
 	static void StoreResidentNegative(
 		DX12CommandListRuntimeState *state,
 		const DX12CompiledDrawDecision &decision,
+		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
 		UINT64 resolveGeneration,
 		const DX12IaDrawInvocation &draw)
@@ -2297,6 +2303,7 @@ public:
 			state->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
 		entry.pipelineState = state->pipelineState;
 		entry.reloadGeneration = decision.reloadGeneration;
+		entry.preSkinGeneration = preSkinGeneration;
 		entry.contentGeneration = contentGeneration;
 		entry.resolveGeneration = resolveGeneration;
 		entry.iaEpoch = state->iaEpoch;
@@ -2319,6 +2326,7 @@ public:
 	static DX12PsoDrawFastRejectKey MakeDrawFastRejectKey(
 		ID3D12PipelineState *pipelineState,
 		UINT64 reloadGeneration,
+		UINT64 preSkinGeneration,
 		const DX12IaHashTargetPlan &targetPlan,
 		UINT64 iaFingerprint,
 		uint32_t fingerprintKind,
@@ -2327,6 +2335,7 @@ public:
 		DX12PsoDrawFastRejectKey key;
 		key.pipelineState = pipelineState;
 		key.reloadGeneration = reloadGeneration;
+		key.preSkinGeneration = preSkinGeneration;
 		key.targetPlanFingerprint = targetPlan.Fingerprint();
 		key.iaFingerprint = iaFingerprint;
 		key.fingerprintKind = fingerprintKind;
@@ -2344,6 +2353,7 @@ public:
 	static DX12PsoDrawFastRejectKey MakePsoIaNegativeKey(
 		ID3D12PipelineState *pipelineState,
 		UINT64 reloadGeneration,
+		UINT64 preSkinGeneration,
 		const DX12IaHashTargetPlan &targetPlan,
 		const DX12IaHashState &iaState,
 		const DX12IaDrawInvocation &draw)
@@ -2365,7 +2375,8 @@ public:
 			fingerprint = MixCheapValue(fingerprint, buffer.vertexView.StrideInBytes);
 		}
 		return MakeDrawFastRejectKey(
-			pipelineState, reloadGeneration, targetPlan, fingerprint, 1, draw);
+			pipelineState, reloadGeneration, preSkinGeneration,
+			targetPlan, fingerprint, 1, draw);
 	}
 
 	static bool TryFindPsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
@@ -2539,6 +2550,10 @@ public:
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		const bool shaderOverrideNegativeCacheAllowed =
 			drawDecision->shaderOverrideNegativeCacheAllowed;
+		// Match DX11's "current state changed, re-evaluate now" behavior:
+		// match_cs / active pre-skin can flip without IA mutations, so draw-level
+		// negative caches must incorporate that generation explicitly.
+		const UINT64 preSkinGeneration = DX12ModGetPreSkinActiveGenerationFast();
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
 		DX12IaHashState directIaState;
@@ -2573,13 +2588,15 @@ public:
 				DX12ResidentDrawNegativeEntry &residentNegative =
 					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
 				if (MatchesResidentNegative(residentNegative, *mutableRuntimeState,
-						*drawDecision, contentGeneration, resolveGeneration, draw)) {
+						*drawDecision, preSkinGeneration,
+						contentGeneration, resolveGeneration, draw)) {
 					DX12Profiling::RecordIaHashStateResult(false);
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
 				directFastRejectKey = DX12DirectIaFastRejectCacheUtils::MakeKey(
 					drawDecision->reloadGeneration,
+					preSkinGeneration,
 					contentGeneration,
 					resolveGeneration,
 				runtimeState.ia,
@@ -2625,6 +2642,7 @@ public:
 				StoreResidentNegative(
 					mutableRuntimeState,
 					*drawDecision,
+					preSkinGeneration,
 					contentGeneration,
 					resolveGeneration,
 					draw);
@@ -2717,6 +2735,7 @@ public:
 					const DX12DirectIaProbeCacheKey directProbeCacheKey =
 							DX12DirectIaProbeCacheUtils::MakeKey(
 								drawDecision->reloadGeneration,
+								preSkinGeneration,
 								directTargetPlan.Fingerprint(),
 								*directIaStateView,
 								draw);
@@ -2787,6 +2806,7 @@ public:
 
 					if (!hasDirectCandidate) {
 						StoreResidentNegative(mutableRuntimeState, *drawDecision,
+							preSkinGeneration,
 							contentGeneration, resolveGeneration, draw);
 						if (directFastRejectKeyValid) {
 							DX12DirectIaFastRejectCacheUtils::Store(
@@ -2845,6 +2865,7 @@ public:
 			psoPreFilterKey = DX12IaReplacementExecutor::MakeDrawFastRejectKey(
 				runtimeState.pipelineState,
 				drawDecision->reloadGeneration,
+				preSkinGeneration,
 				targetPlan,
 				iaCacheKey.iaViewFingerprint,
 				0,
@@ -2956,6 +2977,7 @@ public:
 				psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 					runtimeState.pipelineState,
 					drawDecision->reloadGeneration,
+					preSkinGeneration,
 					targetPlan,
 					*activeIaState,
 					draw);

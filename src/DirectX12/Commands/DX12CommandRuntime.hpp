@@ -549,6 +549,7 @@ class DX12DirectIaProbeCacheKey
 {
 public:
 	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	bool indexed = false;
 	bool hasIndexBuffer = false;
@@ -566,6 +567,7 @@ public:
 	bool operator==(const DX12DirectIaProbeCacheKey &other) const
 	{
 		return reloadGeneration == other.reloadGeneration &&
+			preSkinGeneration == other.preSkinGeneration &&
 			targetPlanFingerprint == other.targetPlanFingerprint &&
 			indexed == other.indexed &&
 			hasIndexBuffer == other.hasIndexBuffer &&
@@ -595,6 +597,7 @@ public:
 	{
 		size_t hash = 0x84222325a9582d75ull;
 		hash = Combine(hash, key.reloadGeneration);
+		hash = Combine(hash, key.preSkinGeneration);
 		hash = Combine(hash, key.targetPlanFingerprint);
 		hash = Combine(hash, key.indexed ? 1 : 0);
 		hash = Combine(hash, key.hasIndexBuffer ? 1 : 0);
@@ -693,12 +696,14 @@ class DX12DirectIaProbeCacheUtils
 public:
 	static DX12DirectIaProbeCacheKey MakeKey(
 		UINT64 reloadGeneration,
+		UINT64 preSkinGeneration,
 		UINT64 targetPlanFingerprint,
 		const DX12IaHashState &state,
 		const DX12IaDrawInvocation &draw)
 	{
 		DX12DirectIaProbeCacheKey key;
 		key.reloadGeneration = reloadGeneration;
+		key.preSkinGeneration = preSkinGeneration;
 		key.targetPlanFingerprint = targetPlanFingerprint;
 		key.indexed = draw.indexed;
 		key.hasIndexBuffer = state.hasIndexBuffer;
@@ -812,6 +817,7 @@ class DX12DirectIaFastRejectCacheKey
 {
 public:
 	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
 	UINT64 targetPlanFingerprint = 0;
 	UINT64 iaViewFingerprint = 0;
 	UINT64 contentGeneration = 0;
@@ -838,6 +844,7 @@ public:
 	bool operator==(const DX12DirectIaFastRejectCacheKey &other) const
 	{
 		if (reloadGeneration != other.reloadGeneration ||
+			preSkinGeneration != other.preSkinGeneration ||
 			targetPlanFingerprint != other.targetPlanFingerprint ||
 			iaViewFingerprint != other.iaViewFingerprint ||
 			contentGeneration != other.contentGeneration ||
@@ -888,6 +895,7 @@ public:
 	{
 		size_t hash = 0x84222325a9582d75ull;
 		hash = Mix(hash, key.reloadGeneration);
+		hash = Mix(hash, key.preSkinGeneration);
 		hash = Mix(hash, key.targetPlanFingerprint);
 		hash = Mix(hash, key.iaViewFingerprint);
 		hash = Mix(hash, key.contentGeneration);
@@ -952,6 +960,7 @@ public:
 
 	static DX12DirectIaFastRejectCacheKey MakeKey(
 		UINT64 reloadGeneration,
+		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
 		UINT64 resolveGeneration,
 		const DX12ActiveIaState &ia,
@@ -960,6 +969,7 @@ public:
 	{
 		DX12DirectIaFastRejectCacheKey key;
 		key.reloadGeneration = reloadGeneration;
+		key.preSkinGeneration = preSkinGeneration;
 		key.targetPlanFingerprint = targetPlan.Fingerprint();
 		key.contentGeneration = contentGeneration;
 		key.resolveGeneration = resolveGeneration;
@@ -1340,6 +1350,7 @@ class DX12ResidentDrawNegativeEntry
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
 	UINT64 contentGeneration = 0;
 	UINT64 resolveGeneration = 0;
 	UINT64 iaEpoch = 0;
