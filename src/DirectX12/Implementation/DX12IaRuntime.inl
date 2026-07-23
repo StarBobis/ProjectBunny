@@ -1411,6 +1411,145 @@ static bool FindIaTextureOverridesCached(
 	return !matchedTriggers.empty();
 }
 
+class DX12IaTargetTextureOverrideCacheKey
+
+{
+
+public:
+	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
+	uint32_t targetKind = 0;
+	uint32_t slot = 0;
+	uint32_t primaryHash = 0;
+	UINT64 bufferLocation = 0;
+	uint32_t bufferSize = 0;
+	uint32_t viewParam = 0;
+	uint32_t vertexCount = 0;
+	uint32_t indexCount = 0;
+	uint32_t instanceCount = 0;
+	uint32_t firstVertex = 0;
+	uint32_t firstIndex = 0;
+	uint32_t firstInstance = 0;
+
+	bool operator==(const DX12IaTargetTextureOverrideCacheKey &other) const
+	{
+		return reloadGeneration == other.reloadGeneration &&
+			preSkinGeneration == other.preSkinGeneration &&
+			targetKind == other.targetKind &&
+			slot == other.slot &&
+			primaryHash == other.primaryHash &&
+			bufferLocation == other.bufferLocation &&
+			bufferSize == other.bufferSize &&
+			viewParam == other.viewParam &&
+			vertexCount == other.vertexCount &&
+			indexCount == other.indexCount &&
+			instanceCount == other.instanceCount &&
+			firstVertex == other.firstVertex &&
+			firstIndex == other.firstIndex &&
+			firstInstance == other.firstInstance;
+	}
+};
+
+class DX12IaTargetTextureOverrideCacheKeyHash
+
+{
+
+public:
+	size_t operator()(const DX12IaTargetTextureOverrideCacheKey &key) const
+	{
+		UINT64 hash = 0x9f4f2726179a98c3ull;
+		hash = HashCombine64(hash, key.reloadGeneration);
+		hash = HashCombine64(hash, key.preSkinGeneration);
+		hash = HashCombine64(hash, key.targetKind);
+		hash = HashCombine64(hash, key.slot);
+		hash = HashCombine64(hash, key.primaryHash);
+		hash = HashCombine64(hash, key.bufferLocation);
+		hash = HashCombine64(hash, key.bufferSize);
+		hash = HashCombine64(hash, key.viewParam);
+		hash = HashCombine64(hash, key.vertexCount);
+		hash = HashCombine64(hash, key.indexCount);
+		hash = HashCombine64(hash, key.instanceCount);
+		hash = HashCombine64(hash, key.firstVertex);
+		hash = HashCombine64(hash, key.firstIndex);
+		hash = HashCombine64(hash, key.firstInstance);
+		return static_cast<size_t>(hash ^ (hash >> 32));
+	}
+};
+
+static DX12IaTargetTextureOverrideCacheKey MakeIaTargetTextureOverrideCacheKey(
+	const Bunny::CommandListTarget &target,
+	uint32_t primaryHash,
+	UINT64 bufferLocation,
+	uint32_t bufferSize,
+	uint32_t viewParam,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	uint32_t instanceCount,
+	uint32_t firstVertex,
+	uint32_t firstIndex,
+	uint32_t firstInstance)
+{
+	DX12IaTargetTextureOverrideCacheKey key = {};
+	key.reloadGeneration = DX12ModGetReloadGenerationFast();
+	key.preSkinGeneration = CurrentPreSkinActiveGeneration();
+	key.targetKind = static_cast<uint32_t>(target.kind);
+	key.slot = target.slot;
+	key.primaryHash = primaryHash;
+	key.bufferLocation = bufferLocation;
+	key.bufferSize = bufferSize;
+	key.viewParam = viewParam;
+	key.vertexCount = vertexCount;
+	key.indexCount = indexCount;
+	key.instanceCount = instanceCount;
+	key.firstVertex = firstVertex;
+	key.firstIndex = firstIndex;
+	key.firstInstance = firstInstance;
+	return key;
+}
+
+static bool TryLoadIaTargetTextureOverrideCache(
+	const DX12IaTargetTextureOverrideCacheKey &key,
+	std::vector<DX12TextureOverrideMatch> *matches)
+{
+	static thread_local UINT64 tlsReloadGeneration = 0;
+	static thread_local std::unordered_map<
+		DX12IaTargetTextureOverrideCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12IaTargetTextureOverrideCacheKeyHash> tlsCache;
+
+	if (tlsReloadGeneration != key.reloadGeneration) {
+		tlsCache.clear();
+		tlsReloadGeneration = key.reloadGeneration;
+	}
+
+	auto cached = tlsCache.find(key);
+	if (cached == tlsCache.end())
+		return false;
+	if (matches)
+		*matches = cached->second;
+	return !cached->second.empty();
+}
+
+static void StoreIaTargetTextureOverrideCache(
+	const DX12IaTargetTextureOverrideCacheKey &key,
+	const std::vector<DX12TextureOverrideMatch> &matches)
+{
+	static thread_local UINT64 tlsReloadGeneration = 0;
+	static thread_local std::unordered_map<
+		DX12IaTargetTextureOverrideCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12IaTargetTextureOverrideCacheKeyHash> tlsCache;
+
+	if (tlsReloadGeneration != key.reloadGeneration) {
+		tlsCache.clear();
+		tlsReloadGeneration = key.reloadGeneration;
+	}
+
+	if (tlsCache.size() >= MaxTextureOverrideLookupCacheEntries)
+		tlsCache.clear();
+	tlsCache[key] = matches;
+}
+
 static const DX12IaBufferHash *FindIaVertexSlot(const DX12IaHashState &iaState, uint32_t slot)
 {
 	for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
@@ -2218,6 +2357,23 @@ static bool FindTargetTextureOverride(
 #endif
 			return false;
 		}
+		const DX12IaTargetTextureOverrideCacheKey cacheKey =
+			MakeIaTargetTextureOverrideCacheKey(
+				target,
+				iaState.indexHash,
+				iaState.indexView.BufferLocation,
+				iaState.indexView.SizeInBytes,
+				static_cast<uint32_t>(iaState.indexView.Format),
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance);
+		if (TryLoadIaTargetTextureOverrideCache(cacheKey, matches))
+			return true;
+
+		std::vector<DX12TextureOverrideMatch> resolvedMatches;
 		std::vector<const Bunny::TextureOverrideConfig*> configs;
 		uint32_t matchedHash = iaState.indexHash;
 		bool found = FindIaTextureOverridesCached(
@@ -2243,7 +2399,7 @@ static bool FindTargetTextureOverride(
 					matchedHash = regionHash;
 			}
 		}
-		if (found && matches) {
+		if (found) {
 			for (const Bunny::TextureOverrideConfig *config : configs) {
 				if (!config)
 					continue;
@@ -2254,9 +2410,12 @@ static bool FindTargetTextureOverride(
 				match.postRuntimeEffect =
 					LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
 				match.matchedHash = matchedHash;
-				matches->push_back(match);
+				resolvedMatches.push_back(match);
 			}
 		}
+		StoreIaTargetTextureOverrideCache(cacheKey, resolvedMatches);
+		if (matches)
+			*matches = resolvedMatches;
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaOverrideCheck",
 			"\"target\":\"ib\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
@@ -2276,6 +2435,23 @@ static bool FindTargetTextureOverride(
 #endif
 		if (!slot || !slot->hash)
 			return false;
+		const DX12IaTargetTextureOverrideCacheKey cacheKey =
+			MakeIaTargetTextureOverrideCacheKey(
+				target,
+				slot->hash,
+				slot->vertexView.BufferLocation,
+				slot->vertexView.SizeInBytes,
+				slot->vertexView.StrideInBytes,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance);
+		if (TryLoadIaTargetTextureOverrideCache(cacheKey, matches))
+			return true;
+
+		std::vector<DX12TextureOverrideMatch> resolvedMatches;
 		std::vector<const Bunny::TextureOverrideConfig*> configs;
 		uint32_t matchedHash = slot->hash;
 		bool found = FindIaTextureOverridesCached(
@@ -2301,7 +2477,7 @@ static bool FindTargetTextureOverride(
 					matchedHash = regionHash;
 			}
 		}
-		if (found && matches) {
+		if (found) {
 			for (const Bunny::TextureOverrideConfig *config : configs) {
 				if (!config)
 					continue;
@@ -2312,9 +2488,12 @@ static bool FindTargetTextureOverride(
 				match.postRuntimeEffect =
 					LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
 				match.matchedHash = matchedHash;
-				matches->push_back(match);
+				resolvedMatches.push_back(match);
 			}
 		}
+		StoreIaTargetTextureOverrideCache(cacheKey, resolvedMatches);
+		if (matches)
+			*matches = resolvedMatches;
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaOverrideCheck",
 			"\"target\":\"vb%u\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
