@@ -549,6 +549,13 @@ public:
 
 static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTextureOverrides;
 static std::unordered_map<ID3D12Resource*, DX12ActivePreSkinOutputState> gActivePreSkinOutputStates;
+class DX12ActivePreSkinSectionSnapshotTlsCache
+{
+public:
+	UINT64 generation = 0;
+	std::unordered_set<std::wstring> sections;
+};
+
 static UINT64 CurrentPreSkinActiveGeneration()
 {
 	return static_cast<UINT64>(InterlockedCompareExchange64(
@@ -560,19 +567,35 @@ UINT64 DX12ModGetPreSkinActiveGenerationFast()
 	return CurrentPreSkinActiveGeneration();
 }
 
+static const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
+	UINT64 *generationOut = nullptr)
+{
+	static thread_local DX12ActivePreSkinSectionSnapshotTlsCache cache;
+	const UINT64 generation = CurrentPreSkinActiveGeneration();
+	if (generationOut)
+		*generationOut = generation;
+	if (cache.generation == generation)
+		return cache.sections;
+
+	cache.generation = generation;
+	cache.sections.clear();
+	if (InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0)
+		return cache.sections;
+
+	AcquireSRWLockShared(&gPreSkinLock);
+	cache.sections.reserve(gActivePreSkinTextureOverrides.size());
+	for (const auto &item : gActivePreSkinTextureOverrides)
+		cache.sections.insert(item.first);
+	ReleaseSRWLockShared(&gPreSkinLock);
+	return cache.sections;
+}
+
 static UINT64 SnapshotActivePreSkinSections(std::unordered_set<std::wstring> *sections)
 {
 	if (!sections)
 		return CurrentPreSkinActiveGeneration();
-	sections->clear();
 	const UINT64 generation = CurrentPreSkinActiveGeneration();
-	if (!DX12ModHasActivePreSkinTextureOverrides())
-		return generation;
-	AcquireSRWLockShared(&gPreSkinLock);
-	sections->reserve(gActivePreSkinTextureOverrides.size());
-	for (const auto &item : gActivePreSkinTextureOverrides)
-		sections->insert(item.first);
-	ReleaseSRWLockShared(&gPreSkinLock);
+	*sections = GetActivePreSkinSectionsSnapshot();
 	return generation;
 }
 

@@ -1310,9 +1310,9 @@ static bool FindIaTextureOverridesCached(
 		tlsIaTriggeredCacheGeneration = reloadGeneration;
 	}
 
-	std::unordered_set<std::wstring> activePreSkinSections;
-	const UINT64 preSkinGeneration =
-		SnapshotActivePreSkinSections(&activePreSkinSections);
+	UINT64 preSkinGeneration = 0;
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot(&preSkinGeneration);
 	const DX12TextureOverrideLookupCacheKey key =
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
@@ -1493,8 +1493,8 @@ static bool FindTextureOverridesByHash(
 		LoadTextureOverrideRuntimeSnapshot();
 	if (!snapshot)
 		return false;
-	std::unordered_set<std::wstring> activePreSkinSections;
-	SnapshotActivePreSkinSections(&activePreSkinSections);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
 	auto bucket = snapshot->textureOverridesByHash.find(hash);
 	if (bucket == snapshot->textureOverridesByHash.end())
 		return false;
@@ -2025,8 +2025,8 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 		return true;
 	}
 
-	std::unordered_set<std::wstring> activePreSkinSections;
-	SnapshotActivePreSkinSections(&activePreSkinSections);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
 
 	if (targetPlan.RequiresIndexBuffer(indexed) &&
 	    ia.hasIndexBuffer &&

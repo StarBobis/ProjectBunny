@@ -1878,9 +1878,9 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	bool explicitMatchCs = false;
 	bool hasExplicitDispatch = false;
 	bool vlrMatched = false;
-	std::unordered_set<std::wstring> activePreSkinSections;
 	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
-	SnapshotActivePreSkinSections(&activePreSkinSections);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"snapshot_active_sections",
@@ -2067,9 +2067,9 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 
 	DX12InternalReplayScope internalReplay;
 	bool applied = false;
-	std::unordered_set<std::wstring> activePreSkinSections;
 	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
-	SnapshotActivePreSkinSections(&activePreSkinSections);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"known_patch_active_sections",
@@ -2303,8 +2303,8 @@ bool DX12ModComputePreSkinMatchOnly(
 	bool explicitMatchCs = false;
 	bool hasExplicitDispatch = false;
 	bool vlrMatched = false;
-	std::unordered_set<std::wstring> activePreSkinSections;
-	SnapshotActivePreSkinSections(&activePreSkinSections);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		GetActivePreSkinSectionsSnapshot();
 
 	AcquireSRWLockExclusive(&gModLock);
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
@@ -2436,12 +2436,7 @@ bool DX12ModHasActivePreSkinTextureOverrides()
 {
 	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)
 		return false;
-
-	bool active = false;
-	AcquireSRWLockShared(&gPreSkinLock);
-	active = !gActivePreSkinTextureOverrides.empty();
-	ReleaseSRWLockShared(&gPreSkinLock);
-	return active;
+	return InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) != 0;
 }
 
 UINT32 DX12ModGetHotPathFlags()
