@@ -1807,6 +1807,14 @@ static void CopyShaderOverrideConfigs(
 	}
 }
 
+static DX12DrawMatchUsage BuildDrawMatchUsage(
+	const std::vector<const Bunny::ShaderOverrideConfig*> &configs)
+{
+	DX12DrawMatchUsage usage;
+	(void)configs;
+	return usage;
+}
+
 class DX12ShaderOverrideConfigView
 {
 public:
@@ -2351,19 +2359,20 @@ static DX12ShaderOverrideNegativeCacheKey MakeShaderOverrideNegativeCacheKey(
 	ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance)
+	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DX12DrawMatchUsage &usage)
 {
 	DX12ShaderOverrideNegativeCacheKey key = {};
 	key.reloadGeneration = static_cast<UINT64>(InterlockedCompareExchange64(
 		reinterpret_cast<volatile LONG64*>(&gShaderOverrideNegativeCacheGeneration), 0, 0));
 	key.preSkinGeneration = CurrentPreSkinActiveGeneration();
 	key.pipelineState = pipelineState;
-	key.vertexCount = vertexCount;
-	key.indexCount = indexCount;
-	key.instanceCount = instanceCount;
-	key.firstVertex = firstVertex;
-	key.firstIndex = firstIndex;
-	key.firstInstance = firstInstance;
+	key.vertexCount = usage.useVertexCount ? vertexCount : 0;
+	key.indexCount = usage.useIndexCount ? indexCount : 0;
+	key.instanceCount = usage.useInstanceCount ? instanceCount : 0;
+	key.firstVertex = usage.useFirstVertex ? firstVertex : 0;
+	key.firstIndex = usage.useFirstIndex ? firstIndex : 0;
+	key.firstInstance = usage.useFirstInstance ? firstInstance : 0;
 	key.hasIndexBuffer = iaState.hasIndexBuffer;
 	key.indexHash = iaState.hasIndexBuffer ? iaState.indexHash : 0;
 	if (iaState.hasIndexBuffer) {
@@ -2410,34 +2419,43 @@ static UINT64 HashShaderOverrideNegativeCacheKey(
 static bool TryFindShaderOverrideNegativeCache(
 	const DX12ShaderOverrideNegativeCacheKey &key)
 {
+	static thread_local UINT64 tlsGeneration = 0;
+	static thread_local std::unordered_map<
+		UINT64,
+		DX12ShaderOverrideNegativeCacheKey> tlsCache;
+	if (tlsGeneration != key.reloadGeneration) {
+		tlsCache.clear();
+		tlsGeneration = key.reloadGeneration;
+	}
 	const UINT64 hash = HashShaderOverrideNegativeCacheKey(key);
-	AcquireSRWLockShared(&gShaderOverrideNegativeCacheLock);
-	auto it = gShaderOverrideNegativeCache.find(hash);
-	const bool found = it != gShaderOverrideNegativeCache.end() &&
-		it->second == key;
-	ReleaseSRWLockShared(&gShaderOverrideNegativeCacheLock);
-	return found;
+	auto it = tlsCache.find(hash);
+	return it != tlsCache.end() && it->second == key;
 }
 
 static void StoreShaderOverrideNegativeCache(
 	const DX12ShaderOverrideNegativeCacheKey &key)
 {
-	const UINT64 hash = HashShaderOverrideNegativeCacheKey(key);
-	AcquireSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
-	auto existing = gShaderOverrideNegativeCache.find(hash);
-	if (existing == gShaderOverrideNegativeCache.end() &&
-	    gShaderOverrideNegativeCache.size() >= MaxShaderOverrideNegativeCacheEntries) {
-		gShaderOverrideNegativeCache.clear();
+	static thread_local UINT64 tlsGeneration = 0;
+	static thread_local std::unordered_map<
+		UINT64,
+		DX12ShaderOverrideNegativeCacheKey> tlsCache;
+	if (tlsGeneration != key.reloadGeneration) {
+		tlsCache.clear();
+		tlsGeneration = key.reloadGeneration;
 	}
-	gShaderOverrideNegativeCache[hash] = key;
-	ReleaseSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
+	const UINT64 hash = HashShaderOverrideNegativeCacheKey(key);
+	auto existing = tlsCache.find(hash);
+	if (existing == tlsCache.end() &&
+	    tlsCache.size() >= MaxShaderOverrideNegativeCacheEntries) {
+		tlsCache.clear();
+	}
+	tlsCache[hash] = key;
 }
 
 static void ClearShaderOverrideNegativeCache()
 {
-	AcquireSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
-	gShaderOverrideNegativeCache.clear();
-	ReleaseSRWLockExclusive(&gShaderOverrideNegativeCacheLock);
+	InterlockedIncrement64(
+		reinterpret_cast<volatile LONG64*>(&gShaderOverrideNegativeCacheGeneration));
 }
 
 static bool TryFindCachedShaderOverridesForPsoLocked(
@@ -2635,6 +2653,7 @@ bool DX12ModCompileDrawDecision(
 	bool targetPlanResolved = false;
 	bool directTargetPlanResolved = false;
 	bool directTextureChecksOnly = false;
+	DX12DrawMatchUsage drawMatchUsage;
 
 	AcquireSRWLockShared(&gModLock);
 	cached = TryFindCachedShaderOverridesForPsoLocked(
@@ -2670,6 +2689,7 @@ bool DX12ModCompileDrawDecision(
 	}
 
 	const bool shaderOverrides = cached ? !configs.empty() : true;
+	drawMatchUsage = BuildDrawMatchUsage(configs);
 	if (!targetPlanResolved)
 		targetPlan.RequireAll();
 	if (!directTargetPlanResolved)
@@ -2682,6 +2702,7 @@ bool DX12ModCompileDrawDecision(
 	decision->SetFromTargetPlan(
 		pipelineState, reloadGeneration, activeShaderOverrides,
 		shaderOverrides, shaderOverrideSkip, targetPlan, directTargetPlan,
+		drawMatchUsage, drawMatchUsage,
 		directTextureChecksOnly,
 		descriptorTrackingNeeded);
 	return true;
@@ -2845,6 +2866,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
+	const DX12DrawMatchUsage &drawMatchUsage,
 	DX12ModIaReplacement *replacement,
 	bool allowDescriptorIndependentNegativeCache,
 	ID3D12Device *cachedDevice,
@@ -2871,7 +2893,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		negativeCacheKey = MakeShaderOverrideNegativeCacheKey(
 			pipelineState, iaState,
 			vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance);
+			firstVertex, firstIndex, firstInstance,
+			drawMatchUsage);
 		if (TryFindShaderOverrideNegativeCache(negativeCacheKey)) {
 #if defined(_DEBUG)
 			if (AllowShaderOverrideHotPathLog(&gShaderOverrideNegativeCacheHitLogCount)) {

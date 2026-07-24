@@ -31,6 +31,27 @@ public:
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
+class DX12DrawMatchUsage
+{
+public:
+	bool useVertexCount = false;
+	bool useIndexCount = false;
+	bool useInstanceCount = false;
+	bool useFirstVertex = false;
+	bool useFirstIndex = false;
+	bool useFirstInstance = false;
+
+	void RequireAll()
+	{
+		useVertexCount = true;
+		useIndexCount = true;
+		useInstanceCount = true;
+		useFirstVertex = true;
+		useFirstIndex = true;
+		useFirstInstance = true;
+	}
+};
+
 
 enum class DX12CompiledDispatchDecisionKind : uint32_t
 {
@@ -339,6 +360,8 @@ public:
 	bool shaderOverrideNegativeCacheAllowed = false;
 	DX12IaHashTargetPlan targetPlan;
 	DX12IaHashTargetPlan directTargetPlan;
+	DX12DrawMatchUsage targetDrawMatchUsage;
+	DX12DrawMatchUsage directTargetDrawMatchUsage;
 	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
 	bool staticReplacementReady = false;
 
@@ -360,6 +383,8 @@ public:
 		shaderOverrideNegativeCacheAllowed = false;
 		targetPlan = DX12IaHashTargetPlan();
 		directTargetPlan = DX12IaHashTargetPlan();
+		targetDrawMatchUsage = DX12DrawMatchUsage();
+		directTargetDrawMatchUsage = DX12DrawMatchUsage();
 		staticReplacementSnapshot.reset();
 		staticReplacementReady = false;
 	}
@@ -385,6 +410,8 @@ public:
 		bool shaderOverrideSkip,
 		const DX12IaHashTargetPlan &plan,
 		const DX12IaHashTargetPlan &directPlan,
+		const DX12DrawMatchUsage &drawMatchUsage,
+		const DX12DrawMatchUsage &directDrawMatchUsage,
 		bool directChecksOnly,
 		bool descriptorTrackingNeeded)
 	{
@@ -397,6 +424,8 @@ public:
 		hasShaderOverrideSkip = shaderOverrideSkip;
 		targetPlan = plan;
 		directTargetPlan = directPlan;
+		targetDrawMatchUsage = drawMatchUsage;
+		directTargetDrawMatchUsage = directDrawMatchUsage;
 		targetPlanResolved = true;
 		directTargetPlanResolved = true;
 		targetPlanHasIaTargets = targetPlan.HasIaTargets();

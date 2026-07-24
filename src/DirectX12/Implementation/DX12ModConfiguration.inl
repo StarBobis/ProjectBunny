@@ -626,9 +626,13 @@ static void BuildDx12IaTextureOverrideIndex(
 	std::unordered_map<uint32_t, std::vector<size_t>> *anyVertexTextureOverrideIndex,
 	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverrideIndex,
 	std::vector<size_t> *indexTextureOverridePrefilterIndex,
+	std::unordered_map<uint32_t, std::vector<size_t>> *indexTextureOverridePrefilterByIndexCount,
 	std::unordered_map<uint32_t, std::vector<size_t>> *vertexTextureOverridePrefilterIndex,
 	std::vector<size_t> *anyVertexTextureOverridePrefilterIndex,
-	std::unordered_map<uint32_t, std::vector<size_t>> *mergedVertexTextureOverridePrefilterIndex);
+	std::unordered_map<uint32_t, std::vector<size_t>> *anyVertexTextureOverridePrefilterByVertexCount,
+	std::unordered_map<uint32_t, std::vector<size_t>> *mergedVertexTextureOverridePrefilterIndex,
+	std::unordered_map<UINT64, std::vector<size_t>> *vertexTextureOverridePrefilterByVertexCount,
+	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverridePrefilterByVertexCount);
 static void BuildDx12CompiledTextureOverridePlans(
 	const Bunny::TextureOverrideMap &textureOverrides,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
@@ -1648,9 +1652,13 @@ bool DX12ModRuntimeLoad(
 	std::unordered_map<uint32_t, std::vector<size_t>> iaAnyVertexTextureOverrideIndex;
 	std::unordered_map<UINT64, std::vector<size_t>> iaMergedVertexTextureOverrideIndex;
 	std::vector<size_t> iaIndexTextureOverridePrefilterIndex;
+	std::unordered_map<uint32_t, std::vector<size_t>> iaIndexTextureOverridePrefilterByIndexCount;
 	std::unordered_map<uint32_t, std::vector<size_t>> iaVertexTextureOverridePrefilterIndex;
 	std::vector<size_t> iaAnyVertexTextureOverridePrefilterIndex;
 	std::unordered_map<uint32_t, std::vector<size_t>> iaMergedVertexTextureOverridePrefilterIndex;
+	std::unordered_map<uint32_t, std::vector<size_t>> iaAnyVertexTextureOverridePrefilterByVertexCount;
+	std::unordered_map<UINT64, std::vector<size_t>> iaVertexTextureOverridePrefilterByVertexCount;
+	std::unordered_map<UINT64, std::vector<size_t>> iaMergedVertexTextureOverridePrefilterByVertexCount;
 	std::vector<DX12PreSkinTextureOverrideCandidate> preSkinTextureOverrides;
 	std::unordered_map<uint32_t, std::vector<size_t>> preSkinUavHashTextureOverrideIndex;
 	std::unordered_map<uint64_t, std::vector<size_t>> preSkinMatchCsTextureOverrideIndex;
@@ -1763,9 +1771,13 @@ bool DX12ModRuntimeLoad(
 		&iaAnyVertexTextureOverrideIndex,
 		&iaMergedVertexTextureOverrideIndex,
 		&iaIndexTextureOverridePrefilterIndex,
+		&iaIndexTextureOverridePrefilterByIndexCount,
 		&iaVertexTextureOverridePrefilterIndex,
 		&iaAnyVertexTextureOverridePrefilterIndex,
-		&iaMergedVertexTextureOverridePrefilterIndex);
+		&iaAnyVertexTextureOverridePrefilterByVertexCount,
+		&iaMergedVertexTextureOverridePrefilterIndex,
+		&iaVertexTextureOverridePrefilterByVertexCount,
+		&iaMergedVertexTextureOverridePrefilterByVertexCount);
 	BuildDx12CompiledCommandListPlans(
 		commandLists, &compiledCommandListPlans);
 	BuildDx12CompiledTextureOverridePlans(
@@ -1822,9 +1834,17 @@ bool DX12ModRuntimeLoad(
 	gIaAnyVertexTextureOverrideIndex.swap(iaAnyVertexTextureOverrideIndex);
 	gIaMergedVertexTextureOverrideIndex.swap(iaMergedVertexTextureOverrideIndex);
 	gIaIndexTextureOverridePrefilterIndex.swap(iaIndexTextureOverridePrefilterIndex);
+	gIaIndexTextureOverridePrefilterByIndexCount.swap(
+		iaIndexTextureOverridePrefilterByIndexCount);
 	gIaVertexTextureOverridePrefilterIndex.swap(iaVertexTextureOverridePrefilterIndex);
 	gIaAnyVertexTextureOverridePrefilterIndex.swap(iaAnyVertexTextureOverridePrefilterIndex);
+	gIaAnyVertexTextureOverridePrefilterByVertexCount.swap(
+		iaAnyVertexTextureOverridePrefilterByVertexCount);
 	gIaMergedVertexTextureOverridePrefilterIndex.swap(iaMergedVertexTextureOverridePrefilterIndex);
+	gIaVertexTextureOverridePrefilterByVertexCount.swap(
+		iaVertexTextureOverridePrefilterByVertexCount);
+	gIaMergedVertexTextureOverridePrefilterByVertexCount.swap(
+		iaMergedVertexTextureOverridePrefilterByVertexCount);
 	gTextureOverrideLookupCache.clear();
 	gIaTextureOverrideHashNoCandidates.clear();
 	DX12ModClearIaReplacementRuntimeCaches();

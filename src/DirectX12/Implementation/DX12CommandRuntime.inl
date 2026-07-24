@@ -552,7 +552,7 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 			pipelineState, reloadGeneration,
 			hasShaderOverrides, hasShaderOverrides, false,
 			targetPlan,
-			targetPlan, false,
+			targetPlan, DX12DrawMatchUsage(), DX12DrawMatchUsage(), false,
 			DX12ModNeedsShaderDescriptorTracking());
 	}
 	decision.staticReplacementSnapshot =

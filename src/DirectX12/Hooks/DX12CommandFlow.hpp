@@ -2301,6 +2301,48 @@ public:
 		return static_cast<size_t>((key ^ (key >> 32)) & 15);
 	}
 
+	static UINT CanonicalVertexCount(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useVertexCount ? draw.vertexCount : 0;
+	}
+
+	static UINT CanonicalIndexCount(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useIndexCount ? draw.indexCount : 0;
+	}
+
+	static UINT CanonicalInstanceCount(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useInstanceCount ? draw.instanceCount : 0;
+	}
+
+	static UINT CanonicalFirstVertex(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useFirstVertex ? draw.firstVertex : 0;
+	}
+
+	static UINT CanonicalFirstIndex(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useFirstIndex ? draw.firstIndex : 0;
+	}
+
+	static UINT CanonicalFirstInstance(
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
+	{
+		return usage.useFirstInstance ? draw.firstInstance : 0;
+	}
+
 	static bool MatchesResidentNegative(
 		const DX12ResidentDrawNegativeEntry &entry,
 		const DX12CommandListRuntimeState &state,
@@ -2312,6 +2354,7 @@ public:
 		UINT64 descriptorQuerySerial,
 		const DX12IaDrawInvocation &draw)
 	{
+		const DX12DrawMatchUsage &usage = decision.directTargetDrawMatchUsage;
 		return entry.valid && entry.pipelineState == state.pipelineState &&
 			entry.reloadGeneration == decision.reloadGeneration &&
 			entry.preSkinGeneration == preSkinGeneration &&
@@ -2321,10 +2364,14 @@ public:
 			entry.graphicsDescriptorQuerySerial == graphicsDescriptorQuerySerial &&
 			entry.descriptorQuerySerial == descriptorQuerySerial &&
 			entry.targetPlanFingerprint == decision.directTargetPlan.Fingerprint() &&
-			entry.indexed == draw.indexed && entry.vertexCount == draw.vertexCount &&
-			entry.indexCount == draw.indexCount && entry.instanceCount == draw.instanceCount &&
-			entry.firstVertex == draw.firstVertex && entry.firstIndex == draw.firstIndex &&
-			entry.baseVertex == draw.baseVertex && entry.firstInstance == draw.firstInstance;
+			entry.indexed == draw.indexed &&
+			entry.vertexCount == CanonicalVertexCount(draw, usage) &&
+			entry.indexCount == CanonicalIndexCount(draw, usage) &&
+			entry.instanceCount == CanonicalInstanceCount(draw, usage) &&
+			entry.firstVertex == CanonicalFirstVertex(draw, usage) &&
+			entry.firstIndex == CanonicalFirstIndex(draw, usage) &&
+			entry.baseVertex == draw.baseVertex &&
+			entry.firstInstance == CanonicalFirstInstance(draw, usage);
 	}
 
 	static void StoreResidentNegative(
@@ -2339,6 +2386,7 @@ public:
 	{
 		DX12ResidentDrawNegativeEntry &entry =
 			state->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+		const DX12DrawMatchUsage &usage = decision.directTargetDrawMatchUsage;
 		entry.pipelineState = state->pipelineState;
 		entry.reloadGeneration = decision.reloadGeneration;
 		entry.preSkinGeneration = preSkinGeneration;
@@ -2348,10 +2396,14 @@ public:
 		entry.graphicsDescriptorQuerySerial = graphicsDescriptorQuerySerial;
 		entry.descriptorQuerySerial = descriptorQuerySerial;
 		entry.targetPlanFingerprint = decision.directTargetPlan.Fingerprint();
-		entry.vertexCount = draw.vertexCount; entry.indexCount = draw.indexCount;
-		entry.instanceCount = draw.instanceCount; entry.firstVertex = draw.firstVertex;
-		entry.firstIndex = draw.firstIndex; entry.baseVertex = draw.baseVertex;
-		entry.firstInstance = draw.firstInstance; entry.indexed = draw.indexed;
+		entry.vertexCount = CanonicalVertexCount(draw, usage);
+		entry.indexCount = CanonicalIndexCount(draw, usage);
+		entry.instanceCount = CanonicalInstanceCount(draw, usage);
+		entry.firstVertex = CanonicalFirstVertex(draw, usage);
+		entry.firstIndex = CanonicalFirstIndex(draw, usage);
+		entry.baseVertex = draw.baseVertex;
+		entry.firstInstance = CanonicalFirstInstance(draw, usage);
+		entry.indexed = draw.indexed;
 		entry.valid = true;
 	}
 
@@ -2368,6 +2420,7 @@ public:
 		UINT64 reloadGeneration,
 		UINT64 preSkinGeneration,
 		const DX12IaHashTargetPlan &targetPlan,
+		const DX12DrawMatchUsage &usage,
 		UINT64 iaFingerprint,
 		uint32_t fingerprintKind,
 		const DX12IaDrawInvocation &draw)
@@ -2380,13 +2433,13 @@ public:
 		key.iaFingerprint = iaFingerprint;
 		key.fingerprintKind = fingerprintKind;
 		key.indexed = draw.indexed;
-		key.vertexCount = draw.vertexCount;
-		key.indexCount = draw.indexCount;
-		key.instanceCount = draw.instanceCount;
-		key.firstVertex = draw.firstVertex;
-		key.firstIndex = draw.firstIndex;
+		key.vertexCount = CanonicalVertexCount(draw, usage);
+		key.indexCount = CanonicalIndexCount(draw, usage);
+		key.instanceCount = CanonicalInstanceCount(draw, usage);
+		key.firstVertex = CanonicalFirstVertex(draw, usage);
+		key.firstIndex = CanonicalFirstIndex(draw, usage);
 		key.baseVertex = draw.baseVertex;
-		key.firstInstance = draw.firstInstance;
+		key.firstInstance = CanonicalFirstInstance(draw, usage);
 		return key;
 	}
 
@@ -2395,6 +2448,7 @@ public:
 		UINT64 reloadGeneration,
 		UINT64 preSkinGeneration,
 		const DX12IaHashTargetPlan &targetPlan,
+		const DX12DrawMatchUsage &usage,
 		const DX12IaHashState &iaState,
 		const DX12IaDrawInvocation &draw)
 	{
@@ -2416,7 +2470,7 @@ public:
 		}
 		return MakeDrawFastRejectKey(
 			pipelineState, reloadGeneration, preSkinGeneration,
-			targetPlan, fingerprint, 1, draw);
+			targetPlan, usage, fingerprint, 1, draw);
 	}
 
 	static bool TryFindPsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
@@ -3067,6 +3121,7 @@ public:
 				drawDecision->reloadGeneration,
 				preSkinGeneration,
 				targetPlan,
+				drawDecision->targetDrawMatchUsage,
 				iaCacheKey.iaViewFingerprint,
 				0,
 				draw);
@@ -3183,6 +3238,7 @@ public:
 					drawDecision->reloadGeneration,
 					preSkinGeneration,
 					targetPlan,
+					DX12DrawMatchUsage(),
 					*activeIaState,
 					draw);
 				DX12OuterTimingProbeUtils::LogCpuStage(
@@ -3217,7 +3273,9 @@ public:
 			if (DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, *activeIaState,
 				vertexCount, indexCount, draw.instanceCount,
-				firstVertex, firstIndex, draw.firstInstance, &iaReplacement,
+				firstVertex, firstIndex, draw.firstInstance,
+				drawDecision->targetDrawMatchUsage,
+				&iaReplacement,
 				shaderOverrideNegativeCacheAllowed,
 				runtimeState.device,
 				skipDirectDescriptorTargets)) {

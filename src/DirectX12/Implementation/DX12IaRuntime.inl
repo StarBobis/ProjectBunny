@@ -41,6 +41,58 @@ static bool TextureOverrideMatchesDrawContext(
 	return true;
 }
 
+class DX12TextureOverrideDrawKeyUsage
+{
+public:
+	bool useVertexCount = false;
+	bool useIndexCount = false;
+	bool useInstanceCount = false;
+	bool useFirstVertex = false;
+	bool useFirstIndex = false;
+	bool useFirstInstance = false;
+
+	void MergeConfig(const Bunny::TextureOverrideConfig &config)
+	{
+		useVertexCount = useVertexCount || config.hasMatchVertexCount;
+		useIndexCount = useIndexCount || config.hasMatchIndexCount;
+		useInstanceCount = useInstanceCount || config.hasMatchInstanceCount;
+		useFirstVertex = useFirstVertex || config.hasMatchFirstVertex;
+		useFirstIndex = useFirstIndex || config.hasMatchFirstIndex;
+		useFirstInstance = useFirstInstance || config.hasMatchFirstInstance;
+	}
+};
+
+static DX12TextureOverrideDrawKeyUsage BuildIaCandidateDrawKeyUsageLocked(
+	const std::vector<size_t> *candidateIndexes)
+{
+	DX12TextureOverrideDrawKeyUsage usage;
+	if (!candidateIndexes)
+		return usage;
+	for (size_t index : *candidateIndexes) {
+		if (index >= gIaTextureOverrides.size())
+			continue;
+		const Bunny::TextureOverrideConfig *config = gIaTextureOverrides[index].config;
+		if (!config)
+			continue;
+		usage.MergeConfig(*config);
+	}
+	return usage;
+}
+
+static DX12TextureOverrideDrawKeyUsage BuildTriggeredDrawKeyUsage(
+	const std::vector<DX12TriggeredTextureOverride> *candidateTriggers)
+{
+	DX12TextureOverrideDrawKeyUsage usage;
+	if (!candidateTriggers)
+		return usage;
+	for (const DX12TriggeredTextureOverride &triggered : *candidateTriggers) {
+		if (!triggered.config)
+			continue;
+		usage.MergeConfig(*triggered.config);
+	}
+	return usage;
+}
+
 static bool TextureOverrideHasDrawKind(
 	const Bunny::TextureOverrideConfig &config, Bunny::CommandListActionKind kind)
 {
@@ -139,6 +191,11 @@ static UINT64 MakeIaVertexIndexKey(uint32_t hash, uint32_t vertexSlot)
 	return (static_cast<UINT64>(hash) << 32) | vertexSlot;
 }
 
+static bool NumericMatchIsExactValue(const Bunny::NumericMatch &match)
+{
+	return match.enabled && match.op == Bunny::NumericMatchOp::Equal;
+}
+
 static void BuildDx12IaTextureOverrideIndex(
 	const Bunny::TextureOverrideMap &textureOverrides,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
@@ -150,17 +207,25 @@ static void BuildDx12IaTextureOverrideIndex(
 	std::unordered_map<uint32_t, std::vector<size_t>> *anyVertexTextureOverrideIndex,
 	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverrideIndex,
 	std::vector<size_t> *indexTextureOverridePrefilterIndex,
+	std::unordered_map<uint32_t, std::vector<size_t>> *indexTextureOverridePrefilterByIndexCount,
 	std::unordered_map<uint32_t, std::vector<size_t>> *vertexTextureOverridePrefilterIndex,
 	std::vector<size_t> *anyVertexTextureOverridePrefilterIndex,
-	std::unordered_map<uint32_t, std::vector<size_t>> *mergedVertexTextureOverridePrefilterIndex)
+	std::unordered_map<uint32_t, std::vector<size_t>> *anyVertexTextureOverridePrefilterByVertexCount,
+	std::unordered_map<uint32_t, std::vector<size_t>> *mergedVertexTextureOverridePrefilterIndex,
+	std::unordered_map<UINT64, std::vector<size_t>> *vertexTextureOverridePrefilterByVertexCount,
+	std::unordered_map<UINT64, std::vector<size_t>> *mergedVertexTextureOverridePrefilterByVertexCount)
 {
 	if (!iaTextureOverrides || !indexTextureOverrideIndex ||
 		!vertexTextureOverrideIndex || !anyVertexTextureOverrideIndex ||
 		!mergedVertexTextureOverrideIndex ||
 		!indexTextureOverridePrefilterIndex ||
+		!indexTextureOverridePrefilterByIndexCount ||
 		!vertexTextureOverridePrefilterIndex ||
 		!anyVertexTextureOverridePrefilterIndex ||
-		!mergedVertexTextureOverridePrefilterIndex)
+		!anyVertexTextureOverridePrefilterByVertexCount ||
+		!mergedVertexTextureOverridePrefilterIndex ||
+		!vertexTextureOverridePrefilterByVertexCount ||
+		!mergedVertexTextureOverridePrefilterByVertexCount)
 		return;
 
 	iaTextureOverrides->clear();
@@ -169,9 +234,13 @@ static void BuildDx12IaTextureOverrideIndex(
 	anyVertexTextureOverrideIndex->clear();
 	mergedVertexTextureOverrideIndex->clear();
 	indexTextureOverridePrefilterIndex->clear();
+	indexTextureOverridePrefilterByIndexCount->clear();
 	vertexTextureOverridePrefilterIndex->clear();
 	anyVertexTextureOverridePrefilterIndex->clear();
+	anyVertexTextureOverridePrefilterByVertexCount->clear();
 	mergedVertexTextureOverridePrefilterIndex->clear();
+	vertexTextureOverridePrefilterByVertexCount->clear();
+	mergedVertexTextureOverridePrefilterByVertexCount->clear();
 	UINT64 order = 0;
 	for (const auto &bucket : textureOverrides)
 	{
@@ -192,7 +261,13 @@ static void BuildDx12IaTextureOverrideIndex(
 
 			if (TextureOverrideMatchesIaBinding(config, true, 0)) {
 				(*indexTextureOverrideIndex)[config.hash].push_back(index);
-				indexTextureOverridePrefilterIndex->push_back(index);
+				if (config.hasMatchIndexCount &&
+				    NumericMatchIsExactValue(config.matchIndexCount)) {
+					(*indexTextureOverridePrefilterByIndexCount)[
+						config.matchIndexCount.value].push_back(index);
+				} else {
+					indexTextureOverridePrefilterIndex->push_back(index);
+				}
 			}
 
 			bool indexedSpecificVertexSlot = false;
@@ -201,14 +276,28 @@ static void BuildDx12IaTextureOverrideIndex(
 				if (!TextureOverrideMatchesIaBinding(config, false, slotResource.first))
 					continue;
 				(*vertexTextureOverrideIndex)[MakeIaVertexIndexKey(config.hash, slotResource.first)].push_back(index);
-				(*vertexTextureOverridePrefilterIndex)[slotResource.first].push_back(index);
+				if (config.hasMatchVertexCount &&
+				    NumericMatchIsExactValue(config.matchVertexCount)) {
+					(*vertexTextureOverridePrefilterByVertexCount)[
+						MakeIaVertexIndexKey(
+							config.matchVertexCount.value,
+							slotResource.first)].push_back(index);
+				} else {
+					(*vertexTextureOverridePrefilterIndex)[slotResource.first].push_back(index);
+				}
 				indexedSpecificVertexSlot = true;
 			}
 			if (!indexedSpecificVertexSlot &&
 				TextureOverrideMatchesIaBinding(config, false, 0))
 			{
 				(*anyVertexTextureOverrideIndex)[config.hash].push_back(index);
-				anyVertexTextureOverridePrefilterIndex->push_back(index);
+				if (config.hasMatchVertexCount &&
+				    NumericMatchIsExactValue(config.matchVertexCount)) {
+					(*anyVertexTextureOverridePrefilterByVertexCount)[
+						config.matchVertexCount.value].push_back(index);
+				} else {
+					anyVertexTextureOverridePrefilterIndex->push_back(index);
+				}
 			}
 		}
 	}
@@ -241,9 +330,15 @@ static void BuildDx12IaTextureOverrideIndex(
 	for (auto &bucket : *anyVertexTextureOverrideIndex)
 		sortCandidates(&bucket.second);
 	sortCandidates(indexTextureOverridePrefilterIndex);
+	for (auto &bucket : *indexTextureOverridePrefilterByIndexCount)
+		sortCandidates(&bucket.second);
 	for (auto &bucket : *vertexTextureOverridePrefilterIndex)
 		sortCandidates(&bucket.second);
 	sortCandidates(anyVertexTextureOverridePrefilterIndex);
+	for (auto &bucket : *anyVertexTextureOverridePrefilterByVertexCount)
+		sortCandidates(&bucket.second);
+	for (auto &bucket : *vertexTextureOverridePrefilterByVertexCount)
+		sortCandidates(&bucket.second);
 
 	for (const auto &bucket : *vertexTextureOverrideIndex)
 	{
@@ -269,6 +364,21 @@ static void BuildDx12IaTextureOverrideIndex(
 		(*mergedVertexTextureOverridePrefilterIndex)[bucket.first] =
 			std::move(merged);
 	}
+	for (const auto &bucket : *vertexTextureOverridePrefilterByVertexCount)
+	{
+		std::vector<size_t> merged = bucket.second;
+		const uint32_t vertexCount = static_cast<uint32_t>(bucket.first >> 32);
+		auto anySlot = anyVertexTextureOverridePrefilterByVertexCount->find(vertexCount);
+		if (anySlot != anyVertexTextureOverridePrefilterByVertexCount->end()) {
+			merged.insert(
+				merged.end(),
+				anySlot->second.begin(),
+				anySlot->second.end());
+		}
+		sortCandidates(&merged);
+		(*mergedVertexTextureOverridePrefilterByVertexCount)[bucket.first] =
+			std::move(merged);
+	}
 }
 
 static const std::vector<size_t> *FindIaTextureOverrideCandidatesLocked(
@@ -290,10 +400,25 @@ static const std::vector<size_t> *FindIaTextureOverrideCandidatesLocked(
 }
 
 static const std::vector<size_t> *FindIaTextureOverridePrefilterCandidatesLocked(
-	bool indexBuffer, uint32_t vertexSlot)
+	bool indexBuffer, uint32_t vertexSlot, uint32_t vertexCount, uint32_t indexCount)
 {
-	if (indexBuffer)
+	if (indexBuffer) {
+		auto indexedByCount =
+			gIaIndexTextureOverridePrefilterByIndexCount.find(indexCount);
+		if (indexedByCount != gIaIndexTextureOverridePrefilterByIndexCount.end())
+			return &indexedByCount->second;
 		return &gIaIndexTextureOverridePrefilterIndex;
+	}
+
+	auto mergedByCount = gIaMergedVertexTextureOverridePrefilterByVertexCount.find(
+		MakeIaVertexIndexKey(vertexCount, vertexSlot));
+	if (mergedByCount != gIaMergedVertexTextureOverridePrefilterByVertexCount.end())
+		return &mergedByCount->second;
+
+	auto anySlotByCount =
+		gIaAnyVertexTextureOverridePrefilterByVertexCount.find(vertexCount);
+	if (anySlotByCount != gIaAnyVertexTextureOverridePrefilterByVertexCount.end())
+		return &anySlotByCount->second;
 
 	auto merged = gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
 	if (merged != gIaMergedVertexTextureOverridePrefilterIndex.end())
@@ -1165,7 +1290,8 @@ static DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(
 	const Bunny::CommandListTarget &target, uint32_t hash,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	UINT64 preSkinGeneration)
+	UINT64 preSkinGeneration,
+	const DX12TextureOverrideDrawKeyUsage &usage)
 {
 	DX12TextureOverrideLookupCacheKey key = {};
 	key.reloadGeneration = gReloadGeneration;
@@ -1174,12 +1300,12 @@ static DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(
 	key.shaderStage = static_cast<uint32_t>(target.stage);
 	key.slot = target.slot;
 	key.hash = hash;
-	key.vertexCount = vertexCount;
-	key.indexCount = indexCount;
-	key.instanceCount = instanceCount;
-	key.firstVertex = firstVertex;
-	key.firstIndex = firstIndex;
-	key.firstInstance = firstInstance;
+	key.vertexCount = usage.useVertexCount ? vertexCount : 0;
+	key.indexCount = usage.useIndexCount ? indexCount : 0;
+	key.instanceCount = usage.useInstanceCount ? instanceCount : 0;
+	key.firstVertex = usage.useFirstVertex ? firstVertex : 0;
+	key.firstIndex = usage.useFirstIndex ? firstIndex : 0;
+	key.firstInstance = usage.useFirstInstance ? firstInstance : 0;
 	return key;
 }
 
@@ -1282,11 +1408,14 @@ static bool FindIaTextureOverridesCachedLocked(
 		dependsOnActivePreSkin ?
 			activePreSkinSections :
 			EmptyActivePreSkinSections();
+	const DX12TextureOverrideDrawKeyUsage keyUsage =
+		BuildIaCandidateDrawKeyUsageLocked(candidateIndexes);
 	const DX12TextureOverrideLookupCacheKey key =
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
 			firstVertex, firstIndex, firstInstance,
-			effectivePreSkinGeneration);
+			effectivePreSkinGeneration,
+			keyUsage);
 	bool cachedMatched = false;
 	if (TryFindCachedIaTextureOverrideLocked(key, &cachedMatched, configs)) {
 #if defined(_DEBUG)
@@ -1394,10 +1523,13 @@ static bool FindIaTextureOverridesCached(
 		 IaTriggeredCandidatesDependOnActivePreSkin(*candidateTriggers)) ?
 			GetActivePreSkinSectionsSnapshot(&preSkinGeneration) :
 			EmptyActivePreSkinSections();
+	const DX12TextureOverrideDrawKeyUsage keyUsage =
+		BuildTriggeredDrawKeyUsage(candidateTriggers);
 	const DX12TextureOverrideLookupCacheKey key =
 		MakeIaTextureOverrideLookupCacheKey(
 			target, hash, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance, preSkinGeneration);
+			firstVertex, firstIndex, firstInstance, preSkinGeneration,
+			keyUsage);
 
 	auto cached = tlsIaTriggeredCache.find(key);
 	if (cached != tlsIaTriggeredCache.end()) {
@@ -1904,7 +2036,8 @@ static bool HasPotentialIaTextureOverrideCandidateLocked(
 	uint32_t firstInstance)
 {
 	const std::vector<size_t> *candidateIndexes =
-		FindIaTextureOverridePrefilterCandidatesLocked(indexBuffer, vertexSlot);
+		FindIaTextureOverridePrefilterCandidatesLocked(
+			indexBuffer, vertexSlot, vertexCount, indexCount);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
 
