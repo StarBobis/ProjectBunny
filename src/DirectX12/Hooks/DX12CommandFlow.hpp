@@ -3339,7 +3339,10 @@ public:
 		}
 
 		LogDrawCall(commandList, draw);
-		if (DX12CommandListStateCapture::ShouldRecordBindingEvents())
+		const bool shouldRecordBindingEvents = runtimeState ?
+			DX12CommandListRuntime::GetTrackingState(runtimeState).recordBindingEvents :
+			DX12CommandListStateCapture::ShouldRecordBindingEvents();
+		if (shouldRecordBindingEvents)
 			RecordBindingDraw(commandList, draw);
 		if (huntEnabled) {
 			if (ShouldSkipHuntDraw(commandList, draw))

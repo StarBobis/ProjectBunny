@@ -52,7 +52,15 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		if (DX12HotPathState::skipAll) {
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool skipComputeBinding =
+			DX12HotPathState::skipAll &&
+			!(flags &
+				(DX12HotPathState::FLAG_PRE_SKIN_PROBE |
+				 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK));
+		// Probe-only PreSkin keeps skipAll set, but it still needs the resident
+		// descriptor heaps for compute-side matching.
+		if (skipComputeBinding) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
 		}
@@ -60,7 +68,6 @@ public:
 		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
 		ID3D12DescriptorHeap *sampler = nullptr;
 		ResolveDescriptorHeaps(count, heaps, &cbvSrvUav, &sampler);
-		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsAnyResidentDescriptorState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::SetDescriptorHeaps(runtimeState, cbvSrvUav, sampler);

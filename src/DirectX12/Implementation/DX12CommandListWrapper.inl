@@ -833,21 +833,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						dest[i] = DX12WrapperRuntimeUtils::UnwrapDescriptorHeap(ppDescriptorHeaps[i]);
 					activeHeaps = dest;
 				}
-				ID3D12DescriptorHeap *cbvSrvUav = nullptr;
-				ID3D12DescriptorHeap *sampler = nullptr;
-				DX12CommandListComputeBindingFlow::ResolveDescriptorHeaps(
-					NumDescriptorHeaps, activeHeaps, &cbvSrvUav, &sampler);
-				const UINT64 flags = DX12HotPathState::HookWorkFlags;
-				if (DX12HotPathState::NeedsAnyResidentDescriptorState(flags))
-					DX12CommandListRuntime::SetDescriptorHeaps(
-						&mRuntimeState, cbvSrvUav, sampler);
-
-				const bool skipComputeBinding =
-					DX12HotPathState::skipAll &&
-					!(flags &
-						(DX12HotPathState::FLAG_PRE_SKIN_PROBE |
-						 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK));
-				if (!skipComputeBinding) {
+				if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 					DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 						mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);
 				}

@@ -1730,8 +1730,9 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12CommandListRuntimeState *runtimeState = nullptr;
+		if (!ShouldSkipComputeBinding())
+			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetDescriptorHeaps(commandList, runtimeState, count, heaps);
 	}
 
@@ -1745,19 +1746,6 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
 		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
-		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
-		ID3D12DescriptorHeap *sampler = nullptr;
-		DX12CommandListComputeBindingFlow::ResolveDescriptorHeaps(
-			count, heaps, &cbvSrvUav, &sampler);
-		const UINT64 flags = DX12HotPathState::HookWorkFlags;
-		if (DX12HotPathState::NeedsAnyResidentDescriptorState(flags)) {
-			if (runtimeState)
-				DX12CommandListRuntime::SetDescriptorHeaps(
-					runtimeState, cbvSrvUav, sampler);
-			else
-				DX12CommandListRuntime::SetDescriptorHeaps(
-					commandList, cbvSrvUav, sampler);
-		}
 		if (!ShouldSkipComputeBinding()) {
 			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 				commandList, runtimeState, count, heaps);
