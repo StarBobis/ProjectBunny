@@ -1177,6 +1177,9 @@ static bool CommandListActionHasRuntimeEffect(
 	case Bunny::CommandListActionKind::HandlingSkip:
 	case Bunny::CommandListActionKind::SetIndexBuffer:
 	case Bunny::CommandListActionKind::SetVertexBuffer:
+	case Bunny::CommandListActionKind::SetShaderResource:
+	case Bunny::CommandListActionKind::SetConstantBuffer:
+	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
 	case Bunny::CommandListActionKind::DrawFromCaller:
@@ -1222,6 +1225,9 @@ static bool TextureOverrideActionsHaveRuntimeEffect(
 		case Bunny::CommandListActionKind::CheckTextureOverride:
 		case Bunny::CommandListActionKind::SetIndexBuffer:
 		case Bunny::CommandListActionKind::SetVertexBuffer:
+		case Bunny::CommandListActionKind::SetShaderResource:
+		case Bunny::CommandListActionKind::SetConstantBuffer:
+		case Bunny::CommandListActionKind::SetUnorderedAccessView:
 		case Bunny::CommandListActionKind::Dispatch:
 			return true;
 		case Bunny::CommandListActionKind::HandlingSkip:
@@ -1316,6 +1322,9 @@ static bool CommandListActionHasPhaseRuntimeEffect(
 	case Bunny::CommandListActionKind::HandlingSkip:
 	case Bunny::CommandListActionKind::SetIndexBuffer:
 	case Bunny::CommandListActionKind::SetVertexBuffer:
+	case Bunny::CommandListActionKind::SetShaderResource:
+	case Bunny::CommandListActionKind::SetConstantBuffer:
+	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
 	case Bunny::CommandListActionKind::DrawFromCaller:

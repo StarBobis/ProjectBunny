@@ -1017,6 +1017,24 @@ public:
 		resource->path = path;
 		DX12DrawTextureSrvViewUtils::CreateTexture2DSrv(
 			device, resource, info.format, srvCpu);
+		if (!info.subresources.empty()) {
+			const DX12DdsSubresourceInfo &topMip = info.subresources.front();
+			uint32_t textureHash = 0;
+			if (DX12TextureHashUtils::Texture2DTopMipHashFromRows(
+					textureDesc,
+					bytes.data() + topMip.dataOffset,
+					topMip.rowBytes,
+					topMip.rowBytes,
+					topMip.numRows,
+					&textureHash) &&
+			    textureHash) {
+				DX12CacheTextureHash(
+					texture,
+					textureHash,
+					&textureDesc,
+					"mod_resource_load");
+			}
+		}
 		DX12LogManager::Fields("DX12DrawSrvReplacement",
 			"stage=dds_loaded,resource=%S,path=%S,width=%u,height=%u,mips=%u,format=%u,uploadBytes=%llu",
 			resource->name.c_str(), path.c_str(), info.width, info.height,

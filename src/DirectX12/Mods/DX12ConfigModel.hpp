@@ -947,7 +947,10 @@ inline void MigotoCommandListParser::ResolveActionReferences(
 	if (action->kind == CommandListActionKind::Run)
 		action->commandList = MigotoCommandListParserText::ResolveCommandListReference(action->commandList, iniNamespace);
 	else if (action->kind == CommandListActionKind::SetIndexBuffer ||
-	         action->kind == CommandListActionKind::SetVertexBuffer)
+	         action->kind == CommandListActionKind::SetVertexBuffer ||
+	         action->kind == CommandListActionKind::SetConstantBuffer ||
+	         action->kind == CommandListActionKind::SetShaderResource ||
+	         action->kind == CommandListActionKind::SetUnorderedAccessView)
 		action->resource = MigotoCommandListParserText::ResolveResourceReference(action->resource, iniNamespace);
 }
 

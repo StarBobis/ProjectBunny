@@ -344,6 +344,33 @@ static bool AppendActionToCompiledPlan(
 			plan->ops.push_back(std::move(op));
 		}
 		return true;
+	case Bunny::CommandListActionKind::SetShaderResource:
+	{
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::SetShaderResource;
+		op.target = action.target;
+		op.resource = action.resource;
+		plan->ops.push_back(std::move(op));
+		return true;
+	}
+	case Bunny::CommandListActionKind::SetConstantBuffer:
+	{
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::SetConstantBuffer;
+		op.target = action.target;
+		op.resource = action.resource;
+		plan->ops.push_back(std::move(op));
+		return true;
+	}
+	case Bunny::CommandListActionKind::SetUnorderedAccessView:
+	{
+		DX12CompiledCommandListPlan::Op op;
+		op.kind = DX12CompiledCommandListPlan::Op::Kind::SetUnorderedAccessView;
+		op.target = action.target;
+		op.resource = action.resource;
+		plan->ops.push_back(std::move(op));
+		return true;
+	}
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
 	case Bunny::CommandListActionKind::DrawFromCaller:

@@ -191,6 +191,9 @@ public:
 			HandlingSkip,
 			SetIndexBuffer,
 			SetVertexBuffer,
+			SetConstantBuffer,
+			SetShaderResource,
+			SetUnorderedAccessView,
 			Draw,
 			Dispatch,
 			CheckTextureOverride
