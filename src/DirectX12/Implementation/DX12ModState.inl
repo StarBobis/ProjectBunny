@@ -282,6 +282,8 @@ class DX12CommandExecutionRuntimeSnapshot
 {
 
 public:
+	bool anyTextureOverridePreRuntimeEffect = false;
+	bool anyTextureOverridePostRuntimeEffect = false;
 	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
 	std::unordered_map<std::wstring, bool> commandListPreRuntimeEffect;
 	std::unordered_map<std::wstring, bool> commandListPostRuntimeEffect;

@@ -1453,6 +1453,10 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 {
 	std::shared_ptr<DX12CommandExecutionRuntimeSnapshot> snapshot =
 		std::make_shared<DX12CommandExecutionRuntimeSnapshot>();
+	snapshot->anyTextureOverridePreRuntimeEffect =
+		AnyRuntimeEffectInMap(textureOverridePreRuntimeEffect);
+	snapshot->anyTextureOverridePostRuntimeEffect =
+		AnyRuntimeEffectInMap(textureOverridePostRuntimeEffect);
 	snapshot->commandListRuntimeEffect = commandListRuntimeEffect;
 	snapshot->commandListPreRuntimeEffect = commandListPreRuntimeEffect;
 	snapshot->commandListPostRuntimeEffect = commandListPostRuntimeEffect;

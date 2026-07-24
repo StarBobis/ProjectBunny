@@ -46,6 +46,17 @@ static bool CommandListRuntimeEffect(
 		LoadCommandExecutionRuntimeSnapshot(), name, includePost);
 }
 
+static bool AnyTextureOverrideRuntimeEffectForPhase(bool includePost)
+{
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (!snapshot)
+		return true;
+	return includePost ?
+		snapshot->anyTextureOverridePostRuntimeEffect :
+		snapshot->anyTextureOverridePreRuntimeEffect;
+}
+
 static std::shared_ptr<const Bunny::CommandListConfig>
 SnapshotCommandListConfig(const std::wstring &name)
 {
@@ -1555,6 +1566,8 @@ public:
 		int depth,
 		bool includePost)
 	{
+		if (!AnyTextureOverrideRuntimeEffectForPhase(includePost))
+			return;
 		mTargetMatchScratch.clear();
 		if (!FindTargetTextureOverride(target, &mTargetMatchScratch))
 			return;
@@ -2435,12 +2448,138 @@ static void CopyShaderOverrideConfigs(
 	}
 }
 
-static DX12DrawMatchUsage BuildDrawMatchUsage(
-	const std::vector<const Bunny::ShaderOverrideConfig*> &configs)
+static void MergeTextureOverrideDrawMatchUsage(
+	const Bunny::TextureOverrideConfig &config,
+	DX12DrawMatchUsage *usage)
+{
+	if (!usage)
+		return;
+	usage->useVertexCount = usage->useVertexCount || config.hasMatchVertexCount;
+	usage->useIndexCount = usage->useIndexCount || config.hasMatchIndexCount;
+	usage->useInstanceCount = usage->useInstanceCount || config.hasMatchInstanceCount;
+	usage->useFirstVertex = usage->useFirstVertex || config.hasMatchFirstVertex;
+	usage->useFirstIndex = usage->useFirstIndex || config.hasMatchFirstIndex;
+	usage->useFirstInstance = usage->useFirstInstance || config.hasMatchFirstInstance;
+}
+
+static bool DrawMatchUsageCommandListRuntimeEffectLocked(const std::wstring &name)
+{
+	std::unordered_map<std::wstring, bool>::const_iterator found =
+		gCommandListPreRuntimeEffect.find(name);
+	return found == gCommandListPreRuntimeEffect.end() || found->second;
+}
+
+static bool ActionsHaveCheckTextureOverrideLocked(
+	const std::vector<Bunny::CommandListAction> &actions,
+	UINT depth,
+	std::unordered_set<std::wstring> *commandListStack)
+{
+	if (depth > 16)
+		return false;
+	for (const Bunny::CommandListAction &action : actions) {
+		switch (action.kind) {
+		case Bunny::CommandListActionKind::CheckTextureOverride:
+			return true;
+		case Bunny::CommandListActionKind::Run: {
+			if (action.commandList.empty() ||
+				!DrawMatchUsageCommandListRuntimeEffectLocked(action.commandList)) {
+				break;
+			}
+			if (commandListStack &&
+				commandListStack->find(action.commandList) !=
+					commandListStack->end()) {
+				break;
+			}
+			if (commandListStack)
+				commandListStack->insert(action.commandList);
+			Bunny::CommandListMap::const_iterator found =
+				gCommandLists.find(action.commandList);
+			const bool nested =
+				found != gCommandLists.end() &&
+				ActionsHaveCheckTextureOverrideLocked(
+					found->second.actions,
+					depth + 1,
+					commandListStack);
+			if (commandListStack)
+				commandListStack->erase(action.commandList);
+			if (nested)
+				return true;
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
+static bool ShaderOverrideHasCheckTextureOverrideLocked(
+	const Bunny::ShaderOverrideConfig &config)
+{
+	std::unordered_set<std::wstring> commandListStack;
+	if (ActionsHaveCheckTextureOverrideLocked(
+			config.actions,
+			0,
+			&commandListStack)) {
+		return true;
+	}
+	for (const std::wstring &name : config.commandLists.pre) {
+		if (!name.empty()) {
+			commandListStack.insert(name);
+			Bunny::CommandListMap::const_iterator found = gCommandLists.find(name);
+			const bool nested =
+				DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
+				found != gCommandLists.end() &&
+				ActionsHaveCheckTextureOverrideLocked(found->second.actions, 1, &commandListStack);
+			commandListStack.erase(name);
+			if (nested)
+				return true;
+		}
+	}
+	for (const std::wstring &name : config.commandLists.main) {
+		if (!name.empty()) {
+			commandListStack.insert(name);
+			Bunny::CommandListMap::const_iterator found = gCommandLists.find(name);
+			const bool nested =
+				DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
+				found != gCommandLists.end() &&
+				ActionsHaveCheckTextureOverrideLocked(found->second.actions, 1, &commandListStack);
+			commandListStack.erase(name);
+			if (nested)
+				return true;
+		}
+	}
+	return false;
+}
+
+static DX12DrawMatchUsage BuildTextureOverrideDrawMatchUsageLocked()
 {
 	DX12DrawMatchUsage usage;
-	(void)configs;
+	for (const auto &bucket : gTextureOverrides) {
+		for (const Bunny::TextureOverrideConfig &config : bucket.second)
+			MergeTextureOverrideDrawMatchUsage(config, &usage);
+	}
 	return usage;
+}
+
+static DX12DrawMatchUsage BuildDrawMatchUsageLocked(
+	const std::vector<const Bunny::ShaderOverrideConfig*> &configs)
+{
+	for (const Bunny::ShaderOverrideConfig *config : configs) {
+		if (config && ShaderOverrideHasCheckTextureOverrideLocked(*config))
+			return BuildTextureOverrideDrawMatchUsageLocked();
+	}
+	return DX12DrawMatchUsage();
+}
+
+static DX12DrawMatchUsage BuildDrawMatchUsageLocked(
+	const std::vector<Bunny::ShaderOverrideConfig> &configs)
+{
+	for (const Bunny::ShaderOverrideConfig &config : configs) {
+		if (ShaderOverrideHasCheckTextureOverrideLocked(config))
+			return BuildTextureOverrideDrawMatchUsageLocked();
+	}
+	return DX12DrawMatchUsage();
 }
 
 class DX12ShaderOverrideConfigView
@@ -3235,6 +3374,21 @@ static bool TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
 	return true;
 }
 
+static bool TryFindCachedShaderOverrideDrawMatchUsageForPsoLocked(
+	ID3D12PipelineState *pipelineState,
+	DX12DrawMatchUsage *drawMatchUsage)
+{
+	if (!drawMatchUsage || !pipelineState)
+		return false;
+	std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache>::iterator cached =
+		gShaderOverridePsoMatchCache.find(pipelineState);
+	if (cached == gShaderOverridePsoMatchCache.end() ||
+		cached->second.generation != gReloadGeneration)
+		return false;
+	*drawMatchUsage = cached->second.drawMatchUsage;
+	return true;
+}
+
 bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
 {
 	if (!pipelineState)
@@ -3294,6 +3448,11 @@ static void FindShaderOverridesForPsoLocked(
 			matchCache,
 			false,
 			&drawDirectHasNonTextureEffect);
+	std::vector<const Bunny::ShaderOverrideConfig*> drawUsageConfigs =
+		matchCache.drawConfigs;
+	for (Bunny::ShaderOverrideConfig &config : matchCache.regexDrawConfigs)
+		drawUsageConfigs.push_back(&config);
+	matchCache.drawMatchUsage = BuildDrawMatchUsageLocked(drawUsageConfigs);
 	matchCache.drawDirectTextureChecksOnly = !drawDirectHasNonTextureEffect;
 	// Keep the draw-decision miss path focused on the first-step CTO targets.
 	// Nested TextureOverride CTOs are now executed by the compiled command-list op
@@ -3388,6 +3547,8 @@ bool DX12ModCompileDrawDecision(
 					pipelineState, &directTargetPlan);
 			TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
 				pipelineState, &directTextureChecksOnly);
+			TryFindCachedShaderOverrideDrawMatchUsageForPsoLocked(
+				pipelineState, &drawMatchUsage);
 		}
 		ReleaseSRWLockShared(&gModLock);
 	}
@@ -3406,13 +3567,16 @@ bool DX12ModCompileDrawDecision(
 					pipelineState, &directTargetPlan);
 			TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
 				pipelineState, &directTextureChecksOnly);
+			TryFindCachedShaderOverrideDrawMatchUsageForPsoLocked(
+				pipelineState, &drawMatchUsage);
 		}
 		ReleaseSRWLockExclusive(&gModLock);
 	}
 
 	const bool shaderOverrides = compiledMetadataHit ? true : (cached ? !configs.empty() : true);
 	if (!compiledMetadataHit) {
-		drawMatchUsage = BuildDrawMatchUsage(configs);
+		if (!cached)
+			drawMatchUsage = BuildDrawMatchUsageLocked(configs);
 		directDrawMatchUsage = drawMatchUsage;
 	}
 	if (!targetPlanResolved)
@@ -4001,8 +4165,8 @@ void DX12ModRecordGraphicsPipelineState(
 				false,
 				&drawDirectHasNonTextureEffect);
 		DX12IaHashTargetPlan drawTargetPlan = drawDirectTargetPlan;
-		DX12DrawMatchUsage drawMatchUsage;
-		DX12DrawMatchUsage directDrawMatchUsage;
+		DX12DrawMatchUsage drawMatchUsage = BuildDrawMatchUsageLocked(snapshot);
+		DX12DrawMatchUsage directDrawMatchUsage = drawMatchUsage;
 		const bool drawDirectTextureChecksOnly = !drawDirectHasNonTextureEffect;
 		StoreCompiledPsoPlan(
 			pipelineState,
