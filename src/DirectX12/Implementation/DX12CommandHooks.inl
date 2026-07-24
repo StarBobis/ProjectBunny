@@ -945,13 +945,19 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawInstanced);
 	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+	// DX11-style forward path: no draw work means no runtime-state lookup.
+	if (DX12HotPathState::skipAll ||
+		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+		PFN_DRAW_INSTANCED original =
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
+		if (original)
+			original(commandList, vertexCountPerInstance, instanceCount,
+				startVertexLocation, startInstanceLocation);
+		return;
+	}
 	DX12CommandListRuntimeState *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	// Fast path: one bit test replaces nine draw-work checks.
-	if (DX12HotPathState::skipAll ||
-		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
-		DX12HotPathState::CanResidentDrawFastReject(
-			drawFlags, runtimeState)) {
+	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
@@ -974,13 +980,19 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+	// DX11-style forward path: no draw work means no runtime-state lookup.
+	if (DX12HotPathState::skipAll ||
+		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+		PFN_DRAW_INDEXED_INSTANCED original =
+			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
+		if (original)
+			original(commandList, indexCountPerInstance, instanceCount,
+				startIndexLocation, baseVertexLocation, startInstanceLocation);
+		return;
+	}
 	DX12CommandListRuntimeState *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	// Fast path: one bit test replaces nine indexed-draw work checks.
-	if (DX12HotPathState::skipAll ||
-		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
-		DX12HotPathState::CanResidentDrawFastReject(
-			drawFlags, runtimeState)) {
+	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)

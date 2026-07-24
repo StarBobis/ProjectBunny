@@ -2237,6 +2237,22 @@ public:
 				FLAG_PRE_SKIN_PROBE);
 	}
 
+	static bool CanResidentDispatchFastReject(
+		UINT64 flags,
+		const DX12CommandListRuntimeState *state)
+	{
+		return state &&
+			AllowsResidentDispatchFastReject(flags) &&
+			state->dispatchDecision.resolved &&
+			state->dispatchDecision.pipelineState == state->pipelineState &&
+			state->dispatchDecision.reloadGeneration ==
+				DX12ModGetReloadGenerationFast() &&
+			state->dispatchDecision.MatchesGlobals(
+				(flags & FLAG_SHADER_OVERRIDES) != 0,
+				(flags & FLAG_PRE_SKIN_PROBE) != 0) &&
+			!state->dispatchDecision.NeedsShaderOverrideWork();
+	}
+
 	static bool NeedsPreSkinBindingTracking(UINT64 flags)
 	{
 		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);

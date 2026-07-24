@@ -1058,27 +1058,57 @@ public:
 			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
+		const bool needsDispatchDecision =
+			hasShaderOverrides || needsPreSkinProbe;
 		// No-candidate compute PSOs are resident state, just like DX11's current
 		// shader. Bypass tracking-state lookup and all decision/cache machinery.
-		if (runtimeState &&
-			DX12HotPathState::AllowsResidentDispatchFastReject(flagsWord) &&
-			runtimeState->dispatchDecision.resolved &&
-			runtimeState->dispatchDecision.pipelineState == runtimeState->pipelineState &&
-			runtimeState->dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-			runtimeState->dispatchDecision.MatchesGlobals(
-				hasShaderOverrides, needsPreSkinProbe) &&
-			!runtimeState->dispatchDecision.NeedsShaderOverrideWork()) {
+		if (DX12HotPathState::CanResidentDispatchFastReject(
+				flagsWord, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
-		const DX12CommandListTrackingState tracking =
-			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
-		if (DX12Profiling::ShouldCollectCounters() || hasShaderOverrides || needsPreSkinProbe)
+		if (DX12Profiling::ShouldCollectCounters() || needsDispatchDecision)
 			DX12RuntimeState::IncrementFrameDispatches();
 
 		if (DX12InternalReplayState::IsActive()) {
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			DX12_HOTPATH_TIME_END(DispatchHookTotal);
+			return;
+		}
+
+		// Match DX11's compute path: when dispatch only needs logging/hunting or
+		// capture, stay on the straight-through path and skip PSO policy rebuilds.
+		if (!needsDispatchDecision) {
+			if (DX12HotPathState::skipBindings && huntEnabled) {
+				DX12_PROFILE_FAST_FORWARD();
+				DX12HuntRecordDispatch(commandList);
+				if (DX12HuntShouldSkipDispatch(commandList)) {
+					DX12_HOTPATH_TIME_END(DispatchHookTotal);
+					return;
+				}
+				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+				DX12_HOTPATH_TIME_END(DispatchHookTotal);
+				return;
+			}
+
+			DX12CommandListFlowDiagnostics::LogDX12Call(
+				"ID3D12GraphicsCommandList::Dispatch", commandList,
+				" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			const DX12CommandListTrackingState tracking =
+				DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
+			if (tracking.recordBindingEvents)
+				DX12BindingTracker::RecordDispatch(
+					commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			if (huntEnabled) {
+				DX12HuntRecordDispatch(commandList);
+				if (DX12HuntShouldSkipDispatch(commandList)) {
+					DX12_HOTPATH_TIME_END(DispatchHookTotal);
+					return;
+				}
+			}
+			DX12_PROFILE_FAST_FORWARD();
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
@@ -1101,6 +1131,8 @@ public:
 			hasShaderOverrides && dispatchDecision && dispatchDecision->NeedsShaderOverrideWork();
 		const bool needsDispatchWork =
 			decisionNeedsShaderOverrideWork || decisionNeedsPreSkinProbe;
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();

@@ -619,14 +619,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
 			const bool residentDispatchReject =
-				DX12HotPathState::AllowsResidentDispatchFastReject(dispatchFlags) &&
-				mRuntimeState.dispatchDecision.resolved &&
-				mRuntimeState.dispatchDecision.pipelineState == mRuntimeState.pipelineState &&
-				mRuntimeState.dispatchDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-				mRuntimeState.dispatchDecision.MatchesGlobals(
-					(dispatchFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0,
-					(dispatchFlags & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0) &&
-				!mRuntimeState.dispatchDecision.NeedsShaderOverrideWork();
+				(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) &&
+				DX12HotPathState::CanResidentDispatchFastReject(
+					dispatchFlags, &mRuntimeState);
 			if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
 				residentDispatchReject) && mOrigDispatch) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(

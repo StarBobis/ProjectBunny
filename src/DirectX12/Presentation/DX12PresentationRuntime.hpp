@@ -1274,8 +1274,9 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12CommandListRuntimeState *runtimeState = nullptr;
+		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
+			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::DrawInstanced(
 			commandList,
 			runtimeState,
@@ -1336,8 +1337,9 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawIndexedInstanced original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12CommandListRuntimeState *runtimeState = nullptr;
+		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
+			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 			commandList,
 			runtimeState,
@@ -1396,8 +1398,9 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		DX12CommandListRuntimeState *runtimeState = nullptr;
+		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)
+			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::Dispatch(
 			commandList,
 			runtimeState,
@@ -1417,7 +1420,10 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
-		if (!(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
+		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
+		if (!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
+			DX12HotPathState::CanResidentDispatchFastReject(
+				dispatchFlags, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
