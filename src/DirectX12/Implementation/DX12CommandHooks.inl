@@ -944,8 +944,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	DX12_PROFILE_FUNCTION(DrawInstanced);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawInstanced);
+	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	// Fast path: one bit test replaces nine draw-work checks.
-	if (DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+	if (DX12HotPathState::skipAll ||
+		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+		DX12HotPathState::CanResidentDrawFastReject(
+			drawFlags, runtimeState)) {
 		PFN_DRAW_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
@@ -957,7 +963,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 		DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
 		vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
-	DX12DrawHookFlow::ExecuteHook(commandList, draw, iaCallbacks);
+	DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, iaCallbacks);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
@@ -967,8 +973,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	DX12_PROFILE_FUNCTION(DrawIndexedInstanced);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
+	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	// Fast path: one bit test replaces nine indexed-draw work checks.
-	if (DX12HotPathState::skipAll || !(DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)) {
+	if (DX12HotPathState::skipAll ||
+		!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+		DX12HotPathState::CanResidentDrawFastReject(
+			drawFlags, runtimeState)) {
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)
@@ -981,7 +993,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 		indexCountPerInstance, instanceCount, startIndexLocation,
 		baseVertexLocation, startInstanceLocation);
-	DX12DrawHookFlow::ExecuteHook(commandList, draw, iaCallbacks);
+	DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, iaCallbacks);
 }
 
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDispatch(

@@ -568,13 +568,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
 				const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 				const bool residentDrawReject =
-					DX12HotPathState::AllowsResidentDrawFastReject(drawFlags) &&
-					mRuntimeState.drawDecision.resolved &&
-					mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
-					mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-					mRuntimeState.drawDecision.MatchesGlobals(
-						(drawFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
-					mRuntimeState.drawDecision.CanFastReject();
+					DX12HotPathState::CanResidentDrawFastReject(
+						drawFlags, &mRuntimeState);
 				if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
 					residentDrawReject) && mOrigDrawInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
@@ -599,13 +594,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 			const bool residentDrawReject =
-				DX12HotPathState::AllowsResidentDrawFastReject(drawFlags) &&
-				mRuntimeState.drawDecision.resolved &&
-				mRuntimeState.drawDecision.pipelineState == mRuntimeState.pipelineState &&
-				mRuntimeState.drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-				mRuntimeState.drawDecision.MatchesGlobals(
-					(drawFlags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
-				mRuntimeState.drawDecision.CanFastReject();
+				DX12HotPathState::CanResidentDrawFastReject(
+					drawFlags, &mRuntimeState);
 			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
 				residentDrawReject) && mOrigDrawIndexedInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(

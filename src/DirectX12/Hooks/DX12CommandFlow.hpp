@@ -3276,14 +3276,8 @@ public:
 		// cache layers). Reload generation keeps the shortcut conservative across
 		// hot reloads while still allowing global resident descriptor/IA features
 		// to coexist with the fast reject.
-		if (runtimeState &&
-			DX12HotPathState::AllowsResidentDrawFastReject(flagsWord) &&
-			runtimeState->drawDecision.resolved &&
-			runtimeState->drawDecision.pipelineState == runtimeState->pipelineState &&
-			runtimeState->drawDecision.reloadGeneration == DX12ModGetReloadGenerationFast() &&
-			runtimeState->drawDecision.MatchesGlobals(
-				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0) &&
-			runtimeState->drawDecision.CanFastReject()) {
+		if (DX12HotPathState::CanResidentDrawFastReject(
+				flagsWord, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 			DX12_HOTPATH_TIME_END(DrawHookTotal);

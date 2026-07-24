@@ -1946,6 +1946,7 @@ bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsPreSkinningBindingTracking();
 bool DX12ModNeedsShaderDescriptorTracking();
+UINT64 DX12ModGetReloadGenerationFast();
 enum DX12ModHotPathFlagBits : UINT32
 {
 	DX12_MOD_HOT_SHADER_OVERRIDES = 1u << 0,
@@ -2195,15 +2196,31 @@ public:
 
 	static bool AllowsResidentDrawFastReject(UINT64 flags)
 	{
-		// DX11-style resident fast reject is safe whenever shader overrides are
-		// active but no draw-time diagnostic/present flow needs the interpreter.
-		return HasAnyFlag(flags, FLAG_SHADER_OVERRIDES) &&
-			!HasAnyFlag(
-				flags,
-				FLAG_HUNT_ENABLED |
-				FLAG_FRAME_ANALYSIS_ACTIVE |
-				FLAG_SHADER_DUMP_ACTIVE |
-				FLAG_PRESENT_REPLACEMENT);
+		// Once the command-list-local draw decision proves a PSO can never
+		// trigger draw-time work, any remaining global mod flags should not force
+		// the call back through the generic interpreter unless diagnostics or
+		// present-time replacement explicitly require it.
+		return !HasAnyFlag(
+			flags,
+			FLAG_HUNT_ENABLED |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE |
+			FLAG_PRESENT_REPLACEMENT);
+	}
+
+	static bool CanResidentDrawFastReject(
+		UINT64 flags,
+		const DX12CommandListRuntimeState *state)
+	{
+		return state &&
+			AllowsResidentDrawFastReject(flags) &&
+			state->drawDecision.resolved &&
+			state->drawDecision.pipelineState == state->pipelineState &&
+			state->drawDecision.reloadGeneration ==
+				DX12ModGetReloadGenerationFast() &&
+			state->drawDecision.MatchesGlobals(
+				(flags & FLAG_SHADER_OVERRIDES) != 0) &&
+			state->drawDecision.CanFastReject();
 	}
 
 	static bool AllowsResidentDispatchFastReject(UINT64 flags)
