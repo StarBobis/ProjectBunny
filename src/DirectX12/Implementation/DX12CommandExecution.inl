@@ -4084,6 +4084,7 @@ static void BackfillCompiledPsoPlanFromFallback(
 
 bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
+	bool hasActiveShaderOverrides,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
@@ -4091,21 +4092,18 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	DX12ModIaReplacement *replacement,
 	bool allowDescriptorIndependentNegativeCache,
 	ID3D12Device *cachedDevice,
-	bool skipDirectDescriptorTargets)
+	bool skipDirectDescriptorTargets,
+	std::shared_ptr<const DX12ModIaReplacement> *generatedStaticReplacement)
 {
 	if (!replacement)
 		return false;
 	*replacement = DX12ModIaReplacement();
-	if (!commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
+	if (generatedStaticReplacement)
+		generatedStaticReplacement->reset();
+	if (!commandList || !pipelineState || !hasActiveShaderOverrides)
 		return false;
 
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	if (DX12ModTryLoadStaticReplacementForPso(
-			pipelineState,
-			reloadGeneration,
-			replacement)) {
-		return ReplacementHasAnyEffect(*replacement);
-	}
 
 	const bool negativeCacheEnabled = ShaderOverrideNegativeCacheEnabled(
 		allowDescriptorIndependentNegativeCache);
@@ -4219,6 +4217,10 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			pipelineState,
 			reloadGeneration,
 			*replacement);
+		if (generatedStaticReplacement) {
+			*generatedStaticReplacement =
+				std::make_shared<const DX12ModIaReplacement>(*replacement);
+		}
 	}
 
 	const bool negativeCacheStoreSafe = negativeCacheEnabled && !changed &&

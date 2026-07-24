@@ -3414,15 +3414,24 @@ public:
 
 			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
 			LARGE_INTEGER prepareBegin = DX12OuterTimingProbeUtils::Now();
-			if (DX12ModPrepareShaderOverrideReplacement(
-				commandList, runtimeState.pipelineState, *activeIaState,
+			std::shared_ptr<const DX12ModIaReplacement> generatedStaticReplacement;
+			const bool preparedReplacement = DX12ModPrepareShaderOverrideReplacement(
+				commandList, runtimeState.pipelineState, activeShaderOverrides,
+				*activeIaState,
 				vertexCount, indexCount, draw.instanceCount,
 				firstVertex, firstIndex, draw.firstInstance,
 				drawDecision->targetDrawMatchUsage,
 				&iaReplacement,
 				shaderOverrideNegativeCacheAllowed,
 				runtimeState.device,
-				skipDirectDescriptorTargets)) {
+				skipDirectDescriptorTargets,
+				&generatedStaticReplacement);
+			if (generatedStaticReplacement) {
+				mutableRuntimeState->drawDecision.staticReplacementSnapshot =
+					std::move(generatedStaticReplacement);
+				mutableRuntimeState->drawDecision.staticReplacementReady = true;
+			}
+			if (preparedReplacement) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"prepare_shader_override_match",

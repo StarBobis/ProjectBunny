@@ -291,6 +291,7 @@ public:
 };
 bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
+	bool hasActiveShaderOverrides,
 	const DX12IaHashState &iaState,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
@@ -298,7 +299,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	DX12ModIaReplacement *replacement,
 	bool allowNegativeCache = true,
 	ID3D12Device *cachedDevice = nullptr,
-	bool skipDirectDescriptorTargets = false);
+	bool skipDirectDescriptorTargets = false,
+	std::shared_ptr<const DX12ModIaReplacement> *generatedStaticReplacement = nullptr);
 bool DX12ModTryLoadStaticReplacementForPso(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
