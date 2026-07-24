@@ -46,13 +46,13 @@ static UINT64 BuildRuntimePreSkinDependencyFingerprint(
 	return fingerprint ? fingerprint : 1;
 }
 
-static bool TryLoadRuntimePreSkinBindings(
+static bool TryGetRuntimePreSkinBindings(
 	DX12SimulateContext *runtimeState,
 	UINT64 computeBindingSerial,
-	std::vector<DX12CurrentComputeUavBinding> *uavs,
-	std::vector<DX12CurrentComputeUavBinding> *srvs,
-	std::vector<DX12CurrentComputeUavBinding> *cbvs,
-	std::vector<DX12CurrentRootConstants> *constants,
+	const std::vector<DX12CurrentComputeUavBinding> **uavs,
+	const std::vector<DX12CurrentComputeUavBinding> **srvs,
+	const std::vector<DX12CurrentComputeUavBinding> **cbvs,
+	const std::vector<DX12CurrentRootConstants> **constants,
 	UINT64 *dependencyFingerprint,
 	bool *foundAny)
 {
@@ -106,17 +106,52 @@ static bool TryLoadRuntimePreSkinBindings(
 	}
 
 	if (uavs)
-		*uavs = runtimeState->resolvedCompute.uavs;
+		*uavs = &runtimeState->resolvedCompute.uavs;
 	if (srvs)
-		*srvs = runtimeState->resolvedCompute.srvs;
+		*srvs = &runtimeState->resolvedCompute.srvs;
 	if (cbvs)
-		*cbvs = runtimeState->resolvedCompute.cbvs;
+		*cbvs = &runtimeState->resolvedCompute.cbvs;
 	if (constants)
-		*constants = runtimeState->resolvedCompute.rootConstants;
+		*constants = &runtimeState->resolvedCompute.rootConstants;
 	if (dependencyFingerprint)
 		*dependencyFingerprint = runtimeState->resolvedCompute.bindingsDependencyFingerprint;
 	if (foundAny)
 		*foundAny = runtimeState->resolvedCompute.bindingsFoundAny;
+	return true;
+}
+
+static bool TryLoadRuntimePreSkinBindings(
+	DX12SimulateContext *runtimeState,
+	UINT64 computeBindingSerial,
+	std::vector<DX12CurrentComputeUavBinding> *uavs,
+	std::vector<DX12CurrentComputeUavBinding> *srvs,
+	std::vector<DX12CurrentComputeUavBinding> *cbvs,
+	std::vector<DX12CurrentRootConstants> *constants,
+	UINT64 *dependencyFingerprint,
+	bool *foundAny)
+{
+	const std::vector<DX12CurrentComputeUavBinding> *cachedUavs = nullptr;
+	const std::vector<DX12CurrentComputeUavBinding> *cachedSrvs = nullptr;
+	const std::vector<DX12CurrentComputeUavBinding> *cachedCbvs = nullptr;
+	const std::vector<DX12CurrentRootConstants> *cachedConstants = nullptr;
+	if (!TryGetRuntimePreSkinBindings(
+			runtimeState,
+			computeBindingSerial,
+			&cachedUavs,
+			&cachedSrvs,
+			&cachedCbvs,
+			&cachedConstants,
+			dependencyFingerprint,
+			foundAny))
+		return false;
+	if (uavs && cachedUavs)
+		*uavs = *cachedUavs;
+	if (srvs && cachedSrvs)
+		*srvs = *cachedSrvs;
+	if (cbvs && cachedCbvs)
+		*cbvs = *cachedCbvs;
+	if (constants && cachedConstants)
+		*constants = *cachedConstants;
 	return true;
 }
 
@@ -154,6 +189,50 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.srvs = srvs;
 	runtimeState->resolvedCompute.cbvs = cbvs;
 	runtimeState->resolvedCompute.rootConstants = constants;
+}
+
+bool DX12BindingTracker::GetSimulateContextPreSkinBindings(
+	ID3D12GraphicsCommandList *commandList,
+	const std::vector<DX12CurrentComputeUavBinding> **uavs,
+	const std::vector<DX12CurrentComputeUavBinding> **srvs,
+	const std::vector<DX12CurrentComputeUavBinding> **cbvs,
+	const std::vector<DX12CurrentRootConstants> **constants,
+	UINT64 *dependencyFingerprint,
+	bool *foundAny)
+{
+	if (uavs)
+		*uavs = nullptr;
+	if (srvs)
+		*srvs = nullptr;
+	if (cbvs)
+		*cbvs = nullptr;
+	if (constants)
+		*constants = nullptr;
+	if (dependencyFingerprint)
+		*dependencyFingerprint = 0;
+	if (foundAny)
+		*foundAny = false;
+	if (!commandList)
+		return false;
+
+	DX12SimulateContext *context =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	if (!context || !context->computeBindingSerial)
+		return false;
+
+	bool cachedFoundAny = false;
+	const bool loaded = TryGetRuntimePreSkinBindings(
+		context,
+		context->computeBindingSerial,
+		uavs,
+		srvs,
+		cbvs,
+		constants,
+		dependencyFingerprint,
+		&cachedFoundAny);
+	if (foundAny)
+		*foundAny = cachedFoundAny;
+	return loaded;
 }
 
 static bool TryLoadRuntimeDescriptorBindings(

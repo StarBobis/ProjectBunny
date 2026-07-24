@@ -1477,15 +1477,26 @@ public:
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
 
-			// One dependency-aware cache owns PreSkin collection. It validates
-			// exact descriptor slots and overlapping root-descriptor GPUVA ranges.
+			// Consume the validated recording-context template directly. The
+			// collector remains the cold path that materializes a missing template.
 			probe->cachedUavs = nullptr;
 			probe->cachedSrvs = nullptr;
 			probe->cachedCbvs = nullptr;
 			probe->cachedRootConstants = nullptr;
-			probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
-				commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
-				&probe->rootConstants, &probe->bindingDependencyFingerprint);
+			bool computeTemplateLoaded =
+				DX12BindingTracker::GetSimulateContextPreSkinBindings(
+				commandList,
+				&probe->cachedUavs,
+				&probe->cachedSrvs,
+				&probe->cachedCbvs,
+				&probe->cachedRootConstants,
+				&probe->bindingDependencyFingerprint,
+				&probe->uavsFound);
+			if (!computeTemplateLoaded) {
+				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
+					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
+					&probe->rootConstants, &probe->bindingDependencyFingerprint);
+			}
 			const std::vector<DX12CurrentComputeUavBinding> &uavs =
 				probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
 			const std::vector<DX12CurrentComputeUavBinding> &srvs =

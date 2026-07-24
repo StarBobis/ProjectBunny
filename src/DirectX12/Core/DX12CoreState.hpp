@@ -961,6 +961,14 @@ public:
 		std::vector<DX12CurrentComputeUavBinding> *cbvs,
 		std::vector<DX12CurrentRootConstants> *constants,
 		UINT64 *dependencyFingerprint = nullptr);
+	static bool GetSimulateContextPreSkinBindings(
+		ID3D12GraphicsCommandList *commandList,
+		const std::vector<DX12CurrentComputeUavBinding> **uavs,
+		const std::vector<DX12CurrentComputeUavBinding> **srvs,
+		const std::vector<DX12CurrentComputeUavBinding> **cbvs,
+		const std::vector<DX12CurrentRootConstants> **constants,
+		UINT64 *dependencyFingerprint = nullptr,
+		bool *foundAny = nullptr);
 	static UINT64 GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static UINT64 GetBindingQuerySerial(ID3D12GraphicsCommandList *commandList);
 	static bool GetCurrentDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
