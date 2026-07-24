@@ -2827,14 +2827,6 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		return false;
 	}
 
-	std::vector<DX12CurrentShaderResourceBinding> graphicsSrvBindings;
-	std::vector<DX12ResolvedGraphicsSrvBinding> resolvedGraphicsSrvBindings;
-	bool graphicsSrvBindingsResolved = false;
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> runtimeSnapshot;
-	bool runtimeSnapshotResolved = false;
-	DX12CommandListRuntimeState *runtimeState =
-		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
 	std::vector<DX12TextureOverrideMatch> matches;
 	for (const DX12IaHashTargetPlan::DescriptorTarget &descriptorTarget :
 	     targetPlan.descriptorTargets) {
@@ -2844,52 +2836,6 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		target.stage = static_cast<Bunny::CommandListShaderStage>(
 			descriptorTarget.stage);
 		target.slot = descriptorTarget.slot;
-		if (target.kind == Bunny::CommandListTargetKind::ShaderResource &&
-		    target.stage != Bunny::CommandListShaderStage::Compute) {
-			if (!graphicsSrvBindingsResolved) {
-				const UINT64 descriptorQuerySerial =
-					(runtimeState && runtimeState->graphicsDescriptorQuerySerial) ?
-						runtimeState->graphicsDescriptorQuerySerial : 1;
-				if (!TryLoadResolvedGraphicsSrvBindings(
-						runtimeState,
-						descriptorQuerySerial,
-						&resolvedGraphicsSrvBindings)) {
-					DX12BindingTracker::GetCurrentShaderResourceBindings(
-						commandList,
-						false,
-						D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-						&graphicsSrvBindings);
-					ResolveGraphicsSrvBindings(
-						commandList,
-						cachedDevice,
-						graphicsSrvBindings,
-						&resolvedGraphicsSrvBindings);
-					StoreResolvedGraphicsSrvBindings(
-						runtimeState,
-						descriptorQuerySerial,
-						resolvedGraphicsSrvBindings);
-				}
-				graphicsSrvBindingsResolved = true;
-			}
-			if (!runtimeSnapshotResolved) {
-				runtimeSnapshot = LoadTextureOverrideRuntimeSnapshot();
-				runtimeSnapshotResolved = true;
-			}
-			if (FindDescriptorTextureOverridesFromResolvedBindings(
-					runtimeSnapshot,
-					target,
-					resolvedGraphicsSrvBindings,
-					vertexCount,
-					indexCount,
-					instanceCount,
-					firstVertex,
-					firstIndex,
-					firstInstance,
-					&matches)) {
-				return true;
-			}
-			continue;
-		}
 		if (FindDescriptorTextureOverrides(
 				commandList,
 				target,
