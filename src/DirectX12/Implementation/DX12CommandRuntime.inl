@@ -761,6 +761,10 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 		return;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
+	state->ia.indexBufferHashValid = false;
+	state->ia.indexBufferHash = 0;
+	state->ia.indexBufferHashContentGeneration = 0;
+	state->ia.indexBufferHashResolveGeneration = 0;
 	// Keep Mod-mode resident IA state lightweight: the current view must stay
 	// resident across unrelated PSOs, but GPUVA->resource resolution is only
 	// needed when a later draw actually builds an IA-targeted override key.
@@ -817,6 +821,10 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
 		ia.vertexBuffers[slot] = newView;
+		ia.vertexBufferHashValid[slot] = false;
+		ia.vertexBufferHashes[slot] = 0;
+		ia.vertexBufferHashContentGeneration[slot] = 0;
+		ia.vertexBufferHashResolveGeneration[slot] = 0;
 		// See RememberIndexBuffer: resident Mod state keeps the live view here and
 		// resolves the backing resource lazily only for IA-targeted override work.
 		ia.vertexBufferResolved[slot] = false;
@@ -1038,6 +1046,96 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		item.slot = slot;
 		item.hash = vertexHash;
 		item.vertexView = ia.vertexBuffers[slot];
+		state->vertexBuffers.push_back(item);
+	}
+
+	return state->hasIndexBuffer || !state->vertexBuffers.empty();
+}
+
+static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
+{
+	if (!ia || !ia->hasIndexBuffer)
+		return 0;
+	if (!ia->indexBuffer.BufferLocation || !ia->indexBuffer.SizeInBytes)
+		return 0;
+	const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
+	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
+	if (ia->indexBufferHashValid &&
+	    ia->indexBufferHashContentGeneration == contentGeneration &&
+	    ia->indexBufferHashResolveGeneration == resolveGeneration) {
+		return ia->indexBufferHash;
+	}
+	ia->indexBufferHash = DX12HashIaBufferView(
+		ia->indexBuffer.BufferLocation,
+		ia->indexBuffer.SizeInBytes,
+		0,
+		static_cast<UINT>(ia->indexBuffer.Format),
+		0);
+	ia->indexBufferHashValid = true;
+	ia->indexBufferHashContentGeneration = contentGeneration;
+	ia->indexBufferHashResolveGeneration = resolveGeneration;
+	return ia->indexBufferHash;
+}
+
+static uint32_t GetOrBuildCachedVertexViewHash(
+	DX12ActiveIaState *ia,
+	UINT slot)
+{
+	if (!ia || slot >= ARRAYSIZE(ia->vertexBuffers) || !ia->hasVertexBuffer[slot])
+		return 0;
+	const D3D12_VERTEX_BUFFER_VIEW &view = ia->vertexBuffers[slot];
+	if (!view.BufferLocation || !view.SizeInBytes)
+		return 0;
+	const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
+	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
+	if (ia->vertexBufferHashValid[slot] &&
+	    ia->vertexBufferHashContentGeneration[slot] == contentGeneration &&
+	    ia->vertexBufferHashResolveGeneration[slot] == resolveGeneration) {
+		return ia->vertexBufferHashes[slot];
+	}
+	ia->vertexBufferHashes[slot] = DX12HashIaBufferView(
+		view.BufferLocation,
+		view.SizeInBytes,
+		view.StrideInBytes,
+		0,
+		slot);
+	ia->vertexBufferHashValid[slot] = true;
+	ia->vertexBufferHashContentGeneration[slot] = contentGeneration;
+	ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
+	return ia->vertexBufferHashes[slot];
+}
+
+bool DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
+	DX12ActiveIaState *ia, const DX12IaHashTargetPlan &targetPlan,
+	bool indexed, UINT vertexCount, UINT indexCount,
+	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
+{
+	if (!ia)
+		return false;
+	if (!state)
+		return false;
+	*state = DX12IaHashState();
+	state->vertexBuffers.reserve(8);
+	(void)vertexCount;
+	(void)indexCount;
+	(void)firstVertex;
+	(void)firstIndex;
+	(void)baseVertex;
+
+	if (targetPlan.RequiresIndexBuffer(indexed) && ia->hasIndexBuffer) {
+		state->hasIndexBuffer = true;
+		state->indexHash = targetPlan.RequiresIndexBufferHash(indexed) ?
+			GetOrBuildCachedIndexViewHash(ia) : 0;
+		state->indexView = ia->indexBuffer;
+	}
+
+	for (UINT slot = 0; slot < ARRAYSIZE(ia->vertexBuffers); ++slot) {
+		if (!ia->hasVertexBuffer[slot] || !targetPlan.RequiresVertexBuffer(slot))
+			continue;
+		DX12IaBufferHash item;
+		item.slot = slot;
+		item.hash = GetOrBuildCachedVertexViewHash(ia, slot);
+		item.vertexView = ia->vertexBuffers[slot];
 		state->vertexBuffers.push_back(item);
 	}
 

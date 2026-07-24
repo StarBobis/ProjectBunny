@@ -1962,7 +1962,8 @@ static bool FindDescriptorTextureOverrides(
 	const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	std::vector<DX12TextureOverrideMatch> *matches)
+	std::vector<DX12TextureOverrideMatch> *matches,
+	const std::vector<DX12CurrentShaderResourceBinding> *preResolvedBindings = nullptr)
 {
 	if (matches)
 		matches->clear();
@@ -2009,14 +2010,34 @@ static bool FindDescriptorTextureOverrides(
 		}
 	}
 
+	// DX11 consumes "current resources" at draw time rather than re-querying
+	// per target. When the caller already has the current graphics SRV state,
+	// reuse it across all descriptor-trigger checks in this draw.
+	const bool canUsePreResolvedBindings =
+		preResolvedBindings &&
+		!compute &&
+		DescriptorRangeTypeForTarget(target.kind) ==
+			D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 	std::vector<DX12CurrentShaderResourceBinding> bindings;
-	if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
-		    commandList,
-		    compute,
-		    DescriptorRangeTypeForTarget(target.kind),
-		    target.slot,
-		    0,
-		    &bindings)) {
+	const std::vector<DX12CurrentShaderResourceBinding> *bindingsView =
+		canUsePreResolvedBindings ? preResolvedBindings : &bindings;
+	if (!canUsePreResolvedBindings) {
+		if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
+			    commandList,
+			    compute,
+			    DescriptorRangeTypeForTarget(target.kind),
+			    target.slot,
+			    0,
+			    &bindings)) {
+			if (canUseSerialCache) {
+				if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+					tlsDescriptorCandidateCache.clear();
+				tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
+			}
+			return false;
+		}
+	}
+	if (!bindingsView || bindingsView->empty()) {
 		if (canUseSerialCache) {
 			if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
 				tlsDescriptorCandidateCache.clear();
@@ -2031,9 +2052,9 @@ static bool FindDescriptorTextureOverrides(
 		return false;
 
 	std::vector<DX12TextureOverrideMatch> candidates;
-	std::vector<uint32_t> resourceHashes(bindings.size(), 0);
-	for (size_t index = 0; index < bindings.size(); ++index) {
-		const DX12CurrentShaderResourceBinding &binding = bindings[index];
+	std::vector<uint32_t> resourceHashes(bindingsView->size(), 0);
+	for (size_t index = 0; index < bindingsView->size(); ++index) {
+		const DX12CurrentShaderResourceBinding &binding = (*bindingsView)[index];
 		if (!DescriptorBindingMatchesTarget(binding, target))
 			continue;
 		const uint32_t resourceHash =
@@ -2353,7 +2374,8 @@ static bool FindTargetTextureOverride(
 	const DX12IaHashState &iaState, const Bunny::CommandListTarget &target,
 	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
 	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	std::vector<DX12TextureOverrideMatch> *matches)
+	std::vector<DX12TextureOverrideMatch> *matches,
+	const std::vector<DX12CurrentShaderResourceBinding> *preResolvedGraphicsSrvs = nullptr)
 {
 	if (matches)
 		matches->clear();
@@ -2516,7 +2538,8 @@ static bool FindTargetTextureOverride(
 	    target.kind == Bunny::CommandListTargetKind::UnorderedAccessView) {
 		return FindDescriptorTextureOverrides(
 			commandList, target, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance, matches);
+			firstVertex, firstIndex, firstInstance, matches,
+			preResolvedGraphicsSrvs);
 	}
 
 	return false;

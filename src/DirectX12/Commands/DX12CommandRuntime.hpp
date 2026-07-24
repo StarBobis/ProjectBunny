@@ -7,10 +7,18 @@ class DX12ActiveIaState
 public:
 	bool hasIndexBuffer = false;
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
+	bool indexBufferHashValid = false;
+	uint32_t indexBufferHash = 0;
+	UINT64 indexBufferHashContentGeneration = 0;
+	UINT64 indexBufferHashResolveGeneration = 0;
 	bool indexBufferResolved = false;
 	DX12BufferResourceSummary indexBufferResource = {};
 	bool hasVertexBuffer[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
+	bool vertexBufferHashValid[32] = {};
+	uint32_t vertexBufferHashes[32] = {};
+	UINT64 vertexBufferHashContentGeneration[32] = {};
+	UINT64 vertexBufferHashResolveGeneration[32] = {};
 	bool vertexBufferResolved[32] = {};
 	DX12BufferResourceSummary vertexBufferResources[32] = {};
 	bool preSkinRedirectNegativeValid[32] = {};
@@ -1654,6 +1662,7 @@ public:
 	static void BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
+	static bool BuildIaHashStateForTargetsCached(DX12ActiveIaState *ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, UINT64 iaContentEpoch, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargetsCached(DX12CommandListRuntimeState *state, UINT cacheSlot, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);

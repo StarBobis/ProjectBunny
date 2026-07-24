@@ -2802,8 +2802,8 @@ public:
 						&directHashFound);
 				}
 				if (!directHashCacheHit) {
-					directHashFound = DX12CommandListRuntime::BuildIaHashStateForTargets(
-						runtimeState.ia,
+					directHashFound = DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
+						&mutableRuntimeState->ia,
 						directTargetPlan,
 						draw.indexed,
 						draw.vertexCount,
@@ -3083,8 +3083,8 @@ public:
 				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
 				DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
 				LARGE_INTEGER buildHashBegin = DX12OuterTimingProbeUtils::Now();
-				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargets(
-					runtimeState.ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
+				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
+					&mutableRuntimeState->ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
 					draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
 				activeIaState = &iaState;
 				DX12OuterTimingProbeUtils::LogCpuStage(
