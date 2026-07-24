@@ -210,6 +210,7 @@ public:
 			DX12PresentSkipLogUtils::Record("Present", "AfterOriginalSkip", swapChain, skipHr);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			DX12RuntimeState::IncrementPresentCount();
+			DX12ModRunPresentMaintenance();
 			DX12HuntOnPresent();
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				RunPostPresentUi(swapChain);
@@ -265,6 +266,7 @@ public:
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
+		DX12ModRunPresentMaintenance();
 		DX12HuntOnPresent();
 		RunPostPresentUi(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
@@ -344,6 +346,7 @@ public:
 			DX12PresentSkipLogUtils::Record("Present1", "AfterOriginalSkip", swapChain, skipHr);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			DX12RuntimeState::IncrementPresentCount();
+			DX12ModRunPresentMaintenance();
 			DX12HuntOnPresent();
 			if (DX12RuntimeState::GetPresentCount() > 2)
 				RunPostPresentUi(swapChain);
@@ -397,6 +400,7 @@ public:
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
+		DX12ModRunPresentMaintenance();
 		DX12HuntOnPresent();
 		RunPostPresentUi(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(

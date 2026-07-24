@@ -1356,9 +1356,7 @@ static volatile LONG gHasPendingPreSkinSubmissionWorkFast = 0;
 static void PublishPendingPreSkinSubmissionWorkLocked()
 {
 	const bool hasWork =
-		!gPendingPreSkinSubmissions.empty() ||
-		!gRetiredPreSkinResources.empty() ||
-		!gRetiredPreSkinDescriptorHeaps.empty();
+		!gPendingPreSkinSubmissions.empty();
 	InterlockedExchange(
 		&gHasPendingPreSkinSubmissionWorkFast,
 		hasWork ? 1 : 0);
@@ -1414,6 +1412,19 @@ static void MovePendingPreSkinSubmission(
 		&source->resources, &target->resources);
 	DX12DescriptorArenaUtils::MoveUniqueOwned(
 		&source->descriptorHeaps, &target->descriptorHeaps);
+}
+
+static void MovePendingPreSkinSubmissionForCommandListLocked(
+	IUnknown *identity,
+	DX12PreSkinPendingSubmission *target)
+{
+	if (!identity || !target)
+		return;
+	auto it = gPendingPreSkinSubmissions.find(identity);
+	if (it == gPendingPreSkinSubmissions.end())
+		return;
+	MovePendingPreSkinSubmission(&it->second, target);
+	gPendingPreSkinSubmissions.erase(it);
 }
 
 static void MovePendingPreSkinSubmissionToReleaseBatch(
@@ -1540,11 +1551,6 @@ void DX12ModNotifyCommandListsSubmitted(
 	if (!queue || !commandLists || !numCommandLists)
 		return;
 
-	std::vector<IUnknown*> identities;
-	identities.reserve(numCommandLists);
-	for (UINT i = 0; i < numCommandLists; ++i)
-		identities.push_back(PreSkinCommandListIdentity(commandLists[i]));
-
 	DX12PreSkinReleaseBatch releaseBatch;
 	DX12PreSkinPendingSubmission pending;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
@@ -1556,12 +1562,12 @@ void DX12ModNotifyCommandListsSubmitted(
 		gPendingPreSkinSubmissions.erase(globalIt);
 	}
 
-	for (IUnknown *identity : identities) {
-		auto it = gPendingPreSkinSubmissions.find(identity);
-		if (it == gPendingPreSkinSubmissions.end())
-			continue;
-		MovePendingPreSkinSubmission(&it->second, &pending);
-		gPendingPreSkinSubmissions.erase(it);
+	if (!gPendingPreSkinSubmissions.empty()) {
+		for (UINT i = 0; i < numCommandLists; ++i) {
+			MovePendingPreSkinSubmissionForCommandListLocked(
+				PreSkinCommandListIdentity(commandLists[i]),
+				&pending);
+		}
 	}
 
 	if (pending.resources.empty() && pending.descriptorHeaps.empty()) {
@@ -1600,6 +1606,16 @@ bool DX12ModNeedsCommandListSubmissionNotifications()
 		0,
 		0) != 0;
 }
+
+void DX12ModRunPresentMaintenance()
+{
+	DX12PreSkinReleaseBatch releaseBatch;
+	AcquireSRWLockExclusive(&gPreSkinRetireLock);
+	CleanupRetiredPreSkinObjectsLocked(&releaseBatch);
+	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
+	ReleasePreSkinReleaseBatch(&releaseBatch);
+}
+
 static void ReleasePreSkinDescriptorRingLocked(DX12PreSkinReleaseBatch *releaseBatch)
 {
 	if (!releaseBatch)
