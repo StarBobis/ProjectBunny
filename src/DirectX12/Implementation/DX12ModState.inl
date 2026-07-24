@@ -212,10 +212,12 @@ public:
 
 	bool unsupported = false;
 	bool handlingSkip = false;
+	bool hasDescriptorCheckTargets = false;
 	std::wstring indexResource;
 	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
 	std::vector<DX12ModIaReplacement::DrawCall> draws;
 	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
+	std::vector<Bunny::CommandListTarget> descriptorCheckTargets;
 	std::vector<Op> ops;
 
 	bool NeedsResidentIaState() const

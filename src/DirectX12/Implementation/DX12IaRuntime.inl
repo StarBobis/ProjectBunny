@@ -502,6 +502,23 @@ static bool AppendActionToCompiledPlan(
 	if (!plan)
 		return false;
 
+	auto targetNeedsDescriptorBindings = [](const Bunny::CommandListTarget &target) {
+		return target.kind == Bunny::CommandListTargetKind::ConstantBuffer ||
+			target.kind == Bunny::CommandListTargetKind::ShaderResource ||
+			target.kind == Bunny::CommandListTargetKind::UnorderedAccessView;
+	};
+	auto appendUniqueDescriptorCheckTarget = [plan](const Bunny::CommandListTarget &target) {
+		for (const Bunny::CommandListTarget &existing : plan->descriptorCheckTargets) {
+			if (existing.kind == target.kind &&
+				existing.stage == target.stage &&
+				existing.slot == target.slot) {
+				return;
+			}
+		}
+		plan->descriptorCheckTargets.push_back(target);
+		plan->hasDescriptorCheckTargets = true;
+	};
+
 	switch (action.kind)
 	{
 	case Bunny::CommandListActionKind::HandlingSkip:
@@ -605,6 +622,8 @@ static bool AppendActionToCompiledPlan(
 		op.kind = DX12CompiledCommandListPlan::Op::Kind::CheckTextureOverride;
 		op.target = action.target;
 		plan->ops.push_back(std::move(op));
+		if (targetNeedsDescriptorBindings(action.target))
+			appendUniqueDescriptorCheckTarget(action.target);
 		return true;
 	}
 	default:
@@ -618,10 +637,25 @@ static void AppendCompiledCommandListPlan(
 	if (!dst)
 		return;
 	dst->handlingSkip = dst->handlingSkip || src.handlingSkip;
+	dst->hasDescriptorCheckTargets =
+		dst->hasDescriptorCheckTargets || src.hasDescriptorCheckTargets;
 	if (!src.indexResource.empty())
 		dst->indexResource = src.indexResource;
 	for (const auto &item : src.vertexResources)
 		SetCompiledVertexResourceBinding(&dst->vertexResources, item.slot, item.resource);
+	for (const Bunny::CommandListTarget &target : src.descriptorCheckTargets) {
+		bool exists = false;
+		for (const Bunny::CommandListTarget &existing : dst->descriptorCheckTargets) {
+			if (existing.kind == target.kind &&
+				existing.stage == target.stage &&
+				existing.slot == target.slot) {
+				exists = true;
+				break;
+			}
+		}
+		if (!exists)
+			dst->descriptorCheckTargets.push_back(target);
+	}
 	dst->draws.insert(dst->draws.end(), src.draws.begin(), src.draws.end());
 	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
 	dst->ops.insert(dst->ops.end(), src.ops.begin(), src.ops.end());

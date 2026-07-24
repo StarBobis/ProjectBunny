@@ -1303,6 +1303,121 @@ public:
 		ExecuteCompiledCommandListPlan(plan.postCommandListPlan, 0, true);
 	}
 
+	void BuildDescriptorTextureOverrideCacheForTargets(
+		const std::vector<Bunny::CommandListTarget> *targets)
+	{
+		mGraphicsSrvTextureOverrideCacheResolved = true;
+		mGraphicsSrvTextureOverrideCache.clear();
+		if (!mCommandList)
+			return;
+
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		if (!snapshot)
+			return;
+		if (!HasPotentialResolvedDescriptorPrefilterCandidates(
+				*snapshot,
+				mVertexCount,
+				mIndexCount))
+			return;
+
+		static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
+		CollectResolvedDescriptorPrefilterSectionIds(
+			*snapshot,
+			mVertexCount,
+			mIndexCount,
+			&tlsAllowedSectionIds);
+		if (tlsAllowedSectionIds.empty())
+			return;
+
+		auto appendTarget = [this, &snapshot](const Bunny::CommandListTarget &target) {
+			const DX12TextureOverrideTargetCacheKey cacheKey = {
+				static_cast<uint32_t>(target.kind),
+				static_cast<uint32_t>(target.stage),
+				target.slot
+			};
+			auto overridden = mShaderResourceOverrideBindingsByTarget.find(cacheKey);
+			const std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindingsView = nullptr;
+			std::vector<DX12ResolvedGraphicsSrvBinding> resolvedBindings;
+			if (overridden != mShaderResourceOverrideBindingsByTarget.end()) {
+				resolvedBindingsView = &overridden->second;
+			} else if (target.kind == Bunny::CommandListTargetKind::ShaderResource &&
+				(target.stage == Bunny::CommandListShaderStage::Vertex ||
+				 target.stage == Bunny::CommandListShaderStage::Pixel)) {
+				resolvedBindingsView = GetResolvedGraphicsSrvBindingsForTarget(target);
+			} else {
+				std::vector<DX12CurrentShaderResourceBinding> bindings;
+				if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
+						mCommandList,
+						target.stage == Bunny::CommandListShaderStage::Compute,
+						DescriptorRangeTypeForTarget(target.kind),
+						target.slot,
+						0,
+						&bindings) || bindings.empty()) {
+					return;
+				}
+				ResolveGraphicsSrvBindings(
+					mCommandList,
+					mDevice,
+					bindings,
+					&resolvedBindings);
+				resolvedBindingsView = &resolvedBindings;
+			}
+			if (!resolvedBindingsView || resolvedBindingsView->empty())
+				return;
+
+			std::vector<DX12TextureOverrideMatch> resolvedMatches;
+			FindDescriptorTextureOverridesFromResolvedBindings(
+				snapshot,
+				target,
+				*resolvedBindingsView,
+				mVertexCount,
+				mIndexCount,
+				mInstanceCount,
+				mFirstVertex,
+				mFirstIndex,
+				mFirstInstance,
+				&resolvedMatches);
+			if (!resolvedMatches.empty())
+				mGraphicsSrvTextureOverrideCache[cacheKey] = std::move(resolvedMatches);
+		};
+
+		if (targets) {
+			if (targets->empty())
+				return;
+			for (const Bunny::CommandListTarget &target : *targets)
+				appendTarget(target);
+			return;
+		}
+
+		BuildDescriptorTextureOverrideCache();
+	}
+
+	void CollectDescriptorCheckTargetsFromActions(
+		const std::vector<Bunny::CommandListAction> &actions)
+	{
+		mDescriptorTargetScratch.clear();
+		for (const Bunny::CommandListAction &action : actions) {
+			if (action.kind != Bunny::CommandListActionKind::CheckTextureOverride)
+				continue;
+			if (action.target.kind != Bunny::CommandListTargetKind::ConstantBuffer &&
+				action.target.kind != Bunny::CommandListTargetKind::ShaderResource &&
+				action.target.kind != Bunny::CommandListTargetKind::UnorderedAccessView)
+				continue;
+			bool exists = false;
+			for (const Bunny::CommandListTarget &existing : mDescriptorTargetScratch) {
+				if (existing.kind == action.target.kind &&
+					existing.stage == action.target.stage &&
+					existing.slot == action.target.slot) {
+					exists = true;
+					break;
+				}
+			}
+			if (!exists)
+				mDescriptorTargetScratch.push_back(action.target);
+		}
+	}
+
 	void RunCheckTextureOverrideTarget(
 		const Bunny::CommandListTarget &target,
 		int depth,
@@ -1339,6 +1454,8 @@ public:
 		const DX12CompiledCommandListPlan &plan, int depth, bool includePost)
 	{
 		const bool executeActions = mReplacement && (mExecuteCommands || mExecuteDrawActions);
+		if (plan.hasDescriptorCheckTargets && !plan.descriptorCheckTargets.empty())
+			BuildDescriptorTextureOverrideCacheForTargets(&plan.descriptorCheckTargets);
 		if (!plan.ops.empty()) {
 			for (const DX12CompiledCommandListPlan::Op &op : plan.ops) {
 				switch (op.kind) {
@@ -1718,6 +1835,9 @@ public:
 			return;
 		if (!EnterCommandList(commandList.section))
 			return;
+		CollectDescriptorCheckTargetsFromActions(commandList.actions);
+		if (!mDescriptorTargetScratch.empty())
+			BuildDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
 		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : commandList.actions) {
 			if (ApplyVmAction(action, includePost))
@@ -1794,6 +1914,9 @@ public:
 			return;
 
 		const bool executeActions = mReplacement && (mExecuteCommands || mExecuteDrawActions);
+		CollectDescriptorCheckTargetsFromActions(actions);
+		if (!mDescriptorTargetScratch.empty())
+			BuildDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
 		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : actions) {
 			if (ApplyVmAction(action, includePost))
@@ -1982,6 +2105,7 @@ public:
 	bool mGraphicsSrvTextureOverrideCacheResolved = false;
 	bool mTextureOverrideRuntimeSnapshotResolved = false;
 	std::vector<std::wstring> mCommandListStack;
+	std::vector<Bunny::CommandListTarget> mDescriptorTargetScratch;
 	std::vector<DX12TextureOverrideMatch> mTargetMatchScratch;
 	std::vector<DX12CurrentShaderResourceBinding> mGraphicsSrvBindings;
 	std::vector<DX12ResolvedGraphicsSrvBinding> mResolvedGraphicsSrvBindings;
