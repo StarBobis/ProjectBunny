@@ -3249,7 +3249,7 @@ public:
 					drawDecision->reloadGeneration,
 					preSkinGeneration,
 					targetPlan,
-					DX12DrawMatchUsage(),
+					drawDecision->targetDrawMatchUsage,
 					*activeIaState,
 					draw);
 				DX12OuterTimingProbeUtils::LogCpuStage(

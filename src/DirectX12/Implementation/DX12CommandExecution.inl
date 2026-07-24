@@ -2462,6 +2462,22 @@ static void MergeTextureOverrideDrawMatchUsage(
 	usage->useFirstInstance = usage->useFirstInstance || config.hasMatchFirstInstance;
 }
 
+static void AppendUniqueDrawMatchUsageTargetLocked(
+	const Bunny::CommandListTarget &target,
+	std::vector<Bunny::CommandListTarget> *targets)
+{
+	if (!targets)
+		return;
+	for (const Bunny::CommandListTarget &existing : *targets) {
+		if (existing.kind == target.kind &&
+			existing.stage == target.stage &&
+			existing.slot == target.slot) {
+			return;
+		}
+	}
+	targets->push_back(target);
+}
+
 static bool DrawMatchUsageCommandListRuntimeEffectLocked(const std::wstring &name)
 {
 	std::unordered_map<std::wstring, bool>::const_iterator found =
@@ -2469,17 +2485,19 @@ static bool DrawMatchUsageCommandListRuntimeEffectLocked(const std::wstring &nam
 	return found == gCommandListPreRuntimeEffect.end() || found->second;
 }
 
-static bool ActionsHaveCheckTextureOverrideLocked(
+static void CollectCheckTextureOverrideTargetsFromActionsLocked(
 	const std::vector<Bunny::CommandListAction> &actions,
 	UINT depth,
-	std::unordered_set<std::wstring> *commandListStack)
+	std::unordered_set<std::wstring> *commandListStack,
+	std::vector<Bunny::CommandListTarget> *targets)
 {
 	if (depth > 16)
-		return false;
+		return;
 	for (const Bunny::CommandListAction &action : actions) {
 		switch (action.kind) {
 		case Bunny::CommandListActionKind::CheckTextureOverride:
-			return true;
+			AppendUniqueDrawMatchUsageTargetLocked(action.target, targets);
+			break;
 		case Bunny::CommandListActionKind::Run: {
 			if (action.commandList.empty() ||
 				!DrawMatchUsageCommandListRuntimeEffectLocked(action.commandList)) {
@@ -2494,70 +2512,159 @@ static bool ActionsHaveCheckTextureOverrideLocked(
 				commandListStack->insert(action.commandList);
 			Bunny::CommandListMap::const_iterator found =
 				gCommandLists.find(action.commandList);
-			const bool nested =
-				found != gCommandLists.end() &&
-				ActionsHaveCheckTextureOverrideLocked(
+			if (found != gCommandLists.end()) {
+				CollectCheckTextureOverrideTargetsFromActionsLocked(
 					found->second.actions,
 					depth + 1,
-					commandListStack);
+					commandListStack,
+					targets);
+			}
 			if (commandListStack)
 				commandListStack->erase(action.commandList);
-			if (nested)
-				return true;
 			break;
 		}
 		default:
 			break;
 		}
 	}
-	return false;
 }
 
-static bool ShaderOverrideHasCheckTextureOverrideLocked(
-	const Bunny::ShaderOverrideConfig &config)
+static void CollectCheckTextureOverrideTargetsFromShaderOverrideLocked(
+	const Bunny::ShaderOverrideConfig &config,
+	std::vector<Bunny::CommandListTarget> *targets)
 {
 	std::unordered_set<std::wstring> commandListStack;
-	if (ActionsHaveCheckTextureOverrideLocked(
-			config.actions,
-			0,
-			&commandListStack)) {
-		return true;
-	}
+	CollectCheckTextureOverrideTargetsFromActionsLocked(
+		config.actions,
+		0,
+		&commandListStack,
+		targets);
 	for (const std::wstring &name : config.commandLists.pre) {
 		if (!name.empty()) {
 			commandListStack.insert(name);
 			Bunny::CommandListMap::const_iterator found = gCommandLists.find(name);
-			const bool nested =
-				DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
-				found != gCommandLists.end() &&
-				ActionsHaveCheckTextureOverrideLocked(found->second.actions, 1, &commandListStack);
+			if (DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
+				found != gCommandLists.end()) {
+				CollectCheckTextureOverrideTargetsFromActionsLocked(
+					found->second.actions,
+					1,
+					&commandListStack,
+					targets);
+			}
 			commandListStack.erase(name);
-			if (nested)
-				return true;
 		}
 	}
 	for (const std::wstring &name : config.commandLists.main) {
 		if (!name.empty()) {
 			commandListStack.insert(name);
 			Bunny::CommandListMap::const_iterator found = gCommandLists.find(name);
-			const bool nested =
-				DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
-				found != gCommandLists.end() &&
-				ActionsHaveCheckTextureOverrideLocked(found->second.actions, 1, &commandListStack);
+			if (DrawMatchUsageCommandListRuntimeEffectLocked(name) &&
+				found != gCommandLists.end()) {
+				CollectCheckTextureOverrideTargetsFromActionsLocked(
+					found->second.actions,
+					1,
+					&commandListStack,
+					targets);
+			}
 			commandListStack.erase(name);
-			if (nested)
-				return true;
 		}
 	}
-	return false;
 }
 
-static DX12DrawMatchUsage BuildTextureOverrideDrawMatchUsageLocked()
+static void MergeAllTextureOverrideDrawMatchUsageLocked(
+	DX12DrawMatchUsage *usage)
+{
+	if (!usage)
+		return;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (snapshot) {
+		std::unordered_map<uint32_t, std::shared_ptr<const Bunny::TextureOverrideConfig>>::const_iterator it =
+			snapshot->textureOverridesBySectionId.begin();
+		for (; it != snapshot->textureOverridesBySectionId.end(); ++it) {
+			if (it->second)
+				MergeTextureOverrideDrawMatchUsage(*it->second, usage);
+		}
+		return;
+	}
+	Bunny::TextureOverrideMap::const_iterator bucket = gTextureOverrides.begin();
+	for (; bucket != gTextureOverrides.end(); ++bucket) {
+		const std::vector<Bunny::TextureOverrideConfig> &configs = bucket->second;
+		for (const Bunny::TextureOverrideConfig &config : configs)
+			MergeTextureOverrideDrawMatchUsage(config, usage);
+	}
+}
+
+static void MergeDescriptorTextureOverrideDrawMatchUsageLocked(
+	DX12DrawMatchUsage *usage)
+{
+	if (!usage)
+		return;
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadCommandExecutionRuntimeSnapshot();
+	if (snapshot) {
+		std::unordered_set<const Bunny::TextureOverrideConfig*> seenConfigs;
+		std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>::const_iterator bucket =
+			snapshot->textureOverridesByHash.begin();
+		for (; bucket != snapshot->textureOverridesByHash.end(); ++bucket) {
+			if (!bucket->first)
+				continue;
+			const std::vector<DX12TriggeredTextureOverride> &triggers = bucket->second;
+			for (const DX12TriggeredTextureOverride &triggered : triggers) {
+				if (!triggered.config || !seenConfigs.insert(triggered.config).second)
+					continue;
+				MergeTextureOverrideDrawMatchUsage(*triggered.config, usage);
+			}
+		}
+		return;
+	}
+	Bunny::TextureOverrideMap::const_iterator bucket = gTextureOverrides.begin();
+	for (; bucket != gTextureOverrides.end(); ++bucket) {
+		if (!bucket->first)
+			continue;
+		const std::vector<Bunny::TextureOverrideConfig> &configs = bucket->second;
+		for (const Bunny::TextureOverrideConfig &config : configs)
+			MergeTextureOverrideDrawMatchUsage(config, usage);
+	}
+}
+
+static void MergeIaTextureOverrideDrawMatchUsageLocked(
+	bool indexBuffer,
+	uint32_t vertexSlot,
+	DX12DrawMatchUsage *usage)
+{
+	if (!usage)
+		return;
+	for (size_t index = 0; index < gIaTextureOverrides.size(); ++index) {
+		const Bunny::TextureOverrideConfig *config = gIaTextureOverrides[index].config;
+		if (!config)
+			continue;
+		if (!TextureOverrideMatchesIaBinding(*config, indexBuffer, vertexSlot))
+			continue;
+		MergeTextureOverrideDrawMatchUsage(*config, usage);
+	}
+}
+
+static DX12DrawMatchUsage BuildTextureOverrideDrawMatchUsageLocked(
+	const std::vector<Bunny::CommandListTarget> &targets)
 {
 	DX12DrawMatchUsage usage;
-	for (const auto &bucket : gTextureOverrides) {
-		for (const Bunny::TextureOverrideConfig &config : bucket.second)
-			MergeTextureOverrideDrawMatchUsage(config, &usage);
+	for (const Bunny::CommandListTarget &target : targets) {
+		switch (target.kind) {
+		case Bunny::CommandListTargetKind::IndexBuffer:
+			MergeIaTextureOverrideDrawMatchUsageLocked(true, 0, &usage);
+			break;
+		case Bunny::CommandListTargetKind::VertexBuffer:
+			MergeIaTextureOverrideDrawMatchUsageLocked(false, target.slot, &usage);
+			break;
+		case Bunny::CommandListTargetKind::ConstantBuffer:
+		case Bunny::CommandListTargetKind::ShaderResource:
+		case Bunny::CommandListTargetKind::UnorderedAccessView:
+			MergeDescriptorTextureOverrideDrawMatchUsageLocked(&usage);
+			break;
+		default:
+			break;
+		}
 	}
 	return usage;
 }
@@ -2565,21 +2672,22 @@ static DX12DrawMatchUsage BuildTextureOverrideDrawMatchUsageLocked()
 static DX12DrawMatchUsage BuildDrawMatchUsageLocked(
 	const std::vector<const Bunny::ShaderOverrideConfig*> &configs)
 {
+	std::vector<Bunny::CommandListTarget> targets;
 	for (const Bunny::ShaderOverrideConfig *config : configs) {
-		if (config && ShaderOverrideHasCheckTextureOverrideLocked(*config))
-			return BuildTextureOverrideDrawMatchUsageLocked();
+		if (config)
+			CollectCheckTextureOverrideTargetsFromShaderOverrideLocked(*config, &targets);
 	}
-	return DX12DrawMatchUsage();
+	return BuildTextureOverrideDrawMatchUsageLocked(targets);
 }
 
 static DX12DrawMatchUsage BuildDrawMatchUsageLocked(
 	const std::vector<Bunny::ShaderOverrideConfig> &configs)
 {
+	std::vector<Bunny::CommandListTarget> targets;
 	for (const Bunny::ShaderOverrideConfig &config : configs) {
-		if (ShaderOverrideHasCheckTextureOverrideLocked(config))
-			return BuildTextureOverrideDrawMatchUsageLocked();
+		CollectCheckTextureOverrideTargetsFromShaderOverrideLocked(config, &targets);
 	}
-	return DX12DrawMatchUsage();
+	return BuildTextureOverrideDrawMatchUsageLocked(targets);
 }
 
 class DX12ShaderOverrideConfigView
