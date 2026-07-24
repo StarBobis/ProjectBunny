@@ -206,12 +206,18 @@ class DX12DirectDescriptorPrefilterCache
 public:
 	UINT64 reloadGeneration = 0;
 	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 descriptorQuerySerial = 0;
+	ID3D12DescriptorHeap *descriptorHeap = nullptr;
+	UINT64 descriptorHeapVersion = 0;
+	UINT64 textureHashGeneration = 0;
+	UINT64 targetPlanFingerprint = 0;
 	uint32_t vertexCount = 0;
 	uint32_t indexCount = 0;
 	uint32_t instanceCount = 0;
 	uint32_t firstVertex = 0;
 	uint32_t firstIndex = 0;
 	uint32_t firstInstance = 0;
+	bool hasCandidate = false;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
 		std::vector<DX12TextureOverrideMatch>,
@@ -221,18 +227,29 @@ public:
 	{
 		reloadGeneration = 0;
 		commandList = nullptr;
+		descriptorQuerySerial = 0;
+		descriptorHeap = nullptr;
+		descriptorHeapVersion = 0;
+		textureHashGeneration = 0;
+		targetPlanFingerprint = 0;
 		vertexCount = 0;
 		indexCount = 0;
 		instanceCount = 0;
 		firstVertex = 0;
 		firstIndex = 0;
 		firstInstance = 0;
+		hasCandidate = false;
 		matchesByTarget.clear();
 	}
 
 	void SetInvocation(
 		UINT64 generation,
 		ID3D12GraphicsCommandList *list,
+		UINT64 currentDescriptorQuerySerial,
+		ID3D12DescriptorHeap *currentDescriptorHeap,
+		UINT64 currentDescriptorHeapVersion,
+		UINT64 currentTextureHashGeneration,
+		UINT64 currentTargetPlanFingerprint,
 		uint32_t drawVertexCount,
 		uint32_t drawIndexCount,
 		uint32_t drawInstanceCount,
@@ -240,15 +257,67 @@ public:
 		uint32_t drawFirstIndex,
 		uint32_t drawFirstInstance)
 	{
+		if (MatchesInvocation(
+				generation,
+				list,
+				currentDescriptorQuerySerial,
+				currentDescriptorHeap,
+				currentDescriptorHeapVersion,
+				currentTextureHashGeneration,
+				currentTargetPlanFingerprint,
+				drawVertexCount,
+				drawIndexCount,
+				drawInstanceCount,
+				drawFirstVertex,
+				drawFirstIndex,
+				drawFirstInstance)) {
+			return;
+		}
 		reloadGeneration = generation;
 		commandList = list;
+		descriptorQuerySerial = currentDescriptorQuerySerial;
+		descriptorHeap = currentDescriptorHeap;
+		descriptorHeapVersion = currentDescriptorHeapVersion;
+		textureHashGeneration = currentTextureHashGeneration;
+		targetPlanFingerprint = currentTargetPlanFingerprint;
 		vertexCount = drawVertexCount;
 		indexCount = drawIndexCount;
 		instanceCount = drawInstanceCount;
 		firstVertex = drawFirstVertex;
 		firstIndex = drawFirstIndex;
 		firstInstance = drawFirstInstance;
+		hasCandidate = false;
 		matchesByTarget.clear();
+	}
+
+	bool MatchesInvocation(
+		UINT64 generation,
+		ID3D12GraphicsCommandList *list,
+		UINT64 currentDescriptorQuerySerial,
+		ID3D12DescriptorHeap *currentDescriptorHeap,
+		UINT64 currentDescriptorHeapVersion,
+		UINT64 currentTextureHashGeneration,
+		UINT64 currentTargetPlanFingerprint,
+		uint32_t drawVertexCount,
+		uint32_t drawIndexCount,
+		uint32_t drawInstanceCount,
+		uint32_t drawFirstVertex,
+		uint32_t drawFirstIndex,
+		uint32_t drawFirstInstance) const
+	{
+		return reloadGeneration == generation &&
+			commandList == list &&
+			descriptorQuerySerial == currentDescriptorQuerySerial &&
+			descriptorHeap == currentDescriptorHeap &&
+			descriptorHeapVersion == currentDescriptorHeapVersion &&
+			textureHashGeneration == currentTextureHashGeneration &&
+			targetPlanFingerprint == currentTargetPlanFingerprint &&
+			vertexCount == drawVertexCount &&
+			indexCount == drawIndexCount &&
+			instanceCount == drawInstanceCount &&
+			firstVertex == drawFirstVertex &&
+			firstIndex == drawFirstIndex &&
+			firstInstance == drawFirstInstance;
 	}
 
 	bool MatchesInvocation(
@@ -3812,15 +3881,53 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	}
 
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	const UINT64 descriptorQuerySerial =
+		runtimeState && runtimeState->graphicsDescriptorQuerySerial ?
+			runtimeState->graphicsDescriptorQuerySerial : 1;
+	ID3D12DescriptorHeap *descriptorHeap =
+		runtimeState ? runtimeState->cbvSrvUavHeap : nullptr;
+	const UINT64 descriptorHeapVersion =
+		DX12GetDescriptorHeapVersion(descriptorHeap);
+	const UINT64 textureHashGeneration = DX12GetTextureHashGeneration();
+	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
 	tlsDirectDescriptorPrefilterCache.SetInvocation(
 		reloadGeneration,
 		commandList,
+		descriptorQuerySerial,
+		descriptorHeap,
+		descriptorHeapVersion,
+		textureHashGeneration,
+		targetPlanFingerprint,
 		vertexCount,
 		indexCount,
 		instanceCount,
 		firstVertex,
 		firstIndex,
 		firstInstance);
+	if (!tlsDirectDescriptorPrefilterCache.matchesByTarget.empty() ||
+		!tlsDirectDescriptorPrefilterCache.hasCandidate) {
+		const bool cacheMatches = tlsDirectDescriptorPrefilterCache.MatchesInvocation(
+			reloadGeneration,
+			commandList,
+			descriptorQuerySerial,
+			descriptorHeap,
+			descriptorHeapVersion,
+			textureHashGeneration,
+			targetPlanFingerprint,
+			vertexCount,
+			indexCount,
+			instanceCount,
+			firstVertex,
+			firstIndex,
+			firstInstance);
+		if (cacheMatches &&
+			(!tlsDirectDescriptorPrefilterCache.matchesByTarget.empty() ||
+			 tlsDirectDescriptorPrefilterCache.hasCandidate)) {
+			return tlsDirectDescriptorPrefilterCache.hasCandidate;
+		}
+	}
 
 	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
 		LoadTextureOverrideRuntimeSnapshot();
@@ -3841,8 +3948,6 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	if (tlsAllowedSectionIds.empty())
 		return false;
 
-	DX12CommandListRuntimeState *runtimeState =
-		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
@@ -3931,6 +4036,7 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 				firstInstance,
 				&matches)) {
 			tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;
+				tlsDirectDescriptorPrefilterCache.hasCandidate = true;
 			return true;
 		}
 		tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;

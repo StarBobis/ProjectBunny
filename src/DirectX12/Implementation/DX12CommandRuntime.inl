@@ -317,12 +317,24 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 {
 	if (!state)
 		return;
+	state->plan = DX12ResolvedDrawRuntimeState::ResolvedPlanState();
 	DX12IaHashStateCacheUtils::Clear(&state->iaHashStateCache);
 	DX12DirectIaProbeCacheUtils::Clear(&state->directIaProbeCache);
 	state->iaHashKeyPrefixes = {};
 	state->lastDirectIaHashBuild = {};
 	state->lastFullIaHashBuild = {};
 	state->residentDrawNegativeCache = {};
+}
+
+void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
+	DX12ResolvedDrawRuntimeState *state)
+{
+	if (!state)
+		return;
+	state->plan.dirty = true;
+	++state->plan.invalidationSerial;
+	if (!state->plan.invalidationSerial)
+		state->plan.invalidationSerial = 1;
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
@@ -406,6 +418,7 @@ void DX12CommandListRuntime::Reset(
 	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
 	state->resolvedDraw = std::move(persistentResolvedDraw);
+	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
 }
@@ -666,6 +679,14 @@ void DX12CommandListRuntime::CompileDrawDecision(
 		state->pipelineState, hasShaderOverrides);
 }
 
+void DX12CommandListRuntime::InvalidateResolvedDrawPlan(
+	DX12CommandListRuntimeState *state)
+{
+	if (!state)
+		return;
+	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
+}
+
 void DX12CommandListRuntime::RememberPipelineState(
 	DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState)
 {
@@ -685,6 +706,7 @@ void DX12CommandListRuntime::RememberPipelineState(
 	state->dispatchDecision.Reset();
 	state->drawDecision.Reset();
 	state->pipelineState = pipelineState;
+	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 	if (!pipelineState) {
 		state->cachedCsHash = 0;
 		state->cachedCsHashValid = false;
@@ -904,6 +926,7 @@ void DX12CommandListRuntime::BumpIaEpoch(DX12CommandListRuntimeState *state)
 	state->iaEpoch++;
 	if (!state->iaEpoch)
 		state->iaEpoch = 1;
+	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
 void DX12CommandListRuntime::BumpIaContentEpoch(DX12CommandListRuntimeState *state)
@@ -1613,6 +1636,7 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
+	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
 void DX12CommandListRuntime::SetDescriptorHeaps(
@@ -1677,6 +1701,7 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 	state->graphicsRootTableValidCount = 0;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
+	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootSignature(
@@ -1764,6 +1789,7 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	} else {
 		DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
+		DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 	}
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
@@ -1820,6 +1846,7 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 	descriptor.address = address;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
+	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootDescriptor(

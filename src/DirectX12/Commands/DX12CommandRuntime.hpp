@@ -1446,6 +1446,13 @@ public:
 class DX12ResolvedDrawRuntimeState
 {
 public:
+	class ResolvedPlanState
+	{
+	public:
+		bool dirty = true;
+		UINT64 invalidationSerial = 1;
+	};
+
 	class CachedIaHashBuildEntry
 	{
 	public:
@@ -1466,12 +1473,16 @@ public:
 	// Small direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
 	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
+	// Unlike IA caches, a resolved plan describes the current command-list
+	// bindings and must never survive Reset or a graphics-state transition.
+	ResolvedPlanState plan;
 };
 
 class DX12ResolvedDrawRuntimeStateUtils
 {
 public:
 	static void Clear(DX12ResolvedDrawRuntimeState *state);
+	static void InvalidatePlan(DX12ResolvedDrawRuntimeState *state);
 	static void EnsureScene(DX12ResolvedDrawRuntimeState *state);
 	static void NoteLookup(
 		DX12ResolvedDrawRuntimeState *state,
@@ -1702,6 +1713,7 @@ public:
 	static void CompileDrawDecision(
 		DX12CommandListRuntimeState *state,
 		bool hasShaderOverrides);
+	static void InvalidateResolvedDrawPlan(DX12CommandListRuntimeState *state);
 	static void RememberPipelineState(DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState);
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void ResetIa(DX12CommandListRuntimeState *state);
