@@ -1230,6 +1230,16 @@ public:
 		DX12IaHashState state;
 	};
 
+	class DirectIaCandidateEntry
+	{
+	public:
+		bool valid = false;
+		bool hasCandidate = false;
+		DX12IaHashStateCacheKey iaKey;
+		UINT instanceCount = 0;
+		UINT firstInstance = 0;
+	};
+
 	DX12IaHashStateCache iaHashStateCache;
 	// Direct-target and full-target key prefixes. Resolved IA resources carry
 	// their own content/lifetime generations; global epochs are only consulted
@@ -1237,6 +1247,10 @@ public:
 	std::array<DX12IaHashKeyPrefixCacheEntry, 2> iaHashKeyPrefixes;
 	CachedIaHashBuildEntry lastDirectIaHashBuild;
 	CachedIaHashBuildEntry lastFullIaHashBuild;
+	// Candidate matching is separate from IA-state materialization. Entries are
+	// keyed by the complete resolved IA identity plus the draw inputs that do not
+	// belong to the IA hash state itself.
+	std::array<DirectIaCandidateEntry, 64> directIaCandidates;
 	// Small direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
 	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;

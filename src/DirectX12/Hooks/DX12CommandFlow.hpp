@@ -2302,6 +2302,51 @@ public:
 		entry->state = state;
 	}
 
+	static size_t DirectIaCandidateSlot(
+		const DX12IaHashStateCacheKey &iaKey,
+		const DX12IaDrawInvocation &draw)
+	{
+		size_t hash = DX12IaHashStateCacheKeyHash()(iaKey);
+		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.instanceCount);
+		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.firstInstance);
+		return hash & 63;
+	}
+
+	static bool TryLoadDirectIaCandidate(
+		DX12SimulateContextDrawTemplate *templateState,
+		const DX12IaHashStateCacheKey &iaKey,
+		const DX12IaDrawInvocation &draw,
+		bool *hasCandidate)
+	{
+		if (!templateState || !hasCandidate)
+			return false;
+		const DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
+			templateState->directIaCandidates[DirectIaCandidateSlot(iaKey, draw)];
+		if (!entry.valid || !(entry.iaKey == iaKey) ||
+			entry.instanceCount != draw.instanceCount ||
+			entry.firstInstance != draw.firstInstance)
+			return false;
+		*hasCandidate = entry.hasCandidate;
+		return true;
+	}
+
+	static void StoreDirectIaCandidate(
+		DX12SimulateContextDrawTemplate *templateState,
+		const DX12IaHashStateCacheKey &iaKey,
+		const DX12IaDrawInvocation &draw,
+		bool hasCandidate)
+	{
+		if (!templateState)
+			return;
+		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
+			templateState->directIaCandidates[DirectIaCandidateSlot(iaKey, draw)];
+		entry.valid = true;
+		entry.hasCandidate = hasCandidate;
+		entry.iaKey = iaKey;
+		entry.instanceCount = draw.instanceCount;
+		entry.firstInstance = draw.firstInstance;
+	}
+
 	static size_t ResidentNegativeSlot(const DX12IaDrawInvocation &draw)
 	{
 		UINT64 key = draw.indexed ? 0x9e3779b97f4a7c15ull : 0xc4ceb9fe1a85ec53ull;
@@ -2980,22 +3025,40 @@ public:
 
 					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheLookup();
 					LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
-					const bool hasDirectCandidate =
-						DX12ModHasAnyDirectIaTextureOverrideCandidate(
-							*directIaStateView,
-							directTargetPlan,
-							draw.indexed,
-							draw.vertexCount,
-							draw.indexCount,
-							draw.instanceCount,
-							draw.firstVertex,
-							draw.firstIndex,
-							draw.firstInstance);
+					bool hasDirectCandidate = false;
+					const bool directCandidateCacheHit =
+						TryLoadDirectIaCandidate(
+							&mutableRuntimeState->resolvedDraw,
+							directHashCacheKey,
+							draw,
+							&hasDirectCandidate);
+					if (!directCandidateCacheHit) {
+						hasDirectCandidate =
+							DX12ModHasAnyDirectIaTextureOverrideCandidate(
+								*directIaStateView,
+								directTargetPlan,
+								draw.indexed,
+								draw.vertexCount,
+								draw.indexCount,
+								draw.instanceCount,
+								draw.firstVertex,
+								draw.firstIndex,
+								draw.firstInstance);
+						StoreDirectIaCandidate(
+							&mutableRuntimeState->resolvedDraw,
+							directHashCacheKey,
+							draw,
+							hasDirectCandidate);
+					}
 					DX12OuterTimingProbeUtils::LogCpuStage(
 						"IaReplacement",
-						hasDirectCandidate ?
-							"direct_ia_probe_positive_result" :
-							"direct_ia_probe_negative_result",
+						directCandidateCacheHit ?
+							(hasDirectCandidate ?
+								"direct_ia_candidate_positive_hit" :
+								"direct_ia_candidate_negative_hit") :
+							(hasDirectCandidate ?
+								"direct_ia_probe_positive_result" :
+								"direct_ia_probe_negative_result"),
 						draw.indexed ? 1u : 0u,
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
