@@ -93,6 +93,69 @@ SnapshotCompiledShaderOverridePlan(const std::wstring &section)
 		nullptr : planIt->second;
 }
 
+static void AppendResolvedDescriptorPrefilterSectionIds(
+	const std::vector<DX12TriggeredTextureOverride> &source,
+	std::vector<uint32_t> *sectionIds)
+{
+	if (!sectionIds)
+		return;
+	for (const DX12TriggeredTextureOverride &triggered : source) {
+		if (!triggered.config || !triggered.sectionId)
+			continue;
+		sectionIds->push_back(triggered.sectionId);
+	}
+}
+
+static bool HasPotentialResolvedDescriptorPrefilterCandidates(
+	const DX12CommandExecutionRuntimeSnapshot &snapshot,
+	uint32_t vertexCount,
+	uint32_t indexCount)
+{
+	if (!snapshot.textureOverridesWithoutDrawContext.empty() ||
+	    !snapshot.textureOverridesGenericDrawContext.empty())
+		return true;
+	if (indexCount) {
+		auto indexed = snapshot.textureOverridesByIndexCount.find(indexCount);
+		if (indexed != snapshot.textureOverridesByIndexCount.end() && !indexed->second.empty())
+			return true;
+	}
+	if (vertexCount) {
+		auto vertex = snapshot.textureOverridesByVertexCount.find(vertexCount);
+		if (vertex != snapshot.textureOverridesByVertexCount.end() && !vertex->second.empty())
+			return true;
+	}
+	return false;
+}
+
+static void CollectResolvedDescriptorPrefilterSectionIds(
+	const DX12CommandExecutionRuntimeSnapshot &snapshot,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	std::vector<uint32_t> *sectionIds)
+{
+	if (!sectionIds)
+		return;
+	sectionIds->clear();
+	AppendResolvedDescriptorPrefilterSectionIds(
+		snapshot.textureOverridesWithoutDrawContext,
+		sectionIds);
+	AppendResolvedDescriptorPrefilterSectionIds(
+		snapshot.textureOverridesGenericDrawContext,
+		sectionIds);
+	if (indexCount) {
+		auto indexed = snapshot.textureOverridesByIndexCount.find(indexCount);
+		if (indexed != snapshot.textureOverridesByIndexCount.end())
+			AppendResolvedDescriptorPrefilterSectionIds(indexed->second, sectionIds);
+	}
+	if (vertexCount) {
+		auto vertex = snapshot.textureOverridesByVertexCount.find(vertexCount);
+		if (vertex != snapshot.textureOverridesByVertexCount.end())
+			AppendResolvedDescriptorPrefilterSectionIds(vertex->second, sectionIds);
+	}
+	std::sort(sectionIds->begin(), sectionIds->end());
+	sectionIds->erase(std::unique(sectionIds->begin(), sectionIds->end()), sectionIds->end());
+}
+
 static DX12IaHashState EmptyIaHashState()
 {
 	DX12IaHashState state = {};
@@ -287,6 +350,21 @@ static bool FindDescriptorTextureOverridesFromResolvedBindings(
 		return false;
 
 	const bool compute = target.stage == Bunny::CommandListShaderStage::Compute;
+	if (!HasPotentialResolvedDescriptorPrefilterCandidates(
+			*snapshot,
+			vertexCount,
+			indexCount))
+		return false;
+
+	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
+	CollectResolvedDescriptorPrefilterSectionIds(
+		*snapshot,
+		vertexCount,
+		indexCount,
+		&tlsAllowedSectionIds);
+	if (tlsAllowedSectionIds.empty())
+		return false;
+
 	std::vector<DX12TextureOverrideMatch> candidates;
 	for (const DX12ResolvedGraphicsSrvBinding &resolved : resolvedBindings) {
 		if (!DescriptorBindingMatchesTarget(resolved.binding, target))
@@ -299,6 +377,7 @@ static bool FindDescriptorTextureOverridesFromResolvedBindings(
 				resolved.descriptorHash,
 				&resolved.binding,
 				compute,
+				&tlsAllowedSectionIds,
 				&candidates);
 		}
 		if (resolved.descriptorHash &&
@@ -310,6 +389,7 @@ static bool FindDescriptorTextureOverridesFromResolvedBindings(
 				resolved.descriptorHash,
 				&resolved.binding,
 				compute,
+				&tlsAllowedSectionIds,
 				&candidates);
 		}
 	}

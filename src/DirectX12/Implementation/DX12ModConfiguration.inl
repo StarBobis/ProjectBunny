@@ -1479,6 +1479,14 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 		triggered.executeDrawActions = true;
 		return triggered;
 	};
+	auto hasDrawContext = [](const Bunny::TextureOverrideConfig &config) {
+		return config.hasMatchVertexCount ||
+			config.hasMatchIndexCount ||
+			config.hasMatchInstanceCount ||
+			config.hasMatchFirstVertex ||
+			config.hasMatchFirstIndex ||
+			config.hasMatchFirstInstance;
+	};
 	for (const auto &bucket : textureOverrides) {
 		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
 			auto sectionId = textureOverrideSectionIds.find(config.section);
@@ -1487,14 +1495,35 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 			std::shared_ptr<const Bunny::TextureOverrideConfig> configSnapshot =
 				std::make_shared<const Bunny::TextureOverrideConfig>(config);
 			snapshot->textureOverridesBySectionId[sectionId->second] = configSnapshot;
-			snapshot->textureOverridesByHash[config.hash].push_back(
-				makeTriggered(
-					configSnapshot,
-					sectionId->second,
-					LookupRuntimeEffect(textureOverridePreRuntimeEffect, config.section),
-					LookupRuntimeEffect(textureOverridePostRuntimeEffect, config.section),
-					false,
-					0));
+			DX12TriggeredTextureOverride triggered = makeTriggered(
+				configSnapshot,
+				sectionId->second,
+				LookupRuntimeEffect(textureOverridePreRuntimeEffect, config.section),
+				LookupRuntimeEffect(textureOverridePostRuntimeEffect, config.section),
+				false,
+				0);
+			snapshot->textureOverridesByHash[config.hash].push_back(triggered);
+
+			const bool hasDrawContextMatch = hasDrawContext(config);
+			bool indexedByExactCount = false;
+			if (!hasDrawContextMatch) {
+				snapshot->textureOverridesWithoutDrawContext.push_back(triggered);
+			} else {
+				if (config.hasMatchIndexCount &&
+				    config.matchIndexCount.op == Bunny::NumericMatchOp::Equal) {
+					snapshot->textureOverridesByIndexCount[config.matchIndexCount.value]
+						.push_back(triggered);
+					indexedByExactCount = true;
+				}
+				if (config.hasMatchVertexCount &&
+				    config.matchVertexCount.op == Bunny::NumericMatchOp::Equal) {
+					snapshot->textureOverridesByVertexCount[config.matchVertexCount.value]
+						.push_back(triggered);
+					indexedByExactCount = true;
+				}
+				if (!indexedByExactCount)
+					snapshot->textureOverridesGenericDrawContext.push_back(triggered);
+			}
 		}
 	}
 	auto appendTriggeredByIndexes =

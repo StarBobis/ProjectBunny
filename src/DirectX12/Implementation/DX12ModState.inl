@@ -289,6 +289,14 @@ public:
 		textureOverridesBySectionId;
 	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
 		textureOverridesByHash;
+	std::vector<DX12TriggeredTextureOverride>
+		textureOverridesWithoutDrawContext;
+	std::vector<DX12TriggeredTextureOverride>
+		textureOverridesGenericDrawContext;
+	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
+		textureOverridesByIndexCount;
+	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
+		textureOverridesByVertexCount;
 	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
 		iaIndexTriggeredTextureOverrides;
 	std::unordered_map<UINT64, std::vector<DX12TriggeredTextureOverride>>

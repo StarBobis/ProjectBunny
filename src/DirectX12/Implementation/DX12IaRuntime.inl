@@ -93,6 +93,69 @@ static DX12TextureOverrideDrawKeyUsage BuildTriggeredDrawKeyUsage(
 	return usage;
 }
 
+static void AppendDescriptorTriggeredPrefilterSectionIds(
+	const std::vector<DX12TriggeredTextureOverride> &source,
+	std::vector<uint32_t> *sectionIds)
+{
+	if (!sectionIds)
+		return;
+	for (const DX12TriggeredTextureOverride &triggered : source) {
+		if (!triggered.config || !triggered.sectionId)
+			continue;
+		sectionIds->push_back(triggered.sectionId);
+	}
+}
+
+static bool HasPotentialDescriptorTriggeredPrefilterCandidates(
+	const DX12CommandExecutionRuntimeSnapshot &snapshot,
+	uint32_t vertexCount,
+	uint32_t indexCount)
+{
+	if (!snapshot.textureOverridesWithoutDrawContext.empty() ||
+	    !snapshot.textureOverridesGenericDrawContext.empty())
+		return true;
+	if (indexCount) {
+		auto indexed = snapshot.textureOverridesByIndexCount.find(indexCount);
+		if (indexed != snapshot.textureOverridesByIndexCount.end() && !indexed->second.empty())
+			return true;
+	}
+	if (vertexCount) {
+		auto vertex = snapshot.textureOverridesByVertexCount.find(vertexCount);
+		if (vertex != snapshot.textureOverridesByVertexCount.end() && !vertex->second.empty())
+			return true;
+	}
+	return false;
+}
+
+static void CollectDescriptorTriggeredPrefilterSectionIds(
+	const DX12CommandExecutionRuntimeSnapshot &snapshot,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	std::vector<uint32_t> *sectionIds)
+{
+	if (!sectionIds)
+		return;
+	sectionIds->clear();
+	AppendDescriptorTriggeredPrefilterSectionIds(
+		snapshot.textureOverridesWithoutDrawContext,
+		sectionIds);
+	AppendDescriptorTriggeredPrefilterSectionIds(
+		snapshot.textureOverridesGenericDrawContext,
+		sectionIds);
+	if (indexCount) {
+		auto indexed = snapshot.textureOverridesByIndexCount.find(indexCount);
+		if (indexed != snapshot.textureOverridesByIndexCount.end())
+			AppendDescriptorTriggeredPrefilterSectionIds(indexed->second, sectionIds);
+	}
+	if (vertexCount) {
+		auto vertex = snapshot.textureOverridesByVertexCount.find(vertexCount);
+		if (vertex != snapshot.textureOverridesByVertexCount.end())
+			AppendDescriptorTriggeredPrefilterSectionIds(vertex->second, sectionIds);
+	}
+	std::sort(sectionIds->begin(), sectionIds->end());
+	sectionIds->erase(std::unique(sectionIds->begin(), sectionIds->end()), sectionIds->end());
+}
+
 static bool TextureOverrideHasDrawKind(
 	const Bunny::TextureOverrideConfig &config, Bunny::CommandListActionKind kind)
 {
@@ -1867,6 +1930,8 @@ public:
 	uint32_t targetKind = 0;
 	uint32_t shaderStage = 0;
 	uint32_t slot = 0;
+	uint32_t vertexCount = 0;
+	uint32_t indexCount = 0;
 	UINT64 descriptorQuerySerial = 0;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	UINT64 descriptorHeapVersion = 0;
@@ -1879,6 +1944,8 @@ public:
 			targetKind == other.targetKind &&
 			shaderStage == other.shaderStage &&
 			slot == other.slot &&
+			vertexCount == other.vertexCount &&
+			indexCount == other.indexCount &&
 			descriptorQuerySerial == other.descriptorQuerySerial &&
 			descriptorHeap == other.descriptorHeap &&
 			descriptorHeapVersion == other.descriptorHeapVersion &&
@@ -1897,6 +1964,8 @@ public:
 		hash = HashCombine64(hash, key.targetKind);
 		hash = HashCombine64(hash, key.shaderStage);
 		hash = HashCombine64(hash, key.slot);
+		hash = HashCombine64(hash, key.vertexCount);
+		hash = HashCombine64(hash, key.indexCount);
 		hash = HashCombine64(hash, key.descriptorQuerySerial);
 		hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(key.descriptorHeap));
 		hash = HashCombine64(hash, key.descriptorHeapVersion);
@@ -1911,6 +1980,8 @@ static bool BuildDescriptorTextureOverrideCandidateCacheKey(
 	const Bunny::CommandListTarget &target,
 	bool compute,
 	UINT64 reloadGeneration,
+	uint32_t vertexCount,
+	uint32_t indexCount,
 	DX12DescriptorTextureOverrideCandidateCacheKey *key)
 {
 	if (!key)
@@ -1924,6 +1995,8 @@ static bool BuildDescriptorTextureOverrideCandidateCacheKey(
 	key->targetKind = static_cast<uint32_t>(target.kind);
 	key->shaderStage = static_cast<uint32_t>(target.stage);
 	key->slot = target.slot;
+	key->vertexCount = vertexCount;
+	key->indexCount = indexCount;
 	if (!runtimeState)
 		return false;
 	key->descriptorQuerySerial = compute ?
@@ -1945,6 +2018,7 @@ static void AppendTextureOverrideCandidateMatchesByHash(
 	uint32_t descriptorHash,
 	const DX12CurrentShaderResourceBinding *binding,
 	bool compute,
+	const std::vector<uint32_t> *allowedSectionIds,
 	std::vector<DX12TextureOverrideMatch> *matches)
 {
 	if (!hash || !matches)
@@ -1956,6 +2030,12 @@ static void AppendTextureOverrideCandidateMatchesByHash(
 	for (const DX12TriggeredTextureOverride &triggered : bucket->second) {
 		const Bunny::TextureOverrideConfig *config = triggered.config;
 		if (!config)
+			continue;
+		if (allowedSectionIds && triggered.sectionId &&
+		    !std::binary_search(
+				allowedSectionIds->begin(),
+				allowedSectionIds->end(),
+				triggered.sectionId))
 			continue;
 		DX12TextureOverrideMatch match;
 		match.config = config;
@@ -2300,6 +2380,8 @@ static bool FindDescriptorTextureOverrides(
 			target,
 			compute,
 			reloadGeneration,
+			vertexCount,
+			indexCount,
 			&cacheKey);
 	if (canUseSerialCache) {
 		auto cachedCandidates = tlsDescriptorCandidateCache.find(cacheKey);
@@ -2314,6 +2396,36 @@ static bool FindDescriptorTextureOverrides(
 				firstInstance,
 				matches);
 		}
+	}
+
+	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadTextureOverrideRuntimeSnapshot();
+	if (!snapshot)
+		return false;
+	if (!HasPotentialDescriptorTriggeredPrefilterCandidates(
+			*snapshot,
+			vertexCount,
+			indexCount)) {
+		if (canUseSerialCache) {
+			if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+				tlsDescriptorCandidateCache.clear();
+			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
+		}
+		return false;
+	}
+	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
+	CollectDescriptorTriggeredPrefilterSectionIds(
+		*snapshot,
+		vertexCount,
+		indexCount,
+		&tlsAllowedSectionIds);
+	if (tlsAllowedSectionIds.empty()) {
+		if (canUseSerialCache) {
+			if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+				tlsDescriptorCandidateCache.clear();
+			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
+		}
+		return false;
 	}
 
 	// DX11 consumes "current resources" at draw time rather than re-querying
@@ -2352,11 +2464,6 @@ static bool FindDescriptorTextureOverrides(
 		return false;
 	}
 
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadTextureOverrideRuntimeSnapshot();
-	if (!snapshot)
-		return false;
-
 	std::vector<DX12TextureOverrideMatch> candidates;
 	std::vector<uint32_t> resourceHashes(bindingsView->size(), 0);
 	for (size_t index = 0; index < bindingsView->size(); ++index) {
@@ -2392,6 +2499,7 @@ static bool FindDescriptorTextureOverrides(
 			descriptorHash,
 			&binding,
 			compute,
+			&tlsAllowedSectionIds,
 			&candidates);
 		if (descriptorHash && descriptorHash != resourceHash) {
 			AppendTextureOverrideCandidateMatchesByHash(
@@ -2401,6 +2509,7 @@ static bool FindDescriptorTextureOverrides(
 				descriptorHash,
 				&binding,
 				compute,
+				&tlsAllowedSectionIds,
 				&candidates);
 		}
 	}
