@@ -305,8 +305,10 @@ std::string NameFromIID(IID id)
 	wchar_t wiid[128];
 	if (SUCCEEDED(StringFromGUID2(id, wiid, 128)))
 	{
-		std::wstring convert = std::wstring(wiid);
-		iidString = std::string(convert.begin(), convert.end());
+		const size_t wiidLen = wcslen(wiid);
+		iidString.reserve(wiidLen);
+		for (size_t index = 0; index < wiidLen; ++index)
+			iidString.push_back(static_cast<char>(wiid[index]));
 	}
 	else
 	{

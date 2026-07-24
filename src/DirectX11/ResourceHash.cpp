@@ -1959,12 +1959,12 @@ void ResourceHandleInfo::WriteDataCacheRegion(const void* src, size_t region_siz
 
 	// Cannot write partial region if cache not initialized.
 	if (!cached_data_size) {
-		LogInfo("WriteDataCacheRegion Failed (not initialized): offset=%d, region_size=%d!\n", offset, region_size);
+		LogInfo("WriteDataCacheRegion Failed (not initialized): offset=%u, region_size=%zu!\n", offset, region_size);
 		return;
 	}
 
 	if (offset > cached_data_size || region_size > cached_data_size - offset){
-		LogInfo("WriteDataCacheRegion Failed (out of bounds): offset=%d, region_size=%d, dst_size=%d!\n", offset, region_size, cached_data_size);
+		LogInfo("WriteDataCacheRegion Failed (out of bounds): offset=%u, region_size=%zu, dst_size=%zu!\n", offset, region_size, cached_data_size);
 		return;
 	}
 

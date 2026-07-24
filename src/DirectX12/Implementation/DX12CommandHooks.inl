@@ -1255,10 +1255,9 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorde
 		return;
 	}
 
-	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView", commandList,
-		" root=%u gpu=0x%llx", rootParameterIndex, static_cast<unsigned long long>(address));
-	DX12CommandListStateCapture::GraphicsRootDescriptor(
-		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, address);
+	DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
+		commandList, rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE_UAV, address, true,
+		"ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView");
 	PFN_SET_ROOT_GPU_VA original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
 	if (original)

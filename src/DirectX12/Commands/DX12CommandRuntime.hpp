@@ -2127,12 +2127,32 @@ public:
 			FLAG_SHADER_DUMP_ACTIVE);
 	}
 
+	static bool NeedsGraphicsResidentRootDescriptorState(UINT64 flags)
+	{
+		// Descriptor-triggered Mod matching can still query graphics root
+		// descriptors from the lightweight runtime snapshot, but draw-time SRV
+		// table patching does not need them.
+		return HasAnyFlag(
+			flags,
+			FLAG_SHADER_DESCRIPTOR_TRACK |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
 	static bool NeedsGraphicsResidentRootValueState(UINT64 flags)
 	{
 		// DX11-style Mod matching for graphics texture replacement only needs the
-		// live descriptor heaps/tables/root signature. Mirroring graphics root
-		// descriptors and root constants on every API call is only required for
-		// capture/debug flows that inspect the full binding state.
+		// live descriptor heaps/tables/root signature. Outside capture/debug, the
+		// only graphics root values that still matter are root descriptors for
+		// descriptor-triggered Mod lookups; root constants remain capture-only.
+		return HasAnyFlag(
+			flags,
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE);
+	}
+
+	static bool NeedsGraphicsTrackedBindingCapture(UINT64 flags)
+	{
 		return HasAnyFlag(
 			flags,
 			FLAG_FRAME_ANALYSIS_ACTIVE |

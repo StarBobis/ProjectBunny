@@ -139,13 +139,13 @@ public:
 						commandList, rootSignature);
 			}
 		}
-		const bool skipTrackedCapture = graphics ?
-			DX12HotPathState::skipGraphicsBindings :
-			DX12HotPathState::skipBindings;
 		if (!graphics) {
 			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
 				runtimeState, reinterpret_cast<uint64_t>(rootSignature));
 		}
+		const bool skipTrackedCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -198,14 +198,14 @@ public:
 					commandList, graphics, rootParameterIndex, baseDescriptor);
 			}
 		}
-		const bool skipTrackedCapture = graphics ?
-			DX12HotPathState::skipGraphicsBindings :
-			DX12HotPathState::skipBindings;
 		if (!graphics) {
 			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
 				runtimeState,
 				static_cast<uint64_t>(rootParameterIndex) ^ 0x9e3779b97f4a7c15ull);
 		}
+		const bool skipTrackedCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -268,7 +268,7 @@ public:
 			}
 		}
 		const bool skipBindingCapture = graphics ?
-			DX12HotPathState::skipGraphicsBindings :
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -337,7 +337,7 @@ public:
 			}
 		}
 		const bool skipBindingCapture = graphics ?
-			DX12HotPathState::skipGraphicsBindings :
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -382,7 +382,7 @@ public:
 	{
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
-			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
+			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		if (needsResidentBinding) {
 			if (graphics) {
@@ -402,7 +402,7 @@ public:
 			}
 		}
 		const bool skipBindingCapture = graphics ?
-			DX12HotPathState::skipGraphicsBindings :
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
