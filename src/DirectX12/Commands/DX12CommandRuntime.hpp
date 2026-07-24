@@ -1524,6 +1524,22 @@ public:
 	std::vector<DX12CurrentComputeUavBinding> bindings;
 };
 
+class DX12ResolvedGraphicsSrvBinding
+{
+public:
+	DX12CurrentShaderResourceBinding binding;
+	uint32_t resourceHash = 0;
+	uint32_t descriptorHash = 0;
+};
+
+class DX12ResolvedGraphicsSrvRuntimeState
+{
+public:
+	bool valid = false;
+	UINT64 descriptorQuerySerial = 0;
+	std::vector<DX12ResolvedGraphicsSrvBinding> bindings;
+};
+
 class DX12CommandListRuntimeState
 {
 public:
@@ -1599,6 +1615,7 @@ public:
 	// Resident descriptor-query results, keyed by descriptor-only serials so
 	// unrelated root-constant churn does not invalidate SRV slot lookups.
 	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6> resolvedDescriptorQueries;
+	DX12ResolvedGraphicsSrvRuntimeState resolvedGraphicsSrvs;
 };
 
 

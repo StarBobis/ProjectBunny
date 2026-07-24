@@ -99,14 +99,6 @@ static DX12IaHashState EmptyIaHashState()
 	return state;
 }
 
-class DX12ResolvedGraphicsSrvBinding
-{
-public:
-	DX12CurrentShaderResourceBinding binding;
-	uint32_t resourceHash = 0;
-	uint32_t descriptorHash = 0;
-};
-
 class DX12TextureOverrideTargetCacheKey
 {
 public:
@@ -156,6 +148,33 @@ static void ResolveGraphicsSrvBindings(
 			HashDescriptorBinding(commandList, cachedDevice, binding);
 		resolvedBindings->push_back(std::move(resolved));
 	}
+}
+
+static bool TryLoadResolvedGraphicsSrvBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	UINT64 descriptorQuerySerial,
+	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings)
+{
+	if (!runtimeState || !resolvedBindings)
+		return false;
+	if (!runtimeState->resolvedGraphicsSrvs.valid ||
+	    runtimeState->resolvedGraphicsSrvs.descriptorQuerySerial != descriptorQuerySerial) {
+		return false;
+	}
+	*resolvedBindings = runtimeState->resolvedGraphicsSrvs.bindings;
+	return true;
+}
+
+static void StoreResolvedGraphicsSrvBindings(
+	DX12CommandListRuntimeState *runtimeState,
+	UINT64 descriptorQuerySerial,
+	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings)
+{
+	if (!runtimeState)
+		return;
+	runtimeState->resolvedGraphicsSrvs.valid = true;
+	runtimeState->resolvedGraphicsSrvs.descriptorQuerySerial = descriptorQuerySerial;
+	runtimeState->resolvedGraphicsSrvs.bindings = resolvedBindings;
 }
 
 static void FillSyntheticTextureBinding(
@@ -1177,14 +1196,30 @@ public:
 	{
 		if (!mResolvedGraphicsSrvBindingsResolved) {
 			mResolvedGraphicsSrvBindingsResolved = true;
-			const std::vector<DX12CurrentShaderResourceBinding> *bindings =
-				GetGraphicsSrvBindings();
-			if (bindings) {
-				ResolveGraphicsSrvBindings(
-					mCommandList,
-					mDevice,
-					*bindings,
-					&mResolvedGraphicsSrvBindings);
+			DX12CommandListRuntimeState *runtimeState =
+				mCommandList ?
+					DX12CommandListRuntime::GetStatePtrFast(mCommandList) :
+					nullptr;
+			const UINT64 descriptorQuerySerial =
+				(runtimeState && runtimeState->graphicsDescriptorQuerySerial) ?
+					runtimeState->graphicsDescriptorQuerySerial : 1;
+			if (!TryLoadResolvedGraphicsSrvBindings(
+					runtimeState,
+					descriptorQuerySerial,
+					&mResolvedGraphicsSrvBindings)) {
+				const std::vector<DX12CurrentShaderResourceBinding> *bindings =
+					GetGraphicsSrvBindings();
+				if (bindings) {
+					ResolveGraphicsSrvBindings(
+						mCommandList,
+						mDevice,
+						*bindings,
+						&mResolvedGraphicsSrvBindings);
+					StoreResolvedGraphicsSrvBindings(
+						runtimeState,
+						descriptorQuerySerial,
+						mResolvedGraphicsSrvBindings);
+				}
 			}
 		}
 		return &mResolvedGraphicsSrvBindings;
@@ -2812,16 +2847,28 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		if (target.kind == Bunny::CommandListTargetKind::ShaderResource &&
 		    target.stage != Bunny::CommandListShaderStage::Compute) {
 			if (!graphicsSrvBindingsResolved) {
-				DX12BindingTracker::GetCurrentShaderResourceBindings(
-					commandList,
-					false,
-					D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-					&graphicsSrvBindings);
-				ResolveGraphicsSrvBindings(
-					commandList,
-					cachedDevice,
-					graphicsSrvBindings,
-					&resolvedGraphicsSrvBindings);
+				const UINT64 descriptorQuerySerial =
+					(runtimeState && runtimeState->graphicsDescriptorQuerySerial) ?
+						runtimeState->graphicsDescriptorQuerySerial : 1;
+				if (!TryLoadResolvedGraphicsSrvBindings(
+						runtimeState,
+						descriptorQuerySerial,
+						&resolvedGraphicsSrvBindings)) {
+					DX12BindingTracker::GetCurrentShaderResourceBindings(
+						commandList,
+						false,
+						D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+						&graphicsSrvBindings);
+					ResolveGraphicsSrvBindings(
+						commandList,
+						cachedDevice,
+						graphicsSrvBindings,
+						&resolvedGraphicsSrvBindings);
+					StoreResolvedGraphicsSrvBindings(
+						runtimeState,
+						descriptorQuerySerial,
+						resolvedGraphicsSrvBindings);
+				}
 				graphicsSrvBindingsResolved = true;
 			}
 			if (!runtimeSnapshotResolved) {
