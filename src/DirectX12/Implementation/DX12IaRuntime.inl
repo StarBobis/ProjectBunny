@@ -1653,7 +1653,10 @@ public:
 	uint32_t targetKind = 0;
 	uint32_t shaderStage = 0;
 	uint32_t slot = 0;
-	UINT64 bindingFingerprint = 0;
+	UINT64 descriptorQuerySerial = 0;
+	ID3D12DescriptorHeap *descriptorHeap = nullptr;
+	UINT64 descriptorHeapVersion = 0;
+	UINT64 textureHashGeneration = 0;
 
 	bool operator==(const DX12DescriptorTextureOverrideCandidateCacheKey &other) const
 	{
@@ -1662,7 +1665,10 @@ public:
 			targetKind == other.targetKind &&
 			shaderStage == other.shaderStage &&
 			slot == other.slot &&
-			bindingFingerprint == other.bindingFingerprint;
+			descriptorQuerySerial == other.descriptorQuerySerial &&
+			descriptorHeap == other.descriptorHeap &&
+			descriptorHeapVersion == other.descriptorHeapVersion &&
+			textureHashGeneration == other.textureHashGeneration;
 	}
 };
 
@@ -1677,48 +1683,45 @@ public:
 		hash = HashCombine64(hash, key.targetKind);
 		hash = HashCombine64(hash, key.shaderStage);
 		hash = HashCombine64(hash, key.slot);
-		hash = HashCombine64(hash, key.bindingFingerprint);
+		hash = HashCombine64(hash, key.descriptorQuerySerial);
+		hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(key.descriptorHeap));
+		hash = HashCombine64(hash, key.descriptorHeapVersion);
+		hash = HashCombine64(hash, key.textureHashGeneration);
 		return static_cast<size_t>(hash ^ (hash >> 32));
 	}
 };
 
-static UINT64 HashDescriptorBindingCandidateFingerprint(
-	UINT64 hash,
-	const DX12CurrentShaderResourceBinding &binding,
-	uint32_t resourceHash)
+static bool BuildDescriptorTextureOverrideCandidateCacheKey(
+	ID3D12GraphicsCommandList *commandList,
+	DX12CommandListRuntimeState *runtimeState,
+	const Bunny::CommandListTarget &target,
+	bool compute,
+	UINT64 reloadGeneration,
+	DX12DescriptorTextureOverrideCandidateCacheKey *key)
 {
-	hash = HashCombine64(hash, binding.shaderVisibility);
-	hash = HashCombine64(hash, binding.rootParameterIndex);
-	hash = HashCombine64(hash, binding.shaderRegister);
-	hash = HashCombine64(hash, binding.registerSpace);
-	hash = HashCombine64(hash, binding.descriptorOffset);
-	hash = HashCombine64(hash, binding.descriptorIncrement);
-	hash = HashCombine64(hash, binding.tableCpuStart);
-	hash = HashCombine64(hash, binding.tableGpuStart.ptr);
-	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(binding.tableHeap));
-	hash = HashCombine64(hash, binding.rootDescriptor ? 1ull : 0ull);
-	hash = HashCombine64(hash, binding.gpuVirtualAddress);
-	hash = HashCombine64(hash, resourceHash);
-	if (!binding.hasDescriptor)
-		return hash;
-
-	const DX12DescriptorSummary &descriptor = binding.descriptor;
-	hash = HashCombine64(hash, descriptor.cpuHandle);
-	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(descriptor.resource));
-	hash = HashCombine64(hash, reinterpret_cast<uintptr_t>(descriptor.counterResource));
-	hash = HashCombine64(hash, descriptor.gpuVirtualAddress);
-	hash = HashCombine64(hash, descriptor.resourceOffset);
-	hash = HashCombine64(hash, descriptor.viewSize);
-	hash = HashCombine64(hash, descriptor.viewFormat);
-	hash = HashCombine64(hash, descriptor.viewDimension);
-	hash = HashCombine64(hash, descriptor.firstElement);
-	hash = HashCombine64(hash, descriptor.numElements);
-	hash = HashCombine64(hash, descriptor.structureByteStride);
-	hash = HashCombine64(hash, descriptor.bufferViewOffset);
-	hash = HashCombine64(hash, descriptor.bufferViewBytes);
-	for (char ch : descriptor.kind)
-		hash = HashCombine64(hash, static_cast<unsigned char>(ch));
-	return hash;
+	if (!key)
+		return false;
+	*key = DX12DescriptorTextureOverrideCandidateCacheKey();
+	key->reloadGeneration = reloadGeneration;
+	key->commandListIdentity =
+		runtimeState && runtimeState->commandListIdentity ?
+			runtimeState->commandListIdentity :
+			commandList;
+	key->targetKind = static_cast<uint32_t>(target.kind);
+	key->shaderStage = static_cast<uint32_t>(target.stage);
+	key->slot = target.slot;
+	if (!runtimeState)
+		return false;
+	key->descriptorQuerySerial = compute ?
+		(runtimeState->computeDescriptorQuerySerial ?
+			runtimeState->computeDescriptorQuerySerial : 1) :
+		(runtimeState->graphicsDescriptorQuerySerial ?
+			runtimeState->graphicsDescriptorQuerySerial : 1);
+	key->descriptorHeap = runtimeState->cbvSrvUavHeap;
+	key->descriptorHeapVersion =
+		DX12GetDescriptorHeapVersion(runtimeState->cbvSrvUavHeap);
+	key->textureHashGeneration = DX12GetTextureHashGeneration();
+	return true;
 }
 
 static void AppendTextureOverrideCandidateMatchesByHash(
@@ -1969,16 +1972,7 @@ static bool FindDescriptorTextureOverrides(
 	DX12CommandListRuntimeState *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
-	std::vector<DX12CurrentShaderResourceBinding> bindings;
 	const bool compute = TargetStageIsCompute(target.stage);
-	if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
-		    commandList,
-		    compute,
-		    DescriptorRangeTypeForTarget(target.kind),
-		    target.slot,
-		    0,
-		    &bindings))
-		return false;
 
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	static thread_local UINT64 tlsDescriptorCandidateCacheGeneration = 0;
@@ -1992,40 +1986,43 @@ static bool FindDescriptorTextureOverrides(
 	}
 
 	DX12DescriptorTextureOverrideCandidateCacheKey cacheKey = {};
-	cacheKey.reloadGeneration = reloadGeneration;
-	cacheKey.commandListIdentity =
-		runtimeState && runtimeState->commandListIdentity ?
-			runtimeState->commandListIdentity :
-			commandList;
-	cacheKey.targetKind = static_cast<uint32_t>(target.kind);
-	cacheKey.shaderStage = static_cast<uint32_t>(target.stage);
-	cacheKey.slot = target.slot;
-
-	std::vector<uint32_t> resourceHashes(bindings.size(), 0);
-	UINT64 bindingFingerprint = 0x9d2f6c71b3a5e4d1ull;
-	size_t relevantBindings = 0;
-	for (size_t index = 0; index < bindings.size(); ++index) {
-		const DX12CurrentShaderResourceBinding &binding = bindings[index];
-		if (!DescriptorBindingMatchesTarget(binding, target))
-			continue;
-		resourceHashes[index] = HashDescriptorBindingResource(binding);
-		bindingFingerprint = HashDescriptorBindingCandidateFingerprint(
-			bindingFingerprint, binding, resourceHashes[index]);
-		++relevantBindings;
+	const bool canUseSerialCache =
+		BuildDescriptorTextureOverrideCandidateCacheKey(
+			commandList,
+			runtimeState,
+			target,
+			compute,
+			reloadGeneration,
+			&cacheKey);
+	if (canUseSerialCache) {
+		auto cachedCandidates = tlsDescriptorCandidateCache.find(cacheKey);
+		if (cachedCandidates != tlsDescriptorCandidateCache.end()) {
+			return FilterDescriptorTextureOverrideCandidates(
+				cachedCandidates->second,
+				vertexCount,
+				indexCount,
+				instanceCount,
+				firstVertex,
+				firstIndex,
+				firstInstance,
+				matches);
+		}
 	}
-	cacheKey.bindingFingerprint = HashCombine64(bindingFingerprint, relevantBindings);
 
-	auto cachedCandidates = tlsDescriptorCandidateCache.find(cacheKey);
-	if (cachedCandidates != tlsDescriptorCandidateCache.end()) {
-		return FilterDescriptorTextureOverrideCandidates(
-			cachedCandidates->second,
-			vertexCount,
-			indexCount,
-			instanceCount,
-			firstVertex,
-			firstIndex,
-			firstInstance,
-			matches);
+	std::vector<DX12CurrentShaderResourceBinding> bindings;
+	if (!DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
+		    commandList,
+		    compute,
+		    DescriptorRangeTypeForTarget(target.kind),
+		    target.slot,
+		    0,
+		    &bindings)) {
+		if (canUseSerialCache) {
+			if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+				tlsDescriptorCandidateCache.clear();
+			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
+		}
+		return false;
 	}
 
 	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
@@ -2034,11 +2031,14 @@ static bool FindDescriptorTextureOverrides(
 		return false;
 
 	std::vector<DX12TextureOverrideMatch> candidates;
+	std::vector<uint32_t> resourceHashes(bindings.size(), 0);
 	for (size_t index = 0; index < bindings.size(); ++index) {
 		const DX12CurrentShaderResourceBinding &binding = bindings[index];
 		if (!DescriptorBindingMatchesTarget(binding, target))
 			continue;
-		const uint32_t resourceHash = resourceHashes[index];
+		const uint32_t resourceHash =
+			resourceHashes[index] ? resourceHashes[index] :
+			(resourceHashes[index] = HashDescriptorBindingResource(binding));
 		const uint32_t descriptorHash =
 			HashDescriptorBinding(commandList, cachedDevice, binding);
 #if defined(_DEBUG)
@@ -2078,9 +2078,11 @@ static bool FindDescriptorTextureOverrides(
 		}
 	}
 
-	if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
-		tlsDescriptorCandidateCache.clear();
-	tlsDescriptorCandidateCache.emplace(cacheKey, candidates);
+	if (canUseSerialCache) {
+		if (tlsDescriptorCandidateCache.size() >= MaxTextureOverrideLookupCacheEntries)
+			tlsDescriptorCandidateCache.clear();
+		tlsDescriptorCandidateCache.emplace(cacheKey, candidates);
+	}
 
 	return FilterDescriptorTextureOverrideCandidates(
 		candidates,

@@ -715,6 +715,7 @@ void DX12InvalidateBufferContent(ID3D12Resource *resource);
 bool DX12CacheTextureHash(
 	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source);
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
+UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
 bool DX12TrackTextureHashFromCopyTextureRegion(
 	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,

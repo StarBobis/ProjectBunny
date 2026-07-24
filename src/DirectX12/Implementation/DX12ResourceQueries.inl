@@ -1075,6 +1075,11 @@ bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash)
 	return *hash != 0;
 }
 
+UINT64 DX12GetTextureHashGeneration()
+{
+	return gTextureHashGeneration.load(std::memory_order_acquire);
+}
+
 void DX12InvalidateTextureHash(ID3D12Resource *resource)
 {
 	if (!resource)
@@ -1083,6 +1088,7 @@ void DX12InvalidateTextureHash(ID3D12Resource *resource)
 	const size_t erased = gTextureHashByResource.erase(resource);
 	ReleaseSRWLockExclusive(&gTextureHashLock);
 	if (erased) {
+		gTextureHashGeneration.fetch_add(1, std::memory_order_relaxed);
 		DX12LogManager::DebugFields("DX12TextureHashCache",
 			"\"stage\":\"invalidated\",\"resource\":\"%p\",\"erased\":%zu",
 			resource,
