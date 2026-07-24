@@ -1240,6 +1240,16 @@ public:
 		UINT firstInstance = 0;
 	};
 
+	class IaTargetPresenceEntry
+	{
+	public:
+		bool valid = false;
+		bool hasTarget = false;
+		UINT64 iaEpoch = 0;
+		UINT64 targetPlanFingerprint = 0;
+		bool indexed = false;
+	};
+
 	DX12IaHashStateCache iaHashStateCache;
 	// Direct-target and full-target key prefixes. Resolved IA resources carry
 	// their own content/lifetime generations; global epochs are only consulted
@@ -1251,6 +1261,11 @@ public:
 	// keyed by the complete resolved IA identity plus the draw inputs that do not
 	// belong to the IA hash state itself.
 	std::array<DirectIaCandidateEntry, 64> directIaCandidates;
+	// IA target-presence checks depend only on the resident IA bindings, the
+	// compiled target plan, and indexed mode. Keep both semantics separately:
+	// direct checks consider descriptor targets while full checks do not.
+	IaTargetPresenceEntry directIaTargetPresence;
+	IaTargetPresenceEntry fullIaTargetPresence;
 	// Small direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
 	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;

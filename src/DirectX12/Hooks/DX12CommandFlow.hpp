@@ -2581,6 +2581,39 @@ public:
 		return false;
 	}
 
+	static bool HasCachedIaTextureOverrideCheckTarget(
+		DX12SimulateContext *runtimeState,
+		const DX12IaHashTargetPlan &targetPlan,
+		bool indexed,
+		bool directCheck)
+	{
+		if (!runtimeState)
+			return false;
+		DX12SimulateContextDrawTemplate::IaTargetPresenceEntry *entry =
+			directCheck ?
+				&runtimeState->resolvedDraw.directIaTargetPresence :
+				&runtimeState->resolvedDraw.fullIaTargetPresence;
+		const UINT64 fingerprint = targetPlan.Fingerprint();
+		if (entry->valid &&
+			entry->iaEpoch == runtimeState->iaEpoch &&
+			entry->targetPlanFingerprint == fingerprint &&
+			entry->indexed == indexed) {
+			return entry->hasTarget;
+		}
+
+		const bool hasTarget = directCheck ?
+			HasAnyDirectTextureOverrideCheckTarget(
+				runtimeState->ia, targetPlan, indexed) :
+			HasAnyIaTextureOverrideCheckTarget(
+				runtimeState->ia, targetPlan, indexed);
+		entry->valid = true;
+		entry->hasTarget = hasTarget;
+		entry->iaEpoch = runtimeState->iaEpoch;
+		entry->targetPlanFingerprint = fingerprint;
+		entry->indexed = indexed;
+		return hasTarget;
+	}
+
 	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
 		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
@@ -2639,21 +2672,35 @@ public:
 			return true;
 		}
 
-		DX12ActiveIaState originalIa = runtimeState.ia;
-		DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
-			commandList, callbacks, &originalIa);
-		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+		const bool modifiesIaBindings = replacement->hasIndexBuffer ||
+			!replacement->vertexBuffers.empty();
+		const bool hasDrawSrvPatches = !replacement->drawSrvPatches.empty();
+		const DX12ActiveIaState *restoreIa = &runtimeState.ia;
+		DX12ActiveIaState redirectedIa;
+		if (DX12ModHasPreSkinOutputResizeBindings()) {
+			redirectedIa = runtimeState.ia;
+			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
+				commandList, callbacks, &redirectedIa);
+			restoreIa = &redirectedIa;
+		}
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
-		bindingExecutor.Apply(*replacement);
-		DX12ModApplyDrawSrvReplacement(
-			commandList, replacement, !replacement->skip);
+		if (modifiesIaBindings) {
+			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+			bindingExecutor.Apply(*replacement);
+		}
+		if (hasDrawSrvPatches)
+			DX12ModApplyDrawSrvReplacement(commandList, replacement, !replacement->skip);
 
 		if (!replacement->skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 
 		drawExecutor.ExecuteReplacementDraws(*replacement, draw);
-		bindingExecutor.Restore(*replacement, originalIa);
-		DX12ModRestoreDrawSrvReplacement(commandList, replacement);
+		if (modifiesIaBindings) {
+			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+			bindingExecutor.Restore(*replacement, *restoreIa);
+		}
+		if (hasDrawSrvPatches)
+			DX12ModRestoreDrawSrvReplacement(commandList, replacement);
 		DX12Profiling::RecordIaApplied();
 		DX12ModRunPostShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,
@@ -2678,16 +2725,28 @@ public:
 			return true;
 		}
 
-		DX12ActiveIaState originalIa = runtimeState.ia;
-		DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
-			commandList, callbacks, &originalIa);
-		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+		const bool modifiesIaBindings = replacement.hasIndexBuffer ||
+			!replacement.vertexBuffers.empty();
+		const DX12ActiveIaState *restoreIa = &runtimeState.ia;
+		DX12ActiveIaState redirectedIa;
+		if (DX12ModHasPreSkinOutputResizeBindings()) {
+			redirectedIa = runtimeState.ia;
+			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
+				commandList, callbacks, &redirectedIa);
+			restoreIa = &redirectedIa;
+		}
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
-		bindingExecutor.Apply(replacement);
+		if (modifiesIaBindings) {
+			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+			bindingExecutor.Apply(replacement);
+		}
 		if (!replacement.skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 		drawExecutor.ExecuteReplacementDraws(replacement, draw);
-		bindingExecutor.Restore(replacement, originalIa);
+		if (modifiesIaBindings) {
+			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+			bindingExecutor.Restore(replacement, *restoreIa);
+		}
 		DX12Profiling::RecordIaApplied();
 		return true;
 	}
@@ -2782,7 +2841,7 @@ public:
 
 		// Cheap negative cache lookup uses PSO, IA view identity, and draw args
 		// before falling back to stable IA content hashing.
-		DX12IaHashTargetPlan targetPlan = drawDecision->targetPlan;
+		const DX12IaHashTargetPlan &targetPlan = drawDecision->targetPlan;
 		const DX12IaHashTargetPlan &directTargetPlan = drawDecision->directTargetPlan;
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
@@ -2808,8 +2867,8 @@ public:
 		UINT64 directDescriptorResolveGeneration = 0;
 		if (drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
-		    !DX12IaReplacementExecutor::HasAnyDirectTextureOverrideCheckTarget(
-			    runtimeState.ia, directTargetPlan, draw.indexed)) {
+		    !DX12IaReplacementExecutor::HasCachedIaTextureOverrideCheckTarget(
+			    mutableRuntimeState, directTargetPlan, draw.indexed, true)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"IaReplacement",
 				"skip_missing_direct_check_target",
@@ -3177,10 +3236,11 @@ public:
 		}
 		const bool hasCurrentIaTarget =
 			!targetPlanHasIaTargets ||
-			DX12IaReplacementExecutor::HasAnyIaTextureOverrideCheckTarget(
-				runtimeState.ia,
+			DX12IaReplacementExecutor::HasCachedIaTextureOverrideCheckTarget(
+				mutableRuntimeState,
 				targetPlan,
-				draw.indexed);
+				draw.indexed,
+				false);
 		if (targetPlanHasIaTargets && !reusedDirectIaState && hasCurrentIaTarget) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =

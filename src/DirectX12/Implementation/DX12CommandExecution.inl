@@ -4728,6 +4728,7 @@ public:
 static std::unordered_map<UINT64, DX12PreSkinOutputResizeEntry>
 	gPreSkinOutputResizeMap;
 static SRWLOCK gPreSkinOutputResizeLock = SRWLOCK_INIT;
+static std::atomic<bool> gHasPreSkinOutputResizeBindings{false};
 static std::atomic<UINT64> gPreSkinOutputResizeGeneration{1};
 
 static void BumpPreSkinOutputResizeGeneration()
@@ -4777,6 +4778,7 @@ void DX12ModRegisterPreSkinOutputResize(
 	entry.uavBarrierPending = true;
 	entry.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	gPreSkinOutputResizeMap[originalGpuVa] = entry;
+	gHasPreSkinOutputResizeBindings.store(true, std::memory_order_release);
 	BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
 	if (oldResource)
@@ -4841,6 +4843,11 @@ UINT64 DX12ModGetPreSkinOutputResizeGeneration()
 	return gPreSkinOutputResizeGeneration.load(std::memory_order_acquire);
 }
 
+bool DX12ModHasPreSkinOutputResizeBindings()
+{
+	return gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire);
+}
+
 void DX12ModClearPreSkinOutputResizeMap()
 {
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
@@ -4850,6 +4857,7 @@ void DX12ModClearPreSkinOutputResizeMap()
 		item.second.resizedResource = nullptr;
 	}
 	gPreSkinOutputResizeMap.clear();
+	gHasPreSkinOutputResizeBindings.store(false, std::memory_order_release);
 	BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
 }

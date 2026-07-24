@@ -445,6 +445,7 @@ void DX12ModRegisterPreSkinOutputResize(
 	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride);
 bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);
+bool DX12ModHasPreSkinOutputResizeBindings();
 UINT64 DX12ModGetPreSkinOutputResizeGeneration();
 void DX12ModClearPreSkinOutputResizeMap();
 
