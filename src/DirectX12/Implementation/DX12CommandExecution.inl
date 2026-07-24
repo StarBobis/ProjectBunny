@@ -2478,9 +2478,15 @@ public:
 	bool valid = false;
 	bool alwaysMiss = false;
 	UINT64 generation = 0;
+	bool drawDecisionMetadataValid = false;
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> configSnapshot;
 	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
 	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
+	DX12IaHashTargetPlan drawTargetPlan;
+	DX12IaHashTargetPlan drawDirectTargetPlan;
+	DX12DrawMatchUsage drawMatchUsage;
+	DX12DrawMatchUsage drawDirectDrawMatchUsage;
+	bool drawDirectTextureChecksOnly = false;
 	bool staticReplacementReady = false;
 };
 
@@ -2513,6 +2519,41 @@ static bool TryLoadCompiledPsoPlan(
 		*configSnapshot = it->second.configSnapshot;
 		*compiledPlanSnapshot = it->second.compiledPlanSnapshot;
 	}
+	ReleaseSRWLockShared(&gPsoOverridePlansLock);
+	return true;
+}
+
+static bool TryLoadCompiledPsoDrawDecisionMetadata(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	DX12IaHashTargetPlan *drawTargetPlan,
+	DX12IaHashTargetPlan *drawDirectTargetPlan,
+	DX12DrawMatchUsage *drawMatchUsage,
+	DX12DrawMatchUsage *drawDirectDrawMatchUsage,
+	bool *drawDirectTextureChecksOnly)
+{
+	if (!pipelineState ||
+		!drawTargetPlan ||
+		!drawDirectTargetPlan ||
+		!drawMatchUsage ||
+		!drawDirectDrawMatchUsage ||
+		!drawDirectTextureChecksOnly) {
+		return false;
+	}
+
+	AcquireSRWLockShared(&gPsoOverridePlansLock);
+	auto it = gPsoOverridePlans.find(pipelineState);
+	if (it == gPsoOverridePlans.end() ||
+		it->second.generation != reloadGeneration ||
+		!it->second.drawDecisionMetadataValid) {
+		ReleaseSRWLockShared(&gPsoOverridePlansLock);
+		return false;
+	}
+	*drawTargetPlan = it->second.drawTargetPlan;
+	*drawDirectTargetPlan = it->second.drawDirectTargetPlan;
+	*drawMatchUsage = it->second.drawMatchUsage;
+	*drawDirectDrawMatchUsage = it->second.drawDirectDrawMatchUsage;
+	*drawDirectTextureChecksOnly = it->second.drawDirectTextureChecksOnly;
 	ReleaseSRWLockShared(&gPsoOverridePlansLock);
 	return true;
 }
@@ -2591,7 +2632,12 @@ BuildStaticReplacementSnapshotFromCompiledPlans(
 static void StoreCompiledPsoPlan(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
-	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot)
+	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot,
+	const DX12IaHashTargetPlan *drawTargetPlan = nullptr,
+	const DX12IaHashTargetPlan *drawDirectTargetPlan = nullptr,
+	const DX12DrawMatchUsage *drawMatchUsage = nullptr,
+	const DX12DrawMatchUsage *drawDirectDrawMatchUsage = nullptr,
+	const bool *drawDirectTextureChecksOnly = nullptr)
 {
 	// Never store empty plans: PSOs created before mod loads would cache "alwaysMiss"
 	// and never recover when the mod later loads matching configs.
@@ -2604,6 +2650,15 @@ static void StoreCompiledPsoPlan(
 	plan.alwaysMiss = false;
 	plan.generation = reloadGeneration;
 	plan.configSnapshot = std::make_shared<const std::vector<Bunny::ShaderOverrideConfig>>(configSnapshot);
+	if (drawTargetPlan && drawDirectTargetPlan && drawMatchUsage &&
+		drawDirectDrawMatchUsage && drawDirectTextureChecksOnly) {
+		plan.drawTargetPlan = *drawTargetPlan;
+		plan.drawDirectTargetPlan = *drawDirectTargetPlan;
+		plan.drawMatchUsage = *drawMatchUsage;
+		plan.drawDirectDrawMatchUsage = *drawDirectDrawMatchUsage;
+		plan.drawDirectTextureChecksOnly = *drawDirectTextureChecksOnly;
+		plan.drawDecisionMetadataValid = true;
+	}
 	plan.compiledPlanSnapshot =
 		BuildCompiledShaderOverridePlanSnapshot(configSnapshot);
 	if (plan.compiledPlanSnapshot && !plan.compiledPlanSnapshot->empty()) {
@@ -2917,6 +2972,27 @@ public:
 				hasDirectNonTextureEffect);
 		}
 		for (const Bunny::ShaderOverrideConfig &config : cache.regexDrawConfigs) {
+			CollectShaderOverrideConfigLocked(
+				config, &commandListStack, &targetPlan,
+				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
+				collectTextureOverrideTargets,
+				false,
+				hasDirectNonTextureEffect);
+		}
+		return targetPlan;
+	}
+
+	static DX12IaHashTargetPlan BuildDrawPlanLocked(
+		const std::vector<Bunny::ShaderOverrideConfig> &configs,
+		bool collectTextureOverrideTargets,
+		bool *hasDirectNonTextureEffect = nullptr)
+	{
+		DX12IaHashTargetPlan targetPlan;
+		targetPlan.ResetKnown();
+		bool textureOverrideTargetsCollected = false;
+		std::unordered_set<std::wstring> commandListStack;
+
+		for (const Bunny::ShaderOverrideConfig &config : configs) {
 			CollectShaderOverrideConfigLocked(
 				config, &commandListStack, &targetPlan,
 				collectTextureOverrideTargets ? &textureOverrideTargetsCollected : nullptr,
@@ -3278,25 +3354,43 @@ bool DX12ModCompileDrawDecision(
 	targetPlan.RequireAll();
 	directTargetPlan.RequireAll();
 	bool cached = false;
+	bool compiledMetadataHit = false;
 	bool targetPlanResolved = false;
 	bool directTargetPlanResolved = false;
 	bool directTextureChecksOnly = false;
 	DX12DrawMatchUsage drawMatchUsage;
+	DX12DrawMatchUsage directDrawMatchUsage;
 
-	AcquireSRWLockShared(&gModLock);
-	cached = TryFindCachedShaderOverridesForPsoLocked(
-		pipelineState, false, &configs);
-	if (cached) {
-		targetPlanResolved =
-			TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
-				pipelineState, &targetPlan);
-		directTargetPlanResolved =
-			TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
-				pipelineState, &directTargetPlan);
-		TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
-			pipelineState, &directTextureChecksOnly);
+	compiledMetadataHit = TryLoadCompiledPsoDrawDecisionMetadata(
+		pipelineState,
+		reloadGeneration,
+		&targetPlan,
+		&directTargetPlan,
+		&drawMatchUsage,
+		&directDrawMatchUsage,
+		&directTextureChecksOnly);
+	if (compiledMetadataHit) {
+		targetPlanResolved = true;
+		directTargetPlanResolved = true;
+		cached = true;
 	}
-	ReleaseSRWLockShared(&gModLock);
+
+	if (!compiledMetadataHit) {
+		AcquireSRWLockShared(&gModLock);
+		cached = TryFindCachedShaderOverridesForPsoLocked(
+			pipelineState, false, &configs);
+		if (cached) {
+			targetPlanResolved =
+				TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
+					pipelineState, &targetPlan);
+			directTargetPlanResolved =
+				TryFindCachedShaderOverrideDirectIaTargetPlanForPsoLocked(
+					pipelineState, &directTargetPlan);
+			TryFindCachedShaderOverrideDirectTextureChecksOnlyForPsoLocked(
+				pipelineState, &directTextureChecksOnly);
+		}
+		ReleaseSRWLockShared(&gModLock);
+	}
 
 	if (!cached) {
 		AcquireSRWLockExclusive(&gModLock);
@@ -3316,8 +3410,11 @@ bool DX12ModCompileDrawDecision(
 		ReleaseSRWLockExclusive(&gModLock);
 	}
 
-	const bool shaderOverrides = cached ? !configs.empty() : true;
-	drawMatchUsage = BuildDrawMatchUsage(configs);
+	const bool shaderOverrides = compiledMetadataHit ? true : (cached ? !configs.empty() : true);
+	if (!compiledMetadataHit) {
+		drawMatchUsage = BuildDrawMatchUsage(configs);
+		directDrawMatchUsage = drawMatchUsage;
+	}
 	if (!targetPlanResolved)
 		targetPlan.RequireAll();
 	if (!directTargetPlanResolved)
@@ -3330,7 +3427,7 @@ bool DX12ModCompileDrawDecision(
 	decision->SetFromTargetPlan(
 		pipelineState, reloadGeneration, activeShaderOverrides,
 		shaderOverrides, shaderOverrideSkip, targetPlan, directTargetPlan,
-		drawMatchUsage, drawMatchUsage,
+		drawMatchUsage, directDrawMatchUsage,
 		directTextureChecksOnly,
 		descriptorTrackingNeeded);
 	return true;
@@ -3897,7 +3994,25 @@ void DX12ModRecordGraphicsPipelineState(
 		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
 		std::vector<Bunny::ShaderOverrideConfig> snapshot;
 		CopyShaderOverrideConfigs(configs, &snapshot);
-		StoreCompiledPsoPlan(pipelineState, gReloadGeneration, snapshot);
+		bool drawDirectHasNonTextureEffect = false;
+		DX12IaHashTargetPlan drawDirectTargetPlan =
+			DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(
+				snapshot,
+				false,
+				&drawDirectHasNonTextureEffect);
+		DX12IaHashTargetPlan drawTargetPlan = drawDirectTargetPlan;
+		DX12DrawMatchUsage drawMatchUsage;
+		DX12DrawMatchUsage directDrawMatchUsage;
+		const bool drawDirectTextureChecksOnly = !drawDirectHasNonTextureEffect;
+		StoreCompiledPsoPlan(
+			pipelineState,
+			gReloadGeneration,
+			snapshot,
+			&drawTargetPlan,
+			&drawDirectTargetPlan,
+			&drawMatchUsage,
+			&directDrawMatchUsage,
+			&drawDirectTextureChecksOnly);
 	}
 
 	gPsoRecords[pipelineState] = record;
@@ -3928,7 +4043,15 @@ void DX12ModRecordComputePipelineState(
 		FindShaderOverridesForPsoLocked(pipelineState, true, &configs);
 		std::vector<Bunny::ShaderOverrideConfig> snapshot;
 		CopyShaderOverrideConfigs(configs, &snapshot);
-		StoreCompiledPsoPlan(pipelineState, gReloadGeneration, snapshot);
+		StoreCompiledPsoPlan(
+			pipelineState,
+			gReloadGeneration,
+			snapshot,
+			nullptr,
+			nullptr,
+			nullptr,
+			nullptr,
+			nullptr);
 	}
 
 	gPsoRecords[pipelineState] = record;
