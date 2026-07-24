@@ -61,6 +61,7 @@ target_compile_definitions(DirectX12 PRIVATE
     _UNICODE
     _USRDLL
     MIGOTO_DX=12
+    $<$<CONFIG:Debug>:DX12_ENABLE_DETAILED_TIMING>
 )
 
 set_target_msvc_options(DirectX12)

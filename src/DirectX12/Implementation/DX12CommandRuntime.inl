@@ -319,7 +319,6 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 		return;
 	state->plan = DX12ResolvedDrawRuntimeState::ResolvedPlanState();
 	DX12IaHashStateCacheUtils::Clear(&state->iaHashStateCache);
-	DX12DirectIaProbeCacheUtils::Clear(&state->directIaProbeCache);
 	state->iaHashKeyPrefixes = {};
 	state->lastDirectIaHashBuild = {};
 	state->lastFullIaHashBuild = {};

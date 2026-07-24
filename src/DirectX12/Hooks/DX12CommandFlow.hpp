@@ -2815,9 +2815,6 @@ public:
 		    directTargetPlan.HasIaTargets() &&
 		    !directTargetPlan.hasDescriptorTargets &&
 		    !directTargetPlan.requireAllIaBuffers) {
-			// Reject repeated negative draws from immutable command-list state before
-			// resolving GPU virtual addresses. Global content and resource-lifetime
-			// generations make the shortcut conservative across uploads and reuse.
 				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
 				DX12ResidentDrawNegativeEntry &residentNegative =
@@ -2970,53 +2967,11 @@ public:
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
 
-					LARGE_INTEGER directProbeKeyBegin = DX12OuterTimingProbeUtils::Now();
-					const DX12DirectIaProbeCacheKey directProbeCacheKey =
-							DX12DirectIaProbeCacheUtils::MakeKey(
-								drawDecision->reloadGeneration,
-								preSkinGeneration,
-								directTargetPlan.Fingerprint(),
-								*directIaStateView,
-								draw);
-					DX12OuterTimingProbeUtils::LogCpuStage(
-						"IaReplacement",
-						"build_direct_ia_probe_key",
-						draw.indexed ? 1u : 0u,
-						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(directProbeKeyBegin));
-
 					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheLookup();
-					LARGE_INTEGER directProbeCacheBegin = DX12OuterTimingProbeUtils::Now();
-					bool hasDirectCandidate = false;
-					if (DX12DirectIaProbeCacheUtils::TryLoad(
-							&mutableRuntimeState->resolvedDraw.directIaProbeCache,
-							directProbeCacheKey,
-							&hasDirectCandidate)) {
-						DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-							&mutableRuntimeState->resolvedDraw, true);
-						DX12OuterTimingProbeUtils::LogCpuStage(
-							"IaReplacement",
-							hasDirectCandidate ?
-								"direct_ia_probe_cache_positive_hit" :
-								"direct_ia_probe_cache_negative_hit",
-							draw.indexed ? 1u : 0u,
-							1,
-							DX12OuterTimingProbeUtils::ElapsedUs(directProbeCacheBegin));
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheHit(
-							hasDirectCandidate);
-					} else {
-						DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-							&mutableRuntimeState->resolvedDraw, false);
-						DX12OuterTimingProbeUtils::LogCpuStage(
-							"IaReplacement",
-							"direct_ia_probe_cache_miss",
-							draw.indexed ? 1u : 0u,
-							1,
-							DX12OuterTimingProbeUtils::ElapsedUs(directProbeCacheBegin));
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
-						LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
-							hasDirectCandidate = DX12ModHasAnyDirectIaTextureOverrideCandidate(
-								*directIaStateView,
+					LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
+					const bool hasDirectCandidate =
+						DX12ModHasAnyDirectIaTextureOverrideCandidate(
+							*directIaStateView,
 							directTargetPlan,
 							draw.indexed,
 							draw.vertexCount,
@@ -3025,23 +2980,15 @@ public:
 							draw.firstVertex,
 							draw.firstIndex,
 							draw.firstInstance);
-						DX12OuterTimingProbeUtils::LogCpuStage(
-							"IaReplacement",
-							hasDirectCandidate ?
-								"direct_ia_probe_positive_result" :
-								"direct_ia_probe_negative_result",
-							draw.indexed ? 1u : 0u,
-							1,
-							DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
-						bool directProbeCacheEvicted = false;
-						DX12DirectIaProbeCacheUtils::Store(
-							&mutableRuntimeState->resolvedDraw.directIaProbeCache,
-							directProbeCacheKey,
-							hasDirectCandidate,
-							&directProbeCacheEvicted);
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheStore(
-							directProbeCacheEvicted);
-					}
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"IaReplacement",
+						hasDirectCandidate ?
+							"direct_ia_probe_positive_result" :
+							"direct_ia_probe_negative_result",
+						draw.indexed ? 1u : 0u,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
 
 					if (!hasDirectCandidate) {
 						StoreResidentNegative(mutableRuntimeState, *drawDecision,

@@ -57,8 +57,10 @@ static bool TryLoadRuntimePreSkinBindings(
 	bool *foundAny)
 {
 	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
-			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial ||
-			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap)
+			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
+			runtimeState->resolvedCompute.bindingsRootSignature !=
+				runtimeState->computeRootSignature ||
+			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial)
 		return false;
 
 	const size_t observedCount = runtimeState->resolvedCompute.observedSlots.size();
@@ -118,6 +120,7 @@ static void StoreRuntimePreSkinBindings(
 	DX12CommandListRuntimeState *runtimeState,
 	UINT64 computeBindingSerial,
 	UINT64 dependencyFingerprint,
+	bool serialSensitive,
 	bool foundAny,
 	const std::vector<UINT> &observedSlots,
 	const std::vector<UINT64> &observedSlotVersions,
@@ -129,12 +132,15 @@ static void StoreRuntimePreSkinBindings(
 {
 	if (!runtimeState)
 		return;
+	(void)serialSensitive;
 	runtimeState->resolvedCompute.bindingsValid = true;
 	runtimeState->resolvedCompute.bindingsFoundAny = foundAny;
 	runtimeState->resolvedCompute.bindingsSerial = computeBindingSerial;
 	runtimeState->resolvedCompute.bindingsDependencyFingerprint =
 		dependencyFingerprint;
 	runtimeState->resolvedCompute.bindingsHeap = runtimeState->cbvSrvUavHeap;
+	runtimeState->resolvedCompute.bindingsRootSignature =
+		runtimeState->computeRootSignature;
 	runtimeState->resolvedCompute.observedSlots = observedSlots;
 	runtimeState->resolvedCompute.observedSlotVersions = observedSlotVersions;
 	runtimeState->resolvedCompute.observedSlotValueIds = observedSlotValueIds;
@@ -1435,6 +1441,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				runtimeState,
 				computeBindingSerial,
 				runtimeDependencyFingerprint,
+				true,
 				foundAny,
 				observedSlots,
 				observedSlotVersions,
