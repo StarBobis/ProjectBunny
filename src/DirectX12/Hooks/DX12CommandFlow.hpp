@@ -1029,7 +1029,7 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12DispatchHookFlow::ExecuteHook(
 			commandList,
@@ -1042,7 +1042,7 @@ public:
 
 	static void ExecuteHook(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
@@ -1179,7 +1179,7 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch,
 		const DX12CompiledDispatchDecision *dispatchDecision = nullptr)
 	{
@@ -1208,8 +1208,8 @@ public:
 
 		// Design debt: this keeps old behavior for untracked command lists. The cleaner module seam is
 		// to guarantee runtime state before entering dispatch flow, then remove this fallback entirely.
-		DX12CommandListRuntimeState fallbackState = {};
-		DX12CommandListRuntimeState *effectiveState = runtimeState;
+		DX12SimulateContext fallbackState = {};
+		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
 		#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
@@ -1327,7 +1327,7 @@ public:
 
 	static bool HasConfiguredPreSkinCs(
 		ID3D12GraphicsCommandList *commandList,
-		const DX12CommandListRuntimeState *runtimeState)
+		const DX12SimulateContext *runtimeState)
 	{
 		ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState :
 			DX12CommandListRuntime::GetPipelineState(commandList);
@@ -1392,7 +1392,7 @@ public:
 
 	static void PreparePreSkinProbe(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		DX12DispatchPreSkinProbe *probe)
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
@@ -2263,7 +2263,7 @@ public:
 	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
 
 	static bool TryLoadResolvedIaHashBuild(
-		DX12ResolvedDrawRuntimeState::CachedIaHashBuildEntry *entry,
+		DX12SimulateContextDrawTemplate::CachedIaHashBuildEntry *entry,
 		const DX12IaHashStateCacheKey &key,
 		const DX12IaHashState **state,
 		bool *hasIaHashState)
@@ -2278,7 +2278,7 @@ public:
 	}
 
 	static void StoreResolvedIaHashBuild(
-		DX12ResolvedDrawRuntimeState::CachedIaHashBuildEntry *entry,
+		DX12SimulateContextDrawTemplate::CachedIaHashBuildEntry *entry,
 		const DX12IaHashStateCacheKey &key,
 		bool hasIaHashState,
 		const DX12IaHashState &state)
@@ -2345,7 +2345,7 @@ public:
 
 	static bool MatchesResidentNegative(
 		const DX12ResidentDrawNegativeEntry &entry,
-		const DX12CommandListRuntimeState &state,
+		const DX12SimulateContext &state,
 		const DX12CompiledDrawDecision &decision,
 		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
@@ -2377,7 +2377,7 @@ public:
 	}
 
 	static void StoreResidentNegative(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		const DX12CompiledDrawDecision &decision,
 		UINT64 preSkinGeneration,
 		UINT64 contentGeneration,
@@ -2549,7 +2549,7 @@ public:
 
 	static bool ExecutePresent(
 		ID3D12GraphicsCommandList *commandList,
-		const DX12CommandListRuntimeState &runtimeState,
+		const DX12SimulateContext &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		DX12ModIaReplacement replacement;
@@ -2573,7 +2573,7 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaHashState &iaState,
 		DX12ModIaReplacement *replacement,
-		const DX12CommandListRuntimeState &runtimeState,
+		const DX12SimulateContext &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		if (!commandList || !replacement)
@@ -2609,7 +2609,7 @@ public:
 	static bool HandleDrawOverrides(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
-		const DX12CommandListRuntimeState &runtimeState,
+		const DX12SimulateContext &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
@@ -2621,8 +2621,8 @@ public:
 			const bool activeShaderOverrides =
 				(DX12HotPathState::HookWorkFlags &
 				 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
-			DX12CommandListRuntimeState *mutableRuntimeState =
-				const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+			DX12SimulateContext *mutableRuntimeState =
+				const_cast<DX12SimulateContext*>(&runtimeState);
 			// The runtime deliberately preserves this cache across command-list Reset.
 			// Using a second TLS cache here defeated that ownership model, mixed entries
 			// from unrelated command lists, and forced every draw through a much larger
@@ -3360,14 +3360,14 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
 	}
 
 	static void ExecuteHook(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
@@ -3444,7 +3444,7 @@ public:
 	static void Execute(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
-		const DX12CommandListRuntimeState *runtimeState,
+		const DX12SimulateContext *runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;

@@ -2010,7 +2010,7 @@ public:
 
 static bool BuildDescriptorTextureOverrideCandidateCacheKey(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	const Bunny::CommandListTarget &target,
 	bool compute,
 	UINT64 reloadGeneration,
@@ -2390,7 +2390,7 @@ static bool FindDescriptorTextureOverrides(
 	if (!commandList)
 		return false;
 
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
 	const bool compute = TargetStageIsCompute(target.stage);

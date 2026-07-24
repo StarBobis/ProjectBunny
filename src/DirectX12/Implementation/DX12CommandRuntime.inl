@@ -8,7 +8,7 @@ DX12ModFindStaticReplacementSnapshotForPso(
 	UINT64 reloadGeneration);
 
 void DX12CommandListRuntime::RegisterDirectState(
-	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state)
+	ID3D12GraphicsCommandList *commandList, DX12SimulateContext *state)
 {
 	if (!commandList || !state)
 		return;
@@ -29,7 +29,7 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 	AcquireSRWLockExclusive(&shard.lock);
 	auto it = shard.directStates.find(commandList);
 	if (it != shard.directStates.end()) {
-		DX12CommandListRuntimeState *state = it->second;
+		DX12SimulateContext *state = it->second;
 		if (state && state->commandListIdentity) {
 			state->commandListIdentity->Release();
 			state->commandListIdentity = nullptr;
@@ -40,7 +40,7 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
-DX12CommandListRuntimeState *DX12CommandListRuntime::GetDirectStatePtr(
+DX12SimulateContext *DX12CommandListRuntime::GetDirectStatePtr(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
@@ -48,9 +48,9 @@ DX12CommandListRuntimeState *DX12CommandListRuntime::GetDirectStatePtr(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext*>::iterator it =
 		shard.directStates.find(commandList);
-	DX12CommandListRuntimeState *state = it != shard.directStates.end() ? it->second : nullptr;
+	DX12SimulateContext *state = it != shard.directStates.end() ? it->second : nullptr;
 	ReleaseSRWLockShared(&shard.lock);
 	return state;
 }
@@ -63,7 +63,7 @@ IUnknown *DX12CommandListRuntime::GetCommandListIdentity(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	DX12CommandListRuntimeState *state = nullptr;
+	DX12SimulateContext *state = nullptr;
 	auto directIt = shard.directStates.find(commandList);
 	if (directIt != shard.directStates.end()) {
 		state = directIt->second;
@@ -145,7 +145,7 @@ DX12CommandListTrackingState DX12CommandListRuntime::MakeTrackingState(
 }
 
 DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
-	DX12CommandListRuntimeState *state)
+	DX12SimulateContext *state)
 {
 	DX12CommandListTrackingCache cache;
 	if (!state) {
@@ -159,7 +159,7 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 }
 
 void DX12CommandListRuntime::TlsRefreshFromState(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	ID3D12GraphicsCommandList *commandList,
 	DX12CommandListRuntimeShard *shard,
 	bool stateIsDirect)
@@ -188,7 +188,7 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 void DX12CommandListRuntime::TlsRefresh(
 	DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList)
 {
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*>::iterator directIt =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext*>::iterator directIt =
 		shard.directStates.find(commandList);
 	if (directIt != shard.directStates.end()) {
 		DX12CommandListRuntime::TlsRefreshFromState(
@@ -196,7 +196,7 @@ void DX12CommandListRuntime::TlsRefresh(
 		return;
 	}
 
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it == shard.states.end()) {
 		Tls.commandList = nullptr;
@@ -256,7 +256,7 @@ DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
 	return DX12CommandListRuntime::MakeTrackingState(cache);
 }
 
-DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtrFast(
+DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
@@ -313,11 +313,11 @@ void DX12ModRefreshRuntimeStateAfterReload()
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::Clear(
-	DX12ResolvedDrawRuntimeState *state)
+	DX12SimulateContextDrawTemplate *state)
 {
 	if (!state)
 		return;
-	state->plan = DX12ResolvedDrawRuntimeState::ResolvedPlanState();
+	state->plan = DX12SimulateContextDrawTemplate::ResolvedPlanState();
 	DX12IaHashStateCacheUtils::Clear(&state->iaHashStateCache);
 	state->iaHashKeyPrefixes = {};
 	state->lastDirectIaHashBuild = {};
@@ -326,7 +326,7 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
-	DX12ResolvedDrawRuntimeState *state)
+	DX12SimulateContextDrawTemplate *state)
 {
 	if (!state)
 		return;
@@ -337,7 +337,7 @@ void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
-	DX12ResolvedDrawRuntimeState *state)
+	DX12SimulateContextDrawTemplate *state)
 {
 	// Deliberately preserve draw caches across Present/scene churn.
 	// Their keys already encode reload/content/resolve/IA epochs, so DX11-style
@@ -346,7 +346,7 @@ void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-	DX12ResolvedDrawRuntimeState *state,
+	DX12SimulateContextDrawTemplate *state,
 	bool hit)
 {
 	(void)state;
@@ -397,7 +397,7 @@ bool DX12CommandListRuntime::Unregister(ID3D12GraphicsCommandList *commandList)
 }
 
 void DX12CommandListRuntime::Reset(
-	DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState)
+	DX12SimulateContext *state, ID3D12PipelineState *initialState)
 {
 	if (!state)
 		return;
@@ -409,9 +409,9 @@ void DX12CommandListRuntime::Reset(
 	// single recording. Their keys already carry the required generations, so
 	// preserve the working set across command-list Reset like DX11's resident
 	// HackerContext state.
-	DX12ResolvedDrawRuntimeState persistentResolvedDraw =
+	DX12SimulateContextDrawTemplate persistentResolvedDraw =
 		std::move(state->resolvedDraw);
-	*state = DX12CommandListRuntimeState();
+	*state = DX12SimulateContext();
 	state->device = cachedDevice;
 	state->commandListIdentity = cachedCommandListIdentity;
 	state->pipelineState = nullptr;
@@ -428,7 +428,7 @@ void DX12CommandListRuntime::Reset(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::Reset(fastState, initialState);
 		DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
@@ -437,7 +437,7 @@ void DX12CommandListRuntime::Reset(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::Reset(&state, initialState);
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -608,7 +608,7 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 }
 
 const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecision(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool hasShaderOverrides,
 	bool needsPreSkinProbe)
 {
@@ -637,7 +637,7 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 }
 
 const DX12CompiledDrawDecision *DX12CommandListRuntime::EnsureDrawDecision(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool hasShaderOverrides)
 {
 	if (!state)
@@ -658,7 +658,7 @@ const DX12CompiledDrawDecision *DX12CommandListRuntime::EnsureDrawDecision(
 }
 
 void DX12CommandListRuntime::CompileDispatchDecision(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool hasShaderOverrides,
 	bool needsPreSkinProbe)
 {
@@ -669,7 +669,7 @@ void DX12CommandListRuntime::CompileDispatchDecision(
 }
 
 void DX12CommandListRuntime::CompileDrawDecision(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool hasShaderOverrides)
 {
 	if (!state)
@@ -679,7 +679,7 @@ void DX12CommandListRuntime::CompileDrawDecision(
 }
 
 void DX12CommandListRuntime::InvalidateResolvedDrawPlan(
-	DX12CommandListRuntimeState *state)
+	DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -687,7 +687,7 @@ void DX12CommandListRuntime::InvalidateResolvedDrawPlan(
 }
 
 void DX12CommandListRuntime::RememberPipelineState(
-	DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState)
+	DX12SimulateContext *state, ID3D12PipelineState *pipelineState)
 {
 	if (!state)
 		return;
@@ -736,7 +736,7 @@ void DX12CommandListRuntime::RememberPipelineState(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::RememberPipelineState(fastState, pipelineState);
 		return;
@@ -744,12 +744,12 @@ void DX12CommandListRuntime::RememberPipelineState(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::RememberPipelineState(&state, pipelineState);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntime::ResetIa(DX12CommandListRuntimeState *state)
+void DX12CommandListRuntime::ResetIa(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -762,7 +762,7 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::ResetIa(fastState);
 		return;
@@ -770,13 +770,13 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::ResetIa(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12CommandListRuntime::RememberIndexBuffer(
-	DX12CommandListRuntimeState *state, const D3D12_INDEX_BUFFER_VIEW *view)
+	DX12SimulateContext *state, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (!state)
 		return;
@@ -811,7 +811,7 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::RememberIndexBuffer(fastState, view);
 		return;
@@ -819,13 +819,13 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::RememberIndexBuffer(&state, view);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12CommandListRuntime::RememberVertexBuffers(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT startSlot,
 	UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
@@ -874,7 +874,7 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::RememberVertexBuffers(fastState, startSlot, count, views);
 		return;
@@ -882,13 +882,13 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::RememberVertexBuffers(&state, startSlot, count, views);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12CommandListRuntime::RememberPrimitiveTopology(
-	DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology)
+	DX12SimulateContext *state, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!state)
 		return;
@@ -905,7 +905,7 @@ void DX12CommandListRuntime::RememberPrimitiveTopology(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
 		DX12CommandListRuntime::RememberPrimitiveTopology(fastState, topology);
 		return;
@@ -913,12 +913,12 @@ void DX12CommandListRuntime::RememberPrimitiveTopology(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	DX12CommandListRuntimeState &state = shard.states[commandList];
+	DX12SimulateContext &state = shard.states[commandList];
 	DX12CommandListRuntime::RememberPrimitiveTopology(&state, topology);
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntime::BumpIaEpoch(DX12CommandListRuntimeState *state)
+void DX12CommandListRuntime::BumpIaEpoch(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -928,7 +928,7 @@ void DX12CommandListRuntime::BumpIaEpoch(DX12CommandListRuntimeState *state)
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
-void DX12CommandListRuntime::BumpIaContentEpoch(DX12CommandListRuntimeState *state)
+void DX12CommandListRuntime::BumpIaContentEpoch(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -942,7 +942,7 @@ void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *comma
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::BumpIaContentEpoch(state);
 		return;
@@ -950,7 +950,7 @@ void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *comma
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end())
 		DX12CommandListRuntime::BumpIaContentEpoch(&it->second);
@@ -958,7 +958,7 @@ void DX12CommandListRuntime::BumpIaContentEpoch(ID3D12GraphicsCommandList *comma
 }
 
 static bool EnsureResolvedIndexBufferForTargets(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool indexed,
 	const DX12IaHashTargetPlan &targetPlan)
 {
@@ -980,7 +980,7 @@ static bool EnsureResolvedIndexBufferForTargets(
 }
 
 static bool EnsureResolvedVertexBuffersForTargets(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	const DX12IaHashTargetPlan &targetPlan)
 {
 	if (!state)
@@ -1008,7 +1008,7 @@ static bool EnsureResolvedVertexBuffersForTargets(
 }
 
 static bool EnsureResolvedIaResourcesForTargets(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	const DX12IaHashTargetPlan &targetPlan,
 	bool indexed)
 {
@@ -1364,7 +1364,7 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 }
 
 DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT cacheSlot,
 	const DX12IaHashTargetPlan &targetPlan,
 	bool indexed,
@@ -1428,13 +1428,13 @@ ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 	if (!commandList)
 		return nullptr;
 
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state)
 		return state->pipelineState;
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	ID3D12PipelineState *result =
 		it == shard.states.end() ? nullptr : it->second.pipelineState;
@@ -1442,20 +1442,20 @@ ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 	return result;
 }
 
-DX12CommandListRuntimeState DX12CommandListRuntime::GetState(
+DX12SimulateContext DX12CommandListRuntime::GetState(
 	ID3D12GraphicsCommandList *commandList)
 {
-	DX12CommandListRuntimeState result;
+	DX12SimulateContext result;
 	if (!commandList)
 		return result;
 
-	const DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtr(commandList);
+	const DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtr(commandList);
 	if (state)
 		result = *state;
 	return result;
 }
 
-const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
+const DX12SimulateContext *DX12CommandListRuntime::GetStatePtr(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
@@ -1463,7 +1463,7 @@ const DX12CommandListRuntimeState *DX12CommandListRuntime::GetStatePtr(
 	return DX12CommandListRuntime::GetStatePtrFast(commandList);
 }
 
-static void DX12RuntimeClearRootTables(DX12CommandListRuntimeState *state)
+static void DX12RuntimeClearRootTables(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -1548,7 +1548,7 @@ static void DX12RuntimeInvalidateRootTableResolution(
 }
 
 static void DX12RuntimeResolveRootTable(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	RootTableState *table)
 {
 	if (!state || !table || !table->valid)
@@ -1562,7 +1562,7 @@ static void DX12RuntimeResolveRootTable(
 	}
 }
 
-static void DX12RuntimeBumpBindingQuerySerial(DX12CommandListRuntimeState *state)
+static void DX12RuntimeBumpBindingQuerySerial(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -1583,7 +1583,7 @@ static void DX12RuntimeBumpDescriptorQuerySerial(UINT64 *serial)
 }
 
 static void DX12RuntimeBumpGraphicsDescriptorQuerySerial(
-	DX12CommandListRuntimeState *state)
+	DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -1591,14 +1591,23 @@ static void DX12RuntimeBumpGraphicsDescriptorQuerySerial(
 }
 
 static void DX12RuntimeBumpComputeDescriptorQuerySerial(
-	DX12CommandListRuntimeState *state)
+	DX12SimulateContext *state)
 {
 	if (!state)
 		return;
 	DX12RuntimeBumpDescriptorQuerySerial(&state->computeDescriptorQuerySerial);
 }
 
-static void DX12RuntimeBumpComputeBindingSerial(DX12CommandListRuntimeState *state)
+static void DX12RuntimeBumpComputeDescriptorBindingVersion(
+	DX12SimulateContext *state)
+{
+	if (!state)
+		return;
+	DX12RuntimeBumpDescriptorQuerySerial(
+		&state->computeDescriptorBindingVersion);
+}
+
+static void DX12RuntimeBumpComputeBindingSerial(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
@@ -1608,7 +1617,7 @@ static void DX12RuntimeBumpComputeBindingSerial(DX12CommandListRuntimeState *sta
 }
 
 void DX12CommandListRuntime::SetDescriptorHeaps(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
 {
@@ -1634,6 +1643,7 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12RuntimeClearRootTables(state);
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
@@ -1646,7 +1656,7 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::SetDescriptorHeaps(state, cbvSrvUavHeap, samplerHeap);
 		return;
@@ -1654,7 +1664,7 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end())
 		DX12CommandListRuntime::SetDescriptorHeaps(&it->second, cbvSrvUavHeap, samplerHeap);
@@ -1662,7 +1672,7 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 }
 
 void DX12CommandListRuntime::RememberComputeRootSignature(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!state)
@@ -1679,11 +1689,12 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	state->computeRootTableValidCount = 0;
 	DX12RuntimeBumpComputeBindingSerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootSignature(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!state)
@@ -1710,7 +1721,7 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberGraphicsRootSignature(
@@ -1721,7 +1732,7 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberGraphicsRootSignature(
@@ -1737,7 +1748,7 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberComputeRootSignature(
@@ -1748,7 +1759,7 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberComputeRootSignature(
@@ -1758,7 +1769,7 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 }
 
 void DX12CommandListRuntime::RememberRootDescriptorTable(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	bool graphics,
 	UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
@@ -1786,6 +1797,7 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 		if (!state->computeBindingSerial)
 			state->computeBindingSerial = 1;
 		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+		DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 	} else {
 		DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 		DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
@@ -1802,7 +1814,7 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberRootDescriptorTable(
 			state, graphics, rootParameterIndex, baseDescriptor);
@@ -1811,7 +1823,7 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberRootDescriptorTable(
@@ -1821,7 +1833,7 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type,
 	D3D12_GPU_VIRTUAL_ADDRESS address)
@@ -1857,7 +1869,7 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberGraphicsRootDescriptor(
@@ -1868,7 +1880,7 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberGraphicsRootDescriptor(
@@ -1878,7 +1890,7 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 }
 
 void DX12CommandListRuntime::RememberComputeRootDescriptor(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type,
 	D3D12_GPU_VIRTUAL_ADDRESS address)
@@ -1914,7 +1926,7 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberComputeRootDescriptor(
@@ -1925,7 +1937,7 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberComputeRootDescriptor(
@@ -1935,7 +1947,7 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 }
 
 void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT rootParameterIndex,
 	UINT destOffset,
 	UINT count,
@@ -1962,7 +1974,7 @@ void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
@@ -1973,7 +1985,7 @@ void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
@@ -1983,7 +1995,7 @@ void DX12CommandListRuntime::RememberGraphicsRoot32BitConstants(
 }
 
 void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
-	DX12CommandListRuntimeState *state,
+	DX12SimulateContext *state,
 	UINT rootParameterIndex,
 	UINT destOffset,
 	UINT count,
@@ -2011,7 +2023,7 @@ void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
 	if (!commandList)
 		return;
 
-	DX12CommandListRuntimeState *state =
+	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		DX12CommandListRuntime::RememberComputeRoot32BitConstants(
@@ -2022,7 +2034,7 @@ void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
 	DX12CommandListRuntimeShard &shard =
 		DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	if (it != shard.states.end()) {
 		DX12CommandListRuntime::RememberComputeRoot32BitConstants(
@@ -2043,7 +2055,7 @@ bool DX12CommandListRuntime::GetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
-	DX12CommandListRuntimeState *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
+	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
 		if (cbvSrvUavHeap)
 			*cbvSrvUavHeap = state->cbvSrvUavHeap;
@@ -2054,7 +2066,7 @@ bool DX12CommandListRuntime::GetDescriptorHeaps(
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState>::iterator it =
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
 	bool found = false;
 	if (it != shard.states.end()) {
@@ -2246,7 +2258,7 @@ DX12CommandListTrackingState DX12CommandListStateCapture::MakeTrackingState()
 }
 
 DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
-	DX12CommandListRuntimeState *runtimeState)
+	DX12SimulateContext *runtimeState)
 {
 	return DX12CommandListRuntime::GetTrackingState(runtimeState);
 }
@@ -2260,7 +2272,7 @@ DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
 }
 
 DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
-	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState)
+	ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState)
 {
 	if (runtimeState)
 		return DX12CommandListStateCapture::GetTrackingState(runtimeState);
@@ -2270,14 +2282,14 @@ DX12CommandListTrackingState DX12CommandListStateCapture::GetTrackingState(
 void DX12CommandListStateCapture::PrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::PrimitiveTopology(commandList, runtimeState, topology);
 }
 
 void DX12CommandListStateCapture::PrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	const DX12CommandListTrackingState tracking =
@@ -2295,14 +2307,14 @@ void DX12CommandListStateCapture::PrimitiveTopology(
 ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	return DX12CommandListStateCapture::PipelineState(commandList, runtimeState, pipelineState);
 }
 
 ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	ID3D12PipelineState *pipelineState)
 {
 	ID3D12PipelineState *activePipelineState = pipelineState;
@@ -2346,14 +2358,14 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList, UINT count, ID3D12DescriptorHeap *const *heaps)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::DescriptorHeaps(commandList, runtimeState, count, heaps);
 }
 
 void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT count,
 	ID3D12DescriptorHeap *const *heaps)
 {
@@ -2372,7 +2384,7 @@ void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::DescriptorHeaps(
 		commandList, runtimeState, cbvSrvUavHeap, samplerHeap);
@@ -2380,7 +2392,7 @@ void DX12CommandListStateCapture::DescriptorHeaps(
 
 void DX12CommandListStateCapture::DescriptorHeaps(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	ID3D12DescriptorHeap *cbvSrvUavHeap,
 	ID3D12DescriptorHeap *samplerHeap)
 {
@@ -2397,14 +2409,14 @@ void DX12CommandListStateCapture::DescriptorHeaps(
 void DX12CommandListStateCapture::ComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::ComputeRootSignature(commandList, runtimeState, rootSignature);
 }
 
 void DX12CommandListStateCapture::ComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	ID3D12RootSignature *rootSignature)
 {
 	const DX12CommandListTrackingState tracking =
@@ -2419,14 +2431,14 @@ void DX12CommandListStateCapture::ComputeRootSignature(
 void DX12CommandListStateCapture::GraphicsRootSignature(
 	ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::GraphicsRootSignature(commandList, runtimeState, rootSignature);
 }
 
 void DX12CommandListStateCapture::GraphicsRootSignature(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	ID3D12RootSignature *rootSignature)
 {
 	const DX12CommandListTrackingState tracking =
@@ -2442,7 +2454,7 @@ void DX12CommandListStateCapture::ComputeRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::ComputeRootDescriptorTable(
 		commandList, runtimeState, rootParameterIndex, baseDescriptor);
@@ -2450,7 +2462,7 @@ void DX12CommandListStateCapture::ComputeRootDescriptorTable(
 
 void DX12CommandListStateCapture::ComputeRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
@@ -2467,7 +2479,7 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 		commandList, runtimeState, rootParameterIndex, baseDescriptor);
@@ -2475,7 +2487,7 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 
 void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
@@ -2491,7 +2503,7 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::ComputeRoot32BitConstant(
 		commandList, runtimeState, rootParameterIndex, srcData, destOffset);
@@ -2499,7 +2511,7 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 
 void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	UINT srcData,
 	UINT destOffset)
@@ -2516,7 +2528,7 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstant(
 void DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 		commandList, runtimeState, rootParameterIndex, srcData, destOffset);
@@ -2524,7 +2536,7 @@ void DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 
 void DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	UINT srcData,
 	UINT destOffset)
@@ -2542,7 +2554,7 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet,
 	const void *srcData, UINT destOffset)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::ComputeRoot32BitConstants(
 		commandList, runtimeState, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
@@ -2550,7 +2562,7 @@ void DX12CommandListStateCapture::ComputeRoot32BitConstants(
 
 void DX12CommandListStateCapture::ComputeRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	UINT num32BitValuesToSet,
 	const void *srcData,
@@ -2570,7 +2582,7 @@ void DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet,
 	const void *srcData, UINT destOffset)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 		commandList, runtimeState, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
@@ -2578,7 +2590,7 @@ void DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 
 void DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	UINT num32BitValuesToSet,
 	const void *srcData,
@@ -2598,7 +2610,7 @@ void DX12CommandListStateCapture::ComputeRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::ComputeRootDescriptor(
 		commandList, runtimeState, rootParameterIndex, type, address);
@@ -2606,7 +2618,7 @@ void DX12CommandListStateCapture::ComputeRootDescriptor(
 
 void DX12CommandListStateCapture::ComputeRootDescriptor(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type,
 	D3D12_GPU_VIRTUAL_ADDRESS address)
@@ -2626,7 +2638,7 @@ void DX12CommandListStateCapture::GraphicsRootDescriptor(
 	ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::GraphicsRootDescriptor(
 		commandList, runtimeState, rootParameterIndex, type, address);
@@ -2634,7 +2646,7 @@ void DX12CommandListStateCapture::GraphicsRootDescriptor(
 
 void DX12CommandListStateCapture::GraphicsRootDescriptor(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT rootParameterIndex,
 	D3D12_ROOT_PARAMETER_TYPE type,
 	D3D12_GPU_VIRTUAL_ADDRESS address)
@@ -2653,14 +2665,14 @@ void DX12CommandListStateCapture::GraphicsRootDescriptor(
 void DX12CommandListStateCapture::IndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
 }
 
 void DX12CommandListStateCapture::IndexBuffer(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	const DX12CommandListTrackingState tracking =
@@ -2679,14 +2691,14 @@ void DX12CommandListStateCapture::VertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	DX12CommandListStateCapture::VertexBuffers(commandList, runtimeState, startSlot, count, views);
 }
 
 void DX12CommandListStateCapture::VertexBuffers(
 	ID3D12GraphicsCommandList *commandList,
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT startSlot,
 	UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)

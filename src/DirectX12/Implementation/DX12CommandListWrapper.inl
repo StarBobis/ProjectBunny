@@ -1618,5 +1618,5 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			CachedCommandListInterface<ID3D12GraphicsCommandList9> mCommandList9Interface;
 			CachedCommandListInterface<ID3D12GraphicsCommandList10> mCommandList10Interface;
 			// Embedded RuntimeState avoids a sharded map lookup, as in DX11.
-			DX12CommandListRuntimeState mRuntimeState;
+			DX12SimulateContext mRuntimeState;
 		};

@@ -47,7 +47,7 @@ static UINT64 BuildRuntimePreSkinDependencyFingerprint(
 }
 
 static bool TryLoadRuntimePreSkinBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT64 computeBindingSerial,
 	std::vector<DX12CurrentComputeUavBinding> *uavs,
 	std::vector<DX12CurrentComputeUavBinding> *srvs,
@@ -60,7 +60,11 @@ static bool TryLoadRuntimePreSkinBindings(
 			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
 			runtimeState->resolvedCompute.bindingsRootSignature !=
 				runtimeState->computeRootSignature ||
-			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial)
+			(runtimeState->resolvedCompute.bindingsUseRootValues &&
+			 runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial) ||
+			(!runtimeState->resolvedCompute.bindingsUseRootValues &&
+			 runtimeState->resolvedCompute.bindingsDescriptorVersion !=
+				runtimeState->computeDescriptorBindingVersion))
 		return false;
 
 	const size_t observedCount = runtimeState->resolvedCompute.observedSlots.size();
@@ -117,10 +121,10 @@ static bool TryLoadRuntimePreSkinBindings(
 }
 
 static void StoreRuntimePreSkinBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT64 computeBindingSerial,
 	UINT64 dependencyFingerprint,
-	bool serialSensitive,
+	bool usesRootValues,
 	bool foundAny,
 	const std::vector<UINT> &observedSlots,
 	const std::vector<UINT64> &observedSlotVersions,
@@ -132,10 +136,12 @@ static void StoreRuntimePreSkinBindings(
 {
 	if (!runtimeState)
 		return;
-	(void)serialSensitive;
 	runtimeState->resolvedCompute.bindingsValid = true;
 	runtimeState->resolvedCompute.bindingsFoundAny = foundAny;
+	runtimeState->resolvedCompute.bindingsUseRootValues = usesRootValues;
 	runtimeState->resolvedCompute.bindingsSerial = computeBindingSerial;
+	runtimeState->resolvedCompute.bindingsDescriptorVersion =
+		runtimeState->computeDescriptorBindingVersion;
 	runtimeState->resolvedCompute.bindingsDependencyFingerprint =
 		dependencyFingerprint;
 	runtimeState->resolvedCompute.bindingsHeap = runtimeState->cbvSrvUavHeap;
@@ -151,7 +157,7 @@ static void StoreRuntimePreSkinBindings(
 }
 
 static bool TryLoadRuntimeDescriptorBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	bool compute,
 	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
 	UINT64 bindingQuerySerial,
@@ -219,7 +225,7 @@ static bool TryLoadRuntimeDescriptorBindings(
 }
 
 static void StoreRuntimeDescriptorBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	bool compute,
 	D3D12_DESCRIPTOR_RANGE_TYPE rangeType,
 	UINT64 bindingQuerySerial,
@@ -253,7 +259,7 @@ static void StoreRuntimeDescriptorBindings(
 }
 
 static UINT64 GetRuntimeDescriptorQuerySerial(
-	const DX12CommandListRuntimeState *runtimeState,
+	const DX12SimulateContext *runtimeState,
 	bool compute)
 {
 	if (!runtimeState)
@@ -265,7 +271,7 @@ static UINT64 GetRuntimeDescriptorQuerySerial(
 }
 
 static bool BuildRuntimeBindingSnapshot(
-	const DX12CommandListRuntimeState *runtimeState,
+	const DX12SimulateContext *runtimeState,
 	CommandListBindingState *snapshot)
 {
 	if (!runtimeState || !snapshot)
@@ -1017,7 +1023,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	if (cbvs) cbvs->clear();
 	if (constants) constants->clear();
 
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	const DX12CommandListTrackingState tracking =
 		runtimeState ?
@@ -1409,6 +1415,29 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
+	bool usesRootValues = !localConstants.empty();
+	for (const DX12CurrentComputeUavBinding &binding : localUavs) {
+		if (binding.rootDescriptor) {
+			usesRootValues = true;
+			break;
+		}
+	}
+	if (!usesRootValues) {
+		for (const DX12CurrentComputeUavBinding &binding : localSrvs) {
+			if (binding.rootDescriptor) {
+				usesRootValues = true;
+				break;
+			}
+		}
+	}
+	if (!usesRootValues) {
+		for (const DX12CurrentComputeUavBinding &binding : localCbvs) {
+			if (binding.rootDescriptor) {
+				usesRootValues = true;
+				break;
+			}
+		}
+	}
 	const UINT64 descriptorHeapVersionAfter =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	const UINT64 descriptorQuerySerialAfter = CurrentDescriptorQuerySerial();
@@ -1432,7 +1461,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		if (observedSlotsValid) {
 			const UINT64 runtimeDependencyFingerprint =
 				BuildRuntimePreSkinDependencyFingerprint(
-					computeBindingSerial,
+					usesRootValues ? computeBindingSerial :
+						runtimeState->computeDescriptorBindingVersion,
 					observedSlotHeap,
 					observedSlotVersions.data(),
 					observedSlotValueIds.data(),
@@ -1441,7 +1471,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				runtimeState,
 				computeBindingSerial,
 				runtimeDependencyFingerprint,
-				true,
+				usesRootValues,
 				foundAny,
 				observedSlots,
 				observedSlotVersions,
@@ -1674,12 +1704,12 @@ bool DX12BindingTracker::SnapshotBindingState(
 	if (!commandList || !snapshot)
 		return false;
 
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	const DX12CommandListTrackingState tracking =
 		runtimeState ?
 			DX12CommandListRuntime::GetTrackingState(
-				const_cast<DX12CommandListRuntimeState*>(runtimeState)) :
+				const_cast<DX12SimulateContext*>(runtimeState)) :
 			DX12CommandListTrackingState();
 	if (runtimeState && !tracking.trackBindings) {
 		if (!BuildRuntimeBindingSnapshot(runtimeState, snapshot))
@@ -2902,7 +2932,7 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		return false;
 
 	uavs->clear();
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	const DX12CommandListTrackingState tracking =
 		runtimeState ?
@@ -3205,7 +3235,7 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 		return false;
 	}
 
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	const DX12CommandListTrackingState tracking =
 		runtimeState ?

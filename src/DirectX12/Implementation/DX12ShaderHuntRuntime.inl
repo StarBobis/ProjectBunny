@@ -80,7 +80,7 @@ void DX12HuntRecordDraw(
 	DX12IaRegionDraw draw = DX12IaRegionDraw::FromDrawArguments(
 		indexed, vertexCount, indexCount, firstVertex, firstIndex, baseVertex);
 
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtr(commandList);
 	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	const HuntIaState iaState = runtimeState ?
@@ -153,7 +153,7 @@ void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList)
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtr(commandList);
 	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	DX12PsoShaderInfo info = {};
@@ -175,7 +175,7 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtr(commandList);
 	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	DX12PsoShaderInfo info = {};
@@ -233,7 +233,7 @@ bool DX12HuntShouldSkipDraw(
 	if (!enabled)
 		return false;
 
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtr(commandList);
 	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	const HuntIaState iaState = runtimeState ?
@@ -274,7 +274,7 @@ bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList)
 		selectedCS = SelectedHashLocked(gCS);
 	}
 	ReleaseSRWLockShared(&gHuntLock);
-	const DX12CommandListRuntimeState *runtimeState =
+	const DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtr(commandList);
 	ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState : nullptr;
 	return enabled && csArmed && selectedCS &&

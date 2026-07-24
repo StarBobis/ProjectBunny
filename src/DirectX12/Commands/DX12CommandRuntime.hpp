@@ -483,6 +483,11 @@ public:
 	}
 };
 
+using DX12SimulateContextDispatchExecutionTemplate =
+	DX12CompiledDispatchDecision;
+using DX12SimulateContextDrawExecutionTemplate =
+	DX12CompiledDrawDecision;
+
 class DX12CommandListTrackingState
 {
 public:
@@ -1206,7 +1211,7 @@ public:
 	bool valid = false;
 };
 
-class DX12ResolvedDrawRuntimeState
+class DX12SimulateContextDrawTemplate
 {
 public:
 	class ResolvedPlanState
@@ -1243,20 +1248,22 @@ public:
 class DX12ResolvedDrawRuntimeStateUtils
 {
 public:
-	static void Clear(DX12ResolvedDrawRuntimeState *state);
-	static void InvalidatePlan(DX12ResolvedDrawRuntimeState *state);
-	static void EnsureScene(DX12ResolvedDrawRuntimeState *state);
+	static void Clear(DX12SimulateContextDrawTemplate *state);
+	static void InvalidatePlan(DX12SimulateContextDrawTemplate *state);
+	static void EnsureScene(DX12SimulateContextDrawTemplate *state);
 	static void NoteLookup(
-		DX12ResolvedDrawRuntimeState *state,
+		DX12SimulateContextDrawTemplate *state,
 		bool hit);
 };
 
-class DX12ResolvedComputeRuntimeState
+class DX12SimulateContextComputeTemplate
 {
 public:
 	bool bindingsValid = false;
 	bool bindingsFoundAny = false;
+	bool bindingsUseRootValues = false;
 	UINT64 bindingsSerial = 0;
+	UINT64 bindingsDescriptorVersion = 0;
 	UINT64 bindingsDependencyFingerprint = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
 	ID3D12RootSignature *bindingsRootSignature = nullptr;
@@ -1315,7 +1322,7 @@ public:
 	std::vector<DX12ResolvedGraphicsSrvBinding> bindings;
 };
 
-class DX12CommandListRuntimeState
+class DX12SimulateContext
 {
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
@@ -1334,7 +1341,7 @@ public:
 	DX12ActiveIaState ia;
 	UINT64 iaEpoch = 1;
 	UINT64 iaContentEpoch = 1;
-	DX12ResolvedDrawRuntimeState resolvedDraw;
+	DX12SimulateContextDrawTemplate resolvedDraw;
 	DX12CommandListTrackingCache trackingCache;
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
@@ -1346,6 +1353,7 @@ public:
 	UINT64 bindingQuerySerial = 1;
 	UINT64 graphicsDescriptorQuerySerial = 1;
 	UINT64 computeDescriptorQuerySerial = 1;
+	UINT64 computeDescriptorBindingVersion = 1;
 	UINT graphicsRootTableValidCount = 0;
 	UINT computeRootTableValidCount = 0;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
@@ -1375,18 +1383,18 @@ public:
 
 	// Compiled per-PSO dispatch policy. Dispatch consumes this instead of
 	// rediscovering non-candidate PreSkin state on every command.
-	DX12CompiledDispatchDecision dispatchDecision;
+	DX12SimulateContextDispatchExecutionTemplate dispatchDecision;
 
 	// Compiled per-PSO draw policy. Draw consumes this instead of rediscovering
 	// PSO shader override metadata on every command.
-	DX12CompiledDrawDecision drawDecision;
+	DX12SimulateContextDrawExecutionTemplate drawDecision;
 
 	// Cached device pointer to eliminate per-draw AcquireModDevice QI overhead.
 	// Set during Reset from the command list; device must outlive the command list
 	// per DX12 spec (device -> command list is a parent-child relationship).
 	ID3D12Device *device = nullptr;
 
-	DX12ResolvedComputeRuntimeState resolvedCompute;
+	DX12SimulateContextComputeTemplate resolvedCompute;
 	// Resident descriptor-query results, keyed by descriptor-only serials so
 	// unrelated root-constant churn does not invalidate SRV slot lookups.
 	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6> resolvedDescriptorQueries;
@@ -1400,8 +1408,8 @@ class DX12CommandListRuntimeShard
 {
 public:
 	SRWLOCK lock = SRWLOCK_INIT;
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState*> directStates;
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12CommandListRuntimeState> states;
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext*> directStates;
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext> states;
 };
 
 
@@ -1414,7 +1422,7 @@ public:
 	bool stateIsDirect = false;
 	UINT64 trackingGeneration = 0;
 	DX12CommandListTrackingCache tracking;
-	DX12CommandListRuntimeState *statePtr = nullptr;
+	DX12SimulateContext *statePtr = nullptr;
 };
 
 
@@ -1429,9 +1437,9 @@ public:
 	static volatile UINT64 TrackingGenerationValue;
 	static thread_local DX12CommandListRuntimeTlsCache Tls;
 
-	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state);
+	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *state);
 	static void UnregisterDirectState(ID3D12GraphicsCommandList *commandList);
-	static DX12CommandListRuntimeState *GetDirectStatePtr(ID3D12GraphicsCommandList *commandList);
+	static DX12SimulateContext *GetDirectStatePtr(ID3D12GraphicsCommandList *commandList);
 	static IUnknown *GetCommandListIdentity(ID3D12GraphicsCommandList *commandList);
 
 	static UINT64 TrackingGeneration();
@@ -1439,21 +1447,21 @@ public:
 	static DX12CommandListRuntimeShard &ShardFor(ID3D12GraphicsCommandList *commandList);
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
 	static DX12CommandListTrackingState MakeTrackingState(const DX12CommandListTrackingCache &cache);
-	static DX12CommandListTrackingState GetTrackingState(DX12CommandListRuntimeState *state);
+	static DX12CommandListTrackingState GetTrackingState(DX12SimulateContext *state);
 	static void TlsRefreshFromState(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeShard *shard,
 		bool stateIsDirect);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
-	static DX12CommandListRuntimeState *GetStatePtrFast(ID3D12GraphicsCommandList *commandList);
+	static DX12SimulateContext *GetStatePtrFast(ID3D12GraphicsCommandList *commandList);
 	static void TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList);
 
 	static void Register(ID3D12GraphicsCommandList *commandList);
 	static bool Unregister(ID3D12GraphicsCommandList *commandList);
-	static void Reset(DX12CommandListRuntimeState *state, ID3D12PipelineState *initialState);
+	static void Reset(DX12SimulateContext *state, ID3D12PipelineState *initialState);
 	static void Reset(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *initialState);
 	static DX12CompiledDispatchDecision BuildDispatchDecision(
 		ID3D12PipelineState *pipelineState,
@@ -1463,56 +1471,56 @@ public:
 		ID3D12PipelineState *pipelineState,
 		bool hasShaderOverrides);
 	static const DX12CompiledDispatchDecision *EnsureDispatchDecision(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		bool hasShaderOverrides,
 		bool needsPreSkinProbe);
 	static const DX12CompiledDrawDecision *EnsureDrawDecision(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		bool hasShaderOverrides);
 	static void CompileDispatchDecision(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		bool hasShaderOverrides,
 		bool needsPreSkinProbe);
 	static void CompileDrawDecision(
-		DX12CommandListRuntimeState *state,
+		DX12SimulateContext *state,
 		bool hasShaderOverrides);
-	static void InvalidateResolvedDrawPlan(DX12CommandListRuntimeState *state);
-	static void RememberPipelineState(DX12CommandListRuntimeState *state, ID3D12PipelineState *pipelineState);
+	static void InvalidateResolvedDrawPlan(DX12SimulateContext *state);
+	static void RememberPipelineState(DX12SimulateContext *state, ID3D12PipelineState *pipelineState);
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
-	static void ResetIa(DX12CommandListRuntimeState *state);
+	static void ResetIa(DX12SimulateContext *state);
 	static void ResetIa(ID3D12GraphicsCommandList *commandList);
-	static void RememberIndexBuffer(DX12CommandListRuntimeState *state, const D3D12_INDEX_BUFFER_VIEW *view);
+	static void RememberIndexBuffer(DX12SimulateContext *state, const D3D12_INDEX_BUFFER_VIEW *view);
 	static void RememberIndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
-	static void RememberVertexBuffers(DX12CommandListRuntimeState *state, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
+	static void RememberVertexBuffers(DX12SimulateContext *state, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 	static void RememberVertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
-	static void RememberPrimitiveTopology(DX12CommandListRuntimeState *state, D3D12_PRIMITIVE_TOPOLOGY topology);
+	static void RememberPrimitiveTopology(DX12SimulateContext *state, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static void RememberPrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
-	static void BumpIaEpoch(DX12CommandListRuntimeState *state);
-	static void BumpIaContentEpoch(DX12CommandListRuntimeState *state);
+	static void BumpIaEpoch(DX12SimulateContext *state);
+	static void BumpIaContentEpoch(DX12SimulateContext *state);
 	static void BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList);
 	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargetsCached(DX12ActiveIaState *ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, UINT64 iaContentEpoch, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
-	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargetsCached(DX12CommandListRuntimeState *state, UINT cacheSlot, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
+	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargetsCached(DX12SimulateContext *state, UINT cacheSlot, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
-	static DX12CommandListRuntimeState GetState(ID3D12GraphicsCommandList *commandList);
-	static const DX12CommandListRuntimeState *GetStatePtr(ID3D12GraphicsCommandList *commandList);
-	static void SetDescriptorHeaps(DX12CommandListRuntimeState *state, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
+	static DX12SimulateContext GetState(ID3D12GraphicsCommandList *commandList);
+	static const DX12SimulateContext *GetStatePtr(ID3D12GraphicsCommandList *commandList);
+	static void SetDescriptorHeaps(DX12SimulateContext *state, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static void SetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
-	static void RememberGraphicsRootSignature(DX12CommandListRuntimeState *state, ID3D12RootSignature *rootSignature);
+	static void RememberGraphicsRootSignature(DX12SimulateContext *state, ID3D12RootSignature *rootSignature);
 	static void RememberGraphicsRootSignature(ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature);
-	static void RememberComputeRootSignature(DX12CommandListRuntimeState *state, ID3D12RootSignature *rootSignature);
+	static void RememberComputeRootSignature(DX12SimulateContext *state, ID3D12RootSignature *rootSignature);
 	static void RememberComputeRootSignature(ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature);
-	static void RememberRootDescriptorTable(DX12CommandListRuntimeState *state, bool graphics, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
+	static void RememberRootDescriptorTable(DX12SimulateContext *state, bool graphics, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
 	static void RememberRootDescriptorTable(ID3D12GraphicsCommandList *commandList, bool graphics, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
-	static void RememberGraphicsRootDescriptor(DX12CommandListRuntimeState *state, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void RememberGraphicsRootDescriptor(DX12SimulateContext *state, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
 	static void RememberGraphicsRootDescriptor(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
-	static void RememberComputeRootDescriptor(DX12CommandListRuntimeState *state, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void RememberComputeRootDescriptor(DX12SimulateContext *state, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
 	static void RememberComputeRootDescriptor(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
-	static void RememberGraphicsRoot32BitConstants(DX12CommandListRuntimeState *state, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
+	static void RememberGraphicsRoot32BitConstants(DX12SimulateContext *state, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 	static void RememberGraphicsRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
-	static void RememberComputeRoot32BitConstants(DX12CommandListRuntimeState *state, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
+	static void RememberComputeRoot32BitConstants(DX12SimulateContext *state, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 	static void RememberComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 	static bool GetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 };
@@ -1530,42 +1538,42 @@ public:
 	static bool ShouldTrackHuntIa();
 	static bool ShouldTrackPsoState();
 	static DX12CommandListTrackingState MakeTrackingState();
-	static DX12CommandListTrackingState GetTrackingState(DX12CommandListRuntimeState *runtimeState);
+	static DX12CommandListTrackingState GetTrackingState(DX12SimulateContext *runtimeState);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
-	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState);
+	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState);
 
 	static void PrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
-	static void PrimitiveTopology(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, D3D12_PRIMITIVE_TOPOLOGY topology);
+	static void PrimitiveTopology(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static ID3D12PipelineState *PipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
-	static ID3D12PipelineState *PipelineState(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, ID3D12PipelineState *pipelineState);
+	static ID3D12PipelineState *PipelineState(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, ID3D12PipelineState *pipelineState);
 	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, UINT count, ID3D12DescriptorHeap *const *heaps);
-	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT count, ID3D12DescriptorHeap *const *heaps);
+	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT count, ID3D12DescriptorHeap *const *heaps);
 	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
-	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
+	static void DescriptorHeaps(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static void ComputeRootSignature(ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature);
-	static void ComputeRootSignature(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, ID3D12RootSignature *rootSignature);
+	static void ComputeRootSignature(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, ID3D12RootSignature *rootSignature);
 	static void GraphicsRootSignature(ID3D12GraphicsCommandList *commandList, ID3D12RootSignature *rootSignature);
-	static void GraphicsRootSignature(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, ID3D12RootSignature *rootSignature);
+	static void GraphicsRootSignature(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, ID3D12RootSignature *rootSignature);
 	static void ComputeRootDescriptorTable(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
-	static void ComputeRootDescriptorTable(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
+	static void ComputeRootDescriptorTable(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
 	static void GraphicsRootDescriptorTable(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
-	static void GraphicsRootDescriptorTable(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
+	static void GraphicsRootDescriptorTable(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor);
 	static void ComputeRoot32BitConstant(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset);
-	static void ComputeRoot32BitConstant(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, UINT srcData, UINT destOffset);
+	static void ComputeRoot32BitConstant(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, UINT srcData, UINT destOffset);
 	static void GraphicsRoot32BitConstant(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT srcData, UINT destOffset);
-	static void GraphicsRoot32BitConstant(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, UINT srcData, UINT destOffset);
+	static void GraphicsRoot32BitConstant(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, UINT srcData, UINT destOffset);
 	static void ComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
-	static void ComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
+	static void ComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
 	static void GraphicsRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
-	static void GraphicsRoot32BitConstants(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
+	static void GraphicsRoot32BitConstants(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, UINT num32BitValuesToSet, const void *srcData, UINT destOffset);
 	static void ComputeRootDescriptor(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
-	static void ComputeRootDescriptor(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void ComputeRootDescriptor(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
 	static void GraphicsRootDescriptor(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
-	static void GraphicsRootDescriptor(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
+	static void GraphicsRootDescriptor(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT rootParameterIndex, D3D12_ROOT_PARAMETER_TYPE type, D3D12_GPU_VIRTUAL_ADDRESS address);
 	static void IndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
-	static void IndexBuffer(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, const D3D12_INDEX_BUFFER_VIEW *view);
+	static void IndexBuffer(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, const D3D12_INDEX_BUFFER_VIEW *view);
 	static void VertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
-	static void VertexBuffers(ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *runtimeState, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
+	static void VertexBuffers(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 };
 
 
@@ -2059,7 +2067,7 @@ public:
 
 	static bool CanResidentDrawFastReject(
 		UINT64 flags,
-		const DX12CommandListRuntimeState *state)
+		const DX12SimulateContext *state)
 	{
 		return state &&
 			AllowsResidentDrawFastReject(flags) &&
@@ -2088,7 +2096,7 @@ public:
 
 	static bool CanResidentDispatchFastReject(
 		UINT64 flags,
-		const DX12CommandListRuntimeState *state)
+		const DX12SimulateContext *state)
 	{
 		return state &&
 			AllowsResidentDispatchFastReject(flags) &&

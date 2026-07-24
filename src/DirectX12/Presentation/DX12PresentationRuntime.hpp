@@ -884,7 +884,7 @@ public:
 
 	static bool TryExecutePresentReplacementOnReset(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		if (!commandList || !runtimeState)
@@ -912,7 +912,7 @@ public:
 
 		ID3D12GraphicsCommandList *baseList =
 			reinterpret_cast<ID3D12GraphicsCommandList*>(commandList);
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetDirectStatePtr(baseList);
 		if (!runtimeState)
 			return;
@@ -1278,7 +1278,7 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
-		DX12CommandListRuntimeState *runtimeState = nullptr;
+		DX12SimulateContext *runtimeState = nullptr;
 		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::DrawInstanced(
@@ -1293,7 +1293,7 @@ public:
 
 	static void DrawInstanced(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT vertexCountPerInstance,
 		UINT instanceCount,
 		UINT startVertexLocation,
@@ -1341,7 +1341,7 @@ public:
 		UINT startInstanceLocation,
 		DX12CommandListHookSignatures::DrawIndexedInstanced original)
 	{
-		DX12CommandListRuntimeState *runtimeState = nullptr;
+		DX12SimulateContext *runtimeState = nullptr;
 		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
@@ -1357,7 +1357,7 @@ public:
 
 	static void DrawIndexedInstanced(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT indexCountPerInstance,
 		UINT instanceCount,
 		UINT startIndexLocation,
@@ -1402,7 +1402,7 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn original)
 	{
-		DX12CommandListRuntimeState *runtimeState = nullptr;
+		DX12SimulateContext *runtimeState = nullptr;
 		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::Dispatch(
@@ -1416,7 +1416,7 @@ public:
 
 	static void Dispatch(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
@@ -1535,7 +1535,7 @@ public:
 		ID3D12PipelineState *initialState,
 		DX12CommandListHookSignatures::ResetCommandList original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		return DX12WrapperRuntimeUtils::ResetCommandList(
 			commandList, runtimeState, allocator, initialState, original);
@@ -1543,7 +1543,7 @@ public:
 
 	static HRESULT ResetCommandList(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12CommandAllocator *allocator,
 		ID3D12PipelineState *initialState,
 		DX12CommandListHookSignatures::ResetCommandList original)
@@ -1579,7 +1579,7 @@ public:
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetPipelineState(
 			commandList, runtimeState, pipelineState, original);
@@ -1587,7 +1587,7 @@ public:
 
 	static void SetPipelineState(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
@@ -1616,7 +1616,7 @@ public:
 
 	static void ResourceBarrier(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers,
 		DX12CommandListHookSignatures::ResourceBarrier original)
@@ -1648,14 +1648,14 @@ public:
 		const D3D12_INDEX_BUFFER_VIEW *view,
 		DX12CommandListHookSignatures::IaSetIndexBuffer original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::IASetIndexBuffer(commandList, runtimeState, view, original);
 	}
 
 	static void IASetIndexBuffer(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		const D3D12_INDEX_BUFFER_VIEW *view,
 		DX12CommandListHookSignatures::IaSetIndexBuffer original)
 	{
@@ -1675,7 +1675,7 @@ public:
 		const D3D12_VERTEX_BUFFER_VIEW *views,
 		DX12CommandListHookSignatures::IaSetVertexBuffers original)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::IASetVertexBuffers(
 			commandList, runtimeState, startSlot, count, views, original);
@@ -1683,7 +1683,7 @@ public:
 
 	static void IASetVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT startSlot,
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views,
@@ -1734,7 +1734,7 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		DX12CommandListRuntimeState *runtimeState = nullptr;
+		DX12SimulateContext *runtimeState = nullptr;
 		if (!ShouldSkipComputeBinding())
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetDescriptorHeaps(commandList, runtimeState, count, heaps);
@@ -1742,7 +1742,7 @@ public:
 
 	static void SetDescriptorHeaps(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
@@ -1762,7 +1762,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootSignature(
 			commandList, runtimeState, rootSignature, nullptr);
@@ -1770,7 +1770,7 @@ public:
 
 	static void SetComputeRootSignature(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
@@ -1799,7 +1799,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootSignature(
 			commandList, runtimeState, rootSignature, nullptr);
@@ -1807,7 +1807,7 @@ public:
 
 	static void SetGraphicsRootSignature(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
@@ -1839,7 +1839,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
 			commandList, runtimeState, rootParameterIndex, baseDescriptor, nullptr);
@@ -1847,7 +1847,7 @@ public:
 
 	static void SetComputeRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
@@ -1868,7 +1868,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
 			commandList, runtimeState, rootParameterIndex, baseDescriptor, nullptr);
@@ -1876,7 +1876,7 @@ public:
 
 	static void SetGraphicsRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
@@ -1900,7 +1900,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootConstantBufferView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -1908,7 +1908,7 @@ public:
 
 	static void SetComputeRootConstantBufferView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -1938,7 +1938,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootConstantBufferView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -1946,7 +1946,7 @@ public:
 
 	static void SetGraphicsRootConstantBufferView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -1973,7 +1973,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootShaderResourceView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -1981,7 +1981,7 @@ public:
 
 	static void SetComputeRootShaderResourceView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -2011,7 +2011,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootShaderResourceView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -2019,7 +2019,7 @@ public:
 
 	static void SetGraphicsRootShaderResourceView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -2046,7 +2046,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetComputeRootUnorderedAccessView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -2054,7 +2054,7 @@ public:
 
 	static void SetComputeRootUnorderedAccessView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -2084,7 +2084,7 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::SetGraphicsRootUnorderedAccessView(
 			commandList, runtimeState, rootParameterIndex, bufferLocation);
@@ -2092,7 +2092,7 @@ public:
 
 	static void SetGraphicsRootUnorderedAccessView(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
@@ -2118,14 +2118,14 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::IASetPrimitiveTopology(commandList, runtimeState, topology);
 	}
 
 	static void IASetPrimitiveTopology(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
 		DX12_PROFILE_FUNCTION(IASetPrimitiveTopology);

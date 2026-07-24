@@ -955,7 +955,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 				startVertexLocation, startInstanceLocation);
 		return;
 	}
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INSTANCED original =
@@ -990,7 +990,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 				startIndexLocation, baseVertexLocation, startInstanceLocation);
 		return;
 	}
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INDEXED_INSTANCED original =

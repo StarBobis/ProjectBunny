@@ -367,7 +367,7 @@ static void ResolveGraphicsSrvBindings(
 }
 
 static bool TryLoadResolvedGraphicsSrvBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT64 descriptorQuerySerial,
 	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings)
 {
@@ -382,7 +382,7 @@ static bool TryLoadResolvedGraphicsSrvBindings(
 }
 
 static void StoreResolvedGraphicsSrvBindings(
-	DX12CommandListRuntimeState *runtimeState,
+	DX12SimulateContext *runtimeState,
 	UINT64 descriptorQuerySerial,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings)
 {
@@ -1784,7 +1784,7 @@ public:
 	{
 		if (!mResolvedGraphicsSrvBindingsResolved) {
 			mResolvedGraphicsSrvBindingsResolved = true;
-			DX12CommandListRuntimeState *runtimeState =
+			DX12SimulateContext *runtimeState =
 				mCommandList ?
 					DX12CommandListRuntime::GetStatePtrFast(mCommandList) :
 					nullptr;
@@ -3881,7 +3881,7 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	}
 
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	DX12CommandListRuntimeState *runtimeState =
+	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	const UINT64 descriptorQuerySerial =
 		runtimeState && runtimeState->graphicsDescriptorQuerySerial ?

@@ -38,7 +38,7 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 			commandList, runtimeState, count, heaps);
@@ -46,7 +46,7 @@ public:
 
 	static void CaptureDescriptorHeaps(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
@@ -87,7 +87,7 @@ public:
 	}
 
 	static void UpdateComputeBindingHash(
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		uint64_t hashComponent)
 	{
 		if (!runtimeState || !hashComponent)
@@ -103,7 +103,7 @@ public:
 	{
 		if (!hashComponent)
 			return;
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(runtimeState, hashComponent);
 	}
@@ -113,7 +113,7 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootSignature(
 			commandList, runtimeState, rootSignature, graphics);
@@ -121,7 +121,7 @@ public:
 
 	static void CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
@@ -177,7 +177,7 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		bool graphics)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 			commandList, runtimeState, rootParameterIndex, baseDescriptor, graphics);
@@ -185,7 +185,7 @@ public:
 
 	static void CaptureRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		bool graphics)
@@ -239,7 +239,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
 			commandList, runtimeState, rootParameterIndex, srcData, destOffset, graphics);
@@ -247,7 +247,7 @@ public:
 
 	static void CaptureRoot32BitConstant(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		UINT srcData,
 		UINT destOffset,
@@ -302,7 +302,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
 			commandList, runtimeState, rootParameterIndex,
@@ -311,7 +311,7 @@ public:
 
 	static void CaptureRoot32BitConstants(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		UINT num32BitValuesToSet,
 		const void *srcData,
@@ -372,7 +372,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 			commandList, runtimeState, rootParameterIndex, type, address, graphics, api);
@@ -380,7 +380,7 @@ public:
 
 	static void CaptureRootDescriptor(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_ROOT_PARAMETER_TYPE type,
 		D3D12_GPU_VIRTUAL_ADDRESS address,
@@ -1603,7 +1603,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12PipelineState *pipelineState)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		return DX12CommandListStateFlow::CapturePipelineState(
 			commandList, runtimeState, pipelineState);
@@ -1611,12 +1611,12 @@ public:
 
 	static ID3D12PipelineState *CapturePipelineState(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		ID3D12PipelineState *pipelineState)
 	{
 		// Same-PSO fast path: when the identical PSO is set again, skip all
 		// tracking.  Resolve runtimeState if the caller didn't provide one.
-		DX12CommandListRuntimeState *rs = runtimeState;
+		DX12SimulateContext *rs = runtimeState;
 		if (!rs) {
 			rs = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		}
@@ -1680,14 +1680,14 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, runtimeState, topology);
 	}
 
 	static void CapturePrimitiveTopology(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
 		if (!DX12HotPathState::skipBindings) {
@@ -1711,14 +1711,14 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const D3D12_INDEX_BUFFER_VIEW *view)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListStateFlow::CaptureIndexBuffer(commandList, runtimeState, view);
 	}
 
 	static void CaptureIndexBuffer(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		const D3D12_INDEX_BUFFER_VIEW *view)
 	{
 		if (!DX12HotPathState::skipBindings) {
@@ -1750,7 +1750,7 @@ public:
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views)
 	{
-		DX12CommandListRuntimeState *runtimeState =
+		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, views);
@@ -1758,7 +1758,7 @@ public:
 
 	static void CaptureVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
-		DX12CommandListRuntimeState *runtimeState,
+		DX12SimulateContext *runtimeState,
 		UINT startSlot,
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views)
