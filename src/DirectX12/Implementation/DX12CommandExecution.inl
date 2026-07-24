@@ -4045,6 +4045,43 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	return false;
 }
 
+static void BackfillCompiledPsoPlanFromFallback(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot)
+{
+	if (!pipelineState || configSnapshot.empty() ||
+		DX12ModGetReloadGenerationFast() != reloadGeneration) {
+		return;
+	}
+
+	AcquireSRWLockShared(&gModLock);
+	if (DX12ModGetReloadGenerationFast() == reloadGeneration) {
+		bool drawDirectHasNonTextureEffect = false;
+		DX12IaHashTargetPlan drawDirectTargetPlan =
+			DX12ShaderOverrideIaTargetPlanUtils::BuildDrawPlanLocked(
+				configSnapshot,
+				false,
+				&drawDirectHasNonTextureEffect);
+		DX12IaHashTargetPlan drawTargetPlan = drawDirectTargetPlan;
+		DX12DrawMatchUsage drawMatchUsage =
+			BuildDrawMatchUsageLocked(configSnapshot);
+		DX12DrawMatchUsage directDrawMatchUsage = drawMatchUsage;
+		const bool drawDirectTextureChecksOnly =
+			!drawDirectHasNonTextureEffect;
+		StoreCompiledPsoPlan(
+			pipelineState,
+			reloadGeneration,
+			configSnapshot,
+			&drawTargetPlan,
+			&drawDirectTargetPlan,
+			&drawMatchUsage,
+			&directDrawMatchUsage,
+			&drawDirectTextureChecksOnly);
+	}
+	ReleaseSRWLockShared(&gModLock);
+}
+
 bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,
@@ -4108,6 +4145,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	}
 	bool cached = compiledPlanHit;
 
+	const bool fallbackPlanResolved = !compiledPlanHit;
 	if (!compiledPlanHit) {
 		// Fallback: legacy PSO config cache lookup (first draw after mod reload).
 		std::vector<const Bunny::ShaderOverrideConfig*> configs;
@@ -4130,6 +4168,12 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			return false;
 	}
 	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot = configView.Get();
+	if (fallbackPlanResolved) {
+		BackfillCompiledPsoPlanFromFallback(
+			pipelineState,
+			reloadGeneration,
+			configSnapshot);
+	}
 
 	ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
 	const bool deviceFromCache = (cachedDevice != nullptr);

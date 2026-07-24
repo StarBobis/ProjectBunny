@@ -65,3 +65,9 @@ target_compile_definitions(DirectX12 PRIVATE
 
 set_target_msvc_options(DirectX12)
 set_target_common_definitions(DirectX12)
+
+if(MSVC)
+    # DX12ModRuntime.cpp aggregates the DX12 implementation units; Debug
+    # symbols exceed the default COFF section limit without this MSVC switch.
+    target_compile_options(DirectX12 PRIVATE /bigobj)
+endif()
