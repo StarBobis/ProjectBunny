@@ -1022,14 +1022,27 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	(void)firstVertex;
 	(void)firstIndex;
 	(void)baseVertex;
+	const bool hasSelectiveTextureOverrideTargets =
+		targetPlan.hasTextureOverrideChecks &&
+		!targetPlan.requireAllIaBuffers;
 
 	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
+		const bool requireIndexHash = targetPlan.RequiresIndexBufferHash(indexed);
+		if (requireIndexHash &&
+		    hasSelectiveTextureOverrideTargets &&
+		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				true,
+				0,
+				vertexCount,
+				indexCount)) {
+			// No candidate indexed override targets this draw shape.
+		} else {
 		// DX11 resident mod matching keys CheckTextureOverride IB/VB tests by the
 		// bound buffer/view identity plus tracked content, then uses draw-context
 		// filters like match_first_index to narrow the match. Using the whole bound
 		// view here keeps the hash stable across repeated draws and avoids
 		// re-hashing a new draw subrange every call.
-		const uint32_t indexHash = targetPlan.RequiresIndexBufferHash(indexed) ?
+		const uint32_t indexHash = requireIndexHash ?
 			DX12HashIaBufferView(
 				ia.indexBuffer.BufferLocation,
 				ia.indexBuffer.SizeInBytes,
@@ -1039,6 +1052,7 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
+		}
 	}
 
 	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
@@ -1046,6 +1060,14 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 			continue;
 		if (!targetPlan.RequiresVertexBuffer(slot))
 			continue;
+		if (hasSelectiveTextureOverrideTargets &&
+		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				false,
+				slot,
+				vertexCount,
+				indexCount)) {
+			continue;
+		}
 		const uint32_t vertexHash =
 			DX12HashIaBufferView(
 				ia.vertexBuffers[slot].BufferLocation,
@@ -1132,17 +1154,37 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
 	(void)firstVertex;
 	(void)firstIndex;
 	(void)baseVertex;
+	const bool hasSelectiveTextureOverrideTargets =
+		targetPlan.hasTextureOverrideChecks &&
+		!targetPlan.requireAllIaBuffers;
 
 	if (targetPlan.RequiresIndexBuffer(indexed) && ia->hasIndexBuffer) {
-		state->hasIndexBuffer = true;
-		state->indexHash = targetPlan.RequiresIndexBufferHash(indexed) ?
-			GetOrBuildCachedIndexViewHash(ia) : 0;
-		state->indexView = ia->indexBuffer;
+		const bool requireIndexHash = targetPlan.RequiresIndexBufferHash(indexed);
+		if (!(requireIndexHash &&
+		      hasSelectiveTextureOverrideTargets &&
+		      !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				true,
+				0,
+				vertexCount,
+				indexCount))) {
+			state->hasIndexBuffer = true;
+			state->indexHash = requireIndexHash ?
+				GetOrBuildCachedIndexViewHash(ia) : 0;
+			state->indexView = ia->indexBuffer;
+		}
 	}
 
 	for (UINT slot = 0; slot < ARRAYSIZE(ia->vertexBuffers); ++slot) {
 		if (!ia->hasVertexBuffer[slot] || !targetPlan.RequiresVertexBuffer(slot))
 			continue;
+		if (hasSelectiveTextureOverrideTargets &&
+		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				false,
+				slot,
+				vertexCount,
+				indexCount)) {
+			continue;
+		}
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = GetOrBuildCachedVertexViewHash(ia, slot);

@@ -2073,6 +2073,45 @@ static bool HasPotentialIaTextureOverrideCandidateLocked(
 	return false;
 }
 
+bool DX12ModHasPotentialIaTextureOverrideTargetByCount(
+	bool indexBuffer,
+	uint32_t vertexSlot,
+	uint32_t vertexCount,
+	uint32_t indexCount)
+{
+	const std::vector<size_t> *candidateIndexes =
+		FindIaTextureOverridePrefilterCandidatesLocked(
+			indexBuffer,
+			vertexSlot,
+			vertexCount,
+			indexCount);
+	if (!candidateIndexes || candidateIndexes->empty())
+		return false;
+
+	const bool dependsOnActivePreSkin =
+		IaCandidateIndexesDependOnActivePreSkin(*candidateIndexes);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		dependsOnActivePreSkin ?
+			GetActivePreSkinSectionsSnapshot() :
+			EmptyActivePreSkinSections();
+
+	for (size_t index : *candidateIndexes) {
+		if (index >= gIaTextureOverrides.size())
+			continue;
+		const DX12IaTextureOverrideCandidate &candidate = gIaTextureOverrides[index];
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config)
+			continue;
+		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections))
+			continue;
+		if (!TextureOverrideMatchesIaBinding(*config, indexBuffer, vertexSlot))
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
 static void AppendTextureOverrideMatchesByHash(
 	uint32_t hash,
 	uint32_t resourceHash,
