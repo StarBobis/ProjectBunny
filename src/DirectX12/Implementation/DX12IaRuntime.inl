@@ -2463,13 +2463,10 @@ static bool FindDescriptorTextureOverrides(
 	}
 
 	// DX11 consumes "current resources" at draw time rather than re-querying
-	// per target. When the caller already has the current graphics SRV state,
-	// reuse it across all descriptor-trigger checks in this draw.
-	const bool canUsePreResolvedBindings =
-		preResolvedBindings &&
-		!compute &&
-		DescriptorRangeTypeForTarget(target.kind) ==
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	// per target. When the caller already has the current descriptor state for
+	// this stage/range bucket, reuse it across all descriptor-trigger checks in
+	// this draw.
+	const bool canUsePreResolvedBindings = preResolvedBindings != nullptr;
 	std::vector<DX12CurrentShaderResourceBinding> bindings;
 	const std::vector<DX12CurrentShaderResourceBinding> *bindingsView =
 		canUsePreResolvedBindings ? preResolvedBindings : &bindings;

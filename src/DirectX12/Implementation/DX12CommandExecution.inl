@@ -190,6 +190,79 @@ public:
 	}
 };
 
+class DX12DirectDescriptorPrefilterCache
+{
+public:
+	UINT64 reloadGeneration = 0;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	uint32_t vertexCount = 0;
+	uint32_t indexCount = 0;
+	uint32_t instanceCount = 0;
+	uint32_t firstVertex = 0;
+	uint32_t firstIndex = 0;
+	uint32_t firstInstance = 0;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12TextureOverrideTargetCacheKeyHash> matchesByTarget;
+
+	void Clear()
+	{
+		reloadGeneration = 0;
+		commandList = nullptr;
+		vertexCount = 0;
+		indexCount = 0;
+		instanceCount = 0;
+		firstVertex = 0;
+		firstIndex = 0;
+		firstInstance = 0;
+		matchesByTarget.clear();
+	}
+
+	void SetInvocation(
+		UINT64 generation,
+		ID3D12GraphicsCommandList *list,
+		uint32_t drawVertexCount,
+		uint32_t drawIndexCount,
+		uint32_t drawInstanceCount,
+		uint32_t drawFirstVertex,
+		uint32_t drawFirstIndex,
+		uint32_t drawFirstInstance)
+	{
+		reloadGeneration = generation;
+		commandList = list;
+		vertexCount = drawVertexCount;
+		indexCount = drawIndexCount;
+		instanceCount = drawInstanceCount;
+		firstVertex = drawFirstVertex;
+		firstIndex = drawFirstIndex;
+		firstInstance = drawFirstInstance;
+		matchesByTarget.clear();
+	}
+
+	bool MatchesInvocation(
+		UINT64 generation,
+		ID3D12GraphicsCommandList *list,
+		uint32_t drawVertexCount,
+		uint32_t drawIndexCount,
+		uint32_t drawInstanceCount,
+		uint32_t drawFirstVertex,
+		uint32_t drawFirstIndex,
+		uint32_t drawFirstInstance) const
+	{
+		return reloadGeneration == generation &&
+			commandList == list &&
+			vertexCount == drawVertexCount &&
+			indexCount == drawIndexCount &&
+			instanceCount == drawInstanceCount &&
+			firstVertex == drawFirstVertex &&
+			firstIndex == drawFirstIndex &&
+			firstInstance == drawFirstInstance;
+	}
+};
+
+static thread_local DX12DirectDescriptorPrefilterCache tlsDirectDescriptorPrefilterCache;
+
 static void ResolveGraphicsSrvBindings(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12Device *cachedDevice,
@@ -839,6 +912,24 @@ public:
 		mSkipDirectDescriptorTargets = skip;
 	}
 
+	void AdoptDirectDescriptorPrefilterCache()
+	{
+		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+		if (!tlsDirectDescriptorPrefilterCache.MatchesInvocation(
+				reloadGeneration,
+				mCommandList,
+				mVertexCount,
+				mIndexCount,
+				mInstanceCount,
+				mFirstVertex,
+				mFirstIndex,
+				mFirstInstance)) {
+			return;
+		}
+		for (const auto &entry : tlsDirectDescriptorPrefilterCache.matchesByTarget)
+			mGraphicsSrvTextureOverrideCache[entry.first] = entry.second;
+	}
+
 	bool observedDescriptorTarget = false;
 	bool observedDynamicCommandState = false;
 
@@ -1150,9 +1241,16 @@ public:
 			target.kind == Bunny::CommandListTargetKind::UnorderedAccessView;
 		if (descriptorTarget) {
 			auto overridden = mShaderResourceOverrideBindingsByTarget.find(cacheKey);
+			auto descriptorCached = mGraphicsSrvTextureOverrideCache.find(cacheKey);
+			if (descriptorCached != mGraphicsSrvTextureOverrideCache.end()) {
+				mTargetTextureOverrideCache.emplace(cacheKey, descriptorCached->second);
+				if (matches)
+					*matches = descriptorCached->second;
+				return !descriptorCached->second.empty();
+			}
 			if (!mGraphicsSrvTextureOverrideCacheResolved)
 				BuildDescriptorTextureOverrideCache();
-			auto descriptorCached = mGraphicsSrvTextureOverrideCache.find(cacheKey);
+			descriptorCached = mGraphicsSrvTextureOverrideCache.find(cacheKey);
 			if (descriptorCached != mGraphicsSrvTextureOverrideCache.end()) {
 				mTargetTextureOverrideCache.emplace(cacheKey, descriptorCached->second);
 				if (matches)
@@ -1296,6 +1394,31 @@ public:
 		ExecuteCompiledCommandListPlan(plan.mainPlan, 0, false);
 	}
 
+	void CollectDescriptorCheckTargetsFromCompiledPlans(
+		const std::vector<DX12CompiledShaderOverridePlan> &plans)
+	{
+		mDescriptorTargetScratch.clear();
+		for (const DX12CompiledShaderOverridePlan &plan : plans) {
+			if (!plan.mainPlan.hasDescriptorCheckTargets)
+				continue;
+			for (const Bunny::CommandListTarget &target :
+				 plan.mainPlan.descriptorCheckTargets) {
+				bool exists = false;
+				for (const Bunny::CommandListTarget &existing :
+					 mDescriptorTargetScratch) {
+					if (existing.kind == target.kind &&
+						existing.stage == target.stage &&
+						existing.slot == target.slot) {
+						exists = true;
+						break;
+					}
+				}
+				if (!exists)
+					mDescriptorTargetScratch.push_back(target);
+			}
+		}
+	}
+
 	void RunCompiledShaderOverridePostPlan(const DX12CompiledShaderOverridePlan &plan)
 	{
 		if (plan.unsupported || !plan.hasPostCommandListPlan)
@@ -1307,6 +1430,7 @@ public:
 		const std::vector<Bunny::CommandListTarget> *targets)
 	{
 		mGraphicsSrvTextureOverrideCacheResolved = true;
+		mDescriptorTextureOverrideCachePrebuilt = true;
 		mGraphicsSrvTextureOverrideCache.clear();
 		if (!mCommandList)
 			return;
@@ -1393,6 +1517,14 @@ public:
 		BuildDescriptorTextureOverrideCache();
 	}
 
+	void PrimeDescriptorTextureOverrideCacheForTargets(
+		const std::vector<Bunny::CommandListTarget> *targets)
+	{
+		if (mDescriptorTextureOverrideCachePrebuilt)
+			return;
+		BuildDescriptorTextureOverrideCacheForTargets(targets);
+	}
+
 	void CollectDescriptorCheckTargetsFromActions(
 		const std::vector<Bunny::CommandListAction> &actions)
 	{
@@ -1455,7 +1587,7 @@ public:
 	{
 		const bool executeActions = mReplacement && (mExecuteCommands || mExecuteDrawActions);
 		if (plan.hasDescriptorCheckTargets && !plan.descriptorCheckTargets.empty())
-			BuildDescriptorTextureOverrideCacheForTargets(&plan.descriptorCheckTargets);
+			PrimeDescriptorTextureOverrideCacheForTargets(&plan.descriptorCheckTargets);
 		if (!plan.ops.empty()) {
 			for (const DX12CompiledCommandListPlan::Op &op : plan.ops) {
 				switch (op.kind) {
@@ -1803,6 +1935,7 @@ public:
 
 	void InvalidateTargetCaches()
 	{
+		mDescriptorTextureOverrideCachePrebuilt = false;
 		mGraphicsSrvTextureOverrideCacheResolved = false;
 		mGraphicsSrvTextureOverrideCache.clear();
 		mTargetTextureOverrideCache.clear();
@@ -1837,7 +1970,7 @@ public:
 			return;
 		CollectDescriptorCheckTargetsFromActions(commandList.actions);
 		if (!mDescriptorTargetScratch.empty())
-			BuildDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
+			PrimeDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
 		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : commandList.actions) {
 			if (ApplyVmAction(action, includePost))
@@ -1916,7 +2049,7 @@ public:
 		const bool executeActions = mReplacement && (mExecuteCommands || mExecuteDrawActions);
 		CollectDescriptorCheckTargetsFromActions(actions);
 		if (!mDescriptorTargetScratch.empty())
-			BuildDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
+			PrimeDescriptorTextureOverrideCacheForTargets(&mDescriptorTargetScratch);
 		CommandVmRunScope vmScope(&mVm, includePost);
 		for (const Bunny::CommandListAction &action : actions) {
 			if (ApplyVmAction(action, includePost))
@@ -2099,6 +2232,7 @@ public:
 	bool mExecuteDrawActions = true;
 	bool mSkipDirectDescriptorTargets = false;
 	bool mSkipDirectDescriptorTargetsActive = false;
+	bool mDescriptorTextureOverrideCachePrebuilt = false;
 	bool mGraphicsSrvBindingsResolved = false;
 	bool mResolvedGraphicsSrvBindingsResolved = false;
 	bool mGraphicsSrvBindingsByTargetResolved = false;
@@ -3304,9 +3438,51 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	    !targetPlan.hasTextureOverrideChecks ||
 	    !targetPlan.hasDescriptorTargets ||
 	    targetPlan.descriptorTargets.empty()) {
+		tlsDirectDescriptorPrefilterCache.Clear();
 		return false;
 	}
 
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	tlsDirectDescriptorPrefilterCache.SetInvocation(
+		reloadGeneration,
+		commandList,
+		vertexCount,
+		indexCount,
+		instanceCount,
+		firstVertex,
+		firstIndex,
+		firstInstance);
+
+	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+		LoadTextureOverrideRuntimeSnapshot();
+	if (!snapshot ||
+		!HasPotentialResolvedDescriptorPrefilterCandidates(
+			*snapshot,
+			vertexCount,
+			indexCount)) {
+		return false;
+	}
+
+	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
+	CollectResolvedDescriptorPrefilterSectionIds(
+		*snapshot,
+		vertexCount,
+		indexCount,
+		&tlsAllowedSectionIds);
+	if (tlsAllowedSectionIds.empty())
+		return false;
+
+	DX12CommandListRuntimeState *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	ID3D12Device *cachedDevice = runtimeState ? runtimeState->device : nullptr;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12TextureOverrideTargetCacheKeyHash> candidateMatchesByTarget;
+	std::vector<DX12CurrentShaderResourceBinding> resolvedBindings[2][3];
+	std::vector<DX12ResolvedGraphicsSrvBinding> hashedBindings[2][3];
+	bool resolvedBindingsLoaded[2][3] = {};
+	bool resolvedBindingsFound[2][3] = {};
 	std::vector<DX12TextureOverrideMatch> matches;
 	for (const DX12IaHashTargetPlan::DescriptorTarget &descriptorTarget :
 	     targetPlan.descriptorTargets) {
@@ -3316,19 +3492,79 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		target.stage = static_cast<Bunny::CommandListShaderStage>(
 			descriptorTarget.stage);
 		target.slot = descriptorTarget.slot;
-		if (FindDescriptorTextureOverrides(
-				commandList,
-				target,
+		const bool compute = TargetStageIsCompute(target.stage);
+		const D3D12_DESCRIPTOR_RANGE_TYPE rangeType =
+			DescriptorRangeTypeForTarget(target.kind);
+		int rangeIndex = -1;
+		switch (rangeType) {
+		case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+			rangeIndex = 0;
+			break;
+		case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+			rangeIndex = 1;
+			break;
+		case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+			rangeIndex = 2;
+			break;
+		default:
+			continue;
+		}
+		const int stageIndex = compute ? 1 : 0;
+		if (!resolvedBindingsLoaded[stageIndex][rangeIndex]) {
+			resolvedBindingsLoaded[stageIndex][rangeIndex] = true;
+			resolvedBindingsFound[stageIndex][rangeIndex] =
+				DX12BindingTracker::GetCurrentShaderResourceBindings(
+					commandList,
+					compute,
+					rangeType,
+					&resolvedBindings[stageIndex][rangeIndex]) &&
+				!resolvedBindings[stageIndex][rangeIndex].empty();
+			if (resolvedBindingsFound[stageIndex][rangeIndex]) {
+				ResolveGraphicsSrvBindings(
+					commandList,
+					cachedDevice,
+					resolvedBindings[stageIndex][rangeIndex],
+					&hashedBindings[stageIndex][rangeIndex]);
+				AppendResolvedBindingsToDescriptorTextureOverrideCache(
+					snapshot,
+					hashedBindings[stageIndex][rangeIndex],
+					target.kind,
+					compute,
+					tlsAllowedSectionIds,
+					&candidateMatchesByTarget);
+			}
+		}
+		if (!resolvedBindingsFound[stageIndex][rangeIndex])
+			continue;
+		const DX12TextureOverrideTargetCacheKey cacheKey = {
+			static_cast<uint32_t>(target.kind),
+			static_cast<uint32_t>(target.stage),
+			target.slot
+		};
+		std::unordered_map<
+			DX12TextureOverrideTargetCacheKey,
+			std::vector<DX12TextureOverrideMatch>,
+			DX12TextureOverrideTargetCacheKeyHash>::iterator matchIt =
+			candidateMatchesByTarget.find(cacheKey);
+		if (matchIt == candidateMatchesByTarget.end()) {
+			tlsDirectDescriptorPrefilterCache.matchesByTarget.emplace(
+				cacheKey,
+				std::vector<DX12TextureOverrideMatch>());
+			continue;
+		}
+		if (FilterDescriptorTextureOverrideCandidates(
+				matchIt->second,
 				vertexCount,
 				indexCount,
 				instanceCount,
 				firstVertex,
 				firstIndex,
 				firstInstance,
-				&matches,
-				nullptr)) {
+				&matches)) {
+			tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;
 			return true;
 		}
+		tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;
 	}
 
 	return false;
@@ -3432,7 +3668,14 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		replacement, &pendingResourceViews);
 	executor.SetExecutionMode(true, true);
 	executor.SetSkipDirectDescriptorTargets(skipDirectDescriptorTargets);
+	executor.AdoptDirectDescriptorPrefilterCache();
 	if (compiledPlanSnapshot && !compiledPlanSnapshot->empty()) {
+		executor.CollectDescriptorCheckTargetsFromCompiledPlans(
+			*compiledPlanSnapshot);
+		if (!executor.mDescriptorTargetScratch.empty()) {
+			executor.PrimeDescriptorTextureOverrideCacheForTargets(
+				&executor.mDescriptorTargetScratch);
+		}
 		for (const DX12CompiledShaderOverridePlan &plan : *compiledPlanSnapshot)
 			executor.RunCompiledShaderOverridePlan(plan);
 	} else {
