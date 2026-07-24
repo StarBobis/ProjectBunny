@@ -2505,6 +2505,26 @@ public:
 		return false;
 	}
 
+	static bool HasAnyIaTextureOverrideCheckTarget(
+		const DX12ActiveIaState &ia,
+		const DX12IaHashTargetPlan &targetPlan,
+		bool indexed)
+	{
+		if (!targetPlan.hasTextureOverrideChecks ||
+			!targetPlan.HasIaTargets()) {
+			return false;
+		}
+		if (targetPlan.requireAllIaBuffers)
+			return true;
+		if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer)
+			return true;
+		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+			if (targetPlan.RequiresVertexBuffer(slot) && ia.hasVertexBuffer[slot])
+				return true;
+		}
+		return false;
+	}
+
 	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
 		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
@@ -3108,7 +3128,13 @@ public:
 				return false;
 			}
 		}
-		if (targetPlanHasIaTargets && !reusedDirectIaState) {
+		const bool hasCurrentIaTarget =
+			!targetPlanHasIaTargets ||
+			DX12IaReplacementExecutor::HasAnyIaTextureOverrideCheckTarget(
+				runtimeState.ia,
+				targetPlan,
+				draw.indexed);
+		if (targetPlanHasIaTargets && !reusedDirectIaState && hasCurrentIaTarget) {
 				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
@@ -3228,7 +3254,7 @@ public:
 			DX12Profiling::RecordIaHashStateResult(hasIaHashState);
 		} else {
 			DX12Profiling::RecordIaHashStateResult(
-				targetPlanHasIaTargets && reusedDirectIaState);
+				targetPlanHasIaTargets && reusedDirectIaState && hasCurrentIaTarget);
 		}
 		if (hasIaHashState || !targetPlanHasIaTargets ||
 		    drawDecision->targetPlanHasDescriptorTargets) {
