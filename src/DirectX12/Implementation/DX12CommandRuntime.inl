@@ -1971,8 +1971,10 @@ bool DX12CommandListStateCapture::ShouldTrackBindings()
 {
 	const bool frameCapture = DX12FrameAnalysis::IsCapturing();
 	const bool shaderDumpActive = DX12ShaderDumpIsBusy();
-	return frameCapture || shaderDumpActive ||
-		DX12ModNeedsPreSkinningBindingTracking();
+	// Pre-skin dispatch probing can now consume the resident runtime snapshot
+	// directly, so keep the tracked binding path reserved for capture/debug
+	// modes instead of charging every descriptor/root-table bind.
+	return frameCapture || shaderDumpActive;
 }
 
 bool DX12CommandListStateCapture::ShouldTrackIaBindings()

@@ -2092,7 +2092,9 @@ public:
 
 		bool NeedsBindingState() const
 		{
-			return NeedsHeavyTracking() || preSkinBindingTrack;
+			// Pre-skin keeps its compute bindings resident in the lightweight
+			// runtime snapshot and no longer needs the full tracked-binding path.
+			return NeedsHeavyTracking();
 		}
 
 		bool NeedsGraphicsBindingState() const
