@@ -2662,6 +2662,36 @@ public:
 		return true;
 	}
 
+	static bool ApplyStaticTemplateAndExecute(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw,
+		const DX12ModIaReplacement &replacement,
+		const DX12SimulateContext &runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList)
+			return false;
+		// Static templates are compiled only when they contain no descriptor
+		// patches or post actions, so execution cannot mutate the snapshot.
+		if (replacement.skip && replacement.draws.empty() &&
+			replacement.dispatches.empty()) {
+			return true;
+		}
+
+		DX12ActiveIaState originalIa = runtimeState.ia;
+		DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
+			commandList, callbacks, &originalIa);
+		DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
+		bindingExecutor.Apply(replacement);
+		if (!replacement.skip)
+			drawExecutor.ExecuteOriginalDraw(draw);
+		drawExecutor.ExecuteReplacementDraws(replacement, draw);
+		bindingExecutor.Restore(replacement, originalIa);
+		DX12Profiling::RecordIaApplied();
+		return true;
+	}
+
 	static bool HandleDrawOverrides(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
@@ -2701,10 +2731,8 @@ public:
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
-			DX12ModIaReplacement staticReplacement;
 			if (drawDecision->staticReplacementReady &&
 			    drawDecision->staticReplacementSnapshot) {
-				staticReplacement = *drawDecision->staticReplacementSnapshot;
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"static_pso_replacement_hit",
@@ -2715,12 +2743,10 @@ public:
 			DX12Profiling::RecordIaDrawOverrideCheck();
 			DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
 			LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
-			DX12IaHashState emptyIaState = {};
-			if (DX12IaReplacementExecutor::ApplyAndExecute(
+			if (DX12IaReplacementExecutor::ApplyStaticTemplateAndExecute(
 					commandList,
 					draw,
-					emptyIaState,
-					&staticReplacement,
+					*drawDecision->staticReplacementSnapshot,
 					runtimeState,
 					callbacks)) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
