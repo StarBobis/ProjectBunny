@@ -997,6 +997,48 @@ static bool EnsureResolvedIaResourcesForTargets(
 	return resolvedIndex || resolvedVertex;
 }
 
+static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	UINT vertexCount,
+	UINT indexCount)
+{
+	if (!targetPlan.hasTextureOverrideChecks || targetPlan.requireAllIaBuffers)
+		return targetPlan;
+
+	DX12IaHashTargetPlan filteredPlan;
+	filteredPlan.ResetKnown();
+	filteredPlan.hasTextureOverrideChecks = targetPlan.hasTextureOverrideChecks;
+	filteredPlan.hasDescriptorTargets = targetPlan.hasDescriptorTargets;
+	filteredPlan.descriptorTargets = targetPlan.descriptorTargets;
+
+	if (targetPlan.requireIndexBufferView || targetPlan.requireIndexBuffer) {
+		if (DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				true,
+				0,
+				vertexCount,
+				indexCount)) {
+			filteredPlan.requireIndexBuffer = targetPlan.requireIndexBuffer;
+			filteredPlan.requireIndexBufferView = targetPlan.requireIndexBufferView;
+		}
+	}
+
+	for (UINT slot = 0; slot < ARRAYSIZE(targetPlan.requireVertexBuffers); ++slot) {
+		if (!targetPlan.requireVertexBuffers[slot])
+			continue;
+		if (!DX12ModHasPotentialIaTextureOverrideTargetByCount(
+				false,
+				slot,
+				vertexCount,
+				indexCount)) {
+			continue;
+		}
+		filteredPlan.requireVertexBuffers[slot] = true;
+	}
+
+	return filteredPlan;
+}
+
 bool DX12CommandListRuntime::BuildIaHashState(
 	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
 	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
@@ -1022,28 +1064,28 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	(void)firstVertex;
 	(void)firstIndex;
 	(void)baseVertex;
-	const bool hasSelectiveTextureOverrideTargets =
-		targetPlan.hasTextureOverrideChecks &&
-		!targetPlan.requireAllIaBuffers;
+	const DX12IaHashTargetPlan filteredTargetPlan =
+		FilterIaHashTargetPlanForDrawCounts(
+			targetPlan,
+			indexed,
+			vertexCount,
+			indexCount);
 
-	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
-		const bool requireIndexHash = targetPlan.RequiresIndexBufferHash(indexed);
-		if (requireIndexHash &&
-		    hasSelectiveTextureOverrideTargets &&
-		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+	if (filteredTargetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
+		const bool requireIndexHash =
+			filteredTargetPlan.RequiresIndexBufferHash(indexed) &&
+			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 				true,
 				0,
 				vertexCount,
-				indexCount)) {
-			// No candidate indexed override targets this draw shape.
-		} else {
+				indexCount);
+		const uint32_t indexHash = requireIndexHash ?
 		// DX11 resident mod matching keys CheckTextureOverride IB/VB tests by the
 		// bound buffer/view identity plus tracked content, then uses draw-context
 		// filters like match_first_index to narrow the match. Using the whole bound
 		// view here keeps the hash stable across repeated draws and avoids
 		// re-hashing a new draw subrange every call.
-		const uint32_t indexHash = requireIndexHash ?
-			DX12HashIaBufferView(
+			DX12HashIaBufferContentView(
 				ia.indexBuffer.BufferLocation,
 				ia.indexBuffer.SizeInBytes,
 				0,
@@ -1052,29 +1094,26 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
-		}
 	}
 
 	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
 		if (!ia.hasVertexBuffer[slot])
 			continue;
-		if (!targetPlan.RequiresVertexBuffer(slot))
+		if (!filteredTargetPlan.RequiresVertexBuffer(slot))
 			continue;
-		if (hasSelectiveTextureOverrideTargets &&
-		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+		const bool requireVertexHash =
+			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 				false,
 				slot,
 				vertexCount,
-				indexCount)) {
-			continue;
-		}
-		const uint32_t vertexHash =
-			DX12HashIaBufferView(
+				indexCount);
+		const uint32_t vertexHash = requireVertexHash ?
+			DX12HashIaBufferContentView(
 				ia.vertexBuffers[slot].BufferLocation,
 				ia.vertexBuffers[slot].SizeInBytes,
 				ia.vertexBuffers[slot].StrideInBytes,
 				0,
-				slot);
+				slot) : 0;
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = vertexHash;
@@ -1098,7 +1137,7 @@ static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
 	    ia->indexBufferHashResolveGeneration == resolveGeneration) {
 		return ia->indexBufferHash;
 	}
-	ia->indexBufferHash = DX12HashIaBufferView(
+	ia->indexBufferHash = DX12HashIaBufferContentView(
 		ia->indexBuffer.BufferLocation,
 		ia->indexBuffer.SizeInBytes,
 		0,
@@ -1126,7 +1165,7 @@ static uint32_t GetOrBuildCachedVertexViewHash(
 	    ia->vertexBufferHashResolveGeneration[slot] == resolveGeneration) {
 		return ia->vertexBufferHashes[slot];
 	}
-	ia->vertexBufferHashes[slot] = DX12HashIaBufferView(
+	ia->vertexBufferHashes[slot] = DX12HashIaBufferContentView(
 		view.BufferLocation,
 		view.SizeInBytes,
 		view.StrideInBytes,
@@ -1154,40 +1193,39 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
 	(void)firstVertex;
 	(void)firstIndex;
 	(void)baseVertex;
-	const bool hasSelectiveTextureOverrideTargets =
-		targetPlan.hasTextureOverrideChecks &&
-		!targetPlan.requireAllIaBuffers;
+	const DX12IaHashTargetPlan filteredTargetPlan =
+		FilterIaHashTargetPlanForDrawCounts(
+			targetPlan,
+			indexed,
+			vertexCount,
+			indexCount);
 
-	if (targetPlan.RequiresIndexBuffer(indexed) && ia->hasIndexBuffer) {
-		const bool requireIndexHash = targetPlan.RequiresIndexBufferHash(indexed);
-		if (!(requireIndexHash &&
-		      hasSelectiveTextureOverrideTargets &&
-		      !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+	if (filteredTargetPlan.RequiresIndexBuffer(indexed) && ia->hasIndexBuffer) {
+		const bool requireIndexHash =
+			filteredTargetPlan.RequiresIndexBufferHash(indexed) &&
+			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 				true,
 				0,
 				vertexCount,
-				indexCount))) {
+				indexCount);
 			state->hasIndexBuffer = true;
 			state->indexHash = requireIndexHash ?
 				GetOrBuildCachedIndexViewHash(ia) : 0;
 			state->indexView = ia->indexBuffer;
-		}
 	}
 
 	for (UINT slot = 0; slot < ARRAYSIZE(ia->vertexBuffers); ++slot) {
-		if (!ia->hasVertexBuffer[slot] || !targetPlan.RequiresVertexBuffer(slot))
+		if (!ia->hasVertexBuffer[slot] || !filteredTargetPlan.RequiresVertexBuffer(slot))
 			continue;
-		if (hasSelectiveTextureOverrideTargets &&
-		    !DX12ModHasPotentialIaTextureOverrideTargetByCount(
+		const bool requireVertexHash =
+			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 				false,
 				slot,
 				vertexCount,
-				indexCount)) {
-			continue;
-		}
+				indexCount);
 		DX12IaBufferHash item;
 		item.slot = slot;
-		item.hash = GetOrBuildCachedVertexViewHash(ia, slot);
+		item.hash = requireVertexHash ? GetOrBuildCachedVertexViewHash(ia, slot) : 0;
 		item.vertexView = ia->vertexBuffers[slot];
 		state->vertexBuffers.push_back(item);
 	}
@@ -1316,9 +1354,15 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 {
 	if (!state)
 		return DX12IaHashStateCacheKey();
-	const UINT64 targetPlanFingerprint = targetPlan.Fingerprint();
+	const DX12IaHashTargetPlan filteredTargetPlan =
+		FilterIaHashTargetPlanForDrawCounts(
+			targetPlan,
+			indexed,
+			vertexCount,
+			indexCount);
+	const UINT64 targetPlanFingerprint = filteredTargetPlan.Fingerprint();
 	const bool resolvedAny =
-		EnsureResolvedIaResourcesForTargets(state, targetPlan, indexed);
+		EnsureResolvedIaResourcesForTargets(state, filteredTargetPlan, indexed);
 	DX12IaHashStateCacheKey key;
 	DX12IaHashKeyPrefixCacheEntry &entry =
 		state->resolvedDraw.iaHashKeyPrefixes[
@@ -1332,7 +1376,7 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 				entry, state->iaEpoch, targetPlanFingerprint, indexed,
 				globalContentGeneration, globalResolveGeneration, &key)) {
 			key = BuildIaHashStateCacheKeyForTargets(
-				state->ia, state->iaContentEpoch, targetPlan, indexed,
+				state->ia, state->iaContentEpoch, filteredTargetPlan, indexed,
 				0, 0, 0, 0, 0);
 			DX12IaHashKeyPrefixCacheUtils::Store(
 				&entry, state->iaEpoch, targetPlanFingerprint, indexed,
@@ -1342,7 +1386,7 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
 		const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
 		key = BuildIaHashStateCacheKeyForTargets(
-			state->ia, state->iaContentEpoch, targetPlan, indexed,
+			state->ia, state->iaContentEpoch, filteredTargetPlan, indexed,
 			0, 0, 0, 0, 0);
 		DX12IaHashKeyPrefixCacheUtils::Store(
 			&entry, state->iaEpoch, targetPlanFingerprint, indexed,

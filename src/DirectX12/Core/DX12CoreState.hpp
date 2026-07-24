@@ -645,6 +645,8 @@ public:
 
 uint32_t DX12HashIaBufferView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
+uint32_t DX12HashIaBufferContentView(
+	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 
 class DX12IaRegionDraw
 {
@@ -758,13 +760,13 @@ public:
 
 	uint32_t HashIndexBuffer(UINT format)
 	{
-		hash = DX12HashIaBufferView(gpuVa, size, 0, format, 0);
+		hash = DX12HashIaBufferContentView(gpuVa, size, 0, format, 0);
 		return hash;
 	}
 
 	uint32_t HashVertexBuffer(UINT stride, UINT slot)
 	{
-		hash = DX12HashIaBufferView(gpuVa, size, stride, 0, slot);
+		hash = DX12HashIaBufferContentView(gpuVa, size, stride, 0, slot);
 		return hash;
 	}
 

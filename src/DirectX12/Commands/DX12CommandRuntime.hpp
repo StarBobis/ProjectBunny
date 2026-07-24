@@ -2016,6 +2016,11 @@ bool DX12ModHasPotentialIaTextureOverrideTargetByCount(
 	uint32_t vertexSlot,
 	uint32_t vertexCount,
 	uint32_t indexCount);
+bool DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
+	bool indexBuffer,
+	uint32_t vertexSlot,
+	uint32_t vertexCount,
+	uint32_t indexCount);
 enum DX12ModHotPathFlagBits : UINT32
 {
 	DX12_MOD_HOT_SHADER_OVERRIDES = 1u << 0,

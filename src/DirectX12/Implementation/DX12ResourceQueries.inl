@@ -1210,6 +1210,23 @@ uint32_t DX12HashIaBufferView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
+	uint32_t hash = 0;
+	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'V');
+	hash = HashBytes(hash, &tag, sizeof(tag));
+	hash = HashBytes(hash, &gpuVirtualAddress, sizeof(gpuVirtualAddress));
+	hash = HashBytes(hash, &size, sizeof(size));
+	hash = HashBytes(hash, &stride, sizeof(stride));
+	hash = HashBytes(hash, &format, sizeof(format));
+	hash = HashBytes(hash, &slot, sizeof(slot));
+	return hash;
+}
+
+uint32_t DX12HashIaBufferContentView(
+	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
+{
+	if (!gpuVirtualAddress || !size)
+		return 0;
+
 	// L1 uses GPUVA to exploit temporal locality.
 	// L2 uses resource identity, offset, and size for stable reuse.
 	// This matches the DX11 resource, offset, and size key model.
@@ -1463,7 +1480,8 @@ uint32_t DX12HashIaBufferView(
 		return hash;
 	}
 
-	// Tier 1 uses content-based CRC32, matching DX11 behavior.
+	// Tier 1 uses content-based CRC32. This path is now reserved for exact-hash
+	// IA candidates; the default steady-state IA path uses DX12HashIaBufferView.
 	const uint8_t *contentData = nullptr;
 	size_t contentSize = 0;
 	if (DX12TryGetBufferContent(gpuVirtualAddress, size, &contentData, &contentSize))

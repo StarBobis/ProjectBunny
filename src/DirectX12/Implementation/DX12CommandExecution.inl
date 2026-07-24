@@ -2764,11 +2764,22 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	Bunny::CommandListTarget target;
 	target.stage = Bunny::CommandListShaderStage::Unknown;
 	if (targetPlan.RequiresIndexBuffer(indexed) &&
-	    iaState.hasIndexBuffer &&
-	    iaState.indexHash) {
+	    iaState.hasIndexBuffer) {
 		target.kind = Bunny::CommandListTargetKind::IndexBuffer;
 		target.slot = 0;
 		if (FindIaTextureOverridesCached(
+			    target,
+			    0,
+			    vertexCount,
+			    indexCount,
+			    instanceCount,
+			    firstVertex,
+				firstIndex,
+				firstInstance,
+				true,
+				0,
+				nullptr) ||
+			FindIaTextureOverridesCached(
 			    target,
 			    iaState.indexHash,
 			    vertexCount,
@@ -2787,12 +2798,22 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	for (const DX12IaBufferHash &buffer : iaState.vertexBuffers) {
 		if (!targetPlan.RequiresVertexBuffer(buffer.slot))
 			continue;
-		if (!buffer.hash)
-			continue;
 
 		target.kind = Bunny::CommandListTargetKind::VertexBuffer;
 		target.slot = buffer.slot;
 		if (FindIaTextureOverridesCached(
+			    target,
+			    0,
+			    vertexCount,
+			    indexCount,
+			    instanceCount,
+			    firstVertex,
+				firstIndex,
+				firstInstance,
+				false,
+				buffer.slot,
+				nullptr) ||
+			FindIaTextureOverridesCached(
 			    target,
 			    buffer.hash,
 			    vertexCount,
