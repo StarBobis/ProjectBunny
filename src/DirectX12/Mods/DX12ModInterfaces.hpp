@@ -297,6 +297,10 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	bool allowNegativeCache = true,
 	ID3D12Device *cachedDevice = nullptr,
 	bool skipDirectDescriptorTargets = false);
+bool DX12ModTryLoadStaticReplacementForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	DX12ModIaReplacement *replacement);
 bool DX12ModApplyDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	DX12ModIaReplacement *replacement,

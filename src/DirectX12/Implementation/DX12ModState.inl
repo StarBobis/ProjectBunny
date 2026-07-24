@@ -262,6 +262,7 @@ public:
 	bool hasPostCommandListPlan = false;
 	DX12CompiledCommandListPlan mainPlan;
 	DX12CompiledCommandListPlan postCommandListPlan;
+	std::vector<std::wstring> postCommandLists;
 
 	bool NeedsResidentIaState() const
 	{

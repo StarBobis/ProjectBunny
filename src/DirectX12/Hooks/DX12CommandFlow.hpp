@@ -2540,16 +2540,14 @@ public:
 		// shader override metadata on every command.
 		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
 		LARGE_INTEGER psoDecisionBegin = DX12OuterTimingProbeUtils::Now();
-		const bool activeShaderOverrides =
-			(DX12HotPathState::HookWorkFlags &
-			 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
-		DX12CommandListRuntimeState *mutableRuntimeState =
-			const_cast<DX12CommandListRuntimeState*>(&runtimeState);
-		DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
-			&mutableRuntimeState->resolvedDraw);
-		// The runtime deliberately preserves this cache across command-list Reset.
-		// Using a second TLS cache here defeated that ownership model, mixed entries
-		// from unrelated command lists, and forced every draw through a much larger
+			const bool activeShaderOverrides =
+				(DX12HotPathState::HookWorkFlags &
+				 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+			DX12CommandListRuntimeState *mutableRuntimeState =
+				const_cast<DX12CommandListRuntimeState*>(&runtimeState);
+			// The runtime deliberately preserves this cache across command-list Reset.
+			// Using a second TLS cache here defeated that ownership model, mixed entries
+			// from unrelated command lists, and forced every draw through a much larger
 		// LRU. Keep hash state resident with the command list whose IA generations
 		// form the key, matching DX11's context-local binding state.
 		DX12IaHashStateCache *iaHashStateCache =
@@ -2566,8 +2564,48 @@ public:
 		if (!drawDecision || drawDecision->CanFastReject()) {
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionFastReject();
 			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-			return false;
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+			DX12ModIaReplacement staticReplacement;
+			if (drawDecision->staticReplacementReady &&
+			    drawDecision->staticReplacementSnapshot) {
+				staticReplacement = *drawDecision->staticReplacementSnapshot;
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"static_pso_replacement_hit",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(psoDecisionBegin));
+			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+			DX12Profiling::RecordIaDrawOverrideCheck();
+			DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
+			LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+			DX12IaHashState emptyIaState = {};
+			if (DX12IaReplacementExecutor::ApplyAndExecute(
+					commandList,
+					draw,
+					emptyIaState,
+					&staticReplacement,
+					runtimeState,
+					callbacks)) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"apply_static_pso_replacement",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+				DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return true;
+			}
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"apply_static_pso_replacement_failed",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+			DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
 		}
 		if (drawDecision->NeedsDescriptorMatch())
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();

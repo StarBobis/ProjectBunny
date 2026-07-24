@@ -2,6 +2,11 @@ DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntim
 volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
 thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
 
+std::shared_ptr<const DX12ModIaReplacement>
+DX12ModFindStaticReplacementSnapshotForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration);
+
 void DX12CommandListRuntime::RegisterDirectState(
 	ID3D12GraphicsCommandList *commandList, DX12CommandListRuntimeState *state)
 {
@@ -550,6 +555,12 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 			targetPlan, false,
 			DX12ModNeedsShaderDescriptorTracking());
 	}
+	decision.staticReplacementSnapshot =
+		DX12ModFindStaticReplacementSnapshotForPso(
+			pipelineState,
+			reloadGeneration);
+	decision.staticReplacementReady =
+		decision.staticReplacementSnapshot != nullptr;
 
 	if (!pipelineState) {
 		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoPso();

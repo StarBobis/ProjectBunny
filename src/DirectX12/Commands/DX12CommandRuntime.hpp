@@ -1,6 +1,10 @@
 #pragma once
 
+#include <memory>
+
 #include "Runtime/DX12RuntimeCore.hpp"
+
+class DX12ModIaReplacement;
 
 class DX12ActiveIaState
 {
@@ -335,6 +339,8 @@ public:
 	bool shaderOverrideNegativeCacheAllowed = false;
 	DX12IaHashTargetPlan targetPlan;
 	DX12IaHashTargetPlan directTargetPlan;
+	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
+	bool staticReplacementReady = false;
 
 	void Reset()
 	{
@@ -354,6 +360,8 @@ public:
 		shaderOverrideNegativeCacheAllowed = false;
 		targetPlan = DX12IaHashTargetPlan();
 		directTargetPlan = DX12IaHashTargetPlan();
+		staticReplacementSnapshot.reset();
+		staticReplacementReady = false;
 	}
 
 	void SetNoopNeverMatches(

@@ -567,6 +567,7 @@ static void BuildCompiledShaderOverridePlanFromParts(
 	}
 	if (!commandLists.post.empty()) {
 		plan->hasPostCommandListPlan = true;
+		plan->postCommandLists = commandLists.post;
 		if (!AppendCompiledCommandListLinksPlan(
 				commandLists.post, compiledCommandListPlans,
 				&plan->postCommandListPlan)) {

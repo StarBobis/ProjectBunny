@@ -1019,6 +1019,10 @@ public:
 		BoolScope directDescriptorSkipScope(
 			&mSkipDirectDescriptorTargetsActive,
 			mSkipDirectDescriptorTargets);
+		if (mReplacement) {
+			for (const std::wstring &list : plan.postCommandLists)
+				mReplacement->AddPostCommandList(list);
+		}
 		ExecuteCompiledCommandListPlan(plan.mainPlan, 0, false);
 	}
 
@@ -1840,6 +1844,8 @@ public:
 	UINT64 generation = 0;
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> configSnapshot;
 	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
+	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
+	bool staticReplacementReady = false;
 };
 
 static std::unordered_map<ID3D12PipelineState*, DX12CompiledPsoOverridePlan> gPsoOverridePlans;
@@ -1875,6 +1881,49 @@ static bool TryLoadCompiledPsoPlan(
 	return true;
 }
 
+bool DX12ModTryLoadStaticReplacementForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	DX12ModIaReplacement *replacement)
+{
+	if (!replacement || !pipelineState)
+		return false;
+	AcquireSRWLockShared(&gPsoOverridePlansLock);
+	auto it = gPsoOverridePlans.find(pipelineState);
+	if (it == gPsoOverridePlans.end() ||
+	    it->second.generation != reloadGeneration ||
+	    !it->second.staticReplacementReady ||
+	    !it->second.staticReplacementSnapshot) {
+		ReleaseSRWLockShared(&gPsoOverridePlansLock);
+		return false;
+	}
+	*replacement = *it->second.staticReplacementSnapshot;
+	ReleaseSRWLockShared(&gPsoOverridePlansLock);
+	return true;
+}
+
+std::shared_ptr<const DX12ModIaReplacement>
+DX12ModFindStaticReplacementSnapshotForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration)
+{
+	if (!pipelineState)
+		return nullptr;
+	AcquireSRWLockShared(&gPsoOverridePlansLock);
+	auto it = gPsoOverridePlans.find(pipelineState);
+	if (it == gPsoOverridePlans.end() ||
+	    it->second.generation != reloadGeneration ||
+	    !it->second.staticReplacementReady ||
+	    !it->second.staticReplacementSnapshot) {
+		ReleaseSRWLockShared(&gPsoOverridePlansLock);
+		return nullptr;
+	}
+	std::shared_ptr<const DX12ModIaReplacement> snapshot =
+		it->second.staticReplacementSnapshot;
+	ReleaseSRWLockShared(&gPsoOverridePlansLock);
+	return snapshot;
+}
+
 static std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>>
 BuildCompiledShaderOverridePlanSnapshot(
 	const std::vector<Bunny::ShaderOverrideConfig> &configSnapshot)
@@ -1899,6 +1948,10 @@ BuildCompiledShaderOverridePlanSnapshot(
 	return compiledPlans;
 }
 
+static std::shared_ptr<const DX12ModIaReplacement>
+BuildStaticReplacementSnapshotFromCompiledPlans(
+	const std::vector<DX12CompiledShaderOverridePlan> &plans);
+
 static void StoreCompiledPsoPlan(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
@@ -1917,7 +1970,31 @@ static void StoreCompiledPsoPlan(
 	plan.configSnapshot = std::make_shared<const std::vector<Bunny::ShaderOverrideConfig>>(configSnapshot);
 	plan.compiledPlanSnapshot =
 		BuildCompiledShaderOverridePlanSnapshot(configSnapshot);
+	if (plan.compiledPlanSnapshot && !plan.compiledPlanSnapshot->empty()) {
+		plan.staticReplacementSnapshot =
+			BuildStaticReplacementSnapshotFromCompiledPlans(
+				*plan.compiledPlanSnapshot);
+		plan.staticReplacementReady = plan.staticReplacementSnapshot != nullptr;
+	}
 	gPsoOverridePlans[pipelineState] = plan;
+	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
+}
+
+static void StoreStaticReplacementForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration,
+	const DX12ModIaReplacement &replacement)
+{
+	if (!pipelineState)
+		return;
+	AcquireSRWLockExclusive(&gPsoOverridePlansLock);
+	auto it = gPsoOverridePlans.find(pipelineState);
+	if (it != gPsoOverridePlans.end() &&
+	    it->second.generation == reloadGeneration) {
+		it->second.staticReplacementSnapshot =
+			std::make_shared<const DX12ModIaReplacement>(replacement);
+		it->second.staticReplacementReady = true;
+	}
 	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
 }
 
@@ -1926,6 +2003,95 @@ static void ClearCompiledPsoPlans()
 	AcquireSRWLockExclusive(&gPsoOverridePlansLock);
 	gPsoOverridePlans.clear();
 	ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
+}
+
+static bool ReplacementHasAnyEffect(const DX12ModIaReplacement &replacement)
+{
+	return replacement.skip ||
+		!replacement.draws.empty() ||
+		!replacement.dispatches.empty() ||
+		!replacement.drawSrvPatches.empty() ||
+		!replacement.postCommandLists.empty() ||
+		!replacement.queuedPostTextureOverrides.empty();
+}
+
+static bool ReplacementIsStaticTemplateCandidate(
+	const DX12CommandListExecutor &executor,
+	const std::vector<DX12PendingResourceViewRequest> &pendingResourceViews,
+	const DX12ModIaReplacement &replacement)
+{
+	if (executor.observedDescriptorTarget ||
+	    executor.observedDynamicCommandState ||
+	    !pendingResourceViews.empty() ||
+	    !replacement.drawSrvPatches.empty() ||
+	    !replacement.postCommandLists.empty() ||
+	    !replacement.queuedPostTextureOverrides.empty()) {
+		return false;
+	}
+	for (const DX12ModIaReplacement::DrawCall &draw : replacement.draws) {
+		if (draw.fromCaller)
+			return false;
+	}
+	return true;
+}
+
+static bool CompiledCommandListPlanIsStaticTemplateCandidate(
+	const DX12CompiledCommandListPlan &plan)
+{
+	if (plan.unsupported || plan.NeedsResidentIaState())
+		return false;
+	if (!plan.ops.empty()) {
+		for (const DX12CompiledCommandListPlan::Op &op : plan.ops) {
+			switch (op.kind) {
+			case DX12CompiledCommandListPlan::Op::Kind::HandlingSkip:
+			case DX12CompiledCommandListPlan::Op::Kind::Draw:
+			case DX12CompiledCommandListPlan::Op::Kind::Dispatch:
+				if (op.kind == DX12CompiledCommandListPlan::Op::Kind::Draw &&
+				    op.draw.fromCaller) {
+					return false;
+				}
+				break;
+			default:
+				return false;
+			}
+		}
+	}
+	for (const DX12ModIaReplacement::DrawCall &draw : plan.draws) {
+		if (draw.fromCaller)
+			return false;
+	}
+	return true;
+}
+
+static bool CompiledShaderOverridePlanIsStaticTemplateCandidate(
+	const DX12CompiledShaderOverridePlan &plan)
+{
+	if (plan.unsupported)
+		return false;
+	if (plan.hasPostCommandListPlan || !plan.postCommandLists.empty())
+		return false;
+	return CompiledCommandListPlanIsStaticTemplateCandidate(plan.mainPlan);
+}
+
+static std::shared_ptr<const DX12ModIaReplacement>
+BuildStaticReplacementSnapshotFromCompiledPlans(
+	const std::vector<DX12CompiledShaderOverridePlan> &plans)
+{
+	for (const DX12CompiledShaderOverridePlan &plan : plans) {
+		if (!CompiledShaderOverridePlanIsStaticTemplateCandidate(plan))
+			return nullptr;
+	}
+
+	DX12ModIaReplacement replacement;
+	DX12IaHashState emptyIa = EmptyIaHashState();
+	DX12CommandListExecutor executor(
+		nullptr, nullptr, emptyIa, 0, 0, 0, 0, 0, 0, &replacement, nullptr);
+	executor.SetExecutionMode(true, true);
+	for (const DX12CompiledShaderOverridePlan &plan : plans)
+		executor.RunCompiledShaderOverridePlan(plan);
+	if (!ReplacementHasAnyEffect(replacement))
+		return nullptr;
+	return std::make_shared<const DX12ModIaReplacement>(replacement);
 }
 
 class DX12ShaderOverrideIaTargetPlanUtils
@@ -2690,6 +2856,14 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (!commandList || !pipelineState || !DX12ModHasActiveShaderOverrides())
 		return false;
 
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (DX12ModTryLoadStaticReplacementForPso(
+			pipelineState,
+			reloadGeneration,
+			replacement)) {
+		return ReplacementHasAnyEffect(*replacement);
+	}
+
 	const bool negativeCacheEnabled = ShaderOverrideNegativeCacheEnabled(
 		allowDescriptorIndependentNegativeCache);
 	DX12ShaderOverrideNegativeCacheKey negativeCacheKey = {};
@@ -2711,7 +2885,6 @@ bool DX12ModPrepareShaderOverrideReplacement(
 
 	// Try the precompiled PSO plan first (zero-lock, zero-discovery).
 	// Eliminates per-draw lock+lookup+copy for PSOs recorded after mod loading.
-	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12ShaderOverrideConfigView configView;
 	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> compiledSnapshot;
 	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
@@ -2775,10 +2948,20 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (resourcesChanged)
 		executor.MarkExternalChange();
 	LogShaderOverrideCommandListSnapshotLimited("pre", configSnapshot, *replacement);
-	bool changed = executor.Changed() || replacement->skip || !replacement->draws.empty() ||
-		!replacement->dispatches.empty();
+	const bool changed = executor.Changed() || ReplacementHasAnyEffect(*replacement);
 	if (!deviceFromCache)
 		device->Release();
+
+	if (compiledPlanHit &&
+	    ReplacementIsStaticTemplateCandidate(
+			executor,
+			pendingResourceViews,
+			*replacement)) {
+		StoreStaticReplacementForPso(
+			pipelineState,
+			reloadGeneration,
+			*replacement);
+	}
 
 	const bool negativeCacheStoreSafe = negativeCacheEnabled && !changed &&
 		!skipDirectDescriptorTargets &&
