@@ -1966,7 +1966,7 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
-		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+		if (DX12HotPathState::NeedsGraphicsResidentRootValueState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 					runtimeState, rootParameterIndex,
@@ -2042,7 +2042,7 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
-		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+		if (DX12HotPathState::NeedsGraphicsResidentRootValueState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 					runtimeState, rootParameterIndex,
@@ -2118,7 +2118,7 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
-		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags)) {
+		if (DX12HotPathState::NeedsGraphicsResidentRootValueState(flags)) {
 			if (runtimeState)
 				DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 					runtimeState, rootParameterIndex,
