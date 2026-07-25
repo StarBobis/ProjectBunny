@@ -1135,7 +1135,7 @@ public:
 		for (const std::wstring &list : config.commandLists.post)
 			mReplacement->AddPostCommandList(list);
 		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
-			SnapshotCompiledShaderOverridePlan(config.section);
+			GetCompiledShaderOverridePlan(config.section);
 		if (compiledPlan && !compiledPlan->unsupported) {
 			RunCompiledShaderOverridePlan(*compiledPlan);
 			return;
@@ -1169,7 +1169,7 @@ public:
 			return;
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
-			SnapshotCompiledTextureOverridePlan(*queued.config);
+			GetCompiledTextureOverridePlan(*queued.config);
 		const DX12CompiledTextureOverridePlan *compiledPlanView =
 			compiledPlan.get();
 		const bool compiledTextureOverride =
@@ -1203,7 +1203,7 @@ public:
 		const Bunny::ShaderOverrideConfig &config)
 	{
 		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
-			SnapshotCompiledShaderOverridePlan(config.section);
+			GetCompiledShaderOverridePlan(config.section);
 		if (compiledPlan && !compiledPlan->unsupported) {
 			RunCompiledShaderOverridePostPlan(*compiledPlan);
 			return;
@@ -1455,7 +1455,7 @@ public:
 			false);
 
 		const std::shared_ptr<const DX12CompiledTextureOverridePlan> compiledPlan =
-			SnapshotCompiledTextureOverridePlan(*config);
+			GetCompiledTextureOverridePlan(*config);
 		const DX12CompiledTextureOverridePlan *compiledPlanView =
 			compiledPlan.get();
 		const bool compiledTextureOverride =
@@ -1718,7 +1718,7 @@ public:
 		int depth,
 		bool includePost)
 	{
-		if (!AnyTextureOverrideRuntimeEffectForPhase(includePost))
+		if (!HasTextureOverrideRuntimeEffect(includePost))
 			return;
 		mTargetMatchScratch.clear();
 		if (!FindTargetTextureOverride(target, &mTargetMatchScratch))
@@ -1732,12 +1732,12 @@ public:
 	{
 		if (!mReplacement)
 			return false;
-		if (!CommandListRuntimeEffect(name, includePost))
+		if (!HasCommandListRuntimeEffect(name, includePost))
 			return false;
 		if (!EnterCommandList(name))
 			return true;
 		const std::shared_ptr<const DX12CompiledCommandListPlan> plan =
-			SnapshotCompiledCommandListPlan(name);
+			GetCompiledCommandListPlan(name);
 		if (!plan) {
 			LeaveCommandList();
 			return false;
@@ -1861,6 +1861,58 @@ public:
 			mTextureOverrideRuntimeSnapshot = LoadTextureOverrideRuntimeSnapshot();
 		}
 		return mTextureOverrideRuntimeSnapshot;
+	}
+
+	std::shared_ptr<const DX12CompiledTextureOverridePlan>
+	GetCompiledTextureOverridePlan(const Bunny::TextureOverrideConfig &config)
+	{
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		if (!snapshot)
+			return nullptr;
+		auto found = snapshot->compiledTextureOverridePlans.find(config.section);
+		return found == snapshot->compiledTextureOverridePlans.end() ?
+			nullptr : found->second;
+	}
+
+	std::shared_ptr<const DX12CompiledShaderOverridePlan>
+	GetCompiledShaderOverridePlan(const std::wstring &section)
+	{
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		if (!snapshot)
+			return nullptr;
+		auto found = snapshot->compiledShaderOverridePlans.find(section);
+		return found == snapshot->compiledShaderOverridePlans.end() ?
+			nullptr : found->second;
+	}
+
+	std::shared_ptr<const DX12CompiledCommandListPlan>
+	GetCompiledCommandListPlan(const std::wstring &name)
+	{
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		if (!snapshot)
+			return nullptr;
+		auto found = snapshot->compiledCommandListPlans.find(name);
+		return found == snapshot->compiledCommandListPlans.end() ?
+			nullptr : found->second;
+	}
+
+	bool HasTextureOverrideRuntimeEffect(bool includePost)
+	{
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		return !snapshot || (includePost ?
+			snapshot->anyTextureOverridePostRuntimeEffect :
+			snapshot->anyTextureOverridePreRuntimeEffect);
+	}
+
+	bool HasCommandListRuntimeEffect(const std::wstring &name, bool includePost)
+	{
+		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
+			GetTextureOverrideRuntimeSnapshot();
+		return !snapshot || CommandListRuntimeEffectLocked(snapshot, name, includePost);
 	}
 
 	const std::vector<DX12ResolvedGraphicsSrvBinding> *GetResolvedGraphicsSrvBindings()
@@ -2324,7 +2376,7 @@ public:
 			return;
 
 		for (const std::wstring &list : links.pre) {
-			if (!CommandListRuntimeEffect(list, false))
+			if (!HasCommandListRuntimeEffect(list, false))
 				continue;
 			if (RunCompiledCommandListPlan(list, depth + 1, false))
 				continue;
@@ -2334,7 +2386,7 @@ public:
 				RunCommandList(*config, depth + 1, false, thisMatch);
 		}
 		for (const std::wstring &list : links.main) {
-			if (!CommandListRuntimeEffect(list, includePost))
+			if (!HasCommandListRuntimeEffect(list, includePost))
 				continue;
 			if (RunCompiledCommandListPlan(list, depth + 1, includePost))
 				continue;
@@ -2345,7 +2397,7 @@ public:
 		}
 		if (includePost) {
 			for (const std::wstring &list : links.post) {
-				if (!CommandListRuntimeEffect(list, true))
+				if (!HasCommandListRuntimeEffect(list, true))
 					continue;
 				if (RunCompiledCommandListPlan(list, depth + 1, true))
 					continue;

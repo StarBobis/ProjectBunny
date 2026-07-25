@@ -1844,7 +1844,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	const std::vector<DX12CurrentRootConstants> &rootConstants,
 	UINT *originalVertexCount,
 	UINT *overrideVertexCount,
-	DX12PreSkinDispatchOverride *dispatchOverride)
+	DX12PreSkinDispatchOverride *dispatchOverride,
+	ID3D12Device *cachedDevice)
 {
 	if (originalVertexCount)
 		*originalVertexCount = 0;
@@ -1856,7 +1857,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		return false;
 
 	LARGE_INTEGER acquireDeviceBegin = DX12OuterTimingProbeUtils::Now();
-	ID3D12Device *device = AcquireModDevice(commandList);
+	ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
+	const bool ownsDevice = cachedDevice == nullptr;
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"apply_acquire_device",
@@ -2025,7 +2027,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	}
 	DX12Profiling::RecordPreSkinUavTest(applied);
 	LARGE_INTEGER releaseDeviceBegin = DX12OuterTimingProbeUtils::Now();
-	device->Release();
+	if (ownsDevice)
+		device->Release();
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"apply_release_device",

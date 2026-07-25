@@ -1071,6 +1071,8 @@ public:
 			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
+		const bool shouldRecordBindingEvents =
+			DX12HotPathState::NeedsBindingEventRecording(flagsWord);
 		const bool needsDispatchDecision =
 			hasShaderOverrides || needsPreSkinProbe;
 		// No-candidate compute PSOs are resident state, just like DX11's current
@@ -1109,11 +1111,13 @@ public:
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::Dispatch", commandList,
 				" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			const DX12CommandListTrackingState tracking =
-				DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
-			if (tracking.recordBindingEvents)
-				DX12BindingTracker::RecordDispatch(
-					commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			if (shouldRecordBindingEvents) {
+				const DX12CommandListTrackingState tracking =
+					DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
+				if (tracking.recordBindingEvents)
+					DX12BindingTracker::RecordDispatch(
+						commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			}
 			if (huntEnabled) {
 				DX12HuntRecordDispatch(commandList);
 				if (DX12HuntShouldSkipDispatch(commandList)) {
@@ -1144,8 +1148,6 @@ public:
 			hasShaderOverrides && dispatchDecision && dispatchDecision->NeedsShaderOverrideWork();
 		const bool needsDispatchWork =
 			decisionNeedsShaderOverrideWork || decisionNeedsPreSkinProbe;
-		const DX12CommandListTrackingState tracking =
-			DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -1162,9 +1164,13 @@ public:
 		DX12CommandListFlowDiagnostics::LogDX12Call(
 			"ID3D12GraphicsCommandList::Dispatch", commandList,
 			" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-		if (tracking.recordBindingEvents)
-			DX12BindingTracker::RecordDispatch(
-				commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		if (shouldRecordBindingEvents) {
+			const DX12CommandListTrackingState tracking =
+				DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
+			if (tracking.recordBindingEvents)
+				DX12BindingTracker::RecordDispatch(
+					commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+		}
 		if (huntEnabled) {
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList)) {
@@ -1438,27 +1444,8 @@ public:
 		}
 		probe->computeBindingSerial = runtimeState ? runtimeState->computeBindingSerial : 0;
 
-		LARGE_INTEGER csConfigBegin = DX12OuterTimingProbeUtils::Now();
-		if (!DX12ModShouldProbePreSkinningForCs(probe->computeShaderHash)) {
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"PreSkin",
-				"prepare_cs_config_miss",
-				0,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(csConfigBegin));
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
-			DX12LogManager::Text("PreparePreSkinProbe: exit cs not configured\n");
-#endif
-			LogPreSkinDispatchProbeReason(
-				"cs_not_configured", probe->computeShaderHash, 0, 0);
-			return;
-		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkin",
-			"prepare_cs_config_hit",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(csConfigBegin));
+		// Execute only reaches this method after the reload-generation-aware
+		// dispatch decision has already confirmed this CS as a PreSkin candidate.
 
 		probe->computeBindingSerial = runtimeState ?
 			runtimeState->computeBindingSerial :
@@ -1699,7 +1686,8 @@ public:
 			probe->cbvsFound ? cbvs : kEmptyComputeBindings,
 			probe->rootConstantsFound ? rootConstants : kEmptyRootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
-			&probe->dispatchOverride);
+			&probe->dispatchOverride,
+			runtimeState ? runtimeState->device : nullptr);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
@@ -3618,9 +3606,11 @@ public:
 		}
 
 		LogDrawCall(commandList, draw);
-		const bool shouldRecordBindingEvents = runtimeState ?
-			DX12CommandListRuntime::GetTrackingState(runtimeState).recordBindingEvents :
-			DX12CommandListStateCapture::ShouldRecordBindingEvents();
+		const bool shouldRecordBindingEvents =
+			DX12HotPathState::NeedsBindingEventRecording(flagsWord) &&
+			(runtimeState ?
+				DX12CommandListRuntime::GetTrackingState(runtimeState).recordBindingEvents :
+				DX12CommandListStateCapture::ShouldRecordBindingEvents());
 		if (shouldRecordBindingEvents)
 			RecordBindingDraw(commandList, draw);
 		if (huntEnabled) {
