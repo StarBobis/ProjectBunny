@@ -416,10 +416,15 @@ inline void DX12Profiling::RecordBindingQueueDrainUs(LONG64 elapsedUs, LONG pend
 inline void DX12Profiling::InitState()
 {
 	QueryPerformanceFrequency(&perfFrequency);
-	InterlockedExchange(&collectCounters, 1);
+
 #if defined(_DEBUG)
+	InterlockedExchange(&collectCounters, 1);
 	InterlockedExchange(&collectTiming, 1);
 #else
+	// Release hooks run for every D3D12 binding call. Keep the atomic profiling
+	// counters off until the user explicitly enables profiling with F11.
+	mode = Mode::NONE;
+	InterlockedExchange(&collectCounters, 0);
 	InterlockedExchange(&collectTiming, 0);
 #endif
 }
