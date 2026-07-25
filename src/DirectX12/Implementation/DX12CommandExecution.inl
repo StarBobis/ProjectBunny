@@ -1062,6 +1062,16 @@ public:
 		  mPendingResourceViews(pendingResourceViews)
 	{
 		mCurrentIaState = iaState;
+		mCommandListStack.reserve(8);
+		mCommandListStackSet.reserve(8);
+		mDescriptorTargetScratch.reserve(8);
+		mTargetMatchScratch.reserve(8);
+		mGraphicsSrvBindings.reserve(32);
+		mResolvedGraphicsSrvBindings.reserve(32);
+		mGraphicsSrvBindingsByTarget.reserve(16);
+		mGraphicsSrvTextureOverrideCache.reserve(16);
+		mShaderResourceOverrideBindingsByTarget.reserve(16);
+		mTargetTextureOverrideCache.reserve(16);
 	}
 
 	void SetExecutionMode(bool executeCommands, bool executeDrawActions)
@@ -2413,8 +2423,9 @@ public:
 	{
 		if (name.empty())
 			return true;
-		if (std::find(mCommandListStack.begin(), mCommandListStack.end(), name) ==
-		    mCommandListStack.end()) {
+		std::pair<std::unordered_set<std::wstring>::iterator, bool> inserted =
+			mCommandListStackSet.insert(name);
+		if (inserted.second) {
 			mCommandListStack.push_back(name);
 			return true;
 		}
@@ -2428,8 +2439,10 @@ public:
 
 	void LeaveCommandList()
 	{
-		if (!mCommandListStack.empty())
+		if (!mCommandListStack.empty()) {
+			mCommandListStackSet.erase(mCommandListStack.back());
 			mCommandListStack.pop_back();
+		}
 	}
 
 	ID3D12Device *mDevice = nullptr;
@@ -2456,6 +2469,7 @@ public:
 	bool mGraphicsSrvTextureOverrideCacheResolved = false;
 	bool mTextureOverrideRuntimeSnapshotResolved = false;
 	std::vector<std::wstring> mCommandListStack;
+	std::unordered_set<std::wstring> mCommandListStackSet;
 	std::vector<Bunny::CommandListTarget> mDescriptorTargetScratch;
 	std::vector<DX12TextureOverrideMatch> mTargetMatchScratch;
 	std::vector<DX12CurrentShaderResourceBinding> mGraphicsSrvBindings;

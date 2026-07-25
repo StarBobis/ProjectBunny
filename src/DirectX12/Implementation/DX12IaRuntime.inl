@@ -1294,11 +1294,12 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// Frame interval is the actual elapsed time between Present calls.
 	static LARGE_INTEGER s_lastFrameTime = {};
 	static bool s_hasLastFrame = false;
-	LARGE_INTEGER freq;
-	QueryPerformanceFrequency(&freq);
+	static LARGE_INTEGER s_perfFrequency = {};
+	if (s_perfFrequency.QuadPart == 0)
+		QueryPerformanceFrequency(&s_perfFrequency);
 	LONG64 frameIntervalUs = 0;
 	if (s_hasLastFrame)
-		frameIntervalUs = (t0.QuadPart - s_lastFrameTime.QuadPart) * 1000000 / freq.QuadPart;
+		frameIntervalUs = (t0.QuadPart - s_lastFrameTime.QuadPart) * 1000000 / s_perfFrequency.QuadPart;
 	s_lastFrameTime = t0;
 	s_hasLastFrame = true;
 
@@ -1349,7 +1350,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 		s_modBeginFrameLogCountdown = 120;
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"ModBeginFrame\",\"us\":%lld,\"frameIntervalUs\":%lld,\"frameDraws\":%ld,\"frameDispatches\":%ld",
-			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart),
+			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / s_perfFrequency.QuadPart),
 			static_cast<long long>(frameIntervalUs),
 			frameDraws,
 			frameDispatches);

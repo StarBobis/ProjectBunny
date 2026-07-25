@@ -173,7 +173,7 @@ static bool ReadPreSkinCbvBytesLocked(
 	}
 
 	DX12PreSkinCbvReadCacheValue value;
-	value.bytes.assign(viewBytes, 0);
+	value.bytes.resize(viewBytes);
 	D3D12_RANGE readRange = {
 		static_cast<SIZE_T>(sourceOffset),
 		static_cast<SIZE_T>(sourceOffset + viewBytes)
@@ -233,6 +233,7 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	}
 
 	std::vector<UINT> patchOffsets;
+	patchOffsets.reserve(bytes.size() / sizeof(UINT32));
 	UINT32 originalVertexCount = 0;
 	if (expectedOriginalVertexCount) {
 		for (UINT offset = 0; offset + sizeof(UINT32) <= bytes.size(); offset += sizeof(UINT32)) {

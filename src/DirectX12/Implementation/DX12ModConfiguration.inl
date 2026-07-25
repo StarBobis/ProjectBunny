@@ -124,6 +124,15 @@ static void BuildDx12PreSkinTextureOverrideIndex(
 	preSkinTextureOverrides->clear();
 	uavHashTextureOverrideIndex->clear();
 	matchCsTextureOverrideIndex->clear();
+	size_t candidateCount = 0;
+	for (const auto &bucket : textureOverrides) {
+		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
+			if (IsComputePreSkinTextureOverride(config))
+				++candidateCount;
+		}
+	}
+	preSkinTextureOverrides->reserve(candidateCount);
+	matchCsTextureOverrideIndex->reserve(candidateCount);
 	UINT64 order = 0;
 	for (const auto &bucket : textureOverrides) {
 		for (const Bunny::TextureOverrideConfig &config : bucket.second) {

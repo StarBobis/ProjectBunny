@@ -175,6 +175,24 @@ public:
 			return false;
 		}
 
+		UINT estimatedBindingCount = 0;
+		for (const DX12RootParameterSummary &parameter :
+				rootSignatureSummary.parameters) {
+			if (parameter.parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
+			    parameter.rootParameterIndex >= MaxRootParameters) {
+				continue;
+			}
+			for (const DX12RootDescriptorRangeSummary &range : parameter.ranges) {
+				if (range.rangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV)
+					continue;
+				if (range.numDescriptors == UINT_MAX)
+					continue;
+				estimatedBindingCount += range.numDescriptors;
+			}
+		}
+		if (estimatedBindingCount)
+			bindings->reserve(estimatedBindingCount);
+
 		for (const DX12RootParameterSummary &parameter :
 				rootSignatureSummary.parameters) {
 			if (parameter.parameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
