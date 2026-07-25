@@ -1625,7 +1625,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	if (overrideVertexCountOut)
 		*overrideVertexCountOut = overrideVertexCount;
 	AcquireSRWLockExclusive(&gPreSkinLock);
-	gActivePreSkinReplacements[commandList] = state;
+	gActivePreSkinReplacements[commandList] = std::move(state);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 #if defined(_DEBUG)
@@ -1746,7 +1746,7 @@ static bool ApplyPreSkinBindingPatchLocked(
 	if (descriptorRestores)
 		state.descriptorRestores.swap(*descriptorRestores);
 	AcquireSRWLockExclusive(&gPreSkinLock);
-	gActivePreSkinReplacements[commandList] = state;
+	gActivePreSkinReplacements[commandList] = std::move(state);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 #if defined(_DEBUG)
@@ -2252,7 +2252,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	AcquireSRWLockExclusive(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
 	if (it != gActivePreSkinReplacements.end()) {
-		state = it->second;
+		state = std::move(it->second);
 		gActivePreSkinReplacements.erase(it);
 		found = state.active;
 	}
@@ -2260,6 +2260,8 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 
 	if (!found)
 		return;
+	DX12SimulateContext *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
 
 #if defined(_DEBUG)
 	const size_t restoredDescriptorCount = state.descriptorRestores.size();
@@ -2275,14 +2277,19 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		if (state.restoreSamplerHeap)
 			heaps[heapCount++] = state.restoreSamplerHeap;
 		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
-		DX12CommandListRuntime::SetDescriptorHeaps(
-			commandList, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
-		DX12BindingTracker::SetDescriptorHeaps(commandList, heapCount, heapCount ? heaps : nullptr);
+		if (!runtimeState) {
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				commandList, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
+			DX12BindingTracker::SetDescriptorHeaps(
+				commandList, heapCount, heapCount ? heaps : nullptr);
+		}
 		for (const auto &restore : state.tableRestores) {
 			commandList->SetComputeRootDescriptorTable(
 				restore.rootParameterIndex, restore.originalTable);
-			DX12BindingTracker::SetComputeRootDescriptorTable(
-				commandList, restore.rootParameterIndex, restore.originalTable);
+			if (!runtimeState) {
+				DX12BindingTracker::SetComputeRootDescriptorTable(
+					commandList, restore.rootParameterIndex, restore.originalTable);
+			}
 		}
 		state.patchHeap = nullptr;
 	}
