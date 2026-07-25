@@ -444,12 +444,20 @@ void DX12CommandListRuntime::Reset(
 	// HackerContext state.
 	DX12SimulateContextDrawTemplate persistentResolvedDraw =
 		std::move(state->resolvedDraw);
+	// barrierScratch is documented as reused storage to avoid an allocation
+	// cycle per ResourceBarrier call, but the full struct reset destroyed and
+	// reallocated it on every command-list Reset. Move it out and back so its
+	// capacity survives; contents are cleared below as before.
+	std::vector<D3D12_RESOURCE_BARRIER> persistentBarrierScratch =
+		std::move(state->barrierScratch);
 	*state = DX12SimulateContext();
 	state->device = cachedDevice;
 	state->commandListIdentity = cachedCommandListIdentity;
 	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
 	state->resolvedDraw = std::move(persistentResolvedDraw);
+	state->barrierScratch = std::move(persistentBarrierScratch);
+	state->barrierScratch.clear();
 	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);

@@ -471,10 +471,8 @@ namespace DX12Wrapper
 				mIdentity = registerIdentity ? GetIdentity(object) : nullptr;
 
 				AcquireSRWLockExclusive(&gWrapperLock);
-				if (mIdentity) {
+				if (mIdentity)
 					gIdentityMap[mIdentity] = this;
-					gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
-				}
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
 
@@ -549,7 +547,10 @@ namespace DX12Wrapper
 				AcquireSRWLockExclusive(&gWrapperLock);
 				gWrapperMap[wrapperPointer] = this;
 				mWrapperPointers.push_back(wrapperPointer);
-				gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
+				// No generation bump here: a wrapper-pointer -> object mapping is
+				// immutable for the wrapper's lifetime, so registrations cannot
+				// invalidate the unwrap TLS caches. Only destruction (which frees
+				// the address for reuse) may do so - see RemoveRegistryEntriesLocked.
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
 

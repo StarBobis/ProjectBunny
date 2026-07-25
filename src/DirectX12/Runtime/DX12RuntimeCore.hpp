@@ -449,7 +449,12 @@ public:
 
 	static bool ReleaseShouldLogFunction(const char *func)
 	{
-#if !defined(_DEBUG)
+#if defined(DX12_RELEASE_TIMING)
+		// Timing builds exist to produce the full stage breakdown; the Release
+		// allowlist would silently drop DX12HotPathTiming/ApiWall/queue slices.
+		(void)func;
+		return true;
+#elif !defined(_DEBUG)
 		if (Get().releaseStartupLogging.load(std::memory_order_relaxed))
 			return true;
 		if (!func)

@@ -1537,7 +1537,13 @@ public:
 			computeIaFingerprint = runtimeState->resolvedCompute.bindingFingerprint;
 		} else {
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
-			computeIaFingerprint = DX12PreSkinPlanUtils::BuildStableBindingFingerprint(
+			// Use the cross-frame stable fingerprint: it strips per-frame-volatile
+			// fields (GPU VA, resource pointer, descriptor offset) that the game's
+			// descriptor arena rewrites every frame, so the plan cache can finally
+			// hit across frames. PreSkin replacement results depend on the binding
+			// pattern (CS + slot layout + descriptor shape), not on the volatile
+			// addresses.
+			computeIaFingerprint = DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
 				uavs, srvs, cbvs, rootConstants);
 			if (computeIaFingerprint == 0)
 				computeIaFingerprint = 1;
