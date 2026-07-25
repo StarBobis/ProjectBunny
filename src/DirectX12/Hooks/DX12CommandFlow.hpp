@@ -15,7 +15,7 @@
 #include <mutex>
 #include <thread>
 
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 
 
 class DX12CreateTimingTelemetryUtils
@@ -332,7 +332,7 @@ public:
 #endif
 
 
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 
 
 class DX12DescriptorShadowTelemetryUtils
@@ -686,7 +686,7 @@ public:
 //   ... work ...
 //   DX12_HOTPATH_TIME_END(DrawHook);
 
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 
 #define DX12_HOTPATH_TIME_ENABLED 1
 
@@ -955,7 +955,7 @@ public:
 
 
 
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
 #else
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do {} while (0)
@@ -1234,7 +1234,7 @@ public:
 		DX12SimulateContext fallbackState = {};
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
-		#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+		#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
 #endif
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
@@ -1394,7 +1394,7 @@ public:
 		UINT64 computeBindingSerial,
 		size_t uavCount)
 	{
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		if (reason && (!strcmp(reason, "uav_filter_miss") ||
 		    !strcmp(reason, "cached_no_uav_match") ||
 		    !strcmp(reason, "cs_not_configured"))) {
@@ -1421,7 +1421,7 @@ public:
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
 			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
 	#endif
 			return;
@@ -1441,7 +1441,7 @@ public:
 			probe->computeShaderHash ? 1 : 0,
 			DX12OuterTimingProbeUtils::ElapsedUs(csHashBegin));
 		if (!probe->computeShaderHash) {
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
 #endif
 			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
@@ -1621,7 +1621,7 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(
 				cacheEntry.applied);
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
 				cacheEntry.applied ? 1 : 0,
 				static_cast<unsigned long long>(computeIaFingerprint));
@@ -1634,7 +1634,7 @@ public:
 			}
 			if (!cacheEntry.applied) {
 				probe->applied = false;
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 				DX12LogManager::Fields("DX12Perf",
 					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit\",\"us\":%lld",
 					static_cast<unsigned long long>(probe->computeShaderHash),
@@ -1644,7 +1644,7 @@ public:
 			}
 			positiveCacheHit = true;
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
 				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
@@ -1664,10 +1664,10 @@ public:
 				1,
 				0);
 		}
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		probe->shouldLog = true;
 	#endif
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 			probe->uavsFound ? 1 : 0, uavs.size(), srvs.size(), cbvs.size());
 
@@ -1678,7 +1678,7 @@ public:
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
 #endif
 		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
@@ -1726,7 +1726,7 @@ public:
 			probe->applied,
 			probe->dispatchOverride);
 
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"%s\",\"us\":%lld",
 			static_cast<unsigned long long>(probe->computeShaderHash),
@@ -2131,7 +2131,7 @@ public:
 			if (!redirectedViews[i].StrideInBytes && binding.stride)
 				redirectedViews[i].StrideInBytes = binding.stride;
 			anyRedirected = true;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 			DX12LogManager::DebugFields("DX12PreSkinningApply",
 				"\"status\":\"vb_redirected\","
 				"\"slot\":%u,"

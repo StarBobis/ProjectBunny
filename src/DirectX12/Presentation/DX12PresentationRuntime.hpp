@@ -257,7 +257,7 @@ public:
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));
@@ -386,7 +386,7 @@ public:
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld", static_cast<long long>(presentUs));
 	#endif
@@ -1005,7 +1005,7 @@ public:
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));
@@ -1134,7 +1134,7 @@ public:
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));

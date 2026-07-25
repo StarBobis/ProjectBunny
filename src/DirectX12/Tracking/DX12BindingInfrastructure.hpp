@@ -930,6 +930,11 @@ public:
 			}
 
 			void *original = DX12HookRegistry::GetOriginalFunction(target);
+			// Wrapper mode never installs vtable method hooks; cache the raw
+			// vtable entry as the positive original so per-call resolution
+			// takes the lock-free fast path from the start.
+			if (!original && !DX12HookRegistry::AnyVtableHooksInstalled())
+				original = target;
 			vtableCache->originals[slot] = original;
 			vtableCache->slotResolved[slot] = true;
 
@@ -982,9 +987,14 @@ public:
 					slotCaches[slot].target == target) {
 					if (slotCaches[slot].original)
 						return reinterpret_cast<T>(slotCaches[slot].original);
-					// Cached negative result: re-check the registry in case a hook
-					// was installed after the cache was filled; otherwise the
-					// unhooked vtable entry itself is the original implementation.
+					// Cached negative result. When no vtable method hooks were ever
+					// installed (wrapper mode), the raw vtable entry is permanently
+					// the original implementation: promote it to a positive hit so
+					// subsequent calls take the lock-free fast path.
+					if (!DX12HookRegistry::AnyVtableHooksInstalled()) {
+						slotCaches[slot].original = target;
+						return reinterpret_cast<T>(target);
+					}
 					void *lateOriginal = DX12HookRegistry::GetOriginalFunction(target);
 					if (lateOriginal)
 						return reinterpret_cast<T>(lateOriginal);
@@ -1004,9 +1014,14 @@ public:
 					}
 					if (original)
 						return reinterpret_cast<T>(original);
-					// Cached negative result: re-check the registry in case a hook
-					// was installed after the cache was filled; otherwise the
-					// unhooked vtable entry itself is the original implementation.
+					// Cached negative result: promote to positive when no vtable
+					// method hooks exist (see L1 above).
+					if (!DX12HookRegistry::AnyVtableHooksInstalled()) {
+						vtableCache->originals[slot] = target;
+						if (slotCaches && slot < slotCacheCount)
+							slotCaches[slot].original = target;
+						return reinterpret_cast<T>(target);
+					}
 					void *lateOriginal = DX12HookRegistry::GetOriginalFunction(target);
 					if (lateOriginal)
 						return reinterpret_cast<T>(lateOriginal);
@@ -1015,6 +1030,12 @@ public:
 
 				// L3: global hook registry, used only for the first lookup.
 				void *original = DX12HookRegistry::GetOriginalFunction(target);
+
+				// Wrapper mode never installs vtable method hooks; treat the raw
+				// vtable entry as the positive original so it is cached below
+				// instead of being re-looked-up on every call.
+				if (!original && !DX12HookRegistry::AnyVtableHooksInstalled())
+					original = target;
 
 				// Store positive and negative results in L1.
 				if (slotCaches && slot < slotCacheCount) {
@@ -1222,7 +1243,7 @@ public:
 	{
 		DX12_PROFILE_FUNCTION(ExecuteCommandLists);
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		volatile LONG &firstExecuteLog = DX12CommandQueueExecutionState::FirstExecuteLog;
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
@@ -1249,7 +1270,7 @@ public:
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "BeforeOriginalSkip");
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -1264,7 +1285,7 @@ public:
 					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "AfterOriginalSkip");
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
 					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -1327,13 +1348,13 @@ public:
 			return;
 		}
 
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 	#endif
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
 		ULONGLONG startTick = GetTickCount64();
@@ -1345,13 +1366,13 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-	#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 	#endif
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		ULONGLONG originalEndTick = GetTickCount64();
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
@@ -1377,7 +1398,7 @@ public:
 				numCommandLists,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		}
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12CommandListFlowDiagnostics::LogQueueStage(
 			"ExecuteCommandLists", "afterNotify", queue, numCommandLists,
 			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);

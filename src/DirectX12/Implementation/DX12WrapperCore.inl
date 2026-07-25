@@ -594,15 +594,20 @@ namespace DX12Wrapper
 					IUnknown *object = nullptr;
 					UINT64 generation = 0;
 				};
-				static thread_local UnwrapCacheEntry cache[8];
-				static thread_local UINT cacheIndex = 0;
+				// Direct-mapped TLS cache: one pointer compare per lookup in the
+				// common case, no lock and no linear scan. 64 slots comfortably
+				// cover the working set of a single API call (e.g. a ResourceBarrier
+				// batch) without thrashing.
+				static constexpr UINT kCacheSlots = 64;
+				static thread_local UnwrapCacheEntry cache[kCacheSlots];
 
 				const UINT64 generation =
 					gWrapperRegistryGeneration.load(std::memory_order_acquire);
-				for (const UnwrapCacheEntry &entry : cache) {
-					if (entry.wrapper == object && entry.generation == generation)
-						return entry.object;
-				}
+				const UINT cacheSlot = static_cast<UINT>(
+					(reinterpret_cast<UINT_PTR>(object) >> 4) & (kCacheSlots - 1));
+				UnwrapCacheEntry &entry = cache[cacheSlot];
+				if (entry.wrapper == object && entry.generation == generation)
+					return entry.object;
 
 				AcquireSRWLockShared(&gWrapperLock);
 				std::unordered_map<IUnknown*, WrapperBase*>::iterator it = gWrapperMap.find(object);
@@ -611,10 +616,9 @@ namespace DX12Wrapper
 					gWrapperRegistryGeneration.load(std::memory_order_relaxed);
 				ReleaseSRWLockShared(&gWrapperLock);
 
-				cache[cacheIndex].wrapper = object;
-				cache[cacheIndex].object = result;
-				cache[cacheIndex].generation = resolvedGeneration;
-				cacheIndex = (cacheIndex + 1) & 7;
+				entry.wrapper = object;
+				entry.object = result;
+				entry.generation = resolvedGeneration;
 				return result;
 			}
 

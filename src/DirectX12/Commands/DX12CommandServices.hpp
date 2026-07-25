@@ -83,6 +83,21 @@ public:
 			return;
 		}
 
+		// Fast path: identical heap set as the last resident capture and no
+		// tracked binding recording needed. The resident heap state already
+		// reflects this exact input, so skip the per-heap GetDesc resolution
+		// entirely. Games re-bind the same heap set thousands of times per
+		// frame; this is the highest-frequency binding entry point.
+		if (runtimeState && heaps && count <= 2 &&
+		    DX12HotPathState::skipBindings &&
+		    runtimeState->lastSetHeapsCount == count &&
+		    (count == 0 ||
+		     (runtimeState->lastSetHeapsInput[0] == heaps[0] &&
+		      (count < 2 || runtimeState->lastSetHeapsInput[1] == heaps[1])))) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
+
 		ID3D12DescriptorHeap *cbvSrvUav = nullptr;
 		ID3D12DescriptorHeap *sampler = nullptr;
 		ResolveDescriptorHeaps(count, heaps, &cbvSrvUav, &sampler);
@@ -91,6 +106,19 @@ public:
 				DX12CommandListRuntime::SetDescriptorHeaps(runtimeState, cbvSrvUav, sampler);
 			else
 				DX12CommandListRuntime::SetDescriptorHeaps(commandList, cbvSrvUav, sampler);
+
+			// Only remember the input once the resident state reflects it;
+			// recording without updating would let a later flag change skip a
+			// resident update that never happened.
+			if (runtimeState) {
+				if (heaps && count <= 2) {
+					runtimeState->lastSetHeapsCount = count;
+					runtimeState->lastSetHeapsInput[0] = count > 0 ? heaps[0] : nullptr;
+					runtimeState->lastSetHeapsInput[1] = count > 1 ? heaps[1] : nullptr;
+				} else {
+					runtimeState->lastSetHeapsCount = 0xFFFFFFFF;
+				}
+			}
 		}
 		if (DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();

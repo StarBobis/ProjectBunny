@@ -11,6 +11,10 @@ public:
 	std::unordered_map<void*, void*> originalFunctions;
 	std::unordered_map<void*, std::array<void*, 256>> vtableOriginals;
 	volatile LONG hooksFinalized = 0;
+	// Number of vtable method hooks installed via DX12HookManager::InstallVTableHook(s).
+	// Zero means no method code in d3d12.dll/dxgi.dll was ever patched, which lets
+	// original-resolution cache the raw vtable entry as a positive result.
+	volatile LONG vtableHooksInstalled = 0;
 
 	DX12HookRegistry()
 	{
@@ -84,6 +88,16 @@ public:
 		Get().hookManager.UnhookAll();
 	}
 
+	static void NoteVtableHookInstalled()
+	{
+		InterlockedIncrement(&Get().vtableHooksInstalled);
+	}
+
+	static bool AnyVtableHooksInstalled()
+	{
+		return InterlockedCompareExchange(&Get().vtableHooksInstalled, 0, 0) != 0;
+	}
+
 	static void CacheVtableOriginals(void *vtable, size_t maxSlot)
 	{
 		if (!vtable || maxSlot == 0 || maxSlot > 256)
@@ -134,7 +148,10 @@ public:
 			return ERROR_INVALID_FUNCTION;
 		}
 
-		return DX12HookRegistry::HookFunction(hook.original, vtable[hook.slot], hook.hook, hook.name);
+		DWORD result = DX12HookRegistry::HookFunction(hook.original, vtable[hook.slot], hook.hook, hook.name);
+		if (result == ERROR_SUCCESS)
+			DX12HookRegistry::NoteVtableHookInstalled();
+		return result;
 	}
 
 	static void InstallVTableHooks(void *object, const DX12VTableHook *hooks, size_t hookCount)
@@ -154,8 +171,9 @@ public:
 			DX12VTableHook hook = hooks[i];
 			if (hook.slot >= 256)
 				continue;
-			DX12HookRegistry::HookFunction(
-				hook.original, vtable[hook.slot], hook.hook, hook.name);
+			if (DX12HookRegistry::HookFunction(
+					hook.original, vtable[hook.slot], hook.hook, hook.name) == ERROR_SUCCESS)
+				DX12HookRegistry::NoteVtableHookInstalled();
 		}
 	}
 

@@ -56,6 +56,11 @@ set_target_properties(DirectX12 PROPERTIES
     OUTPUT_NAME "d3d12"
 )
 
+# Optional: build a Release binary with the detailed hot-path timing
+# instrumentation compiled in (per-stage DX12HotPathTiming logs, ApiWall
+# buckets, queue slices). Usage: cmake -DDX12_RELEASE_TIMING=ON ...
+option(DX12_RELEASE_TIMING "Enable DX12 detailed timing instrumentation in non-Debug builds" OFF)
+
 target_compile_definitions(DirectX12 PRIVATE
     UNICODE
     _UNICODE
@@ -63,6 +68,13 @@ target_compile_definitions(DirectX12 PRIVATE
     MIGOTO_DX=12
     $<$<CONFIG:Debug>:DX12_ENABLE_DETAILED_TIMING>
 )
+
+if(DX12_RELEASE_TIMING)
+    target_compile_definitions(DirectX12 PRIVATE
+        DX12_ENABLE_DETAILED_TIMING
+        DX12_RELEASE_TIMING
+    )
+endif()
 
 set_target_msvc_options(DirectX12)
 set_target_common_definitions(DirectX12)

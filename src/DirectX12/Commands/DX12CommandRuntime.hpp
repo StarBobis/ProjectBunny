@@ -1382,6 +1382,13 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	// Last raw SetDescriptorHeaps input. Lets CaptureDescriptorHeaps skip
+	// redundant GetDesc resolution when the game re-binds the identical heap
+	// set (the resident heap state already reflects it). Only recorded after
+	// the resident state was actually updated, and cleared with the rest of
+	// the context on command-list Reset.
+	UINT lastSetHeapsCount = 0xFFFFFFFF;
+	ID3D12DescriptorHeap *lastSetHeapsInput[2] = {};
 	bool runtimeCbvSrvUavHeapResolved = false;
 	DX12DescriptorHeapSummary runtimeCbvSrvUavHeap = {};
 	bool runtimeSamplerHeapResolved = false;

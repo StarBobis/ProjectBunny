@@ -755,7 +755,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueSignal(
 		DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::Signal, PFN_QUEUE_SIGNAL, DX12CommandListHookState::OrigQueueSignal, "Signal");
 	if (!original)
 		return E_FAIL;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("Signal", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
@@ -775,7 +775,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueSignal(
 		completedAfter,
 		hr,
 		DX12OuterTimingProbeUtils::ElapsedUs(begin));
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("Signal", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);
 #endif
@@ -793,7 +793,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueWait(
 		DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::Wait, PFN_QUEUE_WAIT, DX12CommandListHookState::OrigQueueWait, "Wait");
 	if (!original)
 		return E_FAIL;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("Wait", "beforeOriginal", queue, 0, fence, value);
 	ULONGLONG startTick = GetTickCount64();
 #endif
@@ -813,7 +813,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueWait(
 		completedAfter,
 		hr,
 		DX12OuterTimingProbeUtils::ElapsedUs(begin));
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("Wait", "afterOriginal", queue, 0, fence, value, hr,
 		GetTickCount64() - startTick);
 #endif
@@ -828,12 +828,12 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueGetTimestampF
 		DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::GetTimestampFrequency, PFN_QUEUE_GET_TIMESTAMP_FREQUENCY, DX12CommandListHookState::OrigQueueGetTimestampFrequency, "GetTimestampFrequency");
 	if (!original)
 		return E_FAIL;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("GetTimestampFrequency", "beforeOriginal", queue);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, frequency);
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("GetTimestampFrequency", "afterOriginal", queue, 0, nullptr, 0, hr,
 		GetTickCount64() - startTick);
 #endif
@@ -848,12 +848,12 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedQueueGetClockCalib
 		DX12_QUEUE_ORIG(queue, DX12CommandListHookSlotTypes::ID3D12CommandQueue::GetClockCalibration, PFN_QUEUE_GET_CLOCK_CALIBRATION, DX12CommandListHookState::OrigQueueGetClockCalibration, "GetClockCalibration");
 	if (!original)
 		return E_FAIL;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("GetClockCalibration", "beforeOriginal", queue);
 	ULONGLONG startTick = GetTickCount64();
 #endif
 	HRESULT hr = original(queue, gpuTimestamp, cpuTimestamp);
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogQueueStage("GetClockCalibration", "afterOriginal", queue, 0, nullptr, 0, hr,
 		GetTickCount64() - startTick);
 #endif
@@ -889,29 +889,29 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::Reset", commandList,
 		" allocator=%p initialPso=%p", allocator, initialState);
 	PFN_RESET_COMMAND_LIST original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Reset, PFN_RESET_COMMAND_LIST, DX12CommandListHookState::OrigResetCommandList, "ResetCommandList");
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	ULONGLONG startTick = GetTickCount64();
 	ULONGLONG stageTick = startTick;
 	DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "beforeOriginal", commandList);
 	stageTick = GetTickCount64();
 #endif
 	HRESULT hr = original ? original(commandList, allocator, initialState) : E_FAIL;
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 	DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterOriginal", commandList, hr, GetTickCount64() - stageTick);
 #endif
 	if (SUCCEEDED(hr)) {
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		stageTick = GetTickCount64();
 		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "beforeRuntime", commandList);
 #endif
 		DX12CommandListRuntime::Reset(commandList, initialState);
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterRuntime", commandList, S_OK, GetTickCount64() - stageTick);
 		stageTick = GetTickCount64();
 		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "beforeLifecycle", commandList);
 #endif
 		DX12CommandListLifecycle::Reset(commandList, initialState);
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterLifecycle", commandList, S_OK, GetTickCount64() - stageTick);
 		stageTick = GetTickCount64();
 		DX12CommandListHookDiagnostics::LogCommandListStageEdge("Reset", "skipPresentRuntime", commandList);
@@ -921,7 +921,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 		// reset direct command lists well before those lists are actually used,
 		// and the first far-ahead Reset would otherwise consume the current
 		// Present token and push the effect out by many frames.
-#if defined(_DEBUG) && defined(DX12_ENABLE_DETAILED_TIMING)
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "afterPresentRuntime", commandList, S_OK, GetTickCount64() - stageTick);
 	}
 	DX12CommandListHookDiagnostics::LogCommandListStage("Reset", "end", commandList, hr, GetTickCount64() - startTick);

@@ -5,7 +5,12 @@ param(
     [ValidateSet('x64','Win32')]
     [string]$Platform = 'x64',
 
-    [string]$GameId = ''
+    [string]$GameId = '',
+
+    # Build the DX12 DLL with detailed hot-path timing instrumentation
+    # compiled in (adds -DDX12_RELEASE_TIMING=ON and uses a separate
+    # build directory so the clean build cache is not clobbered).
+    [switch]$ReleaseTiming
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -28,7 +33,8 @@ if (-not $cmake) {
     $cmake = "C:\tools\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe"
 }
 
-$buildDir = "$root\build\cmake-$Platform-$($Configuration.ToLower())"
+$buildDirSuffix = if ($ReleaseTiming) { '-timing' } else { '' }
+$buildDir = "$root\build\cmake-$Platform-$($Configuration.ToLower())$buildDirSuffix"
 
 $cacheFile = "$buildDir\CMakeCache.txt"
 if (Test-Path $cacheFile) {
@@ -112,7 +118,7 @@ $content = @"
 @echo off
 call "$vcvars" > nul
 if errorlevel 1 exit /b 1
-"$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_BUILD_TYPE="$Configuration"
+"$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
 if errorlevel 1 exit /b 1
 "$cmake" --build "$buildDir" --target DirectX12 D3DCompiler_46 dxgi DirectX11
 "@

@@ -1340,12 +1340,20 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
 
 	QueryPerformanceCounter(&t1);
-	DX12LogManager::Fields("DX12Perf",
-		"\"scope\":\"ModBeginFrame\",\"us\":%lld,\"frameIntervalUs\":%lld,\"frameDraws\":%ld,\"frameDispatches\":%ld",
-		static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart),
-		static_cast<long long>(frameIntervalUs),
-		DX12RuntimeState::TakeFrameDraws(),
-		DX12RuntimeState::TakeFrameDispatches());
+	const LONG frameDraws = DX12RuntimeState::TakeFrameDraws();
+	const LONG frameDispatches = DX12RuntimeState::TakeFrameDispatches();
+	// Throttle the per-frame perf log line: one entry every 120 frames keeps
+	// the data usable without paying a log write on every single Present.
+	static LONG s_modBeginFrameLogCountdown = 0;
+	if (--s_modBeginFrameLogCountdown <= 0) {
+		s_modBeginFrameLogCountdown = 120;
+		DX12LogManager::Fields("DX12Perf",
+			"\"scope\":\"ModBeginFrame\",\"us\":%lld,\"frameIntervalUs\":%lld,\"frameDraws\":%ld,\"frameDispatches\":%ld",
+			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / freq.QuadPart),
+			static_cast<long long>(frameIntervalUs),
+			frameDraws,
+			frameDispatches);
+	}
 }
 
 bool DX12ModPreparePresentReplacement(
