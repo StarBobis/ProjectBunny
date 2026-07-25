@@ -1458,13 +1458,17 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			HRESULT STDMETHODCALLTYPE Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData) override
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceMapWrapper, Original);
-				return mResource->Map(Subresource, pReadRange, ppData);
+				// Route through the tracker so buffer content capture keeps
+				// working in wrapper mode (no inline Map/Unmap code patch).
+				return DX12ResourceTrackerHookRuntime::WrappedResourceMap(
+					mResource, Subresource, pReadRange, ppData);
 			}
 
 			void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange) override
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceUnmapWrapper, Original);
-				mResource->Unmap(Subresource, pWrittenRange);
+				DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
+					mResource, Subresource, pWrittenRange);
 			}
 
 			D3D12_RESOURCE_DESC STDMETHODCALLTYPE GetDesc() override

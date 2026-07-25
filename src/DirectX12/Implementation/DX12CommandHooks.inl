@@ -1617,6 +1617,11 @@ void DX12DeviceChildHooks::Install(IUnknown *object)
 	if (!object)
 		return;
 
+	// Wrapper mode: child wrappers implement GetDevice themselves and wrap
+	// the result; never patch the shared ID3D12DeviceChild::GetDevice code.
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
+
 	ID3D12DeviceChild *deviceChild = nullptr;
 	if (FAILED(object->QueryInterface(IID_PPV_ARGS(&deviceChild))))
 		return;
@@ -1691,7 +1696,10 @@ void DX12CommandListHooks::HookCommandQueue(IUnknown *commandQueue)
 			reinterpret_cast<void**>(&DX12CommandListHookState::OrigQueueGetClockCalibration),
 			reinterpret_cast<void*>(DX12CommandListHookCallbacks::HookedQueueGetClockCalibration), "ID3D12CommandQueue::GetClockCalibration"},
 	};
-	DX12HookManager::InstallVTableHooks(queue, hooks, ARRAYSIZE(hooks));
+	// Wrapper mode: CommandQueueWrapper intercepts queue methods; never patch
+	// the shared ID3D12CommandQueue implementation code (DLSS FG compat).
+	if (!DX12Wrapper::UsesLegacyChildWrappers())
+		DX12HookManager::InstallVTableHooks(queue, hooks, ARRAYSIZE(hooks));
 	DX12CommandQueueState::Set(queue);
 	RememberCommandQueueForHotPath(queue);
 	queue->Release();
@@ -1713,6 +1721,10 @@ void DX12CommandListHooks::RememberCommandQueueForHotPath(IUnknown *commandQueue
 
 void DX12CommandListHooks::ActivateCommandQueueHotPathHooks()
 {
+	// Wrapper mode installs no inline hooks; there is nothing to activate.
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
+
 	IUnknown *queue = nullptr;
 	AcquireSRWLockShared(&DX12CommandListHookState::KnownCommandQueueLock);
 	queue = DX12CommandListHookState::KnownCommandQueue;
@@ -1882,6 +1894,10 @@ volatile LONG DX12CommandListHookInstallUtils::ActivatedCategories = 0;
 
 void DX12CommandListHooks::ActivateCommandListHotPathHooks()
 {
+	// Wrapper mode installs no inline hooks; there is nothing to activate.
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
+
 	const UINT32 requestedCategories =
 		DX12CommandListHookInstallUtils::RequiredCategories();
 	const UINT32 newCategories =
@@ -1911,6 +1927,11 @@ void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 	if (!commandList)
 		return;
 
+	// Wrapper mode: GraphicsCommandListWrapper intercepts command list
+	// methods; never patch the shared implementation code (DLSS FG compat).
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
+
 	ID3D12GraphicsCommandList *list = nullptr;
 	if (FAILED(commandList->QueryInterface(IID_PPV_ARGS(&list))))
 		return;
@@ -1925,6 +1946,12 @@ void DX12CommandListHooks::HookCommandListCreation(IUnknown *device)
 {
 	if (!device)
 		return;
+
+	// Wrapper mode: D3D12DeviceWrapper intercepts CreateCommandQueue/
+	// CreateCommandList/CreateCommandAllocator; no code patching needed.
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
+
 	ID3D12Device *baseDevice = nullptr;
 	if (FAILED(device->QueryInterface(IID_PPV_ARGS(&baseDevice))))
 		return;

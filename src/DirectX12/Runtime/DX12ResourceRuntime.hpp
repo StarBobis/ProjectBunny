@@ -251,6 +251,14 @@ public:
 		D3D12_BARRIER_LAYOUT initialLayout);
 
 	static void InstallMapUnmapHooks(ID3D12Resource *resource);
+
+	// Wrapper-mode Map/Unmap interception. ResourceWrapper calls these so
+	// buffer content capture keeps working without patching the shared
+	// ID3D12Resource code (RenderDoc-style, DLSS FG compatible).
+	static HRESULT WrappedResourceMap(
+		ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *readRange, void **data);
+	static void WrappedResourceUnmap(
+		ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *writtenRange);
 };
 
 

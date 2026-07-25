@@ -16,7 +16,12 @@ class DeviceWrapper
 
 			static bool LegacyChildWrappersEnabled()
 			{
-				return false;
+				// RenderDoc-style interception: child objects (command queue,
+				// command list, allocator, resource, ...) are wrapped with COM
+				// proxy objects instead of inline-patching shared d3d12.dll code.
+				// This keeps DLSS Frame Generation's own D3D12 objects free of
+				// our hooks and avoids detour-chain conflicts with Streamline.
+				return true;
 			}
 
 			static bool TryWrapCommandAllocator(REFIID riid, void **object)

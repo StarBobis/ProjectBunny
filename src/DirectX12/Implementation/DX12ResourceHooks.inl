@@ -114,6 +114,74 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 	}
 }
 
+// Wrapper-mode Map interception. ResourceWrapper::Map routes here so buffer
+// content capture works without any code patching (RenderDoc-style).
+HRESULT DX12ResourceTrackerHookRuntime::WrappedResourceMap(
+	ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *readRange, void **data)
+{
+	if (!resource)
+		return E_POINTER;
+
+	HRESULT hr = E_FAIL;
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Original);
+		hr = resource->Map(subresource, readRange, data);
+	}
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
+		if (SUCCEEDED(hr) && data && *data && IsCpuMappableTrackedResource(resource)) {
+			gActiveMap.resource = resource;
+			gActiveMap.data = *data;
+			gActiveMap.subresource = subresource;
+		}
+	}
+	return hr;
+}
+
+// Wrapper-mode Unmap interception. ResourceWrapper::Unmap routes here.
+void DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
+	ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *writtenRange)
+{
+	if (!resource)
+		return;
+
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
+		// Capture content if this resource was previously mapped AND tracked
+		if (gActiveMap.resource == resource &&
+		    gActiveMap.subresource == subresource &&
+		    gActiveMap.data) {
+		// A null range means the whole subresource may have changed. An empty
+		// range explicitly means no CPU writes and must not trigger a full copy.
+		const bool hasWrites = !writtenRange || writtenRange->End > writtenRange->Begin;
+		if (hasWrites) {
+			size_t dataSize = 0;
+			if (writtenRange) {
+				dataSize = static_cast<size_t>(writtenRange->End - writtenRange->Begin);
+			} else {
+				D3D12_RESOURCE_DESC desc = resource->GetDesc();
+				dataSize = static_cast<size_t>(desc.Width);
+			}
+			if (dataSize > 0) {
+				const uint8_t *capturePtr =
+					static_cast<const uint8_t*>(gActiveMap.data);
+				if (writtenRange && writtenRange->Begin > 0)
+					capturePtr += writtenRange->Begin;
+				DX12CacheBufferContentRange(
+					resource, writtenRange ? writtenRange->Begin : 0,
+					capturePtr, dataSize);
+			}
+		}
+			gActiveMap = DX12ResourceMapTracking();
+		}
+	}
+
+	{
+		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Original);
+		resource->Unmap(subresource, writtenRange);
+	}
+}
+
 // Resource VTable Hook Installation
 void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resource)
 {
@@ -140,6 +208,12 @@ void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resour
 	    heapProps.Type != D3D12_HEAP_TYPE_READBACK)
 		return;
 	RegisterCpuMappableResource(resource);
+
+	// Wrapper mode: ResourceWrapper::Map/Unmap perform the same capture via
+	// DX12ResourceTrackerHookRuntime::WrappedResourceMap/WrappedResourceUnmap;
+	// never patch the shared ID3D12Resource code (DLSS FG compat).
+	if (DX12Wrapper::UsesLegacyChildWrappers())
+		return;
 
 	// Install Map/Unmap hooks on this resource (one-shot)
 	DX12VTableHook hooks[] = {

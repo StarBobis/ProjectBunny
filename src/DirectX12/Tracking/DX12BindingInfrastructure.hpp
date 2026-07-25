@@ -950,6 +950,9 @@ public:
 			void *original = DX12HookRegistry::GetOriginalFunction(target);
 			if (original)
 				return reinterpret_cast<T>(original);
+			// Wrapper mode installs no code patches: an unhooked vtable entry
+			// itself is the original implementation.
+			return reinterpret_cast<T>(target);
 		}
 
 		if (fallback) {
@@ -979,10 +982,13 @@ public:
 					slotCaches[slot].target == target) {
 					if (slotCaches[slot].original)
 						return reinterpret_cast<T>(slotCaches[slot].original);
-					// Cached negative result: use the fallback directly.
-					if (fallback)
-						return fallback;
-					goto log_missing;
+					// Cached negative result: re-check the registry in case a hook
+					// was installed after the cache was filled; otherwise the
+					// unhooked vtable entry itself is the original implementation.
+					void *lateOriginal = DX12HookRegistry::GetOriginalFunction(target);
+					if (lateOriginal)
+						return reinterpret_cast<T>(lateOriginal);
+					return reinterpret_cast<T>(target);
 				}
 
 				// L2: batched per-vtable cache.
@@ -998,10 +1004,13 @@ public:
 					}
 					if (original)
 						return reinterpret_cast<T>(original);
-					// Cached negative result.
-					if (fallback)
-						return fallback;
-					goto log_missing;
+					// Cached negative result: re-check the registry in case a hook
+					// was installed after the cache was filled; otherwise the
+					// unhooked vtable entry itself is the original implementation.
+					void *lateOriginal = DX12HookRegistry::GetOriginalFunction(target);
+					if (lateOriginal)
+						return reinterpret_cast<T>(lateOriginal);
+					return reinterpret_cast<T>(target);
 				}
 
 				// L3: global hook registry, used only for the first lookup.
@@ -1028,10 +1037,9 @@ public:
 				if (original)
 					return reinterpret_cast<T>(original);
 
-				// The slot is not hooked; use the fallback.
-				if (fallback)
-					return fallback;
-				goto log_missing;
+				// The slot is not hooked; the vtable entry itself is the original
+				// implementation (wrapper mode patches no code).
+				return reinterpret_cast<T>(target);
 			}
 		}
 
@@ -1040,7 +1048,6 @@ public:
 			return fallback;
 		}
 
-	log_missing:
 		DX12LogManager::Fields(name ? name : "DX12::UnknownOriginal",
 			"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
 			object, slot);
