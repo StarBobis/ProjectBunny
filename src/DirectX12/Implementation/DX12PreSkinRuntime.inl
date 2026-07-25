@@ -1852,7 +1852,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT *originalVertexCount,
 	UINT *overrideVertexCount,
 	DX12PreSkinDispatchOverride *dispatchOverride,
-	ID3D12Device *cachedDevice)
+	ID3D12Device *cachedDevice,
+	UINT64 bindingFingerprint)
 {
 	if (originalVertexCount)
 		*originalVertexCount = 0;
@@ -1887,6 +1888,32 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	bool explicitMatchCs = false;
 	bool hasExplicitDispatch = false;
 	bool vlrMatched = false;
+	class PreSkinMatchPlanCache
+	{
+	public:
+		ID3D12GraphicsCommandList *commandList = nullptr;
+		UINT64 reloadGeneration = 0;
+		UINT64 bindingFingerprint = 0;
+		uint64_t computeShaderHash = 0;
+		DX12ComputeUavProducer producer;
+		DX12VertexLimitRaiseConfig vlr;
+		std::wstring vlrResourceName;
+		DX12CurrentComputeUavBinding hashBinding;
+		DX12UavHashTextureOverrideMatch hashMatch;
+		bool valid = false;
+		bool hashMatched = false;
+		bool explicitMatchCs = false;
+		bool hasExplicitDispatch = false;
+		bool vlrMatched = false;
+	};
+	static thread_local PreSkinMatchPlanCache tlsMatchPlan;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	const bool matchPlanCached = bindingFingerprint != 0 &&
+		tlsMatchPlan.valid &&
+		tlsMatchPlan.commandList == commandList &&
+		tlsMatchPlan.reloadGeneration == reloadGeneration &&
+		tlsMatchPlan.bindingFingerprint == bindingFingerprint &&
+		tlsMatchPlan.computeShaderHash == computeShaderHash;
 	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
 	const std::unordered_set<std::wstring> &activePreSkinSections =
 		GetActivePreSkinSectionsSnapshot();
@@ -1898,31 +1925,59 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 
 	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
-	AcquireSRWLockShared(&gModLock);
-	LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
-	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
-	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
-		uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		hashMatched ? "match_cs_hit" : "match_cs_miss",
-		0,
-		uavs.size() + srvs.size() + cbvs.size(),
-		DX12OuterTimingProbeUtils::ElapsedUs(matchCsBegin));
-	if (hashMatched && hashMatch.config)
-		hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(*hashMatch.config);
-	if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
-		LARGE_INTEGER vlrMatchBegin = DX12OuterTimingProbeUtils::Now();
-		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
-			FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
+	if (matchPlanCached) {
+		producer = tlsMatchPlan.producer;
+		vlr = tlsMatchPlan.vlr;
+		vlrResourceName = tlsMatchPlan.vlrResourceName;
+		hashBinding = tlsMatchPlan.hashBinding;
+		hashMatch = tlsMatchPlan.hashMatch;
+		hashMatched = tlsMatchPlan.hashMatched;
+		explicitMatchCs = tlsMatchPlan.explicitMatchCs;
+		hasExplicitDispatch = tlsMatchPlan.hasExplicitDispatch;
+		vlrMatched = tlsMatchPlan.vlrMatched;
+	} else {
+		AcquireSRWLockShared(&gModLock);
+		LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
+		explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
+		hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
+			uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkinRuntime",
-			vlrMatched ? "vlr_match_hit" : "vlr_match_miss",
+			hashMatched ? "match_cs_hit" : "match_cs_miss",
 			0,
-			uavs.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(vlrMatchBegin));
+			uavs.size() + srvs.size() + cbvs.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(matchCsBegin));
+		if (hashMatched && hashMatch.config)
+			hasExplicitDispatch = HasExplicitPreSkinDispatchOverride(*hashMatch.config);
+		if ((!hashMatched || !hasExplicitDispatch) && !uavs.empty()) {
+			LARGE_INTEGER vlrMatchBegin = DX12OuterTimingProbeUtils::Now();
+			vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
+				FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkinRuntime",
+				vlrMatched ? "vlr_match_hit" : "vlr_match_miss",
+				0,
+				uavs.size(),
+				DX12OuterTimingProbeUtils::ElapsedUs(vlrMatchBegin));
+		}
+		ReleaseSRWLockShared(&gModLock);
+		if (bindingFingerprint != 0) {
+			tlsMatchPlan.commandList = commandList;
+			tlsMatchPlan.reloadGeneration = reloadGeneration;
+			tlsMatchPlan.bindingFingerprint = bindingFingerprint;
+			tlsMatchPlan.computeShaderHash = computeShaderHash;
+			tlsMatchPlan.producer = producer;
+			tlsMatchPlan.vlr = vlr;
+			tlsMatchPlan.vlrResourceName = vlrResourceName;
+			tlsMatchPlan.hashBinding = hashBinding;
+			tlsMatchPlan.hashMatch = hashMatch;
+			tlsMatchPlan.valid = true;
+			tlsMatchPlan.hashMatched = hashMatched;
+			tlsMatchPlan.explicitMatchCs = explicitMatchCs;
+			tlsMatchPlan.hasExplicitDispatch = hasExplicitDispatch;
+			tlsMatchPlan.vlrMatched = vlrMatched;
+		}
 	}
-	ReleaseSRWLockShared(&gModLock);
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"mod_lock_match_total",

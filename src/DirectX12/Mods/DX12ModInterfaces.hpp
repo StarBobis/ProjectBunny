@@ -388,7 +388,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT *originalVertexCount = nullptr,
 	UINT *overrideVertexCount = nullptr,
 	DX12PreSkinDispatchOverride *dispatchOverride = nullptr,
-	ID3D12Device *cachedDevice = nullptr);
+	ID3D12Device *cachedDevice = nullptr,
+	UINT64 bindingFingerprint = 0);
 bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandList);
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModNotifyCommandListsSubmitted(

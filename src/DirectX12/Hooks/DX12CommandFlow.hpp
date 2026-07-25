@@ -1687,7 +1687,8 @@ public:
 			probe->rootConstantsFound ? rootConstants : kEmptyRootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride,
-			runtimeState ? runtimeState->device : nullptr);
+			runtimeState ? runtimeState->device : nullptr,
+			computeIaFingerprint);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
@@ -1700,7 +1701,9 @@ public:
 		}
 		DX12_HOTPATH_TIME_END(PreSkinApply);
 		DX12_HOTPATH_TIME_END(PreSkinMatch);
-		if (!positiveCacheHit || probe->applied) {
+		const bool updateSharedProbeCache =
+			(!runtimeProbeCacheHit && !positiveCacheHit) || !probe->applied;
+		if (updateSharedProbeCache) {
 			LARGE_INTEGER storeCacheBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModStoreCachedPreSkinningUavMatch(
 				commandList, probe->computeShaderHash, computeIaFingerprint,
