@@ -1029,6 +1029,19 @@ public:
 		UINT threadGroupCountZ,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch)
 	{
+		if (!originalDispatch)
+			return;
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
+		if (!(flagsWord & DX12HotPathState::MASK_DISPATCH_WORK) &&
+			!DX12Profiling::ShouldCollectCounters()) {
+			DX12_PROFILE_FAST_FORWARD();
+			originalDispatch(
+				commandList,
+				threadGroupCountX,
+				threadGroupCountY,
+				threadGroupCountZ);
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12DispatchHookFlow::ExecuteHook(
@@ -3538,6 +3551,13 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
+		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
+		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK) &&
+			!DX12Profiling::ShouldCollectCounters()) {
+			DX12_PROFILE_FAST_FORWARD();
+			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);

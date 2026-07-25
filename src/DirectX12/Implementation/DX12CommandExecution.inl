@@ -207,6 +207,9 @@ public:
 	UINT64 reloadGeneration = 0;
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	UINT64 descriptorQuerySerial = 0;
+	bool usesGraphicsRootRevisions = false;
+	std::vector<UINT> graphicsRootParameters;
+	std::vector<UINT64> graphicsRootRevisions;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	UINT64 descriptorHeapVersion = 0;
 	UINT64 textureHashGeneration = 0;
@@ -228,6 +231,9 @@ public:
 		reloadGeneration = 0;
 		commandList = nullptr;
 		descriptorQuerySerial = 0;
+		usesGraphicsRootRevisions = false;
+		graphicsRootParameters.clear();
+		graphicsRootRevisions.clear();
 		descriptorHeap = nullptr;
 		descriptorHeapVersion = 0;
 		textureHashGeneration = 0;
@@ -245,6 +251,7 @@ public:
 	void SetInvocation(
 		UINT64 generation,
 		ID3D12GraphicsCommandList *list,
+		const DX12SimulateContext *runtimeState,
 		UINT64 currentDescriptorQuerySerial,
 		ID3D12DescriptorHeap *currentDescriptorHeap,
 		UINT64 currentDescriptorHeapVersion,
@@ -260,6 +267,7 @@ public:
 		if (MatchesInvocation(
 				generation,
 				list,
+				runtimeState,
 				currentDescriptorQuerySerial,
 				currentDescriptorHeap,
 				currentDescriptorHeapVersion,
@@ -276,6 +284,9 @@ public:
 		reloadGeneration = generation;
 		commandList = list;
 		descriptorQuerySerial = currentDescriptorQuerySerial;
+		usesGraphicsRootRevisions = false;
+		graphicsRootParameters.clear();
+		graphicsRootRevisions.clear();
 		descriptorHeap = currentDescriptorHeap;
 		descriptorHeapVersion = currentDescriptorHeapVersion;
 		textureHashGeneration = currentTextureHashGeneration;
@@ -293,6 +304,7 @@ public:
 	bool MatchesInvocation(
 		UINT64 generation,
 		ID3D12GraphicsCommandList *list,
+		const DX12SimulateContext *runtimeState,
 		UINT64 currentDescriptorQuerySerial,
 		ID3D12DescriptorHeap *currentDescriptorHeap,
 		UINT64 currentDescriptorHeapVersion,
@@ -305,19 +317,54 @@ public:
 		uint32_t drawFirstIndex,
 		uint32_t drawFirstInstance) const
 	{
-		return reloadGeneration == generation &&
-			commandList == list &&
-			descriptorQuerySerial == currentDescriptorQuerySerial &&
-			descriptorHeap == currentDescriptorHeap &&
-			descriptorHeapVersion == currentDescriptorHeapVersion &&
-			textureHashGeneration == currentTextureHashGeneration &&
-			targetPlanFingerprint == currentTargetPlanFingerprint &&
-			vertexCount == drawVertexCount &&
-			indexCount == drawIndexCount &&
-			instanceCount == drawInstanceCount &&
-			firstVertex == drawFirstVertex &&
-			firstIndex == drawFirstIndex &&
-			firstInstance == drawFirstInstance;
+		if (reloadGeneration != generation ||
+			commandList != list ||
+			descriptorHeap != currentDescriptorHeap ||
+			descriptorHeapVersion != currentDescriptorHeapVersion ||
+			textureHashGeneration != currentTextureHashGeneration ||
+			targetPlanFingerprint != currentTargetPlanFingerprint ||
+			vertexCount != drawVertexCount ||
+			indexCount != drawIndexCount ||
+			instanceCount != drawInstanceCount ||
+			firstVertex != drawFirstVertex ||
+			firstIndex != drawFirstIndex ||
+			firstInstance != drawFirstInstance) {
+			return false;
+		}
+		if (!usesGraphicsRootRevisions)
+			return descriptorQuerySerial == currentDescriptorQuerySerial;
+		if (!runtimeState ||
+			graphicsRootParameters.size() != graphicsRootRevisions.size())
+			return false;
+		for (size_t index = 0; index < graphicsRootParameters.size(); ++index) {
+			const UINT root = graphicsRootParameters[index];
+			if (root >= runtimeState->graphicsRootBindingRevisions.size() ||
+				runtimeState->graphicsRootBindingRevisions[root] !=
+					graphicsRootRevisions[index])
+				return false;
+		}
+		return true;
+	}
+
+	void StoreGraphicsRootDependencies(
+		const DX12SimulateContext *runtimeState,
+		bool dependenciesKnown,
+		const std::array<bool, MaxRootParameters> &rootSeen)
+	{
+		usesGraphicsRootRevisions = dependenciesKnown && runtimeState;
+		graphicsRootParameters.clear();
+		graphicsRootRevisions.clear();
+		if (!usesGraphicsRootRevisions)
+			return;
+		for (UINT root = 0; root < rootSeen.size(); ++root) {
+			if (!rootSeen[root])
+				continue;
+			graphicsRootParameters.push_back(root);
+			graphicsRootRevisions.push_back(
+				runtimeState->graphicsRootBindingRevisions[root]);
+		}
+		if (graphicsRootParameters.empty())
+			usesGraphicsRootRevisions = false;
 	}
 
 	bool MatchesInvocation(
@@ -3992,6 +4039,7 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	tlsDirectDescriptorPrefilterCache.SetInvocation(
 		reloadGeneration,
 		commandList,
+		runtimeState,
 		descriptorQuerySerial,
 		descriptorHeap,
 		descriptorHeapVersion,
@@ -4008,6 +4056,7 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		const bool cacheMatches = tlsDirectDescriptorPrefilterCache.MatchesInvocation(
 			reloadGeneration,
 			commandList,
+			runtimeState,
 			descriptorQuerySerial,
 			descriptorHeap,
 			descriptorHeapVersion,
@@ -4054,7 +4103,10 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 	std::vector<DX12ResolvedGraphicsSrvBinding> hashedBindings[2][3];
 	bool resolvedBindingsLoaded[2][3] = {};
 	bool resolvedBindingsFound[2][3] = {};
+	bool graphicsRootDependenciesKnown = runtimeState != nullptr;
+	std::array<bool, MaxRootParameters> graphicsRootSeen = {};
 	std::vector<DX12TextureOverrideMatch> matches;
+	bool hasCandidate = false;
 	for (const DX12IaHashTargetPlan::DescriptorTarget &descriptorTarget :
 	     targetPlan.descriptorTargets) {
 		Bunny::CommandListTarget target;
@@ -4091,6 +4143,18 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 					&resolvedBindings[stageIndex][rangeIndex]) &&
 				!resolvedBindings[stageIndex][rangeIndex].empty();
 			if (resolvedBindingsFound[stageIndex][rangeIndex]) {
+				if (compute) {
+					graphicsRootDependenciesKnown = false;
+				} else {
+					for (const DX12CurrentShaderResourceBinding &binding :
+						 resolvedBindings[stageIndex][rangeIndex]) {
+						if (binding.rootParameterIndex >= graphicsRootSeen.size()) {
+							graphicsRootDependenciesKnown = false;
+							break;
+						}
+						graphicsRootSeen[binding.rootParameterIndex] = true;
+					}
+				}
 				ResolveGraphicsSrvBindings(
 					commandList,
 					cachedDevice,
@@ -4103,6 +4167,8 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 					compute,
 					tlsAllowedSectionIds,
 					&candidateMatchesByTarget);
+			} else {
+				graphicsRootDependenciesKnown = false;
 			}
 		}
 		if (!resolvedBindingsFound[stageIndex][rangeIndex])
@@ -4134,12 +4200,17 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 				&matches)) {
 			tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;
 				tlsDirectDescriptorPrefilterCache.hasCandidate = true;
-			return true;
+				hasCandidate = true;
+				break;
 		}
 		tlsDirectDescriptorPrefilterCache.matchesByTarget[cacheKey] = matches;
 	}
 
-	return false;
+	tlsDirectDescriptorPrefilterCache.StoreGraphicsRootDependencies(
+		runtimeState,
+		graphicsRootDependenciesKnown,
+		graphicsRootSeen);
+	return hasCandidate;
 }
 
 static void BackfillCompiledPsoPlanFromFallback(
