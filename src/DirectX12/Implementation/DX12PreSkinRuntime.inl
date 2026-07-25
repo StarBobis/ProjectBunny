@@ -1482,15 +1482,44 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	logStage("tables_copied", static_cast<UINT>(tables.size()), totalDescriptors);
 
 			DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
-	auto findTable = [&tables](const DX12CurrentComputeUavBinding &binding) -> const TableCopy* {
-		for (const TableCopy &table : tables) {
-			if (table.root == binding.rootParameterIndex &&
-			    table.cpuStart == binding.tableCpuStart &&
-			    table.gpuStart.ptr == binding.tableGpuStart.ptr)
-				return &table;
+	class TableCopyLookupKeyUtils
+	{
+	public:
+		static UINT64 Build(const DX12CurrentComputeUavBinding &binding)
+		{
+			UINT64 hash = binding.rootParameterIndex;
+			hash = HashCombine64(hash, static_cast<UINT64>(binding.tableCpuStart));
+			hash = HashCombine64(hash, binding.tableGpuStart.ptr);
+			return hash;
 		}
-		return nullptr;
+
+		static UINT64 Build(const TableCopy &table)
+		{
+			UINT64 hash = table.root;
+			hash = HashCombine64(hash, static_cast<UINT64>(table.cpuStart));
+			hash = HashCombine64(hash, table.gpuStart.ptr);
+			return hash;
+		}
 	};
+	static thread_local std::unordered_map<UINT64, size_t> tlsTableLookup;
+	std::unordered_map<UINT64, size_t> &tableLookup = tlsTableLookup;
+	tableLookup.clear();
+	tableLookup.reserve(tables.size());
+	for (size_t tableIndex = 0; tableIndex < tables.size(); ++tableIndex)
+		tableLookup[TableCopyLookupKeyUtils::Build(tables[tableIndex])] = tableIndex;
+	auto findTable = [&tables, &tableLookup](const DX12CurrentComputeUavBinding &binding) -> const TableCopy* {
+		const auto found = tableLookup.find(TableCopyLookupKeyUtils::Build(binding));
+		if (found == tableLookup.end() || found->second >= tables.size())
+			return nullptr;
+		return &tables[found->second];
+	};
+	static thread_local std::unordered_map<UINT, const DX12PreSkinSrvReplacementBinding*> tlsSrvReplacementLookup;
+	std::unordered_map<UINT, const DX12PreSkinSrvReplacementBinding*> &srvReplacementLookup =
+		tlsSrvReplacementLookup;
+	srvReplacementLookup.clear();
+	srvReplacementLookup.reserve(srvReplacements.size());
+	for (const DX12PreSkinSrvReplacementBinding &binding : srvReplacements)
+		srvReplacementLookup[binding.shaderRegister] = &binding;
 	static thread_local std::vector<ID3D12Resource*> tlsTemporaryResources;
 	std::vector<ID3D12Resource*> &temporaryResources = tlsTemporaryResources;
 	temporaryResources.clear();
@@ -1498,12 +1527,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	for (const DX12CurrentComputeUavBinding &srv : srvs) {
 		const DX12PreSkinSrvReplacementBinding *replacementBinding = nullptr;
 			DX12_HOTPATH_TIME_BEGIN(PreSkinLoadResource);
-		for (const DX12PreSkinSrvReplacementBinding &binding : srvReplacements) {
-			if (binding.shaderRegister == srv.shaderRegister) {
-				replacementBinding = &binding;
-				break;
-			}
-		}
+		const auto replacementIt = srvReplacementLookup.find(srv.shaderRegister);
+		if (replacementIt != srvReplacementLookup.end())
+			replacementBinding = replacementIt->second;
 		if (!replacementBinding)
 			continue;
 
