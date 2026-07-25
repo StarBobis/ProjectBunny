@@ -1085,6 +1085,9 @@ public:
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	UINT64 producerSerial = 0;
+	uint64_t computeShaderHash = 0;
+	UINT64 bindingFingerprint = 0;
+	uint32_t triggerHash = 0;
 	bool hasActiveTextureOverride = false;
 	Bunny::TextureOverrideConfig activeConfig;
 	DX12ComputeUavProducer activeProducer;
@@ -1110,6 +1113,7 @@ public:
 };
 
 static std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState> gActivePreSkinReplacements;
+static volatile LONG gHasActivePreSkinReplacement = 0;
 class DX12RetiredPreSkinResource
 {
 public:

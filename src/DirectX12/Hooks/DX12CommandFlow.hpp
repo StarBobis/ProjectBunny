@@ -1080,6 +1080,7 @@ public:
 		if (DX12HotPathState::CanResidentDispatchFastReject(
 				flagsWord, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12ModRestorePreSkinningUavReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
@@ -1096,6 +1097,7 @@ public:
 		// Match DX11's compute path: when dispatch only needs logging/hunting or
 		// capture, stay on the straight-through path and skip PSO policy rebuilds.
 		if (!needsDispatchDecision) {
+			DX12ModRestorePreSkinningUavReplacement(commandList);
 			if (DX12HotPathState::skipBindings && huntEnabled) {
 				DX12_PROFILE_FAST_FORWARD();
 				DX12HuntRecordDispatch(commandList);
@@ -1151,6 +1153,7 @@ public:
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList)) {
 				DX12_HOTPATH_TIME_END(DispatchHookTotal);
@@ -1182,6 +1185,7 @@ public:
 			if (needsPreSkinProbe && dispatchDecision && dispatchDecision->IsPreSkinRejected())
 				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
 			DX12_PROFILE_FAST_FORWARD();
+			DX12ModRestorePreSkinningUavReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
@@ -1249,6 +1253,7 @@ public:
 		if (!needsPreSkinProbe || !effectiveState || !decisionNeedsPreSkinProbe) {
 			if (needsPreSkinProbe && effectiveDecision && effectiveDecision->IsPreSkinRejected())
 				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
+			DX12ModRestorePreSkinningUavReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
@@ -1749,7 +1754,8 @@ public:
 			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
 		const std::vector<DX12CurrentRootConstants> &rootConstants =
 			probe.cachedRootConstants ? *probe.cachedRootConstants : probe.rootConstants;
-		if (probe.applied) {
+		if (!probe.applied ||
+			!DX12ModCanDeferPreSkinningUavReplacement(commandList)) {
 			LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12OuterTimingProbeUtils::LogCpuStage(

@@ -3,9 +3,19 @@
 #include "Commands/DX12CommandRuntime.hpp"
 #include "Diagnostics/DX12Profiling.hpp"
 
+void DX12ModRestorePreSkinningUavReplacement(
+	ID3D12GraphicsCommandList *commandList);
+
 class DX12CommandListComputeBindingFlow
 {
 public:
+	static void RestoreDeferredPreSkinBeforeBindingMutation(
+		ID3D12GraphicsCommandList *commandList)
+	{
+		if (!DX12InternalReplayState::IsActive())
+			DX12ModRestorePreSkinningUavReplacement(commandList);
+	}
+
 	static void ResolveDescriptorHeaps(
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps,
@@ -38,6 +48,7 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (!DX12HotPathState::NeedsAnyResidentDescriptorState(flags) &&
 			DX12HotPathState::skipBindings) {
@@ -58,6 +69,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool skipComputeBinding =
 			DX12HotPathState::skipAll &&
@@ -119,6 +131,7 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -142,6 +155,7 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -194,6 +208,7 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -220,6 +235,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -267,6 +283,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -292,6 +309,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -341,6 +359,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -368,6 +387,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -422,6 +442,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :
@@ -448,6 +469,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
+		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :

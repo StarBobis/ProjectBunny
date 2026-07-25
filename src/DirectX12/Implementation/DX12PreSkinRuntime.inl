@@ -1149,6 +1149,59 @@ public:
 	}
 };
 
+static bool TryReuseDeferredPreSkinDescriptorTable(
+	ID3D12GraphicsCommandList *commandList,
+	uint64_t computeShaderHash,
+	UINT64 bindingFingerprint,
+	uint32_t triggerHash,
+	bool *hasPendingState)
+{
+	if (hasPendingState)
+		*hasPendingState = false;
+	if (!commandList || !bindingFingerprint)
+		return false;
+	AcquireSRWLockShared(&gPreSkinLock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
+		it = gActivePreSkinReplacements.find(commandList);
+	if (it == gActivePreSkinReplacements.end()) {
+		ReleaseSRWLockShared(&gPreSkinLock);
+		return false;
+	}
+	const DX12PreSkinReplacementState &state = it->second;
+	const bool reusable = state.active && state.patchHeap &&
+		state.descriptorRestores.empty() && state.temporaryResources.empty() &&
+		state.computeShaderHash == computeShaderHash &&
+		state.bindingFingerprint == bindingFingerprint &&
+		state.triggerHash == triggerHash;
+	if (hasPendingState)
+		*hasPendingState = true;
+	ReleaseSRWLockShared(&gPreSkinLock);
+	return reusable;
+}
+
+bool DX12ModCanDeferPreSkinningUavReplacement(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return false;
+	AcquireSRWLockShared(&gPreSkinLock);
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
+		it = gActivePreSkinReplacements.find(commandList);
+	const bool canDefer = it != gActivePreSkinReplacements.end() &&
+		it->second.active && it->second.patchHeap &&
+		it->second.descriptorRestores.empty() &&
+		it->second.temporaryResources.empty() &&
+		it->second.bindingFingerprint != 0;
+	ReleaseSRWLockShared(&gPreSkinLock);
+	return canDefer;
+}
+
+bool DX12ModHasActivePreSkinningUavReplacement()
+{
+	return InterlockedCompareExchange(
+		&gHasActivePreSkinReplacement, 0, 0) != 0;
+}
+
 static bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &uavBinding, const DX12ComputeUavProducer &producer,
@@ -1159,7 +1212,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	const std::vector<DX12CurrentRootConstants> &rootConstants,
 	const wchar_t *section, uint32_t triggerHash,
 	UINT *originalVertexCountOut, UINT *overrideVertexCountOut,
-	UINT64 bindingFingerprint)
+	UINT64 bindingFingerprint, uint64_t computeShaderHash)
 {
 	if (!device || !commandList || !uavBinding.hasDescriptor || !uavBinding.tableGpuStart.ptr)
 		return false;
@@ -1321,6 +1374,18 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			return false;
 		}
 	}
+	bool hasPendingState = false;
+	if (!requiresCountPatch && TryReuseDeferredPreSkinDescriptorTable(
+			commandList, computeShaderHash, bindingFingerprint, triggerHash,
+			&hasPendingState)) {
+		if (originalVertexCountOut)
+			*originalVertexCountOut = originalVertexCount;
+		if (overrideVertexCountOut)
+			*overrideVertexCountOut = overrideVertexCount;
+		return true;
+	}
+	if (hasPendingState)
+		DX12ModRestorePreSkinningUavReplacement(commandList);
 	static thread_local DX12PreSkinDescriptorTableCloneCache tlsCloneCache;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	if (!requiresCountPatch && bindingFingerprint && tlsCloneCache.Matches(
@@ -1337,6 +1402,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		}
 		DX12PreSkinReplacementState state;
 		state.active = true;
+		state.computeShaderHash = computeShaderHash;
+		state.bindingFingerprint = bindingFingerprint;
+		state.triggerHash = triggerHash;
 		state.rootParameterIndex = uavBinding.rootParameterIndex;
 		state.originalTable = uavBinding.tableGpuStart;
 		state.originalHeap = uavBinding.tableHeap;
@@ -1367,6 +1435,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			*overrideVertexCountOut = overrideVertexCount;
 		AcquireSRWLockExclusive(&gPreSkinLock);
 		gActivePreSkinReplacements[commandList] = std::move(state);
+		InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 		ReleaseSRWLockExclusive(&gPreSkinLock);
 		return true;
 	}
@@ -1675,6 +1744,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	DX12PreSkinReplacementState state;
 	state.active = true;
+	state.computeShaderHash = computeShaderHash;
+	state.bindingFingerprint = bindingFingerprint;
+	state.triggerHash = triggerHash;
 			DX12_HOTPATH_TIME_END(PreSkinCopyPatch);
 	state.rootParameterIndex = uavBinding.rootParameterIndex;
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindHeaps);
@@ -1730,6 +1802,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		*overrideVertexCountOut = overrideVertexCount;
 	AcquireSRWLockExclusive(&gPreSkinLock);
 	gActivePreSkinReplacements[commandList] = std::move(state);
+	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 #if defined(_DEBUG)
@@ -1851,6 +1924,7 @@ static bool ApplyPreSkinBindingPatchLocked(
 		state.descriptorRestores.swap(*descriptorRestores);
 	AcquireSRWLockExclusive(&gPreSkinLock);
 	gActivePreSkinReplacements[commandList] = std::move(state);
+	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 #if defined(_DEBUG)
@@ -2108,7 +2182,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 						hashMatch.config->section.c_str() :
 						hashMatch.config->originalSection.c_str(),
 					hashMatch.hash, originalVertexCount, overrideVertexCount,
-					bindingFingerprint);
+					bindingFingerprint, computeShaderHash);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"PreSkinRuntime",
 					applied ? "descriptor_table_patch_hit" : "descriptor_table_patch_miss",
@@ -2348,7 +2422,8 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList)
 {
-	if (!commandList)
+	if (!commandList || InterlockedCompareExchange(
+		&gHasActivePreSkinReplacement, 0, 0) == 0)
 		return;
 
 	DX12InternalReplayScope internalReplay;
@@ -2361,6 +2436,8 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		gActivePreSkinReplacements.erase(it);
 		found = state.active;
 	}
+	if (gActivePreSkinReplacements.empty())
+		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 	if (!found)

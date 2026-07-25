@@ -180,7 +180,8 @@ public:
 
 	static bool ShouldSkipGraphicsBinding()
 	{
-		return DX12HotPathState::skipGraphicsBindings != 0;
+		return DX12HotPathState::skipGraphicsBindings != 0 &&
+			!DX12ModHasActivePreSkinningUavReplacement();
 	}
 
 	static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(
@@ -863,6 +864,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCloseCommandList(I
 {
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiCloseCommandList);
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::Close", commandList);
 	PFN_CLOSE_COMMAND_LIST original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::Close, PFN_CLOSE_COMMAND_LIST, DX12CommandListHookState::OrigCloseCommandList, "CloseCommandList");
 	return original ? original(commandList) : E_FAIL;
@@ -875,6 +877,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 	DX12_PROFILE_FUNCTION(ResetCommandList);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiResetCommandList);
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	const UINT64 flags = DX12HotPathState::HookWorkFlags;
 	const bool needsPresentResetWork =
 		(flags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) != 0;
@@ -931,6 +934,7 @@ HRESULT STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResetCommandList(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearState(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState)
 {
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearState", commandList, " pso=%p", pipelineState);
 	DX12CommandListLifecycle::ClearState(commandList, pipelineState);
 	PFN_CLEAR_STATE original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ClearState, PFN_CLEAR_STATE, DX12CommandListHookState::OrigClearState, "ClearState");
@@ -945,6 +949,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	DX12_PROFILE_FUNCTION(DrawInstanced);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawInstanced);
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 	// DX11-style forward path: no draw work means no runtime-state lookup.
 	if (DX12HotPathState::skipAll ||
@@ -980,6 +985,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	DX12_PROFILE_FUNCTION(DrawIndexedInstanced);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 	// DX11-style forward path: no draw work means no runtime-state lookup.
 	if (DX12HotPathState::skipAll ||
@@ -1262,6 +1268,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResourceBarrier(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteBundle(
 	ID3D12GraphicsCommandList *commandList, ID3D12GraphicsCommandList *bundle)
 {
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ExecuteBundle", commandList, " bundle=%p", bundle);
 	DX12CommandListCommandRecorder::RecordExecuteBundle(bundle, nullptr);
 	PFN_EXECUTE_BUNDLE original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteBundle, PFN_EXECUTE_BUNDLE, DX12CommandListHookState::OrigExecuteBundle, "ExecuteBundle");
@@ -1276,15 +1283,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedSetGraphicsRootUnorde
 	DX12_PROFILE_FUNCTION(SetGraphicsRootUnorderedAccessView);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
-	if (DX12HotPathState::skipAll) {
-		PFN_SET_ROOT_GPU_VA original =
-			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
-		if (original)
-			original(commandList, rootParameterIndex, address);
-		return;
-	}
-
-	if (DX12HotPathState::skipGraphicsBindings) {
+	if (DX12CommandListComputeBindingHookCallbacks::ShouldSkipGraphicsBinding()) {
 		DX12_PROFILE_FAST_FORWARD();
 		PFN_SET_ROOT_GPU_VA original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootUnorderedAccessView, PFN_SET_ROOT_GPU_VA, DX12CommandListHookState::OrigSetGraphicsRootUnorderedAccessView, "SetGraphicsRootUnorderedAccessView");
@@ -1329,6 +1328,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetVertexBuffers(
 	DX12_PROFILE_FUNCTION(IASetVertexBuffers);
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	if (DX12HotPathState::skipAll) {
 		PFN_IA_SET_VERTEX_BUFFERS original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
@@ -1429,6 +1429,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const UINT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	if (DX12HotPathState::skipAll ||
 		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigClearUnorderedAccessViewUint)
@@ -1452,6 +1453,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const FLOAT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	if (DX12HotPathState::skipAll ||
 		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigClearUnorderedAccessViewFloat)
@@ -1581,6 +1583,7 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 	UINT maxCommandCount, ID3D12Resource *argumentBuffer, UINT64 argumentBufferOffset,
 	ID3D12Resource *countBuffer, UINT64 countBufferOffset)
 {
+	DX12ModRestorePreSkinningUavReplacement(commandList);
 	PFN_EXECUTE_INDIRECT original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
 	const UINT64 flags = DX12HotPathState::HookWorkFlags;
