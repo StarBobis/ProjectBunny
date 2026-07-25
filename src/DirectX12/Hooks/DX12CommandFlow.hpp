@@ -2267,11 +2267,26 @@ public:
 class DX12IaReplacementExecutor
 {
 public:
-	inline static std::unordered_set<
-		DX12PsoDrawFastRejectKey,
-		DX12PsoDrawFastRejectKeyHash> s_psoDrawFastRejectCache;
-	inline static SRWLOCK s_psoDrawFastRejectCacheLock = SRWLOCK_INIT;
-	static constexpr size_t MaxPsoDrawFastRejectEntries = 16384;
+	class PsoDrawFastRejectThreadCache
+	{
+	public:
+		class Entry
+		{
+		public:
+			bool valid = false;
+			DX12PsoDrawFastRejectKey key;
+		};
+
+		static constexpr size_t SlotCount = 256;
+		std::array<Entry, SlotCount> entries;
+
+		static size_t Slot(const DX12PsoDrawFastRejectKey &key)
+		{
+			return DX12PsoDrawFastRejectKeyHash()(key) & (SlotCount - 1);
+		}
+	};
+
+	inline static thread_local PsoDrawFastRejectThreadCache s_psoDrawFastRejectCache;
 
 	static bool TryLoadResolvedIaHashBuild(
 		DX12SimulateContextDrawTemplate::CachedIaHashBuildEntry *entry,
@@ -2535,10 +2550,10 @@ public:
 
 	static bool TryFindPsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
-		AcquireSRWLockShared(&s_psoDrawFastRejectCacheLock);
-		bool found = s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end();
-		ReleaseSRWLockShared(&s_psoDrawFastRejectCacheLock);
-		return found;
+		const PsoDrawFastRejectThreadCache::Entry &entry =
+			s_psoDrawFastRejectCache.entries[
+				PsoDrawFastRejectThreadCache::Slot(key)];
+		return entry.valid && entry.key == key;
 	}
 
 	static bool HasAnyDirectTextureOverrideCheckTarget(
@@ -2616,24 +2631,18 @@ public:
 
 	static void StorePsoDrawFastReject(const DX12PsoDrawFastRejectKey &key)
 	{
-		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
-		if (s_psoDrawFastRejectCache.find(key) != s_psoDrawFastRejectCache.end()) {
-			ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
-			return;
-		}
-		if (s_psoDrawFastRejectCache.size() >= MaxPsoDrawFastRejectEntries)
-			s_psoDrawFastRejectCache.erase(s_psoDrawFastRejectCache.begin());
-		s_psoDrawFastRejectCache.insert(key);
-		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		PsoDrawFastRejectThreadCache::Entry &entry =
+			s_psoDrawFastRejectCache.entries[
+				PsoDrawFastRejectThreadCache::Slot(key)];
+		entry.key = key;
+		entry.valid = true;
 	}
 
 
 
 	static void ClearPsoDrawFastRejectCache()
 	{
-		AcquireSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
-		s_psoDrawFastRejectCache.clear();
-		ReleaseSRWLockExclusive(&s_psoDrawFastRejectCacheLock);
+		s_psoDrawFastRejectCache.entries = {};
 	}
 
 	static bool ExecutePresent(

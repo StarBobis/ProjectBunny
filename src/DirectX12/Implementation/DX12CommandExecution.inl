@@ -2809,6 +2809,46 @@ public:
 static std::unordered_map<ID3D12PipelineState*, DX12CompiledPsoOverridePlan> gPsoOverridePlans;
 static SRWLOCK gPsoOverridePlansLock = SRWLOCK_INIT;
 
+class DX12CompiledPsoPlanTlsCache
+{
+public:
+	ID3D12PipelineState *pipelineState = nullptr;
+	UINT64 reloadGeneration = 0;
+	bool valid = false;
+	bool alwaysMiss = false;
+	std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> configSnapshot;
+	std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> compiledPlanSnapshot;
+
+	~DX12CompiledPsoPlanTlsCache()
+	{
+		if (pipelineState)
+			pipelineState->Release();
+	}
+
+	void Store(
+		ID3D12PipelineState *newPipelineState,
+		UINT64 newReloadGeneration,
+		bool newAlwaysMiss,
+		const std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> &newConfigSnapshot,
+		const std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> &newCompiledPlanSnapshot)
+	{
+		if (pipelineState != newPipelineState) {
+			if (pipelineState)
+				pipelineState->Release();
+			pipelineState = newPipelineState;
+			if (pipelineState)
+				pipelineState->AddRef();
+		}
+		reloadGeneration = newReloadGeneration;
+		valid = true;
+		alwaysMiss = newAlwaysMiss;
+		configSnapshot = newConfigSnapshot;
+		compiledPlanSnapshot = newCompiledPlanSnapshot;
+	}
+};
+
+static thread_local DX12CompiledPsoPlanTlsCache gCompiledPsoPlanTlsCache;
+
 static bool TryLoadCompiledPsoPlan(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
@@ -2823,6 +2863,16 @@ static bool TryLoadCompiledPsoPlan(
 	compiledPlanSnapshot->reset();
 	if (!pipelineState)
 		return false;
+	if (gCompiledPsoPlanTlsCache.valid &&
+		gCompiledPsoPlanTlsCache.pipelineState == pipelineState &&
+		gCompiledPsoPlanTlsCache.reloadGeneration == reloadGeneration) {
+		*alwaysMiss = gCompiledPsoPlanTlsCache.alwaysMiss;
+		if (!*alwaysMiss) {
+			*configSnapshot = gCompiledPsoPlanTlsCache.configSnapshot;
+			*compiledPlanSnapshot = gCompiledPsoPlanTlsCache.compiledPlanSnapshot;
+		}
+		return true;
+	}
 
 	AcquireSRWLockShared(&gPsoOverridePlansLock);
 	auto it = gPsoOverridePlans.find(pipelineState);
@@ -2830,12 +2880,23 @@ static bool TryLoadCompiledPsoPlan(
 		ReleaseSRWLockShared(&gPsoOverridePlansLock);
 		return false;
 	}
-	*alwaysMiss = it->second.alwaysMiss;
-	if (!it->second.alwaysMiss) {
-		*configSnapshot = it->second.configSnapshot;
-		*compiledPlanSnapshot = it->second.compiledPlanSnapshot;
-	}
+	const bool cachedAlwaysMiss = it->second.alwaysMiss;
+	const std::shared_ptr<const std::vector<Bunny::ShaderOverrideConfig>> cachedConfigSnapshot =
+		it->second.configSnapshot;
+	const std::shared_ptr<const std::vector<DX12CompiledShaderOverridePlan>> cachedCompiledPlanSnapshot =
+		it->second.compiledPlanSnapshot;
 	ReleaseSRWLockShared(&gPsoOverridePlansLock);
+	gCompiledPsoPlanTlsCache.Store(
+		pipelineState,
+		reloadGeneration,
+		cachedAlwaysMiss,
+		cachedConfigSnapshot,
+		cachedCompiledPlanSnapshot);
+	*alwaysMiss = cachedAlwaysMiss;
+	if (!*alwaysMiss) {
+		*configSnapshot = cachedConfigSnapshot;
+		*compiledPlanSnapshot = cachedCompiledPlanSnapshot;
+	}
 	return true;
 }
 
