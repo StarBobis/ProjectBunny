@@ -1756,6 +1756,7 @@ public:
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
 		}
+	#if defined(_DEBUG)
 		if (probe.uavsFound) {
 			LARGE_INTEGER recordUavBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModRecordComputeUavs(commandList, uavs);
@@ -1766,6 +1767,7 @@ public:
 				uavs.size(),
 				DX12OuterTimingProbeUtils::ElapsedUs(recordUavBegin));
 		}
+	#endif
 		if (!probe.applied)
 			return;
 

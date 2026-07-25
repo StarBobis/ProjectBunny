@@ -78,15 +78,15 @@ static bool TryGetRuntimePreSkinBindings(
 		constexpr size_t StackIdentityCount = 64;
 		std::array<UINT64, StackIdentityCount> stackSlotVersions;
 		std::array<UINT64, StackIdentityCount> stackSlotValueIds;
-		std::vector<UINT64> heapSlotVersions;
-		std::vector<UINT64> heapSlotValueIds;
 		UINT64 *currentSlotVersions = stackSlotVersions.data();
 		UINT64 *currentSlotValueIds = stackSlotValueIds.data();
 		if (observedCount > StackIdentityCount) {
-			heapSlotVersions.resize(observedCount);
-			heapSlotValueIds.resize(observedCount);
-			currentSlotVersions = heapSlotVersions.data();
-			currentSlotValueIds = heapSlotValueIds.data();
+			static thread_local std::vector<UINT64> tlsSlotVersions;
+			static thread_local std::vector<UINT64> tlsSlotValueIds;
+			tlsSlotVersions.resize(observedCount);
+			tlsSlotValueIds.resize(observedCount);
+			currentSlotVersions = tlsSlotVersions.data();
+			currentSlotValueIds = tlsSlotValueIds.data();
 		}
 		if (!DX12GetDescriptorSlotIdentities(
 				runtimeState->resolvedCompute.bindingsHeap,
@@ -1182,14 +1182,19 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	// Parse the blob once, reuse across all dispatches with the same signature.
 	static std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary> s_rootSigCache;
 	static SRWLOCK s_rootSigCacheLock = SRWLOCK_INIT;
-	static UINT64 s_rootSigCacheReloadGen = 0;
+	static volatile LONG64 s_rootSigCacheReloadGen = 0;
 	UINT64 reloadGen = DX12ModGetReloadGeneration();
-	AcquireSRWLockExclusive(&s_rootSigCacheLock);
-	if (s_rootSigCacheReloadGen != reloadGen) {
-		s_rootSigCache.clear();
-		s_rootSigCacheReloadGen = reloadGen;
+	if (static_cast<UINT64>(InterlockedCompareExchange64(
+			&s_rootSigCacheReloadGen, 0, 0)) != reloadGen) {
+		AcquireSRWLockExclusive(&s_rootSigCacheLock);
+		if (static_cast<UINT64>(s_rootSigCacheReloadGen) != reloadGen) {
+			s_rootSigCache.clear();
+			InterlockedExchange64(
+				&s_rootSigCacheReloadGen,
+				static_cast<LONG64>(reloadGen));
+		}
+		ReleaseSRWLockExclusive(&s_rootSigCacheLock);
 	}
-	ReleaseSRWLockExclusive(&s_rootSigCacheLock);
 
 	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
 	if (!computeRootSig && snapshot.pipelineState) {
@@ -1218,9 +1223,11 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			DX12RootSignatureSummary parsed;
 			if (DX12GetRootSignatureSummary(computeRootSig, &parsed)) {
 				AcquireSRWLockExclusive(&s_rootSigCacheLock);
-				if (s_rootSigCacheReloadGen != reloadGen) {
+				if (static_cast<UINT64>(s_rootSigCacheReloadGen) != reloadGen) {
 					s_rootSigCache.clear();
-					s_rootSigCacheReloadGen = reloadGen;
+					InterlockedExchange64(
+						&s_rootSigCacheReloadGen,
+						static_cast<LONG64>(reloadGen));
 				}
 				std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::iterator storeIt =
 					s_rootSigCache.find(computeRootSig);
