@@ -703,6 +703,7 @@ public:
 
 	static SRWLOCK HookedVTableLock;
 	static std::unordered_set<void*> HookedCommandListVTables;
+	static std::unordered_map<void*, UINT32> CommandListVTableHookMasks;
 	static SRWLOCK RegisteredListLock;
 	static std::unordered_set<void*> RegisteredCommandLists;
 	static SRWLOCK KnownCommandQueueLock;
@@ -1052,24 +1053,38 @@ public:
 class DX12CommandListHookRegistry
 {
 public:
-	static bool ShouldHookCommandListVTable(void *vtable)
+	static void RememberCommandListVTable(void *vtable)
 	{
 		if (!vtable)
-			return false;
-
-		AcquireSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
-		const bool alreadyHooked =
-			DX12CommandListHookState::HookedCommandListVTables.find(vtable) !=
-			DX12CommandListHookState::HookedCommandListVTables.end();
-		ReleaseSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
-		if (alreadyHooked)
-			return false;
-
-		bool shouldHook = false;
+			return;
 		AcquireSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
-		shouldHook = DX12CommandListHookState::HookedCommandListVTables.insert(vtable).second;
+		DX12CommandListHookState::HookedCommandListVTables.insert(vtable);
+		DX12CommandListHookState::CommandListVTableHookMasks.try_emplace(vtable, 0);
 		ReleaseSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
-		return shouldHook;
+	}
+
+	static UINT32 GetCommandListVTableMissingHookMask(void *vtable, UINT32 requestedMask)
+	{
+		if (!vtable || !requestedMask)
+			return 0;
+		AcquireSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
+		UINT32 &installedMask = DX12CommandListHookState::CommandListVTableHookMasks[vtable];
+		const UINT32 missingMask = requestedMask & ~installedMask;
+		installedMask |= missingMask;
+		ReleaseSRWLockExclusive(&DX12CommandListHookState::HookedVTableLock);
+		return missingMask;
+	}
+
+	static void SnapshotCommandListVTables(std::vector<void*> *vtables)
+	{
+		if (!vtables)
+			return;
+		vtables->clear();
+		AcquireSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
+		vtables->reserve(DX12CommandListHookState::HookedCommandListVTables.size());
+		for (void *vtable : DX12CommandListHookState::HookedCommandListVTables)
+			vtables->push_back(vtable);
+		ReleaseSRWLockShared(&DX12CommandListHookState::HookedVTableLock);
 	}
 
 	static bool ShouldRegisterCommandListPointer(void *commandList)
@@ -1130,6 +1145,7 @@ class DX12CommandListHooks
 public:
 	static void HookCommandListCreation(IUnknown *device);
 	static void HookCommandList(IUnknown *commandList);
+	static void ActivateCommandListHotPathHooks();
 	static void HookCommandQueue(IUnknown *commandQueue);
 	static void RememberCommandQueueForHotPath(IUnknown *commandQueue);
 	static void ActivateCommandQueueHotPathHooks();

@@ -133,6 +133,7 @@ volatile LONG DX12CommandListHookState::IaReplacementSummaryDispatches = 0;
 
 SRWLOCK DX12CommandListHookState::HookedVTableLock = SRWLOCK_INIT;
 std::unordered_set<void*> DX12CommandListHookState::HookedCommandListVTables;
+std::unordered_map<void*, UINT32> DX12CommandListHookState::CommandListVTableHookMasks;
 SRWLOCK DX12CommandListHookState::RegisteredListLock = SRWLOCK_INIT;
 std::unordered_set<void*> DX12CommandListHookState::RegisteredCommandLists;
 SRWLOCK DX12CommandListHookState::KnownCommandQueueLock = SRWLOCK_INIT;
@@ -1721,6 +1722,161 @@ void DX12CommandListHooks::ActivateCommandQueueHotPathHooks()
 	}
 }
 
+class DX12CommandListHookInstallUtils
+{
+public:
+	static constexpr UINT32 Base = 1u << 0;
+	static constexpr UINT32 ComputeBindings = 1u << 1;
+	static constexpr UINT32 GraphicsBindings = 1u << 2;
+	static constexpr UINT32 Ia = 1u << 3;
+	static constexpr UINT32 Resources = 1u << 4;
+	static constexpr UINT32 Analysis = 1u << 5;
+	static constexpr UINT32 ExecuteIndirect = 1u << 6;
+
+	class CategorizedHook
+	{
+	public:
+		DX12VTableHook hook;
+		UINT32 categories = 0;
+	};
+
+	static UINT32 RequiredCategories()
+	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (!flags)
+			return 0;
+
+		UINT32 categories = Base;
+		if (DX12HotPathState::NeedsComputeResidentBindingState(flags))
+			categories |= ComputeBindings;
+		if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) ||
+			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) ||
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags)) {
+			categories |= GraphicsBindings;
+		}
+		if (DX12HotPathState::NeedsResidentIaState(flags))
+			categories |= Ia;
+		if (DX12HotPathState::NeedsPreSkinProbe(flags) ||
+			DX12HotPathState::NeedsIaBufferContentTracking(flags)) {
+			categories |= Resources;
+		}
+		if (DX12HotPathState::HasAnyFlag(
+				flags,
+				DX12HotPathState::FLAG_HUNT_ENABLED |
+				DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
+				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) {
+			categories |= Analysis;
+		}
+		if (DX12HotPathState::NeedsPreSkinProbe(flags) ||
+			DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED)) {
+			categories |= ExecuteIndirect;
+		}
+		return categories;
+	}
+
+	static void Install(void **vtable, UINT32 requestedCategories)
+	{
+		const UINT32 missingCategories =
+			DX12CommandListHookRegistry::GetCommandListVTableMissingHookMask(
+				vtable, requestedCategories);
+		if (!missingCategories)
+			return;
+
+#define DX12_CL_HOOK_CATEGORY(slotName, originalName, callbackClass, callbackName, categories) \
+		{{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::slotName, \
+			reinterpret_cast<void**>(&DX12CommandListHookState::originalName), \
+			reinterpret_cast<void*>(callbackClass::callbackName), \
+			"ID3D12GraphicsCommandList::" #slotName}, categories}
+
+		const CategorizedHook hooks[] = {
+			DX12_CL_HOOK_CATEGORY(Close, OrigCloseCommandList, DX12CommandListHookCallbacks, HookedCloseCommandList, Base),
+			DX12_CL_HOOK_CATEGORY(Reset, OrigResetCommandList, DX12CommandListHookCallbacks, HookedResetCommandList, Base),
+			DX12_CL_HOOK_CATEGORY(ClearState, OrigClearState, DX12CommandListHookCallbacks, HookedClearState, Base),
+			DX12_CL_HOOK_CATEGORY(DrawInstanced, OrigDrawInstanced, DX12CommandListHookCallbacks, HookedDrawInstanced, Base),
+			DX12_CL_HOOK_CATEGORY(DrawIndexedInstanced, OrigDrawIndexedInstanced, DX12CommandListHookCallbacks, HookedDrawIndexedInstanced, Base),
+			DX12_CL_HOOK_CATEGORY(Dispatch, OrigDispatch, DX12CommandListHookCallbacks, HookedDispatch, Base),
+			DX12_CL_HOOK_CATEGORY(CopyBufferRegion, OrigCopyBufferRegion, DX12CommandListHookCallbacks, HookedCopyBufferRegion, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(CopyTextureRegion, OrigCopyTextureRegion, DX12CommandListHookCallbacks, HookedCopyTextureRegion, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(CopyResource, OrigCopyResource, DX12CommandListHookCallbacks, HookedCopyResource, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(CopyTiles, OrigCopyTiles, DX12CommandListHookCallbacks, HookedCopyTiles, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(ResolveSubresource, OrigResolveSubresource, DX12CommandListHookCallbacks, HookedResolveSubresource, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(IaSetPrimitiveTopology, OrigIASetPrimitiveTopology, DX12CommandListHookCallbacks, HookedIASetPrimitiveTopology, Ia),
+			DX12_CL_HOOK_CATEGORY(RsSetViewports, OrigRSSetViewports, DX12CommandListHookCallbacks, HookedRSSetViewports, Analysis),
+			DX12_CL_HOOK_CATEGORY(RsSetScissorRects, OrigRSSetScissorRects, DX12CommandListHookCallbacks, HookedRSSetScissorRects, Analysis),
+			DX12_CL_HOOK_CATEGORY(OmSetBlendFactor, OrigOMSetBlendFactor, DX12CommandListHookCallbacks, HookedOMSetBlendFactor, Analysis),
+			DX12_CL_HOOK_CATEGORY(OmSetStencilRef, OrigOMSetStencilRef, DX12CommandListHookCallbacks, HookedOMSetStencilRef, Analysis),
+			DX12_CL_HOOK_CATEGORY(SetPipelineState, OrigSetPipelineState, DX12CommandListHookCallbacks, HookedSetPipelineState, Base),
+			DX12_CL_HOOK_CATEGORY(ResourceBarrier, OrigResourceBarrier, DX12CommandListHookCallbacks, HookedResourceBarrier, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(ExecuteBundle, OrigExecuteBundle, DX12CommandListHookCallbacks, HookedExecuteBundle, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(SetDescriptorHeaps, OrigSetDescriptorHeaps, DX12CommandListComputeBindingHookCallbacks, HookedSetDescriptorHeaps, ComputeBindings | GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRootSignature, OrigSetComputeRootSignature, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootSignature, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRootSignature, OrigSetGraphicsRootSignature, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootSignature, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRootDescriptorTable, OrigSetComputeRootDescriptorTable, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootDescriptorTable, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRootDescriptorTable, OrigSetGraphicsRootDescriptorTable, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootDescriptorTable, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRoot32BitConstant, OrigSetComputeRoot32BitConstant, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRoot32BitConstant, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRoot32BitConstant, OrigSetGraphicsRoot32BitConstant, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRoot32BitConstant, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRoot32BitConstants, OrigSetComputeRoot32BitConstants, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRoot32BitConstants, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRoot32BitConstants, OrigSetGraphicsRoot32BitConstants, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRoot32BitConstants, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRootConstantBufferView, OrigSetComputeRootConstantBufferView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootConstantBufferView, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRootConstantBufferView, OrigSetGraphicsRootConstantBufferView, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootConstantBufferView, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRootShaderResourceView, OrigSetComputeRootShaderResourceView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootShaderResourceView, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRootShaderResourceView, OrigSetGraphicsRootShaderResourceView, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootShaderResourceView, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(SetComputeRootUnorderedAccessView, OrigSetComputeRootUnorderedAccessView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootUnorderedAccessView, ComputeBindings),
+			DX12_CL_HOOK_CATEGORY(SetGraphicsRootUnorderedAccessView, OrigSetGraphicsRootUnorderedAccessView, DX12CommandListHookCallbacks, HookedSetGraphicsRootUnorderedAccessView, GraphicsBindings),
+			DX12_CL_HOOK_CATEGORY(IaSetIndexBuffer, OrigIASetIndexBuffer, DX12CommandListHookCallbacks, HookedIASetIndexBuffer, Ia),
+			DX12_CL_HOOK_CATEGORY(IaSetVertexBuffers, OrigIASetVertexBuffers, DX12CommandListHookCallbacks, HookedIASetVertexBuffers, Ia),
+			DX12_CL_HOOK_CATEGORY(SoSetTargets, OrigSOSetTargets, DX12CommandListHookCallbacks, HookedSOSetTargets, Analysis),
+			DX12_CL_HOOK_CATEGORY(OmSetRenderTargets, OrigOMSetRenderTargets, DX12CommandListHookCallbacks, HookedOMSetRenderTargets, Analysis),
+			DX12_CL_HOOK_CATEGORY(ClearDepthStencilView, OrigClearDepthStencilView, DX12CommandListHookCallbacks, HookedClearDepthStencilView, Analysis),
+			DX12_CL_HOOK_CATEGORY(ClearRenderTargetView, OrigClearRenderTargetView, DX12CommandListHookCallbacks, HookedClearRenderTargetView, Analysis),
+			DX12_CL_HOOK_CATEGORY(ClearUnorderedAccessViewUint, OrigClearUnorderedAccessViewUint, DX12CommandListHookCallbacks, HookedClearUnorderedAccessViewUint, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(ClearUnorderedAccessViewFloat, OrigClearUnorderedAccessViewFloat, DX12CommandListHookCallbacks, HookedClearUnorderedAccessViewFloat, Resources | Analysis),
+			DX12_CL_HOOK_CATEGORY(DiscardResource, OrigDiscardResource, DX12CommandListHookCallbacks, HookedDiscardResource, Analysis),
+			DX12_CL_HOOK_CATEGORY(BeginQuery, OrigBeginQuery, DX12CommandListHookCallbacks, HookedBeginQuery, Analysis),
+			DX12_CL_HOOK_CATEGORY(EndQuery, OrigEndQuery, DX12CommandListHookCallbacks, HookedEndQuery, Analysis),
+			DX12_CL_HOOK_CATEGORY(ResolveQueryData, OrigResolveQueryData, DX12CommandListHookCallbacks, HookedResolveQueryData, Analysis),
+			DX12_CL_HOOK_CATEGORY(SetPredication, OrigSetPredication, DX12CommandListHookCallbacks, HookedSetPredication, Analysis),
+			DX12_CL_HOOK_CATEGORY(SetMarker, OrigCommandListSetMarker, DX12CommandListHookCallbacks, HookedCommandListSetMarker, Analysis),
+			DX12_CL_HOOK_CATEGORY(BeginEvent, OrigCommandListBeginEvent, DX12CommandListHookCallbacks, HookedCommandListBeginEvent, Analysis),
+			DX12_CL_HOOK_CATEGORY(EndEvent, OrigCommandListEndEvent, DX12CommandListHookCallbacks, HookedCommandListEndEvent, Analysis),
+			DX12_CL_HOOK_CATEGORY(ExecuteIndirect, OrigExecuteIndirect, DX12CommandListHookCallbacks, HookedExecuteIndirect, ExecuteIndirect),
+		};
+#undef DX12_CL_HOOK_CATEGORY
+
+		DX12VTableHook selectedHooks[ARRAYSIZE(hooks)] = {};
+		size_t selectedCount = 0;
+		for (const CategorizedHook &categorized : hooks) {
+			if (categorized.categories & missingCategories)
+				selectedHooks[selectedCount++] = categorized.hook;
+		}
+		DX12HookManager::InstallVTableHooks(vtable, selectedHooks, selectedCount);
+	}
+};
+
+void DX12CommandListHooks::ActivateCommandListHotPathHooks()
+{
+	const UINT32 requestedCategories =
+		DX12CommandListHookInstallUtils::RequiredCategories();
+	if (!requestedCategories)
+		return;
+
+	static thread_local bool activationInProgress = false;
+	if (activationInProgress)
+		return;
+	activationInProgress = true;
+	std::vector<void*> vtables;
+	DX12CommandListHookRegistry::SnapshotCommandListVTables(&vtables);
+	for (void *vtable : vtables)
+		DX12CommandListHookInstallUtils::Install(
+			static_cast<void**>(vtable), requestedCategories);
+	activationInProgress = false;
+}
+
+void DX12ActivateCommandListHotPathHooks()
+{
+	DX12CommandListHooks::ActivateCommandListHotPathHooks();
+}
+
 void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 {
 	if (!commandList)
@@ -1730,71 +1886,9 @@ void DX12CommandListHooks::HookCommandList(IUnknown *commandList)
 	if (FAILED(commandList->QueryInterface(IID_PPV_ARGS(&list))))
 		return;
 	void **vtable = DX12HookManager::GetVTable(list);
-	if (!DX12CommandListHookRegistry::ShouldHookCommandListVTable(vtable)) {
-		list->Release();
-		return;
-	}
-
-#define DX12_CL_HOOK(slotName, originalName, callbackClass, callbackName) \
-	{DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::slotName, \
-		reinterpret_cast<void**>(&DX12CommandListHookState::originalName), \
-		reinterpret_cast<void*>(callbackClass::callbackName), "ID3D12GraphicsCommandList::" #slotName}
-
-	DX12VTableHook hooks[] = {
-		DX12_CL_HOOK(Close, OrigCloseCommandList, DX12CommandListHookCallbacks, HookedCloseCommandList),
-		DX12_CL_HOOK(Reset, OrigResetCommandList, DX12CommandListHookCallbacks, HookedResetCommandList),
-		DX12_CL_HOOK(ClearState, OrigClearState, DX12CommandListHookCallbacks, HookedClearState),
-		DX12_CL_HOOK(DrawInstanced, OrigDrawInstanced, DX12CommandListHookCallbacks, HookedDrawInstanced),
-		DX12_CL_HOOK(DrawIndexedInstanced, OrigDrawIndexedInstanced, DX12CommandListHookCallbacks, HookedDrawIndexedInstanced),
-		DX12_CL_HOOK(Dispatch, OrigDispatch, DX12CommandListHookCallbacks, HookedDispatch),
-		DX12_CL_HOOK(CopyBufferRegion, OrigCopyBufferRegion, DX12CommandListHookCallbacks, HookedCopyBufferRegion),
-		DX12_CL_HOOK(CopyTextureRegion, OrigCopyTextureRegion, DX12CommandListHookCallbacks, HookedCopyTextureRegion),
-		DX12_CL_HOOK(CopyResource, OrigCopyResource, DX12CommandListHookCallbacks, HookedCopyResource),
-		DX12_CL_HOOK(CopyTiles, OrigCopyTiles, DX12CommandListHookCallbacks, HookedCopyTiles),
-		DX12_CL_HOOK(ResolveSubresource, OrigResolveSubresource, DX12CommandListHookCallbacks, HookedResolveSubresource),
-		DX12_CL_HOOK(IaSetPrimitiveTopology, OrigIASetPrimitiveTopology, DX12CommandListHookCallbacks, HookedIASetPrimitiveTopology),
-		DX12_CL_HOOK(RsSetViewports, OrigRSSetViewports, DX12CommandListHookCallbacks, HookedRSSetViewports),
-		DX12_CL_HOOK(RsSetScissorRects, OrigRSSetScissorRects, DX12CommandListHookCallbacks, HookedRSSetScissorRects),
-		DX12_CL_HOOK(OmSetBlendFactor, OrigOMSetBlendFactor, DX12CommandListHookCallbacks, HookedOMSetBlendFactor),
-		DX12_CL_HOOK(OmSetStencilRef, OrigOMSetStencilRef, DX12CommandListHookCallbacks, HookedOMSetStencilRef),
-		DX12_CL_HOOK(SetPipelineState, OrigSetPipelineState, DX12CommandListHookCallbacks, HookedSetPipelineState),
-		DX12_CL_HOOK(ResourceBarrier, OrigResourceBarrier, DX12CommandListHookCallbacks, HookedResourceBarrier),
-		DX12_CL_HOOK(ExecuteBundle, OrigExecuteBundle, DX12CommandListHookCallbacks, HookedExecuteBundle),
-		DX12_CL_HOOK(SetDescriptorHeaps, OrigSetDescriptorHeaps, DX12CommandListComputeBindingHookCallbacks, HookedSetDescriptorHeaps),
-		DX12_CL_HOOK(SetComputeRootSignature, OrigSetComputeRootSignature, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootSignature),
-		DX12_CL_HOOK(SetGraphicsRootSignature, OrigSetGraphicsRootSignature, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootSignature),
-		DX12_CL_HOOK(SetComputeRootDescriptorTable, OrigSetComputeRootDescriptorTable, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootDescriptorTable),
-		DX12_CL_HOOK(SetGraphicsRootDescriptorTable, OrigSetGraphicsRootDescriptorTable, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootDescriptorTable),
-		DX12_CL_HOOK(SetComputeRoot32BitConstant, OrigSetComputeRoot32BitConstant, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRoot32BitConstant),
-		DX12_CL_HOOK(SetGraphicsRoot32BitConstant, OrigSetGraphicsRoot32BitConstant, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRoot32BitConstant),
-		DX12_CL_HOOK(SetComputeRoot32BitConstants, OrigSetComputeRoot32BitConstants, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRoot32BitConstants),
-		DX12_CL_HOOK(SetGraphicsRoot32BitConstants, OrigSetGraphicsRoot32BitConstants, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRoot32BitConstants),
-		DX12_CL_HOOK(SetComputeRootConstantBufferView, OrigSetComputeRootConstantBufferView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootConstantBufferView),
-		DX12_CL_HOOK(SetGraphicsRootConstantBufferView, OrigSetGraphicsRootConstantBufferView, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootConstantBufferView),
-		DX12_CL_HOOK(SetComputeRootShaderResourceView, OrigSetComputeRootShaderResourceView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootShaderResourceView),
-		DX12_CL_HOOK(SetGraphicsRootShaderResourceView, OrigSetGraphicsRootShaderResourceView, DX12CommandListComputeBindingHookCallbacks, HookedSetGraphicsRootShaderResourceView),
-		DX12_CL_HOOK(SetComputeRootUnorderedAccessView, OrigSetComputeRootUnorderedAccessView, DX12CommandListComputeBindingHookCallbacks, HookedSetComputeRootUnorderedAccessView),
-		DX12_CL_HOOK(SetGraphicsRootUnorderedAccessView, OrigSetGraphicsRootUnorderedAccessView, DX12CommandListHookCallbacks, HookedSetGraphicsRootUnorderedAccessView),
-		DX12_CL_HOOK(IaSetIndexBuffer, OrigIASetIndexBuffer, DX12CommandListHookCallbacks, HookedIASetIndexBuffer),
-		DX12_CL_HOOK(IaSetVertexBuffers, OrigIASetVertexBuffers, DX12CommandListHookCallbacks, HookedIASetVertexBuffers),
-		DX12_CL_HOOK(SoSetTargets, OrigSOSetTargets, DX12CommandListHookCallbacks, HookedSOSetTargets),
-		DX12_CL_HOOK(OmSetRenderTargets, OrigOMSetRenderTargets, DX12CommandListHookCallbacks, HookedOMSetRenderTargets),
-		DX12_CL_HOOK(ClearDepthStencilView, OrigClearDepthStencilView, DX12CommandListHookCallbacks, HookedClearDepthStencilView),
-		DX12_CL_HOOK(ClearRenderTargetView, OrigClearRenderTargetView, DX12CommandListHookCallbacks, HookedClearRenderTargetView),
-		DX12_CL_HOOK(ClearUnorderedAccessViewUint, OrigClearUnorderedAccessViewUint, DX12CommandListHookCallbacks, HookedClearUnorderedAccessViewUint),
-		DX12_CL_HOOK(ClearUnorderedAccessViewFloat, OrigClearUnorderedAccessViewFloat, DX12CommandListHookCallbacks, HookedClearUnorderedAccessViewFloat),
-		DX12_CL_HOOK(DiscardResource, OrigDiscardResource, DX12CommandListHookCallbacks, HookedDiscardResource),
-		DX12_CL_HOOK(BeginQuery, OrigBeginQuery, DX12CommandListHookCallbacks, HookedBeginQuery),
-		DX12_CL_HOOK(EndQuery, OrigEndQuery, DX12CommandListHookCallbacks, HookedEndQuery),
-		DX12_CL_HOOK(ResolveQueryData, OrigResolveQueryData, DX12CommandListHookCallbacks, HookedResolveQueryData),
-		DX12_CL_HOOK(SetPredication, OrigSetPredication, DX12CommandListHookCallbacks, HookedSetPredication),
-		DX12_CL_HOOK(SetMarker, OrigCommandListSetMarker, DX12CommandListHookCallbacks, HookedCommandListSetMarker),
-		DX12_CL_HOOK(BeginEvent, OrigCommandListBeginEvent, DX12CommandListHookCallbacks, HookedCommandListBeginEvent),
-		DX12_CL_HOOK(EndEvent, OrigCommandListEndEvent, DX12CommandListHookCallbacks, HookedCommandListEndEvent),
-		DX12_CL_HOOK(ExecuteIndirect, OrigExecuteIndirect, DX12CommandListHookCallbacks, HookedExecuteIndirect),
-	};
-	DX12HookManager::InstallVTableHooks(list, hooks, ARRAYSIZE(hooks));
-#undef DX12_CL_HOOK
+	DX12CommandListHookRegistry::RememberCommandListVTable(vtable);
+	DX12CommandListHookInstallUtils::Install(
+		vtable, DX12CommandListHookInstallUtils::RequiredCategories());
 	list->Release();
 }
 

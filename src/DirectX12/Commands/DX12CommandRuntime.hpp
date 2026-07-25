@@ -1852,6 +1852,7 @@ enum DX12ModHotPathFlagBits : UINT32
 	DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT = 1u << 6
 };
 UINT32 DX12ModGetHotPathFlags();
+void DX12ActivateCommandListHotPathHooks();
 
 class DX12HotPathState
 {
@@ -2193,6 +2194,7 @@ public:
 		InterlockedExchange64(
 			reinterpret_cast<volatile LONG64*>(&HookWorkFlags),
 			static_cast<LONG64>(flags));
+		DX12ActivateCommandListHotPathHooks();
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |

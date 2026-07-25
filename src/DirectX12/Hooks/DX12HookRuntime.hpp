@@ -142,8 +142,21 @@ public:
 		if (!object || !hooks)
 			return;
 
-		for (size_t i = 0; i < hookCount; ++i)
-			InstallVTableHook(object, hooks[i]);
+		InstallVTableHooks(GetVTable(object), hooks, hookCount);
+	}
+
+	static void InstallVTableHooks(void **vtable, const DX12VTableHook *hooks, size_t hookCount)
+	{
+		if (!vtable || !hooks)
+			return;
+
+		for (size_t i = 0; i < hookCount; ++i) {
+			DX12VTableHook hook = hooks[i];
+			if (hook.slot >= 256)
+				continue;
+			DX12HookRegistry::HookFunction(
+				hook.original, vtable[hook.slot], hook.hook, hook.name);
+		}
 	}
 
 	template <size_t N>
