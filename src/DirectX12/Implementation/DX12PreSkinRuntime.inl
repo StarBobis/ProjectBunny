@@ -1160,6 +1160,9 @@ static bool TryReuseDeferredPreSkinDescriptorTable(
 		*hasPendingState = false;
 	if (!commandList || !bindingFingerprint)
 		return false;
+	if (InterlockedCompareExchange(
+		&gHasActivePreSkinReplacement, 0, 0) == 0)
+		return false;
 	AcquireSRWLockShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
 		it = gActivePreSkinReplacements.find(commandList);
@@ -1183,6 +1186,9 @@ bool DX12ModCanDeferPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
+		return false;
+	if (InterlockedCompareExchange(
+		&gHasActivePreSkinReplacement, 0, 0) == 0)
 		return false;
 	AcquireSRWLockShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
@@ -2092,15 +2098,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		tlsMatchPlan.reloadGeneration == reloadGeneration &&
 		tlsMatchPlan.bindingFingerprint == bindingFingerprint &&
 		tlsMatchPlan.computeShaderHash == computeShaderHash;
-	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
-	const std::unordered_set<std::wstring> &activePreSkinSections =
-		GetActivePreSkinSectionsSnapshot();
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		"snapshot_active_sections",
-		0,
-		activePreSkinSections.size(),
-		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 
 	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
 	if (matchPlanCached) {
@@ -2204,6 +2201,15 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		}
 	}
 	if (!applied && vlrMatched) {
+		LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
+		const std::unordered_set<std::wstring> &activePreSkinSections =
+			GetActivePreSkinSectionsSnapshot();
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkinRuntime",
+			"snapshot_active_sections",
+			0,
+			activePreSkinSections.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 		LARGE_INTEGER loadBegin = DX12OuterTimingProbeUtils::Now();
 		replacement = EnsureLoadedResourceForPreSkin(device, vlrResourceName);
 		DX12OuterTimingProbeUtils::LogCpuStage(

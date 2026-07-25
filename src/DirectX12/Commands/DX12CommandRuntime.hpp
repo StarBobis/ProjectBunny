@@ -1293,6 +1293,7 @@ public:
 	bool bindingsUseRootValues = false;
 	UINT64 bindingsSerial = 0;
 	UINT64 bindingsDescriptorVersion = 0;
+	UINT64 bindingsDescriptorQuerySerial = 0;
 	UINT64 bindingsDependencyFingerprint = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
 	ID3D12RootSignature *bindingsRootSignature = nullptr;

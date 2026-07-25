@@ -75,34 +75,45 @@ static bool TryGetRuntimePreSkinBindings(
 	if (observedCount) {
 		if (!runtimeState->resolvedCompute.bindingsHeap)
 			return false;
-		constexpr size_t StackIdentityCount = 64;
-		std::array<UINT64, StackIdentityCount> stackSlotVersions;
-		std::array<UINT64, StackIdentityCount> stackSlotValueIds;
-		UINT64 *currentSlotVersions = stackSlotVersions.data();
-		UINT64 *currentSlotValueIds = stackSlotValueIds.data();
-		if (observedCount > StackIdentityCount) {
-			static thread_local std::vector<UINT64> tlsSlotVersions;
-			static thread_local std::vector<UINT64> tlsSlotValueIds;
-			tlsSlotVersions.resize(observedCount);
-			tlsSlotValueIds.resize(observedCount);
-			currentSlotVersions = tlsSlotVersions.data();
-			currentSlotValueIds = tlsSlotValueIds.data();
-		}
-		if (!DX12GetDescriptorSlotIdentities(
-				runtimeState->resolvedCompute.bindingsHeap,
-				runtimeState->resolvedCompute.observedSlots.data(),
-				observedCount,
-				currentSlotVersions,
-				currentSlotValueIds))
-			return false;
-		for (size_t index = 0; index < observedCount; ++index) {
-			if (currentSlotVersions[index] !=
-					runtimeState->resolvedCompute.observedSlotVersions[index] ||
-					currentSlotValueIds[index] !=
-					runtimeState->resolvedCompute.observedSlotValueIds[index]) {
-				return false;
+		const UINT64 descriptorQuerySerialBefore =
+			CurrentDescriptorQuerySerial();
+		if (runtimeState->resolvedCompute.bindingsDescriptorQuerySerial !=
+			descriptorQuerySerialBefore) {
+			constexpr size_t StackIdentityCount = 64;
+			std::array<UINT64, StackIdentityCount> stackSlotVersions;
+			std::array<UINT64, StackIdentityCount> stackSlotValueIds;
+			UINT64 *currentSlotVersions = stackSlotVersions.data();
+			UINT64 *currentSlotValueIds = stackSlotValueIds.data();
+			if (observedCount > StackIdentityCount) {
+				static thread_local std::vector<UINT64> tlsSlotVersions;
+				static thread_local std::vector<UINT64> tlsSlotValueIds;
+				tlsSlotVersions.resize(observedCount);
+				tlsSlotValueIds.resize(observedCount);
+				currentSlotVersions = tlsSlotVersions.data();
+				currentSlotValueIds = tlsSlotValueIds.data();
 			}
-		}
+			if (!DX12GetDescriptorSlotIdentities(
+					runtimeState->resolvedCompute.bindingsHeap,
+					runtimeState->resolvedCompute.observedSlots.data(),
+					observedCount,
+					currentSlotVersions,
+					currentSlotValueIds))
+				return false;
+			for (size_t index = 0; index < observedCount; ++index) {
+				if (currentSlotVersions[index] !=
+						runtimeState->resolvedCompute.observedSlotVersions[index] ||
+					currentSlotValueIds[index] !=
+						runtimeState->resolvedCompute.observedSlotValueIds[index]) {
+					return false;
+				}
+			}
+			const UINT64 descriptorQuerySerialAfter =
+				CurrentDescriptorQuerySerial();
+			if (descriptorQuerySerialAfter != descriptorQuerySerialBefore)
+				return false;
+			runtimeState->resolvedCompute.bindingsDescriptorQuerySerial =
+				descriptorQuerySerialAfter;
+			}
 	}
 
 	if (uavs)
@@ -158,6 +169,7 @@ static bool TryLoadRuntimePreSkinBindings(
 static void StoreRuntimePreSkinBindings(
 	DX12SimulateContext *runtimeState,
 	UINT64 computeBindingSerial,
+	UINT64 descriptorQuerySerial,
 	UINT64 dependencyFingerprint,
 	bool usesRootValues,
 	bool foundAny,
@@ -177,6 +189,8 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.bindingsSerial = computeBindingSerial;
 	runtimeState->resolvedCompute.bindingsDescriptorVersion =
 		runtimeState->computeDescriptorBindingVersion;
+	runtimeState->resolvedCompute.bindingsDescriptorQuerySerial =
+		descriptorQuerySerial;
 	runtimeState->resolvedCompute.bindingsDependencyFingerprint =
 		dependencyFingerprint;
 	runtimeState->resolvedCompute.bindingsHeap = runtimeState->cbvSrvUavHeap;
@@ -1593,6 +1607,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			StoreRuntimePreSkinBindings(
 				runtimeState,
 				computeBindingSerial,
+				descriptorQuerySerialAfter,
 				runtimeDependencyFingerprint,
 				usesRootValues,
 				foundAny,
@@ -1616,10 +1631,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			localCbvs.size());
 	}
 
-	if (uavs) *uavs = localUavs;
-	if (srvs) *srvs = localSrvs;
-	if (cbvs) *cbvs = localCbvs;
-	if (constants) *constants = localConstants;
+	if (uavs) *uavs = std::move(localUavs);
+	if (srvs) *srvs = std::move(localSrvs);
+	if (cbvs) *cbvs = std::move(localCbvs);
+	if (constants) *constants = std::move(localConstants);
 
 	return foundAny;
 }
