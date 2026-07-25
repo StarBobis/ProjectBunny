@@ -1732,6 +1732,7 @@ public:
 	static constexpr UINT32 Resources = 1u << 4;
 	static constexpr UINT32 Analysis = 1u << 5;
 	static constexpr UINT32 ExecuteIndirect = 1u << 6;
+	static volatile LONG ActivatedCategories;
 
 	class CategorizedHook
 	{
@@ -1772,6 +1773,27 @@ public:
 			categories |= ExecuteIndirect;
 		}
 		return categories;
+	}
+
+	static UINT32 ClaimNewCategories(UINT32 requestedCategories)
+	{
+		if (!requestedCategories)
+			return 0;
+
+		LONG observed = InterlockedCompareExchange(&ActivatedCategories, 0, 0);
+		for (;;) {
+			const UINT32 missingCategories =
+				requestedCategories & ~static_cast<UINT32>(observed);
+			if (!missingCategories)
+				return 0;
+
+			const LONG desired = observed | static_cast<LONG>(missingCategories);
+			const LONG previous = InterlockedCompareExchange(
+				&ActivatedCategories, desired, observed);
+			if (previous == observed)
+				return missingCategories;
+			observed = previous;
+		}
 	}
 
 	static void Install(void **vtable, UINT32 requestedCategories)
@@ -1853,11 +1875,15 @@ public:
 	}
 };
 
+volatile LONG DX12CommandListHookInstallUtils::ActivatedCategories = 0;
+
 void DX12CommandListHooks::ActivateCommandListHotPathHooks()
 {
 	const UINT32 requestedCategories =
 		DX12CommandListHookInstallUtils::RequiredCategories();
-	if (!requestedCategories)
+	const UINT32 newCategories =
+		DX12CommandListHookInstallUtils::ClaimNewCategories(requestedCategories);
+	if (!newCategories)
 		return;
 
 	static thread_local bool activationInProgress = false;
@@ -1868,7 +1894,7 @@ void DX12CommandListHooks::ActivateCommandListHotPathHooks()
 	DX12CommandListHookRegistry::SnapshotCommandListVTables(&vtables);
 	for (void *vtable : vtables)
 		DX12CommandListHookInstallUtils::Install(
-			static_cast<void**>(vtable), requestedCategories);
+			static_cast<void**>(vtable), newCategories);
 	activationInProgress = false;
 }
 
