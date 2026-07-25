@@ -38,6 +38,12 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		if (!DX12HotPathState::NeedsAnyResidentDescriptorState(flags) &&
+			DX12HotPathState::skipBindings) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
@@ -113,6 +119,17 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentBinding = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsComputeResidentBindingState(flags);
+		const bool skipTrackedCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
+		if (!needsResidentBinding && skipTrackedCapture) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootSignature(
@@ -177,6 +194,17 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		bool graphics)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentTable = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
+			DX12HotPathState::NeedsComputeResidentDescriptorState(flags);
+		const bool skipTrackedCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
+		if (!needsResidentTable && skipTrackedCapture) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
@@ -239,6 +267,17 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentBinding = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
+			DX12HotPathState::NeedsComputeResidentBindingState(flags);
+		const bool skipBindingCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
+		if (!needsResidentBinding && skipBindingCapture) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
@@ -302,6 +341,17 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentBinding = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
+			DX12HotPathState::NeedsComputeResidentBindingState(flags);
+		const bool skipBindingCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
+		if (!needsResidentBinding && skipBindingCapture) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
@@ -372,6 +422,17 @@ public:
 		bool graphics,
 		const char *api)
 	{
+		const UINT64 flags = DX12HotPathState::HookWorkFlags;
+		const bool needsResidentBinding = graphics ?
+			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :
+			DX12HotPathState::NeedsComputeResidentBindingState(flags);
+		const bool skipBindingCapture = graphics ?
+			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
+			DX12HotPathState::skipBindings;
+		if (!needsResidentBinding && skipBindingCapture) {
+			DX12_PROFILE_FAST_FORWARD();
+			return;
+		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
