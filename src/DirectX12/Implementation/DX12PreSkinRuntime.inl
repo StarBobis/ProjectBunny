@@ -1111,6 +1111,44 @@ static bool FindPreSkinProducerLocked(
 	return false;
 }
 
+class DX12PreSkinDescriptorTableCloneCache
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 bindingFingerprint = 0;
+	uint32_t triggerHash = 0;
+	ID3D12DescriptorHeap *heap = nullptr;
+	std::vector<DX12PreSkinReplacementState::TableRestore> tableRestores;
+	std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> patchedTables;
+
+	bool Matches(
+		ID3D12GraphicsCommandList *candidateCommandList,
+		UINT64 candidateReloadGeneration,
+		UINT64 candidateBindingFingerprint,
+		uint32_t candidateTriggerHash) const
+	{
+		return heap && commandList == candidateCommandList &&
+			reloadGeneration == candidateReloadGeneration &&
+			bindingFingerprint == candidateBindingFingerprint &&
+			triggerHash == candidateTriggerHash &&
+			tableRestores.size() == patchedTables.size();
+	}
+
+	void Clear()
+	{
+		if (heap)
+			heap->Release();
+		commandList = nullptr;
+		reloadGeneration = 0;
+		bindingFingerprint = 0;
+		triggerHash = 0;
+		heap = nullptr;
+		tableRestores.clear();
+		patchedTables.clear();
+	}
+};
+
 static bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &uavBinding, const DX12ComputeUavProducer &producer,
@@ -1120,7 +1158,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
 	const std::vector<DX12CurrentRootConstants> &rootConstants,
 	const wchar_t *section, uint32_t triggerHash,
-	UINT *originalVertexCountOut, UINT *overrideVertexCountOut)
+	UINT *originalVertexCountOut, UINT *overrideVertexCountOut,
+	UINT64 bindingFingerprint)
 {
 	if (!device || !commandList || !uavBinding.hasDescriptor || !uavBinding.tableGpuStart.ptr)
 		return false;
@@ -1281,6 +1320,55 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 #endif
 			return false;
 		}
+	}
+	static thread_local DX12PreSkinDescriptorTableCloneCache tlsCloneCache;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (!requiresCountPatch && bindingFingerprint && tlsCloneCache.Matches(
+			commandList, reloadGeneration, bindingFingerprint, triggerHash)) {
+		ID3D12DescriptorHeap *restoreCbvSrvUavHeap = nullptr;
+		ID3D12DescriptorHeap *restoreSamplerHeap = nullptr;
+		DX12BindingTracker::GetCurrentDescriptorHeaps(
+			commandList, &restoreCbvSrvUavHeap, &restoreSamplerHeap);
+		if (restoreCbvSrvUavHeap != tlsCloneCache.heap) {
+			ID3D12DescriptorHeap *heaps[2] = {
+				tlsCloneCache.heap, restoreSamplerHeap
+			};
+			commandList->SetDescriptorHeaps(restoreSamplerHeap ? 2 : 1, heaps);
+		}
+		DX12PreSkinReplacementState state;
+		state.active = true;
+		state.rootParameterIndex = uavBinding.rootParameterIndex;
+		state.originalTable = uavBinding.tableGpuStart;
+		state.originalHeap = uavBinding.tableHeap;
+		state.resource = uavBinding.descriptor.resource;
+		state.byteWidth = DescriptorViewSize(uavBinding.descriptor);
+		state.stride = uavBinding.descriptor.structureByteStride;
+		state.hasActiveTextureOverride =
+			state.resource && state.byteWidth && state.stride;
+		if (state.hasActiveTextureOverride) {
+			state.activeConfig = config;
+			state.activeProducer = producer;
+			state.resource->AddRef();
+		}
+		state.patchHeap = tlsCloneCache.heap;
+		state.restoreCbvSrvUavHeap = restoreCbvSrvUavHeap;
+		state.restoreSamplerHeap = restoreSamplerHeap;
+		state.tableRestores = tlsCloneCache.tableRestores;
+		for (size_t index = 0; index < state.tableRestores.size(); ++index) {
+			commandList->SetComputeRootDescriptorTable(
+				state.tableRestores[index].rootParameterIndex,
+				tlsCloneCache.patchedTables[index]);
+		}
+		RetainPreSkinDescriptorHeapForCommandList(
+			commandList, tlsCloneCache.heap);
+		if (originalVertexCountOut)
+			*originalVertexCountOut = originalVertexCount;
+		if (overrideVertexCountOut)
+			*overrideVertexCountOut = overrideVertexCount;
+		AcquireSRWLockExclusive(&gPreSkinLock);
+		gActivePreSkinReplacements[commandList] = std::move(state);
+		ReleaseSRWLockExclusive(&gPreSkinLock);
+		return true;
 	}
 
 	UINT totalDescriptors = 0;
@@ -1618,6 +1706,22 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		restore.rootParameterIndex = table.root;
 		restore.originalTable = table.gpuStart;
 		state.tableRestores.push_back(restore);
+	}
+	if (!requiresCountPatch && !outputUavResized && bindingFingerprint) {
+		tlsCloneCache.Clear();
+		tempHeap->AddRef();
+		tlsCloneCache.commandList = commandList;
+		tlsCloneCache.reloadGeneration = reloadGeneration;
+		tlsCloneCache.bindingFingerprint = bindingFingerprint;
+		tlsCloneCache.triggerHash = triggerHash;
+		tlsCloneCache.heap = tempHeap;
+		tlsCloneCache.tableRestores = state.tableRestores;
+		tlsCloneCache.patchedTables.reserve(tables.size());
+		for (const TableCopy &table : tables) {
+			D3D12_GPU_DESCRIPTOR_HANDLE gpu = tempGpuBase;
+			gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
+			tlsCloneCache.patchedTables.push_back(gpu);
+		}
 	}
 	if (originalVertexCountOut)
 			DX12_HOTPATH_TIME_END(PreSkinBindHeaps);
@@ -2003,7 +2107,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 					hashMatch.config->originalSection.empty() ?
 						hashMatch.config->section.c_str() :
 						hashMatch.config->originalSection.c_str(),
-					hashMatch.hash, originalVertexCount, overrideVertexCount);
+					hashMatch.hash, originalVertexCount, overrideVertexCount,
+					bindingFingerprint);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"PreSkinRuntime",
 					applied ? "descriptor_table_patch_hit" : "descriptor_table_patch_miss",
