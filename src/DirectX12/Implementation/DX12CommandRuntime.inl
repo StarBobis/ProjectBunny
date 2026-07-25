@@ -164,13 +164,16 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 	DX12CommandListRuntimeShard *shard,
 	bool stateIsDirect)
 {
-	if (!state) {
-		Tls.commandList = nullptr;
-		Tls.shard = nullptr;
-		Tls.stateIsDirect = false;
-		Tls.statePtr = nullptr;
-		Tls.trackingGeneration = 0;
+	if (!state)
 		return;
+
+	if (Tls.commandList && Tls.commandList != commandList) {
+		Tls.previousCommandList = Tls.commandList;
+		Tls.previousShard = Tls.shard;
+		Tls.previousStateIsDirect = Tls.stateIsDirect;
+		Tls.previousTrackingGeneration = Tls.trackingGeneration;
+		Tls.previousTracking = Tls.tracking;
+		Tls.previousStatePtr = Tls.statePtr;
 	}
 
 	Tls.commandList = commandList;
@@ -183,6 +186,23 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 	if (mapCache.generation != TrackingGenerationValue)
 		DX12CommandListRuntime::RefreshTrackingCache(mapCache);
 	Tls.tracking = mapCache;
+}
+
+bool DX12CommandListRuntime::TlsPromotePrevious(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (Tls.previousCommandList != commandList ||
+		Tls.previousTrackingGeneration != TrackingGenerationValue) {
+		return false;
+	}
+
+	std::swap(Tls.commandList, Tls.previousCommandList);
+	std::swap(Tls.shard, Tls.previousShard);
+	std::swap(Tls.stateIsDirect, Tls.previousStateIsDirect);
+	std::swap(Tls.trackingGeneration, Tls.previousTrackingGeneration);
+	std::swap(Tls.tracking, Tls.previousTracking);
+	std::swap(Tls.statePtr, Tls.previousStatePtr);
+	return true;
 }
 
 void DX12CommandListRuntime::TlsRefresh(
@@ -198,14 +218,8 @@ void DX12CommandListRuntime::TlsRefresh(
 
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
-	if (it == shard.states.end()) {
-		Tls.commandList = nullptr;
-		Tls.shard = nullptr;
-		Tls.stateIsDirect = false;
-		Tls.statePtr = nullptr;
-		Tls.trackingGeneration = 0;
+	if (it == shard.states.end())
 		return;
-	}
 
 	DX12CommandListRuntime::TlsRefreshFromState(
 		&it->second, commandList, &shard, false);
@@ -219,6 +233,11 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	if (!commandList)
 		return;
 	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
+		out = Tls.tracking;
+		return;
+	}
+	if (DX12CommandListRuntime::TlsPromotePrevious(commandList)) {
 		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
 		out = Tls.tracking;
 		return;
@@ -265,6 +284,10 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
 		return Tls.statePtr;
 	}
+	if (DX12CommandListRuntime::TlsPromotePrevious(commandList)) {
+		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
+		return Tls.statePtr;
+	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
@@ -285,13 +308,20 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 
 void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList)
 {
-	if (Tls.commandList != commandList)
-		return;
-	Tls.commandList = nullptr;
-	Tls.shard = nullptr;
-	Tls.stateIsDirect = false;
-	Tls.statePtr = nullptr;
-	Tls.trackingGeneration = 0;
+	if (Tls.commandList == commandList) {
+		Tls.commandList = nullptr;
+		Tls.shard = nullptr;
+		Tls.stateIsDirect = false;
+		Tls.statePtr = nullptr;
+		Tls.trackingGeneration = 0;
+	}
+	if (Tls.previousCommandList == commandList) {
+		Tls.previousCommandList = nullptr;
+		Tls.previousShard = nullptr;
+		Tls.previousStateIsDirect = false;
+		Tls.previousStatePtr = nullptr;
+		Tls.previousTrackingGeneration = 0;
+	}
 }
 
 UINT64 DX12CommandListRuntime::TrackingGeneration()

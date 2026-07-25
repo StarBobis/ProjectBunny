@@ -905,6 +905,13 @@ static bool FindMatchCsTextureOverrideLocked(
 	auto indexed = gPreSkinMatchCsTextureOverrideIndex.find(csHash);
 	if (indexed == gPreSkinMatchCsTextureOverrideIndex.end())
 		return false;
+	static thread_local UINT64 tlsInputCacheReloadGeneration = 0;
+	static thread_local std::unordered_map<uint64_t, bool> tlsInputCache;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (tlsInputCacheReloadGeneration != reloadGeneration) {
+		tlsInputCache.clear();
+		tlsInputCacheReloadGeneration = reloadGeneration;
+	}
 
 	for (size_t index : indexed->second) {
 		if (index >= gPreSkinTextureOverrides.size())
@@ -918,14 +925,14 @@ static bool FindMatchCsTextureOverrideLocked(
 		const uint64_t inputKey = MakePreSkinMatchCsInputCacheKey(
 			csHash, candidate, 0, uavs, srvs, cbvs, rootConstants);
 		bool inputMatched = false;
-		auto cachedInput = gPreSkinMatchCsInputCache.find(inputKey);
-		if (cachedInput != gPreSkinMatchCsInputCache.end()) {
+		auto cachedInput = tlsInputCache.find(inputKey);
+		if (cachedInput != tlsInputCache.end()) {
 			inputMatched = cachedInput->second;
 		} else {
 			inputMatched = MatchComputeInputSrvsTextureOverrideLocked(srvs, *config);
-			if (gPreSkinMatchCsInputCache.size() > 4096)
-				gPreSkinMatchCsInputCache.clear();
-			gPreSkinMatchCsInputCache[inputKey] = inputMatched;
+			if (tlsInputCache.size() > 4096)
+				tlsInputCache.clear();
+			tlsInputCache[inputKey] = inputMatched;
 		}
 		LogPreSkinMatchCsProbeLimited(csHash, candidate, 0, inputMatched, uavs, srvs, cbvs, rootConstants);
 		if (!inputMatched)
@@ -1891,7 +1898,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
 
 	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
-	AcquireSRWLockExclusive(&gModLock);
+	AcquireSRWLockShared(&gModLock);
 	LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
@@ -1915,7 +1922,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 			uavs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(vlrMatchBegin));
 	}
-	ReleaseSRWLockExclusive(&gModLock);
+	ReleaseSRWLockShared(&gModLock);
 	DX12OuterTimingProbeUtils::LogCpuStage(
 		"PreSkinRuntime",
 		"mod_lock_match_total",
@@ -2309,7 +2316,7 @@ bool DX12ModComputePreSkinMatchOnly(
 	const std::unordered_set<std::wstring> &activePreSkinSections =
 		GetActivePreSkinSectionsSnapshot();
 
-	AcquireSRWLockExclusive(&gModLock);
+	AcquireSRWLockShared(&gModLock);
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
 		uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
@@ -2319,7 +2326,7 @@ bool DX12ModComputePreSkinMatchOnly(
 		vlrMatched = FindPreSkinProducerLocked(uavs, computeShaderHash, &producer, &vlr) &&
 			FindReplacementResourceNameForVlrLocked(vlr, &vlrResourceName);
 	}
-	ReleaseSRWLockExclusive(&gModLock);
+	ReleaseSRWLockShared(&gModLock);
 
 	bool matched = hashMatched || vlrMatched;
 	if (outMatched)

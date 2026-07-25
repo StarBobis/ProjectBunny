@@ -1460,6 +1460,12 @@ public:
 	UINT64 trackingGeneration = 0;
 	DX12CommandListTrackingCache tracking;
 	DX12SimulateContext *statePtr = nullptr;
+	ID3D12GraphicsCommandList *previousCommandList = nullptr;
+	DX12CommandListRuntimeShard *previousShard = nullptr;
+	bool previousStateIsDirect = false;
+	UINT64 previousTrackingGeneration = 0;
+	DX12CommandListTrackingCache previousTracking;
+	DX12SimulateContext *previousStatePtr = nullptr;
 };
 
 
@@ -1490,6 +1496,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeShard *shard,
 		bool stateIsDirect);
+	static bool TlsPromotePrevious(ID3D12GraphicsCommandList *commandList);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
