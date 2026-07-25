@@ -120,7 +120,7 @@ call "$vcvars" > nul
 if errorlevel 1 exit /b 1
 "$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
 if errorlevel 1 exit /b 1
-"$cmake" --build "$buildDir" --target DirectX12 D3DCompiler_46 dxgi DirectX11
+"$cmake" --build "$buildDir" --target DirectX12
 "@
 
 Write-Host "===== Configuring CMake ($Configuration|$Platform) =====" -ForegroundColor Cyan
