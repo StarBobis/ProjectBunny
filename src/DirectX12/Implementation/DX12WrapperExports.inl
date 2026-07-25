@@ -439,6 +439,11 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 		return WrapperBase::UnwrapObject(object);
 	}
 
+	bool UsesLegacyChildWrappers()
+	{
+		return DeviceWrapper::LegacyChildWrappersEnabled();
+	}
+
 void Shutdown()
 {
 	DX12LogManager::Fields("DX12Wrapper", "stage=shutdown");

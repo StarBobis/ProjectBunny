@@ -25,6 +25,7 @@ namespace DX12Wrapper
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object);
 	bool WrapDXGIFactoryResult(REFIID riid, void **factory);
 	bool WrapDXGISwapChainResult(REFIID riid, void **swapChain);
+	bool UsesLegacyChildWrappers();
 	IUnknown *Unwrap(IUnknown *object);
 	void Shutdown();
 }
@@ -168,6 +169,15 @@ public:
 			DX12BindingTracker::BeginFrame();
 			DXGIHookDiagnostics::LogPresentStage(api, "afterBindingBeginFrame", swapChain, hr);
 		}
+		// DX11 publishes feature changes from its Present-time frame actions.
+		// Capture begin/end transitions happen above, so publish them here rather
+		// than rebuilding global work flags at every queue submission.
+		LARGE_INTEGER updateBegin = DX12OuterTimingProbeUtils::Now();
+		DX12HotPathState::Update();
+		DX12OuterTimingProbeUtils::LogPresentSlice(
+			api, "hotpath_update", swapChain, hr,
+			DX12OuterTimingProbeUtils::ElapsedUs(updateBegin));
+		DXGIHookDiagnostics::LogPresentStage(api, "afterHotPathUpdate", swapChain, hr);
 	}
 
 	static HRESULT Present(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
@@ -279,13 +289,6 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "mod_begin_frame", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12HotPathState::Update();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present", "hotpath_update", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present", "afterHotPathUpdate", swapChain, hr);
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
@@ -415,13 +418,6 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12HotPathState::Update();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1", "hotpath_update", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present1", "afterHotPathUpdate", swapChain, hr);
-
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		CompleteCaptureOrBeginNext("Present1", swapChain, hr, dumpFrame, dumpShaders);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "capture_complete_or_begin", swapChain, hr,
@@ -445,56 +441,62 @@ public:
 class DX12WrapperRuntimeUtils
 {
 public:
+	static IUnknown *UnwrapD3D12Child(IUnknown *object)
+	{
+		return DX12Wrapper::UsesLegacyChildWrappers()
+			? DX12Wrapper::Unwrap(object) : object;
+	}
+
 	static ID3D12CommandAllocator *UnwrapCommandAllocator(ID3D12CommandAllocator *allocator)
 	{
-		return reinterpret_cast<ID3D12CommandAllocator*>(DX12Wrapper::Unwrap(allocator));
+		return reinterpret_cast<ID3D12CommandAllocator*>(UnwrapD3D12Child(allocator));
 	}
 
 	static ID3D12CommandSignature *UnwrapCommandSignature(ID3D12CommandSignature *signature)
 	{
-		return reinterpret_cast<ID3D12CommandSignature*>(DX12Wrapper::Unwrap(signature));
+		return reinterpret_cast<ID3D12CommandSignature*>(UnwrapD3D12Child(signature));
 	}
 
 	static ID3D12CommandList *UnwrapCommandList(ID3D12CommandList *commandList)
 	{
-		return reinterpret_cast<ID3D12CommandList*>(DX12Wrapper::Unwrap(commandList));
+		return reinterpret_cast<ID3D12CommandList*>(UnwrapD3D12Child(commandList));
 	}
 
 	static ID3D12DescriptorHeap *UnwrapDescriptorHeap(ID3D12DescriptorHeap *heap)
 	{
-		return reinterpret_cast<ID3D12DescriptorHeap*>(DX12Wrapper::Unwrap(heap));
+		return reinterpret_cast<ID3D12DescriptorHeap*>(UnwrapD3D12Child(heap));
 	}
 
 	static ID3D12Fence *UnwrapFence(ID3D12Fence *fence)
 	{
-		return reinterpret_cast<ID3D12Fence*>(DX12Wrapper::Unwrap(fence));
+		return reinterpret_cast<ID3D12Fence*>(UnwrapD3D12Child(fence));
 	}
 
 	static ID3D12GraphicsCommandList *UnwrapGraphicsCommandList(ID3D12GraphicsCommandList *commandList)
 	{
-		return reinterpret_cast<ID3D12GraphicsCommandList*>(DX12Wrapper::Unwrap(commandList));
+		return reinterpret_cast<ID3D12GraphicsCommandList*>(UnwrapD3D12Child(commandList));
 	}
 
 	static ID3D12Heap *UnwrapHeap(ID3D12Heap *heap)
 	{
-		return reinterpret_cast<ID3D12Heap*>(DX12Wrapper::Unwrap(heap));
+		return reinterpret_cast<ID3D12Heap*>(UnwrapD3D12Child(heap));
 	}
 
 	static ID3D12MetaCommand *UnwrapMetaCommand(ID3D12MetaCommand *metaCommand)
 	{
-		return reinterpret_cast<ID3D12MetaCommand*>(DX12Wrapper::Unwrap(metaCommand));
+		return reinterpret_cast<ID3D12MetaCommand*>(UnwrapD3D12Child(metaCommand));
 	}
 
 	static ID3D12Pageable *UnwrapPageable(ID3D12Pageable *pageable)
 	{
-		return reinterpret_cast<ID3D12Pageable*>(DX12Wrapper::Unwrap(pageable));
+		return reinterpret_cast<ID3D12Pageable*>(UnwrapD3D12Child(pageable));
 	}
 
 	static ID3D12PipelineState *UnwrapPipelineState(ID3D12PipelineState *pipelineState)
 	{
 		DX12_HOTPATH_TIME_BEGIN(UnwrapObjTotal);
 		ID3D12PipelineState *result =
-			reinterpret_cast<ID3D12PipelineState*>(DX12Wrapper::Unwrap(pipelineState));
+			reinterpret_cast<ID3D12PipelineState*>(UnwrapD3D12Child(pipelineState));
 		DX12_HOTPATH_TIME_END(UnwrapObjTotal);
 		return result;
 	}
@@ -502,27 +504,27 @@ public:
 	static ID3D12ProtectedResourceSession *UnwrapProtectedResourceSession(
 		ID3D12ProtectedResourceSession *session)
 	{
-		return reinterpret_cast<ID3D12ProtectedResourceSession*>(DX12Wrapper::Unwrap(session));
+		return reinterpret_cast<ID3D12ProtectedResourceSession*>(UnwrapD3D12Child(session));
 	}
 
 	static ID3D12QueryHeap *UnwrapQueryHeap(ID3D12QueryHeap *heap)
 	{
-		return reinterpret_cast<ID3D12QueryHeap*>(DX12Wrapper::Unwrap(heap));
+		return reinterpret_cast<ID3D12QueryHeap*>(UnwrapD3D12Child(heap));
 	}
 
 	static ID3D12Resource *UnwrapResource(ID3D12Resource *resource)
 	{
-		return reinterpret_cast<ID3D12Resource*>(DX12Wrapper::Unwrap(resource));
+		return reinterpret_cast<ID3D12Resource*>(UnwrapD3D12Child(resource));
 	}
 
 	static ID3D12RootSignature *UnwrapRootSignature(ID3D12RootSignature *rootSignature)
 	{
-		return reinterpret_cast<ID3D12RootSignature*>(DX12Wrapper::Unwrap(rootSignature));
+		return reinterpret_cast<ID3D12RootSignature*>(UnwrapD3D12Child(rootSignature));
 	}
 
 	static ID3D12StateObject *UnwrapStateObject(ID3D12StateObject *stateObject)
 	{
-		return reinterpret_cast<ID3D12StateObject*>(DX12Wrapper::Unwrap(stateObject));
+		return reinterpret_cast<ID3D12StateObject*>(UnwrapD3D12Child(stateObject));
 	}
 
 	static const D3D12_GRAPHICS_PIPELINE_STATE_DESC *UnwrapGraphicsPipelineStateDesc(
@@ -1036,11 +1038,6 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12HotPathState::Update();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "hotpath_update", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "capture_complete_or_begin", swapChain, hr,
@@ -1168,11 +1165,6 @@ public:
 			"Present1Wrapper", "mod_begin_frame", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12HotPathState::Update();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "hotpath_update", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present1", swapChain, hr, dumpFrame, dumpShaders);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
@@ -1624,13 +1616,15 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiResourceBarrier);
 		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
-		std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
-		std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
-			runtimeState ? runtimeState->barrierScratch : localBarriers;
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
-		DX12_HOTPATH_TIME_BEGIN(BarrierUnwrap);
-		UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
-		DX12_HOTPATH_TIME_END(BarrierUnwrap);
+		if (DX12Wrapper::UsesLegacyChildWrappers()) {
+			std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
+			std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
+				runtimeState ? runtimeState->barrierScratch : localBarriers;
+			DX12_HOTPATH_TIME_BEGIN(BarrierUnwrap);
+			UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
+			DX12_HOTPATH_TIME_END(BarrierUnwrap);
+		}
 		LogCommandListStage("ResourceBarrier", "before", commandList);
 		DX12_HOTPATH_TIME_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);

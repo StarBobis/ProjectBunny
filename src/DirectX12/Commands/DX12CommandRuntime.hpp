@@ -1863,8 +1863,7 @@ public:
 	inline static volatile LONG stateMask = -1;
 
 	// A single flags word replaces nine independent hot-path checks.
-	// Update and RebuildHookWorkFlags maintain it, and ExecuteCommandLists
-	// refreshes it to keep command submission state consistent.
+	// Update publishes it from Present-time frame actions and state transitions.
 	inline static volatile UINT64 HookWorkFlags = 0;
 
 	// Individual work bits.
@@ -2150,13 +2149,6 @@ public:
 	static bool NeedsPreSkinBindingTracking(UINT64 flags)
 	{
 		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);
-	}
-
-	static void RebuildHookWorkFlags()
-	{
-		const SourceState source = SourceState::Capture();
-		const UINT64 flags = source.BuildHookWorkFlags();
-		InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&HookWorkFlags), static_cast<LONG64>(flags));
 	}
 
 	static void Update()

@@ -1208,16 +1208,16 @@ public:
 				DX12InternalReplayState::IsActive() ? "true" : "false");
 	#endif
 
-		// Refresh work flags so draw and dispatch use current state.
+		// Present publishes feature and capture changes, matching DX11's
+		// frame-action timing. Submission only consumes that published state.
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12HotPathState::RebuildHookWorkFlags();
 		const bool shouldNotifySubmitted =
 			DX12ModNeedsCommandListSubmissionNotifications();
 		const bool shouldRegisterSubmitted =
 			DX12HuntIsEnabled() ||
 			DX12CaptureLedger::CurrentCaptureSessionId() != 0;
 		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"rebuild_work_flags",
+			"read_work_flags",
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
