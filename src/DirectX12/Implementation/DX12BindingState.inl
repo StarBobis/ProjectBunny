@@ -1262,18 +1262,21 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const UINT64 descriptorHeapVersionBefore =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 
-	std::vector<DX12CurrentComputeUavBinding> localUavs;
-	std::vector<DX12CurrentComputeUavBinding> localSrvs;
-	std::vector<DX12CurrentComputeUavBinding> localCbvs;
-	std::vector<DX12CurrentRootConstants> localConstants;
 	bool allRuntimeDescriptorsStable = true;
 	bool canStoreRuntimeBindings = runtimeState && computeBindingSerial != 0;
 	ID3D12DescriptorHeap *observedSlotHeap = nullptr;
-	std::vector<UINT> observedSlots;
+	bool usesRootValues = false;
 
 	// Thread-local scratch buffers grow to the actual descriptor workload and
 	// retain capacity across calls. Correctness is bounded by D3D12 metadata,
 	// not by a local fixed-size array.
+	static thread_local std::vector<DX12CurrentComputeUavBinding> tlsLocalUavs;
+	static thread_local std::vector<DX12CurrentComputeUavBinding> tlsLocalSrvs;
+	static thread_local std::vector<DX12CurrentComputeUavBinding> tlsLocalCbvs;
+	static thread_local std::vector<DX12CurrentRootConstants> tlsLocalConstants;
+	static thread_local std::vector<UINT> tlsObservedSlots;
+	static thread_local std::vector<UINT64> tlsObservedSlotVersions;
+	static thread_local std::vector<UINT64> tlsObservedSlotValueIds;
 	static thread_local std::vector<SIZE_T> tlsCpuHandles;
 	static thread_local std::vector<DX12DescriptorSummary> tlsDescriptors;
 	static thread_local std::vector<uint8_t> tlsFound;
@@ -1281,6 +1284,21 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	static thread_local std::vector<UINT> tlsDescriptorOffsets;
 	static thread_local std::vector<UINT64> tlsDescriptorIndices;
 	static thread_local std::vector<UINT> tlsDescriptorSlots;
+
+	std::vector<DX12CurrentComputeUavBinding> &localUavs = tlsLocalUavs;
+	std::vector<DX12CurrentComputeUavBinding> &localSrvs = tlsLocalSrvs;
+	std::vector<DX12CurrentComputeUavBinding> &localCbvs = tlsLocalCbvs;
+	std::vector<DX12CurrentRootConstants> &localConstants = tlsLocalConstants;
+	std::vector<UINT> &observedSlots = tlsObservedSlots;
+	std::vector<UINT64> &observedSlotVersions = tlsObservedSlotVersions;
+	std::vector<UINT64> &observedSlotValueIds = tlsObservedSlotValueIds;
+	localUavs.clear();
+	localSrvs.clear();
+	localCbvs.clear();
+	localConstants.clear();
+	observedSlots.clear();
+	observedSlotVersions.clear();
+	observedSlotValueIds.clear();
 
 	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 
@@ -1303,6 +1321,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		memcpy(current.values, rc.values, sizeof(current.values));
 		memcpy(current.valueValid, rc.valueValid, sizeof(current.valueValid));
 		localConstants.push_back(current);
+		usesRootValues = true;
 	}
 
 	// Collect descriptor table bindings.
@@ -1539,6 +1558,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			binding.shaderRegister = parameter->shaderRegister;
 			binding.registerSpace = parameter->registerSpace;
 		}
+		usesRootValues = true;
 
 		if (rd.type == D3D12_ROOT_PARAMETER_TYPE_UAV)
 			localUavs.push_back(std::move(binding));
@@ -1552,29 +1572,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
-	bool usesRootValues = !localConstants.empty();
-	for (const DX12CurrentComputeUavBinding &binding : localUavs) {
-		if (binding.rootDescriptor) {
-			usesRootValues = true;
-			break;
-		}
-	}
-	if (!usesRootValues) {
-		for (const DX12CurrentComputeUavBinding &binding : localSrvs) {
-			if (binding.rootDescriptor) {
-				usesRootValues = true;
-				break;
-			}
-		}
-	}
-	if (!usesRootValues) {
-		for (const DX12CurrentComputeUavBinding &binding : localCbvs) {
-			if (binding.rootDescriptor) {
-				usesRootValues = true;
-				break;
-			}
-		}
-	}
 	const UINT64 descriptorHeapVersionAfter =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	const UINT64 descriptorQuerySerialAfter = CurrentDescriptorQuerySerial();
@@ -1582,8 +1579,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
 		descriptorQuerySerialAfter == descriptorQuerySerialBefore;
 	if (canStoreRuntimeBindings && allRuntimeDescriptorsStable && descriptorStateStable) {
-		std::vector<UINT64> observedSlotVersions(observedSlots.size());
-		std::vector<UINT64> observedSlotValueIds(observedSlots.size());
+		observedSlotVersions.resize(observedSlots.size());
+		observedSlotValueIds.resize(observedSlots.size());
 		bool observedSlotsValid = true;
 		if (!observedSlots.empty()) {
 			observedSlotsValid =
