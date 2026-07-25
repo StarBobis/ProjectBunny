@@ -644,7 +644,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				const UINT64 flags = DX12HotPathState::HookWorkFlags;
+				if (DX12HotPathState::NeedsPreSkinProbe(flags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				ID3D12Resource *dstResource =
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer);
 				ID3D12Resource *srcResource =
@@ -655,7 +657,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					srcResource,
 					SrcOffset,
 					NumBytes);
-				if (!DX12CopyBufferContentRange(
+				if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
+					!DX12CopyBufferContentRange(
 						dstResource,
 						DstOffset,
 						srcResource,
@@ -671,7 +674,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				if (DX12HotPathState::NeedsPreSkinProbe(
+						DX12HotPathState::HookWorkFlags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				D3D12_TEXTURE_COPY_LOCATION dstStorage = {};
 				D3D12_TEXTURE_COPY_LOCATION srcStorage = {};
 				const D3D12_TEXTURE_COPY_LOCATION *activeDst = pDst;
@@ -687,7 +692,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiCopyResource);
-			DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+			const UINT64 flags = DX12HotPathState::HookWorkFlags;
+			if (DX12HotPathState::NeedsPreSkinProbe(flags))
+				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 			DX12_HOTPATH_TIME_BEGIN(CopyResourceOpTotal);
 				ID3D12Resource *dstResource =
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource);
@@ -696,7 +703,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				mCommandList->CopyResource(
 					dstResource,
 					srcResource);
-				if (dstResource && srcResource) {
+				if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
+					dstResource && srcResource) {
 					const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
 					const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
 					if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
@@ -716,7 +724,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiCopyTiles);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				if (DX12HotPathState::NeedsPreSkinProbe(
+						DX12HotPathState::HookWorkFlags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->CopyTiles(
 					DX12WrapperRuntimeUtils::UnwrapResource(pTiledResource),
 					pTileRegionStartCoordinate, pTileRegionSize,
@@ -729,7 +739,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiResolveSubresource);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				if (DX12HotPathState::NeedsPreSkinProbe(
+						DX12HotPathState::HookWorkFlags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ResolveSubresource(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource), DstSubresource,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource), SrcSubresource, Format);
@@ -810,7 +822,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *pCommandList) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(ExecuteBundleTotal);
-				mCommandList->ExecuteBundle(DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList));
+				ID3D12GraphicsCommandList *bundle =
+					DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList);
+				DX12CommandListCommandRecorder::RecordExecuteBundle(bundle, nullptr);
+				mCommandList->ExecuteBundle(bundle);
 				DX12CommandListLifecycle::InvalidateAfterExecuteBundle(mCommandList);
 			DX12_HOTPATH_TIME_END(ExecuteBundleTotal);
 			}
@@ -1160,7 +1175,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				if (DX12HotPathState::NeedsPreSkinProbe(
+						DX12HotPathState::HookWorkFlags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ClearUnorderedAccessViewUint(
 					ViewGPUHandleInCurrentHeap, ViewCPUHandle,
 					DX12WrapperRuntimeUtils::UnwrapResource(pResource), Values, NumRects, pRects);
@@ -1173,7 +1190,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
-				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
+				if (DX12HotPathState::NeedsPreSkinProbe(
+						DX12HotPathState::HookWorkFlags))
+					DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 				mCommandList->ClearUnorderedAccessViewFloat(
 					ViewGPUHandleInCurrentHeap, ViewCPUHandle,
 					DX12WrapperRuntimeUtils::UnwrapResource(pResource), Values, NumRects, pRects);

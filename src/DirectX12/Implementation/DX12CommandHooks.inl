@@ -1031,20 +1031,25 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyBufferRegion(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstBuffer, UINT64 dstOffset,
 	ID3D12Resource *srcBuffer, UINT64 srcOffset, UINT64 numBytes)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
-	if (DX12HotPathState::skipAll) {
+	const UINT64 flags = DX12HotPathState::HookWorkFlags;
+	if (DX12HotPathState::skipAll ||
+		(!DX12HotPathState::NeedsPreSkinProbe(flags) &&
+		 !DX12HotPathState::NeedsIaBufferContentTracking(flags))) {
 		if (DX12CommandListHookState::OrigCopyBufferRegion)
 			DX12CommandListHookState::OrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
 		return;
 	}
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
+	if (DX12HotPathState::NeedsPreSkinProbe(flags))
+		DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyBufferRegion", commandList,
 		" dst=%p dstOffset=%llu src=%p srcOffset=%llu bytes=%llu",
 		dstBuffer, static_cast<unsigned long long>(dstOffset), srcBuffer,
 		static_cast<unsigned long long>(srcOffset), static_cast<unsigned long long>(numBytes));
 	DX12CommandListHookState::OrigCopyBufferRegion(commandList, dstBuffer, dstOffset, srcBuffer, srcOffset, numBytes);
-	if (!DX12CopyBufferContentRange(
+	if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
+		!DX12CopyBufferContentRange(
 			dstBuffer,
 			dstOffset,
 			srcBuffer,
@@ -1058,13 +1063,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
 	ID3D12GraphicsCommandList *commandList, const D3D12_TEXTURE_COPY_LOCATION *dst,
 	UINT dstX, UINT dstY, UINT dstZ, const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
-	if (DX12HotPathState::skipAll) {
+	if (DX12HotPathState::skipAll ||
+		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigCopyTextureRegion)
 			DX12CommandListHookState::OrigCopyTextureRegion(commandList, dst, dstX, dstY, dstZ, src, srcBox);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTextureRegion", commandList,
 		" dst=%p dstXYZ=%u,%u,%u src=%p srcBox=%p", dst, dstX, dstY, dstZ, src, srcBox);
@@ -1074,18 +1080,23 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTextureRegion(
 void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyResource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, ID3D12Resource *srcResource)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiCopyResource);
-	if (DX12HotPathState::skipAll) {
+	const UINT64 flags = DX12HotPathState::HookWorkFlags;
+	if (DX12HotPathState::skipAll ||
+		(!DX12HotPathState::NeedsPreSkinProbe(flags) &&
+		 !DX12HotPathState::NeedsIaBufferContentTracking(flags))) {
 		if (DX12CommandListHookState::OrigCopyResource)
 			DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
 		return;
 	}
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyResource);
+	if (DX12HotPathState::NeedsPreSkinProbe(flags))
+		DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyResource", commandList,
 		" dst=%p src=%p", dstResource, srcResource);
 	DX12CommandListHookState::OrigCopyResource(commandList, dstResource, srcResource);
-	if (dstResource && srcResource) {
+	if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
+		dstResource && srcResource) {
 		const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
 		const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
 		if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
@@ -1102,14 +1113,15 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedCopyTiles(
 	const D3D12_TILE_REGION_SIZE *tileRegionSize, ID3D12Resource *buffer,
 	UINT64 bufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS flags)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiCopyTiles);
-	if (DX12HotPathState::skipAll) {
+	if (DX12HotPathState::skipAll ||
+		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigCopyTiles)
 			DX12CommandListHookState::OrigCopyTiles(commandList, tiledResource, tileRegionStartCoordinate,
 				tileRegionSize, buffer, bufferStartOffsetInBytes, flags);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiCopyTiles);
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::CopyTiles", commandList,
 		" tiled=%p buffer=%p offset=%llu flags=0x%x", tiledResource, buffer,
@@ -1122,13 +1134,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedResolveSubresource(
 	ID3D12GraphicsCommandList *commandList, ID3D12Resource *dstResource, UINT dstSubresource,
 	ID3D12Resource *srcResource, UINT srcSubresource, DXGI_FORMAT format)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiResolveSubresource);
-	if (DX12HotPathState::skipAll) {
+	if (DX12HotPathState::skipAll ||
+		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigResolveSubresource)
 			DX12CommandListHookState::OrigResolveSubresource(commandList, dstResource, dstSubresource, srcResource, srcSubresource, format);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiResolveSubresource);
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ResolveSubresource", commandList,
 		" dst=%p dstSub=%u src=%p srcSub=%u format=%u",
@@ -1365,11 +1378,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedOMSetRenderTargets(
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::OMSetRenderTargets", commandList,
 		" rtCount=%u singleRange=%u dsv=%p", numRenderTargetDescriptors,
 		singleHandleToDescriptorRange, depthStencilDescriptor);
-	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.recordBindingEvents)
-		DX12BindingTracker::RecordOutputTargets(commandList, numRenderTargetDescriptors,
-			renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
+	if (DX12HotPathState::NeedsBindingEventRecording(
+			DX12HotPathState::HookWorkFlags)) {
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
+		if (tracking.recordBindingEvents)
+			DX12BindingTracker::RecordOutputTargets(commandList, numRenderTargetDescriptors,
+				renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
+	}
 	DX12CommandListHookState::OrigOMSetRenderTargets(commandList, numRenderTargetDescriptors,
 		renderTargetDescriptors, singleHandleToDescriptorRange, depthStencilDescriptor);
 }
@@ -1381,10 +1397,13 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearDepthStencilView
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearDepthStencilView", commandList,
 		" dsv=0x%llx flags=0x%x rects=%u", static_cast<unsigned long long>(depthStencilView.ptr),
 		static_cast<UINT>(clearFlags), numRects);
-	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.recordBindingEvents)
-		DX12BindingTracker::RecordDepthStencilClear(commandList, depthStencilView);
+	if (DX12HotPathState::NeedsBindingEventRecording(
+			DX12HotPathState::HookWorkFlags)) {
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
+		if (tracking.recordBindingEvents)
+			DX12BindingTracker::RecordDepthStencilClear(commandList, depthStencilView);
+	}
 	DX12CommandListHookState::OrigClearDepthStencilView(commandList, depthStencilView, clearFlags, depth, stencil, numRects, rects);
 }
 
@@ -1394,10 +1413,13 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearRenderTargetView
 {
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearRenderTargetView", commandList,
 		" rtv=0x%llx rects=%u", static_cast<unsigned long long>(renderTargetView.ptr), numRects);
-	const DX12CommandListTrackingState tracking =
-		DX12CommandListStateCapture::GetTrackingState(commandList);
-	if (tracking.recordBindingEvents)
-		DX12BindingTracker::RecordRenderTargetClear(commandList, renderTargetView);
+	if (DX12HotPathState::NeedsBindingEventRecording(
+			DX12HotPathState::HookWorkFlags)) {
+		const DX12CommandListTrackingState tracking =
+			DX12CommandListStateCapture::GetTrackingState(commandList);
+		if (tracking.recordBindingEvents)
+			DX12BindingTracker::RecordRenderTargetClear(commandList, renderTargetView);
+	}
 	DX12CommandListHookState::OrigClearRenderTargetView(commandList, renderTargetView, colorRGBA, numRects, rects);
 }
 
@@ -1406,14 +1428,15 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const UINT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
-	if (DX12HotPathState::skipAll) {
+	if (DX12HotPathState::skipAll ||
+		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigClearUnorderedAccessViewUint)
 			DX12CommandListHookState::OrigClearUnorderedAccessViewUint(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
 				resource, values, numRects, rects);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewUint", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,
@@ -1428,14 +1451,15 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedClearUnorderedAccessV
 	D3D12_CPU_DESCRIPTOR_HANDLE viewCpuHandle, ID3D12Resource *resource, const FLOAT values[4],
 	UINT numRects, const D3D12_RECT *rects)
 {
-	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
-	if (DX12HotPathState::skipAll) {
+	if (DX12HotPathState::skipAll ||
+		!DX12HotPathState::NeedsPreSkinProbe(DX12HotPathState::HookWorkFlags)) {
 		if (DX12CommandListHookState::OrigClearUnorderedAccessViewFloat)
 			DX12CommandListHookState::OrigClearUnorderedAccessViewFloat(commandList, viewGpuHandleInCurrentHeap, viewCpuHandle,
 				resource, values, numRects, rects);
 		return;
 	}
+	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
+		DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
 	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ClearUnorderedAccessViewFloat", commandList,
 		" resource=%p gpu=0x%llx cpu=0x%llx rects=%u", resource,

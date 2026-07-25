@@ -2151,6 +2151,23 @@ public:
 		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);
 	}
 
+	static bool NeedsPreSkinProbe(UINT64 flags)
+	{
+		return HasAnyFlag(flags, FLAG_PRE_SKIN_PROBE);
+	}
+
+	static bool NeedsIaBufferContentTracking(UINT64 flags)
+	{
+		return HasAnyFlag(flags, FLAG_IA_RESIDENT_STATE);
+	}
+
+	static bool NeedsBindingEventRecording(UINT64 flags)
+	{
+		return HasAnyFlag(
+			flags,
+			FLAG_FRAME_ANALYSIS_ACTIVE | FLAG_SHADER_DUMP_ACTIVE);
+	}
+
 	static void Update()
 	{
 		const SourceState source = SourceState::Capture();

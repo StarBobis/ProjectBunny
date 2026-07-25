@@ -788,7 +788,8 @@ public:
 		ID3D12CommandList *stackUnwrapped[8];
 		std::vector<ID3D12CommandList*> heapUnwrapped;
 		ID3D12CommandList *const *activeCommandLists = commandLists;
-		if (commandLists && numCommandLists) {
+		if (DX12Wrapper::UsesLegacyChildWrappers() &&
+			commandLists && numCommandLists) {
 			ID3D12CommandList **unwrapped = stackUnwrapped;
 			if (numCommandLists > ARRAYSIZE(stackUnwrapped)) {
 				heapUnwrapped.resize(numCommandLists);
@@ -1233,7 +1234,8 @@ public:
 		ID3D12CommandList *stackUnwrapped[8];
 		ID3D12CommandList *const *activeCommandLists = commandLists;
 		std::vector<ID3D12CommandList*> heapUnwrapped;
-		if (commandLists && numCommandLists) {
+		if (DX12Wrapper::UsesLegacyChildWrappers() &&
+			commandLists && numCommandLists) {
 			ID3D12CommandList **dest = stackUnwrapped;
 			if (numCommandLists > 8) {
 				heapUnwrapped.resize(numCommandLists);
