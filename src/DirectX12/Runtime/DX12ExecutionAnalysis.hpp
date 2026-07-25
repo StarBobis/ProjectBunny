@@ -50,6 +50,14 @@ public:
 		UINT64 countBufferOffset,
 		Fn originalExecuteIndirect)
 	{
+		if (!DX12ModNeedsPreSkinningUavProbe()) {
+			if (originalExecuteIndirect) {
+				originalExecuteIndirect(commandList, commandSignature, maxCommandCount,
+					argumentBuffer, argumentBufferOffset, countBuffer, countBufferOffset);
+			}
+			return;
+		}
+
 		PreSkinProbe &probe = ScratchProbe();
 		PreparePreSkinProbe(commandList, &probe);
 

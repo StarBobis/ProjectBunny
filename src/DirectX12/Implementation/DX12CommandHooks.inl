@@ -1558,7 +1558,12 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 {
 	PFN_EXECUTE_INDIRECT original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::ExecuteIndirect, PFN_EXECUTE_INDIRECT, DX12CommandListHookState::OrigExecuteIndirect, "ExecuteIndirect");
-	if (DX12HotPathState::skipAll) {
+	const UINT64 flags = DX12HotPathState::HookWorkFlags;
+	const bool needsPreSkinProbe =
+		(flags & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
+	const bool huntEnabled =
+		(flags & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
+	if (DX12HotPathState::skipAll || (!needsPreSkinProbe && !huntEnabled)) {
 		if (original)
 			original(commandList, commandSignature, maxCommandCount, argumentBuffer,
 				argumentBufferOffset, countBuffer, countBufferOffset);
@@ -1566,14 +1571,14 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedExecuteIndirect(
 	}
 	DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 		DX12OuterTimingProbeUtils::ApiExecuteIndirect);
-	DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 
 	DX12CommandListHookDiagnostics::LogDX12Call("ID3D12GraphicsCommandList::ExecuteIndirect", commandList,
 		" signature=%p max=%u args=%p argOffset=%llu count=%p countOffset=%llu",
 		commandSignature, maxCommandCount, argumentBuffer,
 		static_cast<unsigned long long>(argumentBufferOffset), countBuffer,
 		static_cast<unsigned long long>(countBufferOffset));
-	DX12CommandListCommandRecorder::RecordExecuteIndirect(commandList);
+	if (huntEnabled)
+		DX12CommandListCommandRecorder::RecordExecuteIndirect(commandList);
 
 	DX12ExecuteIndirectRuntime::Execute(commandList, commandSignature, maxCommandCount,
 		argumentBuffer, argumentBufferOffset, countBuffer, countBufferOffset, original);

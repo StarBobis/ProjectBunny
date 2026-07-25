@@ -1448,7 +1448,6 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiExecuteIndirect);
-		DX12CommandListRuntime::BumpIaContentEpoch(commandList);
 		ID3D12Resource *unwrappedArgumentBuffer = UnwrapResource(argumentBuffer);
 		ID3D12Resource *unwrappedCountBuffer = UnwrapResource(countBuffer);
 		ID3D12CommandSignature *unwrappedCommandSignature = UnwrapCommandSignature(commandSignature);
