@@ -1326,9 +1326,12 @@ public:
 	bool valid = false;
 	bool foundAny = false;
 	bool compute = false;
+	bool usesRootRevisions = false;
 	UINT rangeType = UINT_MAX;
 	UINT64 bindingQuerySerial = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
+	std::vector<UINT> rootParameters;
+	std::vector<UINT64> rootRevisions;
 	std::vector<UINT> observedSlots;
 	std::vector<UINT64> observedSlotVersions;
 	std::vector<UINT64> observedSlotValueIds;
@@ -1347,7 +1350,10 @@ class DX12ResolvedGraphicsSrvRuntimeState
 {
 public:
 	bool valid = false;
+	bool usesRootRevisions = false;
 	UINT64 descriptorQuerySerial = 0;
+	std::vector<UINT> rootParameters;
+	std::vector<UINT64> rootRevisions;
 	std::vector<DX12ResolvedGraphicsSrvBinding> bindings;
 };
 
@@ -1383,6 +1389,8 @@ public:
 	UINT64 graphicsDescriptorQuerySerial = 1;
 	UINT64 computeDescriptorQuerySerial = 1;
 	UINT64 computeDescriptorBindingVersion = 1;
+	std::array<UINT64, MaxRootParameters> graphicsRootBindingRevisions = {};
+	std::array<UINT64, MaxRootParameters> computeRootBindingRevisions = {};
 	UINT graphicsRootTableValidCount = 0;
 	UINT computeRootTableValidCount = 0;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;

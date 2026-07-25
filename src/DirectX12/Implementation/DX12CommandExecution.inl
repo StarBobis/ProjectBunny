@@ -374,8 +374,23 @@ static bool TryLoadResolvedGraphicsSrvBindings(
 	if (!runtimeState || !resolvedBindings)
 		return false;
 	if (!runtimeState->resolvedGraphicsSrvs.valid ||
-	    runtimeState->resolvedGraphicsSrvs.descriptorQuerySerial != descriptorQuerySerial) {
+	    (!runtimeState->resolvedGraphicsSrvs.usesRootRevisions &&
+	     runtimeState->resolvedGraphicsSrvs.descriptorQuerySerial != descriptorQuerySerial)) {
 		return false;
+	}
+	if (runtimeState->resolvedGraphicsSrvs.usesRootRevisions) {
+		if (runtimeState->resolvedGraphicsSrvs.rootParameters.size() !=
+			runtimeState->resolvedGraphicsSrvs.rootRevisions.size())
+			return false;
+		for (size_t index = 0;
+			 index < runtimeState->resolvedGraphicsSrvs.rootParameters.size();
+			 ++index) {
+			const UINT root = runtimeState->resolvedGraphicsSrvs.rootParameters[index];
+			if (root >= runtimeState->graphicsRootBindingRevisions.size() ||
+				runtimeState->graphicsRootBindingRevisions[root] !=
+					runtimeState->resolvedGraphicsSrvs.rootRevisions[index])
+				return false;
+		}
 	}
 	*resolvedBindings = runtimeState->resolvedGraphicsSrvs.bindings;
 	return true;
@@ -390,6 +405,27 @@ static void StoreResolvedGraphicsSrvBindings(
 		return;
 	runtimeState->resolvedGraphicsSrvs.valid = true;
 	runtimeState->resolvedGraphicsSrvs.descriptorQuerySerial = descriptorQuerySerial;
+	runtimeState->resolvedGraphicsSrvs.rootParameters.clear();
+	runtimeState->resolvedGraphicsSrvs.rootRevisions.clear();
+	runtimeState->resolvedGraphicsSrvs.usesRootRevisions = !resolvedBindings.empty();
+	if (runtimeState->resolvedGraphicsSrvs.usesRootRevisions) {
+		std::array<bool, MaxRootParameters> rootSeen = {};
+		for (const DX12ResolvedGraphicsSrvBinding &binding : resolvedBindings) {
+			const UINT root = binding.binding.rootParameterIndex;
+			if (root >= runtimeState->graphicsRootBindingRevisions.size()) {
+				runtimeState->resolvedGraphicsSrvs.usesRootRevisions = false;
+				runtimeState->resolvedGraphicsSrvs.rootParameters.clear();
+				runtimeState->resolvedGraphicsSrvs.rootRevisions.clear();
+				break;
+			}
+			if (rootSeen[root])
+				continue;
+			rootSeen[root] = true;
+			runtimeState->resolvedGraphicsSrvs.rootParameters.push_back(root);
+			runtimeState->resolvedGraphicsSrvs.rootRevisions.push_back(
+				runtimeState->graphicsRootBindingRevisions[root]);
+		}
+	}
 	runtimeState->resolvedGraphicsSrvs.bindings = resolvedBindings;
 }
 

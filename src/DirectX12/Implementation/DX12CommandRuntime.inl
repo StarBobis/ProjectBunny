@@ -1593,6 +1593,24 @@ static void DX12RuntimeBumpGraphicsDescriptorQuerySerial(
 	DX12RuntimeBumpDescriptorQuerySerial(&state->graphicsDescriptorQuerySerial);
 }
 
+static void DX12RuntimeBumpRootBindingRevision(
+	std::array<UINT64, MaxRootParameters> *revisions,
+	UINT rootParameterIndex)
+{
+	if (!revisions || rootParameterIndex >= revisions->size())
+		return;
+	DX12RuntimeBumpDescriptorQuerySerial(&(*revisions)[rootParameterIndex]);
+}
+
+static void DX12RuntimeBumpAllRootBindingRevisions(
+	std::array<UINT64, MaxRootParameters> *revisions)
+{
+	if (!revisions)
+		return;
+	for (UINT root = 0; root < revisions->size(); ++root)
+		DX12RuntimeBumpRootBindingRevision(revisions, root);
+}
+
 static void DX12RuntimeBumpComputeDescriptorQuerySerial(
 	DX12SimulateContext *state)
 {
@@ -1646,6 +1664,10 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12RuntimeClearRootTables(state);
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	DX12RuntimeBumpAllRootBindingRevisions(
+		&state->graphicsRootBindingRevisions);
+	DX12RuntimeBumpAllRootBindingRevisions(
+		&state->computeRootBindingRevisions);
 	DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
@@ -1690,6 +1712,8 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 		state->computeRootConstants[root] = RootConstantsState();
 	}
 	state->computeRootTableValidCount = 0;
+	DX12RuntimeBumpAllRootBindingRevisions(
+		&state->computeRootBindingRevisions);
 	DX12RuntimeBumpComputeBindingSerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorBindingVersion(state);
@@ -1713,6 +1737,8 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 	}
 	state->graphicsRootTableValidCount = 0;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
+	DX12RuntimeBumpAllRootBindingRevisions(
+		&state->graphicsRootBindingRevisions);
 	DX12RuntimeBumpBindingQuerySerial(state);
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
@@ -1801,9 +1827,12 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 			state->computeBindingSerial = 1;
 		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 		DX12RuntimeBumpComputeDescriptorBindingVersion(state);
+		DX12RuntimeBumpRootBindingRevision(
+			&state->computeRootBindingRevisions, rootParameterIndex);
 	} else {
 		DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
-		DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
+		DX12RuntimeBumpRootBindingRevision(
+			&state->graphicsRootBindingRevisions, rootParameterIndex);
 	}
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
@@ -1859,8 +1888,9 @@ void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
 	descriptor.type = type;
 	descriptor.address = address;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
+	DX12RuntimeBumpRootBindingRevision(
+		&state->graphicsRootBindingRevisions, rootParameterIndex);
 	DX12RuntimeBumpBindingQuerySerial(state);
-	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootDescriptor(
@@ -1917,6 +1947,8 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	descriptor.address = address;
 	DX12RuntimeBumpComputeBindingSerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	DX12RuntimeBumpRootBindingRevision(
+		&state->computeRootBindingRevisions, rootParameterIndex);
 	DX12RuntimeBumpBindingQuerySerial(state);
 }
 

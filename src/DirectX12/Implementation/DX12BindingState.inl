@@ -257,9 +257,23 @@ static bool TryLoadRuntimeDescriptorBindings(
 	if (!cache.valid ||
 			cache.compute != compute ||
 			cache.rangeType != static_cast<UINT>(rangeType) ||
-			cache.bindingQuerySerial != bindingQuerySerial ||
 			cache.bindingsHeap != runtimeState->cbvSrvUavHeap)
 		return false;
+	if (cache.usesRootRevisions) {
+		const std::array<UINT64, MaxRootParameters> &revisions = compute ?
+			runtimeState->computeRootBindingRevisions :
+			runtimeState->graphicsRootBindingRevisions;
+		if (cache.rootParameters.size() != cache.rootRevisions.size())
+			return false;
+		for (size_t index = 0; index < cache.rootParameters.size(); ++index) {
+			const UINT root = cache.rootParameters[index];
+			if (root >= revisions.size() ||
+				revisions[root] != cache.rootRevisions[index])
+				return false;
+		}
+	} else if (cache.bindingQuerySerial != bindingQuerySerial) {
+		return false;
+	}
 
 	const size_t observedCount = cache.observedSlots.size();
 	if (observedCount != cache.observedSlotVersions.size() ||
@@ -331,6 +345,29 @@ static void StoreRuntimeDescriptorBindings(
 	cache.rangeType = static_cast<UINT>(rangeType);
 	cache.bindingQuerySerial = bindingQuerySerial;
 	cache.bindingsHeap = runtimeState->cbvSrvUavHeap;
+	cache.rootParameters.clear();
+	cache.rootRevisions.clear();
+	cache.usesRootRevisions = !bindings.empty();
+	if (cache.usesRootRevisions) {
+		const std::array<UINT64, MaxRootParameters> &revisions = compute ?
+			runtimeState->computeRootBindingRevisions :
+			runtimeState->graphicsRootBindingRevisions;
+		std::array<bool, MaxRootParameters> rootSeen = {};
+		for (const DX12CurrentComputeUavBinding &binding : bindings) {
+			if (binding.rootParameterIndex >= revisions.size()) {
+				cache.usesRootRevisions = false;
+				cache.rootParameters.clear();
+				cache.rootRevisions.clear();
+				break;
+			}
+			if (rootSeen[binding.rootParameterIndex])
+				continue;
+			rootSeen[binding.rootParameterIndex] = true;
+			cache.rootParameters.push_back(binding.rootParameterIndex);
+			cache.rootRevisions.push_back(
+				revisions[binding.rootParameterIndex]);
+		}
+	}
 	cache.observedSlots = observedSlots;
 	cache.observedSlotVersions = observedSlotVersions;
 	cache.observedSlotValueIds = observedSlotValueIds;
