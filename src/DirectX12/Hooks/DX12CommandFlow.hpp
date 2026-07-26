@@ -2585,11 +2585,14 @@ public:
 
 	static size_t DirectIaCandidateTag(
 		const DX12IaHashStateCacheKey &iaKey,
-		const DX12IaDrawInvocation &draw)
+		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage)
 	{
 		size_t hash = DX12IaHashStateCacheKeyHash()(iaKey);
-		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.instanceCount);
-		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.firstInstance);
+		hash = DX12IaHashStateCacheKeyHash::Combine(
+			hash, CanonicalInstanceCount(draw, usage));
+		hash = DX12IaHashStateCacheKeyHash::Combine(
+			hash, CanonicalFirstInstance(draw, usage));
 		return hash;
 	}
 
@@ -2597,20 +2600,31 @@ public:
 		DX12SimulateContextDrawTemplate *templateState,
 		const DX12IaHashStateCacheKey &iaKey,
 		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage,
 		bool *hasCandidate)
 	{
 		if (!templateState || !hasCandidate)
 			return false;
-		const size_t tag = DirectIaCandidateTag(iaKey, draw);
-		const size_t setBase = (tag & 63) * 4;
-		for (size_t way = 0; way < 4; ++way) {
+		DX12SimulateContextDrawTemplate::DirectIaCandidateCache::Entries *entries =
+			templateState->directIaCandidateCache.entries.get();
+		if (!entries)
+			return false;
+		const UINT instanceCount = CanonicalInstanceCount(draw, usage);
+		const UINT firstInstance = CanonicalFirstInstance(draw, usage);
+		const size_t tag = DirectIaCandidateTag(iaKey, draw, usage);
+		const size_t setBase =
+			(tag & (DX12SimulateContextDrawTemplate::DirectIaCandidateSetCount - 1)) *
+			DX12SimulateContextDrawTemplate::DirectIaCandidateWayCount;
+		for (size_t way = 0;
+			 way < DX12SimulateContextDrawTemplate::DirectIaCandidateWayCount;
+			 ++way) {
 			DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
-				templateState->directIaCandidates[setBase + way];
+				(*entries)[setBase + way];
 			if (!entry.valid || entry.tag != tag || !(entry.iaKey == iaKey) ||
-				entry.instanceCount != draw.instanceCount ||
-				entry.firstInstance != draw.firstInstance)
+				entry.instanceCount != instanceCount ||
+				entry.firstInstance != firstInstance)
 				continue;
-			entry.age = ++templateState->directIaCandidateClock;
+			entry.age = ++templateState->directIaCandidateCache.clock;
 			*hasCandidate = entry.hasCandidate;
 			return true;
 		}
@@ -2621,19 +2635,30 @@ public:
 		DX12SimulateContextDrawTemplate *templateState,
 		const DX12IaHashStateCacheKey &iaKey,
 		const DX12IaDrawInvocation &draw,
+		const DX12DrawMatchUsage &usage,
 		bool hasCandidate)
 	{
 		if (!templateState)
 			return false;
-		const size_t tag = DirectIaCandidateTag(iaKey, draw);
-		const size_t setBase = (tag & 63) * 4;
+		DX12SimulateContextDrawTemplate::DirectIaCandidateCache::Entries *entries =
+			templateState->directIaCandidateCache.EnsureEntries();
+		if (!entries)
+			return false;
+		const UINT instanceCount = CanonicalInstanceCount(draw, usage);
+		const UINT firstInstance = CanonicalFirstInstance(draw, usage);
+		const size_t tag = DirectIaCandidateTag(iaKey, draw, usage);
+		const size_t setBase =
+			(tag & (DX12SimulateContextDrawTemplate::DirectIaCandidateSetCount - 1)) *
+			DX12SimulateContextDrawTemplate::DirectIaCandidateWayCount;
 		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry *target = nullptr;
-		for (size_t way = 0; way < 4; ++way) {
+		for (size_t way = 0;
+			 way < DX12SimulateContextDrawTemplate::DirectIaCandidateWayCount;
+			 ++way) {
 			DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
-				templateState->directIaCandidates[setBase + way];
+				(*entries)[setBase + way];
 			if (entry.valid && entry.tag == tag && entry.iaKey == iaKey &&
-				entry.instanceCount == draw.instanceCount &&
-				entry.firstInstance == draw.firstInstance) {
+				entry.instanceCount == instanceCount &&
+				entry.firstInstance == firstInstance) {
 				target = &entry;
 				break;
 			}
@@ -2647,15 +2672,15 @@ public:
 		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry = *target;
 		const bool evicted = entry.valid &&
 			(!(entry.iaKey == iaKey) ||
-			 entry.instanceCount != draw.instanceCount ||
-			 entry.firstInstance != draw.firstInstance);
+			 entry.instanceCount != instanceCount ||
+			 entry.firstInstance != firstInstance);
 		entry.valid = true;
 		entry.hasCandidate = hasCandidate;
-		entry.age = ++templateState->directIaCandidateClock;
+		entry.age = ++templateState->directIaCandidateCache.clock;
 		entry.tag = tag;
 		entry.iaKey = iaKey;
-		entry.instanceCount = draw.instanceCount;
-		entry.firstInstance = draw.firstInstance;
+		entry.instanceCount = instanceCount;
+		entry.firstInstance = firstInstance;
 		return evicted;
 	}
 
@@ -3423,6 +3448,7 @@ public:
 							&mutableRuntimeState->resolvedDraw,
 							directHashCacheKey,
 							draw,
+							drawDecision->directTargetDrawMatchUsage,
 							&hasDirectCandidate);
 					if (!directCandidateCacheHit) {
 						hasDirectCandidate =
@@ -3440,6 +3466,7 @@ public:
 							&mutableRuntimeState->resolvedDraw,
 							directHashCacheKey,
 							draw,
+							drawDecision->directTargetDrawMatchUsage,
 							hasDirectCandidate);
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheStore(
@@ -3582,6 +3609,12 @@ public:
 				draw);
 			if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoPreFilterKey)
 				&& !drawDecision->targetPlanHasDescriptorTargets) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"pso_view_negative_hit",
+					draw.indexed ? 1u : 0u,
+					1,
+					0);
 				DX12Profiling::RecordIaHashStateResult(false);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;

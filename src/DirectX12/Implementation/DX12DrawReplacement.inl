@@ -765,6 +765,7 @@ public:
 		DX12ModIaReplacement *replacement,
 		bool executeOriginalDraw)
 	{
+		const LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
 		if (!device || !commandList || !replacement ||
 				replacement->drawSrvPatches.empty())
 			return false;
@@ -778,6 +779,7 @@ public:
 				"stage=table_patch_fail,reason=bundle_requires_parent_replay");
 			return false;
 		}
+		const LARGE_INTEGER planBegin = DX12OuterTimingProbeUtils::Now();
 		CommandListBindingState snapshot;
 		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
@@ -867,11 +869,18 @@ public:
 				return false;
 			}
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"build_mirror_plan",
+			0,
+			totalDescriptors,
+			DX12OuterTimingProbeUtils::ElapsedUs(planBegin));
 
 		D3D12_CPU_DESCRIPTOR_HANDLE tempCpuBase = {};
 		D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
 		UINT tempIncrement = 0;
 		ID3D12DescriptorHeap *tempHeap = nullptr;
+		const LARGE_INTEGER allocateBegin = DX12OuterTimingProbeUtils::Now();
 		if (!EnsurePreSkinDescriptorRingLocked(
 				device, commandList, totalDescriptors,
 				&tempCpuBase, &tempGpuBase, &tempIncrement, &tempHeap)) {
@@ -880,6 +889,12 @@ public:
 				totalDescriptors);
 			return false;
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"allocate_mirror_range",
+			0,
+			totalDescriptors,
+			DX12OuterTimingProbeUtils::ElapsedUs(allocateBegin));
 		// Persist the only authoritative restore snapshot before issuing any
 		// command-list state mutation. Restore never asks Binding State for a
 		// second, potentially stale snapshot.
@@ -887,6 +902,7 @@ public:
 		replacement->drawSrvApplyState.patchHeap = tempHeap;
 
 		DX12InternalReplayScope internalReplay;
+		const LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
 		for (const DX12DrawSrvPatchTable &table : tables) {
 			if (table.sampler)
 				continue;
@@ -925,7 +941,14 @@ public:
 				break;
 			}
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"copy_mirror_descriptors",
+			0,
+			totalDescriptors,
+			DX12OuterTimingProbeUtils::ElapsedUs(copyBegin));
 		replacement->drawSrvApplyState.applied = true;
+		const LARGE_INTEGER bindBegin = DX12OuterTimingProbeUtils::Now();
 		ID3D12DescriptorHeap *heaps[2] = { tempHeap, snapshot.samplerHeap };
 		commandList->SetDescriptorHeaps(snapshot.samplerHeap ? 2 : 1, heaps);
 		for (const DX12DrawSrvPatchTable &table : tables) {
@@ -941,6 +964,18 @@ public:
 				commandList->SetGraphicsRootDescriptorTable(
 					table.rootParameterIndex, tableGpu);
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"bind_mirror_tables",
+			0,
+			tables.size(),
+			DX12OuterTimingProbeUtils::ElapsedUs(bindBegin));
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"apply_total",
+			0,
+			totalDescriptors,
+			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
 #if defined(_DEBUG)
 		DX12LogManager::Fields("DX12DrawSrvReplacement",
 			"stage=descriptors_patched,mode=mirrored_tables,requests=%zu,"
@@ -1090,6 +1125,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12ModIaReplacement *replacement)
 	{
+		const LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
 		if (!replacement)
 			return;
 		DX12ModIaReplacement::DrawSrvApplyState &state =
@@ -1116,6 +1152,13 @@ public:
 				commandList->SetComputeRootDescriptorTable(
 					root, snapshot.computeTables[root].baseDescriptor);
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"restore_original_tables",
+			0,
+			static_cast<size_t>(snapshot.graphicsTableValidCount) +
+				snapshot.computeTableValidCount,
+			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
 #if defined(_DEBUG)
 		DX12LogManager::Fields("DX12DrawSrvReplacement",
 			"stage=descriptor_tables_restored,requests=%zu,snapshot=saved,present=%ld",

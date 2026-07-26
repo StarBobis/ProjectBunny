@@ -1214,6 +1214,11 @@ public:
 class DX12SimulateContextDrawTemplate
 {
 public:
+	static constexpr size_t DirectIaCandidateSetCount = 256;
+	static constexpr size_t DirectIaCandidateWayCount = 8;
+	static_assert((DirectIaCandidateSetCount & (DirectIaCandidateSetCount - 1)) == 0,
+		"Direct IA candidate set count must be a power of two");
+
 	class ResolvedPlanState
 	{
 	public:
@@ -1242,6 +1247,41 @@ public:
 		UINT firstInstance = 0;
 	};
 
+	class DirectIaCandidateCache
+	{
+	public:
+		using Entries = std::array<DirectIaCandidateEntry,
+			DirectIaCandidateSetCount * DirectIaCandidateWayCount>;
+
+		DirectIaCandidateCache() = default;
+
+		DirectIaCandidateCache(const DirectIaCandidateCache &)
+		{
+		}
+
+		DirectIaCandidateCache &operator=(const DirectIaCandidateCache &other)
+		{
+			if (this != &other) {
+				entries.reset();
+				clock = 0;
+			}
+			return *this;
+		}
+
+		DirectIaCandidateCache(DirectIaCandidateCache &&) noexcept = default;
+		DirectIaCandidateCache &operator=(DirectIaCandidateCache &&) noexcept = default;
+
+		Entries *EnsureEntries()
+		{
+			if (!entries)
+				entries = std::make_unique<Entries>();
+			return entries.get();
+		}
+
+		std::unique_ptr<Entries> entries;
+		UINT64 clock = 0;
+	};
+
 	class IaTargetPresenceEntry
 	{
 	public:
@@ -1262,8 +1302,7 @@ public:
 	// Candidate matching is separate from IA-state materialization. Entries are
 	// keyed by the complete resolved IA identity plus the draw inputs that do not
 	// belong to the IA hash state itself.
-	std::array<DirectIaCandidateEntry, 256> directIaCandidates;
-	UINT64 directIaCandidateClock = 0;
+	DirectIaCandidateCache directIaCandidateCache;
 	// IA target-presence checks depend only on the resident IA bindings, the
 	// compiled target plan, and indexed mode. Keep both semantics separately:
 	// direct checks consider descriptor targets while full checks do not.

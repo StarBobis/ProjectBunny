@@ -352,8 +352,8 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 	state->iaHashKeyPrefixes = {};
 	state->lastDirectIaHashBuild = {};
 	state->lastFullIaHashBuild = {};
-	state->directIaCandidates = {};
-	state->directIaCandidateClock = 0;
+	state->directIaCandidateCache =
+		DX12SimulateContextDrawTemplate::DirectIaCandidateCache();
 	state->directIaTargetPresence = {};
 	state->fullIaTargetPresence = {};
 	state->residentDrawNegativeCache = {};
