@@ -1000,31 +1000,31 @@ class DeviceWrapper
 
 			HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryPrivateDataWrapper, Original);
 				return mDevice->GetPrivateData(guid, pDataSize, pData);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 				return mDevice->SetPrivateData(guid, DataSize, pData);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 				return mDevice->SetPrivateDataInterface(guid, pData);
 			}
 
 			HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 				return mDevice->SetName(Name);
 			}
 
 			UINT STDMETHODCALLTYPE GetNodeCount() override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
 				return mDevice->GetNodeCount();
 			}
 
@@ -1203,7 +1203,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE CheckFeatureSupport(
 				D3D12_FEATURE Feature, void *pFeatureSupportData, UINT FeatureSupportDataSize) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryCapabilityWrapper, Original);
 				return mDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
 			}
 
@@ -1231,7 +1231,7 @@ class DeviceWrapper
 			UINT STDMETHODCALLTYPE GetDescriptorHandleIncrementSize(
 				D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryDescriptorWrapper, Original);
 				return mDevice->GetDescriptorHandleIncrementSize(DescriptorHeapType);
 			}
 
@@ -1410,14 +1410,14 @@ class DeviceWrapper
 			D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE GetResourceAllocationInfo(
 				UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
 				return mDevice->GetResourceAllocationInfo(visibleMask, numResourceDescs, pResourceDescs);
 			}
 
 			D3D12_HEAP_PROPERTIES STDMETHODCALLTYPE GetCustomHeapProperties(
 				UINT nodeMask, D3D12_HEAP_TYPE heapType) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryCapabilityWrapper, Original);
 				return mDevice->GetCustomHeapProperties(nodeMask, heapType);
 			}
 
@@ -1533,7 +1533,7 @@ class DeviceWrapper
 				ID3D12DeviceChild *pObject, const SECURITY_ATTRIBUTES *pAttributes,
 				DWORD Access, LPCWSTR Name, HANDLE *pHandle) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 				return mDevice->CreateSharedHandle(
 					reinterpret_cast<ID3D12DeviceChild*>(DX12Wrapper::Unwrap(pObject)),
 					pAttributes, Access, Name, pHandle);
@@ -1542,7 +1542,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE OpenSharedHandle(
 				HANDLE NTHandle, REFIID riid, void **ppvObj) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 				HRESULT hr = mDevice->OpenSharedHandle(NTHandle, riid, ppvObj);
 				if (SUCCEEDED(hr) && ppvObj && *ppvObj)
 					DX12Wrapper::WrapD3D12DeviceResult(riid, ppvObj);
@@ -1551,7 +1551,7 @@ class DeviceWrapper
 
 			HRESULT STDMETHODCALLTYPE OpenSharedHandleByName(LPCWSTR Name, DWORD Access, HANDLE *pNTHandle) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 				return mDevice->OpenSharedHandleByName(Name, Access, pNTHandle);
 			}
 
@@ -1601,7 +1601,7 @@ class DeviceWrapper
 
 			HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
 				return mDevice->GetDeviceRemovedReason();
 			}
 
@@ -1611,7 +1611,7 @@ class DeviceWrapper
 				D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows,
 				UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryLayoutWrapper, Original);
 				mDevice->GetCopyableFootprints(
 					pResourceDesc, FirstSubresource, NumSubresources, BaseOffset,
 					pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
@@ -1635,7 +1635,7 @@ class DeviceWrapper
 
 			HRESULT STDMETHODCALLTYPE SetStablePowerState(BOOL Enable) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscPowerWrapper, Original);
 				return mDevice->SetStablePowerState(Enable);
 			}
 
@@ -1669,7 +1669,7 @@ class DeviceWrapper
 				UINT *pNumSubresourceTilings, UINT FirstSubresourceTilingToGet,
 				D3D12_SUBRESOURCE_TILING *pSubresourceTilingsForNonPackedMips) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryTilingWrapper, Original);
 				mDevice->GetResourceTiling(
 					DX12WrapperRuntimeUtils::UnwrapResource(pTiledResource),
 					pNumTilesForEntireResource, pPackedMipDesc, pStandardTileShapeForNonPackedMips,
@@ -1679,7 +1679,7 @@ class DeviceWrapper
 
 			LUID STDMETHODCALLTYPE GetAdapterLuid() override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
 				return mDevice->GetAdapterLuid();
 			}
 
@@ -1707,7 +1707,7 @@ class DeviceWrapper
 				ID3D12Fence *const *ppFences, const UINT64 *pFenceValues, UINT NumFences,
 				D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags, HANDLE hEvent) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscPowerWrapper, Original);
 				ID3D12Device1 *device1 = nullptr;
 				HRESULT hr = QueryDevice1(&device1);
 				if (FAILED(hr))
@@ -1872,7 +1872,7 @@ class DeviceWrapper
 				const D3D12_PROTECTED_RESOURCE_SESSION_DESC *pDesc, REFIID riid,
 				void **ppSession) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
 				ID3D12Device4 *device4 = nullptr;
 				HRESULT hr = QueryDevice4(&device4);
 				if (FAILED(hr))
@@ -1983,7 +1983,7 @@ class DeviceWrapper
 				UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs,
 				D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
 				ID3D12Device4 *device4 = nullptr;
 				HRESULT hr = QueryDevice4(&device4);
 				if (FAILED(hr))
@@ -1997,7 +1997,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE CreateLifetimeTracker(
 				ID3D12LifetimeOwner *pOwner, REFIID riid, void **ppvTracker) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscLifetimeWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2011,7 +2011,7 @@ class DeviceWrapper
 
 			void STDMETHODCALLTYPE RemoveDevice() override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscLifetimeWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				if (SUCCEEDED(QueryDevice5(&device5))) {
 					device5->RemoveDevice();
@@ -2022,7 +2022,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE EnumerateMetaCommands(
 				UINT *pNumMetaCommands, D3D12_META_COMMAND_DESC *pDescs) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryMetaCommandWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2037,7 +2037,7 @@ class DeviceWrapper
 				UINT *pTotalStructureSizeInBytes, UINT *pParameterCount,
 				D3D12_META_COMMAND_PARAMETER_DESC *pParameterDescs) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryMetaCommandWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2053,7 +2053,7 @@ class DeviceWrapper
 				SIZE_T CreationParametersDataSizeInBytes, REFIID riid,
 				void **ppMetaCommand) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscMetaCommandWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2070,7 +2070,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE CreateStateObject(
 				const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscStateObjectWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2102,7 +2102,7 @@ class DeviceWrapper
 				const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *pDesc,
 				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *pInfo) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryRaytracingWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				if (SUCCEEDED(QueryDevice5(&device5))) {
 					device5->GetRaytracingAccelerationStructurePrebuildInfo(pDesc, pInfo);
@@ -2114,7 +2114,7 @@ class DeviceWrapper
 				D3D12_SERIALIZED_DATA_TYPE SerializedDataType,
 				const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *pIdentifierToCheck) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryRaytracingWrapper, Original);
 				ID3D12Device5 *device5 = nullptr;
 				HRESULT hr = QueryDevice5(&device5);
 				if (FAILED(hr))
@@ -2129,7 +2129,7 @@ class DeviceWrapper
 				D3D12_BACKGROUND_PROCESSING_MODE Mode, D3D12_MEASUREMENTS_ACTION MeasurementsAction,
 				HANDLE hEventToSignalUponCompletion, BOOL *pbFurtherMeasurementsDesired) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscBackgroundProcessingWrapper, Original);
 				ID3D12Device6 *device6 = nullptr;
 				HRESULT hr = QueryDevice6(&device6);
 				if (FAILED(hr))
@@ -2145,7 +2145,7 @@ class DeviceWrapper
 				const D3D12_STATE_OBJECT_DESC *pAddition, ID3D12StateObject *pStateObjectToGrowFrom,
 				REFIID riid, void **ppNewStateObject) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscStateObjectWrapper, Original);
 				ID3D12Device7 *device7 = nullptr;
 				HRESULT hr = QueryDevice7(&device7);
 				if (FAILED(hr))
@@ -2181,7 +2181,7 @@ class DeviceWrapper
 				const D3D12_PROTECTED_RESOURCE_SESSION_DESC1 *pDesc, REFIID riid,
 				void **ppSession) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
 				ID3D12Device7 *device7 = nullptr;
 				HRESULT hr = QueryDevice7(&device7);
 				if (FAILED(hr))
@@ -2197,7 +2197,7 @@ class DeviceWrapper
 				UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC1 *pResourceDescs,
 				D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
 				ID3D12Device8 *device8 = nullptr;
 				HRESULT hr = QueryDevice8(&device8);
 				if (FAILED(hr))
@@ -2307,6 +2307,7 @@ class DeviceWrapper
 			{
 				ID3D12Device8 *device8 = nullptr;
 				if (SUCCEEDED(QueryDevice8(&device8))) {
+					DX12_CREATE_TIMING_SCOPE(DeviceQueryLayoutWrapper, Original);
 					device8->GetCopyableFootprints1(
 						pResourceDesc, FirstSubresource, NumSubresources, BaseOffset,
 						pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
@@ -2318,7 +2319,7 @@ class DeviceWrapper
 				const D3D12_SHADER_CACHE_SESSION_DESC *pDesc, REFIID riid,
 				void **ppvSession) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscShaderCacheWrapper, Original);
 				ID3D12Device9 *device9 = nullptr;
 				HRESULT hr = QueryDevice9(&device9);
 				if (FAILED(hr))
@@ -2333,7 +2334,7 @@ class DeviceWrapper
 			HRESULT STDMETHODCALLTYPE ShaderCacheControl(
 				D3D12_SHADER_CACHE_KIND_FLAGS Kinds, D3D12_SHADER_CACHE_CONTROL_FLAGS Control) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceMiscWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceMiscShaderCacheWrapper, Original);
 				ID3D12Device9 *device9 = nullptr;
 				HRESULT hr = QueryDevice9(&device9);
 				if (FAILED(hr))
@@ -2497,7 +2498,7 @@ class DeviceWrapper
 				const UINT32 *pNumCastableFormats, const DXGI_FORMAT *const *ppCastableFormats,
 				D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 			{
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryWrapper, Original);
+				DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
 				ID3D12Device12 *device12 = nullptr;
 				HRESULT hr = QueryDevice12(&device12);
 				if (FAILED(hr))

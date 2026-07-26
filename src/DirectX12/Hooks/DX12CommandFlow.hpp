@@ -68,6 +68,15 @@ public:
 		CommandSignatureWrapper,
 		PipelineLibraryWrapper,
 		DeviceMiscWrapper,
+		DeviceMiscPrivateDataWrapper,
+		DeviceMiscSharedHandleWrapper,
+		DeviceMiscPowerWrapper,
+		DeviceMiscProtectedSessionWrapper,
+		DeviceMiscLifetimeWrapper,
+		DeviceMiscMetaCommandWrapper,
+		DeviceMiscStateObjectWrapper,
+		DeviceMiscBackgroundProcessingWrapper,
+		DeviceMiscShaderCacheWrapper,
 		DeviceResidencyWrapper,
 		ResourceMapWrapper,
 		ResourceMapHook,
@@ -76,6 +85,15 @@ public:
 		ResourceReadWriteWrapper,
 		ResourceQueryWrapper,
 		DeviceQueryWrapper,
+		DeviceQueryPrivateDataWrapper,
+		DeviceQueryCapabilityWrapper,
+		DeviceQueryDescriptorWrapper,
+		DeviceQueryAllocationWrapper,
+		DeviceQueryLayoutWrapper,
+		DeviceQueryTilingWrapper,
+		DeviceQueryMetaCommandWrapper,
+		DeviceQueryRaytracingWrapper,
+		DeviceQueryMiscWrapper,
 		WrapperLifetime,
 		RootSignatureSerializeProxy,
 		ProxyDeviceCreate,
@@ -160,6 +178,24 @@ public:
 			return DX12OuterTimingProbeUtils::ApiDeviceCommandSignatureCreate;
 		case Api::PipelineLibraryWrapper:
 			return DX12OuterTimingProbeUtils::ApiDevicePipelineLibraryCreate;
+		case Api::DeviceMiscPrivateDataWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscPrivateData;
+		case Api::DeviceMiscSharedHandleWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscSharedHandle;
+		case Api::DeviceMiscPowerWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscPower;
+		case Api::DeviceMiscProtectedSessionWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscProtectedSession;
+		case Api::DeviceMiscLifetimeWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscLifetime;
+		case Api::DeviceMiscMetaCommandWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscMetaCommand;
+		case Api::DeviceMiscStateObjectWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscStateObject;
+		case Api::DeviceMiscBackgroundProcessingWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscBackgroundProcessing;
+		case Api::DeviceMiscShaderCacheWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceMiscShaderCache;
 		case Api::DeviceResidencyWrapper:
 			return DX12OuterTimingProbeUtils::ApiDeviceResidency;
 		case Api::ResourceMapWrapper:
@@ -172,6 +208,24 @@ public:
 			return DX12OuterTimingProbeUtils::ApiResourceReadWrite;
 		case Api::ResourceQueryWrapper:
 			return DX12OuterTimingProbeUtils::ApiResourceQuery;
+		case Api::DeviceQueryPrivateDataWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryPrivateData;
+		case Api::DeviceQueryCapabilityWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryCapability;
+		case Api::DeviceQueryDescriptorWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryDescriptor;
+		case Api::DeviceQueryAllocationWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryAllocation;
+		case Api::DeviceQueryLayoutWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryLayout;
+		case Api::DeviceQueryTilingWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryTiling;
+		case Api::DeviceQueryMetaCommandWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryMetaCommand;
+		case Api::DeviceQueryRaytracingWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryRaytracing;
+		case Api::DeviceQueryMiscWrapper:
+			return DX12OuterTimingProbeUtils::ApiDeviceQueryMisc;
 		case Api::DeviceQueryWrapper:
 			return DX12OuterTimingProbeUtils::ApiDeviceQuery;
 		case Api::ProxyDeviceCreate:
@@ -270,10 +324,20 @@ public:
 			"CommandListWrapper", "CommandListHook",
 			"FenceWrapper", "FenceHook", "HeapWrapper", "QueryHeapWrapper",
 			"CommandSignatureWrapper", "PipelineLibraryWrapper", "DeviceMiscWrapper",
+			"DeviceMiscPrivateDataWrapper", "DeviceMiscSharedHandleWrapper",
+			"DeviceMiscPowerWrapper", "DeviceMiscProtectedSessionWrapper",
+			"DeviceMiscLifetimeWrapper", "DeviceMiscMetaCommandWrapper",
+			"DeviceMiscStateObjectWrapper", "DeviceMiscBackgroundProcessingWrapper",
+			"DeviceMiscShaderCacheWrapper",
 			"DeviceResidencyWrapper",
 			"ResourceMapWrapper", "ResourceMapHook",
 			"ResourceUnmapWrapper", "ResourceUnmapHook",
 			"ResourceReadWriteWrapper", "ResourceQueryWrapper", "DeviceQueryWrapper",
+			"DeviceQueryPrivateDataWrapper", "DeviceQueryCapabilityWrapper",
+			"DeviceQueryDescriptorWrapper", "DeviceQueryAllocationWrapper",
+			"DeviceQueryLayoutWrapper", "DeviceQueryTilingWrapper",
+			"DeviceQueryMetaCommandWrapper", "DeviceQueryRaytracingWrapper",
+			"DeviceQueryMiscWrapper",
 			"WrapperLifetime", "RootSignatureSerializeProxy", "ProxyDeviceCreate",
 			"ProxyMisc", "ResourceInvalidate",
 			"DescriptorHeapInvalidate"

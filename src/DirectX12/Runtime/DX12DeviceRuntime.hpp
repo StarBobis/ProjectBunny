@@ -1140,6 +1140,36 @@ public:
 			else
 				ReleaseSRWLockShared(held.lock);
 		};
+		auto collectHeldLock = [](std::vector<HeldShardLock> *locks,
+			SRWLOCK *lock, bool exclusive) {
+			if (!locks || !lock)
+				return;
+			for (HeldShardLock &held : *locks) {
+				if (held.lock != lock)
+					continue;
+				held.exclusive = held.exclusive || exclusive;
+				return;
+			}
+			HeldShardLock held;
+			held.lock = lock;
+			held.exclusive = exclusive;
+			std::vector<HeldShardLock>::iterator insertAt = locks->begin();
+			for (; insertAt != locks->end(); ++insertAt) {
+				if (reinterpret_cast<uintptr_t>(lock) <
+						reinterpret_cast<uintptr_t>(insertAt->lock))
+					break;
+			}
+			locks->insert(insertAt, held);
+		};
+		auto acquireHeldLocks = [&](const std::vector<HeldShardLock> &locks) {
+			for (const HeldShardLock &held : locks)
+				acquireHeldLock(held);
+		};
+		auto releaseHeldLocks = [&](const std::vector<HeldShardLock> &locks) {
+			for (std::vector<HeldShardLock>::const_reverse_iterator it =
+					locks.rbegin(); it != locks.rend(); ++it)
+				releaseHeldLock(*it);
+		};
 		auto lockSlotPair = [&](UINT sSlot, UINT dSlot,
 			HeldShardLock *first, HeldShardLock *second) {
 			*first = HeldShardLock();
@@ -1175,43 +1205,83 @@ public:
 
 		if (!overlaps) {
 			// The overwhelmingly common path, especially CopyDescriptorsSimple:
-			// no temporary vector or allocation. The source is shared/read-only;
-			// only the destination is exclusive, so copies can fan out from one
-			// stable CPU heap without serialising readers.
+			// first classify contiguous dirty spans with published identities, then
+			// hold the involved shard locks once per dirty run instead of once per
+			// slot. Sequential descriptors stripe across shard locks, so this cuts
+			// hot-path lock traffic by turning O(slots) acquisitions into O(shards).
+			UINT dirtyStart = UINT_MAX;
+			bool rangeAborted = false;
+			auto flushDirtySpan = [&](UINT dirtyEnd) {
+				if (dirtyStart == UINT_MAX || dirtyStart >= dirtyEnd)
+					return;
+				std::vector<HeldShardLock> heldLocks;
+				heldLocks.reserve((dirtyEnd - dirtyStart) * 2);
+				for (UINT dirtyIndex = dirtyStart; dirtyIndex < dirtyEnd; ++dirtyIndex) {
+					collectHeldLock(
+						&heldLocks,
+						HeapLock(&srcHeap, srcSlot + dirtyIndex),
+						false);
+					collectHeldLock(
+						&heldLocks,
+						HeapLock(&destHeap, destSlot + dirtyIndex),
+						true);
+				}
+				acquireHeldLocks(heldLocks);
+				if (!srcHeap.stateLocks->IsActive() ||
+						!destHeap.stateLocks->IsActive()) {
+					releaseHeldLocks(heldLocks);
+					rangeAborted = true;
+					dirtyStart = UINT_MAX;
+					return;
+				}
+				for (UINT dirtyIndex = dirtyStart; dirtyIndex < dirtyEnd; ++dirtyIndex) {
+					const UINT currentDestSlot = destSlot + dirtyIndex;
+					const SIZE_T destHandle = destStart.ptr +
+						static_cast<SIZE_T>(dirtyIndex) * destHeap.increment;
+					UINT64 publishedValueId = 0;
+					accountCopyResult(
+						DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
+							&destHeap,
+							currentDestSlot,
+							srcHeap,
+							srcSlot + dirtyIndex,
+							destHandle,
+							&publishedValueId),
+						currentDestSlot,
+						publishedValueId);
+				}
+				releaseHeldLocks(heldLocks);
+				dirtyStart = UINT_MAX;
+			};
 			for (UINT i = 0; i < count; ++i) {
 				const CopyIdentityResult identityResult =
 					ComparePublishedSlotIdentities(
 						srcHeap, srcSlot + i, destHeap, destSlot + i);
 				if (identityResult == CopyIdentityResult::Unchanged) {
+					flushDirtySpan(i);
 					++sourceFoundCount;
 					++unchangedCount;
 					continue;
 				}
 				if (identityResult ==
 						CopyIdentityResult::SourceMissingDestinationEmpty) {
+					flushDirtySpan(i);
 					++sourceMissingCount;
 					++alreadyEmptyCount;
 					continue;
 				}
-				HeldShardLock first;
-				HeldShardLock second;
-				lockSlotPair(srcSlot + i, destSlot + i, &first, &second);
-				if (!srcHeap.stateLocks->IsActive() ||
-						!destHeap.stateLocks->IsActive()) {
-					unlockSlotPair(first, second);
-					return;
+				if (dirtyStart == UINT_MAX)
+					dirtyStart = i;
+				if (i + 1 == count) {
+					flushDirtySpan(i + 1);
+					if (rangeAborted) {
+						rangeAborted = true;
+						break;
+					}
 				}
-				const UINT currentDestSlot = destSlot + i;
-				const SIZE_T destHandle = destStart.ptr +
-					static_cast<SIZE_T>(i) * destHeap.increment;
-				UINT64 publishedValueId = 0;
-				accountCopyResult(
-					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
-						&destHeap, currentDestSlot, srcHeap, srcSlot + i,
-						destHandle, &publishedValueId),
-					currentDestSlot, publishedValueId);
-				unlockSlotPair(first, second);
 			}
+			if (rangeAborted)
+				return;
 		} else {
 			// Snapshot first so an overlapping same-heap copy cannot overwrite a
 			// later source. Unknown sources deliberately clear stale destinations.
@@ -1262,6 +1332,18 @@ public:
 			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
 				sourceFoundCount, sourceMissingCount,
 				changedCount, unchangedCount, erasedCount, alreadyEmptyCount);
+		if (changedCount == 0 && erasedCount == 0) {
+			RangeMemo().Store(
+				srcHeap,
+				srcSlot,
+				destHeap,
+				destSlot,
+				count,
+				sourceFoundCount,
+				sourceMissingCount,
+				unchangedCount,
+				alreadyEmptyCount);
+		}
 	}
 
 	// Per-descriptor fallback when bulk heap-slot resolution fails.

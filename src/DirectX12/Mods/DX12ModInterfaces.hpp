@@ -892,11 +892,29 @@ public:
 		ApiDeviceCommandSignatureCreate,
 		ApiDevicePipelineLibraryCreate,
 		ApiDeviceMisc,
+		ApiDeviceMiscPrivateData,
+		ApiDeviceMiscSharedHandle,
+		ApiDeviceMiscPower,
+		ApiDeviceMiscProtectedSession,
+		ApiDeviceMiscLifetime,
+		ApiDeviceMiscMetaCommand,
+		ApiDeviceMiscStateObject,
+		ApiDeviceMiscBackgroundProcessing,
+		ApiDeviceMiscShaderCache,
 		ApiResourceMap,
 		ApiResourceUnmap,
 		ApiResourceReadWrite,
 		ApiResourceQuery,
 		ApiDeviceQuery,
+		ApiDeviceQueryPrivateData,
+		ApiDeviceQueryCapability,
+		ApiDeviceQueryDescriptor,
+		ApiDeviceQueryAllocation,
+		ApiDeviceQueryLayout,
+		ApiDeviceQueryTiling,
+		ApiDeviceQueryMetaCommand,
+		ApiDeviceQueryRaytracing,
+		ApiDeviceQueryMisc,
 		ApiObjectLifetime,
 		ApiWallBucketCount
 	};
@@ -1176,11 +1194,29 @@ public:
 		case ApiDeviceCommandSignatureCreate: return "DeviceCommandSignatureCreate";
 		case ApiDevicePipelineLibraryCreate: return "DevicePipelineLibraryCreate";
 		case ApiDeviceMisc: return "DeviceMisc";
+		case ApiDeviceMiscPrivateData: return "DeviceMiscPrivateData";
+		case ApiDeviceMiscSharedHandle: return "DeviceMiscSharedHandle";
+		case ApiDeviceMiscPower: return "DeviceMiscPower";
+		case ApiDeviceMiscProtectedSession: return "DeviceMiscProtectedSession";
+		case ApiDeviceMiscLifetime: return "DeviceMiscLifetime";
+		case ApiDeviceMiscMetaCommand: return "DeviceMiscMetaCommand";
+		case ApiDeviceMiscStateObject: return "DeviceMiscStateObject";
+		case ApiDeviceMiscBackgroundProcessing: return "DeviceMiscBackgroundProcessing";
+		case ApiDeviceMiscShaderCache: return "DeviceMiscShaderCache";
 		case ApiResourceMap: return "ResourceMap";
 		case ApiResourceUnmap: return "ResourceUnmap";
 		case ApiResourceReadWrite: return "ResourceReadWrite";
 		case ApiResourceQuery: return "ResourceQuery";
 		case ApiDeviceQuery: return "DeviceQuery";
+		case ApiDeviceQueryPrivateData: return "DeviceQueryPrivateData";
+		case ApiDeviceQueryCapability: return "DeviceQueryCapability";
+		case ApiDeviceQueryDescriptor: return "DeviceQueryDescriptor";
+		case ApiDeviceQueryAllocation: return "DeviceQueryAllocation";
+		case ApiDeviceQueryLayout: return "DeviceQueryLayout";
+		case ApiDeviceQueryTiling: return "DeviceQueryTiling";
+		case ApiDeviceQueryMetaCommand: return "DeviceQueryMetaCommand";
+		case ApiDeviceQueryRaytracing: return "DeviceQueryRaytracing";
+		case ApiDeviceQueryMisc: return "DeviceQueryMisc";
 		case ApiObjectLifetime: return "ObjectLifetime";
 		default: return "OtherCommandList";
 		}
