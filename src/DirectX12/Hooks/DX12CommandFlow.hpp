@@ -1058,6 +1058,48 @@ public:
 	DX12PreSkinDispatchOverride dispatchOverride;
 };
 
+class DX12PreSkinStableFingerprintCacheUtils
+{
+public:
+	class Entry
+	{
+	public:
+		UINT64 dependency = 0;
+		UINT64 fingerprint = 0;
+	};
+
+	static constexpr size_t EntryCount = 1024;
+	inline static thread_local std::array<Entry, EntryCount> Entries = {};
+
+	static size_t Slot(UINT64 dependency)
+	{
+		dependency ^= dependency >> 33;
+		dependency *= 0xff51afd7ed558ccdull;
+		dependency ^= dependency >> 33;
+		return static_cast<size_t>(dependency) & (EntryCount - 1);
+	}
+
+	static bool TryLoad(UINT64 dependency, UINT64 *fingerprint)
+	{
+		if (!dependency || !fingerprint)
+			return false;
+		const Entry &entry = Entries[Slot(dependency)];
+		if (entry.dependency != dependency || !entry.fingerprint)
+			return false;
+		*fingerprint = entry.fingerprint;
+		return true;
+	}
+
+	static void Store(UINT64 dependency, UINT64 fingerprint)
+	{
+		if (!dependency || !fingerprint)
+			return;
+		Entry &entry = Entries[Slot(dependency)];
+		entry.dependency = dependency;
+		entry.fingerprint = fingerprint;
+	}
+};
+
 class DX12DispatchHookFlowGuard
 {
 public:
@@ -1722,6 +1764,9 @@ public:
 					probe->bindingDependencyFingerprint &&
 				runtimeState->resolvedCompute.bindingFingerprint) {
 			computeIaFingerprint = runtimeState->resolvedCompute.bindingFingerprint;
+		} else if (DX12PreSkinStableFingerprintCacheUtils::TryLoad(
+				probe->bindingDependencyFingerprint,
+				&computeIaFingerprint)) {
 		} else {
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
 			// Use the cross-frame stable fingerprint: it strips per-frame-volatile
@@ -1739,6 +1784,9 @@ public:
 					probe->bindingDependencyFingerprint;
 				runtimeState->resolvedCompute.bindingFingerprint = computeIaFingerprint;
 			}
+			DX12PreSkinStableFingerprintCacheUtils::Store(
+				probe->bindingDependencyFingerprint,
+				computeIaFingerprint);
 		}
 		computeIaFingerprint = DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
 			computeIaFingerprint,
@@ -2525,14 +2573,14 @@ public:
 		entry->state = state;
 	}
 
-	static size_t DirectIaCandidateSlot(
+	static size_t DirectIaCandidateTag(
 		const DX12IaHashStateCacheKey &iaKey,
 		const DX12IaDrawInvocation &draw)
 	{
 		size_t hash = DX12IaHashStateCacheKeyHash()(iaKey);
 		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.instanceCount);
 		hash = DX12IaHashStateCacheKeyHash::Combine(hash, draw.firstInstance);
-		return hash & 63;
+		return hash;
 	}
 
 	static bool TryLoadDirectIaCandidate(
@@ -2543,14 +2591,20 @@ public:
 	{
 		if (!templateState || !hasCandidate)
 			return false;
-		const DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
-			templateState->directIaCandidates[DirectIaCandidateSlot(iaKey, draw)];
-		if (!entry.valid || !(entry.iaKey == iaKey) ||
-			entry.instanceCount != draw.instanceCount ||
-			entry.firstInstance != draw.firstInstance)
-			return false;
-		*hasCandidate = entry.hasCandidate;
-		return true;
+		const size_t tag = DirectIaCandidateTag(iaKey, draw);
+		const size_t setBase = (tag & 63) * 4;
+		for (size_t way = 0; way < 4; ++way) {
+			DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
+				templateState->directIaCandidates[setBase + way];
+			if (!entry.valid || entry.tag != tag || !(entry.iaKey == iaKey) ||
+				entry.instanceCount != draw.instanceCount ||
+				entry.firstInstance != draw.firstInstance)
+				continue;
+			entry.age = ++templateState->directIaCandidateClock;
+			*hasCandidate = entry.hasCandidate;
+			return true;
+		}
+		return false;
 	}
 
 	static bool StoreDirectIaCandidate(
@@ -2561,14 +2615,34 @@ public:
 	{
 		if (!templateState)
 			return false;
-		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
-			templateState->directIaCandidates[DirectIaCandidateSlot(iaKey, draw)];
+		const size_t tag = DirectIaCandidateTag(iaKey, draw);
+		const size_t setBase = (tag & 63) * 4;
+		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry *target = nullptr;
+		for (size_t way = 0; way < 4; ++way) {
+			DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
+				templateState->directIaCandidates[setBase + way];
+			if (entry.valid && entry.tag == tag && entry.iaKey == iaKey &&
+				entry.instanceCount == draw.instanceCount &&
+				entry.firstInstance == draw.firstInstance) {
+				target = &entry;
+				break;
+			}
+			if (!target || !entry.valid || entry.age < target->age)
+				target = &entry;
+			if (!entry.valid)
+				break;
+		}
+		if (!target)
+			return false;
+		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry = *target;
 		const bool evicted = entry.valid &&
 			(!(entry.iaKey == iaKey) ||
 			 entry.instanceCount != draw.instanceCount ||
 			 entry.firstInstance != draw.firstInstance);
 		entry.valid = true;
 		entry.hasCandidate = hasCandidate;
+		entry.age = ++templateState->directIaCandidateClock;
+		entry.tag = tag;
 		entry.iaKey = iaKey;
 		entry.instanceCount = draw.instanceCount;
 		entry.firstInstance = draw.firstInstance;

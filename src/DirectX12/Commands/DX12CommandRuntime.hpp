@@ -1235,6 +1235,8 @@ public:
 	public:
 		bool valid = false;
 		bool hasCandidate = false;
+		UINT64 age = 0;
+		size_t tag = 0;
 		DX12IaHashStateCacheKey iaKey;
 		UINT instanceCount = 0;
 		UINT firstInstance = 0;
@@ -1260,7 +1262,8 @@ public:
 	// Candidate matching is separate from IA-state materialization. Entries are
 	// keyed by the complete resolved IA identity plus the draw inputs that do not
 	// belong to the IA hash state itself.
-	std::array<DirectIaCandidateEntry, 64> directIaCandidates;
+	std::array<DirectIaCandidateEntry, 256> directIaCandidates;
+	UINT64 directIaCandidateClock = 0;
 	// IA target-presence checks depend only on the resident IA bindings, the
 	// compiled target plan, and indexed mode. Keep both semantics separately:
 	// direct checks consider descriptor targets while full checks do not.
