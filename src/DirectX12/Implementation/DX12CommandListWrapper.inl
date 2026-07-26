@@ -758,11 +758,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					else
 						mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
 				} else {
-					DX12CommandListStateFlow::CapturePrimitiveTopology(
+					const bool changed = DX12CommandListStateFlow::CapturePrimitiveTopology(
 						mCommandList, &mRuntimeState, PrimitiveTopology);
-					if (mOrigIASetPrimitiveTopology)
+					if (changed && mOrigIASetPrimitiveTopology)
 						mOrigIASetPrimitiveTopology(mCommandList, PrimitiveTopology);
-					else
+					else if (changed)
 						mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
 				}
 				DX12_HOTPATH_TIME_END(IaSetTopologyTotal);

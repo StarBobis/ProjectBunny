@@ -218,11 +218,11 @@ public:
 				original(commandList, rootSignature);
 			return;
 		}
-		DX12CommandListComputeBindingFlow::CaptureRootSignature(
+		const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 			commandList, rootSignature, false);
 		PFN_SET_ROOT_SIGNATURE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetComputeRootSignature, "SetComputeRootSignature");
-		if (original)
+		if (changed && original)
 			original(commandList, rootSignature);
 	}
 
@@ -239,11 +239,11 @@ public:
 				original(commandList, rootSignature);
 			return;
 		}
-		DX12CommandListComputeBindingFlow::CaptureRootSignature(
+		const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 			commandList, rootSignature, true);
 		PFN_SET_ROOT_SIGNATURE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootSignature, PFN_SET_ROOT_SIGNATURE, DX12CommandListHookState::OrigSetGraphicsRootSignature, "SetGraphicsRootSignature");
-		if (original)
+		if (changed && original)
 			original(commandList, rootSignature);
 	}
 
@@ -261,11 +261,11 @@ public:
 				original(commandList, rootParameterIndex, baseDescriptor);
 			return;
 		}
-		DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+		const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 			commandList, rootParameterIndex, baseDescriptor, false);
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetComputeRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetComputeRootDescriptorTable, "SetComputeRootDescriptorTable");
-		if (original)
+		if (changed && original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 	}
 
@@ -283,11 +283,11 @@ public:
 				original(commandList, rootParameterIndex, baseDescriptor);
 			return;
 		}
-		DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+		const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 			commandList, rootParameterIndex, baseDescriptor, true);
 		PFN_SET_ROOT_DESCRIPTOR_TABLE original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable, PFN_SET_ROOT_DESCRIPTOR_TABLE, DX12CommandListHookState::OrigSetGraphicsRootDescriptorTable, "SetGraphicsRootDescriptorTable");
-		if (original)
+		if (changed && original)
 			original(commandList, rootParameterIndex, baseDescriptor);
 	}
 
@@ -1170,10 +1170,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetPrimitiveTopolog
 		return;
 	}
 
-	DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, topology);
+	const bool changed =
+		DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, topology);
 	PFN_IA_SET_PRIMITIVE_TOPOLOGY original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetPrimitiveTopology, PFN_IA_SET_PRIMITIVE_TOPOLOGY, DX12CommandListHookState::OrigIASetPrimitiveTopology, "IASetPrimitiveTopology");
-	if (original)
+	if (changed && original)
 		original(commandList, topology);
 }
 
@@ -1315,9 +1316,10 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetIndexBuffer(
 		return;
 	}
 
-	DX12CommandListStateFlow::CaptureIndexBuffer(commandList, view);
+	const bool changed = DX12CommandListStateFlow::CaptureIndexBuffer(
+		commandList, view);
 	PFN_IA_SET_INDEX_BUFFER original = DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetIndexBuffer, PFN_IA_SET_INDEX_BUFFER, DX12CommandListHookState::OrigIASetIndexBuffer, "IASetIndexBuffer");
-	if (original)
+	if (changed && original)
 		original(commandList, view);
 }
 
@@ -1349,11 +1351,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedIASetVertexBuffers(
 		    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
 		activeViews = redirectedViews;
 	}
-	DX12CommandListStateFlow::CaptureVertexBuffers(
+	const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 		commandList, startSlot, count, activeViews);
 	PFN_IA_SET_VERTEX_BUFFERS original =
 		DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::IaSetVertexBuffers, PFN_IA_SET_VERTEX_BUFFERS, DX12CommandListHookState::OrigIASetVertexBuffers, "IASetVertexBuffers");
-	if (original)
+	if (changed && original)
 		original(commandList, startSlot, count, activeViews);
 }
 

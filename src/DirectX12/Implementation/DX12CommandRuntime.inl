@@ -817,11 +817,11 @@ void DX12CommandListRuntime::ResetIa(ID3D12GraphicsCommandList *commandList)
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntime::RememberIndexBuffer(
+bool DX12CommandListRuntime::RememberIndexBuffer(
 	DX12SimulateContext *state, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (!state)
-		return;
+		return true;
 
 	const bool newValid = view != nullptr;
 	const bool same =
@@ -832,7 +832,7 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 				state->ia.indexBuffer.Format == view->Format));
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeIndexBuffer(!same);
 	if (same)
-		return;
+		return false;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
 	state->ia.indexBufferHashValid = false;
@@ -845,39 +845,42 @@ void DX12CommandListRuntime::RememberIndexBuffer(
 	state->ia.indexBufferResolved = false;
 	state->ia.indexBufferResource = DX12BufferResourceSummary();
 	DX12CommandListRuntime::BumpIaEpoch(state);
+	return true;
 }
 
-void DX12CommandListRuntime::RememberIndexBuffer(
+bool DX12CommandListRuntime::RememberIndexBuffer(
 	ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		DX12CommandListRuntime::RememberIndexBuffer(fastState, view);
-		return;
+		return DX12CommandListRuntime::RememberIndexBuffer(fastState, view);
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12SimulateContext &state = shard.states[commandList];
-	DX12CommandListRuntime::RememberIndexBuffer(&state, view);
+	const bool changed = DX12CommandListRuntime::RememberIndexBuffer(&state, view);
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
-void DX12CommandListRuntime::RememberVertexBuffers(
+bool DX12CommandListRuntime::RememberVertexBuffers(
 	DX12SimulateContext *state,
 	UINT startSlot,
 	UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (!state)
-		return;
+		return true;
 
 	DX12ActiveIaState &ia = state->ia;
 	const UINT trackedCount = startSlot < ARRAYSIZE(ia.vertexBuffers) ?
 		min(count, static_cast<UINT>(ARRAYSIZE(ia.vertexBuffers)) - startSlot) : 0;
+	if (trackedCount != count)
+		return true;
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferCall(trackedCount);
 	bool changedAny = false;
 	for (UINT i = 0; i < trackedCount; ++i) {
@@ -907,57 +910,60 @@ void DX12CommandListRuntime::RememberVertexBuffers(
 	}
 	if (changedAny)
 		DX12CommandListRuntime::BumpIaEpoch(state);
+	return changedAny;
 }
 
-void DX12CommandListRuntime::RememberVertexBuffers(
+bool DX12CommandListRuntime::RememberVertexBuffers(
 	ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count,
 	const D3D12_VERTEX_BUFFER_VIEW *views)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		DX12CommandListRuntime::RememberVertexBuffers(fastState, startSlot, count, views);
-		return;
+		return DX12CommandListRuntime::RememberVertexBuffers(fastState, startSlot, count, views);
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12SimulateContext &state = shard.states[commandList];
-	DX12CommandListRuntime::RememberVertexBuffers(&state, startSlot, count, views);
+	const bool changed = DX12CommandListRuntime::RememberVertexBuffers(
+		&state, startSlot, count, views);
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
-void DX12CommandListRuntime::RememberPrimitiveTopology(
+bool DX12CommandListRuntime::RememberPrimitiveTopology(
 	DX12SimulateContext *state, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!state)
-		return;
+		return true;
 	const bool changed = state->ia.primitiveTopology != topology;
 	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePrimitiveTopology(changed);
 	if (!changed)
-		return;
+		return false;
 	state->ia.primitiveTopology = topology;
+	return true;
 }
 
-void DX12CommandListRuntime::RememberPrimitiveTopology(
+bool DX12CommandListRuntime::RememberPrimitiveTopology(
 	ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *fastState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (fastState) {
-		DX12CommandListRuntime::RememberPrimitiveTopology(fastState, topology);
-		return;
+		return DX12CommandListRuntime::RememberPrimitiveTopology(fastState, topology);
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	DX12SimulateContext &state = shard.states[commandList];
-	DX12CommandListRuntime::RememberPrimitiveTopology(&state, topology);
+	const bool changed = DX12CommandListRuntime::RememberPrimitiveTopology(&state, topology);
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
 void DX12CommandListRuntime::BumpIaEpoch(DX12SimulateContext *state)
@@ -1735,14 +1741,14 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12CommandListRuntime::RememberComputeRootSignature(
+bool DX12CommandListRuntime::RememberComputeRootSignature(
 	DX12SimulateContext *state,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!state)
-		return;
+		return true;
 	if (state->computeRootSignature == rootSignature)
-		return;
+		return false;
 
 	state->computeRootSignature = rootSignature;
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
@@ -1757,16 +1763,17 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 	DX12RuntimeBumpBindingQuerySerial(state);
+	return true;
 }
 
-void DX12CommandListRuntime::RememberGraphicsRootSignature(
+bool DX12CommandListRuntime::RememberGraphicsRootSignature(
 	DX12SimulateContext *state,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!state)
-		return;
+		return true;
 	if (state->graphicsRootSignature == rootSignature)
-		return;
+		return false;
 
 	state->graphicsRootSignature = rootSignature;
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
@@ -1780,21 +1787,21 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 		&state->graphicsRootBindingRevisions);
 	DX12RuntimeBumpBindingQuerySerial(state);
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
+	return true;
 }
 
-void DX12CommandListRuntime::RememberGraphicsRootSignature(
+bool DX12CommandListRuntime::RememberGraphicsRootSignature(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
-		DX12CommandListRuntime::RememberGraphicsRootSignature(
+		return DX12CommandListRuntime::RememberGraphicsRootSignature(
 			state, rootSignature);
-		return;
 	}
 
 	DX12CommandListRuntimeShard &shard =
@@ -1802,26 +1809,27 @@ void DX12CommandListRuntime::RememberGraphicsRootSignature(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
+	bool changed = true;
 	if (it != shard.states.end()) {
-		DX12CommandListRuntime::RememberGraphicsRootSignature(
+		changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
 			&it->second, rootSignature);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
-void DX12CommandListRuntime::RememberComputeRootSignature(
+bool DX12CommandListRuntime::RememberComputeRootSignature(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12RootSignature *rootSignature)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *state =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
-		DX12CommandListRuntime::RememberComputeRootSignature(
+		return DX12CommandListRuntime::RememberComputeRootSignature(
 			state, rootSignature);
-		return;
 	}
 
 	DX12CommandListRuntimeShard &shard =
@@ -1829,26 +1837,28 @@ void DX12CommandListRuntime::RememberComputeRootSignature(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
+	bool changed = true;
 	if (it != shard.states.end()) {
-		DX12CommandListRuntime::RememberComputeRootSignature(
+		changed = DX12CommandListRuntime::RememberComputeRootSignature(
 			&it->second, rootSignature);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
-void DX12CommandListRuntime::RememberRootDescriptorTable(
+bool DX12CommandListRuntime::RememberRootDescriptorTable(
 	DX12SimulateContext *state,
 	bool graphics,
 	UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
 	if (!state || rootParameterIndex >= MaxRootParameters)
-		return;
+		return true;
 	RootTableState &table = graphics ?
 		state->graphicsRootTables[rootParameterIndex] :
 		state->computeRootTables[rootParameterIndex];
 	if (table.valid && table.baseDescriptor.ptr == baseDescriptor.ptr) {
-		return;
+		return false;
 	}
 	if (!table.valid) {
 		if (graphics)
@@ -1874,33 +1884,35 @@ void DX12CommandListRuntime::RememberRootDescriptorTable(
 			&state->graphicsRootBindingRevisions, rootParameterIndex);
 	}
 	DX12RuntimeBumpBindingQuerySerial(state);
+	return true;
 }
 
-void DX12CommandListRuntime::RememberRootDescriptorTable(
+bool DX12CommandListRuntime::RememberRootDescriptorTable(
 	ID3D12GraphicsCommandList *commandList,
 	bool graphics,
 	UINT rootParameterIndex,
 	D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor)
 {
 	if (!commandList)
-		return;
+		return true;
 
 	DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtrFast(commandList);
 	if (state) {
-		DX12CommandListRuntime::RememberRootDescriptorTable(
+		return DX12CommandListRuntime::RememberRootDescriptorTable(
 			state, graphics, rootParameterIndex, baseDescriptor);
-		return;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext>::iterator it =
 		shard.states.find(commandList);
+	bool changed = true;
 	if (it != shard.states.end()) {
-		DX12CommandListRuntime::RememberRootDescriptorTable(
+		changed = DX12CommandListRuntime::RememberRootDescriptorTable(
 			&it->second, graphics, rootParameterIndex, baseDescriptor);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
+	return changed;
 }
 
 void DX12CommandListRuntime::RememberGraphicsRootDescriptor(

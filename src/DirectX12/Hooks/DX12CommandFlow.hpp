@@ -3369,7 +3369,7 @@ public:
 				// hash state. Cache it before building the probe key so a negative probe
 				// hit does not require re-hashing the same draw region first.
 				LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
-				const DX12IaHashStateCacheKey directHashCacheKey =
+				DX12IaHashStateCacheKey directHashCacheKey =
 					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
 						mutableRuntimeState,
 						0,

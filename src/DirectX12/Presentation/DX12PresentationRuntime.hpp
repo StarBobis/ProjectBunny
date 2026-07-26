@@ -1681,7 +1681,10 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
-		DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
+		const bool changed = DX12CommandListStateFlow::CaptureIndexBuffer(
+			commandList, runtimeState, view);
+		if (!changed)
+			return;
 		if (original)
 			original(commandList, view);
 		else
@@ -1724,8 +1727,10 @@ public:
 			    runtimeState ? &runtimeState->ia : nullptr)) {
 			activeViews = redirectedViews;
 		}
-		DX12CommandListStateCapture::VertexBuffers(
+		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, activeViews);
+		if (!changed)
+			return;
 		if (original)
 			original(commandList, startSlot, count, activeViews);
 		else
@@ -1808,8 +1813,10 @@ public:
 			}
 		}
 		if (!ShouldSkipComputeBinding()) {
-			DX12CommandListComputeBindingFlow::CaptureRootSignature(
+			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, false);
+			if (!changed)
+				return;
 		}
 		if (original) original(commandList, unwrapped);
 		else commandList->SetComputeRootSignature(unwrapped);
@@ -1848,8 +1855,10 @@ public:
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
 		}
 		else {
-			DX12CommandListComputeBindingFlow::CaptureRootSignature(
+			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, true);
+			if (!changed)
+				return;
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
 		}
 	}
@@ -1876,8 +1885,10 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptorTable);
 		if (!ShouldSkipComputeBinding()) {
-			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, false);
+			if (!changed)
+				return;
 		}
 		if (original) original(commandList, rootParameterIndex, baseDescriptor);
 		else commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
@@ -1908,8 +1919,10 @@ public:
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		else {
-			DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, true);
+			if (!changed)
+				return;
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		}
@@ -2154,8 +2167,9 @@ public:
 		if (DX12HotPathState::skipAll)
 			commandList->IASetPrimitiveTopology(topology);
 		else {
-			DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, runtimeState, topology);
-			commandList->IASetPrimitiveTopology(topology);
+			if (DX12CommandListStateFlow::CapturePrimitiveTopology(
+					commandList, runtimeState, topology))
+				commandList->IASetPrimitiveTopology(topology);
 		}
 	}
 };

@@ -154,7 +154,7 @@ public:
 		DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(runtimeState, hashComponent);
 	}
 
-	static void CaptureRootSignature(
+	static bool CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
@@ -169,43 +169,46 @@ public:
 			DX12HotPathState::skipBindings;
 		if (!needsResidentBinding && skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
-			return;
+			return true;
 		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListComputeBindingFlow::CaptureRootSignature(
+		return DX12CommandListComputeBindingFlow::CaptureRootSignature(
 			commandList, runtimeState, rootSignature, graphics);
 	}
 
-	static void CaptureRootSignature(
+	static bool CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
 		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		if (DX12InternalReplayState::IsActive())
+			return true;
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
+		bool changed = true;
 		if (needsResidentBinding) {
 			if (graphics) {
 				if (runtimeState)
-					DX12CommandListRuntime::RememberGraphicsRootSignature(
+					changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
 						runtimeState, rootSignature);
 				else
-					DX12CommandListRuntime::RememberGraphicsRootSignature(
+					changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
 						commandList, rootSignature);
 			} else {
 				if (runtimeState)
-					DX12CommandListRuntime::RememberComputeRootSignature(
+					changed = DX12CommandListRuntime::RememberComputeRootSignature(
 						runtimeState, rootSignature);
 				else
-					DX12CommandListRuntime::RememberComputeRootSignature(
+					changed = DX12CommandListRuntime::RememberComputeRootSignature(
 						commandList, rootSignature);
 			}
 		}
-		if (!graphics) {
+		if (!graphics && changed) {
 			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
 				runtimeState, reinterpret_cast<uint64_t>(rootSignature));
 		}
@@ -214,7 +217,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
-			return;
+			return changed;
 		}
 
 		DX12CommandListFlowDiagnostics::LogDX12Call(
@@ -228,9 +231,10 @@ public:
 			DX12CommandListStateCapture::ComputeRootSignature(
 				commandList, runtimeState, rootSignature);
 		}
+		return true;
 	}
 
-	static void CaptureRootDescriptorTable(
+	static bool CaptureRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
@@ -246,15 +250,15 @@ public:
 			DX12HotPathState::skipBindings;
 		if (!needsResidentTable && skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
-			return;
+			return true;
 		}
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
+		return DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 			commandList, runtimeState, rootParameterIndex, baseDescriptor, graphics);
 	}
 
-	static void CaptureRootDescriptorTable(
+	static bool CaptureRootDescriptorTable(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
@@ -262,22 +266,23 @@ public:
 		bool graphics)
 	{
 		if (DX12InternalReplayState::IsActive())
-			return;
+			return true;
 		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
 			DX12HotPathState::NeedsComputeResidentDescriptorState(flags);
+		bool changed = true;
 		if (needsResidentTable) {
 			if (runtimeState) {
-				DX12CommandListRuntime::RememberRootDescriptorTable(
+				changed = DX12CommandListRuntime::RememberRootDescriptorTable(
 					runtimeState, graphics, rootParameterIndex, baseDescriptor);
 			} else {
-				DX12CommandListRuntime::RememberRootDescriptorTable(
+				changed = DX12CommandListRuntime::RememberRootDescriptorTable(
 					commandList, graphics, rootParameterIndex, baseDescriptor);
 			}
 		}
-		if (!graphics) {
+		if (!graphics && changed) {
 			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
 				runtimeState,
 				static_cast<uint64_t>(rootParameterIndex) ^ 0x9e3779b97f4a7c15ull);
@@ -287,7 +292,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
-			return;
+			return changed;
 		}
 
 		DX12CommandListFlowDiagnostics::LogDX12Call(
@@ -302,6 +307,7 @@ public:
 			DX12CommandListStateCapture::ComputeRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor);
 		}
+		return true;
 	}
 
 	static void CaptureRoot32BitConstant(
@@ -1787,51 +1793,55 @@ public:
 		return true;
 	}
 
-	static void CapturePrimitiveTopology(
+	static bool CapturePrimitiveTopology(
 		ID3D12GraphicsCommandList *commandList,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, runtimeState, topology);
+		return DX12CommandListStateFlow::CapturePrimitiveTopology(commandList, runtimeState, topology);
 	}
 
-	static void CapturePrimitiveTopology(
+	static bool CapturePrimitiveTopology(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
+		if (DX12InternalReplayState::IsActive())
+			return true;
 		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetPrimitiveTopology", commandList,
 				" topology=%u", static_cast<UINT>(topology));
 			DX12CommandListStateCapture::PrimitiveTopology(commandList, runtimeState, topology);
-			return;
+			return true;
 		}
 
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
-				DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
-			else
-				DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
+				return DX12CommandListRuntime::RememberPrimitiveTopology(runtimeState, topology);
+			return DX12CommandListRuntime::RememberPrimitiveTopology(commandList, topology);
 		}
+		return true;
 	}
 
-	static void CaptureIndexBuffer(
+	static bool CaptureIndexBuffer(
 		ID3D12GraphicsCommandList *commandList,
 		const D3D12_INDEX_BUFFER_VIEW *view)
 	{
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListStateFlow::CaptureIndexBuffer(commandList, runtimeState, view);
+		return DX12CommandListStateFlow::CaptureIndexBuffer(commandList, runtimeState, view);
 	}
 
-	static void CaptureIndexBuffer(
+	static bool CaptureIndexBuffer(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		const D3D12_INDEX_BUFFER_VIEW *view)
 	{
+		if (DX12InternalReplayState::IsActive())
+			return true;
 		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetIndexBuffer", commandList,
@@ -1840,7 +1850,7 @@ public:
 				view ? view->SizeInBytes : 0,
 				view ? static_cast<UINT>(view->Format) : 0);
 			DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
-			return;
+			return true;
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
@@ -1849,13 +1859,13 @@ public:
 			DX12Profiling::RecordIaHuntIaUpdate();
 		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
-				DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
-			else
-				DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
+				return DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
+			return DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
 		}
+		return true;
 	}
 
-	static void CaptureVertexBuffers(
+	static bool CaptureVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
 		UINT startSlot,
 		UINT count,
@@ -1863,24 +1873,26 @@ public:
 	{
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListStateFlow::CaptureVertexBuffers(
+		return DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, views);
 	}
 
-	static void CaptureVertexBuffers(
+	static bool CaptureVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		UINT startSlot,
 		UINT count,
 		const D3D12_VERTEX_BUFFER_VIEW *views)
 	{
+		if (DX12InternalReplayState::IsActive())
+			return true;
 		if (!DX12HotPathState::skipBindings) {
 			DX12CommandListFlowDiagnostics::LogDX12Call(
 				"ID3D12GraphicsCommandList::IASetVertexBuffers", commandList,
 				" start=%u count=%u", startSlot, count);
 			DX12CommandListStateCapture::VertexBuffers(
 				commandList, runtimeState, startSlot, count, views);
-			return;
+			return true;
 		}
 
 		DX12_PROFILE_FAST_FORWARD();
@@ -1889,9 +1901,9 @@ public:
 			DX12Profiling::RecordIaHuntIaUpdate();
 		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
-				DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
-			else
-				DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
+				return DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
+			return DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
 		}
+		return true;
 	}
 };
