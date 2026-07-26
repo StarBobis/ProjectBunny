@@ -32,6 +32,7 @@ UINT64 DX12ModGetReloadGeneration();
 UINT64 DX12ModGetReloadGenerationFast();
 UINT64 DX12ModGetPreSkinActiveGenerationFast();
 bool DX12ModHasActiveTextureOverrides();
+bool DX12ModHasConfiguredTextureOverrides();
 bool DX12ModHasAnyActiveOverrides();
 bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();

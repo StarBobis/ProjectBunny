@@ -196,6 +196,7 @@ struct PlacedResourceInfo
 
 bool DX12ModHasActiveShaderOverrides();
 bool DX12ModHasActiveTextureOverrides();
+bool DX12ModHasConfiguredTextureOverrides();
 bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsShaderDescriptorTracking();
@@ -226,7 +227,7 @@ public:
 
 	static bool NeedsIaContentTracking()
 	{
-		return DX12ModHasActiveTextureOverrides();
+		return DX12ModHasConfiguredTextureOverrides();
 	}
 
 	static bool NeedsDescriptorTracking()
@@ -244,6 +245,13 @@ public:
 	static bool NeedsFullResourceMetadata()
 	{
 		return NeedsDumpOrHuntingTracking();
+	}
+
+	static bool NeedsTextureResourceTracking()
+	{
+		return NeedsFullResourceMetadata() ||
+			NeedsIaContentTracking() ||
+			NeedsDescriptorTracking();
 	}
 
 	// Runtime recording (gRuntimeDescriptorByCpuHandle) is a fast cache for

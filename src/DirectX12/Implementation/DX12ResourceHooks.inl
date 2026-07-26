@@ -352,14 +352,19 @@ const D3D12_RESOURCE_DESC1 *DX12ResourceTrackerHookRuntime::PrepareResourceDesc1
 
 bool DX12ResourceTrackerHookRuntime::ShouldRecordCreatedResource(const D3D12_RESOURCE_DESC *desc)
 {
-	// Resource creation is always a baseline fact. Only the heavier full-metadata
-	// path is conditional; otherwise keep the always-needed dumpable resource set.
+	// Buffers must always stay tracked for IA/buffer replacement, GPU-VA lookup,
+	// and upload/readback content capture. Textures only need global resource
+	// records when an active feature consumes texture identity through the
+	// descriptor/runtime tracking path.
 	if (DX12ResourceTrackingPolicyUtils::NeedsFullResourceMetadata())
 		return true;
 	if (!desc)
 		return true;
-	return desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ||
-		IsTextureResourceDimension(desc->Dimension);
+	if (desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+		return true;
+	if (IsTextureResourceDimension(desc->Dimension))
+		return DX12ResourceTrackingPolicyUtils::NeedsTextureResourceTracking();
+	return false;
 }
 
 void DX12ResourceTrackerHookRuntime::LogResourceCreateStage(
@@ -567,6 +572,27 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	auto flushPendingRange = [&]() {
 		if (!pendingCount)
 			return;
+		if (pendingDest.ptr == pendingSrc.ptr) {
+			copyTelemetry.RecordRange(pendingCount, false, false, false);
+			copyTelemetry.RecordResults(
+				pendingCount,
+				0,
+				0,
+				pendingCount,
+				0,
+				0);
+			pendingCount = 0;
+			return;
+		}
+		if (pendingCount == 1 &&
+				DX12DescriptorHeapShadowUtils::TrySkipEquivalentSingleDescriptorCopy(
+					descriptorHeapsType,
+					pendingDest,
+					pendingSrc,
+					&copyTelemetry)) {
+			pendingCount = 0;
+			return;
+		}
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 			descriptorHeapsType,
 			pendingDest,
@@ -622,10 +648,20 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking())
+	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking()) {
+		if (numDescriptors != 0 &&
+				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
+			return;
+		if (numDescriptors == 1 &&
+				DX12DescriptorHeapShadowUtils::TrySkipEquivalentSingleDescriptorCopy(
+					descriptorHeapsType,
+					destDescriptorRangeStart,
+					srcDescriptorRangeStart))
+			return;
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 			descriptorHeapsType, destDescriptorRangeStart,
 			srcDescriptorRangeStart, numDescriptors);
+	}
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource(

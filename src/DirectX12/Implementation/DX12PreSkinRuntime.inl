@@ -2691,6 +2691,12 @@ bool DX12ModHasActiveTextureOverrides()
 		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
 }
 
+bool DX12ModHasConfiguredTextureOverrides()
+{
+	return gHasTextureOverrides != 0 &&
+		InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+}
+
 bool DX12ModHasAnyActiveOverrides()
 {
 	return InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0 &&

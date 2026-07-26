@@ -735,6 +735,59 @@ public:
 		return true;
 	}
 
+	static bool TrySkipEquivalentSingleDescriptorCopy(
+		D3D12_DESCRIPTOR_HEAP_TYPE type,
+		D3D12_CPU_DESCRIPTOR_HANDLE destHandle,
+		D3D12_CPU_DESCRIPTOR_HANDLE srcHandle,
+		CopyTelemetryBatch *telemetryBatch = nullptr)
+	{
+		if (!destHandle.ptr || !srcHandle.ptr)
+			return false;
+
+		ResolvedHeapSlot destResolved;
+		ResolvedHeapSlot srcResolved;
+		const bool hasDestination = ResolveHeapSlotFast(
+			destHandle.ptr, type, &destResolved);
+		const bool hasSource = ResolveHeapSlotFast(
+			srcHandle.ptr, type, &srcResolved);
+		if (!hasDestination || !hasSource)
+			return false;
+
+		DescriptorHeapRecord &destHeap = *destResolved.heap;
+		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
+		const bool sameHeap = &destHeap == &srcHeap;
+		const bool overlaps = sameHeap && destResolved.slot == srcResolved.slot;
+		const CopyIdentityResult identityResult =
+			ComparePublishedSlotIdentities(
+				srcHeap, srcResolved.slot, destHeap, destResolved.slot);
+		if (identityResult == CopyIdentityResult::Unknown)
+			return false;
+
+		if (telemetryBatch) {
+			telemetryBatch->RecordRange(1, true, sameHeap, overlaps);
+			telemetryBatch->RecordMemo(true);
+			telemetryBatch->RecordResults(
+				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+				identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+				0,
+				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+				0,
+				identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+		} else {
+			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
+				1, true, sameHeap, overlaps);
+			DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+				identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+				0,
+				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+				0,
+				identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+		}
+		return true;
+	}
+
 	static void CopyDescriptorRange(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
