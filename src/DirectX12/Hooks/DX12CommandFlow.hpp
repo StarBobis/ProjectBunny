@@ -1479,6 +1479,30 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(t0));
 			return;
 		}
+		if (runtimeState &&
+			runtimeState->resolvedCompute.probeResultValid &&
+			!runtimeState->resolvedCompute.probeApplied &&
+			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
+			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
+			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+			runtimeState->resolvedCompute.bindingsValid &&
+			!runtimeState->resolvedCompute.bindingsUseRootValues &&
+			runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
+			runtimeState->resolvedCompute.bindingsRootSignature ==
+				runtimeState->computeRootSignature &&
+			runtimeState->resolvedCompute.bindingsDescriptorVersion ==
+				runtimeState->computeDescriptorBindingVersion) {
+			probe->applied = false;
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkin",
+				"probe_cache_descriptor_version_negative_hit",
+				0,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(t0));
+			return;
+		}
 
 		UINT64 templateStableBindingFingerprint = 0;
 		if (!probe->uavsFound) {

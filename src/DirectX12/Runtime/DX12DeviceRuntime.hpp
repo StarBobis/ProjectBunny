@@ -125,40 +125,48 @@ public:
 			UINT sourceSlot = 0;
 			UINT destinationSlot = 0;
 			UINT count = 0;
-			UINT64 descriptorQuerySerial = 0;
 			UINT sourceFound = 0;
 			UINT sourceMissing = 0;
 			UINT unchanged = 0;
 			UINT alreadyEmpty = 0;
+			std::vector<UINT64> sourceVersions;
+			std::vector<UINT64> destinationVersions;
 			bool occupied = false;
 		};
 
 		bool TryLoad(
-			const void *sourceHeap,
+			const DescriptorHeapRecord &sourceHeap,
 			UINT sourceSlot,
-			const void *destinationHeap,
+			const DescriptorHeapRecord &destinationHeap,
 			UINT destinationSlot,
 			UINT count,
-			UINT64 descriptorQuerySerial,
 			UINT *sourceFound,
 			UINT *sourceMissing,
 			UINT *unchanged,
 			UINT *alreadyEmpty) const
 		{
 			const Entry &entry = entries[EntryIndex(
-				sourceHeap,
+				&sourceHeap,
 				sourceSlot,
-				destinationHeap,
+				&destinationHeap,
 				destinationSlot,
 				count)];
 			if (!entry.occupied ||
-				entry.sourceHeap != sourceHeap ||
-				entry.destinationHeap != destinationHeap ||
+				entry.sourceHeap != &sourceHeap ||
+				entry.destinationHeap != &destinationHeap ||
 				entry.sourceSlot != sourceSlot ||
 				entry.destinationSlot != destinationSlot ||
 				entry.count != count ||
-				entry.descriptorQuerySerial != descriptorQuerySerial)
+				entry.sourceVersions.size() != count ||
+				entry.destinationVersions.size() != count)
 				return false;
+			for (UINT index = 0; index < count; ++index) {
+				if (sourceHeap.stateLocks->ReadSlotVersion(sourceSlot + index) !=
+						entry.sourceVersions[index] ||
+					destinationHeap.stateLocks->ReadSlotVersion(destinationSlot + index) !=
+						entry.destinationVersions[index])
+					return false;
+			}
 			if (sourceFound)
 				*sourceFound = entry.sourceFound;
 			if (sourceMissing)
@@ -171,33 +179,39 @@ public:
 		}
 
 		void Store(
-			const void *sourceHeap,
+			const DescriptorHeapRecord &sourceHeap,
 			UINT sourceSlot,
-			const void *destinationHeap,
+			const DescriptorHeapRecord &destinationHeap,
 			UINT destinationSlot,
 			UINT count,
-			UINT64 descriptorQuerySerial,
 			UINT sourceFound,
 			UINT sourceMissing,
 			UINT unchanged,
 			UINT alreadyEmpty)
 		{
 			Entry &entry = entries[EntryIndex(
-				sourceHeap,
+				&sourceHeap,
 				sourceSlot,
-				destinationHeap,
+				&destinationHeap,
 				destinationSlot,
 				count)];
-			entry.sourceHeap = sourceHeap;
-			entry.destinationHeap = destinationHeap;
+			entry.sourceHeap = &sourceHeap;
+			entry.destinationHeap = &destinationHeap;
 			entry.sourceSlot = sourceSlot;
 			entry.destinationSlot = destinationSlot;
 			entry.count = count;
-			entry.descriptorQuerySerial = descriptorQuerySerial;
 			entry.sourceFound = sourceFound;
 			entry.sourceMissing = sourceMissing;
 			entry.unchanged = unchanged;
 			entry.alreadyEmpty = alreadyEmpty;
+			entry.sourceVersions.resize(count);
+			entry.destinationVersions.resize(count);
+			for (UINT index = 0; index < count; ++index) {
+				entry.sourceVersions[index] =
+					sourceHeap.stateLocks->ReadSlotVersion(sourceSlot + index);
+				entry.destinationVersions[index] =
+					destinationHeap.stateLocks->ReadSlotVersion(destinationSlot + index);
+			}
 			entry.occupied = true;
 		}
 
@@ -889,14 +903,12 @@ public:
 		UINT unchangedCount = 0;
 		UINT erasedCount = 0;
 		UINT alreadyEmptyCount = 0;
-		const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
 		if (RangeMemo().TryLoad(
-				&srcHeap,
+				srcHeap,
 				srcSlot,
-				&destHeap,
+				destHeap,
 				destSlot,
 				count,
-				descriptorQuerySerial,
 				&sourceFoundCount,
 				&sourceMissingCount,
 				&unchangedCount,
@@ -952,12 +964,11 @@ public:
 					alreadyEmptyCount);
 			}
 			RangeMemo().Store(
-				&srcHeap,
+				srcHeap,
 				srcSlot,
-				&destHeap,
+				destHeap,
 				destSlot,
 				count,
-				descriptorQuerySerial,
 				sourceFoundCount,
 				sourceMissingCount,
 				unchangedCount,
