@@ -2691,7 +2691,8 @@ public:
 		key ^= static_cast<UINT64>(draw.indexCount) << 1;
 		key ^= static_cast<UINT64>(draw.firstVertex) << 17;
 		key ^= draw.instanceCount;
-		return static_cast<size_t>((key ^ (key >> 32)) & 15);
+		return static_cast<size_t>((key ^ (key >> 32)) &
+			(DX12SimulateContextDrawTemplate::ResidentDrawNegativeEntryCount - 1));
 	}
 
 	static UINT CanonicalVertexCount(

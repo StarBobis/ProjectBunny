@@ -857,6 +857,7 @@ std::unordered_map<UINT64, size_t> gPsoRootByIndex;
 std::vector<ResourceRecord> gResources;
 std::vector<size_t> gFreeResourceSlots;
 size_t gLiveResourceCount = 0;
+static std::vector<std::unique_ptr<DX12ResourcePublishedState>> gResourcePublishedStates;
 std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 // Reverse ownership for gResourceByPtr. Resource invalidation used to scan
 // every live pointer (roughly 20k in the target game) to find the one or two
@@ -864,7 +865,6 @@ std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 // so release is O(alias count), not O(all live resources).
 static std::vector<std::vector<ID3D12Resource*>> gResourceAliasesByIndex;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
-std::map<UINT64, size_t> gBufferResourceByGpuVaComplete;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
 std::atomic<UINT64> gBufferResolveGeneration{1};
 std::atomic<UINT64> gResourceIdentityGeneration{1};
@@ -930,6 +930,16 @@ UINT64 gDescriptorExclusiveLockSlowMaxUs = 0;
 // Canonical identity cache: avoids per-call COM QueryInterface overhead.
 static std::unordered_map<ID3D12Resource*, ID3D12Resource*> gCanonicalCache;
 static SRWLOCK gCanonicalCacheLock = SRWLOCK_INIT;
+
+static DX12ResourcePublishedState *EnsureResourcePublishedStateLocked(size_t index)
+{
+	if (index >= gResourcePublishedStates.size())
+		gResourcePublishedStates.resize(index + 1);
+	if (!gResourcePublishedStates[index])
+		gResourcePublishedStates[index] =
+			std::make_unique<DX12ResourcePublishedState>();
+	return gResourcePublishedStates[index].get();
+}
 
 class DX12BufferAddressRangeLogUtils
 {
@@ -1265,10 +1275,10 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	}
 	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
 	ResourceRecord oldRecord = record;
-	if (record.gpuVirtualAddress) {
+	if (record.publishedState)
+		record.publishedState->Invalidate();
+	if (record.gpuVirtualAddress)
 		gBufferResourceByGpuVa.erase(record.gpuVirtualAddress);
-		gBufferResourceByGpuVaComplete.erase(record.gpuVirtualAddress);
-	}
 	if (index < gResourceAliasesByIndex.size()) {
 		for (ID3D12Resource *alias : gResourceAliasesByIndex[index]) {
 			auto aliasFound = gResourceByPtr.find(alias);
@@ -1534,9 +1544,9 @@ void RecordResource(
 			existing.identityGeneration :
 			gResourceIdentityGeneration.fetch_add(
 				1, std::memory_order_relaxed) + 1;
+		record.publishedState = EnsureResourcePublishedStateLocked(index);
 		if (existing.gpuVirtualAddress && existing.gpuVirtualAddress != record.gpuVirtualAddress) {
 			gBufferResourceByGpuVa.erase(existing.gpuVirtualAddress);
-			gBufferResourceByGpuVaComplete.erase(existing.gpuVirtualAddress);
 		}
 		gResources[found->second] = record;
 		auto addAlias = [index](ID3D12Resource *alias) {
@@ -1553,8 +1563,8 @@ void RecordResource(
 		addAlias(canonical);
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = found->second;
-			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = found->second;
 		}
+		record.publishedState->Publish(record);
 	} else {
 		record.identityGeneration = gResourceIdentityGeneration.fetch_add(
 			1, std::memory_order_relaxed) + 1;
@@ -1562,9 +1572,11 @@ void RecordResource(
 		if (!gFreeResourceSlots.empty()) {
 			index = gFreeResourceSlots.back();
 			gFreeResourceSlots.pop_back();
+			record.publishedState = EnsureResourcePublishedStateLocked(index);
 			gResources[index] = record;
 		} else {
 			index = gResources.size();
+			record.publishedState = EnsureResourcePublishedStateLocked(index);
 			gResources.push_back(record);
 		}
 		gLiveResourceCount++;
@@ -1582,8 +1594,8 @@ void RecordResource(
 		addAlias(canonical);
 		if (record.gpuVirtualAddress && record.size) {
 			gBufferResourceByGpuVa[record.gpuVirtualAddress] = index;
-			gBufferResourceByGpuVaComplete[record.gpuVirtualAddress] = index;
 		}
+		record.publishedState->Publish(record);
 	}
 	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
 		hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
@@ -1630,16 +1642,23 @@ void CleanupTrackedResources()
 	gDescriptorHeapByCpuStart.clear();
 	gPsoRoots.clear();
 	gPsoRootByIndex.clear();
+	for (std::unique_ptr<DX12ResourcePublishedState> &publishedState :
+			gResourcePublishedStates) {
+		if (publishedState)
+			publishedState->Invalidate();
+	}
 	gResources.clear();
 	gFreeResourceSlots.clear();
 	gLiveResourceCount = 0;
 	gResourceByPtr.clear();
 	gResourceAliasesByIndex.clear();
 	gBufferResourceByGpuVa.clear();
-	gBufferResourceByGpuVaComplete.clear();
 	DX12BufferResolveCacheUtils::InvalidateAllLocked("cleanup");
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	ReleaseSRWLockExclusive(&gResourceLock);
+	AcquireSRWLockExclusive(&gCanonicalCacheLock);
+	gCanonicalCache.clear();
+	ReleaseSRWLockExclusive(&gCanonicalCacheLock);
 
 	if (gD3D12ForDeserialization) {
 		FreeLibrary(gD3D12ForDeserialization);
@@ -2949,6 +2968,8 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			record.stateTrackedByBarrier = true;
 			resourceStateChanged = true;
 		}
+		if (record.publishedState)
+			record.publishedState->PublishState(record);
 	}
 	if (resourceStateChanged) {
 		DX12BufferResolveCacheUtils::RecordStateOnlyUpdateLocked();

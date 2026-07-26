@@ -108,12 +108,6 @@ public:
 			heap->stateLocks->LockForSlot(slot) : nullptr;
 	}
 
-	static DX12DescriptorCopyMemo &CopyMemo()
-	{
-		static thread_local DX12DescriptorCopyMemo memo;
-		return memo;
-	}
-
 	class RangeCopyMemo
 	{
 	public:
@@ -527,9 +521,6 @@ public:
 			return false;
 		const UINT64 valueId =
 			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
-		const DX12DescriptorValue value =
-			DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
-				*desc, valueId);
 
 		ResolvedHeapSlot resolved;
 		const bool resolvedKnownHeap = ResolveHeapSlotFast(
@@ -561,6 +552,9 @@ public:
 		if (lockedKnownHeap) {
 			resolved = locked;
 			DescriptorHeapRecord &heap = *resolved.heap;
+			const DX12DescriptorValue value =
+				DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
+					*desc, valueId);
 			const bool changed =
 				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
 					&heap, resolved.slot, value, destDescriptor.ptr);
@@ -735,59 +729,6 @@ public:
 		return true;
 	}
 
-	static bool TrySkipEquivalentSingleDescriptorCopy(
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destHandle,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcHandle,
-		CopyTelemetryBatch *telemetryBatch = nullptr)
-	{
-		if (!destHandle.ptr || !srcHandle.ptr)
-			return false;
-
-		ResolvedHeapSlot destResolved;
-		ResolvedHeapSlot srcResolved;
-		const bool hasDestination = ResolveHeapSlotFast(
-			destHandle.ptr, type, &destResolved);
-		const bool hasSource = ResolveHeapSlotFast(
-			srcHandle.ptr, type, &srcResolved);
-		if (!hasDestination || !hasSource)
-			return false;
-
-		DescriptorHeapRecord &destHeap = *destResolved.heap;
-		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
-		const bool sameHeap = &destHeap == &srcHeap;
-		const bool overlaps = sameHeap && destResolved.slot == srcResolved.slot;
-		const CopyIdentityResult identityResult =
-			ComparePublishedSlotIdentities(
-				srcHeap, srcResolved.slot, destHeap, destResolved.slot);
-		if (identityResult == CopyIdentityResult::Unknown)
-			return false;
-
-		if (telemetryBatch) {
-			telemetryBatch->RecordRange(1, true, sameHeap, overlaps);
-			telemetryBatch->RecordMemo(true);
-			telemetryBatch->RecordResults(
-				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-				identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-				0,
-				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-				0,
-				identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-		} else {
-			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-				1, true, sameHeap, overlaps);
-			DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-				identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-				0,
-				identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-				0,
-				identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-		}
-		return true;
-	}
-
 	static void CopyDescriptorRange(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
@@ -840,74 +781,10 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
-			const DX12DescriptorCopyMemo::Key memoKey = {
-				&srcHeap,
-				&destHeap,
-				srcSlot,
-				destSlot
-			};
-			const UINT64 sourceVersion =
-				srcHeap.stateLocks ? srcHeap.stateLocks->ReadSlotVersion(srcSlot) : 0;
-			const UINT64 destinationVersion =
-				destHeap.stateLocks ? destHeap.stateLocks->ReadSlotVersion(destSlot) : 0;
-			DX12DescriptorCopyMemo::Result memoResult =
-				DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty;
-			if ((sourceVersion & 1ull) == 0 &&
-				(destinationVersion & 1ull) == 0 &&
-				CopyMemo().TryLoad(
-					memoKey,
-					sourceVersion,
-					destinationVersion,
-					&memoResult)) {
-				if (telemetryBatch)
-					telemetryBatch->RecordMemo(true);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-				if (telemetryBatch)
-					telemetryBatch->RecordResults(
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1,
-						0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
-						0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1,
-						0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
-						0,
-						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1);
-				return;
-			}
-			// A completed copy makes this exact source/destination pair a proven
-			// no-op until either slot is published again.  Consult the slot-version
-			// memo before loading both published value IDs or taking shard locks.
-			// This is the normal steady-state path for descriptor rings: the game
-			// repeatedly copies stable staging descriptors into stable visible slots.
-			// Most pairs in the captured workload mutate every frame. The old
-			// 65K x 4-way TLS memo missed 87% of probes and made a cache miss more
-			// expensive than reading the authoritative slot identities directly.
-			// Source descriptor rings commonly republish a slot with a new version
-			// even when its value already matches the visible destination. Version-
-			// keyed memoization therefore misses and performs a large random TLS cache
-			// lookup precisely where the published value IDs can prove the copy is a
-			// no-op directly. The seqlock comparison is the authoritative proof.
 			const CopyIdentityResult identityResult =
 				ComparePublishedSlotIdentities(
 					srcHeap, srcSlot, destHeap, destSlot);
 			if (identityResult != CopyIdentityResult::Unknown) {
-				if ((sourceVersion & 1ull) == 0 &&
-					(destinationVersion & 1ull) == 0) {
-					CopyMemo().Store(
-						memoKey,
-						sourceVersion,
-						destinationVersion,
-						identityResult == CopyIdentityResult::Unchanged ?
-							DX12DescriptorCopyMemo::Result::Unchanged :
-							DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
-				}
 				if (telemetryBatch)
 					telemetryBatch->RecordMemo(true);
 				else

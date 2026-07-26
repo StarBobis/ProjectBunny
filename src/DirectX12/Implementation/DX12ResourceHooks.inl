@@ -584,15 +584,6 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			pendingCount = 0;
 			return;
 		}
-		if (pendingCount == 1 &&
-				DX12DescriptorHeapShadowUtils::TrySkipEquivalentSingleDescriptorCopy(
-					descriptorHeapsType,
-					pendingDest,
-					pendingSrc,
-					&copyTelemetry)) {
-			pendingCount = 0;
-			return;
-		}
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 			descriptorHeapsType,
 			pendingDest,
@@ -651,12 +642,6 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking()) {
 		if (numDescriptors != 0 &&
 				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
-			return;
-		if (numDescriptors == 1 &&
-				DX12DescriptorHeapShadowUtils::TrySkipEquivalentSingleDescriptorCopy(
-					descriptorHeapsType,
-					destDescriptorRangeStart,
-					srcDescriptorRangeStart))
 			return;
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 			descriptorHeapsType, destDescriptorRangeStart,

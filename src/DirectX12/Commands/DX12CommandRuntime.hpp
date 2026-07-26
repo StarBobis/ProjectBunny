@@ -1214,10 +1214,13 @@ public:
 class DX12SimulateContextDrawTemplate
 {
 public:
-	static constexpr size_t DirectIaCandidateSetCount = 256;
+	static constexpr size_t DirectIaCandidateSetCount = 512;
 	static constexpr size_t DirectIaCandidateWayCount = 8;
+	static constexpr size_t ResidentDrawNegativeEntryCount = 128;
 	static_assert((DirectIaCandidateSetCount & (DirectIaCandidateSetCount - 1)) == 0,
 		"Direct IA candidate set count must be a power of two");
+	static_assert((ResidentDrawNegativeEntryCount & (ResidentDrawNegativeEntryCount - 1)) == 0,
+		"Resident draw negative entry count must be a power of two");
 
 	class ResolvedPlanState
 	{
@@ -1308,9 +1311,10 @@ public:
 	// direct checks consider descriptor targets while full checks do not.
 	IaTargetPresenceEntry directIaTargetPresence;
 	IaTargetPresenceEntry fullIaTargetPresence;
-	// Small direct-mapped resident cache: the common repeated negative draw is a
+	// Exact direct-mapped resident cache: the common repeated negative draw is a
 	// handful of integer comparisons, with no 32-slot scan or unordered lookup.
-	std::array<DX12ResidentDrawNegativeEntry, 16> residentDrawNegativeCache;
+	std::array<DX12ResidentDrawNegativeEntry,
+		ResidentDrawNegativeEntryCount> residentDrawNegativeCache;
 	// Unlike IA caches, a resolved plan describes the current command-list
 	// bindings and must never survive Reset or a graphics-state transition.
 	ResolvedPlanState plan;

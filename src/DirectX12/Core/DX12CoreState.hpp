@@ -179,6 +179,8 @@ public:
 	ID3D12RootSignature *rootSignature = nullptr;
 };
 
+class DX12ResourcePublishedState;
+
 class DX12BufferResourceSummary
 {
 public:
@@ -186,6 +188,7 @@ public:
 	// Monotonic Resource Identity generation. Unlike a COM pointer, this token
 	// changes when an address is reused or the tracked GPUVA range changes.
 	UINT64 resourceGeneration = 0;
+	DX12ResourcePublishedState *publishedState = nullptr;
 	D3D12_RESOURCE_DESC resourceDesc = {};
 	bool hasResourceDesc = false;
 	UINT resourceHeapType = 0;

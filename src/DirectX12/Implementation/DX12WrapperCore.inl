@@ -479,9 +479,11 @@ namespace DX12Wrapper
 			virtual ~WrapperBase()
 			{
 				DX12_CREATE_TIMING_SCOPE(WrapperLifetime, Record);
-				AcquireSRWLockExclusive(&gWrapperLock);
-				RemoveRegistryEntriesLocked();
-				ReleaseSRWLockExclusive(&gWrapperLock);
+				if (!mRegistryEntriesRemoved) {
+					AcquireSRWLockExclusive(&gWrapperLock);
+					RemoveRegistryEntriesLocked();
+					ReleaseSRWLockExclusive(&gWrapperLock);
+				}
 
 				if (mIdentity) {
 					mIdentity->Release();
@@ -495,6 +497,8 @@ namespace DX12Wrapper
 
 			void RemoveRegistryEntriesLocked()
 			{
+				if (mRegistryEntriesRemoved)
+					return;
 				bool removed = false;
 				for (size_t i = 0; i < mWrapperPointers.size(); ++i)
 					removed = gWrapperMap.erase(mWrapperPointers[i]) != 0 || removed;
@@ -507,6 +511,7 @@ namespace DX12Wrapper
 				}
 				if (removed)
 					gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
+				mRegistryEntriesRemoved = true;
 			}
 
 			ULONG ReleaseWithRegistry(std::atomic<long> &references)
@@ -627,6 +632,7 @@ namespace DX12Wrapper
 			IUnknown *mObject = nullptr;
 			IUnknown *mIdentity = nullptr;
 			std::vector<IUnknown*> mWrapperPointers;
+			bool mRegistryEntriesRemoved = false;
 		};
 
 		class ScopedWrapperReference

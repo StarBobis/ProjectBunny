@@ -57,42 +57,16 @@ public:
 // instead of replaying the global range-invalidation journal for every cache
 // hit.  The journal may contain thousands of unrelated transient resources in
 // one frame, which turned a local IA cache hit into an O(history) operation.
-static bool ApplyLatestResourceStateLocked(DX12BufferResourceSummary *summary)
+static bool ApplyLatestResourceState(DX12BufferResourceSummary *summary)
 {
-	if (!summary || !summary->resource || !summary->resourceGeneration)
+	if (!summary || !summary->resource || !summary->resourceGeneration ||
+		!summary->publishedState)
 		return false;
-
-	std::unordered_map<ID3D12Resource*, size_t>::iterator found = gResourceByPtr.find(summary->resource);
-	if (found == gResourceByPtr.end() || found->second >= gResources.size())
-		return false;
-
-	const ResourceRecord &resource = gResources[found->second];
-	if (!resource.resource ||
-		resource.identityGeneration != summary->resourceGeneration)
-		return false;
-
-	summary->currentState = static_cast<UINT>(resource.currentState);
-	summary->hasCurrentState = resource.hasCurrentState;
-	summary->stateTrackedByBarrier = resource.stateTrackedByBarrier;
-	return true;
-}
-
-static bool ResourceIdentityMatchesTrackedResource(
-	ID3D12Resource *resource, UINT64 resourceGeneration)
-{
-	if (!resource || !resourceGeneration)
-		return false;
-
-	AcquireSRWLockShared(&gResourceLock);
-	std::unordered_map<ID3D12Resource*, size_t>::iterator found =
-		gResourceByPtr.find(resource);
-	const bool matches =
-		found != gResourceByPtr.end() &&
-		found->second < gResources.size() &&
-		gResources[found->second].resource != nullptr &&
-		gResources[found->second].identityGeneration == resourceGeneration;
-	ReleaseSRWLockShared(&gResourceLock);
-	return matches;
+	return summary->publishedState->TryRead(
+		summary->resourceGeneration,
+		&summary->currentState,
+		&summary->hasCurrentState,
+		&summary->stateTrackedByBarrier);
 }
 
 static bool FillSummaryFromCacheEntry(
@@ -106,7 +80,7 @@ static bool FillSummaryFromCacheEntry(
 	summary->resourceOffset = gpuVirtualAddress - entry.begin;
 	const UINT64 available = entry.end - gpuVirtualAddress;
 	summary->viewSize = size < available ? size : available;
-	return DX12BufferResolveRangeUtils::ApplyLatestResourceStateLocked(summary);
+	return DX12BufferResolveRangeUtils::ApplyLatestResourceState(summary);
 }
 
 static bool TryResolveSummaryFromResourceRecord(
@@ -132,6 +106,7 @@ static bool TryResolveSummaryFromResourceRecord(
 
 	summary->resource = resource.resource;
 	summary->resourceGeneration = resource.identityGeneration;
+	summary->publishedState = resource.publishedState;
 	summary->resourceDesc = resource.desc;
 	summary->hasResourceDesc = true;
 	summary->gpuVirtualAddress = resource.gpuVirtualAddress;
@@ -207,11 +182,9 @@ bool DX12ResolveBufferResourceByGpuVa(
 			++cacheIndex) {
 		const BufferResolveCacheEntry &entry = localCache.entries[cacheIndex];
 		if (entry.begin && gpuVirtualAddress >= entry.begin && gpuVirtualAddress < entry.end) {
-			AcquireSRWLockShared(&gResourceLock);
 			const bool cacheResolved =
 				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
 					gpuVirtualAddress, size, entry, summary);
-			ReleaseSRWLockShared(&gResourceLock);
 			if (cacheResolved) {
 				if (cacheIndex != 0)
 					std::swap(
@@ -265,51 +238,33 @@ bool DX12ResolveBufferResourceByGpuVa(
 	ReleaseSRWLockShared(&gResourceLock);
 
 	if (!resolved) {
-		// Fallback to the secondary complete GPUVA index first.
-		// that mirrors all buffer resources with valid GPU VA that were missed by
-		// the primary gBufferResourceByGpuVa index (e.g. reserved resources with
-		// delayed VA assignment, or resources created before hook activation).
-		// This replaces the O(n) linear scan with O(log n) map lookup.
 		AcquireSRWLockShared(&gResourceLock);
-		std::map<UINT64, size_t>::iterator completeIt =
-			gBufferResourceByGpuVaComplete.upper_bound(gpuVirtualAddress);
-		if (completeIt != gBufferResourceByGpuVaComplete.begin()) {
-			--completeIt;
-			const ResourceRecord &completeResource = gResources[completeIt->second];
+		// Safety net for resources created before hook activation or temporarily
+		// absent from the synchronous normal-Mod index.
+		for (size_t i = 0; i < gResources.size(); ++i) {
+			const ResourceRecord &resource = gResources[i];
+			if (!resource.resource)
+				continue;
+			if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+				continue;
+			if (resource.gpuVirtualAddress == 0 || resource.size == 0)
+				continue;
 			if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
-					gpuVirtualAddress, size, completeResource, summary,
+					gpuVirtualAddress, size, resource, summary,
 					&resolvedBegin, &resolvedEnd)) {
 				resolved = true;
 				gBufferResolveFallbackScanHits++;
-			}
-		}
-		// Safety net: full linear scan for truly unindexed resources.
-		if (!resolved) {
-			for (size_t i = 0; i < gResources.size(); ++i) {
-				const ResourceRecord &resource = gResources[i];
-				if (!resource.resource)
-					continue;
-				if (resource.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-					continue;
-				if (resource.gpuVirtualAddress == 0 || resource.size == 0)
-					continue;
-				if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
-						gpuVirtualAddress, size, resource, summary,
-						&resolvedBegin, &resolvedEnd)) {
-					resolved = true;
-					gBufferResolveFallbackScanHits++;
-					DX12FrameAnalysis::LogJsonFunc("BufferResolveFallbackScanHit",
-							"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"resource\":\"%p\",\"resourceSize\":%llu,\"heapType\":%u,\"hasHeapType\":%u",
-						static_cast<unsigned long long>(gpuVirtualAddress),
-						static_cast<unsigned long long>(size),
-						static_cast<unsigned long long>(resolvedBegin),
-						static_cast<unsigned long long>(resolvedEnd),
-						resource.resource,
-						static_cast<unsigned long long>(resource.size),
-						resource.hasHeapType ? static_cast<UINT>(resource.heapType) : UINT_MAX,
-						resource.hasHeapType ? 1 : 0);
-					break;
-				}
+				DX12FrameAnalysis::LogJsonFunc("BufferResolveFallbackScanHit",
+						"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"resource\":\"%p\",\"resourceSize\":%llu,\"heapType\":%u,\"hasHeapType\":%u",
+					static_cast<unsigned long long>(gpuVirtualAddress),
+					static_cast<unsigned long long>(size),
+					static_cast<unsigned long long>(resolvedBegin),
+					static_cast<unsigned long long>(resolvedEnd),
+					resource.resource,
+					static_cast<unsigned long long>(resource.size),
+					resource.hasHeapType ? static_cast<UINT>(resource.heapType) : UINT_MAX,
+					resource.hasHeapType ? 1 : 0);
+				break;
 			}
 		}
 		ReleaseSRWLockShared(&gResourceLock);
@@ -1180,7 +1135,7 @@ UINT64 DX12GetIaHashContentGeneration()
 
 UINT64 DX12GetIaHashResolveGeneration()
 {
-	return gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
+	return gBufferResolveInvalidationEpochAtomic.load(std::memory_order_acquire);
 }
 
 bool DX12BufferResolveValidationUtils::IsRangeStillValid(
@@ -1231,7 +1186,8 @@ uint32_t DX12HashIaBufferContentView(
 	// L2 uses resource identity, offset, and size for stable reuse.
 	// This matches the DX11 resource, offset, and size key model.
 	// Resource-generation invalidation:
-	// - GPUVA index/resource lifetime changes bump gBufferResolveGeneration.
+	// - Resolved resources publish identity through a stable lock-free token.
+	// - Unresolved GPUVA ranges fall back to gBufferResolveGeneration.
 	// - CPU-upload content changes bump gBufferContentGeneration.
 	// This keeps IA region hashes reusable across frames without keeping stale
 	// content-derived hashes after upload buffers are rewritten.
@@ -1244,6 +1200,7 @@ uint32_t DX12HashIaBufferContentView(
 		UINT64 size = 0;
 		ID3D12Resource *resource = nullptr;
 		UINT64 resourceGeneration = 0;
+		DX12ResourcePublishedState *publishedState = nullptr;
 		bool tracksContent = false;
 	};
 
@@ -1341,7 +1298,8 @@ uint32_t DX12HashIaBufferContentView(
 	static constexpr size_t MaxL1Entries = 32768;
 	static constexpr size_t MaxL2Entries = 32768;
 	static constexpr size_t MaxL3ResolvedEntries = 65536;
-	const UINT64 resolveGeneration = gBufferResolveInvalidationEpochAtomic.load(std::memory_order_relaxed);
+	const UINT64 resolveGeneration =
+		gBufferResolveInvalidationEpochAtomic.load(std::memory_order_acquire);
 	const UINT64 globalContentGeneration =
 		gBufferContentGeneration.load(std::memory_order_relaxed);
 
@@ -1352,10 +1310,12 @@ uint32_t DX12HashIaBufferContentView(
 		IaHashCacheValue &cacheValue = itL1->second;
 		bool invalidated = true;
 		const bool hasTrackedResourceIdentity =
-			cacheValue.resource != nullptr && cacheValue.resourceGeneration != 0;
+			cacheValue.resource != nullptr &&
+			cacheValue.resourceGeneration != 0 &&
+			cacheValue.publishedState != nullptr;
 		if (!hasTrackedResourceIdentity ||
-		    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
-			    cacheValue.resource, cacheValue.resourceGeneration)) {
+		    cacheValue.publishedState->TryRead(
+			    cacheValue.resourceGeneration, nullptr, nullptr, nullptr)) {
 			const UINT64 currentContentGeneration = cacheValue.tracksContent ?
 				(cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
 					cacheValue.contentGeneration :
@@ -1398,10 +1358,12 @@ uint32_t DX12HashIaBufferContentView(
 			IaHashCacheValue &cacheValue = itL2->second;
 			bool invalidated = true;
 			const bool hasTrackedResourceIdentity =
-				cacheValue.resource != nullptr && cacheValue.resourceGeneration != 0;
+				cacheValue.resource != nullptr &&
+				cacheValue.resourceGeneration != 0 &&
+				cacheValue.publishedState != nullptr;
 			if (!hasTrackedResourceIdentity ||
-			    DX12BufferResolveRangeUtils::ResourceIdentityMatchesTrackedResource(
-				    cacheValue.resource, cacheValue.resourceGeneration)) {
+			    cacheValue.publishedState->TryRead(
+				    cacheValue.resourceGeneration, nullptr, nullptr, nullptr)) {
 				const UINT64 currentContentGeneration = cacheValue.tracksContent ?
 					(cacheValue.observedGlobalContentGeneration == globalContentGeneration ?
 						cacheValue.contentGeneration :
@@ -1456,6 +1418,7 @@ uint32_t DX12HashIaBufferContentView(
 		contentCacheValue.size = size;
 		contentCacheValue.resource = summary.resource;
 		contentCacheValue.resourceGeneration = summary.resourceGeneration;
+		contentCacheValue.publishedState = summary.publishedState;
 		contentCacheValue.tracksContent = true;
 		s_cacheL1[keyL1] = contentCacheValue;
 		IaHashKeyL2 keyL2 = { summary.resource,
@@ -1502,6 +1465,8 @@ uint32_t DX12HashIaBufferContentView(
 		contentCacheValue.resource = resolved ? summary.resource : nullptr;
 		contentCacheValue.resourceGeneration =
 			resolved ? summary.resourceGeneration : 0;
+		contentCacheValue.publishedState =
+			resolved ? summary.publishedState : nullptr;
 		contentCacheValue.tracksContent = true;
 		s_cacheL1[keyL1] = contentCacheValue;
 		if (resolved && summary.resource) {
@@ -1613,6 +1578,7 @@ uint32_t DX12HashIaBufferContentView(
 	cacheValue.resource = resolved ? summary.resource : nullptr;
 	cacheValue.resourceGeneration =
 		resolved ? summary.resourceGeneration : 0;
+	cacheValue.publishedState = resolved ? summary.publishedState : nullptr;
 	cacheValue.tracksContent = false;
 	s_cacheL1[keyL1] = cacheValue;
 	if (resolved && summary.resource) {
