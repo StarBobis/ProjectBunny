@@ -663,15 +663,20 @@ public:
 		const std::vector<DX12CurrentComputeUavBinding> &bindings,
 		uint64_t listSalt)
 	{
-		std::vector<DX12CurrentComputeUavBinding> sortedBindings = bindings;
-		std::sort(
-			sortedBindings.begin(),
-			sortedBindings.end(),
-			DX12PreSkinPlanUtils::BindingLess);
-		hash = HashCombine(hash, sortedBindings.size());
-		for (size_t index = 0; index < sortedBindings.size(); ++index) {
-			hash = AppendStableBinding(hash, sortedBindings[index], listSalt);
+		static thread_local std::vector<uint64_t> bindingHashes;
+		bindingHashes.clear();
+		if (bindingHashes.capacity() < bindings.size())
+			bindingHashes.reserve(bindings.size());
+		for (const DX12CurrentComputeUavBinding &binding : bindings) {
+			bindingHashes.push_back(AppendStableBinding(
+				0xc3a5c85c97cb3127ull,
+				binding,
+				listSalt));
 		}
+		std::sort(bindingHashes.begin(), bindingHashes.end());
+		hash = HashCombine(hash, bindingHashes.size());
+		for (uint64_t bindingHash : bindingHashes)
+			hash = HashCombine(hash, bindingHash);
 		return hash;
 	}
 
@@ -963,6 +968,22 @@ public:
 		LONG64 items = 0;
 	};
 
+	class CpuStageLookupEntry
+	{
+	public:
+		const char *category = nullptr;
+		const char *stage = nullptr;
+		UINT kind = 0;
+		LONG index = -1;
+	};
+
+	class CpuStageLookupCache
+	{
+	public:
+		CpuStageLookupEntry entries[160] = {};
+		LONG count = 0;
+	};
+
 	inline static volatile LONG64 LastPresentEnterQpc = 0;
 	inline static volatile LONG64 LastPresentLeaveQpc = 0;
 	inline static volatile LONG64 CurrentPresentEnterQpc = 0;
@@ -1030,6 +1051,7 @@ public:
 	inline static SRWLOCK CpuStageLock = SRWLOCK_INIT;
 	inline static CpuStageBucket CpuStageBuckets[160] = {};
 	inline static LONG CpuStageBucketCount = 0;
+	inline static thread_local CpuStageLookupCache CpuStageCache = {};
 
 	static LARGE_INTEGER Frequency()
 	{
@@ -1432,6 +1454,38 @@ public:
 		return newIndex;
 	}
 
+	static LONG FindCpuStageBucketCached(const char *category, const char *stage, UINT kind)
+	{
+		for (LONG index = 0; index < CpuStageCache.count; ++index) {
+			const CpuStageLookupEntry &entry = CpuStageCache.entries[index];
+			if (entry.category == category && entry.stage == stage && entry.kind == kind)
+				return entry.index;
+		}
+
+		AcquireSRWLockExclusive(&CpuStageLock);
+		const LONG bucketIndex = FindCpuStageBucketLocked(category, stage, kind);
+		ReleaseSRWLockExclusive(&CpuStageLock);
+		if (bucketIndex >= 0 && CpuStageCache.count < ARRAYSIZE(CpuStageCache.entries)) {
+			CpuStageLookupEntry &entry = CpuStageCache.entries[CpuStageCache.count++];
+			entry.category = category;
+			entry.stage = stage;
+			entry.kind = kind;
+			entry.index = bucketIndex;
+		}
+		return bucketIndex;
+	}
+
+	static void UpdateCpuStageMax(LONG64 *maximum, LONG64 value)
+	{
+		LONG64 observed = InterlockedCompareExchange64(maximum, 0, 0);
+		while (value > observed) {
+			const LONG64 previous = InterlockedCompareExchange64(maximum, value, observed);
+			if (previous == observed)
+				break;
+			observed = previous;
+		}
+	}
+
 	static void LogCpuStage(
 		const char *category,
 		const char *stage,
@@ -1441,16 +1495,14 @@ public:
 	{
 #if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		const LONG64 safeUs = ClampUs(us);
-		AcquireSRWLockExclusive(&CpuStageLock);
-		const LONG index = FindCpuStageBucketLocked(category, stage, kind);
+		const LONG index = FindCpuStageBucketCached(category, stage, kind);
 		if (index >= 0) {
-			++CpuStageBuckets[index].calls;
-			CpuStageBuckets[index].totalUs += safeUs;
-			if (safeUs > CpuStageBuckets[index].maxUs)
-				CpuStageBuckets[index].maxUs = safeUs;
-			CpuStageBuckets[index].items += static_cast<LONG64>(itemCount);
+			CpuStageBucket &bucket = CpuStageBuckets[index];
+			InterlockedIncrement64(&bucket.calls);
+			InterlockedExchangeAdd64(&bucket.totalUs, safeUs);
+			UpdateCpuStageMax(&bucket.maxUs, safeUs);
+			InterlockedExchangeAdd64(&bucket.items, static_cast<LONG64>(itemCount));
 		}
-		ReleaseSRWLockExclusive(&CpuStageLock);
 #else
 		(void)category;
 		(void)stage;
@@ -1466,10 +1518,15 @@ public:
 		LONG snapshotCount = 0;
 		AcquireSRWLockExclusive(&CpuStageLock);
 		snapshotCount = CpuStageBucketCount;
-		for (LONG index = 0; index < snapshotCount; ++index)
-			snapshot[index] = CpuStageBuckets[index];
-		memset(CpuStageBuckets, 0, sizeof(CpuStageBuckets));
-		CpuStageBucketCount = 0;
+		for (LONG index = 0; index < snapshotCount; ++index) {
+			CopyLabel(snapshot[index].category, sizeof(snapshot[index].category), CpuStageBuckets[index].category);
+			CopyLabel(snapshot[index].stage, sizeof(snapshot[index].stage), CpuStageBuckets[index].stage);
+			snapshot[index].kind = CpuStageBuckets[index].kind;
+			snapshot[index].calls = InterlockedExchange64(&CpuStageBuckets[index].calls, 0);
+			snapshot[index].totalUs = InterlockedExchange64(&CpuStageBuckets[index].totalUs, 0);
+			snapshot[index].maxUs = InterlockedExchange64(&CpuStageBuckets[index].maxUs, 0);
+			snapshot[index].items = InterlockedExchange64(&CpuStageBuckets[index].items, 0);
+		}
 		ReleaseSRWLockExclusive(&CpuStageLock);
 
 		for (LONG index = 0; index < snapshotCount; ++index) {

@@ -987,9 +987,68 @@ static bool BuildResolvedDescriptorBindingsForResourceOverride(
 	return true;
 }
 
+class DX12CommandListExecutorScratch
+{
+public:
+	std::vector<std::wstring> commandListStack;
+	std::unordered_set<std::wstring> commandListStackSet;
+	std::vector<Bunny::CommandListTarget> descriptorTargetScratch;
+	std::vector<DX12TextureOverrideMatch> targetMatchScratch;
+	std::vector<DX12CurrentShaderResourceBinding> graphicsSrvBindings;
+	std::vector<DX12ResolvedGraphicsSrvBinding> resolvedGraphicsSrvBindings;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12ResolvedGraphicsSrvBinding>,
+		DX12TextureOverrideTargetCacheKeyHash> graphicsSrvBindingsByTarget;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12TextureOverrideTargetCacheKeyHash> graphicsSrvTextureOverrideCache;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12ResolvedGraphicsSrvBinding>,
+		DX12TextureOverrideTargetCacheKeyHash> shaderResourceOverrideBindingsByTarget;
+	std::unordered_map<
+		DX12TextureOverrideTargetCacheKey,
+		std::vector<DX12TextureOverrideMatch>,
+		DX12TextureOverrideTargetCacheKeyHash> targetTextureOverrideCache;
+
+	void Reset()
+	{
+		commandListStack.clear();
+		commandListStackSet.clear();
+		descriptorTargetScratch.clear();
+		targetMatchScratch.clear();
+		graphicsSrvBindings.clear();
+		resolvedGraphicsSrvBindings.clear();
+		graphicsSrvBindingsByTarget.clear();
+		graphicsSrvTextureOverrideCache.clear();
+		shaderResourceOverrideBindingsByTarget.clear();
+		targetTextureOverrideCache.clear();
+	}
+};
+
 class DX12CommandListExecutor
 {
 public:
+	inline static thread_local DX12CommandListExecutorScratch ScratchPool[18] = {};
+	inline static thread_local UINT ScratchDepth = 0;
+
+	static DX12CommandListExecutorScratch *AcquireScratch(
+		bool *pooled,
+		DX12CommandListExecutorScratch *fallback)
+	{
+		if (ScratchDepth < ARRAYSIZE(ScratchPool)) {
+			DX12CommandListExecutorScratch *scratch = &ScratchPool[ScratchDepth++];
+			scratch->Reset();
+			*pooled = true;
+			return scratch;
+		}
+		fallback->Reset();
+		*pooled = false;
+		return fallback;
+	}
+
 	class CommandVmRunScope
 	{
 	public:
@@ -1059,7 +1118,18 @@ public:
 		  mFirstIndex(firstIndex),
 		  mFirstInstance(firstInstance),
 		  mReplacement(replacement),
-		  mPendingResourceViews(pendingResourceViews)
+		  mPendingResourceViews(pendingResourceViews),
+		  mScratch(AcquireScratch(&mScratchPooled, &mFallbackScratch)),
+		  mCommandListStack(mScratch->commandListStack),
+		  mCommandListStackSet(mScratch->commandListStackSet),
+		  mDescriptorTargetScratch(mScratch->descriptorTargetScratch),
+		  mTargetMatchScratch(mScratch->targetMatchScratch),
+		  mGraphicsSrvBindings(mScratch->graphicsSrvBindings),
+		  mResolvedGraphicsSrvBindings(mScratch->resolvedGraphicsSrvBindings),
+		  mGraphicsSrvBindingsByTarget(mScratch->graphicsSrvBindingsByTarget),
+		  mGraphicsSrvTextureOverrideCache(mScratch->graphicsSrvTextureOverrideCache),
+		  mShaderResourceOverrideBindingsByTarget(mScratch->shaderResourceOverrideBindingsByTarget),
+		  mTargetTextureOverrideCache(mScratch->targetTextureOverrideCache)
 	{
 		mCurrentIaState = iaState;
 		mCommandListStack.reserve(8);
@@ -1072,6 +1142,13 @@ public:
 		mGraphicsSrvTextureOverrideCache.reserve(16);
 		mShaderResourceOverrideBindingsByTarget.reserve(16);
 		mTargetTextureOverrideCache.reserve(16);
+	}
+
+	~DX12CommandListExecutor()
+	{
+		mScratch->Reset();
+		if (mScratchPooled)
+			--ScratchDepth;
 	}
 
 	void SetExecutionMode(bool executeCommands, bool executeDrawActions)
@@ -2468,28 +2545,31 @@ public:
 	bool mGraphicsSrvBindingsByTargetResolved = false;
 	bool mGraphicsSrvTextureOverrideCacheResolved = false;
 	bool mTextureOverrideRuntimeSnapshotResolved = false;
-	std::vector<std::wstring> mCommandListStack;
-	std::unordered_set<std::wstring> mCommandListStackSet;
-	std::vector<Bunny::CommandListTarget> mDescriptorTargetScratch;
-	std::vector<DX12TextureOverrideMatch> mTargetMatchScratch;
-	std::vector<DX12CurrentShaderResourceBinding> mGraphicsSrvBindings;
-	std::vector<DX12ResolvedGraphicsSrvBinding> mResolvedGraphicsSrvBindings;
+	DX12CommandListExecutorScratch mFallbackScratch;
+	bool mScratchPooled = false;
+	DX12CommandListExecutorScratch *mScratch = nullptr;
+	std::vector<std::wstring> &mCommandListStack;
+	std::unordered_set<std::wstring> &mCommandListStackSet;
+	std::vector<Bunny::CommandListTarget> &mDescriptorTargetScratch;
+	std::vector<DX12TextureOverrideMatch> &mTargetMatchScratch;
+	std::vector<DX12CurrentShaderResourceBinding> &mGraphicsSrvBindings;
+	std::vector<DX12ResolvedGraphicsSrvBinding> &mResolvedGraphicsSrvBindings;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
 		std::vector<DX12ResolvedGraphicsSrvBinding>,
-		DX12TextureOverrideTargetCacheKeyHash> mGraphicsSrvBindingsByTarget;
+		DX12TextureOverrideTargetCacheKeyHash> &mGraphicsSrvBindingsByTarget;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
 		std::vector<DX12TextureOverrideMatch>,
-		DX12TextureOverrideTargetCacheKeyHash> mGraphicsSrvTextureOverrideCache;
+		DX12TextureOverrideTargetCacheKeyHash> &mGraphicsSrvTextureOverrideCache;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
 		std::vector<DX12ResolvedGraphicsSrvBinding>,
-		DX12TextureOverrideTargetCacheKeyHash> mShaderResourceOverrideBindingsByTarget;
+		DX12TextureOverrideTargetCacheKeyHash> &mShaderResourceOverrideBindingsByTarget;
 	std::unordered_map<
 		DX12TextureOverrideTargetCacheKey,
 		std::vector<DX12TextureOverrideMatch>,
-		DX12TextureOverrideTargetCacheKeyHash> mTargetTextureOverrideCache;
+		DX12TextureOverrideTargetCacheKeyHash> &mTargetTextureOverrideCache;
 	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 		mTextureOverrideRuntimeSnapshot;
 	MigotoCommandVmUtils::State mVm;
@@ -4331,7 +4411,6 @@ bool DX12ModPrepareShaderOverrideReplacement(
 {
 	if (!replacement)
 		return false;
-	*replacement = DX12ModIaReplacement();
 	if (generatedStaticReplacement)
 		generatedStaticReplacement->reset();
 	if (!commandList || !pipelineState || !hasActiveShaderOverrides)
