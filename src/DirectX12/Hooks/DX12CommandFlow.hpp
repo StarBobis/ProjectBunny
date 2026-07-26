@@ -1497,6 +1497,27 @@ public:
 				&probe->cachedRootConstants,
 				&probe->bindingDependencyFingerprint,
 				&probe->uavsFound);
+			if (computeTemplateLoaded &&
+				runtimeState &&
+				runtimeState->resolvedCompute.probeResultValid &&
+				!runtimeState->resolvedCompute.probeApplied &&
+				runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
+				runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
+				runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+				runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
+					probe->bindingDependencyFingerprint) {
+				probe->applied = false;
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"PreSkin",
+					"probe_cache_template_negative_hit",
+					0,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(t0));
+				DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+				return;
+			}
 			if (!computeTemplateLoaded) {
 				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
 					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
@@ -1575,12 +1596,15 @@ public:
 		const UINT64 probeIaContentEpoch = runtimeState ? runtimeState->iaContentEpoch : 0;
 		const auto storeRuntimeProbeCache =
 			[runtimeState, reloadGeneration, computeIaFingerprint,
+			 probe = probe,
 			 probeBindingSerial, probeIaContentEpoch](
 				uint64_t computeShaderHash,
 				bool applied,
 				const DX12PreSkinDispatchOverride &dispatchOverride) {
 				if (!runtimeState)
 					return;
+				runtimeState->resolvedCompute.probeBindingDependencyFingerprint =
+					probe ? probe->bindingDependencyFingerprint : 0;
 				runtimeState->resolvedCompute.probeFingerprint =
 					computeIaFingerprint;
 				runtimeState->resolvedCompute.probeCsHash = computeShaderHash;

@@ -4442,8 +4442,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (!deviceFromCache)
 		device->Release();
 
-	if (compiledPlanHit &&
-	    ReplacementIsStaticTemplateCandidate(
+	if (ReplacementIsStaticTemplateCandidate(
 			executor,
 			pendingResourceViews,
 			*replacement)) {

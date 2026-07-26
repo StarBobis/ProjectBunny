@@ -59,6 +59,7 @@ static HANDLE gUiThread = nullptr;
 static DWORD gUiThreadId = 0;
 static volatile LONG gThreadStarted = 0;
 static volatile LONG gShutdownRequested = 0;
+static volatile LONG gLastGameWindowRefreshPresent = -120;
 static bool gClassRegistered = false;
 static DX12HuntListCategory gCurrentCategory = DX12_HUNT_LIST_VS;
 static bool gUpdatingList = false;
@@ -490,10 +491,20 @@ bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
 {
 	if (!swapChain)
 		return false;
-	DXGI_SWAP_CHAIN_DESC desc = {};
-	if (SUCCEEDED(swapChain->GetDesc(&desc)) && desc.OutputWindow && IsWindow(desc.OutputWindow))
-		SetSharedGameWindow(desc.OutputWindow);
-	EnsureUiThread();
+	const LONG present = DX12RuntimeState::GetPresentCount();
+	HWND gameWindow = GetSharedGameWindow();
+	const bool refreshGameWindow =
+		!gameWindow ||
+		!IsWindow(gameWindow) ||
+		present >= InterlockedCompareExchange(&gLastGameWindowRefreshPresent, 0, 0) + 120;
+	if (refreshGameWindow) {
+		DXGI_SWAP_CHAIN_DESC desc = {};
+		if (SUCCEEDED(swapChain->GetDesc(&desc)) && desc.OutputWindow && IsWindow(desc.OutputWindow))
+			SetSharedGameWindow(desc.OutputWindow);
+		InterlockedExchange(&gLastGameWindowRefreshPresent, present);
+	}
+	if (InterlockedCompareExchange(&gThreadStarted, 0, 0) == 0)
+		EnsureUiThread();
 	return true;
 }
 

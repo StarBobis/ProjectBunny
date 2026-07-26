@@ -429,6 +429,8 @@ public:
 		record.hasDesc = true;
 		record.gpuVirtualAddress = desc->BufferLocation;
 		record.viewSize = desc->SizeInBytes;
+		if (DescriptorValueUnchanged(destDescriptor.ptr, valueId))
+			return false;
 		WriteToCpuLedger(std::move(record));
 		return true;
 	}
@@ -536,6 +538,52 @@ public:
 			CopyIdentityResult::SourceMissingDestinationEmpty;
 	}
 
+	static bool ComparePublishedRangeIdentities(
+		const DescriptorHeapRecord &sourceHeap,
+		UINT sourceSlot,
+		const DescriptorHeapRecord &destinationHeap,
+		UINT destinationSlot,
+		UINT count,
+		UINT *sourceFound,
+		UINT *sourceMissing,
+		UINT *unchanged,
+		UINT *alreadyEmpty)
+	{
+		if (!count || !sourceHeap.stateLocks || !destinationHeap.stateLocks)
+			return false;
+		UINT localSourceFound = 0;
+		UINT localSourceMissing = 0;
+		UINT localUnchanged = 0;
+		UINT localAlreadyEmpty = 0;
+		for (UINT index = 0; index < count; ++index) {
+			DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
+			DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
+			if (!sourceHeap.stateLocks->ObserveSlotIdentity(
+					sourceSlot + index, &sourceIdentity) ||
+				!destinationHeap.stateLocks->ObserveSlotIdentity(
+					destinationSlot + index, &destinationIdentity) ||
+				sourceIdentity.valueId != destinationIdentity.valueId) {
+				return false;
+			}
+			if (sourceIdentity.valueId) {
+				++localSourceFound;
+				++localUnchanged;
+			} else {
+				++localSourceMissing;
+				++localAlreadyEmpty;
+			}
+		}
+		if (sourceFound)
+			*sourceFound = localSourceFound;
+		if (sourceMissing)
+			*sourceMissing = localSourceMissing;
+		if (unchanged)
+			*unchanged = localUnchanged;
+		if (alreadyEmpty)
+			*alreadyEmpty = localAlreadyEmpty;
+		return true;
+	}
+
 	static void CopyDescriptorRange(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
@@ -606,6 +654,10 @@ public:
 					srcHeap, srcSlot, destHeap, destSlot);
 			if (identityResult != CopyIdentityResult::Unknown) {
 				if (telemetryBatch)
+					telemetryBatch->RecordMemo(true);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				if (telemetryBatch)
 					telemetryBatch->RecordResults(
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
 						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
@@ -623,6 +675,10 @@ public:
 						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
 				return;
 			}
+			if (telemetryBatch)
+				telemetryBatch->RecordMemo(false);
+			else
+				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
 			SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot);
 			SRWLOCK *destLock = HeapLock(&destHeap, destSlot);
 			bool sourceShared = false;
@@ -716,6 +772,41 @@ public:
 		UINT unchangedCount = 0;
 		UINT erasedCount = 0;
 		UINT alreadyEmptyCount = 0;
+		if (ComparePublishedRangeIdentities(
+				srcHeap,
+				srcSlot,
+				destHeap,
+				destSlot,
+				count,
+				&sourceFoundCount,
+				&sourceMissingCount,
+				&unchangedCount,
+				&alreadyEmptyCount)) {
+			if (telemetryBatch) {
+				telemetryBatch->RecordMemo(true);
+				telemetryBatch->RecordResults(
+					sourceFoundCount,
+					sourceMissingCount,
+					0,
+					unchangedCount,
+					0,
+					alreadyEmptyCount);
+			} else {
+				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+					sourceFoundCount,
+					sourceMissingCount,
+					0,
+					unchangedCount,
+					0,
+					alreadyEmptyCount);
+			}
+			return;
+		}
+		if (telemetryBatch)
+			telemetryBatch->RecordMemo(false);
+		else
+			DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
 		bool rangeVersionCommitted = false;
 		auto invalidateRangeOnce = [&]() {
 			if (!rangeVersionCommitted) {

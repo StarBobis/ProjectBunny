@@ -1307,6 +1307,7 @@ public:
 
 	UINT64 bindingFingerprintDependency = 0;
 	UINT64 bindingFingerprint = 0;
+	UINT64 probeBindingDependencyFingerprint = 0;
 	UINT64 probeFingerprint = 0;
 	uint64_t probeCsHash = 0;
 	UINT64 probeReloadGeneration = 0;
