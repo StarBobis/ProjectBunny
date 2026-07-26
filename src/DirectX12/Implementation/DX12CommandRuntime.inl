@@ -1080,7 +1080,6 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 	filteredPlan.ResetKnown();
 	filteredPlan.hasTextureOverrideChecks = targetPlan.hasTextureOverrideChecks;
 	filteredPlan.hasDescriptorTargets = targetPlan.hasDescriptorTargets;
-	filteredPlan.descriptorTargets = targetPlan.descriptorTargets;
 
 	if (targetPlan.requireIndexBufferView || targetPlan.requireIndexBuffer) {
 		if (DX12ModHasPotentialIaTextureOverrideTargetByCount(
@@ -1093,8 +1092,8 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 		}
 	}
 
-	for (UINT slot = 0; slot < ARRAYSIZE(targetPlan.requireVertexBuffers); ++slot) {
-		if (!targetPlan.requireVertexBuffers[slot])
+	for (UINT slot = 0; slot < 32; ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot))
 			continue;
 		if (!DX12ModHasPotentialIaTextureOverrideTargetByCount(
 				false,
@@ -1103,7 +1102,7 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 				indexCount)) {
 			continue;
 		}
-		filteredPlan.requireVertexBuffers[slot] = true;
+		filteredPlan.RequireVertexBuffer(slot);
 	}
 
 	return filteredPlan;

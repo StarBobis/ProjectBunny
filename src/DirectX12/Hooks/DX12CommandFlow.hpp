@@ -2687,11 +2687,15 @@ public:
 	static size_t ResidentNegativeSlot(const DX12IaDrawInvocation &draw)
 	{
 		UINT64 key = draw.indexed ? 0x9e3779b97f4a7c15ull : 0xc4ceb9fe1a85ec53ull;
-		key ^= static_cast<UINT64>(draw.firstIndex) << 32;
-		key ^= static_cast<UINT64>(draw.indexCount) << 1;
-		key ^= static_cast<UINT64>(draw.firstVertex) << 17;
-		key ^= draw.instanceCount;
-		return static_cast<size_t>((key ^ (key >> 32)) &
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.vertexCount);
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.indexCount);
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.instanceCount);
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.firstVertex);
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.firstIndex);
+		key = DX12IaHashStateCacheKeyHash::Combine(
+			key, static_cast<UINT64>(static_cast<INT64>(draw.baseVertex)));
+		key = DX12IaHashStateCacheKeyHash::Combine(key, draw.firstInstance);
+		return static_cast<size_t>(key &
 			(DX12SimulateContextDrawTemplate::ResidentDrawNegativeEntryCount - 1));
 	}
 
@@ -2768,6 +2772,28 @@ public:
 			entry.firstIndex == CanonicalFirstIndex(draw, usage) &&
 			entry.baseVertex == draw.baseVertex &&
 			entry.firstInstance == CanonicalFirstInstance(draw, usage);
+	}
+
+	static bool TryFindResidentNegative(
+		DX12SimulateContext *state,
+		const DX12CompiledDrawDecision &decision,
+		UINT64 preSkinGeneration,
+		UINT64 contentGeneration,
+		UINT64 resolveGeneration,
+		UINT64 graphicsDescriptorQuerySerial,
+		ID3D12DescriptorHeap *graphicsDescriptorHeap,
+		UINT64 graphicsDescriptorHeapVersion,
+		const DX12IaDrawInvocation &draw)
+	{
+		if (!state)
+			return false;
+		const DX12ResidentDrawNegativeEntry &entry =
+			state->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
+		return MatchesResidentNegative(
+			entry, *state, decision, preSkinGeneration,
+			contentGeneration, resolveGeneration,
+			graphicsDescriptorQuerySerial, graphicsDescriptorHeap,
+			graphicsDescriptorHeapVersion, draw);
 	}
 
 	static void StoreResidentNegative(
@@ -3225,12 +3251,8 @@ public:
 			if (directTargetPlan.HasIaTargets()) {
 				directDescriptorContentGeneration = DX12GetIaHashContentGeneration();
 				directDescriptorResolveGeneration = DX12GetIaHashResolveGeneration();
-				DX12ResidentDrawNegativeEntry &residentNegative =
-					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[
-						ResidentNegativeSlot(draw)];
-				if (MatchesResidentNegative(
-						residentNegative,
-						*mutableRuntimeState,
+				if (TryFindResidentNegative(
+						mutableRuntimeState,
 						*drawDecision,
 						preSkinGeneration,
 						directDescriptorContentGeneration,
@@ -3290,9 +3312,7 @@ public:
 		    !directTargetPlan.requireAllIaBuffers) {
 				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
-				DX12ResidentDrawNegativeEntry &residentNegative =
-					mutableRuntimeState->resolvedDraw.residentDrawNegativeCache[ResidentNegativeSlot(draw)];
-				if (MatchesResidentNegative(residentNegative, *mutableRuntimeState,
+				if (TryFindResidentNegative(mutableRuntimeState,
 						*drawDecision, preSkinGeneration,
 						contentGeneration, resolveGeneration,
 						0, nullptr, 0, draw)) {

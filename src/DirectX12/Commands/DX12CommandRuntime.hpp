@@ -205,10 +205,11 @@ public:
 	bool requireAllIaBuffers = true;
 	bool requireIndexBuffer = false;
 	bool requireIndexBufferView = false;
-	bool requireVertexBuffers[32] = {};
+	UINT requireVertexBufferMask = 0;
 	bool hasDescriptorTargets = false;
 	bool hasTextureOverrideChecks = false;
 	std::vector<DescriptorTarget> descriptorTargets;
+	mutable UINT64 cachedFingerprint = 0;
 
 	void ResetKnown()
 	{
@@ -218,8 +219,8 @@ public:
 		hasDescriptorTargets = false;
 		hasTextureOverrideChecks = false;
 		descriptorTargets.clear();
-		for (UINT slot = 0; slot < 32; ++slot)
-			requireVertexBuffers[slot] = false;
+		requireVertexBufferMask = 0;
+		cachedFingerprint = 0;
 	}
 
 	void RequireAll()
@@ -228,8 +229,8 @@ public:
 		requireIndexBuffer = true;
 		requireIndexBufferView = true;
 		descriptorTargets.clear();
-		for (UINT slot = 0; slot < 32; ++slot)
-			requireVertexBuffers[slot] = true;
+		requireVertexBufferMask = UINT_MAX;
+		cachedFingerprint = 0;
 	}
 
 	void RequireIndexBuffer()
@@ -237,11 +238,13 @@ public:
 		requireIndexBuffer = true;
 		requireIndexBufferView = true;
 		hasTextureOverrideChecks = true;
+		cachedFingerprint = 0;
 	}
 
 	void RequireIndexBufferView()
 	{
 		requireIndexBufferView = true;
+		cachedFingerprint = 0;
 	}
 
 	void RequireVertexBuffer(UINT slot)
@@ -251,7 +254,8 @@ public:
 			RequireAll();
 			return;
 		}
-		requireVertexBuffers[slot] = true;
+		requireVertexBufferMask |= 1u << slot;
+		cachedFingerprint = 0;
 	}
 
 	void RequireDescriptorTarget(
@@ -272,6 +276,7 @@ public:
 		target.stage = stage;
 		target.slot = slot;
 		descriptorTargets.push_back(target);
+		cachedFingerprint = 0;
 	}
 
 	bool RequiresIndexBufferHash(bool indexed) const
@@ -286,18 +291,15 @@ public:
 
 	bool RequiresVertexBuffer(UINT slot) const
 	{
-		return requireAllIaBuffers || (slot < 32 && requireVertexBuffers[slot]);
+		return requireAllIaBuffers ||
+			(slot < 32 && (requireVertexBufferMask & (1u << slot)) != 0);
 	}
 
 	bool HasIaTargets() const
 	{
 		if (requireAllIaBuffers || requireIndexBuffer || requireIndexBufferView)
 			return true;
-		for (UINT slot = 0; slot < 32; ++slot) {
-			if (requireVertexBuffers[slot])
-				return true;
-		}
-		return false;
+		return requireVertexBufferMask != 0;
 	}
 
 	bool HasSameIaHashTargets(const DX12IaHashTargetPlan &other) const
@@ -306,27 +308,26 @@ public:
 			requireIndexBuffer != other.requireIndexBuffer ||
 			requireIndexBufferView != other.requireIndexBufferView)
 			return false;
-		for (UINT slot = 0; slot < 32; ++slot) {
-			if (requireVertexBuffers[slot] != other.requireVertexBuffers[slot])
-				return false;
-		}
-		return true;
+		return requireVertexBufferMask == other.requireVertexBufferMask;
 	}
 
 	UINT64 Fingerprint() const
 	{
+		if (cachedFingerprint)
+			return cachedFingerprint;
 		UINT64 key = requireAllIaBuffers ? 0xf17a11b7a11b7a11ull : 0x27a7b125f00d1234ull;
 		key ^= requireIndexBuffer ? 0x9e3779b97f4a7c15ull : 0ull;
 		key ^= requireIndexBufferView ? 0xb7e151628aed2a6bull : 0ull;
 		key ^= hasDescriptorTargets ? 0x51ed1234cafe9876ull : 0ull;
 		for (UINT slot = 0; slot < 32; ++slot) {
-			if (!requireVertexBuffers[slot])
+			if ((requireVertexBufferMask & (1u << slot)) == 0)
 				continue;
 			key ^= static_cast<UINT64>(slot + 1) * 0x100000001b3ull;
 			key ^= key >> 33;
 			key *= 0xff51afd7ed558ccdull;
 		}
-		return key ? key : 1;
+		cachedFingerprint = key ? key : 1;
+		return cachedFingerprint;
 	}
 };
 
