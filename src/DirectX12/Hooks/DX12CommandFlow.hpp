@@ -2553,21 +2553,26 @@ public:
 		return true;
 	}
 
-	static void StoreDirectIaCandidate(
+	static bool StoreDirectIaCandidate(
 		DX12SimulateContextDrawTemplate *templateState,
 		const DX12IaHashStateCacheKey &iaKey,
 		const DX12IaDrawInvocation &draw,
 		bool hasCandidate)
 	{
 		if (!templateState)
-			return;
+			return false;
 		DX12SimulateContextDrawTemplate::DirectIaCandidateEntry &entry =
 			templateState->directIaCandidates[DirectIaCandidateSlot(iaKey, draw)];
+		const bool evicted = entry.valid &&
+			(!(entry.iaKey == iaKey) ||
+			 entry.instanceCount != draw.instanceCount ||
+			 entry.firstInstance != draw.firstInstance);
 		entry.valid = true;
 		entry.hasCandidate = hasCandidate;
 		entry.iaKey = iaKey;
 		entry.instanceCount = draw.instanceCount;
 		entry.firstInstance = draw.firstInstance;
+		return evicted;
 	}
 
 	static size_t ResidentNegativeSlot(const DX12IaDrawInvocation &draw)
@@ -3346,10 +3351,16 @@ public:
 								draw.firstVertex,
 								draw.firstIndex,
 								draw.firstInstance);
-						StoreDirectIaCandidate(
+						const bool directCandidateCacheEvicted = StoreDirectIaCandidate(
 							&mutableRuntimeState->resolvedDraw,
 							directHashCacheKey,
 							draw,
+							hasDirectCandidate);
+						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
+						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheStore(
+							directCandidateCacheEvicted);
+					} else {
+						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheHit(
 							hasDirectCandidate);
 					}
 					DX12OuterTimingProbeUtils::LogCpuStage(
@@ -3364,8 +3375,6 @@ public:
 						draw.indexed ? 1u : 0u,
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
-
 					if (!hasDirectCandidate) {
 						StoreResidentNegative(mutableRuntimeState, *drawDecision,
 							preSkinGeneration,

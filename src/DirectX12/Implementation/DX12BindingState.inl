@@ -1179,7 +1179,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
 		return cachedFoundAny;
 	}
-	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
 
 	CommandListBindingState snapshot;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
@@ -1261,6 +1260,36 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
 	const UINT64 descriptorHeapVersionBefore =
 		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+	const UINT64 bufferResolveEpoch =
+		gBufferResolveGeneration.load(std::memory_order_relaxed);
+	DX12PreSkinBindingCacheKey bindingCacheKey;
+	DX12PreSkinBindingCacheUtils::BuildKey<DX12BindingTrackerQueryCacheUtils>(
+		snapshot,
+		descriptorHeapVersionBefore,
+		bufferResolveEpoch,
+		hasParsedRootSignatureSummary ? cachedSummary : nullptr,
+		&bindingCacheKey);
+	static thread_local UINT64 tlsPreSkinBindingCacheReloadGeneration = 0;
+	static thread_local DX12PreSkinBindingTlsCache tlsPreSkinBindingCache;
+	if (tlsPreSkinBindingCacheReloadGeneration != reloadGen) {
+		tlsPreSkinBindingCache = DX12PreSkinBindingTlsCache();
+		tlsPreSkinBindingCacheReloadGeneration = reloadGen;
+	}
+	bool contentCachedFoundAny = false;
+	if (DX12PreSkinBindingCacheUtils::TryLoad(
+			&tlsPreSkinBindingCache,
+			bindingCacheKey,
+			uavs,
+			srvs,
+			cbvs,
+			constants,
+			&contentCachedFoundAny)) {
+		if (dependencyFingerprint)
+			*dependencyFingerprint = bindingCacheKey.fingerprint;
+		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+		return contentCachedFoundAny;
+	}
+	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
 
 	bool allRuntimeDescriptorsStable = true;
 	bool canStoreRuntimeBindings = runtimeState && computeBindingSerial != 0;
@@ -1578,6 +1607,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const bool descriptorStateStable =
 		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
 		descriptorQuerySerialAfter == descriptorQuerySerialBefore;
+	if (allRuntimeDescriptorsStable && descriptorStateStable) {
+		DX12PreSkinBindingCacheUtils::Store(
+			&tlsPreSkinBindingCache,
+			bindingCacheKey,
+			localUavs,
+			localSrvs,
+			localCbvs,
+			localConstants,
+			foundAny);
+	}
 	if (canStoreRuntimeBindings && allRuntimeDescriptorsStable && descriptorStateStable) {
 		observedSlotVersions.resize(observedSlots.size());
 		observedSlotValueIds.resize(observedSlots.size());
@@ -1593,14 +1632,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 					observedSlotValueIds.data());
 		}
 		if (observedSlotsValid) {
-			const UINT64 runtimeDependencyFingerprint =
-				BuildRuntimePreSkinDependencyFingerprint(
-					usesRootValues ? computeBindingSerial :
-						runtimeState->computeDescriptorBindingVersion,
-					observedSlotHeap,
-					observedSlotVersions.data(),
-					observedSlotValueIds.data(),
-					observedSlots.size());
+			const UINT64 runtimeDependencyFingerprint = bindingCacheKey.fingerprint;
 			StoreRuntimePreSkinBindings(
 				runtimeState,
 				computeBindingSerial,

@@ -83,4 +83,11 @@ if(MSVC)
     # DX12ModRuntime.cpp aggregates the DX12 implementation units; Debug
     # symbols exceed the default COFF section limit without this MSVC switch.
     target_compile_options(DirectX12 PRIVATE /bigobj)
+
+    # Package global data and discard unreferenced COMDATs in optimized builds.
+    # These complement /Gy + /OPT:REF already supplied by CompilerOptions.cmake.
+    target_compile_options(DirectX12 PRIVATE
+        $<$<CONFIG:Release>:/Gw>
+        $<$<CONFIG:Release>:/Zc:inline>
+    )
 endif()
