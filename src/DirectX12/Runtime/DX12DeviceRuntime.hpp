@@ -478,11 +478,31 @@ public:
 
 		const SIZE_T cpuHandle = record.cpuHandle;
 		ResolvedHeapSlot resolved;
-		if (!ResolveAndLockHeapSlot(cpuHandle,
-				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, true, &resolved)) {
+		const bool resolvedKnownHeap = ResolveHeapSlotFast(
+			cpuHandle,
+			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+			&resolved);
+		if (resolvedKnownHeap && resolved.heap && resolved.heap->stateLocks &&
+			resolved.heap->stateLocks->PublishedSlotValueEquals(
+				resolved.slot,
+				record.valueId)) {
+			ReleaseDescriptorRecordResources(&record);
+			return false;
+		}
+		ResolvedHeapSlot locked;
+		bool lockedKnownHeap = resolvedKnownHeap &&
+			LockResolvedHeapSlotExclusive(resolved, &locked);
+		if (!lockedKnownHeap)
+			lockedKnownHeap = ResolveAndLockHeapSlot(
+				cpuHandle,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+				true,
+				&locked);
+		if (!lockedKnownHeap) {
 			WriteToCpuLedger(std::move(record));
 			return true;
 		}
+		resolved = locked;
 
 		DescriptorHeapRecord &heap = *resolved.heap;
 		const bool changed =
@@ -767,6 +787,47 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
+			const DX12DescriptorCopyMemo::Key memoKey = {
+				&srcHeap,
+				&destHeap,
+				srcSlot,
+				destSlot
+			};
+			const UINT64 sourceVersion =
+				srcHeap.stateLocks ? srcHeap.stateLocks->ReadSlotVersion(srcSlot) : 0;
+			const UINT64 destinationVersion =
+				destHeap.stateLocks ? destHeap.stateLocks->ReadSlotVersion(destSlot) : 0;
+			DX12DescriptorCopyMemo::Result memoResult =
+				DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty;
+			if ((sourceVersion & 1ull) == 0 &&
+				(destinationVersion & 1ull) == 0 &&
+				CopyMemo().TryLoad(
+					memoKey,
+					sourceVersion,
+					destinationVersion,
+					&memoResult)) {
+				if (telemetryBatch)
+					telemetryBatch->RecordMemo(true);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				if (telemetryBatch)
+					telemetryBatch->RecordResults(
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1,
+						0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
+						0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1,
+						0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 1 : 0,
+						0,
+						memoResult == DX12DescriptorCopyMemo::Result::Unchanged ? 0 : 1);
+				return;
+			}
 			// A completed copy makes this exact source/destination pair a proven
 			// no-op until either slot is published again.  Consult the slot-version
 			// memo before loading both published value IDs or taking shard locks.
@@ -784,6 +845,16 @@ public:
 				ComparePublishedSlotIdentities(
 					srcHeap, srcSlot, destHeap, destSlot);
 			if (identityResult != CopyIdentityResult::Unknown) {
+				if ((sourceVersion & 1ull) == 0 &&
+					(destinationVersion & 1ull) == 0) {
+					CopyMemo().Store(
+						memoKey,
+						sourceVersion,
+						destinationVersion,
+						identityResult == CopyIdentityResult::Unchanged ?
+							DX12DescriptorCopyMemo::Result::Unchanged :
+							DX12DescriptorCopyMemo::Result::SourceMissingDestinationEmpty);
+				}
 				if (telemetryBatch)
 					telemetryBatch->RecordMemo(true);
 				else

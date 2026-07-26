@@ -2193,14 +2193,46 @@ void DX12CommandListLifecycle::Reset(
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||
-	    DX12ModNeedsPreSkinningBindingTracking())
+	    DX12ModNeedsPreSkinningBindingTracking()) {
+		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
-	if (tracking.trackPsoState)
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"CommandListReset",
+			"binding_tracker_reset",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+	}
+	if (tracking.trackPsoState) {
+		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		DX12CommandListRuntime::RememberPipelineState(commandList, initialState);
-	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides())
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"CommandListReset",
+			"remember_pipeline_state",
+			0,
+			initialState ? 1 : 0,
+			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+	}
+	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
+		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		DX12CommandListRuntime::ResetIa(commandList);
-	if (tracking.trackPsoState || tracking.trackHuntIa)
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"CommandListReset",
+			"reset_ia",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+	}
+	if (tracking.trackPsoState || tracking.trackHuntIa) {
+		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
 		DX12HuntResetCommandList(commandList, initialState);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"CommandListReset",
+			"hunt_reset",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+	}
 }
 
 void DX12CommandListLifecycle::ClearState(

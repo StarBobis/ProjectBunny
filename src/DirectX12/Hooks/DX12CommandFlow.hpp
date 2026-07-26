@@ -1262,6 +1262,40 @@ public:
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidateDispatch();
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
+		const UINT64 outerReloadGeneration = DX12ModGetReloadGenerationFast();
+		if (effectiveState && effectiveDecision &&
+			effectiveState->resolvedCompute.probeResultValid &&
+			!effectiveState->resolvedCompute.probeApplied &&
+			effectiveDecision->computeShaderHash != 0 &&
+			effectiveState->resolvedCompute.probeCsHash ==
+				effectiveDecision->computeShaderHash &&
+			effectiveState->resolvedCompute.probeReloadGeneration ==
+				outerReloadGeneration &&
+			effectiveState->resolvedCompute.probeIaContentEpoch ==
+				effectiveState->iaContentEpoch &&
+			effectiveState->resolvedCompute.bindingsValid &&
+			!effectiveState->resolvedCompute.bindingsUseRootValues &&
+			effectiveState->resolvedCompute.bindingsHeap ==
+				effectiveState->cbvSrvUavHeap &&
+			effectiveState->resolvedCompute.bindingsRootSignature ==
+				effectiveState->computeRootSignature &&
+			effectiveState->resolvedCompute.bindingsDescriptorVersion ==
+				effectiveState->computeDescriptorBindingVersion) {
+			probe.computeShaderHash = effectiveDecision->computeShaderHash;
+			probe.computeBindingSerial = effectiveState->computeBindingSerial;
+			probe.applied = false;
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkin",
+				"probe_cache_dispatch_descriptor_version_negative_hit",
+				0,
+				1,
+				0);
+			DX12ModRestorePreSkinningUavReplacement(commandList);
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
 		LARGE_INTEGER prepareProbeBegin = DX12OuterTimingProbeUtils::Now();
 		PreparePreSkinProbe(commandList, effectiveState, &probe);
 		const std::vector<DX12CurrentComputeUavBinding> &probeUavs =
