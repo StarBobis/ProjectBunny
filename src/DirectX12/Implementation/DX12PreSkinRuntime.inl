@@ -1913,16 +1913,17 @@ static bool ApplyPreSkinBindingPatchLocked(
 	D3D12_CPU_DESCRIPTOR_HANDLE target = {};
 	target.ptr = binding.descriptor.cpuHandle;
 	if (descriptorRestores) {
-		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		heapDesc.NumDescriptors = 1;
-		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		ID3D12DescriptorHeap *restoreHeap = nullptr;
-		HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&restoreHeap));
-		if (FAILED(hr) || !restoreHeap)
+		ID3D12Device *restoreDevice = nullptr;
+		if (!AcquirePreSkinDescriptorRestoreHeap(
+				device,
+				&restoreHeap,
+				&restoreDevice) ||
+			!restoreHeap || !restoreDevice)
 			return false;
 		DX12PreSkinReplacementState::DescriptorRestore restore;
 		restore.targetCpu = target.ptr;
+		restore.device = restoreDevice;
 		restore.heap = restoreHeap;
 		restore.cpu = restoreHeap->GetCPUDescriptorHandleForHeapStart();
 		device->CopyDescriptorsSimple(
@@ -2018,16 +2019,17 @@ static bool ApplyPreSkinSrvInputPatchesLocked(
 		D3D12_CPU_DESCRIPTOR_HANDLE target = {};
 		target.ptr = srv.descriptor.cpuHandle;
 		if (descriptorRestores) {
-			D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-			heapDesc.NumDescriptors = 1;
-			heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 			ID3D12DescriptorHeap *restoreHeap = nullptr;
-			HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&restoreHeap));
-			if (FAILED(hr) || !restoreHeap)
+			ID3D12Device *restoreDevice = nullptr;
+			if (!AcquirePreSkinDescriptorRestoreHeap(
+					device,
+					&restoreHeap,
+					&restoreDevice) ||
+				!restoreHeap || !restoreDevice)
 				continue;
 			DX12PreSkinReplacementState::DescriptorRestore restore;
 			restore.targetCpu = target.ptr;
+			restore.device = restoreDevice;
 			restore.heap = restoreHeap;
 			restore.cpu = restoreHeap->GetCPUDescriptorHandleForHeapStart();
 			device->CopyDescriptorsSimple(

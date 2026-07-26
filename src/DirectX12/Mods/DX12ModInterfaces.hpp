@@ -1438,6 +1438,8 @@ public:
 		for (LONG index = 0; index < snapshotCount; ++index) {
 			if (!snapshot[index].calls && !snapshot[index].totalUs)
 				continue;
+			if (snapshot[index].totalUs < 40 && snapshot[index].maxUs < 10)
+				continue;
 			DX12LogManager::Fields("DX12CpuStageTiming",
 				"\"present\":%ld,\"category\":\"%s\",\"stage\":\"%s\",\"kind\":%u,"
 				"\"calls\":%lld,\"items\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,"
@@ -1466,6 +1468,8 @@ public:
 			return;
 		}
 		const LONG64 totalUs = snapshot.formatUs + snapshot.enqueueUs;
+		if (totalUs < 40 && !snapshot.droppedLines)
+			return;
 		DX12LogManager::Fields("DX12LogCost",
 			"\"present\":%ld,\"fieldCalls\":%lld,\"textCalls\":%lld,"
 			"\"debugFieldCalls\":%lld,\"enqueueCalls\":%lld,\"formatUs\":%lld,"
@@ -1551,16 +1555,25 @@ public:
 		(void)hr;
 
 		const LONG64 safeUs = ClampUs(us);
-		AddUs(&PresentSliceKnownUs, safeUs);
+		const bool isPostOriginalRuntimeDetail =
+			StageEquals(stage, "present_maintenance") ||
+			StageEquals(stage, "hunt_on_present") ||
+			StageEquals(stage, "post_present_ui");
+		if (!isPostOriginalRuntimeDetail)
+			AddUs(&PresentSliceKnownUs, safeUs);
 		if (StageEquals(stage, "original_present") || StageEquals(stage, "original_present_skip")) {
 			AddUs(&PresentOriginalUs, safeUs);
-		} else if (StageEquals(stage, "post_original_runtime") || StageEquals(stage, "post_original_skip")) {
+		} else if (StageEquals(stage, "post_original_runtime") ||
+			StageEquals(stage, "post_original_runtime_total") ||
+			StageEquals(stage, "post_original_skip")) {
 			AddUs(&PresentPostOriginalRuntimeUs, safeUs);
 		} else if (StageEquals(stage, "mod_begin_frame")) {
 			AddUs(&PresentModBeginFrameUs, safeUs);
 		} else if (StageEquals(stage, "profiling_and_hotpath_flush")) {
 			AddUs(&PresentProfilingFlushUs, safeUs);
-		} else if (StageEquals(stage, "consume_ui_actions")) {
+		} else if (StageEquals(stage, "consume_ui_actions") ||
+			StageEquals(stage, "consume_ui_actions_poll") ||
+			StageEquals(stage, "consume_ui_actions_apply")) {
 			AddUs(&PresentConsumeUiActionsUs, safeUs);
 		} else if (StageEquals(stage, "per_frame_counters")) {
 			AddUs(&PresentPerFrameCountersUs, safeUs);

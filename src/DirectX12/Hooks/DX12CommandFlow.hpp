@@ -302,6 +302,8 @@ public:
 					continue;
 				const LONG64 totalUs = totalTicks * 1000000 / frequency;
 				const LONG64 maxUs = maxTicks * 1000000 / frequency;
+				if (totalUs < 40 && maxUs < 10)
+					continue;
 				DX12LogManager::Fields("DX12CreateTiming",
 					"\"present\":%ld,\"api\":\"%s\",\"stage\":\"%s\","
 					"\"calls\":%ld,\"totalUs\":%lld,\"avgUs\":%lld,\"maxUs\":%lld",
@@ -1478,6 +1480,7 @@ public:
 			return;
 		}
 
+		UINT64 templateStableBindingFingerprint = 0;
 		if (!probe->uavsFound) {
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
@@ -1518,6 +1521,45 @@ public:
 				DX12_HOTPATH_TIME_END(PreSkinBindQuery);
 				return;
 			}
+			if (computeTemplateLoaded &&
+				runtimeState &&
+				runtimeState->resolvedCompute.probeResultValid &&
+				!runtimeState->resolvedCompute.probeApplied &&
+				runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
+				runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
+				runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch) {
+				const std::vector<DX12CurrentComputeUavBinding> &templateUavs =
+					probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
+				const std::vector<DX12CurrentComputeUavBinding> &templateSrvs =
+					probe->cachedSrvs ? *probe->cachedSrvs : probe->srvs;
+				const std::vector<DX12CurrentComputeUavBinding> &templateCbvs =
+					probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
+				const std::vector<DX12CurrentRootConstants> &templateRootConstants =
+					probe->cachedRootConstants ? *probe->cachedRootConstants : probe->rootConstants;
+				templateStableBindingFingerprint =
+					DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
+						templateUavs,
+						templateSrvs,
+						templateCbvs,
+						templateRootConstants);
+				const UINT64 templateProbeFingerprint =
+					DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
+						templateStableBindingFingerprint,
+						runtimeState->iaContentEpoch);
+				if (runtimeState->resolvedCompute.probeFingerprint == templateProbeFingerprint) {
+					probe->applied = false;
+					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+					DX12OuterTimingProbeUtils::LogCpuStage(
+						"PreSkin",
+						"probe_cache_template_fingerprint_negative_hit",
+						0,
+						1,
+						DX12OuterTimingProbeUtils::ElapsedUs(t0));
+					DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+					return;
+				}
+			}
 			if (!computeTemplateLoaded) {
 				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
 					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
@@ -1551,7 +1593,9 @@ public:
 
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
 		UINT64 computeIaFingerprint = 0;
-		if (runtimeState && probe->bindingDependencyFingerprint &&
+		if (templateStableBindingFingerprint) {
+			computeIaFingerprint = templateStableBindingFingerprint;
+		} else if (runtimeState && probe->bindingDependencyFingerprint &&
 				runtimeState->resolvedCompute.bindingFingerprintDependency ==
 					probe->bindingDependencyFingerprint &&
 				runtimeState->resolvedCompute.bindingFingerprint) {

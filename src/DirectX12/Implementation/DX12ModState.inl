@@ -1095,6 +1095,7 @@ public:
 	{
 	public:
 		SIZE_T targetCpu = 0;
+		ID3D12Device *device = nullptr;
 		ID3D12DescriptorHeap *heap = nullptr;
 		D3D12_CPU_DESCRIPTOR_HANDLE cpu = {};
 	};
@@ -1354,6 +1355,13 @@ public:
 	std::vector<ID3D12DescriptorHeap*> descriptorHeaps;
 };
 
+class DX12PooledPreSkinDescriptorRestoreHeap
+{
+public:
+	ID3D12Device *device = nullptr;
+	ID3D12DescriptorHeap *heap = nullptr;
+};
+
 class DX12PreSkinReleaseBatch
 
 {
@@ -1368,6 +1376,9 @@ public:
 static SRWLOCK gPreSkinRetireLock = SRWLOCK_INIT;
 static std::unordered_map<IUnknown*, DX12PreSkinPendingSubmission> gPendingPreSkinSubmissions;
 static volatile LONG gHasPendingPreSkinSubmissionWorkFast = 0;
+static SRWLOCK gPreSkinDescriptorRestoreHeapPoolLock = SRWLOCK_INIT;
+static std::vector<DX12PooledPreSkinDescriptorRestoreHeap> gPreSkinDescriptorRestoreHeapPool;
+static constexpr size_t PreSkinDescriptorRestoreHeapPoolCapacity = 64;
 
 static void PublishPendingPreSkinSubmissionWorkLocked()
 {
@@ -1378,16 +1389,98 @@ static void PublishPendingPreSkinSubmissionWorkLocked()
 		hasWork ? 1 : 0);
 }
 
+static bool AcquirePreSkinDescriptorRestoreHeap(
+	ID3D12Device *device,
+	ID3D12DescriptorHeap **heapOut,
+	ID3D12Device **retainedDeviceOut)
+{
+	if (!device || !heapOut || !retainedDeviceOut)
+		return false;
+	*heapOut = nullptr;
+	*retainedDeviceOut = nullptr;
+
+	AcquireSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+	for (size_t index = gPreSkinDescriptorRestoreHeapPool.size(); index > 0; --index) {
+		DX12PooledPreSkinDescriptorRestoreHeap &entry =
+			gPreSkinDescriptorRestoreHeapPool[index - 1];
+		if (entry.device != device || !entry.heap)
+			continue;
+		*heapOut = entry.heap;
+		*retainedDeviceOut = entry.device;
+		gPreSkinDescriptorRestoreHeapPool.erase(
+			gPreSkinDescriptorRestoreHeapPool.begin() + static_cast<ptrdiff_t>(index - 1));
+		ReleaseSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+		return true;
+	}
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+
+	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	heapDesc.NumDescriptors = 1;
+	heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+	ID3D12DescriptorHeap *heap = nullptr;
+	HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
+	if (FAILED(hr) || !heap)
+		return false;
+	device->AddRef();
+	*heapOut = heap;
+	*retainedDeviceOut = device;
+	return true;
+}
+
+static void RecyclePreSkinDescriptorRestoreHeap(
+	ID3D12Device *device,
+	ID3D12DescriptorHeap *heap)
+{
+	if (!device) {
+		if (heap)
+			heap->Release();
+		return;
+	}
+	if (!heap) {
+		device->Release();
+		return;
+	}
+
+	bool pooled = false;
+	AcquireSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+	if (gPreSkinDescriptorRestoreHeapPool.size() <
+			PreSkinDescriptorRestoreHeapPoolCapacity) {
+		gPreSkinDescriptorRestoreHeapPool.push_back({ device, heap });
+		pooled = true;
+	}
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+	if (!pooled) {
+		heap->Release();
+		device->Release();
+	}
+}
+
+static void DrainPreSkinDescriptorRestoreHeapPool(
+	DX12PreSkinReleaseBatch *releaseBatch)
+{
+	if (!releaseBatch)
+		return;
+	AcquireSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+	for (auto &entry : gPreSkinDescriptorRestoreHeapPool) {
+		if (entry.heap)
+			releaseBatch->descriptorHeaps.push_back(entry.heap);
+		if (entry.device)
+			releaseBatch->devices.push_back(entry.device);
+	}
+	gPreSkinDescriptorRestoreHeapPool.clear();
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorRestoreHeapPoolLock);
+}
+
 static void ReleasePreSkinDescriptorRestores(
 	std::vector<DX12PreSkinReplacementState::DescriptorRestore> *restores)
 {
 	if (!restores)
 		return;
 	for (auto &restore : *restores) {
-		if (restore.heap) {
-			restore.heap->Release();
-			restore.heap = nullptr;
-		}
+		RecyclePreSkinDescriptorRestoreHeap(restore.device, restore.heap);
+		restore.device = nullptr;
+		restore.heap = nullptr;
 	}
 	restores->clear();
 }

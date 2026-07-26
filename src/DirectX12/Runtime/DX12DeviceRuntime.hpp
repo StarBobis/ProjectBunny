@@ -114,6 +114,123 @@ public:
 		return memo;
 	}
 
+	class RangeCopyMemo
+	{
+	public:
+		class Entry
+		{
+		public:
+			const void *sourceHeap = nullptr;
+			const void *destinationHeap = nullptr;
+			UINT sourceSlot = 0;
+			UINT destinationSlot = 0;
+			UINT count = 0;
+			UINT64 descriptorQuerySerial = 0;
+			UINT sourceFound = 0;
+			UINT sourceMissing = 0;
+			UINT unchanged = 0;
+			UINT alreadyEmpty = 0;
+			bool occupied = false;
+		};
+
+		bool TryLoad(
+			const void *sourceHeap,
+			UINT sourceSlot,
+			const void *destinationHeap,
+			UINT destinationSlot,
+			UINT count,
+			UINT64 descriptorQuerySerial,
+			UINT *sourceFound,
+			UINT *sourceMissing,
+			UINT *unchanged,
+			UINT *alreadyEmpty) const
+		{
+			const Entry &entry = entries[EntryIndex(
+				sourceHeap,
+				sourceSlot,
+				destinationHeap,
+				destinationSlot,
+				count)];
+			if (!entry.occupied ||
+				entry.sourceHeap != sourceHeap ||
+				entry.destinationHeap != destinationHeap ||
+				entry.sourceSlot != sourceSlot ||
+				entry.destinationSlot != destinationSlot ||
+				entry.count != count ||
+				entry.descriptorQuerySerial != descriptorQuerySerial)
+				return false;
+			if (sourceFound)
+				*sourceFound = entry.sourceFound;
+			if (sourceMissing)
+				*sourceMissing = entry.sourceMissing;
+			if (unchanged)
+				*unchanged = entry.unchanged;
+			if (alreadyEmpty)
+				*alreadyEmpty = entry.alreadyEmpty;
+			return true;
+		}
+
+		void Store(
+			const void *sourceHeap,
+			UINT sourceSlot,
+			const void *destinationHeap,
+			UINT destinationSlot,
+			UINT count,
+			UINT64 descriptorQuerySerial,
+			UINT sourceFound,
+			UINT sourceMissing,
+			UINT unchanged,
+			UINT alreadyEmpty)
+		{
+			Entry &entry = entries[EntryIndex(
+				sourceHeap,
+				sourceSlot,
+				destinationHeap,
+				destinationSlot,
+				count)];
+			entry.sourceHeap = sourceHeap;
+			entry.destinationHeap = destinationHeap;
+			entry.sourceSlot = sourceSlot;
+			entry.destinationSlot = destinationSlot;
+			entry.count = count;
+			entry.descriptorQuerySerial = descriptorQuerySerial;
+			entry.sourceFound = sourceFound;
+			entry.sourceMissing = sourceMissing;
+			entry.unchanged = unchanged;
+			entry.alreadyEmpty = alreadyEmpty;
+			entry.occupied = true;
+		}
+
+	private:
+		static constexpr size_t EntryCount = 1024;
+
+		static size_t EntryIndex(
+			const void *sourceHeap,
+			UINT sourceSlot,
+			const void *destinationHeap,
+			UINT destinationSlot,
+			UINT count)
+		{
+			UINT64 hash = static_cast<UINT64>(reinterpret_cast<uintptr_t>(sourceHeap)) >> 4;
+			hash ^= static_cast<UINT64>(reinterpret_cast<uintptr_t>(destinationHeap)) *
+				0x9e3779b97f4a7c15ull;
+			hash ^= (static_cast<UINT64>(sourceSlot) << 32) | destinationSlot;
+			hash ^= static_cast<UINT64>(count) * 0xc2b2ae3d27d4eb4full;
+			hash ^= hash >> 33;
+			hash *= 0xff51afd7ed558ccdull;
+			hash ^= hash >> 33;
+			return static_cast<size_t>(hash) & (EntryCount - 1);
+		}
+
+		std::array<Entry, EntryCount> entries = {};
+	};
+
+	static RangeCopyMemo &RangeMemo()
+	{
+		static thread_local RangeCopyMemo memo;
+		return memo;
+	}
+
 	// gDescriptorLock must be held while resolving this pointer. The lock object
 	// itself is heap allocated, and the owning deque keeps record addresses stable.
 	static SRWLOCK *HeapLock(size_t heapIndex, UINT slot)
@@ -772,6 +889,39 @@ public:
 		UINT unchangedCount = 0;
 		UINT erasedCount = 0;
 		UINT alreadyEmptyCount = 0;
+		const UINT64 descriptorQuerySerial = CurrentDescriptorQuerySerial();
+		if (RangeMemo().TryLoad(
+				&srcHeap,
+				srcSlot,
+				&destHeap,
+				destSlot,
+				count,
+				descriptorQuerySerial,
+				&sourceFoundCount,
+				&sourceMissingCount,
+				&unchangedCount,
+				&alreadyEmptyCount)) {
+			if (telemetryBatch) {
+				telemetryBatch->RecordMemo(true);
+				telemetryBatch->RecordResults(
+					sourceFoundCount,
+					sourceMissingCount,
+					0,
+					unchangedCount,
+					0,
+					alreadyEmptyCount);
+			} else {
+				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+				DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+					sourceFoundCount,
+					sourceMissingCount,
+					0,
+					unchangedCount,
+					0,
+					alreadyEmptyCount);
+			}
+			return;
+		}
 		if (ComparePublishedRangeIdentities(
 				srcHeap,
 				srcSlot,
@@ -801,6 +951,17 @@ public:
 					0,
 					alreadyEmptyCount);
 			}
+			RangeMemo().Store(
+				&srcHeap,
+				srcSlot,
+				&destHeap,
+				destSlot,
+				count,
+				descriptorQuerySerial,
+				sourceFoundCount,
+				sourceMissingCount,
+				unchangedCount,
+				alreadyEmptyCount);
 			return;
 		}
 		if (telemetryBatch)
