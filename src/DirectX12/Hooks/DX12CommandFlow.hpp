@@ -1700,12 +1700,22 @@ public:
 					probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
 				const std::vector<DX12CurrentRootConstants> &templateRootConstants =
 					probe->cachedRootConstants ? *probe->cachedRootConstants : probe->rootConstants;
-				templateStableBindingFingerprint =
-					DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
-						templateUavs,
-						templateSrvs,
-						templateCbvs,
-						templateRootConstants);
+				if (!DX12PreSkinStableFingerprintCacheUtils::TryLoad(
+						probe->bindingDependencyFingerprint,
+						&templateStableBindingFingerprint)) {
+					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
+					templateStableBindingFingerprint =
+						DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
+							templateUavs,
+							templateSrvs,
+							templateCbvs,
+							templateRootConstants);
+					if (templateStableBindingFingerprint == 0)
+						templateStableBindingFingerprint = 1;
+					DX12PreSkinStableFingerprintCacheUtils::Store(
+						probe->bindingDependencyFingerprint,
+						templateStableBindingFingerprint);
+				}
 				const UINT64 templateProbeFingerprint =
 					DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
 						templateStableBindingFingerprint,
@@ -3345,11 +3355,12 @@ public:
 						draw.firstIndex,
 						draw.baseVertex);
 				bool directHashFound = false;
-				bool directHashCacheHit = TryLoadResolvedIaHashBuild(
+				const bool residentDirectHashCacheHit = TryLoadResolvedIaHashBuild(
 					&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
 					directHashCacheKey,
 					&directIaStateView,
 					&directHashFound);
+				bool directHashCacheHit = residentDirectHashCacheHit;
 				if (!directHashCacheHit) {
 					directHashCacheHit = DX12IaHashStateCacheUtils::TryLoad(
 						iaHashStateCache,
@@ -3387,7 +3398,7 @@ public:
 					}
 					if (directHashCacheEvicted)
 						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
-				} else if (directIaStateView) {
+				} else if (!residentDirectHashCacheHit && directIaStateView) {
 					StoreResolvedIaHashBuild(
 						&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
 						directHashCacheKey,
