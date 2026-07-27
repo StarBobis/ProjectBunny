@@ -1970,6 +1970,7 @@ bool DX12HuntIsEnabled();
 bool DX12HuntNeedsHotPath();
 bool DX12ModHasActiveShaderOverrides();
 bool DX12ModNeedsPresentReplacement();
+bool DX12ModPresentReplacementPendingForCurrentPresent();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsPreSkinningBindingTracking();
 bool DX12ModNeedsShaderDescriptorTracking();
@@ -2241,8 +2242,7 @@ public:
 			flags,
 			FLAG_HUNT_ENABLED |
 			FLAG_FRAME_ANALYSIS_ACTIVE |
-			FLAG_SHADER_DUMP_ACTIVE |
-			FLAG_PRESENT_REPLACEMENT);
+			FLAG_SHADER_DUMP_ACTIVE);
 	}
 
 	static bool CanResidentDrawFastReject(

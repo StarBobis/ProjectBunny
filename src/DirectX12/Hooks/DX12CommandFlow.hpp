@@ -3990,7 +3990,11 @@ public:
 		// cache layers). Reload generation keeps the shortcut conservative across
 		// hot reloads while still allowing global resident descriptor/IA features
 		// to coexist with the fast reject.
-		if (DX12HotPathState::CanResidentDrawFastReject(
+		const bool presentReplacementPending =
+			(flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			DX12ModPresentReplacementPendingForCurrentPresent();
+		if (!presentReplacementPending &&
+			DX12HotPathState::CanResidentDrawFastReject(
 				flagsWord, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);

@@ -1365,21 +1365,21 @@ bool DX12ModPreparePresentReplacement(
 	if (!DX12ModNeedsPresentReplacement())
 		return false;
 
-	ID3D12Device *device = AcquireModDevice(commandList);
-	if (!device)
-		return false;
-
 	const LONG present = DX12RuntimeState::GetPresentCount();
 	for (;;) {
 		const LONG observed = InterlockedCompareExchange(
 			&gPresentCommandListExecutedPresent, 0, 0);
-		if (observed == present) {
-			device->Release();
+		if (observed == present)
 			return false;
-		}
 		if (InterlockedCompareExchange(
 			    &gPresentCommandListExecutedPresent, present, observed) == observed)
 			break;
+	}
+
+	ID3D12Device *device = AcquireModDevice(commandList);
+	if (!device) {
+		InterlockedCompareExchange(&gPresentCommandListExecutedPresent, present - 1, present);
+		return false;
 	}
 
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
@@ -1390,6 +1390,15 @@ bool DX12ModPreparePresentReplacement(
 		device, commandList, emptyIa, pendingResourceViews, replacement);
 	device->Release();
 	return changed;
+}
+
+bool DX12ModPresentReplacementPendingForCurrentPresent()
+{
+	if (!DX12ModNeedsPresentReplacement())
+		return false;
+	const LONG present = DX12RuntimeState::GetPresentCount();
+	return InterlockedCompareExchange(
+		&gPresentCommandListExecutedPresent, 0, 0) != present;
 }
 
 static DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(

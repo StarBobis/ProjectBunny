@@ -399,6 +399,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists);
 void DX12ModBeginFrame(IDXGISwapChain *swapChain);
+bool DX12ModPresentReplacementPendingForCurrentPresent();
 bool DX12ModPreparePresentReplacement(
 	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement);
 bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *source);

@@ -963,7 +963,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 	}
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
+	const bool presentReplacementPending =
+		(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+		DX12ModPresentReplacementPendingForCurrentPresent();
+	if (!presentReplacementPending &&
+		DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
 		if (original)
@@ -999,7 +1003,11 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 	}
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
+	const bool presentReplacementPending =
+		(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+		DX12ModPresentReplacementPendingForCurrentPresent();
+	if (!presentReplacementPending &&
+		DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
 		PFN_DRAW_INDEXED_INSTANCED original =
 			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
 		if (original)

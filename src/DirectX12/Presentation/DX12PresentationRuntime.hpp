@@ -1322,7 +1322,11 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+		const bool presentReplacementPending =
+			(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			DX12ModPresentReplacementPendingForCurrentPresent();
 		const bool residentDrawReject =
+			!presentReplacementPending &&
 			DX12HotPathState::CanResidentDrawFastReject(
 				drawFlags, runtimeState);
 		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
@@ -1387,7 +1391,11 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
+		const bool presentReplacementPending =
+			(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			DX12ModPresentReplacementPendingForCurrentPresent();
 		const bool residentDrawReject =
+			!presentReplacementPending &&
 			DX12HotPathState::CanResidentDrawFastReject(
 				drawFlags, runtimeState);
 		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
