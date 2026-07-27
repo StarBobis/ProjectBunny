@@ -2329,6 +2329,40 @@ public:
 		}
 	}
 
+	static bool ExpandInPlaceVertexBufferView(
+		const D3D12_VERTEX_BUFFER_VIEW &sourceView,
+		D3D12_VERTEX_BUFFER_VIEW *expandedView)
+	{
+		if (!expandedView || !sourceView.BufferLocation || !sourceView.SizeInBytes)
+			return false;
+		if (!DX12ModHasActivePreSkinTextureOverrides())
+			return false;
+
+		DX12BufferResourceSummary resource;
+		if (!DX12ResolveBufferResourceByGpuVa(
+				sourceView.BufferLocation, 1, &resource) ||
+			!resource.hasResourceDesc ||
+			resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+			resource.gpuVirtualAddress > sourceView.BufferLocation)
+			return false;
+
+		const UINT64 offset = sourceView.BufferLocation - resource.gpuVirtualAddress;
+		DX12ModPreSkinProducerSummary producer;
+		if (!DX12ModFindActivePreSkinProducerForOutput(
+				resource.resource, 0, sourceView.StrideInBytes, &producer) ||
+			!producer.outputByteWidth ||
+			producer.outputByteWidth > resource.resourceDesc.Width ||
+			producer.outputByteWidth <= offset)
+			return false;
+
+		const UINT expandedBytes = ClampViewBytes(producer.outputByteWidth - offset);
+		if (expandedBytes <= sourceView.SizeInBytes)
+			return false;
+		*expandedView = sourceView;
+		expandedView->SizeInBytes = expandedBytes;
+		return true;
+	}
+
 	static bool RedirectVertexBufferViews(
 		ID3D12GraphicsCommandList *commandList,
 		UINT startSlot,
@@ -2343,7 +2377,9 @@ public:
 		bool anyRedirected = false;
 		for (UINT i = 0; i < count; ++i)
 			redirectedViews[i] = views[i];
-		const UINT64 resizeGeneration = DX12ModGetPreSkinOutputResizeGeneration();
+		const UINT64 resizeGeneration =
+			DX12ModGetPreSkinOutputResizeGeneration() ^
+			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
 		for (UINT i = 0; i < count; ++i) {
 			const D3D12_VERTEX_BUFFER_VIEW &sourceView = views[i];
 			if (!sourceView.BufferLocation || !sourceView.SizeInBytes)
@@ -2359,6 +2395,23 @@ public:
 						cached.SizeInBytes == sourceView.SizeInBytes &&
 						cached.StrideInBytes == sourceView.StrideInBytes)
 					continue;
+			}
+			if (ExpandInPlaceVertexBufferView(sourceView, &redirectedViews[i])) {
+				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+					activeIa->preSkinRedirectNegativeValid[slot] = false;
+				anyRedirected = true;
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+				DX12LogManager::DebugFields("DX12PreSkinningApply",
+					"\"status\":\"vb_view_expanded\","
+					"\"slot\":%u,\"gpuVa\":\"0x%llx\","
+					"\"oldBytes\":%u,\"newBytes\":%u,\"stride\":%u",
+					slot,
+					static_cast<unsigned long long>(sourceView.BufferLocation),
+					sourceView.SizeInBytes,
+					redirectedViews[i].SizeInBytes,
+					redirectedViews[i].StrideInBytes);
+#endif
+				continue;
 			}
 			DX12PreSkinOutputResizeBinding binding;
 			if (!DX12ModResolvePreSkinOutputResizeByGpuVa(

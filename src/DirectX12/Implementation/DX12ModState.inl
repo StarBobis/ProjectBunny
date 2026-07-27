@@ -1082,8 +1082,13 @@ public:
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	ID3D12DescriptorHeap *originalHeap = nullptr;
 	ID3D12Resource *resource = nullptr;
+	ID3D12Resource *outputVertexResource = nullptr;
+	ID3D12Resource *originalOutputResource = nullptr;
+	UINT64 originalOutputByteWidth = 0;
+	UINT outputResizeSlot = 0;
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
+	bool outputUavResized = false;
 	UINT64 producerSerial = 0;
 	uint64_t computeShaderHash = 0;
 	UINT64 bindingFingerprint = 0;
@@ -1129,17 +1134,20 @@ class DX12PreSkinOutputResizeCacheEntry
 public:
 	ID3D12Resource *originalResource = nullptr;
 	ID3D12Resource *resizedResource = nullptr;
+	ID3D12Resource *vertexResource = nullptr;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptorCpu = {};
-	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	UINT64 useSerial = 0;
 };
 
 static SRWLOCK gPreSkinOutputResizeCacheLock = SRWLOCK_INIT;
 static std::map<DX12PreSkinOutputResizeCacheIdentity, DX12PreSkinOutputResizeCacheEntry>
 	gPreSkinOutputResizeCache;
+static std::map<DX12PreSkinOutputResizeCacheIdentity, UINT>
+	gPreSkinOutputResizeNextRingSlot;
 static UINT64 gPreSkinOutputResizeCacheUseSerial = 0;
 static constexpr size_t PreSkinOutputResizeCacheCapacity = 32;
+static constexpr UINT PreSkinOutputResizeRingSize = 5;
 
 static void ReleasePreSkinOutputResizeCacheEntry(
 	DX12PreSkinOutputResizeCacheEntry *entry)
@@ -1150,6 +1158,8 @@ static void ReleasePreSkinOutputResizeCacheEntry(
 		entry->originalResource->Release();
 	if (entry->resizedResource)
 		entry->resizedResource->Release();
+	if (entry->vertexResource)
+		entry->vertexResource->Release();
 	if (entry->descriptorHeap)
 		entry->descriptorHeap->Release();
 	*entry = DX12PreSkinOutputResizeCacheEntry();
@@ -1163,67 +1173,63 @@ static void ClearPreSkinOutputResizeCache()
 	for (auto &item : gPreSkinOutputResizeCache)
 		releaseEntries.push_back(item.second);
 	gPreSkinOutputResizeCache.clear();
+	gPreSkinOutputResizeNextRingSlot.clear();
 	gPreSkinOutputResizeCacheUseSerial = 0;
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 	for (DX12PreSkinOutputResizeCacheEntry &entry : releaseEntries)
 		ReleasePreSkinOutputResizeCacheEntry(&entry);
 }
 
-static void SetPreSkinOutputResizeCacheState(
-	ID3D12Resource *resizedResource, D3D12_RESOURCE_STATES state)
-{
-	if (!resizedResource)
-		return;
-	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-	for (auto &item : gPreSkinOutputResizeCache) {
-		if (item.second.resizedResource != resizedResource)
-			continue;
-		item.second.state = state;
-		break;
-	}
-	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-}
-
 static bool AcquirePreSkinOutputResizeCacheEntry(
 	ID3D12Device *device, ID3D12Resource *originalResource,
 	UINT64 requiredByteWidth, UINT stride, UINT elementCount,
 	ID3D12Resource **resizedResourceOut,
+	ID3D12Resource **vertexResourceOut,
 	ID3D12DescriptorHeap **descriptorHeapOut,
 	D3D12_CPU_DESCRIPTOR_HANDLE *descriptorCpuOut,
-	D3D12_RESOURCE_STATES *stateOut, bool *cacheHitOut)
+	bool *cacheHitOut, UINT *ringSlotOut)
 {
 	if (resizedResourceOut)
 		*resizedResourceOut = nullptr;
+	if (vertexResourceOut)
+		*vertexResourceOut = nullptr;
 	if (descriptorHeapOut)
 		*descriptorHeapOut = nullptr;
 	if (descriptorCpuOut)
 		*descriptorCpuOut = {};
-	if (stateOut)
-		*stateOut = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	if (cacheHitOut)
 		*cacheHitOut = false;
+	if (ringSlotOut)
+		*ringSlotOut = 0;
 	if (!device || !originalResource || !requiredByteWidth || !stride || !elementCount ||
-	    !resizedResourceOut || !descriptorHeapOut || !descriptorCpuOut)
+	    !resizedResourceOut || !vertexResourceOut || !descriptorHeapOut ||
+	    !descriptorCpuOut)
 		return false;
 
-	const DX12PreSkinOutputResizeCacheIdentity key = {
-		reinterpret_cast<std::uintptr_t>(originalResource), requiredByteWidth, stride
+	DX12PreSkinOutputResizeCacheIdentity baseKey = {
+		reinterpret_cast<std::uintptr_t>(originalResource), requiredByteWidth, stride, 0
 	};
-	auto retainEntry = [resizedResourceOut, descriptorHeapOut, descriptorCpuOut,
-		stateOut](DX12PreSkinOutputResizeCacheEntry &entry) {
-		if (!entry.resizedResource || !entry.descriptorHeap || !entry.descriptorCpu.ptr)
+	DX12PreSkinOutputResizeCacheIdentity key = baseKey;
+	auto retainEntry = [resizedResourceOut, vertexResourceOut, descriptorHeapOut,
+		descriptorCpuOut](DX12PreSkinOutputResizeCacheEntry &entry) {
+		if (!entry.resizedResource || !entry.vertexResource ||
+		    !entry.descriptorHeap || !entry.descriptorCpu.ptr)
 			return false;
 		entry.resizedResource->AddRef();
+		entry.vertexResource->AddRef();
 		entry.descriptorHeap->AddRef();
 		*resizedResourceOut = entry.resizedResource;
+		*vertexResourceOut = entry.vertexResource;
 		*descriptorHeapOut = entry.descriptorHeap;
 		*descriptorCpuOut = entry.descriptorCpu;
-		if (stateOut)
-			*stateOut = entry.state;
 		return true;
 	};
 
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	key.ringSlot =
+		gPreSkinOutputResizeNextRingSlot[baseKey]++ % PreSkinOutputResizeRingSize;
+	if (ringSlotOut)
+		*ringSlotOut = key.ringSlot;
 	auto cached = gPreSkinOutputResizeCache.find(key);
 	if (cached != gPreSkinOutputResizeCache.end()) {
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
@@ -1256,6 +1262,16 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		IID_PPV_ARGS(&createdResource));
 	if (FAILED(resourceHr) || !createdResource)
 		return false;
+	resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+	ID3D12Resource *createdVertexResource = nullptr;
+	resourceHr = device->CreateCommittedResource(
+		&heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDesc,
+		D3D12_RESOURCE_STATE_COMMON, nullptr,
+		IID_PPV_ARGS(&createdVertexResource));
+	if (FAILED(resourceHr) || !createdVertexResource) {
+		createdResource->Release();
+		return false;
+	}
 
 	D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
 	heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -1266,6 +1282,7 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		&heapDesc, IID_PPV_ARGS(&createdHeap));
 	if (FAILED(heapHr) || !createdHeap) {
 		createdResource->Release();
+		createdVertexResource->Release();
 		return false;
 	}
 	const D3D12_CPU_DESCRIPTOR_HANDLE createdCpu =
@@ -1298,12 +1315,13 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		originalResource->AddRef();
 		entry.originalResource = originalResource;
 		entry.resizedResource = createdResource;
+		entry.vertexResource = createdVertexResource;
 		entry.descriptorHeap = createdHeap;
 		entry.descriptorCpu = createdCpu;
-		entry.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 		entry.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 		cached = gPreSkinOutputResizeCache.emplace(key, entry).first;
 		createdResource = nullptr;
+		createdVertexResource = nullptr;
 		createdHeap = nullptr;
 	} else {
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
@@ -1313,6 +1331,8 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 	ReleasePreSkinOutputResizeCacheEntry(&releaseEntry);
 	if (createdResource)
 		createdResource->Release();
+	if (createdVertexResource)
+		createdVertexResource->Release();
 	if (createdHeap)
 		createdHeap->Release();
 	return retained;

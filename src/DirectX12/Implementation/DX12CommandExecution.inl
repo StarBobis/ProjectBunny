@@ -5035,8 +5035,6 @@ public:
 	UINT64 resizedByteWidth = 0;
 	UINT stride = 0;
 	UINT64 resizedGpuVa = 0;
-	bool uavBarrierPending = true;
-	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 };
 
 static std::unordered_map<UINT64, DX12PreSkinOutputResizeEntry>
@@ -5089,8 +5087,6 @@ void DX12ModRegisterPreSkinOutputResize(
 	entry.resizedByteWidth = resizedByteWidth;
 	entry.stride = stride;
 	entry.resizedGpuVa = resizedGpuVa;
-	entry.uavBarrierPending = true;
-	entry.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	gPreSkinOutputResizeMap[originalGpuVa] = entry;
 	gHasPreSkinOutputResizeBindings.store(true, std::memory_order_release);
 	BumpPreSkinOutputResizeGeneration();
@@ -5105,7 +5101,7 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	if (!viewGpuVa || !binding)
 		return false;
 	binding->Clear();
-	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	AcquireSRWLockShared(&gPreSkinOutputResizeLock);
 	DX12PreSkinOutputResizeEntry *entry = nullptr;
 	UINT64 sourceOffset = 0;
 	auto exactIt = gPreSkinOutputResizeMap.find(viewGpuVa);
@@ -5127,7 +5123,7 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 		}
 	}
 	if (!entry || !entry->resizedResource || sourceOffset >= entry->resizedByteWidth) {
-		ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+		ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
 		return false;
 	}
 	entry->resizedResource->AddRef();
@@ -5139,16 +5135,10 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	binding->resizedByteWidth = entry->resizedByteWidth;
 	binding->sourceOffset = sourceOffset;
 	binding->stride = entry->stride;
-	binding->uavBarrierPending = entry->uavBarrierPending;
-	binding->transitionToVertex =
-		entry->state != D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-	binding->stateBefore = entry->state;
-	entry->uavBarrierPending = false;
-	entry->state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-	SetPreSkinOutputResizeCacheState(
-		entry->resizedResource,
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+	binding->uavBarrierPending = false;
+	binding->transitionToVertex = false;
+	binding->stateBefore = D3D12_RESOURCE_STATE_COMMON;
+	ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
 	return true;
 }
 

@@ -1698,15 +1698,14 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		}
 	}
 	// Resize output UAV when mod vertex count exceeds original buffer capacity.
-	// Equivalent to DX11 DynamicUAV: if replacement SRVs have more elements than
-	// the output UAV can hold, create a larger UAV so the CS can write all
-	// vertices without truncation. Also register the resized resource so the
-	// IASetVertexBuffers hook can redirect the VB to it.
+	// The compute shader writes a producer UAV, then the completed output is
+	// copied to a separate IA-only buffer after dispatch.
 	ID3D12Resource *resizedUavResource = nullptr;
+	ID3D12Resource *resizedVertexResource = nullptr;
 	ID3D12DescriptorHeap *resizedUavHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE resizedUavCpu = {};
-	D3D12_RESOURCE_STATES resizedUavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	bool resizedUavCacheHit = false;
+	UINT resizedOutputSlot = 0;
 	bool outputUavResized = false;
 #if defined(_DEBUG)
 	DX12LogManager::DebugFields("DX12PreSkinningApply",
@@ -1743,19 +1742,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			if (uavTable && AcquirePreSkinOutputResizeCacheEntry(
 				device, uavBinding.descriptor.resource,
 				requiredByteWidth, uavStride, overrideVertexCount,
-				&resizedUavResource, &resizedUavHeap, &resizedUavCpu,
-				&resizedUavState, &resizedUavCacheHit)) {
-				if (resizedUavState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
-					D3D12_RESOURCE_BARRIER barrier = {};
-					barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-					barrier.Transition.pResource = resizedUavResource;
-					barrier.Transition.StateBefore = resizedUavState;
-					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-					barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-					commandList->ResourceBarrier(1, &barrier);
-				}
-				SetPreSkinOutputResizeCacheState(
-					resizedUavResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				&resizedUavResource, &resizedVertexResource,
+				&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
+				&resizedOutputSlot)) {
 				D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
 				uavDst.ptr += static_cast<SIZE_T>(
 					uavTable->tempOffset + uavBinding.descriptorOffset) *
@@ -1764,22 +1753,14 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 					1, uavDst, resizedUavCpu,
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 				outputUavResized = true;
-				// The acquired resource reference follows this command list through
-				// the existing delayed-retirement path. The cache keeps a separate
-				// base reference for reuse by later frames.
+				// Acquired references follow this command list through the existing
+				// delayed-retirement path. The cache owns separate base references.
 				temporaryResources.push_back(resizedUavResource);
+				temporaryResources.push_back(resizedVertexResource);
 				if (resizedUavHeap) {
 					resizedUavHeap->Release();
 					resizedUavHeap = nullptr;
 				}
-				// Register for IASetVertexBuffers redirection so the draw uses the
-				// resized buffer as vb0.
-				DX12ModRegisterPreSkinOutputResize(
-					uavBinding.descriptor.resource,
-					resizedUavResource,
-					currentByteWidth,
-					requiredByteWidth,
-					uavStride);
 #if defined(_DEBUG)
 				DX12LogManager::DebugFields(
 					"DX12PreSkinningApply",
@@ -1790,7 +1771,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 					"\"newBytes\":%llu,"
 					"\"oldVertices\":%u,"
 					"\"newVertices\":%u,"
-					"\"stride\":%u,"
+					"\"stride\":%u,\"slot\":%u,"
 					"\"cache\":\"%s\"",
 					section ? section : L"",
 					triggerHash,
@@ -1799,15 +1780,19 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 					originalVertexCount,
 					overrideVertexCount,
 					uavStride,
+					resizedOutputSlot,
 					resizedUavCacheHit ? "hit" : "miss");
 #endif
 			}
 			if (!outputUavResized) {
 				if (resizedUavResource)
 					resizedUavResource->Release();
+				if (resizedVertexResource)
+					resizedVertexResource->Release();
 				if (resizedUavHeap)
 					resizedUavHeap->Release();
 				resizedUavResource = nullptr;
+				resizedVertexResource = nullptr;
 				resizedUavHeap = nullptr;
 				resizedUavCpu = {};
 			}
@@ -1836,10 +1821,17 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	state.originalTable = uavBinding.tableGpuStart;
 	state.originalHeap = uavBinding.tableHeap;
 	state.resource = outputUavResized ? resizedUavResource : uavBinding.descriptor.resource;
+	state.outputVertexResource = outputUavResized ? resizedVertexResource : nullptr;
+	state.originalOutputResource = outputUavResized ?
+		uavBinding.descriptor.resource : nullptr;
+	state.originalOutputByteWidth = outputUavResized ?
+		DescriptorViewSize(uavBinding.descriptor) : 0;
+	state.outputResizeSlot = outputUavResized ? resizedOutputSlot : 0;
 	state.byteWidth = outputUavResized ?
 		(static_cast<UINT64>(uavBinding.descriptor.structureByteStride) * overrideVertexCount) :
 		DescriptorViewSize(uavBinding.descriptor);
 	state.stride = uavBinding.descriptor.structureByteStride;
+	state.outputUavResized = outputUavResized;
 	state.hasActiveTextureOverride = state.resource && state.byteWidth && state.stride;
 	if (state.hasActiveTextureOverride) {
 		state.activeConfig = config;
@@ -2531,6 +2523,66 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		return;
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
+
+	// Keep compute writes and IA reads on separate resources. The copy is ordered
+	// after dispatch on this producer command list, while later draw lists only
+	// ever see a COMMON buffer eligible for independent read promotion.
+	if (state.outputUavResized && state.resource &&
+	    state.outputVertexResource && state.byteWidth) {
+		D3D12_RESOURCE_BARRIER beforeCopy[2] = {};
+		beforeCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		beforeCopy[0].Transition.pResource = state.resource;
+		beforeCopy[0].Transition.StateBefore =
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		beforeCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		beforeCopy[0].Transition.Subresource =
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		beforeCopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		beforeCopy[1].Transition.pResource = state.outputVertexResource;
+		beforeCopy[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+		beforeCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		beforeCopy[1].Transition.Subresource =
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		commandList->ResourceBarrier(2, beforeCopy);
+		commandList->CopyBufferRegion(
+			state.outputVertexResource, 0, state.resource, 0, state.byteWidth);
+
+		D3D12_RESOURCE_BARRIER afterCopy[2] = {};
+		afterCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		afterCopy[0].Transition.pResource = state.resource;
+		afterCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		afterCopy[0].Transition.StateAfter =
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		afterCopy[0].Transition.Subresource =
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		afterCopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		afterCopy[1].Transition.pResource = state.outputVertexResource;
+		afterCopy[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		afterCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+		afterCopy[1].Transition.Subresource =
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		commandList->ResourceBarrier(2, afterCopy);
+
+		DX12ModRegisterPreSkinOutputResize(
+			state.originalOutputResource,
+			state.outputVertexResource,
+			state.originalOutputByteWidth,
+			state.byteWidth,
+			state.stride);
+#if defined(_DEBUG)
+		DX12LogManager::DebugFields(
+			"DX12PreSkinningApply",
+			"\"status\":\"output_copy_ready\","
+			"\"present\":%ld,\"producerGpuVa\":\"0x%llx\","
+			"\"consumerGpuVa\":\"0x%llx\",\"bytes\":%llu,\"slot\":%u",
+			DX12RuntimeState::GetPresentCount(),
+			static_cast<unsigned long long>(state.resource->GetGPUVirtualAddress()),
+			static_cast<unsigned long long>(
+				state.outputVertexResource->GetGPUVirtualAddress()),
+			static_cast<unsigned long long>(state.byteWidth),
+			state.outputResizeSlot);
+#endif
+	}
 
 #if defined(_DEBUG)
 	const size_t restoredDescriptorCount = state.descriptorRestores.size();

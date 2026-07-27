@@ -1,6 +1,32 @@
 class DeviceWrapper
 		{
 		public:
+			static const D3D12_RESOURCE_DESC *PrepareResourceDescArray(
+				const D3D12_RESOURCE_DESC *descs, UINT count,
+				std::vector<D3D12_RESOURCE_DESC> *storage, const char *source)
+			{
+				if (!descs || !count || !storage)
+					return descs;
+				storage->assign(descs, descs + count);
+				bool adjusted = false;
+				for (D3D12_RESOURCE_DESC &desc : *storage)
+					adjusted |= DX12ModAdjustBufferResourceDesc(&desc, source);
+				return adjusted ? storage->data() : descs;
+			}
+
+			static const D3D12_RESOURCE_DESC1 *PrepareResourceDescArray1(
+				const D3D12_RESOURCE_DESC1 *descs, UINT count,
+				std::vector<D3D12_RESOURCE_DESC1> *storage, const char *source)
+			{
+				if (!descs || !count || !storage)
+					return descs;
+				storage->assign(descs, descs + count);
+				bool adjusted = false;
+				for (D3D12_RESOURCE_DESC1 &desc : *storage)
+					adjusted |= DX12ModAdjustBufferResourceDesc1(&desc, source);
+				return adjusted ? storage->data() : descs;
+			}
+
 			template <typename T>
 			static bool PassThroughObject(void **object)
 			{
@@ -1411,7 +1437,12 @@ class DeviceWrapper
 				UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs) override
 			{
 				DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
-				return mDevice->GetResourceAllocationInfo(visibleMask, numResourceDescs, pResourceDescs);
+				std::vector<D3D12_RESOURCE_DESC> adjustedDescs;
+				const D3D12_RESOURCE_DESC *descsToUse = DeviceWrapper::PrepareResourceDescArray(
+					pResourceDescs, numResourceDescs, &adjustedDescs,
+					"GetResourceAllocationInfo");
+				return mDevice->GetResourceAllocationInfo(
+					visibleMask, numResourceDescs, descsToUse);
 			}
 
 			D3D12_HEAP_PROPERTIES STDMETHODCALLTYPE GetCustomHeapProperties(
@@ -1480,22 +1511,27 @@ class DeviceWrapper
 				REFIID riid, void **ppvResource) override
 			{
 				ID3D12Heap *heap = nullptr;
+				D3D12_RESOURCE_DESC adjustedDesc = {};
+				const D3D12_RESOURCE_DESC *descToUse = pDesc;
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
+						pDesc, &adjustedDesc, "CreatePlacedResource");
 				}
 				HRESULT hr = E_FAIL;
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
 					hr = mDevice->CreatePlacedResource(
-						heap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+						heap, HeapOffset, descToUse, InitialState,
+						pOptimizedClearValue, riid, ppvResource);
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Record);
 					PlacedResourceInfo placedInfo =
 						DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 					DX12ResourceTrackerHookRuntime::RecordCreatedResource(
-						hr, ppvResource, pDesc, nullptr, &placedInfo, InitialState);
+						hr, ppvResource, descToUse, nullptr, &placedInfo, InitialState);
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
@@ -1988,8 +2024,12 @@ class DeviceWrapper
 				HRESULT hr = QueryDevice4(&device4);
 				if (FAILED(hr))
 					return D3D12_RESOURCE_ALLOCATION_INFO();
+				std::vector<D3D12_RESOURCE_DESC> adjustedDescs;
+				const D3D12_RESOURCE_DESC *descsToUse = DeviceWrapper::PrepareResourceDescArray(
+					pResourceDescs, numResourceDescs, &adjustedDescs,
+					"GetResourceAllocationInfo1");
 				D3D12_RESOURCE_ALLOCATION_INFO info = device4->GetResourceAllocationInfo1(
-					visibleMask, numResourceDescs, pResourceDescs, pResourceAllocationInfo1);
+					visibleMask, numResourceDescs, descsToUse, pResourceAllocationInfo1);
 				device4->Release();
 				return info;
 			}
@@ -2202,8 +2242,12 @@ class DeviceWrapper
 				HRESULT hr = QueryDevice8(&device8);
 				if (FAILED(hr))
 					return D3D12_RESOURCE_ALLOCATION_INFO();
+				std::vector<D3D12_RESOURCE_DESC1> adjustedDescs;
+				const D3D12_RESOURCE_DESC1 *descsToUse = DeviceWrapper::PrepareResourceDescArray1(
+					pResourceDescs, numResourceDescs, &adjustedDescs,
+					"GetResourceAllocationInfo2");
 				D3D12_RESOURCE_ALLOCATION_INFO info = device8->GetResourceAllocationInfo2(
-					visibleMask, numResourceDescs, pResourceDescs, pResourceAllocationInfo1);
+					visibleMask, numResourceDescs, descsToUse, pResourceAllocationInfo1);
 				device8->Release();
 				return info;
 			}
@@ -2259,21 +2303,26 @@ class DeviceWrapper
 				if (FAILED(hr))
 					return hr;
 				ID3D12Heap *heap = nullptr;
+				D3D12_RESOURCE_DESC1 adjustedDesc = {};
+				const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
+						pDesc, &adjustedDesc, "CreatePlacedResource1");
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
 					hr = device8->CreatePlacedResource1(
-						heap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+						heap, HeapOffset, descToUse, InitialState,
+						pOptimizedClearValue, riid, ppvResource);
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Record);
 					PlacedResourceInfo placedInfo =
 						DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 					DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
-						hr, ppvResource, pDesc, nullptr, &placedInfo, InitialState);
+						hr, ppvResource, descToUse, nullptr, &placedInfo, InitialState);
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
@@ -2419,14 +2468,18 @@ class DeviceWrapper
 				if (FAILED(hr))
 					return hr;
 				ID3D12Heap *heap = nullptr;
+				D3D12_RESOURCE_DESC1 adjustedDesc = {};
+				const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
+						pDesc, &adjustedDesc, "CreatePlacedResource2");
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
 					hr = device10->CreatePlacedResource2(
-						heap, HeapOffset, pDesc, InitialLayout, pOptimizedClearValue,
+						heap, HeapOffset, descToUse, InitialLayout, pOptimizedClearValue,
 						NumCastableFormats, pCastableFormats, riid, ppvResource);
 				}
 				{
@@ -2434,7 +2487,7 @@ class DeviceWrapper
 					PlacedResourceInfo placedInfo =
 						DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 					DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
-						hr, ppvResource, pDesc, nullptr, &placedInfo, InitialLayout);
+						hr, ppvResource, descToUse, nullptr, &placedInfo, InitialLayout);
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
@@ -2503,8 +2556,12 @@ class DeviceWrapper
 				HRESULT hr = QueryDevice12(&device12);
 				if (FAILED(hr))
 					return D3D12_RESOURCE_ALLOCATION_INFO();
+				std::vector<D3D12_RESOURCE_DESC1> adjustedDescs;
+				const D3D12_RESOURCE_DESC1 *descsToUse = DeviceWrapper::PrepareResourceDescArray1(
+					pResourceDescs, numResourceDescs, &adjustedDescs,
+					"GetResourceAllocationInfo3");
 				D3D12_RESOURCE_ALLOCATION_INFO info = device12->GetResourceAllocationInfo3(
-					visibleMask, numResourceDescs, pResourceDescs, pNumCastableFormats,
+					visibleMask, numResourceDescs, descsToUse, pNumCastableFormats,
 					ppCastableFormats, pResourceAllocationInfo1);
 				device12->Release();
 				return info;

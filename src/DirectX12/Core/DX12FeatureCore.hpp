@@ -720,12 +720,14 @@ public:
 	std::uintptr_t originalResource = 0;
 	std::uint64_t requiredByteWidth = 0;
 	std::uint32_t stride = 0;
+	std::uint32_t ringSlot = 0;
 
 	bool operator==(const DX12PreSkinOutputResizeCacheIdentity &rhs) const
 	{
 		return originalResource == rhs.originalResource &&
 			requiredByteWidth == rhs.requiredByteWidth &&
-			stride == rhs.stride;
+			stride == rhs.stride &&
+			ringSlot == rhs.ringSlot;
 	}
 
 	bool operator!=(const DX12PreSkinOutputResizeCacheIdentity &rhs) const
@@ -739,7 +741,9 @@ public:
 			return originalResource < rhs.originalResource;
 		if (requiredByteWidth != rhs.requiredByteWidth)
 			return requiredByteWidth < rhs.requiredByteWidth;
-		return stride < rhs.stride;
+		if (stride != rhs.stride)
+			return stride < rhs.stride;
+		return ringSlot < rhs.ringSlot;
 	}
 };
 
