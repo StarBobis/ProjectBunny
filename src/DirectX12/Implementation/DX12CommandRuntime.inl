@@ -357,6 +357,7 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 	state->directIaTargetPresence = {};
 	state->fullIaTargetPresence = {};
 	state->residentDrawNegativeCache = {};
+	state->boundDrawResult.Reset();
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
@@ -368,6 +369,7 @@ void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 	++state->plan.invalidationSerial;
 	if (!state->plan.invalidationSerial)
 		state->plan.invalidationSerial = 1;
+	state->boundDrawResult.Reset();
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(

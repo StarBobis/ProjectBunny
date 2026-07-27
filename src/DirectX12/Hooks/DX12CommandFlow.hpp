@@ -3188,6 +3188,52 @@ public:
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();
 		DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
 
+		// Bound-state draw-result cache: when PSO, IA state, root descriptors,
+		// and descriptor heap haven't changed since the last negative result on
+		// this command list, the override decision must be identical. This skips
+		// the entire multi-layer dynamic chain (IA hash, descriptor prefilter,
+		// resource hash lookup, candidate matching). Only negative results are
+		// cached in this phase; positive hits still execute the full path.
+		const UINT64 preSkinGeneration = DX12ModGetPreSkinActiveGenerationFast();
+		const UINT64 boundHeapVersion = runtimeState.cbvSrvUavHeap ?
+			DX12GetDescriptorHeapVersion(runtimeState.cbvSrvUavHeap) : 0;
+		DX12BoundDrawResultCache &boundDrawCache =
+			mutableRuntimeState->resolvedDraw.boundDrawResult;
+		if (boundDrawCache.Matches(
+				runtimeState.iaEpoch,
+				runtimeState.iaContentEpoch,
+				runtimeState.graphicsDescriptorQuerySerial,
+				runtimeState.pipelineState,
+				drawDecision->reloadGeneration,
+				preSkinGeneration,
+				runtimeState.cbvSrvUavHeap,
+				boundHeapVersion,
+				runtimeState.graphicsRootSignature)) {
+			if (!boundDrawCache.hasOverride) {
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"bound_draw_cache_hit_negative",
+					draw.indexed ? 1u : 0u,
+					1,
+					0);
+				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				return false;
+			}
+		}
+		auto StoreBoundDrawNegative = [&]() {
+			boundDrawCache.Capture(
+				runtimeState.iaEpoch,
+				runtimeState.iaContentEpoch,
+				runtimeState.graphicsDescriptorQuerySerial,
+				runtimeState.pipelineState,
+				drawDecision->reloadGeneration,
+				preSkinGeneration,
+				runtimeState.cbvSrvUavHeap,
+				boundHeapVersion,
+				runtimeState.graphicsRootSignature,
+				false);
+		};
+
 		DX12Profiling::RecordIaDrawOverrideCheck();
 		DX12ModIaReplacement iaReplacement;
 		DX12IaHashState iaState;
@@ -3207,8 +3253,8 @@ public:
 			drawDecision->shaderOverrideNegativeCacheAllowed;
 		// Match DX11's "current state changed, re-evaluate now" behavior:
 		// match_cs / active pre-skin can flip without IA mutations, so draw-level
-		// negative caches must incorporate that generation explicitly.
-		const UINT64 preSkinGeneration = DX12ModGetPreSkinActiveGenerationFast();
+		// negative caches must incorporate that generation explicitly
+		// (preSkinGeneration captured above for the bound-draw cache).
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
 		DX12IaHashState directIaState;
@@ -3234,6 +3280,7 @@ public:
 				1,
 				0);
 			DX12Profiling::RecordIaHashStateResult(false);
+			StoreBoundDrawNegative();
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
@@ -3262,6 +3309,7 @@ public:
 						directGraphicsDescriptorHeapVersion,
 						draw)) {
 					DX12Profiling::RecordIaHashStateResult(false);
+					StoreBoundDrawNegative();
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
@@ -3300,6 +3348,7 @@ public:
 					directGraphicsDescriptorHeapVersion,
 					draw);
 				DX12Profiling::RecordIaHashStateResult(false);
+				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
@@ -3317,6 +3366,7 @@ public:
 						contentGeneration, resolveGeneration,
 						0, nullptr, 0, draw)) {
 					DX12Profiling::RecordIaHashStateResult(false);
+					StoreBoundDrawNegative();
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
@@ -3339,6 +3389,7 @@ public:
 					1,
 					0);
 				DX12Profiling::RecordIaHashStateResult(false);
+				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
@@ -3381,6 +3432,7 @@ public:
 						directFastRejectKey);
 				}
 				DX12Profiling::RecordIaHashStateResult(false);
+				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
@@ -3525,6 +3577,7 @@ public:
 							1,
 							0);
 						DX12Profiling::RecordIaHashStateResult(false);
+						StoreBoundDrawNegative();
 						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 						return false;
 					}
@@ -3589,6 +3642,7 @@ public:
 					directGraphicsDescriptorHeapVersion,
 					draw);
 				DX12Profiling::RecordIaHashStateResult(false);
+				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
@@ -3637,6 +3691,7 @@ public:
 					1,
 					0);
 				DX12Profiling::RecordIaHashStateResult(false);
+				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
@@ -3765,6 +3820,7 @@ public:
 						1,
 						DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
 					DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
+					StoreBoundDrawNegative();
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
@@ -3861,6 +3917,7 @@ public:
 					directGraphicsDescriptorHeapVersion,
 					draw);
 			}
+			StoreBoundDrawNegative();
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return false;
 		}
@@ -3868,6 +3925,7 @@ public:
 			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 			return true;
 		}
+		StoreBoundDrawNegative();
 		DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 		return false;
 	}

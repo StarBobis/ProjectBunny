@@ -1212,6 +1212,80 @@ public:
 	bool valid = false;
 };
 
+// Top-level draw-result cache that captures the full bound-state identity.
+// When nothing changes (PSO / IA / root descriptors / heap), the per-draw
+// override decision must be identical. A hit here skips the entire multi-layer
+// dynamic decision chain (IA hash, descriptor match, resource hash, etc.).
+class DX12BoundDrawResultCache
+{
+public:
+	bool valid = false;
+	bool hasOverride = false;
+	UINT64 iaEpoch = 0;
+	UINT64 iaContentEpoch = 0;
+	UINT64 graphicsDescriptorQuerySerial = 0;
+	ID3D12PipelineState *pipelineState = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	UINT64 cbvSrvUavHeapVersion = 0;
+	ID3D12RootSignature *graphicsRootSignature = nullptr;
+
+	void Reset()
+	{
+		valid = false;
+		hasOverride = false;
+	}
+
+	bool Matches(
+		UINT64 currentIaEpoch,
+		UINT64 currentIaContentEpoch,
+		UINT64 currentGraphicsDescriptorQuerySerial,
+		ID3D12PipelineState *currentPso,
+		UINT64 currentReloadGeneration,
+		UINT64 currentPreSkinGeneration,
+		ID3D12DescriptorHeap *currentHeap,
+		UINT64 currentHeapVersion,
+		ID3D12RootSignature *currentRootSig) const
+	{
+		return valid &&
+			iaEpoch == currentIaEpoch &&
+			iaContentEpoch == currentIaContentEpoch &&
+			graphicsDescriptorQuerySerial == currentGraphicsDescriptorQuerySerial &&
+			pipelineState == currentPso &&
+			reloadGeneration == currentReloadGeneration &&
+			preSkinGeneration == currentPreSkinGeneration &&
+			cbvSrvUavHeap == currentHeap &&
+			cbvSrvUavHeapVersion == currentHeapVersion &&
+			graphicsRootSignature == currentRootSig;
+	}
+
+	void Capture(
+		UINT64 currentIaEpoch,
+		UINT64 currentIaContentEpoch,
+		UINT64 currentGraphicsDescriptorQuerySerial,
+		ID3D12PipelineState *currentPso,
+		UINT64 currentReloadGeneration,
+		UINT64 currentPreSkinGeneration,
+		ID3D12DescriptorHeap *currentHeap,
+		UINT64 currentHeapVersion,
+		ID3D12RootSignature *currentRootSig,
+		bool overrideResult)
+	{
+		valid = true;
+		hasOverride = overrideResult;
+		iaEpoch = currentIaEpoch;
+		iaContentEpoch = currentIaContentEpoch;
+		graphicsDescriptorQuerySerial = currentGraphicsDescriptorQuerySerial;
+		pipelineState = currentPso;
+		reloadGeneration = currentReloadGeneration;
+		preSkinGeneration = currentPreSkinGeneration;
+		cbvSrvUavHeap = currentHeap;
+		cbvSrvUavHeapVersion = currentHeapVersion;
+		graphicsRootSignature = currentRootSig;
+	}
+};
+
 class DX12SimulateContextDrawTemplate
 {
 public:
@@ -1319,6 +1393,10 @@ public:
 	// Unlike IA caches, a resolved plan describes the current command-list
 	// bindings and must never survive Reset or a graphics-state transition.
 	ResolvedPlanState plan;
+	// Bound-state draw-result cache: captures the full PSO/IA/descriptor
+	// identity so repeated draws with unchanged state skip the entire
+	// dynamic decision chain (IA hash, descriptor match, resource hash).
+	DX12BoundDrawResultCache boundDrawResult;
 };
 
 class DX12ResolvedDrawRuntimeStateUtils

@@ -742,7 +742,7 @@ Dispatch 只验证精确 dependency revisions，避免重复 collect/materialize
 
 每次优化必须同时满足：
 
-1. Debug x64 编译通过。
+
 2. Release Timing x64 编译通过。
 3. built/deployed SHA256 一致。
 4. 相同场景和相同 45–60 ms cohort。
