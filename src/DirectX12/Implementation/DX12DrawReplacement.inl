@@ -43,6 +43,58 @@ public:
 class DX12DrawSrvReplacementUtils
 {
 public:
+	static void SyncDescriptorHeaps(
+		ID3D12GraphicsCommandList *commandList,
+		ID3D12DescriptorHeap *cbvSrvUavHeap,
+		ID3D12DescriptorHeap *samplerHeap)
+	{
+		if (!commandList)
+			return;
+		ID3D12DescriptorHeap *heaps[2] = {};
+		UINT heapCount = 0;
+		if (cbvSrvUavHeap)
+			heaps[heapCount++] = cbvSrvUavHeap;
+		if (samplerHeap)
+			heaps[heapCount++] = samplerHeap;
+		DX12SimulateContext *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if (runtimeState) {
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				runtimeState, cbvSrvUavHeap, samplerHeap);
+		} else {
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				commandList, cbvSrvUavHeap, samplerHeap);
+		}
+		DX12BindingTracker::SetDescriptorHeaps(
+			commandList, heapCount, heapCount ? heaps : nullptr);
+	}
+
+	static void SyncRootDescriptorTable(
+		ID3D12GraphicsCommandList *commandList,
+		bool compute,
+		UINT rootParameterIndex,
+		D3D12_GPU_DESCRIPTOR_HANDLE table)
+	{
+		if (!commandList)
+			return;
+		DX12SimulateContext *runtimeState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if (runtimeState) {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				runtimeState, !compute, rootParameterIndex, table);
+		} else {
+			DX12CommandListRuntime::RememberRootDescriptorTable(
+				commandList, !compute, rootParameterIndex, table);
+		}
+		if (compute) {
+			DX12BindingTracker::SetComputeRootDescriptorTable(
+				commandList, rootParameterIndex, table);
+		} else {
+			DX12BindingTracker::SetGraphicsRootDescriptorTable(
+				commandList, rootParameterIndex, table);
+		}
+	}
+
 	static DX12DrawSrvSignaturePlanTemplate BuildSignaturePlanTemplate(
 		const DX12RootSignatureSummary &rootSignature)
 	{
@@ -951,6 +1003,7 @@ public:
 		const LARGE_INTEGER bindBegin = DX12OuterTimingProbeUtils::Now();
 		ID3D12DescriptorHeap *heaps[2] = { tempHeap, snapshot.samplerHeap };
 		commandList->SetDescriptorHeaps(snapshot.samplerHeap ? 2 : 1, heaps);
+		SyncDescriptorHeaps(commandList, tempHeap, snapshot.samplerHeap);
 		for (const DX12DrawSrvPatchTable &table : tables) {
 			D3D12_GPU_DESCRIPTOR_HANDLE tableGpu = table.gpuStart;
 			if (!table.sampler) {
@@ -963,6 +1016,8 @@ public:
 			else
 				commandList->SetGraphicsRootDescriptorTable(
 					table.rootParameterIndex, tableGpu);
+			SyncRootDescriptorTable(
+				commandList, table.compute, table.rootParameterIndex, tableGpu);
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"DrawSrv",
@@ -1144,13 +1199,23 @@ public:
 		if (snapshot.samplerHeap)
 			heaps[heapCount++] = snapshot.samplerHeap;
 		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
+		SyncDescriptorHeaps(
+			commandList, snapshot.cbvSrvUavHeap, snapshot.samplerHeap);
 		for (UINT root = 0; root < MaxRootParameters; ++root) {
-			if (snapshot.graphicsTables[root].valid)
+			if (snapshot.graphicsTables[root].valid) {
 				commandList->SetGraphicsRootDescriptorTable(
 					root, snapshot.graphicsTables[root].baseDescriptor);
-			if (snapshot.computeTables[root].valid)
+				SyncRootDescriptorTable(
+					commandList, false, root,
+					snapshot.graphicsTables[root].baseDescriptor);
+			}
+			if (snapshot.computeTables[root].valid) {
 				commandList->SetComputeRootDescriptorTable(
 					root, snapshot.computeTables[root].baseDescriptor);
+				SyncRootDescriptorTable(
+					commandList, true, root,
+					snapshot.computeTables[root].baseDescriptor);
+			}
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"DrawSrv",

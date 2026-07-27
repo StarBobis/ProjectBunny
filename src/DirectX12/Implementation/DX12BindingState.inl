@@ -56,8 +56,8 @@ static bool TryGetRuntimePreSkinBindings(
 	UINT64 *dependencyFingerprint,
 	bool *foundAny)
 {
-	(void)computeBindingSerial;
 	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
+			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial ||
 			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
 			runtimeState->resolvedCompute.bindingsRootSignature !=
 				runtimeState->computeRootSignature)
