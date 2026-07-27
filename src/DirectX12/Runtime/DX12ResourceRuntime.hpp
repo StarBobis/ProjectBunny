@@ -730,7 +730,10 @@ public:
 	static void RequestHuntResetSelection() { Request(DX12UiActionBits::HuntReset); }
 	static void RequestFrameAnalysis() { Request(DX12UiActionBits::FrameAnalysis); }
 	static void RequestShaderDump() { Request(DX12UiActionBits::ShaderDump); }
-	static void RequestModReload() { DX12Input::RequestModReload(); }
+	// The overlay runs on its own Win32 thread. Reloading changes the live
+	// command/descriptor state, so defer it to the render thread's Present
+	// boundary just like every other UI action.
+	static void RequestModReload() { Request(DX12UiActionBits::ModReload); }
 	static void RequestProfilingToggle() { Request(DX12UiActionBits::Profiling); }
 
 	static bool Consume()

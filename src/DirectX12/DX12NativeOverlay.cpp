@@ -17,7 +17,10 @@ static constexpr int kOverlayGap = 8;
 static constexpr UINT_PTR kUiRefreshTimer = 1;
 static constexpr UINT kUiRefreshMs = 100;
 static constexpr DWORD kOverlayStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-static constexpr DWORD kOverlayExStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+// The tool window must never take activation from the game. Several DX12
+// titles aggressively throttle or alter their render path while unfocused.
+static constexpr DWORD kOverlayExStyle =
+	WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE;
 static constexpr COLORREF kWindowBg = RGB(245, 247, 250);
 static constexpr COLORREF kPanelBg = RGB(255, 255, 255);
 static constexpr COLORREF kTextColor = RGB(26, 31, 39);

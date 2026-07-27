@@ -1051,8 +1051,8 @@ public:
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
-		DX12HuntOnPresent();
-		DXGIHookRuntime::RunPostPresentUi(swapChain);
+		DXGIHookRuntime::RunPostPresentRuntime(
+			"PresentWrapper", swapChain, hr, true);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "post_original_runtime", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1178,8 +1178,8 @@ public:
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
-		DX12HuntOnPresent();
-		DXGIHookRuntime::RunPostPresentUi(swapChain);
+		DXGIHookRuntime::RunPostPresentRuntime(
+			"Present1Wrapper", swapChain, hr, true);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "post_original_runtime", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
