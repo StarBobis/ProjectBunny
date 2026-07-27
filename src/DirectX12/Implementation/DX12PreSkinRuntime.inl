@@ -9,6 +9,46 @@ static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
 	return 0;
 }
 
+static void SyncPreSkinDescriptorHeaps(
+	ID3D12GraphicsCommandList *commandList,
+	DX12SimulateContext *runtimeState,
+	ID3D12DescriptorHeap *cbvSrvUavHeap,
+	ID3D12DescriptorHeap *samplerHeap)
+{
+	if (runtimeState) {
+		DX12CommandListRuntime::SetDescriptorHeaps(
+			runtimeState, cbvSrvUavHeap, samplerHeap);
+	} else {
+		DX12CommandListRuntime::SetDescriptorHeaps(
+			commandList, cbvSrvUavHeap, samplerHeap);
+	}
+	ID3D12DescriptorHeap *heaps[2] = {};
+	UINT heapCount = 0;
+	if (cbvSrvUavHeap)
+		heaps[heapCount++] = cbvSrvUavHeap;
+	if (samplerHeap)
+		heaps[heapCount++] = samplerHeap;
+	DX12BindingTracker::SetDescriptorHeaps(
+		commandList, heapCount, heapCount ? heaps : nullptr);
+}
+
+static void SyncPreSkinComputeRootDescriptorTable(
+	ID3D12GraphicsCommandList *commandList,
+	DX12SimulateContext *runtimeState,
+	UINT rootParameterIndex,
+	D3D12_GPU_DESCRIPTOR_HANDLE table)
+{
+	if (runtimeState) {
+		DX12CommandListRuntime::RememberRootDescriptorTable(
+			runtimeState, false, rootParameterIndex, table);
+	} else {
+		DX12CommandListRuntime::RememberRootDescriptorTable(
+			commandList, false, rootParameterIndex, table);
+	}
+	DX12BindingTracker::SetComputeRootDescriptorTable(
+		commandList, rootParameterIndex, table);
+}
+
 static void LogPreSkinSrvProbe(
 	const char *status, const DX12CurrentComputeUavBinding *binding,
 	const Bunny::TextureOverrideConfig *config, uint32_t srvRegister,
@@ -1223,6 +1263,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 {
 	if (!device || !commandList || !uavBinding.hasDescriptor || !uavBinding.tableGpuStart.ptr)
 		return false;
+	DX12SimulateContext *runtimeState =
+		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	auto logStage = [&config, section, triggerHash](const char *stage, UINT tables = 0, UINT descriptors = 0) {
 #if defined(_DEBUG)
 		static SRWLOCK logLock = SRWLOCK_INIT;
@@ -1406,6 +1448,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 				tlsCloneCache.heap, restoreSamplerHeap
 			};
 			commandList->SetDescriptorHeaps(restoreSamplerHeap ? 2 : 1, heaps);
+			SyncPreSkinDescriptorHeaps(
+				commandList, runtimeState, tlsCloneCache.heap, restoreSamplerHeap);
 		}
 		DX12PreSkinReplacementState state;
 		state.active = true;
@@ -1431,6 +1475,10 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		state.tableRestores = tlsCloneCache.tableRestores;
 		for (size_t index = 0; index < state.tableRestores.size(); ++index) {
 			commandList->SetComputeRootDescriptorTable(
+				state.tableRestores[index].rootParameterIndex,
+				tlsCloneCache.patchedTables[index]);
+			SyncPreSkinComputeRootDescriptorTable(
+				commandList, runtimeState,
 				state.tableRestores[index].rootParameterIndex,
 				tlsCloneCache.patchedTables[index]);
 		}
@@ -1773,6 +1821,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		ID3D12DescriptorHeap *heaps[2] = { tempHeap, restoreSamplerHeap };
 		logStage("before_set_heaps", static_cast<UINT>(tables.size()), totalDescriptors);
 		commandList->SetDescriptorHeaps(restoreSamplerHeap ? 2 : 1, heaps);
+		SyncPreSkinDescriptorHeaps(
+			commandList, runtimeState, tempHeap, restoreSamplerHeap);
 		logStage("after_set_heaps", static_cast<UINT>(tables.size()), totalDescriptors);
 	}
 	DX12PreSkinReplacementState state;
@@ -1806,6 +1856,8 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
 		logStage("before_set_root_table", static_cast<UINT>(tables.size()), totalDescriptors);
 		commandList->SetComputeRootDescriptorTable(table.root, gpu);
+		SyncPreSkinComputeRootDescriptorTable(
+			commandList, runtimeState, table.root, gpu);
 		logStage("after_set_root_table", static_cast<UINT>(tables.size()), totalDescriptors);
 		DX12PreSkinReplacementState::TableRestore restore;
 		restore.rootParameterIndex = table.root;
