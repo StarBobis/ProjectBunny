@@ -2008,18 +2008,20 @@ public:
 			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
 		const std::vector<DX12CurrentRootConstants> &rootConstants =
 			probe.cachedRootConstants ? *probe.cachedRootConstants : probe.rootConstants;
-		if (!probe.applied ||
-			!DX12ModCanDeferPreSkinningUavReplacement(commandList)) {
-			LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
-			DX12ModRestorePreSkinningUavReplacement(commandList);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"PreSkin",
-				"restore_replacement",
-				0,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
-		}
-	#if defined(_DEBUG)
+		// Keep PreSkin descriptor/table mutations scoped to the current
+		// dispatch. Deferred reuse is a CPU optimization, but if our tracked
+		// command-list state drifts from the actual restored bindings it can
+		// poison later matching and leave patched tables active for unrelated
+		// Unity work.
+		LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
+		DX12ModRestorePreSkinningUavReplacement(commandList);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"PreSkin",
+			"restore_replacement",
+			0,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
+#if defined(_DEBUG)
 		if (probe.uavsFound) {
 			LARGE_INTEGER recordUavBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModRecordComputeUavs(commandList, uavs);

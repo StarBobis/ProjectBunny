@@ -6,6 +6,7 @@ add_library(DirectX12 SHARED
     D3D12Proxy.cpp
     DX12Wrapper.cpp
     DXGIHooks.cpp
+    DX12WaitHooks.cpp
 
     # Tracking and command execution modules
     DX12ResourceTracking.cpp

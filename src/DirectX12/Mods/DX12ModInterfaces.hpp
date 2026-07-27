@@ -1023,6 +1023,8 @@ public:
 	inline static volatile LONG64 FenceTotalUs = 0;
 	inline static volatile LONG64 EventWaitCalls = 0;
 	inline static volatile LONG64 EventWaitTotalUs = 0;
+	inline static volatile LONG64 SystemWaitCalls = 0;
+	inline static volatile LONG64 SystemWaitTotalUs = 0;
 
 	inline static volatile LONG64 WorkerTaskCalls = 0;
 	inline static volatile LONG64 WorkerTaskUs = 0;
@@ -1040,6 +1042,39 @@ public:
 	inline static volatile LONG64 ApiScopeFirstBeginQpc = 0;
 	inline static volatile LONG64 ApiScopeLastEndQpc = 0;
 	inline static volatile LONG64 ApiScopeMaxGapUs = 0;
+	inline static volatile LONG64 ApiScopeMaxGapBeginQpc = 0;
+	inline static volatile LONG64 ApiScopeMaxGapEndQpc = 0;
+	inline static volatile LONG64 ApiScopeLastEndThreadKernelUs = 0;
+	inline static volatile LONG64 ApiScopeLastEndThreadUserUs = 0;
+	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadKernelUs = 0;
+	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadUserUs = 0;
+	inline static volatile LONG64 ApiScopeMaxGapAfterThreadKernelUs = 0;
+	inline static volatile LONG64 ApiScopeMaxGapAfterThreadUserUs = 0;
+	inline static volatile LONG64 LastFrameLatencyHandle = 0;
+	inline static volatile LONG64 LastFrameLatencySwapChain = 0;
+	inline static volatile LONG LastFrameLatencyThreadId = 0;
+	inline static volatile LONG LastFrameLatencyPresent = 0;
+	inline static volatile LONG64 LastFrameLatencyQpc = 0;
+	inline static volatile LONG64 LastFenceEventHandle = 0;
+	inline static volatile LONG64 LastFenceEventFence = 0;
+	inline static volatile LONG64 LastFenceEventValue = 0;
+	inline static volatile LONG64 LastFenceEventCompletedBefore = 0;
+	inline static volatile LONG64 LastFenceEventCompletedAfter = 0;
+	inline static volatile LONG LastFenceEventThreadId = 0;
+	inline static volatile LONG LastFenceEventPresent = 0;
+	inline static volatile LONG64 LastFenceEventQpc = 0;
+	inline static volatile LONG LastFenceEventHr = 0;
+	inline static volatile LONG64 LastSystemWaitHandle = 0;
+	inline static volatile LONG64 LastSystemWaitSecondaryHandle = 0;
+	inline static volatile LONG64 LastSystemWaitQpc = 0;
+	inline static volatile LONG64 LastSystemWaitUs = 0;
+	inline static volatile LONG LastSystemWaitThreadId = 0;
+	inline static volatile LONG LastSystemWaitPresent = 0;
+	inline static volatile LONG LastSystemWaitApi = 0;
+	inline static volatile LONG LastSystemWaitResult = 0;
+	inline static volatile LONG LastSystemWaitError = 0;
+	inline static volatile LONG LastSystemWaitMatchesFenceEvent = 0;
+	inline static volatile LONG LastSystemWaitMatchesFrameLatency = 0;
 	inline static volatile LONG ApiScopeFirstBucket = ApiOtherCommandList;
 	inline static volatile LONG ApiScopeLastBucket = ApiOtherCommandList;
 	inline static volatile LONG ApiScopeLastThreadId = 0;
@@ -1114,6 +1149,306 @@ public:
 	static LONG64 ClampUs(LONG64 us)
 	{
 		return us > 0 ? us : 0;
+	}
+
+	static UINT64 FileTimeToUs(const FILETIME &value)
+	{
+		ULARGE_INTEGER combined = {};
+		combined.LowPart = value.dwLowDateTime;
+		combined.HighPart = value.dwHighDateTime;
+		return combined.QuadPart / 10;
+	}
+
+	static void GetCurrentThreadCpuUs(LONG64 *kernelUs, LONG64 *userUs)
+	{
+		if (kernelUs)
+			*kernelUs = 0;
+		if (userUs)
+			*userUs = 0;
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		FILETIME createTime = {};
+		FILETIME exitTime = {};
+		FILETIME kernelTime = {};
+		FILETIME userTime = {};
+		if (!GetThreadTimes(GetCurrentThread(), &createTime, &exitTime, &kernelTime, &userTime))
+			return;
+		if (kernelUs)
+			*kernelUs = static_cast<LONG64>(FileTimeToUs(kernelTime));
+		if (userUs)
+			*userUs = static_cast<LONG64>(FileTimeToUs(userTime));
+#endif
+	}
+
+	static bool IsInterestingGap(LONG64 gapUs)
+	{
+		return gapUs >= 50000;
+	}
+
+	static const char *WaitApiName(LONG api)
+	{
+		switch (api) {
+		case 1:
+			return "WaitForSingleObject";
+		case 2:
+			return "WaitForMultipleObjects";
+		case 3:
+			return "SignalObjectAndWait";
+		default:
+			return "Unknown";
+		}
+	}
+
+	static void LogCurrentCallStack(
+		const char *reason,
+		const char *api,
+		HANDLE handle,
+		ID3D12Fence *fence,
+		UINT64 fenceValue,
+		LONG64 waitUs,
+		DWORD waitResult,
+		DWORD threadId,
+		ULONG skipFrames = 0)
+	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		void *frames[24] = {};
+		const USHORT captured = CaptureStackBackTrace(
+			static_cast<DWORD>(skipFrames + 1),
+			ARRAYSIZE(frames),
+			frames,
+			nullptr);
+		for (USHORT i = 0; i < captured; ++i) {
+			void *address = frames[i];
+			HMODULE module = nullptr;
+			char modulePath[MAX_PATH] = {};
+			const char *moduleText = "";
+			ULONG_PTR moduleBase = 0;
+			if (GetModuleHandleExA(
+					GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+						GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+					reinterpret_cast<LPCSTR>(address),
+					&module) && module) {
+				moduleBase = reinterpret_cast<ULONG_PTR>(module);
+				if (GetModuleFileNameA(module, modulePath, ARRAYSIZE(modulePath)))
+					moduleText = modulePath;
+			}
+
+			DX12LogManager::Fields("DX12WaitStack",
+				"\"reason\":\"%s\",\"api\":\"%s\",\"frame\":%u,\"address\":\"%p\","
+				"\"module\":\"%s\",\"moduleBase\":\"0x%llx\",\"moduleOffset\":\"0x%llx\","
+				"\"handle\":\"%p\",\"fence\":\"%p\",\"fenceValue\":%llu,"
+				"\"waitUs\":%lld,\"waitResult\":\"0x%lx\",\"threadId\":%lu,\"present\":%ld",
+				reason ? reason : "",
+				api ? api : "",
+				static_cast<unsigned>(i),
+				address,
+				moduleText,
+				static_cast<unsigned long long>(moduleBase),
+				static_cast<unsigned long long>(
+					moduleBase ? reinterpret_cast<ULONG_PTR>(address) - moduleBase : 0),
+				handle,
+				fence,
+				static_cast<unsigned long long>(fenceValue),
+				static_cast<long long>(waitUs),
+				static_cast<unsigned long>(waitResult),
+				static_cast<unsigned long>(threadId),
+				DX12RuntimeState::GetPresentCount());
+		}
+#else
+		(void)reason;
+		(void)api;
+		(void)handle;
+		(void)fence;
+		(void)fenceValue;
+		(void)waitUs;
+		(void)waitResult;
+		(void)threadId;
+		(void)skipFrames;
+#endif
+	}
+
+	static bool IsTrackedWaitHandle(HANDLE handle, bool *matchesFenceEvent, bool *matchesFrameLatency)
+	{
+		const ULONG_PTR rawHandle = reinterpret_cast<ULONG_PTR>(handle);
+		const ULONG_PTR rawFenceHandle = static_cast<ULONG_PTR>(
+			InterlockedCompareExchange64(&LastFenceEventHandle, 0, 0));
+		const ULONG_PTR rawFrameLatencyHandle = static_cast<ULONG_PTR>(
+			InterlockedCompareExchange64(&LastFrameLatencyHandle, 0, 0));
+		const bool fenceMatch = rawHandle != 0 && rawHandle == rawFenceHandle;
+		const bool frameLatencyMatch = rawHandle != 0 && rawHandle == rawFrameLatencyHandle;
+		if (matchesFenceEvent)
+			*matchesFenceEvent = fenceMatch;
+		if (matchesFrameLatency)
+			*matchesFrameLatency = frameLatencyMatch;
+		return fenceMatch || frameLatencyMatch;
+	}
+
+	static void SnapshotLastFenceEvent(
+		ID3D12Fence **fence,
+		UINT64 *value,
+		HANDLE *eventHandle)
+	{
+		if (fence) {
+			*fence = reinterpret_cast<ID3D12Fence*>(
+				static_cast<ULONG_PTR>(
+					InterlockedCompareExchange64(&LastFenceEventFence, 0, 0)));
+		}
+		if (value)
+			*value = static_cast<UINT64>(
+				InterlockedCompareExchange64(&LastFenceEventValue, 0, 0));
+		if (eventHandle) {
+			*eventHandle = reinterpret_cast<HANDLE>(
+				static_cast<ULONG_PTR>(
+					InterlockedCompareExchange64(&LastFenceEventHandle, 0, 0)));
+		}
+	}
+
+	static void RegisterFrameLatencyWaitableObject(IDXGISwapChain *swapChain, HANDLE handle)
+	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		InterlockedExchange64(&LastFrameLatencyHandle,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(handle)));
+		InterlockedExchange64(&LastFrameLatencySwapChain,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(swapChain)));
+		InterlockedExchange(&LastFrameLatencyThreadId, static_cast<LONG>(GetCurrentThreadId()));
+		InterlockedExchange(&LastFrameLatencyPresent, DX12RuntimeState::GetPresentCount());
+		InterlockedExchange64(&LastFrameLatencyQpc, Now().QuadPart);
+		DX12LogManager::Fields("DX12WaitableObject",
+			"\"kind\":\"frame_latency\",\"swapchain\":\"%p\",\"handle\":\"%p\","
+			"\"threadId\":%ld,\"present\":%ld",
+			swapChain,
+			handle,
+			static_cast<LONG>(GetCurrentThreadId()),
+			DX12RuntimeState::GetPresentCount());
+#else
+		(void)swapChain;
+		(void)handle;
+#endif
+	}
+
+	static void RegisterFenceEventOnCompletion(
+		ID3D12Fence *fence,
+		HANDLE eventHandle,
+		UINT64 value,
+		UINT64 completedBefore,
+		UINT64 completedAfter,
+		HRESULT hr)
+	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		InterlockedExchange64(&LastFenceEventHandle,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(eventHandle)));
+		InterlockedExchange64(&LastFenceEventFence,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(fence)));
+		InterlockedExchange64(&LastFenceEventValue, static_cast<LONG64>(value));
+		InterlockedExchange64(&LastFenceEventCompletedBefore, static_cast<LONG64>(completedBefore));
+		InterlockedExchange64(&LastFenceEventCompletedAfter, static_cast<LONG64>(completedAfter));
+		InterlockedExchange(&LastFenceEventThreadId, static_cast<LONG>(GetCurrentThreadId()));
+		InterlockedExchange(&LastFenceEventPresent, DX12RuntimeState::GetPresentCount());
+		InterlockedExchange64(&LastFenceEventQpc, Now().QuadPart);
+		InterlockedExchange(&LastFenceEventHr, static_cast<LONG>(hr));
+		DX12LogManager::Fields("DX12WaitableObject",
+			"\"kind\":\"fence_event\",\"fence\":\"%p\",\"handle\":\"%p\","
+			"\"value\":%llu,\"completedBefore\":%llu,\"completedAfter\":%llu,"
+			"\"hr\":\"0x%lx\",\"threadId\":%ld,\"present\":%ld",
+			fence,
+			eventHandle,
+			static_cast<unsigned long long>(value),
+			static_cast<unsigned long long>(completedBefore),
+			static_cast<unsigned long long>(completedAfter),
+			static_cast<unsigned long>(hr),
+			static_cast<LONG>(GetCurrentThreadId()),
+			DX12RuntimeState::GetPresentCount());
+#else
+		(void)fence;
+		(void)eventHandle;
+		(void)value;
+		(void)completedBefore;
+		(void)completedAfter;
+		(void)hr;
+#endif
+	}
+
+	static void RegisterSystemWait(
+		LONG api,
+		HANDLE primaryHandle,
+		HANDLE secondaryHandle,
+		DWORD waitResult,
+		DWORD lastError,
+		LONG64 us,
+		bool matchesFenceEvent,
+		bool matchesFrameLatency)
+	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		InterlockedExchange64(&LastSystemWaitHandle,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(primaryHandle)));
+		InterlockedExchange64(&LastSystemWaitSecondaryHandle,
+			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(secondaryHandle)));
+		InterlockedExchange64(&LastSystemWaitQpc, Now().QuadPart);
+		InterlockedExchange64(&LastSystemWaitUs, us);
+		InterlockedExchange(&LastSystemWaitThreadId, static_cast<LONG>(GetCurrentThreadId()));
+		InterlockedExchange(&LastSystemWaitPresent, DX12RuntimeState::GetPresentCount());
+		InterlockedExchange(&LastSystemWaitApi, api);
+		InterlockedExchange(&LastSystemWaitResult, static_cast<LONG>(waitResult));
+		InterlockedExchange(&LastSystemWaitError, static_cast<LONG>(lastError));
+		InterlockedExchange(&LastSystemWaitMatchesFenceEvent, matchesFenceEvent ? 1 : 0);
+		InterlockedExchange(&LastSystemWaitMatchesFrameLatency, matchesFrameLatency ? 1 : 0);
+#else
+		(void)api;
+		(void)primaryHandle;
+		(void)secondaryHandle;
+		(void)waitResult;
+		(void)lastError;
+		(void)us;
+		(void)matchesFenceEvent;
+		(void)matchesFrameLatency;
+#endif
+	}
+
+	static void LogSystemWaitSlice(
+		const char *api,
+		HANDLE primaryHandle,
+		HANDLE secondaryHandle,
+		DWORD waitMs,
+		DWORD waitResult,
+		DWORD lastError,
+		LONG64 us,
+		bool matchesFenceEvent,
+		bool matchesFrameLatency)
+	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		const LONG64 safeUs = ClampUs(us);
+		InterlockedIncrement64(&SystemWaitCalls);
+		AddUs(&SystemWaitTotalUs, safeUs);
+
+		const bool interesting = safeUs >= 50000 || matchesFenceEvent || matchesFrameLatency;
+		if (!interesting)
+			return;
+
+		DX12LogManager::Fields("DX12WaitableObject",
+			"\"kind\":\"system_wait\",\"api\":\"%s\",\"handle\":\"%p\",\"secondaryHandle\":\"%p\","
+			"\"waitMs\":%lu,\"waitResult\":\"0x%lx\",\"lastError\":%lu,\"us\":%lld,"
+			"\"matchesFenceEvent\":%s,\"matchesFrameLatency\":%s,\"threadId\":%lu,\"present\":%ld",
+			api ? api : "",
+			primaryHandle,
+			secondaryHandle,
+			static_cast<unsigned long>(waitMs),
+			static_cast<unsigned long>(waitResult),
+			static_cast<unsigned long>(lastError),
+			static_cast<long long>(safeUs),
+			matchesFenceEvent ? "true" : "false",
+			matchesFrameLatency ? "true" : "false",
+			static_cast<unsigned long>(GetCurrentThreadId()),
+			DX12RuntimeState::GetPresentCount());
+#else
+		(void)api;
+		(void)primaryHandle;
+		(void)secondaryHandle;
+		(void)waitMs;
+		(void)waitResult;
+		(void)lastError;
+		(void)us;
+		(void)matchesFenceEvent;
+		(void)matchesFrameLatency;
+#endif
 	}
 
 	static bool StageEquals(const char *stage, const char *value)
@@ -1287,21 +1622,61 @@ public:
 			InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
 		if (previousEndQpc > 0 && beginQpc > previousEndQpc) {
 			const LONG64 gapUs = DeltaUs(previousEndQpc, beginQpc);
+			const LONG beforeBucket = InterlockedCompareExchange(&ApiScopeLastBucket, 0, 0);
+			const LONG beforeThreadId = InterlockedCompareExchange(&ApiScopeLastThreadId, 0, 0);
+			const LONG64 beforeKernelUs =
+				InterlockedCompareExchange64(&ApiScopeLastEndThreadKernelUs, 0, 0);
+			const LONG64 beforeUserUs =
+				InterlockedCompareExchange64(&ApiScopeLastEndThreadUserUs, 0, 0);
+			LONG64 afterKernelUs = 0;
+			LONG64 afterUserUs = 0;
+			GetCurrentThreadCpuUs(&afterKernelUs, &afterUserUs);
+			const LONG64 threadKernelDeltaUs =
+				static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId ?
+					SafeSubtract(afterKernelUs, beforeKernelUs) : 0;
+			const LONG64 threadUserDeltaUs =
+				static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId ?
+					SafeSubtract(afterUserUs, beforeUserUs) : 0;
+			const LONG64 threadCpuDeltaUs = threadKernelDeltaUs + threadUserDeltaUs;
 			LONG64 observed = InterlockedCompareExchange64(&ApiScopeMaxGapUs, 0, 0);
 			while (gapUs > observed) {
 				const LONG64 previous = InterlockedCompareExchange64(
 					&ApiScopeMaxGapUs, gapUs, observed);
 				if (previous == observed) {
-					InterlockedExchange(&ApiScopeMaxGapBeforeBucket,
-						InterlockedCompareExchange(&ApiScopeLastBucket, 0, 0));
+					InterlockedExchange64(&ApiScopeMaxGapBeginQpc, previousEndQpc);
+					InterlockedExchange64(&ApiScopeMaxGapEndQpc, beginQpc);
+					InterlockedExchange64(&ApiScopeMaxGapBeforeThreadKernelUs, beforeKernelUs);
+					InterlockedExchange64(&ApiScopeMaxGapBeforeThreadUserUs, beforeUserUs);
+					InterlockedExchange64(&ApiScopeMaxGapAfterThreadKernelUs, afterKernelUs);
+					InterlockedExchange64(&ApiScopeMaxGapAfterThreadUserUs, afterUserUs);
+					InterlockedExchange(&ApiScopeMaxGapBeforeBucket, beforeBucket);
 					InterlockedExchange(&ApiScopeMaxGapAfterBucket, bucket);
-					InterlockedExchange(&ApiScopeMaxGapBeforeThreadId,
-						InterlockedCompareExchange(&ApiScopeLastThreadId, 0, 0));
+					InterlockedExchange(&ApiScopeMaxGapBeforeThreadId, beforeThreadId);
 					InterlockedExchange(&ApiScopeMaxGapAfterThreadId,
 						static_cast<LONG>(GetCurrentThreadId()));
 					break;
 				}
 				observed = previous;
+			}
+			if (IsInterestingGap(gapUs)) {
+				DX12LogManager::Fields("DX12CpuGapProbe",
+					"\"present\":%ld,\"gapUs\":%lld,\"beforeBucket\":\"%s\","
+					"\"afterBucket\":\"%s\",\"beforeThreadId\":%ld,\"afterThreadId\":%ld,"
+					"\"sameThread\":%ld,\"threadKernelDeltaUs\":%lld,"
+					"\"threadUserDeltaUs\":%lld,\"threadCpuDeltaUs\":%lld,"
+					"\"beginQpc\":%lld,\"endQpc\":%lld",
+					DX12RuntimeState::GetPresentCount(),
+					static_cast<long long>(gapUs),
+					ApiWallBucketName(beforeBucket),
+					ApiWallBucketName(bucket),
+					beforeThreadId,
+					static_cast<LONG>(GetCurrentThreadId()),
+					static_cast<LONG>(static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId),
+					static_cast<long long>(threadKernelDeltaUs),
+					static_cast<long long>(threadUserDeltaUs),
+					static_cast<long long>(threadCpuDeltaUs),
+					static_cast<long long>(previousEndQpc),
+					static_cast<long long>(beginQpc));
 			}
 		}
 	}
@@ -1320,6 +1695,11 @@ public:
 					InterlockedExchange(&ApiScopeLastBucket, bucket);
 					InterlockedExchange(&ApiScopeLastThreadId,
 						static_cast<LONG>(GetCurrentThreadId()));
+					LONG64 kernelUs = 0;
+					LONG64 userUs = 0;
+					GetCurrentThreadCpuUs(&kernelUs, &userUs);
+					InterlockedExchange64(&ApiScopeLastEndThreadKernelUs, kernelUs);
+					InterlockedExchange64(&ApiScopeLastEndThreadUserUs, userUs);
 					break;
 				}
 				observed = previous;
@@ -1375,6 +1755,16 @@ public:
 		const LONG64 firstBeginQpc = TakeLong64(&ApiScopeFirstBeginQpc);
 		const LONG64 lastEndQpc = TakeLong64(&ApiScopeLastEndQpc);
 		const LONG64 maxGapUs = TakeLong64(&ApiScopeMaxGapUs);
+		const LONG64 maxGapBeginQpc = TakeLong64(&ApiScopeMaxGapBeginQpc);
+		const LONG64 maxGapEndQpc = TakeLong64(&ApiScopeMaxGapEndQpc);
+		const LONG64 maxGapBeforeThreadKernelUs =
+			TakeLong64(&ApiScopeMaxGapBeforeThreadKernelUs);
+		const LONG64 maxGapBeforeThreadUserUs =
+			TakeLong64(&ApiScopeMaxGapBeforeThreadUserUs);
+		const LONG64 maxGapAfterThreadKernelUs =
+			TakeLong64(&ApiScopeMaxGapAfterThreadKernelUs);
+		const LONG64 maxGapAfterThreadUserUs =
+			TakeLong64(&ApiScopeMaxGapAfterThreadUserUs);
 		const LONG firstBucket = InterlockedExchange(&ApiScopeFirstBucket, ApiOtherCommandList);
 		const LONG lastBucket = InterlockedExchange(&ApiScopeLastBucket, ApiOtherCommandList);
 		const LONG maxGapBeforeBucket = InterlockedExchange(
@@ -1384,6 +1774,43 @@ public:
 		const LONG maxGapBeforeThreadId = TakeLong(&ApiScopeMaxGapBeforeThreadId);
 		const LONG maxGapAfterThreadId = TakeLong(&ApiScopeMaxGapAfterThreadId);
 		TakeLong(&ApiScopeLastThreadId);
+		TakeLong64(&ApiScopeLastEndThreadKernelUs);
+		TakeLong64(&ApiScopeLastEndThreadUserUs);
+		const LONG64 maxGapThreadKernelDeltaUs =
+			maxGapBeforeThreadId == maxGapAfterThreadId ?
+				SafeSubtract(maxGapAfterThreadKernelUs, maxGapBeforeThreadKernelUs) : 0;
+		const LONG64 maxGapThreadUserDeltaUs =
+			maxGapBeforeThreadId == maxGapAfterThreadId ?
+				SafeSubtract(maxGapAfterThreadUserUs, maxGapBeforeThreadUserUs) : 0;
+		const LONG64 maxGapThreadCpuDeltaUs =
+			maxGapThreadKernelDeltaUs + maxGapThreadUserDeltaUs;
+		const LONG64 lastFrameLatencyHandle = TakeLong64(&LastFrameLatencyHandle);
+		const LONG64 lastFrameLatencySwapChain = TakeLong64(&LastFrameLatencySwapChain);
+		const LONG lastFrameLatencyThreadId = TakeLong(&LastFrameLatencyThreadId);
+		const LONG lastFrameLatencyPresent = TakeLong(&LastFrameLatencyPresent);
+		const LONG64 lastFrameLatencyQpc = TakeLong64(&LastFrameLatencyQpc);
+		const LONG64 lastFenceEventHandle = TakeLong64(&LastFenceEventHandle);
+		const LONG64 lastFenceEventFence = TakeLong64(&LastFenceEventFence);
+		const LONG64 lastFenceEventValue = TakeLong64(&LastFenceEventValue);
+		const LONG64 lastFenceEventCompletedBefore = TakeLong64(&LastFenceEventCompletedBefore);
+		const LONG64 lastFenceEventCompletedAfter = TakeLong64(&LastFenceEventCompletedAfter);
+		const LONG lastFenceEventThreadId = TakeLong(&LastFenceEventThreadId);
+		const LONG lastFenceEventPresent = TakeLong(&LastFenceEventPresent);
+		const LONG64 lastFenceEventQpc = TakeLong64(&LastFenceEventQpc);
+		const LONG lastFenceEventHr = TakeLong(&LastFenceEventHr);
+		const LONG64 lastSystemWaitHandle = TakeLong64(&LastSystemWaitHandle);
+		const LONG64 lastSystemWaitSecondaryHandle = TakeLong64(&LastSystemWaitSecondaryHandle);
+		const LONG64 lastSystemWaitQpc = TakeLong64(&LastSystemWaitQpc);
+		const LONG64 lastSystemWaitUs = TakeLong64(&LastSystemWaitUs);
+		const LONG lastSystemWaitThreadId = TakeLong(&LastSystemWaitThreadId);
+		const LONG lastSystemWaitPresent = TakeLong(&LastSystemWaitPresent);
+		const LONG lastSystemWaitApi = TakeLong(&LastSystemWaitApi);
+		const LONG lastSystemWaitResult = TakeLong(&LastSystemWaitResult);
+		const LONG lastSystemWaitError = TakeLong(&LastSystemWaitError);
+		const LONG lastSystemWaitMatchesFenceEvent =
+			TakeLong(&LastSystemWaitMatchesFenceEvent);
+		const LONG lastSystemWaitMatchesFrameLatency =
+			TakeLong(&LastSystemWaitMatchesFrameLatency);
 
 		const LONG64 apiSpanUs =
 			(firstBeginQpc > 0 && lastEndQpc > firstBeginQpc) ?
@@ -1407,6 +1834,22 @@ public:
 			"\"apiScopeFirstBucket\":\"%s\",\"apiScopeLastBucket\":\"%s\","
 			"\"apiScopeMaxGapBeforeBucket\":\"%s\",\"apiScopeMaxGapAfterBucket\":\"%s\","
 			"\"apiScopeMaxGapBeforeThreadId\":%ld,\"apiScopeMaxGapAfterThreadId\":%ld,"
+			"\"apiScopeMaxGapSameThread\":%ld,\"apiScopeMaxGapThreadKernelDeltaUs\":%lld,"
+			"\"apiScopeMaxGapThreadUserDeltaUs\":%lld,\"apiScopeMaxGapThreadCpuDeltaUs\":%lld,"
+			"\"apiScopeMaxGapBeginQpc\":%lld,\"apiScopeMaxGapEndQpc\":%lld,"
+			"\"lastFrameLatencyHandle\":\"0x%llx\",\"lastFrameLatencySwapChain\":\"0x%llx\","
+			"\"lastFrameLatencyThreadId\":%ld,\"lastFrameLatencyPresent\":%ld,"
+			"\"lastFrameLatencyQpc\":%lld,"
+			"\"lastFenceEventHandle\":\"0x%llx\",\"lastFenceEventFence\":\"0x%llx\","
+			"\"lastFenceEventValue\":%lld,\"lastFenceEventCompletedBefore\":%lld,"
+			"\"lastFenceEventCompletedAfter\":%lld,\"lastFenceEventThreadId\":%ld,"
+			"\"lastFenceEventPresent\":%ld,\"lastFenceEventQpc\":%lld,\"lastFenceEventHr\":\"0x%lx\","
+			"\"lastSystemWaitApi\":\"%s\",\"lastSystemWaitHandle\":\"0x%llx\","
+			"\"lastSystemWaitSecondaryHandle\":\"0x%llx\",\"lastSystemWaitUs\":%lld,"
+			"\"lastSystemWaitResult\":\"0x%lx\",\"lastSystemWaitError\":%ld,"
+			"\"lastSystemWaitThreadId\":%ld,\"lastSystemWaitPresent\":%ld,"
+			"\"lastSystemWaitQpc\":%lld,\"lastSystemWaitMatchesFenceEvent\":%ld,"
+			"\"lastSystemWaitMatchesFrameLatency\":%ld,"
 			"\"apiBeforeFirstScopeUs\":%lld,\"apiAfterLastScopeUs\":%lld,"
 			"\"apiFirstBeginToPresentUs\":%lld,\"apiLastEndToPresentUs\":%lld,"
 			"\"frameWallUs\":%lld,\"presentWallUs\":%lld,\"frameMinusApiTotalUs\":%lld,"
@@ -1423,6 +1866,37 @@ public:
 			ApiWallBucketName(maxGapAfterBucket),
 			maxGapBeforeThreadId,
 			maxGapAfterThreadId,
+			static_cast<LONG>(maxGapBeforeThreadId == maxGapAfterThreadId),
+			static_cast<long long>(maxGapThreadKernelDeltaUs),
+			static_cast<long long>(maxGapThreadUserDeltaUs),
+			static_cast<long long>(maxGapThreadCpuDeltaUs),
+			static_cast<long long>(maxGapBeginQpc),
+			static_cast<long long>(maxGapEndQpc),
+			static_cast<unsigned long long>(lastFrameLatencyHandle),
+			static_cast<unsigned long long>(lastFrameLatencySwapChain),
+			lastFrameLatencyThreadId,
+			lastFrameLatencyPresent,
+			static_cast<long long>(lastFrameLatencyQpc),
+			static_cast<unsigned long long>(lastFenceEventHandle),
+			static_cast<unsigned long long>(lastFenceEventFence),
+			static_cast<long long>(lastFenceEventValue),
+			static_cast<long long>(lastFenceEventCompletedBefore),
+			static_cast<long long>(lastFenceEventCompletedAfter),
+			lastFenceEventThreadId,
+			lastFenceEventPresent,
+			static_cast<long long>(lastFenceEventQpc),
+			static_cast<unsigned long>(lastFenceEventHr),
+			WaitApiName(lastSystemWaitApi),
+			static_cast<unsigned long long>(lastSystemWaitHandle),
+			static_cast<unsigned long long>(lastSystemWaitSecondaryHandle),
+			static_cast<long long>(lastSystemWaitUs),
+			static_cast<unsigned long>(lastSystemWaitResult),
+			lastSystemWaitError,
+			lastSystemWaitThreadId,
+			lastSystemWaitPresent,
+			static_cast<long long>(lastSystemWaitQpc),
+			lastSystemWaitMatchesFenceEvent,
+			lastSystemWaitMatchesFrameLatency,
 			static_cast<long long>(beforeFirstApiUs),
 			static_cast<long long>(afterLastApiUs),
 			static_cast<long long>(firstBeginToPresentUs),
@@ -1947,6 +2421,8 @@ public:
 		const LONG64 fenceTotalUs = TakeLong64(&FenceTotalUs);
 		const LONG64 eventWaitCalls = TakeLong64(&EventWaitCalls);
 		const LONG64 eventWaitTotalUs = TakeLong64(&EventWaitTotalUs);
+		const LONG64 systemWaitCalls = TakeLong64(&SystemWaitCalls);
+		const LONG64 systemWaitTotalUs = TakeLong64(&SystemWaitTotalUs);
 
 		const LONG64 workerTaskCalls = TakeLong64(&WorkerTaskCalls);
 		const LONG64 workerTaskUs = TakeLong64(&WorkerTaskUs);
@@ -1981,7 +2457,8 @@ public:
 			"\"queueRebuildWorkFlagsUs\":%lld,\"queueOtherUs\":%lld,"
 			"\"queueFenceCalls\":%lld,\"queueSignalUs\":%lld,\"queueWaitUs\":%lld,"
 			"\"fenceCalls\":%lld,\"fenceTotalUs\":%lld,\"eventWaitCalls\":%lld,"
-			"\"eventWaitTotalUs\":%lld,\"workerTaskCalls\":%lld,\"workerTaskUs\":%lld,"
+			"\"eventWaitTotalUs\":%lld,\"systemWaitCalls\":%lld,\"systemWaitTotalUs\":%lld,"
+			"\"workerTaskCalls\":%lld,\"workerTaskUs\":%lld,"
 			"\"workerWaitCalls\":%lld,\"workerWaitUs\":%lld,\"workerIdleWaitUs\":%lld,"
 			"\"workerDrainWaitUs\":%lld,"
 			"\"presentWallMinusKnownSlicesUs\":%lld",
@@ -2025,6 +2502,8 @@ public:
 			static_cast<long long>(fenceTotalUs),
 			static_cast<long long>(eventWaitCalls),
 			static_cast<long long>(eventWaitTotalUs),
+			static_cast<long long>(systemWaitCalls),
+			static_cast<long long>(systemWaitTotalUs),
 			static_cast<long long>(workerTaskCalls),
 			static_cast<long long>(workerTaskUs),
 			static_cast<long long>(workerWaitCalls),

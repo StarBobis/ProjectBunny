@@ -740,6 +740,8 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				if (FAILED(QuerySwapChain2(&swapChain2)))
 					return nullptr;
 				HANDLE handle = swapChain2->GetFrameLatencyWaitableObject();
+				DX12OuterTimingProbeUtils::RegisterFrameLatencyWaitableObject(
+					mSwapChain, handle);
 				swapChain2->Release();
 				return handle;
 			}
@@ -1208,6 +1210,13 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				HRESULT hr = mFence->SetEventOnCompletion(Value, hEvent);
 				const UINT64 completedAfter =
 					DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
+				DX12OuterTimingProbeUtils::RegisterFenceEventOnCompletion(
+					mFence,
+					hEvent,
+					Value,
+					completedBefore,
+					completedAfter,
+					hr);
 				DX12OuterTimingProbeUtils::LogFenceSlice(
 					"SetEventOnCompletion",
 					"wrapper",

@@ -2494,19 +2494,29 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		if (state.restoreSamplerHeap)
 			heaps[heapCount++] = state.restoreSamplerHeap;
 		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
-		if (!runtimeState) {
+		if (runtimeState) {
+			DX12CommandListRuntime::SetDescriptorHeaps(
+				runtimeState, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
+		} else {
 			DX12CommandListRuntime::SetDescriptorHeaps(
 				commandList, restoreCbvSrvUavHeap, state.restoreSamplerHeap);
-			DX12BindingTracker::SetDescriptorHeaps(
-				commandList, heapCount, heapCount ? heaps : nullptr);
 		}
+		DX12BindingTracker::SetDescriptorHeaps(
+			commandList, heapCount, heapCount ? heaps : nullptr);
 		for (const auto &restore : state.tableRestores) {
 			commandList->SetComputeRootDescriptorTable(
 				restore.rootParameterIndex, restore.originalTable);
-			if (!runtimeState) {
-				DX12BindingTracker::SetComputeRootDescriptorTable(
-					commandList, restore.rootParameterIndex, restore.originalTable);
+			if (runtimeState) {
+				DX12CommandListRuntime::RememberRootDescriptorTable(
+					runtimeState, false, restore.rootParameterIndex,
+					restore.originalTable);
+			} else {
+				DX12CommandListRuntime::RememberRootDescriptorTable(
+					commandList, false, restore.rootParameterIndex,
+					restore.originalTable);
 			}
+			DX12BindingTracker::SetComputeRootDescriptorTable(
+				commandList, restore.rootParameterIndex, restore.originalTable);
 		}
 		state.patchHeap = nullptr;
 	}

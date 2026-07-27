@@ -413,6 +413,13 @@ public:
 	static void Shutdown();
 };
 
+class DX12WaitHooks
+{
+public:
+	static void Install();
+	static void Shutdown();
+};
+
 
 
 namespace Bunny {
@@ -589,6 +596,7 @@ public:
 
 		for (int i = 0; i < 200; ++i) {
 			DXGIHooks::Install();
+			DX12WaitHooks::Install();
 			Sleep(50);
 		}
 
@@ -650,6 +658,7 @@ public:
 	{
 		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
 		DX12NativeOverlayShutdown();
+		DX12WaitHooks::Shutdown();
 		DXGIHooks::Shutdown();
 		DX12CommandListHookState::ReleaseKnownCommandQueue();
 		DX12HookRegistry::UnhookAll();
