@@ -5111,10 +5111,12 @@ void DX12ModRegisterPreSkinOutputResize(
 	entry.stride = stride;
 	entry.resizedGpuVa = resizedGpuVa;
 
-	// A global "latest output" is ambiguous while the engine records multiple
-	// frames and shadow passes in parallel. Keep the producer command list's
-	// exact output beside the compatibility map so its later IA bindings cannot
-	// be redirected to a different frame's PreSkin result.
+	// The fallback map is safe only because the resize cache keeps one stable
+	// replacement for each original output resource. Producer-local entries make
+	// lookup precise when dispatch and draw share a command list; consumers on a
+	// different list resolve the same stable resource through the global entry.
+	// Do not publish a rotating per-frame allocation here: IA bindings contain
+	// only the original GPU VA and cannot identify which ring slot produced them.
 	ID3D12Resource *oldGlobalResource = nullptr;
 	ID3D12Resource *oldCommandListResource = nullptr;
 	IUnknown *commandListIdentity =
@@ -5186,7 +5188,12 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 			&gPreSkinOutputResizeMap, viewGpuVa, &sourceOffset);
 	if (!entry || !entry->resizedResource || sourceOffset >= entry->resizedByteWidth) {
 		ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
-		return false;
+		// A miss is expected when Present/FG occurs between producer and consumer
+		// recording. Do not turn this into an immediate failure or republish a raw
+		// GPU VA globally; resolve through the cache that owns both COM lifetime and
+		// queue-fence completion for the stable replacement resource.
+		return DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
+			commandList, viewGpuVa, binding);
 	}
 	entry->resizedResource->AddRef();
 	binding->resizedResource = entry->resizedResource;

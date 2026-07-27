@@ -409,8 +409,12 @@ bool DX12ModAdjustUavDesc(
 bool DX12ModResolveExpandedPreSkinBufferWidth(
 	ID3D12Resource *resource, UINT vertexStride, UINT64 *outputByteWidth);
 
-// PreSkin DynamicUAV: register a resized output UAV so IA redirects can bind
-// the larger buffer when vertex count exceeds original buffer capacity.
+// PreSkin DynamicUAV lifetime contract:
+// - the GPU-VA publish map is only a fast, frame-local producer handoff;
+// - the resize cache is the durable, fence-tracked owner across Present/FG;
+// - every returned binding retains its vertex resource until Clear().
+// A consumer command list may be recorded after Present has cleared the publish
+// map, so callers must preserve the cache fallback below.
 class DX12PreSkinOutputResizeBinding
 {
 public:
@@ -451,6 +455,9 @@ public:
 	bool transitionToVertex = false;
 	D3D12_RESOURCE_STATES stateBefore = D3D12_RESOURCE_STATE_COMMON;
 };
+bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
+	ID3D12GraphicsCommandList *commandList,
+	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);
 void DX12ModRegisterPreSkinOutputResize(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,

@@ -349,6 +349,7 @@ static std::unordered_set<uint64_t> gPreSkinMatchCsHashes;
 // overrides, binding tracking can be skipped to save ~1500+ lock acquisitions/frame.
 static volatile LONG gPreSkinBindingIdleFrames = 0;
 static volatile LONG gHasActivePreSkinTextureOverridesFast = 0;
+static volatile LONG gHasConfirmedPreSkinSectionsFast = 0;
 static constexpr LONG kPreSkinBindingIdleMax = 60;
 class DX12PreSkinUavMatchCacheEntry
 {
@@ -573,6 +574,13 @@ public:
 
 static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTextureOverrides;
 static std::unordered_map<ID3D12Resource*, DX12ActivePreSkinOutputState> gActivePreSkinOutputStates;
+// A successful producer match proves that this configured section participates
+// in PreSkin for the current mod configuration. Keep that proof independently
+// from the frame-local resource binding below: DX12 command lists may be recorded
+// out of execution order, and Present/FG/capture can run before a consumer draw is
+// recorded. Clearing this set at Present would make that draw fail match_cs and
+// intermittently remove the entire replacement model.
+static std::unordered_set<std::wstring> gConfirmedPreSkinSections;
 class DX12ActivePreSkinSectionSnapshotTlsCache
 {
 public:
@@ -603,13 +611,17 @@ static const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
 
 	cache.generation = generation;
 	cache.sections.clear();
-	if (InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0)
+	if (InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0 &&
+	    InterlockedCompareExchange(&gHasConfirmedPreSkinSectionsFast, 0, 0) == 0)
 		return cache.sections;
 
 	AcquireSRWLockShared(&gPreSkinLock);
-	cache.sections.reserve(gActivePreSkinTextureOverrides.size());
+	cache.sections.reserve(
+		gActivePreSkinTextureOverrides.size() + gConfirmedPreSkinSections.size());
 	for (const auto &item : gActivePreSkinTextureOverrides)
 		cache.sections.insert(item.first);
+	cache.sections.insert(
+		gConfirmedPreSkinSections.begin(), gConfirmedPreSkinSections.end());
 	ReleaseSRWLockShared(&gPreSkinLock);
 	return cache.sections;
 }
@@ -677,6 +689,11 @@ static void ClearActivePreSkinTextureOverridesLocked(
 	gActivePreSkinTextureOverrides.clear();
 	gActivePreSkinOutputStates.clear();
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
+	// This clears only the transient producer publication. Never clear
+	// gPreSkinOutputResizeCache here: Present calls this function every frame,
+	// while DX12 may record the corresponding consumer draw after that Present.
+	// DLSS FG and NVIDIA capture widen this window. The consumer must fall back
+	// to the fence-owned cache in DX12ModResolvePreSkinOutputResizeCacheByGpuVa.
 	DX12ModClearPreSkinOutputResizeMap();
 	if (changed)
 		BumpPreSkinActiveGeneration();
@@ -686,6 +703,11 @@ static void StoreActivePreSkinTextureOverrideLocked(
 	const std::wstring &section, const DX12ActivePreSkinTextureOverride &active,
 	std::vector<ID3D12Resource*> *releaseResources)
 {
+	// Do not use frame-local recording order as match_cs proof. Once the actual
+	// PreSkin producer has matched, retain the section until configuration reload
+	// so draws recorded across a Present or on another command list remain valid.
+	if (gConfirmedPreSkinSections.insert(section).second)
+		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 1);
 	auto existing = gActivePreSkinTextureOverrides.find(section);
 	ID3D12Resource *oldResource = existing != gActivePreSkinTextureOverrides.end() ?
 		existing->second.outputResource : nullptr;
@@ -1157,8 +1179,6 @@ public:
 static SRWLOCK gPreSkinOutputResizeCacheLock = SRWLOCK_INIT;
 static std::map<DX12PreSkinOutputResizeCacheIdentity, DX12PreSkinOutputResizeCacheEntry>
 	gPreSkinOutputResizeCache;
-static std::map<DX12PreSkinOutputResizeCacheIdentity, UINT>
-	gPreSkinOutputResizeNextRingSlot;
 static UINT64 gPreSkinOutputResizeCacheUseSerial = 0;
 static constexpr size_t PreSkinOutputResizeCacheCapacity = 32;
 static volatile LONG gHasPendingPreSkinOutputResizeSubmissionWorkFast = 0;
@@ -1178,28 +1198,16 @@ static bool IsPreSkinOutputResizeCacheEntryReusable(
 	return true;
 }
 
-static bool HasSamePreSkinOutputResizeBase(
-	const DX12PreSkinOutputResizeCacheIdentity &lhs,
-	const DX12PreSkinOutputResizeCacheIdentity &rhs)
-{
-	return lhs.originalResource == rhs.originalResource &&
-		lhs.requiredByteWidth == rhs.requiredByteWidth &&
-		lhs.stride == rhs.stride;
-}
-
-static void MarkPreSkinOutputResizeCacheEntryAcquired(
+static void TrackPreSkinOutputResizeCacheEntryUse(
 	DX12PreSkinOutputResizeCacheEntry *entry,
 	IUnknown *commandListIdentity)
 {
 	if (!entry)
 		return;
-	for (auto &completion : entry->completionPoints) {
-		if (completion.fence)
-			completion.fence->Release();
-	}
-	entry->completionPoints.clear();
-	entry->pendingCommandLists.clear();
-	if (commandListIdentity) {
+	if (commandListIdentity &&
+	    std::find(entry->pendingCommandLists.begin(),
+		entry->pendingCommandLists.end(), commandListIdentity) ==
+		entry->pendingCommandLists.end()) {
 		entry->pendingCommandLists.push_back(commandListIdentity);
 		InterlockedExchange(
 			&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 1);
@@ -1234,7 +1242,6 @@ static void ClearPreSkinOutputResizeCache()
 	for (auto &item : gPreSkinOutputResizeCache)
 		releaseEntries.push_back(item.second);
 	gPreSkinOutputResizeCache.clear();
-	gPreSkinOutputResizeNextRingSlot.clear();
 	gPreSkinOutputResizeCacheUseSerial = 0;
 	InterlockedExchange(
 		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0);
@@ -1291,20 +1298,11 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 	};
 
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-	auto cached = gPreSkinOutputResizeCache.end();
-	for (auto it = gPreSkinOutputResizeCache.begin();
-	     it != gPreSkinOutputResizeCache.end(); ++it) {
-		if (!HasSamePreSkinOutputResizeBase(it->first, baseKey) ||
-		    !IsPreSkinOutputResizeCacheEntryReusable(it->second))
-			continue;
-		if (cached == gPreSkinOutputResizeCache.end() ||
-		    it->second.useSerial < cached->second.useSerial)
-			cached = it;
-	}
+	auto cached = gPreSkinOutputResizeCache.find(baseKey);
 	if (cached != gPreSkinOutputResizeCache.end()) {
 		key = cached->first;
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
-		MarkPreSkinOutputResizeCacheEntryAcquired(
+		TrackPreSkinOutputResizeCacheEntryUse(
 			&cached->second, commandListIdentity);
 		const bool retained = retainEntry(cached->second);
 		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
@@ -1315,14 +1313,15 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		return retained;
 	}
 
-	// A slot is unavailable until the queue fence covering its producer and all
-	// consumers has completed. Allocate another slot instead of wrapping onto an
-	// in-flight buffer; FG/capture can keep substantially more than five frames
-	// queued, so a fixed ring is not a valid D3D12 lifetime guarantee.
-	key.ringSlot = gPreSkinOutputResizeNextRingSlot[baseKey]++;
-	while (gPreSkinOutputResizeCache.find(key) !=
-	       gPreSkinOutputResizeCache.end())
-		key.ringSlot = gPreSkinOutputResizeNextRingSlot[baseKey]++;
+	// Keep one replacement resource per original PreSkin output. Consumers bind
+	// only the original GPU VA and often record on a different command list, so
+	// they cannot identify a per-frame ring slot. A stable replacement inherits
+	// the application's ordering for the original resource: producer copies and
+	// consumer draws observe the same queue/fence dependency chain. Rotating the
+	// replacement here lets a later recorded frame overwrite the global VA map
+	// before an earlier frame records its draw, which appears as whole-model
+	// flicker under FG/capture.
+	key.ringSlot = 0;
 	if (ringSlotOut)
 		*ringSlotOut = key.ringSlot;
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
@@ -1421,7 +1420,7 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		createdHeap = nullptr;
 	} else {
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
-		MarkPreSkinOutputResizeCacheEntryAcquired(
+		TrackPreSkinOutputResizeCacheEntryUse(
 			&cached->second, commandListIdentity);
 	}
 	const bool retained = retainEntry(cached->second);
@@ -1703,6 +1702,83 @@ static IUnknown *PreSkinCommandListIdentity(IUnknown *commandList)
 	return identity ? identity : commandList;
 }
 
+bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
+	ID3D12GraphicsCommandList *commandList,
+	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding)
+{
+	if (!viewGpuVa || !binding)
+		return false;
+	binding->Clear();
+
+	// The publish map is intentionally frame-local, but the resize cache owns a
+	// stable replacement for the original output resource until fence-safe
+	// eviction or configuration reload. Resolve through that owner when Present,
+	// FG, or capture falls between producer and consumer command-list recording.
+	// This avoids both a frame-order dependency and a stale persistent GPU-VA map.
+	IUnknown *commandListIdentity = PreSkinCommandListIdentity(commandList);
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	DX12PreSkinOutputResizeCacheEntry *bestEntry = nullptr;
+	const DX12PreSkinOutputResizeCacheIdentity *bestKey = nullptr;
+	UINT64 bestOffset = 0;
+	// The same original allocation can have variants for different required
+	// widths or strides. useSerial identifies the most recently observed producer
+	// and keeps the fallback consistent with the publish map's last writer.
+	for (auto &item : gPreSkinOutputResizeCache) {
+		DX12PreSkinOutputResizeCacheEntry &candidate = item.second;
+		if (!candidate.originalResource || !candidate.vertexResource)
+			continue;
+		const D3D12_RESOURCE_DESC originalDesc =
+			candidate.originalResource->GetDesc();
+		if (originalDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+			continue;
+		const UINT64 originalGpuVa =
+			candidate.originalResource->GetGPUVirtualAddress();
+		if (!originalGpuVa || viewGpuVa < originalGpuVa)
+			continue;
+		const UINT64 sourceOffset = viewGpuVa - originalGpuVa;
+		if (sourceOffset >= originalDesc.Width ||
+		    sourceOffset >= item.first.requiredByteWidth)
+			continue;
+		if (!bestEntry || candidate.useSerial > bestEntry->useSerial) {
+			bestEntry = &candidate;
+			bestKey = &item.first;
+			bestOffset = sourceOffset;
+		}
+	}
+
+	if (!bestEntry || !bestKey) {
+		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+		return false;
+	}
+	const D3D12_RESOURCE_DESC originalDesc = bestEntry->originalResource->GetDesc();
+	const UINT64 originalGpuVa = bestEntry->originalResource->GetGPUVirtualAddress();
+	const UINT64 resizedGpuVa = bestEntry->vertexResource->GetGPUVirtualAddress();
+	if (!originalGpuVa || !resizedGpuVa) {
+		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+		return false;
+	}
+
+	// Bind vertexResource, not resizedResource. PreSkin writes the UAV resource,
+	// then records the required barriers and a copy into this COMMON-state
+	// consumer resource; IA must not read the UAV allocation directly.
+	bestEntry->vertexResource->AddRef();
+	binding->resizedResource = bestEntry->vertexResource;
+	binding->retainedResource = true;
+	binding->originalGpuVa = originalGpuVa;
+	binding->originalByteWidth = originalDesc.Width;
+	binding->resizedGpuVa = resizedGpuVa;
+	binding->resizedByteWidth = bestKey->requiredByteWidth;
+	binding->sourceOffset = bestOffset;
+	binding->stride = bestKey->stride;
+	binding->uavBarrierPending = false;
+	binding->transitionToVertex = false;
+	binding->stateBefore = D3D12_RESOURCE_STATE_COMMON;
+	bestEntry->useSerial = ++gPreSkinOutputResizeCacheUseSerial;
+	TrackPreSkinOutputResizeCacheEntryUse(bestEntry, commandListIdentity);
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	return true;
+}
+
 class DX12PreSkinOutputResizeQueueFence
 {
 public:
@@ -1714,7 +1790,6 @@ class DX12PreSkinOutputResizeSubmittedUse
 {
 public:
 	DX12PreSkinOutputResizeCacheIdentity key;
-	UINT64 useSerial = 0;
 };
 
 static SRWLOCK gPreSkinOutputResizeQueueFenceLock = SRWLOCK_INIT;
@@ -1788,7 +1863,7 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 		}
 		if (!hasSubmittedUse)
 			continue;
-		submittedUses.push_back({ item.first, entry.useSerial });
+		submittedUses.push_back({ item.first });
 	}
 	ReleaseSRWLockShared(&gPreSkinOutputResizeCacheLock);
 	if (submittedUses.empty())
@@ -1814,8 +1889,7 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 	for (const DX12PreSkinOutputResizeSubmittedUse &submitted : submittedUses) {
 		auto found = gPreSkinOutputResizeCache.find(submitted.key);
-		if (found == gPreSkinOutputResizeCache.end() ||
-		    found->second.useSerial != submitted.useSerial)
+		if (found == gPreSkinOutputResizeCache.end())
 			continue;
 		DX12PreSkinOutputResizeCacheEntry &entry = found->second;
 		const size_t oldPendingCount = entry.pendingCommandLists.size();

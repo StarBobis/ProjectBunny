@@ -2342,7 +2342,10 @@ public:
 		// independently recorded shadow passes can otherwise consume another frame.
 		if (!expandedView || !sourceView.BufferLocation || !sourceView.SizeInBytes)
 			return false;
-		if (!DX12ModHasActivePreSkinTextureOverrides())
+		// Resource-private expansion metadata is the durable proof here. The
+		// current active-producer table is frame-local and may already have been
+		// cleared by Present while this consumer list is still being recorded.
+		if (!DX12ModNeedsPreSkinningUavProbe())
 			return false;
 
 		DX12BufferResourceSummary resource;
@@ -3130,7 +3133,11 @@ public:
 		const bool hasDrawSrvPatches = !replacement->drawSrvPatches.empty();
 		const DX12ActiveIaState *restoreIa = &runtimeState.ia;
 		DX12ActiveIaState redirectedIa;
-		if (DX12ModHasPreSkinOutputResizeBindings()) {
+		// Present clears the frame-local resize publish map, so its fast flag
+		// cannot decide whether an already-bound IA view needs recovery. Retry for
+		// configured PreSkin draws; durable resource metadata and the fence-owned
+		// resize cache make the lookup cheap and independent of recording order.
+		if (DX12ModNeedsPreSkinningUavProbe()) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
 				commandList, callbacks, &redirectedIa);
@@ -3182,7 +3189,11 @@ public:
 			!replacement.vertexBuffers.empty();
 		const DX12ActiveIaState *restoreIa = &runtimeState.ia;
 		DX12ActiveIaState redirectedIa;
-		if (DX12ModHasPreSkinOutputResizeBindings()) {
+		// Keep this gate aligned with the dynamic Execute path above. The resize
+		// publication flag is frame-local and is deliberately false after Present;
+		// configured PreSkin work must still replay IA so metadata/cache fallback
+		// can recover a consumer recorded on the other side of that boundary.
+		if (DX12ModNeedsPreSkinningUavProbe()) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
 				commandList, callbacks, &redirectedIa);

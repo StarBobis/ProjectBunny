@@ -262,6 +262,14 @@ static void ClearPreSkinRuntimeState()
 	gPatchedPreSkinDescriptors.clear();
 	gKnownPreSkinDescriptorPatches.clear();
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
+	// Confirmed match_cs sections outlive Present boundaries because DX12 command
+	// list recording is not frame ordered. A configuration reload is the point at
+	// which that proof becomes stale and must be discarded.
+	if (!gConfirmedPreSkinSections.empty()) {
+		gConfirmedPreSkinSections.clear();
+		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 0);
+		BumpPreSkinActiveGeneration();
+	}
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
@@ -295,6 +303,10 @@ static void ClearPreSkinRuntimeState()
 	ReleasePreSkinDescriptorRingLocked(&releaseBatch);
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
 	DrainPreSkinDescriptorRestoreHeapPool(&releaseBatch);
+	// Configuration reload is the ownership boundary for the durable resize
+	// cache. Do not move this clear into DX12ModBeginFrame: consumer command lists
+	// can legitimately be recorded after Present while referring to the previous
+	// producer's original GPU VA.
 	ClearPreSkinOutputResizeCache();
 	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
