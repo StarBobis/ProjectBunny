@@ -77,6 +77,69 @@ public:
 class DXGIHookRuntime
 {
 public:
+	inline static SRWLOCK PrimarySwapChainLock = SRWLOCK_INIT;
+	inline static IUnknown *PrimarySwapChainIdentity = nullptr;
+	inline static volatile LONG SecondarySwapChainLogged = 0;
+
+	static IUnknown *GetSwapChainIdentity(IDXGISwapChain *swapChain)
+	{
+		if (!swapChain)
+			return nullptr;
+		IUnknown *identity = nullptr;
+		if (FAILED(swapChain->QueryInterface(IID_PPV_ARGS(&identity))) || !identity)
+			return reinterpret_cast<IUnknown*>(swapChain);
+		identity->Release();
+		return identity;
+	}
+
+	static bool IsPrimarySwapChain(const char *api, IDXGISwapChain *swapChain)
+	{
+		IUnknown *identity = GetSwapChainIdentity(swapChain);
+		if (!identity)
+			return false;
+
+		bool primary = false;
+		bool selected = false;
+		IUnknown *primaryIdentity = nullptr;
+		AcquireSRWLockExclusive(&PrimarySwapChainLock);
+		if (!PrimarySwapChainIdentity) {
+			PrimarySwapChainIdentity = identity;
+			selected = true;
+		}
+		primary = PrimarySwapChainIdentity == identity;
+		primaryIdentity = PrimarySwapChainIdentity;
+		ReleaseSRWLockExclusive(&PrimarySwapChainLock);
+
+		if (selected) {
+			InterlockedExchange(&SecondarySwapChainLogged, 0);
+			DX12LogManager::FieldsFlush("DX12PrimarySwapChain",
+				"\"event\":\"select\",\"api\":\"%s\",\"swapchain\":\"%p\",\"identity\":\"%p\"",
+				api ? api : "", swapChain, identity);
+		} else if (!primary &&
+			InterlockedCompareExchange(&SecondarySwapChainLogged, 1, 0) == 0) {
+			DX12LogManager::FieldsFlush("DX12PrimarySwapChain",
+				"\"event\":\"ignore_secondary\",\"api\":\"%s\",\"swapchain\":\"%p\",\"identity\":\"%p\",\"primaryIdentity\":\"%p\"",
+				api ? api : "", swapChain, identity, primaryIdentity);
+		}
+		return primary;
+	}
+
+	static void ForgetSwapChain(IDXGISwapChain *swapChain)
+	{
+		IUnknown *identity = GetSwapChainIdentity(swapChain);
+		bool forgotten = false;
+		AcquireSRWLockExclusive(&PrimarySwapChainLock);
+		if (PrimarySwapChainIdentity == identity) {
+			PrimarySwapChainIdentity = nullptr;
+			forgotten = true;
+		}
+		ReleaseSRWLockExclusive(&PrimarySwapChainLock);
+		if (forgotten)
+			DX12LogManager::FieldsFlush("DX12PrimarySwapChain",
+				"\"event\":\"release\",\"swapchain\":\"%p\",\"identity\":\"%p\"",
+				swapChain, identity);
+	}
+
 	class DX12PresentSkipLogUtils
 	{
 	public:
@@ -234,6 +297,16 @@ public:
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
 		}
+		// Streamline frame generation and NVIDIA capture present through their
+		// own swapchains. Those Presents contain no game dispatches and must not
+		// advance the Mod frame epoch: DX12ModBeginFrame clears the active
+		// PreSkin producer set, and present maintenance retires GPU resources.
+		// DX11 naturally ties frame actions to its one wrapped game swapchain;
+		// preserve that ownership explicitly for DX12.
+		if (!IsPrimarySwapChain("Present", swapChain)) {
+			_profile_timer.Pause();
+			return swapChain->Present(syncInterval, flags);
+		}
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present", swapChain, syncInterval, flags);
@@ -353,6 +426,10 @@ public:
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		if (flags & DXGI_PRESENT_TEST) {
+			_profile_timer.Pause();
+			return swapChain->Present1(syncInterval, flags, presentParameters);
+		}
+		if (!IsPrimarySwapChain("Present1", swapChain)) {
 			_profile_timer.Pause();
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
@@ -970,6 +1047,10 @@ public:
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
 		}
+		if (!DXGIHookRuntime::IsPrimarySwapChain("PresentWrapper", swapChain)) {
+			_profile_timer.Pause();
+			return swapChain->Present(syncInterval, flags);
+		}
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("PresentWrapper", swapChain, syncInterval, flags);
@@ -1096,6 +1177,10 @@ public:
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		if (flags & DXGI_PRESENT_TEST) {
+			_profile_timer.Pause();
+			return swapChain->Present1(syncInterval, flags, presentParameters);
+		}
+		if (!DXGIHookRuntime::IsPrimarySwapChain("Present1Wrapper", swapChain)) {
 			_profile_timer.Pause();
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}

@@ -191,52 +191,57 @@ static bool ReadPreSkinCbvBytesLocked(
 	if (!resource || !viewBytes || !bytes)
 		return false;
 
-	const DX12PreSkinCbvReadCacheKey key = {
-		resource, sourceOffset, viewBytes
-	};
-	// mod generation mod
-	{
-		UINT64 reloadGen = DX12ModGetReloadGeneration();
-		if (gPreSkinCbvReadCacheReloadGen != reloadGen) {
-			gPreSkinCbvReadCache.clear();
-			gPreSkinCbvReadCacheReloadGen = reloadGen;
-		}
-	}
-	auto cached = gPreSkinCbvReadCache.find(key);
-	if (cached != gPreSkinCbvReadCache.end()) {
-		if (hrOut)
-			*hrOut = cached->second.hr;
-		if (FAILED(cached->second.hr))
-			return false;
-		*bytes = cached->second.bytes;
-		return true;
-	}
-
-	DX12PreSkinCbvReadCacheValue value;
-	value.bytes.resize(viewBytes);
+	// Upload CBVs are commonly rewritten in place every frame. Resource identity
+	// and GPU VA therefore do not identify their contents; caching this read made
+	// later PreSkin dispatches consume the first frame's constants indefinitely.
+	bytes->resize(viewBytes);
 	D3D12_RANGE readRange = {
 		static_cast<SIZE_T>(sourceOffset),
 		static_cast<SIZE_T>(sourceOffset + viewBytes)
 	};
 	void *sourceMapped = nullptr;
-	value.hr = resource->Map(0, &readRange, &sourceMapped);
-	if (SUCCEEDED(value.hr) && sourceMapped) {
-		memcpy(value.bytes.data(),
+	const HRESULT hr = resource->Map(0, &readRange, &sourceMapped);
+	if (SUCCEEDED(hr) && sourceMapped) {
+		memcpy(bytes->data(),
 			static_cast<const unsigned char*>(sourceMapped) + sourceOffset,
 			viewBytes);
 		D3D12_RANGE writtenRange = {};
 		resource->Unmap(0, &writtenRange);
 	}
-
-	if (gPreSkinCbvReadCache.size() > 128)
-		gPreSkinCbvReadCache.clear();
-	gPreSkinCbvReadCache[key] = value;
 	if (hrOut)
-		*hrOut = value.hr;
-	if (FAILED(value.hr) || !sourceMapped)
+		*hrOut = hr;
+	if (FAILED(hr) || !sourceMapped)
 		return false;
-	*bytes = value.bytes;
 	return true;
+}
+
+static UINT64 HashPreSkinCbvBytes(const std::vector<unsigned char> &bytes)
+{
+	UINT64 hash = 1469598103934665603ull;
+	for (unsigned char value : bytes) {
+		hash ^= value;
+		hash *= 1099511628211ull;
+	}
+	return hash ? hash : 1;
+}
+
+static void ReleasePreSkinCbvPatchCacheEntry(
+	DX12PreSkinCbvPatchCacheEntry *entry)
+{
+	if (!entry)
+		return;
+	if (entry->patchedResource)
+		entry->patchedResource->Release();
+	if (entry->descriptorHeap)
+		entry->descriptorHeap->Release();
+	*entry = DX12PreSkinCbvPatchCacheEntry();
+}
+
+static void ClearPreSkinCbvPatchCache()
+{
+	for (auto &item : gPreSkinCbvPatchCache)
+		ReleasePreSkinCbvPatchCacheEntry(&item.second);
+	gPreSkinCbvPatchCache.clear();
 }
 
 static bool PatchPreSkinVertexCountCbvLocked(
@@ -303,6 +308,7 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	}
 	for (UINT offset : patchOffsets)
 		memcpy(bytes.data() + offset, &overrideVertexCount, sizeof(overrideVertexCount));
+	const UINT64 patchedContentHash = HashPreSkinCbvBytes(bytes);
 
 	// Patched CBV Buffer
 	// UPLOAD buffer + CBV descriptor mod
@@ -313,39 +319,40 @@ static bool PatchPreSkinVertexCountCbvLocked(
 		patchKey.sourceOffset = sourceOffset;
 		patchKey.viewBytes = viewBytes;
 		patchKey.overrideVertexCount = overrideVertexCount;
+		patchKey.contentHash = patchedContentHash;
 
 		UINT64 reloadGen = DX12ModGetReloadGeneration();
 		if (gPreSkinCbvPatchCacheGeneration != reloadGen) {
-			gPreSkinCbvPatchCache.clear();
+			ClearPreSkinCbvPatchCache();
 			gPreSkinCbvPatchCacheGeneration = reloadGen;
 		}
 
 		auto cached = gPreSkinCbvPatchCache.find(patchKey);
 		if (cached != gPreSkinCbvPatchCache.end() &&
 		    cached->second.patchedResource && cached->second.cbvCpu.ptr &&
-		    cached->second.generation == reloadGen) {
-			void *mapped = nullptr;
-			D3D12_RANGE readRange = {};
-			hr = cached->second.patchedResource->Map(0, &readRange, &mapped);
-			if (SUCCEEDED(hr) && mapped) {
-				memcpy(mapped, bytes.data(), viewBytes);
-				cached->second.patchedResource->Unmap(0, nullptr);
-				device->CopyDescriptorsSimple(1, dst, cached->second.cbvCpu,
-					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-				temporaryResources->push_back(cached->second.patchedResource);
-				cached->second.patchedResource->AddRef();
-				if (originalVertexCountOut)
-					*originalVertexCountOut = originalVertexCount;
-				if (overrideVertexCountOut)
-					*overrideVertexCountOut = overrideVertexCount;
+		    cached->second.generation == reloadGen &&
+		    cached->second.patchedBytes == bytes) {
+			// D3D12 upload memory is read by the GPU at execution time. Rewriting a
+			// cached CBV while an earlier command list is in flight lets that earlier
+			// PreSkin dispatch observe a later frame's constants. FG and capture make
+			// the race much easier to hit by increasing queue depth. The read cache
+			// content hash and exact byte comparison guarantee this key uses the
+			// same snapshot, so keep the allocation immutable and copy its descriptor.
+			device->CopyDescriptorsSimple(1, dst, cached->second.cbvCpu,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+			temporaryResources->push_back(cached->second.patchedResource);
+			cached->second.patchedResource->AddRef();
+			if (originalVertexCountOut)
+				*originalVertexCountOut = originalVertexCount;
+			if (overrideVertexCountOut)
+				*overrideVertexCountOut = overrideVertexCount;
 #if defined(_DEBUG)
-				DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
-					"\"status\":\"patched_cache_hit\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u",
-					config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
-					originalVertexCount, overrideVertexCount, viewBytes);
+			DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
+				"\"status\":\"patched_cache_hit\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u",
+				config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
+				originalVertexCount, overrideVertexCount, viewBytes);
 #endif
-				return true;
-			}
+			return true;
 		}
 	}
 
@@ -398,8 +405,10 @@ static bool PatchPreSkinVertexCountCbvLocked(
 			device->CreateConstantBufferView(&cbvDesc, cachedCpu);
 			DX12PreSkinCbvPatchCacheEntry entry;
 			entry.patchedResource = patchedResource;
+			entry.descriptorHeap = patchHeap;
 			entry.cbvCpu = cachedCpu;
 			entry.generation = DX12ModGetReloadGeneration();
+			entry.patchedBytes = bytes;
 			patchedResource->AddRef();
 
 			DX12PreSkinCbvPatchCacheKey patchKey;
@@ -407,8 +416,14 @@ static bool PatchPreSkinVertexCountCbvLocked(
 			patchKey.sourceOffset = sourceOffset;
 			patchKey.viewBytes = viewBytes;
 			patchKey.overrideVertexCount = overrideVertexCount;
+			patchKey.contentHash = patchedContentHash;
 			if (gPreSkinCbvPatchCache.size() > 64)
-				gPreSkinCbvPatchCache.clear();
+				ClearPreSkinCbvPatchCache();
+			auto old = gPreSkinCbvPatchCache.find(patchKey);
+			if (old != gPreSkinCbvPatchCache.end()) {
+				ReleasePreSkinCbvPatchCacheEntry(&old->second);
+				gPreSkinCbvPatchCache.erase(old);
+			}
 			gPreSkinCbvPatchCache[patchKey] = entry;
 		}
 	}
@@ -1740,7 +1755,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		if (requiredByteWidth > currentByteWidth) {
 			const TableCopy *uavTable = findTable(uavBinding);
 			if (uavTable && AcquirePreSkinOutputResizeCacheEntry(
-				device, uavBinding.descriptor.resource,
+				device, commandList, uavBinding.descriptor.resource,
 				requiredByteWidth, uavStride, overrideVertexCount,
 				&resizedUavResource, &resizedVertexResource,
 				&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
@@ -2564,6 +2579,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		commandList->ResourceBarrier(2, afterCopy);
 
 		DX12ModRegisterPreSkinOutputResize(
+			commandList,
 			state.originalOutputResource,
 			state.outputVertexResource,
 			state.originalOutputByteWidth,

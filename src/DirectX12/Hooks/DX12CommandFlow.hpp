@@ -2354,15 +2354,28 @@ public:
 			return false;
 
 		const UINT64 offset = sourceView.BufferLocation - resource.gpuVirtualAddress;
+		UINT64 outputByteWidth = 0;
 		DX12ModPreSkinProducerSummary producer;
-		if (!DX12ModFindActivePreSkinProducerForOutput(
-				resource.resource, 0, sourceView.StrideInBytes, &producer) ||
-			!producer.outputByteWidth ||
-			producer.outputByteWidth > resource.resourceDesc.Width ||
-			producer.outputByteWidth <= offset)
+		if (DX12ModFindActivePreSkinProducerForOutput(
+				resource.resource, 0, sourceView.StrideInBytes, &producer)) {
+			outputByteWidth = producer.outputByteWidth;
+		}
+		// The active-producer table is only a fast path. It is keyed by Mod
+		// section, so a later frame can replace its output resource while an
+		// earlier frame's command list is still being recorded. DLSS Frame
+		// Generation and NVIDIA capture make that normal by increasing the number
+		// of in-flight resources. Recover the VLR size from resource-local metadata
+		// written when its UAV was expanded, matching DX11's buffer-local lifetime.
+		if (!outputByteWidth) {
+			DX12ModResolveExpandedPreSkinBufferWidth(
+				resource.resource, sourceView.StrideInBytes, &outputByteWidth);
+		}
+		if (!outputByteWidth ||
+			outputByteWidth > resource.resourceDesc.Width ||
+			outputByteWidth <= offset)
 			return false;
 
-		const UINT expandedBytes = ClampViewBytes(producer.outputByteWidth - offset);
+		const UINT expandedBytes = ClampViewBytes(outputByteWidth - offset);
 		if (expandedBytes <= sourceView.SizeInBytes)
 			return false;
 		*expandedView = sourceView;
@@ -2425,7 +2438,7 @@ public:
 			}
 			DX12PreSkinOutputResizeBinding binding;
 			if (!DX12ModResolvePreSkinOutputResizeByGpuVa(
-				    sourceView.BufferLocation, &binding)) {
+				    commandList, sourceView.BufferLocation, &binding)) {
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
 					activeIa->preSkinRedirectNegativeValid[slot] = true;
 					activeIa->preSkinRedirectNegativeGeneration[slot] =
@@ -3290,7 +3303,8 @@ public:
 				preSkinGeneration,
 				runtimeState.cbvSrvUavHeap,
 				boundHeapVersion,
-				runtimeState.graphicsRootSignature)) {
+				runtimeState.graphicsRootSignature,
+				draw)) {
 			if (!boundDrawCache.hasOverride) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -3313,6 +3327,7 @@ public:
 				runtimeState.cbvSrvUavHeap,
 				boundHeapVersion,
 				runtimeState.graphicsRootSignature,
+				draw,
 				false);
 		};
 

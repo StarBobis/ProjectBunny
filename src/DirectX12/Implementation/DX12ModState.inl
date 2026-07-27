@@ -812,13 +812,16 @@ public:
 	UINT64 sourceOffset = 0;
 	UINT viewBytes = 0;
 	UINT overrideVertexCount = 0;
+	UINT64 contentHash = 0;
 
 	bool operator<(const DX12PreSkinCbvPatchCacheKey &rhs) const
 	{
 		if (resource != rhs.resource) return resource < rhs.resource;
 		if (sourceOffset != rhs.sourceOffset) return sourceOffset < rhs.sourceOffset;
 		if (viewBytes != rhs.viewBytes) return viewBytes < rhs.viewBytes;
-		return overrideVertexCount < rhs.overrideVertexCount;
+		if (overrideVertexCount != rhs.overrideVertexCount)
+			return overrideVertexCount < rhs.overrideVertexCount;
+		return contentHash < rhs.contentHash;
 	}
 };
 
@@ -826,8 +829,10 @@ class DX12PreSkinCbvPatchCacheEntry
 {
 public:
 	ID3D12Resource *patchedResource = nullptr;       // UPLOAD heap buffer, reused
+	ID3D12DescriptorHeap *descriptorHeap = nullptr;  // owns cbvCpu
 	D3D12_CPU_DESCRIPTOR_HANDLE cbvCpu = {};         // CBV descriptor pointing to patchedResource
 	UINT64 generation = 0;                            // mod reload generation when created
+	std::vector<unsigned char> patchedBytes;
 };
 
 static std::map<DX12PreSkinCbvPatchCacheKey, DX12PreSkinCbvPatchCacheEntry> gPreSkinCbvPatchCache;
@@ -1132,11 +1137,20 @@ static constexpr LONG PreSkinRetiredObjectPresentDelay = 120;
 class DX12PreSkinOutputResizeCacheEntry
 {
 public:
+	class CompletionPoint
+	{
+	public:
+		ID3D12Fence *fence = nullptr;
+		UINT64 value = 0;
+	};
+
 	ID3D12Resource *originalResource = nullptr;
 	ID3D12Resource *resizedResource = nullptr;
 	ID3D12Resource *vertexResource = nullptr;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptorCpu = {};
+	std::vector<IUnknown*> pendingCommandLists;
+	std::vector<CompletionPoint> completionPoints;
 	UINT64 useSerial = 0;
 };
 
@@ -1147,7 +1161,50 @@ static std::map<DX12PreSkinOutputResizeCacheIdentity, UINT>
 	gPreSkinOutputResizeNextRingSlot;
 static UINT64 gPreSkinOutputResizeCacheUseSerial = 0;
 static constexpr size_t PreSkinOutputResizeCacheCapacity = 32;
-static constexpr UINT PreSkinOutputResizeRingSize = 5;
+static volatile LONG gHasPendingPreSkinOutputResizeSubmissionWorkFast = 0;
+
+static IUnknown *PreSkinCommandListIdentity(IUnknown *commandList);
+
+static bool IsPreSkinOutputResizeCacheEntryReusable(
+	const DX12PreSkinOutputResizeCacheEntry &entry)
+{
+	if (!entry.pendingCommandLists.empty())
+		return false;
+	for (const auto &completion : entry.completionPoints) {
+		if (completion.fence && completion.value &&
+		    completion.fence->GetCompletedValue() < completion.value)
+			return false;
+	}
+	return true;
+}
+
+static bool HasSamePreSkinOutputResizeBase(
+	const DX12PreSkinOutputResizeCacheIdentity &lhs,
+	const DX12PreSkinOutputResizeCacheIdentity &rhs)
+{
+	return lhs.originalResource == rhs.originalResource &&
+		lhs.requiredByteWidth == rhs.requiredByteWidth &&
+		lhs.stride == rhs.stride;
+}
+
+static void MarkPreSkinOutputResizeCacheEntryAcquired(
+	DX12PreSkinOutputResizeCacheEntry *entry,
+	IUnknown *commandListIdentity)
+{
+	if (!entry)
+		return;
+	for (auto &completion : entry->completionPoints) {
+		if (completion.fence)
+			completion.fence->Release();
+	}
+	entry->completionPoints.clear();
+	entry->pendingCommandLists.clear();
+	if (commandListIdentity) {
+		entry->pendingCommandLists.push_back(commandListIdentity);
+		InterlockedExchange(
+			&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 1);
+	}
+}
 
 static void ReleasePreSkinOutputResizeCacheEntry(
 	DX12PreSkinOutputResizeCacheEntry *entry)
@@ -1162,6 +1219,10 @@ static void ReleasePreSkinOutputResizeCacheEntry(
 		entry->vertexResource->Release();
 	if (entry->descriptorHeap)
 		entry->descriptorHeap->Release();
+	for (auto &completion : entry->completionPoints) {
+		if (completion.fence)
+			completion.fence->Release();
+	}
 	*entry = DX12PreSkinOutputResizeCacheEntry();
 }
 
@@ -1175,13 +1236,16 @@ static void ClearPreSkinOutputResizeCache()
 	gPreSkinOutputResizeCache.clear();
 	gPreSkinOutputResizeNextRingSlot.clear();
 	gPreSkinOutputResizeCacheUseSerial = 0;
+	InterlockedExchange(
+		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 	for (DX12PreSkinOutputResizeCacheEntry &entry : releaseEntries)
 		ReleasePreSkinOutputResizeCacheEntry(&entry);
 }
 
 static bool AcquirePreSkinOutputResizeCacheEntry(
-	ID3D12Device *device, ID3D12Resource *originalResource,
+	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
+	ID3D12Resource *originalResource,
 	UINT64 requiredByteWidth, UINT stride, UINT elementCount,
 	ID3D12Resource **resizedResourceOut,
 	ID3D12Resource **vertexResourceOut,
@@ -1210,6 +1274,7 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		reinterpret_cast<std::uintptr_t>(originalResource), requiredByteWidth, stride, 0
 	};
 	DX12PreSkinOutputResizeCacheIdentity key = baseKey;
+	IUnknown *commandListIdentity = PreSkinCommandListIdentity(commandList);
 	auto retainEntry = [resizedResourceOut, vertexResourceOut, descriptorHeapOut,
 		descriptorCpuOut](DX12PreSkinOutputResizeCacheEntry &entry) {
 		if (!entry.resizedResource || !entry.vertexResource ||
@@ -1226,19 +1291,40 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 	};
 
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-	key.ringSlot =
-		gPreSkinOutputResizeNextRingSlot[baseKey]++ % PreSkinOutputResizeRingSize;
-	if (ringSlotOut)
-		*ringSlotOut = key.ringSlot;
-	auto cached = gPreSkinOutputResizeCache.find(key);
+	auto cached = gPreSkinOutputResizeCache.end();
+	for (auto it = gPreSkinOutputResizeCache.begin();
+	     it != gPreSkinOutputResizeCache.end(); ++it) {
+		if (!HasSamePreSkinOutputResizeBase(it->first, baseKey) ||
+		    !IsPreSkinOutputResizeCacheEntryReusable(it->second))
+			continue;
+		if (cached == gPreSkinOutputResizeCache.end() ||
+		    it->second.useSerial < cached->second.useSerial)
+			cached = it;
+	}
 	if (cached != gPreSkinOutputResizeCache.end()) {
+		key = cached->first;
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
+		MarkPreSkinOutputResizeCacheEntryAcquired(
+			&cached->second, commandListIdentity);
 		const bool retained = retainEntry(cached->second);
 		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 		if (cacheHitOut)
 			*cacheHitOut = retained;
+		if (ringSlotOut)
+			*ringSlotOut = key.ringSlot;
 		return retained;
 	}
+
+	// A slot is unavailable until the queue fence covering its producer and all
+	// consumers has completed. Allocate another slot instead of wrapping onto an
+	// in-flight buffer; FG/capture can keep substantially more than five frames
+	// queued, so a fixed ring is not a valid D3D12 lifetime guarantee.
+	key.ringSlot = gPreSkinOutputResizeNextRingSlot[baseKey]++;
+	while (gPreSkinOutputResizeCache.find(key) !=
+	       gPreSkinOutputResizeCache.end())
+		key.ringSlot = gPreSkinOutputResizeNextRingSlot[baseKey]++;
+	if (ringSlotOut)
+		*ringSlotOut = key.ringSlot;
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 
 	D3D12_HEAP_PROPERTIES heapProperties = {};
@@ -1302,14 +1388,19 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 	cached = gPreSkinOutputResizeCache.find(key);
 	if (cached == gPreSkinOutputResizeCache.end()) {
 		if (gPreSkinOutputResizeCache.size() >= PreSkinOutputResizeCacheCapacity) {
-			auto oldest = gPreSkinOutputResizeCache.begin();
+			auto oldest = gPreSkinOutputResizeCache.end();
 			for (auto it = gPreSkinOutputResizeCache.begin();
 			     it != gPreSkinOutputResizeCache.end(); ++it) {
-				if (it->second.useSerial < oldest->second.useSerial)
+				if (!IsPreSkinOutputResizeCacheEntryReusable(it->second))
+					continue;
+				if (oldest == gPreSkinOutputResizeCache.end() ||
+				    it->second.useSerial < oldest->second.useSerial)
 					oldest = it;
 			}
-			releaseEntry = oldest->second;
-			gPreSkinOutputResizeCache.erase(oldest);
+			if (oldest != gPreSkinOutputResizeCache.end()) {
+				releaseEntry = oldest->second;
+				gPreSkinOutputResizeCache.erase(oldest);
+			}
 		}
 		DX12PreSkinOutputResizeCacheEntry entry;
 		originalResource->AddRef();
@@ -1318,6 +1409,11 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		entry.vertexResource = createdVertexResource;
 		entry.descriptorHeap = createdHeap;
 		entry.descriptorCpu = createdCpu;
+		if (commandListIdentity) {
+			entry.pendingCommandLists.push_back(commandListIdentity);
+			InterlockedExchange(
+				&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 1);
+		}
 		entry.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 		cached = gPreSkinOutputResizeCache.emplace(key, entry).first;
 		createdResource = nullptr;
@@ -1325,6 +1421,8 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		createdHeap = nullptr;
 	} else {
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
+		MarkPreSkinOutputResizeCacheEntryAcquired(
+			&cached->second, commandListIdentity);
 	}
 	const bool retained = retainEntry(cached->second);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
@@ -1605,6 +1703,213 @@ static IUnknown *PreSkinCommandListIdentity(IUnknown *commandList)
 	return identity ? identity : commandList;
 }
 
+class DX12PreSkinOutputResizeQueueFence
+{
+public:
+	ID3D12Fence *fence = nullptr;
+	UINT64 nextValue = 0;
+};
+
+class DX12PreSkinOutputResizeSubmittedUse
+{
+public:
+	DX12PreSkinOutputResizeCacheIdentity key;
+	UINT64 useSerial = 0;
+};
+
+static SRWLOCK gPreSkinOutputResizeQueueFenceLock = SRWLOCK_INIT;
+static std::unordered_map<ID3D12CommandQueue*, DX12PreSkinOutputResizeQueueFence>
+	gPreSkinOutputResizeQueueFences;
+
+static bool AcquirePreSkinOutputResizeSubmissionFence(
+	ID3D12CommandQueue *queue, ID3D12Fence **fenceOut, UINT64 *valueOut)
+{
+	if (!queue || !fenceOut || !valueOut)
+		return false;
+	*fenceOut = nullptr;
+	*valueOut = 0;
+
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeQueueFenceLock);
+	DX12PreSkinOutputResizeQueueFence &state =
+		gPreSkinOutputResizeQueueFences[queue];
+	if (!state.fence) {
+		ID3D12Device *device = nullptr;
+		if (FAILED(queue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
+			gPreSkinOutputResizeQueueFences.erase(queue);
+			ReleaseSRWLockExclusive(&gPreSkinOutputResizeQueueFenceLock);
+			return false;
+		}
+		const HRESULT hr = device->CreateFence(
+			0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.fence));
+		device->Release();
+		if (FAILED(hr) || !state.fence) {
+			gPreSkinOutputResizeQueueFences.erase(queue);
+			ReleaseSRWLockExclusive(&gPreSkinOutputResizeQueueFenceLock);
+			return false;
+		}
+	}
+	if (state.nextValue == UINT64_MAX)
+		state.nextValue = 0;
+	*valueOut = ++state.nextValue;
+	state.fence->AddRef();
+	*fenceOut = state.fence;
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeQueueFenceLock);
+	return true;
+}
+
+static void MarkPreSkinOutputResizeCacheUsesSubmitted(
+	ID3D12CommandQueue *queue,
+	UINT numCommandLists,
+	ID3D12CommandList *const *commandLists)
+{
+	if (!queue || !numCommandLists || !commandLists)
+		return;
+	std::vector<IUnknown*> submittedIdentities;
+	submittedIdentities.reserve(numCommandLists);
+	for (UINT i = 0; i < numCommandLists; ++i) {
+		IUnknown *identity = PreSkinCommandListIdentity(commandLists[i]);
+		if (identity)
+			submittedIdentities.push_back(identity);
+	}
+	if (submittedIdentities.empty())
+		return;
+
+	std::vector<DX12PreSkinOutputResizeSubmittedUse> submittedUses;
+	AcquireSRWLockShared(&gPreSkinOutputResizeCacheLock);
+	for (const auto &item : gPreSkinOutputResizeCache) {
+		const DX12PreSkinOutputResizeCacheEntry &entry = item.second;
+		bool hasSubmittedUse = false;
+		for (IUnknown *pending : entry.pendingCommandLists) {
+			if (std::find(submittedIdentities.begin(), submittedIdentities.end(),
+					pending) != submittedIdentities.end()) {
+				hasSubmittedUse = true;
+				break;
+			}
+		}
+		if (!hasSubmittedUse)
+			continue;
+		submittedUses.push_back({ item.first, entry.useSerial });
+	}
+	ReleaseSRWLockShared(&gPreSkinOutputResizeCacheLock);
+	if (submittedUses.empty())
+		return;
+
+	ID3D12Fence *fence = nullptr;
+	UINT64 fenceValue = 0;
+	if (!AcquirePreSkinOutputResizeSubmissionFence(
+			queue, &fence, &fenceValue))
+		return;
+	HRESULT signalHr = E_FAIL;
+	{
+		// The signal must follow the application's ExecuteCommandLists call but
+		// bypass our normal queue instrumentation to avoid recursive bookkeeping.
+		DX12InternalReplayScope internalReplay;
+		signalHr = queue->Signal(fence, fenceValue);
+	}
+	if (FAILED(signalHr)) {
+		fence->Release();
+		return;
+	}
+
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	for (const DX12PreSkinOutputResizeSubmittedUse &submitted : submittedUses) {
+		auto found = gPreSkinOutputResizeCache.find(submitted.key);
+		if (found == gPreSkinOutputResizeCache.end() ||
+		    found->second.useSerial != submitted.useSerial)
+			continue;
+		DX12PreSkinOutputResizeCacheEntry &entry = found->second;
+		const size_t oldPendingCount = entry.pendingCommandLists.size();
+		entry.pendingCommandLists.erase(
+			std::remove_if(
+				entry.pendingCommandLists.begin(),
+				entry.pendingCommandLists.end(),
+				[&submittedIdentities](IUnknown *pending) {
+					return std::find(
+						submittedIdentities.begin(),
+						submittedIdentities.end(),
+						pending) != submittedIdentities.end();
+				}),
+			entry.pendingCommandLists.end());
+		if (entry.pendingCommandLists.size() == oldPendingCount)
+			continue;
+		auto existing = std::find_if(
+			entry.completionPoints.begin(), entry.completionPoints.end(),
+			[fence](const DX12PreSkinOutputResizeCacheEntry::CompletionPoint &point) {
+				return point.fence == fence;
+			});
+		if (existing != entry.completionPoints.end()) {
+			if (fenceValue > existing->value)
+				existing->value = fenceValue;
+		} else {
+			fence->AddRef();
+			entry.completionPoints.push_back({ fence, fenceValue });
+		}
+	}
+	bool hasPendingUses = false;
+	for (const auto &item : gPreSkinOutputResizeCache) {
+		if (!item.second.pendingCommandLists.empty()) {
+			hasPendingUses = true;
+			break;
+		}
+	}
+	InterlockedExchange(
+		&gHasPendingPreSkinOutputResizeSubmissionWorkFast,
+		hasPendingUses ? 1 : 0);
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	fence->Release();
+}
+
+void DX12ModAbandonPreSkinOutputResizeCacheUses(
+	ID3D12GraphicsCommandList *commandList)
+{
+	IUnknown *identity = PreSkinCommandListIdentity(commandList);
+	if (!identity)
+		return;
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	for (auto &item : gPreSkinOutputResizeCache) {
+		DX12PreSkinOutputResizeCacheEntry &entry = item.second;
+		entry.pendingCommandLists.erase(
+			std::remove(entry.pendingCommandLists.begin(),
+				entry.pendingCommandLists.end(), identity),
+			entry.pendingCommandLists.end());
+	}
+	bool hasPendingUses = false;
+	for (const auto &item : gPreSkinOutputResizeCache) {
+		if (!item.second.pendingCommandLists.empty()) {
+			hasPendingUses = true;
+			break;
+		}
+	}
+	InterlockedExchange(
+		&gHasPendingPreSkinOutputResizeSubmissionWorkFast,
+		hasPendingUses ? 1 : 0);
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+}
+
+void DX12ModTrackPreSkinOutputResizeCacheUse(
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12Resource *vertexResource)
+{
+	IUnknown *identity = PreSkinCommandListIdentity(commandList);
+	if (!identity || !vertexResource)
+		return;
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	for (auto &item : gPreSkinOutputResizeCache) {
+		DX12PreSkinOutputResizeCacheEntry &entry = item.second;
+		if (entry.vertexResource != vertexResource)
+			continue;
+		if (std::find(entry.pendingCommandLists.begin(),
+				entry.pendingCommandLists.end(), identity) ==
+			entry.pendingCommandLists.end()) {
+			entry.pendingCommandLists.push_back(identity);
+			InterlockedExchange(
+				&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 1);
+		}
+		break;
+	}
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+}
+
 static void RequeuePendingPreSkinSubmissionLocked(DX12PreSkinPendingSubmission *pending)
 {
 	if (!pending)
@@ -1679,6 +1984,8 @@ void DX12ModNotifyCommandListsSubmitted(
 {
 	if (!queue || !commandLists || !numCommandLists)
 		return;
+	MarkPreSkinOutputResizeCacheUsesSubmitted(
+		queue, numCommandLists, commandLists);
 
 	DX12PreSkinReleaseBatch releaseBatch;
 	DX12PreSkinPendingSubmission pending;
@@ -1733,7 +2040,11 @@ bool DX12ModNeedsCommandListSubmissionNotifications()
 	return InterlockedCompareExchange(
 		&gHasPendingPreSkinSubmissionWorkFast,
 		0,
-		0) != 0;
+		0) != 0 ||
+		InterlockedCompareExchange(
+			&gHasPendingPreSkinOutputResizeSubmissionWorkFast,
+			0,
+			0) != 0;
 }
 
 void DX12ModRunPresentMaintenance()

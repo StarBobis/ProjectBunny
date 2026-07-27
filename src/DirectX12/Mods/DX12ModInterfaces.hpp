@@ -406,6 +406,8 @@ bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *sour
 bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *source);
 bool DX12ModAdjustUavDesc(
 	ID3D12Resource *resource, D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, const char *source);
+bool DX12ModResolveExpandedPreSkinBufferWidth(
+	ID3D12Resource *resource, UINT vertexStride, UINT64 *outputByteWidth);
 
 // PreSkin DynamicUAV: register a resized output UAV so IA redirects can bind
 // the larger buffer when vertex count exceeds original buffer capacity.
@@ -450,12 +452,21 @@ public:
 	D3D12_RESOURCE_STATES stateBefore = D3D12_RESOURCE_STATE_COMMON;
 };
 void DX12ModRegisterPreSkinOutputResize(
+	ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,
 	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride);
 bool DX12ModResolvePreSkinOutputResizeByGpuVa(
+	ID3D12GraphicsCommandList *commandList,
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);
 bool DX12ModHasPreSkinOutputResizeBindings();
 UINT64 DX12ModGetPreSkinOutputResizeGeneration();
+void DX12ModForgetPreSkinOutputResizesForCommandList(
+	ID3D12GraphicsCommandList *commandList);
+void DX12ModAbandonPreSkinOutputResizeCacheUses(
+	ID3D12GraphicsCommandList *commandList);
+void DX12ModTrackPreSkinOutputResizeCacheUse(
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12Resource *vertexResource);
 void DX12ModClearPreSkinOutputResizeMap();
 
 

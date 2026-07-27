@@ -1230,6 +1230,14 @@ public:
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	UINT64 cbvSrvUavHeapVersion = 0;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
+	bool indexed = false;
+	UINT vertexCount = 0;
+	UINT indexCount = 0;
+	UINT instanceCount = 0;
+	UINT firstVertex = 0;
+	UINT firstIndex = 0;
+	INT baseVertex = 0;
+	UINT firstInstance = 0;
 
 	void Reset()
 	{
@@ -1246,7 +1254,8 @@ public:
 		UINT64 currentPreSkinGeneration,
 		ID3D12DescriptorHeap *currentHeap,
 		UINT64 currentHeapVersion,
-		ID3D12RootSignature *currentRootSig) const
+		ID3D12RootSignature *currentRootSig,
+		const DX12IaDrawInvocation &draw) const
 	{
 		return valid &&
 			iaEpoch == currentIaEpoch &&
@@ -1257,7 +1266,15 @@ public:
 			preSkinGeneration == currentPreSkinGeneration &&
 			cbvSrvUavHeap == currentHeap &&
 			cbvSrvUavHeapVersion == currentHeapVersion &&
-			graphicsRootSignature == currentRootSig;
+			graphicsRootSignature == currentRootSig &&
+			indexed == draw.indexed &&
+			vertexCount == draw.vertexCount &&
+			indexCount == draw.indexCount &&
+			instanceCount == draw.instanceCount &&
+			firstVertex == draw.firstVertex &&
+			firstIndex == draw.firstIndex &&
+			baseVertex == draw.baseVertex &&
+			firstInstance == draw.firstInstance;
 	}
 
 	void Capture(
@@ -1270,6 +1287,7 @@ public:
 		ID3D12DescriptorHeap *currentHeap,
 		UINT64 currentHeapVersion,
 		ID3D12RootSignature *currentRootSig,
+		const DX12IaDrawInvocation &draw,
 		bool overrideResult)
 	{
 		valid = true;
@@ -1283,6 +1301,14 @@ public:
 		cbvSrvUavHeap = currentHeap;
 		cbvSrvUavHeapVersion = currentHeapVersion;
 		graphicsRootSignature = currentRootSig;
+		indexed = draw.indexed;
+		vertexCount = draw.vertexCount;
+		indexCount = draw.indexCount;
+		instanceCount = draw.instanceCount;
+		firstVertex = draw.firstVertex;
+		firstIndex = draw.firstIndex;
+		baseVertex = draw.baseVertex;
+		firstInstance = draw.firstInstance;
 	}
 };
 

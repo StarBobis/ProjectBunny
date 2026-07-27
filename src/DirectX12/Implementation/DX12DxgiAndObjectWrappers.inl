@@ -413,6 +413,13 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 					this, swapChain);
 			}
 
+			~SwapChainWrapper()
+			{
+				// Release the frame-lifecycle owner before WrapperBase releases the
+				// native object so a genuine game swapchain recreation can be selected.
+				DXGIHookRuntime::ForgetSwapChain(mSwapChain);
+			}
+
 			HRESULT QuerySwapChain1(IDXGISwapChain1 **swapChain)
 			{
 				return mSwapChain->QueryInterface(IID_PPV_ARGS(swapChain));

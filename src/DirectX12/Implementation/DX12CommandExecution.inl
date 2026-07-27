@@ -5039,6 +5039,10 @@ public:
 
 static std::unordered_map<UINT64, DX12PreSkinOutputResizeEntry>
 	gPreSkinOutputResizeMap;
+using DX12PreSkinOutputResizeEntryMap =
+	std::unordered_map<UINT64, DX12PreSkinOutputResizeEntry>;
+static std::unordered_map<IUnknown*, DX12PreSkinOutputResizeEntryMap>
+	gPreSkinOutputResizeCommandListMaps;
 static SRWLOCK gPreSkinOutputResizeLock = SRWLOCK_INIT;
 static std::atomic<bool> gHasPreSkinOutputResizeBindings{false};
 static std::atomic<UINT64> gPreSkinOutputResizeGeneration{1};
@@ -5057,7 +5061,32 @@ static void BumpPreSkinOutputResizeGeneration()
 	}
 }
 
+static IUnknown *PreSkinOutputResizeCommandListIdentity(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return nullptr;
+	IUnknown *identity = DX12CommandListRuntime::GetCommandListIdentity(commandList);
+	return identity ? identity : commandList;
+}
+
+static ID3D12Resource *StorePreSkinOutputResizeEntryLocked(
+	DX12PreSkinOutputResizeEntryMap *entries,
+	const DX12PreSkinOutputResizeEntry &entry)
+{
+	if (!entries || !entry.originalGpuVa || !entry.resizedResource)
+		return nullptr;
+	ID3D12Resource *oldResource = nullptr;
+	auto oldIt = entries->find(entry.originalGpuVa);
+	if (oldIt != entries->end())
+		oldResource = oldIt->second.resizedResource;
+	entry.resizedResource->AddRef();
+	(*entries)[entry.originalGpuVa] = entry;
+	return oldResource;
+}
+
 void DX12ModRegisterPreSkinOutputResize(
+	ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,
 	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride)
 {
@@ -5074,12 +5103,6 @@ void DX12ModRegisterPreSkinOutputResize(
 	}
 	if (!originalByteWidth || !resizedByteWidth)
 		return;
-	resizedResource->AddRef();
-	ID3D12Resource *oldResource = nullptr;
-	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
-	auto oldIt = gPreSkinOutputResizeMap.find(originalGpuVa);
-	if (oldIt != gPreSkinOutputResizeMap.end())
-		oldResource = oldIt->second.resizedResource;
 	DX12PreSkinOutputResizeEntry entry;
 	entry.resizedResource = resizedResource;
 	entry.originalGpuVa = originalGpuVa;
@@ -5087,41 +5110,80 @@ void DX12ModRegisterPreSkinOutputResize(
 	entry.resizedByteWidth = resizedByteWidth;
 	entry.stride = stride;
 	entry.resizedGpuVa = resizedGpuVa;
-	gPreSkinOutputResizeMap[originalGpuVa] = entry;
+
+	// A global "latest output" is ambiguous while the engine records multiple
+	// frames and shadow passes in parallel. Keep the producer command list's
+	// exact output beside the compatibility map so its later IA bindings cannot
+	// be redirected to a different frame's PreSkin result.
+	ID3D12Resource *oldGlobalResource = nullptr;
+	ID3D12Resource *oldCommandListResource = nullptr;
+	IUnknown *commandListIdentity =
+		PreSkinOutputResizeCommandListIdentity(commandList);
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	oldGlobalResource =
+		StorePreSkinOutputResizeEntryLocked(&gPreSkinOutputResizeMap, entry);
+	if (commandListIdentity) {
+		oldCommandListResource = StorePreSkinOutputResizeEntryLocked(
+			&gPreSkinOutputResizeCommandListMaps[commandListIdentity], entry);
+	}
 	gHasPreSkinOutputResizeBindings.store(true, std::memory_order_release);
 	BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
-	if (oldResource)
-		oldResource->Release();
+	if (oldGlobalResource)
+		oldGlobalResource->Release();
+	if (oldCommandListResource)
+		oldCommandListResource->Release();
+}
+
+static DX12PreSkinOutputResizeEntry *FindPreSkinOutputResizeEntryLocked(
+	DX12PreSkinOutputResizeEntryMap *entries,
+	UINT64 viewGpuVa,
+	UINT64 *sourceOffset)
+{
+	if (sourceOffset)
+		*sourceOffset = 0;
+	if (!entries)
+		return nullptr;
+	auto exactIt = entries->find(viewGpuVa);
+	if (exactIt != entries->end())
+		return &exactIt->second;
+	for (auto &item : *entries) {
+		DX12PreSkinOutputResizeEntry &candidate = item.second;
+		if (!candidate.originalGpuVa || !candidate.originalByteWidth ||
+		    viewGpuVa < candidate.originalGpuVa)
+			continue;
+		const UINT64 candidateOffset = viewGpuVa - candidate.originalGpuVa;
+		if (candidateOffset >= candidate.originalByteWidth)
+			continue;
+		if (sourceOffset)
+			*sourceOffset = candidateOffset;
+		return &candidate;
+	}
+	return nullptr;
 }
 
 bool DX12ModResolvePreSkinOutputResizeByGpuVa(
+	ID3D12GraphicsCommandList *commandList,
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding)
 {
 	if (!viewGpuVa || !binding)
 		return false;
 	binding->Clear();
+	IUnknown *commandListIdentity =
+		PreSkinOutputResizeCommandListIdentity(commandList);
 	AcquireSRWLockShared(&gPreSkinOutputResizeLock);
 	DX12PreSkinOutputResizeEntry *entry = nullptr;
 	UINT64 sourceOffset = 0;
-	auto exactIt = gPreSkinOutputResizeMap.find(viewGpuVa);
-	if (exactIt != gPreSkinOutputResizeMap.end()) {
-		entry = &exactIt->second;
-	} else {
-		for (auto &item : gPreSkinOutputResizeMap) {
-			DX12PreSkinOutputResizeEntry &candidate = item.second;
-			if (!candidate.originalGpuVa || !candidate.originalByteWidth)
-				continue;
-			if (viewGpuVa < candidate.originalGpuVa)
-				continue;
-			const UINT64 candidateOffset = viewGpuVa - candidate.originalGpuVa;
-			if (candidateOffset >= candidate.originalByteWidth)
-				continue;
-			entry = &candidate;
-			sourceOffset = candidateOffset;
-			break;
+	if (commandListIdentity) {
+		auto local = gPreSkinOutputResizeCommandListMaps.find(commandListIdentity);
+		if (local != gPreSkinOutputResizeCommandListMaps.end()) {
+			entry = FindPreSkinOutputResizeEntryLocked(
+				&local->second, viewGpuVa, &sourceOffset);
 		}
 	}
+	if (!entry)
+		entry = FindPreSkinOutputResizeEntryLocked(
+			&gPreSkinOutputResizeMap, viewGpuVa, &sourceOffset);
 	if (!entry || !entry->resizedResource || sourceOffset >= entry->resizedByteWidth) {
 		ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
 		return false;
@@ -5139,6 +5201,8 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	binding->transitionToVertex = false;
 	binding->stateBefore = D3D12_RESOURCE_STATE_COMMON;
 	ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
+	DX12ModTrackPreSkinOutputResizeCacheUse(
+		commandList, binding->resizedResource);
 	return true;
 }
 
@@ -5152,16 +5216,51 @@ bool DX12ModHasPreSkinOutputResizeBindings()
 	return gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire);
 }
 
+void DX12ModForgetPreSkinOutputResizesForCommandList(
+	ID3D12GraphicsCommandList *commandList)
+{
+	DX12ModAbandonPreSkinOutputResizeCacheUses(commandList);
+	IUnknown *identity = PreSkinOutputResizeCommandListIdentity(commandList);
+	if (!identity)
+		return;
+	std::vector<ID3D12Resource*> releaseResources;
+	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	auto found = gPreSkinOutputResizeCommandListMaps.find(identity);
+	if (found != gPreSkinOutputResizeCommandListMaps.end()) {
+		releaseResources.reserve(found->second.size());
+		for (auto &item : found->second) {
+			if (item.second.resizedResource)
+				releaseResources.push_back(item.second.resizedResource);
+		}
+		gPreSkinOutputResizeCommandListMaps.erase(found);
+		BumpPreSkinOutputResizeGeneration();
+	}
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+	for (ID3D12Resource *resource : releaseResources)
+		resource->Release();
+}
+
 void DX12ModClearPreSkinOutputResizeMap()
 {
+	std::vector<ID3D12Resource*> releaseResources;
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
 	for (auto &item : gPreSkinOutputResizeMap) {
 		if (item.second.resizedResource)
-			item.second.resizedResource->Release();
+			releaseResources.push_back(item.second.resizedResource);
 		item.second.resizedResource = nullptr;
 	}
+	for (auto &commandList : gPreSkinOutputResizeCommandListMaps) {
+		for (auto &item : commandList.second) {
+			if (item.second.resizedResource)
+				releaseResources.push_back(item.second.resizedResource);
+			item.second.resizedResource = nullptr;
+		}
+	}
 	gPreSkinOutputResizeMap.clear();
+	gPreSkinOutputResizeCommandListMaps.clear();
 	gHasPreSkinOutputResizeBindings.store(false, std::memory_order_release);
 	BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
+	for (ID3D12Resource *resource : releaseResources)
+		resource->Release();
 }

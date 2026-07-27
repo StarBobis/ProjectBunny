@@ -561,6 +561,61 @@ bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *so
 	return true;
 }
 
+class DX12ExpandedPreSkinBufferPrivateData
+{
+public:
+	UINT version = 1;
+	UINT vertexStride = 0;
+	UINT uavStride = 0;
+	UINT reserved = 0;
+	UINT64 outputByteWidth = 0;
+};
+
+static const GUID DX12ExpandedPreSkinBufferPrivateDataGuid =
+	{0x2ce8d27c, 0xdd3f, 0x4d84, {0xa8, 0x9d, 0x7f, 0xb7, 0xf4, 0x85, 0xe0, 0x9f}};
+
+bool DX12ModResolveExpandedPreSkinBufferWidth(
+	ID3D12Resource *resource, UINT vertexStride, UINT64 *outputByteWidth)
+{
+	if (outputByteWidth)
+		*outputByteWidth = 0;
+	if (!resource || !outputByteWidth)
+		return false;
+
+	DX12ExpandedPreSkinBufferPrivateData info;
+	UINT infoSize = sizeof(info);
+	if (FAILED(resource->GetPrivateData(
+			DX12ExpandedPreSkinBufferPrivateDataGuid, &infoSize, &info)) ||
+	    infoSize != sizeof(info) || info.version != 1 ||
+	    !info.outputByteWidth ||
+	    (vertexStride && info.vertexStride && vertexStride != info.vertexStride))
+		return false;
+
+	const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
+	if (resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+	    info.outputByteWidth > resourceDesc.Width)
+		return false;
+
+	// Private data follows the resource through frame buffering, but the INI can
+	// be reloaded while that resource remains alive. Require a current VLR with
+	// the same shape so stale tags cannot reactivate a removed configuration.
+	bool configured = false;
+	AcquireSRWLockShared(&gModLock);
+	for (const DX12VertexLimitRaiseConfig &vlr : gVertexLimitRaiseConfigs) {
+		if (vlr.overrideByteWidth == info.outputByteWidth &&
+		    (!info.vertexStride || vlr.overrideByteStride == info.vertexStride)) {
+			configured = true;
+			break;
+		}
+	}
+	ReleaseSRWLockShared(&gModLock);
+	if (!configured)
+		return false;
+
+	*outputByteWidth = info.outputByteWidth;
+	return true;
+}
+
 bool DX12ModAdjustUavDesc(
 	ID3D12Resource *resource, D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, const char *source)
 {
@@ -603,6 +658,19 @@ bool DX12ModAdjustUavDesc(
 
 	if (!found)
 		return false;
+
+	// DX11 stores the VLR size on the resized buffer object. DX12 additionally
+	// freezes the readable range in every VBV, so keep the matching VLR shape on
+	// the resource itself. A section-global "latest producer" is insufficient:
+	// frame generation and capture increase the number of in-flight frame
+	// resources, and a later PreSkin dispatch can replace that entry before an
+	// earlier command list records its IA binding.
+	DX12ExpandedPreSkinBufferPrivateData info;
+	info.vertexStride = match.overrideByteStride;
+	info.uavStride = match.uavByteStride;
+	info.outputByteWidth = match.overrideByteWidth;
+	resource->SetPrivateData(
+		DX12ExpandedPreSkinBufferPrivateDataGuid, sizeof(info), &info);
 
 #if defined(_DEBUG)
 	const UINT oldNumElements = desc->Buffer.NumElements;
