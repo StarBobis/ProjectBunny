@@ -1298,8 +1298,18 @@ public:
 		DX12CommandListHookSignatures::DrawInstanced original)
 	{
 		DX12SimulateContext *runtimeState = nullptr;
-		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
+		if (DX12HotPathState::HookWorkFlags &
+			(DX12HotPathState::MASK_DRAW_WORK |
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if ((DX12HotPathState::HookWorkFlags &
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			DX12ModPresentReplacementPendingForCurrentPresent()) {
+			const DX12IaReplacementExecutorCallbacks callbacks =
+				MakeDirectIaReplacementCallbacks();
+			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
+				commandList, runtimeState, callbacks);
+		}
 		DX12WrapperRuntimeUtils::DrawInstanced(
 			commandList,
 			runtimeState,
@@ -1322,14 +1332,11 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		const bool presentReplacementPending =
-			(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
-			DX12ModPresentReplacementPendingForCurrentPresent();
 		const bool residentDrawReject =
-			!presentReplacementPending &&
 			DX12HotPathState::CanResidentDrawFastReject(
 				drawFlags, runtimeState);
-		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT)) ||
 			residentDrawReject) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
@@ -1365,8 +1372,18 @@ public:
 		DX12CommandListHookSignatures::DrawIndexedInstanced original)
 	{
 		DX12SimulateContext *runtimeState = nullptr;
-		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DRAW_WORK)
+		if (DX12HotPathState::HookWorkFlags &
+			(DX12HotPathState::MASK_DRAW_WORK |
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if ((DX12HotPathState::HookWorkFlags &
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			DX12ModPresentReplacementPendingForCurrentPresent()) {
+			const DX12IaReplacementExecutorCallbacks callbacks =
+				MakeDirectIaReplacementCallbacks();
+			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
+				commandList, runtimeState, callbacks);
+		}
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 			commandList,
 			runtimeState,
@@ -1391,14 +1408,11 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		const bool presentReplacementPending =
-			(drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
-			DX12ModPresentReplacementPendingForCurrentPresent();
 		const bool residentDrawReject =
-			!presentReplacementPending &&
 			DX12HotPathState::CanResidentDrawFastReject(
 				drawFlags, runtimeState);
-		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
+		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT)) ||
 			residentDrawReject) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)

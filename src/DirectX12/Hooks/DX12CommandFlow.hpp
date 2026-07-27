@@ -3017,6 +3017,23 @@ public:
 		return true;
 	}
 
+	static void ExecutePendingPresentBeforeFastReject(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12SimulateContext *runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList || !runtimeState ||
+			!(DX12HotPathState::HookWorkFlags &
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) ||
+			!DX12ModPresentReplacementPendingForCurrentPresent())
+			return;
+
+		// Present replacement is frame-scoped and must be recorded before a
+		// resident draw can be fast-forwarded. Do only this small one-time
+		// operation here; the draw itself can still use the resident fast path.
+		ExecutePresent(commandList, *runtimeState, callbacks);
+	}
+
 	static bool ApplyAndExecute(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
@@ -3990,11 +4007,9 @@ public:
 		// cache layers). Reload generation keeps the shortcut conservative across
 		// hot reloads while still allowing global resident descriptor/IA features
 		// to coexist with the fast reject.
-		const bool presentReplacementPending =
-			(flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
-			DX12ModPresentReplacementPendingForCurrentPresent();
-		if (!presentReplacementPending &&
-			DX12HotPathState::CanResidentDrawFastReject(
+		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
+			commandList, runtimeState, callbacks);
+		if (DX12HotPathState::CanResidentDrawFastReject(
 				flagsWord, runtimeState)) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
