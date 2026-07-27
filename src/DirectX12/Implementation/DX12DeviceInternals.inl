@@ -1,6 +1,12 @@
 class DeviceWrapper
 		{
 		public:
+			// Vertex-limit raising for placed buffers has a two-sided contract:
+			// allocation queries and CreatePlacedResource* must see the exact same
+			// adjusted Width. Adjusting creation alone can overlap the next resource
+			// in the heap; adjusting allocation alone leaves the resource undersized.
+			// Keeping both sides paired mirrors DX11's CreateBuffer-time ByteWidth
+			// override and preserves one resource identity for UAV and IA use.
 			static const D3D12_RESOURCE_DESC *PrepareResourceDescArray(
 				const D3D12_RESOURCE_DESC *descs, UINT count,
 				std::vector<D3D12_RESOURCE_DESC> *storage, const char *source)
@@ -1516,6 +1522,7 @@ class DeviceWrapper
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					// Must remain paired with GetResourceAllocationInfo above.
 					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
 						pDesc, &adjustedDesc, "CreatePlacedResource");
 				}
@@ -2308,6 +2315,7 @@ class DeviceWrapper
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					// Must remain paired with GetResourceAllocationInfo2.
 					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 						pDesc, &adjustedDesc, "CreatePlacedResource1");
 				}
@@ -2473,6 +2481,7 @@ class DeviceWrapper
 				{
 					DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
 					heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
+					// Must remain paired with GetResourceAllocationInfo3.
 					descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 						pDesc, &adjustedDesc, "CreatePlacedResource2");
 				}

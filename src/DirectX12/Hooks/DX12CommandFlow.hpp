@@ -2333,6 +2333,13 @@ public:
 		const D3D12_VERTEX_BUFFER_VIEW &sourceView,
 		D3D12_VERTEX_BUFFER_VIEW *expandedView)
 	{
+		// DX11 derives the readable VB range from the buffer object, while DX12
+		// freezes it in D3D12_VERTEX_BUFFER_VIEW::SizeInBytes. Creation-time
+		// resource expansion therefore also needs this command-list-local view
+		// expansion. Match the exact active PreSkin output and keep BufferLocation
+		// unchanged: its resource identity carries the game's barriers and queue
+		// ordering. Do not replace it with a copied buffer or a global GPU-VA map;
+		// independently recorded shadow passes can otherwise consume another frame.
 		if (!expandedView || !sourceView.BufferLocation || !sourceView.SizeInBytes)
 			return false;
 		if (!DX12ModHasActivePreSkinTextureOverrides())
@@ -2377,6 +2384,9 @@ public:
 		bool anyRedirected = false;
 		for (UINT i = 0; i < count; ++i)
 			redirectedViews[i] = views[i];
+		// A negative lookup is valid only while both the fallback map and the
+		// active producer set are unchanged. A new dispatch can make an existing
+		// same-VA view expandable without changing the fallback-map generation.
 		const UINT64 resizeGeneration =
 			DX12ModGetPreSkinOutputResizeGeneration() ^
 			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
