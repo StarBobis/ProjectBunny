@@ -28,10 +28,10 @@ if (-not $?) {
     exit 1
 }
 
-$cmake = (Get-Command cmake -ErrorAction SilentlyContinue).Source
-if (-not $cmake) {
-    $cmake = "C:\tools\cmake\cmake-4.3.2-windows-x86_64\bin\cmake.exe"
-}
+$localCmake = Join-Path $root ".tools\cmake\bin\cmake.exe"
+$localNinja = Join-Path $root ".tools\ninja\ninja.exe"
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+$cmake = if (Test-Path $localCmake) { $localCmake } elseif ($cmakeCommand) { $cmakeCommand.Source } else { $null }
 
 $buildDirSuffix = if ($ReleaseTiming) { '-timing' } else { '' }
 $buildDir = "$root\build\cmake-$Platform-$($Configuration.ToLower())$buildDirSuffix"
@@ -49,9 +49,17 @@ if (Test-Path $cacheFile) {
     }
 }
 
-if (-not (Test-Path $cmake)) {
-    Write-Host "ERROR: CMake not found at $cmake" -ForegroundColor Red
-    Write-Host "Please install CMake and ensure it is in your system PATH." -ForegroundColor Red
+if (-not $cmake -or -not (Test-Path $cmake)) {
+    Write-Host "ERROR: CMake not found." -ForegroundColor Red
+    Write-Host "Install it in .tools\cmake or ensure cmake is in your system PATH." -ForegroundColor Red
+    exit 1
+}
+
+$ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
+$ninja = if (Test-Path $localNinja) { $localNinja } elseif ($ninjaCommand) { $ninjaCommand.Source } else { $null }
+if (-not $ninja -or -not (Test-Path $ninja)) {
+    Write-Host "ERROR: Ninja not found." -ForegroundColor Red
+    Write-Host "Install it in .tools\ninja or ensure ninja is in your system PATH." -ForegroundColor Red
     exit 1
 }
 
@@ -118,7 +126,7 @@ $content = @"
 @echo off
 call "$vcvars" > nul
 if errorlevel 1 exit /b 1
-"$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
+"$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_MAKE_PROGRAM="$ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
 if errorlevel 1 exit /b 1
 "$cmake" --build "$buildDir" --target DirectX12
 "@

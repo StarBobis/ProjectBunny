@@ -208,6 +208,7 @@ $RECYCLE.BIN/
 # CMake build output
 /build/
 /x32/
+/.tools/
 
 
 # VS Code
