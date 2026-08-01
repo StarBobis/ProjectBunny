@@ -45,6 +45,7 @@ target_link_libraries(DirectX12 PRIVATE
     comctl32.lib
     Dwmapi.lib
     Shlwapi.lib
+    dbghelp.lib
 )
 
 target_compile_features(DirectX12 PRIVATE cxx_std_17)

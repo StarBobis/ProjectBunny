@@ -375,6 +375,79 @@ static void SetBasePaths(const wchar_t *configPath)
 	gShaderFixesDir = shaderFixes;
 }
 
+void DX12ModScheduleInitialLoad(const wchar_t *configPath)
+{
+	AcquireSRWLockExclusive(&gModLock);
+	SetBasePaths(configPath);
+	gPendingInitialConfigPath = configPath ? configPath : L"";
+	gDeferredInitialModLoadStartTick = GetTickCount();
+	InterlockedExchange(&gDeferredInitialModLoadState,
+		gPendingInitialConfigPath.empty() ? 0 : 1);
+	ReleaseSRWLockExclusive(&gModLock);
+}
+
+void DX12ModMaybeRunDeferredInitialLoad()
+{
+	// Diagnostic probe: log the state machine inputs on every call so a
+	// "mod never loads" report can be traced without guessing.
+	{
+		DWORD probeElapsed = 0;
+		LONG probeState = InterlockedCompareExchange(&gDeferredInitialModLoadState, 0, 0);
+		DX12LogManager::Fields("DX12ModDeferredProbe",
+			"\"state\":%ld,\"present\":%ld,\"elapsedMs\":%lu,\"delayMs\":%lu",
+			probeState,
+			DX12RuntimeState::GetPresentCount(),
+			probeElapsed = GetTickCount() - gDeferredInitialModLoadStartTick,
+			gDeferredInitialModLoadDelayMs);
+	}
+	if (InterlockedCompareExchange(&gDeferredInitialModLoadState, 2, 1) != 1)
+		return;
+
+	std::wstring configPath;
+	DWORD delayMs = 0;
+	DWORD startTick = 0;
+	AcquireSRWLockShared(&gModLock);
+	configPath = gPendingInitialConfigPath;
+	delayMs = gDeferredInitialModLoadDelayMs;
+	startTick = gDeferredInitialModLoadStartTick;
+	ReleaseSRWLockShared(&gModLock);
+
+	if (configPath.empty()) {
+		InterlockedExchange(&gDeferredInitialModLoadState, 0);
+		return;
+	}
+
+	const LONG present = DX12RuntimeState::GetPresentCount();
+	const DWORD elapsedMs = GetTickCount() - startTick;
+	if (present <= 2 || elapsedMs < delayMs) {
+		InterlockedExchange(&gDeferredInitialModLoadState, 1);
+		return;
+	}
+
+	DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+		"\"status\":\"begin\",\"path\":\"%S\",\"present\":%ld,\"elapsedMs\":%lu,\"delayMs\":%lu",
+		configPath.c_str(), present, elapsedMs, delayMs);
+
+	DX12OverlayStatusState::SetStatus(L"DX12 startup reload running");
+	const bool ok = DX12ModRuntimeReload();
+	if (ok)
+		DX12ModRefreshRuntimeStateAfterReload();
+
+	AcquireSRWLockExclusive(&gModLock);
+	if (ok)
+		gPendingInitialConfigPath.clear();
+	else
+		gPendingInitialConfigPath = configPath;
+	ReleaseSRWLockExclusive(&gModLock);
+
+	DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+		"\"status\":\"done\",\"result\":\"%s\",\"present\":%ld,\"elapsedMs\":%lu",
+		ok ? "ok" : "failed",
+		DX12RuntimeState::GetPresentCount(),
+		GetTickCount() - startTick);
+	InterlockedExchange(&gDeferredInitialModLoadState, ok ? 0 : 1);
+}
+
 static bool ReadFileBytes(const wchar_t *path, std::vector<unsigned char> *data)
 {
 	if (!path || !data)

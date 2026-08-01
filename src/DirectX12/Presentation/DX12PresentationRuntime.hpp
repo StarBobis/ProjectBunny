@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/DX12ResourceRuntime.hpp"
+#include "Diagnostics/DX12HangWatchdog.hpp"
 
 namespace DX12Wrapper
 {
@@ -325,6 +326,7 @@ public:
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
 			_profile_timer.Resume();
+			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -368,6 +370,7 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
+		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
@@ -451,6 +454,7 @@ public:
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
 			_profile_timer.Resume();
+			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present1", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -494,6 +498,7 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
+		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
@@ -1064,11 +1069,18 @@ public:
 				"\"api\":\"Present\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
+		// Deferred mod load must run on EVERY present, including the skipAll
+		// fast path. When no mod is loaded skipAll==1, so the call cannot live
+		// in the normal branch below - it would never execute and the mod would
+		// never load (deadlock between skipAll and the deferred load).
+		DX12ModMaybeRunDeferredInitialLoad();
+
 		if (DX12HotPathState::skipAll) {
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
 			_profile_timer.Resume();
+			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"PresentWrapper", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1112,6 +1124,7 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
+		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",
@@ -1197,11 +1210,18 @@ public:
 				"\"api\":\"Present1\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
+		// Deferred mod load must run on EVERY present, including the skipAll
+		// fast path. When no mod is loaded skipAll==1, so the call cannot live
+		// in the normal branch below - it would never execute and the mod would
+		// never load (deadlock between skipAll and the deferred load).
+		DX12ModMaybeRunDeferredInitialLoad();
+
 		if (DX12HotPathState::skipAll) {
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
 			_profile_timer.Resume();
+			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present1Wrapper", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1244,6 +1264,7 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
+		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12LogManager::Fields("DX12Perf",

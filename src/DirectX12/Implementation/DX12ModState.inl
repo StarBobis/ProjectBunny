@@ -20,6 +20,10 @@ static DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
 static SRWLOCK gModLock = SRWLOCK_INIT;
 static bool gLoaded = false;
 static std::wstring gConfigPath;
+static std::wstring gPendingInitialConfigPath;
+static volatile LONG gDeferredInitialModLoadState = 0;
+static DWORD gDeferredInitialModLoadStartTick = 0;
+DWORD gDeferredInitialModLoadDelayMs = 2000;
 static std::wstring gBaseDir;
 static std::wstring gShaderFixesDir;
 static Bunny::ShaderOverrideMap gShaderOverrides;

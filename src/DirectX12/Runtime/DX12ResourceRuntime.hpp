@@ -1,6 +1,15 @@
 #pragma once
 
 #include "Resources/DX12ResourceDump.hpp"
+#include "Diagnostics/DX12HangWatchdog.hpp"
+
+// Deferred initial mod load (startup hang workaround). Declared here so every
+// TU that compiles DX12ResourceRuntime.hpp sees them regardless of include
+// order; the (extern) definitions live in DX12ModState.inl /
+// DX12ModConfiguration.inl, which are only included by DX12ModRuntime.cpp.
+extern DWORD gDeferredInitialModLoadDelayMs;
+extern void DX12ModScheduleInitialLoad(const wchar_t *configPath);
+extern void DX12ModMaybeRunDeferredInitialLoad();
 
 class DX12ResourceHookSlotTypes
 {
@@ -258,7 +267,8 @@ public:
 	static HRESULT WrappedResourceMap(
 		ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *readRange, void **data);
 	static void WrappedResourceUnmap(
-		ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *writtenRange);
+		ID3D12Resource *resource, UINT subresource,
+		const D3D12_RANGE *writtenRange, const void *caller);
 };
 
 
@@ -445,6 +455,7 @@ public:
 	bool dx12ProxyMode = true;
 	bool dx12SafeMode = false;
 	bool enableOverlay = false;
+	int dx12ConfigInitializationDelayMs = 2000;
 	std::wstring configPath;
 };
 
@@ -548,9 +559,13 @@ inline void MigotoConfig::ReadRuntimeConfig()
 	MigotoConfigReader::ReadBool(mIni, L"DX12", L"proxy_mode", &mRuntime.dx12ProxyMode);
 	MigotoConfigReader::ReadBool(mIni, L"DX12", L"safe_mode", &mRuntime.dx12SafeMode);
 	MigotoConfigReader::ReadBool(mIni, L"DX12", L"overlay", &mRuntime.enableOverlay);
+	MigotoConfigReader::ReadInt(mIni, L"DX12", L"config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
 	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_proxy_mode", &mRuntime.dx12ProxyMode);
 	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_safe_mode", &mRuntime.dx12SafeMode);
 	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_overlay", &mRuntime.enableOverlay);
+	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
+	if (mRuntime.dx12ConfigInitializationDelayMs < 0)
+		mRuntime.dx12ConfigInitializationDelayMs = 0;
 }
 
 inline std::wstring MigotoConfigLocator::FindDefaultConfigPath(HINSTANCE module)
@@ -615,25 +630,27 @@ public:
 		DX12Profiling::Init();
 		DX12LogManager::Text(
 			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");
+		DX12HangWatchdog::Start();
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
 		if (ConfigLoaded) {
 			DX12ModSetSafeMode(Config.Runtime().dx12SafeMode);
+			gDeferredInitialModLoadDelayMs =
+				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
 			DX12LogManager::Fields("DX12Config",
-				"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"overlayStarted\":true",
+				"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"configInitializationDelayMs\":%lu,\"overlayStarted\":true",
 				Config.Path().c_str(),
 				Config.Runtime().dx12SafeMode ? "true" : "false",
-				Config.Runtime().enableOverlay ? "true" : "false");
-			std::wstring modStatus;
-			bool modWarnings = false;
-			bool modErrors = false;
-			if (!DX12ModRuntimeLoad(Config.Path().c_str(), &modStatus, &modWarnings, &modErrors))
-				DX12OverlayStatusState::SetError(modStatus.c_str());
-			else if (modErrors)
-				DX12OverlayStatusState::SetError(modStatus.c_str());
-			else if (modWarnings)
-				DX12OverlayStatusState::SetWarning(modStatus.c_str());
+				Config.Runtime().enableOverlay ? "true" : "false",
+				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
+			DX12ModScheduleInitialLoad(Config.Path().c_str());
+			DX12OverlayStatusState::SetStatus(
+				L"DX12 mod load deferred until startup reload");
+			DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+				"\"status\":\"scheduled\",\"path\":\"%S\",\"delayMs\":%lu",
+				Config.Path().c_str(),
+				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
 		} else {
 			DX12LogManager::Fields("DX12Config",
 				"\"path\":\"%S\",\"status\":\"missing_or_invalid\",\"error\":\"%S\"",

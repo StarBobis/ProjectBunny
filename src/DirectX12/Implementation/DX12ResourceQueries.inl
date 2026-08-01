@@ -735,6 +735,16 @@ bool DX12CacheBufferContentRange(
 {
 	if (!resource || !data || !dataSize)
 		return false;
+	// Bound the capture: a NULL written range on Unmap means the whole
+	// subresource may have changed. The deadlock guard lives in the Unmap
+	// hook (caller-module allowlist), so this bound is only a memory sanity
+	// net for the content cache; large game-side buffers must remain
+	// capturable, hence the deliberately loose limit.
+	constexpr UINT64 kMaxCaptureBytes = 256ull * 1024 * 1024;
+	if (dataSize > kMaxCaptureBytes || resourceOffset > kMaxCaptureBytes) {
+		DX12InvalidateBufferContent(resource);
+		return false;
+	}
 	const UINT64 gpuVaBase = resource->GetGPUVirtualAddress();
 	const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
 	if (resourceOffset > UINT64_MAX - static_cast<UINT64>(dataSize))

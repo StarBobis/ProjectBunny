@@ -1,6 +1,7 @@
 // Buffer Content Capture via Map/Unmap hooks
 // Like DX11: capture UPLOAD buffer data at Unmap time so Tier 1
 // (content CRC32) hashing works.  Maps are tracked per-thread.
+#include <intrin.h>
 struct DX12ResourceMapTracking
 {
 	ID3D12Resource *resource = nullptr;
@@ -47,9 +48,64 @@ static bool TakeResourceMap(
 	return false;
 }
 
+// Content capture must not read driver-synchronized (CUDA/DLSS-shared)
+// mapped memory: the read blocks until the owning CUDA context is free, but
+// that context is held by the middleware call that is waiting for our Unmap
+// to return (observed hung 8+ s in the page memcmp loop; no TDR). Restrict
+// the capture to Unmaps issued by the game's own modules; middleware
+// (nvngx_dlss, sl_*, ...) mappings are never read. The check is cached per
+// module so the hot path stays cheap.
+static bool CaptureAllowedForCaller(const void *caller)
+{
+	if (!caller)
+		return false;
+	HMODULE module = nullptr;
+	if (!GetModuleHandleExW(
+			GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(caller), &module) ||
+	    !module)
+		return false;
+
+	struct Entry { HMODULE module = nullptr; bool allowed = false; };
+	static thread_local Entry sCache[8];
+	static thread_local UINT sCacheNext = 0;
+	for (const Entry &entry : sCache) {
+		if (entry.module == module)
+			return entry.allowed;
+	}
+
+	wchar_t name[MAX_PATH] = {};
+	bool allowed = false;
+	if (GetModuleFileNameW(module, name, MAX_PATH)) {
+		const wchar_t *base = wcsrchr(name, L'\\');
+		base = base ? base + 1 : name;
+		// Allowlist of the game's own modules; anything else (NVIDIA
+		// Streamline/DLSS, overlays, capture tools) is skipped.
+		allowed =
+			_wcsicmp(base, L"UnityPlayer.dll") == 0 ||
+			_wcsicmp(base, L"GameAssembly.dll") == 0 ||
+			_wcsicmp(base, L"ZenlessZoneZero.exe") == 0;
+		if (!allowed) {
+			// Rate-limited diagnostic so the guard's effect is visible in the
+			// log (one line per skipped module).
+			static volatile LONG skipLogCounter = 0;
+			if ((InterlockedIncrement(&skipLogCounter) & 0x3FF) == 1) {
+				DX12LogManager::Fields("DX12BufferCaptureSkip",
+					"\"module\":\"%S\",\"allowed\":%s",
+					name, allowed ? "true" : "false");
+			}
+		}
+	}
+	Entry &entry = sCache[sCacheNext++ % 8];
+	entry.module = module;
+	entry.allowed = allowed;
+	return allowed;
+}
+
 static void CaptureResourceMapWrites(
 	ID3D12Resource *resource, UINT subresource,
-	const D3D12_RANGE *writtenRange)
+	const D3D12_RANGE *writtenRange, const void *caller)
 {
 	DX12ResourceMapTracking mapping;
 	if (!TakeResourceMap(resource, subresource, &mapping))
@@ -58,6 +114,12 @@ static void CaptureResourceMapWrites(
 	// range explicitly means no CPU writes and must not update generations.
 	if (writtenRange && writtenRange->End <= writtenRange->Begin)
 		return;
+	if (!CaptureAllowedForCaller(caller)) {
+		// Never read driver-synchronized mappings from middleware; keep the
+		// cache coherent by dropping the entry instead of serving stale data.
+		DX12InvalidateBufferContent(resource);
+		return;
+	}
 	UINT64 offset = 0;
 	UINT64 bytes = 0;
 	if (writtenRange) {
@@ -68,6 +130,15 @@ static void CaptureResourceMapWrites(
 	}
 	if (!bytes || bytes > SIZE_MAX)
 		return;
+	// Size bound is only a memory sanity net for the content cache; the
+	// deadlock guard is the caller-module allowlist above. Large game-side
+	// buffers (upload arenas, big meshes) must still be capturable, so the
+	// bound is deliberately loose. Oversized ranges are invalidated instead.
+	constexpr UINT64 kMaxCaptureBytes = 256ull * 1024 * 1024;
+	if (bytes > kMaxCaptureBytes || offset > kMaxCaptureBytes) {
+		DX12InvalidateBufferContent(resource);
+		return;
+	}
 	DX12CacheBufferContentRange(resource, offset,
 		static_cast<const uint8_t*>(mapping.data) + static_cast<size_t>(offset),
 		static_cast<size_t>(bytes));
@@ -137,7 +208,7 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 {
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
-		CaptureResourceMapWrites(resource, Subresource, pWrittenRange);
+		CaptureResourceMapWrites(resource, Subresource, pWrittenRange, _ReturnAddress());
 	}
 
 	// Call original Unmap
@@ -173,14 +244,15 @@ HRESULT DX12ResourceTrackerHookRuntime::WrappedResourceMap(
 
 // Wrapper-mode Unmap interception. ResourceWrapper::Unmap routes here.
 void DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
-	ID3D12Resource *resource, UINT subresource, const D3D12_RANGE *writtenRange)
+	ID3D12Resource *resource, UINT subresource,
+	const D3D12_RANGE *writtenRange, const void *caller)
 {
 	if (!resource)
 		return;
 
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
-		CaptureResourceMapWrites(resource, subresource, writtenRange);
+		CaptureResourceMapWrites(resource, subresource, writtenRange, caller);
 	}
 
 	{

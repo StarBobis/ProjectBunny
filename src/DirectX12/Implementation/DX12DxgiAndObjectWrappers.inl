@@ -1,3 +1,4 @@
+#include <intrin.h>
 class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 		{
 		public:
@@ -1484,7 +1485,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceUnmapWrapper, Original);
 				DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
-					mResource, Subresource, pWrittenRange);
+					mResource, Subresource, pWrittenRange, _ReturnAddress());
 			}
 
 			D3D12_RESOURCE_DESC STDMETHODCALLTYPE GetDesc() override
