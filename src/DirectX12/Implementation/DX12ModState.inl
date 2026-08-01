@@ -972,9 +972,16 @@ static UINT64 MakePreSkinSrvStableProbeCacheKey(
 	append(static_cast<UINT64>(srv.descriptorOffset));
 	append(static_cast<UINT64>(srv.descriptor.viewDimension));
 	append(static_cast<UINT64>(srv.descriptor.structureByteStride));
-	append(static_cast<UINT64>(srv.descriptor.gpuVirtualAddress));
 	append(srvByteWidth);
-	append(reinterpret_cast<UINT64>(srv.descriptor.resource));
+	// Deliberately NOT part of the key: srv.descriptor.gpuVirtualAddress and
+	// srv.descriptor.resource. The game rewrites its descriptor arena every
+	// frame, so those fields change per frame even when the same logical slot
+	// is bound; including them made this "stable" cache miss every frame and
+	// forced EnsureLoadedResourceForPreSkin + EnsureResourceSrvLocked to run
+	// on every apply. The probe outcome depends only on the slot layout and
+	// view shape plus the mod config (the replacement SRV always comes from
+	// the mod's own resource), never on which game resource happens to be
+	// bound at the slot - the mod replaces the slot wholesale.
 	for (wchar_t ch : config.section) {
 		key ^= static_cast<unsigned char>(ch & 0xff);
 		key *= 1099511628211ull;

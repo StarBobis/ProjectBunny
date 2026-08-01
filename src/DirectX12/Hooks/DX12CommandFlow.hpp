@@ -958,6 +958,7 @@ public:
 		DX12CreateTimingTelemetryUtils::LogAndReset();
 		DX12DescriptorShadowTelemetryUtils::LogAndReset();
 		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
+		LogFrameCpuDiagnostics();
 
 		for (UINT i = 0; i < DX12HotPathStage::STAGE_COUNT; ++i) {
 			LONG calls = tlsAccum[i].callCount;
@@ -992,6 +993,43 @@ public:
 			End(stage);
 		}
 	};
+
+	// Frame-level wall-clock vs render-thread CPU time. The hot-path stage
+	// timers only account for instrumented wrapper work; when the frame wall
+	// time is far larger than the thread CPU time, the thread is blocked
+	// (fence wait, lock contention, game-side stall) and the missing time
+	// must be hunted in the wait/lock path, not in the wrapper methods.
+	static void LogFrameCpuDiagnostics()
+	{
+		const ULONGLONG wallNow = GetTickCount64();
+		FILETIME createTime = {};
+		FILETIME exitTime = {};
+		FILETIME kernelTime = {};
+		FILETIME userTime = {};
+		GetThreadTimes(
+			GetCurrentThread(), &createTime, &exitTime, &kernelTime, &userTime);
+		const ULONGLONG cpuNow =
+			((static_cast<ULONGLONG>(kernelTime.dwHighDateTime) << 32) |
+				kernelTime.dwLowDateTime) / 10 +
+			((static_cast<ULONGLONG>(userTime.dwHighDateTime) << 32) |
+				userTime.dwLowDateTime) / 10;
+		thread_local ULONGLONG lastWall = 0;
+		thread_local ULONGLONG lastCpu = 0;
+		if (lastWall != 0) {
+			const ULONGLONG wallDelta = wallNow - lastWall;
+			const ULONGLONG cpuDelta = cpuNow - lastCpu;
+			const UINT cpuPct = wallDelta
+				? static_cast<UINT>((cpuDelta * 100) / (wallDelta * 1000))
+				: 0;
+			DX12LogManager::Fields("DX12FrameCpuDiag",
+				"\"wallUs\":%llu,\"threadCpuUs\":%llu,\"threadCpuPct\":%u",
+				wallDelta * 1000,
+				cpuDelta,
+				cpuPct);
+		}
+		lastWall = wallNow;
+		lastCpu = cpuNow;
+	}
 };
 
 #define DX12_HOTPATH_TIME_BEGIN(stage) \

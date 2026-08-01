@@ -1069,8 +1069,34 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	// can create million-entry heaps during normal Mod mode; keeping only heap
 	// boundaries until Mod/Dump needs the slots avoids turning capacity into CPU
 	// work and memory pressure.
-	record->slots.resize(record->desc.NumDescriptors);
-	record->occupied.assign(record->desc.NumDescriptors, 0);
+	//
+	// The allocation itself (potentially MBs of DescriptorRecord) runs OUTSIDE
+	// the all-shard lock: while it is in flight, other threads must not block
+	// on every shard of this heap. A second thread may allocate concurrently;
+	// the re-check below keeps exactly one result.
+	const size_t slotCount = record->desc.NumDescriptors;
+	if (stateLocks)
+		stateLocks->UnlockAllExclusive();
+
+	std::vector<DescriptorRecord> newSlots;
+	std::vector<uint8_t> newOccupied;
+	newSlots.resize(slotCount);
+	newOccupied.assign(slotCount, 0);
+
+	if (stateLocks)
+		stateLocks->LockAllExclusive();
+	if (stateLocks && !stateLocks->IsActive()) {
+		stateLocks->UnlockAllExclusive();
+		return false;
+	}
+	if (!record->slots.empty()) {
+		const bool ready = record->slots.size() == record->desc.NumDescriptors;
+		if (stateLocks)
+			stateLocks->UnlockAllExclusive();
+		return ready;
+	}
+	record->slots.swap(newSlots);
+	record->occupied.swap(newOccupied);
 	const size_t sparseCount = record->currentDescriptors.Size();
 	record->currentDescriptors.ForEach(
 		[record](uint32_t slot, const DescriptorSlotBinding &binding) {

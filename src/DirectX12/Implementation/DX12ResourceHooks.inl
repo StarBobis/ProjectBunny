@@ -578,6 +578,12 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(
 	const D3D12_RENDER_TARGET_VIEW_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
+	// RTV/DSV/Sampler values have no mod consumer: PreSkin and descriptor
+	// replacement only read CBV/SRV/UAV slots, and the heap slot versions are
+	// per-heap-type, so skipping these cannot stale any CBV/SRV/UAV query
+	// cache. Only capture/hunting needs them (DX11 tracks nothing here).
+	if (!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+		return;
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::RTV_ID);
 	record.cpuHandle = destDescriptor.ptr;
@@ -595,6 +601,8 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(
 	const D3D12_DEPTH_STENCIL_VIEW_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
+	if (!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+		return;
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::DSV_ID);
 	record.cpuHandle = destDescriptor.ptr;
@@ -611,7 +619,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 	const D3D12_SAMPLER_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
 {
-	if (!desc)
+	if (!desc || !DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
 		return;
 	DescriptorRecord record;
 	SetDescriptorKind(&record, DescriptorKind::Sampler_ID);

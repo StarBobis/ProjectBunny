@@ -522,11 +522,56 @@ public:
 		const UINT64 valueId =
 			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
 
+		// Sequential-slot TLS fast path: engines fill descriptor arenas
+		// front-to-back every frame, so the workload is thousands of CreateCBV
+		// calls landing on consecutive slots of the same heap (the ZZZ
+		// character scene issues ~18K CreateCBV per frame). When the
+		// destination is exactly the next slot of the same heap, resolve the
+		// slot from the previous call's identity and skip the heap-resolve
+		// scan entirely; the seqlock value compare below still guards against
+		// redundant shadow writes.
+		struct CbvSequentialState
+		{
+			SIZE_T lastHandle = 0;
+			UINT increment = 0;
+			UINT numDescriptors = 0;
+			UINT slot = 0;
+			DescriptorHeapRecord *heap = nullptr;
+			size_t heapIndex = 0;
+			bool valid = false;
+		};
+		static thread_local CbvSequentialState seq;
+
 		ResolvedHeapSlot resolved;
-		const bool resolvedKnownHeap = ResolveHeapSlotFast(
+		bool resolvedKnownHeap = false;
+		if (seq.valid && seq.heap && seq.increment &&
+			destDescriptor.ptr == seq.lastHandle + seq.increment &&
+			seq.slot + 1 < seq.numDescriptors &&
+			seq.heap->stateLocks && seq.heap->stateLocks->IsActive()) {
+			resolved.heap = seq.heap;
+			resolved.heapIndex = seq.heapIndex;
+			resolved.slot = seq.slot + 1;
+			resolvedKnownHeap = true;
+		} else {
+			resolvedKnownHeap = ResolveHeapSlotFast(
 				destDescriptor.ptr,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
 				&resolved);
+			if (resolvedKnownHeap && resolved.heap) {
+				seq.valid = true;
+				seq.heap = resolved.heap;
+				seq.heapIndex = resolved.heapIndex;
+				seq.increment = resolved.heap->increment;
+				seq.numDescriptors = resolved.heap->desc.NumDescriptors;
+				seq.slot = resolved.slot;
+			} else {
+				seq.valid = false;
+			}
+		}
+		if (resolvedKnownHeap) {
+			seq.lastHandle = destDescriptor.ptr;
+			seq.slot = resolved.slot;
+		}
 		// ResolveHeapSlotFast already validates the heap activity immediately
 		// before returning. PublishedSlotValueEquals performs the authoritative
 		// seqlock read, so another activity load here only duplicated an atomic on
@@ -536,6 +581,17 @@ public:
 				resolved.heap->stateLocks->PublishedSlotValueEquals(
 					resolved.slot, valueId)) {
 			return false;
+		}
+		// Ensure the dense shadow array exists BEFORE taking the per-slot
+		// shard lock: StoreCurrentValueIfChanged then takes the array path
+		// instead of the global sparse store / value pool, and
+		// EnsureDescriptorHeapStorageLocked needs the all-shard lock, which
+		// must not be acquired while a single shard is held (non-reentrant
+		// SRWLOCK). The empty() check is a cheap lock-free gate; the function
+		// itself re-checks under the lock.
+		if (resolvedKnownHeap && resolved.heap &&
+				resolved.heap->slots.empty()) {
+			EnsureDescriptorHeapStorageLocked(resolved.heap);
 		}
 		ResolvedHeapSlot locked;
 		bool lockedKnownHeap = resolvedKnownHeap &&
@@ -811,6 +867,11 @@ public:
 				telemetryBatch->RecordMemo(false);
 			else
 				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
+			// Prefer the dense array path for the destination: materialize it
+			// before any shard lock is taken (all-shard lock is not reentrant
+			// with a held single shard).
+			if (destHeap.slots.empty())
+				EnsureDescriptorHeapStorageLocked(&destHeap);
 			SRWLOCK *sourceLock = HeapLock(&srcHeap, srcSlot);
 			SRWLOCK *destLock = HeapLock(&destHeap, destSlot);
 			bool sourceShared = false;

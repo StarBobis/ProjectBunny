@@ -516,12 +516,30 @@ namespace DX12Wrapper
 
 			ULONG ReleaseWithRegistry(std::atomic<long> &references)
 			{
+				// Lock-free fast path: the global wrapper lock is only needed
+				// when the last reference dies (registry removal + destruction).
+				// The previous implementation took the exclusive lock on every
+				// Release, which the game's per-frame object churn hits
+				// thousands of times and which serializes against unwrap
+				// lookups and wrapper creation on other threads (DX11
+				// AddRef/Release are plain interlocked ops).
+				const ULONG ref = static_cast<ULONG>(
+					references.fetch_sub(1, std::memory_order_acq_rel) - 1);
+				if (ref != 0)
+					return ref;
+
 				AcquireSRWLockExclusive(&gWrapperLock);
-				const ULONG ref = static_cast<ULONG>(--references);
-				if (!ref)
+				// A concurrent FindByIdentity/FindByWrapperPointer may have
+				// retained the wrapper (RetainForLookupLocked) while we were
+				// decrementing; the object must stay alive for it. Re-check
+				// under the lock before removing registry entries and
+				// destroying.
+				const bool stillZero =
+					references.load(std::memory_order_acquire) == 0;
+				if (stillZero)
 					RemoveRegistryEntriesLocked();
 				ReleaseSRWLockExclusive(&gWrapperLock);
-				if (!ref)
+				if (stillZero)
 					delete this;
 				return ref;
 			}

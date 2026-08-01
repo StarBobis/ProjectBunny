@@ -1244,6 +1244,44 @@ public:
 		DX12_PROFILE_FUNCTION(ExecuteCommandLists);
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		// Submission-gap probe: wall clock and this thread's CPU time since the
+		// previous ExecuteCommandLists. A large wall gap with a small CPU delta
+		// means the recording thread was blocked (fence wait / lock / game-side
+		// stall) between submits; a large CPU delta means it was busy recording
+		// or in unhooked game code. This locates frame time that the per-API
+		// hot-path timers cannot see.
+		{
+			const ULONGLONG wallNow = GetTickCount64();
+			FILETIME createTime = {};
+			FILETIME exitTime = {};
+			FILETIME kernelTime = {};
+			FILETIME userTime = {};
+			GetThreadTimes(
+				GetCurrentThread(), &createTime, &exitTime, &kernelTime, &userTime);
+			const ULONGLONG cpuNow =
+				((static_cast<ULONGLONG>(kernelTime.dwHighDateTime) << 32) |
+					kernelTime.dwLowDateTime) / 10 +
+				((static_cast<ULONGLONG>(userTime.dwHighDateTime) << 32) |
+					userTime.dwLowDateTime) / 10;
+			thread_local ULONGLONG lastWall = 0;
+			thread_local ULONGLONG lastCpu = 0;
+			thread_local LONG lastPresent = -1;
+			const LONG present = DX12RuntimeState::GetPresentCount();
+			if (lastWall != 0 && lastPresent >= 0) {
+				const ULONGLONG wallDelta = wallNow - lastWall;
+				const ULONGLONG cpuDelta = cpuNow - lastCpu;
+				DX12LogManager::Fields("DX12ExecuteGapDiag",
+					"\"present\":%ld,\"wallUs\":%llu,\"threadCpuUs\":%llu,"
+					"\"framesSince\":%ld",
+					present,
+					wallDelta * 1000,
+					cpuDelta,
+					static_cast<LONG>(present - lastPresent));
+			}
+			lastWall = wallNow;
+			lastCpu = cpuNow;
+			lastPresent = present;
+		}
 		volatile LONG &firstExecuteLog = DX12CommandQueueExecutionState::FirstExecuteLog;
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",

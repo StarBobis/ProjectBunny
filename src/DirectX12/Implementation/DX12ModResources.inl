@@ -1381,8 +1381,24 @@ static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 
 	Bunny::ResourceConfig config;
 	std::wstring baseDir;
-	AcquireSRWLockExclusive(&gModLock);
+	// Read-only fast path first: gLoadedResources is queried on every pre-skin
+	// apply, every frame. A shared lock lets concurrent recording threads and
+	// the UI thread read it without serializing on the exclusive gModLock
+	// (DX11 reads resource metadata without taking a global write lock).
+	AcquireSRWLockShared(&gModLock);
 	auto loaded = gLoadedResources.find(name);
+	if (loaded != gLoadedResources.end()) {
+		DX12LoadedResource *resource =
+			loaded->second.resource && !loaded->second.failed ? &loaded->second : nullptr;
+		ReleaseSRWLockShared(&gModLock);
+		return resource;
+	}
+	ReleaseSRWLockShared(&gModLock);
+
+	AcquireSRWLockExclusive(&gModLock);
+	// Another thread may have loaded the resource while we held the shared
+	// lock; re-check before doing the (expensive) load.
+	loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		DX12LoadedResource *resource =
 			loaded->second.resource && !loaded->second.failed ? &loaded->second : nullptr;
