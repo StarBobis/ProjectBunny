@@ -3375,6 +3375,52 @@ public:
 		// before falling back to stable IA content hashing.
 		const DX12IaHashTargetPlan &targetPlan = drawDecision->targetPlan;
 		const DX12IaHashTargetPlan &directTargetPlan = drawDecision->directTargetPlan;
+		// IA-state-level negative cache: with count-independent prefilter
+		// tables, "this IA state has no override candidate" is a property of
+		// the bound buffer views alone (DX11: hash saved at bind time, map
+		// lookup miss ends the draw). Check it before any per-draw key
+		// construction; only draw-context filters (match_first_index etc.)
+		// are draw-arg dependent, and those only matter once a candidate
+		// exists, which is exactly the case this cache does not short-circuit.
+		if (drawDecision->directTextureChecksOnly &&
+		    drawDecision->directTargetPlanResolved &&
+		    directTargetPlan.hasTextureOverrideChecks &&
+		    directTargetPlan.HasIaTargets() &&
+		    !directTargetPlan.hasDescriptorTargets &&
+		    !directTargetPlan.requireAllIaBuffers &&
+		    !DX12ModIaPrefilterCountSensitive()) {
+			DX12SimulateContextDrawTemplate::IaStateNegativeCache &iaNeg =
+				mutableRuntimeState->resolvedDraw.iaStateNegative;
+			const UINT64 iaPlanFingerprint = directTargetPlan.Fingerprint();
+			if (iaNeg.valid &&
+			    iaNeg.iaEpoch == runtimeState.iaEpoch &&
+			    iaNeg.iaContentEpoch == runtimeState.iaContentEpoch &&
+			    iaNeg.reloadGeneration == drawDecision->reloadGeneration &&
+			    iaNeg.targetPlanFingerprint == iaPlanFingerprint &&
+			    iaNeg.pipelineState == runtimeState.pipelineState) {
+				if (iaNeg.noCandidate) {
+					StoreBoundDrawNegative();
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
+				}
+			} else {
+				const bool noCandidate =
+					DX12ModIaStateDefinitelyHasNoCandidate(
+						runtimeState.ia, directTargetPlan, draw.indexed);
+				iaNeg.valid = true;
+				iaNeg.noCandidate = noCandidate;
+				iaNeg.iaEpoch = runtimeState.iaEpoch;
+				iaNeg.iaContentEpoch = runtimeState.iaContentEpoch;
+				iaNeg.reloadGeneration = drawDecision->reloadGeneration;
+				iaNeg.targetPlanFingerprint = iaPlanFingerprint;
+				iaNeg.pipelineState = runtimeState.pipelineState;
+				if (noCandidate) {
+					StoreBoundDrawNegative();
+					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					return false;
+				}
+			}
+		}
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
 		const bool shaderOverrideNegativeCacheAllowed =

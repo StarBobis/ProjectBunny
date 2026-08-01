@@ -358,6 +358,7 @@ void DX12ResolvedDrawRuntimeStateUtils::Clear(
 	state->fullIaTargetPresence = {};
 	state->residentDrawNegativeCache = {};
 	state->boundDrawResult.Reset();
+	state->iaStateNegative = {};
 }
 
 void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
@@ -1136,12 +1137,6 @@ bool DX12CommandListRuntime::BuildIaHashState(
 		firstVertex, firstIndex, baseVertex, state);
 }
 
-// Forward declarations: the cached per-view hash builders are defined below
-// BuildIaHashStateForTargets but are the DX11-equivalent "hash saved at bind
-// time, reused at draw time" path (invalidated by content generation).
-static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia);
-static uint32_t GetOrBuildCachedVertexViewHash(DX12ActiveIaState *ia, UINT slot);
-
 bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan,
 	bool indexed, UINT vertexCount, UINT indexCount,
@@ -1177,7 +1172,8 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		// filters like match_first_index to narrow the match. Using the whole bound
 		// view here keeps the hash stable across repeated draws and avoids
 		// re-hashing a new draw subrange every call.
-			GetOrBuildCachedIndexViewHash(const_cast<DX12ActiveIaState*>(&ia)) : 0;
+			DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(
+				const_cast<DX12ActiveIaState*>(&ia)) : 0;
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
@@ -1195,7 +1191,8 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 				vertexCount,
 				indexCount);
 		const uint32_t vertexHash = requireVertexHash ?
-			GetOrBuildCachedVertexViewHash(const_cast<DX12ActiveIaState*>(&ia), slot) : 0;
+			DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
+				const_cast<DX12ActiveIaState*>(&ia), slot) : 0;
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = vertexHash;
@@ -1206,7 +1203,7 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	return state->hasIndexBuffer || !state->vertexBuffers.empty();
 }
 
-static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
+uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
 {
 	if (!ia || !ia->hasIndexBuffer)
 		return 0;
@@ -1231,7 +1228,7 @@ static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
 	return ia->indexBufferHash;
 }
 
-static uint32_t GetOrBuildCachedVertexViewHash(
+uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 	DX12ActiveIaState *ia,
 	UINT slot)
 {

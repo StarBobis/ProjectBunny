@@ -1398,6 +1398,26 @@ public:
 		bool indexed = false;
 	};
 
+	// IA-state-level negative cache: when the compiled prefilter tables are
+	// draw-count independent (gIaPrefilterCountSensitive == 0), "this IA state
+	// has no override candidate" is a property of the bound buffer views alone
+	// (DX11: hash saved at bind time, map lookup miss ends the draw). Caching it
+	// here lets every draw that shares the same IA bindings skip the whole
+	// per-draw candidate chain.
+	class IaStateNegativeCache
+	{
+	public:
+		bool valid = false;
+		bool noCandidate = false;
+		UINT64 iaEpoch = 0;
+		UINT64 iaContentEpoch = 0;
+		UINT64 reloadGeneration = 0;
+		UINT64 targetPlanFingerprint = 0;
+		ID3D12PipelineState *pipelineState = nullptr;
+	};
+
+	IaStateNegativeCache iaStateNegative;
+
 	DX12IaHashStateCache iaHashStateCache;
 	// Direct-target and full-target key prefixes. Resolved IA resources carry
 	// their own content/lifetime generations; global epochs are only consulted
@@ -1710,6 +1730,11 @@ public:
 	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargetsCached(DX12ActiveIaState *ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, UINT64 iaContentEpoch, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
+
+	// Cross-TU cached per-view IA hash builders (DX11-style: hash saved at bind
+	// time, reused at draw time, invalidated by content generation).
+	static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia);
+	static uint32_t GetOrBuildCachedVertexViewHash(DX12ActiveIaState *ia, UINT slot);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargetsCached(DX12SimulateContext *state, UINT cacheSlot, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
 	static DX12SimulateContext GetState(ID3D12GraphicsCommandList *commandList);

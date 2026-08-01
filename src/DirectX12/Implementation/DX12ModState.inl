@@ -62,6 +62,12 @@ static std::unordered_map<uint32_t, std::vector<size_t>> gIaMergedVertexTextureO
 static std::unordered_map<UINT64, std::vector<size_t>> gIaVertexTextureOverridePrefilterByVertexCount;
 static std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverridePrefilterByVertexCount;
 
+// True when any IA prefilter table is indexed by draw count. When false, the
+// "does this IA state have any override candidate" answer is draw-arg
+// independent, which lets the draw path cache it at IA-state granularity
+// (DX11-style) instead of per draw.
+static volatile LONG gIaPrefilterCountSensitive = 0;
+
 // The hash-level negative cache records tuples with no global candidates.
 // It is draw-context independent and therefore has a higher hit rate.
 // key = bits[31:0]=hash | bit[32]=indexBuffer | bits[47:33]=vertexSlot

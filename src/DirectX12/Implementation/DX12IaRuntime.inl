@@ -3100,3 +3100,90 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 
 	return false;
 }
+
+// Returns true when the prefilter tables prove no candidate can exist for this
+// (ib/vb, slot, hash) tuple, ignoring draw-context filters (match_first_index
+// etc.). The prefilter tables are queried with zero counts: callers must only
+// use this when gIaPrefilterCountSensitive == 0 so the count-indexed tables are
+// empty and the generic tables are authoritative. Candidates that depend on
+// active pre-skin sections still resolve through the live snapshot, and any
+// candidate that survives hash + match_cs + IA-binding checks counts as
+// "possibly present" so the per-draw path stays authoritative.
+static bool IaHashDefinitelyHasNoCandidate(
+	bool indexBuffer,
+	uint32_t vertexSlot,
+	uint32_t hash)
+{
+	const std::vector<size_t> *candidateIndexes =
+		FindIaTextureOverridePrefilterCandidatesLocked(
+			indexBuffer, vertexSlot, 0, 0);
+	if (!candidateIndexes || candidateIndexes->empty())
+		return true;
+
+	const bool dependsOnActivePreSkin =
+		IaCandidateIndexesDependOnActivePreSkin(*candidateIndexes);
+	const std::unordered_set<std::wstring> &activePreSkinSections =
+		dependsOnActivePreSkin ?
+			GetActivePreSkinSectionsSnapshot() :
+			EmptyActivePreSkinSections();
+
+	for (size_t index : *candidateIndexes) {
+		if (index >= gIaTextureOverrides.size())
+			continue;
+		const DX12IaTextureOverrideCandidate &candidate =
+			gIaTextureOverrides[index];
+		const Bunny::TextureOverrideConfig *config = candidate.config;
+		if (!config || config->hash != hash)
+			continue;
+		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections))
+			continue;
+		if (!TextureOverrideMatchesIaBinding(
+				*config, indexBuffer, vertexSlot))
+			continue;
+		return false;
+	}
+	return true;
+}
+
+// DX11-style IA-state-level negative check: the per-view hashes are computed
+// (or reused from the resident cache) and matched against the candidate tables
+// without any draw-context filtering. Only call when gIaPrefilterCountSensitive
+// is 0; the result is then independent of vertex/index counts and offsets, so
+// the draw path can cache it across draws for the same IA bindings.
+bool DX12ModIaStateDefinitelyHasNoCandidate(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed)
+{
+	if (!targetPlan.hasTextureOverrideChecks ||
+	    targetPlan.hasDescriptorTargets ||
+	    targetPlan.requireAllIaBuffers ||
+	    !targetPlan.HasIaTargets()) {
+		return false;
+	}
+
+	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
+		const uint32_t indexHash =
+			DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(
+				const_cast<DX12ActiveIaState*>(&ia));
+		if (!IaHashDefinitelyHasNoCandidate(true, 0, indexHash))
+			return false;
+	}
+
+	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot) || !ia.hasVertexBuffer[slot])
+			continue;
+		const uint32_t vertexHash =
+			DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
+				const_cast<DX12ActiveIaState*>(&ia), slot);
+		if (!IaHashDefinitelyHasNoCandidate(false, slot, vertexHash))
+			return false;
+	}
+
+	return true;
+}
+
+bool DX12ModIaPrefilterCountSensitive()
+{
+	return gIaPrefilterCountSensitive != 0;
+}

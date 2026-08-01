@@ -339,6 +339,13 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 	uint32_t firstVertex,
 	uint32_t firstIndex,
 	uint32_t firstInstance);
+// DX11-style IA-state-level negative check (draw-arg independent; only valid
+// when the compiled prefilter tables are not count-sensitive).
+bool DX12ModIaStateDefinitelyHasNoCandidate(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed);
+bool DX12ModIaPrefilterCountSensitive();
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,
 	const DX12IaHashState &iaState,

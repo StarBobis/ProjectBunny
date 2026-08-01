@@ -1982,6 +1982,14 @@ bool DX12ModRuntimeLoad(
 	BuildDx12CompiledShaderOverridePlans(
 		shaderOverrides, shaderRegexes, compiledCommandListPlans,
 		&compiledShaderOverridePlans);
+	// Any draw-count-indexed prefilter table makes the "has candidate" answer
+	// count-dependent; publish that before the tables are swapped in below so
+	// the draw path can choose IA-state-level negative caching.
+	const bool iaPrefilterCountSensitive =
+		!iaIndexTextureOverridePrefilterByIndexCount.empty() ||
+		!iaAnyVertexTextureOverridePrefilterByVertexCount.empty() ||
+		!iaVertexTextureOverridePrefilterByVertexCount.empty() ||
+		!iaMergedVertexTextureOverridePrefilterByVertexCount.empty();
 	bool hasIaResidentStateRequirements =
 		hasShaderIaTextureOverrideTriggers ||
 		CompiledShaderOverridePlansNeedResidentIaState(compiledShaderOverridePlans);
@@ -2043,6 +2051,8 @@ bool DX12ModRuntimeLoad(
 		iaMergedVertexTextureOverridePrefilterByVertexCount);
 	gTextureOverrideLookupCache.clear();
 	gIaTextureOverrideHashNoCandidates.clear();
+	InterlockedExchange(&gIaPrefilterCountSensitive,
+		iaPrefilterCountSensitive ? 1 : 0);
 	DX12ModClearIaReplacementRuntimeCaches();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
 	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
