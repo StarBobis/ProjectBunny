@@ -611,7 +611,12 @@ public:
 
 		for (int i = 0; i < 200; ++i) {
 			DXGIHooks::Install();
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+			// Wait-object instrumentation hooks kernel32 exports process-wide;
+			// it exists to attribute stall stacks in TIMING builds and must not
+			// ship in normal Release (DX11 has no equivalent global wait hook).
 			DX12WaitHooks::Install();
+#endif
 			Sleep(50);
 		}
 
@@ -675,7 +680,9 @@ public:
 	{
 		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
 		DX12NativeOverlayShutdown();
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12WaitHooks::Shutdown();
+#endif
 		DXGIHooks::Shutdown();
 		DX12CommandListHookState::ReleaseKnownCommandQueue();
 		DX12HookRegistry::UnhookAll();

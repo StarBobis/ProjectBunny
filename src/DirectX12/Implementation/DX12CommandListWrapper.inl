@@ -683,8 +683,15 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
 					DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
 					DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
-					DX12TrackTextureHashFromCopyTextureRegion(
-						activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+					// DX11-style gating: only maintain the texture hash cache on
+					// copies when a consumer (override matching / hunt / capture)
+					// can actually read it. The ungated path hashed the full top
+					// mip and took a global lock on every streaming copy.
+					if (DX12HotPathState::NeedsTextureHashTracking(
+							DX12HotPathState::HookWorkFlags)) {
+						DX12TrackTextureHashFromCopyTextureRegion(
+							activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+					}
 					mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
 				}
 

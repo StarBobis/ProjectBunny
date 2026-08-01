@@ -1515,6 +1515,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		gActivePreSkinReplacements[commandList] = std::move(state);
 		InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 		ReleaseSRWLockExclusive(&gPreSkinLock);
+		BumpPreSkinReplacementMutationGeneration();
 		return true;
 	}
 
@@ -1904,6 +1905,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	gActivePreSkinReplacements[commandList] = std::move(state);
 	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
+	BumpPreSkinReplacementMutationGeneration();
 
 #if defined(_DEBUG)
 	DX12LogManager::DebugFields("DX12PreSkinningApply",
@@ -2027,6 +2029,7 @@ static bool ApplyPreSkinBindingPatchLocked(
 	gActivePreSkinReplacements[commandList] = std::move(state);
 	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
+	BumpPreSkinReplacementMutationGeneration();
 
 #if defined(_DEBUG)
 	if (!alreadyPatched) {
@@ -2529,6 +2532,25 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	if (!commandList || gHasActivePreSkinReplacement == 0)
 		return;
 
+	// Command-list-local negative cache: while no map mutation has happened,
+	// "this list has no pending restore" cannot change. Recording is
+	// single-threaded per command list, so a thread-local entry keyed by the
+	// list pointer is exact; the mutation generation covers inserts/erases
+	// made by other threads. This keeps the per-draw cost at two loads
+	// instead of a global exclusive SRW lock + unordered_map lookup on every
+	// draw/dispatch/binding mutation while any pre-skin replacement is
+	// pending anywhere in the process.
+	struct TlsNoPendingRestore {
+		ID3D12GraphicsCommandList *commandList = nullptr;
+		UINT64 generation = 0;
+	};
+	static thread_local TlsNoPendingRestore tlsNoPendingRestore;
+	const UINT64 mutationGeneration =
+		gPreSkinReplacementMutationGeneration.load(std::memory_order_acquire);
+	if (tlsNoPendingRestore.commandList == commandList &&
+	    tlsNoPendingRestore.generation == mutationGeneration)
+		return;
+
 	DX12InternalReplayScope internalReplay;
 	DX12PreSkinReplacementState state = {};
 	bool found = false;
@@ -2542,6 +2564,13 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	if (gActivePreSkinReplacements.empty())
 		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
+	BumpPreSkinReplacementMutationGeneration();
+
+	// Re-read the generation after the mutation so the negative entry stays
+	// valid for exactly the state we just observed.
+	tlsNoPendingRestore.commandList = commandList;
+	tlsNoPendingRestore.generation =
+		gPreSkinReplacementMutationGeneration.load(std::memory_order_relaxed);
 
 	if (!found)
 		return;

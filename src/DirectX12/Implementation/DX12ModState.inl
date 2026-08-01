@@ -1160,6 +1160,18 @@ public:
 
 static std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState> gActivePreSkinReplacements;
 static volatile LONG gHasActivePreSkinReplacement = 0;
+// Monotonic mutation generation for gActivePreSkinReplacements. Every insert
+// and erase bumps it, so a command-list-local TLS negative cache can prove
+// "this list has no pending restore right now" without taking gPreSkinLock on
+// every draw while a replacement is pending anywhere (DX11 has no global lock
+// on the draw path). Recording is single-threaded per command list, so a TLS
+// cache keyed by the list pointer is exact; the generation covers inserts and
+// erases made by other threads (cross-thread recording, list destruction).
+static std::atomic<UINT64> gPreSkinReplacementMutationGeneration{0};
+static void BumpPreSkinReplacementMutationGeneration()
+{
+	gPreSkinReplacementMutationGeneration.fetch_add(1, std::memory_order_relaxed);
+}
 class DX12RetiredPreSkinResource
 {
 public:

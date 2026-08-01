@@ -2358,6 +2358,26 @@ public:
 		return HasAnyFlag(flags, FLAG_IA_RESIDENT_STATE);
 	}
 
+	static bool NeedsTextureHashTracking(UINT64 flags)
+	{
+		// Only maintain the resource-content hash cache on copy paths when a
+		// consumer can actually read it. DX11 gates the same work behind
+		// track_texture_updates / hunting; running the full top-mip hash plus
+		// a global lock insert on every streaming copy with no mods loaded is
+		// pure overhead (wrapper-mode CopyTextureRegion was doing exactly that).
+		return HasAnyFlag(
+			flags,
+			FLAG_SHADER_OVERRIDES |
+			FLAG_IA_RESIDENT_STATE |
+			FLAG_HUNT_ENABLED |
+			FLAG_FRAME_ANALYSIS_ACTIVE |
+			FLAG_SHADER_DUMP_ACTIVE |
+			FLAG_PRE_SKIN_PROBE |
+			FLAG_PRE_SKIN_BINDING_TRACK |
+			FLAG_SHADER_DESCRIPTOR_TRACK |
+			FLAG_DRAW_SRV_SLOT_REPLACEMENT);
+	}
+
 	static bool NeedsBindingEventRecording(UINT64 flags)
 	{
 		return HasAnyFlag(
