@@ -1067,6 +1067,10 @@ public:
 	inline static volatile LONG64 ApiScopeMaxGapEndQpc = 0;
 	inline static volatile LONG64 ApiScopeLastEndThreadKernelUs = 0;
 	inline static volatile LONG64 ApiScopeLastEndThreadUserUs = 0;
+	// Set by LogApiScopeBegin when a gap is worth recording; the matching End
+	// then samples thread CPU times once. Keeps the GetThreadTimes syscall
+	// (hundreds of ns each) off the per-API-call path.
+	inline static volatile LONG ApiScopeEndCpuSamplePending = 0;
 	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadKernelUs = 0;
 	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadUserUs = 0;
 	inline static volatile LONG64 ApiScopeMaxGapAfterThreadKernelUs = 0;
@@ -1651,7 +1655,16 @@ public:
 				InterlockedCompareExchange64(&ApiScopeLastEndThreadUserUs, 0, 0);
 			LONG64 afterKernelUs = 0;
 			LONG64 afterUserUs = 0;
-			GetCurrentThreadCpuUs(&afterKernelUs, &afterUserUs);
+			// GetThreadTimes is a syscall (hundreds of ns each); sampling it on
+			// every API call dominates the TIMING build cost while the 50ms
+			// IsInterestingGap threshold almost never fires. Only sample when
+			// this gap can actually be logged or beat the recorded maximum.
+			const LONG64 observedMaxGap =
+				InterlockedCompareExchange64(&ApiScopeMaxGapUs, 0, 0);
+			if (IsInterestingGap(gapUs) || gapUs > observedMaxGap) {
+				GetCurrentThreadCpuUs(&afterKernelUs, &afterUserUs);
+				InterlockedExchange(&ApiScopeEndCpuSamplePending, 1);
+			}
 			const LONG64 threadKernelDeltaUs =
 				static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId ?
 					SafeSubtract(afterKernelUs, beforeKernelUs) : 0;
@@ -1718,9 +1731,13 @@ public:
 						static_cast<LONG>(GetCurrentThreadId()));
 					LONG64 kernelUs = 0;
 					LONG64 userUs = 0;
-					GetCurrentThreadCpuUs(&kernelUs, &userUs);
-					InterlockedExchange64(&ApiScopeLastEndThreadKernelUs, kernelUs);
-					InterlockedExchange64(&ApiScopeLastEndThreadUserUs, userUs);
+					// Only sample when the matching Begin flagged a recordable
+					// gap; see ApiScopeEndCpuSamplePending in LogApiScopeBegin.
+					if (InterlockedExchange(&ApiScopeEndCpuSamplePending, 0)) {
+						GetCurrentThreadCpuUs(&kernelUs, &userUs);
+						InterlockedExchange64(&ApiScopeLastEndThreadKernelUs, kernelUs);
+						InterlockedExchange64(&ApiScopeLastEndThreadUserUs, userUs);
+					}
 					break;
 				}
 				observed = previous;

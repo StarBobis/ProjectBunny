@@ -1255,18 +1255,20 @@ public:
 		ID3D12DescriptorHeap *currentHeap,
 		UINT64 currentHeapVersion,
 		ID3D12RootSignature *currentRootSig,
-		const DX12IaDrawInvocation &draw) const
+		const DX12IaDrawInvocation &draw,
+		bool compareDescriptorState) const
 	{
 		return valid &&
 			iaEpoch == currentIaEpoch &&
 			iaContentEpoch == currentIaContentEpoch &&
-			graphicsDescriptorQuerySerial == currentGraphicsDescriptorQuerySerial &&
 			pipelineState == currentPso &&
 			reloadGeneration == currentReloadGeneration &&
-			preSkinGeneration == currentPreSkinGeneration &&
-			cbvSrvUavHeap == currentHeap &&
-			cbvSrvUavHeapVersion == currentHeapVersion &&
-			graphicsRootSignature == currentRootSig &&
+			(!compareDescriptorState ||
+				(graphicsDescriptorQuerySerial == currentGraphicsDescriptorQuerySerial &&
+				 preSkinGeneration == currentPreSkinGeneration &&
+				 cbvSrvUavHeap == currentHeap &&
+				 cbvSrvUavHeapVersion == currentHeapVersion &&
+				 graphicsRootSignature == currentRootSig)) &&
 			indexed == draw.indexed &&
 			vertexCount == draw.vertexCount &&
 			indexCount == draw.indexCount &&

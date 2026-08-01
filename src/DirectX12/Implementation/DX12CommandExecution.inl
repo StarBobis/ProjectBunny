@@ -4088,19 +4088,12 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 	    iaState.hasIndexBuffer) {
 		target.kind = Bunny::CommandListTargetKind::IndexBuffer;
 		target.slot = 0;
+		// Query the real hash first: hash-triggered configs (the common case)
+		// either match here or miss both times, so ordering the wildcard
+		// (hash==0) probe after the real one saves one full lookup+snapshot
+		// cycle per draw for every config that does match. OR semantics make
+		// the order irrelevant for the result.
 		if (FindIaTextureOverridesCached(
-			    target,
-			    0,
-			    vertexCount,
-			    indexCount,
-			    instanceCount,
-			    firstVertex,
-				firstIndex,
-				firstInstance,
-				true,
-				0,
-				nullptr) ||
-			FindIaTextureOverridesCached(
 			    target,
 			    iaState.indexHash,
 			    vertexCount,
@@ -4111,7 +4104,19 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 				    firstInstance,
 				    true,
 				    0,
-				    nullptr)) {
+				    nullptr) ||
+			FindIaTextureOverridesCached(
+			    target,
+			    0,
+			    vertexCount,
+			    indexCount,
+			    instanceCount,
+			    firstVertex,
+				firstIndex,
+				firstInstance,
+				true,
+				0,
+				nullptr)) {
 				return true;
 			}
 		}
@@ -4124,7 +4129,7 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 		target.slot = buffer.slot;
 		if (FindIaTextureOverridesCached(
 			    target,
-			    0,
+			    buffer.hash,
 			    vertexCount,
 			    indexCount,
 			    instanceCount,
@@ -4136,7 +4141,7 @@ bool DX12ModHasAnyDirectIaTextureOverrideCandidate(
 				nullptr) ||
 			FindIaTextureOverridesCached(
 			    target,
-			    buffer.hash,
+			    0,
 			    vertexCount,
 			    indexCount,
 			    instanceCount,

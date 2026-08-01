@@ -3303,6 +3303,25 @@ public:
 		const UINT64 preSkinGeneration = DX12ModGetPreSkinActiveGenerationFast();
 		const UINT64 boundHeapVersion = runtimeState.cbvSrvUavHeap ?
 			DX12GetDescriptorHeapVersion(runtimeState.cbvSrvUavHeap) : 0;
+		// A pure IA-content decision (IB/VB hash targets, no descriptor
+		// targets, no draw-SRV patch, no pre-skin, no capture/hunt) does not
+		// depend on the graphics descriptor query serial, heap identity,
+		// heap version or root signature. Those change every frame in most
+		// games, so comparing them here would force the bound-draw cache to
+		// miss on every draw even though the IA state is unchanged - the
+		// exact cost DX11 avoids by keying its region-hash caches on the
+		// buffer, not the descriptor pipeline. Only compare descriptor state
+		// when the compiled decision can actually observe it.
+		const bool boundCacheCompareDescriptorState =
+			drawDecision->targetPlanHasDescriptorTargets ||
+			drawDecision->directTargetPlan.hasDescriptorTargets ||
+			(DX12HotPathState::HookWorkFlags &
+				(DX12HotPathState::FLAG_DRAW_SRV_SLOT_REPLACEMENT |
+				 DX12HotPathState::FLAG_PRE_SKIN_PROBE |
+				 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK |
+				 DX12HotPathState::FLAG_HUNT_ENABLED |
+				 DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
+				 DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) != 0;
 		DX12BoundDrawResultCache &boundDrawCache =
 			mutableRuntimeState->resolvedDraw.boundDrawResult;
 		if (boundDrawCache.Matches(
@@ -3315,7 +3334,8 @@ public:
 				runtimeState.cbvSrvUavHeap,
 				boundHeapVersion,
 				runtimeState.graphicsRootSignature,
-				draw)) {
+				draw,
+				boundCacheCompareDescriptorState)) {
 			if (!boundDrawCache.hasOverride) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",

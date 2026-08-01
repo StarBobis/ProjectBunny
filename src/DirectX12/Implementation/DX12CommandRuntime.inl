@@ -1136,6 +1136,12 @@ bool DX12CommandListRuntime::BuildIaHashState(
 		firstVertex, firstIndex, baseVertex, state);
 }
 
+// Forward declarations: the cached per-view hash builders are defined below
+// BuildIaHashStateForTargets but are the DX11-equivalent "hash saved at bind
+// time, reused at draw time" path (invalidated by content generation).
+static uint32_t GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia);
+static uint32_t GetOrBuildCachedVertexViewHash(DX12ActiveIaState *ia, UINT slot);
+
 bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 	const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan,
 	bool indexed, UINT vertexCount, UINT indexCount,
@@ -1171,12 +1177,7 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 		// filters like match_first_index to narrow the match. Using the whole bound
 		// view here keeps the hash stable across repeated draws and avoids
 		// re-hashing a new draw subrange every call.
-			DX12HashIaBufferContentView(
-				ia.indexBuffer.BufferLocation,
-				ia.indexBuffer.SizeInBytes,
-				0,
-				static_cast<UINT>(ia.indexBuffer.Format),
-				0) : 0;
+			GetOrBuildCachedIndexViewHash(const_cast<DX12ActiveIaState*>(&ia)) : 0;
 		state->hasIndexBuffer = true;
 		state->indexHash = indexHash;
 		state->indexView = ia.indexBuffer;
@@ -1194,12 +1195,7 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargets(
 				vertexCount,
 				indexCount);
 		const uint32_t vertexHash = requireVertexHash ?
-			DX12HashIaBufferContentView(
-				ia.vertexBuffers[slot].BufferLocation,
-				ia.vertexBuffers[slot].SizeInBytes,
-				ia.vertexBuffers[slot].StrideInBytes,
-				0,
-				slot) : 0;
+			GetOrBuildCachedVertexViewHash(const_cast<DX12ActiveIaState*>(&ia), slot) : 0;
 		DX12IaBufferHash item;
 		item.slot = slot;
 		item.hash = vertexHash;
@@ -1480,9 +1476,11 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 	}
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;
-	key.firstVertex = firstVertex;
-	key.firstIndex = firstIndex;
-	key.baseVertex = baseVertex;
+	// firstVertex/firstIndex/baseVertex are intentionally NOT part of the IA
+	// hash key: BuildIaHashStateForTargets ignores them (the hash covers the
+	// whole bound view, DX11-style), and only the candidate-match stage
+	// (match_first_index etc.) consumes them. Keeping them out lets draws
+	// that differ only in vertex offsets share the same IA hash cache entry.
 	return key;
 }
 
