@@ -1470,6 +1470,15 @@ public:
 	UINT64 bindingsDependencyFingerprint = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
 	ID3D12RootSignature *bindingsRootSignature = nullptr;
+	// Exact root-binding identity snapshot for cache validation. The game
+	// re-binds compute root tables on every dispatch (and bumps
+	// computeBindingSerial / root revisions), which made the previous
+	// serial/revision validation miss on every dispatch and forced a full
+	// binding re-collect per dispatch. Same root signature + same root
+	// table/descriptor identities + same observed slot versions prove the
+	// collected bindings are identical, so the cache hits across re-binds.
+	std::array<UINT64, MaxRootParameters> bindingsRootIdentities;
+	std::array<bool, MaxRootParameters> bindingsRootValid;
 	std::vector<UINT> bindingsRootParameters;
 	std::vector<UINT64> bindingsRootRevisions;
 	std::vector<UINT> observedSlots;
@@ -1507,6 +1516,18 @@ public:
 	UINT rangeType = UINT_MAX;
 	UINT64 bindingQuerySerial = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
+	// Root-binding snapshot used for cache validation. Revisions/serial bump
+	// on every re-bind even when the game binds the same descriptors again,
+	// which forced a full re-collect on every draw in binding-churn games
+	// (e.g. ZZZ rebinds per draw; heapVersion changes thousands of times per
+	// frame). Instead validate the exact bound identity: the GPU handle of
+	// each root table / root descriptor. Same identity + same observed slot
+	// versions => the collected bindings are identical, so the cache can hit
+	// across re-binds. Content changes of observed slots are caught by
+	// observedSlotVersions below.
+	ID3D12RootSignature *rootSignature = nullptr;
+	std::array<UINT64, MaxRootParameters> rootBindingIdentities;
+	std::array<bool, MaxRootParameters> rootBindingValid;
 	std::vector<UINT> rootParameters;
 	std::vector<UINT64> rootRevisions;
 	std::vector<UINT> observedSlots;

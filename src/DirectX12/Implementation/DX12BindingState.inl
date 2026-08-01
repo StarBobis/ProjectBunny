@@ -279,6 +279,7 @@ static bool TryLoadRuntimeDescriptorBindings(
 {
 	if (!runtimeState || !bindings)
 		return false;
+	(void)bindingQuerySerial;
 
 	const UINT cacheSlot =
 		BindingTlsDescriptorQueryCache::CacheSlotIndex(compute, rangeType);
@@ -293,20 +294,37 @@ static bool TryLoadRuntimeDescriptorBindings(
 			cache.rangeType != static_cast<UINT>(rangeType) ||
 			cache.bindingsHeap != runtimeState->cbvSrvUavHeap)
 		return false;
-	if (cache.usesRootRevisions) {
-		const std::array<UINT64, MaxRootParameters> &revisions = compute ?
-			runtimeState->computeRootBindingRevisions :
-			runtimeState->graphicsRootBindingRevisions;
-		if (cache.rootParameters.size() != cache.rootRevisions.size())
-			return false;
-		for (size_t index = 0; index < cache.rootParameters.size(); ++index) {
-			const UINT root = cache.rootParameters[index];
-			if (root >= revisions.size() ||
-				revisions[root] != cache.rootRevisions[index])
-				return false;
-		}
-	} else if (cache.bindingQuerySerial != bindingQuerySerial) {
+	// Validate the exact root-binding identity instead of revisions/serial:
+	// games like ZZZ re-bind root tables on every draw even when binding the
+	// same descriptors, so revision/serial-based validation misses on every
+	// draw and forces a full re-collect (snapshot copy + descriptor resolve +
+	// locks) per draw. Same root signature + same root table/descriptor
+	// identity + same observed slot versions proves the collected bindings
+	// are identical.
+	const ID3D12RootSignature *currentRootSignature = compute ?
+		runtimeState->computeRootSignature :
+		runtimeState->graphicsRootSignature;
+	if (cache.rootSignature != currentRootSignature)
 		return false;
+	const RootTableState *currentTables = compute ?
+		runtimeState->computeRootTables :
+		runtimeState->graphicsRootTables;
+	const RootDescriptorState *currentRootDescriptors = compute ?
+		runtimeState->computeRootDescriptors :
+		runtimeState->graphicsRootDescriptors;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		const bool currentValid =
+			currentTables[root].valid ||
+			currentRootDescriptors[root].valid;
+		if (currentValid != cache.rootBindingValid[root])
+			return false;
+		if (!currentValid)
+			continue;
+		const UINT64 currentIdentity = currentTables[root].valid ?
+			currentTables[root].baseDescriptor.ptr :
+			currentRootDescriptors[root].address;
+		if (currentIdentity != cache.rootBindingIdentities[root])
+			return false;
 	}
 
 	const size_t observedCount = cache.observedSlots.size();
@@ -379,6 +397,28 @@ static void StoreRuntimeDescriptorBindings(
 	cache.rangeType = static_cast<UINT>(rangeType);
 	cache.bindingQuerySerial = bindingQuerySerial;
 	cache.bindingsHeap = runtimeState->cbvSrvUavHeap;
+	// Snapshot the exact root-binding identity for validation (see
+	// TryLoadRuntimeDescriptorBindings): revisions/serial bump on every
+	// re-bind, which defeats the cache in binding-churn games.
+	cache.rootSignature = compute ?
+		runtimeState->computeRootSignature :
+		runtimeState->graphicsRootSignature;
+	{
+		const RootTableState *tables = compute ?
+			runtimeState->computeRootTables :
+			runtimeState->graphicsRootTables;
+		const RootDescriptorState *rootDescriptors = compute ?
+			runtimeState->computeRootDescriptors :
+			runtimeState->graphicsRootDescriptors;
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			const bool tableValid = tables[root].valid;
+			const bool descriptorValid = rootDescriptors[root].valid;
+			cache.rootBindingValid[root] = tableValid || descriptorValid;
+			cache.rootBindingIdentities[root] = tableValid ?
+				tables[root].baseDescriptor.ptr :
+				(descriptorValid ? rootDescriptors[root].address : 0);
+		}
+	}
 	cache.rootParameters.clear();
 	cache.rootRevisions.clear();
 	cache.usesRootRevisions = !bindings.empty();

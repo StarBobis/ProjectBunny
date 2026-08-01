@@ -3362,7 +3362,8 @@ public:
 				 DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) != 0;
 		DX12BoundDrawResultCache &boundDrawCache =
 			mutableRuntimeState->resolvedDraw.boundDrawResult;
-		if (boundDrawCache.Matches(
+		LARGE_INTEGER boundCacheBegin = DX12OuterTimingProbeUtils::Now();
+		const bool boundCacheHit = boundDrawCache.Matches(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
 				runtimeState.graphicsDescriptorQuerySerial,
@@ -3373,7 +3374,14 @@ public:
 				boundHeapVersion,
 				runtimeState.graphicsRootSignature,
 				draw,
-				boundCacheCompareDescriptorState)) {
+				boundCacheCompareDescriptorState);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement",
+			boundCacheHit ? "bound_cache_compare_hit" : "bound_cache_compare_miss",
+			draw.indexed ? 1u : 0u,
+			1,
+			DX12OuterTimingProbeUtils::ElapsedUs(boundCacheBegin));
+		if (boundCacheHit) {
 			if (!boundDrawCache.hasOverride) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
@@ -3386,6 +3394,7 @@ public:
 			}
 		}
 		auto StoreBoundDrawNegative = [&]() {
+			LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
 			boundDrawCache.Capture(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
@@ -3398,6 +3407,12 @@ public:
 				runtimeState.graphicsRootSignature,
 				draw,
 				false);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement",
+				"store_bound_negative",
+				draw.indexed ? 1u : 0u,
+				1,
+				DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
 		};
 
 		DX12Profiling::RecordIaDrawOverrideCheck();
