@@ -1216,8 +1216,13 @@ static bool TryReuseDeferredPreSkinDescriptorTable(
 		*hasPendingState = false;
 	if (!commandList || !bindingFingerprint)
 		return false;
-	if (InterlockedCompareExchange(
-		&gHasActivePreSkinReplacement, 0, 0) == 0)
+	// Read-only probe: the flag is published with InterlockedExchange under
+	// gPreSkinLock together with the map entry, and a same-thread reader always
+	// observes its own writes in program order. A stale cross-thread zero only
+	// skips a restore for a command list this thread does not own, which is
+	// correct, so a plain volatile load (atomic on x86 for aligned 32-bit)
+	// avoids a LOCK CMPXCHG on every hot-path call.
+	if (gHasActivePreSkinReplacement == 0)
 		return false;
 	AcquireSRWLockShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
@@ -1243,8 +1248,9 @@ bool DX12ModCanDeferPreSkinningUavReplacement(
 {
 	if (!commandList)
 		return false;
-	if (InterlockedCompareExchange(
-		&gHasActivePreSkinReplacement, 0, 0) == 0)
+	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
+	// ordering argument.
+	if (gHasActivePreSkinReplacement == 0)
 		return false;
 	AcquireSRWLockShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState>::const_iterator
@@ -1260,8 +1266,10 @@ bool DX12ModCanDeferPreSkinningUavReplacement(
 
 bool DX12ModHasActivePreSkinningUavReplacement()
 {
-	return InterlockedCompareExchange(
-		&gHasActivePreSkinReplacement, 0, 0) != 0;
+	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
+	// ordering argument. This is called on every graphics binding hook and
+	// draw; a LOCK CMPXCHG here costs measurable cycles per call.
+	return gHasActivePreSkinReplacement != 0;
 }
 
 static bool ApplyPreSkinDescriptorTablePatchLocked(
@@ -2516,8 +2524,9 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList)
 {
-	if (!commandList || InterlockedCompareExchange(
-		&gHasActivePreSkinReplacement, 0, 0) == 0)
+	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
+	// ordering argument. The map lookup below is still lock-protected.
+	if (!commandList || gHasActivePreSkinReplacement == 0)
 		return;
 
 	DX12InternalReplayScope internalReplay;

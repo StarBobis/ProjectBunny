@@ -4701,8 +4701,10 @@ UINT64 DX12ModGetReloadGeneration()
 
 UINT64 DX12ModGetReloadGenerationFast()
 {
-	return static_cast<UINT64>(InterlockedCompareExchange64(
-		reinterpret_cast<volatile LONG64*>(&gReloadGeneration), 0, 0));
+	// gReloadGeneration is volatile; an aligned 64-bit load is atomic on x64.
+	// This runs on every Draw/Dispatch resident fast-reject, so avoid the
+	// LOCK CMPXCHG that a read-modify-write helper would cost.
+	return gReloadGeneration;
 }
 
 void DX12ModRecordGraphicsPipelineState(

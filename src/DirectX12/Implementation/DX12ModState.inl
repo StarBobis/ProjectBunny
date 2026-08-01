@@ -334,7 +334,10 @@ public:
 	UINT64 overrideNumElements = 0;
 };
 static std::vector<DX12VertexLimitRaiseConfig> gVertexLimitRaiseConfigs;
-static UINT64 gReloadGeneration = 1;
+// Written under gModLock on reload; read on the hot path per Draw/Dispatch.
+// volatile keeps every read a fresh load (aligned 64-bit loads are atomic on
+// x64), so readers never need a LOCK CMPXCHG just to observe the value.
+static volatile UINT64 gReloadGeneration = 1;
 static volatile UINT64 gShaderOverrideNegativeCacheGeneration = 1;
 static volatile LONG gHasVertexLimitRaiseConfigs = 0;
 static volatile LONG gHasShaderOverrides = 0;

@@ -2079,6 +2079,8 @@ bool DX12BindingTracker::BuildEvent(
 	event->drawId = isDrawKind ? state.drawSerial : 0;
 	event->dispatchId = isDispatchKind ? state.dispatchSerial : 0;
 	event->descriptorEpoch = descriptorEpoch;
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
 	event->commandList = commandList;
 	event->pipelineState = state.pipelineState;
 	event->graphicsRootSignature = state.graphicsRootSignature;
@@ -2242,6 +2244,7 @@ void DX12BindingTracker::RecordTemplateEvent(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
 	events.push_back(std::move(recorded));
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
 	const size_t templateCount = events.size();
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -2267,6 +2270,7 @@ void DX12BindingTracker::RecordTemplateOutputEvent(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
 	events.push_back(std::move(recorded));
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
 	const size_t templateCount = events.size();
 	ReleaseSRWLockExclusive(&shard.lock);
 

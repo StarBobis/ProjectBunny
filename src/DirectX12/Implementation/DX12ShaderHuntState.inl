@@ -113,6 +113,7 @@ static void AddVisitedLocked(StageSelection &stage, UINT64 hash)
 	if (!hash)
 		return;
 	stage.visited.insert(hash);
+	DX12ResidentMaintenanceTelemetryUtils::RecordHuntVisitedWrite();
 	if (!stage.visited.empty())
 		stage.selected %= stage.visited.size();
 }
@@ -168,6 +169,7 @@ static void AddVisitedLocked(IaSelection &selection, uint32_t hash)
 	if (!hash)
 		return;
 	selection.visited.insert(hash);
+	DX12ResidentMaintenanceTelemetryUtils::RecordHuntVisitedWrite();
 	selection.lastSeenFrame[hash] = gPresentFrames;
 	SyncIaSelectionPositionLocked(selection);
 }

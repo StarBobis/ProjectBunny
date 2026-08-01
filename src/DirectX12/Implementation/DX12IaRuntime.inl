@@ -1397,8 +1397,10 @@ bool DX12ModPresentReplacementPendingForCurrentPresent()
 	if (!DX12ModNeedsPresentReplacement())
 		return false;
 	const LONG present = DX12RuntimeState::GetPresentCount();
-	return InterlockedCompareExchange(
-		&gPresentCommandListExecutedPresent, 0, 0) != present;
+	// Plain volatile probe: the value is only meaningful to the recording
+	// thread and is published with interlocked ops, so a LOCK CMPXCHG here
+	// (once per Draw while a Present mod is active) buys nothing.
+	return gPresentCommandListExecutedPresent != present;
 }
 
 static DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(

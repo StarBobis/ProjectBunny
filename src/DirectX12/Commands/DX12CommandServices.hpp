@@ -6,6 +6,10 @@
 void DX12ModRestorePreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList);
 
+// Forward-declared so the hot binding flow above can count descriptor-record
+// fast skips before DX12ResidentMaintenanceTelemetryUtils is defined.
+static inline void DX12RecordDescriptorRecordFastSkip();
+
 class DX12CommandListComputeBindingFlow
 {
 public:
@@ -53,6 +57,7 @@ public:
 		if (!DX12HotPathState::NeedsAnyResidentDescriptorState(flags) &&
 			DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 		DX12SimulateContext *runtimeState =
@@ -80,6 +85,7 @@ public:
 		// descriptor heaps for compute-side matching.
 		if (skipComputeBinding) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -95,6 +101,7 @@ public:
 		     (runtimeState->lastSetHeapsInput[0] == heaps[0] &&
 		      (count < 2 || runtimeState->lastSetHeapsInput[1] == heaps[1])))) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -122,6 +129,7 @@ public:
 		}
 		if (DX12HotPathState::skipBindings) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -217,6 +225,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return changed;
 		}
 
@@ -292,6 +301,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return changed;
 		}
 
@@ -370,6 +380,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -452,6 +463,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -530,6 +542,7 @@ public:
 			DX12HotPathState::skipBindings;
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
+			DX12RecordDescriptorRecordFastSkip();
 			return;
 		}
 
@@ -779,6 +792,15 @@ public:
 	inline static volatile LONG DrawDecisionDirectProbeCacheNegativeHits = 0;
 	inline static volatile LONG DrawDecisionDirectProbeCacheStores = 0;
 	inline static volatile LONG DrawDecisionDirectProbeCacheEvictions = 0;
+
+	// Zero-work-path verification (docs/DX11_ARCHITECTURE_MIGRATION_TO_DX12.md
+	// Stage A): binding events, descriptor epoch writes and Hunt visited-set
+	// writes must stay 0 in plain Mod mode; descriptor record fast-skips should
+	// cover nearly every binding call when no capture is active.
+	inline static volatile LONG BindingEventsRecorded = 0;
+	inline static volatile LONG DescriptorEpochWrites = 0;
+	inline static volatile LONG HuntVisitedWrites = 0;
+	inline static volatile LONG DescriptorRecordFastSkips = 0;
 
 	static void Inc(volatile LONG *value)
 	{
@@ -1696,6 +1718,39 @@ public:
 			directProbeCacheStores, directProbeCacheEvictions);
 	}
 
+	static void RecordBindingEventRecorded()
+	{
+		Inc(&BindingEventsRecorded);
+	}
+
+	static void RecordDescriptorEpochWrite()
+	{
+		Inc(&DescriptorEpochWrites);
+	}
+
+	static void RecordHuntVisitedWrite()
+	{
+		Inc(&HuntVisitedWrites);
+	}
+
+	static void RecordDescriptorRecordFastSkip()
+	{
+		Inc(&DescriptorRecordFastSkips);
+	}
+
+	static void LogZeroWorkState()
+	{
+		LONG bindingEvents = Take(&BindingEventsRecorded);
+		LONG epochWrites = Take(&DescriptorEpochWrites);
+		LONG visitedWrites = Take(&HuntVisitedWrites);
+		LONG descriptorFastSkips = Take(&DescriptorRecordFastSkips);
+		if (!bindingEvents && !epochWrites && !visitedWrites && !descriptorFastSkips)
+			return;
+		DX12LogManager::Fields("DX12ResidentMaintenance",
+			"\"category\":\"zero_work\",\"bindingEventsRecorded\":%ld,\"descriptorEpochWrites\":%ld,\"huntVisitedWrites\":%ld,\"descriptorRecordFastSkips\":%ld",
+			bindingEvents, epochWrites, visitedWrites, descriptorFastSkips);
+	}
+
 	static void LogAndReset()
 	{
 		LogRuntimeLookup();
@@ -1708,8 +1763,14 @@ public:
 		LogDispatchDecisionState();
 		LogPreSkinPlanState();
 		LogDrawDecisionState();
+		LogZeroWorkState();
 	}
 };
+
+inline void DX12RecordDescriptorRecordFastSkip()
+{
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorRecordFastSkip();
+}
 
 
 

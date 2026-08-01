@@ -271,6 +271,8 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	task.eventKind = kind;
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
 	return EnqueueTask(std::move(task));
 }
 
@@ -295,6 +297,8 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	task.eventKind = kind;
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
 	task.vertexCountPerInstance = vertexCountPerInstance;
 	task.indexCountPerInstance = indexCountPerInstance;
 	task.instanceCount = instanceCount;
@@ -321,6 +325,8 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	task.eventKind = "dispatch";
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
+	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
 	task.threadGroupCountX = threadGroupCountX;
 	task.threadGroupCountY = threadGroupCountY;
 	task.threadGroupCountZ = threadGroupCountZ;
