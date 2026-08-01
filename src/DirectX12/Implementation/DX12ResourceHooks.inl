@@ -6,9 +6,72 @@ struct DX12ResourceMapTracking
 	ID3D12Resource *resource = nullptr;
 	void *data = nullptr;
 	UINT subresource = 0;
+	UINT mapDepth = 1;
 };
 
-static thread_local DX12ResourceMapTracking gActiveMap;
+static thread_local std::vector<DX12ResourceMapTracking> gActiveMaps;
+
+static void TrackResourceMap(
+	ID3D12Resource *resource, UINT subresource, void *data)
+{
+	for (DX12ResourceMapTracking &active : gActiveMaps) {
+		if (active.resource == resource && active.subresource == subresource) {
+			active.data = data;
+			if (active.mapDepth != UINT_MAX)
+				++active.mapDepth;
+			return;
+		}
+	}
+	DX12ResourceMapTracking active;
+	active.resource = resource;
+	active.data = data;
+	active.subresource = subresource;
+	gActiveMaps.push_back(active);
+}
+
+static bool TakeResourceMap(
+	ID3D12Resource *resource, UINT subresource, DX12ResourceMapTracking *mapping)
+{
+	if (!mapping)
+		return false;
+	for (auto it = gActiveMaps.begin(); it != gActiveMaps.end(); ++it) {
+		if (it->resource != resource || it->subresource != subresource)
+			continue;
+		*mapping = *it;
+		if (it->mapDepth > 1)
+			--it->mapDepth;
+		else
+			gActiveMaps.erase(it);
+		return mapping->data != nullptr;
+	}
+	return false;
+}
+
+static void CaptureResourceMapWrites(
+	ID3D12Resource *resource, UINT subresource,
+	const D3D12_RANGE *writtenRange)
+{
+	DX12ResourceMapTracking mapping;
+	if (!TakeResourceMap(resource, subresource, &mapping))
+		return;
+	// A null range means the whole subresource may have changed. An empty
+	// range explicitly means no CPU writes and must not update generations.
+	if (writtenRange && writtenRange->End <= writtenRange->Begin)
+		return;
+	UINT64 offset = 0;
+	UINT64 bytes = 0;
+	if (writtenRange) {
+		offset = writtenRange->Begin;
+		bytes = writtenRange->End - writtenRange->Begin;
+	} else {
+		bytes = resource->GetDesc().Width;
+	}
+	if (!bytes || bytes > SIZE_MAX)
+		return;
+	DX12CacheBufferContentRange(resource, offset,
+		static_cast<const uint8_t*>(mapping.data) + static_cast<size_t>(offset),
+		static_cast<size_t>(bytes));
+}
 
 struct DX12CpuMappableLookupCache
 {
@@ -60,9 +123,7 @@ static HRESULT STDMETHODCALLTYPE HookedResourceMap(
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
 		if (SUCCEEDED(hr) && ppData && *ppData && IsCpuMappableTrackedResource(resource)) {
-			gActiveMap.resource = resource;
-			gActiveMap.data = *ppData;
-			gActiveMap.subresource = Subresource;
+			TrackResourceMap(resource, Subresource, *ppData);
 		}
 	}
 	return hr;
@@ -76,33 +137,7 @@ static void STDMETHODCALLTYPE HookedResourceUnmap(
 {
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
-		// Capture content if this resource was previously mapped AND tracked
-		if (gActiveMap.resource == resource &&
-		    gActiveMap.subresource == Subresource &&
-		    gActiveMap.data) {
-		// A null range means the whole subresource may have changed. An empty
-		// range explicitly means no CPU writes and must not trigger a full copy.
-		const bool hasWrites = !pWrittenRange || pWrittenRange->End > pWrittenRange->Begin;
-		if (hasWrites) {
-			size_t dataSize = 0;
-			if (pWrittenRange) {
-				dataSize = static_cast<size_t>(pWrittenRange->End - pWrittenRange->Begin);
-			} else {
-				D3D12_RESOURCE_DESC desc = resource->GetDesc();
-				dataSize = static_cast<size_t>(desc.Width);
-			}
-			if (dataSize > 0) {
-				const uint8_t *capturePtr =
-					static_cast<const uint8_t*>(gActiveMap.data);
-				if (pWrittenRange && pWrittenRange->Begin > 0)
-					capturePtr += pWrittenRange->Begin;
-				DX12CacheBufferContentRange(
-					resource, pWrittenRange ? pWrittenRange->Begin : 0,
-					capturePtr, dataSize);
-			}
-		}
-			gActiveMap = DX12ResourceMapTracking();
-		}
+		CaptureResourceMapWrites(resource, Subresource, pWrittenRange);
 	}
 
 	// Call original Unmap
@@ -130,9 +165,7 @@ HRESULT DX12ResourceTrackerHookRuntime::WrappedResourceMap(
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
 		if (SUCCEEDED(hr) && data && *data && IsCpuMappableTrackedResource(resource)) {
-			gActiveMap.resource = resource;
-			gActiveMap.data = *data;
-			gActiveMap.subresource = subresource;
+			TrackResourceMap(resource, subresource, *data);
 		}
 	}
 	return hr;
@@ -147,33 +180,7 @@ void DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
 
 	{
 		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
-		// Capture content if this resource was previously mapped AND tracked
-		if (gActiveMap.resource == resource &&
-		    gActiveMap.subresource == subresource &&
-		    gActiveMap.data) {
-		// A null range means the whole subresource may have changed. An empty
-		// range explicitly means no CPU writes and must not trigger a full copy.
-		const bool hasWrites = !writtenRange || writtenRange->End > writtenRange->Begin;
-		if (hasWrites) {
-			size_t dataSize = 0;
-			if (writtenRange) {
-				dataSize = static_cast<size_t>(writtenRange->End - writtenRange->Begin);
-			} else {
-				D3D12_RESOURCE_DESC desc = resource->GetDesc();
-				dataSize = static_cast<size_t>(desc.Width);
-			}
-			if (dataSize > 0) {
-				const uint8_t *capturePtr =
-					static_cast<const uint8_t*>(gActiveMap.data);
-				if (writtenRange && writtenRange->Begin > 0)
-					capturePtr += writtenRange->Begin;
-				DX12CacheBufferContentRange(
-					resource, writtenRange ? writtenRange->Begin : 0,
-					capturePtr, dataSize);
-			}
-		}
-			gActiveMap = DX12ResourceMapTracking();
-		}
+		CaptureResourceMapWrites(resource, subresource, writtenRange);
 	}
 
 	{

@@ -752,6 +752,8 @@ bool DX12CopyBufferContent(
 	ID3D12Resource *srcResource);
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size, const uint8_t **data, size_t *dataSize);
 UINT64 DX12GetBufferContentGenerationForResource(ID3D12Resource *resource);
+void DX12InvalidateBufferContentRange(
+	ID3D12Resource *resource, UINT64 offset, UINT64 size);
 void DX12InvalidateBufferContent(ID3D12Resource *resource);
 bool DX12CacheTextureHash(
 	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source);
