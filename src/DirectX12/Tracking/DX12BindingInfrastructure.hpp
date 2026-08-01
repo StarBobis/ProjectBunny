@@ -1254,6 +1254,14 @@ public:
 
 		// Present publishes feature and capture changes, matching DX11's
 		// frame-action timing. Submission only consumes that published state.
+		//
+		// The notify/register callbacks below run AFTER the original
+		// ExecuteCommandLists call, i.e. the command lists are already
+		// submitted to the GPU. They must be pure CPU bookkeeping - no
+		// D3D12/COM recording, no vtable patching, no locks held across
+		// waits - or the driver/D3D12Core can hang (white-screen startup
+		// hang observed in ZenlessZoneZero with a post-submit
+		// ResourceBarrier replay).
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
 		const bool shouldNotifySubmitted =
 			DX12ModNeedsCommandListSubmissionNotifications();

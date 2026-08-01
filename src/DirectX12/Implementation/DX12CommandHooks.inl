@@ -551,10 +551,14 @@ void DX12CommandListHookCallbacks::RegisterSubmittedCommandList(IUnknown *comman
 	if (!huntEnabled && !captureActive)
 		return;
 
-	DX12CommandListHooks::HookCommandList(commandList);
+	// Post-submit callback: the command list has already been submitted to
+	// the GPU. HookCommandList/RegisterCommandListBase are performed at
+	// creation time (HookedCreateCommandList / TryWrapGraphicsCommandList);
+	// repeating them here is redundant and unsafe - vtable patching a
+	// submitted command list can hang the driver or trip D3D12Core
+	// validation. Keep this path to pure CPU bookkeeping only.
 	ID3D12GraphicsCommandList *baseList = nullptr;
 	if (SUCCEEDED(commandList->QueryInterface(IID_PPV_ARGS(&baseList)))) {
-		DX12CommandListHookCallbacks::RegisterCommandListBase(baseList, nullptr);
 		if (huntEnabled)
 			DX12HuntPublishCommandList(baseList);
 		if (captureActive)

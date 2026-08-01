@@ -1017,14 +1017,15 @@ public:
 		if (!huntEnabled && !captureActive)
 			return;
 
+		// Post-submit callback: ID3D12CommandQueue::ExecuteCommandLists has
+		// already handed these command lists to the GPU. Recording into,
+		// re-barriering, or patching a submitted command list is invalid
+		// D3D12 usage - it can hang the driver or trip D3D12Core's
+		// InvalidResourceBarrierCall fatal path (observed as a white-screen
+		// startup hang in ZenlessZoneZero). This callback must stay pure
+		// CPU bookkeeping: no D3D12/COM calls, no locks held across waits.
 		ID3D12GraphicsCommandList *baseList =
 			reinterpret_cast<ID3D12GraphicsCommandList*>(commandList);
-		DX12SimulateContext *runtimeState =
-			DX12CommandListRuntime::GetDirectStatePtr(baseList);
-		if (!runtimeState)
-			return;
-		(void)runtimeState;
-
 		if (huntEnabled)
 			DX12HuntPublishCommandList(baseList);
 		if (captureActive)

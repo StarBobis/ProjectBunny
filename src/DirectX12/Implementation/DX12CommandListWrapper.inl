@@ -801,7 +801,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				if (DX12HotPathState::skipAll && mOrigSetPipelineState) {
 					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 						DX12OuterTimingProbeUtils::ApiSetPipelineState);
-					mOrigSetPipelineState(mCommandList, pPipelineState);
+					// Wrapper mode hands the game wrapped child objects; the
+					// skip-all fast path must still unwrap them before the
+					// original call, or D3D12Core receives our proxy pointer.
+					mOrigSetPipelineState(
+						mCommandList,
+						DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
 					return;
 				}
 				DX12WrapperRuntimeUtils::SetPipelineState(
@@ -813,7 +818,18 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				if (DX12HotPathState::skipAll && mOrigResourceBarrier) {
 					DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 						DX12OuterTimingProbeUtils::ApiResourceBarrier);
-					mOrigResourceBarrier(mCommandList, NumBarriers, pBarriers);
+					// Wrapper mode wraps every resource handed to the game,
+					// including swap chain back buffers (GetBuffer). Barriers
+					// therefore reference wrapped resources, which D3D12Core
+					// must never see: unwrap before the original call or it
+					// trips ValidateTransitionBarrierDesc / hangs the driver
+					// (observed white-screen startup hang in ZenlessZoneZero).
+					std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
+						mRuntimeState.barrierScratch;
+					const D3D12_RESOURCE_BARRIER *activeBarriers = pBarriers;
+					DX12WrapperRuntimeUtils::UnwrapResourceBarrierArray(
+						pBarriers, NumBarriers, &unwrappedBarriers, &activeBarriers);
+					mOrigResourceBarrier(mCommandList, NumBarriers, activeBarriers);
 					return;
 				}
 				DX12WrapperRuntimeUtils::ResourceBarrier(mCommandList, &mRuntimeState, NumBarriers, pBarriers, mOrigResourceBarrier);
