@@ -1335,14 +1335,6 @@ public:
 			hasShaderOverrides || needsPreSkinProbe;
 		// No-candidate compute PSOs are resident state, just like DX11's current
 		// shader. Bypass tracking-state lookup and all decision/cache machinery.
-		if (DX12HotPathState::CanResidentDispatchFastReject(
-				flagsWord, runtimeState)) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12ModRestorePreSkinningUavReplacement(commandList);
-			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
-			return;
-		}
 		if (DX12Profiling::ShouldCollectCounters() || needsDispatchDecision)
 			DX12RuntimeState::IncrementFrameDispatches();
 
@@ -4342,14 +4334,6 @@ public:
 		// to coexist with the fast reject.
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
 			commandList, runtimeState, callbacks);
-		if (DX12HotPathState::CanResidentDrawFastReject(
-				flagsWord, runtimeState)) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			DX12_HOTPATH_TIME_END(DrawHookTotal);
-			return;
-		}
-
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 

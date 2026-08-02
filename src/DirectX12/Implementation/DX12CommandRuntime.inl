@@ -637,7 +637,7 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionBuild();
 	if (!DX12ModCompileDrawDecision(pipelineState, &decision)) {
 		DX12IaHashTargetPlan targetPlan;
-		targetPlan.RequireAll();
+		targetPlan.ResetKnown();
 		decision.SetFromTargetPlan(
 			pipelineState, reloadGeneration,
 			hasShaderOverrides, hasShaderOverrides, false,

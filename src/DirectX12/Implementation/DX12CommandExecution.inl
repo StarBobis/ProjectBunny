@@ -3201,6 +3201,19 @@ public:
 
 static std::unordered_map<ID3D12PipelineState*, DX12CompiledPsoOverridePlan> gPsoOverridePlans;
 static SRWLOCK gPsoOverridePlansLock = SRWLOCK_INIT;
+static UINT64 gPsoOverridePlansFormatVersion = 0;
+
+static void ClearPsoOverridesIfFormatChanged()
+{
+	if (gPsoOverridePlansFormatVersion !=
+		DX12PsoDecisionCacheUtils::CacheFormatVersionCurrent) {
+		AcquireSRWLockExclusive(&gPsoOverridePlansLock);
+		gPsoOverridePlans.clear();
+		gPsoOverridePlansFormatVersion =
+			DX12PsoDecisionCacheUtils::CacheFormatVersionCurrent;
+		ReleaseSRWLockExclusive(&gPsoOverridePlansLock);
+	}
+}
 
 class DX12CompiledPsoPlanTlsCache
 {
@@ -3267,6 +3280,7 @@ static bool TryLoadCompiledPsoPlan(
 		return true;
 	}
 
+	ClearPsoOverridesIfFormatChanged();
 	AcquireSRWLockShared(&gPsoOverridePlansLock);
 	auto it = gPsoOverridePlans.find(pipelineState);
 	if (it == gPsoOverridePlans.end() || it->second.generation != reloadGeneration) {
@@ -4151,6 +4165,7 @@ bool DX12ModCompileDrawDecision(
 	DX12DrawMatchUsage drawMatchUsage;
 	DX12DrawMatchUsage directDrawMatchUsage;
 
+	ClearPsoOverridesIfFormatChanged();
 	compiledMetadataHit = TryLoadCompiledPsoDrawDecisionMetadata(
 		pipelineState,
 		reloadGeneration,

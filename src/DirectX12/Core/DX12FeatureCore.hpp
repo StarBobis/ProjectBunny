@@ -828,6 +828,8 @@ public:
 	// resident PSO decisions in thread-local generation arenas instead: reads are
 	// lock-free and a generation change discards the complete arena in O(1).
 	inline static thread_local UINT64 ReloadGeneration = 0;
+	static constexpr UINT64 CacheFormatVersionCurrent = 3;
+	inline static thread_local UINT64 CacheFormatVersion = 0;
 	static constexpr size_t InitialEntriesPerKind = 4096;
 	inline static thread_local size_t DispatchGrowthBudget = InitialEntriesPerKind;
 	inline static thread_local size_t DrawGrowthBudget = InitialEntriesPerKind;
@@ -842,8 +844,12 @@ public:
 
 	static void ClearIfReloadChanged(UINT64 reloadGeneration)
 	{
-		if (DX12PsoDecisionCacheUtils::ReloadGeneration != reloadGeneration) {
+		if (DX12PsoDecisionCacheUtils::ReloadGeneration != reloadGeneration ||
+			DX12PsoDecisionCacheUtils::CacheFormatVersion !=
+				CacheFormatVersionCurrent) {
 			DX12PsoDecisionCacheUtils::ReloadGeneration = reloadGeneration;
+			DX12PsoDecisionCacheUtils::CacheFormatVersion =
+				CacheFormatVersionCurrent;
 			DX12PsoDecisionCacheUtils::DispatchEntries.clear();
 			DX12PsoDecisionCacheUtils::DrawEntries.clear();
 		}

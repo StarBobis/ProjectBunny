@@ -453,7 +453,9 @@ ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)
 {
 	if (!resource)
 		return nullptr;
-	WrapperBase *base = WrapperBase::FindByWrapperPointer(
+	// Use FindByIdentity because barrier hooks unwrap resources first -
+	// the pointer we receive is the raw resource, not the wrapper.
+	WrapperBase *base = WrapperBase::FindByIdentity(
 		static_cast<IUnknown*>(resource));
 	if (!base)
 		return nullptr;

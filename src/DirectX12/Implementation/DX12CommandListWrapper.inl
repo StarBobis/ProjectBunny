@@ -567,11 +567,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			{
 			// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
 				const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-				const bool residentDrawReject =
-					DX12HotPathState::CanResidentDrawFastReject(
-						drawFlags, &mRuntimeState);
-				if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
-					residentDrawReject) && mOrigDrawInstanced) {
+				if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) &&
+					mOrigDrawInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawInstanced);
 				mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
@@ -593,11 +590,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			INT BaseVertexLocation, UINT StartInstanceLocation) override
 		{
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-			const bool residentDrawReject =
-				DX12HotPathState::CanResidentDrawFastReject(
-					drawFlags, &mRuntimeState);
-			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK) ||
-				residentDrawReject) && mOrigDrawIndexedInstanced) {
+			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) &&
+				mOrigDrawIndexedInstanced) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 				mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
@@ -618,12 +612,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 		{
 			const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
-			const bool residentDispatchReject =
-				(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) &&
-				DX12HotPathState::CanResidentDispatchFastReject(
-					dispatchFlags, &mRuntimeState);
-			if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
-				residentDispatchReject) && mOrigDispatch) {
+			if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK)) && mOrigDispatch) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiDispatch);
 				mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);

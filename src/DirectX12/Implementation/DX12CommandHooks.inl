@@ -975,14 +975,6 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawInstanced(
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
 			commandList, runtimeState, *iaCallbacks);
 	}
-	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
-		PFN_DRAW_INSTANCED original =
-			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawInstanced, PFN_DRAW_INSTANCED, DX12CommandListHookState::OrigDrawInstanced, "DrawInstanced");
-		if (original)
-			original(commandList, vertexCountPerInstance, instanceCount,
-				startVertexLocation, startInstanceLocation);
-		return;
-	}
 	if (!iaCallbacks)
 		iaCallbacks = &DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
 	DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
@@ -1018,14 +1010,6 @@ void STDMETHODCALLTYPE DX12CommandListHookCallbacks::HookedDrawIndexedInstanced(
 		iaCallbacks = &DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
 			commandList, runtimeState, *iaCallbacks);
-	}
-	if (DX12HotPathState::CanResidentDrawFastReject(drawFlags, runtimeState)) {
-		PFN_DRAW_INDEXED_INSTANCED original =
-			DX12_CL_ORIG(commandList, DX12CommandListHookSlotTypes::ID3D12GraphicsCommandList::DrawIndexedInstanced, PFN_DRAW_INDEXED_INSTANCED, DX12CommandListHookState::OrigDrawIndexedInstanced, "DrawIndexedInstanced");
-		if (original)
-			original(commandList, indexCountPerInstance, instanceCount,
-				startIndexLocation, baseVertexLocation, startInstanceLocation);
-		return;
 	}
 	if (!iaCallbacks)
 		iaCallbacks = &DX12CommandListHookCallbacks::GetCachedIaReplacementCallbacks(commandList);

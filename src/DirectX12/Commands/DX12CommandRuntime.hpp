@@ -443,7 +443,9 @@ public:
 		shaderOverrideNegativeCacheAllowed =
 			negativeCacheSafe || targetPlan.hasTextureOverrideChecks;
 
-		if (!hasShaderOverrides && !hasShaderOverrideSkip) {
+		if (!hasShaderOverrideSkip &&
+			!targetPlanHasIaTargets &&
+			!targetPlanHasDescriptorTargets) {
 			kind = DX12CompiledDrawDecisionKind::NoopNeverMatches;
 		} else if (hasShaderOverrideSkip) {
 			kind = DX12CompiledDrawDecisionKind::SkipOriginal;
@@ -2388,64 +2390,6 @@ public:
 	{
 		return HasAnyFlag(flags, FLAG_HUNT_ENABLED) &&
 			!HasAnyFlag(flags, FLAG_SHADER_OVERRIDES);
-	}
-
-	static bool AllowsResidentDrawFastReject(UINT64 flags)
-	{
-		// Once the command-list-local draw decision proves a PSO can never
-		// trigger draw-time work, any remaining global mod flags should not force
-		// the call back through the generic interpreter unless diagnostics or
-		// present-time replacement explicitly require it.
-		return !HasAnyFlag(
-			flags,
-			FLAG_HUNT_ENABLED |
-			FLAG_FRAME_ANALYSIS_ACTIVE |
-			FLAG_SHADER_DUMP_ACTIVE);
-	}
-
-	static bool CanResidentDrawFastReject(
-		UINT64 flags,
-		const DX12SimulateContext *state)
-	{
-		return state &&
-			AllowsResidentDrawFastReject(flags) &&
-			state->drawDecision.resolved &&
-			state->drawDecision.pipelineState == state->pipelineState &&
-			state->drawDecision.reloadGeneration ==
-				DX12ModGetReloadGenerationFast() &&
-			state->drawDecision.MatchesGlobals(
-				(flags & FLAG_SHADER_OVERRIDES) != 0) &&
-			state->drawDecision.CanFastReject();
-	}
-
-	static bool AllowsResidentDispatchFastReject(UINT64 flags)
-	{
-		// Compute fast reject must stay disabled while pre-skin probing is live,
-		// but graphics-only resident mod bits should not force every dispatch back
-		// through the generic interpreter.
-		return HasAnyFlag(flags, FLAG_SHADER_OVERRIDES) &&
-			!HasAnyFlag(
-				flags,
-				FLAG_HUNT_ENABLED |
-				FLAG_FRAME_ANALYSIS_ACTIVE |
-				FLAG_SHADER_DUMP_ACTIVE |
-				FLAG_PRE_SKIN_PROBE);
-	}
-
-	static bool CanResidentDispatchFastReject(
-		UINT64 flags,
-		const DX12SimulateContext *state)
-	{
-		return state &&
-			AllowsResidentDispatchFastReject(flags) &&
-			state->dispatchDecision.resolved &&
-			state->dispatchDecision.pipelineState == state->pipelineState &&
-			state->dispatchDecision.reloadGeneration ==
-				DX12ModGetReloadGenerationFast() &&
-			state->dispatchDecision.MatchesGlobals(
-				(flags & FLAG_SHADER_OVERRIDES) != 0,
-				(flags & FLAG_PRE_SKIN_PROBE) != 0) &&
-			!state->dispatchDecision.NeedsShaderOverrideWork();
 	}
 
 	static bool NeedsPreSkinBindingTracking(UINT64 flags)

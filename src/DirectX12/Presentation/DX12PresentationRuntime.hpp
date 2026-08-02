@@ -1439,12 +1439,8 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		const bool residentDrawReject =
-			DX12HotPathState::CanResidentDrawFastReject(
-				drawFlags, runtimeState);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT)) ||
-			residentDrawReject) {
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, vertexCountPerInstance, instanceCount,
@@ -1515,12 +1511,8 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		const bool residentDrawReject =
-			DX12HotPathState::CanResidentDrawFastReject(
-				drawFlags, runtimeState);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT)) ||
-			residentDrawReject) {
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, indexCountPerInstance, instanceCount,
@@ -1573,9 +1565,7 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
 		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
-		if (!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK) ||
-			DX12HotPathState::CanResidentDispatchFastReject(
-				dispatchFlags, runtimeState)) {
+		if (!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
