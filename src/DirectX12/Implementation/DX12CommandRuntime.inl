@@ -1262,12 +1262,38 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 	    ia->vertexBufferHashResolveGeneration[slot] == resolveGeneration) {
 		return ia->vertexBufferHashes[slot];
 	}
+	// Reuse cache from the backing ResourceWrapper: games that rotate a small
+	// set of vertex buffers across slots/command lists rebuild the same hash
+	// repeatedly because each command list invalidates its own slot entry.
+	uint32_t wrapperHash = 0;
+	if (DX12TryGetWrapperIaHash(
+			view.BufferLocation,
+			view.SizeInBytes,
+			view.StrideInBytes,
+			slot,
+			contentGeneration,
+			resolveGeneration,
+			&wrapperHash)) {
+		ia->vertexBufferHashes[slot] = wrapperHash;
+		ia->vertexBufferHashValid[slot] = true;
+		ia->vertexBufferHashContentGeneration[slot] = contentGeneration;
+		ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
+		return wrapperHash;
+	}
 	ia->vertexBufferHashes[slot] = DX12HashIaBufferContentView(
 		view.BufferLocation,
 		view.SizeInBytes,
 		view.StrideInBytes,
 		0,
 		slot);
+	DX12StoreWrapperIaHash(
+		view.BufferLocation,
+		view.SizeInBytes,
+		view.StrideInBytes,
+		slot,
+		contentGeneration,
+		resolveGeneration,
+		ia->vertexBufferHashes[slot]);
 	ia->vertexBufferHashValid[slot] = true;
 	ia->vertexBufferHashContentGeneration[slot] = contentGeneration;
 	ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;

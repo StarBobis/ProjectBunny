@@ -1849,6 +1849,14 @@ ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource);
 // within a wrapper-backed heap, or nullptr.  Skips gDescriptorByCpuHandle.
 DescriptorRecord *DX12FindDescriptorShadowSlot(
 	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle);
+// IA-hash reuse cache stored on ResourceWrapper.  Returns true and fills
+// *hash on a full match (view params + generations), false otherwise.
+bool DX12TryGetWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash);
+void DX12StoreWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash);
 extern std::atomic<UINT64> gBufferResolveGeneration;
 extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;

@@ -1642,6 +1642,23 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			ResourceRecord mRecord = {};
 			bool mVaRegistered = false;
 
+			// Small IA-hash reuse cache.  IA region hashes are expensive to
+			// rebuild (content hash + resolve), and per-command-list slot caches
+			// are invalidated whenever a different view is bound to the slot.
+			// Games that rotate a small set of vertex buffers across slots and
+			// command lists hit this cache instead of recomputing.
+			struct IaHashCacheEntry {
+				UINT64 gpuVa = 0;      // view.BufferLocation
+				UINT64 size = 0;       // view.SizeInBytes
+				UINT stride = 0;       // view.StrideInBytes
+				UINT slot = UINT_MAX;  // bound slot (part of hash input)
+				UINT64 contentGeneration = 0;
+				UINT64 resolveGeneration = 0;
+				uint32_t hash = 0;
+				bool valid = false;
+			};
+			std::array<IaHashCacheEntry, 8> mIaHashCache = {};
+
 			ResourceRecord *GetResourceRecord() override { return &mRecord; }
 		};
 

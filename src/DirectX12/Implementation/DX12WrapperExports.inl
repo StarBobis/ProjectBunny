@@ -488,6 +488,91 @@ DescriptorRecord *FindDescriptorShadowSlot(
 	return rec;
 }
 
+static ResourceWrapper *FindWrapperCoveringGpuVaLocked(UINT64 gpuVa)
+{
+	if (!gpuVa)
+		return nullptr;
+	GpuVaWrapperEntry key{gpuVa, nullptr, nullptr};
+	auto it = std::lower_bound(
+		gGpuVaWrappers.begin(), gGpuVaWrappers.end(), key,
+		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) {
+			return a.gpuVa < b.gpuVa;
+		});
+	if (it != gGpuVaWrappers.begin() &&
+		(it == gGpuVaWrappers.end() || it->gpuVa > gpuVa))
+		--it;
+	for (; it != gGpuVaWrappers.end() && it->gpuVa <= gpuVa; ++it) {
+		const ResourceRecord *rec = it->record;
+		if (!rec || !rec->resource)
+			continue;
+		if (rec->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+			continue;
+		const UINT64 end = rec->gpuVirtualAddressRealEnd;
+		if (end > rec->gpuVirtualAddress && gpuVa < end)
+			return static_cast<ResourceWrapper*>(it->wrapper);
+	}
+	return nullptr;
+}
+
+bool TryGetWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash)
+{
+	if (!hash)
+		return false;
+	AcquireSRWLockShared(&gGpuVaWrappersLock);
+	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaLocked(gpuVa);
+	if (!wrapper) {
+		ReleaseSRWLockShared(&gGpuVaWrappersLock);
+		return false;
+	}
+	for (const ResourceWrapper::IaHashCacheEntry &entry : wrapper->mIaHashCache) {
+		if (!entry.valid)
+			continue;
+		if (entry.gpuVa == gpuVa && entry.size == size &&
+			entry.stride == stride && entry.slot == slot &&
+			entry.contentGeneration == contentGeneration &&
+			entry.resolveGeneration == resolveGeneration) {
+			*hash = entry.hash;
+			ReleaseSRWLockShared(&gGpuVaWrappersLock);
+			return true;
+		}
+	}
+	ReleaseSRWLockShared(&gGpuVaWrappersLock);
+	return false;
+}
+
+void StoreWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash)
+{
+	AcquireSRWLockShared(&gGpuVaWrappersLock);
+	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaLocked(gpuVa);
+	if (!wrapper) {
+		ReleaseSRWLockShared(&gGpuVaWrappersLock);
+		return;
+	}
+	ResourceWrapper::IaHashCacheEntry *freeEntry = nullptr;
+	for (ResourceWrapper::IaHashCacheEntry &entry : wrapper->mIaHashCache) {
+		if (!entry.valid) {
+			freeEntry = &entry;
+			break;
+		}
+	}
+	if (!freeEntry)
+		freeEntry = &wrapper->mIaHashCache[0];
+	*freeEntry = ResourceWrapper::IaHashCacheEntry();
+	freeEntry->gpuVa = gpuVa;
+	freeEntry->size = size;
+	freeEntry->stride = stride;
+	freeEntry->slot = slot;
+	freeEntry->contentGeneration = contentGeneration;
+	freeEntry->resolveGeneration = resolveGeneration;
+	freeEntry->hash = hash;
+	freeEntry->valid = true;
+	ReleaseSRWLockShared(&gGpuVaWrappersLock);
+}
+
 }
 
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource)
@@ -499,4 +584,22 @@ DescriptorRecord *DX12FindDescriptorShadowSlot(
 	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle)
 {
 	return DX12Wrapper::FindDescriptorShadowSlot(heap, cpuHandle);
+}
+
+bool DX12TryGetWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash)
+{
+	return DX12Wrapper::TryGetWrapperIaHash(
+		gpuVa, size, stride, slot,
+		contentGeneration, resolveGeneration, hash);
+}
+
+void DX12StoreWrapperIaHash(
+	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
+	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash)
+{
+	DX12Wrapper::StoreWrapperIaHash(
+		gpuVa, size, stride, slot,
+		contentGeneration, resolveGeneration, hash);
 }
