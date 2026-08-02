@@ -1013,14 +1013,31 @@ public:
 		const char *stage = nullptr;
 		UINT kind = 0;
 		LONG index = -1;
+		// Combined content hash; 0 marks an empty slot (index < 0 also checked).
+		UINT64 hash = 0;
 	};
 
 	class CpuStageLookupCache
 	{
 	public:
-		CpuStageLookupEntry entries[160] = {};
+		// Power of two so lookups use a mask instead of a modulo.
+		CpuStageLookupEntry entries[128] = {};
 		LONG count = 0;
 	};
+
+	static UINT64 HashCpuStageLabel(const char *label)
+	{
+		// FNV-1a 64-bit; labels are short compile-time constants.
+		if (!label)
+			label = "";
+		UINT64 hash = 0xcbf29ce484222325ull;
+		for (const unsigned char *p =
+				reinterpret_cast<const unsigned char*>(label); *p; ++p) {
+			hash ^= *p;
+			hash *= 0x100000001b3ull;
+		}
+		return hash;
+	}
 
 	inline static volatile LONG64 LastPresentEnterQpc = 0;
 	inline static volatile LONG64 LastPresentLeaveQpc = 0;
@@ -1985,21 +2002,52 @@ public:
 
 	static LONG FindCpuStageBucketCached(const char *category, const char *stage, UINT kind)
 	{
-		for (LONG index = 0; index < CpuStageCache.count; ++index) {
-			const CpuStageLookupEntry &entry = CpuStageCache.entries[index];
-			if (entry.category == category && entry.stage == stage && entry.kind == kind)
-				return entry.index;
+		// Thread-local open-addressed hash table keyed on label content.
+		// The previous linear scan paid up to ~34 strcmp pairs per call;
+		// on the draw hot path LogCpuStage runs 2-3 times per draw, which
+		// made the measurement itself dominate the numbers it was reporting.
+		// Pointer equality short-circuits the common case (the same literal
+		// is passed from the same call site every time); the content hash +
+		// strcmp fallback only runs on collision or distinct-literal aliases.
+		const UINT64 hash = HashCpuStageLabel(category) ^
+			(HashCpuStageLabel(stage) * 0x9e3779b97f4a7c15ull) ^
+			(static_cast<UINT64>(kind) * 0xbf58476d1ce4e5b9ull);
+		const UINT slotMask = static_cast<UINT>(
+			ARRAYSIZE(CpuStageCache.entries)) - 1;
+		UINT slot = static_cast<UINT>(hash) & slotMask;
+		for (UINT probe = 0; probe < ARRAYSIZE(CpuStageCache.entries); ++probe) {
+			const CpuStageLookupEntry &entry = CpuStageCache.entries[slot];
+			if (entry.hash == 0 && entry.index < 0)
+				break; // empty slot: not cached
+			if (entry.hash == hash && entry.kind == kind) {
+				if (entry.category == category && entry.stage == stage)
+					return entry.index;
+				if (LabelEquals(entry.category, category) &&
+						LabelEquals(entry.stage, stage))
+					return entry.index;
+			}
+			slot = (slot + 1) & slotMask;
 		}
 
 		AcquireSRWLockExclusive(&CpuStageLock);
 		const LONG bucketIndex = FindCpuStageBucketLocked(category, stage, kind);
 		ReleaseSRWLockExclusive(&CpuStageLock);
-		if (bucketIndex >= 0 && CpuStageCache.count < ARRAYSIZE(CpuStageCache.entries)) {
-			CpuStageLookupEntry &entry = CpuStageCache.entries[CpuStageCache.count++];
-			entry.category = category;
-			entry.stage = stage;
-			entry.kind = kind;
-			entry.index = bucketIndex;
+		if (bucketIndex >= 0) {
+			UINT insertSlot = static_cast<UINT>(hash) & slotMask;
+			for (UINT probe = 0; probe < ARRAYSIZE(CpuStageCache.entries); ++probe) {
+				CpuStageLookupEntry &entry = CpuStageCache.entries[insertSlot];
+				if (entry.hash == 0 && entry.index < 0) {
+					entry.hash = hash;
+					entry.category = category;
+					entry.stage = stage;
+					entry.kind = kind;
+					entry.index = bucketIndex;
+					break;
+				}
+				insertSlot = (insertSlot + 1) & slotMask;
+			}
+			// A full table simply stops caching; lookups still resolve
+			// correctly through the locked path above.
 		}
 		return bucketIndex;
 	}
