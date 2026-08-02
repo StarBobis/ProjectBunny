@@ -167,13 +167,28 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 	if (!state)
 		return;
 
+	// Demote the current hot entry into the history ring before overwriting
+	// it. Prefer replacing an existing slot for the same list so each list
+	// appears at most once; otherwise take the ring's next slot.
 	if (Tls.commandList && Tls.commandList != commandList) {
-		Tls.previousCommandList = Tls.commandList;
-		Tls.previousShard = Tls.shard;
-		Tls.previousStateIsDirect = Tls.stateIsDirect;
-		Tls.previousTrackingGeneration = Tls.trackingGeneration;
-		Tls.previousTracking = Tls.tracking;
-		Tls.previousStatePtr = Tls.statePtr;
+		DX12CommandListRuntimeTlsCache::Slot *target = nullptr;
+		for (size_t i = 0; i < DX12CommandListRuntimeTlsCache::kHistorySlotCount; ++i) {
+			if (Tls.slots[i].commandList == Tls.commandList) {
+				target = &Tls.slots[i];
+				break;
+			}
+		}
+		if (!target) {
+			target = &Tls.slots[Tls.nextSlot];
+			Tls.nextSlot = (Tls.nextSlot + 1) %
+				DX12CommandListRuntimeTlsCache::kHistorySlotCount;
+		}
+		target->commandList = Tls.commandList;
+		target->shard = Tls.shard;
+		target->stateIsDirect = Tls.stateIsDirect;
+		target->trackingGeneration = Tls.trackingGeneration;
+		target->tracking = Tls.tracking;
+		target->statePtr = Tls.statePtr;
 	}
 
 	Tls.commandList = commandList;
@@ -188,21 +203,33 @@ void DX12CommandListRuntime::TlsRefreshFromState(
 	Tls.tracking = mapCache;
 }
 
-bool DX12CommandListRuntime::TlsPromotePrevious(
+DX12SimulateContext *DX12CommandListRuntime::TlsLookup(
 	ID3D12GraphicsCommandList *commandList)
 {
-	if (Tls.previousCommandList != commandList ||
-		Tls.previousTrackingGeneration != TrackingGenerationValue) {
-		return false;
+	if (!commandList)
+		return nullptr;
+
+	// Hot slot first: single-list recording threads hit here every call.
+	if (Tls.commandList == commandList &&
+		Tls.trackingGeneration == TrackingGenerationValue) {
+		return Tls.statePtr;
 	}
 
-	std::swap(Tls.commandList, Tls.previousCommandList);
-	std::swap(Tls.shard, Tls.previousShard);
-	std::swap(Tls.stateIsDirect, Tls.previousStateIsDirect);
-	std::swap(Tls.trackingGeneration, Tls.previousTrackingGeneration);
-	std::swap(Tls.tracking, Tls.previousTracking);
-	std::swap(Tls.statePtr, Tls.previousStatePtr);
-	return true;
+	// History scan with move-to-front promotion. Games interleave several
+	// command lists per recording thread; a linear scan of a handful of
+	// slots is far cheaper than the shard lock + unordered_map fallback.
+	for (size_t i = 0; i < DX12CommandListRuntimeTlsCache::kHistorySlotCount; ++i) {
+		DX12CommandListRuntimeTlsCache::Slot &slot = Tls.slots[i];
+		if (slot.commandList == commandList &&
+			slot.trackingGeneration == TrackingGenerationValue) {
+			// Promote the hit into the hot position so the next lookup for
+			// this list takes the two-load path.
+			Tls.SwapHotWith(slot);
+			return Tls.statePtr;
+		}
+	}
+
+	return nullptr;
 }
 
 void DX12CommandListRuntime::TlsRefresh(
@@ -232,12 +259,8 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 	out = DX12CommandListTrackingCache();
 	if (!commandList)
 		return;
-	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
-		out = Tls.tracking;
-		return;
-	}
-	if (DX12CommandListRuntime::TlsPromotePrevious(commandList)) {
+	DX12SimulateContext *state = DX12CommandListRuntime::TlsLookup(commandList);
+	if (state) {
 		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
 		out = Tls.tracking;
 		return;
@@ -280,13 +303,10 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 {
 	if (!commandList)
 		return nullptr;
-	if (Tls.commandList == commandList && Tls.trackingGeneration == TrackingGenerationValue) {
+	DX12SimulateContext *state = DX12CommandListRuntime::TlsLookup(commandList);
+	if (state) {
 		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
-		return Tls.statePtr;
-	}
-	if (DX12CommandListRuntime::TlsPromotePrevious(commandList)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
-		return Tls.statePtr;
+		return state;
 	}
 
 	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
@@ -308,19 +328,17 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 
 void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *commandList)
 {
-	if (Tls.commandList == commandList) {
-		Tls.commandList = nullptr;
-		Tls.shard = nullptr;
-		Tls.stateIsDirect = false;
-		Tls.statePtr = nullptr;
-		Tls.trackingGeneration = 0;
-	}
-	if (Tls.previousCommandList == commandList) {
-		Tls.previousCommandList = nullptr;
-		Tls.previousShard = nullptr;
-		Tls.previousStateIsDirect = false;
-		Tls.previousStatePtr = nullptr;
-		Tls.previousTrackingGeneration = 0;
+	if (Tls.commandList == commandList)
+		Tls.ClearHot();
+	for (size_t i = 0; i < DX12CommandListRuntimeTlsCache::kHistorySlotCount; ++i) {
+		DX12CommandListRuntimeTlsCache::Slot &slot = Tls.slots[i];
+		if (slot.commandList == commandList) {
+			slot.commandList = nullptr;
+			slot.shard = nullptr;
+			slot.stateIsDirect = false;
+			slot.statePtr = nullptr;
+			slot.trackingGeneration = 0;
+		}
 	}
 }
 

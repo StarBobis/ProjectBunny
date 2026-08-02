@@ -1672,18 +1672,77 @@ public:
 class DX12CommandListRuntimeTlsCache
 {
 public:
+	// Per-thread command-list state cache. Games commonly interleave 3+
+	// command lists on one recording thread (scene / shadow / UI / compute);
+	// a single "previous" slot forced a shard lock + unordered_map lookup on
+	// every alternation past two lists. A small move-to-front history keeps
+	// the common interleave sets on the lock-free path: the hot slot is
+	// checked first (two loads), then the history slots are scanned linearly
+	// (cheap compared to the locked fallback).
+	static constexpr size_t kHistorySlotCount = 7;
+
+	class Slot
+	{
+	public:
+		ID3D12GraphicsCommandList *commandList = nullptr;
+		DX12CommandListRuntimeShard *shard = nullptr;
+		bool stateIsDirect = false;
+		UINT64 trackingGeneration = 0;
+		DX12CommandListTrackingCache tracking;
+		DX12SimulateContext *statePtr = nullptr;
+	};
+
+	// Hot slot, kept as direct members so the common single-list fast path
+	// stays a couple of loads and compares.
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	DX12CommandListRuntimeShard *shard = nullptr;
 	bool stateIsDirect = false;
 	UINT64 trackingGeneration = 0;
 	DX12CommandListTrackingCache tracking;
 	DX12SimulateContext *statePtr = nullptr;
-	ID3D12GraphicsCommandList *previousCommandList = nullptr;
-	DX12CommandListRuntimeShard *previousShard = nullptr;
-	bool previousStateIsDirect = false;
-	UINT64 previousTrackingGeneration = 0;
-	DX12CommandListTrackingCache previousTracking;
-	DX12SimulateContext *previousStatePtr = nullptr;
+
+	// History slots for additional interleaved command lists. A hit swaps
+	// the matching slot into the hot position (move-to-front); a demoted hot
+	// entry overwrites slots[nextSlot] ring-style, preferring an existing
+	// entry for the same list so each list appears at most once.
+	Slot slots[kHistorySlotCount];
+	UINT32 nextSlot = 0;
+
+	void SwapHotWith(Slot &slot)
+	{
+		ID3D12GraphicsCommandList *tmpCommandList = commandList;
+		commandList = slot.commandList;
+		slot.commandList = tmpCommandList;
+
+		DX12CommandListRuntimeShard *tmpShard = shard;
+		shard = slot.shard;
+		slot.shard = tmpShard;
+
+		bool tmpStateIsDirect = stateIsDirect;
+		stateIsDirect = slot.stateIsDirect;
+		slot.stateIsDirect = tmpStateIsDirect;
+
+		UINT64 tmpTrackingGeneration = trackingGeneration;
+		trackingGeneration = slot.trackingGeneration;
+		slot.trackingGeneration = tmpTrackingGeneration;
+
+		DX12CommandListTrackingCache tmpTracking = tracking;
+		tracking = slot.tracking;
+		slot.tracking = tmpTracking;
+
+		DX12SimulateContext *tmpStatePtr = statePtr;
+		statePtr = slot.statePtr;
+		slot.statePtr = tmpStatePtr;
+	}
+
+	void ClearHot()
+	{
+		commandList = nullptr;
+		shard = nullptr;
+		stateIsDirect = false;
+		trackingGeneration = 0;
+		statePtr = nullptr;
+	}
 };
 
 
@@ -1714,7 +1773,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListRuntimeShard *shard,
 		bool stateIsDirect);
-	static bool TlsPromotePrevious(ID3D12GraphicsCommandList *commandList);
+	static DX12SimulateContext *TlsLookup(ID3D12GraphicsCommandList *commandList);
 	static void TlsRefresh(DX12CommandListRuntimeShard &shard, ID3D12GraphicsCommandList *commandList);
 	static void GetTrackingCacheFast(ID3D12GraphicsCommandList *commandList, DX12CommandListTrackingCache &out);
 	static DX12CommandListTrackingState GetTrackingState(ID3D12GraphicsCommandList *commandList);
