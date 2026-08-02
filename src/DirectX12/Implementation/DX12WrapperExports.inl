@@ -462,9 +462,39 @@ ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)
 	return rec;
 }
 
+DescriptorRecord *FindDescriptorShadowSlot(
+	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle)
+{
+	if (!heap || !cpuHandle)
+		return nullptr;
+	WrapperBase *base = WrapperBase::FindByWrapperPointer(
+		static_cast<IUnknown*>(heap));
+	if (!base)
+		return nullptr;
+	DescriptorHeapWrapper *dhw = dynamic_cast<DescriptorHeapWrapper*>(base);
+	if (!dhw) {
+		base->ReleaseLookupReference();
+		return nullptr;
+	}
+	const UINT slot = dhw->GetSlotIndex(cpuHandle);
+	if (slot == UINT_MAX) {
+		base->ReleaseLookupReference();
+		return nullptr;
+	}
+	DescriptorRecord *rec = &dhw->mShadowSlots[slot];
+	base->ReleaseLookupReference();
+	return rec;
+}
+
 }
 
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource)
 {
 	return DX12Wrapper::FindWrapperResourceRecord(resource);
+}
+
+DescriptorRecord *DX12FindDescriptorShadowSlot(
+	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle)
+{
+	return DX12Wrapper::FindDescriptorShadowSlot(heap, cpuHandle);
 }

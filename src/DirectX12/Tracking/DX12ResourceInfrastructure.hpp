@@ -1845,6 +1845,10 @@ void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper);
 // Returns the cached ResourceRecord for a resource that has an active wrapper,
 // or nullptr.  Skips the gResourceByPtr hash map and gResources array lookup.
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource);
+// Returns a pointer to the shadow descriptor slot for the given CPU handle
+// within a wrapper-backed heap, or nullptr.  Skips gDescriptorByCpuHandle.
+DescriptorRecord *DX12FindDescriptorShadowSlot(
+	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle);
 extern std::atomic<UINT64> gBufferResolveGeneration;
 extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;
