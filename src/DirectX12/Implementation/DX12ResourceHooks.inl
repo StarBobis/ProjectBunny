@@ -490,6 +490,8 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	record.cpuStart = descriptorHeap->GetCPUDescriptorHandleForHeapStart().ptr;
 	record.gpuStart = descriptorHeap->GetGPUDescriptorHandleForHeapStart().ptr;
 	record.increment = device->GetDescriptorHandleIncrementSize(desc->Type);
+	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
+		desc->Type, record.increment);
 	InitializeDescriptorHeapRecord(&record);
 	DX12ObjectLifetimeTrackerUtils::InstallDescriptorHeapReleaseTracker(descriptorHeap);
 	descriptorHeap->Release();
@@ -649,10 +651,17 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	UINT destOffset = 0;
 	UINT srcOffset = 0;
 	DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
-	const UINT increment = device ?
-		device->GetDescriptorHandleIncrementSize(descriptorHeapsType) : 0;
+	// The increment is a device constant per heap type; query the device only
+	// once per type instead of paying a COM vtable call on every
+	// CopyDescriptors.
+	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
+		descriptorHeapsType);
+	if (!increment && device)
+		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
 	if (!increment)
 		return;
+	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
+		descriptorHeapsType, increment);
 	D3D12_CPU_DESCRIPTOR_HANDLE pendingDest = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE pendingSrc = {};
 	UINT pendingCount = 0;

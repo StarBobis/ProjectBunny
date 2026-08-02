@@ -102,6 +102,119 @@ public:
 		}
 	};
 
+	// Descriptor handle increments are device constants per heap type
+	// (ID3D12Device::GetDescriptorHandleIncrementSize). Cache them per type so
+	// descriptor-copy bookkeeping never pays a COM call (multi-range copy path)
+	// or a global-lock heap scan (fallback path) just to step CPU handles.
+	// The registry is process-global (single-device assumption), so a global
+	// per-type cache is consistent with gDescriptorHeaps.
+	inline static std::atomic<UINT> sIncrementByType[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES] = {};
+	inline static std::atomic<bool> sIncrementResolved[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES] = {};
+
+	static UINT CachedIncrementForType(D3D12_DESCRIPTOR_HEAP_TYPE type)
+	{
+		if (type >= D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES)
+			return 0;
+		if (sIncrementResolved[type].load(std::memory_order_acquire))
+			return sIncrementByType[type].load(std::memory_order_relaxed);
+		return 0;
+	}
+
+	static void CacheIncrementForType(D3D12_DESCRIPTOR_HEAP_TYPE type, UINT increment)
+	{
+		if (type >= D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES || !increment)
+			return;
+		if (sIncrementResolved[type].load(std::memory_order_acquire))
+			return;
+		sIncrementByType[type].store(increment, std::memory_order_relaxed);
+		sIncrementResolved[type].store(true, std::memory_order_release);
+	}
+
+	// Global set-associative CPU-handle -> heap cache. The per-thread scan
+	// cache holds only the last 32 heaps, but the target workload rotates
+	// through ~100 descriptor heaps per frame; every TLS miss pays the global
+	// lock plus an ordered-map lookup. The multiplicative hash scatters heap
+	// bases across 4096 sets (consecutive handles of one heap map to
+	// consecutive sets, so a heap never thrashes its own ways). Each way is
+	// fully range-validated, so an aliased way degrades to a miss and can
+	// never misattribute a handle to the wrong heap (heap CPU ranges are
+	// disjoint). Plain 64-bit aligned fields are atomic on x64; concurrent
+	// inserters of the same handle race benignly (any winner is a valid
+	// entry), and retired heaps are rejected through stateLocks->IsActive().
+	static constexpr UINT HeapCacheSetCount = 4096;
+	static constexpr UINT HeapCacheWayCount = 4;
+	struct HeapCacheEntry
+	{
+		SIZE_T cpuStart = 0;
+		UINT increment = 0;
+		UINT numDescriptors = 0;
+		D3D12_DESCRIPTOR_HEAP_TYPE type = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
+		size_t heapIndex = 0;
+		DescriptorHeapRecord *heap = nullptr;
+	};
+	struct HeapCacheSet
+	{
+		HeapCacheEntry ways[HeapCacheWayCount];
+		UINT insertCounter = 0;
+	};
+	inline static HeapCacheSet heapCache[HeapCacheSetCount] = {};
+
+	static UINT HeapCacheSetIndex(SIZE_T cpuHandle)
+	{
+		// Knuth multiplicative hash of the handle's 16-byte-granular bits;
+		// the top 12 bits select the set.
+		const UINT64 mixed =
+			(static_cast<UINT64>(cpuHandle) >> 4) * 0x9E3779B97F4A7C15ull;
+		return static_cast<UINT>((mixed >> 52) & (HeapCacheSetCount - 1));
+	}
+
+	static bool HeapCacheLookup(
+		SIZE_T cpuHandle,
+		D3D12_DESCRIPTOR_HEAP_TYPE requiredType,
+		ResolvedHeapSlot *out)
+	{
+		if (!out)
+			return false;
+		HeapCacheSet &set = heapCache[HeapCacheSetIndex(cpuHandle)];
+		for (UINT way = 0; way < HeapCacheWayCount; ++way) {
+			const HeapCacheEntry &entry = set.ways[way];
+			if (!entry.heap || entry.cpuStart == 0 || entry.increment == 0 ||
+				(requiredType != D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES &&
+					entry.type != requiredType) ||
+				cpuHandle < entry.cpuStart ||
+				!entry.heap->stateLocks ||
+				!entry.heap->stateLocks->IsActive())
+				continue;
+			const UINT64 rangeBytes = static_cast<UINT64>(entry.increment) *
+				static_cast<UINT64>(entry.numDescriptors);
+			if (static_cast<UINT64>(cpuHandle - entry.cpuStart) >= rangeBytes)
+				continue;
+			out->heap = entry.heap;
+			out->heapIndex = entry.heapIndex;
+			out->slot = static_cast<UINT>(
+				(cpuHandle - entry.cpuStart) / entry.increment);
+			return true;
+		}
+		return false;
+	}
+
+	static void HeapCacheStore(
+		SIZE_T cpuHandle,
+		const ResolvedHeapSlot &resolved)
+	{
+		if (!resolved.heap)
+			return;
+		HeapCacheSet &set = heapCache[HeapCacheSetIndex(cpuHandle)];
+		HeapCacheEntry &entry =
+			set.ways[set.insertCounter++ & (HeapCacheWayCount - 1)];
+		entry.cpuStart = resolved.heap->cpuStart;
+		entry.increment = resolved.heap->increment;
+		entry.numDescriptors = resolved.heap->desc.NumDescriptors;
+		entry.type = resolved.heap->desc.Type;
+		entry.heapIndex = resolved.heapIndex;
+		entry.heap = resolved.heap;
+	}
+
 	static SRWLOCK *HeapLock(DescriptorHeapRecord *heap, UINT slot)
 	{
 		return heap && heap->stateLocks ?
@@ -367,6 +480,24 @@ public:
 			return true;
 		}
 
+		// Second level: global set-associative cache shared by all threads.
+		// Also insert into the TLS cache with an O(1) round-robin victim so
+		// the scan cache keeps learning new heaps; a full shift-insert here
+		// would cost a 32-entry memmove on every second-level hit.
+		if (HeapCacheLookup(cpuHandle, requiredType, out)) {
+			DX12DescriptorShadowTelemetryUtils::RecordHeapCacheHit();
+			static thread_local UINT tlsVictim = 0;
+			HeapResolveCacheEntry &victim = cache.entries[
+				tlsVictim++ & (HeapResolveTlsCache::EntryCount - 1)];
+			victim.heap = out->heap;
+			victim.heapIndex = out->heapIndex;
+			victim.cpuStart = out->heap->cpuStart;
+			victim.increment = out->heap->increment;
+			victim.numDescriptors = out->heap->desc.NumDescriptors;
+			victim.type = out->heap->desc.Type;
+			return true;
+		}
+
 		DX12DescriptorShadowTelemetryUtils::RecordResolveMiss();
 		DX12DescriptorShadowTelemetryUtils::AcquireGlobalShared(&gDescriptorLock);
 		size_t heapIndex = 0;
@@ -392,6 +523,7 @@ public:
 		out->heap = heap;
 		out->heapIndex = heapIndex;
 		out->slot = slot;
+		HeapCacheStore(cpuHandle, *out);
 		ReleaseSRWLockShared(&gDescriptorLock);
 		return true;
 	}
@@ -1348,16 +1480,23 @@ public:
 	{
 		(void)type;
 
-		UINT increment = 0;
-		DX12DescriptorShadowTelemetryUtils::AcquireGlobalShared(&gDescriptorLock);
-		for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
-			if (gDescriptorHeaps[hi].desc.Type == type &&
-				gDescriptorHeaps[hi].increment > 0) {
-				increment = gDescriptorHeaps[hi].increment;
-				break;
+		// The descriptor handle increment is a device constant per heap type.
+		// Use the cached value so the fallback path does not take the global
+		// lock and linearly scan every registered heap just to step CPU
+		// handles; the scan only runs once as the cache fill.
+		UINT increment = CachedIncrementForType(type);
+		if (!increment) {
+			AcquireSRWLockShared(&gDescriptorLock);
+			for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
+				if (gDescriptorHeaps[hi].desc.Type == type &&
+					gDescriptorHeaps[hi].increment > 0) {
+					increment = gDescriptorHeaps[hi].increment;
+					break;
+				}
 			}
+			ReleaseSRWLockShared(&gDescriptorLock);
+			CacheIncrementForType(type, increment);
 		}
-		ReleaseSRWLockShared(&gDescriptorLock);
 
 		UINT copiedCount = 0;
 		for (UINT i = 0; i < count; ++i) {

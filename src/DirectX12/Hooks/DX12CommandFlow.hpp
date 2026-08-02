@@ -434,6 +434,163 @@ public:
 	inline static volatile LONG64 copyAlreadyEmptySlots = 0;
 	inline static volatile LONG64 copyMemoHits = 0;
 	inline static volatile LONG64 copyMemoMisses = 0;
+	inline static volatile LONG64 heapCacheHits = 0;
+
+	// Per-frame copy telemetry is updated on the hottest path in the wrapper
+	// (every descriptor range the game copies - tens of thousands per frame).
+	// Routing those updates through per-thread accumulator blocks turns the
+	// per-range cost into plain local increments and merges the blocks once
+	// per frame at Present; the previous design paid up to 14 Interlocked
+	// RMWs per range, which measurably inflated both the timing build's
+	// numbers and its run time.
+	//
+	// The pool is a fixed array (never freed, no dangling registry entries on
+	// thread exit); threads beyond the pool share the last block, which only
+	// merges their counts. The present thread reads other threads' blocks
+	// with aligned 64-bit loads, which are atomic on x64; a concurrent
+	// increment can at worst be missed for one frame in the diagnostic.
+	struct TlsCopyCounters
+	{
+		LONG64 resolveMisses = 0;
+		LONG64 resolveFailures = 0;
+		LONG64 fallbackCalls = 0;
+		LONG64 fallbackSlots = 0;
+		LONG64 rangeCalls = 0;
+		LONG64 slots = 0;
+		LONG64 singleRangeCalls = 0;
+		LONG64 multiRangeCalls = 0;
+		LONG64 resolvedRangeCalls = 0;
+		LONG64 sameHeapRangeCalls = 0;
+		LONG64 overlapRangeCalls = 0;
+		LONG64 sourceFoundSlots = 0;
+		LONG64 sourceMissingSlots = 0;
+		LONG64 changedSlots = 0;
+		LONG64 unchangedSlots = 0;
+		LONG64 erasedSlots = 0;
+		LONG64 alreadyEmptySlots = 0;
+		LONG64 memoHits = 0;
+		LONG64 memoMisses = 0;
+		LONG64 heapCacheHits = 0; // global set-associative heap cache hits
+	};
+
+	static constexpr UINT TlsBlockCount = 64;
+	inline static TlsCopyCounters tlsBlocks[TlsBlockCount] = {};
+	inline static volatile LONG nextTlsBlock = 0;
+	inline static thread_local UINT tlsBlockIndex = UINT_MAX;
+
+	static TlsCopyCounters &TlsCopyCountersRef()
+	{
+		if (tlsBlockIndex == UINT_MAX) {
+			const LONG index = InterlockedIncrement(&nextTlsBlock) - 1;
+			tlsBlockIndex = (index >= 0 &&
+				index < static_cast<LONG>(TlsBlockCount))
+				? static_cast<UINT>(index) : TlsBlockCount - 1;
+		}
+		return tlsBlocks[tlsBlockIndex];
+	}
+
+	static void RecordResolveMiss()
+	{
+		++TlsCopyCountersRef().resolveMisses;
+	}
+
+	static void RecordResolveFailure()
+	{
+		++TlsCopyCountersRef().resolveFailures;
+	}
+
+	static void RecordFallback(UINT count)
+	{
+		TlsCopyCounters &counters = TlsCopyCountersRef();
+		++counters.fallbackCalls;
+		counters.fallbackSlots += count;
+	}
+
+	static void RecordCopyRange(
+		UINT count, bool resolved, bool sameHeap, bool overlaps)
+	{
+		TlsCopyCounters &counters = TlsCopyCountersRef();
+		++counters.rangeCalls;
+		counters.slots += count;
+		if (count == 1)
+			++counters.singleRangeCalls;
+		else
+			++counters.multiRangeCalls;
+		if (resolved)
+			++counters.resolvedRangeCalls;
+		if (sameHeap)
+			++counters.sameHeapRangeCalls;
+		if (overlaps)
+			++counters.overlapRangeCalls;
+	}
+
+	static void RecordCopyResults(
+		UINT sourceFound, UINT sourceMissing,
+		UINT changed, UINT unchanged,
+		UINT erased, UINT alreadyEmpty)
+	{
+		TlsCopyCounters &counters = TlsCopyCountersRef();
+		if (sourceFound)
+			counters.sourceFoundSlots += sourceFound;
+		if (sourceMissing)
+			counters.sourceMissingSlots += sourceMissing;
+		if (changed)
+			counters.changedSlots += changed;
+		if (unchanged)
+			counters.unchangedSlots += unchanged;
+		if (erased)
+			counters.erasedSlots += erased;
+		if (alreadyEmpty)
+			counters.alreadyEmptySlots += alreadyEmpty;
+	}
+
+	static void RecordCopyMemo(bool hit)
+	{
+		TlsCopyCounters &counters = TlsCopyCountersRef();
+		if (hit)
+			++counters.memoHits;
+		else
+			++counters.memoMisses;
+	}
+
+	static void RecordHeapCacheHit()
+	{
+		++TlsCopyCountersRef().heapCacheHits;
+	}
+
+	static void MergeTlsCountersLocked()
+	{
+		for (UINT i = 0; i < TlsBlockCount; ++i) {
+			TlsCopyCounters &block = tlsBlocks[i];
+			if (!block.rangeCalls && !block.resolveMisses &&
+				!block.fallbackCalls && !block.memoHits && !block.memoMisses &&
+				!block.sourceFoundSlots && !block.sourceMissingSlots &&
+				!block.changedSlots && !block.unchangedSlots &&
+				!block.erasedSlots && !block.alreadyEmptySlots)
+				continue;
+			InterlockedExchangeAdd64(&resolveMisses, block.resolveMisses);
+			InterlockedExchangeAdd64(&resolveFailures, block.resolveFailures);
+			InterlockedExchangeAdd64(&fallbackCalls, block.fallbackCalls);
+			InterlockedExchangeAdd64(&fallbackSlots, block.fallbackSlots);
+			InterlockedExchangeAdd64(&copyRangeCalls, block.rangeCalls);
+			InterlockedExchangeAdd64(&copySlots, block.slots);
+			InterlockedExchangeAdd64(&copySingleRangeCalls, block.singleRangeCalls);
+			InterlockedExchangeAdd64(&copyMultiRangeCalls, block.multiRangeCalls);
+			InterlockedExchangeAdd64(&copyResolvedRangeCalls, block.resolvedRangeCalls);
+			InterlockedExchangeAdd64(&copySameHeapRangeCalls, block.sameHeapRangeCalls);
+			InterlockedExchangeAdd64(&copyOverlapRangeCalls, block.overlapRangeCalls);
+			InterlockedExchangeAdd64(&copySourceFoundSlots, block.sourceFoundSlots);
+			InterlockedExchangeAdd64(&copySourceMissingSlots, block.sourceMissingSlots);
+			InterlockedExchangeAdd64(&copyChangedSlots, block.changedSlots);
+			InterlockedExchangeAdd64(&copyUnchangedSlots, block.unchangedSlots);
+			InterlockedExchangeAdd64(&copyErasedSlots, block.erasedSlots);
+			InterlockedExchangeAdd64(&copyAlreadyEmptySlots, block.alreadyEmptySlots);
+			InterlockedExchangeAdd64(&copyMemoHits, block.memoHits);
+			InterlockedExchangeAdd64(&copyMemoMisses, block.memoMisses);
+			InterlockedExchangeAdd64(&heapCacheHits, block.heapCacheHits);
+			block = TlsCopyCounters();
+		}
+	}
 
 	static LONG64 Frequency()
 	{
@@ -512,63 +669,6 @@ public:
 		AcquireExclusive(lock, &globalExclusive);
 	}
 
-	static void RecordResolveMiss()
-	{
-		InterlockedIncrement64(&resolveMisses);
-	}
-
-	static void RecordResolveFailure()
-	{
-		InterlockedIncrement64(&resolveFailures);
-	}
-
-	static void RecordFallback(UINT count)
-	{
-		InterlockedIncrement64(&fallbackCalls);
-		InterlockedExchangeAdd64(&fallbackSlots, count);
-	}
-
-	static void RecordCopyRange(
-		UINT count, bool resolved, bool sameHeap, bool overlaps)
-	{
-		InterlockedIncrement64(&copyRangeCalls);
-		InterlockedExchangeAdd64(&copySlots, count);
-		if (count == 1)
-			InterlockedIncrement64(&copySingleRangeCalls);
-		else
-			InterlockedIncrement64(&copyMultiRangeCalls);
-		if (resolved)
-			InterlockedIncrement64(&copyResolvedRangeCalls);
-		if (sameHeap)
-			InterlockedIncrement64(&copySameHeapRangeCalls);
-		if (overlaps)
-			InterlockedIncrement64(&copyOverlapRangeCalls);
-	}
-
-	static void RecordCopyResults(
-		UINT sourceFound, UINT sourceMissing,
-		UINT changed, UINT unchanged,
-		UINT erased, UINT alreadyEmpty)
-	{
-		if (sourceFound)
-			InterlockedExchangeAdd64(&copySourceFoundSlots, sourceFound);
-		if (sourceMissing)
-			InterlockedExchangeAdd64(&copySourceMissingSlots, sourceMissing);
-		if (changed)
-			InterlockedExchangeAdd64(&copyChangedSlots, changed);
-		if (unchanged)
-			InterlockedExchangeAdd64(&copyUnchangedSlots, unchanged);
-		if (erased)
-			InterlockedExchangeAdd64(&copyErasedSlots, erased);
-		if (alreadyEmpty)
-			InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
-	}
-
-	static void RecordCopyMemo(bool hit)
-	{
-		InterlockedIncrement64(hit ? &copyMemoHits : &copyMemoMisses);
-	}
-
 	// Commits one API call's locally accumulated descriptor-copy counters.
 	// CopyDescriptors commonly exposes 8-10 single-slot ranges per call; doing
 	// every counter update atomically per slot made the diagnostics themselves
@@ -602,6 +702,9 @@ public:
 	static void LogAndReset()
 	{
 		const LONG64 frequency = Frequency();
+		// Merge the per-thread copy counters into the frame globals once per
+		// frame (the hot-path Record* methods only touch their own TLS block).
+		MergeTlsCountersLocked();
 		const LONG64 heapSharedContentions =
 			InterlockedExchange64(&heapShared.contentions, 0);
 		const LONG64 heapSharedTicks =
@@ -645,6 +748,7 @@ public:
 		const LONG64 alreadyEmpty = InterlockedExchange64(&copyAlreadyEmptySlots, 0);
 		const LONG64 memoHits = InterlockedExchange64(&copyMemoHits, 0);
 		const LONG64 memoMisses = InterlockedExchange64(&copyMemoMisses, 0);
+		const LONG64 heapCacheHitCount = InterlockedExchange64(&heapCacheHits, 0);
 		if (heapSharedContentions == 0 && heapExclusiveContentions == 0 &&
 			globalSharedContentions == 0 && globalExclusiveContentions == 0 &&
 			misses == 0 && failures == 0 && fallbacks == 0 && ranges == 0)
@@ -660,7 +764,7 @@ public:
 			"\"copySourceMissingSlots\":%lld,\"copyChangedSlots\":%lld,"
 			"\"copyUnchangedSlots\":%lld,\"copyErasedSlots\":%lld,"
 			"\"copyAlreadyEmptySlots\":%lld,"
-			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,"
+			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,\"heapCacheHits\":%lld,"
 			"\"heapSharedContentions\":%lld,\"heapSharedWaitUs\":%lld,\"heapSharedMaxUs\":%lld,"
 			"\"heapExclusiveContentions\":%lld,\"heapExclusiveWaitUs\":%lld,\"heapExclusiveMaxUs\":%lld,"
 			"\"globalSharedContentions\":%lld,\"globalSharedWaitUs\":%lld,\"globalSharedMaxUs\":%lld,"
@@ -685,6 +789,7 @@ public:
 			static_cast<long long>(alreadyEmpty),
 			static_cast<long long>(memoHits),
 			static_cast<long long>(memoMisses),
+			static_cast<long long>(heapCacheHitCount),
 			static_cast<long long>(heapSharedContentions),
 			static_cast<long long>(heapSharedTicks * 1000000 / frequency),
 			static_cast<long long>(heapSharedMaxTicks * 1000000 / frequency),
@@ -731,6 +836,7 @@ public:
 	static void RecordCopyRange(UINT, bool, bool, bool) {}
 	static void RecordCopyResults(UINT, UINT, UINT, UINT, UINT, UINT) {}
 	static void RecordCopyMemo(bool) {}
+	static void RecordHeapCacheHit() {}
 	static void RecordCopyBatch(
 		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64,
 		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64) {}
