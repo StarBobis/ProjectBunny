@@ -9,11 +9,10 @@ public:
 	CNktHookLib hookManager;
 	std::unordered_set<void*> hookedFunctions;
 	std::unordered_map<void*, void*> originalFunctions;
-	std::unordered_map<void*, std::array<void*, 256>> vtableOriginals;
 	volatile LONG hooksFinalized = 0;
-	// Number of vtable method hooks installed via DX12HookManager::InstallVTableHook(s).
-	// Zero means no method code in d3d12.dll/dxgi.dll was ever patched, which lets
-	// original-resolution cache the raw vtable entry as a positive result.
+	// Vtable method hooks are never installed in wrapper-only mode.  Keeping
+	// the counter lets original-resolution cache raw vtable entries as positive
+	// results (zero means no method code in d3d12.dll/dxgi.dll was patched).
 	volatile LONG vtableHooksInstalled = 0;
 
 	DX12HookRegistry()
@@ -88,101 +87,16 @@ public:
 		Get().hookManager.UnhookAll();
 	}
 
-	static void NoteVtableHookInstalled()
-	{
-		InterlockedIncrement(&Get().vtableHooksInstalled);
-	}
-
 	static bool AnyVtableHooksInstalled()
 	{
 		return InterlockedCompareExchange(&Get().vtableHooksInstalled, 0, 0) != 0;
 	}
-
-	static void CacheVtableOriginals(void *vtable, size_t maxSlot)
-	{
-		if (!vtable || maxSlot == 0 || maxSlot > 256)
-			return;
-		DX12HookRegistry &state = Get();
-		void **slots = static_cast<void**>(vtable);
-		std::array<void*, 256> originals = {};
-		for (size_t i = 0; i < maxSlot; ++i) {
-			void *target = slots[i];
-			if (!target)
-				continue;
-			auto it = state.originalFunctions.find(target);
-			if (it != state.originalFunctions.end())
-				originals[i] = it->second;
-		}
-		state.vtableOriginals[vtable] = originals;
-	}
 };
-
-
-class DX12VTableHook
-{
-public:
-	UINT slot;
-	void **original;
-	void *hook;
-	const char *name;
-};
-
 
 
 class DX12HookManager
 {
 public:
-	static void **GetVTable(void *object)
-	{
-		if (!object)
-			return nullptr;
-		return *reinterpret_cast<void***>(object);
-	}
-
-	static DWORD InstallVTableHook(void *object, const DX12VTableHook &hook)
-	{
-		void **vtable = GetVTable(object);
-		if (!vtable) {
-			DX12LogManager::Fields(hook.name ? hook.name : "HookInstall",
-				"\"event\":\"HookInstall\",\"status\":\"failed\",\"reason\":\"missing_vtable\"");
-			return ERROR_INVALID_FUNCTION;
-		}
-
-		DWORD result = DX12HookRegistry::HookFunction(hook.original, vtable[hook.slot], hook.hook, hook.name);
-		if (result == ERROR_SUCCESS)
-			DX12HookRegistry::NoteVtableHookInstalled();
-		return result;
-	}
-
-	static void InstallVTableHooks(void *object, const DX12VTableHook *hooks, size_t hookCount)
-	{
-		if (!object || !hooks)
-			return;
-
-		InstallVTableHooks(GetVTable(object), hooks, hookCount);
-	}
-
-	static void InstallVTableHooks(void **vtable, const DX12VTableHook *hooks, size_t hookCount)
-	{
-		if (!vtable || !hooks)
-			return;
-
-		for (size_t i = 0; i < hookCount; ++i) {
-			DX12VTableHook hook = hooks[i];
-			if (hook.slot >= 256)
-				continue;
-			if (DX12HookRegistry::HookFunction(
-					hook.original, vtable[hook.slot], hook.hook, hook.name) == ERROR_SUCCESS)
-				DX12HookRegistry::NoteVtableHookInstalled();
-		}
-	}
-
-	template <size_t N>
-	static void InstallVTableHooks(void *object, const DX12VTableHook (&hooks)[N])
-	{
-		InstallVTableHooks(object, hooks, N);
-	}
-
 	static DWORD InstallExportHook(HMODULE module, const char *exportName, void **original, void *hook)
 	{
 		if (!module || !exportName)
@@ -190,20 +104,6 @@ public:
 
 		return DX12HookRegistry::HookFunction(original, GetProcAddress(module, exportName), hook, exportName);
 	}
-};
-
-
-class DX12DeviceChildHooks
-{
-public:
-	using GetDevice = HRESULT(STDMETHODCALLTYPE *)(ID3D12DeviceChild*, REFIID, void**);
-	static constexpr UINT GetDeviceSlot = 7;
-
-	static void Install(IUnknown *object);
-	static HRESULT STDMETHODCALLTYPE HookedGetDevice(
-		ID3D12DeviceChild *object, REFIID riid, void **device);
-
-	inline static void *OriginalGetDevice = nullptr;
 };
 
 

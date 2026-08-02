@@ -33,36 +33,14 @@ class DeviceWrapper
 				return adjusted ? storage->data() : descs;
 			}
 
-			template <typename T>
-			static bool PassThroughObject(void **object)
-			{
-				if (!object || !*object)
-					return false;
-				T *typedObject = nullptr;
-				if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&typedObject))))
-					return false;
-				DX12DeviceChildHooks::Install(typedObject);
-				typedObject->Release();
-				return true;
-			}
-
-			static bool LegacyChildWrappersEnabled()
-			{
-				// RenderDoc-style interception: child objects (command queue,
-				// command list, allocator, resource, ...) are wrapped with COM
-				// proxy objects instead of inline-patching shared d3d12.dll code.
-				// This keeps DLSS Frame Generation's own D3D12 objects free of
-				// our hooks and avoids detour-chain conflicts with Streamline.
-				return true;
-			}
+			// Wrapper-only interception: child objects (command queue, command
+			// list, allocator, resource, ...) are wrapped with COM proxy objects
+			// instead of inline-patching shared d3d12.dll code. This keeps DLSS
+			// Frame Generation's own D3D12 objects free of our hooks and avoids
+			// detour-chain conflicts with Streamline.
 
 			static bool TryWrapCommandAllocator(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12CommandAllocatorIid(riid))
-						return false;
-					return PassThroughObject<ID3D12CommandAllocator>(object);
-				}
 				if (!object || !*object || !IsD3D12CommandAllocatorIid(riid))
 					return false;
 
@@ -95,11 +73,6 @@ class DeviceWrapper
 
 			static bool TryWrapFence(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12FenceIid(riid))
-						return false;
-					return PassThroughObject<ID3D12Fence>(object);
-				}
 				if (!object || !*object || !IsD3D12FenceIid(riid))
 					return false;
 
@@ -143,11 +116,6 @@ class DeviceWrapper
 
 			static bool TryWrapDescriptorHeap(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12DescriptorHeapIid(riid))
-						return false;
-					return PassThroughObject<ID3D12DescriptorHeap>(object);
-				}
 				if (!object || !*object || !IsD3D12DescriptorHeapIid(riid))
 					return false;
 
@@ -191,11 +159,6 @@ class DeviceWrapper
 
 			static bool TryWrapResource(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12ResourceIid(riid))
-						return false;
-					return PassThroughObject<ID3D12Resource>(object);
-				}
 				if (!object || !*object || !IsD3D12ResourceIid(riid))
 					return false;
 
@@ -239,17 +202,6 @@ class DeviceWrapper
 
 			static bool TryWrapCommandQueue(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!object || !*object || !IsD3D12CommandQueueIid(riid))
-						return false;
-					ID3D12CommandQueue *queue = nullptr;
-					if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&queue))))
-						return false;
-					DX12DeviceChildHooks::Install(queue);
-					DX12CommandListHookCallbacks::RegisterCommandQueue(queue);
-					queue->Release();
-					return true;
-				}
 				if (!object || !*object || !IsD3D12CommandQueueIid(riid))
 					return false;
 
@@ -282,17 +234,6 @@ class DeviceWrapper
 
 			static bool TryWrapGraphicsCommandList(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!object || !*object || !IsD3D12GraphicsCommandListIid(riid))
-						return false;
-					ID3D12GraphicsCommandList *commandList = nullptr;
-					if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&commandList))))
-						return false;
-					DX12DeviceChildHooks::Install(commandList);
-					DX12CommandListHooks::HookCommandList(commandList);
-					commandList->Release();
-					return true;
-				}
 				if (!object || !*object || !IsD3D12GraphicsCommandListIid(riid))
 					return false;
 
@@ -336,11 +277,6 @@ class DeviceWrapper
 
 			static bool TryWrapHeap(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12HeapIid(riid))
-						return false;
-					return PassThroughObject<ID3D12Heap>(object);
-				}
 				if (!object || !*object || !IsD3D12HeapIid(riid))
 					return false;
 
@@ -384,11 +320,6 @@ class DeviceWrapper
 
 			static bool TryWrapPipelineState(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12PipelineStateIid(riid))
-						return false;
-					return PassThroughObject<ID3D12PipelineState>(object);
-				}
 				if (!object || !*object || !IsD3D12PipelineStateIid(riid))
 					return false;
 
@@ -432,11 +363,6 @@ class DeviceWrapper
 
 			static bool TryWrapRootSignature(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12RootSignatureIid(riid))
-						return false;
-					return PassThroughObject<ID3D12RootSignature>(object);
-				}
 				if (!object || !*object || !IsD3D12RootSignatureIid(riid))
 					return false;
 
@@ -480,11 +406,6 @@ class DeviceWrapper
 
 			static bool TryWrapQueryHeap(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12QueryHeapIid(riid))
-						return false;
-					return PassThroughObject<ID3D12QueryHeap>(object);
-				}
 				if (!object || !*object || !IsD3D12QueryHeapIid(riid))
 					return false;
 
@@ -528,11 +449,6 @@ class DeviceWrapper
 
 			static bool TryWrapCommandSignature(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12CommandSignatureIid(riid))
-						return false;
-					return PassThroughObject<ID3D12CommandSignature>(object);
-				}
 				if (!object || !*object || !IsD3D12CommandSignatureIid(riid))
 					return false;
 
@@ -576,11 +492,6 @@ class DeviceWrapper
 
 			static bool TryWrapLifetimeTracker(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12LifetimeTrackerIid(riid))
-						return false;
-					return PassThroughObject<ID3D12LifetimeTracker>(object);
-				}
 				if (!object || !*object || !IsD3D12LifetimeTrackerIid(riid))
 					return false;
 
@@ -624,11 +535,6 @@ class DeviceWrapper
 
 			static bool TryWrapProtectedResourceSession(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12ProtectedResourceSessionIid(riid))
-						return false;
-					return PassThroughObject<ID3D12ProtectedResourceSession>(object);
-				}
 				if (!object || !*object || !IsD3D12ProtectedResourceSessionIid(riid))
 					return false;
 
@@ -673,11 +579,6 @@ class DeviceWrapper
 
 			static bool TryWrapMetaCommand(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12MetaCommandIid(riid))
-						return false;
-					return PassThroughObject<ID3D12MetaCommand>(object);
-				}
 				if (!object || !*object || !IsD3D12MetaCommandIid(riid))
 					return false;
 
@@ -721,11 +622,6 @@ class DeviceWrapper
 
 			static bool TryWrapStateObject(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12StateObjectIid(riid))
-						return false;
-					return PassThroughObject<ID3D12StateObject>(object);
-				}
 				if (!object || !*object || !IsD3D12StateObjectIid(riid))
 					return false;
 
@@ -769,11 +665,6 @@ class DeviceWrapper
 
 			static bool TryWrapPipelineLibrary(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12PipelineLibraryIid(riid))
-						return false;
-					return PassThroughObject<ID3D12PipelineLibrary>(object);
-				}
 				if (!object || !*object || !IsD3D12PipelineLibraryIid(riid))
 					return false;
 
@@ -817,11 +708,6 @@ class DeviceWrapper
 
 			static bool TryWrapShaderCacheSession(REFIID riid, void **object)
 			{
-				if (!LegacyChildWrappersEnabled()) {
-					if (!IsD3D12ShaderCacheSessionIid(riid))
-						return false;
-					return PassThroughObject<ID3D12ShaderCacheSession>(object);
-				}
 				if (!object || !*object || !IsD3D12ShaderCacheSessionIid(riid))
 					return false;
 

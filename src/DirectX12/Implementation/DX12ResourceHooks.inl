@@ -288,27 +288,9 @@ void DX12ResourceTrackerHookRuntime::InstallMapUnmapHooks(ID3D12Resource *resour
 		return;
 	RegisterCpuMappableResource(resource);
 
-	// Wrapper mode: ResourceWrapper::Map/Unmap perform the same capture via
+	// Wrapper-only mode: ResourceWrapper::Map/Unmap perform the same capture via
 	// DX12ResourceTrackerHookRuntime::WrappedResourceMap/WrappedResourceUnmap;
-	// never patch the shared ID3D12Resource code (DLSS FG compat).
-	if (DX12Wrapper::UsesLegacyChildWrappers())
-		return;
-
-	// Install Map/Unmap hooks on this resource (one-shot)
-	DX12VTableHook hooks[] = {
-		{DX12ResourceHookSlotTypes::ID3D12Resource::Map,
-			reinterpret_cast<void**>(&DX12ResourceTrackerHookState::ResourceOriginals.Map),
-			reinterpret_cast<void*>(HookedResourceMap), "ID3D12Resource::Map"},
-		{DX12ResourceHookSlotTypes::ID3D12Resource::Unmap,
-			reinterpret_cast<void**>(&DX12ResourceTrackerHookState::ResourceOriginals.Unmap),
-			reinterpret_cast<void*>(HookedResourceUnmap), "ID3D12Resource::Unmap"},
-	};
-	DX12HookManager::InstallVTableHooks(resource, hooks, ARRAYSIZE(hooks));
-
-	DX12LogManager::DebugFields("DX12BufferContentHook",
-		"stage=installed,resource=0x%p,bytes=%llu,heapType=%u",
-		resource, static_cast<unsigned long long>(desc.Width),
-		static_cast<UINT>(heapProps.Type));
+	// vtable patching was removed (DLSS FG compat).
 }
 
 class DX12ResourceCreateLogUtils

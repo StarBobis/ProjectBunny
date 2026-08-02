@@ -26,7 +26,6 @@ namespace DX12Wrapper
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object);
 	bool WrapDXGIFactoryResult(REFIID riid, void **factory);
 	bool WrapDXGISwapChainResult(REFIID riid, void **swapChain);
-	bool UsesLegacyChildWrappers();
 	IUnknown *Unwrap(IUnknown *object);
 	void Shutdown();
 }
@@ -552,8 +551,7 @@ class DX12WrapperRuntimeUtils
 public:
 	static IUnknown *UnwrapD3D12Child(IUnknown *object)
 	{
-		return DX12Wrapper::UsesLegacyChildWrappers()
-			? DX12Wrapper::Unwrap(object) : object;
+		return DX12Wrapper::Unwrap(object);
 	}
 
 	static ID3D12CommandAllocator *UnwrapCommandAllocator(ID3D12CommandAllocator *allocator)
@@ -897,8 +895,7 @@ public:
 		ID3D12CommandList *stackUnwrapped[8];
 		std::vector<ID3D12CommandList*> heapUnwrapped;
 		ID3D12CommandList *const *activeCommandLists = commandLists;
-		if (DX12Wrapper::UsesLegacyChildWrappers() &&
-			commandLists && numCommandLists) {
+		if (commandLists && numCommandLists) {
 			ID3D12CommandList **unwrapped = stackUnwrapped;
 			if (numCommandLists > ARRAYSIZE(stackUnwrapped)) {
 				heapUnwrapped.resize(numCommandLists);
@@ -1366,8 +1363,7 @@ public:
 		ID3D12CommandList *stackUnwrapped[8];
 		ID3D12CommandList *const *activeCommandLists = commandLists;
 		std::vector<ID3D12CommandList*> heapUnwrapped;
-		if (DX12Wrapper::UsesLegacyChildWrappers() &&
-			commandLists && numCommandLists) {
+		if (commandLists && numCommandLists) {
 			ID3D12CommandList **dest = stackUnwrapped;
 			if (numCommandLists > 8) {
 				heapUnwrapped.resize(numCommandLists);
@@ -1762,7 +1758,7 @@ public:
 			DX12OuterTimingProbeUtils::ApiResourceBarrier);
 		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
-		if (DX12Wrapper::UsesLegacyChildWrappers()) {
+		{
 			std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
 			std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
 				runtimeState ? runtimeState->barrierScratch : localBarriers;

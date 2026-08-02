@@ -3390,8 +3390,7 @@ public:
 			draw.indexed ? 1u : 0u,
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(psoDecisionBegin));
-		if (!drawDecision || drawDecision->CanFastReject()) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionFastReject();
+		if (!drawDecision) {
 			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
@@ -3443,8 +3442,7 @@ public:
 		// resource hash lookup, candidate matching). Only negative results are
 		// cached in this phase; positive hits still execute the full path.
 		const UINT64 preSkinGeneration = DX12ModGetPreSkinActiveGenerationFast();
-		const UINT64 boundHeapVersion = runtimeState.cbvSrvUavHeap ?
-			DX12GetDescriptorHeapVersion(runtimeState.cbvSrvUavHeap) : 0;
+		const UINT64 boundHeapVersion = runtimeState.cbvSrvUavHeapVersion;
 		// A pure IA-content decision (IB/VB hash targets, no descriptor
 		// targets, no draw-SRV patch, no pre-skin, no capture/hunt) does not
 		// depend on the graphics descriptor query serial, heap identity,
@@ -3557,7 +3555,6 @@ public:
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    directTargetPlan.HasIaTargets() &&
 		    !directTargetPlan.hasDescriptorTargets &&
-		    !directTargetPlan.requireAllIaBuffers &&
 		    !DX12ModIaPrefilterCountSensitive()) {
 			DX12SimulateContextDrawTemplate::IaStateNegativeCache &iaNeg =
 				mutableRuntimeState->resolvedDraw.iaStateNegative;
@@ -3637,8 +3634,8 @@ public:
 				runtimeState.graphicsDescriptorQuerySerial ?
 					runtimeState.graphicsDescriptorQuerySerial : 1;
 			directGraphicsDescriptorHeap = runtimeState.cbvSrvUavHeap;
-			directGraphicsDescriptorHeapVersion = DX12GetDescriptorHeapVersion(
-				runtimeState.cbvSrvUavHeap);
+			directGraphicsDescriptorHeapVersion =
+				runtimeState.cbvSrvUavHeapVersion;
 			if (directTargetPlan.HasIaTargets()) {
 				directDescriptorContentGeneration = DX12GetIaHashContentGeneration();
 				directDescriptorResolveGeneration = DX12GetIaHashResolveGeneration();
@@ -3701,8 +3698,7 @@ public:
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    directTargetPlan.HasIaTargets() &&
-		    !directTargetPlan.hasDescriptorTargets &&
-		    !directTargetPlan.requireAllIaBuffers) {
+		    !directTargetPlan.hasDescriptorTargets) {
 				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
 				if (TryFindResidentNegative(mutableRuntimeState,

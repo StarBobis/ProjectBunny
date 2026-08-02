@@ -828,7 +828,7 @@ public:
 	// resident PSO decisions in thread-local generation arenas instead: reads are
 	// lock-free and a generation change discards the complete arena in O(1).
 	inline static thread_local UINT64 ReloadGeneration = 0;
-	static constexpr UINT64 CacheFormatVersionCurrent = 3;
+	static constexpr UINT64 CacheFormatVersionCurrent = 5;
 	inline static thread_local UINT64 CacheFormatVersion = 0;
 	static constexpr size_t InitialEntriesPerKind = 4096;
 	inline static thread_local size_t DispatchGrowthBudget = InitialEntriesPerKind;

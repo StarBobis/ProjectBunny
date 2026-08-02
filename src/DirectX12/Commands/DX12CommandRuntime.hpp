@@ -458,13 +458,6 @@ public:
 		}
 	}
 
-	bool CanFastReject() const
-	{
-		return resolved &&
-			kind == DX12CompiledDrawDecisionKind::NoopNeverMatches &&
-			!hasShaderOverrideSkip;
-	}
-
 	bool NeedsIaHash() const
 	{
 		return targetPlanHasIaTargets;
@@ -473,11 +466,6 @@ public:
 	bool NeedsDescriptorMatch() const
 	{
 		return targetPlanHasDescriptorTargets;
-	}
-
-	bool NeedsDrawOverrideWork() const
-	{
-		return !CanFastReject();
 	}
 
 	bool MatchesGlobals(bool activeShaderOverrides) const
@@ -1583,6 +1571,11 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	// Cached CBV/SRV/UAV heap content version.  Re-read on every SetDescriptorHeaps
+	// instead of on every draw: DX12GetDescriptorHeapVersion takes the global
+	// descriptor lock plus a hash-map lookup, and draws outnumber heap changes by
+	// ~250x (988 vs 4 per frame in the target game).
+	UINT64 cbvSrvUavHeapVersion = 0;
 	// Last raw SetDescriptorHeaps input. Lets CaptureDescriptorHeaps skip
 	// redundant GetDesc resolution when the game re-binds the identical heap
 	// set (the resident heap state already reflects it). Only recorded after
@@ -2459,7 +2452,6 @@ public:
 		InterlockedExchange64(
 			reinterpret_cast<volatile LONG64*>(&HookWorkFlags),
 			static_cast<LONG64>(flags));
-		DX12ActivateCommandListHotPathHooks();
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |

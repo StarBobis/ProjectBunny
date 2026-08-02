@@ -1752,6 +1752,10 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 
 	state->cbvSrvUavHeap = cbvSrvUavHeap;
 	state->samplerHeap = samplerHeap;
+	// Cache the heap content version at bind time so the draw hot path never
+	// takes the global descriptor lock (see cbvSrvUavHeapVersion comment).
+	state->cbvSrvUavHeapVersion =
+		DX12GetDescriptorHeapVersion(cbvSrvUavHeap);
 	// Match DX11's "bind now, resolve later" policy: descriptor heap identity is
 	// the hot-path state we need to preserve, while heap summaries can be filled
 	// lazily the moment a draw actually needs descriptor inspection.

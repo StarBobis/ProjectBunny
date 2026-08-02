@@ -228,8 +228,6 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 	bool WrapD3D12DebugInterfaceResult(REFIID riid, void **object)
 	{
-		if (!DeviceWrapper::LegacyChildWrappersEnabled())
-			return false;
 		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object ||
 			(!IsD3D12DebugInterfaceIid(riid) && !IsD3D12DredSettingsIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
@@ -255,8 +253,6 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 	bool WrapD3D12AuxiliaryResult(REFIID riid, void **object)
 	{
-		if (!DeviceWrapper::LegacyChildWrappersEnabled())
-			return false;
 		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object)
 			return false;
@@ -437,11 +433,6 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 	IUnknown *Unwrap(IUnknown *object)
 	{
 		return WrapperBase::UnwrapObject(object);
-	}
-
-	bool UsesLegacyChildWrappers()
-	{
-		return DeviceWrapper::LegacyChildWrappersEnabled();
 	}
 
 void Shutdown()

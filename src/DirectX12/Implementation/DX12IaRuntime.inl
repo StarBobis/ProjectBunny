@@ -3164,10 +3164,12 @@ bool DX12ModIaStateDefinitelyHasNoCandidate(
 {
 	if (!targetPlan.hasTextureOverrideChecks ||
 	    targetPlan.hasDescriptorTargets ||
-	    targetPlan.requireAllIaBuffers ||
 	    !targetPlan.HasIaTargets()) {
 		return false;
 	}
+	// requireAllIaBuffers is handled below: every bound buffer is probed
+	// against the candidate table, so an all-IA plan still resolves to
+	// "definitely no candidate" when none of the bound views match.
 
 	if (targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
 		const uint32_t indexHash =

@@ -776,7 +776,6 @@ public:
 	inline static volatile LONG DrawDecisionNeedsDescriptorMatch = 0;
 	inline static volatile LONG DrawDecisionNeedsReplacement = 0;
 	inline static volatile LONG DrawDecisionSkipOriginal = 0;
-	inline static volatile LONG DrawDecisionFastRejects = 0;
 	inline static volatile LONG DrawDecisionIaHashDraws = 0;
 	inline static volatile LONG DrawDecisionIaHashCacheLookups = 0;
 	inline static volatile LONG DrawDecisionIaHashCacheHits = 0;
@@ -1340,11 +1339,6 @@ public:
 		Inc(&DrawDecisionSkipOriginal);
 	}
 
-	static void RecordDrawDecisionFastReject()
-	{
-		Inc(&DrawDecisionFastRejects);
-	}
-
 	static void RecordDrawDecisionIaHashDraw()
 	{
 		Inc(&DrawDecisionIaHashDraws);
@@ -1676,7 +1670,6 @@ public:
 		LONG needsDescriptorMatch = Take(&DrawDecisionNeedsDescriptorMatch);
 		LONG needsReplacement = Take(&DrawDecisionNeedsReplacement);
 		LONG skipOriginal = Take(&DrawDecisionSkipOriginal);
-		LONG fastRejects = Take(&DrawDecisionFastRejects);
 		LONG iaHashDraws = Take(&DrawDecisionIaHashDraws);
 		LONG iaHashCacheLookups = Take(&DrawDecisionIaHashCacheLookups);
 		LONG iaHashCacheHits = Take(&DrawDecisionIaHashCacheHits);
@@ -1696,7 +1689,7 @@ public:
 			!builds && !noPso &&
 			!noShaderOverride && !noDrawOverride && !needsIaHash &&
 			!needsDescriptorMatch && !needsReplacement && !skipOriginal &&
-			!fastRejects && !iaHashDraws && !iaHashCacheLookups &&
+			!iaHashDraws && !iaHashCacheLookups &&
 			!iaHashCacheHits && !iaHashCacheMisses && !iaHashCacheStores &&
 			!iaHashCacheEvictions &&
 			!iaHashCacheNegativeHits && !descriptorDraws &&
@@ -1706,11 +1699,11 @@ public:
 			!directProbeCacheEvictions)
 			return;
 		DX12LogManager::Fields("DX12ResidentMaintenance",
-			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"fastRejects\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheEvictions\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld,\"directProbeCacheLookups\":%ld,\"directProbeCacheHits\":%ld,\"directProbeCacheMisses\":%ld,\"directProbeCachePositiveHits\":%ld,\"directProbeCacheNegativeHits\":%ld,\"directProbeCacheStores\":%ld,\"directProbeCacheEvictions\":%ld",
+			"\"category\":\"draw_decision\",\"cacheHits\":%ld,\"cacheMisses\":%ld,\"psoCacheHits\":%ld,\"psoCacheMisses\":%ld,\"builds\":%ld,\"noPso\":%ld,\"noShaderOverride\":%ld,\"noDrawOverride\":%ld,\"needsIaHash\":%ld,\"needsDescriptorMatch\":%ld,\"needsReplacement\":%ld,\"skipOriginal\":%ld,\"iaHashDraws\":%ld,\"iaHashCacheLookups\":%ld,\"iaHashCacheHits\":%ld,\"iaHashCacheMisses\":%ld,\"iaHashCacheStores\":%ld,\"iaHashCacheEvictions\":%ld,\"iaHashCacheNegativeHits\":%ld,\"descriptorDraws\":%ld,\"directProbeCacheLookups\":%ld,\"directProbeCacheHits\":%ld,\"directProbeCacheMisses\":%ld,\"directProbeCachePositiveHits\":%ld,\"directProbeCacheNegativeHits\":%ld,\"directProbeCacheStores\":%ld,\"directProbeCacheEvictions\":%ld",
 			cacheHits, cacheMisses, psoCacheHits, psoCacheMisses, builds, noPso,
 			noShaderOverride, noDrawOverride, needsIaHash,
 			needsDescriptorMatch, needsReplacement, skipOriginal,
-			fastRejects, iaHashDraws, iaHashCacheLookups,
+			iaHashDraws, iaHashCacheLookups,
 			iaHashCacheHits, iaHashCacheMisses, iaHashCacheStores, iaHashCacheEvictions,
 			iaHashCacheNegativeHits, descriptorDraws,
 			directProbeCacheLookups, directProbeCacheHits, directProbeCacheMisses,

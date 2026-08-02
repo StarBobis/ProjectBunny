@@ -4219,16 +4219,27 @@ bool DX12ModCompileDrawDecision(
 		ReleaseSRWLockExclusive(&gModLock);
 	}
 
-	const bool shaderOverrides = compiledMetadataHit ? true : (cached ? !configs.empty() : true);
+	const bool shaderOverrides = compiledMetadataHit ? true : !configs.empty();
 	if (!compiledMetadataHit) {
 		if (!cached)
 			drawMatchUsage = BuildDrawMatchUsageLocked(configs);
 		directDrawMatchUsage = drawMatchUsage;
 	}
-	if (!targetPlanResolved)
-		targetPlan.RequireAll();
-	if (!directTargetPlanResolved)
-		directTargetPlan = targetPlan;
+	if (!targetPlanResolved) {
+		// Only PSOs that actually matched override configs need the conservative
+		// RequireAll plan.  Unmatched PSOs get an empty plan so the decision can
+		// become NoopNeverMatches and fast-reject every draw on this PSO.
+		if (shaderOverrides)
+			targetPlan.RequireAll();
+		else
+			targetPlan.ResetKnown();
+	}
+	if (!directTargetPlanResolved) {
+		if (shaderOverrides)
+			directTargetPlan.RequireAll();
+		else
+			directTargetPlan.ResetKnown();
+	}
 
 	const bool shaderOverrideSkip =
 		DX12ModShouldSkipPipelineState(pipelineState, false);
