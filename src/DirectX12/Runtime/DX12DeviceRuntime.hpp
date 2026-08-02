@@ -658,8 +658,30 @@ public:
 	{
 		if (!desc || !destDescriptor.ptr)
 			return false;
-		const UINT64 valueId =
-			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
+
+		// CBV content-hash TLS cache: games re-create the same constant
+		// buffer views every frame (ZZZ issues ~18K CreateCBV per frame, most
+		// repeating the same BufferLocation/SizeInBytes). Hashing the desc is
+		// cheap, but 18K hash computations per frame still add up; caching
+		// the last desc + hash skips the Mix chain when the view repeats.
+		struct CbvHashCache
+		{
+			D3D12_CONSTANT_BUFFER_VIEW_DESC desc = {};
+			UINT64 valueId = 0;
+			bool valid = false;
+		};
+		static thread_local CbvHashCache hashCache;
+		UINT64 valueId = 0;
+		if (hashCache.valid &&
+			hashCache.desc.BufferLocation == desc->BufferLocation &&
+			hashCache.desc.SizeInBytes == desc->SizeInBytes) {
+			valueId = hashCache.valueId;
+		} else {
+			valueId = DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
+			hashCache.desc = *desc;
+			hashCache.valueId = valueId;
+			hashCache.valid = true;
+		}
 
 		// Sequential-slot TLS fast path: engines fill descriptor arenas
 		// front-to-back every frame, so the workload is thousands of CreateCBV
@@ -714,7 +736,9 @@ public:
 		// ResolveHeapSlotFast already validates the heap activity immediately
 		// before returning. PublishedSlotValueEquals performs the authoritative
 		// seqlock read, so another activity load here only duplicated an atomic on
-		// every CreateCBV call.
+		// every CreateCBV call. Note: the flat snapshot path is NOT used here -
+		// every CreateCBV publishes a fresh slot version, so the flat version
+		// check would always miss and only add a second read.
 		if (resolvedKnownHeap &&
 				resolved.heap && resolved.heap->stateLocks &&
 				resolved.heap->stateLocks->PublishedSlotValueEquals(
