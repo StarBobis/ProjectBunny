@@ -818,6 +818,121 @@ public:
 		return LoadResourceBytes(config, baseDir, bytes, path);
 	}
 
+	// Upload channel for DDS textures. Mirrors DX11's immediate-context
+	// upload: the copy and state transition execute on a private queue and
+	// the CPU waits for completion, so the game's command list is never
+	// polluted with mod upload commands (which previously added a large
+	// CopyTextureRegion + barrier into the middle of the game's recording).
+	// Created lazily on first upload and reused for the mod's lifetime.
+	inline static SRWLOCK s_uploadLock = SRWLOCK_INIT;
+	inline static ID3D12CommandQueue *s_uploadQueue = nullptr;
+	inline static ID3D12CommandAllocator *s_uploadAllocator = nullptr;
+	inline static ID3D12GraphicsCommandList *s_uploadList = nullptr;
+	inline static ID3D12Fence *s_uploadFence = nullptr;
+	inline static UINT64 s_uploadFenceValue = 0;
+
+	static bool EnsureUploadChannel(ID3D12Device *device)
+	{
+		if (s_uploadQueue && s_uploadAllocator && s_uploadList && s_uploadFence)
+			return true;
+		if (!device)
+			return false;
+		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		HRESULT hr = device->CreateCommandQueue(
+			&queueDesc, IID_PPV_ARGS(&s_uploadQueue));
+		if (FAILED(hr) || !s_uploadQueue)
+			return false;
+		hr = device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s_uploadAllocator));
+		if (FAILED(hr) || !s_uploadAllocator) {
+			s_uploadQueue->Release();
+			s_uploadQueue = nullptr;
+			return false;
+		}
+		hr = device->CreateCommandList(
+			0, D3D12_COMMAND_LIST_TYPE_DIRECT, s_uploadAllocator,
+			nullptr, IID_PPV_ARGS(&s_uploadList));
+		if (FAILED(hr) || !s_uploadList) {
+			s_uploadAllocator->Release();
+			s_uploadAllocator = nullptr;
+			s_uploadQueue->Release();
+			s_uploadQueue = nullptr;
+			return false;
+		}
+		hr = device->CreateFence(
+			0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&s_uploadFence));
+		if (FAILED(hr) || !s_uploadFence) {
+			s_uploadList->Release();
+			s_uploadList = nullptr;
+			s_uploadAllocator->Release();
+			s_uploadAllocator = nullptr;
+			s_uploadQueue->Release();
+			s_uploadQueue = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	static bool ExecuteTextureUpload(
+		ID3D12Device *device,
+		ID3D12Resource *texture,
+		ID3D12Resource *upload,
+		UINT subresourceCount,
+		const std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> &layouts)
+	{
+		if (!device || !texture || !upload || subresourceCount == 0)
+			return false;
+		AcquireSRWLockExclusive(&s_uploadLock);
+		if (!EnsureUploadChannel(device)) {
+			ReleaseSRWLockExclusive(&s_uploadLock);
+			return false;
+		}
+		s_uploadAllocator->Reset();
+		s_uploadList->Reset(s_uploadAllocator, nullptr);
+		for (UINT index = 0; index < subresourceCount; ++index) {
+			D3D12_TEXTURE_COPY_LOCATION dst = {};
+			dst.pResource = texture;
+			dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			dst.SubresourceIndex = index;
+			D3D12_TEXTURE_COPY_LOCATION src = {};
+			src.pResource = upload;
+			src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			src.PlacedFootprint = layouts[index];
+			s_uploadList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+		}
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = texture;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barrier.Transition.StateAfter =
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		s_uploadList->ResourceBarrier(1, &barrier);
+		s_uploadList->Close();
+
+		ID3D12CommandList *lists[] = { s_uploadList };
+		s_uploadQueue->ExecuteCommandLists(1, lists);
+		const UINT64 fenceValue = ++s_uploadFenceValue;
+		s_uploadQueue->Signal(s_uploadFence, fenceValue);
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		bool completed = false;
+		if (event) {
+			if (SUCCEEDED(s_uploadFence->SetEventOnCompletion(
+					fenceValue, event))) {
+				const DWORD waitResult = WaitForSingleObject(event, 5000);
+				completed = waitResult == WAIT_OBJECT_0;
+			}
+			CloseHandle(event);
+		} else {
+			completed =
+				s_uploadFence->GetCompletedValue() >= fenceValue;
+		}
+		ReleaseSRWLockExclusive(&s_uploadLock);
+		return completed;
+	}
+
 	static DX12LoadedResource *EnsureTextureResourceRecord(
 		const std::wstring &name)
 	{
@@ -985,26 +1100,20 @@ public:
 
 		D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
 
-		for (UINT index = 0; index < subresourceCount; ++index) {
-			D3D12_TEXTURE_COPY_LOCATION dst = {};
-			dst.pResource = texture;
-			dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-			dst.SubresourceIndex = index;
-			D3D12_TEXTURE_COPY_LOCATION src = {};
-			src.pResource = upload;
-			src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-			src.PlacedFootprint = layouts[index];
-			commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+		// Upload on the private channel (DX11 immediate-context equivalent)
+		// instead of recording CopyTextureRegion + barrier into the game's
+		// command list. The CPU waits for the upload to complete, so the
+		// texture is in SRV state before the game ever submits.
+		if (!ExecuteTextureUpload(
+				device, texture, upload, subresourceCount, layouts)) {
+			upload->Release();
+			texture->Release();
+			srvHeap->Release();
+			DX12LogManager::Fields("DX12DrawSrvReplacement",
+				"stage=texture_load_fail,reason=upload_failed,resource=%S",
+				resource->name.c_str());
+			return false;
 		}
-		D3D12_RESOURCE_BARRIER barrier = {};
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Transition.pResource = texture;
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		barrier.Transition.StateAfter =
-			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-		commandList->ResourceBarrier(1, &barrier);
 
 		resource->drawSrvTextureResource = texture;
 		resource->drawSrvUploadResource = upload;
