@@ -64,6 +64,7 @@ public:
 		LONG64 alreadyEmpty = 0;
 		LONG64 memoHits = 0;
 		LONG64 memoMisses = 0;
+		LONG64 repeatHits = 0;
 
 		void RecordRange(UINT count, bool resolved, bool sameHeap, bool overlaps)
 		{
@@ -78,6 +79,11 @@ public:
 		void RecordMemo(bool hit)
 		{
 			if (hit) ++memoHits; else ++memoMisses;
+		}
+
+		void RecordRepeatHit()
+		{
+			++repeatHits;
 		}
 
 		void RecordResults(
@@ -98,7 +104,8 @@ public:
 				rangeCalls, slots, singleRanges, multiRanges,
 				resolvedRanges, sameHeapRanges, overlapRanges,
 				sourceFound, sourceMissing, changed, unchanged,
-				erased, alreadyEmpty, memoHits, memoMisses);
+				erased, alreadyEmpty, memoHits, memoMisses,
+				repeatHits);
 		}
 	};
 
@@ -850,7 +857,9 @@ public:
 		const DescriptorHeapRecord &sourceHeap,
 		UINT sourceSlot,
 		const DescriptorHeapRecord &destinationHeap,
-		UINT destinationSlot)
+		UINT destinationSlot,
+		UINT64 *sourceVersionOut = nullptr,
+		UINT64 *destinationVersionOut = nullptr)
 	{
 		// Both endpoints came from ResolveHeapSlotFast, which has already checked
 		// activity. The identities below are seqlock snapshots; repeating the two
@@ -866,6 +875,10 @@ public:
 					destinationSlot, &destinationIdentity) ||
 				sourceIdentity.valueId != destinationIdentity.valueId)
 			return CopyIdentityResult::Unknown;
+		if (sourceVersionOut)
+			*sourceVersionOut = sourceIdentity.version;
+		if (destinationVersionOut)
+			*destinationVersionOut = destinationIdentity.version;
 		return sourceIdentity.valueId ?
 			CopyIdentityResult::Unchanged :
 			CopyIdentityResult::SourceMissingDestinationEmpty;
@@ -969,10 +982,88 @@ public:
 		// Keep that case out of the generic range lambdas/loop: under Debug /Od
 		// their call machinery is measurable across thousands of calls per frame.
 		if (count == 1) {
+			// DXVK-style flat snapshot fast path: after any publication the
+			// slot's valueId and completing version are mirrored into a flat
+			// per-slot array. When both slots' versions are unchanged since
+			// their last publication and the valueIds are equal, the
+			// destination already holds the source's exact content: the copy
+			// is a no-op. This is a few relaxed/acquire loads indexed by
+			// slot - no hash table, no capacity limits, no seqlock protocol -
+			// mirroring DXVK's views[slot] != resView comparison.
+			uint64_t flatDestValueId = 0;
+			uint64_t flatSrcValueId = 0;
+			if (srcHeap.stateLocks && destHeap.stateLocks &&
+				destHeap.stateLocks->ReadFlatValueId(
+					destSlot, &flatDestValueId) &&
+				srcHeap.stateLocks->ReadFlatValueId(
+					srcSlot, &flatSrcValueId) &&
+				flatDestValueId == flatSrcValueId) {
+				if (telemetryBatch) {
+					telemetryBatch->RecordRepeatHit();
+					telemetryBatch->RecordMemo(true);
+					telemetryBatch->RecordResults(
+						flatDestValueId ? 1 : 0,
+						flatDestValueId ? 0 : 1,
+						0,
+						flatDestValueId ? 1 : 0,
+						0,
+						flatDestValueId ? 0 : 1);
+				} else {
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						flatDestValueId ? 1 : 0,
+						flatDestValueId ? 0 : 1,
+						0,
+						flatDestValueId ? 1 : 0,
+						0,
+						flatDestValueId ? 0 : 1);
+				}
+				return;
+			}
+			// Single-descriptor copies are 99.5% of all copy ranges. The
+			// 1024-slot RangeMemo below keys on (srcHeap, srcSlot,
+			// destHeap, destSlot) and validates freshness with two cheap
+			// ReadSlotVersion loads instead of the seqlock identity reads.
+			// Games re-issue the same descriptor copies every frame, so the
+			// same pair recurs with unchanged slot versions and the memo
+			// serves the overwhelming majority of calls.
+			UINT memoSourceFound = 0;
+			UINT memoSourceMissing = 0;
+			UINT memoUnchanged = 0;
+			UINT memoAlreadyEmpty = 0;
+			if (RangeMemo().TryLoad(
+					srcHeap, srcSlot, destHeap, destSlot, 1,
+					&memoSourceFound, &memoSourceMissing,
+					&memoUnchanged, &memoAlreadyEmpty)) {
+				if (telemetryBatch) {
+					telemetryBatch->RecordRepeatHit();
+					telemetryBatch->RecordMemo(true);
+					telemetryBatch->RecordResults(
+						memoSourceFound, memoSourceMissing,
+						0, memoUnchanged, 0, memoAlreadyEmpty);
+				} else {
+					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						memoSourceFound, memoSourceMissing,
+						0, memoUnchanged, 0, memoAlreadyEmpty);
+				}
+				return;
+			}
+			UINT64 srcVersion = 0;
+			UINT64 destVersion = 0;
 			const CopyIdentityResult identityResult =
 				ComparePublishedSlotIdentities(
-					srcHeap, srcSlot, destHeap, destSlot);
+					srcHeap, srcSlot, destHeap, destSlot,
+					&srcVersion, &destVersion);
 			if (identityResult != CopyIdentityResult::Unknown) {
+				// Seed the RangeMemo so the next identical copy skips the
+				// seqlock identity reads entirely.
+				RangeMemo().Store(
+					srcHeap, srcSlot, destHeap, destSlot, 1,
+					identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+					identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+					identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+					identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
 				if (telemetryBatch)
 					telemetryBatch->RecordMemo(true);
 				else

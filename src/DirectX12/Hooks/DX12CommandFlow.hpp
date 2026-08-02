@@ -434,6 +434,7 @@ public:
 	inline static volatile LONG64 copyAlreadyEmptySlots = 0;
 	inline static volatile LONG64 copyMemoHits = 0;
 	inline static volatile LONG64 copyMemoMisses = 0;
+	inline static volatile LONG64 copyRepeatHits = 0;
 	inline static volatile LONG64 heapCacheHits = 0;
 
 	// Per-frame copy telemetry is updated on the hottest path in the wrapper
@@ -680,7 +681,8 @@ public:
 		LONG64 sourceFound, LONG64 sourceMissing,
 		LONG64 changed, LONG64 unchanged,
 		LONG64 erased, LONG64 alreadyEmpty,
-		LONG64 memoHits, LONG64 memoMisses)
+		LONG64 memoHits, LONG64 memoMisses,
+		LONG64 repeatHits)
 	{
 		if (rangeCalls) InterlockedExchangeAdd64(&copyRangeCalls, rangeCalls);
 		if (slots) InterlockedExchangeAdd64(&copySlots, slots);
@@ -697,6 +699,7 @@ public:
 		if (alreadyEmpty) InterlockedExchangeAdd64(&copyAlreadyEmptySlots, alreadyEmpty);
 		if (memoHits) InterlockedExchangeAdd64(&copyMemoHits, memoHits);
 		if (memoMisses) InterlockedExchangeAdd64(&copyMemoMisses, memoMisses);
+		if (repeatHits) InterlockedExchangeAdd64(&copyRepeatHits, repeatHits);
 	}
 
 	static void LogAndReset()
@@ -748,6 +751,7 @@ public:
 		const LONG64 alreadyEmpty = InterlockedExchange64(&copyAlreadyEmptySlots, 0);
 		const LONG64 memoHits = InterlockedExchange64(&copyMemoHits, 0);
 		const LONG64 memoMisses = InterlockedExchange64(&copyMemoMisses, 0);
+		const LONG64 repeatHits = InterlockedExchange64(&copyRepeatHits, 0);
 		const LONG64 heapCacheHitCount = InterlockedExchange64(&heapCacheHits, 0);
 		if (heapSharedContentions == 0 && heapExclusiveContentions == 0 &&
 			globalSharedContentions == 0 && globalExclusiveContentions == 0 &&
@@ -764,7 +768,7 @@ public:
 			"\"copySourceMissingSlots\":%lld,\"copyChangedSlots\":%lld,"
 			"\"copyUnchangedSlots\":%lld,\"copyErasedSlots\":%lld,"
 			"\"copyAlreadyEmptySlots\":%lld,"
-			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,\"heapCacheHits\":%lld,"
+			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,\"copyRepeatHits\":%lld,\"heapCacheHits\":%lld,"
 			"\"heapSharedContentions\":%lld,\"heapSharedWaitUs\":%lld,\"heapSharedMaxUs\":%lld,"
 			"\"heapExclusiveContentions\":%lld,\"heapExclusiveWaitUs\":%lld,\"heapExclusiveMaxUs\":%lld,"
 			"\"globalSharedContentions\":%lld,\"globalSharedWaitUs\":%lld,\"globalSharedMaxUs\":%lld,"
@@ -789,6 +793,7 @@ public:
 			static_cast<long long>(alreadyEmpty),
 			static_cast<long long>(memoHits),
 			static_cast<long long>(memoMisses),
+			static_cast<long long>(repeatHits),
 			static_cast<long long>(heapCacheHitCount),
 			static_cast<long long>(heapSharedContentions),
 			static_cast<long long>(heapSharedTicks * 1000000 / frequency),
@@ -839,7 +844,8 @@ public:
 	static void RecordHeapCacheHit() {}
 	static void RecordCopyBatch(
 		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64,
-		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64) {}
+		LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64, LONG64,
+		LONG64) {}
 	static void LogAndReset() {}
 };
 

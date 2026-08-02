@@ -371,6 +371,10 @@ public:
 				slotVersion.store(2, std::memory_order_release);
 			for (std::atomic<uint64_t> &valueId : page->valueIds)
 				valueId.store(0, std::memory_order_release);
+			for (std::atomic<uint64_t> &valueId : page->flatValueIds)
+				valueId.store(0, std::memory_order_release);
+			for (std::atomic<uint64_t> &version : page->flatVersions)
+				version.store(2, std::memory_order_release);
 		}
 	}
 
@@ -407,9 +411,43 @@ public:
 			// Versions are initialized even and only one writer owns this slot.
 			// Advancing from the previous even generation preserves cache-key
 			// invalidation, including wraparound's even parity.
-			slotVersion.store((previous + 2ull) & ~1ull,
+			const uint64_t completedVersion = (previous + 2ull) & ~1ull;
+			slotVersion.store(completedVersion,
 				std::memory_order_release);
+			// Flat snapshot: written after the version store completes so a
+			// reader that observes flatVersions == versions also observes the
+			// matching flatValueIds (same thread store order; relaxed loads
+			// on x86 observe stores in order).
+			page->flatValueIds[slot & (VersionPageSize - 1)].store(
+				valueId, std::memory_order_relaxed);
+			page->flatVersions[slot & (VersionPageSize - 1)].store(
+				completedVersion, std::memory_order_relaxed);
 		}
+	}
+
+	// Lock-free O(1) check: when the slot's version is unchanged since the
+	// last publication, flatValueIds[slot] is the authoritative valueId.
+	// Returns false when the slot was never published or has been republished
+	// (the caller then falls back to the seqlock path).
+	bool ReadFlatValueId(uint32_t slot, uint64_t *valueId) const
+	{
+		if (!valueId || !versionPages_ || slot >= maxSlots_)
+			return false;
+		VersionPage *page = versionPages_[slot / VersionPageSize].load(
+			std::memory_order_acquire);
+		if (!page)
+			return false;
+		const uint32_t offset = slot & (VersionPageSize - 1);
+		const uint64_t flatVersion =
+			page->flatVersions[offset].load(std::memory_order_relaxed);
+		if (flatVersion == 0)
+			return false;
+		if (page->versions[offset].load(std::memory_order_acquire) !=
+			flatVersion)
+			return false;
+		*valueId =
+			page->flatValueIds[offset].load(std::memory_order_relaxed);
+		return true;
 	}
 
 	void BumpHeapVersion()
@@ -488,6 +526,17 @@ private:
 	{
 		std::array<std::atomic<uint64_t>, VersionPageSize> versions;
 		std::array<std::atomic<uint64_t>, VersionPageSize> valueIds;
+		// Flat post-publication snapshots, written after the seqlock version
+		// store completes. Readers compare flatVersions[slot] against the
+		// live versions[slot]: when they match, the slot has not been
+		// republished since the snapshot, so flatValueIds[slot] is the
+		// authoritative current valueId. This gives CopyDescriptorRange a
+		// lock-free O(1) "is dest already identical to src" check indexed by
+		// slot - the same design as DXVK's views[slot] != resView compare -
+		// without the seqlock's three-load read protocol or any hash-table
+		// capacity limits.
+		std::array<std::atomic<uint64_t>, VersionPageSize> flatValueIds;
+		std::array<std::atomic<uint64_t>, VersionPageSize> flatVersions;
 
 		VersionPage()
 		{
@@ -495,6 +544,10 @@ private:
 				version.store(2, std::memory_order_relaxed);
 			for (std::atomic<uint64_t> &valueId : valueIds)
 				valueId.store(0, std::memory_order_relaxed);
+			for (std::atomic<uint64_t> &valueId : flatValueIds)
+				valueId.store(0, std::memory_order_relaxed);
+			for (std::atomic<uint64_t> &version : flatVersions)
+				version.store(2, std::memory_order_relaxed);
 		}
 	};
 
