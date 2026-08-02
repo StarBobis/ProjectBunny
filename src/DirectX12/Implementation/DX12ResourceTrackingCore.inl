@@ -1183,6 +1183,8 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	std::vector<uint8_t> newOccupied;
 	newSlots.resize(slotCount);
 	newOccupied.assign(slotCount, 0);
+	DX12DescriptorShadowTelemetryUtils::RecordSlotAllocation(
+		1, slotCount * (sizeof(DescriptorRecord) + 1));
 
 	if (stateLocks)
 		stateLocks->LockAllExclusive();
@@ -1211,6 +1213,10 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	DX12DescriptorSlotArrayUtils::ClearSparseRecords(record);
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(
 		record, static_cast<LONG64>(sparseCount));
+	// Publish dense readiness before releasing the all-shard lock so any
+	// thread that acquires the flag can safely access slots/occupied.
+	if (record->stateLocks)
+		record->stateLocks->MarkMaterialized();
 	if (stateLocks)
 		stateLocks->UnlockAllExclusive();
 	return true;

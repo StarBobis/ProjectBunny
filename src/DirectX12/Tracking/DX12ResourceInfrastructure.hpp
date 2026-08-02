@@ -351,6 +351,19 @@ public:
 		active_.store(false, std::memory_order_release);
 	}
 
+	// Dense slot arrays are materialized once per heap lifetime and then
+	// stable; a release store here publishes that readiness so lock-free
+	// writers/readers can touch slots/occupied without the shard locks.
+	bool IsMaterialized() const
+	{
+		return materialized_.load(std::memory_order_acquire);
+	}
+
+	void MarkMaterialized()
+	{
+		materialized_.store(true, std::memory_order_release);
+	}
+
 	const SRWLOCK *LockForSlot(uint32_t slot) const
 	{
 		return &locks_[ShardForSlot(slot)].value;
@@ -571,6 +584,7 @@ private:
 		return expected;
 	}
 
+	std::atomic<bool> materialized_{false};
 	std::atomic<bool> active_{true};
 	std::array<LockCell, ShardCount> locks_;
 	// Consumers only need a non-zero token that changes after any Descriptor
@@ -1152,6 +1166,11 @@ struct DescriptorHeapRecord
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	volatile LONG64 liveSlots = 0;
+
+	bool IsMaterialized() const
+	{
+		return stateLocks && stateLocks->IsMaterialized();
+	}
 };
 
 class DX12DescriptorHeapStateUtils
@@ -1845,10 +1864,6 @@ void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper);
 // Returns the cached ResourceRecord for a resource that has an active wrapper,
 // or nullptr.  Skips the gResourceByPtr hash map and gResources array lookup.
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource);
-// Returns a pointer to the shadow descriptor slot for the given CPU handle
-// within a wrapper-backed heap, or nullptr.  Skips gDescriptorByCpuHandle.
-DescriptorRecord *DX12FindDescriptorShadowSlot(
-	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle);
 // IA-hash reuse cache stored on ResourceWrapper.  Returns true and fills
 // *hash on a full match (view params + generations), false otherwise.
 bool DX12TryGetWrapperIaHash(

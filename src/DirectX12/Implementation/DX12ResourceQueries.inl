@@ -2573,21 +2573,41 @@ void DX12FindDescriptorSummariesByHeapSlot(
 		const size_t heapIndex = heapIt->second;
 		DescriptorHeapRecord &record = gDescriptorHeaps[heapIndex];
 		if (record.heap == heap) {
-			for (size_t i = 0; i < count; ++i) {
+		for (size_t i = 0; i < count; ++i) {
 				summaries[i] = DX12DescriptorSummary();
 				const UINT slot = slots[i];
 				if (slot >= record.desc.NumDescriptors)
 					continue;
-				SRWLOCK *slotLock =
-					DX12DescriptorHeapShadowUtils::HeapLock(heapIndex, slot);
-				if (slotLock)
-					DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(slotLock);
 				DescriptorRecord recordCopy;
-				const bool copied =
-					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+				bool copied = false;
+				if (record.IsMaterialized()) {
+					// Lock-free seqlock read for materialized heaps.
+					for (UINT attempt = 0; attempt < 4; ++attempt) {
+						DescriptorHeapRecord::StateLocks::SlotIdentity before;
+						if (!record.stateLocks ||
+								!record.stateLocks->ObserveSlotIdentity(
+									slot, &before))
+							break;
+						copied = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+							record, slot, &recordCopy);
+						DescriptorHeapRecord::StateLocks::SlotIdentity after;
+						if (record.stateLocks->ObserveSlotIdentity(
+								slot, &after) &&
+								before.version == after.version) {
+							break;
+						}
+						copied = false;
+					}
+				} else {
+					SRWLOCK *slotLock =
+						DX12DescriptorHeapShadowUtils::HeapLock(heapIndex, slot);
+					if (slotLock)
+						DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(slotLock);
+					copied = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
 						record, slot, &recordCopy);
-				if (slotLock)
-					ReleaseSRWLockShared(slotLock);
+					if (slotLock)
+						ReleaseSRWLockShared(slotLock);
+				}
 				if (!copied)
 					continue;
 				FillDescriptorSummary(

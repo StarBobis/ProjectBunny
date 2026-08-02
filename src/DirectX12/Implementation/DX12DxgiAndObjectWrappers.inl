@@ -1283,34 +1283,6 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DescriptorHeap*>(this));
-
-				// Cache heap metadata and allocate shadow slots for
-				// lock-free descriptor copy tracking.
-				mDesc = mHeap->GetDesc();
-				mCpuStart =
-					mHeap->GetCPUDescriptorHandleForHeapStart().ptr;
-				{
-					ID3D12Device *device = nullptr;
-					if (SUCCEEDED(mHeap->GetDevice(
-							IID_PPV_ARGS(&device)))) {
-						mIncrement =
-							device->GetDescriptorHandleIncrementSize(
-								mDesc.Type);
-						device->Release();
-					}
-				}
-				mShadowSlots.resize(mDesc.NumDescriptors);
-			}
-
-			UINT GetSlotIndex(SIZE_T cpuHandle) const
-			{
-				if (!mCpuStart || cpuHandle < mCpuStart)
-					return UINT_MAX;
-				const SIZE_T offset = cpuHandle - mCpuStart;
-				const UINT slot = static_cast<UINT>(offset / mIncrement);
-				if (slot >= mShadowSlots.size())
-					return UINT_MAX;
-				return slot;
 			}
 
 			void *GetDescriptorHeapWrapperInterface(REFIID riid)
@@ -1400,10 +1372,6 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 		public:
 			std::atomic<long> mRefCount{1};
 			ID3D12DescriptorHeap *mHeap = nullptr;
-			D3D12_DESCRIPTOR_HEAP_DESC mDesc = {};
-			SIZE_T mCpuStart = 0;
-			UINT mIncrement = 0;
-			std::vector<DescriptorRecord> mShadowSlots;
 		};
 
 		class ResourceWrapper final : public ID3D12Resource2, public WrapperBase

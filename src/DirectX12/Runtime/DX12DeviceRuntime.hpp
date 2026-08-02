@@ -622,6 +622,21 @@ public:
 			ReleaseDescriptorRecordResources(&record);
 			return false;
 		}
+		// Lock-free dense write: materialized heaps have stable arrays and the
+		// seqlock publication makes the write visible to lock-free readers.
+		if (resolvedKnownHeap && resolved.heap &&
+				resolved.heap->IsMaterialized() &&
+				resolved.heap->stateLocks &&
+				resolved.heap->stateLocks->IsActive()) {
+			DescriptorHeapRecord &heap = *resolved.heap;
+			const bool changed =
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&heap, resolved.slot, record, cpuHandle);
+			if (changed)
+				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
+			ReleaseDescriptorRecordResources(&record);
+			return changed;
+		}
 		ResolvedHeapSlot locked;
 		bool lockedKnownHeap = resolvedKnownHeap &&
 			LockResolvedHeapSlotExclusive(resolved, &locked);
@@ -766,6 +781,23 @@ public:
 				resolved.heap->slots.empty()) {
 			EnsureDescriptorHeapStorageLocked(resolved.heap);
 		}
+		// Lock-free dense write once the heap is materialized.
+		if (resolvedKnownHeap && resolved.heap &&
+				resolved.heap->IsMaterialized() &&
+				resolved.heap->stateLocks &&
+				resolved.heap->stateLocks->IsActive()) {
+			DescriptorHeapRecord &heap = *resolved.heap;
+			const DX12DescriptorValue value =
+				DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
+					*desc, valueId);
+			const bool changed =
+				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
+					&heap, resolved.slot, value, destDescriptor.ptr);
+			if (changed)
+				DX12DescriptorHeapStateUtils::BumpVersion(
+					&heap, resolved.slot);
+			return changed;
+		}
 		ResolvedHeapSlot locked;
 		bool lockedKnownHeap = resolvedKnownHeap &&
 			LockResolvedHeapSlotExclusive(resolved, &locked);
@@ -822,12 +854,26 @@ public:
 		DescriptorRecord &&record)
 	{
 		ResolvedHeapSlot resolved;
+		if (!ResolveHeapSlotFast(cpuHandle,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &resolved)) {
+			return false;
+		}
+		DescriptorHeapRecord &heap = *resolved.heap;
+		if (heap.IsMaterialized()) {
+			const bool changed =
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&heap, resolved.slot, record, cpuHandle);
+			if (changed)
+				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
+			ReleaseDescriptorRecordResources(&record);
+			return true;
+		}
+
 		if (!ResolveAndLockHeapSlot(cpuHandle,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, true, &resolved)) {
 			return false;
 		}
 
-		DescriptorHeapRecord &heap = *resolved.heap;
 		const bool changed =
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
 				&heap, resolved.slot, record, cpuHandle);
@@ -849,6 +895,37 @@ public:
 		}
 
 		ResolvedHeapSlot resolved;
+		if (!ResolveHeapSlotFast(cpuHandle, requiredType, &resolved))
+			return false;
+		DescriptorHeapRecord &heap = *resolved.heap;
+		if (heap.IsMaterialized()) {
+			// Lock-free read: copy the dense slot under a seqlock identity
+			// bracket and accept the result only when the version is stable.
+			// Writers publish via the same identity protocol, so no shard
+			// lock is required for materialized heaps.
+			for (UINT attempt = 0; attempt < 4; ++attempt) {
+				DescriptorHeapRecord::StateLocks::SlotIdentity before;
+				if (!heap.stateLocks ||
+						!heap.stateLocks->ObserveSlotIdentity(
+							resolved.slot, &before))
+					break;
+				DescriptorRecord record;
+				const bool found =
+					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+						heap, resolved.slot, &record);
+				DescriptorHeapRecord::StateLocks::SlotIdentity after;
+				if (heap.stateLocks->ObserveSlotIdentity(
+						resolved.slot, &after) &&
+						before.version == after.version) {
+					if (found)
+						*outRecord = std::move(record);
+					return found;
+				}
+			}
+			return false;
+		}
+
+		// Sparse heap or in-flight materialization: locked read path.
 		if (!ResolveAndLockHeapSlot(
 				cpuHandle, requiredType, false, &resolved))
 			return false;
@@ -871,10 +948,34 @@ public:
 		UINT slot = 0;
 		if (!ResolveHeapSlot(cpuHandle, requiredType, &heapIndex, &slot))
 			return false;
+		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+		if (heap.IsMaterialized()) {
+			// Lock-free seqlock read (same protocol as ReadDescriptorFromSlot).
+			for (UINT attempt = 0; attempt < 4; ++attempt) {
+				DescriptorHeapRecord::StateLocks::SlotIdentity before;
+				if (!heap.stateLocks ||
+						!heap.stateLocks->ObserveSlotIdentity(
+							slot, &before))
+					break;
+				DescriptorRecord record;
+				const bool found =
+					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+						heap, slot, &record);
+				DescriptorHeapRecord::StateLocks::SlotIdentity after;
+				if (heap.stateLocks->ObserveSlotIdentity(
+						slot, &after) &&
+						before.version == after.version) {
+					if (found)
+						*outRecord = std::move(record);
+					return found;
+				}
+			}
+			return false;
+		}
 		LockShared(heapIndex, slot);
 		const bool found =
 			DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
-				gDescriptorHeaps[heapIndex], slot, outRecord);
+				heap, slot, outRecord);
 		UnlockShared(heapIndex, slot);
 		return found;
 	}
@@ -1124,6 +1225,54 @@ public:
 				telemetryBatch->RecordMemo(false);
 			else
 				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
+			// Dense fast path: once both heaps have materialized their slot
+			// arrays they are stable for the heap lifetime, so the copy is a
+			// plain seqlock-published write with no shard locks. Sparse heaps
+			// and in-flight materialization keep the locked path below.
+			if (srcHeap.IsMaterialized() &&
+					destHeap.IsMaterialized()) {
+				UINT sourceFound = 0;
+				UINT sourceMissing = 0;
+				UINT changed = 0;
+				UINT unchanged = 0;
+				UINT erased = 0;
+				UINT alreadyEmpty = 0;
+				UINT64 publishedValueId = 0;
+				if (srcHeap.stateLocks->IsActive() &&
+						destHeap.stateLocks->IsActive() &&
+						destSlot < destHeap.desc.NumDescriptors) {
+					const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult copyResult =
+						DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
+							&destHeap, destSlot, srcHeap, srcSlot,
+							destStart.ptr, &publishedValueId);
+					if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
+						sourceFound = 1;
+						changed = 1;
+						DX12DescriptorHeapStateUtils::PublishValue(
+							&destHeap, destSlot, publishedValueId);
+					} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+						sourceFound = 1;
+						unchanged = 1;
+					} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+						sourceMissing = 1;
+						erased = 1;
+						DX12DescriptorHeapStateUtils::PublishValue(
+							&destHeap, destSlot, 0);
+					} else {
+						sourceMissing = 1;
+						alreadyEmpty = 1;
+					}
+				}
+				if (telemetryBatch)
+					telemetryBatch->RecordResults(
+						sourceFound, sourceMissing, changed, unchanged,
+						erased, alreadyEmpty);
+				else
+					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+						sourceFound, sourceMissing, changed, unchanged,
+						erased, alreadyEmpty);
+				return;
+			}
 			// Prefer the dense array path for the destination: materialize it
 			// before any shard lock is taken (all-shard lock is not reentrant
 			// with a held single shard).
@@ -1452,6 +1601,42 @@ public:
 		};
 
 		if (!overlaps) {
+			// Lock-free dense path: materialized heaps have stable arrays, so
+			// each dirty slot is copied and published directly. In-flight
+			// materialization and sparse heaps use the locked dirty-span path.
+			if (srcHeap.IsMaterialized() &&
+					destHeap.IsMaterialized()) {
+				for (UINT i = 0; i < count; ++i) {
+					const CopyIdentityResult identityResult =
+						ComparePublishedSlotIdentities(
+							srcHeap, srcSlot + i, destHeap, destSlot + i);
+					if (identityResult == CopyIdentityResult::Unchanged) {
+						++sourceFoundCount;
+						++unchangedCount;
+						continue;
+					}
+					if (identityResult ==
+							CopyIdentityResult::SourceMissingDestinationEmpty) {
+						++sourceMissingCount;
+						++alreadyEmptyCount;
+						continue;
+					}
+					const UINT currentDestSlot = destSlot + i;
+					const SIZE_T destHandle = destStart.ptr +
+						static_cast<SIZE_T>(i) * destHeap.increment;
+					UINT64 publishedValueId = 0;
+					accountCopyResult(
+						DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
+							&destHeap,
+							currentDestSlot,
+							srcHeap,
+							srcSlot + i,
+							destHandle,
+							&publishedValueId),
+						currentDestSlot,
+						publishedValueId);
+				}
+			} else {
 			// The overwhelmingly common path, especially CopyDescriptorsSimple:
 			// first classify contiguous dirty spans with published identities, then
 			// hold the involved shard locks once per dirty run instead of once per
@@ -1530,6 +1715,7 @@ public:
 			}
 			if (rangeAborted)
 				return;
+			}
 		} else {
 			// Snapshot first so an overlapping same-heap copy cannot overwrite a
 			// later source. Unknown sources deliberately clear stale destinations.
@@ -1683,6 +1869,17 @@ public:
 		if (!cpuHandle)
 			return false;
 		ResolvedHeapSlot resolved;
+		if (ResolveHeapSlotFast(cpuHandle,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &resolved) &&
+				resolved.heap->IsMaterialized()) {
+			const bool erased = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+				resolved.heap, resolved.slot);
+			if (erased) {
+				DX12DescriptorHeapStateUtils::BumpVersion(
+					resolved.heap, resolved.slot);
+			}
+			return erased;
+		}
 		if (ResolveAndLockHeapSlot(cpuHandle,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, true, &resolved)) {
 			const bool erased = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(

@@ -436,6 +436,12 @@ public:
 	inline static volatile LONG64 copyMemoMisses = 0;
 	inline static volatile LONG64 copyRepeatHits = 0;
 	inline static volatile LONG64 heapCacheHits = 0;
+	inline static volatile LONG64 copyCallsCbvSrvUav = 0;
+	inline static volatile LONG64 copyCallsSampler = 0;
+	inline static volatile LONG64 copyCallsRtv = 0;
+	inline static volatile LONG64 copyCallsDsv = 0;
+	inline static volatile LONG64 slotAllocations = 0;
+	inline static volatile LONG64 slotAllocationBytes = 0;
 
 	// Per-frame copy telemetry is updated on the hottest path in the wrapper
 	// (every descriptor range the game copies - tens of thousands per frame).
@@ -472,6 +478,10 @@ public:
 		LONG64 memoHits = 0;
 		LONG64 memoMisses = 0;
 		LONG64 heapCacheHits = 0; // global set-associative heap cache hits
+		LONG64 copyCallsCbvSrvUav = 0;
+		LONG64 copyCallsSampler = 0;
+		LONG64 copyCallsRtv = 0;
+		LONG64 copyCallsDsv = 0;
 	};
 
 	static constexpr UINT TlsBlockCount = 64;
@@ -523,6 +533,35 @@ public:
 			++counters.sameHeapRangeCalls;
 		if (overlaps)
 			++counters.overlapRangeCalls;
+	}
+
+	static void RecordCopyTypeCall(D3D12_DESCRIPTOR_HEAP_TYPE type)
+	{
+		TlsCopyCounters &counters = TlsCopyCountersRef();
+		switch (type) {
+		case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
+			++counters.copyCallsCbvSrvUav;
+			break;
+		case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
+			++counters.copyCallsSampler;
+			break;
+		case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
+			++counters.copyCallsRtv;
+			break;
+		case D3D12_DESCRIPTOR_HEAP_TYPE_DSV:
+			++counters.copyCallsDsv;
+			break;
+		default:
+			break;
+		}
+	}
+
+	// Shadow slot array materialization is rare (once per heap) but can be
+	// MBs-sized on the game thread; count it so the cost is visible.
+	static void RecordSlotAllocation(UINT64 count, UINT64 bytes)
+	{
+		InterlockedExchangeAdd64(&slotAllocations, count);
+		InterlockedExchangeAdd64(&slotAllocationBytes, bytes);
 	}
 
 	static void RecordCopyResults(
@@ -589,6 +628,10 @@ public:
 			InterlockedExchangeAdd64(&copyMemoHits, block.memoHits);
 			InterlockedExchangeAdd64(&copyMemoMisses, block.memoMisses);
 			InterlockedExchangeAdd64(&heapCacheHits, block.heapCacheHits);
+			InterlockedExchangeAdd64(&copyCallsCbvSrvUav, block.copyCallsCbvSrvUav);
+			InterlockedExchangeAdd64(&copyCallsSampler, block.copyCallsSampler);
+			InterlockedExchangeAdd64(&copyCallsRtv, block.copyCallsRtv);
+			InterlockedExchangeAdd64(&copyCallsDsv, block.copyCallsDsv);
 			block = TlsCopyCounters();
 		}
 	}
@@ -753,6 +796,12 @@ public:
 		const LONG64 memoMisses = InterlockedExchange64(&copyMemoMisses, 0);
 		const LONG64 repeatHits = InterlockedExchange64(&copyRepeatHits, 0);
 		const LONG64 heapCacheHitCount = InterlockedExchange64(&heapCacheHits, 0);
+		const LONG64 typeCbvSrvUav = InterlockedExchange64(&copyCallsCbvSrvUav, 0);
+		const LONG64 typeSampler = InterlockedExchange64(&copyCallsSampler, 0);
+		const LONG64 typeRtv = InterlockedExchange64(&copyCallsRtv, 0);
+		const LONG64 typeDsv = InterlockedExchange64(&copyCallsDsv, 0);
+		const LONG64 slotAllocationsCount = InterlockedExchange64(&slotAllocations, 0);
+		const LONG64 slotAllocationBytesCount = InterlockedExchange64(&slotAllocationBytes, 0);
 		if (heapSharedContentions == 0 && heapExclusiveContentions == 0 &&
 			globalSharedContentions == 0 && globalExclusiveContentions == 0 &&
 			misses == 0 && failures == 0 && fallbacks == 0 && ranges == 0)
@@ -769,6 +818,8 @@ public:
 			"\"copyUnchangedSlots\":%lld,\"copyErasedSlots\":%lld,"
 			"\"copyAlreadyEmptySlots\":%lld,"
 			"\"copyMemoHits\":%lld,\"copyMemoMisses\":%lld,\"copyRepeatHits\":%lld,\"heapCacheHits\":%lld,"
+			"\"copyTypeCbvSrvUav\":%lld,\"copyTypeSampler\":%lld,\"copyTypeRtv\":%lld,\"copyTypeDsv\":%lld,"
+			"\"slotAllocations\":%lld,\"slotAllocationBytes\":%lld,"
 			"\"heapSharedContentions\":%lld,\"heapSharedWaitUs\":%lld,\"heapSharedMaxUs\":%lld,"
 			"\"heapExclusiveContentions\":%lld,\"heapExclusiveWaitUs\":%lld,\"heapExclusiveMaxUs\":%lld,"
 			"\"globalSharedContentions\":%lld,\"globalSharedWaitUs\":%lld,\"globalSharedMaxUs\":%lld,"
@@ -795,6 +846,12 @@ public:
 			static_cast<long long>(memoMisses),
 			static_cast<long long>(repeatHits),
 			static_cast<long long>(heapCacheHitCount),
+			static_cast<long long>(typeCbvSrvUav),
+			static_cast<long long>(typeSampler),
+			static_cast<long long>(typeRtv),
+			static_cast<long long>(typeDsv),
+			static_cast<long long>(slotAllocationsCount),
+			static_cast<long long>(slotAllocationBytesCount),
 			static_cast<long long>(heapSharedContentions),
 			static_cast<long long>(heapSharedTicks * 1000000 / frequency),
 			static_cast<long long>(heapSharedMaxTicks * 1000000 / frequency),
@@ -839,6 +896,8 @@ public:
 	static void RecordResolveFailure() {}
 	static void RecordFallback(UINT) {}
 	static void RecordCopyRange(UINT, bool, bool, bool) {}
+	static void RecordCopyTypeCall(D3D12_DESCRIPTOR_HEAP_TYPE) {}
+	static void RecordSlotAllocation(UINT64, UINT64) {}
 	static void RecordCopyResults(UINT, UINT, UINT, UINT, UINT, UINT) {}
 	static void RecordCopyMemo(bool) {}
 	static void RecordHeapCacheHit() {}

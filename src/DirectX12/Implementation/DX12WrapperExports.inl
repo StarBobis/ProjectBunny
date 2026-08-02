@@ -455,30 +455,6 @@ ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)
 	return rec;
 }
 
-DescriptorRecord *FindDescriptorShadowSlot(
-	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle)
-{
-	if (!heap || !cpuHandle)
-		return nullptr;
-	WrapperBase *base = WrapperBase::FindByWrapperPointer(
-		static_cast<IUnknown*>(heap));
-	if (!base)
-		return nullptr;
-	DescriptorHeapWrapper *dhw = dynamic_cast<DescriptorHeapWrapper*>(base);
-	if (!dhw) {
-		base->ReleaseLookupReference();
-		return nullptr;
-	}
-	const UINT slot = dhw->GetSlotIndex(cpuHandle);
-	if (slot == UINT_MAX) {
-		base->ReleaseLookupReference();
-		return nullptr;
-	}
-	DescriptorRecord *rec = &dhw->mShadowSlots[slot];
-	base->ReleaseLookupReference();
-	return rec;
-}
-
 static ResourceWrapper *FindWrapperCoveringGpuVaLocked(UINT64 gpuVa)
 {
 	if (!gpuVa)
@@ -537,10 +513,12 @@ void StoreWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
 	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash)
 {
-	AcquireSRWLockShared(&gGpuVaWrappersLock);
+	// Writes mIaHashCache entries, so the exclusive side of the lock is
+	// required even though the covering-wrapper lookup itself is read-only.
+	AcquireSRWLockExclusive(&gGpuVaWrappersLock);
 	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaLocked(gpuVa);
 	if (!wrapper) {
-		ReleaseSRWLockShared(&gGpuVaWrappersLock);
+		ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
 		return;
 	}
 	ResourceWrapper::IaHashCacheEntry *freeEntry = nullptr;
@@ -561,7 +539,7 @@ void StoreWrapperIaHash(
 	freeEntry->resolveGeneration = resolveGeneration;
 	freeEntry->hash = hash;
 	freeEntry->valid = true;
-	ReleaseSRWLockShared(&gGpuVaWrappersLock);
+	ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
 }
 
 }
@@ -569,12 +547,6 @@ void StoreWrapperIaHash(
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource)
 {
 	return DX12Wrapper::FindWrapperResourceRecord(resource);
-}
-
-DescriptorRecord *DX12FindDescriptorShadowSlot(
-	ID3D12DescriptorHeap *heap, SIZE_T cpuHandle)
-{
-	return DX12Wrapper::FindDescriptorShadowSlot(heap, cpuHandle);
 }
 
 bool DX12TryGetWrapperIaHash(

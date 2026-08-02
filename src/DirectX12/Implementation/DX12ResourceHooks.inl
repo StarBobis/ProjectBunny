@@ -635,6 +635,13 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	if (!DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() ||
 			!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
 		return;
+	DX12DescriptorShadowTelemetryUtils::RecordCopyTypeCall(descriptorHeapsType);
+	// Mod descriptor matching (match_cs_t0_hash / PreSkin UAV probe) only
+	// reads the CBV/SRV/UAV shadow; RTV/DSV/Sampler copies are pure overhead
+	// unless a capture/hunt pass needs the full descriptor history.
+	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+		return;
 
 	UINT destRange = 0;
 	UINT srcRange = 0;
@@ -726,6 +733,10 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
 	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking()) {
+		DX12DescriptorShadowTelemetryUtils::RecordCopyTypeCall(descriptorHeapsType);
+		if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+			return;
 		if (numDescriptors != 0 &&
 				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
 			return;
