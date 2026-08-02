@@ -1633,6 +1633,17 @@ public:
 	// PSO shader override metadata on every command.
 	DX12SimulateContextDrawExecutionTemplate drawDecision;
 
+	// Static replacement template cache, deliberately independent of
+	// drawDecision: drawDecision.Reset() runs on every PSO transition, which
+	// would discard an otherwise reusable replacement template (the game
+	// changes PSO thousands of times per frame, so the template would be
+	// regenerated on every encounter of the same PSO). Keyed by PSO pointer +
+	// reload generation; a stale PSO pointer is only ever compared, never
+	// dereferenced, matching the existing drawDecision.pipelineState pattern.
+	ID3D12PipelineState *staticReplacementPso = nullptr;
+	UINT64 staticReplacementReloadGeneration = 0;
+	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
+
 	// Cached device pointer to eliminate per-draw AcquireModDevice QI overhead.
 	// Set during Reset from the command list; device must outlive the command list
 	// per DX12 spec (device -> command list is a parent-child relationship).

@@ -306,6 +306,9 @@ bool DX12ModTryLoadStaticReplacementForPso(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration,
 	DX12ModIaReplacement *replacement);
+std::shared_ptr<const DX12ModIaReplacement> DX12ModFindStaticReplacementSnapshotForPso(
+	ID3D12PipelineState *pipelineState,
+	UINT64 reloadGeneration);
 bool DX12ModApplyDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	DX12ModIaReplacement *replacement,

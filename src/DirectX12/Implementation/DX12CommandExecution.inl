@@ -390,6 +390,170 @@ public:
 
 static thread_local DX12DirectDescriptorPrefilterCache tlsDirectDescriptorPrefilterCache;
 
+// Draw-prefilter SRV resolution cache. Collecting and hashing the current
+// graphics SRV bindings is the dominant per-draw cost of descriptor-target
+// overrides. The collection result depends only on the bound root tables and
+// the referenced descriptor contents - NOT on the PSO or draw arguments
+// (the compiled target plan is applied afterwards, per draw). The cache is
+// validated per draw against (a) the root signature (its register mapping
+// defines the collection), (b) the resident root-table GPU handles, and
+// (c) the observed descriptor slots' published identities. All three come
+// from the wrapper's own tracking, so a hit is exactly as correct as a fresh
+// collection; this mirrors the DX11 model of bind-time state instead of a
+// per-draw rebuild.
+struct PrefilterSrvResolutionCacheEntry
+{
+	bool valid = false;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 textureHashGeneration = 0;
+	ID3D12RootSignature *graphicsRootSignature = nullptr;
+	UINT64 descriptorQuerySerial = 0;
+	// stageIndex 0 = graphics (all SRV bindings), 1 = compute (unused here).
+	std::vector<DX12CurrentShaderResourceBinding> bindings[2];
+	std::vector<DX12ResolvedGraphicsSrvBinding> hashed[2];
+	ID3D12DescriptorHeap *observedHeap = nullptr;
+	std::vector<UINT> observedSlots;
+	std::vector<UINT64> observedSlotVersions;
+	std::vector<UINT64> observedSlotValueIds;
+};
+static thread_local PrefilterSrvResolutionCacheEntry tlsPrefilterSrvResolutionCache;
+
+static bool PrefilterSrvCacheTryLoad(
+	ID3D12GraphicsCommandList *commandList,
+	DX12SimulateContext *runtimeState,
+	UINT stageIndex,
+	UINT64 reloadGeneration,
+	std::vector<DX12ResolvedGraphicsSrvBinding> *outHashed)
+{
+	PrefilterSrvResolutionCacheEntry &cache = tlsPrefilterSrvResolutionCache;
+	if (!cache.valid || !outHashed || !runtimeState ||
+	    cache.commandList != commandList ||
+	    cache.reloadGeneration != reloadGeneration ||
+	    cache.textureHashGeneration != DX12GetTextureHashGeneration() ||
+	    cache.graphicsRootSignature != runtimeState->graphicsRootSignature)
+		return false;
+
+	// Root tables must still hold the exact GPU handles observed at fill.
+	for (UINT s = 0; s < 2; ++s) {
+		for (const DX12CurrentShaderResourceBinding &binding : cache.bindings[s]) {
+			if (binding.rootParameterIndex >= MaxRootParameters)
+				return false;
+			const RootTableState &table =
+				runtimeState->graphicsRootTables[binding.rootParameterIndex];
+			if (!table.valid ||
+			    table.baseDescriptor.ptr != binding.tableGpuStart.ptr)
+				return false;
+		}
+	}
+
+	// Observed descriptor slots must still hold the same published content.
+	// The query-serial gate skips the slot reads entirely when no descriptor
+	// write happened since the fill (the common case between draws).
+	if (!cache.observedSlots.empty()) {
+		const UINT64 serialBefore = CurrentDescriptorQuerySerial();
+		if (cache.descriptorQuerySerial != serialBefore) {
+			if (!cache.observedHeap)
+				return false;
+			constexpr size_t StackIdentityCount = 64;
+			std::array<UINT64, StackIdentityCount> stackVersions;
+			std::array<UINT64, StackIdentityCount> stackValueIds;
+			static thread_local std::vector<UINT64> tlsVersions;
+			static thread_local std::vector<UINT64> tlsValueIds;
+			UINT64 *versions = stackVersions.data();
+			UINT64 *valueIds = stackValueIds.data();
+			const size_t count = cache.observedSlots.size();
+			if (count > StackIdentityCount) {
+				tlsVersions.resize(count);
+				tlsValueIds.resize(count);
+				versions = tlsVersions.data();
+				valueIds = tlsValueIds.data();
+			}
+			if (!DX12GetDescriptorSlotIdentities(
+					cache.observedHeap,
+					cache.observedSlots.data(),
+					count,
+					versions,
+					valueIds))
+				return false;
+			for (size_t index = 0; index < count; ++index) {
+				if (versions[index] != cache.observedSlotVersions[index] ||
+				    valueIds[index] != cache.observedSlotValueIds[index])
+					return false;
+			}
+			const UINT64 serialAfter = CurrentDescriptorQuerySerial();
+			if (serialAfter != serialBefore)
+				return false;
+			cache.descriptorQuerySerial = serialAfter;
+		}
+	}
+
+	*outHashed = cache.hashed[stageIndex];
+	return true;
+}
+
+static void PrefilterSrvCacheStore(
+	ID3D12GraphicsCommandList *commandList,
+	DX12SimulateContext *runtimeState,
+	UINT stageIndex,
+	UINT64 reloadGeneration,
+	const std::vector<DX12CurrentShaderResourceBinding> &bindings,
+	const std::vector<DX12ResolvedGraphicsSrvBinding> &hashed)
+{
+	PrefilterSrvResolutionCacheEntry &cache = tlsPrefilterSrvResolutionCache;
+	cache.valid = false;
+	if (!runtimeState || bindings.empty() || hashed.empty())
+		return;
+
+	cache.bindings[stageIndex] = bindings;
+	cache.hashed[stageIndex] = hashed;
+	cache.commandList = commandList;
+	cache.reloadGeneration = reloadGeneration;
+	cache.textureHashGeneration = DX12GetTextureHashGeneration();
+	cache.graphicsRootSignature = runtimeState->graphicsRootSignature;
+	cache.descriptorQuerySerial = CurrentDescriptorQuerySerial();
+	cache.observedHeap = nullptr;
+	cache.observedSlots.clear();
+	cache.observedSlotVersions.clear();
+	cache.observedSlotValueIds.clear();
+
+	// Cache only when every binding can be identity-validated: table-based
+	// bindings with a resolvable CPU handle and a published slot identity.
+	// Any binding that fails (inline root descriptor, unresolvable handle,
+	// unpublished slot, multiple heaps) disables caching for the entry.
+	ID3D12DescriptorHeap *observedHeap = nullptr;
+	for (const DX12CurrentShaderResourceBinding &binding : bindings) {
+		if (binding.rootDescriptor || binding.tableCpuStart == 0 ||
+		    binding.descriptorIncrement == 0)
+			return;
+		const SIZE_T cpuHandle = binding.tableCpuStart +
+			static_cast<SIZE_T>(binding.descriptorOffset) *
+				binding.descriptorIncrement;
+		DX12DescriptorHeapShadowUtils::ResolvedHeapSlot resolved;
+		if (!DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
+				cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &resolved) ||
+		    !resolved.heap || !resolved.heap->stateLocks)
+			return;
+		DescriptorHeapRecord::StateLocks::SlotIdentity identity;
+		if (!resolved.heap->stateLocks->ObserveSlotIdentity(
+				resolved.slot, &identity) ||
+		    identity.valueId == 0)
+			return;
+		if (!observedHeap) {
+			observedHeap = resolved.heap->heap;
+		} else if (observedHeap != resolved.heap->heap) {
+			return;
+		}
+		cache.observedSlots.push_back(resolved.slot);
+		cache.observedSlotVersions.push_back(identity.version);
+		cache.observedSlotValueIds.push_back(identity.valueId);
+	}
+	if (!observedHeap || cache.observedSlots.empty())
+		return;
+	cache.observedHeap = observedHeap;
+	cache.valid = true;
+}
+
 static void ResolveGraphicsSrvBindings(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12Device *cachedDevice,
@@ -4286,40 +4450,87 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		const int stageIndex = compute ? 1 : 0;
 		if (!resolvedBindingsLoaded[stageIndex][rangeIndex]) {
 			resolvedBindingsLoaded[stageIndex][rangeIndex] = true;
-			resolvedBindingsFound[stageIndex][rangeIndex] =
-				DX12BindingTracker::GetCurrentShaderResourceBindings(
-					commandList,
-					compute,
-					rangeType,
-					&resolvedBindings[stageIndex][rangeIndex]) &&
-				!resolvedBindings[stageIndex][rangeIndex].empty();
-			if (resolvedBindingsFound[stageIndex][rangeIndex]) {
-				if (compute) {
-					graphicsRootDependenciesKnown = false;
-				} else {
-					for (const DX12CurrentShaderResourceBinding &binding :
-						 resolvedBindings[stageIndex][rangeIndex]) {
-						if (binding.rootParameterIndex >= graphicsRootSeen.size()) {
+			// SRV-range graphics targets: reuse the cached resolution when the
+			// root tables and observed descriptor slots are unchanged. The
+			// cached result is PSO/draw-argument independent - the compiled
+			// target plan is applied below, per draw.
+			const bool srvGraphicsCacheable =
+				!compute && rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			if (srvGraphicsCacheable &&
+			    PrefilterSrvCacheTryLoad(
+				    commandList,
+				    runtimeState,
+				    stageIndex,
+				    reloadGeneration,
+				    &hashedBindings[stageIndex][rangeIndex])) {
+				resolvedBindingsFound[stageIndex][rangeIndex] =
+					!hashedBindings[stageIndex][rangeIndex].empty();
+				if (resolvedBindingsFound[stageIndex][rangeIndex]) {
+					for (const DX12ResolvedGraphicsSrvBinding &resolved :
+					     hashedBindings[stageIndex][rangeIndex]) {
+						if (resolved.binding.rootParameterIndex >=
+						    graphicsRootSeen.size()) {
 							graphicsRootDependenciesKnown = false;
 							break;
 						}
-						graphicsRootSeen[binding.rootParameterIndex] = true;
+						graphicsRootSeen[
+							resolved.binding.rootParameterIndex] = true;
 					}
+					AppendResolvedBindingsToDescriptorTextureOverrideCache(
+						snapshot,
+						hashedBindings[stageIndex][rangeIndex],
+						target.kind,
+						compute,
+						tlsAllowedSectionIds,
+						&candidateMatchesByTarget);
+				} else {
+					graphicsRootDependenciesKnown = false;
 				}
-				ResolveGraphicsSrvBindings(
-					commandList,
-					cachedDevice,
-					resolvedBindings[stageIndex][rangeIndex],
-					&hashedBindings[stageIndex][rangeIndex]);
-				AppendResolvedBindingsToDescriptorTextureOverrideCache(
-					snapshot,
-					hashedBindings[stageIndex][rangeIndex],
-					target.kind,
-					compute,
-					tlsAllowedSectionIds,
-					&candidateMatchesByTarget);
 			} else {
-				graphicsRootDependenciesKnown = false;
+				resolvedBindingsFound[stageIndex][rangeIndex] =
+					DX12BindingTracker::GetCurrentShaderResourceBindings(
+						commandList,
+						compute,
+						rangeType,
+						&resolvedBindings[stageIndex][rangeIndex]) &&
+					!resolvedBindings[stageIndex][rangeIndex].empty();
+				if (resolvedBindingsFound[stageIndex][rangeIndex]) {
+					if (compute) {
+						graphicsRootDependenciesKnown = false;
+					} else {
+						for (const DX12CurrentShaderResourceBinding &binding :
+						     resolvedBindings[stageIndex][rangeIndex]) {
+							if (binding.rootParameterIndex >= graphicsRootSeen.size()) {
+								graphicsRootDependenciesKnown = false;
+								break;
+							}
+							graphicsRootSeen[binding.rootParameterIndex] = true;
+						}
+					}
+					ResolveGraphicsSrvBindings(
+						commandList,
+						cachedDevice,
+						resolvedBindings[stageIndex][rangeIndex],
+						&hashedBindings[stageIndex][rangeIndex]);
+					if (srvGraphicsCacheable) {
+						PrefilterSrvCacheStore(
+							commandList,
+							runtimeState,
+							stageIndex,
+							reloadGeneration,
+							resolvedBindings[stageIndex][rangeIndex],
+							hashedBindings[stageIndex][rangeIndex]);
+					}
+					AppendResolvedBindingsToDescriptorTextureOverrideCache(
+						snapshot,
+						hashedBindings[stageIndex][rangeIndex],
+						target.kind,
+						compute,
+						tlsAllowedSectionIds,
+						&candidateMatchesByTarget);
+				} else {
+					graphicsRootDependenciesKnown = false;
+				}
 			}
 		}
 		if (!resolvedBindingsFound[stageIndex][rangeIndex])
