@@ -1,4 +1,5 @@
 #include "Resources/DX12ResourceFileIO.hpp"
+#include <algorithm>
 #include <chrono>
 #include "Mods/DX12ModInterfaces.hpp"
 #include "Mods/DX12ConfigResources.hpp"

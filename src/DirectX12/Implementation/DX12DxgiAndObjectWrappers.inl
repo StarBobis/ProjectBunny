@@ -1387,6 +1387,38 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				RegisterWrapperPointer(static_cast<ID3D12Resource*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Resource1*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Resource2*>(this));
+
+				// Cache the resource record eagerly so GPU VA lookups can
+				// resolve through the sorted gGpuVaWrappers vector instead of
+				// the pointer-chasing std::map gBufferResourceByGpuVa.
+				mRecord.resource = mResource;
+				mRecord.desc = mResource->GetDesc();
+				if (mRecord.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+					mRecord.gpuVirtualAddress =
+						mResource->GetGPUVirtualAddress();
+					mRecord.size = mRecord.desc.Width;
+					mRecord.gpuVirtualAddressRealEnd =
+						mRecord.gpuVirtualAddress + mRecord.size;
+					mRecord.gpuVirtualAddressOobEnd =
+						mRecord.gpuVirtualAddressRealEnd;
+					if (mRecord.gpuVirtualAddress && mRecord.size) {
+						RegisterGpuVaWrapper(
+							mRecord.gpuVirtualAddress,
+							static_cast<void*>(this),
+							&mRecord);
+						mVaRegistered = true;
+					}
+				}
+			}
+
+			~ResourceWrapper()
+			{
+				if (mVaRegistered) {
+					UnregisterGpuVaWrapper(
+						mRecord.gpuVirtualAddress,
+						static_cast<void*>(this));
+					mVaRegistered = false;
+				}
 			}
 
 			HRESULT QueryResource1(ID3D12Resource1 **resource)
@@ -1575,6 +1607,10 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 		public:
 			std::atomic<long> mRefCount{1};
 			ID3D12Resource *mResource = nullptr;
+			ResourceRecord mRecord = {};
+			bool mVaRegistered = false;
+
+			ResourceRecord *GetResourceRecord() override { return &mRecord; }
 		};
 
 		class HeapWrapper final : public ID3D12Heap, public WrapperBase

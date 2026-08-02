@@ -1,4 +1,5 @@
 #include "Mods/DX12ConfigResources.hpp"
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>

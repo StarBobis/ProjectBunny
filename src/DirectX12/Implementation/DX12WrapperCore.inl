@@ -647,6 +647,11 @@ namespace DX12Wrapper
 			}
 
 		public:
+			// Returns the cached ResourceRecord for ResourceWrapper subclasses,
+			// or nullptr for non-resource wrappers.  Used by the fast lookup path
+			// to skip gResourceByPtr hash map searches.
+			virtual ResourceRecord *GetResourceRecord() { return nullptr; }
+
 			IUnknown *mObject = nullptr;
 			IUnknown *mIdentity = nullptr;
 			std::vector<IUnknown*> mWrapperPointers;

@@ -735,6 +735,10 @@ void DX12RecordPsoRootSignature(
 void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers);
 bool DX12ResolveBufferResourceByGpuVa(
 	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary);
+// Fast path: try GPU VA → ResourceWrapper lookup (sorted vector) before
+// falling back to the full gBufferResourceByGpuVa std::map search.
+bool DX12TryResolveFromGpuVaWrapper(
+	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary);
 const char *DX12DiagnoseBufferResolveByGpuVa(
 	UINT64 gpuVirtualAddress, UINT64 size,
 	UINT64 *nearestBegin, UINT64 *nearestEnd, UINT64 *nearestResource);

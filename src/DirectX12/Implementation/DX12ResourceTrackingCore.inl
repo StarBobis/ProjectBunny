@@ -866,6 +866,8 @@ std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 static std::vector<std::vector<ID3D12Resource*>> gResourceAliasesByIndex;
 std::map<UINT64, size_t> gBufferResourceByGpuVa;
 std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+std::vector<GpuVaWrapperEntry> gGpuVaWrappers;
+SRWLOCK gGpuVaWrappersLock = SRWLOCK_INIT;
 std::atomic<UINT64> gBufferResolveGeneration{1};
 std::atomic<UINT64> gResourceIdentityGeneration{1};
 std::atomic<UINT64> gDescriptorQuerySerial{1};
@@ -892,6 +894,105 @@ UINT64 gBufferResolveGlobalHits = 0;
 UINT64 gBufferResolveBackwardScanHits = 0;
 UINT64 gBufferResolveMisses = 0;
 UINT64 gBufferResolveFallbackScanHits = 0;
+
+void RegisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, const ResourceRecord *record)
+{
+	if (!gpuVa || !wrapper || !record)
+		return;
+	AcquireSRWLockExclusive(&gGpuVaWrappersLock);
+	GpuVaWrapperEntry entry{gpuVa, wrapper, record};
+	auto it = std::lower_bound(gGpuVaWrappers.begin(), gGpuVaWrappers.end(), entry,
+		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) { return a.gpuVa < b.gpuVa; });
+	gGpuVaWrappers.insert(it, entry);
+	ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
+}
+
+void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper)
+{
+	if (!gpuVa || !wrapper)
+		return;
+	AcquireSRWLockExclusive(&gGpuVaWrappersLock);
+	GpuVaWrapperEntry entry{gpuVa, wrapper};
+	auto it = std::lower_bound(gGpuVaWrappers.begin(), gGpuVaWrappers.end(), entry,
+		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) { return a.gpuVa < b.gpuVa; });
+	while (it != gGpuVaWrappers.end() && it->gpuVa == gpuVa) {
+		if (it->wrapper == wrapper) {
+			gGpuVaWrappers.erase(it);
+			break;
+		}
+		++it;
+	}
+	ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
+}
+
+// Fast path: resolve GPU VA from the sorted gGpuVaWrappers vector using the
+// cached ResourceRecord pointer stored in each entry.  Avoids both the
+// std::map red-black tree and the gResources array indirection.
+bool DX12TryResolveFromGpuVaWrapper(
+	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary)
+{
+	if (!summary || gpuVirtualAddress == 0)
+		return false;
+
+	*summary = DX12BufferResourceSummary();
+	const UINT64 requestedEnd = gpuVirtualAddress + size;
+	if (requestedEnd < gpuVirtualAddress)
+		return false;
+
+	AcquireSRWLockShared(&gGpuVaWrappersLock);
+	GpuVaWrapperEntry key{gpuVirtualAddress, nullptr, nullptr};
+	auto it = std::lower_bound(
+		gGpuVaWrappers.begin(), gGpuVaWrappers.end(), key,
+		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) {
+			return a.gpuVa < b.gpuVa;
+		});
+
+	if (it != gGpuVaWrappers.begin() &&
+		(it == gGpuVaWrappers.end() || it->gpuVa > gpuVirtualAddress))
+		--it;
+
+	const ResourceRecord *best = nullptr;
+	for (; it != gGpuVaWrappers.end() && it->gpuVa <= gpuVirtualAddress; ++it) {
+		const ResourceRecord *rec = it->record;
+		if (!rec || !rec->resource)
+			continue;
+		if (rec->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+			continue;
+		const UINT64 begin = rec->gpuVirtualAddress;
+		const UINT64 end = rec->gpuVirtualAddressRealEnd;
+		if (begin == 0 || end <= begin)
+			continue;
+		if (gpuVirtualAddress < begin || gpuVirtualAddress >= end)
+			continue;
+		best = rec;
+		break;
+	}
+
+	if (!best) {
+		ReleaseSRWLockShared(&gGpuVaWrappersLock);
+		return false;
+	}
+
+	summary->resource = best->resource;
+	summary->resourceGeneration = best->identityGeneration;
+	summary->publishedState = best->publishedState;
+	summary->resourceDesc = best->desc;
+	summary->hasResourceDesc = true;
+	summary->resourceHeapType = best->hasHeapType ?
+		static_cast<UINT>(best->heapType) : 0;
+	summary->hasResourceHeapType = best->hasHeapType;
+	summary->gpuVirtualAddress = best->gpuVirtualAddress;
+	summary->resourceOffset = gpuVirtualAddress - best->gpuVirtualAddress;
+	summary->viewSize = size;
+	summary->currentState = best->hasCurrentState ?
+		static_cast<UINT>(best->currentState) :
+		static_cast<UINT>(D3D12_RESOURCE_STATE_COMMON);
+	summary->hasCurrentState = best->hasCurrentState;
+	summary->stateTrackedByBarrier = best->stateTrackedByBarrier;
+
+	ReleaseSRWLockShared(&gGpuVaWrappersLock);
+	return true;
+}
 
 static void RegisterCpuMappableResource(ID3D12Resource *resource)
 {
@@ -2974,6 +3075,27 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 		if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ||
 			!barrier.Transition.pResource)
 			continue;
+
+		// Fast path: wrapper-cached record (no gResourceByPtr hash map lookup).
+		ResourceRecord *fastRecord =
+			DX12FindWrapperResourceRecord(barrier.Transition.pResource);
+		if (fastRecord) {
+			if (barrier.Transition.Subresource ==
+					D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
+				fastRecord->desc.Dimension ==
+					D3D12_RESOURCE_DIMENSION_BUFFER) {
+				fastRecord->currentState = barrier.Transition.StateAfter;
+				fastRecord->hasCurrentState = true;
+				fastRecord->stateTrackedByBarrier = true;
+			} else {
+				fastRecord->hasCurrentState = false;
+				fastRecord->stateTrackedByBarrier = true;
+			}
+			if (fastRecord->publishedState)
+				fastRecord->publishedState->PublishState(*fastRecord);
+			resourceStateChanged = true;
+			continue;
+		}
 
 		size_t *index = FindTrackedResourceIndexLocked(barrier.Transition.pResource);
 		if (!index || *index >= gResources.size())

@@ -448,4 +448,23 @@ void Shutdown()
 {
 	DX12LogManager::Fields("DX12Wrapper", "stage=shutdown");
 }
+
+ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)
+{
+	if (!resource)
+		return nullptr;
+	WrapperBase *base = WrapperBase::FindByWrapperPointer(
+		static_cast<IUnknown*>(resource));
+	if (!base)
+		return nullptr;
+	ResourceRecord *rec = base->GetResourceRecord();
+	base->ReleaseLookupReference();
+	return rec;
+}
+
+}
+
+ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource)
+{
+	return DX12Wrapper::FindWrapperResourceRecord(resource);
 }

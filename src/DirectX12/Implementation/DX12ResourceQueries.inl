@@ -171,6 +171,12 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (requestedEnd < gpuVirtualAddress)
 		return false;
 
+	// Fast path: resolve through the sorted GPU VA → ResourceWrapper index.
+	// The wrapper stores a cached ResourceRecord, avoiding both the
+	// std::map red-black tree traversal and the gResources array lookup.
+	if (DX12TryResolveFromGpuVaWrapper(gpuVirtualAddress, size, summary))
+		return true;
+
 	struct LocalBufferResolveCache
 	{
 		size_t next = 0;

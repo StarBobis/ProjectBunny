@@ -1830,6 +1830,21 @@ extern size_t gLiveResourceCount;
 extern std::unordered_map<ID3D12Resource*, size_t> gResourceByPtr;
 extern std::map<UINT64, size_t> gBufferResourceByGpuVa;
 extern std::map<UINT64, BufferResolveCacheEntry> gBufferResolveCache;
+// Fast GPU VA → ResourceWrapper index: sorted vector for cache-friendly
+// binary search.  Stores a direct pointer to the wrapper's cached
+// ResourceRecord so the hot lookup path never needs the wrapper type.
+struct GpuVaWrapperEntry {
+	UINT64 gpuVa;
+	void *wrapper;
+	const ResourceRecord *record;
+};
+extern std::vector<GpuVaWrapperEntry> gGpuVaWrappers;
+extern SRWLOCK gGpuVaWrappersLock;
+void RegisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, const ResourceRecord *record);
+void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper);
+// Returns the cached ResourceRecord for a resource that has an active wrapper,
+// or nullptr.  Skips the gResourceByPtr hash map and gResources array lookup.
+ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource);
 extern std::atomic<UINT64> gBufferResolveGeneration;
 extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;
