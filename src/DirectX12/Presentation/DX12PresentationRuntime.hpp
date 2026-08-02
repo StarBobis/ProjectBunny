@@ -1956,6 +1956,7 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootSignature);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
+		LARGE_INTEGER rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 		ID3D12RootSignature *unwrapped = nullptr;
 		if (runtimeState && runtimeState->lastWrappedGraphicsRootSignature == rootSignature)
 			unwrapped = runtimeState->lastUnwrappedGraphicsRootSignature;
@@ -1966,15 +1967,30 @@ public:
 				runtimeState->lastUnwrappedGraphicsRootSignature = unwrapped;
 			}
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"RootSig", "unwrap", 1, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		if (ShouldSkipGraphicsBinding()) {
+			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"RootSig", "original_skip", 1, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		}
 		else {
+			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, true);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"RootSig", "capture", 1, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 			if (!changed)
 				return;
+			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"RootSig", "original", 1, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		}
 	}
 

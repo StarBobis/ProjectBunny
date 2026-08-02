@@ -3338,35 +3338,59 @@ public:
 		// cannot decide whether an already-bound IA view needs recovery. Retry for
 		// configured PreSkin draws; durable resource metadata and the fence-owned
 		// resize cache make the lookup cheap and independent of recording order.
+		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModNeedsPreSkinningUavProbe()) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
 				commandList, callbacks, &redirectedIa);
 			restoreIa = &redirectedIa;
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_replay_ia", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
+		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (modifiesIaBindings) {
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Apply(*replacement);
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_ia_bindings", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (hasDrawSrvPatches)
 			DX12ModApplyDrawSrvReplacement(commandList, replacement, !replacement->skip);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_draw_srv", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
 
+		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (!replacement->skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 
 		drawExecutor.ExecuteReplacementDraws(*replacement, draw);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_execute_draws", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (modifiesIaBindings) {
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Restore(*replacement, *restoreIa);
 		}
 		if (hasDrawSrvPatches)
 			DX12ModRestoreDrawSrvReplacement(commandList, replacement);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_restore", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
 		DX12Profiling::RecordIaApplied();
+		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModRunPostShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,
 			draw.vertexCount, draw.indexCount, draw.instanceCount,
 			draw.firstVertex, draw.firstIndex, draw.firstInstance, replacement);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_post_override", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
 		return true;
 	}
 
