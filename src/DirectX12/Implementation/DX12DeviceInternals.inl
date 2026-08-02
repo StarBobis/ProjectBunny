@@ -1318,7 +1318,8 @@ class DeviceWrapper
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(DescriptorSrvWrapper, Record);
-					DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(resource, pDesc, DestDescriptor);
+					DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
+						mDevice, resource, pDesc, DestDescriptor);
 				}
 			}
 
@@ -1345,7 +1346,7 @@ class DeviceWrapper
 				{
 					DX12_CREATE_TIMING_SCOPE(DescriptorUavWrapper, Record);
 					DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
-						resource, counterResource, descToUse, DestDescriptor);
+						mDevice, resource, counterResource, descToUse, DestDescriptor);
 				}
 			}
 

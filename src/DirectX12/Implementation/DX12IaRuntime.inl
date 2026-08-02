@@ -1933,6 +1933,13 @@ static uint32_t HashDescriptorBinding(
 	const DX12CurrentShaderResourceBinding &binding)
 {
 	if (binding.hasDescriptor) {
+		// Content hash cached at descriptor write time (Create*View). The
+		// fallback recompute costs device calls (CheckFeatureSupport /
+		// GetCopyableFootprints) per binding per draw for texture views;
+		// records without a cached hash (CBVs, untracked resources) still
+		// take the fallback, so a missed cache is always safe.
+		if (binding.descriptor.huntHash)
+			return binding.descriptor.huntHash;
 		ID3D12Device *device = AcquireModDeviceFast(commandList, cachedDevice);
 		const bool deviceFromCache = (cachedDevice != nullptr);
 		if (!device)

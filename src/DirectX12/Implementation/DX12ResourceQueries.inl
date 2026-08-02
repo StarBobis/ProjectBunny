@@ -1849,6 +1849,7 @@ static void FillDescriptorSummary(
 
 	summary->kind = record.kind;
 	summary->cpuHandle = record.cpuHandle;
+	summary->huntHash = record.descriptorHuntHash;
 	summary->resource = record.resource;
 	summary->counterResource = record.counterResource;
 	summary->resourceDesc = record.resourceDesc;
@@ -1926,6 +1927,26 @@ static void FillDescriptorSummary(
 		summary->viewFormat = static_cast<UINT>(record.dsv.Format);
 		summary->viewDimension = static_cast<UINT>(record.dsv.ViewDimension);
 	}
+}
+
+// Computes the draw-time hunt/override content hash at descriptor write
+// time. It mirrors exactly what the draw prefilter would compute
+// (DX12FindDescriptorSummaryByCpuHandle + DescriptorHuntHash), so the cached
+// value is identical to a fresh computation while avoiding the per-draw
+// device calls (CheckFeatureSupport / GetCopyableFootprints) that the
+// fallback size calculation makes for every texture binding, every draw.
+// Returns 0 when the record cannot be hashed deterministically (no resource,
+// no view desc, CBV with unresolved buffer info); the draw path then
+// recomputes as before.
+uint32_t DX12ComputeDescriptorHuntHash(
+	ID3D12Device *device, const DescriptorRecord &record)
+{
+	if (!device || !record.resource || !record.hasDesc)
+		return 0;
+	DX12DescriptorSummary summary = {};
+	FillDescriptorSummary(&summary, record, false, false, false);
+	CompleteDescriptorSummaryResourceInfo(&summary, false);
+	return DX12TextureHashUtils::DescriptorHuntHash(device, summary);
 }
 
 struct MetadataSnapshotCache

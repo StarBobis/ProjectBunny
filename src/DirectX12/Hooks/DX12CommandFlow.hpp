@@ -3466,6 +3466,18 @@ public:
 				 DX12HotPathState::FLAG_HUNT_ENABLED |
 				 DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
 				 DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) != 0;
+		// Draw-argument comparison is only required when the negative result
+		// can depend on draw context: count-sensitive prefilter tables, plans
+		// with descriptor targets (their section filtering is count-based),
+		// or shader overrides with draw-arg filters. For pure-IA plans
+		// without count tables, "no override candidate for this bound state"
+		// is a property of the bound views alone (DX11: hash saved at bind
+		// time), so the negative cache can hit across different draw args.
+		const bool boundCacheCompareDrawArgs =
+			DX12ModIaPrefilterCountSensitive() ||
+			drawDecision->targetPlanHasDescriptorTargets ||
+			drawDecision->directTargetPlan.hasDescriptorTargets ||
+			!drawDecision->shaderOverrideNegativeCacheAllowed;
 		DX12BoundDrawResultCache &boundDrawCache =
 			mutableRuntimeState->resolvedDraw.boundDrawResult;
 		LARGE_INTEGER boundCacheBegin = DX12OuterTimingProbeUtils::Now();
@@ -3480,7 +3492,8 @@ public:
 				boundHeapVersion,
 				runtimeState.graphicsRootSignature,
 				draw,
-				boundCacheCompareDescriptorState);
+				boundCacheCompareDescriptorState,
+				boundCacheCompareDrawArgs);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"IaReplacement",
 			boundCacheHit ? "bound_cache_compare_hit" : "bound_cache_compare_miss",

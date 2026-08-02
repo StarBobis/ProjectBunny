@@ -538,6 +538,7 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
+	ID3D12Device *device,
 	ID3D12Resource *resource,
 	const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
@@ -552,10 +553,14 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 		FillSrvBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
+	// Cache the draw-time hunt hash at write time (see
+	// DX12ComputeDescriptorHuntHash); 0 disables the cache for this record.
+	record.descriptorHuntHash = DX12ComputeDescriptorHuntHash(device, record);
 	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
+	ID3D12Device *device,
 	ID3D12Resource *resource,
 	ID3D12Resource *counterResource,
 	const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc,
@@ -572,6 +577,9 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 		FillUavBufferView(&record);
 	}
 	PrepareDescriptorValueId(&record);
+	// Cache the draw-time hunt hash at write time (see
+	// DX12ComputeDescriptorHuntHash); 0 disables the cache for this record.
+	record.descriptorHuntHash = DX12ComputeDescriptorHuntHash(device, record);
 	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
 }
 
@@ -915,7 +923,7 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateShaderResou
 	}
 	{
 		DX12_CREATE_TIMING_SCOPE(DescriptorSrvHook, Record);
-		DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(resource, desc, destDescriptor);
+		DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(device, resource, desc, destDescriptor);
 	}
 }
 
@@ -946,7 +954,7 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateUnorderedAc
 	{
 		DX12_CREATE_TIMING_SCOPE(DescriptorUavHook, Record);
 		DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
-			resource, counterResource, descToUse, destDescriptor);
+			device, resource, counterResource, descToUse, destDescriptor);
 	}
 }
 

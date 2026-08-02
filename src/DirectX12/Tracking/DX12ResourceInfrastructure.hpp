@@ -875,6 +875,10 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 	std::string kind;
 	UINT kindId = 0;
 	UINT64 valueId = 0;
+	// Draw-time hunt/override content hash, computed once at write time
+	// (Create*View) and reused by the draw prefilter. 0 = not cached (the
+	// draw path then recomputes, so a missed cache is always safe).
+	uint32_t descriptorHuntHash = 0;
 	SIZE_T cpuHandle = 0;
 	ID3D12Resource *resource = nullptr;
 	bool ownsResource = false;
@@ -1221,6 +1225,7 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 		dest->kind = src.kind;
 	dest->kindId = src.kindId;
 	dest->valueId = src.valueId;
+	dest->descriptorHuntHash = src.descriptorHuntHash;
 	dest->cpuHandle = destCpuHandle;
 	dest->resource = src.resource;
 	// Descriptor heap slots mirror descriptor values. Ownership stays with the
@@ -1293,6 +1298,8 @@ static void CopyRecordValueForSlot(
 		dest->kind = kind;
 	dest->kindId = src.kindId;
 	dest->valueId = src.valueId;
+	// Value-path records (CBV fast path) never carry a cached hunt hash.
+	dest->descriptorHuntHash = 0;
 	dest->cpuHandle = destCpuHandle;
 	dest->resource = nullptr;
 	dest->ownsResource = false;

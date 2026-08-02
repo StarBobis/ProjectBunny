@@ -177,10 +177,12 @@ public:
 		const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
 	static void RecordCreatedShaderResourceView(
+		ID3D12Device *device,
 		ID3D12Resource *resource,
 		const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
 	static void RecordCreatedUnorderedAccessView(
+		ID3D12Device *device,
 		ID3D12Resource *resource,
 		ID3D12Resource *counterResource,
 		const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc,

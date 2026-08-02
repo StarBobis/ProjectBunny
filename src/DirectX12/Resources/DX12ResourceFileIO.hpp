@@ -242,6 +242,40 @@ public:
 			desc, base, layout.Footprint.RowPitch, rowBytes, rowCount, hashOut);
 	}
 
+	// Result cache for TextureCopyableBytes. The device calls it makes
+	// (CheckFeatureSupport + GetCopyableFootprints) cost ~10-20us each and
+	// are pure functions of the (immutable) resource desc; the same descs are
+	// hit repeatedly by the write-time hunt hash and by the draw-time
+	// fallback. A 128-bit desc fingerprint makes aliasing negligible, and a
+	// mismatch only degrades to a recompute, never a wrong value.
+	struct CopyableBytesCacheEntry
+	{
+		UINT64 keyA = 0;
+		UINT64 keyB = 0;
+		UINT64 value = 0;
+	};
+	static constexpr UINT CopyableBytesCacheCount = 128;
+	inline static CopyableBytesCacheEntry sCopyableBytesCache[CopyableBytesCacheCount] = {};
+
+	static void CopyableBytesKey(
+		const D3D12_RESOURCE_DESC &desc, UINT subresources, UINT64 *keyA, UINT64 *keyB)
+	{
+		const UINT64 a =
+			(static_cast<UINT64>(desc.Dimension) << 56) |
+			(static_cast<UINT64>(desc.Format) << 40) |
+			(static_cast<UINT64>(desc.SampleDesc.Count) << 24) |
+			(static_cast<UINT64>(desc.SampleDesc.Quality) << 8) |
+			(static_cast<UINT64>(desc.Layout) & 0xFF);
+		const UINT64 b =
+			(static_cast<UINT64>(desc.Alignment) << 32) |
+			(static_cast<UINT64>(desc.Flags) & 0xFFFFFFFFull);
+		*keyA = a ^ (desc.Width * 0x9E3779B97F4A7C15ull) ^
+			(static_cast<UINT64>(desc.MipLevels) << 32) ^
+			static_cast<UINT64>(subresources);
+		*keyB = b ^ (desc.Height * 0xC2B2AE3D27D4EB4Full) ^
+			(static_cast<UINT64>(desc.DepthOrArraySize) * 0x165667B19E3779F9ull);
+	}
+
 	static UINT64 TextureCopyableBytes(ID3D12Device *device, const D3D12_RESOURCE_DESC &desc)
 	{
 		if (!device)
@@ -257,6 +291,14 @@ public:
 			subresources *= static_cast<UINT>(desc.DepthOrArraySize ? desc.DepthOrArraySize : 1);
 		if (!subresources)
 			return 0;
+		UINT64 keyA = 0;
+		UINT64 keyB = 0;
+		CopyableBytesKey(desc, subresources, &keyA, &keyB);
+		const UINT cacheIndex = static_cast<UINT>(
+			(keyA ^ (keyB >> 7)) & (CopyableBytesCacheCount - 1));
+		CopyableBytesCacheEntry &cached = sCopyableBytesCache[cacheIndex];
+		if (cached.keyA == keyA && cached.keyB == keyB)
+			return cached.value;
 		D3D12_FEATURE_DATA_FORMAT_INFO formatInfo = {};
 		formatInfo.Format = desc.Format;
 		__try {
@@ -281,7 +323,11 @@ public:
 		__except (EXCEPTION_EXECUTE_HANDLER) {
 			return 0;
 		}
-		return copyBytes == UINT64_MAX ? 0 : copyBytes;
+		const UINT64 result = copyBytes == UINT64_MAX ? 0 : copyBytes;
+		cached.keyA = keyA;
+		cached.keyB = keyB;
+		cached.value = result;
+		return result;
 	}
 
 	static UINT64 DescriptorTextureHashFallbackSize(
@@ -314,6 +360,19 @@ public:
 			binding.hasDescriptor ? &descriptor : nullptr,
 			fallbackGpuVa,
 			fallbackSize);
+	}
+
+	// Summary-based variant used at descriptor write time so the content hash
+	// (and its fallback-size device calls) is computed once per Create*View
+	// instead of once per draw per binding.
+	static uint32_t DescriptorHuntHash(
+		ID3D12Device *device,
+		const DX12DescriptorSummary &descriptor)
+	{
+		const UINT64 fallbackSize =
+			DescriptorTextureHashFallbackSize(device, descriptor);
+		return DX12HashDescriptorBufferView(
+			&descriptor, descriptor.gpuVirtualAddress, fallbackSize);
 	}
 
 	static bool FillD3D11Texture2DDesc(

@@ -140,6 +140,9 @@ public:
 	UINT64 gpuVirtualAddress = 0;
 	UINT64 resourceOffset = 0;
 	UINT64 viewSize = 0;
+	// Hunt/override content hash cached at descriptor write time; 0 = not
+	// cached (the draw path recomputes).
+	uint32_t huntHash = 0;
 	UINT currentState = 0;
 	bool hasCurrentState = false;
 	bool stateTrackedByBarrier = false;

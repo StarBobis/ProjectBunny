@@ -781,6 +781,9 @@ public:
 uint32_t DX12HashDescriptorBufferView(
 	const DX12DescriptorSummary *descriptor, UINT64 fallbackGpuVirtualAddress,
 	UINT64 fallbackSize);
+struct DescriptorRecord;
+uint32_t DX12ComputeDescriptorHuntHash(
+	ID3D12Device *device, const DescriptorRecord &record);
 bool DX12GetRootSignatureSummary(
 	ID3D12RootSignature *rootSignature, DX12RootSignatureSummary *summary);
 bool DX12GetPsoRootSignature(UINT64 psoIndex, ID3D12RootSignature **rootSignature);

@@ -1256,7 +1256,8 @@ public:
 		UINT64 currentHeapVersion,
 		ID3D12RootSignature *currentRootSig,
 		const DX12IaDrawInvocation &draw,
-		bool compareDescriptorState) const
+		bool compareDescriptorState,
+		bool compareDrawArgs) const
 	{
 		return valid &&
 			iaEpoch == currentIaEpoch &&
@@ -1269,14 +1270,15 @@ public:
 				 cbvSrvUavHeap == currentHeap &&
 				 cbvSrvUavHeapVersion == currentHeapVersion &&
 				 graphicsRootSignature == currentRootSig)) &&
-			indexed == draw.indexed &&
-			vertexCount == draw.vertexCount &&
-			indexCount == draw.indexCount &&
-			instanceCount == draw.instanceCount &&
-			firstVertex == draw.firstVertex &&
-			firstIndex == draw.firstIndex &&
-			baseVertex == draw.baseVertex &&
-			firstInstance == draw.firstInstance;
+			(!compareDrawArgs ||
+				(indexed == draw.indexed &&
+				 vertexCount == draw.vertexCount &&
+				 indexCount == draw.indexCount &&
+				 instanceCount == draw.instanceCount &&
+				 firstVertex == draw.firstVertex &&
+				 firstIndex == draw.firstIndex &&
+				 baseVertex == draw.baseVertex &&
+				 firstInstance == draw.firstInstance));
 	}
 
 	void Capture(
