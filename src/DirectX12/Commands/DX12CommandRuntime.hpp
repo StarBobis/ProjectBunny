@@ -1596,6 +1596,18 @@ public:
 	UINT64 graphicsDescriptorQuerySerial = 1;
 	UINT64 computeDescriptorQuerySerial = 1;
 	UINT64 computeDescriptorBindingVersion = 1;
+	// DXVK-style per-root-parameter dirty tracking for compute bindings.
+	// RememberComputeRoot*() sets the bit for the changed root parameter
+	// instead of bumping one global serial; probe/collect paths clear the
+	// mask after they consume it. This keeps "binding churn on unrelated root
+	// parameters" from invalidating the whole compute binding cache, exactly
+	// like DXVK's bindingsDirty bitmask vs bindingsUsed intersection.
+	UINT64 computeRootDirtyMask = 0;
+	// Root parameters this compute root signature actually exposes to the
+	// shader (from the parsed root signature summary). Only dirty bits that
+	// intersect this mask invalidate the binding cache.
+	UINT64 computeRootUsedMask = 0;
+	bool computeRootUsedMaskValid = false;
 	std::array<UINT64, MaxRootParameters> graphicsRootBindingRevisions = {};
 	std::array<UINT64, MaxRootParameters> computeRootBindingRevisions = {};
 	UINT graphicsRootTableValidCount = 0;

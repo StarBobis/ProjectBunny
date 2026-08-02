@@ -1736,6 +1736,8 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 		&state->runtimeSamplerHeapResolved,
 		&state->runtimeSamplerHeap);
 	DX12RuntimeClearRootTables(state);
+	// Heap swap invalidates every table-based binding (DXVK: whole mask dirty).
+	state->computeRootDirtyMask = ~0ull;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpAllRootBindingRevisions(
@@ -1780,6 +1782,42 @@ bool DX12CommandListRuntime::RememberComputeRootSignature(
 		return false;
 
 	state->computeRootSignature = rootSignature;
+	// Root signature change can rewrite every binding: mark all root
+	// parameters dirty (DXVK: bindingsDirty = all bits).
+	state->computeRootDirtyMask = ~0ull;
+	state->computeRootUsedMaskValid = false;
+	// Compute which root parameters this signature exposes to the shader so
+	// later churn on unrelated parameters does not invalidate the binding
+	// cache. Missing metadata keeps the mask invalid (conservative: any dirty
+	// bit then invalidates).
+	DX12RootSignatureSummary summary;
+	if (rootSignature && DX12GetRootSignatureSummary(rootSignature, &summary) &&
+		summary.parsed) {
+		UINT64 usedMask = 0;
+		for (const DX12RootParameterSummary &parameter : summary.parameters) {
+			if (parameter.rootParameterIndex >= MaxRootParameters)
+				continue;
+			// Match CollectPreSkinBindings' affectsPreSkinBindings test:
+			// descriptor tables with CBV/SRV/UAV ranges, root descriptors,
+			// and root constants are observed by the probe; sampler-only
+			// parameters are not, so churn on them must not invalidate.
+			bool affectsPreSkinBindings =
+				parameter.parameterType !=
+					D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			for (const DX12RootDescriptorRangeSummary &range : parameter.ranges) {
+				if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV ||
+					range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
+					range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV) {
+					affectsPreSkinBindings = true;
+					break;
+				}
+			}
+			if (affectsPreSkinBindings)
+				usedMask |= 1ull << parameter.rootParameterIndex;
+		}
+		state->computeRootUsedMask = usedMask;
+		state->computeRootUsedMaskValid = true;
+	}
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		state->computeRootTables[root] = RootTableState();
 		state->computeRootDescriptors[root] = RootDescriptorState();
@@ -1903,6 +1941,10 @@ bool DX12CommandListRuntime::RememberRootDescriptorTable(
 		state->computeBindingSerial++;
 		if (!state->computeBindingSerial)
 			state->computeBindingSerial = 1;
+		// DXVK-style: mark this root parameter dirty instead of relying on
+		// the global serial alone. The mask lets probe/collect skip bindings
+		// that the current root signature does not use.
+		state->computeRootDirtyMask |= 1ull << rootParameterIndex;
 		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 		DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 		DX12RuntimeBumpRootBindingRevision(
@@ -2025,6 +2067,7 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
+	state->computeRootDirtyMask |= 1ull << rootParameterIndex;
 	DX12RuntimeBumpComputeBindingSerial(state);
 	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpRootBindingRevision(
@@ -2123,6 +2166,7 @@ void DX12CommandListRuntime::RememberComputeRoot32BitConstants(
 		state->computeRootConstants[rootParameterIndex];
 	if (DX12BindingTracker::SetRootConstantsLocked(
 			&constants, rootParameterIndex, destOffset, count, values)) {
+		state->computeRootDirtyMask |= 1ull << rootParameterIndex;
 		DX12RuntimeBumpComputeBindingSerial(state);
 		DX12RuntimeBumpBindingQuerySerial(state);
 	}

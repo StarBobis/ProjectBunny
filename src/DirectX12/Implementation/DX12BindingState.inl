@@ -57,23 +57,38 @@ static bool TryGetRuntimePreSkinBindings(
 	bool *foundAny)
 {
 	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
-			runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial ||
 			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
 			runtimeState->resolvedCompute.bindingsRootSignature !=
 				runtimeState->computeRootSignature)
 		return false;
 
-	const size_t rootCount =
-		runtimeState->resolvedCompute.bindingsRootParameters.size();
-	if (rootCount != runtimeState->resolvedCompute.bindingsRootRevisions.size())
-		return false;
-	for (size_t index = 0; index < rootCount; ++index) {
-		const UINT root =
-			runtimeState->resolvedCompute.bindingsRootParameters[index];
-		if (root >= runtimeState->computeRootBindingRevisions.size() ||
-				runtimeState->computeRootBindingRevisions[root] !=
-					runtimeState->resolvedCompute.bindingsRootRevisions[index])
+	// DXVK-style dirty-mask validation: only root parameters the current
+	// root signature actually uses can invalidate the cached bindings.
+	// Games churn root tables on every dispatch even when binding the same
+	// descriptors; a global serial comparison would discard the cache on
+	// every such re-bind. When the dirty mask has no intersection with the
+	// used mask, the cached bindings are still valid regardless of the
+	// global serial. Without a parsed root signature, fall back to the
+	// exact serial + per-root revision checks (conservative).
+	if (runtimeState->computeRootUsedMaskValid) {
+		if (runtimeState->computeRootDirtyMask &
+				runtimeState->computeRootUsedMask)
 			return false;
+	} else {
+		if (runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial)
+			return false;
+		const size_t rootCount =
+			runtimeState->resolvedCompute.bindingsRootParameters.size();
+		if (rootCount != runtimeState->resolvedCompute.bindingsRootRevisions.size())
+			return false;
+		for (size_t index = 0; index < rootCount; ++index) {
+			const UINT root =
+				runtimeState->resolvedCompute.bindingsRootParameters[index];
+			if (root >= runtimeState->computeRootBindingRevisions.size() ||
+					runtimeState->computeRootBindingRevisions[root] !=
+						runtimeState->resolvedCompute.bindingsRootRevisions[index])
+				return false;
+		}
 	}
 
 	const size_t observedCount = runtimeState->resolvedCompute.observedSlots.size();
@@ -223,6 +238,18 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.srvs = srvs;
 	runtimeState->resolvedCompute.cbvs = cbvs;
 	runtimeState->resolvedCompute.rootConstants = constants;
+
+	// DXVK-style ResetDirtyTracking: the cache now reflects every binding
+	// this root signature uses, so those dirty bits are consumed. Bits for
+	// root parameters outside the used mask (churn on tables the shader does
+	// not reference) are left set; they never invalidate the cache and any
+	// future collection pass clears them naturally. When no parsed root
+	// signature is available the mask is not authoritative, so leave it
+	// untouched (the serial fallback governs).
+	if (runtimeState->computeRootUsedMaskValid) {
+		runtimeState->computeRootDirtyMask &=
+			~runtimeState->computeRootUsedMask;
+	}
 }
 
 bool DX12BindingTracker::GetSimulateContextPreSkinBindings(
