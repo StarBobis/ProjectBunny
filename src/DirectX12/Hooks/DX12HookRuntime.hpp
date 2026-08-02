@@ -69,9 +69,23 @@ public:
 		InterlockedExchange(&Get().hooksFinalized, 1);
 	}
 
+	static bool AnyVtableHooksInstalled()
+	{
+		return InterlockedCompareExchange(&Get().vtableHooksInstalled, 0, 0) != 0;
+	}
+
 	static void *GetOriginalFunction(void *target)
 	{
 		if (!target)
+			return nullptr;
+
+		// Wrapper mode never patches vtables: an unhooked vtable entry IS
+		// the original implementation, and the registry only ever contains
+		// entries for actually patched targets. Skipping the lookup removes
+		// a shared SRW lock acquire plus an unordered_map find from every
+		// hot hook call (CopyDescriptors / Create*View run thousands of
+		// times per frame).
+		if (!AnyVtableHooksInstalled())
 			return nullptr;
 
 		DX12HookRegistry &state = Get();
@@ -87,10 +101,6 @@ public:
 		Get().hookManager.UnhookAll();
 	}
 
-	static bool AnyVtableHooksInstalled()
-	{
-		return InterlockedCompareExchange(&Get().vtableHooksInstalled, 0, 0) != 0;
-	}
 };
 
 
