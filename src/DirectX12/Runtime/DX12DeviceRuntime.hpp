@@ -734,16 +734,26 @@ public:
 			seq.slot = resolved.slot;
 		}
 		// ResolveHeapSlotFast already validates the heap activity immediately
-		// before returning. PublishedSlotValueEquals performs the authoritative
-		// seqlock read, so another activity load here only duplicated an atomic on
-		// every CreateCBV call. Note: the flat snapshot path is NOT used here -
-		// every CreateCBV publishes a fresh slot version, so the flat version
-		// check would always miss and only add a second read.
+		// before returning. Prefer the flat post-publication snapshot over the
+		// seqlock read when available: every publish writes flatValueIds +
+		// flatVersions atomically with the completing version, so a slot whose
+		// version is unchanged since its last publication has an authoritative
+		// flat valueId. Re-creating the same CBV into the same slot therefore
+		// hits a couple of loads instead of the full three-load seqlock
+		// protocol. When the slot was never published, or was republished
+		// (content changed), fall back to the seqlock identity read.
 		if (resolvedKnownHeap &&
-				resolved.heap && resolved.heap->stateLocks &&
-				resolved.heap->stateLocks->PublishedSlotValueEquals(
+				resolved.heap && resolved.heap->stateLocks) {
+			UINT64 flatValueId = 0;
+			if (resolved.heap->stateLocks->ReadFlatValueId(
+					resolved.slot, &flatValueId) &&
+					flatValueId == valueId) {
+				return false;
+			}
+			if (resolved.heap->stateLocks->PublishedSlotValueEquals(
 					resolved.slot, valueId)) {
-			return false;
+				return false;
+			}
 		}
 		// Ensure the dense shadow array exists BEFORE taking the per-slot
 		// shard lock: StoreCurrentValueIfChanged then takes the array path

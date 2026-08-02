@@ -1,0 +1,45 @@
+===== Cleaning previous build results =====
+Remove D:\Dev\4Dmigoto\build
+Remove D:\Dev\4Dmigoto\x64
+Clean complete.
+INFO: Using Visual Studio vcvars: C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat
+===== Configuring CMake (Release|x64) =====
+-- The C compiler identification is MSVC 19.51.36252.0
+-- The CXX compiler identification is MSVC 19.51.36252.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Nektra Hook Library: D:/Dev/4Dmigoto/3rdparty/Nektra
+-- Configuring done (3.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/Dev/4Dmigoto/build/cmake-x64-release-timing
+[1/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\__\common\ini_parser_lite.cpp.obj
+[2/14] Building CXX object 3rdparty\crc32c-hw-1.0.5\CMakeFiles\crc32c.dir\src\crc32c.cpp.obj
+[3/14] Linking CXX static library 3rdparty\crc32c-hw-1.0.5\crc32c.lib
+[4/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12WaitHooks.cpp.obj
+[5/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12NativeOverlay.cpp.obj
+[6/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12BindingTracking.cpp.obj
+[7/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\D3D12Proxy.cpp.obj
+[8/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DXGIHooks.cpp.obj
+[9/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12CommandLists.cpp.obj
+[10/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12Wrapper.cpp.obj
+[11/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12ShaderTools.cpp.obj
+[12/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12ResourceTracking.cpp.obj
+[13/14] Building CXX object src\DirectX12\CMakeFiles\DirectX12.dir\DX12ModRuntime.cpp.obj
+D:\Dev\4Dmigoto\src\DirectX12\Implementation/DX12ModResources.inl(1028): warning C4244: “参数”: 从“const UINT64”转换到“UINT”，可能丢失数据
+[14/14] Linking CXX shared library src\DirectX12\d3d12.dll
+  Copied: D:\Dev\4Dmigoto\x64\Release/d3d12.dll
+  Copied DX12 DLL: D:\Dev\ssmt4\src-tauri\resources\DX12\\d3d12.dll
+  Removed old DX12 test artifact: D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12_log.txt
+  Copied DX12 DLL: D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12\d3d12.dll
+  Skipped DX12 launch: LaunchGame=false
+
+===== All projects built successfully =====
+Output directory: D:\Dev\4Dmigoto\x64\Release

@@ -1584,6 +1584,31 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 		return CopyCurrentSlotResult::Changed;
 	}
 
+	// Dense-to-dense direct copy: when both sides already have their dense
+	// slot arrays materialized, copy the record straight from src slot to
+	// dest slot in one pass. The previous flow went through a temporary
+	// DescriptorRecord (CopyCurrentRecord -> StoreCurrentRecordIfChanged),
+	// which paid the full field copy twice per descriptor. This mirrors
+	// RenderDoc's single dst.CopyFrom(src) per descriptor.
+	if (!srcHeap.slots.empty() && srcSlot < srcHeap.slots.size() &&
+			srcSlot < srcHeap.occupied.size() && srcHeap.occupied[srcSlot] &&
+			!destHeap->slots.empty() && destSlot < destHeap->slots.size() &&
+			destSlot < destHeap->occupied.size()) {
+		const DescriptorRecord &srcRecord = srcHeap.slots[srcSlot];
+		DescriptorRecord &destRecord = destHeap->slots[destSlot];
+		if (publishedValueId)
+			*publishedValueId = srcRecord.valueId;
+		const bool wasOccupied = destHeap->occupied[destSlot] != 0;
+		if (wasOccupied &&
+				SameRecordValueAtSlot(destRecord, srcRecord, destCpuHandle))
+			return CopyCurrentSlotResult::Unchanged;
+		CopyRecordValueForSlot(&destRecord, srcRecord, destCpuHandle);
+		destHeap->occupied[destSlot] = 1;
+		if (!wasOccupied)
+			IncrementLiveSlots(destHeap);
+		return CopyCurrentSlotResult::Changed;
+	}
+
 	DescriptorRecord source;
 	if (!CopyCurrentRecord(srcHeap, srcSlot, &source))
 		return SourceMissingResult(destHeap, destSlot);
