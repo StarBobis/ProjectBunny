@@ -1856,9 +1856,34 @@ struct GpuVaWrapperEntry {
 	UINT64 gpuVa;
 	void *wrapper;
 	const ResourceRecord *record;
+	// Registration serial: a released resource's VA can be reused by a newer
+	// resource while a lingering wrapper entry still exists.  Resolution
+	// picks the newest registration so stale entries cannot shadow the
+	// current resource.
+	UINT64 serial;
 };
-extern std::vector<GpuVaWrapperEntry> gGpuVaWrappers;
-extern SRWLOCK gGpuVaWrappersLock;
+// Sharded by VA (64 KiB granularity): concurrent resource churn on different
+// address ranges no longer serializes on one global lock, and each shard's
+// insert/erase cost is O(n/shardCount) instead of O(n).  Resolutions that
+// span a shard boundary (rare large-offset queries) simply miss and fall
+// back to the gBufferResourceByGpuVa / resolve-cache paths.
+static constexpr UINT kGpuVaWrapperShardBits = 8;
+static constexpr UINT kGpuVaWrapperShardCount = 1u << kGpuVaWrapperShardBits;
+struct GpuVaWrapperShard {
+	SRWLOCK lock = SRWLOCK_INIT;
+	std::vector<GpuVaWrapperEntry> wrappers;
+};
+extern GpuVaWrapperShard gGpuVaWrapperShards[kGpuVaWrapperShardCount];
+extern std::atomic<UINT64> gGpuVaWrapperSerial;
+// 64 KiB shard granularity: queries with small offsets (the common case for
+// BufferLocation == resource base VA) resolve in the same shard as the
+// resource registration.
+inline GpuVaWrapperShard &GpuVaWrapperShardFor(UINT64 gpuVa)
+{
+	const UINT index = static_cast<UINT>(
+		(gpuVa >> 16) & (kGpuVaWrapperShardCount - 1));
+	return gGpuVaWrapperShards[index];
+}
 void RegisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, const ResourceRecord *record);
 void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper);
 // Returns the cached ResourceRecord for a resource that has an active wrapper,

@@ -1580,6 +1580,8 @@ public:
 				outerReloadGeneration &&
 			effectiveState->resolvedCompute.probeIaContentEpoch ==
 				effectiveState->iaContentEpoch &&
+			effectiveState->resolvedCompute.probeBufferContentGeneration ==
+				DX12GetIaHashContentGeneration() &&
 			effectiveState->resolvedCompute.bindingsValid &&
 			!effectiveState->resolvedCompute.bindingsUseRootValues &&
 			effectiveState->resolvedCompute.bindingsHeap ==
@@ -1625,6 +1627,9 @@ public:
 				dispatchGroupX = probe.dispatchOverride.groupsX;
 				dispatchGroupY = probe.dispatchOverride.groupsY;
 				dispatchGroupZ = probe.dispatchOverride.groupsZ;
+				// Publish the resize alias before the dispatch so draws
+				// recorded on other lists still resolve the resized output.
+				DX12ModPublishPreSkinOutputResizeEarly(commandList);
 				LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
 				originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
 				DX12OuterTimingProbeUtils::LogCpuStage(
@@ -1648,6 +1653,8 @@ public:
 			return;
 		}
 		LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
+		if (probe.applied)
+			DX12ModPublishPreSkinOutputResizeEarly(commandList);
 		originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
@@ -1811,7 +1818,9 @@ public:
 			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
 			runtimeState->resolvedCompute.probeBindingSerial == probe->computeBindingSerial &&
-			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch) {
+			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+			runtimeState->resolvedCompute.probeBufferContentGeneration ==
+				DX12GetIaHashContentGeneration()) {
 			probe->applied = false;
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
@@ -1826,6 +1835,8 @@ public:
 			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
 			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+			runtimeState->resolvedCompute.probeBufferContentGeneration ==
+				DX12GetIaHashContentGeneration() &&
 			runtimeState->resolvedCompute.bindingsValid &&
 			!runtimeState->resolvedCompute.bindingsUseRootValues &&
 			runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
@@ -1872,6 +1883,8 @@ public:
 				runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 				runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
 				runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+				runtimeState->resolvedCompute.probeBufferContentGeneration ==
+					DX12GetIaHashContentGeneration() &&
 				runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
 					probe->bindingDependencyFingerprint) {
 				probe->applied = false;
@@ -1892,7 +1905,9 @@ public:
 				!runtimeState->resolvedCompute.probeApplied &&
 				runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 				runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
-				runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch) {
+				runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
+				runtimeState->resolvedCompute.probeBufferContentGeneration ==
+					DX12GetIaHashContentGeneration()) {
 				const std::vector<DX12CurrentComputeUavBinding> &templateUavs =
 					probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
 				const std::vector<DX12CurrentComputeUavBinding> &templateSrvs =
@@ -2036,6 +2051,8 @@ public:
 				runtimeState->resolvedCompute.probeReloadGeneration = reloadGeneration;
 				runtimeState->resolvedCompute.probeBindingSerial = probeBindingSerial;
 				runtimeState->resolvedCompute.probeIaContentEpoch = probeIaContentEpoch;
+				runtimeState->resolvedCompute.probeBufferContentGeneration =
+					DX12GetIaHashContentGeneration();
 				runtimeState->resolvedCompute.probeResultValid = true;
 				runtimeState->resolvedCompute.probeApplied = applied;
 				runtimeState->resolvedCompute.probeDispatchHandlingSkip =
@@ -3574,6 +3591,7 @@ public:
 		const bool boundCacheHit = boundDrawCache.Matches(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
+				DX12GetIaHashContentGeneration(),
 				runtimeState.graphicsDescriptorQuerySerial,
 				runtimeState.pipelineState,
 				drawDecision->reloadGeneration,
@@ -3607,6 +3625,7 @@ public:
 			boundDrawCache.Capture(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
+				DX12GetIaHashContentGeneration(),
 				runtimeState.graphicsDescriptorQuerySerial,
 				runtimeState.pipelineState,
 				drawDecision->reloadGeneration,
@@ -3656,6 +3675,7 @@ public:
 			if (iaNeg.valid &&
 			    iaNeg.iaEpoch == runtimeState.iaEpoch &&
 			    iaNeg.iaContentEpoch == runtimeState.iaContentEpoch &&
+			    iaNeg.bufferContentGeneration == DX12GetIaHashContentGeneration() &&
 			    iaNeg.reloadGeneration == drawDecision->reloadGeneration &&
 			    iaNeg.targetPlanFingerprint == iaPlanFingerprint &&
 			    iaNeg.pipelineState == runtimeState.pipelineState) {
@@ -3672,6 +3692,7 @@ public:
 				iaNeg.noCandidate = noCandidate;
 				iaNeg.iaEpoch = runtimeState.iaEpoch;
 				iaNeg.iaContentEpoch = runtimeState.iaContentEpoch;
+				iaNeg.bufferContentGeneration = DX12GetIaHashContentGeneration();
 				iaNeg.reloadGeneration = drawDecision->reloadGeneration;
 				iaNeg.targetPlanFingerprint = iaPlanFingerprint;
 				iaNeg.pipelineState = runtimeState.pipelineState;

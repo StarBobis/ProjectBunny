@@ -1213,6 +1213,13 @@ public:
 	bool hasOverride = false;
 	UINT64 iaEpoch = 0;
 	UINT64 iaContentEpoch = 0;
+	// Global buffer-content generation (gBufferContentGeneration): the
+	// per-command-list iaContentEpoch only bumps on that list's own copy
+	// calls, so content written by another list (upload list, Map/Unmap on
+	// a shared buffer) would otherwise leave this cache hit with a stale
+	// decision across command-list Reset / scene transitions - the root
+	// cause of intermittent wrong IA replacement (shadow mismatch flicker).
+	UINT64 bufferContentGeneration = 0;
 	UINT64 graphicsDescriptorQuerySerial = 0;
 	ID3D12PipelineState *pipelineState = nullptr;
 	UINT64 reloadGeneration = 0;
@@ -1238,6 +1245,7 @@ public:
 	bool Matches(
 		UINT64 currentIaEpoch,
 		UINT64 currentIaContentEpoch,
+		UINT64 currentBufferContentGeneration,
 		UINT64 currentGraphicsDescriptorQuerySerial,
 		ID3D12PipelineState *currentPso,
 		UINT64 currentReloadGeneration,
@@ -1252,6 +1260,7 @@ public:
 		return valid &&
 			iaEpoch == currentIaEpoch &&
 			iaContentEpoch == currentIaContentEpoch &&
+			bufferContentGeneration == currentBufferContentGeneration &&
 			pipelineState == currentPso &&
 			reloadGeneration == currentReloadGeneration &&
 			(!compareDescriptorState ||
@@ -1274,6 +1283,7 @@ public:
 	void Capture(
 		UINT64 currentIaEpoch,
 		UINT64 currentIaContentEpoch,
+		UINT64 currentBufferContentGeneration,
 		UINT64 currentGraphicsDescriptorQuerySerial,
 		ID3D12PipelineState *currentPso,
 		UINT64 currentReloadGeneration,
@@ -1288,6 +1298,7 @@ public:
 		hasOverride = overrideResult;
 		iaEpoch = currentIaEpoch;
 		iaContentEpoch = currentIaContentEpoch;
+		bufferContentGeneration = currentBufferContentGeneration;
 		graphicsDescriptorQuerySerial = currentGraphicsDescriptorQuerySerial;
 		pipelineState = currentPso;
 		reloadGeneration = currentReloadGeneration;
@@ -1403,6 +1414,11 @@ public:
 		bool noCandidate = false;
 		UINT64 iaEpoch = 0;
 		UINT64 iaContentEpoch = 0;
+		// Global buffer-content generation: per-list iaContentEpoch misses
+		// content written by other lists / Map, which would otherwise leave
+		// a stale "no candidate" verdict across list Reset (missing mesh
+		// replacement on shadow passes after scene transitions).
+		UINT64 bufferContentGeneration = 0;
 		UINT64 reloadGeneration = 0;
 		UINT64 targetPlanFingerprint = 0;
 		ID3D12PipelineState *pipelineState = nullptr;
@@ -1489,6 +1505,11 @@ public:
 	UINT64 probeReloadGeneration = 0;
 	UINT64 probeBindingSerial = 0;
 	UINT64 probeIaContentEpoch = 0;
+	// Global buffer-content generation at probe time: per-list epochs miss
+	// content rewritten in place via CopyDescriptors / Map by other lists,
+	// which would otherwise let the negative probe cache hit with a stale
+	// "no replacement" verdict and make PreSkin replacement flicker on/off.
+	UINT64 probeBufferContentGeneration = 0;
 	bool probeResultValid = false;
 	bool probeApplied = false;
 	bool probeDispatchHandlingSkip = false;

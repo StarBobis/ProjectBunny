@@ -455,30 +455,42 @@ ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)
 	return rec;
 }
 
-static ResourceWrapper *FindWrapperCoveringGpuVaLocked(UINT64 gpuVa)
+static ResourceWrapper *FindWrapperCoveringGpuVaInShard(
+	GpuVaWrapperShard &shard, UINT64 gpuVa)
 {
 	if (!gpuVa)
 		return nullptr;
-	GpuVaWrapperEntry key{gpuVa, nullptr, nullptr};
+	GpuVaWrapperEntry key{gpuVa, nullptr, nullptr, 0};
 	auto it = std::lower_bound(
-		gGpuVaWrappers.begin(), gGpuVaWrappers.end(), key,
+		shard.wrappers.begin(), shard.wrappers.end(), key,
 		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) {
 			return a.gpuVa < b.gpuVa;
 		});
-	if (it != gGpuVaWrappers.begin() &&
-		(it == gGpuVaWrappers.end() || it->gpuVa > gpuVa))
+	if (it != shard.wrappers.begin() &&
+		(it == shard.wrappers.end() || it->gpuVa > gpuVa))
 		--it;
-	for (; it != gGpuVaWrappers.end() && it->gpuVa <= gpuVa; ++it) {
+	// VA reuse: a released resource's VA can be reused by a newer resource
+	// while the released wrapper is still registered.  IA hashes cached on
+	// the stale wrapper would then be served for the live resource, which
+	// breaks [TextureOverride] hash matching (wrong mesh / flickering).
+	// Pick the newest registration so cache lookups always hit the wrapper
+	// that owns the current resource at this VA.
+	ResourceWrapper *best = nullptr;
+	UINT64 bestSerial = 0;
+	for (; it != shard.wrappers.end() && it->gpuVa <= gpuVa; ++it) {
 		const ResourceRecord *rec = it->record;
 		if (!rec || !rec->resource)
 			continue;
 		if (rec->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
 			continue;
 		const UINT64 end = rec->gpuVirtualAddressRealEnd;
-		if (end > rec->gpuVirtualAddress && gpuVa < end)
-			return static_cast<ResourceWrapper*>(it->wrapper);
+		if (end > rec->gpuVirtualAddress && gpuVa < end &&
+		    it->serial >= bestSerial) {
+			best = static_cast<ResourceWrapper*>(it->wrapper);
+			bestSerial = it->serial;
+		}
 	}
-	return nullptr;
+	return best;
 }
 
 bool TryGetWrapperIaHash(
@@ -487,10 +499,11 @@ bool TryGetWrapperIaHash(
 {
 	if (!hash)
 		return false;
-	AcquireSRWLockShared(&gGpuVaWrappersLock);
-	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaLocked(gpuVa);
+	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVa);
+	AcquireSRWLockShared(&shard.lock);
+	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaInShard(shard, gpuVa);
 	if (!wrapper) {
-		ReleaseSRWLockShared(&gGpuVaWrappersLock);
+		ReleaseSRWLockShared(&shard.lock);
 		return false;
 	}
 	for (const ResourceWrapper::IaHashCacheEntry &entry : wrapper->mIaHashCache) {
@@ -501,11 +514,11 @@ bool TryGetWrapperIaHash(
 			entry.contentGeneration == contentGeneration &&
 			entry.resolveGeneration == resolveGeneration) {
 			*hash = entry.hash;
-			ReleaseSRWLockShared(&gGpuVaWrappersLock);
+			ReleaseSRWLockShared(&shard.lock);
 			return true;
 		}
 	}
-	ReleaseSRWLockShared(&gGpuVaWrappersLock);
+	ReleaseSRWLockShared(&shard.lock);
 	return false;
 }
 
@@ -515,10 +528,11 @@ void StoreWrapperIaHash(
 {
 	// Writes mIaHashCache entries, so the exclusive side of the lock is
 	// required even though the covering-wrapper lookup itself is read-only.
-	AcquireSRWLockExclusive(&gGpuVaWrappersLock);
-	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaLocked(gpuVa);
+	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVa);
+	AcquireSRWLockExclusive(&shard.lock);
+	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaInShard(shard, gpuVa);
 	if (!wrapper) {
-		ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
+		ReleaseSRWLockExclusive(&shard.lock);
 		return;
 	}
 	ResourceWrapper::IaHashCacheEntry *freeEntry = nullptr;
@@ -539,7 +553,7 @@ void StoreWrapperIaHash(
 	freeEntry->resolveGeneration = resolveGeneration;
 	freeEntry->hash = hash;
 	freeEntry->valid = true;
-	ReleaseSRWLockExclusive(&gGpuVaWrappersLock);
+	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 }

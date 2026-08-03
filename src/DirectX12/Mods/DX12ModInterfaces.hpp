@@ -472,6 +472,16 @@ void DX12ModRegisterPreSkinOutputResize(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource, ID3D12Resource *resizedResource,
 	UINT64 originalByteWidth, UINT64 resizedByteWidth, UINT stride);
+// Publish the resize mapping before the skinning dispatch executes instead of
+// at restore time. Shadow/draw lists recorded concurrently (or before this
+// dispatch on another list) resolve IA views during recording; if the mapping
+// is only registered after the dispatch, those draws miss it and render the
+// un-skinned original buffer - the shadow-mismatch flicker. Registering early
+// is safe: the mapping is a VA alias (contents are written by the dispatch
+// before any dependent draw on the same list), and re-registration with equal
+// content is a no-op that does not bump the generation.
+void DX12ModPublishPreSkinOutputResizeEarly(
+	ID3D12GraphicsCommandList *commandList);
 bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	ID3D12GraphicsCommandList *commandList,
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);

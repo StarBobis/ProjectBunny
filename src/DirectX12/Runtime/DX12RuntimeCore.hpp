@@ -347,6 +347,16 @@ public:
 			return false;
 
 		PathRemoveFileSpecW(path);
+		// Keep a timestamped copy of every run so normal vs broken sessions
+		// can be compared: the log is overwritten on each launch otherwise.
+		wchar_t logPath[MAX_PATH];
+		wchar_t historyPath[MAX_PATH];
+		wsprintfW(logPath, L"%s\\d3d12_log.txt", path);
+		wsprintfW(historyPath, L"%s\\d3d12_log_%llu.txt", path,
+			static_cast<unsigned long long>(GetTickCount64()));
+		if (PathFileExistsW(logPath)) {
+			CopyFileW(logPath, historyPath, FALSE);
+		}
 		PathAppendW(path, L"d3d12_log.txt");
 		state.log = _wfsopen(path, L"w", _SH_DENYNO);
 		if (!state.log)

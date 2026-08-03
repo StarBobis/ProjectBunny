@@ -2525,6 +2525,39 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 	return applied;
 }
 
+void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandList)
+{
+	// Publish the VA alias before the skinning dispatch runs. Draws recorded
+	// on other lists (or earlier on this list) resolve IA views while
+	// recording; registering only at restore time (after the dispatch) lets
+	// those draws miss the mapping and render the un-skinned original
+	// buffer - shadow/body mismatch and flicker. Re-registration from the
+	// restore path with equal content is a no-op that does not bump the
+	// generation (see DX12ModRegisterPreSkinOutputResize).
+	if (!commandList || gHasActivePreSkinReplacement == 0)
+		return;
+	AcquireSRWLockShared(&gPreSkinLock);
+	auto it = gActivePreSkinReplacements.find(commandList);
+	if (it == gActivePreSkinReplacements.end()) {
+		ReleaseSRWLockShared(&gPreSkinLock);
+		return;
+	}
+	const DX12PreSkinReplacementState &state = it->second;
+	const bool canPublish = state.active && state.outputUavResized &&
+		state.resource && state.outputVertexResource && state.byteWidth &&
+		state.originalOutputResource && state.originalOutputByteWidth;
+	ReleaseSRWLockShared(&gPreSkinLock);
+	if (!canPublish)
+		return;
+	DX12ModRegisterPreSkinOutputResize(
+		commandList,
+		state.originalOutputResource,
+		state.outputVertexResource,
+		state.originalOutputByteWidth,
+		state.byteWidth,
+		state.stride);
+}
+
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList)
 {
 	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
