@@ -5366,6 +5366,44 @@ void DX12ModRegisterPreSkinOutputResize(
 	IUnknown *commandListIdentity =
 		PreSkinOutputResizeCommandListIdentity(commandList);
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	// Bump the generation only when a published mapping actually changes.
+	// The resize maps are rebuilt every frame (Present clears them, each
+	// matching dispatch re-registers the same stable replacement); bumping on
+	// every store made RedirectVertexBufferViews' negative cache miss on
+	// every matching draw and redo the full GPU-VA lookup + barriers three
+	// times a frame (~2ms). A content-equal re-registration keeps the cached
+	// negative valid: the redirection outcome depends only on
+	// resizedGpuVa/width/stride, so identical values yield identical results.
+	// Both the per-command-list and global maps are checked because the
+	// resolver consults local first, then global.
+	bool resizeMappingChanged = true;
+	{
+		auto globalIt = gPreSkinOutputResizeMap.find(entry.originalGpuVa);
+		if (globalIt != gPreSkinOutputResizeMap.end()) {
+			const DX12PreSkinOutputResizeEntry &old = globalIt->second;
+			resizeMappingChanged =
+				old.resizedGpuVa != entry.resizedGpuVa ||
+				old.originalByteWidth != entry.originalByteWidth ||
+				old.resizedByteWidth != entry.resizedByteWidth ||
+				old.stride != entry.stride;
+			if (!resizeMappingChanged && commandListIdentity) {
+				auto localIt =
+					gPreSkinOutputResizeCommandListMaps.find(commandListIdentity);
+				if (localIt != gPreSkinOutputResizeCommandListMaps.end()) {
+					auto localEntryIt = localIt->second.find(entry.originalGpuVa);
+					if (localEntryIt != localIt->second.end()) {
+						const DX12PreSkinOutputResizeEntry &oldLocal =
+							localEntryIt->second;
+						resizeMappingChanged =
+							oldLocal.resizedGpuVa != entry.resizedGpuVa ||
+							oldLocal.originalByteWidth != entry.originalByteWidth ||
+							oldLocal.resizedByteWidth != entry.resizedByteWidth ||
+							oldLocal.stride != entry.stride;
+					}
+				}
+			}
+		}
+	}
 	oldGlobalResource =
 		StorePreSkinOutputResizeEntryLocked(&gPreSkinOutputResizeMap, entry);
 	if (commandListIdentity) {
@@ -5373,7 +5411,8 @@ void DX12ModRegisterPreSkinOutputResize(
 			&gPreSkinOutputResizeCommandListMaps[commandListIdentity], entry);
 	}
 	gHasPreSkinOutputResizeBindings.store(true, std::memory_order_release);
-	BumpPreSkinOutputResizeGeneration();
+	if (resizeMappingChanged)
+		BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
 	if (oldGlobalResource)
 		oldGlobalResource->Release();

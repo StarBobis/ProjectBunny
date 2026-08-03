@@ -2702,6 +2702,9 @@ public:
 			return false;
 		bool replayedAny = false;
 		UINT slot = 0;
+		LARGE_INTEGER replaySegmentBegin = DX12OuterTimingProbeUtils::Now();
+		LONG64 replayLookupUs = 0;
+		LONG64 replaySetUs = 0;
 		while (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
 			while (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT &&
 			       !activeIa->hasVertexBuffer[slot])
@@ -2715,6 +2718,7 @@ public:
 			const UINT runCount = slot - runStart;
 			D3D12_VERTEX_BUFFER_VIEW redirected[
 				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+			replaySegmentBegin = DX12OuterTimingProbeUtils::Now();
 			if (!RedirectVertexBufferViews(
 				    commandList,
 				    runStart,
@@ -2724,14 +2728,21 @@ public:
 				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
 				    activeIa))
 				continue;
+			replayLookupUs += DX12OuterTimingProbeUtils::ElapsedUs(replaySegmentBegin);
+			replaySegmentBegin = DX12OuterTimingProbeUtils::Now();
 			for (UINT i = 0; i < runCount; ++i)
 				activeIa->vertexBuffers[runStart + i] = redirected[i];
 			DX12CommandListRuntime::RememberVertexBuffers(
 				commandList, runStart, runCount, redirected);
 			callbacks.setVertexBuffers(
 				commandList, runStart, runCount, redirected);
+			replaySetUs += DX12OuterTimingProbeUtils::ElapsedUs(replaySegmentBegin);
 			replayedAny = true;
 		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_replay_lookup", 1, 1, replayLookupUs);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "apply_replay_setvb", 1, 1, replaySetUs);
 		return replayedAny;
 	}
 };

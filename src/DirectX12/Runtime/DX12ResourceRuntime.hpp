@@ -617,13 +617,11 @@ public:
 			// Wait-object instrumentation hooks kernel32 exports process-wide;
 			// it exists to attribute stall stacks in TIMING builds and must not
 			// ship in normal Release (DX11 has no equivalent global wait hook).
-			// DISABLED: the Nektra inline patch rewrites the entry bytes of
-			// WaitForSingleObject/WaitForMultipleObjects/SignalObjectAndWait
-			// while the game may be executing them during startup; a torn
-			// patch can corrupt a wait (lost signal) and leave the game in a
-			// permanent 100ms timeout polling loop (slow frames + GPU pegged
-			// + flicker). Diagnostic value does not justify the risk.
-			// DX12WaitHooks::Install();
+			// Safe to install since Nektra now suspends all threads while
+			// patching (DX12HookRegistry ctor), eliminating the torn-patch race
+			// that previously corrupted waits (permanent 100ms timeout polling,
+			// GPU pegged, flicker).
+			// DX12WaitHooks::Install(); // CONTROLLED-EXPERIMENT: disabled
 #endif
 			Sleep(50);
 		}

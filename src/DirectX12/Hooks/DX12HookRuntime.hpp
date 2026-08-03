@@ -18,6 +18,15 @@ public:
 	DX12HookRegistry()
 	{
 		InitializeSRWLock(&lock);
+		// Install patches with all other threads suspended. Nektra's default
+		// inline hook rewrites the target's entry bytes non-atomically; if the
+		// game executes the function during the rewrite, the torn call can
+		// corrupt a wait/sync/init sequence and leave the game in a broken
+		// state (observed as permanent 100ms timeout polling, GPU pegged at
+		// 99%, flicker) - randomly, depending on whether a thread happened to
+		// be inside the patched function at install time. Suspending threads
+		// during installation removes that race for every export hook.
+		hookManager.SetSuspendThreadsWhileHooking(TRUE);
 	}
 
 	static DX12HookRegistry &Get()
