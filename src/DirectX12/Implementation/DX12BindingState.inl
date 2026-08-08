@@ -65,6 +65,128 @@ static bool RuntimeSlotIdentityMatches(
 		currentValueId == cachedValueId;
 }
 
+static bool RuntimeResolveHeapRecord(
+	const RootTableState &table,
+	UINT slot,
+	DescriptorHeapRecord::StateLocks **stateLocks)
+{
+	if (!stateLocks ||
+			!table.runtimeHeap || !table.runtimeHeapCpuStart ||
+			table.runtimeHeapIncrement == 0 ||
+			slot >= table.runtimeHeapNumDescriptors)
+		return false;
+	const SIZE_T cpuHandle = table.runtimeHeapCpuStart +
+		static_cast<SIZE_T>(slot) * table.runtimeHeapIncrement;
+	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot resolved = {};
+	if (!DX12DescriptorHeapShadowUtils::HeapCacheLookup(
+			cpuHandle,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			&resolved) ||
+			resolved.slot != slot ||
+			!resolved.heap || !resolved.heap->stateLocks)
+		return false;
+	*stateLocks = resolved.heap->stateLocks.get();
+	return true;
+}
+
+static bool RuntimeDescriptorRootsMatch(
+	const DX12SimulateContext *runtimeState)
+{
+	if (!runtimeState)
+		return false;
+	const DX12SimulateContextComputeTemplate &cache =
+		runtimeState->resolvedCompute;
+	const bool checkAll = !runtimeState->computeRootUsedMaskValid;
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		if (!checkAll &&
+				!(runtimeState->computeRootUsedMask & (1ull << root)))
+			continue;
+		const RootDescriptorState &descriptor =
+			runtimeState->computeRootDescriptors[root];
+		const bool valid = descriptor.valid;
+		if (valid != cache.bindingsRootValid[root])
+			return false;
+		if (valid && descriptor.address != cache.bindingsRootIdentities[root])
+			return false;
+	}
+	return true;
+}
+
+static bool RuntimeConstantsMatch(
+	const DX12SimulateContext *runtimeState)
+{
+	if (!runtimeState)
+		return false;
+	const DX12SimulateContextComputeTemplate &cache =
+		runtimeState->resolvedCompute;
+	const bool checkAll = !runtimeState->computeRootUsedMaskValid;
+	// Every cached constant must still match the live root constant state.
+	for (const DX12CurrentRootConstants &cached : cache.rootConstants) {
+		const UINT root = cached.rootParameterIndex;
+		if (root >= MaxRootParameters)
+			return false;
+		const RootConstantsState &current =
+			runtimeState->computeRootConstants[root];
+		if (!current.valid ||
+				current.maxSet != cached.maxSet ||
+				memcmp(current.values, cached.values,
+					sizeof(current.values)) != 0 ||
+				memcmp(current.valueValid, cached.valueValid,
+					sizeof(current.valueValid)) != 0)
+			return false;
+	}
+	// A used root that gained constants absent from the cache invalidates it.
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		if (!checkAll &&
+				!(runtimeState->computeRootUsedMask & (1ull << root)))
+			continue;
+		if (!runtimeState->computeRootConstants[root].valid)
+			continue;
+		bool found = false;
+		for (const DX12CurrentRootConstants &cached : cache.rootConstants) {
+			if (cached.rootParameterIndex == root) {
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			return false;
+	}
+	return true;
+}
+
+static void RebaseRuntimePreSkinBindings(
+	DX12SimulateContext *runtimeState)
+{
+	if (!runtimeState)
+		return;
+	DX12SimulateContextComputeTemplate &cache =
+		runtimeState->resolvedCompute;
+	const auto rebase = [runtimeState](
+		std::vector<DX12CurrentComputeUavBinding> &bindings) {
+		for (DX12CurrentComputeUavBinding &binding : bindings) {
+			if (!binding.hasDescriptor || binding.rootDescriptor ||
+					binding.rootParameterIndex >= MaxRootParameters)
+				continue;
+			const RootTableState &table =
+				runtimeState->computeRootTables[binding.rootParameterIndex];
+			if (!table.valid || !table.runtimeHeapResolved ||
+					table.runtimeHeapIncrement == 0)
+				continue;
+			binding.tableHeap = table.runtimeHeap;
+			binding.tableCpuStart = table.runtimeTableCpuStart;
+			binding.tableGpuStart.ptr = table.runtimeTableGpuStart;
+			binding.descriptorIncrement = table.runtimeHeapIncrement;
+			binding.descriptor.cpuHandle = table.runtimeTableCpuStart +
+				static_cast<SIZE_T>(binding.descriptorOffset) *
+					table.runtimeHeapIncrement;
+		}
+	};
+	rebase(cache.uavs);
+	rebase(cache.srvs);
+	rebase(cache.cbvs);
+}
+
 static bool TryGetRuntimePreSkinBindings(
 	DX12SimulateContext *runtimeState,
 	UINT64 computeBindingSerial,
@@ -75,79 +197,93 @@ static bool TryGetRuntimePreSkinBindings(
 	UINT64 *dependencyFingerprint,
 	bool *foundAny)
 {
+	(void)computeBindingSerial;
 	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
 			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
 			runtimeState->resolvedCompute.bindingsRootSignature !=
 				runtimeState->computeRootSignature)
 		return false;
 
-	// DXVK-style dirty-mask validation: only root parameters the current
-	// root signature actually uses can invalidate the cached bindings.
-	// Games churn root tables on every dispatch even when binding the same
-	// descriptors; a global serial comparison would discard the cache on
-	// every such re-bind. When the dirty mask has no intersection with the
-	// used mask, the cached bindings are still valid regardless of the
-	// global serial. Without a parsed root signature, fall back to the
-	// exact serial + per-root revision checks (conservative).
-	if (runtimeState->computeRootUsedMaskValid) {
-		if (runtimeState->computeRootDirtyMask &
-				runtimeState->computeRootUsedMask)
-			return false;
-	} else {
-		if (runtimeState->resolvedCompute.bindingsSerial != computeBindingSerial)
-			return false;
-		const size_t rootCount =
-			runtimeState->resolvedCompute.bindingsRootParameters.size();
-		if (rootCount != runtimeState->resolvedCompute.bindingsRootRevisions.size())
-			return false;
-		for (size_t index = 0; index < rootCount; ++index) {
-			const UINT root =
-				runtimeState->resolvedCompute.bindingsRootParameters[index];
-			if (root >= runtimeState->computeRootBindingRevisions.size() ||
-					runtimeState->computeRootBindingRevisions[root] !=
-						runtimeState->resolvedCompute.bindingsRootRevisions[index])
-				return false;
-		}
-	}
+	// DX12-style semantic validation: root descriptors must match exactly
+	// (a bare GPU VA has no value identity), root constants must match by
+	// content, and descriptor-table content is proven by per-slot value
+	// identities read at the CURRENT ring locations. The previous dirty-mask
+	// / binding-serial checks invalidated on every re-bind even when the game
+	// bound identical descriptors at a rotated ring position, forcing a full
+	// re-collect per dispatch (DX11-style deferred state inspection).
+	if (!RuntimeDescriptorRootsMatch(runtimeState) ||
+			!RuntimeConstantsMatch(runtimeState))
+		return false;
 
-	const size_t observedCount = runtimeState->resolvedCompute.observedSlots.size();
-	if (observedCount != runtimeState->resolvedCompute.observedSlotVersions.size() ||
-			observedCount != runtimeState->resolvedCompute.observedSlotValueIds.size())
+	DX12SimulateContextComputeTemplate &cache =
+		runtimeState->resolvedCompute;
+	const size_t observedCount = cache.bindingsObservedSlots.size();
+	if (observedCount != cache.observedSlots.size() ||
+			observedCount != cache.observedSlotVersions.size() ||
+			observedCount != cache.observedSlotValueIds.size())
 		return false;
 
 	if (observedCount) {
-		if (!runtimeState->resolvedCompute.bindingsHeap)
+		if (!cache.bindingsHeap)
 			return false;
+		// A rotated table invalidates the "no descriptor writes since last
+		// check" shortcut: the new slots were never validated, so their
+		// content must be read even when the global serial is unchanged.
+		bool tablesUnchanged = true;
+		for (size_t index = 0; index < observedCount; ++index) {
+			const UINT root = cache.bindingsObservedSlots[index].root;
+			if (root >= MaxRootParameters)
+				return false;
+			const RootTableState &table = runtimeState->computeRootTables[root];
+			const UINT64 cachedBase = cache.bindingsRootTableBases[root];
+			const UINT64 currentBase = table.valid ?
+				table.baseDescriptor.ptr : 0;
+			if (currentBase != cachedBase) {
+				tablesUnchanged = false;
+				break;
+			}
+		}
 		const UINT64 descriptorQuerySerialBefore =
 			CurrentDescriptorQuerySerial();
-		if (runtimeState->resolvedCompute.bindingsDescriptorQuerySerial !=
-			descriptorQuerySerialBefore) {
-			constexpr size_t StackIdentityCount = 64;
-			std::array<UINT64, StackIdentityCount> stackSlotVersions;
-			std::array<UINT64, StackIdentityCount> stackSlotValueIds;
-			UINT64 *currentSlotVersions = stackSlotVersions.data();
-			UINT64 *currentSlotValueIds = stackSlotValueIds.data();
-			if (observedCount > StackIdentityCount) {
-				static thread_local std::vector<UINT64> tlsSlotVersions;
-				static thread_local std::vector<UINT64> tlsSlotValueIds;
-				tlsSlotVersions.resize(observedCount);
-				tlsSlotValueIds.resize(observedCount);
-				currentSlotVersions = tlsSlotVersions.data();
-				currentSlotValueIds = tlsSlotValueIds.data();
-			}
-			if (!DX12GetDescriptorSlotIdentities(
-					runtimeState->resolvedCompute.bindingsHeap,
-					runtimeState->resolvedCompute.observedSlots.data(),
-					observedCount,
-					currentSlotVersions,
-					currentSlotValueIds))
-				return false;
+		if (cache.bindingsDescriptorQuerySerial !=
+				descriptorQuerySerialBefore ||
+				!tablesUnchanged) {
+			std::array<DescriptorHeapRecord::StateLocks*,
+				MaxRootParameters> stateLocksByRoot = {};
 			for (size_t index = 0; index < observedCount; ++index) {
+				const DX12SimulateContextComputeTemplate::RuntimeObservedSlot
+					&observed = cache.bindingsObservedSlots[index];
+				if (observed.root >= MaxRootParameters)
+					return false;
+				const RootTableState &table =
+					runtimeState->computeRootTables[observed.root];
+				if (!table.valid || !table.runtimeHeapResolved ||
+						table.runtimeHeapIncrement == 0)
+					return false;
+				const UINT currentSlot =
+					table.runtimeTableBaseIndex + observed.offset;
+				if (currentSlot >= table.runtimeHeapNumDescriptors)
+					return false;
+				DescriptorHeapRecord::StateLocks *stateLocks =
+					stateLocksByRoot[observed.root];
+				if (!stateLocks &&
+						!RuntimeResolveHeapRecord(
+							table, currentSlot, &stateLocks))
+					return false;
+				stateLocksByRoot[observed.root] = stateLocks;
+				UINT64 currentVersion = 0;
+				UINT64 currentValueId = 0;
+				DescriptorHeapRecord::StateLocks::SlotIdentity identity = {};
+				if (!stateLocks->ObserveSlotIdentity(
+						currentSlot, &identity))
+					return false;
+				currentVersion = identity.version;
+				currentValueId = identity.valueId;
 				if (!RuntimeSlotIdentityMatches(
-						currentSlotVersions[index],
-						currentSlotValueIds[index],
-						runtimeState->resolvedCompute.observedSlotVersions[index],
-						runtimeState->resolvedCompute.observedSlotValueIds[index])) {
+						currentVersion,
+						currentValueId,
+						observed.version,
+						observed.valueId)) {
 					return false;
 				}
 			}
@@ -155,23 +291,33 @@ static bool TryGetRuntimePreSkinBindings(
 				CurrentDescriptorQuerySerial();
 			if (descriptorQuerySerialAfter != descriptorQuerySerialBefore)
 				return false;
-			runtimeState->resolvedCompute.bindingsDescriptorQuerySerial =
+			cache.bindingsDescriptorQuerySerial =
 				descriptorQuerySerialAfter;
+			for (size_t index = 0; index < observedCount; ++index) {
+				const UINT root = cache.bindingsObservedSlots[index].root;
+				cache.bindingsRootTableBases[root] =
+					runtimeState->computeRootTables[root].baseDescriptor.ptr;
+			}
 			}
 	}
 
+	// The ring may have rotated since the collection. The cached bindings are
+	// semantically identical (value IDs matched), so rebase their CPU/GPU
+	// table locations to the current tables before handing them out.
+	RebaseRuntimePreSkinBindings(runtimeState);
+
 	if (uavs)
-		*uavs = &runtimeState->resolvedCompute.uavs;
+		*uavs = &cache.uavs;
 	if (srvs)
-		*srvs = &runtimeState->resolvedCompute.srvs;
+		*srvs = &cache.srvs;
 	if (cbvs)
-		*cbvs = &runtimeState->resolvedCompute.cbvs;
+		*cbvs = &cache.cbvs;
 	if (constants)
-		*constants = &runtimeState->resolvedCompute.rootConstants;
+		*constants = &cache.rootConstants;
 	if (dependencyFingerprint)
-		*dependencyFingerprint = runtimeState->resolvedCompute.bindingsDependencyFingerprint;
+		*dependencyFingerprint = cache.bindingsDependencyFingerprint;
 	if (foundAny)
-		*foundAny = runtimeState->resolvedCompute.bindingsFoundAny;
+		*foundAny = cache.bindingsFoundAny;
 	return true;
 }
 
@@ -221,6 +367,8 @@ static void StoreRuntimePreSkinBindings(
 	const std::vector<UINT> &observedSlots,
 	const std::vector<UINT64> &observedSlotVersions,
 	const std::vector<UINT64> &observedSlotValueIds,
+	const std::vector<DX12SimulateContextComputeTemplate::RuntimeObservedSlot>
+		&observedSlotsRelative,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
@@ -241,6 +389,19 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.bindingsHeap = runtimeState->cbvSrvUavHeap;
 	runtimeState->resolvedCompute.bindingsRootSignature =
 		runtimeState->computeRootSignature;
+	// Snapshot the exact descriptor-root identity (bare GPU VA roots have no
+	// content-addressed value identity, so they must match exactly on hit).
+	for (UINT root = 0; root < MaxRootParameters; ++root) {
+		const RootDescriptorState &descriptor =
+			runtimeState->computeRootDescriptors[root];
+		runtimeState->resolvedCompute.bindingsRootValid[root] =
+			descriptor.valid;
+		runtimeState->resolvedCompute.bindingsRootIdentities[root] =
+			descriptor.valid ? descriptor.address : 0;
+		runtimeState->resolvedCompute.bindingsRootTableBases[root] =
+			runtimeState->computeRootTables[root].valid ?
+				runtimeState->computeRootTables[root].baseDescriptor.ptr : 0;
+	}
 	runtimeState->resolvedCompute.bindingsRootParameters =
 		observedRootParameters;
 	runtimeState->resolvedCompute.bindingsRootRevisions.resize(
@@ -254,6 +415,12 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.observedSlots = observedSlots;
 	runtimeState->resolvedCompute.observedSlotVersions = observedSlotVersions;
 	runtimeState->resolvedCompute.observedSlotValueIds = observedSlotValueIds;
+	if (observedSlotsRelative.size() == observedSlots.size()) {
+		runtimeState->resolvedCompute.bindingsObservedSlots =
+			observedSlotsRelative;
+	} else {
+		runtimeState->resolvedCompute.bindingsObservedSlots.clear();
+	}
 	runtimeState->resolvedCompute.uavs = uavs;
 	runtimeState->resolvedCompute.srvs = srvs;
 	runtimeState->resolvedCompute.cbvs = cbvs;
@@ -1425,8 +1592,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	static thread_local std::vector<DX12CurrentRootConstants> tlsLocalConstants;
 	static thread_local std::vector<UINT> tlsObservedRootParameters;
 	static thread_local std::vector<UINT> tlsObservedSlots;
+	static thread_local std::vector<UINT> tlsObservedRoots;
+	static thread_local std::vector<UINT> tlsObservedOffsets;
 	static thread_local std::vector<UINT64> tlsObservedSlotVersions;
 	static thread_local std::vector<UINT64> tlsObservedSlotValueIds;
+	static thread_local std::vector<
+		DX12SimulateContextComputeTemplate::RuntimeObservedSlot>
+		tlsObservedSlotsRelative;
 	static thread_local std::vector<SIZE_T> tlsCpuHandles;
 	static thread_local std::vector<DX12DescriptorSummary> tlsDescriptors;
 	static thread_local std::vector<uint8_t> tlsFound;
@@ -1441,16 +1613,23 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	std::vector<DX12CurrentRootConstants> &localConstants = tlsLocalConstants;
 	std::vector<UINT> &observedRootParameters = tlsObservedRootParameters;
 	std::vector<UINT> &observedSlots = tlsObservedSlots;
+	std::vector<UINT> &observedRoots = tlsObservedRoots;
+	std::vector<UINT> &observedOffsets = tlsObservedOffsets;
 	std::vector<UINT64> &observedSlotVersions = tlsObservedSlotVersions;
 	std::vector<UINT64> &observedSlotValueIds = tlsObservedSlotValueIds;
+	std::vector<DX12SimulateContextComputeTemplate::RuntimeObservedSlot>
+		&observedSlotsRelative = tlsObservedSlotsRelative;
 	localUavs.clear();
 	localSrvs.clear();
 	localCbvs.clear();
 	localConstants.clear();
 	observedRootParameters.clear();
 	observedSlots.clear();
+	observedRoots.clear();
+	observedOffsets.clear();
 	observedSlotVersions.clear();
 	observedSlotValueIds.clear();
+	observedSlotsRelative.clear();
 
 	DX12_HOTPATH_TIME_BEGIN(BindCollect);
 
@@ -1619,6 +1798,11 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 					}
 					if (canStoreRuntimeBindings)
 						observedSlots.push_back(static_cast<UINT>(di));
+					if (canStoreRuntimeBindings) {
+						observedRoots.push_back(root);
+						observedOffsets.push_back(static_cast<UINT>(
+							di - tableBaseIndex));
+					}
 				}
 
 				tlsCpuHandles.push_back(cpuHandle);
@@ -1778,6 +1962,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		}
 		if (observedSlotsValid) {
 			const UINT64 runtimeDependencyFingerprint = bindingCacheKey.fingerprint;
+			observedSlotsRelative.resize(observedSlots.size());
+			for (size_t slotIndex = 0;
+					slotIndex < observedSlots.size(); ++slotIndex) {
+				DX12SimulateContextComputeTemplate::RuntimeObservedSlot &slot =
+					observedSlotsRelative[slotIndex];
+				slot.root = observedRoots[slotIndex];
+				slot.offset = observedOffsets[slotIndex];
+				slot.version = observedSlotVersions[slotIndex];
+				slot.valueId = observedSlotValueIds[slotIndex];
+			}
 			StoreRuntimePreSkinBindings(
 				runtimeState,
 				computeBindingSerial,
@@ -1789,6 +1983,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				observedSlots,
 				observedSlotVersions,
 				observedSlotValueIds,
+				observedSlotsRelative,
 				localUavs,
 				localSrvs,
 				localCbvs,

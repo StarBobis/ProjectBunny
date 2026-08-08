@@ -1538,6 +1538,27 @@ public:
 	std::vector<UINT> observedSlots;
 	std::vector<UINT64> observedSlotVersions;
 	std::vector<UINT64> observedSlotValueIds;
+	// Content-addressed per-slot snapshot for cache validation across
+	// descriptor-ring rotation: (root, offset-from-table-base, version,
+	// valueId). Validation recomputes the current absolute slot from the
+	// current table base, so the cache can hit when the game re-binds the
+	// same descriptor values at a different ring location. This is the DX12
+	// model - value identity is authoritative and the GPU handle / ring slot
+	// is transient - instead of DX11's binding-slot identity.
+	struct RuntimeObservedSlot
+	{
+		UINT root = 0;
+		UINT offset = 0;
+		UINT64 version = 0;
+		UINT64 valueId = 0;
+	};
+	std::vector<RuntimeObservedSlot> bindingsObservedSlots;
+	// Table GPU base pointer captured at store time. Validation may skip the
+	// slot identity read when the descriptor query serial is unchanged AND
+	// every observed table still points at the same base; a moved table means
+	// the ring rotated and the new slots must be re-validated even if no
+	// descriptor write happened since the last check.
+	std::array<UINT64, MaxRootParameters> bindingsRootTableBases = {};
 	std::vector<DX12CurrentComputeUavBinding> uavs;
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;

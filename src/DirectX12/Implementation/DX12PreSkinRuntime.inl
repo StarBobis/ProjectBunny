@@ -2992,6 +2992,31 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 	    gHasPreSkinTextureOverrideCandidates == 0)
 		return false;
 
+	// The configured CS hash set only changes on mod reload. Cache the
+	// verdict per CS hash in TLS so the dispatch hot path does not take the
+	// global mod lock on every dispatch (this predicate is consulted 2-3
+	// times per dispatch and the game rotates through a small CS set).
+	struct TlsProbeCsCacheEntry
+	{
+		uint64_t hash = 0;
+		bool result = false;
+		bool valid = false;
+	};
+	static thread_local std::array<TlsProbeCsCacheEntry, 32> tlsProbeCsCache;
+	static thread_local UINT64 tlsProbeCsReloadGeneration = 0;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (reloadGeneration != tlsProbeCsReloadGeneration) {
+		tlsProbeCsCache = {};
+		tlsProbeCsReloadGeneration = reloadGeneration;
+	}
+	const UINT slotMask =
+		static_cast<UINT>(tlsProbeCsCache.size()) - 1;
+	const UINT slot = static_cast<UINT>(computeShaderHash ^
+		(computeShaderHash >> 32)) & slotMask;
+	TlsProbeCsCacheEntry &tlsEntry = tlsProbeCsCache[slot];
+	if (tlsEntry.valid && tlsEntry.hash == computeShaderHash)
+		return tlsEntry.result;
+
 	bool shouldProbe = false;
 	AcquireSRWLockShared(&gModLock);
 	if (gHasPreSkinVlrWithoutMatchCs) {
@@ -3001,6 +3026,9 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 			gPreSkinMatchCsHashes.end();
 	}
 	ReleaseSRWLockShared(&gModLock);
+	tlsEntry.valid = true;
+	tlsEntry.hash = computeShaderHash;
+	tlsEntry.result = shouldProbe;
 	// Reset binding tracking idle counter: as long as a matching CS dispatch
 	// runs, keep binding tracking active so the probe can access bindings.
 	if (shouldProbe)

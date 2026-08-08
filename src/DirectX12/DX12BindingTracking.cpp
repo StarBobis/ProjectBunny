@@ -1,5 +1,6 @@
 #include "Tracking/DX12ResourceInfrastructure.hpp"
 #include "Mods/DX12ModInterfaces.hpp"
+#include "Runtime/DX12DeviceRuntime.hpp"
 #include <chrono>
 #include "Resources/DX12ResourceFileIO.hpp"
 #include <stdio.h>

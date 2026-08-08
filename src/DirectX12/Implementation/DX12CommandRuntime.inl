@@ -466,6 +466,14 @@ void DX12CommandListRuntime::Reset(
 	// HackerContext state.
 	DX12SimulateContextDrawTemplate persistentResolvedDraw =
 		std::move(state->resolvedDraw);
+	// The compute binding template and probe verdicts are validated by
+	// semantic identity (root signature + heap + descriptor value IDs +
+	// fingerprint), not by per-recording serials, so they survive Reset and
+	// hit when the game re-records identical dispatches every frame. This is
+	// the DX12 equivalent of caching the decision at bind/write time instead
+	// of re-collecting state on every dispatch.
+	DX12SimulateContextComputeTemplate persistentResolvedCompute =
+		std::move(state->resolvedCompute);
 	// barrierScratch is documented as reused storage to avoid an allocation
 	// cycle per ResourceBarrier call, but the full struct reset destroyed and
 	// reallocated it on every command-list Reset. Move it out and back so its
@@ -478,6 +486,7 @@ void DX12CommandListRuntime::Reset(
 	state->pipelineState = nullptr;
 	state->trackingCache = oldCache;
 	state->resolvedDraw = std::move(persistentResolvedDraw);
+	state->resolvedCompute = std::move(persistentResolvedCompute);
 	state->barrierScratch = std::move(persistentBarrierScratch);
 	state->barrierScratch.clear();
 	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
@@ -1781,6 +1790,22 @@ void DX12CommandListRuntime::SetDescriptorHeaps(
 	DX12RuntimeInvalidateHeapSummary(
 		&state->runtimeSamplerHeapResolved,
 		&state->runtimeSamplerHeap);
+	// Resolve the heap summaries at bind time (a handful of calls per frame)
+	// so the dispatch hot path never has to take the global descriptor lock
+	// to map a GPU descriptor handle back to a heap. The summaries are pure
+	// identity + layout data: the version field may age, but slot arithmetic
+	// stays valid for the lifetime of the heap and content changes are still
+	// caught by the descriptor query serial on the draw/dispatch path.
+	state->runtimeCbvSrvUavHeapResolved =
+		DX12RuntimeResolveHeapSummary(
+			cbvSrvUavHeap,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			&state->runtimeCbvSrvUavHeap);
+	state->runtimeSamplerHeapResolved =
+		DX12RuntimeResolveHeapSummary(
+			samplerHeap,
+			D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+			&state->runtimeSamplerHeap);
 	DX12RuntimeClearRootTables(state);
 	// Heap swap invalidates every table-based binding (DXVK: whole mask dirty).
 	state->computeRootDirtyMask = ~0ull;
@@ -1983,6 +2008,10 @@ bool DX12CommandListRuntime::RememberRootDescriptorTable(
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
+	// Fill the table's runtime heap fields at bind time from the cached heap
+	// summary (pure arithmetic, no global lock). The dispatch path can then
+	// compute descriptor slots without reverse-mapping the GPU handle.
+	DX12RuntimeResolveRootTable(state, &table);
 	if (!graphics) {
 		state->computeBindingSerial++;
 		if (!state->computeBindingSerial)
