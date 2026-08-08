@@ -163,3 +163,58 @@ PreSkin 段（present 4283-4813，~18fps）每帧 API 墙钟大头：
 
 GPU 占用率从 80% 掉到 13% 的根因：CPU 渲染线程被上述包装累计拖慢 ~45-50ms/帧，
 GPU 无事可做。修复优先级：CopyDescriptors > CreateCBV > Draw > 包装层杂项。
+
+## 5. >1ms 函数 DX12 机制调查结果（2026-08-08）
+
+> 依据：BP 版日志（18:19）PreSkin 段 API 墙钟 + 源码走查。
+> 结论：大部分函数内部已经有 DX12 快速路径，剩余大头是“每调用固定开销”
+> （原始函数指针解析 + TIMING 遥测原子操作 + 计时 scope），以及几处真正的
+> “一次性全量状态”式实现（堆创建、Reset 全量清零）。
+
+| 函数/API | 每帧 | 单次 | 现状（是否已走 DX12 机制） | DX12 专属机制/建议 | 优先级 |
+|---|---|---|---|---|---|
+| CopyDescriptors | 9.4ms | record 2.9us | 内部已有无锁堆缓存/扁平值ID memo/RangeMemo/稠密 seqlock 路径 | 遥测改 TLS 批量每帧刷；original 指针进对象缓存；未观察堆跳过记录 | P0 |
+| DrawIndexedInstanced | 6.8ms | 7us | bound-draw/IA/PSO 多层负缓存已生效 | 无替换候选判定下沉到 SetPipelineState；Release 版对比剥离计时仪器开销 | P1 |
+| PSO 创建 | 6.0ms（32帧） | — | 游戏侧编译为主 | 跟踪异步化/重复 PSO 缓存 | P2 |
+| 堆创建 | 5.7ms（270帧） | — | 创建时全量分配影子数组（日志见 257MB） | 影子状态按页懒分配（D3D12 堆内容由应用管理） | P1 |
+| CreateCBV | 4.7ms | 1.35us | 已有 TLS 内容哈希+顺序槽+扁平值ID 早退 | 遥测 TLS 批量；original 指针缓存 | P1 |
+| ExecuteCommandLists | 2.5ms | 358us | unwrap+执行流 | 零工作时直通；检查 upload/readback 是否插入 GPU 等待 | P1 |
+| Dispatch | 2.0ms | 22us | CS 判定 TLS 缓存+本地 probe 缓存已生效 | 无替换候选挂到 PSO 决策一次算好 | P2 |
+| ObjectLifetime | 1.7ms | 52us | 生命周期跟踪（锁+map） | 只跟踪 mod 引用对象；引用计数原子化 | P2 |
+| ResourceBarrier | 1.7ms | 12us | 显式 barrier 状态登记 | 无状态依赖时整段跳过 | P2 |
+| 资源创建 | 1.6ms | 21us | 创建即登记（锁+GPU VA map） | 惰性登记/批量入队 | P2 |
+| SetPipelineState | 1.2ms | 3.5us | PSO 缓存已生效 | TLS 同值透传；决策挂 PSO | P2 |
+| ResetCommandList | 1.15ms | 68us | `*state=...` 全量清零+大对象移动 | 懒重置：保留容量，只清代际字段 | P1 |
+| IASetVertexBuffers | 1.1ms | 1.5us | 延迟资源解析已生效 | 无 IA 替换时快速透传 | P3 |
+| SetGraphicsRootSignature | 1.06ms | 4.2us | TLS 快路径已生效 | 遥测批量；original 缓存 | P3 |
+
+注意：TIMING 构建的计时/遥测本身有成本（每调用 QPC+原子操作），
+正式性能对比建议用 Release（非计时）版再测一轮，避免把测量开销当成 Mod 开销。
+
+## 6. 已实施的 DX12 专属路径优化（2026-08-08 第二轮）
+
+按上表优先级落地并已构建部署；2026-08-08 第三轮根据同场景测试回退了两项
+无收益且有理论风险的变化，最终保留/回退情况如下：
+
+1. **ResetCommandList 懒重置**（`DX12CommandRuntime.inl`）
+   - 不再 `*state = DX12SimulateContext()` 全量清零（~60KB/次，其中根常量数组
+     43KB），改为 `DX12RuntimeResetStateForRecording` 精确重置：
+     - 根常量只清 valid/maxSet/rootParameterIndex，payload 留旧（valid=false 永不被读）；
+     - `resolvedDescriptorQueries` 跨 Reset 保留容量（move 出去再回来，只清 valid）；
+     - 其余标量/表/描述符/决策模板逐项复位。
+2. ~~描述符拷贝跳过非 shader-visible 目标堆~~（**已回退**）
+   - 理论上符合 DX12 模型，但同场景 A/B 未测出收益，且存在“CPU 堆将来作为源
+     拷贝到 GPU 堆时值ID 传播被破坏”的潜在风险；按 best practice 回退。
+3. ~~SetPipelineState 冗余调用跳过~~（**已回退**）
+   - 同场景 A/B 未测出收益（该场景连续重复设置不多），为保守起见回退。
+
+同场景测试结论：Reset 懒重置确认有效（-13%/次）；CopyDescriptors/SetPSO 的
+帧间差异来自游戏状态方差（“内容真变的槽” 7560 -> 10869/帧），与回退项无关。
+
+调查后确认已符合 DX12 机制、无需改动：
+- CopyDescriptors/CreateCBV：内部已有无锁堆缓存、TLS 内容哈希、扁平值ID memo、
+  RangeMemo、稠密 seqlock 路径，遥测已是 TLS 分块；
+- 原始函数指针解析在 wrapper 模式下已免锁（vtable 直读）；
+- 堆创建：影子槽数组已是按需懒分配；
+- ExecuteCommandLists：upload/readback 通道已有零工作快速门；
+- Draw：多层负缓存 + PSO 编译决策已生效，剩余主要是原始调用+计时仪器。
