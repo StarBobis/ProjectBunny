@@ -103,6 +103,54 @@ static bool CaptureAllowedForCaller(const void *caller)
 	return allowed;
 }
 
+struct DX12CpuMappableLookupCache
+{
+	ID3D12Resource *resource = nullptr;
+	UINT64 generation = 0;
+	bool eligible = false;
+	bool isUpload = false;
+};
+
+static thread_local DX12CpuMappableLookupCache gCpuMappableLookupCache;
+
+static bool IsCpuMappableTrackedResource(ID3D12Resource *resource)
+{
+	const UINT64 generation =
+		gCpuMappableResourceGeneration.load(std::memory_order_acquire);
+	if (gCpuMappableLookupCache.resource == resource &&
+		gCpuMappableLookupCache.generation == generation) {
+		return gCpuMappableLookupCache.eligible;
+	}
+
+	AcquireSRWLockShared(&gCpuMappableResourceLock);
+	const bool eligible = gCpuMappableResources.find(resource) != gCpuMappableResources.end();
+	const UINT64 resolvedGeneration =
+		gCpuMappableResourceGeneration.load(std::memory_order_relaxed);
+	ReleaseSRWLockShared(&gCpuMappableResourceLock);
+	gCpuMappableLookupCache.resource = resource;
+	gCpuMappableLookupCache.generation = resolvedGeneration;
+	gCpuMappableLookupCache.eligible = eligible;
+	bool isUpload = false;
+	if (eligible) {
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		D3D12_HEAP_FLAGS heapFlags = {};
+		if (SUCCEEDED(resource->GetHeapProperties(&heapProps, &heapFlags)))
+			isUpload = heapProps.Type == D3D12_HEAP_TYPE_UPLOAD;
+	}
+	gCpuMappableLookupCache.isUpload = isUpload;
+	return eligible;
+}
+
+// Upload-heap check for the async capture path. Reuses the TLS lookup cache
+// populated by IsCpuMappableTrackedResource so the capture path pays at most
+// one cached load beyond the eligibility check.
+static bool IsCpuMappableUploadResource(ID3D12Resource *resource)
+{
+	if (!IsCpuMappableTrackedResource(resource))
+		return false;
+	return gCpuMappableLookupCache.isUpload;
+}
+
 static void CaptureResourceMapWrites(
 	ID3D12Resource *resource, UINT subresource,
 	const D3D12_RANGE *writtenRange, const void *caller)
@@ -139,38 +187,22 @@ static void CaptureResourceMapWrites(
 		DX12InvalidateBufferContent(resource);
 		return;
 	}
-	DX12CacheBufferContentRange(resource, offset,
-		static_cast<const uint8_t*>(mapping.data) + static_cast<size_t>(offset),
-		static_cast<size_t>(bytes));
-}
-
-struct DX12CpuMappableLookupCache
-{
-	ID3D12Resource *resource = nullptr;
-	UINT64 generation = 0;
-	bool eligible = false;
-};
-
-static thread_local DX12CpuMappableLookupCache gCpuMappableLookupCache;
-
-static bool IsCpuMappableTrackedResource(ID3D12Resource *resource)
-{
-	const UINT64 generation =
-		gCpuMappableResourceGeneration.load(std::memory_order_acquire);
-	if (gCpuMappableLookupCache.resource == resource &&
-		gCpuMappableLookupCache.generation == generation) {
-		return gCpuMappableLookupCache.eligible;
+	// Async capture: enqueue a copy-queue readback instead of memcpy'ing the
+	// written range into the content cache on the recording thread. Only
+	// UPLOAD heaps are GPU-readable by the copy engine without barriers;
+	// READBACK heaps are CPU-read-only and never written by the game this way.
+	if (!IsCpuMappableUploadResource(resource)) {
+		static volatile LONG captureSkipLogCounter = 0;
+		if ((InterlockedIncrement(&captureSkipLogCounter) & 0xFF) == 1) {
+			DX12LogManager::Fields("DX12BufferCaptureSkip",
+				"stage=not_upload_or_untracked,resource=%p,offset=%llu,bytes=%llu",
+				resource,
+				static_cast<unsigned long long>(offset),
+				static_cast<unsigned long long>(bytes));
+		}
+		return;
 	}
-
-	AcquireSRWLockShared(&gCpuMappableResourceLock);
-	const bool eligible = gCpuMappableResources.find(resource) != gCpuMappableResources.end();
-	const UINT64 resolvedGeneration =
-		gCpuMappableResourceGeneration.load(std::memory_order_relaxed);
-	ReleaseSRWLockShared(&gCpuMappableResourceLock);
-	gCpuMappableLookupCache.resource = resource;
-	gCpuMappableLookupCache.generation = resolvedGeneration;
-	gCpuMappableLookupCache.eligible = eligible;
-	return eligible;
+	DX12AsyncReadbackQueueBufferCapture(resource, offset, bytes);
 }
 
 // Hooked Map ??records the mapped pointer for later content capture

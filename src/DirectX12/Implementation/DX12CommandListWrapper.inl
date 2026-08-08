@@ -646,14 +646,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					srcResource,
 					SrcOffset,
 					NumBytes);
-				if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
-					!DX12CopyBufferContentRange(
-						dstResource,
-						DstOffset,
-						srcResource,
-						SrcOffset,
-						NumBytes)) {
-					DX12InvalidateBufferContent(dstResource);
+				// Async content capture: queue a GPU readback of the
+				// destination range instead of propagating CPU shadow content
+				// synchronously. The readback executes after this submit, so
+				// it always observes the post-copy bytes.
+				if (DX12HotPathState::NeedsIaBufferContentTracking(flags)) {
+					DX12AsyncReadbackQueueBufferCapture(
+						dstResource, DstOffset, NumBytes);
 				}
 			}
 
@@ -699,14 +698,18 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				mCommandList->CopyResource(
 					dstResource,
 					srcResource);
+				// Async content capture: queue a GPU readback of the whole
+				// destination buffer instead of CPU shadow propagation. The
+				// readback executes after this submit and observes the
+				// post-copy bytes.
 				if (DX12HotPathState::NeedsIaBufferContentTracking(flags) &&
 					dstResource && srcResource) {
 					const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
 					const D3D12_RESOURCE_DESC srcDesc = srcResource->GetDesc();
 					if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-					    srcDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-					    !DX12CopyBufferContent(dstResource, srcResource)) {
-						DX12InvalidateBufferContent(dstResource);
+					    srcDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+						DX12AsyncReadbackQueueBufferCapture(
+							dstResource, 0, dstDesc.Width);
 					}
 				}
 			DX12_HOTPATH_TIME_END(CopyResourceOpTotal);

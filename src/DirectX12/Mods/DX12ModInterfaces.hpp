@@ -785,6 +785,49 @@ bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
 UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
 
+// ---------------------------------------------------------------------------
+// Async content capture (copy-queue readback pipeline).
+//
+// DX11 kept CPU-side buffer content by memcpy'ing at Map/Unmap time on the
+// recording thread; the DX12 port mirrored that with synchronous cache writes
+// and global-epoch bumps on every Unmap/Copy call. This pipeline replaces the
+// synchronous writes: recording threads only enqueue a tiny capture event
+// (no memcpy, no cache lock, no epoch bump). A dedicated copy queue reads the
+// buffer/texture content back into a readback ring after the game's submit,
+// and a worker thread publishes the bytes into the existing content caches
+// (DX12CacheBufferContentRange / DX12CacheTextureHash) when the fence lands.
+// Draw-time consumers therefore see content one frame late, which is exact
+// for static resources and self-corrects for streaming ones.
+// Implemented in the tracking TU (DX12AsyncContentReadback.inl).
+bool DX12AsyncReadbackQueueBufferCapture(
+	ID3D12Resource *resource, UINT64 offset, UINT64 size);
+bool DX12AsyncReadbackQueueTextureCapture(
+	ID3D12Resource *texture, const D3D12_RESOURCE_DESC *desc);
+// Cheap volatile gate: true when at least one capture event is pending a
+// submit. Called on the game's ExecuteCommandLists hot path.
+bool DX12AsyncReadbackHasPendingWork();
+// Submit all pending capture events on the copy queue, ordered after the
+// given (game) queue via Signal/Wait. Called after the original
+// ExecuteCommandLists call; pure queue operations on the mod-owned channel.
+void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue);
+
+// ---------------------------------------------------------------------------
+// Async upload channel (ring of allocators, no per-upload CPU wait).
+// The game's queue waits on the upload fence at its next ExecuteCommandLists
+// instead of the caller blocking on WaitForSingleObject per upload.
+bool DX12UploadChannelHasPendingWork();
+void DX12UploadChannelWaitOnQueue(ID3D12CommandQueue *queue);
+
+// Resource state query for the readback pipeline: returns the tracked current
+// state of a resource (from creation initialState and recorded transitions).
+// knownOut=false when no state is tracked; barrierTrackedOut=true when the
+// state was observed from an explicit ResourceBarrier transition.
+bool DX12GetResourceCurrentState(
+	ID3D12Resource *resource,
+	D3D12_RESOURCE_STATES *stateOut,
+	bool *knownOut,
+	bool *barrierTrackedOut);
+
 // Write-time static texture replacement (plan step 3.1). Implemented in the
 // mod TU (DX12ModRuntime.cpp) and consumed by the tracking TU descriptor
 // hooks; this TU (resource queries) provides the texture hash cache the

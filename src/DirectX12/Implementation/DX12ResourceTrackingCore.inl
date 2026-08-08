@@ -1014,6 +1014,14 @@ static void RegisterCpuMappableResource(ID3D12Resource *resource)
 	if (gCpuMappableResources.insert(resource).second)
 		gCpuMappableResourceGeneration.fetch_add(1, std::memory_order_release);
 	ReleaseSRWLockExclusive(&gCpuMappableResourceLock);
+	{
+		static volatile LONG registerLogCounter = 0;
+		if ((InterlockedIncrement(&registerLogCounter) & 0xFFF) == 1) {
+			DX12LogManager::Fields("DX12BufferCaptureRegister",
+				"stage=registered,resource=%p",
+				resource);
+		}
+	}
 }
 
 static void UnregisterCpuMappableResource(ID3D12Resource *resource, ID3D12Resource *canonical)
@@ -3149,6 +3157,59 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			gLiveResourceCount);
 	}
 	ReleaseSRWLockExclusive(&gResourceLock);
+}
+
+// State query for the async readback pipeline (DX12AsyncContentReadback.inl).
+// Returns the tracked current state of a resource from the same records the
+// barrier recorder maintains. knownOut=false when no state is known (created
+// before tracking was enabled, or never observed); barrierTrackedOut=true
+// when the state came from an explicit ResourceBarrier transition (creation
+// initialState alone cannot distinguish COMMON-promotion engines from
+// explicit-state engines that never barriered this resource yet).
+bool DX12GetResourceCurrentState(
+	ID3D12Resource *resource,
+	D3D12_RESOURCE_STATES *stateOut,
+	bool *knownOut,
+	bool *barrierTrackedOut)
+{
+	if (stateOut)
+		*stateOut = D3D12_RESOURCE_STATE_COMMON;
+	if (knownOut)
+		*knownOut = false;
+	if (barrierTrackedOut)
+		*barrierTrackedOut = false;
+	if (!resource)
+		return false;
+
+	// Fast path: wrapper-cached record (no gResourceLock, mirrors the barrier
+	// recorder's hot path).
+	if (ResourceRecord *fastRecord = DX12FindWrapperResourceRecord(resource)) {
+		if (stateOut)
+			*stateOut = fastRecord->currentState;
+		if (knownOut)
+			*knownOut = fastRecord->hasCurrentState;
+		if (barrierTrackedOut)
+			*barrierTrackedOut = fastRecord->stateTrackedByBarrier;
+		return fastRecord->hasCurrentState;
+	}
+
+	AcquireSRWLockShared(&gResourceLock);
+	size_t *index = FindTrackedResourceIndexLocked(resource);
+	bool found = false;
+	if (index && *index < gResources.size()) {
+		const ResourceRecord &record = gResources[*index];
+		if (record.resource) {
+			if (stateOut)
+				*stateOut = record.currentState;
+			if (knownOut)
+				*knownOut = record.hasCurrentState;
+			if (barrierTrackedOut)
+				*barrierTrackedOut = record.stateTrackedByBarrier;
+			found = record.hasCurrentState;
+		}
+	}
+	ReleaseSRWLockShared(&gResourceLock);
+	return found;
 }
 
 

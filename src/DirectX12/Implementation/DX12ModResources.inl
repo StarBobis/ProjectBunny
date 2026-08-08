@@ -819,21 +819,37 @@ public:
 	}
 
 	// Upload channel for DDS textures. Mirrors DX11's immediate-context
-	// upload: the copy and state transition execute on a private queue and
-	// the CPU waits for completion, so the game's command list is never
-	// polluted with mod upload commands (which previously added a large
-	// CopyTextureRegion + barrier into the middle of the game's recording).
+	// upload semantics without the CPU stall: the copy and state transition
+	// execute on a private queue, and the game's queue waits on the upload
+	// fence at its next ExecuteCommandLists (GPU-side wait, no CPU block),
+	// so the game's command list is never polluted with mod upload commands
+	// (which previously added a large CopyTextureRegion + barrier into the
+	// middle of the game's recording).
 	// Created lazily on first upload and reused for the mod's lifetime.
+	// A small allocator ring allows several uploads per frame to overlap:
+	// slot i is only reused after its fence value completes.
+	inline static constexpr UINT kUploadChannelSlots = 4;
+	struct UploadChannelSlot
+	{
+		ID3D12CommandAllocator *allocator = nullptr;
+		ID3D12GraphicsCommandList *list = nullptr;
+		UINT64 busyUntilFence = 0; // 0 = never used / free
+		bool everUsed = false;     // first use skips Reset (see below)
+	};
 	inline static SRWLOCK s_uploadLock = SRWLOCK_INIT;
 	inline static ID3D12CommandQueue *s_uploadQueue = nullptr;
-	inline static ID3D12CommandAllocator *s_uploadAllocator = nullptr;
-	inline static ID3D12GraphicsCommandList *s_uploadList = nullptr;
+	inline static UploadChannelSlot s_uploadSlots[kUploadChannelSlots];
 	inline static ID3D12Fence *s_uploadFence = nullptr;
 	inline static UINT64 s_uploadFenceValue = 0;
+	// Pending-upload publication for the game-queue wait (read by the
+	// ExecuteCommandLists wrapper on the game thread under s_uploadLock).
+	inline static UINT64 s_uploadPendingFenceValue = 0;
+	inline static std::atomic<bool> s_uploadHasPending{false};
 
 	static bool EnsureUploadChannel(ID3D12Device *device)
 	{
-		if (s_uploadQueue && s_uploadAllocator && s_uploadList && s_uploadFence)
+		if (s_uploadQueue && s_uploadFence &&
+		    s_uploadSlots[0].allocator && s_uploadSlots[0].list)
 			return true;
 		if (!device)
 			return false;
@@ -841,37 +857,82 @@ public:
 		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 		HRESULT hr = device->CreateCommandQueue(
 			&queueDesc, IID_PPV_ARGS(&s_uploadQueue));
-		if (FAILED(hr) || !s_uploadQueue)
-			return false;
-		hr = device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s_uploadAllocator));
-		if (FAILED(hr) || !s_uploadAllocator) {
-			s_uploadQueue->Release();
-			s_uploadQueue = nullptr;
+		if (FAILED(hr) || !s_uploadQueue) {
+			DX12LogManager::Fields("DX12TextureUpload",
+				"stage=ensure_channel_failed,step=create_queue,hr=0x%lx",
+				hr);
 			return false;
 		}
-		hr = device->CreateCommandList(
-			0, D3D12_COMMAND_LIST_TYPE_DIRECT, s_uploadAllocator,
-			nullptr, IID_PPV_ARGS(&s_uploadList));
-		if (FAILED(hr) || !s_uploadList) {
-			s_uploadAllocator->Release();
-			s_uploadAllocator = nullptr;
-			s_uploadQueue->Release();
-			s_uploadQueue = nullptr;
-			return false;
+		for (UINT i = 0; i < kUploadChannelSlots; ++i) {
+			hr = device->CreateCommandAllocator(
+				D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s_uploadSlots[i].allocator));
+			if (FAILED(hr) || !s_uploadSlots[i].allocator) {
+				DX12LogManager::Fields("DX12TextureUpload",
+					"stage=ensure_channel_failed,step=create_allocator,slot=%u,hr=0x%lx",
+					i, hr);
+				goto upload_channel_failed;
+			}
+			hr = device->CreateCommandList(
+				0, D3D12_COMMAND_LIST_TYPE_DIRECT, s_uploadSlots[i].allocator,
+				nullptr, IID_PPV_ARGS(&s_uploadSlots[i].list));
+			if (FAILED(hr) || !s_uploadSlots[i].list) {
+				DX12LogManager::Fields("DX12TextureUpload",
+					"stage=ensure_channel_failed,step=create_list,slot=%u,hr=0x%lx",
+					i, hr);
+				goto upload_channel_failed;
+			}
 		}
 		hr = device->CreateFence(
 			0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&s_uploadFence));
 		if (FAILED(hr) || !s_uploadFence) {
-			s_uploadList->Release();
-			s_uploadList = nullptr;
-			s_uploadAllocator->Release();
-			s_uploadAllocator = nullptr;
-			s_uploadQueue->Release();
-			s_uploadQueue = nullptr;
-			return false;
+			DX12LogManager::Fields("DX12TextureUpload",
+				"stage=ensure_channel_failed,step=create_fence,hr=0x%lx",
+				hr);
+			goto upload_channel_failed;
 		}
 		return true;
+
+	upload_channel_failed:
+		for (UINT i = 0; i < kUploadChannelSlots; ++i) {
+			if (s_uploadSlots[i].list) {
+				s_uploadSlots[i].list->Release();
+				s_uploadSlots[i].list = nullptr;
+			}
+			if (s_uploadSlots[i].allocator) {
+				s_uploadSlots[i].allocator->Release();
+				s_uploadSlots[i].allocator = nullptr;
+			}
+		}
+		if (s_uploadFence) {
+			s_uploadFence->Release();
+			s_uploadFence = nullptr;
+		}
+		if (s_uploadQueue) {
+			s_uploadQueue->Release();
+			s_uploadQueue = nullptr;
+		}
+		return false;
+	}
+
+	static bool WaitUploadFence(UINT64 fenceValue, DWORD timeoutMs)
+	{
+		if (!s_uploadFence)
+			return false;
+		if (s_uploadFence->GetCompletedValue() >= fenceValue)
+			return true;
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		bool completed = false;
+		if (event) {
+			if (SUCCEEDED(s_uploadFence->SetEventOnCompletion(
+					fenceValue, event))) {
+				completed =
+					WaitForSingleObject(event, timeoutMs) == WAIT_OBJECT_0;
+			}
+			CloseHandle(event);
+		} else {
+			completed = s_uploadFence->GetCompletedValue() >= fenceValue;
+		}
+		return completed;
 	}
 
 	static bool ExecuteTextureUpload(
@@ -881,15 +942,68 @@ public:
 		UINT subresourceCount,
 		const std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> &layouts)
 	{
-		if (!device || !texture || !upload || subresourceCount == 0)
+		if (!device || !texture || !upload || subresourceCount == 0) {
+			DX12LogManager::Fields("DX12TextureUpload",
+				"stage=invalid_args,device=%d,texture=%d,upload=%d,subresources=%u",
+				device != nullptr, texture != nullptr, upload != nullptr,
+				subresourceCount);
 			return false;
+		}
 		AcquireSRWLockExclusive(&s_uploadLock);
 		if (!EnsureUploadChannel(device)) {
 			ReleaseSRWLockExclusive(&s_uploadLock);
 			return false;
 		}
-		s_uploadAllocator->Reset();
-		s_uploadList->Reset(s_uploadAllocator, nullptr);
+
+		// Pick a slot whose previous work completed; when all slots are
+		// still busy (more concurrent uploads than slots) block on the
+		// oldest - rare, and equivalent to the old synchronous path.
+		UINT slotIndex = UINT_MAX;
+		UINT oldestIndex = UINT_MAX;
+		UINT64 oldestValue = UINT64_MAX;
+		const UINT64 completedValue = s_uploadFence->GetCompletedValue();
+		for (UINT i = 0; i < kUploadChannelSlots; ++i) {
+			UploadChannelSlot &slot = s_uploadSlots[i];
+			if (slot.busyUntilFence == 0 || completedValue >= slot.busyUntilFence) {
+				slotIndex = i;
+				break;
+			}
+			if (slot.busyUntilFence < oldestValue) {
+				oldestValue = slot.busyUntilFence;
+				oldestIndex = i;
+			}
+		}
+		if (slotIndex == UINT_MAX) {
+			slotIndex = oldestIndex;
+			if (!WaitUploadFence(oldestValue, 5000)) {
+				DX12LogManager::Fields("DX12TextureUpload",
+					"stage=slot_wait_failed,fenceValue=%llu",
+					static_cast<unsigned long long>(oldestValue));
+				ReleaseSRWLockExclusive(&s_uploadLock);
+				return false;
+			}
+		}
+
+		UploadChannelSlot &slot = s_uploadSlots[slotIndex];
+		if (slot.everUsed) {
+			// Reuse: the previous list is closed and the fence check above
+			// guarantees the GPU finished with it, so Reset is legal here.
+			const HRESULT allocatorResetHr = slot.allocator->Reset();
+			const HRESULT listResetHr = slot.list->Reset(slot.allocator, nullptr);
+			if (FAILED(allocatorResetHr) || FAILED(listResetHr)) {
+				DX12LogManager::Fields("DX12TextureUpload",
+					"stage=reset_failed,slot=%u,allocatorHr=0x%lx,listHr=0x%lx",
+					slotIndex, allocatorResetHr, listResetHr);
+				ReleaseSRWLockExclusive(&s_uploadLock);
+				return false;
+			}
+		} else {
+			// First use: a freshly created command list is already in the
+			// recording state and its allocator must NOT be reset while the
+			// list is recording (Reset returns E_FAIL on strict drivers).
+			// Record directly into the initial recording state.
+			slot.everUsed = true;
+		}
 		for (UINT index = 0; index < subresourceCount; ++index) {
 			D3D12_TEXTURE_COPY_LOCATION dst = {};
 			dst.pResource = texture;
@@ -899,7 +1013,7 @@ public:
 			src.pResource = upload;
 			src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 			src.PlacedFootprint = layouts[index];
-			s_uploadList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+			slot.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 		}
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -909,28 +1023,28 @@ public:
 		barrier.Transition.StateAfter =
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
 			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-		s_uploadList->ResourceBarrier(1, &barrier);
-		s_uploadList->Close();
+		slot.list->ResourceBarrier(1, &barrier);
+		const HRESULT closeHr = slot.list->Close();
+		if (FAILED(closeHr)) {
+			DX12LogManager::Fields("DX12TextureUpload",
+				"stage=close_failed,slot=%u,hr=0x%lx",
+				slotIndex, closeHr);
+			ReleaseSRWLockExclusive(&s_uploadLock);
+			return false;
+		}
 
-		ID3D12CommandList *lists[] = { s_uploadList };
+		// Async submit: no CPU wait. The game's queue waits on this fence
+		// before its next ExecuteCommandLists, so the texture is in SRV
+		// state before any game work that references it runs.
+		ID3D12CommandList *lists[] = { slot.list };
 		s_uploadQueue->ExecuteCommandLists(1, lists);
 		const UINT64 fenceValue = ++s_uploadFenceValue;
 		s_uploadQueue->Signal(s_uploadFence, fenceValue);
-		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		bool completed = false;
-		if (event) {
-			if (SUCCEEDED(s_uploadFence->SetEventOnCompletion(
-					fenceValue, event))) {
-				const DWORD waitResult = WaitForSingleObject(event, 5000);
-				completed = waitResult == WAIT_OBJECT_0;
-			}
-			CloseHandle(event);
-		} else {
-			completed =
-				s_uploadFence->GetCompletedValue() >= fenceValue;
-		}
+		slot.busyUntilFence = fenceValue;
+		s_uploadPendingFenceValue = fenceValue;
+		s_uploadHasPending.store(true, std::memory_order_release);
 		ReleaseSRWLockExclusive(&s_uploadLock);
-		return completed;
+		return true;
 	}
 
 	static DX12LoadedResource *EnsureTextureResourceRecord(
@@ -1191,6 +1305,38 @@ public:
 		return resource;
 	}
 };
+
+// Exported upload-channel state for the ExecuteCommandLists wrapper: the game
+// queue waits on the upload fence (GPU-side) before its next submit instead
+// of the upload caller blocking on WaitForSingleObject.
+bool DX12UploadChannelHasPendingWork()
+{
+	return DX12DdsTextureLoadUtils::s_uploadHasPending.load(
+		std::memory_order_acquire);
+}
+
+void DX12UploadChannelWaitOnQueue(ID3D12CommandQueue *queue)
+{
+	if (!queue || !DX12UploadChannelHasPendingWork())
+		return;
+	AcquireSRWLockExclusive(&DX12DdsTextureLoadUtils::s_uploadLock);
+	const UINT64 pendingValue = DX12DdsTextureLoadUtils::s_uploadPendingFenceValue;
+	const bool hasPending = DX12DdsTextureLoadUtils::s_uploadHasPending.load(
+		std::memory_order_relaxed);
+	if (hasPending && pendingValue &&
+	    DX12DdsTextureLoadUtils::s_uploadFence) {
+		if (DX12DdsTextureLoadUtils::s_uploadFence->GetCompletedValue() >=
+		    pendingValue) {
+			// Upload landed; stop paying the Wait on later submits.
+			DX12DdsTextureLoadUtils::s_uploadHasPending.store(
+				false, std::memory_order_release);
+		} else {
+			queue->Wait(
+				DX12DdsTextureLoadUtils::s_uploadFence, pendingValue);
+		}
+	}
+	ReleaseSRWLockExclusive(&DX12DdsTextureLoadUtils::s_uploadLock);
+}
 
 static ID3D12Device *AcquireModDevice(ID3D12GraphicsCommandList *commandList)
 {

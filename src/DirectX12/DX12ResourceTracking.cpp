@@ -9,3 +9,4 @@
 #include "Implementation/DX12ResourceTrackingCore.inl"
 #include "Implementation/DX12ResourceHooks.inl"
 #include "Implementation/DX12ResourceQueries.inl"
+#include "Implementation/DX12AsyncContentReadback.inl"

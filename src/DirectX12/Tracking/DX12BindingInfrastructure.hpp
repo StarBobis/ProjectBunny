@@ -1118,6 +1118,13 @@ public:
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
+		// Order any pending mod uploads (mod textures loaded since the
+		// previous submit) before this submit's lists: the game queue waits
+		// on the upload fence GPU-side, so SRVs referencing freshly uploaded
+		// textures never observe uninitialized contents and no CPU thread
+		// blocks. A no-op once the upload fence has completed.
+		DX12UploadChannelWaitOnQueue(queue);
+
 		if (DX12HotPathState::skipAll) {
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(
@@ -1144,6 +1151,11 @@ public:
 						queue, numCommandLists);
 	#endif
 			}
+			// Async content capture: submit readback events queued during
+			// recording, ordered after the game's lists via Signal/Wait on
+			// the mod-owned copy queue.
+			if (DX12AsyncReadbackHasPendingWork())
+				DX12AsyncReadbackSubmitPending(queue);
 			if (shouldNotifySubmitted) {
 				sliceBegin = DX12OuterTimingProbeUtils::Now();
 				DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
@@ -1181,6 +1193,10 @@ public:
 					numCommandLists,
 					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 			}
+			// Keep the async readback pipeline moving during capture replay:
+			// replay submits never carry the game's normal ExecuteCommandLists.
+			if (DX12AsyncReadbackHasPendingWork())
+				DX12AsyncReadbackSubmitPending(queue);
 			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
 				"total_internal_replay",
 				queue,
@@ -1230,6 +1246,11 @@ public:
 			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
 			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
+		// Async content capture: submit readback events queued during
+		// recording, ordered after the game's lists via Signal/Wait on the
+		// mod-owned copy queue (pure queue operations, no recording).
+		if (DX12AsyncReadbackHasPendingWork())
+			DX12AsyncReadbackSubmitPending(queue);
 		if (shouldNotifySubmitted) {
 			DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();

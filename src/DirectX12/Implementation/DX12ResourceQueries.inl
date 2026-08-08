@@ -1268,42 +1268,15 @@ bool DX12TrackTextureHashFromCopyTextureRegion(
 	if (!DX12CopyRegionCoversTopMip(desc, dstX, dstY, dstZ, footprint, srcBox))
 		return false;
 
-	const UINT rowCount = DX12TextureHashUtils::Texture2DTopMipRowCount(
-		desc.Format, desc.Height);
-	const UINT64 rowBytes = DX12TextureHashUtils::Texture2DTopMipRowBytes(
-		desc.Format, static_cast<UINT>(desc.Width));
-	if (!rowCount || !rowBytes || footprint.Footprint.RowPitch < rowBytes)
-		return false;
-
-	const UINT64 requiredBytes =
-		static_cast<UINT64>(footprint.Footprint.RowPitch) * (rowCount - 1) + rowBytes;
-	const UINT64 sourceGpuVa = src->pResource->GetGPUVirtualAddress() + footprint.Offset;
-	const uint8_t *content = nullptr;
-	size_t contentSize = 0;
-	if (!DX12TryGetBufferContent(sourceGpuVa, requiredBytes, &content, &contentSize)) {
-		DX12LogManager::DebugFields("DX12TextureHashCache",
-			"\"stage\":\"copy_upload_miss\",\"dst\":\"%p\",\"src\":\"%p\",\"gpu\":\"0x%llx\",\"bytes\":%llu,\"width\":%llu,\"height\":%u,\"format\":%u",
-			dst->pResource,
-			src->pResource,
-			static_cast<unsigned long long>(sourceGpuVa),
-			static_cast<unsigned long long>(requiredBytes),
-			static_cast<unsigned long long>(desc.Width),
-			desc.Height,
-			static_cast<UINT>(desc.Format));
-		return false;
-	}
-
-	uint32_t hash = 0;
-	if (!DX12TextureHashUtils::Texture2DTopMipHashFromRows(
-			desc,
-			content,
-			footprint.Footprint.RowPitch,
-			rowBytes,
-			rowCount,
-			&hash)) {
-		return false;
-	}
-	return DX12CacheTextureHash(dst->pResource, hash, &desc, "copy_texture_region");
+	// Async texture hashing: queue a GPU readback of the texture's top mip
+	// instead of hashing the upload source synchronously on the recording
+	// thread. Reading the texture (rather than the upload buffer) is exact
+	// even when the game reuses one upload arena for several textures in the
+	// same frame: the readback executes after the game's submit and observes
+	// the post-copy bytes of this texture. The worker publishes the hash one
+	// frame later; static textures (the normal override target) hash
+	// identically, so override matching is unaffected.
+	return DX12AsyncReadbackQueueTextureCapture(dst->pResource, &desc);
 }
 UINT64 DX12GetIaHashContentGeneration()
 {

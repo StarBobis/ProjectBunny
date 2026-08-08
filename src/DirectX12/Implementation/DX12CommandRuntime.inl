@@ -2463,7 +2463,12 @@ bool DX12CommandListStateCapture::ShouldTrackResourceStates()
 {
 	return DX12FrameAnalysis::IsCapturing() ||
 		DX12ShaderDumpIsBusy() ||
-		DX12HuntNeedsHotPath();
+		DX12HuntNeedsHotPath() ||
+		// The async content readback pipeline transitions textures/buffers
+		// to COPY_SOURCE in its own copy-queue list and must know the
+		// current state to write valid barriers; configured texture
+		// overrides are the IA/content-tracking consumer that needs it.
+		DX12ModHasConfiguredTextureOverrides();
 }
 
 bool DX12CommandListStateCapture::ShouldRecordBindingEvents()
