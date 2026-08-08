@@ -2072,6 +2072,21 @@ public:
 				runtimeState->resolvedCompute.probeGroupsX = dispatchOverride.groupsX;
 				runtimeState->resolvedCompute.probeGroupsY = dispatchOverride.groupsY;
 				runtimeState->resolvedCompute.probeGroupsZ = dispatchOverride.groupsZ;
+				DX12SimulateContextComputeTemplate::LocalProbeCacheEntry
+					&localEntry =
+					runtimeState->resolvedCompute.localProbeCache[
+						DX12SimulateContextComputeTemplate::LocalProbeCacheSlot(
+							computeIaFingerprint, computeShaderHash)];
+				localEntry.valid = true;
+				localEntry.reloadGeneration = reloadGeneration;
+				localEntry.csHash = computeShaderHash;
+				localEntry.fingerprint = computeIaFingerprint;
+				localEntry.applied = applied;
+				localEntry.handlingSkip = dispatchOverride.handlingSkip;
+				localEntry.hasDispatch = dispatchOverride.hasDispatch;
+				localEntry.groupsX = dispatchOverride.groupsX;
+				localEntry.groupsY = dispatchOverride.groupsY;
+				localEntry.groupsZ = dispatchOverride.groupsZ;
 			};
 		bool runtimeProbeCacheHit = false;
 		if (runtimeState &&
@@ -2093,7 +2108,34 @@ public:
 				runtimeState->resolvedCompute.probeGroupsZ;
 			runtimeProbeCacheHit = true;
 		}
-		if (runtimeProbeCacheHit || DX12ModGetCachedPreSkinProbeResult(
+		// Local lock-free multi-entry verdict cache: same semantic key as the
+		// shared cache (command list + CS hash + stable probe fingerprint +
+		// reload generation) but stored in the command-list runtime state that
+		// survives Reset, so repeated dispatches across frames skip the global
+		// mod lock + map lookup entirely.
+		bool localProbeCacheHit = false;
+		if (runtimeState) {
+			DX12SimulateContextComputeTemplate::LocalProbeCacheEntry &localEntry =
+				runtimeState->resolvedCompute.localProbeCache[
+					DX12SimulateContextComputeTemplate::LocalProbeCacheSlot(
+						computeIaFingerprint, probe->computeShaderHash)];
+			if (localEntry.valid &&
+			    localEntry.reloadGeneration == reloadGeneration &&
+			    localEntry.csHash == probe->computeShaderHash &&
+			    localEntry.fingerprint == computeIaFingerprint) {
+				cacheEntry.applied = localEntry.applied;
+				cacheEntry.dispatchOverride.handlingSkip =
+					localEntry.handlingSkip;
+				cacheEntry.dispatchOverride.hasDispatch =
+					localEntry.hasDispatch;
+				cacheEntry.dispatchOverride.groupsX = localEntry.groupsX;
+				cacheEntry.dispatchOverride.groupsY = localEntry.groupsY;
+				cacheEntry.dispatchOverride.groupsZ = localEntry.groupsZ;
+				localProbeCacheHit = true;
+			}
+		}
+		if (runtimeProbeCacheHit || localProbeCacheHit ||
+		    DX12ModGetCachedPreSkinProbeResult(
 			    commandList, probe->computeShaderHash, computeIaFingerprint, &cacheEntry)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",

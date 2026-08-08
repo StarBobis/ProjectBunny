@@ -1563,6 +1563,34 @@ public:
 	std::vector<DX12CurrentComputeUavBinding> srvs;
 	std::vector<DX12CurrentComputeUavBinding> cbvs;
 	std::vector<DX12CurrentRootConstants> rootConstants;
+	// Local lock-free probe verdict cache: (csHash, probeFingerprint,
+	// reloadGeneration) -> applied + dispatch override. Recording is
+	// single-threaded per command list and this template survives Reset, so
+	// repeated dispatches across frames hit here instead of taking the
+	// global mod lock + map lookup on every dispatch.
+	struct LocalProbeCacheEntry
+	{
+		UINT64 reloadGeneration = 0;
+		uint64_t csHash = 0;
+		UINT64 fingerprint = 0;
+		bool applied = false;
+		bool valid = false;
+		bool handlingSkip = false;
+		bool hasDispatch = false;
+		UINT groupsX = 0;
+		UINT groupsY = 0;
+		UINT groupsZ = 0;
+	};
+	static constexpr size_t LocalProbeCacheCount = 32;
+	std::array<LocalProbeCacheEntry, LocalProbeCacheCount> localProbeCache = {};
+
+	static size_t LocalProbeCacheSlot(
+		UINT64 fingerprint, uint64_t csHash)
+	{
+		return static_cast<size_t>(
+			(fingerprint ^ (csHash * 0x9e3779b97f4a7c15ull)) &
+			(LocalProbeCacheCount - 1));
+	}
 
 	UINT64 bindingFingerprintDependency = 0;
 	UINT64 bindingFingerprint = 0;

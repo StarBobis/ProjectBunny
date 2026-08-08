@@ -282,8 +282,9 @@ public:
 			static_cast<UINT64>(reinterpret_cast<uintptr_t>(value)));
 	}
 
+	template <class Snapshot>
 	static void InitializeKey(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		UINT64 cbvSrvUavHeapVersion,
 		UINT64 bufferResolveEpoch,
 		DX12PreSkinBindingCacheKey *key)
@@ -390,9 +391,9 @@ public:
 		}
 	}
 
-	template <class ResolverUtils>
+	template <class ResolverUtils, class Snapshot>
 	static void BuildKey(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		UINT64 cbvSrvUavHeapVersion,
 		UINT64 bufferResolveEpoch,
 		const DX12RootSignatureSummary *rootSignature,
@@ -453,7 +454,8 @@ public:
 								tableKey.observedSlots.data(),
 								tableKey.observedSlots.size(),
 								tableKey.observedSlotVersions.data(),
-								tableKey.observedSlotValueIds.data())) {
+								tableKey.observedSlotValueIds.data(),
+								&heap)) {
 							tableKey.observedSlots.clear();
 							tableKey.observedSlotVersions.clear();
 							tableKey.observedSlotValueIds.clear();

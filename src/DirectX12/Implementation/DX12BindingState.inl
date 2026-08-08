@@ -89,6 +89,43 @@ static bool RuntimeResolveHeapRecord(
 	return true;
 }
 
+static bool RuntimeReadSlotIdentitiesFast(
+	const DX12DescriptorHeapSummary &heapSummary,
+	const UINT *slots,
+	size_t count,
+	UINT64 *versions,
+	UINT64 *valueIds)
+{
+	if (!heapSummary.heap || !heapSummary.cpuStart ||
+			heapSummary.increment == 0 || count == 0 ||
+			!slots || !versions || !valueIds)
+		return false;
+	// Resolve the heap record once through the lock-free CPU-handle cache,
+	// then read every slot directly through the per-slot seqlock. No global
+	// descriptor lock is taken on this path.
+	const SIZE_T firstCpu = heapSummary.cpuStart +
+		static_cast<SIZE_T>(slots[0]) * heapSummary.increment;
+	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot resolved = {};
+	if (!DX12DescriptorHeapShadowUtils::HeapCacheLookup(
+			firstCpu,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			&resolved) ||
+			!resolved.heap || !resolved.heap->stateLocks)
+		return false;
+	for (size_t index = 0; index < count; ++index) {
+		const UINT slot = slots[index];
+		if (slot >= heapSummary.numDescriptors)
+			return false;
+		DescriptorHeapRecord::StateLocks::SlotIdentity identity = {};
+		if (!resolved.heap->stateLocks->ObserveSlotIdentity(
+				slot, &identity))
+			return false;
+		versions[index] = identity.version;
+		valueIds[index] = identity.valueId;
+	}
+	return true;
+}
+
 static bool RuntimeDescriptorRootsMatch(
 	const DX12SimulateContext *runtimeState)
 {
@@ -748,6 +785,78 @@ static bool BuildRuntimeBindingSnapshot(
 	return true;
 }
 
+// Compute-only snapshot consumed by the PreSkin collector. Keeping this a
+// dedicated type makes the contract explicit: this path only observes the
+// compute root signature / tables / descriptors / constants and the bound
+// CBV/SRV/UAV heap. The full CommandListBindingState (graphics tables, IA
+// views, render targets, ...) is intentionally never copied here.
+struct DX12PreSkinComputeSnapshot
+{
+	ID3D12PipelineState *pipelineState = nullptr;
+	ID3D12RootSignature *computeRootSignature = nullptr;
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	bool runtimeCbvSrvUavHeapResolved = false;
+	DX12DescriptorHeapSummary runtimeCbvSrvUavHeap = {};
+	UINT64 computeBindingSerial = 0;
+	UINT64 bindingQuerySerial = 1;
+	UINT computeTableValidCount = 0;
+	RootTableState computeTables[MaxRootParameters] = {};
+	RootDescriptorState computeRootDescriptors[MaxRootParameters] = {};
+	RootConstantsState computeRootConstants[MaxRootParameters] = {};
+};
+
+static bool BuildRuntimeComputeBindingSnapshot(
+	const DX12SimulateContext *runtimeState,
+	DX12PreSkinComputeSnapshot *snapshot)
+{
+	if (!runtimeState || !snapshot)
+		return false;
+	snapshot->pipelineState = runtimeState->pipelineState;
+	snapshot->computeRootSignature = runtimeState->computeRootSignature;
+	snapshot->cbvSrvUavHeap = runtimeState->cbvSrvUavHeap;
+	snapshot->runtimeCbvSrvUavHeapResolved =
+		runtimeState->runtimeCbvSrvUavHeapResolved;
+	snapshot->runtimeCbvSrvUavHeap = runtimeState->runtimeCbvSrvUavHeap;
+	snapshot->computeBindingSerial = runtimeState->computeBindingSerial;
+	snapshot->bindingQuerySerial = runtimeState->bindingQuerySerial;
+	snapshot->computeTableValidCount = runtimeState->computeRootTableValidCount;
+	memcpy(snapshot->computeTables,
+		runtimeState->computeRootTables,
+		sizeof(snapshot->computeTables));
+	memcpy(snapshot->computeRootDescriptors,
+		runtimeState->computeRootDescriptors,
+		sizeof(snapshot->computeRootDescriptors));
+	memcpy(snapshot->computeRootConstants,
+		runtimeState->computeRootConstants,
+		sizeof(snapshot->computeRootConstants));
+	return true;
+}
+
+static void FillPreSkinComputeSnapshotFromFull(
+	const CommandListBindingState &src,
+	DX12PreSkinComputeSnapshot *dst)
+{
+	if (!dst)
+		return;
+	dst->pipelineState = src.pipelineState;
+	dst->computeRootSignature = src.computeRootSignature;
+	dst->cbvSrvUavHeap = src.cbvSrvUavHeap;
+	dst->runtimeCbvSrvUavHeapResolved = src.runtimeCbvSrvUavHeapResolved;
+	dst->runtimeCbvSrvUavHeap = src.runtimeCbvSrvUavHeap;
+	dst->computeBindingSerial = src.computeBindingSerial;
+	dst->bindingQuerySerial = src.bindingQuerySerial;
+	dst->computeTableValidCount = src.computeTableValidCount;
+	memcpy(dst->computeTables,
+		src.computeTables,
+		sizeof(dst->computeTables));
+	memcpy(dst->computeRootDescriptors,
+		src.computeRootDescriptors,
+		sizeof(dst->computeRootDescriptors));
+	memcpy(dst->computeRootConstants,
+		src.computeRootConstants,
+		sizeof(dst->computeRootConstants));
+}
+
 class DX12BindingTrackerQueryCacheUtils
 {
 public:
@@ -756,8 +865,12 @@ public:
 		const UINT *slots,
 		size_t count,
 		UINT64 *versions,
-		UINT64 *valueIds)
+		UINT64 *valueIds,
+		const DX12DescriptorHeapSummary *summary = nullptr)
 	{
+		if (summary && RuntimeReadSlotIdentitiesFast(
+				*summary, slots, count, versions, valueIds))
+			return true;
 		return DX12GetDescriptorSlotIdentities(
 			heap, slots, count, versions, valueIds);
 	}
@@ -810,8 +923,9 @@ public:
 		table->runtimeTableGpuStart = 0;
 	}
 
+	template <class Snapshot>
 	static void RefreshRuntimeTable(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		RootTableState *table)
 	{
 		if (!table || !table->valid)
@@ -846,8 +960,9 @@ public:
 		return true;
 	}
 
+	template <class Snapshot>
 	static bool TryGetBoundCbvSrvUavHeap(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		DX12DescriptorHeapSummary *heap)
 	{
 		if (!heap || !snapshot.cbvSrvUavHeap)
@@ -898,8 +1013,9 @@ public:
 		}
 	}
 
+	template <class Snapshot>
 	static bool ResolveTableHeap(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		const RootTableState &table,
 		DX12DescriptorHeapSummary *heap)
 	{
@@ -920,8 +1036,9 @@ public:
 			heap->increment != 0;
 	}
 
+	template <class Snapshot>
 	static bool ResolveRuntimeTableHeap(
-		const CommandListBindingState &snapshot,
+		const Snapshot &snapshot,
 		const RootTableState &table,
 		DX12DescriptorHeapSummary *heap)
 	{
@@ -1467,11 +1584,22 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		return cachedFoundAny;
 	}
 
-	CommandListBindingState snapshot;
+	DX12PreSkinComputeSnapshot snapshot;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
-	const bool snapshotReady = preferRuntimeSnapshot ?
-		BuildRuntimeBindingSnapshot(runtimeState, &snapshot) :
-		DX12BindingTracker::SnapshotBindingState(commandList, &snapshot);
+	bool snapshotReady = false;
+	if (preferRuntimeSnapshot) {
+		snapshotReady = BuildRuntimeComputeBindingSnapshot(
+			runtimeState, &snapshot);
+	} else {
+		// Non-runtime tracked lists snapshot the full state, then only the
+		// compute fields this collector observes are carried over.
+		CommandListBindingState fullSnapshot;
+		if (DX12BindingTracker::SnapshotBindingState(
+				commandList, &fullSnapshot)) {
+			FillPreSkinComputeSnapshotFromFull(fullSnapshot, &snapshot);
+			snapshotReady = true;
+		}
+	}
 	if (!snapshotReady) {
 		DX12_HOTPATH_TIME_END(BindSnapshot);
 		return false;
@@ -1545,8 +1673,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const bool hasParsedRootSignatureSummary =
 		cachedSummary && cachedSummary->parsed;
 	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
+	// The runtime state caches the heap content version at SetDescriptorHeaps
+	// time, so the runtime path does not need the global descriptor lock to
+	// re-read it here; descriptor writes are still caught by the query serial.
 	const UINT64 descriptorHeapVersionBefore =
-		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+		preferRuntimeSnapshot ?
+			runtimeState->cbvSrvUavHeapVersion :
+			DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	const UINT64 bufferResolveEpoch =
 		gBufferResolveGeneration.load(std::memory_order_relaxed);
 	DX12PreSkinBindingCacheKey bindingCacheKey;
@@ -1931,7 +2064,9 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
 	const UINT64 descriptorHeapVersionAfter =
-		DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
+		preferRuntimeSnapshot ?
+			runtimeState->cbvSrvUavHeapVersion :
+			DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	const UINT64 descriptorQuerySerialAfter = CurrentDescriptorQuerySerial();
 	const bool descriptorStateStable =
 		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
@@ -1951,14 +2086,26 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		observedSlotValueIds.resize(observedSlots.size());
 		bool observedSlotsValid = true;
 		if (!observedSlots.empty()) {
-			observedSlotsValid =
-				observedSlotHeap &&
-				DX12GetDescriptorSlotIdentities(
-					observedSlotHeap,
+			if (observedSlotHeap &&
+					runtimeState->runtimeCbvSrvUavHeapResolved &&
+					runtimeState->runtimeCbvSrvUavHeap.heap ==
+						observedSlotHeap) {
+				observedSlotsValid = RuntimeReadSlotIdentitiesFast(
+					runtimeState->runtimeCbvSrvUavHeap,
 					observedSlots.data(),
 					observedSlots.size(),
 					observedSlotVersions.data(),
 					observedSlotValueIds.data());
+			} else {
+				observedSlotsValid =
+					observedSlotHeap &&
+					DX12GetDescriptorSlotIdentities(
+						observedSlotHeap,
+						observedSlots.data(),
+						observedSlots.size(),
+						observedSlotVersions.data(),
+						observedSlotValueIds.data());
+			}
 		}
 		if (observedSlotsValid) {
 			const UINT64 runtimeDependencyFingerprint = bindingCacheKey.fingerprint;
