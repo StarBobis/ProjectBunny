@@ -893,6 +893,7 @@ static void BuildDx12CompiledTextureOverridePlans(
 				continue;
 
 			DX12CompiledTextureOverridePlan plan;
+			plan.hash = config.hash;
 			plan.hasActions = !config.actions.empty();
 			plan.drawSrvResources.reserve(
 				config.drawPsSrvResources.size() +

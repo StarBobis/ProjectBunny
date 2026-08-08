@@ -803,7 +803,11 @@ public:
 
 	static void Inc(volatile LONG *value)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING)
+	// Match the hot-path timing macro convention (DX12CommandFlow.hpp): the
+	// counters only run in an actual timing build. Defining
+	// DX12_ENABLE_DETAILED_TIMING alone must never enable atomic counting in
+	// a plain Release build.
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		InterlockedIncrement(value);
 	#else
 		(void)value;
@@ -812,7 +816,7 @@ public:
 
 	static void Add64(volatile LONG64 *value, LONG64 amount)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING)
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		if (amount)
 			InterlockedExchangeAdd64(value, amount);
 	#else

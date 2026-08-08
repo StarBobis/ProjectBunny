@@ -1622,6 +1622,16 @@ public:
 		UINT dispatchGroupX = threadGroupCountX;
 		UINT dispatchGroupY = threadGroupCountY;
 		UINT dispatchGroupZ = threadGroupCountZ;
+		DX12LogManager::Fields("DX12DispatchExecDetail",
+			"applied=%d,skip=%d,hasD=%d,gx=%u,gy=%u,gz=%u,origX=%u,origY=%u,origZ=%u,cs=%llx",
+			probe.applied ? 1 : 0,
+			probe.dispatchOverride.handlingSkip ? 1 : 0,
+			probe.dispatchOverride.hasDispatch ? 1 : 0,
+			probe.dispatchOverride.groupsX,
+			probe.dispatchOverride.groupsY,
+			probe.dispatchOverride.groupsZ,
+			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
+			static_cast<unsigned long long>(probe.computeShaderHash));
 		if (probe.applied && probe.dispatchOverride.handlingSkip) {
 			if (probe.dispatchOverride.hasDispatch) {
 				dispatchGroupX = probe.dispatchOverride.groupsX;
@@ -3468,6 +3478,131 @@ public:
 		return true;
 	}
 
+	// Bind-time static IA replacement (plan step 3.2): staleness watchdog.
+	// A bind redirected to a mod buffer must fall back to the original game
+	// binding when (a) the replacement table was reloaded away, (b) the game
+	// rebound a different view in the meantime (bookkeeping no longer matches
+	// the live view), (c) the backing resource was released/recreated
+	// (resolve epoch bump), or (d) the buffer content was rewritten
+	// (per-resource content generation bump). The check costs two scalar
+	// loads per draw when nothing is replaced.
+	static void RestoreStaleStaticIaBindings(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList || !runtimeState)
+			return;
+		DX12ActiveIaState &ia = runtimeState->ia;
+		if (!ia.indexBufferStaticReplaced && !ia.vertexBufferStaticReplacedMask)
+			return;
+		// Evaluated only when this command list actually carries a redirected
+		// binding, so the volatile gate read stays off the common draw path.
+		const bool tableEnabled = DX12HasStaticIaReplacements();
+		const UINT64 resolveEpoch = DX12GetIaHashResolveGeneration();
+		bool restoredAny = false;
+
+		if (ia.indexBufferStaticReplaced) {
+			bool stale = !tableEnabled;
+			bool bookkeepingMatchesLiveView =
+				ia.hasIndexBuffer &&
+				ia.indexBuffer.BufferLocation ==
+					ia.indexBufferStaticReplacedView.BufferLocation &&
+				ia.indexBuffer.SizeInBytes ==
+					ia.indexBufferStaticReplacedView.SizeInBytes &&
+				ia.indexBuffer.Format ==
+					ia.indexBufferStaticReplacedView.Format;
+			if (!bookkeepingMatchesLiveView) {
+				// The game rebound something else after our redirect (or the
+				// binding was restored/cleared by another path). Nothing to
+				// restore; just drop the stale bookkeeping.
+				ia.indexBufferStaticReplaced = false;
+			} else {
+				if (!stale &&
+				    ia.indexBufferStaticResolveEpoch != resolveEpoch) {
+					stale = true;
+				}
+				if (!stale && ia.indexBufferStaticOriginalResolved &&
+				    ia.indexBufferStaticOriginalResource.resource) {
+					const UINT64 currentContentGeneration =
+						DX12GetBufferContentGenerationForResource(
+							ia.indexBufferStaticOriginalResource.resource);
+					if (currentContentGeneration !=
+					    ia.indexBufferStaticContentGeneration)
+						stale = true;
+				}
+				if (stale) {
+					if (callbacks.setIndexBuffer) {
+						callbacks.setIndexBuffer(
+							commandList, &ia.indexBufferStaticOriginal);
+					}
+					ia.indexBuffer = ia.indexBufferStaticOriginal;
+					ia.hasIndexBuffer = true;
+					ia.indexBufferHashValid = false;
+					ia.indexBufferResolved = false;
+					ia.indexBufferResource = DX12BufferResourceSummary();
+					ia.indexBufferStaticReplaced = false;
+					restoredAny = true;
+				}
+			}
+		}
+
+		UINT32 pendingMask = ia.vertexBufferStaticReplacedMask;
+		while (pendingMask) {
+			DWORD lowestBit = 0;
+			_BitScanForward(&lowestBit, pendingMask);
+			const UINT slot = static_cast<UINT>(lowestBit);
+			pendingMask &= pendingMask - 1;
+			if (!ia.vertexBufferStaticReplaced[slot])
+				continue;
+			bool stale = !tableEnabled;
+			const bool bookkeepingMatchesLiveView =
+				ia.hasVertexBuffer[slot] &&
+				ia.vertexBuffers[slot].BufferLocation ==
+					ia.vertexBufferStaticReplacedView[slot].BufferLocation &&
+				ia.vertexBuffers[slot].SizeInBytes ==
+					ia.vertexBufferStaticReplacedView[slot].SizeInBytes &&
+				ia.vertexBuffers[slot].StrideInBytes ==
+					ia.vertexBufferStaticReplacedView[slot].StrideInBytes;
+			if (!bookkeepingMatchesLiveView) {
+				ia.vertexBufferStaticReplaced[slot] = false;
+				ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+				continue;
+			}
+			if (!stale &&
+			    ia.vertexBufferStaticResolveEpoch[slot] != resolveEpoch) {
+				stale = true;
+			}
+			if (!stale && ia.vertexBufferStaticOriginalResolved[slot] &&
+			    ia.vertexBufferStaticOriginalResources[slot].resource) {
+				const UINT64 currentContentGeneration =
+					DX12GetBufferContentGenerationForResource(
+						ia.vertexBufferStaticOriginalResources[slot].resource);
+				if (currentContentGeneration !=
+				    ia.vertexBufferStaticContentGeneration[slot])
+					stale = true;
+			}
+			if (!stale)
+				continue;
+			if (callbacks.setVertexBuffers) {
+				callbacks.setVertexBuffers(
+					commandList, slot, 1,
+					&ia.vertexBufferStaticOriginal[slot]);
+			}
+			ia.vertexBuffers[slot] = ia.vertexBufferStaticOriginal[slot];
+			ia.hasVertexBuffer[slot] = true;
+			ia.vertexBufferHashValid[slot] = false;
+			ia.vertexBufferResolved[slot] = false;
+			ia.vertexBufferResources[slot] = DX12BufferResourceSummary();
+			ia.vertexBufferStaticReplaced[slot] = false;
+			ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+			restoredAny = true;
+		}
+
+		if (restoredAny)
+			DX12CommandListRuntime::BumpIaEpoch(runtimeState);
+	}
+
 	static bool HandleDrawOverrides(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
@@ -3492,6 +3627,10 @@ public:
 		// form the key, matching DX11's context-local binding state.
 		DX12IaHashStateCache *iaHashStateCache =
 			&mutableRuntimeState->resolvedDraw.iaHashStateCache;
+		// Bind-time static IA replacement (plan step 3.2): restore any stale
+		// redirected bindings before the decision/cache layer reads IA state.
+		RestoreStaleStaticIaBindings(
+			commandList, mutableRuntimeState, callbacks);
 		const DX12CompiledDrawDecision *drawDecision =
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
@@ -3541,6 +3680,15 @@ public:
 				1,
 				DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
 			DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+		}
+		if (drawDecision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
+			// Plan step 3.3: the decision was compiled with no IA targets, no
+			// descriptor targets and no skip, so no draw on this PSO can ever
+			// match. Return before building any negative-cache key (bound-draw,
+			// IA-state or fast-reject) or touching the pre-skin generation.
+			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			return false;
 		}
 		if (drawDecision->NeedsDescriptorMatch())
 			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();
@@ -3716,8 +3864,6 @@ public:
 		DX12IaHashState directIaState;
 		const DX12IaHashState *directIaStateView = &directIaState;
 		bool reusedDirectIaState = false;
-		DX12DirectIaFastRejectCacheKey directFastRejectKey;
-		bool directFastRejectKeyValid = false;
 		bool directDescriptorCandidateKnown = false;
 		bool hasDirectDescriptorCandidate = false;
 		UINT64 directGraphicsDescriptorQuerySerial = 0;
@@ -3772,25 +3918,40 @@ public:
 			}
 			LARGE_INTEGER directDescriptorBegin =
 				DX12OuterTimingProbeUtils::Now();
-			hasDirectDescriptorCandidate =
-				DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
-					commandList,
-					directTargetPlan,
-					draw.vertexCount,
-					draw.indexCount,
-					draw.instanceCount,
-					draw.firstVertex,
-					draw.firstIndex,
-					draw.firstInstance);
-			directDescriptorCandidateKnown = true;
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"IaReplacement",
-				hasDirectDescriptorCandidate ?
-					"direct_descriptor_prefilter_positive" :
-					"direct_descriptor_prefilter_negative",
-				draw.indexed ? 1u : 0u,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+			if (drawDecision->descriptorTargetsStatic) {
+				// Plan step 3.1: every descriptor texture target is an
+				// unconditional static replacement already applied at
+				// descriptor write time. Skip the draw-time SRV binding
+				// resolution and hash candidate prefilter entirely.
+				hasDirectDescriptorCandidate = true;
+				directDescriptorCandidateKnown = true;
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					"direct_descriptor_prefilter_static_skip",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+			} else {
+				hasDirectDescriptorCandidate =
+					DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
+						commandList,
+						directTargetPlan,
+						draw.vertexCount,
+						draw.indexCount,
+						draw.instanceCount,
+						draw.firstVertex,
+						draw.firstIndex,
+						draw.firstInstance);
+				directDescriptorCandidateKnown = true;
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"IaReplacement",
+					hasDirectDescriptorCandidate ?
+						"direct_descriptor_prefilter_positive" :
+						"direct_descriptor_prefilter_negative",
+					draw.indexed ? 1u : 0u,
+					1,
+					DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+			}
 			if (!directTargetPlan.HasIaTargets() &&
 			    !hasDirectDescriptorCandidate) {
 				StoreResidentNegative(
@@ -3825,29 +3986,6 @@ public:
 					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 					return false;
 				}
-				directFastRejectKey = DX12DirectIaFastRejectCacheUtils::MakeKey(
-					drawDecision->reloadGeneration,
-					preSkinGeneration,
-					contentGeneration,
-					resolveGeneration,
-				runtimeState.ia,
-				directTargetPlan,
-				draw);
-			directFastRejectKeyValid = true;
-			if (DX12DirectIaFastRejectCacheUtils::Contains(
-					&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
-					directFastRejectKey)) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
-					"IaReplacement",
-					"direct_ia_fast_reject_cache_hit",
-					draw.indexed ? 1u : 0u,
-					1,
-					0);
-				DX12Profiling::RecordIaHashStateResult(false);
-				StoreBoundDrawNegative();
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
-				return false;
-			}
 
 			LARGE_INTEGER directPrefilterBegin =
 				DX12OuterTimingProbeUtils::Now();
@@ -3881,11 +4019,6 @@ public:
 					nullptr,
 					0,
 					draw);
-				if (directFastRejectKeyValid) {
-					DX12DirectIaFastRejectCacheUtils::Store(
-						&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
-						directFastRejectKey);
-				}
 				DX12Profiling::RecordIaHashStateResult(false);
 				StoreBoundDrawNegative();
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
@@ -4020,11 +4153,6 @@ public:
 							preSkinGeneration,
 							contentGeneration, resolveGeneration,
 							0, nullptr, 0, draw);
-						if (directFastRejectKeyValid) {
-							DX12DirectIaFastRejectCacheUtils::Store(
-								&DX12DirectIaFastRejectCacheUtils::ThreadCache(),
-								std::move(directFastRejectKey));
-						}
 						DX12OuterTimingProbeUtils::LogCpuStage(
 							"IaReplacement",
 							"skip_direct_ia_probe_miss",

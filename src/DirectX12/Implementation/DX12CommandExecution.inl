@@ -4251,6 +4251,12 @@ bool DX12ModCompileDrawDecision(
 		drawMatchUsage, directDrawMatchUsage,
 		directTextureChecksOnly,
 		descriptorTrackingNeeded);
+	// Plan step 3.1: when every descriptor-relevant hashed texture override is
+	// an unconditional static replacement handled at descriptor write time,
+	// this decision's descriptor targets are already satisfied by the patched
+	// descriptors, so the draw path can skip SRV binding resolution entirely.
+	decision->descriptorTargetsStatic =
+		DX12StaticTextureReplacementAllDescriptorOverridesStatic();
 	return true;
 }
 

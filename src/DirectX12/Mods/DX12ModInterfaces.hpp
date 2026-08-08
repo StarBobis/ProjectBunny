@@ -784,6 +784,46 @@ bool DX12CacheTextureHash(
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
 UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
+
+// Write-time static texture replacement (plan step 3.1). Implemented in the
+// mod TU (DX12ModRuntime.cpp) and consumed by the tracking TU descriptor
+// hooks; this TU (resource queries) provides the texture hash cache the
+// resolution is keyed on.
+struct DescriptorRecord;
+// Resolves the write-time replacement SRV descriptor for an original texture
+// hash. With sourceRecord the SRV is made view-compatible with the
+// descriptor the game originally wrote; otherwise the DDS default SRV is
+// used. Returns false when no unconditional static replacement exists.
+bool DX12ResolveStaticTextureReplacementSrv(
+	ID3D12Device *device,
+	uint32_t originalHash,
+	const DescriptorRecord *sourceRecord,
+	D3D12_CPU_DESCRIPTOR_HANDLE *outSrv,
+	ID3D12Resource **outResource);
+// True when every descriptor-relevant hashed texture override is an
+// unconditional static replacement; gates the draw-path descriptor skip.
+bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
+// True when this original texture hash has a static write-time replacement.
+bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash);
+// Cheap volatile gate so descriptor-copy hot paths can skip all patch work
+// when no static replacement table is active.
+bool DX12HasStaticTextureReplacements();
+// Bind-time static IA replacement (plan step 3.2). Same gating idea for the
+// IASet bind hot path.
+bool DX12HasStaticIaReplacements();
+// Resolves the static geometry replacement for a bound IB/VB content hash.
+// Fills the replacement view the same way the draw-time path does; returns
+// false when there is no static replacement so the caller binds the
+// original view unchanged.
+bool DX12ResolveStaticIaReplacement(
+	ID3D12Device *device,
+	bool indexBuffer,
+	UINT vertexSlot,
+	uint32_t contentHash,
+	const D3D12_INDEX_BUFFER_VIEW *originalIndexView,
+	D3D12_INDEX_BUFFER_VIEW *outIndexView,
+	const D3D12_VERTEX_BUFFER_VIEW *originalVertexView,
+	D3D12_VERTEX_BUFFER_VIEW *outVertexView);
 bool DX12TrackTextureHashFromCopyTextureRegion(
 	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,
 	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox);

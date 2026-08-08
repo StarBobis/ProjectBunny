@@ -28,6 +28,30 @@ public:
 	bool preSkinRedirectNegativeValid[32] = {};
 	UINT64 preSkinRedirectNegativeGeneration[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW preSkinRedirectNegativeSource[32] = {};
+	// Bind-time static IA replacement bookkeeping (plan step 3.2). When a
+	// bound IB/VB content hash matched an unconditional static geometry
+	// override at IASet time, the stored view above points at the mod buffer
+	// and these fields remember the original binding plus the identity used
+	// for staleness checks, so a rewritten or recreated game buffer can be
+	// detected and re-bound with the original view.
+	bool indexBufferStaticReplaced = false;
+	D3D12_INDEX_BUFFER_VIEW indexBufferStaticOriginal = {};
+	D3D12_INDEX_BUFFER_VIEW indexBufferStaticReplacedView = {};
+	DX12BufferResourceSummary indexBufferStaticOriginalResource = {};
+	bool indexBufferStaticOriginalResolved = false;
+	UINT64 indexBufferStaticContentGeneration = 0;
+	UINT64 indexBufferStaticResolveEpoch = 0;
+	uint32_t indexBufferStaticMatchedHash = 0;
+	bool vertexBufferStaticReplaced[32] = {};
+	// Aggregate of vertexBufferStaticReplaced for a single-load draw-path gate.
+	UINT32 vertexBufferStaticReplacedMask = 0;
+	D3D12_VERTEX_BUFFER_VIEW vertexBufferStaticOriginal[32] = {};
+	D3D12_VERTEX_BUFFER_VIEW vertexBufferStaticReplacedView[32] = {};
+	DX12BufferResourceSummary vertexBufferStaticOriginalResources[32] = {};
+	bool vertexBufferStaticOriginalResolved[32] = {};
+	UINT64 vertexBufferStaticContentGeneration[32] = {};
+	UINT64 vertexBufferStaticResolveEpoch[32] = {};
+	uint32_t vertexBufferStaticMatchedHash[32] = {};
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
@@ -359,6 +383,11 @@ public:
 	bool directTextureChecksOnly = false;
 	bool negativeCacheSafe = false;
 	bool shaderOverrideNegativeCacheAllowed = false;
+	// Every descriptor texture target in this decision's plans is an
+	// unconditional static replacement handled at descriptor write time
+	// (CreateShaderResourceView / CopyDescriptors), so the draw path never
+	// needs to resolve SRV bindings for them.
+	bool descriptorTargetsStatic = false;
 	DX12IaHashTargetPlan targetPlan;
 	DX12IaHashTargetPlan directTargetPlan;
 	DX12DrawMatchUsage targetDrawMatchUsage;
@@ -382,6 +411,7 @@ public:
 		directTextureChecksOnly = false;
 		negativeCacheSafe = false;
 		shaderOverrideNegativeCacheAllowed = false;
+		descriptorTargetsStatic = false;
 		targetPlan = DX12IaHashTargetPlan();
 		directTargetPlan = DX12IaHashTargetPlan();
 		targetDrawMatchUsage = DX12DrawMatchUsage();

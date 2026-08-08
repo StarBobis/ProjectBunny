@@ -1778,6 +1778,141 @@ public:
 		DX12_HOTPATH_TIME_END(ResourceBarrierTotal);
 	}
 
+	// Bind-time static IA replacement (plan step 3.2). Hashes the original
+	// bound view; an unconditional static geometry override redirects the
+	// bind to the mod buffer so the draw path never re-evaluates it. The
+	// bookkeeping on DX12ActiveIaState lets the draw fast-path detect a
+	// rewritten or recreated game buffer and restore the original binding.
+	static bool TryRedirectStaticIaIndexBuffer(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *runtimeState,
+		const D3D12_INDEX_BUFFER_VIEW *view,
+		D3D12_INDEX_BUFFER_VIEW *redirectedView)
+	{
+		if (!redirectedView)
+			return false;
+		// No table active: single volatile load on the bind path.
+		if (!DX12HasStaticIaReplacements())
+			return false;
+		if (!view || !view->BufferLocation || !view->SizeInBytes)
+			return false;
+		ID3D12Device *device = runtimeState ? runtimeState->device : nullptr;
+		ID3D12Device *queriedDevice = nullptr;
+		if (!device && commandList &&
+		    SUCCEEDED(commandList->GetDevice(IID_PPV_ARGS(&queriedDevice)))) {
+			device = queriedDevice;
+		}
+		const uint32_t hash = DX12HashIaBufferContentView(
+			view->BufferLocation, view->SizeInBytes, 0,
+			static_cast<UINT>(view->Format), 0);
+		bool redirected = false;
+		if (hash && device) {
+			redirected = DX12ResolveStaticIaReplacement(
+				device, true, 0, hash, view, redirectedView, nullptr, nullptr);
+		}
+		if (queriedDevice)
+			queriedDevice->Release();
+		if (runtimeState) {
+			DX12ActiveIaState &ia = runtimeState->ia;
+			if (redirected) {
+				ia.indexBufferStaticReplaced = true;
+				ia.indexBufferStaticOriginal = *view;
+				ia.indexBufferStaticReplacedView = *redirectedView;
+				ia.indexBufferStaticOriginalResolved =
+					DX12ResolveBufferResourceByGpuVa(
+						view->BufferLocation, view->SizeInBytes,
+						&ia.indexBufferStaticOriginalResource);
+				ia.indexBufferStaticContentGeneration =
+					ia.indexBufferStaticOriginalResolved ?
+						DX12GetBufferContentGenerationForResource(
+							ia.indexBufferStaticOriginalResource.resource) : 0;
+				ia.indexBufferStaticResolveEpoch =
+					DX12GetIaHashResolveGeneration();
+				ia.indexBufferStaticMatchedHash = hash;
+			} else if (hash && ia.indexBufferStaticReplaced) {
+				// The bind was evaluated (hash succeeded) and the table has no
+				// replacement for it: drop stale bookkeeping from an earlier
+				// redirected binding.
+				ia.indexBufferStaticReplaced = false;
+			}
+		}
+		return redirected;
+	}
+
+	static bool TryRedirectStaticIaVertexBuffers(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *runtimeState,
+		UINT startSlot,
+		UINT count,
+		const D3D12_VERTEX_BUFFER_VIEW *views,
+		D3D12_VERTEX_BUFFER_VIEW *redirectedViews,
+		UINT redirectedCapacity)
+	{
+		if (!DX12HasStaticIaReplacements() || !views || !count)
+			return false;
+		if (startSlot >= 32 || count > 32 - startSlot ||
+		    count > redirectedCapacity)
+			return false;
+		ID3D12Device *device = runtimeState ? runtimeState->device : nullptr;
+		ID3D12Device *queriedDevice = nullptr;
+		if (!device && commandList &&
+		    SUCCEEDED(commandList->GetDevice(IID_PPV_ARGS(&queriedDevice)))) {
+			device = queriedDevice;
+		}
+		bool redirectedAny = false;
+		for (UINT index = 0; index < count; ++index) {
+			const UINT slot = startSlot + index;
+			const D3D12_VERTEX_BUFFER_VIEW &view = views[index];
+			redirectedViews[index] = view;
+			if (!view.BufferLocation || !view.SizeInBytes ||
+			    !view.StrideInBytes) {
+				if (runtimeState) {
+					runtimeState->ia.vertexBufferStaticReplaced[slot] = false;
+					runtimeState->ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+				}
+				continue;
+			}
+			const uint32_t hash = DX12HashIaBufferContentView(
+				view.BufferLocation, view.SizeInBytes,
+				view.StrideInBytes, 0, slot);
+			bool redirected = false;
+			if (hash && device) {
+				redirected = DX12ResolveStaticIaReplacement(
+					device, false, slot, hash,
+					nullptr, nullptr, &view, &redirectedViews[index]);
+			}
+			if (!redirected)
+				redirectedViews[index] = view;
+			if (runtimeState) {
+				DX12ActiveIaState &ia = runtimeState->ia;
+				if (redirected) {
+					ia.vertexBufferStaticReplaced[slot] = true;
+					ia.vertexBufferStaticReplacedMask |= (1u << slot);
+					ia.vertexBufferStaticOriginal[slot] = view;
+					ia.vertexBufferStaticReplacedView[slot] = redirectedViews[index];
+					ia.vertexBufferStaticOriginalResolved[slot] =
+						DX12ResolveBufferResourceByGpuVa(
+							view.BufferLocation, view.SizeInBytes,
+							&ia.vertexBufferStaticOriginalResources[slot]);
+					ia.vertexBufferStaticContentGeneration[slot] =
+						ia.vertexBufferStaticOriginalResolved[slot] ?
+							DX12GetBufferContentGenerationForResource(
+								ia.vertexBufferStaticOriginalResources[slot].resource) : 0;
+					ia.vertexBufferStaticResolveEpoch[slot] =
+						DX12GetIaHashResolveGeneration();
+					ia.vertexBufferStaticMatchedHash[slot] = hash;
+				} else if (hash && ia.vertexBufferStaticReplaced[slot]) {
+					ia.vertexBufferStaticReplaced[slot] = false;
+					ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+				}
+			}
+			redirectedAny = redirectedAny || redirected;
+		}
+		if (queriedDevice)
+			queriedDevice->Release();
+		return redirectedAny;
+	}
+
 	static void IASetIndexBuffer(
 		ID3D12GraphicsCommandList *commandList,
 		const D3D12_INDEX_BUFFER_VIEW *view,
@@ -1796,14 +1931,20 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
+		D3D12_INDEX_BUFFER_VIEW redirectedView = {};
+		const D3D12_INDEX_BUFFER_VIEW *activeView = view;
+		if (TryRedirectStaticIaIndexBuffer(
+			    commandList, runtimeState, view, &redirectedView)) {
+			activeView = &redirectedView;
+		}
 		const bool changed = DX12CommandListStateFlow::CaptureIndexBuffer(
-			commandList, runtimeState, view);
+			commandList, runtimeState, activeView);
 		if (!changed)
 			return;
 		if (original)
-			original(commandList, view);
+			original(commandList, activeView);
 		else
-			commandList->IASetIndexBuffer(view);
+			commandList->IASetIndexBuffer(activeView);
 	}
 
 	static void IASetVertexBuffers(
@@ -1841,6 +1982,30 @@ public:
 			    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
 			    runtimeState ? &runtimeState->ia : nullptr)) {
 			activeViews = redirectedViews;
+		}
+		// Plan step 3.2: bind-time static IA replacement. Only evaluated when
+		// the PreSkin redirect above left the original views untouched; when
+		// PreSkin takes over a bind, the static bookkeeping for those slots no
+		// longer reflects the live binding and must be dropped.
+		if (activeViews == views) {
+			D3D12_VERTEX_BUFFER_VIEW staticRedirectedViews[
+				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+			if (TryRedirectStaticIaVertexBuffers(
+				    commandList,
+				    runtimeState,
+				    startSlot,
+				    count,
+				    views,
+				    staticRedirectedViews,
+				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+				activeViews = staticRedirectedViews;
+			}
+		} else if (runtimeState) {
+			for (UINT index = 0; index < count && startSlot + index < 32; ++index) {
+				const UINT slot = startSlot + index;
+				runtimeState->ia.vertexBufferStaticReplaced[slot] = false;
+				runtimeState->ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+			}
 		}
 		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, activeViews);

@@ -111,6 +111,164 @@ public:
 	}
 };
 
+// Plan step 3.1: decide which TextureOverride sections are unconditional
+// static texture replacements. A section qualifies when it only replaces the
+// texture content (drawReplaceThisResource set), never observes the draw call
+// (no draw-context match filters, no match_cs / pre-skin dependency), and runs
+// no command lists or actions that could depend on the original texture.
+static bool TextureOverrideIsStaticReplacement(
+	const Bunny::TextureOverrideConfig &config)
+{
+	if (config.drawReplaceThisResource.empty())
+		return false;
+	if (config.hasMatchVertexCount || config.hasMatchIndexCount ||
+	    config.hasMatchInstanceCount || config.hasMatchFirstVertex ||
+	    config.hasMatchFirstIndex || config.hasMatchFirstInstance ||
+	    config.hasMatchCs || config.hasMatchUavBytes || config.hasCsHash ||
+	    !config.preSkinMatchCsSrvHashes.empty() ||
+	    !config.preSkinCsSrvResources.empty())
+		return false;
+	if (config.hasVertexLimitRaise)
+		return false;
+	if (!config.commandLists.pre.empty() ||
+	    !config.commandLists.main.empty() ||
+	    !config.commandLists.post.empty() ||
+	    !config.actions.empty())
+		return false;
+	// Sections that also replace IB/VB or draw extra calls are not pure texture
+	// swaps; keep those on the draw-time path.
+	if (!config.indexBufferResource.empty() ||
+	    !config.vertexBufferResources.empty() ||
+	    !config.drawPsSrvResources.empty() ||
+	    !config.drawVsSrvResources.empty())
+		return false;
+	return true;
+}
+
+static std::shared_ptr<DX12StaticTextureReplacementTable>
+BuildDx12StaticTextureReplacementTable(
+	const Bunny::TextureOverrideMap &textureOverrides,
+	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds)
+{
+	std::shared_ptr<DX12StaticTextureReplacementTable> table =
+		std::make_shared<DX12StaticTextureReplacementTable>();
+	bool allStatic = true;
+	for (const auto &bucket : textureOverrides) {
+		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
+			// Descriptor consumers key on the section hash; only hashed
+			// sections can ever match a descriptor slot.
+			if (!config.hash)
+				continue;
+			if (TextureOverrideIsStaticReplacement(config)) {
+				DX12StaticTextureReplacementEntry entry;
+				entry.hash = config.hash;
+				entry.resourceName = config.drawReplaceThisResource;
+				auto sectionId =
+					textureOverrideSectionIds.find(config.section);
+				entry.sectionId =
+					sectionId != textureOverrideSectionIds.end() ?
+						sectionId->second : 0;
+				table->byHash[config.hash] = std::move(entry);
+				continue;
+			}
+			if (table->byHash.find(config.hash) != table->byHash.end()) {
+				// A dynamic override exists for a hash we already classified as
+				// static: the hash is ambiguous, fall back to draw-time matching.
+				table->byHash.erase(config.hash);
+			}
+			allStatic = false;
+		}
+	}
+	table->enabled = !table->byHash.empty();
+	// The draw path may skip descriptor candidate matching only when every
+	// descriptor-relevant hashed texture override is static. A shader
+	// override that carries no descriptor targets never reads descriptors,
+	// so it does not block this; one that does read descriptor hashes goes
+	// through target plans that still carry hasDescriptorTargets, which the
+	// draw short-circuit checks before consulting this flag.
+	table->allDescriptorOverridesStatic = table->enabled && allStatic;
+	return table;
+}
+
+// Plan step 3.2: decide which TextureOverride sections are unconditional
+// static geometry (IB/VB) replacements. A section qualifies when it only
+// swaps geometry (indexBufferResource / vertexBufferResources set), never
+// observes the draw call, never skips the original draw, and runs no command
+// lists or actions. A hash shared by any non-static override falls back to
+// the draw-time path for every section using it. The whole table is
+// disabled when any shader override reads IA checktextureoverride results:
+// those control flows must keep matching against the original bindings.
+static std::shared_ptr<DX12StaticIaReplacementTable>
+BuildDx12StaticIaReplacementTable(
+	const Bunny::TextureOverrideMap &textureOverrides,
+	bool hasShaderIaTextureOverrideTriggers)
+{
+	std::shared_ptr<DX12StaticIaReplacementTable> table =
+		std::make_shared<DX12StaticIaReplacementTable>();
+	if (hasShaderIaTextureOverrideTriggers)
+		return table;
+	for (const auto &bucket : textureOverrides) {
+		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
+			if (!config.hash)
+				continue;
+			const bool hasIaSwap =
+				!config.indexBufferResource.empty() ||
+				!config.vertexBufferResources.empty();
+			const bool clean =
+				!config.handlingSkip &&
+				!config.hasMatchVertexCount && !config.hasMatchIndexCount &&
+				!config.hasMatchInstanceCount && !config.hasMatchFirstVertex &&
+				!config.hasMatchFirstIndex && !config.hasMatchFirstInstance &&
+				!config.hasMatchCs && !config.hasMatchUavBytes &&
+				!config.hasCsHash &&
+				config.preSkinMatchCsSrvHashes.empty() &&
+				config.preSkinCsSrvResources.empty() &&
+				!config.hasVertexLimitRaise &&
+				config.commandLists.pre.empty() &&
+				config.commandLists.main.empty() &&
+				config.commandLists.post.empty() &&
+				config.actions.empty() &&
+				config.drawPsSrvResources.empty() &&
+				config.drawVsSrvResources.empty() &&
+				config.drawReplaceThisResource.empty();
+			if (!hasIaSwap || !clean) {
+				// Any non-static override on this hash makes the hash ambiguous:
+				// keep every section using it on the draw-time path.
+				table->indexByHash.erase(config.hash);
+				for (UINT slot = 0; slot < 32; ++slot) {
+					const uint64_t key =
+						(static_cast<uint64_t>(slot) << 32) |
+						static_cast<uint64_t>(config.hash);
+					table->vertexByHashAndSlot.erase(key);
+				}
+				continue;
+			}
+			if (!config.indexBufferResource.empty()) {
+				auto inserted = table->indexByHash.emplace(
+					config.hash, config.indexBufferResource);
+				if (!inserted.second &&
+				    inserted.first->second != config.indexBufferResource) {
+					// Conflicting replacements for the same hash: ambiguous.
+					table->indexByHash.erase(inserted.first);
+				}
+			}
+			for (const auto &vb : config.vertexBufferResources) {
+				if (vb.first >= 32)
+					continue;
+				const uint64_t key =
+					(static_cast<uint64_t>(vb.first) << 32) |
+					static_cast<uint64_t>(config.hash);
+				auto inserted = table->vertexByHashAndSlot.emplace(key, vb.second);
+				if (!inserted.second && inserted.first->second != vb.second)
+					table->vertexByHashAndSlot.erase(inserted.first);
+			}
+		}
+	}
+	table->enabled =
+		!table->indexByHash.empty() || !table->vertexByHashAndSlot.empty();
+	return table;
+}
+
 static void BuildDx12PreSkinTextureOverrideIndex(
 	const Bunny::TextureOverrideMap &textureOverrides,
 	std::vector<DX12PreSkinTextureOverrideCandidate> *preSkinTextureOverrides,
@@ -817,6 +975,15 @@ static void BuildDx12PreSkinTextureOverrideIndex(
 static void BuildDx12ExplicitMatchCsResourceIndex(
 	const Bunny::TextureOverrideMap &textureOverrides,
 	std::unordered_map<std::wstring, std::vector<std::wstring>> *resourceSections);
+static std::shared_ptr<DX12StaticTextureReplacementTable>
+BuildDx12StaticTextureReplacementTable(
+	const Bunny::TextureOverrideMap &textureOverrides,
+	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds);
+// Plan step 3.2: write-time (bind-time) static IA replacement table.
+static std::shared_ptr<DX12StaticIaReplacementTable>
+BuildDx12StaticIaReplacementTable(
+	const Bunny::TextureOverrideMap &textureOverrides,
+	bool hasShaderIaTextureOverrideTriggers);
 static void BuildDx12VlrResourceCandidates(
 	const Bunny::ResourceMap &resources,
 	const std::unordered_map<std::wstring, std::vector<std::wstring>> &explicitMatchCsResourceSections,
@@ -1982,6 +2149,18 @@ bool DX12ModRuntimeLoad(
 	BuildDx12CompiledShaderOverridePlans(
 		shaderOverrides, shaderRegexes, compiledCommandListPlans,
 		&compiledShaderOverridePlans);
+	// Plan step 3.1: write-time static texture replacement table. Built from
+	// the parsed configs before the swap-in below publishes them.
+	std::shared_ptr<DX12StaticTextureReplacementTable> staticTextureReplacements =
+		BuildDx12StaticTextureReplacementTable(
+			textureOverrides, textureOverrideSectionIds);
+	staticTextureReplacements->reloadGeneration = gReloadGeneration + 1;
+	// Plan step 3.2: bind-time static IA replacement table. Disabled entirely
+	// while any shader override reads IA checktextureoverride results.
+	std::shared_ptr<DX12StaticIaReplacementTable> staticIaReplacements =
+		BuildDx12StaticIaReplacementTable(
+			textureOverrides, hasShaderIaTextureOverrideTriggers);
+	staticIaReplacements->reloadGeneration = gReloadGeneration + 1;
 	// Any draw-count-indexed prefilter table makes the "has candidate" answer
 	// count-dependent; publish that before the tables are swapped in below so
 	// the draw path can choose IA-state-level negative caching.
@@ -2060,6 +2239,23 @@ bool DX12ModRuntimeLoad(
 		&gCommandExecutionRuntimeSnapshot,
 		commandExecutionRuntimeSnapshot,
 		std::memory_order_release);
+	// Publish the write-time static texture replacement table (plan step 3.1)
+	// and drop resolved descriptor handles cached against the old table.
+	std::atomic_store_explicit(
+		&gStaticTextureReplacementSnapshot,
+		std::shared_ptr<const DX12StaticTextureReplacementTable>(
+			staticTextureReplacements),
+		std::memory_order_release);
+	InterlockedExchange(&gHasStaticTextureReplacements,
+		staticTextureReplacements->enabled ? 1 : 0);
+	DX12NoteStaticTextureReplacementTablePublished();
+	std::atomic_store_explicit(
+		&gStaticIaReplacementSnapshot,
+		std::shared_ptr<const DX12StaticIaReplacementTable>(
+			staticIaReplacements),
+		std::memory_order_release);
+	InterlockedExchange(&gHasStaticIaReplacements,
+		staticIaReplacements->enabled ? 1 : 0);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);
 	gPreSkinUavHashTextureOverrideIndex.swap(preSkinUavHashTextureOverrideIndex);
 	gPreSkinMatchCsTextureOverrideIndex.swap(preSkinMatchCsTextureOverrideIndex);

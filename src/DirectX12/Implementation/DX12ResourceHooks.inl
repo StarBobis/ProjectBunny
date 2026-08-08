@@ -914,8 +914,33 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateShaderResou
 		DX12_CREATE_TIMING_SCOPE(DescriptorSrvHook, Original);
 		original(device, resource, desc, destDescriptor);
 	}
+	// Write-time static texture replacement (plan step 3.1): if the source
+	// resource has an unconditional static replacement, overwrite the freshly
+	// written descriptor with the mod texture's SRV so the draw path never
+	// has to resolve this slot again.
 	{
 		DX12_CREATE_TIMING_SCOPE(DescriptorSrvHook, Record);
+		uint32_t textureHash = 0;
+		if (DX12TryGetTextureHash(resource, &textureHash)) {
+			D3D12_CPU_DESCRIPTOR_HANDLE replacementSrv = {};
+			if (DX12ResolveStaticTextureReplacementSrv(
+					device, textureHash, nullptr, &replacementSrv, nullptr) &&
+				replacementSrv.ptr && replacementSrv.ptr != destDescriptor.ptr) {
+				// The un-patched SRV was already written by the Original call
+				// above; overwrite that single slot with the replacement. Use
+				// the original CopyDescriptorsSimple so the patch does not
+				// re-enter the hooks or disturb shadow records.
+				auto originalSimple = DX12ResourceTrackerHookRegistry::GetDeviceOriginal(
+					device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CopyDescriptorsSimple,
+					DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple,
+					"ID3D12Device::CopyDescriptorsSimple");
+				if (originalSimple) {
+					originalSimple(
+						device, 1, destDescriptor, replacementSrv,
+						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				}
+			}
+		}
 		DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(device, resource, desc, destDescriptor);
 	}
 }
@@ -1020,6 +1045,97 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCreateSampler(
 	}
 }
 
+// ---- Write-time static texture replacement (plan step 3.1) ----
+// After the original copy lands, every src SRV slot whose resource has an
+// unconditional static replacement gets its dest slot overwritten with the
+// mod texture's SRV. Shadow bookkeeping (RecordCopiedDescriptors*) keeps
+// recording the ORIGINAL src record, so draw-time hash matching still sees
+// the game's texture identity and descriptor-to-descriptor copies propagate
+// the logical (original) binding even though the GPU bytes hold the mod SRV.
+// Ring-heap games re-copy descriptors every frame; the cost here is
+// O(copied slots) with a shadow lookup + texture hash query per slot, which
+// is orders of magnitude below the draw-time SRV table resolution this
+// replaces.
+static void PatchCopiedDescriptorsStaticReplacements(
+	ID3D12Device *device,
+	UINT numDestDescriptorRanges,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
+	const UINT *destDescriptorRangeSizes,
+	UINT numSrcDescriptorRanges,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *srcDescriptorRangeStarts,
+	const UINT *srcDescriptorRangeSizes,
+	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
+{
+	if (!DX12HasStaticTextureReplacements() ||
+	    descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
+	    !device || !destDescriptorRangeStarts || !srcDescriptorRangeStarts)
+		return;
+
+	// Use the original CopyDescriptorsSimple so the patch does not re-enter
+	// the hooks or disturb the shadow records written by Record*.
+	auto originalSimple = DX12ResourceTrackerHookRegistry::GetDeviceOriginal(
+		device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CopyDescriptorsSimple,
+		DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple,
+		"ID3D12Device::CopyDescriptorsSimple");
+	if (!originalSimple)
+		return;
+
+	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
+		descriptorHeapsType);
+	if (!increment)
+		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
+	if (!increment)
+		return;
+
+	UINT destRange = 0;
+	UINT srcRange = 0;
+	UINT destOffset = 0;
+	UINT srcOffset = 0;
+	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
+		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
+		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
+		if (destOffset >= destRangeSize) {
+			++destRange;
+			destOffset = 0;
+			continue;
+		}
+		if (srcOffset >= srcRangeSize) {
+			++srcRange;
+			srcOffset = 0;
+			continue;
+		}
+
+		const UINT count = min(destRangeSize - destOffset, srcRangeSize - srcOffset);
+		D3D12_CPU_DESCRIPTOR_HANDLE dest = destDescriptorRangeStarts[destRange];
+		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
+		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
+		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
+		for (UINT index = 0; index < count; ++index,
+			dest.ptr += increment, src.ptr += increment) {
+			if (dest.ptr == src.ptr)
+				continue;
+			DescriptorRecord record;
+			if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(
+					src.ptr, &record))
+				continue;
+			if (record.kindId != DescriptorKind::SRV_ID || !record.resource)
+				continue;
+			uint32_t textureHash = 0;
+			if (!DX12TryGetTextureHash(record.resource, &textureHash))
+				continue;
+			D3D12_CPU_DESCRIPTOR_HANDLE replacementSrv = {};
+			if (!DX12ResolveStaticTextureReplacementSrv(
+					device, textureHash, &record, &replacementSrv, nullptr) ||
+				!replacementSrv.ptr || replacementSrv.ptr == dest.ptr)
+				continue;
+			originalSimple(
+				device, 1, dest, replacementSrv, descriptorHeapsType);
+		}
+		destOffset += count;
+		srcOffset += count;
+	}
+}
+
 void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors(
 	ID3D12Device *device, UINT numDestDescriptorRanges,
 	const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
@@ -1046,6 +1162,10 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptors(
 	}
 	{
 		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsHook, Record);
+		PatchCopiedDescriptorsStaticReplacements(
+			device, numDestDescriptorRanges, destDescriptorRangeStarts,
+			destDescriptorRangeSizes, numSrcDescriptorRanges,
+			srcDescriptorRangeStarts, srcDescriptorRangeSizes, descriptorHeapsType);
 		DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			device, numDestDescriptorRanges, destDescriptorRangeStarts, destDescriptorRangeSizes,
 			numSrcDescriptorRanges, srcDescriptorRangeStarts, srcDescriptorRangeSizes, descriptorHeapsType);
@@ -1073,6 +1193,9 @@ void STDMETHODCALLTYPE DX12ResourceTrackerHookCallbacks::HookedCopyDescriptorsSi
 	}
 	{
 		DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleHook, Record);
+		PatchCopiedDescriptorsStaticReplacements(
+			device, 1, &destDescriptorRangeStart, &numDescriptors,
+			1, &srcDescriptorRangeStart, &numDescriptors, descriptorHeapsType);
 		DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 			device, numDescriptors, destDescriptorRangeStart, srcDescriptorRangeStart, descriptorHeapsType);
 	}

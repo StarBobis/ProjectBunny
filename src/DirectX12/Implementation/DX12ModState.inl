@@ -242,6 +242,10 @@ class DX12CompiledTextureOverridePlan
 {
 
 public:
+	// Source texture hash of the owning TextureOverride section; used by the
+	// write-time static replacement short-circuit to look the section up in
+	// DX12StaticTextureReplacementTable without re-reading the config.
+	uint32_t hash = 0;
 	bool hasActions = false;
 	bool hasUnsupportedCommandActions = false;
 	bool hasPreCommandListPlan = false;
@@ -324,6 +328,86 @@ public:
 };
 static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 	gCommandExecutionRuntimeSnapshot;
+
+// Static texture replacement table (plan step 3.1): hash of the original
+// texture -> the mod resource that unconditionally replaces it. Only
+// TextureOverride sections with no draw-context filters, no match_cs / pre-skin
+// dependency and no command lists / actions are eligible; those are patched at
+// descriptor write time (CreateShaderResourceView / CopyDescriptors) so the
+// draw path never has to resolve SRV bindings for them.
+class DX12StaticTextureReplacementEntry
+{
+public:
+	uint32_t hash = 0;
+	std::wstring resourceName;
+	uint32_t sectionId = 0;
+	// Published generation this entry was resolved against. The replacement
+	// descriptor handle is cached separately and must be re-resolved when the
+	// reload generation changes.
+	UINT64 reloadGeneration = 0;
+};
+class DX12StaticTextureReplacementTable
+{
+public:
+	bool enabled = false;
+	UINT64 reloadGeneration = 0;
+	// Every descriptor-relevant hashed texture override is an unconditional
+	// static replacement, and no shader override command list reads
+	// checktextureoverride results of SRV targets. Only then may the draw
+	// path skip descriptor candidate matching entirely.
+	bool allDescriptorOverridesStatic = false;
+	// hash -> entry. Built at ini load; published atomically so hot-path
+	// readers (CreateShaderResourceView / CopyDescriptors hooks) never take
+	// gModLock.
+	std::unordered_map<uint32_t, DX12StaticTextureReplacementEntry> byHash;
+};
+static std::shared_ptr<const DX12StaticTextureReplacementTable>
+	gStaticTextureReplacementSnapshot;
+// Low-cost gate mirroring the snapshot for hot paths that must not pay the
+// shared_ptr atomic load when no static replacement exists at all.
+static volatile LONG gHasStaticTextureReplacements = 0;
+
+// Static IA replacement table (plan step 3.2): hash of the bound IB/VB
+// content -> the mod buffer that unconditionally replaces the binding. Only
+// TextureOverride sections that purely swap geometry (indexBufferResource /
+// vertexBufferResources set, no skip, no draw-context filters, no match_cs /
+// pre-skin dependency, no command lists / actions) are eligible, and the
+// whole table is disabled when any shader override reads IA
+// checktextureoverride results (those need the draw-time match on the
+// original binding). Eligible bindings are redirected at IASet time so the
+// draw path never re-evaluates them.
+class DX12StaticIaReplacementTable
+{
+public:
+	bool enabled = false;
+	UINT64 reloadGeneration = 0;
+	// IB content hash -> mod buffer resource name.
+	std::unordered_map<uint32_t, std::wstring> indexByHash;
+	// (vertexSlot << 32) | VB content hash -> mod buffer resource name.
+	std::unordered_map<uint64_t, std::wstring> vertexByHashAndSlot;
+};
+static std::shared_ptr<const DX12StaticIaReplacementTable>
+	gStaticIaReplacementSnapshot;
+// Low-cost gate for the IASet bind hot path.
+static volatile LONG gHasStaticIaReplacements = 0;
+
+static std::shared_ptr<const DX12StaticIaReplacementTable>
+LoadStaticIaReplacementSnapshot()
+{
+	return std::atomic_load_explicit(
+		&gStaticIaReplacementSnapshot, std::memory_order_acquire);
+}
+
+static std::shared_ptr<const DX12StaticTextureReplacementTable>
+LoadStaticTextureReplacementSnapshot()
+{
+	return std::atomic_load_explicit(
+		&gStaticTextureReplacementSnapshot, std::memory_order_acquire);
+}
+
+// Defined in DX12ModResources.inl (same TU); resets the resolved
+// descriptor handle cache when a new table is published.
+void DX12NoteStaticTextureReplacementTablePublished();
 
 class DX12VertexLimitRaiseConfig
 

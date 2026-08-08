@@ -967,7 +967,11 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12LoadedResource *resource)
 	{
-		if (!device || !commandList || !resource)
+		// commandList is accepted for call-site symmetry but never used: the
+		// upload is recorded and executed on the private upload channel, so a
+		// null command list is fine (descriptor write-time patch path has no
+		// command list in scope).
+		if (!device || !resource)
 			return false;
 		if (resource->drawSrvTextureResource && resource->drawSrvCpu.ptr)
 			return true;
@@ -1165,6 +1169,24 @@ public:
 		if (!resource)
 			return nullptr;
 		if (!DX12DdsTextureLoadUtils::EnsureTextureSrv(device, commandList, resource))
+			return nullptr;
+		return resource;
+	}
+
+	// Device-only variant for the descriptor write-time patch path (plan step
+	// 3.1), where no command list exists. EnsureTextureSrv uploads on the
+	// private channel and only requires the device.
+	static DX12LoadedResource *EnsureLoadedDrawTextureSrvDeviceOnly(
+		ID3D12Device *device,
+		const std::wstring &name)
+	{
+		if (!device || name.empty())
+			return nullptr;
+		DX12LoadedResource *resource =
+			DX12DdsTextureLoadUtils::EnsureTextureResourceRecord(name);
+		if (!resource)
+			return nullptr;
+		if (!DX12DdsTextureLoadUtils::EnsureTextureSrv(device, nullptr, resource))
 			return nullptr;
 		return resource;
 	}
@@ -1951,4 +1973,253 @@ static bool ResourceMatchesVlrTarget(
 	    resource.stride != vlr.overrideByteStride)
 		return false;
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Write-time static texture replacement (plan step 3.1)
+//
+// DX12 gives every descriptor write to the application: CreateShaderResourceView
+// hands us the resource pointer, CopyDescriptors hands us src and dst. When a
+// TextureOverride is an unconditional static replacement (hash match only, no
+// draw-context filters, no match_cs / pre-skin dependency, no command lists),
+// the mod descriptor can be written at that point and the draw path never has
+// to resolve SRV bindings for it. This block resolves original hash ->
+// replacement SRV descriptor handle and is called from the tracking TU hooks
+// through the non-static interface declared in Mods/DX12ModInterfaces.hpp.
+// ---------------------------------------------------------------------------
+
+class DX12StaticTextureReplacementResolveCacheEntry
+{
+public:
+	UINT64 tableGeneration = 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE defaultSrv = {};
+	bool hasDefaultSrv = false;
+};
+
+// Keyed by original texture hash. Only the lookup result (descriptor handle)
+// is cached; the DX12LoadedResource owns the descriptor heap that backs it.
+static std::unordered_map<uint32_t, DX12StaticTextureReplacementResolveCacheEntry>
+	gStaticTextureReplacementResolveCache;
+static SRWLOCK gStaticTextureReplacementResolveLock = SRWLOCK_INIT;
+
+void DX12NoteStaticTextureReplacementTablePublished()
+{
+	AcquireSRWLockExclusive(&gStaticTextureReplacementResolveLock);
+	gStaticTextureReplacementResolveCache.clear();
+	ReleaseSRWLockExclusive(&gStaticTextureReplacementResolveLock);
+}
+
+// Resolves the write-time replacement for an original texture hash. When
+// sourceRecord is provided, the replacement SRV is made view-compatible with
+// the descriptor the game originally wrote (mirrors the draw-time
+// EnsureCompatibleSrv contract); otherwise the DDS default SRV is used.
+// Returns true and fills outSrv on success; outResource receives the loaded
+// mod resource when requested. This is deliberately non-static so the
+// tracking TU (DX12ResourceTracking.cpp) can call it from the
+// CreateShaderResourceView / CopyDescriptors hooks.
+bool DX12ResolveStaticTextureReplacementSrv(
+	ID3D12Device *device,
+	uint32_t originalHash,
+	const DescriptorRecord *sourceRecord,
+	D3D12_CPU_DESCRIPTOR_HANDLE *outSrv,
+	ID3D12Resource **outResource)
+{
+	if (outSrv)
+		*outSrv = {};
+	if (outResource)
+		*outResource = nullptr;
+	if (!device || !originalHash || !outSrv)
+		return false;
+
+	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
+		LoadStaticTextureReplacementSnapshot();
+	if (!table || !table->enabled || table->byHash.empty())
+		return false;
+	auto entryIt = table->byHash.find(originalHash);
+	if (entryIt == table->byHash.end())
+		return false;
+	const DX12StaticTextureReplacementEntry &entry = entryIt->second;
+	if (entry.resourceName.empty())
+		return false;
+
+	// Device-only texture load: uploads execute on the private channel, so
+	// this stays callable from descriptor-write hooks that have no command
+	// list in scope.
+	DX12LoadedResource *resource =
+		DX12DdsTextureLoadUtils::EnsureLoadedDrawTextureSrvDeviceOnly(
+			device, entry.resourceName);
+	if (!resource)
+		return false;
+
+	if (sourceRecord) {
+		DX12DescriptorSummary originalDescriptor = {};
+		originalDescriptor.resource = sourceRecord->resource;
+		originalDescriptor.resourceDesc = sourceRecord->resourceDesc;
+		originalDescriptor.hasResourceDesc = sourceRecord->hasResourceDesc;
+		originalDescriptor.hasDesc = sourceRecord->hasDesc;
+		if (sourceRecord->hasDesc) {
+			originalDescriptor.srvDesc = sourceRecord->srv;
+			originalDescriptor.hasSrvDesc = true;
+		}
+		originalDescriptor.viewFormat =
+			sourceRecord->hasDesc ?
+				static_cast<UINT>(sourceRecord->srv.Format) :
+				(sourceRecord->hasResourceDesc ?
+					static_cast<UINT>(sourceRecord->resourceDesc.Format) : 0);
+		originalDescriptor.viewDimension =
+			sourceRecord->hasDesc ?
+				static_cast<UINT>(sourceRecord->srv.ViewDimension) : 0;
+		D3D12_CPU_DESCRIPTOR_HANDLE compatible =
+			DX12DrawTextureSrvViewUtils::EnsureCompatibleSrv(
+				device, resource, originalDescriptor, nullptr);
+		if (!compatible.ptr)
+			return false;
+		*outSrv = compatible;
+		if (outResource)
+			*outResource = resource->drawSrvTextureResource;
+		return true;
+	}
+
+	// Default-view path: cache the lookup per table generation.
+	AcquireSRWLockShared(&gStaticTextureReplacementResolveLock);
+	auto cached = gStaticTextureReplacementResolveCache.find(originalHash);
+	if (cached != gStaticTextureReplacementResolveCache.end() &&
+	    cached->second.tableGeneration == table->reloadGeneration &&
+	    cached->second.hasDefaultSrv) {
+		*outSrv = cached->second.defaultSrv;
+		if (outResource)
+			*outResource = resource->drawSrvTextureResource;
+		ReleaseSRWLockShared(&gStaticTextureReplacementResolveLock);
+		return true;
+	}
+	ReleaseSRWLockShared(&gStaticTextureReplacementResolveLock);
+
+	if (!resource->drawSrvCpu.ptr)
+		return false;
+	AcquireSRWLockExclusive(&gStaticTextureReplacementResolveLock);
+	DX12StaticTextureReplacementResolveCacheEntry &stored =
+		gStaticTextureReplacementResolveCache[originalHash];
+	stored.tableGeneration = table->reloadGeneration;
+	stored.defaultSrv = resource->drawSrvCpu;
+	stored.hasDefaultSrv = true;
+	ReleaseSRWLockExclusive(&gStaticTextureReplacementResolveLock);
+
+	*outSrv = resource->drawSrvCpu;
+	if (outResource)
+		*outResource = resource->drawSrvTextureResource;
+	return true;
+}
+
+bool DX12StaticTextureReplacementAllDescriptorOverridesStatic()
+{
+	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
+		LoadStaticTextureReplacementSnapshot();
+	return table && table->enabled && table->allDescriptorOverridesStatic;
+}
+
+bool DX12HasStaticTextureReplacements()
+{
+	return InterlockedCompareExchange(
+		&gHasStaticTextureReplacements, 0, 0) != 0;
+}
+
+bool DX12HasStaticIaReplacements()
+{
+	return InterlockedCompareExchange(
+		&gHasStaticIaReplacements, 0, 0) != 0;
+}
+
+// Bind-time static IA replacement (plan step 3.2). Resolves the mod buffer
+// for a bound IB/VB whose content hash matches an unconditional static
+// geometry override, and builds the replacement view exactly the way the
+// draw-time AppendResourceViewsForCommandList path does. The mod buffers
+// are UPLOAD-heap resources in GENERIC_READ state (see
+// EnsureLoadedResourceForPreSkin), so no barrier is required before binding.
+// Returns false when the hash has no static replacement or the mod resource
+// failed to load; the caller then binds the original view unchanged.
+bool DX12ResolveStaticIaReplacement(
+	ID3D12Device *device,
+	bool indexBuffer,
+	UINT vertexSlot,
+	uint32_t contentHash,
+	const D3D12_INDEX_BUFFER_VIEW *originalIndexView,
+	D3D12_INDEX_BUFFER_VIEW *outIndexView,
+	const D3D12_VERTEX_BUFFER_VIEW *originalVertexView,
+	D3D12_VERTEX_BUFFER_VIEW *outVertexView)
+{
+	if (outIndexView)
+		*outIndexView = {};
+	if (outVertexView)
+		*outVertexView = {};
+	if (!device || !contentHash)
+		return false;
+
+	const std::shared_ptr<const DX12StaticIaReplacementTable> table =
+		LoadStaticIaReplacementSnapshot();
+	if (!table || !table->enabled)
+		return false;
+
+	const std::wstring *resourceName = nullptr;
+	if (indexBuffer) {
+		auto it = table->indexByHash.find(contentHash);
+		if (it != table->indexByHash.end())
+			resourceName = &it->second;
+	} else {
+		if (vertexSlot >= 32)
+			return false;
+		const uint64_t key =
+			(static_cast<uint64_t>(vertexSlot) << 32) |
+			static_cast<uint64_t>(contentHash);
+		auto it = table->vertexByHashAndSlot.find(key);
+		if (it != table->vertexByHashAndSlot.end())
+			resourceName = &it->second;
+	}
+	if (!resourceName || resourceName->empty())
+		return false;
+
+	DX12LoadedResource *resource =
+		EnsureLoadedResourceForPreSkin(device, *resourceName);
+	if (!resource || !resource->resource)
+		return false;
+
+	const UINT64 byteWidth = resource->byteWidth;
+	if (!byteWidth || byteWidth > UINT_MAX)
+		return false;
+
+	if (indexBuffer) {
+		if (!outIndexView)
+			return false;
+		outIndexView->BufferLocation =
+			resource->resource->GetGPUVirtualAddress();
+		outIndexView->SizeInBytes = static_cast<UINT>(byteWidth);
+		// Mirror the draw-time path: keep the mod resource's own R16/R32
+		// format when declared, otherwise reuse the game's view format.
+		outIndexView->Format =
+			(resource->format == DXGI_FORMAT_R16_UINT ||
+			 resource->format == DXGI_FORMAT_R32_UINT) ?
+				resource->format :
+				(originalIndexView ? originalIndexView->Format :
+					DXGI_FORMAT_R32_UINT);
+		return true;
+	}
+
+	if (!outVertexView)
+		return false;
+	outVertexView->BufferLocation =
+		resource->resource->GetGPUVirtualAddress();
+	outVertexView->SizeInBytes = static_cast<UINT>(byteWidth);
+	outVertexView->StrideInBytes =
+		resource->stride ? resource->stride :
+			(originalVertexView ? originalVertexView->StrideInBytes : 0);
+	return outVertexView->StrideInBytes != 0;
+}
+
+bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash)
+{
+	if (!originalHash)
+		return false;
+	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
+		LoadStaticTextureReplacementSnapshot();
+	return table && table->enabled &&
+		table->byHash.find(originalHash) != table->byHash.end();
 }
