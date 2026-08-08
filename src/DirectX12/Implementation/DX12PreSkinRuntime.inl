@@ -2935,6 +2935,14 @@ bool DX12ModHasActivePreSkinTextureOverrides()
 	return InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) != 0;
 }
 
+bool DX12ModHasActivePreSkinIaViewExpansion()
+{
+	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)
+		return false;
+	return InterlockedCompareExchange(
+		&gHasActivePreSkinIaViewExpansionFast, 0, 0) != 0;
+}
+
 UINT32 DX12ModGetHotPathFlags()
 {
 	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)

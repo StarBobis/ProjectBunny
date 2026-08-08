@@ -40,6 +40,7 @@ bool DX12ModNeedsPreSkinningBindingTracking();
 bool DX12ModNeedsCommandListSubmissionNotifications();
 void DX12ModRunPresentMaintenance();
 bool DX12ModHasActivePreSkinTextureOverrides();
+bool DX12ModHasActivePreSkinIaViewExpansion();
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash);
 bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash);
 bool DX12ModPreSkinningUavProducerMayMatch(

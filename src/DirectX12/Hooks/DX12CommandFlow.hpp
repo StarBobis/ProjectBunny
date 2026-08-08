@@ -1242,10 +1242,6 @@ public:
 	using Fn = void(STDMETHODCALLTYPE *)(ID3D12GraphicsCommandList*, UINT, UINT, UINT);
 };
 
-static void ReplayPublishedPreSkinVertexBuffers(
-	ID3D12GraphicsCommandList *commandList,
-	DX12SimulateContext *runtimeState);
-
 class DX12DispatchPreSkinProbe
 {
 public:
@@ -1644,7 +1640,6 @@ public:
 				// Publish the resize alias before the dispatch so draws
 				// recorded on other lists still resolve the resized output.
 				DX12ModPublishPreSkinOutputResizeEarly(commandList);
-				ReplayPublishedPreSkinVertexBuffers(commandList, effectiveState);
 				LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
 				originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
 				DX12OuterTimingProbeUtils::LogCpuStage(
@@ -1668,10 +1663,8 @@ public:
 			return;
 		}
 		LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
-		if (probe.applied) {
+		if (probe.applied)
 			DX12ModPublishPreSkinOutputResizeEarly(commandList);
-			ReplayPublishedPreSkinVertexBuffers(commandList, effectiveState);
-		}
 		originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
@@ -2880,36 +2873,6 @@ public:
 	}
 };
 
-static void STDMETHODCALLTYPE ReplayPublishedPreSkinSetVertexBuffers(
-	ID3D12GraphicsCommandList *commandList,
-	UINT startSlot,
-	UINT count,
-	const D3D12_VERTEX_BUFFER_VIEW *views)
-{
-	if (commandList)
-		commandList->IASetVertexBuffers(startSlot, count, views);
-}
-
-static void ReplayPublishedPreSkinVertexBuffers(
-	ID3D12GraphicsCommandList *commandList,
-	DX12SimulateContext *runtimeState)
-{
-	if (!commandList || !runtimeState ||
-		!DX12ModHasPreSkinOutputResizeBindings())
-		return;
-
-	DX12InternalReplayScope internalReplay;
-	DX12IaReplacementExecutorCallbacks callbacks;
-	callbacks.setVertexBuffers = ReplayPublishedPreSkinSetVertexBuffers;
-	DX12ActiveIaState redirectedIa = runtimeState->ia;
-	const bool replayed = DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
-		commandList, callbacks, &redirectedIa, runtimeState);
-	if (replayed)
-		runtimeState->ia = redirectedIa;
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkin", "preskin_publish_replay", 0, 1, 0);
-}
-
 
 
 
@@ -3513,7 +3476,8 @@ public:
 		// configured PreSkin draws; durable resource metadata and the fence-owned
 		// resize cache make the lookup cheap and independent of recording order.
 		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
-		if (DX12ModNeedsPreSkinningUavProbe()) {
+		if (DX12ModHasPreSkinOutputResizeBindings() ||
+			DX12ModHasActivePreSkinIaViewExpansion()) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);
@@ -3592,7 +3556,8 @@ public:
 		// publication flag is frame-local and is deliberately false after Present;
 		// configured PreSkin work must still replay IA so metadata/cache fallback
 		// can recover a consumer recorded on the other side of that boundary.
-		if (DX12ModNeedsPreSkinningUavProbe()) {
+		if (DX12ModHasPreSkinOutputResizeBindings() ||
+			DX12ModHasActivePreSkinIaViewExpansion()) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);
