@@ -3477,7 +3477,10 @@ public:
 		// resize cache make the lookup cheap and independent of recording order.
 		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModHasPreSkinOutputResizeBindings() ||
-			DX12ModHasActivePreSkinIaViewExpansion()) {
+			DX12ModMayNeedPreSkinIaViewExpansion(
+				runtimeState.ia.vertexBuffers,
+				runtimeState.ia.hasVertexBuffer,
+				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);
@@ -3557,7 +3560,10 @@ public:
 		// configured PreSkin work must still replay IA so metadata/cache fallback
 		// can recover a consumer recorded on the other side of that boundary.
 		if (DX12ModHasPreSkinOutputResizeBindings() ||
-			DX12ModHasActivePreSkinIaViewExpansion()) {
+			DX12ModMayNeedPreSkinIaViewExpansion(
+				runtimeState.ia.vertexBuffers,
+				runtimeState.ia.hasVertexBuffer,
+				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
 			redirectedIa = runtimeState.ia;
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);

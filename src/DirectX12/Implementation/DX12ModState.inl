@@ -679,7 +679,6 @@ static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTe
 // in place on every store and section names are the stable identity.
 static std::unordered_map<ID3D12Resource*, std::vector<std::wstring>> gPreSkinProducerSectionsByOutputResource;
 static std::unordered_map<ID3D12Resource*, DX12ActivePreSkinOutputState> gActivePreSkinOutputStates;
-static volatile LONG gHasActivePreSkinIaViewExpansionFast = 0;
 // A successful producer match proves that this configured section participates
 // in PreSkin for the current mod configuration. Keep that proof independently
 // from the frame-local resource binding below: DX12 command lists may be recorded
@@ -794,23 +793,6 @@ static void ReleaseMovedPreSkinResources(std::vector<ID3D12Resource*> *resources
 	resources->clear();
 }
 
-static void RefreshActivePreSkinIaViewExpansionFastLocked()
-{
-	bool hasExpansion = false;
-	for (const auto &item : gActivePreSkinTextureOverrides) {
-		const DX12ActivePreSkinTextureOverride &active = item.second;
-		if (!active.outputResource || !active.outputByteWidth)
-			continue;
-		const D3D12_RESOURCE_DESC desc = active.outputResource->GetDesc();
-		if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-			active.outputByteWidth > desc.Width) {
-			hasExpansion = true;
-			break;
-		}
-	}
-	InterlockedExchange(&gHasActivePreSkinIaViewExpansionFast, hasExpansion ? 1 : 0);
-}
-
 static void ClearActivePreSkinTextureOverridesLocked(
 	std::vector<ID3D12Resource*> *releaseResources)
 {
@@ -821,7 +803,6 @@ static void ClearActivePreSkinTextureOverridesLocked(
 	gActivePreSkinTextureOverrides.clear();
 	gPreSkinProducerSectionsByOutputResource.clear();
 	gActivePreSkinOutputStates.clear();
-	InterlockedExchange(&gHasActivePreSkinIaViewExpansionFast, 0);
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
 	// This clears only the transient producer publication. Never clear
 	// gPreSkinOutputResizeCache here: Present calls this function every frame,
@@ -870,7 +851,6 @@ static void StoreActivePreSkinTextureOverrideLocked(
 			state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 			state.uavBarrierPending = true;
 		}
-		RefreshActivePreSkinIaViewExpansionFastLocked();
 		return;
 	}
 	ID3D12Resource *oldResource = existingPtr ? existingPtr->outputResource : nullptr;
@@ -890,8 +870,39 @@ static void StoreActivePreSkinTextureOverrideLocked(
 		state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 		state.uavBarrierPending = true;
 	}
-	RefreshActivePreSkinIaViewExpansionFastLocked();
 	BumpPreSkinActiveGeneration();
+}
+
+bool DX12ModMayNeedPreSkinIaViewExpansion(
+	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count)
+{
+	if (!views || !hasViews || !count ||
+		InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0)
+		return false;
+
+	AcquireSRWLockShared(&gPreSkinLock);
+	for (const auto &item : gActivePreSkinTextureOverrides) {
+		const DX12ActivePreSkinTextureOverride &active = item.second;
+		if (!active.outputResource || !active.outputByteWidth)
+			continue;
+		const D3D12_RESOURCE_DESC desc = active.outputResource->GetDesc();
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+			active.outputByteWidth <= desc.Width)
+			continue;
+		const UINT64 outputGpuVa = active.outputResource->GetGPUVirtualAddress();
+		if (!outputGpuVa)
+			continue;
+		for (UINT slot = 0; slot < count; ++slot) {
+			if (!hasViews[slot] || views[slot].BufferLocation < outputGpuVa)
+				continue;
+			if (views[slot].BufferLocation - outputGpuVa < desc.Width) {
+				ReleaseSRWLockShared(&gPreSkinLock);
+				return true;
+			}
+		}
+	}
+	ReleaseSRWLockShared(&gPreSkinLock);
+	return false;
 }
 
 bool DX12ModFindActivePreSkinProducerForOutput(
