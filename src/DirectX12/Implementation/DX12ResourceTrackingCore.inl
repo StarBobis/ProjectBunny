@@ -3182,15 +3182,20 @@ bool DX12GetResourceCurrentState(
 		return false;
 
 	// Fast path: wrapper-cached record (no gResourceLock, mirrors the barrier
-	// recorder's hot path).
+	// recorder's hot path). The wrapper record only carries states observed
+	// from barriers; before the first barrier (or for resources created
+	// before tracking enabled) it has no state, so fall through to the
+	// tracked record which holds the creation initialState.
 	if (ResourceRecord *fastRecord = DX12FindWrapperResourceRecord(resource)) {
-		if (stateOut)
-			*stateOut = fastRecord->currentState;
-		if (knownOut)
-			*knownOut = fastRecord->hasCurrentState;
-		if (barrierTrackedOut)
-			*barrierTrackedOut = fastRecord->stateTrackedByBarrier;
-		return fastRecord->hasCurrentState;
+		if (fastRecord->hasCurrentState) {
+			if (stateOut)
+				*stateOut = fastRecord->currentState;
+			if (knownOut)
+				*knownOut = true;
+			if (barrierTrackedOut)
+				*barrierTrackedOut = fastRecord->stateTrackedByBarrier;
+			return true;
+		}
 	}
 
 	AcquireSRWLockShared(&gResourceLock);
@@ -3198,14 +3203,14 @@ bool DX12GetResourceCurrentState(
 	bool found = false;
 	if (index && *index < gResources.size()) {
 		const ResourceRecord &record = gResources[*index];
-		if (record.resource) {
+		if (record.resource && record.hasCurrentState) {
 			if (stateOut)
 				*stateOut = record.currentState;
 			if (knownOut)
-				*knownOut = record.hasCurrentState;
+				*knownOut = true;
 			if (barrierTrackedOut)
 				*barrierTrackedOut = record.stateTrackedByBarrier;
-			found = record.hasCurrentState;
+			found = true;
 		}
 	}
 	ReleaseSRWLockShared(&gResourceLock);

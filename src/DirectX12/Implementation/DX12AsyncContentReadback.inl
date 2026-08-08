@@ -146,11 +146,13 @@ bool DX12ReadbackAcquireListLocked(
 
 	ID3D12CommandAllocator *allocator = nullptr;
 	ID3D12GraphicsCommandList *list = nullptr;
+	bool fromPool = false;
 	if (!gReadbackAllocatorPool.empty() && !gReadbackListPool.empty()) {
 		allocator = gReadbackAllocatorPool.back();
 		gReadbackAllocatorPool.pop_back();
 		list = gReadbackListPool.back();
 		gReadbackListPool.pop_back();
+		fromPool = true;
 	} else {
 		HRESULT hr = gReadbackDevice->CreateCommandAllocator(
 			D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&allocator));
@@ -165,8 +167,11 @@ bool DX12ReadbackAcquireListLocked(
 		}
 	}
 	// Pooled allocators are only returned after their fence passed, so Reset
-	// is safe here.
-	if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator, nullptr))) {
+	// is safe here. Freshly created allocator/list pairs must NOT be reset:
+	// the new list is already in the recording state and Reset returns E_FAIL
+	// on strict drivers (same trap as the upload channel).
+	if (fromPool &&
+	    (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator, nullptr)))) {
 		allocator->Release();
 		list->Release();
 		return false;
@@ -327,6 +332,22 @@ bool DX12ReadbackRecordTextureCopyLocked(
 	if (event->desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
 	    event->desc.SampleDesc.Count > 1)
 		return false;
+
+	// The texture may have been resized/recreated since the event was
+	// enqueued (dynamic-resolution games resize textures per frame); the
+	// enqueued desc would then describe a stale footprint and the copy
+	// would record out-of-bounds reads, failing Close on the driver.
+	// Re-validate against the live desc and skip when it changed.
+	const D3D12_RESOURCE_DESC liveDesc = event->resource->GetDesc();
+	if (liveDesc.Dimension != event->desc.Dimension ||
+	    liveDesc.Width != event->desc.Width ||
+	    liveDesc.Height != event->desc.Height ||
+	    liveDesc.DepthOrArraySize != event->desc.DepthOrArraySize ||
+	    liveDesc.MipLevels != event->desc.MipLevels ||
+	    liveDesc.Format != event->desc.Format ||
+	    liveDesc.SampleDesc.Count != event->desc.SampleDesc.Count) {
+		return false;
+	}
 
 	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
 	bool known = false;
@@ -592,8 +613,24 @@ bool DX12AsyncReadbackHasPendingWork()
 	return gReadbackPendingCount.load(std::memory_order_acquire) != 0;
 }
 
+// Rate-limited submit-failure diagnostics. The failure path can run on every
+// ExecuteCommandLists (e.g. a persistent channel fault), and an unthrottled
+// log line per submit blew the log up to 500MB+ in testing.
+static void DX12ReadbackLogSubmitFailure(const char *stage, UINT64 a, UINT64 b)
+{
+	static volatile LONG failureLogCounter = 0;
+	if ((InterlockedIncrement(&failureLogCounter) & 0xFF) != 1)
+		return;
+	DX12LogManager::Fields("DX12ReadbackSubmit",
+		"stage=%s,a=%llu,b=%llu",
+		stage ? stage : "",
+		static_cast<unsigned long long>(a),
+		static_cast<unsigned long long>(b));
+}
+
 void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 {
+	const LARGE_INTEGER submitBegin = DX12OuterTimingProbeUtils::Now();
 	if (!gameQueue || gReadbackPendingCount.load(std::memory_order_acquire) == 0)
 		return;
 
@@ -618,6 +655,7 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 
 	ID3D12Device *device = nullptr;
 	if (FAILED(gameQueue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
+		DX12ReadbackLogSubmitFailure("failed_get_device", events.size(), 0);
 		DX12ReadbackReleaseEvents(events);
 		return;
 	}
@@ -626,6 +664,7 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	if (!DX12ReadbackEnsureChannelLocked(device)) {
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
+		DX12ReadbackLogSubmitFailure("failed_channel", events.size(), 0);
 		DX12ReadbackReleaseEvents(events);
 		return;
 	}
@@ -635,6 +674,7 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	if (!DX12ReadbackAcquireListLocked(&allocator, &list)) {
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
+		DX12ReadbackLogSubmitFailure("failed_list", events.size(), 0);
 		DX12ReadbackReleaseEvents(events);
 		return;
 	}
@@ -664,7 +704,9 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		kept.push_back(event);
 	}
 	if (kept.empty()) {
-		DX12ReadbackReleaseListLocked(allocator, list);
+		DX12ReadbackLogSubmitFailure("failed_all_oversized", events.size(), 0);
+		allocator->Release();
+		list->Release();
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
 		return;
@@ -673,7 +715,11 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 
 	DX12ReadbackRingSlot *slot = DX12ReadbackAcquireRingSlotLocked(ringUsed);
 	if (!slot) {
-		DX12ReadbackReleaseListLocked(allocator, list);
+		DX12ReadbackLogSubmitFailure("failed_ring_slot", ringUsed, 0);
+		// The list is open (recorded, never closed); release directly so a
+		// half-recorded list never reaches the reuse pool.
+		allocator->Release();
+		list->Release();
 		DX12ReadbackReleaseEvents(kept);
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
@@ -694,14 +740,32 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		}
 	}
 	// Drop events that were skipped at record time (unknown state etc.).
+	UINT skippedRecord = 0;
 	for (auto it = kept.begin(); it != kept.end();) {
-		if (!it->resource)
+		if (!it->resource) {
+			++skippedRecord;
 			it = kept.erase(it);
-		else
+		} else {
 			++it;
+		}
 	}
-	if (kept.empty() || FAILED(list->Close())) {
-		DX12ReadbackReleaseListLocked(allocator, list);
+	if (skippedRecord != 0) {
+		static volatile LONG skippedLogCounter = 0;
+		if ((InterlockedIncrement(&skippedLogCounter) & 0xFF) == 1) {
+			DX12LogManager::Fields("DX12ReadbackSubmit",
+				"stage=skipped_state_unknown,count=%u,kept=%zu",
+				skippedRecord, kept.size());
+		}
+	}
+	const HRESULT closeHr = kept.empty() ? S_OK : list->Close();
+	if (kept.empty() || FAILED(closeHr)) {
+		DX12ReadbackLogSubmitFailure(
+			kept.empty() ? "failed_all_state_unknown" : "failed_close",
+			kept.size(), static_cast<UINT64>(closeHr));
+		// The list may still be open; never return it to the pool (a pooled
+		// list must be closed so its allocator can be Reset).
+		allocator->Release();
+		list->Release();
 		DX12ReadbackReleaseEvents(kept);
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
@@ -710,7 +774,9 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 
 	DX12ReadbackGameFence *gameFence = DX12ReadbackEnsureGameFenceLocked(gameQueue);
 	if (!gameFence) {
-		DX12ReadbackReleaseListLocked(allocator, list);
+		DX12ReadbackLogSubmitFailure("failed_game_fence", kept.size(), 0);
+		allocator->Release();
+		list->Release();
 		DX12ReadbackReleaseEvents(kept);
 		ReleaseSRWLockExclusive(&gReadbackChannelLock);
 		device->Release();
@@ -749,9 +815,11 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		static volatile LONG submitLogCounter = 0;
 		if ((InterlockedIncrement(&submitLogCounter) & 0xFF) == 1) {
 			DX12LogManager::Fields("DX12ReadbackSubmit",
-				"stage=submitted,events=%u,ringBytes=%llu,queue=%p",
+				"stage=submitted,events=%u,ringBytes=%llu,us=%lld,queue=%p",
 				batch->events.size(),
 				static_cast<unsigned long long>(ringUsed),
+				static_cast<long long>(
+					DX12OuterTimingProbeUtils::ElapsedUs(submitBegin)),
 				gameQueue);
 		}
 	}

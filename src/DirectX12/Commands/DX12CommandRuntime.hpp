@@ -1574,6 +1574,7 @@ public:
 	bool usesRootRevisions = false;
 	UINT rangeType = UINT_MAX;
 	UINT64 bindingQuerySerial = 0;
+	UINT64 descriptorQuerySerial = 0;
 	ID3D12DescriptorHeap *bindingsHeap = nullptr;
 	// Root-binding snapshot used for cache validation. Revisions/serial bump
 	// on every re-bind even when the game binds the same descriptors again,

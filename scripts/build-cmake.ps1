@@ -259,23 +259,52 @@ if ($Platform -eq 'x64') {
                 continue
             }
 
-            $dx12CleanupPaths = @(
-                "$dx12TestDir\ShaderDumpDX12",
+            # Never delete the previous run's log files: rotate them to a
+            # timestamped backup so a build cannot destroy the evidence the
+            # user is analyzing. Only the oldest rotated backups are pruned
+            # (keep the newest 10 per log kind) to bound disk usage.
+            $dx12LogFiles = @(
                 "$dx12TestDir\d3d12_log.jsonl",
                 "$dx12TestDir\d3d12_log.txt",
                 "$dx12TestDir\d3d12_hook.log"
             )
-            $dx12CleanupPaths += Get-ChildItem -Path $dx12TestDir -Filter "d3d12_log.before_*.jsonl" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
-            $dx12CleanupPaths += Get-ChildItem -Path $dx12TestDir -Filter "d3d12_log.before_*.txt" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
-            foreach ($cleanupPath in $dx12CleanupPaths) {
-                if (Test-Path $cleanupPath) {
+            $dx12RotateStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            foreach ($dx12LogFile in $dx12LogFiles) {
+                if (Test-Path $dx12LogFile) {
+                    $dx12LogBase = [System.IO.Path]::GetFileNameWithoutExtension($dx12LogFile)
+                    $dx12LogExt = [System.IO.Path]::GetExtension($dx12LogFile)
+                    $dx12BackupFile = Join-Path $dx12TestDir ("{0}.before_{1}{2}" -f $dx12LogBase, $dx12RotateStamp, $dx12LogExt)
                     try {
-                        Remove-Item $cleanupPath -Recurse -Force -ErrorAction Stop
-                        Write-Host "  Removed old DX12 test artifact: $cleanupPath" -ForegroundColor Gray
+                        Move-Item -LiteralPath $dx12LogFile -Destination $dx12BackupFile -Force -ErrorAction Stop
+                        Write-Host "  Rotated DX12 test log: $dx12BackupFile" -ForegroundColor Gray
                     } catch {
-                        Write-Host "  Could not remove old DX12 test artifact: $cleanupPath" -ForegroundColor Yellow
+                        Write-Host "  Could not rotate DX12 test log (leaving it in place): $dx12LogFile" -ForegroundColor Yellow
                         Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
                     }
+                }
+            }
+            foreach ($dx12RotatePattern in @("d3d12_log.before_*.jsonl", "d3d12_log.before_*.txt", "d3d12_hook.before_*.log")) {
+                $dx12Rotated = @(Get-ChildItem -Path $dx12TestDir -Filter $dx12RotatePattern -File -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending)
+                if ($dx12Rotated.Count -gt 10) {
+                    foreach ($dx12OldLog in $dx12Rotated | Select-Object -Skip 10) {
+                        try {
+                            Remove-Item -LiteralPath $dx12OldLog.FullName -Force -ErrorAction Stop
+                            Write-Host "  Pruned old DX12 test log: $($dx12OldLog.FullName)" -ForegroundColor Gray
+                        } catch {
+                            Write-Host "  Could not prune old DX12 test log: $($dx12OldLog.FullName)" -ForegroundColor Yellow
+                        }
+                    }
+                }
+            }
+            $dx12ShaderDumpDir = "$dx12TestDir\ShaderDumpDX12"
+            if (Test-Path $dx12ShaderDumpDir) {
+                try {
+                    Remove-Item -LiteralPath $dx12ShaderDumpDir -Recurse -Force -ErrorAction Stop
+                    Write-Host "  Removed old DX12 shader dump directory: $dx12ShaderDumpDir" -ForegroundColor Gray
+                } catch {
+                    Write-Host "  Could not remove old DX12 shader dump directory: $dx12ShaderDumpDir" -ForegroundColor Yellow
+                    Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
                 }
             }
 

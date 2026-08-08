@@ -2584,8 +2584,9 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (tracking.trackPipelineStateBindings) {
-		DX12BindingTracker::SetPipelineState(commandList, activePipelineState);
-		if (tracking.recordBindingEvents)
+		const bool changed =
+			DX12BindingTracker::SetPipelineState(commandList, activePipelineState);
+		if (changed && tracking.recordBindingEvents)
 			DX12BindingTracker::RecordStateEvent(commandList, "set_pso");
 	}
 	if (tracking.trackPsoState) {
@@ -2667,8 +2668,9 @@ void DX12CommandListStateCapture::ComputeRootSignature(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
-	DX12BindingTracker::SetComputeRootSignature(commandList, rootSignature);
-	if (tracking.recordBindingEvents)
+	const bool changed =
+		DX12BindingTracker::SetComputeRootSignature(commandList, rootSignature);
+	if (changed && tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_root_signature");
 }
 
@@ -2689,8 +2691,9 @@ void DX12CommandListStateCapture::GraphicsRootSignature(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
-	DX12BindingTracker::SetGraphicsRootSignature(commandList, rootSignature);
-	if (tracking.recordBindingEvents)
+	const bool changed =
+		DX12BindingTracker::SetGraphicsRootSignature(commandList, rootSignature);
+	if (changed && tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_root_signature");
 }
 
@@ -2714,8 +2717,9 @@ void DX12CommandListStateCapture::ComputeRootDescriptorTable(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
-	DX12BindingTracker::SetComputeRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
-	if (tracking.recordBindingEvents)
+	const bool changed = DX12BindingTracker::SetComputeRootDescriptorTable(
+		commandList, rootParameterIndex, baseDescriptor);
+	if (changed && tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "set_compute_table");
 }
 
@@ -2739,8 +2743,9 @@ void DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 		DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 	if (!tracking.trackBindings)
 		return;
-	DX12BindingTracker::SetGraphicsRootDescriptorTable(commandList, rootParameterIndex, baseDescriptor);
-	if (tracking.recordBindingEvents)
+	const bool changed = DX12BindingTracker::SetGraphicsRootDescriptorTable(
+		commandList, rootParameterIndex, baseDescriptor);
+	if (changed && tracking.recordBindingEvents)
 		DX12BindingTracker::RecordStateEvent(commandList, "set_graphics_table");
 }
 
