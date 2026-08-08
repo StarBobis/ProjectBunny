@@ -5540,6 +5540,13 @@ void DX12ModClearPreSkinOutputResizeMap()
 {
 	std::vector<ID3D12Resource*> releaseResources;
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeLock);
+	// Plan fix G: only bump the resize generation when entries were actually
+	// cleared. Present calls this every frame; unconditionally bumping made
+	// the per-draw pre-skin replay gate and slot negative caches (keyed on
+	// the resize generation) miss every frame even when no resize happened,
+	// forcing the full GPUVA lookup chain on every matching draw.
+	const bool hadContent =
+		!gPreSkinOutputResizeMap.empty() || !gPreSkinOutputResizeCommandListMaps.empty();
 	for (auto &item : gPreSkinOutputResizeMap) {
 		if (item.second.resizedResource)
 			releaseResources.push_back(item.second.resizedResource);
@@ -5555,7 +5562,8 @@ void DX12ModClearPreSkinOutputResizeMap()
 	gPreSkinOutputResizeMap.clear();
 	gPreSkinOutputResizeCommandListMaps.clear();
 	gHasPreSkinOutputResizeBindings.store(false, std::memory_order_release);
-	BumpPreSkinOutputResizeGeneration();
+	if (hadContent)
+		BumpPreSkinOutputResizeGeneration();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeLock);
 	for (ID3D12Resource *resource : releaseResources)
 		resource->Release();

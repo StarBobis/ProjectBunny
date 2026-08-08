@@ -824,8 +824,36 @@ static void StoreActivePreSkinTextureOverrideLocked(
 	if (gConfirmedPreSkinSections.insert(section).second)
 		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 1);
 	auto existing = gActivePreSkinTextureOverrides.find(section);
-	ID3D12Resource *oldResource = existing != gActivePreSkinTextureOverrides.end() ?
-		existing->second.outputResource : nullptr;
+	const DX12ActivePreSkinTextureOverride *existingPtr =
+		existing != gActivePreSkinTextureOverrides.end() ? &existing->second : nullptr;
+	// Plan fix G: the pre-skin dispatch publishes the same output buffer
+	// identity every frame (the GPU rewrites its contents, but the active
+	// entry - buffer, byte width, stride, producer slot layout - is stable).
+	// Only bump the active generation when that identity actually changed;
+	// bumping every frame invalidated the per-draw replay gate and the
+	// per-slot pre-skin redirect negative caches, forcing the full GPUVA
+	// lookup chain on every matching draw every frame.
+	const bool sameContent = existingPtr &&
+		existingPtr->outputResource == active.outputResource &&
+		existingPtr->outputByteWidth == active.outputByteWidth &&
+		existingPtr->outputStride == active.outputStride &&
+		existingPtr->producer.rootParameterIndex == active.producer.rootParameterIndex &&
+		existingPtr->producer.rangeIndex == active.producer.rangeIndex &&
+		existingPtr->producer.shaderRegister == active.producer.shaderRegister &&
+		existingPtr->producer.descriptorOffset == active.producer.descriptorOffset;
+	if (sameContent) {
+		// Refresh the entry in place (producer details may be republished)
+		// and keep the barrier bookkeeping, but do not bump the generation.
+		gActivePreSkinTextureOverrides[section] = active;
+		if (active.outputResource) {
+			DX12ActivePreSkinOutputState &state =
+				gActivePreSkinOutputStates[active.outputResource];
+			state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			state.uavBarrierPending = true;
+		}
+		return;
+	}
+	ID3D12Resource *oldResource = existingPtr ? existingPtr->outputResource : nullptr;
 	if (existing != gActivePreSkinTextureOverrides.end())
 		MoveActivePreSkinTextureOverrideResourceLocked(section, &existing->second, releaseResources);
 	if (oldResource && oldResource != active.outputResource &&

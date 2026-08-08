@@ -62,10 +62,11 @@ public:
 	// Plan fix F: pre-skin IA replay gate. ReplayActiveVertexBuffers (GPUVA
 	// lookups + IASet) only needs to run once per output-resize/active
 	// generation per IA state; further matching draws on the same command list
-	// reuse the already-replayed views. iaEpoch guards against game rebinds
-	// between replays.
+	// reuse the already-replayed views. The IA view fingerprint guards against
+	// game rebinds between replays (rebinding identical views keeps the same
+	// fingerprint, unlike iaEpoch which bumps on every rebind).
 	UINT64 preSkinReplayGeneration = 0;
-	UINT64 preSkinReplayIaEpoch = 0;
+	UINT64 preSkinReplayIaFingerprint = 0;
 	bool preSkinReplayApplied = false;
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };

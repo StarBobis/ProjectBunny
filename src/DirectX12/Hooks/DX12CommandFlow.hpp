@@ -2776,9 +2776,34 @@ public:
 	// Plan fix F: pre-skin IA replay gate. ReplayActiveVertexBuffers (GPUVA
 	// lookups + IASet) only needs to run once per output-resize/active
 	// generation per command list; further matching draws reuse the already
-	// replayed views. iaEpoch guards against game rebinds between replays.
-	// The gate state lives on the real runtimeState->ia (not the per-call
-	// redirectedIa copy the replay itself works on).
+	// replayed views. The IA view fingerprint guards against game rebinds
+	// between replays (rebinding identical views keeps the same fingerprint,
+	// while iaEpoch bumped on every rebind and defeated the gate). The gate
+	// state lives on the real runtimeState->ia (not the per-call redirectedIa
+	// copy the replay itself works on).
+	static UINT64 ComputeIaViewFingerprint(const DX12ActiveIaState &ia)
+	{
+		UINT64 fp = 0x84222325a9582d75ull;
+		auto mix = [&fp](UINT64 value) {
+			fp ^= value + 0x9e3779b97f4a7c15ull + (fp << 6) + (fp >> 2);
+		};
+		mix(ia.hasIndexBuffer ? 0x7f4a7c15ull : 0x51afd7edull);
+		if (ia.hasIndexBuffer) {
+			mix(ia.indexBuffer.BufferLocation);
+			mix(ia.indexBuffer.SizeInBytes);
+			mix(ia.indexBuffer.Format);
+		}
+		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+			if (!ia.hasVertexBuffer[slot])
+				continue;
+			mix(static_cast<UINT64>(slot + 1));
+			mix(ia.vertexBuffers[slot].BufferLocation);
+			mix(ia.vertexBuffers[slot].SizeInBytes);
+			mix(ia.vertexBuffers[slot].StrideInBytes);
+		}
+		return fp ? fp : 1;
+	}
+
 	static bool ReplayActiveVertexBuffersGated(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaReplacementExecutorCallbacks &callbacks,
@@ -2792,15 +2817,16 @@ public:
 		const UINT64 replayGeneration = DX12ModGetPreSkinOutputResizeGeneration() ^
 			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
 		DX12ActiveIaState &liveIa = mutableState->ia;
+		const UINT64 iaFingerprint = ComputeIaViewFingerprint(liveIa);
 		if (liveIa.preSkinReplayApplied &&
 		    liveIa.preSkinReplayGeneration == replayGeneration &&
-		    liveIa.preSkinReplayIaEpoch == mutableState->iaEpoch)
+		    liveIa.preSkinReplayIaFingerprint == iaFingerprint)
 			return false;
 		const bool replayed = ReplayActiveVertexBuffers(
 			commandList, callbacks, redirectedIa);
 		liveIa.preSkinReplayApplied = true;
 		liveIa.preSkinReplayGeneration = replayGeneration;
-		liveIa.preSkinReplayIaEpoch = mutableState->iaEpoch;
+		liveIa.preSkinReplayIaFingerprint = iaFingerprint;
 		return replayed;
 	}
 };
