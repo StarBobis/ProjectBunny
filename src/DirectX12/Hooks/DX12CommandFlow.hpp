@@ -2772,6 +2772,37 @@ public:
 			"IaReplacement", "apply_replay_setvb", 1, 1, replaySetUs);
 		return replayedAny;
 	}
+
+	// Plan fix F: pre-skin IA replay gate. ReplayActiveVertexBuffers (GPUVA
+	// lookups + IASet) only needs to run once per output-resize/active
+	// generation per command list; further matching draws reuse the already
+	// replayed views. iaEpoch guards against game rebinds between replays.
+	// The gate state lives on the real runtimeState->ia (not the per-call
+	// redirectedIa copy the replay itself works on).
+	static bool ReplayActiveVertexBuffersGated(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaReplacementExecutorCallbacks &callbacks,
+		DX12ActiveIaState *redirectedIa,
+		const DX12SimulateContext *runtimeState)
+	{
+		if (!runtimeState)
+			return false;
+		DX12SimulateContext *mutableState =
+			const_cast<DX12SimulateContext*>(runtimeState);
+		const UINT64 replayGeneration = DX12ModGetPreSkinOutputResizeGeneration() ^
+			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
+		DX12ActiveIaState &liveIa = mutableState->ia;
+		if (liveIa.preSkinReplayApplied &&
+		    liveIa.preSkinReplayGeneration == replayGeneration &&
+		    liveIa.preSkinReplayIaEpoch == mutableState->iaEpoch)
+			return false;
+		const bool replayed = ReplayActiveVertexBuffers(
+			commandList, callbacks, redirectedIa);
+		liveIa.preSkinReplayApplied = true;
+		liveIa.preSkinReplayGeneration = replayGeneration;
+		liveIa.preSkinReplayIaEpoch = mutableState->iaEpoch;
+		return replayed;
+	}
 };
 
 
@@ -3379,8 +3410,8 @@ public:
 		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModNeedsPreSkinningUavProbe()) {
 			redirectedIa = runtimeState.ia;
-			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
-				commandList, callbacks, &redirectedIa);
+			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
+				commandList, callbacks, &redirectedIa, &runtimeState);
 			restoreIa = &redirectedIa;
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
@@ -3458,8 +3489,8 @@ public:
 		// can recover a consumer recorded on the other side of that boundary.
 		if (DX12ModNeedsPreSkinningUavProbe()) {
 			redirectedIa = runtimeState.ia;
-			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffers(
-				commandList, callbacks, &redirectedIa);
+			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
+				commandList, callbacks, &redirectedIa, &runtimeState);
 			restoreIa = &redirectedIa;
 		}
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
@@ -3476,6 +3507,86 @@ public:
 		}
 		DX12Profiling::RecordIaApplied();
 		return true;
+	}
+
+	// Plan fix A: apply a static template's IA replacement once and keep it
+	// live until the PSO changes or the game explicitly rebinds IA, instead of
+	// applying + restoring on every draw. The saved pre-apply IA state is
+	// snapshotted here so RestoreStaticTemplateIa can put back the exact
+	// original views. Skip / replacement-draw execution still happens on every
+	// draw (draw arguments are per-draw), but the binding churn - and the
+	// iaEpoch bumps that defeated every IA-keyed negative cache - is gone.
+	static bool ApplyStaticTemplateLazy(
+		ID3D12GraphicsCommandList *commandList,
+		const DX12IaDrawInvocation &draw,
+		const std::shared_ptr<const DX12ModIaReplacement> &replacementSnapshot,
+		DX12SimulateContext *runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList || !runtimeState || !replacementSnapshot)
+			return false;
+		const DX12ModIaReplacement &replacement = *replacementSnapshot;
+		if (replacement.skip && replacement.draws.empty() &&
+			replacement.dispatches.empty()) {
+			return true;
+		}
+
+		const bool modifiesIaBindings = replacement.hasIndexBuffer ||
+			!replacement.vertexBuffers.empty();
+		if (modifiesIaBindings && !runtimeState->staticTemplateIaApplied) {
+			runtimeState->staticTemplateSavedIa = runtimeState->ia;
+			// Share ownership with the caller's snapshot: the drawDecision
+			// resets on every PSO transition and would otherwise destroy the
+			// replacement while the deferred restore still references it.
+			runtimeState->staticTemplateReplacement = replacementSnapshot;
+			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
+			bindingExecutor.Apply(replacement);
+			runtimeState->staticTemplateIaApplied = true;
+		}
+
+		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
+		if (!replacement.skip)
+			drawExecutor.ExecuteOriginalDraw(draw);
+		drawExecutor.ExecuteReplacementDraws(replacement, draw);
+		DX12Profiling::RecordIaApplied();
+		return true;
+	}
+
+	// Plan fix A: deferred restore half of the lazy static template. Puts the
+	// snapshotted original views back on the command list (shadow state and
+	// driver) and clears the live-template marker. Called from the draw path
+	// when the decision no longer carries the active template, and from the
+	// IASet* wrappers when the game rebinds IA over a live replacement.
+	static void RestoreStaticTemplateIa(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *runtimeState,
+		const DX12IaReplacementExecutorCallbacks &callbacks)
+	{
+		if (!commandList || !runtimeState || !runtimeState->staticTemplateIaApplied)
+			return;
+		const DX12ModIaReplacement &replacement =
+			*runtimeState->staticTemplateReplacement;
+		const DX12ActiveIaState &savedIa = runtimeState->staticTemplateSavedIa;
+
+		if (replacement.hasIndexBuffer && callbacks.setIndexBuffer) {
+			const D3D12_INDEX_BUFFER_VIEW *originalView =
+				savedIa.hasIndexBuffer ? &savedIa.indexBuffer : nullptr;
+			DX12CommandListRuntime::RememberIndexBuffer(commandList, originalView);
+			callbacks.setIndexBuffer(commandList, originalView);
+		}
+		if (!replacement.vertexBuffers.empty() && callbacks.setVertexBuffers) {
+			D3D12_VERTEX_BUFFER_VIEW restore[32] = {};
+			const UINT start = replacement.vertexBufferStartSlot;
+			const UINT count = static_cast<UINT>(replacement.vertexBuffers.size());
+			for (UINT i = 0; i < count && start + i < ARRAYSIZE(savedIa.vertexBuffers); ++i)
+				restore[i] = savedIa.hasVertexBuffer[start + i] ?
+					savedIa.vertexBuffers[start + i] : D3D12_VERTEX_BUFFER_VIEW();
+			DX12CommandListRuntime::RememberVertexBuffers(commandList, start, count, restore);
+			callbacks.setVertexBuffers(commandList, start, count, restore);
+		}
+		runtimeState->staticTemplateIaApplied = false;
+		runtimeState->staticTemplateReplacement.reset();
+		runtimeState->staticTemplateSavedIa = DX12ActiveIaState();
 	}
 
 	// Bind-time static IA replacement (plan step 3.2): staleness watchdog.
@@ -3496,10 +3607,23 @@ public:
 		DX12ActiveIaState &ia = runtimeState->ia;
 		if (!ia.indexBufferStaticReplaced && !ia.vertexBufferStaticReplacedMask)
 			return;
+		// Plan fix B: the per-slot deep check below reads the per-resource
+		// content generation under a lock for every redirected slot. Buffer
+		// content changes are what can make a redirect stale, and every such
+		// change bumps the global content generation, so a fast global
+		// comparison gates the deep check: it only runs on the first draw
+		// after any buffer content change / resolve epoch bump on this command
+		// list instead of on every draw.
+		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
+		const UINT64 resolveEpoch = DX12GetIaHashResolveGeneration();
+		if (ia.staticReplacedLastCheckedContentGeneration == globalContentGeneration &&
+		    ia.staticReplacedLastCheckedResolveEpoch == resolveEpoch)
+			return;
+		ia.staticReplacedLastCheckedContentGeneration = globalContentGeneration;
+		ia.staticReplacedLastCheckedResolveEpoch = resolveEpoch;
 		// Evaluated only when this command list actually carries a redirected
 		// binding, so the volatile gate read stays off the common draw path.
 		const bool tableEnabled = DX12HasStaticIaReplacements();
-		const UINT64 resolveEpoch = DX12GetIaHashResolveGeneration();
 		bool restoredAny = false;
 
 		if (ia.indexBufferStaticReplaced) {
@@ -3645,6 +3769,19 @@ public:
 				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
 				return false;
 			}
+			// Plan fix A: a live static-template IA replacement must be
+			// restored before any draw whose decision does not carry the same
+			// template (PSO switched away, or the template was regenerated by
+			// a config reload). This is the deferred half of the old per-draw
+			// apply+restore; it now runs once per PSO transition instead of on
+			// every draw.
+			if (mutableRuntimeState->staticTemplateIaApplied &&
+			    (!drawDecision->staticReplacementReady ||
+			     drawDecision->staticReplacementSnapshot.get() !=
+				     mutableRuntimeState->staticTemplateReplacement.get())) {
+				DX12IaReplacementExecutor::RestoreStaticTemplateIa(
+					commandList, mutableRuntimeState, callbacks);
+			}
 			if (drawDecision->staticReplacementReady &&
 			    drawDecision->staticReplacementSnapshot) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
@@ -3657,12 +3794,28 @@ public:
 			DX12Profiling::RecordIaDrawOverrideCheck();
 			DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
 			LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
-			if (DX12IaReplacementExecutor::ApplyStaticTemplateAndExecute(
-					commandList,
-					draw,
-					*drawDecision->staticReplacementSnapshot,
-					runtimeState,
-					callbacks)) {
+			bool applied = false;
+			if (DX12ModNeedsPreSkinningUavProbe()) {
+				// Pre-skin keeps per-draw apply+restore semantics: its VB
+				// content is GPU-rewritten every frame, so a retained
+				// replacement would go stale within the same frame.
+				applied = DX12IaReplacementExecutor::ApplyStaticTemplateAndExecute(
+						commandList,
+						draw,
+						*drawDecision->staticReplacementSnapshot,
+						runtimeState,
+						callbacks);
+			} else {
+				// Plan fix A: apply the template IA once and keep it applied;
+				// the restore is deferred to PSO change / game rebind.
+				applied = DX12IaReplacementExecutor::ApplyStaticTemplateLazy(
+						commandList,
+						draw,
+						drawDecision->staticReplacementSnapshot,
+						mutableRuntimeState,
+						callbacks);
+			}
+			if (applied) {
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"IaReplacement",
 					"apply_static_pso_replacement",

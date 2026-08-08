@@ -52,6 +52,21 @@ public:
 	UINT64 vertexBufferStaticContentGeneration[32] = {};
 	UINT64 vertexBufferStaticResolveEpoch[32] = {};
 	uint32_t vertexBufferStaticMatchedHash[32] = {};
+	// Plan fix B: lazily re-check static-replacement staleness only when the
+	// global content/resolve generations moved since the last deep check on
+	// this command list. Without this gate every draw pays a per-slot locked
+	// map lookup (DX12GetBufferContentGenerationForResource) whenever a
+	// bind-time static replacement is live.
+	UINT64 staticReplacedLastCheckedContentGeneration = 0;
+	UINT64 staticReplacedLastCheckedResolveEpoch = 0;
+	// Plan fix F: pre-skin IA replay gate. ReplayActiveVertexBuffers (GPUVA
+	// lookups + IASet) only needs to run once per output-resize/active
+	// generation per IA state; further matching draws on the same command list
+	// reuse the already-replayed views. iaEpoch guards against game rebinds
+	// between replays.
+	UINT64 preSkinReplayGeneration = 0;
+	UINT64 preSkinReplayIaEpoch = 0;
+	bool preSkinReplayApplied = false;
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 };
 
@@ -1701,6 +1716,17 @@ public:
 	ID3D12PipelineState *staticReplacementPso = nullptr;
 	UINT64 staticReplacementReloadGeneration = 0;
 	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
+
+	// Plan fix A: lazy static-template IA application. The template's IA
+	// replacement is applied once when the template first becomes active on
+	// this command list and kept live until the PSO changes or the game
+	// explicitly rebinds IA, instead of applying + restoring on every draw
+	// (which also bumped iaEpoch every draw and defeated every IA-keyed
+	// negative cache). staticTemplateSavedIa snapshots the IA state right
+	// before the apply so the restore can put back the exact original views.
+	std::shared_ptr<const DX12ModIaReplacement> staticTemplateReplacement;
+	bool staticTemplateIaApplied = false;
+	DX12ActiveIaState staticTemplateSavedIa;
 
 	// Cached device pointer to eliminate per-draw AcquireModDevice QI overhead.
 	// Set during Reset from the command list; device must outlive the command list

@@ -2972,12 +2972,15 @@ UINT32 DX12ModGetHotPathFlags()
 	if (gHasShaderDescriptorTextureOverrideTriggers != 0) {
 		flags |= DX12_MOD_HOT_SHADER_DESCRIPTOR_TRACK;
 	}
-	// Plan step 3.2: bind-time static IA replacements need the draw hook
-	// alive so a rewritten or recreated game buffer can be detected and the
-	// original binding restored. IA resident state keeps the recorded views
-	// (and the static-replacement bookkeeping on DX12ActiveIaState) fresh.
+	// Plan step 3.2: bind-time static IA replacements keep their staleness
+	// bookkeeping on DX12ActiveIaState (checked lazily by
+	// RestoreStaleStaticIaBindings once per content/resolve generation change).
+	// IA resident state keeps the recorded views fresh. FLAG_SHADER_OVERRIDES
+	// is deliberately NOT forced here: static IA replacement is unrelated to
+	// shader overrides, and forcing the flag made every draw enter the full
+	// HandleDrawOverrides chain (plan fix B).
 	if (gHasStaticIaReplacements != 0)
-		flags |= DX12_MOD_HOT_SHADER_OVERRIDES | DX12_MOD_HOT_IA_RESIDENT_STATE;
+		flags |= DX12_MOD_HOT_IA_RESIDENT_STATE;
 	return flags;
 }
 

@@ -832,6 +832,11 @@ void DX12CommandListRuntime::ResetIa(DX12SimulateContext *state)
 	if (!state)
 		return;
 	state->ia = DX12ActiveIaState();
+	// Plan fix A: the command list was reset, so any live static-template IA
+	// replacement must be forgotten (the driver-side IA state is gone too).
+	state->staticTemplateIaApplied = false;
+	state->staticTemplateReplacement.reset();
+	state->staticTemplateSavedIa = DX12ActiveIaState();
 	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
@@ -1506,14 +1511,25 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 				globalContentGeneration, globalResolveGeneration, key);
 		}
 	} else if (resolvedAny) {
+		// Plan fix E: try the prefix cache before rebuilding. The built key
+		// carries exact per-resource generations for resolved targets, and
+		// TryLoad only compares the global generations when the key actually
+		// fell back to them (usesGlobalFallback), so fully-resolved keys stay
+		// cached across unrelated buffer churn that bumps the global
+		// generation every frame. Previously this branch rebuilt the key on
+		// every draw.
 		const UINT64 globalContentGeneration = DX12GetIaHashContentGeneration();
 		const UINT64 globalResolveGeneration = DX12GetIaHashResolveGeneration();
-		key = BuildIaHashStateCacheKeyForTargets(
-			state->ia, state->iaContentEpoch, filteredTargetPlan, indexed,
-			0, 0, 0, 0, 0);
-		DX12IaHashKeyPrefixCacheUtils::Store(
-			&entry, state->iaEpoch, targetPlanFingerprint, indexed,
-			globalContentGeneration, globalResolveGeneration, key);
+		if (!DX12IaHashKeyPrefixCacheUtils::TryLoad(
+				entry, state->iaEpoch, targetPlanFingerprint, indexed,
+				globalContentGeneration, globalResolveGeneration, &key)) {
+			key = BuildIaHashStateCacheKeyForTargets(
+				state->ia, state->iaContentEpoch, filteredTargetPlan, indexed,
+				0, 0, 0, 0, 0);
+			DX12IaHashKeyPrefixCacheUtils::Store(
+				&entry, state->iaEpoch, targetPlanFingerprint, indexed,
+				globalContentGeneration, globalResolveGeneration, key);
+		}
 	}
 	key.vertexCount = vertexCount;
 	key.indexCount = indexCount;

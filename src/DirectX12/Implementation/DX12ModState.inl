@@ -670,6 +670,14 @@ public:
 };
 
 static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTextureOverrides;
+// Plan fix C: reverse index from pre-skin output resource to the configured
+// sections publishing it. DX12ModFindActivePreSkinProducerForOutput used to
+// hold the lock and linearly scan the whole active table per call; the
+// pre-skin IA replay path (ReplayActiveVertexBuffers) calls it once per VB
+// slot per matching draw, so that scan dominated the frame cost. The index
+// stores section names (not pointers) because the map entries are rewritten
+// in place on every store and section names are the stable identity.
+static std::unordered_map<ID3D12Resource*, std::vector<std::wstring>> gPreSkinProducerSectionsByOutputResource;
 static std::unordered_map<ID3D12Resource*, DX12ActivePreSkinOutputState> gActivePreSkinOutputStates;
 // A successful producer match proves that this configured section participates
 // in PreSkin for the current mod configuration. Keep that proof independently
@@ -752,11 +760,20 @@ static bool ActivePreSkinResourceReferencedLocked(
 }
 
 static void MoveActivePreSkinTextureOverrideResourceLocked(
-	DX12ActivePreSkinTextureOverride *active, std::vector<ID3D12Resource*> *releaseResources)
+	const std::wstring &section, DX12ActivePreSkinTextureOverride *active,
+	std::vector<ID3D12Resource*> *releaseResources)
 {
 	if (!active)
 		return;
+	// Plan fix C: keep the output-resource reverse index in sync.
 	if (active->outputResource) {
+		auto indexIt = gPreSkinProducerSectionsByOutputResource.find(active->outputResource);
+		if (indexIt != gPreSkinProducerSectionsByOutputResource.end()) {
+			std::vector<std::wstring> &sections = indexIt->second;
+			sections.erase(std::remove(sections.begin(), sections.end(), section), sections.end());
+			if (sections.empty())
+				gPreSkinProducerSectionsByOutputResource.erase(indexIt);
+		}
 		if (releaseResources)
 			releaseResources->push_back(active->outputResource);
 		active->outputResource = nullptr;
@@ -782,8 +799,9 @@ static void ClearActivePreSkinTextureOverridesLocked(
 	const bool changed =
 		!gActivePreSkinTextureOverrides.empty() || !gActivePreSkinOutputStates.empty();
 	for (auto &item : gActivePreSkinTextureOverrides)
-		MoveActivePreSkinTextureOverrideResourceLocked(&item.second, releaseResources);
+		MoveActivePreSkinTextureOverrideResourceLocked(item.first, &item.second, releaseResources);
 	gActivePreSkinTextureOverrides.clear();
+	gPreSkinProducerSectionsByOutputResource.clear();
 	gActivePreSkinOutputStates.clear();
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
 	// This clears only the transient producer publication. Never clear
@@ -809,14 +827,16 @@ static void StoreActivePreSkinTextureOverrideLocked(
 	ID3D12Resource *oldResource = existing != gActivePreSkinTextureOverrides.end() ?
 		existing->second.outputResource : nullptr;
 	if (existing != gActivePreSkinTextureOverrides.end())
-		MoveActivePreSkinTextureOverrideResourceLocked(&existing->second, releaseResources);
+		MoveActivePreSkinTextureOverrideResourceLocked(section, &existing->second, releaseResources);
 	if (oldResource && oldResource != active.outputResource &&
 	    !ActivePreSkinResourceReferencedLocked(section, oldResource))
 		gActivePreSkinOutputStates.erase(oldResource);
 	DX12ActivePreSkinTextureOverride stored = active;
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 1);
 	gActivePreSkinTextureOverrides[section] = stored;
+	// Plan fix C: publish the reverse index entry for the new output resource.
 	if (stored.outputResource) {
+		gPreSkinProducerSectionsByOutputResource[stored.outputResource].push_back(section);
 		DX12ActivePreSkinOutputState &state =
 			gActivePreSkinOutputStates[stored.outputResource];
 		state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -836,29 +856,36 @@ bool DX12ModFindActivePreSkinProducerForOutput(
 
 	bool found = false;
 	AcquireSRWLockShared(&gPreSkinLock);
-	for (const auto &item : gActivePreSkinTextureOverrides) {
-		const DX12ActivePreSkinTextureOverride &active = item.second;
-		if (active.outputResource != outputResource)
-			continue;
-		if (outputByteWidth && active.outputByteWidth &&
-		    outputByteWidth != active.outputByteWidth)
-			continue;
-		if (outputStride && active.outputStride &&
-		    outputStride != active.outputStride)
-			continue;
-		summary->rootParameterIndex = active.producer.rootParameterIndex;
-		summary->rangeIndex = active.producer.rangeIndex;
-		summary->shaderRegister = active.producer.shaderRegister;
-		summary->registerSpace = active.producer.registerSpace;
-		summary->descriptorOffset = active.producer.descriptorOffset;
-		summary->rootDescriptor = active.producer.rootDescriptor;
-		summary->gpuVirtualAddress = active.producer.gpuVirtualAddress;
-		summary->descriptor = active.producer.descriptor;
-		summary->hasDescriptor = active.producer.hasDescriptor;
-		summary->outputByteWidth = active.outputByteWidth;
-		summary->outputStride = active.outputStride;
-		found = true;
-		break;
+	// Plan fix C: O(1) reverse-index lookup instead of a locked linear scan
+	// of the whole active table (which the pre-skin IA replay path hit once
+	// per VB slot per matching draw).
+	auto indexIt = gPreSkinProducerSectionsByOutputResource.find(outputResource);
+	if (indexIt != gPreSkinProducerSectionsByOutputResource.end()) {
+		for (const std::wstring &section : indexIt->second) {
+			auto item = gActivePreSkinTextureOverrides.find(section);
+			if (item == gActivePreSkinTextureOverrides.end())
+				continue;
+			const DX12ActivePreSkinTextureOverride &active = item->second;
+			if (outputByteWidth && active.outputByteWidth &&
+			    outputByteWidth != active.outputByteWidth)
+				continue;
+			if (outputStride && active.outputStride &&
+			    outputStride != active.outputStride)
+				continue;
+			summary->rootParameterIndex = active.producer.rootParameterIndex;
+			summary->rangeIndex = active.producer.rangeIndex;
+			summary->shaderRegister = active.producer.shaderRegister;
+			summary->registerSpace = active.producer.registerSpace;
+			summary->descriptorOffset = active.producer.descriptorOffset;
+			summary->rootDescriptor = active.producer.rootDescriptor;
+			summary->gpuVirtualAddress = active.producer.gpuVirtualAddress;
+			summary->descriptor = active.producer.descriptor;
+			summary->hasDescriptor = active.producer.hasDescriptor;
+			summary->outputByteWidth = active.outputByteWidth;
+			summary->outputStride = active.outputStride;
+			found = true;
+			break;
+		}
 	}
 	ReleaseSRWLockShared(&gPreSkinLock);
 	return found;

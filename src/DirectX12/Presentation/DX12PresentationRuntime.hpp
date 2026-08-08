@@ -1931,6 +1931,16 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
+		// Plan fix A: a game rebind supersedes a live static-template IA
+		// replacement. Restore the snapshotted original views first so slots
+		// this call does not cover do not keep the mod view.
+		if (runtimeState && runtimeState->staticTemplateIaApplied) {
+			DX12IaReplacementExecutorCallbacks callbacks;
+			callbacks.setIndexBuffer = DirectSetIndexBuffer;
+			callbacks.setVertexBuffers = DirectSetVertexBuffers;
+			DX12IaReplacementExecutor::RestoreStaticTemplateIa(
+				commandList, runtimeState, callbacks);
+		}
 		D3D12_INDEX_BUFFER_VIEW redirectedView = {};
 		const D3D12_INDEX_BUFFER_VIEW *activeView = view;
 		if (TryRedirectStaticIaIndexBuffer(
@@ -1970,6 +1980,16 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
+		// Plan fix A: a game rebind supersedes a live static-template IA
+		// replacement. Restore the snapshotted original views first so slots
+		// this call does not cover do not keep the mod view.
+		if (runtimeState && runtimeState->staticTemplateIaApplied) {
+			DX12IaReplacementExecutorCallbacks callbacks;
+			callbacks.setIndexBuffer = DirectSetIndexBuffer;
+			callbacks.setVertexBuffers = DirectSetVertexBuffers;
+			DX12IaReplacementExecutor::RestoreStaticTemplateIa(
+				commandList, runtimeState, callbacks);
+		}
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 		const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;

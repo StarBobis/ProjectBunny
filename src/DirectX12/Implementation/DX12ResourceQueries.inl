@@ -530,6 +530,21 @@ static std::unordered_map<
 static SRWLOCK gBufferContentLock = SRWLOCK_INIT;
 static std::atomic<UINT64> gBufferContentGeneration{1};
 
+// Plan fix D: per-thread cache of per-resource content generations, valid
+// while the global content generation is unchanged (every content change
+// bumps the global generation, so an unchanged global implies every
+// per-resource value is unchanged). Avoids a locked map lookup per validated
+// IA-hash entry on every draw when the game rewrites dynamic buffers.
+struct DX12BufferContentGenerationTlsEntry
+{
+	ID3D12Resource *resource = nullptr;
+	UINT64 globalGeneration = 0;
+	UINT64 generation = 0;
+};
+static constexpr UINT32 DX12BufferContentGenerationTlsEntryCount = 8;
+static thread_local DX12BufferContentGenerationTlsEntry gBufferContentGenerationTls[DX12BufferContentGenerationTlsEntryCount];
+static thread_local UINT32 gBufferContentGenerationTlsNext = 0;
+
 class DX12BufferContentCacheUtils
 {
 public:
@@ -940,11 +955,32 @@ UINT64 DX12GetBufferContentGenerationForResource(ID3D12Resource *resource)
 {
 	if (!resource)
 		return gBufferContentGeneration.load(std::memory_order_relaxed);
+	// Plan fix D: lock-free TLS fast path. The IA hash cache validates every
+	// tracked entry against the global content generation; games that rewrite
+	// dynamic buffers every frame bump the global generation constantly,
+	// which previously forced a locked map lookup per validated entry on
+	// every draw. The global generation monotonically increases on every
+	// content change, so "global unchanged" implies "per-resource unchanged"
+	// and the cached per-resource value stays valid.
+	const UINT64 globalGeneration = gBufferContentGeneration.load(std::memory_order_acquire);
+	for (UINT32 i = 0; i < DX12BufferContentGenerationTlsEntryCount; ++i) {
+		const DX12BufferContentGenerationTlsEntry &entry =
+			gBufferContentGenerationTls[i];
+		if (entry.resource == resource &&
+		    entry.globalGeneration == globalGeneration)
+			return entry.generation;
+	}
 	AcquireSRWLockShared(&gBufferContentLock);
 	auto found = gBufferContentByResource.find(resource);
 	const UINT64 generation = found == gBufferContentByResource.end() ?
 		1 : found->second.generation;
 	ReleaseSRWLockShared(&gBufferContentLock);
+	DX12BufferContentGenerationTlsEntry &slot =
+		gBufferContentGenerationTls[gBufferContentGenerationTlsNext++ &
+			(DX12BufferContentGenerationTlsEntryCount - 1)];
+	slot.resource = resource;
+	slot.globalGeneration = globalGeneration;
+	slot.generation = generation;
 	return generation;
 }
 
