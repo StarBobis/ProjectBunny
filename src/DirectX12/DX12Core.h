@@ -8792,6 +8792,33 @@ public:
 		LONG count = 0;
 	};
 
+	// ApiScopeActiveDepth is intentionally retained for the legacy aggregate
+	// coverage log, but it cannot distinguish independent recording threads.
+	// Keep a small, fixed per-thread timeline alongside it so timing captures
+	// can prove whether a frame is spent inside one submitting thread, split
+	// across workers, or blocked between API scopes. Slots are claimed once and
+	// never recycled: thread registration is not on the hot path.
+	struct alignas(64) ApiThreadTimelineSlot
+	{
+		volatile LONG threadId = 0;
+		volatile LONG64 outerCalls = 0;
+		volatile LONG64 outerTotalUs = 0;
+		volatile LONG64 firstBeginQpc = 0;
+		volatile LONG64 lastEndQpc = 0;
+		volatile LONG64 maxScopeUs = 0;
+		volatile LONG64 maxGapUs = 0;
+		volatile LONG maxScopeBucket = ApiOtherCommandList;
+	};
+
+	struct ApiThreadTimelineLocal
+	{
+		ApiThreadTimelineSlot *slot = nullptr;
+		DWORD threadId = 0;
+		LONG depth = 0;
+		LONGLONG outerBeginQpc = 0;
+		bool lookupFailed = false;
+	};
+
 	static UINT64 HashCpuStageLabel(const char *label)
 	{
 		// FNV-1a 64-bit; labels are short compile-time constants.
@@ -8908,6 +8935,9 @@ public:
 	inline static volatile LONG ApiScopeMaxGapAfterBucket = ApiOtherCommandList;
 	inline static volatile LONG ApiScopeMaxGapBeforeThreadId = 0;
 	inline static volatile LONG ApiScopeMaxGapAfterThreadId = 0;
+	static constexpr UINT ApiThreadTimelineSlotCount = 32;
+	inline static ApiThreadTimelineSlot
+		ApiThreadTimelineSlots[ApiThreadTimelineSlotCount] = {};
 
 	inline static SRWLOCK CpuStageLock = SRWLOCK_INIT;
 	inline static CpuStageBucket CpuStageBuckets[160] = {};
@@ -9430,8 +9460,85 @@ public:
 		}
 	}
 
+	static ApiThreadTimelineLocal &GetApiThreadTimelineLocal()
+	{
+		static thread_local ApiThreadTimelineLocal local;
+		return local;
+	}
+
+	static ApiThreadTimelineSlot *GetApiThreadTimelineSlot()
+	{
+		ApiThreadTimelineLocal &local = GetApiThreadTimelineLocal();
+		const DWORD threadId = GetCurrentThreadId();
+		if (local.threadId == threadId) {
+			if (local.slot || local.lookupFailed)
+				return local.slot;
+		} else {
+			local = ApiThreadTimelineLocal();
+			local.threadId = threadId;
+		}
+
+		const LONG owner = static_cast<LONG>(threadId);
+		for (UINT index = 0; index < ApiThreadTimelineSlotCount; ++index) {
+			ApiThreadTimelineSlot &slot = ApiThreadTimelineSlots[index];
+			const LONG observed = InterlockedCompareExchange(
+				&slot.threadId, 0, 0);
+			if (observed == owner ||
+				(observed == 0 && InterlockedCompareExchange(
+					&slot.threadId, owner, 0) == 0)) {
+				local.slot = &slot;
+				return local.slot;
+			}
+		}
+
+		local.lookupFailed = true;
+		return nullptr;
+	}
+
+	static void RecordApiThreadScopeBegin(LONGLONG beginQpc)
+	{
+		ApiThreadTimelineLocal &local = GetApiThreadTimelineLocal();
+		ApiThreadTimelineSlot *slot = GetApiThreadTimelineSlot();
+		if (++local.depth != 1 || !slot)
+			return;
+
+		local.outerBeginQpc = beginQpc;
+		InterlockedIncrement64(&slot->outerCalls);
+		InterlockedCompareExchange64(
+			&slot->firstBeginQpc, static_cast<LONG64>(beginQpc), 0);
+		const LONG64 previousEndQpc = InterlockedCompareExchange64(
+			&slot->lastEndQpc, 0, 0);
+		if (previousEndQpc > 0 && beginQpc > previousEndQpc)
+			MaxUs(&slot->maxGapUs, DeltaUs(previousEndQpc, beginQpc));
+	}
+
+	static void RecordApiThreadScopeEnd(int bucket, LONGLONG endQpc)
+	{
+		ApiThreadTimelineLocal &local = GetApiThreadTimelineLocal();
+		if (local.depth <= 0)
+			return;
+		if (--local.depth != 0 || !local.slot)
+			return;
+
+		ApiThreadTimelineSlot *slot = local.slot;
+		const LONG64 elapsedUs = DeltaUs(local.outerBeginQpc, endQpc);
+		AddUs(&slot->outerTotalUs, elapsedUs);
+		LONG64 observed = InterlockedCompareExchange64(&slot->maxScopeUs, 0, 0);
+		while (elapsedUs > observed) {
+			const LONG64 previous = InterlockedCompareExchange64(
+				&slot->maxScopeUs, elapsedUs, observed);
+			if (previous == observed) {
+				InterlockedExchange(&slot->maxScopeBucket, bucket);
+				break;
+			}
+			observed = previous;
+		}
+		MaxQpc(&slot->lastEndQpc, endQpc);
+	}
+
 	static void LogApiScopeBegin(int bucket, LONGLONG beginQpc)
 	{
+		RecordApiThreadScopeBegin(beginQpc);
 		const LONG64 activeDepth = InterlockedIncrement64(&ApiScopeActiveDepth);
 		if (activeDepth > 1) {
 			InterlockedIncrement64(&ApiScopeNestedCalls);
@@ -9518,6 +9625,7 @@ public:
 
 	static void LogApiScopeEnd(int bucket, LONGLONG beginQpc, LONGLONG endQpc)
 	{
+		RecordApiThreadScopeEnd(bucket, endQpc);
 		const LONG64 elapsedUs = DeltaUs(beginQpc, endQpc);
 		const LONG64 activeDepth = InterlockedCompareExchange64(&ApiScopeActiveDepth, 0, 0);
 		if (activeDepth <= 1) {
@@ -9578,6 +9686,57 @@ public:
 				static_cast<long long>(frameWallUs),
 				static_cast<long long>(
 					frameWallUs > 0 ? (totalUs * 10000 / frameWallUs) : 0));
+		}
+	}
+
+	static void LogApiThreadTimelineState(
+		LONG present,
+		LONGLONG frameStartQpc,
+		LONGLONG frameEndQpc,
+		LONG64 frameWallUs)
+	{
+		for (UINT index = 0; index < ApiThreadTimelineSlotCount; ++index) {
+			ApiThreadTimelineSlot &slot = ApiThreadTimelineSlots[index];
+			const LONG threadId = InterlockedCompareExchange(&slot.threadId, 0, 0);
+			const LONG64 calls = TakeLong64(&slot.outerCalls);
+			const LONG64 totalUs = TakeLong64(&slot.outerTotalUs);
+			const LONG64 firstBeginQpc = TakeLong64(&slot.firstBeginQpc);
+			const LONG64 lastEndQpc = TakeLong64(&slot.lastEndQpc);
+			const LONG64 maxScopeUs = TakeLong64(&slot.maxScopeUs);
+			const LONG64 maxGapUs = TakeLong64(&slot.maxGapUs);
+			const LONG maxScopeBucket = InterlockedExchange(
+				&slot.maxScopeBucket, ApiOtherCommandList);
+			if (!calls && !totalUs && !firstBeginQpc && !lastEndQpc)
+				continue;
+
+			const LONG64 spanUs = firstBeginQpc > 0 && lastEndQpc > firstBeginQpc ?
+				DeltaUs(firstBeginQpc, lastEndQpc) : 0;
+			const LONG64 startOffsetUs = frameStartQpc > 0 &&
+				firstBeginQpc > frameStartQpc ?
+				DeltaUs(frameStartQpc, firstBeginQpc) : 0;
+			const LONG64 endSlackUs = frameEndQpc > lastEndQpc && lastEndQpc > 0 ?
+				DeltaUs(lastEndQpc, frameEndQpc) : 0;
+			DX12LogManager::Fields("DX12CpuThreadTimeline",
+				"\"present\":%ld,\"threadId\":%ld,\"outerCalls\":%lld,"
+				"\"outerTotalUs\":%lld,\"spanUs\":%lld,\"startOffsetUs\":%lld,"
+				"\"endSlackUs\":%lld,\"maxScopeUs\":%lld,"
+				"\"maxScopeBucket\":\"%s\",\"maxGapUs\":%lld,"
+				"\"frameWallUs\":%lld,\"outerTotalPctX100\":%lld,"
+				"\"spanPctX100\":%lld",
+				present, threadId,
+				static_cast<long long>(calls),
+				static_cast<long long>(totalUs),
+				static_cast<long long>(spanUs),
+				static_cast<long long>(startOffsetUs),
+				static_cast<long long>(endSlackUs),
+				static_cast<long long>(maxScopeUs),
+				ApiWallBucketName(maxScopeBucket),
+				static_cast<long long>(maxGapUs),
+				static_cast<long long>(frameWallUs),
+				static_cast<long long>(frameWallUs > 0 ?
+					totalUs * 10000 / frameWallUs : 0),
+				static_cast<long long>(frameWallUs > 0 ?
+					spanUs * 10000 / frameWallUs : 0));
 		}
 	}
 
@@ -10307,6 +10466,11 @@ public:
 			frameEndQpc,
 			frameWallUs,
 			presentWallUs);
+		LogApiThreadTimelineState(
+			present,
+			frameStartQpc,
+			frameEndQpc,
+			frameWallUs);
 		LogApiWallTimingState(present, frameWallUs);
 		LogCpuStageTimingState(present, frameWallUs);
 
