@@ -606,7 +606,7 @@ public:
 		ULONGLONG elapsedMs = 0)
 	{
 #if defined(_DEBUG)
-		if (!DX12LogManager::VerboseDiagnosticsEnabled())
+		if (!kVerboseEnabled)
 			return;
 		if (SUCCEEDED(hr) && elapsedMs < 4 && stage && !strcmp(stage, "beforeOriginal"))
 			return;
@@ -635,7 +635,7 @@ public:
 		HRESULT hr = S_OK, ULONGLONG elapsedMs = 0)
 	{
 #if defined(_DEBUG)
-		if (!DX12LogManager::VerboseDiagnosticsEnabled())
+		if (!kVerboseEnabled)
 			return;
 		if (SUCCEEDED(hr) && elapsedMs < 4)
 			return;
@@ -656,7 +656,7 @@ public:
 	static void LogCommandListStageEdge(
 		const char *api, const char *stage, ID3D12GraphicsCommandList *commandList)
 	{
-		if (!DX12LogManager::VerboseDiagnosticsEnabled())
+		if (!kVerboseEnabled)
 			return;
 		DX12LogManager::DebugFields("DX12CommandListStage",
 			"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"commandList\":\"%p\"",

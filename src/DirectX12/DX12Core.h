@@ -1334,6 +1334,46 @@ public:
 };
 
 
+// ---------------------------------------------------------------------------
+// Log mode - fixed at compile time.
+//
+//   Debug         - full diagnostics: verbose hook/present logs + detailed
+//                   timing tables.
+//   Release       - startup and mod-load lifecycle logs only (allowlist in
+//                   ReleaseShouldLogFunction); no per-frame diagnostics.
+//   ReleaseTiming - detailed timing tables and diagnostics, but no verbose
+//                   per-call/per-present spam (kVerboseEnabled is false).
+//
+// These constants let call sites gate with a single folded bool; Release and
+// Timing builds compile the dead branches out entirely.
+// ---------------------------------------------------------------------------
+enum class DX12LogMode : unsigned char
+{
+	Debug = 0,
+	Release,
+	ReleaseTiming,
+};
+
+constexpr DX12LogMode gLogMode =
+#if defined(DX12_RELEASE_TIMING)
+	DX12LogMode::ReleaseTiming;
+#elif defined(_DEBUG)
+	DX12LogMode::Debug;
+#else
+	DX12LogMode::Release;
+#endif
+
+// Verbose per-call/per-present diagnostics: Debug only.
+constexpr bool kVerboseEnabled = gLogMode == DX12LogMode::Debug;
+
+// Detailed timing tables (ApiWall/HotPath/FrameTimeline): Debug + Timing.
+constexpr bool kTimingEnabled =
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	true;
+#else
+	false;
+#endif
+
 
 
 class DX12LogManager
@@ -1557,57 +1597,20 @@ public:
 #endif
 	}
 
-	static bool DiagnosticsLoggingEnabled()
-	{
-#if defined(_DEBUG)
-		return true;
-#else
-		return false;
-#endif
-	}
-
-	static bool HookCallLoggingEnabled()
-	{
-#if defined(_DEBUG)
-		static LONG sEnabled = -1;
-		LONG enabled = InterlockedCompareExchange(&sEnabled, 0, -1);
-		if (enabled == -1) {
-			char value[16] = {};
-			const DWORD len = GetEnvironmentVariableA(
-				"ZZMIDX12_VERBOSE_DIAGNOSTICS", value, ARRAYSIZE(value));
-			const bool requested = len > 0 &&
-				(!_stricmp(value, "1") || !_stricmp(value, "true") || !_stricmp(value, "yes"));
-			enabled = requested ? 1 : 0;
-			InterlockedExchange(&sEnabled, enabled);
-		}
-		return enabled != 0;
-#else
-		return false;
-#endif
-	}
-
-	static bool VerboseDiagnosticsEnabled()
-	{
-		return HookCallLoggingEnabled();
-	}
-
 	static bool ShouldLogHookCall(const char *api)
 	{
-#if defined(_DEBUG)
-		if (!api || !api[0] || DX12InternalReplayState::IsActive() || !HookCallLoggingEnabled())
+		if (!kVerboseEnabled)
+			return false;
+		if (!api || !api[0] || DX12InternalReplayState::IsActive())
 			return false;
 		return true;
-#else
-		(void)api;
-		return false;
-#endif
 	}
 
 	static bool ReleaseShouldLogFunction(const char *func)
 	{
 #if defined(DX12_RELEASE_TIMING)
-		// Timing builds exist to produce the full stage breakdown; the Release
-		// allowlist would silently drop DX12HotPathTiming/ApiWall/queue slices.
+		// Timing builds keep every Fields log (verbose per-call spam is gated
+		// by kVerboseEnabled instead), so the timing tables are never dropped.
 		(void)func;
 		return true;
 #elif !defined(_DEBUG)
@@ -1615,46 +1618,27 @@ public:
 			return true;
 		if (!func)
 			return false;
-		if (!strcmp(func, "Log"))
-			return true;
-		if (!strcmp(func, "HookInstall"))
-			return true;
-		if (!strcmp(func, "DeviceHooksReady"))
-			return true;
-		if (!strcmp(func, "D3D12CreateDevice"))
-			return true;
-		if (!strncmp(func, "CreateDXGIFactory", 17))
-			return true;
-		if (!strncmp(func, "IDXGIFactory", 12))
-			return true;
-		if (!strncmp(func, "IDXGISwapChain", 14))
-			return true;
-		if (!strncmp(func, "ID3D12CommandQueue", 18))
-			return true;
-		if (!strcmp(func, "DX12CommandQueueState"))
-			return true;
-		if (!strcmp(func, "DX12ExecuteCommandListsFirst"))
-			return true;
-		if (!strcmp(func, "DX12PresentFirst"))
-			return true;
-		if (!strcmp(func, "DX12ResidentMaintenance"))
-			return true;
-		if (!strcmp(func, "DX12HotPathHookGate"))
-			return true;
-		if (!strcmp(func, "DX12HotPathState"))
-			return true;
-		if (!strcmp(func, "InputHotkey"))
-			return true;
-		if (!strcmp(func, "DX12InputThread"))
-			return true;
-		if (!strcmp(func, "DX12HuntSelect"))
-			return true;
-		if (!strcmp(func, "DX12HuntIaStats"))
-			return true;
-		if (!strcmp(func, "DX12HuntToggle"))
-			return true;
-		if (!strncmp(func, "OverlayWindow", 13))
-			return true;
+		// Release keeps only startup and mod-load lifecycle logs.
+		static const char *const kReleaseAllowlist[] = {
+			"Log",                        // startup text messages
+			"HookInstall",                // hook installation
+			"DeviceHooksReady",           // device hooks finished
+			"D3D12CreateDevice",          // device creation
+			"CreateDXGIFactory",          // factory creation (1/2 included)
+			"IDXGIFactory",               // factory/swapchain lifecycle
+			"IDXGISwapChain",             // swapchain lifecycle
+			"ID3D12CommandQueue",         // command queue lifecycle
+			"DX12CommandQueueState",      // queue accept/ignore decisions
+			"DX12ExecuteCommandListsFirst", // first command list submit
+			"DX12PresentFirst",           // first present
+			"DX12Config",                 // d3dx.ini configuration load
+			"DX12ModRuntime",             // mod runtime load/reload/deferred
+			"DX12ResourceLoad",           // mod resource loading
+		};
+		for (const char *name : kReleaseAllowlist) {
+			if (!strncmp(func, name, strlen(name)))
+				return true;
+		}
 		return false;
 #else
 		(void)func;
@@ -1815,7 +1799,7 @@ public:
 #if defined(_DEBUG)
 	static void DebugFields(const char *func, const char *fmt, ...)
 	{
-		if (!Get().log || !DiagnosticsLoggingEnabled())
+		if (!Get().log || !kVerboseEnabled)
 			return;
 		va_list args;
 		va_start(args, fmt);
@@ -1825,7 +1809,7 @@ public:
 
 	static void DebugFieldsFlush(const char *func, const char *fmt, ...)
 	{
-		if (!Get().log || !DiagnosticsLoggingEnabled())
+		if (!Get().log || !kVerboseEnabled)
 			return;
 		va_list args;
 		va_start(args, fmt);
@@ -2148,7 +2132,7 @@ public:
 		ULONGLONG elapsedMs = 0)
 	{
 #if defined(_DEBUG)
-		if (!DX12LogManager::VerboseDiagnosticsEnabled())
+		if (!kVerboseEnabled)
 			return;
 		if (SUCCEEDED(hr) && elapsedMs < 4 && stage && !strcmp(stage, "beforeOriginal"))
 			return;
@@ -5351,7 +5335,7 @@ inline void DX12Profiling::EndFrameState()
 
 	if (mode == Mode::SUMMARY) {
 		FlushFrameState();
-	} else if (DX12LogManager::VerboseDiagnosticsEnabled()) {
+	} else if (kVerboseEnabled) {
 		LogFrameStatsState();
 	}
 

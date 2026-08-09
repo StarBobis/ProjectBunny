@@ -13149,7 +13149,7 @@ static void LogShaderOverrideCommandListLimited(
 	const DX12ModIaReplacement &replacement)
 {
 #if defined(_DEBUG)
-	if (!DX12LogManager::DiagnosticsLoggingEnabled())
+	if (!kVerboseEnabled)
 		return;
 	static volatile LONG logCount = 0;
 	if (InterlockedIncrement(&logCount) > 512)
@@ -18155,7 +18155,7 @@ static volatile LONG gShaderOverrideNegativeCacheDynamicBlockedLogCount = 0;
 static bool AllowShaderOverrideHotPathLog(volatile LONG *counter)
 {
 #if defined(_DEBUG)
-	if (!DX12LogManager::DiagnosticsLoggingEnabled())
+	if (!kVerboseEnabled)
 		return false;
 	return InterlockedIncrement(counter) <= ShaderOverrideHotPathLogLimit;
 #else
@@ -18197,7 +18197,7 @@ static void AppendShaderRegexForShaderLocked(
 			continue;
 		regexConfigs->push_back(MakeShaderOverrideFromRegex(regex, hash));
 #if defined(_DEBUG)
-		if (DX12LogManager::DiagnosticsLoggingEnabled()) {
+		if (kVerboseEnabled) {
 			DX12LogManager::DebugFields("DX12ShaderRegexMatch",
 				"\"section\":\"%S\",\"hash\":\"%016llx\",\"model\":\"%S\"",
 				regex.section.c_str(), static_cast<unsigned long long>(hash),

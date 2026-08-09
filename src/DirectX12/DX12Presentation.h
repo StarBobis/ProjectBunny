@@ -50,7 +50,7 @@ public:
 	static void LogPresentStage(
 		const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK)
 	{
-		if (!DX12LogManager::VerboseDiagnosticsEnabled())
+		if (!kVerboseEnabled)
 			return;
 		DX12LogManager::DebugFieldsFlush("DX12PresentStage",
 			"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
@@ -251,7 +251,7 @@ public:
 	{
 		const LONG draws = DX12RuntimeState::TakeFrameDraws();
 		const LONG dispatches = DX12RuntimeState::TakeFrameDispatches();
-		if (DX12LogManager::VerboseDiagnosticsEnabled()) {
+		if (kVerboseEnabled) {
 			DX12LogManager::Fields("DX12PerFrameCounters",
 				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
 		}
