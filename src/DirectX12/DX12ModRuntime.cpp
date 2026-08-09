@@ -1383,6 +1383,11 @@ class DX12RetiredPreSkinResource
 {
 public:
 	ID3D12Resource *resource = nullptr;
+	// GPU completion, rather than Present cadence, owns retired resources.
+	// retirePresent remains only as a conservative fallback when signaling the
+	// private queue fence is unavailable.
+	ID3D12Fence *completionFence = nullptr;
+	UINT64 completionValue = 0;
 	LONG retirePresent = 0;
 };
 static std::deque<DX12RetiredPreSkinResource> gRetiredPreSkinResources;
@@ -1686,6 +1691,8 @@ class DX12RetiredPreSkinDescriptorHeap
 
 public:
 	ID3D12DescriptorHeap *heap = nullptr;
+	ID3D12Fence *completionFence = nullptr;
+	UINT64 completionValue = 0;
 	LONG retirePresent = 0;
 };
 
@@ -1718,6 +1725,7 @@ class DX12PreSkinReleaseBatch
 public:
 	std::vector<ID3D12Resource*> resources;
 	std::vector<ID3D12DescriptorHeap*> descriptorHeaps;
+	std::vector<ID3D12Fence*> fences;
 	std::vector<ID3D12Device*> devices;
 	std::vector<ID3D12CommandQueue*> queues;
 };
@@ -1846,6 +1854,10 @@ static void ReleasePreSkinReleaseBatch(DX12PreSkinReleaseBatch *batch)
 		if (heap)
 			heap->Release();
 	}
+	for (ID3D12Fence *fence : batch->fences) {
+		if (fence)
+			fence->Release();
+	}
 	for (ID3D12CommandQueue *queue : batch->queues) {
 		if (queue)
 			queue->Release();
@@ -1856,6 +1868,7 @@ static void ReleasePreSkinReleaseBatch(DX12PreSkinReleaseBatch *batch)
 	}
 	batch->resources.clear();
 	batch->descriptorHeaps.clear();
+	batch->fences.clear();
 	batch->queues.clear();
 	batch->devices.clear();
 }
@@ -1903,24 +1916,38 @@ static void CleanupRetiredPreSkinObjectsLocked(
 	if (!releaseBatch)
 		return;
 	const LONG present = DX12RuntimeState::GetPresentCount();
-	while (!gRetiredPreSkinResources.empty()) {
-		const DX12RetiredPreSkinResource &retired =
-			gRetiredPreSkinResources.front();
-		if (present - retired.retirePresent < PreSkinRetiredObjectPresentDelay)
-			break;
-		if (retired.resource)
-			releaseBatch->resources.push_back(retired.resource);
-		gRetiredPreSkinResources.pop_front();
+	for (auto it = gRetiredPreSkinResources.begin();
+		 it != gRetiredPreSkinResources.end();) {
+		const bool fenceComplete = it->completionFence && it->completionValue &&
+			it->completionFence->GetCompletedValue() >= it->completionValue;
+		const bool fallbackExpired = !it->completionFence &&
+			present - it->retirePresent >= PreSkinRetiredObjectPresentDelay;
+		if (!fenceComplete && !fallbackExpired) {
+			++it;
+			continue;
+		}
+		if (it->resource)
+			releaseBatch->resources.push_back(it->resource);
+		if (it->completionFence)
+			releaseBatch->fences.push_back(it->completionFence);
+		it = gRetiredPreSkinResources.erase(it);
 	}
 
-	while (!gRetiredPreSkinDescriptorHeaps.empty()) {
-		const DX12RetiredPreSkinDescriptorHeap &retired =
-			gRetiredPreSkinDescriptorHeaps.front();
-		if (present - retired.retirePresent < PreSkinRetiredObjectPresentDelay)
-			break;
-		if (retired.heap)
-			releaseBatch->descriptorHeaps.push_back(retired.heap);
-		gRetiredPreSkinDescriptorHeaps.pop_front();
+	for (auto it = gRetiredPreSkinDescriptorHeaps.begin();
+		 it != gRetiredPreSkinDescriptorHeaps.end();) {
+		const bool fenceComplete = it->completionFence && it->completionValue &&
+			it->completionFence->GetCompletedValue() >= it->completionValue;
+		const bool fallbackExpired = !it->completionFence &&
+			present - it->retirePresent >= PreSkinRetiredObjectPresentDelay;
+		if (!fenceComplete && !fallbackExpired) {
+			++it;
+			continue;
+		}
+		if (it->heap)
+			releaseBatch->descriptorHeaps.push_back(it->heap);
+		if (it->completionFence)
+			releaseBatch->fences.push_back(it->completionFence);
+		it = gRetiredPreSkinDescriptorHeaps.erase(it);
 	}
 }
 
@@ -2064,13 +2091,22 @@ static bool AcquirePreSkinOutputResizeSubmissionFence(
 	return true;
 }
 
-static void MarkPreSkinOutputResizeCacheUsesSubmitted(
+// Returns one caller-owned completion fence when requested. Retirement can
+// share this signal with the resize cache, keeping submission bookkeeping to
+// one queue Signal per ExecuteCommandLists.
+static bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 	ID3D12CommandQueue *queue,
 	UINT numCommandLists,
-	ID3D12CommandList *const *commandLists)
+	ID3D12CommandList *const *commandLists,
+	ID3D12Fence **completionFenceOut = nullptr,
+	UINT64 *completionValueOut = nullptr)
 {
+	if (completionFenceOut)
+		*completionFenceOut = nullptr;
+	if (completionValueOut)
+		*completionValueOut = 0;
 	if (!queue || !numCommandLists || !commandLists)
-		return;
+		return false;
 	std::vector<IUnknown*> submittedIdentities;
 	submittedIdentities.reserve(numCommandLists);
 	for (UINT i = 0; i < numCommandLists; ++i) {
@@ -2079,7 +2115,7 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 			submittedIdentities.push_back(identity);
 	}
 	if (submittedIdentities.empty())
-		return;
+		return false;
 
 	std::vector<DX12PreSkinOutputResizeSubmittedUse> submittedUses;
 	AcquireSRWLockShared(&gPreSkinOutputResizeCacheLock);
@@ -2099,13 +2135,13 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 	}
 	ReleaseSRWLockShared(&gPreSkinOutputResizeCacheLock);
 	if (submittedUses.empty())
-		return;
+		return false;
 
 	ID3D12Fence *fence = nullptr;
 	UINT64 fenceValue = 0;
 	if (!AcquirePreSkinOutputResizeSubmissionFence(
 			queue, &fence, &fenceValue))
-		return;
+		return false;
 	HRESULT signalHr = E_FAIL;
 	{
 		// The signal must follow the application's ExecuteCommandLists call but
@@ -2115,7 +2151,7 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 	}
 	if (FAILED(signalHr)) {
 		fence->Release();
-		return;
+		return false;
 	}
 
 	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
@@ -2162,7 +2198,14 @@ static void MarkPreSkinOutputResizeCacheUsesSubmitted(
 		&gHasPendingPreSkinOutputResizeSubmissionWorkFast,
 		hasPendingUses ? 1 : 0);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-	fence->Release();
+	if (completionFenceOut) {
+		*completionFenceOut = fence;
+		if (completionValueOut)
+			*completionValueOut = fenceValue;
+	} else {
+		fence->Release();
+	}
+	return true;
 }
 
 void DX12ModAbandonPreSkinOutputResizeCacheUses(
@@ -2290,8 +2333,10 @@ void DX12ModNotifyCommandListsSubmitted(
 {
 	if (!queue || !commandLists || !numCommandLists)
 		return;
+	ID3D12Fence *fence = nullptr;
+	UINT64 fenceValue = 0;
 	MarkPreSkinOutputResizeCacheUsesSubmitted(
-		queue, numCommandLists, commandLists);
+		queue, numCommandLists, commandLists, &fence, &fenceValue);
 
 	DX12PreSkinReleaseBatch releaseBatch;
 	DX12PreSkinPendingSubmission pending;
@@ -2319,25 +2364,50 @@ void DX12ModNotifyCommandListsSubmitted(
 		return;
 	}
 
-	const LONG retirePresent = DX12RuntimeState::GetPresentCount();
+	// The original ExecuteCommandLists has returned. Signal a queue-local fence
+	// now, so every object retired by these command lists is released exactly
+	// after the GPU has consumed this submission. Do not hold gPreSkinRetireLock
+	// across Signal: drivers may synchronously enter queue instrumentation.
+	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
+	HRESULT signalHr = E_FAIL;
+	if (fence) {
+		signalHr = S_OK;
+	} else if (AcquirePreSkinOutputResizeSubmissionFence(queue, &fence, &fenceValue)) {
+		DX12InternalReplayScope internalReplay;
+		signalHr = queue->Signal(fence, fenceValue);
+	}
 
+	const LONG retirePresent = DX12RuntimeState::GetPresentCount();
+	const bool fenceTracked = SUCCEEDED(signalHr) && fence && fenceValue;
+	AcquireSRWLockExclusive(&gPreSkinRetireLock);
 	for (ID3D12Resource *resource : pending.resources) {
 		if (!resource)
 			continue;
-		gRetiredPreSkinResources.push_back({ resource, retirePresent });
+		if (fenceTracked)
+			fence->AddRef();
+		gRetiredPreSkinResources.push_back(
+			{ resource, fenceTracked ? fence : nullptr,
+				fenceTracked ? fenceValue : 0, retirePresent });
 	}
 	for (ID3D12DescriptorHeap *heap : pending.descriptorHeaps) {
 		if (!heap)
 			continue;
-		gRetiredPreSkinDescriptorHeaps.push_back({ heap, retirePresent });
+		if (fenceTracked)
+			fence->AddRef();
+		gRetiredPreSkinDescriptorHeaps.push_back(
+			{ heap, fenceTracked ? fence : nullptr,
+				fenceTracked ? fenceValue : 0, retirePresent });
 	}
 	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	DX12LogManager::DebugFields("DX12PreSkinRetireSubmit",
-		"present=%ld,queue=%p,commandLists=%u,resources=%zu,descriptorHeaps=%zu,delay=%ld",
+		"present=%ld,queue=%p,commandLists=%u,resources=%zu,descriptorHeaps=%zu,fence=%p,fenceValue=%llu,fallback=%s",
 		retirePresent, queue, numCommandLists,
-		pending.resources.size(), pending.descriptorHeaps.size(),
-		PreSkinRetiredObjectPresentDelay);
+		pending.resources.size(), pending.descriptorHeaps.size(), fenceTracked ? fence : nullptr,
+		static_cast<unsigned long long>(fenceTracked ? fenceValue : 0),
+		fenceTracked ? "false" : "true");
+	if (fence)
+		fence->Release();
 	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
 
@@ -2381,6 +2451,8 @@ static void ReleasePreSkinDescriptorRingLocked(DX12PreSkinReleaseBatch *releaseB
 	for (auto &retired : gRetiredPreSkinDescriptorHeaps) {
 		if (retired.heap)
 			releaseBatch->descriptorHeaps.push_back(retired.heap);
+		if (retired.completionFence)
+			releaseBatch->fences.push_back(retired.completionFence);
 	}
 	gRetiredPreSkinDescriptorHeaps.clear();
 }
@@ -2970,11 +3042,15 @@ static void ClearPreSkinRuntimeState()
 	for (auto &retired : gRetiredPreSkinResources) {
 		if (retired.resource)
 			releaseBatch.resources.push_back(retired.resource);
+		if (retired.completionFence)
+			releaseBatch.fences.push_back(retired.completionFence);
 	}
 	gRetiredPreSkinResources.clear();
 	for (auto &retired : gRetiredPreSkinDescriptorHeaps) {
 		if (retired.heap)
 			releaseBatch.descriptorHeaps.push_back(retired.heap);
+		if (retired.completionFence)
+			releaseBatch.fences.push_back(retired.completionFence);
 	}
 	gRetiredPreSkinDescriptorHeaps.clear();
 	InterlockedExchange(&gHasPendingPreSkinSubmissionWorkFast, 0);
