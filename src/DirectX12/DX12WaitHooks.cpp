@@ -1,6 +1,4 @@
-#include "Mods/DX12ConfigResources.hpp"
-#include "Tracking/DX12ResourceInfrastructure.hpp"
-#include "Mods/DX12ModInterfaces.hpp"
+#include "DX12.h"
 
 class DX12WaitHookState
 {

@@ -2,6 +2,9 @@
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
+    # Single merged header (one-header layout)
+    DX12.h
+
     # Proxy and presentation integration
     D3D12Proxy.cpp
     DX12Wrapper.cpp

@@ -1,13 +1,10 @@
 
 
 
-#include "Tracking/DX12ResourceInfrastructure.hpp"
+#include "DX12.h"
 #include <Shlwapi.h>
 #include <crtdbg.h>
 #include <stdlib.h>
-#include "Mods/DX12ConfigResources.hpp"
-#include "Presentation/DX12UiRuntime.hpp"
-#include "Mods/DX12ModInterfaces.hpp"
 
 bool D3D12ProxyTargetHelper::VerifyIntendedTarget(HINSTANCE module)
 {

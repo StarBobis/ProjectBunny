@@ -1,14 +1,11 @@
 
 
 
-#include "Resources/DX12ResourceFileIO.hpp"
+#include "DX12.h"
 #include <CommCtrl.h>
 #include <dwmapi.h>
 #include <stdint.h>
 #include <vector>
-#include "Mods/DX12ModInterfaces.hpp"
-#include "Presentation/DX12UiRuntime.hpp"
-#include "Mods/DX12ConfigResources.hpp"
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
 static constexpr UINT kOverlayClientWidth = 860;
