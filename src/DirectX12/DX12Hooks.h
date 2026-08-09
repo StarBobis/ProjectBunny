@@ -5018,8 +5018,7 @@ public:
 		// restoring them when the game switches away from their source PSO.
 		// Hunt/capture paths also retain their per-draw bookkeeping below.
 		if (needsModWork && !huntEnabled &&
-			!(flagsWord & (DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
-				DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
+			!(flagsWord & (DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
 				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) &&
 			runtimeState && !runtimeState->staticTemplateIaApplied) {
 			const bool activeShaderOverrides =
