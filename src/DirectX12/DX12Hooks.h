@@ -5013,21 +5013,28 @@ public:
 		// A compiled NoopNeverMatches decision is a PSO-level proof that no
 		// draw on this PSO can reach an override.  Keep that decision at the
 		// SetPipelineState/draw boundary instead of paying the DX11-style
-		// generic draw interpreter for every draw in the main scene.  Static IA
-		// redirects must stay on the regular path: it is responsible for
-		// restoring them when the game switches away from their source PSO.
-		// Hunt/capture paths also retain their per-draw bookkeeping below.
+		// generic draw interpreter for every draw in the main scene.  Preserve
+		// the two static-IA restore checks from HandleDrawOverrides before
+		// forwarding: they are normally no-ops, but a PSO switch can require one
+		// restore before this non-matching draw is recorded. Hunt/capture paths
+		// retain their per-draw bookkeeping below.
 		if (needsModWork && !huntEnabled &&
 			!(flagsWord & (DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
 				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) &&
-			runtimeState && !runtimeState->staticTemplateIaApplied) {
+			runtimeState) {
 			const bool activeShaderOverrides =
 				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+			DX12IaReplacementExecutor::RestoreStaleStaticIaBindings(
+				commandList, runtimeState, callbacks);
 			const DX12CompiledDrawDecision *decision =
 				DX12CommandListRuntime::EnsureDrawDecision(
 					runtimeState, activeShaderOverrides);
 			if (decision &&
 				decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
+				if (runtimeState->staticTemplateIaApplied) {
+					DX12IaReplacementExecutor::RestoreStaticTemplateIa(
+						commandList, runtimeState, callbacks);
+				}
 				DX12_PROFILE_FAST_FORWARD();
 				DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 				DX12_HOTPATH_TIME_END(DrawHookTotal);
