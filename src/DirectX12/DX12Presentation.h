@@ -291,15 +291,34 @@ public:
 		DXGIHookDiagnostics::LogPresentStage(api, "afterHotPathUpdate", swapChain, hr);
 	}
 
+	// DXGI Present hook for the primary game swapchain.
+	//
+	// Flow:
+	//   1. Fast bypasses (invalid arg, internal replay, present-test, non-primary
+	//      swapchains) forward straight to the real Present without touching the
+	//      frame pipeline.
+	//   2. skipAll mode still presents but skips mod/frame bookkeeping.
+	//   3. Normal path: consume UI actions, reset per-frame counters, finalize
+	//      pending captures, call the real Present, then run the per-frame mod
+	//      work (frame epoch, capture state machine) and flush profiling logs.
 	static HRESULT Present(IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 	{
+		// Track this Present call in the unified profiler (counter scope).
 		DX12_PROFILE_FUNCTION(Present);
+
+		// Nothing to present -> invalid call.
 		if (!swapChain)
 			return DXGI_ERROR_INVALID_CALL;
+
+		// Internal replay presents must not advance the frame pipeline: pause
+		// the profile timer and forward untouched.
 		if (DX12InternalReplayState::IsActive()) {
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
 		}
+
+		// DXGI_PRESENT_TEST is a query, not a real present; keep it out of the
+		// frame bookkeeping and profiling counters.
 		if (flags & DXGI_PRESENT_TEST) {
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
@@ -310,22 +329,33 @@ public:
 		// PreSkin producer set, and present maintenance retires GPU resources.
 		// DX11 naturally ties frame actions to its one wrapped game swapchain;
 		// preserve that ownership explicitly for DX12.
+		// Non-game swapchains (streamline frame gen, NVIDIA capture) contain no
+		// game dispatches; forwarding them without frame work keeps the Mod
+		// frame epoch and resource retirement tied to the real game swapchain.
 		if (!IsPrimarySwapChain("Present", swapChain)) {
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
 		}
+
+		// Retire GPU copies that finished in previous frames before present.
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
+		// Begin the per-frame timing timeline and consume queued UI actions.
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present", swapChain, syncInterval, flags);
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
 		ConsumeUiActionsForFrame("Present", swapChain);
 
+		// Log the first Present once per process (flush immediately so it is
+		// visible even if the process hangs before the regular log flush).
 		static volatile LONG firstPresentLog = 0;
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
 
+		// skipAll: present normally but skip all mod/frame work; still advance
+		// the present counter, run the lightweight post-present runtime and
+		// flush per-frame profiling so diagnostics stay consistent.
 		if (DX12HotPathState::skipAll) {
 			DX12PresentSkipLogUtils::Record("Present", "BeforeOriginalSkip", swapChain, S_OK);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -355,12 +385,14 @@ public:
 
 		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
 
+		// Reset per-frame counters (draws, dispatches, fast-forward hits, ...).
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		LogAndResetPerFrameCounters();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "per_frame_counters", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
+		// Close any pending frame/shader captures and begin the profiling frame.
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12Profiling::BeginFrame();
 		const bool dumpFrame = DX12FrameAnalysis::EndCapture();
@@ -372,6 +404,9 @@ public:
 			"Present", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present", "beforeOriginal", swapChain);
+
+		// Call the real Present; time only the driver wait (profile timer is
+		// paused around it so the counter measures our wrapper, not the stall).
 		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
@@ -388,17 +423,22 @@ public:
 			presentUs);
 		DXGIHookDiagnostics::LogPresentStage("Present", "afterOriginal", swapChain, hr);
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
+
+		// Present failed: finish profiling, flush logs and return the error.
 		if (FAILED(hr)) {
 			_profile_timer.Finish();
-			DX12Profiling::EndFrame();
-			DX12_HOTPATH_LOG_AND_RESET();
+			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present", swapChain, hr);
 			return hr;
 		}
+
+		// Successful present: publish the frame and run the normal post-present
+		// runtime (hot-path state, resource maintenance, ...).
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12RuntimeState::IncrementPresentCount();
 		RunPostPresentRuntime("Present", swapChain, hr, true);
 
+		// Advance the mod frame epoch (PreSkin producer set, per-frame mods).
 		DXGIHookDiagnostics::LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModBeginFrame(swapChain);
@@ -406,19 +446,24 @@ public:
 			"Present", "mod_begin_frame", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
+		// Complete a finished capture or begin the next one.
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "capture_complete_or_begin", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+
+		// End the profiling scope and flush all per-frame instrumentation
+		// (counters, hot-path stages, frame timeline) in one pass.
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Finish();
-		DX12Profiling::EndFrame();
-		DX12_HOTPATH_LOG_AND_RESET();
+		DX12Profiler::FlushFrame();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		DXGIHookDiagnostics::LogPresentStage("Present", "end", swapChain, hr);
+
+		// Close the per-frame timing timeline and return the Present result.
 		DX12OuterTimingProbeUtils::LogPresentLeave("Present", swapChain, hr);
 		return hr;
 	}
@@ -516,8 +561,7 @@ public:
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 		if (FAILED(hr)) {
 			_profile_timer.Finish();
-			DX12Profiling::EndFrame();
-			DX12_HOTPATH_LOG_AND_RESET();
+			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present1", swapChain, hr);
 			return hr;
 		}
@@ -539,8 +583,7 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Finish();
-		DX12Profiling::EndFrame();
-		DX12_HOTPATH_LOG_AND_RESET();
+		DX12Profiler::FlushFrame();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1142,9 +1185,8 @@ public:
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 		if (FAILED(hr)) {
 			_profile_timer.Finish();
-			DX12Profiling::EndFrame();
 			DX12_HOTPATH_TIME_END(PresentTotal);
-			DX12_HOTPATH_LOG_AND_RESET();
+			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
 			return hr;
 		}
@@ -1170,9 +1212,8 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Finish();
-		DX12Profiling::EndFrame();
 		DX12_HOTPATH_TIME_END(PresentTotal);
-		DX12_HOTPATH_LOG_AND_RESET();
+		DX12Profiler::FlushFrame();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1282,8 +1323,7 @@ public:
 		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
 		if (FAILED(hr)) {
 			_profile_timer.Finish();
-			DX12Profiling::EndFrame();
-			DX12_HOTPATH_LOG_AND_RESET();
+			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
 			return hr;
 		}
@@ -1309,8 +1349,7 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Finish();
-		DX12Profiling::EndFrame();
-		DX12_HOTPATH_LOG_AND_RESET();
+		DX12Profiler::FlushFrame();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -1361,9 +1400,17 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		// One QPC pair feeds both the API wall bucket and the ExecuteCL hot-path
+		// stage (previously two independent timers measured the same span).
+		DX12Profiler::Scope apiWallScope(
+			DX12Profiler::ApiStage,
+			DX12OuterTimingProbeUtils::ApiExecuteCommandLists,
+			static_cast<int>(DX12HotPathStage::ExecuteCLTotal));
+#else
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiExecuteCommandLists);
-		DX12_HOTPATH_TIME_BEGIN(ExecuteCLTotal);
+#endif
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 		LARGE_INTEGER unwrapBegin = DX12OuterTimingProbeUtils::Now();
 		// Use the stack for up to eight command lists, then fall back to the heap.
@@ -1396,7 +1443,6 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
-		DX12_HOTPATH_TIME_END(ExecuteCLTotal);
 	}
 
 	static void DrawInstanced(

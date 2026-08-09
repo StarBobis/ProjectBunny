@@ -4971,18 +4971,6 @@ public:
 		bool counted = false;
 	};
 
-	class ScopedTimer
-	{
-	public:
-		State state;
-
-		explicit ScopedTimer(Counter &counter);
-		~ScopedTimer();
-		void Pause();
-		void Resume();
-		void Finish();
-	};
-
 	Counter DrawInstanced;
 	Counter DrawIndexedInstanced;
 	Counter Dispatch;
@@ -5086,8 +5074,11 @@ public:
 	const wchar_t *FormatUs(double us, wchar_t *buf, size_t bufSize) const;
 };
 
+class DX12Profiler;
+
 #define DX12_PROFILE_FUNCTION(counter) \
-	DX12Profiling::ScopedTimer _profile_timer(DX12Profiling::Get().counter)
+	DX12Profiler::Scope _profile_timer( \
+		DX12Profiler::Counter, &DX12Profiling::Get().counter)
 
 #define DX12_PROFILE_FAST_FORWARD() do { \
 	DX12Profiling::RecordFastForwardHit(); \
@@ -5114,32 +5105,6 @@ inline void DX12Profiling::Counter::AccumulateFrom(const Counter &src)
 inline void DX12Profiling::Counter::IncrementCalls()
 {
 	InterlockedIncrement(&calls);
-}
-
-inline DX12Profiling::ScopedTimer::ScopedTimer(Counter &counter) :
-	state()
-{
-	DX12Profiling::Start(&state, &counter);
-}
-
-inline DX12Profiling::ScopedTimer::~ScopedTimer()
-{
-	Finish();
-}
-
-inline void DX12Profiling::ScopedTimer::Pause()
-{
-	DX12Profiling::End(&state);
-}
-
-inline void DX12Profiling::ScopedTimer::Resume()
-{
-	DX12Profiling::Start(&state, state.counter);
-}
-
-inline void DX12Profiling::ScopedTimer::Finish()
-{
-	DX12Profiling::End(&state);
 }
 
 inline void DX12Profiling::Start(State *state, Counter *counter)
