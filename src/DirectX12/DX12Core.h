@@ -4807,10 +4807,20 @@ public:
 		if (InterlockedCompareExchange(&sStarted, 1, 0) != 0)
 			return;
 		sInitTick = GetTickCount64();
+		InterlockedExchange(&sStopRequested, 0);
 		sThresholdMs = DefaultThresholdMs();
-		HANDLE thread = CreateThread(nullptr, 0, ThreadProc, nullptr, 0, nullptr);
-		if (thread)
-			CloseHandle(thread);
+		sThread = CreateThread(nullptr, 0, ThreadProc, nullptr, 0, nullptr);
+	}
+
+	static void Stop()
+	{
+		InterlockedExchange(&sStopRequested, 1);
+		if (sThread) {
+			WaitForSingleObject(sThread, 5000);
+			CloseHandle(sThread);
+			sThread = nullptr;
+		}
+		InterlockedExchange(&sStarted, 0);
 	}
 
 private:
@@ -4890,7 +4900,7 @@ private:
 
 	static DWORD WINAPI ThreadProc(void *)
 	{
-		for (;;) {
+		for (; InterlockedCompareExchange(&sStopRequested, 0, 0) == 0;) {
 			Sleep(1000);
 			const ULONGLONG now = GetTickCount64();
 			if (!sHasSeenPresent) {
@@ -4917,11 +4927,13 @@ private:
 	}
 
 	inline static volatile LONG sStarted = 0;
+	inline static volatile LONG sStopRequested = 0;
 	inline static volatile LONG sHasSeenPresent = 0;
 	inline static volatile LONG sDumpAttempted = 0;
 	inline static volatile LONGLONG sLastPresentCompletionTick = 0;
 	inline static ULONGLONG sInitTick = 0;
 	inline static DWORD sThresholdMs = 8000;
+	inline static HANDLE sThread = nullptr;
 };
 
 
@@ -8470,6 +8482,7 @@ bool DX12AsyncReadbackHasPendingWork();
 // given (game) queue via Signal/Wait. Called after the original
 // ExecuteCommandLists call; pure queue operations on the mod-owned channel.
 void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue);
+void DX12AsyncReadbackShutdown();
 
 // ---------------------------------------------------------------------------
 // Async upload channel (ring of allocators, no per-upload CPU wait).

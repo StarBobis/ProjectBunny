@@ -7927,6 +7927,8 @@ std::vector<DX12ReadbackGameFence> gReadbackGameFences;
 SRWLOCK gReadbackWorkerLock = SRWLOCK_INIT;
 HANDLE gReadbackWorker = nullptr;
 HANDLE gReadbackWorkerEvent = nullptr;
+volatile LONG gReadbackStopRequested = 0;
+volatile LONG gReadbackChannelFaulted = 0;
 
 void DX12ReadbackReleaseEvents(std::vector<DX12ReadbackEvent> &events)
 {
@@ -7939,6 +7941,8 @@ void DX12ReadbackReleaseEvents(std::vector<DX12ReadbackEvent> &events)
 
 bool DX12ReadbackEnsureChannelLocked(ID3D12Device *device)
 {
+	if (InterlockedCompareExchange(&gReadbackChannelFaulted, 0, 0) != 0)
+		return false;
 	if (gReadbackQueue && gReadbackFence && gReadbackDevice)
 		return true;
 	if (!device)
@@ -8278,7 +8282,7 @@ void DX12ReadbackPublishBatch(DX12ReadbackBatch *batch)
 
 DWORD WINAPI DX12ReadbackWorkerProc(LPVOID)
 {
-	for (;;) {
+	while (InterlockedCompareExchange(&gReadbackStopRequested, 0, 0) == 0) {
 		std::vector<DX12ReadbackBatch*> completed;
 		DX12ReadbackBatch *oldest = nullptr;
 		{
@@ -8340,6 +8344,8 @@ DWORD WINAPI DX12ReadbackWorkerProc(LPVOID)
 
 void DX12ReadbackEnsureWorker()
 {
+	if (InterlockedCompareExchange(&gReadbackStopRequested, 0, 0) != 0)
+		return;
 	if (gReadbackWorker)
 		return;
 	AcquireSRWLockExclusive(&gReadbackWorkerLock);
@@ -8357,6 +8363,29 @@ void DX12ReadbackEnsureWorker()
 	ReleaseSRWLockExclusive(&gReadbackWorkerLock);
 }
 } // namespace
+
+void DX12AsyncReadbackShutdown()
+{
+	InterlockedExchange(&gReadbackStopRequested, 1);
+	AcquireSRWLockExclusive(&gReadbackWorkerLock);
+	HANDLE worker = gReadbackWorker;
+	HANDLE eventHandle = gReadbackWorkerEvent;
+	ReleaseSRWLockExclusive(&gReadbackWorkerLock);
+	if (eventHandle)
+		SetEvent(eventHandle);
+	if (worker)
+		WaitForSingleObject(worker, 5000);
+	AcquireSRWLockExclusive(&gReadbackWorkerLock);
+	if (gReadbackWorker) {
+		CloseHandle(gReadbackWorker);
+		gReadbackWorker = nullptr;
+	}
+	if (gReadbackWorkerEvent) {
+		CloseHandle(gReadbackWorkerEvent);
+		gReadbackWorkerEvent = nullptr;
+	}
+	ReleaseSRWLockExclusive(&gReadbackWorkerLock);
+}
 
 bool DX12AsyncReadbackQueueBufferCapture(
 	ID3D12Resource *resource, UINT64 offset, UINT64 size)
@@ -8615,9 +8644,22 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	}
 
 	// Order the readback after all work the game queue has submitted so far.
-	++gameFence->value;
-	gameQueue->Signal(gameFence->fence, gameFence->value);
-	gReadbackQueue->Wait(gameFence->fence, gameFence->value);
+	const UINT64 gameFenceValue = gameFence->value + 1;
+	HRESULT submitHr = gameQueue->Signal(gameFence->fence, gameFenceValue);
+	if (SUCCEEDED(submitHr))
+		submitHr = gReadbackQueue->Wait(gameFence->fence, gameFenceValue);
+	if (FAILED(submitHr)) {
+		InterlockedExchange(&gReadbackChannelFaulted, 1);
+		DX12ReadbackLogSubmitFailure("failed_game_queue_sync", kept.size(),
+			static_cast<UINT64>(submitHr));
+		allocator->Release();
+		list->Release();
+		DX12ReadbackReleaseEvents(kept);
+		ReleaseSRWLockExclusive(&gReadbackChannelLock);
+		device->Release();
+		return;
+	}
+	gameFence->value = gameFenceValue;
 
 	DX12ReadbackBatch *batch = new DX12ReadbackBatch();
 	batch->allocator = allocator;
@@ -8630,7 +8672,18 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	ID3D12CommandList *lists[] = { list };
 	gReadbackQueue->ExecuteCommandLists(1, lists);
 	batch->fenceValue = ++gReadbackFenceValue;
-	gReadbackQueue->Signal(gReadbackFence, batch->fenceValue);
+	submitHr = gReadbackQueue->Signal(gReadbackFence, batch->fenceValue);
+	if (FAILED(submitHr)) {
+		InterlockedExchange(&gReadbackChannelFaulted, 1);
+		DX12ReadbackLogSubmitFailure("failed_readback_signal", batch->events.size(),
+			static_cast<UINT64>(submitHr));
+		batch->ring->Release();
+		DX12ReadbackReleaseEvents(batch->events);
+		delete batch;
+		ReleaseSRWLockExclusive(&gReadbackChannelLock);
+		device->Release();
+		return;
+	}
 	batch->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 	if (batch->event)
 		gReadbackFence->SetEventOnCompletion(batch->fenceValue, batch->event);

@@ -14,6 +14,7 @@ bool D3D12ProxyTargetHelper::VerifyIntendedTarget(HINSTANCE module)
 }
 
 static bool gD3D12ProxyRuntimeInitialized = false;
+static SRWLOCK gD3D12ProxyLoadLock = SRWLOCK_INIT;
 
 FARPROC D3D12ProxyRuntime::GetRealProc(const char *name)
 {
@@ -63,43 +64,52 @@ UINT_PTR D3D12ProxyRuntime::CallRealProc(WORD ordinal,
 
 HMODULE D3D12ProxyRuntime::LoadRealD3D12()
 {
-	if (D3D12ProxyState::RealD3D12)
-		return D3D12ProxyState::RealD3D12;
+	AcquireSRWLockExclusive(&gD3D12ProxyLoadLock);
+	if (D3D12ProxyState::RealD3D12) {
+		HMODULE module = D3D12ProxyState::RealD3D12;
+		ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
+		return module;
+	}
 
 	wchar_t path[MAX_PATH];
-	if (!GetSystemDirectoryW(path, MAX_PATH))
+	if (!GetSystemDirectoryW(path, MAX_PATH)) {
+		ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
 		return nullptr;
+	}
 	PathAppendW(path, L"d3d12.dll");
 
-	D3D12ProxyState::RealD3D12 = LoadLibraryW(path);
-	if (!D3D12ProxyState::RealD3D12) {
+	HMODULE module = LoadLibraryW(path);
+	if (!module) {
 		DX12LogManager::Text("Failed to load real d3d12.dll from %S, error=%lu\n", path, GetLastError());
+		ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
 		return nullptr;
 	}
 
 	D3D12ProxyState::OrigCreateDevice = reinterpret_cast<D3D12ProxySignatures::CreateDevice>(
-		GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12CreateDevice"));
+		GetProcAddress(module, "D3D12CreateDevice"));
 	D3D12ProxyState::OrigGetDebugInterface = reinterpret_cast<D3D12ProxySignatures::GetDebugInterface>(
-		GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12GetDebugInterface"));
+		GetProcAddress(module, "D3D12GetDebugInterface"));
 	D3D12ProxyState::OrigSerializeRootSignature = reinterpret_cast<D3D12ProxySignatures::SerializeRootSignature>(
-		GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12SerializeRootSignature"));
+		GetProcAddress(module, "D3D12SerializeRootSignature"));
 	D3D12ProxyState::OrigCreateRootSignatureDeserializer =
 		reinterpret_cast<D3D12ProxySignatures::CreateRootSignatureDeserializer>(
-			GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12CreateRootSignatureDeserializer"));
+			GetProcAddress(module, "D3D12CreateRootSignatureDeserializer"));
 	D3D12ProxyState::OrigSerializeVersionedRootSignature =
 		reinterpret_cast<D3D12ProxySignatures::SerializeVersionedRootSignature>(
-			GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12SerializeVersionedRootSignature"));
+		GetProcAddress(module, "D3D12SerializeVersionedRootSignature"));
 	D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer =
 		reinterpret_cast<D3D12ProxySignatures::CreateVersionedRootSignatureDeserializer>(
-			GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12CreateVersionedRootSignatureDeserializer"));
+			GetProcAddress(module, "D3D12CreateVersionedRootSignatureDeserializer"));
 	D3D12ProxyState::OrigEnableExperimentalFeatures =
 		reinterpret_cast<D3D12ProxySignatures::EnableExperimentalFeatures>(
-			GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12EnableExperimentalFeatures"));
+		GetProcAddress(module, "D3D12EnableExperimentalFeatures"));
 	D3D12ProxyState::OrigGetInterface = reinterpret_cast<D3D12ProxySignatures::GetInterface>(
-		GetProcAddress(D3D12ProxyState::RealD3D12, "D3D12GetInterface"));
+		GetProcAddress(module, "D3D12GetInterface"));
+	D3D12ProxyState::RealD3D12 = module;
 
 	DX12LogManager::Text("Loaded real d3d12.dll: %p\n", D3D12ProxyState::RealD3D12);
-	return D3D12ProxyState::RealD3D12;
+	ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
+	return module;
 }
 
 void D3D12ProxyRuntime::Initialize(HINSTANCE module)
@@ -115,10 +125,12 @@ void D3D12ProxyRuntime::Shutdown()
 
 void D3D12ProxyRuntime::UnloadRealD3D12()
 {
+	AcquireSRWLockExclusive(&gD3D12ProxyLoadLock);
 	if (D3D12ProxyState::RealD3D12) {
 		FreeLibrary(D3D12ProxyState::RealD3D12);
 		D3D12ProxyState::RealD3D12 = nullptr;
 	}
+	ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
 }
 
 extern "C" HRESULT WINAPI D3D12CreateDevice(

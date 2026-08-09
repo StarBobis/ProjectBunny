@@ -7315,6 +7315,8 @@ public:
 	static void Shutdown()
 	{
 		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
+		DX12HangWatchdog::Stop();
+		DX12AsyncReadbackShutdown();
 		DX12NativeOverlayShutdown();
 #if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 		DX12WaitHooks::Shutdown();
