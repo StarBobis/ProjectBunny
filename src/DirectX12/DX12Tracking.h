@@ -2501,6 +2501,9 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 	std::string kind;
 	UINT kindId = 0;
 	UINT64 valueId = 0;
+	// Physical descriptor bytes may have been replaced while this record keeps
+	// the game's original logical resource for matching and diagnostics.
+	UINT64 staticReplacementGeneration = 0;
 	// Draw-time hunt/override content hash, computed once at write time
 	// (Create*View) and reused by the draw prefilter. 0 = not cached (the
 	// draw path then recomputes, so a missed cache is always safe).
@@ -2525,6 +2528,7 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 
 struct DX12ExtendedDescriptorValue : public DX12DescriptorViewPayload
 {
+	UINT64 staticReplacementGeneration = 0;
 	ID3D12Resource *resource = nullptr;
 	ID3D12Resource *counterResource = nullptr;
 	D3D12_RESOURCE_DESC resourceDesc = {};
@@ -2856,6 +2860,7 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 		dest->kind = src.kind;
 	dest->kindId = src.kindId;
 	dest->valueId = src.valueId;
+	dest->staticReplacementGeneration = src.staticReplacementGeneration;
 	dest->descriptorHuntHash = src.descriptorHuntHash;
 	dest->cpuHandle = destCpuHandle;
 	dest->resource = src.resource;
@@ -2894,6 +2899,7 @@ static void CopyDescriptorValue(
 	dest->extended = std::make_unique<DX12ExtendedDescriptorValue>();
 	DX12ExtendedDescriptorValue &extended = *dest->extended;
 	static_cast<DX12DescriptorViewPayload &>(extended) = src;
+	extended.staticReplacementGeneration = src.staticReplacementGeneration;
 	extended.resource = src.resource;
 	extended.counterResource = src.counterResource;
 	extended.resourceDesc = src.resourceDesc;
@@ -2929,6 +2935,7 @@ static void CopyRecordValueForSlot(
 		dest->kind = kind;
 	dest->kindId = src.kindId;
 	dest->valueId = src.valueId;
+	dest->staticReplacementGeneration = 0;
 	// Value-path records (CBV fast path) never carry a cached hunt hash.
 	dest->descriptorHuntHash = 0;
 	dest->cpuHandle = destCpuHandle;
@@ -2964,6 +2971,7 @@ static void CopyRecordValueForSlot(
 	const DX12ExtendedDescriptorValue &extended = *src.extended;
 	static_cast<DX12DescriptorViewPayload &>(*dest) = extended;
 	dest->resource = extended.resource;
+	dest->staticReplacementGeneration = extended.staticReplacementGeneration;
 	dest->counterResource = extended.counterResource;
 	dest->resourceDesc = extended.resourceDesc;
 	dest->hasResourceDesc = extended.hasResourceDesc;

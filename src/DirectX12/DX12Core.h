@@ -8515,7 +8515,8 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	uint32_t originalHash,
 	const DescriptorRecord *sourceRecord,
 	D3D12_CPU_DESCRIPTOR_HANDLE *outSrv,
-	ID3D12Resource **outResource);
+	ID3D12Resource **outResource,
+	UINT64 *outTableGeneration = nullptr);
 // True when every descriptor-relevant hashed texture override is an
 // unconditional static replacement; gates the draw-path descriptor skip.
 bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
@@ -8524,6 +8525,7 @@ bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash);
 // Cheap volatile gate so descriptor-copy hot paths can skip all patch work
 // when no static replacement table is active.
 bool DX12HasStaticTextureReplacements();
+UINT64 DX12StaticTextureReplacementGeneration();
 // Bind-time static IA replacement (plan step 3.2). Same gating idea for the
 // IASet bind hot path.
 bool DX12HasStaticIaReplacements();

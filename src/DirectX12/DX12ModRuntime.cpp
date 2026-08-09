@@ -7235,12 +7235,15 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	uint32_t originalHash,
 	const DescriptorRecord *sourceRecord,
 	D3D12_CPU_DESCRIPTOR_HANDLE *outSrv,
-	ID3D12Resource **outResource)
+	ID3D12Resource **outResource,
+	UINT64 *outTableGeneration)
 {
 	if (outSrv)
 		*outSrv = {};
 	if (outResource)
 		*outResource = nullptr;
+	if (outTableGeneration)
+		*outTableGeneration = 0;
 	if (!device || !originalHash || !outSrv)
 		return false;
 
@@ -7252,6 +7255,8 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	if (entryIt == table->byHash.end())
 		return false;
 	const DX12StaticTextureReplacementEntry &entry = entryIt->second;
+	if (outTableGeneration)
+		*outTableGeneration = table->reloadGeneration;
 	if (entry.resourceName.empty())
 		return false;
 
@@ -7334,6 +7339,13 @@ bool DX12HasStaticTextureReplacements()
 {
 	return InterlockedCompareExchange(
 		&gHasStaticTextureReplacements, 0, 0) != 0;
+}
+
+UINT64 DX12StaticTextureReplacementGeneration()
+{
+	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
+		LoadStaticTextureReplacementSnapshot();
+	return table && table->enabled ? table->reloadGeneration : 0;
 }
 
 bool DX12HasStaticIaReplacements()
