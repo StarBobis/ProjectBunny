@@ -4005,7 +4005,8 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
 		const DX12SimulateContext &runtimeState,
-		const DX12IaReplacementExecutorCallbacks &callbacks)
+		const DX12IaReplacementExecutorCallbacks &callbacks,
+		const DX12CompiledDrawDecision *precompiledDrawDecision = nullptr)
 	{
 		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
 
@@ -4029,7 +4030,18 @@ public:
 		// redirected bindings before the decision/cache layer reads IA state.
 		RestoreStaleStaticIaBindings(
 			commandList, mutableRuntimeState, callbacks);
+		// SetPipelineState compiles the immutable PSO policy.  The outer draw
+		// hook may already have consumed that resident decision to reject a
+		// Noop PSO; carry it into the interpreter instead of resolving the same
+		// policy a second time for this Draw.
+		const bool precompiledDecisionStillCurrent =
+			precompiledDrawDecision && precompiledDrawDecision->resolved &&
+			precompiledDrawDecision->pipelineState == runtimeState.pipelineState &&
+			precompiledDrawDecision->reloadGeneration ==
+				DX12ModGetReloadGenerationFast() &&
+			precompiledDrawDecision->MatchesGlobals(activeShaderOverrides);
 		const DX12CompiledDrawDecision *drawDecision =
+			precompiledDecisionStillCurrent ? precompiledDrawDecision :
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
 		DX12OuterTimingProbeUtils::LogCpuStage(
@@ -4987,6 +4999,7 @@ public:
 		const bool frameCapturePendingOrActive =
 			DX12FrameAnalysisState::IsCaptureRequested() ||
 			DX12FrameAnalysisState::IsCapturing();
+		const DX12CompiledDrawDecision *residentDrawDecision = nullptr;
 
 		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -5039,6 +5052,7 @@ public:
 				const DX12CompiledDrawDecision *decision =
 					DX12CommandListRuntime::EnsureDrawDecision(
 						runtimeState, activeShaderOverrides);
+				residentDrawDecision = decision;
 				if (!decision) {
 					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoDecision();
 				} else if (decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
@@ -5089,7 +5103,8 @@ public:
 			return;
 		}
 
-		DX12DrawHookFlow::Execute(commandList, draw, runtimeState, callbacks);
+		DX12DrawHookFlow::Execute(
+			commandList, draw, runtimeState, callbacks, residentDrawDecision);
 		DX12_HOTPATH_TIME_END(DrawHookTotal);
 	}
 
@@ -5097,14 +5112,16 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
 		const DX12SimulateContext *runtimeState,
-		const DX12IaReplacementExecutorCallbacks &callbacks)
+		const DX12IaReplacementExecutorCallbacks &callbacks,
+		const DX12CompiledDrawDecision *residentDrawDecision = nullptr)
 	{
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		if (runtimeState &&
 		    (flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			DX12IaReplacementExecutor::ExecutePresent(commandList, *runtimeState, callbacks);
 		if (runtimeState &&
-		    DX12IaReplacementExecutor::HandleDrawOverrides(commandList, draw, *runtimeState, callbacks))
+		    DX12IaReplacementExecutor::HandleDrawOverrides(
+				commandList, draw, *runtimeState, callbacks, residentDrawDecision))
 			return;
 		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 	}
