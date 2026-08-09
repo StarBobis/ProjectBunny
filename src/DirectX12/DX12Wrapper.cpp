@@ -1,4 +1,9 @@
-#include "DX12.h"
+#include "DX12Core.h"
+#include "DX12Hooks.h"
+#include "DX12Tracking.h"
+#include "DX12Runtime.h"
+#include "DX12Resources.h"
+#include "DX12Presentation.h"
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -9761,3 +9766,355 @@ void DX12StoreWrapperIaHash(
 }
 
 // ===================== end pasted: Implementation/DX12WrapperExports.inl =====================
+
+// ===================== merged from DXGIHooks.cpp =====================
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **factory)
+{
+	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory ?
+		DXGIHookState::OrigCreateDXGIFactory(riid, factory) : DXGI_ERROR_INVALID_CALL;
+	DX12LogManager::Fields("CreateDXGIFactory",
+		"riid=%p,hr=0x%lx,factory=%p",
+		&riid, hr, factory ? *factory : nullptr);
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);
+	return hr;
+}
+
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory1(REFIID riid, void **factory)
+{
+	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory1", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory1 ?
+		DXGIHookState::OrigCreateDXGIFactory1(riid, factory) : DXGI_ERROR_INVALID_CALL;
+	DX12LogManager::Fields("CreateDXGIFactory1",
+		"riid=%p,hr=0x%lx,factory=%p",
+		&riid, hr, factory ? *factory : nullptr);
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);
+	return hr;
+}
+
+HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory2(UINT flags, REFIID riid, void **factory)
+{
+	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory2", nullptr);
+	HRESULT hr = DXGIHookState::OrigCreateDXGIFactory2 ?
+		DXGIHookState::OrigCreateDXGIFactory2(flags, riid, factory) : DXGI_ERROR_INVALID_CALL;
+	DX12LogManager::Fields("CreateDXGIFactory2",
+		"flags=0x%x,riid=%p,hr=0x%lx,factory=%p",
+		flags, &riid, hr, factory ? *factory : nullptr);
+	if (SUCCEEDED(hr))
+		DX12Wrapper::WrapDXGIFactoryResult(riid, factory);
+	return hr;
+}
+
+void DXGIHooks::Install()
+{
+	AcquireSRWLockExclusive(&DXGIHookState::HookLock);
+	if (DXGIHookState::HookAttempted) {
+		ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
+		return;
+	}
+	DXGIHookState::HookAttempted = true;
+	ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
+
+	HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+	if (!dxgi) {
+		static volatile LONG deferredLogs = 0;
+		if (InterlockedIncrement(&deferredLogs) <= 4)
+			DX12LogManager::Text("dxgi.dll is not loaded yet; DXGI wrapper bootstrap deferred\n");
+		AcquireSRWLockExclusive(&DXGIHookState::HookLock);
+		DXGIHookState::HookAttempted = false;
+		ReleaseSRWLockExclusive(&DXGIHookState::HookLock);
+		return;
+	}
+
+	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory",
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory), DXGIHookCallbacks::HookedCreateDXGIFactory);
+	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory1",
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory1), DXGIHookCallbacks::HookedCreateDXGIFactory1);
+	DX12HookManager::InstallExportHook(dxgi, "CreateDXGIFactory2",
+		reinterpret_cast<void**>(&DXGIHookState::OrigCreateDXGIFactory2), DXGIHookCallbacks::HookedCreateDXGIFactory2);
+}
+
+void DXGIHooks::Shutdown()
+{
+}
+
+// ===================== merged from DX12WaitHooks.cpp =====================
+class DX12WaitHookState
+{
+public:
+	using WaitForSingleObjectFn = DWORD(WINAPI *)(HANDLE, DWORD);
+	using WaitForMultipleObjectsFn = DWORD(WINAPI *)(DWORD, const HANDLE *, BOOL, DWORD);
+	using SignalObjectAndWaitFn = DWORD(WINAPI *)(HANDLE, HANDLE, DWORD, BOOL);
+
+	inline static WaitForSingleObjectFn OrigWaitForSingleObject = nullptr;
+	inline static WaitForMultipleObjectsFn OrigWaitForMultipleObjects = nullptr;
+	inline static SignalObjectAndWaitFn OrigSignalObjectAndWait = nullptr;
+	inline static SRWLOCK HookLock = SRWLOCK_INIT;
+	inline static bool HookAttempted = false;
+};
+
+class DX12WaitHookCallbacks
+{
+public:
+	static bool ShouldProbeHandle(HANDLE handle, bool *matchesFenceEvent, bool *matchesFrameLatency)
+	{
+		return DX12OuterTimingProbeUtils::IsTrackedWaitHandle(
+			handle, matchesFenceEvent, matchesFrameLatency);
+	}
+
+	static bool ShouldProbeHandles(
+		DWORD count,
+		const HANDLE *handles,
+		HANDLE *matchedHandle,
+		bool *matchesFenceEvent,
+		bool *matchesFrameLatency)
+	{
+		if (matchedHandle)
+			*matchedHandle = nullptr;
+		if (matchesFenceEvent)
+			*matchesFenceEvent = false;
+		if (matchesFrameLatency)
+			*matchesFrameLatency = false;
+		if (!handles)
+			return false;
+
+		for (DWORD i = 0; i < count; ++i) {
+			bool fenceMatch = false;
+			bool frameLatencyMatch = false;
+			if (!ShouldProbeHandle(handles[i], &fenceMatch, &frameLatencyMatch))
+				continue;
+			if (matchedHandle)
+				*matchedHandle = handles[i];
+			if (matchesFenceEvent)
+				*matchesFenceEvent = fenceMatch;
+			if (matchesFrameLatency)
+				*matchesFrameLatency = frameLatencyMatch;
+			return true;
+		}
+		return false;
+	}
+
+	static void LogMatchedWaitStack(
+		const char *api,
+		HANDLE handle,
+		DWORD waitResult,
+		LONG64 us)
+	{
+		ID3D12Fence *fence = nullptr;
+		UINT64 fenceValue = 0;
+		HANDLE fenceEvent = nullptr;
+		DX12OuterTimingProbeUtils::SnapshotLastFenceEvent(
+			&fence, &fenceValue, &fenceEvent);
+		DX12OuterTimingProbeUtils::LogCurrentCallStack(
+			"matched_waitable_object",
+			api,
+			handle ? handle : fenceEvent,
+			fence,
+			fenceValue,
+			us,
+			waitResult,
+			GetCurrentThreadId(),
+			1);
+	}
+
+	static DWORD WINAPI HookedWaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds)
+	{
+		if (!DX12WaitHookState::OrigWaitForSingleObject)
+			return WAIT_FAILED;
+
+		thread_local LONG reentryDepth = 0;
+		if (InterlockedIncrement(&reentryDepth) != 1) {
+			const DWORD result =
+				DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
+			InterlockedDecrement(&reentryDepth);
+			return result;
+		}
+
+		bool matchesFenceEvent = false;
+		bool matchesFrameLatency = false;
+		const bool probeHandle = ShouldProbeHandle(
+			hHandle, &matchesFenceEvent, &matchesFrameLatency);
+		const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		const DWORD result =
+			DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
+		const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		const LONG64 us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+		DX12OuterTimingProbeUtils::RegisterSystemWait(
+			1,
+			hHandle,
+			nullptr,
+			result,
+			lastError,
+			us,
+			matchesFenceEvent,
+			matchesFrameLatency);
+		if (probeHandle || us >= 50000) {
+			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+				"WaitForSingleObject",
+				hHandle,
+				nullptr,
+				dwMilliseconds,
+				result,
+				lastError,
+				us,
+				matchesFenceEvent,
+				matchesFrameLatency);
+			if (matchesFenceEvent || matchesFrameLatency)
+				LogMatchedWaitStack("WaitForSingleObject", hHandle, result, us);
+		}
+		InterlockedDecrement(&reentryDepth);
+		return result;
+	}
+
+	static DWORD WINAPI HookedWaitForMultipleObjects(
+		DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll, DWORD dwMilliseconds)
+	{
+		if (!DX12WaitHookState::OrigWaitForMultipleObjects)
+			return WAIT_FAILED;
+
+		thread_local LONG reentryDepth = 0;
+		if (InterlockedIncrement(&reentryDepth) != 1) {
+			const DWORD result = DX12WaitHookState::OrigWaitForMultipleObjects(
+				nCount, lpHandles, bWaitAll, dwMilliseconds);
+			InterlockedDecrement(&reentryDepth);
+			return result;
+		}
+
+		HANDLE matchedHandle = nullptr;
+		bool matchesFenceEvent = false;
+		bool matchesFrameLatency = false;
+		const bool probeHandle = ShouldProbeHandles(
+			nCount,
+			lpHandles,
+			&matchedHandle,
+			&matchesFenceEvent,
+			&matchesFrameLatency);
+		const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		const DWORD result = DX12WaitHookState::OrigWaitForMultipleObjects(
+			nCount, lpHandles, bWaitAll, dwMilliseconds);
+		const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		const LONG64 us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+		DX12OuterTimingProbeUtils::RegisterSystemWait(
+			2,
+			matchedHandle,
+			nullptr,
+			result,
+			lastError,
+			us,
+			matchesFenceEvent,
+			matchesFrameLatency);
+		if (probeHandle || us >= 50000) {
+			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+				bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)",
+				matchedHandle,
+				nullptr,
+				dwMilliseconds,
+				result,
+				lastError,
+				us,
+				matchesFenceEvent,
+				matchesFrameLatency);
+			if (matchesFenceEvent || matchesFrameLatency)
+				LogMatchedWaitStack(
+					bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)",
+					matchedHandle,
+					result,
+					us);
+		}
+		InterlockedDecrement(&reentryDepth);
+		return result;
+	}
+
+	static DWORD WINAPI HookedSignalObjectAndWait(
+		HANDLE hObjectToSignal, HANDLE hObjectToWaitOn, DWORD dwMilliseconds, BOOL bAlertable)
+	{
+		if (!DX12WaitHookState::OrigSignalObjectAndWait)
+			return WAIT_FAILED;
+
+		thread_local LONG reentryDepth = 0;
+		if (InterlockedIncrement(&reentryDepth) != 1) {
+			const DWORD result = DX12WaitHookState::OrigSignalObjectAndWait(
+				hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
+			InterlockedDecrement(&reentryDepth);
+			return result;
+		}
+
+		bool matchesFenceEvent = false;
+		bool matchesFrameLatency = false;
+		const bool probeHandle = ShouldProbeHandle(
+			hObjectToWaitOn, &matchesFenceEvent, &matchesFrameLatency);
+		const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		const DWORD result = DX12WaitHookState::OrigSignalObjectAndWait(
+			hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
+		const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		const LONG64 us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+		DX12OuterTimingProbeUtils::RegisterSystemWait(
+			3,
+			hObjectToWaitOn,
+			hObjectToSignal,
+			result,
+			lastError,
+			us,
+			matchesFenceEvent,
+			matchesFrameLatency);
+		if (probeHandle || us >= 50000) {
+			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+				"SignalObjectAndWait",
+				hObjectToWaitOn,
+				hObjectToSignal,
+				dwMilliseconds,
+				result,
+				lastError,
+				us,
+				matchesFenceEvent,
+				matchesFrameLatency);
+			if (matchesFenceEvent || matchesFrameLatency)
+				LogMatchedWaitStack("SignalObjectAndWait", hObjectToWaitOn, result, us);
+		}
+		InterlockedDecrement(&reentryDepth);
+		return result;
+	}
+};
+
+void DX12WaitHooks::Install()
+{
+	AcquireSRWLockExclusive(&DX12WaitHookState::HookLock);
+	if (DX12WaitHookState::HookAttempted) {
+		ReleaseSRWLockExclusive(&DX12WaitHookState::HookLock);
+		return;
+	}
+	DX12WaitHookState::HookAttempted = true;
+	ReleaseSRWLockExclusive(&DX12WaitHookState::HookLock);
+
+	HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+	if (!kernel32)
+		kernel32 = LoadLibraryW(L"kernel32.dll");
+	if (!kernel32) {
+		AcquireSRWLockExclusive(&DX12WaitHookState::HookLock);
+		DX12WaitHookState::HookAttempted = false;
+		ReleaseSRWLockExclusive(&DX12WaitHookState::HookLock);
+		return;
+	}
+
+	DX12HookManager::InstallExportHook(
+		kernel32,
+		"WaitForSingleObject",
+		reinterpret_cast<void**>(&DX12WaitHookState::OrigWaitForSingleObject),
+		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedWaitForSingleObject));
+	DX12HookManager::InstallExportHook(
+		kernel32,
+		"WaitForMultipleObjects",
+		reinterpret_cast<void**>(&DX12WaitHookState::OrigWaitForMultipleObjects),
+		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedWaitForMultipleObjects));
+	DX12HookManager::InstallExportHook(
+		kernel32,
+		"SignalObjectAndWait",
+		reinterpret_cast<void**>(&DX12WaitHookState::OrigSignalObjectAndWait),
+		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedSignalObjectAndWait));
+}
+
+void DX12WaitHooks::Shutdown()
+{
+}

@@ -1,4 +1,9 @@
-#include "DX12.h"
+#include "DX12Core.h"
+#include "DX12Hooks.h"
+#include "DX12Tracking.h"
+#include "DX12Runtime.h"
+#include "DX12Resources.h"
+#include "DX12Presentation.h"
 #include <chrono>
 #include <stdio.h>
 #include <string.h>

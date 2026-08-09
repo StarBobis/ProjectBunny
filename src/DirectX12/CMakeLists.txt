@@ -2,22 +2,22 @@
 # DirectX12 - d3d12.dll proxy and minimal DXGI/Present hook
 # ============================================================
 add_library(DirectX12 SHARED
-    # Single merged header (one-header layout)
-    DX12.h
+    # Layered module headers (later layers include earlier ones)
+    DX12Core.h
+    DX12Hooks.h
+    DX12Tracking.h
+    DX12Runtime.h
+    DX12Resources.h
+    DX12Presentation.h
 
     # Proxy and presentation integration
     D3D12Proxy.cpp
     DX12Wrapper.cpp
-    DXGIHooks.cpp
-    DX12WaitHooks.cpp
 
     # Tracking and command execution modules
     DX12ResourceTracking.cpp
     DX12BindingTracking.cpp
     DX12CommandLists.cpp
-
-    # UI
-    DX12NativeOverlay.cpp
 
     # Shader dump & hunt
     DX12ShaderTools.cpp
