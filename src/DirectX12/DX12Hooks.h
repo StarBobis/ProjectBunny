@@ -5010,6 +5010,32 @@ public:
 			return;
 		}
 
+		// A compiled NoopNeverMatches decision is a PSO-level proof that no
+		// draw on this PSO can reach an override.  Keep that decision at the
+		// SetPipelineState/draw boundary instead of paying the DX11-style
+		// generic draw interpreter for every draw in the main scene.  Static IA
+		// redirects must stay on the regular path: it is responsible for
+		// restoring them when the game switches away from their source PSO.
+		// Hunt/capture paths also retain their per-draw bookkeeping below.
+		if (needsModWork && !huntEnabled &&
+			!(flagsWord & (DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
+				DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
+				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) &&
+			runtimeState && !runtimeState->staticTemplateIaApplied) {
+			const bool activeShaderOverrides =
+				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+			const DX12CompiledDrawDecision *decision =
+				DX12CommandListRuntime::EnsureDrawDecision(
+					runtimeState, activeShaderOverrides);
+			if (decision &&
+				decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
+				DX12_PROFILE_FAST_FORWARD();
+				DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+				DX12_HOTPATH_TIME_END(DrawHookTotal);
+				return;
+			}
+		}
+
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsModWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (ShouldSkipHuntDraw(commandList, draw)) {
