@@ -5802,6 +5802,24 @@ public:
 	// ExecuteCommandLists wrapper on the game thread under s_uploadLock).
 	inline static UINT64 s_uploadPendingFenceValue = 0;
 	inline static std::atomic<bool> s_uploadHasPending{false};
+	// A queue only needs one GPU-side wait for a given upload fence value. Keep
+	// the queues alive while the value is pending so a recycled COM address can
+	// never make us incorrectly suppress a required wait.
+	struct UploadQueueWait
+	{
+		ID3D12CommandQueue *queue = nullptr;
+		UINT64 fenceValue = 0;
+	};
+	inline static std::vector<UploadQueueWait> s_uploadQueueWaits;
+
+	static void ClearUploadQueueWaitsLocked()
+	{
+		for (UploadQueueWait &wait : s_uploadQueueWaits) {
+			if (wait.queue)
+				wait.queue->Release();
+		}
+		s_uploadQueueWaits.clear();
+	}
 
 	static bool EnsureUploadChannel(ID3D12Device *device)
 	{
@@ -5998,6 +6016,9 @@ public:
 		const UINT64 fenceValue = ++s_uploadFenceValue;
 		s_uploadQueue->Signal(s_uploadFence, fenceValue);
 		slot.busyUntilFence = fenceValue;
+		// A newer upload requires every game queue to establish a dependency on
+		// the new fence value, even if it already waited for an older one.
+		ClearUploadQueueWaitsLocked();
 		s_uploadPendingFenceValue = fenceValue;
 		s_uploadHasPending.store(true, std::memory_order_release);
 		ReleaseSRWLockExclusive(&s_uploadLock);
@@ -6287,9 +6308,22 @@ void DX12UploadChannelWaitOnQueue(ID3D12CommandQueue *queue)
 			// Upload landed; stop paying the Wait on later submits.
 			DX12DdsTextureLoadUtils::s_uploadHasPending.store(
 				false, std::memory_order_release);
+			DX12DdsTextureLoadUtils::ClearUploadQueueWaitsLocked();
 		} else {
-			queue->Wait(
-				DX12DdsTextureLoadUtils::s_uploadFence, pendingValue);
+			bool alreadyWaited = false;
+			for (const DX12DdsTextureLoadUtils::UploadQueueWait &wait :
+			     DX12DdsTextureLoadUtils::s_uploadQueueWaits) {
+				if (wait.queue == queue && wait.fenceValue >= pendingValue) {
+					alreadyWaited = true;
+					break;
+				}
+			}
+			if (!alreadyWaited && SUCCEEDED(queue->Wait(
+					DX12DdsTextureLoadUtils::s_uploadFence, pendingValue))) {
+				queue->AddRef();
+				DX12DdsTextureLoadUtils::s_uploadQueueWaits.push_back(
+					{ queue, pendingValue });
+			}
 		}
 	}
 	ReleaseSRWLockExclusive(&DX12DdsTextureLoadUtils::s_uploadLock);

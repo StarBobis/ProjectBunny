@@ -6532,13 +6532,12 @@ uint32_t DX12HashIaBufferContentView(
 			summary.resourceOffset, summary.viewSize,
 			stride, format, slot };
 		s_cacheL2[keyL2] = contentCacheValue;
-		if (s_cacheL1.size() > MaxL1Entries ||
-		    s_cacheL2.size() > MaxL2Entries) {
-			s_cacheL1.clear();
-			s_cacheL2.clear();
-		}
+		if (s_cacheL1.size() > MaxL1Entries)
+			s_cacheL1.erase(s_cacheL1.begin());
+		if (s_cacheL2.size() > MaxL2Entries)
+			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
-			s_cacheL3Resolved.clear();
+			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaHashResolve",
 			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
@@ -6582,13 +6581,12 @@ uint32_t DX12HashIaBufferContentView(
 				stride, format, slot };
 			s_cacheL2[keyL2] = contentCacheValue;
 		}
-		if (s_cacheL1.size() > MaxL1Entries ||
-		    s_cacheL2.size() > MaxL2Entries) {
-			s_cacheL1.clear();
-			s_cacheL2.clear();
-		}
+		if (s_cacheL1.size() > MaxL1Entries)
+			s_cacheL1.erase(s_cacheL1.begin());
+		if (s_cacheL2.size() > MaxL2Entries)
+			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
-			s_cacheL3Resolved.clear();
+			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
 #if defined(_DEBUG)
 		DX12LogManager::DebugFields("DX12IaHashResolve",
 			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
@@ -6694,13 +6692,12 @@ uint32_t DX12HashIaBufferContentView(
 			stride, format, slot };
 		s_cacheL2[keyL2] = cacheValue;
 	}
-	if (s_cacheL1.size() > MaxL1Entries ||
-	    s_cacheL2.size() > MaxL2Entries) {
-		s_cacheL1.clear();
-		s_cacheL2.clear();
-	}
+	if (s_cacheL1.size() > MaxL1Entries)
+		s_cacheL1.erase(s_cacheL1.begin());
+	if (s_cacheL2.size() > MaxL2Entries)
+		s_cacheL2.erase(s_cacheL2.begin());
 	if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
-		s_cacheL3Resolved.clear();
+		s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
 	return hash;
 }
 
@@ -8513,44 +8510,16 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	if (events.empty())
 		return;
 
-	ID3D12Device *device = nullptr;
-	if (FAILED(gameQueue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
-		DX12ReadbackLogSubmitFailure("failed_get_device", events.size(), 0);
-		DX12ReadbackReleaseEvents(events);
-		return;
-	}
-
-	AcquireSRWLockExclusive(&gReadbackChannelLock);
-	if (!DX12ReadbackEnsureChannelLocked(device)) {
-		ReleaseSRWLockExclusive(&gReadbackChannelLock);
-		device->Release();
-		DX12ReadbackLogSubmitFailure("failed_channel", events.size(), 0);
-		DX12ReadbackReleaseEvents(events);
-		return;
-	}
-
-	ID3D12CommandAllocator *allocator = nullptr;
-	ID3D12GraphicsCommandList *list = nullptr;
-	if (!DX12ReadbackAcquireListLocked(&allocator, &list)) {
-		ReleaseSRWLockExclusive(&gReadbackChannelLock);
-		device->Release();
-		DX12ReadbackLogSubmitFailure("failed_list", events.size(), 0);
-		DX12ReadbackReleaseEvents(events);
-		return;
-	}
-
-	// Plan ring placement and drop oversized events.
+	// Plan the detached batch before taking the channel lock. This is CPU-only
+	// work and must not contend with allocator/ring maintenance or the worker.
 	UINT64 ringUsed = 0;
 	UINT submittedCount = 0;
 	std::vector<DX12ReadbackEvent> kept;
 	kept.reserve(events.size());
 	for (DX12ReadbackEvent &event : events) {
-		UINT64 bytes = 0;
-		if (event.kind == DX12ReadbackEventKind::Buffer) {
-			bytes = (event.size + kReadbackAlign - 1) & ~(kReadbackAlign - 1);
-		} else {
-			bytes = event.rowCount * event.ringPitch;
-		}
+		UINT64 bytes = event.kind == DX12ReadbackEventKind::Buffer ?
+			(event.size + kReadbackAlign - 1) & ~(kReadbackAlign - 1) :
+			event.rowCount * event.ringPitch;
 		if (bytes == 0 || bytes > kReadbackSlotMaxBytes ||
 		    ringUsed + bytes > kReadbackSlotMaxBytes ||
 		    submittedCount >= kReadbackSubmitEventCap) {
@@ -8565,13 +8534,35 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	}
 	if (kept.empty()) {
 		DX12ReadbackLogSubmitFailure("failed_all_oversized", events.size(), 0);
-		allocator->Release();
-		list->Release();
-		ReleaseSRWLockExclusive(&gReadbackChannelLock);
-		device->Release();
 		return;
 	}
 	events.clear();
+
+	ID3D12Device *device = nullptr;
+	if (FAILED(gameQueue->GetDevice(IID_PPV_ARGS(&device))) || !device) {
+		DX12ReadbackLogSubmitFailure("failed_get_device", kept.size(), 0);
+		DX12ReadbackReleaseEvents(kept);
+		return;
+	}
+
+	AcquireSRWLockExclusive(&gReadbackChannelLock);
+	if (!DX12ReadbackEnsureChannelLocked(device)) {
+		ReleaseSRWLockExclusive(&gReadbackChannelLock);
+		device->Release();
+		DX12ReadbackLogSubmitFailure("failed_channel", kept.size(), 0);
+		DX12ReadbackReleaseEvents(kept);
+		return;
+	}
+
+	ID3D12CommandAllocator *allocator = nullptr;
+	ID3D12GraphicsCommandList *list = nullptr;
+	if (!DX12ReadbackAcquireListLocked(&allocator, &list)) {
+		ReleaseSRWLockExclusive(&gReadbackChannelLock);
+		device->Release();
+		DX12ReadbackLogSubmitFailure("failed_list", kept.size(), 0);
+		DX12ReadbackReleaseEvents(kept);
+		return;
+	}
 
 	DX12ReadbackRingSlot *slot = DX12ReadbackAcquireRingSlotLocked(ringUsed);
 	if (!slot) {
