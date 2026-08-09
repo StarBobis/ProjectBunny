@@ -367,142 +367,6 @@ public:
 		return memo;
 	}
 
-	// CopyDescriptors frequently repeats the same one-slot CPU handle pairs.
-	// RangeMemo validates those copies only after resolving both handles back to
-	// heap slots. Keep a small raw-handle front cache for the proven-unchanged
-	// case: the slot versions are still the authority, so a descriptor write or
-	// heap retirement always falls back to the normal resolver before any
-	// shadow state can be skipped.
-	class HandleCopyMemo
-	{
-	public:
-		class Entry
-		{
-		public:
-			SIZE_T sourceHandle = 0;
-			SIZE_T destinationHandle = 0;
-			DescriptorHeapRecord *sourceHeap = nullptr;
-			DescriptorHeapRecord *destinationHeap = nullptr;
-			const DescriptorHeapRecord::StateLocks *sourceStateLocks = nullptr;
-			const DescriptorHeapRecord::StateLocks *destinationStateLocks = nullptr;
-			UINT sourceSlot = 0;
-			UINT destinationSlot = 0;
-			UINT64 sourceVersion = 0;
-			UINT64 destinationVersion = 0;
-			D3D12_DESCRIPTOR_HEAP_TYPE type = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
-			bool sourceFound = false;
-			bool occupied = false;
-		};
-
-		bool TryLoad(
-			D3D12_DESCRIPTOR_HEAP_TYPE type,
-			SIZE_T destinationHandle,
-			SIZE_T sourceHandle,
-			Entry *out) const
-		{
-			const Entry &entry = entries[EntryIndex(type, destinationHandle, sourceHandle)];
-			if (!entry.occupied || entry.type != type ||
-				entry.destinationHandle != destinationHandle ||
-				entry.sourceHandle != sourceHandle ||
-				!entry.sourceHeap || !entry.destinationHeap ||
-				!entry.sourceHeap->stateLocks || !entry.destinationHeap->stateLocks ||
-				entry.sourceHeap->stateLocks.get() != entry.sourceStateLocks ||
-				entry.destinationHeap->stateLocks.get() != entry.destinationStateLocks ||
-				!entry.sourceHeap->stateLocks->IsActive() ||
-				!entry.destinationHeap->stateLocks->IsActive() ||
-				entry.sourceHeap->stateLocks->ReadSlotVersion(entry.sourceSlot) != entry.sourceVersion ||
-				entry.destinationHeap->stateLocks->ReadSlotVersion(entry.destinationSlot) != entry.destinationVersion)
-				return false;
-			if (out)
-				*out = entry;
-			return true;
-		}
-
-		void Store(
-			D3D12_DESCRIPTOR_HEAP_TYPE type,
-			SIZE_T destinationHandle,
-			SIZE_T sourceHandle,
-			DescriptorHeapRecord &sourceHeap,
-			UINT sourceSlot,
-			DescriptorHeapRecord &destinationHeap,
-			UINT destinationSlot,
-			bool sourceFound)
-		{
-			if (!sourceHeap.stateLocks || !destinationHeap.stateLocks)
-				return;
-			Entry &entry = entries[EntryIndex(type, destinationHandle, sourceHandle)];
-			entry.sourceHandle = sourceHandle;
-			entry.destinationHandle = destinationHandle;
-			entry.sourceHeap = &sourceHeap;
-			entry.destinationHeap = &destinationHeap;
-			entry.sourceStateLocks = sourceHeap.stateLocks.get();
-			entry.destinationStateLocks = destinationHeap.stateLocks.get();
-			entry.sourceSlot = sourceSlot;
-			entry.destinationSlot = destinationSlot;
-			entry.sourceVersion = sourceHeap.stateLocks->ReadSlotVersion(sourceSlot);
-			entry.destinationVersion = destinationHeap.stateLocks->ReadSlotVersion(destinationSlot);
-			entry.type = type;
-			entry.sourceFound = sourceFound;
-			entry.occupied = true;
-		}
-
-	private:
-		static constexpr size_t EntryCount = 4096;
-
-		static size_t EntryIndex(
-			D3D12_DESCRIPTOR_HEAP_TYPE type,
-			SIZE_T destinationHandle,
-			SIZE_T sourceHandle)
-		{
-			UINT64 hash = static_cast<UINT64>(destinationHandle);
-			hash ^= static_cast<UINT64>(sourceHandle) * 0x9e3779b97f4a7c15ull;
-			hash ^= static_cast<UINT64>(type) * 0xc2b2ae3d27d4eb4full;
-			hash ^= hash >> 33;
-			hash *= 0xff51afd7ed558ccdull;
-			hash ^= hash >> 33;
-			return static_cast<size_t>(hash) & (EntryCount - 1);
-		}
-
-		std::array<Entry, EntryCount> entries = {};
-	};
-
-	static HandleCopyMemo &HandleMemo()
-	{
-		static thread_local HandleCopyMemo memo;
-		return memo;
-	}
-
-	static bool TrySkipMemoizedHandleCopy(
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		CopyTelemetryBatch *telemetryBatch)
-	{
-		HandleCopyMemo::Entry entry;
-		if (!HandleMemo().TryLoad(type, destStart.ptr, srcStart.ptr, &entry))
-			return false;
-		const bool sameHeap = entry.sourceHeap == entry.destinationHeap;
-		const bool overlaps = sameHeap && entry.sourceSlot == entry.destinationSlot;
-		if (telemetryBatch) {
-			telemetryBatch->RecordRange(1, true, sameHeap, overlaps);
-			telemetryBatch->RecordRepeatHit();
-			telemetryBatch->RecordMemo(true);
-			telemetryBatch->RecordResults(
-				entry.sourceFound ? 1 : 0, entry.sourceFound ? 0 : 1,
-				0, entry.sourceFound ? 1 : 0,
-				0, entry.sourceFound ? 0 : 1);
-		} else {
-			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-				1, true, sameHeap, overlaps);
-			DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-			DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-				entry.sourceFound ? 1 : 0, entry.sourceFound ? 0 : 1,
-				0, entry.sourceFound ? 1 : 0,
-				0, entry.sourceFound ? 0 : 1);
-		}
-		return true;
-	}
-
 	// gDescriptorLock must be held while resolving this pointer. The lock object
 	// itself is heap allocated, and the owning deque keeps record addresses stable.
 	static SRWLOCK *HeapLock(size_t heapIndex, UINT slot)
@@ -904,13 +768,14 @@ public:
 		if (resolvedKnownHeap &&
 				resolved.heap && resolved.heap->stateLocks) {
 			UINT64 flatValueId = 0;
-			if (resolved.heap->stateLocks->ReadFlatValueId(
-					resolved.slot, &flatValueId) &&
-					flatValueId == valueId) {
-				return false;
-			}
-			if (resolved.heap->stateLocks->PublishedSlotValueEquals(
-					resolved.slot, valueId)) {
+			const bool hasFlatValue =
+				resolved.heap->stateLocks->ReadFlatValueId(
+					resolved.slot, &flatValueId);
+			if (hasFlatValue) {
+				if (flatValueId == valueId)
+					return false;
+			} else if (resolved.heap->stateLocks->PublishedSlotValueEquals(
+						resolved.slot, valueId)) {
 				return false;
 			}
 		}
@@ -1219,11 +1084,6 @@ public:
 		if (count == 0) {
 			return;
 		}
-		if (count == 1 && TrySkipMemoizedHandleCopy(
-				type, destStart, srcStart, telemetryBatch)) {
-			return;
-		}
-
 		ResolvedHeapSlot destResolved;
 		ResolvedHeapSlot srcResolved;
 		const bool hasDestination = ResolveHeapSlotFast(
@@ -1301,10 +1161,6 @@ public:
 						0,
 						flatDestValueId ? 0 : 1);
 				}
-				HandleMemo().Store(
-					type, destStart.ptr, srcStart.ptr,
-					srcHeap, srcSlot, destHeap, destSlot,
-					flatDestValueId != 0);
 				return;
 			}
 			// Single-descriptor copies are 99.5% of all copy ranges. The
@@ -1334,10 +1190,6 @@ public:
 						memoSourceFound, memoSourceMissing,
 						0, memoUnchanged, 0, memoAlreadyEmpty);
 				}
-				HandleMemo().Store(
-					type, destStart.ptr, srcStart.ptr,
-					srcHeap, srcSlot, destHeap, destSlot,
-					memoSourceFound != 0);
 				return;
 			}
 			UINT64 srcVersion = 0;
@@ -1375,10 +1227,6 @@ public:
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
 						0,
 						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				HandleMemo().Store(
-					type, destStart.ptr, srcStart.ptr,
-					srcHeap, srcSlot, destHeap, destSlot,
-					identityResult == CopyIdentityResult::Unchanged);
 				return;
 			}
 			if (telemetryBatch)
