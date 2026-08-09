@@ -4984,6 +4984,9 @@ public:
 		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
+		const bool frameCapturePendingOrActive =
+			DX12FrameAnalysisState::IsCaptureRequested() ||
+			DX12FrameAnalysisState::IsCapturing();
 
 		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -5019,8 +5022,8 @@ public:
 		// restore before this non-matching draw is recorded. Hunt/capture paths
 		// retain their per-draw bookkeeping below.
 		if (needsModWork && !huntEnabled &&
-			!(flagsWord & (DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
-				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE)) &&
+			!frameCapturePendingOrActive &&
+			!(flagsWord & DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE) &&
 			runtimeState) {
 			const bool activeShaderOverrides =
 				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
