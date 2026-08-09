@@ -6409,6 +6409,18 @@ public:
 	inline static volatile LONG DrawDecisionDirectProbeCacheStores = 0;
 	inline static volatile LONG DrawDecisionDirectProbeCacheEvictions = 0;
 
+	// Draw-hook no-op forwarding diagnostics. These are per-frame counters in
+	// timing builds so a rejected PSO-level fast path never requires per-draw
+	// logging to diagnose.
+	inline static volatile LONG DrawNoopFastPathAttempts = 0;
+	inline static volatile LONG DrawNoopFastPathForwarded = 0;
+	inline static volatile LONG DrawNoopFastPathHuntBlocked = 0;
+	inline static volatile LONG DrawNoopFastPathCaptureBlocked = 0;
+	inline static volatile LONG DrawNoopFastPathShaderDumpBlocked = 0;
+	inline static volatile LONG DrawNoopFastPathNoRuntime = 0;
+	inline static volatile LONG DrawNoopFastPathNoDecision = 0;
+	inline static volatile LONG DrawNoopFastPathNonNoopDecision = 0;
+
 	// Zero-work-path verification (docs/DX11_ARCHITECTURE_MIGRATION_TO_DX12.md
 	// Stage A): binding events, descriptor epoch writes and Hunt visited-set
 	// writes must stay 0 in plain Mod mode; descriptor record fast-skips should
@@ -7023,6 +7035,46 @@ public:
 			Inc(&DrawDecisionDirectProbeCacheEvictions);
 	}
 
+	static void RecordDrawNoopFastPathAttempt()
+	{
+		Inc(&DrawNoopFastPathAttempts);
+	}
+
+	static void RecordDrawNoopFastPathForwarded()
+	{
+		Inc(&DrawNoopFastPathForwarded);
+	}
+
+	static void RecordDrawNoopFastPathHuntBlocked()
+	{
+		Inc(&DrawNoopFastPathHuntBlocked);
+	}
+
+	static void RecordDrawNoopFastPathCaptureBlocked()
+	{
+		Inc(&DrawNoopFastPathCaptureBlocked);
+	}
+
+	static void RecordDrawNoopFastPathShaderDumpBlocked()
+	{
+		Inc(&DrawNoopFastPathShaderDumpBlocked);
+	}
+
+	static void RecordDrawNoopFastPathNoRuntime()
+	{
+		Inc(&DrawNoopFastPathNoRuntime);
+	}
+
+	static void RecordDrawNoopFastPathNoDecision()
+	{
+		Inc(&DrawNoopFastPathNoDecision);
+	}
+
+	static void RecordDrawNoopFastPathNonNoopDecision()
+	{
+		Inc(&DrawNoopFastPathNonNoopDecision);
+	}
+
 	static void LogPso()
 	{
 		LONG psoCalls = Take(&PsoCalls);
@@ -7332,6 +7384,25 @@ public:
 			directProbeCacheStores, directProbeCacheEvictions);
 	}
 
+	static void LogDrawNoopFastPathState()
+	{
+		LONG attempts = Take(&DrawNoopFastPathAttempts);
+		LONG forwarded = Take(&DrawNoopFastPathForwarded);
+		LONG huntBlocked = Take(&DrawNoopFastPathHuntBlocked);
+		LONG captureBlocked = Take(&DrawNoopFastPathCaptureBlocked);
+		LONG shaderDumpBlocked = Take(&DrawNoopFastPathShaderDumpBlocked);
+		LONG noRuntime = Take(&DrawNoopFastPathNoRuntime);
+		LONG noDecision = Take(&DrawNoopFastPathNoDecision);
+		LONG nonNoopDecision = Take(&DrawNoopFastPathNonNoopDecision);
+		if (!attempts && !forwarded && !huntBlocked && !captureBlocked &&
+			!shaderDumpBlocked && !noRuntime && !noDecision && !nonNoopDecision)
+			return;
+		DX12LogManager::Fields("DX12ResidentMaintenance",
+			"\"category\":\"draw_noop_fast_path\",\"attempts\":%ld,\"forwarded\":%ld,\"huntBlocked\":%ld,\"captureBlocked\":%ld,\"shaderDumpBlocked\":%ld,\"noRuntime\":%ld,\"noDecision\":%ld,\"nonNoopDecision\":%ld",
+			attempts, forwarded, huntBlocked, captureBlocked, shaderDumpBlocked,
+			noRuntime, noDecision, nonNoopDecision);
+	}
+
 	static void RecordBindingEventRecorded()
 	{
 		Inc(&BindingEventsRecorded);
@@ -7377,6 +7448,7 @@ public:
 		LogDispatchDecisionState();
 		LogPreSkinPlanState();
 		LogDrawDecisionState();
+		LogDrawNoopFastPathState();
 		LogZeroWorkState();
 	}
 };

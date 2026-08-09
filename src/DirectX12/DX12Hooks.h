@@ -5021,27 +5021,39 @@ public:
 		// forwarding: they are normally no-ops, but a PSO switch can require one
 		// restore before this non-matching draw is recorded. Hunt/capture paths
 		// retain their per-draw bookkeeping below.
-		if (needsModWork && !huntEnabled &&
-			!frameCapturePendingOrActive &&
-			!(flagsWord & DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE) &&
-			runtimeState) {
-			const bool activeShaderOverrides =
-				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
-			DX12IaReplacementExecutor::RestoreStaleStaticIaBindings(
-				commandList, runtimeState, callbacks);
-			const DX12CompiledDrawDecision *decision =
-				DX12CommandListRuntime::EnsureDrawDecision(
-					runtimeState, activeShaderOverrides);
-			if (decision &&
-				decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
-				if (runtimeState->staticTemplateIaApplied) {
-					DX12IaReplacementExecutor::RestoreStaticTemplateIa(
-						commandList, runtimeState, callbacks);
+		if (needsModWork) {
+			DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathAttempt();
+			if (huntEnabled) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathHuntBlocked();
+			} else if (frameCapturePendingOrActive) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathCaptureBlocked();
+			} else if (flagsWord & DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathShaderDumpBlocked();
+			} else if (!runtimeState) {
+				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoRuntime();
+			} else {
+				const bool activeShaderOverrides =
+					(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+				DX12IaReplacementExecutor::RestoreStaleStaticIaBindings(
+					commandList, runtimeState, callbacks);
+				const DX12CompiledDrawDecision *decision =
+					DX12CommandListRuntime::EnsureDrawDecision(
+						runtimeState, activeShaderOverrides);
+				if (!decision) {
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoDecision();
+				} else if (decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
+					if (runtimeState->staticTemplateIaApplied) {
+						DX12IaReplacementExecutor::RestoreStaticTemplateIa(
+							commandList, runtimeState, callbacks);
+					}
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathForwarded();
+					DX12_PROFILE_FAST_FORWARD();
+					DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
+					DX12_HOTPATH_TIME_END(DrawHookTotal);
+					return;
+				} else {
+					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNonNoopDecision();
 				}
-				DX12_PROFILE_FAST_FORWARD();
-				DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-				DX12_HOTPATH_TIME_END(DrawHookTotal);
-				return;
 			}
 		}
 
