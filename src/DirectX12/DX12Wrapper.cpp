@@ -320,7 +320,15 @@ namespace DX12Wrapper
 				IsDxgiSwapChainIid(riid);
 		}
 
-		bool DoesObjectSupportIid(IUnknown *object, REFIID riid)
+		struct InterfaceSupportCacheEntry
+		{
+			IUnknown *object = nullptr;
+			IID iid = {};
+			UINT64 generation = 0;
+			bool supported = false;
+		};
+
+		bool DoesObjectSupportIidUncached(IUnknown *object, REFIID riid)
 		{
 			if (!object)
 				return false;
@@ -331,6 +339,34 @@ namespace DX12Wrapper
 				return true;
 			}
 			return false;
+		}
+
+		// QI support is stable for a COM object's lifetime, and wrapper
+		// destruction bumps the registry generation, so per-thread caching
+		// keyed by the underlying object is safe.
+		bool DoesObjectSupportIid(IUnknown *object, REFIID riid)
+		{
+			if (!object)
+				return false;
+			static constexpr UINT kCacheEntries = 16;
+			static thread_local InterfaceSupportCacheEntry cache[kCacheEntries];
+			static thread_local UINT next = 0;
+			const UINT64 generation =
+				gWrapperRegistryGeneration.load(std::memory_order_acquire);
+			for (UINT i = 0; i < kCacheEntries; ++i) {
+				const InterfaceSupportCacheEntry &entry = cache[i];
+				if (entry.object == object &&
+				    entry.generation == generation &&
+				    IsEqualIID(entry.iid, riid))
+					return entry.supported;
+			}
+			const bool supported = DoesObjectSupportIidUncached(object, riid);
+			InterfaceSupportCacheEntry &entry = cache[next++ & (kCacheEntries - 1)];
+			entry.object = object;
+			entry.iid = riid;
+			entry.generation = generation;
+			entry.supported = supported;
+			return supported;
 		}
 
 		bool IsSupportedWrapperIid(IUnknown *object, REFIID riid, bool (*isWrapperIid)(REFIID))
@@ -445,20 +481,20 @@ namespace DX12Wrapper
 		bool SupportsAnyD3D12AuxiliaryInterface(IUnknown *object)
 		{
 			return
-				DoesObjectSupportIid(object, __uuidof(ID3D12Debug)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12Debug1)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12Debug2)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12Debug3)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12DeviceRemovedExtendedDataSettings)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12DeviceRemovedExtendedData)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12Tools)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12SDKConfiguration)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12InfoQueue)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12DebugDevice)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12DebugCommandQueue)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12DebugCommandList)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12SharingContract)) ||
-				DoesObjectSupportIid(object, __uuidof(ID3D12ManualWriteTrackingResource));
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12Debug)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12Debug1)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12Debug2)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12Debug3)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12DeviceRemovedExtendedDataSettings)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12DeviceRemovedExtendedData)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12Tools)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12SDKConfiguration)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12InfoQueue)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12DebugDevice)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12DebugCommandQueue)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12DebugCommandList)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12SharingContract)) ||
+				DoesObjectSupportIidUncached(object, __uuidof(ID3D12ManualWriteTrackingResource));
 		}
 
 		bool TryWrapKnownD3D12Result(REFIID riid, void **object)
@@ -5287,15 +5323,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		}
 
 			template <typename Interface>
-			HRESULT QueryCachedCommandListInterface(
-				CachedCommandListInterface<Interface> *cached,
-				Interface **commandList)
+			Interface *GetCachedCommandListInterface(
+				CachedCommandListInterface<Interface> *cached)
 			{
-				if (!commandList)
-					return E_POINTER;
-				*commandList = nullptr;
-				// COM requires an object's supported interface set to remain stable.
-				// Keep one cached reference and preserve the caller's AddRef contract.
+				// Internal forwarding only: the wrapper owns this cached
+				// reference for its whole lifetime, so no AddRef is needed.
 				if (!cached->queried) {
 					cached->queried = true;
 					cached->result = mCommandList->QueryInterface(
@@ -5303,10 +5335,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						reinterpret_cast<void**>(&cached->pointer));
 				}
 				if (FAILED(cached->result))
-					return cached->result;
-				cached->pointer->AddRef();
-				*commandList = cached->pointer;
-				return S_OK;
+					return nullptr;
+				return cached->pointer;
 			}
 
 			template <typename Interface>
@@ -5319,54 +5349,54 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				}
 			}
 
-			HRESULT QueryCommandList1(ID3D12GraphicsCommandList1 **commandList)
+			ID3D12GraphicsCommandList1 *CommandList1Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList1Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList1Interface);
 			}
 
-			HRESULT QueryCommandList2(ID3D12GraphicsCommandList2 **commandList)
+			ID3D12GraphicsCommandList2 *CommandList2Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList2Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList2Interface);
 			}
 
-			HRESULT QueryCommandList3(ID3D12GraphicsCommandList3 **commandList)
+			ID3D12GraphicsCommandList3 *CommandList3Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList3Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList3Interface);
 			}
 
-			HRESULT QueryCommandList4(ID3D12GraphicsCommandList4 **commandList)
+			ID3D12GraphicsCommandList4 *CommandList4Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList4Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList4Interface);
 			}
 
-			HRESULT QueryCommandList5(ID3D12GraphicsCommandList5 **commandList)
+			ID3D12GraphicsCommandList5 *CommandList5Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList5Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList5Interface);
 			}
 
-			HRESULT QueryCommandList6(ID3D12GraphicsCommandList6 **commandList)
+			ID3D12GraphicsCommandList6 *CommandList6Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList6Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList6Interface);
 			}
 
-			HRESULT QueryCommandList7(ID3D12GraphicsCommandList7 **commandList)
+			ID3D12GraphicsCommandList7 *CommandList7Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList7Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList7Interface);
 			}
 
-			HRESULT QueryCommandList8(ID3D12GraphicsCommandList8 **commandList)
+			ID3D12GraphicsCommandList8 *CommandList8Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList8Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList8Interface);
 			}
 
-			HRESULT QueryCommandList9(ID3D12GraphicsCommandList9 **commandList)
+			ID3D12GraphicsCommandList9 *CommandList9Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList9Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList9Interface);
 			}
 
-			HRESULT QueryCommandList10(ID3D12GraphicsCommandList10 **commandList)
+			ID3D12GraphicsCommandList10 *CommandList10Raw()
 			{
-				return QueryCachedCommandListInterface(&mCommandList10Interface, commandList);
+				return GetCachedCommandListInterface(&mCommandList10Interface);
 			}
 
 			void *GetGraphicsCommandListWrapperInterface(REFIID riid)
@@ -6220,8 +6250,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				UINT64 SrcOffset, UINT Dependencies, ID3D12Resource *const *ppDependentResources,
 				const D3D12_SUBRESOURCE_RANGE_UINT64 *pDependentSubresourceRanges) override
 			{
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (FAILED(QueryCommandList1(&commandList1)))
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (!commandList1)
 					return;
 				std::vector<ID3D12Resource*> dependentResources;
 				ID3D12Resource *const *activeDependentResources = ppDependentResources;
@@ -6231,7 +6261,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer), DstOffset,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcBuffer), SrcOffset,
 					Dependencies, activeDependentResources, pDependentSubresourceRanges);
-				commandList1->Release();
 			}
 
 			void STDMETHODCALLTYPE AtomicCopyBufferUINT64(
@@ -6239,8 +6268,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				UINT64 SrcOffset, UINT Dependencies, ID3D12Resource *const *ppDependentResources,
 				const D3D12_SUBRESOURCE_RANGE_UINT64 *pDependentSubresourceRanges) override
 			{
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (FAILED(QueryCommandList1(&commandList1)))
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (!commandList1)
 					return;
 				std::vector<ID3D12Resource*> dependentResources;
 				ID3D12Resource *const *activeDependentResources = ppDependentResources;
@@ -6250,16 +6279,14 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstBuffer), DstOffset,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcBuffer), SrcOffset,
 					Dependencies, activeDependentResources, pDependentSubresourceRanges);
-				commandList1->Release();
 			}
 
 			void STDMETHODCALLTYPE OMSetDepthBounds(FLOAT Min, FLOAT Max) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(OMSetDepthBoundsTotal);
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (SUCCEEDED(QueryCommandList1(&commandList1))) {
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (commandList1) {
 					commandList1->OMSetDepthBounds(Min, Max);
-					commandList1->Release();
 				}
 			DX12_HOTPATH_TIME_END(OMSetDepthBoundsTotal);
 			}
@@ -6267,10 +6294,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetSamplePositions(
 				UINT NumSamplesPerPixel, UINT NumPixels, D3D12_SAMPLE_POSITION *pSamplePositions) override
 			{
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (SUCCEEDED(QueryCommandList1(&commandList1))) {
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (commandList1) {
 					commandList1->SetSamplePositions(NumSamplesPerPixel, NumPixels, pSamplePositions);
-					commandList1->Release();
 				}
 			}
 
@@ -6279,23 +6305,21 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				ID3D12Resource *pSrcResource, UINT SrcSubresource, RECT *pSrcRect,
 				DXGI_FORMAT Format, D3D12_RESOLVE_MODE ResolveMode) override
 			{
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (FAILED(QueryCommandList1(&commandList1)))
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (!commandList1)
 					return;
 				commandList1->ResolveSubresourceRegion(
 					DX12WrapperRuntimeUtils::UnwrapResource(pDstResource), DstSubresource, DstX, DstY,
 					DX12WrapperRuntimeUtils::UnwrapResource(pSrcResource), SrcSubresource,
 					pSrcRect, Format, ResolveMode);
-				commandList1->Release();
 			}
 
 			void STDMETHODCALLTYPE SetViewInstanceMask(UINT Mask) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetViewInstanceMaskTotal);
-				ID3D12GraphicsCommandList1 *commandList1 = nullptr;
-				if (SUCCEEDED(QueryCommandList1(&commandList1))) {
+				ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
+				if (commandList1) {
 					commandList1->SetViewInstanceMask(Mask);
-					commandList1->Release();
 				}
 			DX12_HOTPATH_TIME_END(SetViewInstanceMaskTotal);
 			}
@@ -6304,21 +6328,19 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				UINT Count, const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER *pParams,
 				const D3D12_WRITEBUFFERIMMEDIATE_MODE *pModes) override
 			{
-				ID3D12GraphicsCommandList2 *commandList2 = nullptr;
-				if (SUCCEEDED(QueryCommandList2(&commandList2))) {
+				ID3D12GraphicsCommandList2 *commandList2 = CommandList2Raw();
+				if (commandList2) {
 					commandList2->WriteBufferImmediate(Count, pParams, pModes);
-					commandList2->Release();
 				}
 			}
 
 			void STDMETHODCALLTYPE SetProtectedResourceSession(ID3D12ProtectedResourceSession *pProtectedResourceSession) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetProtectedSessionTotal);
-				ID3D12GraphicsCommandList3 *commandList3 = nullptr;
-				if (SUCCEEDED(QueryCommandList3(&commandList3))) {
+				ID3D12GraphicsCommandList3 *commandList3 = CommandList3Raw();
+				if (commandList3) {
 					commandList3->SetProtectedResourceSession(
 						DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedResourceSession));
-					commandList3->Release();
 				}
 			DX12_HOTPATH_TIME_END(SetProtectedSessionTotal);
 			}
@@ -6327,20 +6349,18 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				UINT NumRenderTargets, const D3D12_RENDER_PASS_RENDER_TARGET_DESC *pRenderTargets,
 				const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC *pDepthStencil, D3D12_RENDER_PASS_FLAGS Flags) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->BeginRenderPass(NumRenderTargets, pRenderTargets, pDepthStencil, Flags);
-					commandList4->Release();
 				}
 			}
 
 			void STDMETHODCALLTYPE EndRenderPass() override
 			{
 			DX12_HOTPATH_TIME_BEGIN(EndRenderPassTotal);
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->EndRenderPass();
-					commandList4->Release();
 				}
 			DX12_HOTPATH_TIME_END(EndRenderPassTotal);
 			}
@@ -6349,12 +6369,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				ID3D12MetaCommand *pMetaCommand, const void *pInitializationParametersData,
 				SIZE_T InitializationParametersDataSizeInBytes) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->InitializeMetaCommand(
 						DX12WrapperRuntimeUtils::UnwrapMetaCommand(pMetaCommand),
 						pInitializationParametersData, InitializationParametersDataSizeInBytes);
-					commandList4->Release();
 				}
 			}
 
@@ -6362,12 +6381,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				ID3D12MetaCommand *pMetaCommand, const void *pExecutionParametersData,
 				SIZE_T ExecutionParametersDataSizeInBytes) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->ExecuteMetaCommand(
 						DX12WrapperRuntimeUtils::UnwrapMetaCommand(pMetaCommand),
 						pExecutionParametersData, ExecutionParametersDataSizeInBytes);
-					commandList4->Release();
 				}
 			}
 
@@ -6375,10 +6393,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *pDesc,
 				UINT NumPostbuildInfoDescs, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pPostbuildInfoDescs) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->BuildRaytracingAccelerationStructure(pDesc, NumPostbuildInfoDescs, pPostbuildInfoDescs);
-					commandList4->Release();
 				}
 			}
 
@@ -6386,11 +6403,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pDesc,
 				UINT NumSourceAccelerationStructures, const D3D12_GPU_VIRTUAL_ADDRESS *pSourceAccelerationStructureData) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->EmitRaytracingAccelerationStructurePostbuildInfo(
 						pDesc, NumSourceAccelerationStructures, pSourceAccelerationStructureData);
-					commandList4->Release();
 				}
 			}
 
@@ -6399,21 +6415,19 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				D3D12_GPU_VIRTUAL_ADDRESS SourceAccelerationStructureData,
 				D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode) override
 			{
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->CopyRaytracingAccelerationStructure(
 						DestAccelerationStructureData, SourceAccelerationStructureData, Mode);
-					commandList4->Release();
 				}
 			}
 
 			void STDMETHODCALLTYPE SetPipelineState1(ID3D12StateObject *pStateObject) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetPSO1Total);
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->SetPipelineState1(DX12WrapperRuntimeUtils::UnwrapStateObject(pStateObject));
-					commandList4->Release();
 				}
 			DX12_HOTPATH_TIME_END(SetPSO1Total);
 			}
@@ -6421,10 +6435,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(DispatchRaysTotal);
-				ID3D12GraphicsCommandList4 *commandList4 = nullptr;
-				if (SUCCEEDED(QueryCommandList4(&commandList4))) {
+				ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
+				if (commandList4) {
 					commandList4->DispatchRays(pDesc);
-					commandList4->Release();
 				}
 			DX12_HOTPATH_TIME_END(DispatchRaysTotal);
 			}
@@ -6432,10 +6445,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE RSSetShadingRate(D3D12_SHADING_RATE baseShadingRate, const D3D12_SHADING_RATE_COMBINER *combiners) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateTotal);
-				ID3D12GraphicsCommandList5 *commandList5 = nullptr;
-				if (SUCCEEDED(QueryCommandList5(&commandList5))) {
+				ID3D12GraphicsCommandList5 *commandList5 = CommandList5Raw();
+				if (commandList5) {
 					commandList5->RSSetShadingRate(baseShadingRate, combiners);
-					commandList5->Release();
 				}
 			DX12_HOTPATH_TIME_END(RSSetShadingRateTotal);
 			}
@@ -6443,10 +6455,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE RSSetShadingRateImage(ID3D12Resource *pShadingRateImage) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateImgTotal);
-				ID3D12GraphicsCommandList5 *commandList5 = nullptr;
-				if (SUCCEEDED(QueryCommandList5(&commandList5))) {
+				ID3D12GraphicsCommandList5 *commandList5 = CommandList5Raw();
+				if (commandList5) {
 					commandList5->RSSetShadingRateImage(DX12WrapperRuntimeUtils::UnwrapResource(pShadingRateImage));
-					commandList5->Release();
 				}
 			DX12_HOTPATH_TIME_END(RSSetShadingRateImgTotal);
 			}
@@ -6454,10 +6465,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE DispatchMesh(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(DispatchMeshTotal);
-				ID3D12GraphicsCommandList6 *commandList6 = nullptr;
-				if (SUCCEEDED(QueryCommandList6(&commandList6))) {
+				ID3D12GraphicsCommandList6 *commandList6 = CommandList6Raw();
+				if (commandList6) {
 					commandList6->DispatchMesh(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
-					commandList6->Release();
 				}
 			DX12_HOTPATH_TIME_END(DispatchMeshTotal);
 			}
@@ -6465,8 +6475,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE Barrier(
 				UINT32 NumBarrierGroups, const D3D12_BARRIER_GROUP *pBarrierGroups) override
 			{
-				ID3D12GraphicsCommandList7 *commandList7 = nullptr;
-				if (FAILED(QueryCommandList7(&commandList7)))
+				ID3D12GraphicsCommandList7 *commandList7 = CommandList7Raw();
+				if (!commandList7)
 					return;
 				std::vector<D3D12_BARRIER_GROUP> groupStorage;
 				std::vector<std::vector<D3D12_TEXTURE_BARRIER>> textureStorage;
@@ -6482,16 +6492,14 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				DX12WrapperRuntimeUtils::LogCommandListStage("Barrier", "before", mCommandList);
 				commandList7->Barrier(NumBarrierGroups, activeBarrierGroups);
 				DX12WrapperRuntimeUtils::LogCommandListStage("Barrier", "after", mCommandList);
-				commandList7->Release();
 			}
 
 			void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(OMSetFrontBackStencilTotal);
-				ID3D12GraphicsCommandList8 *commandList8 = nullptr;
-				if (SUCCEEDED(QueryCommandList8(&commandList8))) {
+				ID3D12GraphicsCommandList8 *commandList8 = CommandList8Raw();
+				if (commandList8) {
 					commandList8->OMSetFrontAndBackStencilRef(FrontStencilRef, BackStencilRef);
-					commandList8->Release();
 				}
 			DX12_HOTPATH_TIME_END(OMSetFrontBackStencilTotal);
 			}
@@ -6499,10 +6507,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(RSSetDepthBiasTotal);
-				ID3D12GraphicsCommandList9 *commandList9 = nullptr;
-				if (SUCCEEDED(QueryCommandList9(&commandList9))) {
+				ID3D12GraphicsCommandList9 *commandList9 = CommandList9Raw();
+				if (commandList9) {
 					commandList9->RSSetDepthBias(DepthBias, DepthBiasClamp, SlopeScaledDepthBias);
-					commandList9->Release();
 				}
 			DX12_HOTPATH_TIME_END(RSSetDepthBiasTotal);
 			}
@@ -6510,10 +6517,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE IASetIndexBufferStripCutValue(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(IASetIBStripCutTotal);
-				ID3D12GraphicsCommandList9 *commandList9 = nullptr;
-				if (SUCCEEDED(QueryCommandList9(&commandList9))) {
+				ID3D12GraphicsCommandList9 *commandList9 = CommandList9Raw();
+				if (commandList9) {
 					commandList9->IASetIndexBufferStripCutValue(IBStripCutValue);
-					commandList9->Release();
 				}
 			DX12_HOTPATH_TIME_END(IASetIBStripCutTotal);
 			}
@@ -6521,10 +6527,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE SetProgram(const D3D12_SET_PROGRAM_DESC *pDesc) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(SetProgramTotal);
-				ID3D12GraphicsCommandList10 *commandList10 = nullptr;
-				if (SUCCEEDED(QueryCommandList10(&commandList10))) {
+				ID3D12GraphicsCommandList10 *commandList10 = CommandList10Raw();
+				if (commandList10) {
 					commandList10->SetProgram(pDesc);
-					commandList10->Release();
 				}
 			DX12_HOTPATH_TIME_END(SetProgramTotal);
 			}
@@ -6532,10 +6537,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			void STDMETHODCALLTYPE DispatchGraph(const D3D12_DISPATCH_GRAPH_DESC *pDesc) override
 			{
 			DX12_HOTPATH_TIME_BEGIN(DispatchGraphTotal);
-				ID3D12GraphicsCommandList10 *commandList10 = nullptr;
-				if (SUCCEEDED(QueryCommandList10(&commandList10))) {
+				ID3D12GraphicsCommandList10 *commandList10 = CommandList10Raw();
+				if (commandList10) {
 					commandList10->DispatchGraph(pDesc);
-					commandList10->Release();
 				}
 			DX12_HOTPATH_TIME_END(DispatchGraphTotal);
 			}

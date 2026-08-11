@@ -3066,7 +3066,11 @@ public:
 			commandList, callbacks, redirectedIa);
 		liveIa.preSkinReplayApplied = true;
 		liveIa.preSkinReplayGeneration = replayGeneration;
-		liveIa.preSkinReplayIaFingerprint = iaFingerprint;
+		// Replay updates liveIa to the redirected views, so the stored
+		// fingerprint must reflect the post-replay state or the gate never
+		// hits on the next matching draw.
+		liveIa.preSkinReplayIaFingerprint =
+			ComputeIaViewFingerprint(liveIa);
 		return replayed;
 	}
 };
@@ -3916,7 +3920,23 @@ public:
 				// restore; just drop the stale bookkeeping.
 				ia.indexBufferStaticReplaced = false;
 			} else {
-				if (!stale &&
+				const bool indexIdentityAvailable =
+					ia.indexBufferStaticOriginalResolved &&
+					ia.indexBufferStaticOriginalResource.resource &&
+					ia.indexBufferStaticOriginalResource.resourceGeneration != 0;
+				if (!stale && indexIdentityAvailable) {
+					DX12BufferResourceSummary currentOriginal = {};
+					if (!DX12ResolveBufferResourceByGpuVa(
+							ia.indexBufferStaticOriginal.BufferLocation,
+							ia.indexBufferStaticOriginal.SizeInBytes,
+							&currentOriginal) ||
+					    currentOriginal.resource !=
+						    ia.indexBufferStaticOriginalResource.resource ||
+					    currentOriginal.resourceGeneration !=
+						    ia.indexBufferStaticOriginalResource.resourceGeneration) {
+						stale = true;
+					}
+				} else if (!stale &&
 				    ia.indexBufferStaticResolveEpoch != resolveEpoch) {
 					stale = true;
 				}
@@ -3967,7 +3987,23 @@ public:
 				ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
 				continue;
 			}
-			if (!stale &&
+			const bool vertexIdentityAvailable =
+				ia.vertexBufferStaticOriginalResolved[slot] &&
+				ia.vertexBufferStaticOriginalResources[slot].resource &&
+				ia.vertexBufferStaticOriginalResources[slot].resourceGeneration != 0;
+			if (!stale && vertexIdentityAvailable) {
+				DX12BufferResourceSummary currentOriginal = {};
+				if (!DX12ResolveBufferResourceByGpuVa(
+						ia.vertexBufferStaticOriginal[slot].BufferLocation,
+						ia.vertexBufferStaticOriginal[slot].SizeInBytes,
+						&currentOriginal) ||
+				    currentOriginal.resource !=
+					    ia.vertexBufferStaticOriginalResources[slot].resource ||
+				    currentOriginal.resourceGeneration !=
+					    ia.vertexBufferStaticOriginalResources[slot].resourceGeneration) {
+					stale = true;
+				}
+			} else if (!stale &&
 			    ia.vertexBufferStaticResolveEpoch[slot] != resolveEpoch) {
 				stale = true;
 			}
