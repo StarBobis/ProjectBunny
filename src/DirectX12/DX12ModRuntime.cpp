@@ -514,6 +514,7 @@ static volatile LONG gPreSkinMatchCsProbeLogCount = 0;
 static SRWLOCK gPreSkinMatchCsProbeLogLock = SRWLOCK_INIT;
 static std::unordered_set<uint64_t> gPreSkinMatchCsProbeKeys;
 static std::unordered_map<uint64_t, bool> gPreSkinMatchCsInputCache;
+static void ClearPreSkinStickyMatchCache();
 class DX12ShaderOverridePsoMatchCache
 {
 public:
@@ -4881,6 +4882,7 @@ bool DX12ModRuntimeLoad(
 	gPreSkinMatchCsInputCache.clear();
 	gPreSkinMatchCsProbeKeys.clear();
 	InterlockedExchange(&gPreSkinMatchCsProbeLogCount, 0);
+	ClearPreSkinStickyMatchCache();
 	BumpPreSkinActiveGeneration();
 	++gPreSkinSrvCacheGeneration;
 	InterlockedExchange(&gHasShaderOverrides, gShaderOverrides.empty() ? 0 : 1);
@@ -9808,6 +9810,131 @@ static bool IsPreSkinMatchCsUavCandidate(const DX12CurrentComputeUavBinding &bin
 	return true;
 }
 
+static size_t FindPreSkinTextureOverrideCandidateIndex(
+	const Bunny::TextureOverrideConfig *config)
+{
+	if (!config)
+		return static_cast<size_t>(-1);
+	for (size_t i = 0; i < gPreSkinTextureOverrides.size(); ++i)
+	{
+		if (gPreSkinTextureOverrides[i].config == config)
+			return i;
+	}
+	return static_cast<size_t>(-1);
+}
+
+// Sticky-positive hysteresis for MatchCs pre-skin replacements.
+//
+// The game rewrites its descriptor tables every frame (observed ~73% slot
+// churn), so the SRV view hash the probe matches against can flip between
+// the original descriptor and an in-flight/alternate copy from frame to
+// frame. Without hysteresis the replacement applies intermittently and the
+// model visibly flickers between the replaced and original skinning. Once a
+// dispatch has matched, remember its output UAV for a short window and keep
+// treating it as a match even when the SRV hash probe fails. The key
+// includes the output resource pointer + view geometry, so a different mesh
+// that happens to share the CS hash is not affected.
+struct DX12PreSkinStickyMatchEntry
+{
+	volatile UINT64 reloadGeneration = 0;
+	volatile UINT64 uavKey = 0;
+	volatile uint64_t csHash = 0;
+	volatile size_t candidateIndex = static_cast<size_t>(-1);
+	volatile uint32_t hash = 0;
+	volatile LONG present = 0;
+	volatile LONG occupied = 0;
+};
+
+static constexpr LONG kPreSkinStickyMatchFrames = 8;
+static constexpr size_t kPreSkinStickyMatchSlots = 64;
+static DX12PreSkinStickyMatchEntry gPreSkinStickyMatch[kPreSkinStickyMatchSlots] = {};
+
+static void ClearPreSkinStickyMatchCache()
+{
+	for (size_t i = 0; i < kPreSkinStickyMatchSlots; ++i)
+		InterlockedExchange(&gPreSkinStickyMatch[i].occupied, 0);
+}
+
+static size_t PreSkinStickyMatchSlot(uint64_t csHash, UINT64 uavKey)
+{
+	uint64_t hash = HashCombine64(csHash, uavKey);
+	hash ^= hash >> 33;
+	hash *= 0xff51afd7ed558ccdull;
+	hash ^= hash >> 33;
+	return static_cast<size_t>(hash) & (kPreSkinStickyMatchSlots - 1);
+}
+
+static UINT64 MakePreSkinStickyMatchUavKey(
+	const std::vector<DX12CurrentComputeUavBinding> &uavs)
+{
+	for (auto it = uavs.rbegin(); it != uavs.rend(); ++it)
+	{
+		if (!IsPreSkinMatchCsUavCandidate(*it))
+			continue;
+		const DX12CurrentComputeUavBinding &uav = *it;
+		UINT64 key = uav.rootParameterIndex;
+		key = HashCombine64(key, uav.rangeIndex);
+		key = HashCombine64(key, uav.shaderRegister);
+		key = HashCombine64(key, uav.registerSpace);
+		key = HashCombine64(key, uav.descriptorOffset);
+		key = HashCombine64(key, reinterpret_cast<uintptr_t>(uav.descriptor.resource));
+		key = HashCombine64(key, DescriptorViewSize(uav.descriptor));
+		key = HashCombine64(key, uav.descriptor.structureByteStride);
+		return key;
+	}
+	return 0;
+}
+
+static void StorePreSkinStickyMatch(
+	uint64_t csHash, UINT64 uavKey, size_t candidateIndex, uint32_t hash)
+{
+	if (!csHash || !uavKey || candidateIndex >= gPreSkinTextureOverrides.size())
+		return;
+	DX12PreSkinStickyMatchEntry &entry =
+		gPreSkinStickyMatch[PreSkinStickyMatchSlot(csHash, uavKey)];
+	entry.reloadGeneration = DX12ModGetReloadGenerationFast();
+	entry.uavKey = uavKey;
+	entry.csHash = csHash;
+	entry.candidateIndex = candidateIndex;
+	entry.hash = hash;
+	entry.present = DX12RuntimeState::GetPresentCount();
+	InterlockedExchange(&entry.occupied, 1);
+}
+
+static bool TryLoadPreSkinStickyMatch(
+	uint64_t csHash, const std::vector<DX12CurrentComputeUavBinding> &uavs,
+	DX12UavHashTextureOverrideMatch *match)
+{
+	const UINT64 uavKey = MakePreSkinStickyMatchUavKey(uavs);
+	if (!uavKey)
+		return false;
+	DX12PreSkinStickyMatchEntry &entry =
+		gPreSkinStickyMatch[PreSkinStickyMatchSlot(csHash, uavKey)];
+	if (InterlockedCompareExchange(&entry.occupied, 0, 0) == 0)
+		return false;
+	if (entry.reloadGeneration != DX12ModGetReloadGenerationFast() ||
+		entry.csHash != csHash || entry.uavKey != uavKey)
+		return false;
+	if (DX12RuntimeState::GetPresentCount() - entry.present >
+		kPreSkinStickyMatchFrames)
+		return false;
+	if (entry.candidateIndex >= gPreSkinTextureOverrides.size())
+		return false;
+	const DX12PreSkinTextureOverrideCandidate &candidate =
+		gPreSkinTextureOverrides[entry.candidateIndex];
+	const Bunny::TextureOverrideConfig *config = candidate.config;
+	if (!config || !IsComputePreSkinTextureOverride(*config) ||
+		GetPreSkinCsHash(*config) != csHash)
+		return false;
+	if (match)
+	{
+		match->config = config;
+		match->hash = entry.hash;
+		match->resourceName = candidate.resourceName;
+	}
+	return true;
+}
+
 static bool FindPreSkinProducerByMatchCsLocked(
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
@@ -9818,8 +9945,9 @@ static bool FindPreSkinProducerByMatchCsLocked(
 	DX12UavHashTextureOverrideMatch *match)
 {
 	DX12UavHashTextureOverrideMatch candidateMatch = {};
-	if (!FindMatchCsTextureOverrideLocked(
-			csHash, uavs, srvs, cbvs, rootConstants, &candidateMatch))
+	const bool freshMatch = FindMatchCsTextureOverrideLocked(
+			csHash, uavs, srvs, cbvs, rootConstants, &candidateMatch);
+	if (!freshMatch && !TryLoadPreSkinStickyMatch(csHash, uavs, &candidateMatch))
 		return false;
 
 	const DX12CurrentComputeUavBinding *chosenBinding = nullptr;
@@ -9853,6 +9981,13 @@ static bool FindPreSkinProducerByMatchCsLocked(
 		*binding = *chosenBinding;
 	if (match)
 		*match = candidateMatch;
+	// Remember the positive match for sticky hysteresis so the replacement
+	// stays applied when the SRV hash probe flickers across frames.
+	StorePreSkinStickyMatch(
+		csHash,
+		MakePreSkinStickyMatchUavKey(uavs),
+		FindPreSkinTextureOverrideCandidateIndex(candidateMatch.config),
+		candidateMatch.hash);
 	return true;
 }
 
@@ -13535,6 +13670,43 @@ static bool IaTriggeredCandidatesDependOnActivePreSkin(
 	return false;
 }
 
+static void PreloadPreSkinReplacementResources(ID3D12Device *device)
+{
+	if (!device)
+		return;
+	// Collect replacement resource names under the shared mod lock (configs
+	// are stable within a reload generation), then load each once outside
+	// the lock. Preloading moves the first-match synchronous file I/O +
+	// resource creation off the command-recording thread (multi-second
+	// freeze) to the first frame after the mod is (re)loaded.
+	std::vector<std::wstring> names;
+	{
+		AcquireSRWLockShared(&gModLock);
+		names.reserve(gPreSkinTextureOverrides.size() * 4);
+		for (const DX12PreSkinTextureOverrideCandidate &candidate : gPreSkinTextureOverrides)
+		{
+			const Bunny::TextureOverrideConfig *config = candidate.config;
+			if (!config)
+				continue;
+			for (const auto &entry : config->preSkinCsSrvResources)
+			{
+				if (!entry.second.empty())
+					names.push_back(entry.second);
+			}
+			for (const auto &entry : config->vertexBufferResources)
+			{
+				if (!entry.second.empty())
+					names.push_back(entry.second);
+			}
+		}
+		ReleaseSRWLockShared(&gModLock);
+	}
+	std::sort(names.begin(), names.end());
+	names.erase(std::unique(names.begin(), names.end()), names.end());
+	for (const std::wstring &name : names)
+		EnsureLoadedResourceForPreSkin(device, name);
+}
+
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
 	LARGE_INTEGER t0, t1;
@@ -13588,6 +13760,27 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	for (DX12RetiredLoadedResource &resource : expired)
 		ReleaseLoadedResourceObjects(&resource.resource);
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
+
+	// Preload pre-skin replacement resources once per mod generation so the
+	// first match does not pay synchronous file I/O + resource creation on
+	// the command-recording thread.
+	{
+		static UINT64 sPreSkinResourcesPreloadedGeneration = 0;
+		const UINT64 preloadGeneration = DX12ModGetReloadGenerationFast();
+		if (gHasPreSkinTextureOverrideCandidates != 0 &&
+			sPreSkinResourcesPreloadedGeneration != preloadGeneration)
+		{
+			ID3D12Device *preloadDevice = nullptr;
+			if (swapChain &&
+				SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
+				preloadDevice)
+			{
+				PreloadPreSkinReplacementResources(preloadDevice);
+				preloadDevice->Release();
+				sPreSkinResourcesPreloadedGeneration = preloadGeneration;
+			}
+		}
+	}
 
 	QueryPerformanceCounter(&t1);
 	const LONG frameDraws = DX12RuntimeState::TakeFrameDraws();
