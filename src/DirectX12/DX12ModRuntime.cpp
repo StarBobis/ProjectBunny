@@ -13674,30 +13674,21 @@ static void PreloadPreSkinReplacementResources(ID3D12Device *device)
 {
 	if (!device)
 		return;
-	// Collect replacement resource names under the shared mod lock (configs
-	// are stable within a reload generation), then load each once outside
-	// the lock. Preloading moves the first-match synchronous file I/O +
-	// resource creation off the command-recording thread (multi-second
-	// freeze) to the first frame after the mod is (re)loaded.
+	// Collect every buffer-like mod resource under the shared mod lock
+	// (stable within a reload generation), then load each once outside the
+	// lock. This covers preSkinCsSrvResources, vertexBufferResources, VLR
+	// candidates and any other lazy EnsureLoadedResource* path, and moves the
+	// first-match synchronous file I/O + resource creation off the
+	// command-recording thread (multi-second freeze) to the first frame after
+	// the mod is (re)loaded.
 	std::vector<std::wstring> names;
 	{
 		AcquireSRWLockShared(&gModLock);
-		names.reserve(gPreSkinTextureOverrides.size() * 4);
-		for (const DX12PreSkinTextureOverrideCandidate &candidate : gPreSkinTextureOverrides)
+		names.reserve(gModResources.size());
+		for (const auto &entry : gModResources)
 		{
-			const Bunny::TextureOverrideConfig *config = candidate.config;
-			if (!config)
-				continue;
-			for (const auto &entry : config->preSkinCsSrvResources)
-			{
-				if (!entry.second.empty())
-					names.push_back(entry.second);
-			}
-			for (const auto &entry : config->vertexBufferResources)
-			{
-				if (!entry.second.empty())
-					names.push_back(entry.second);
-			}
+			if (ResourceConfigLooksLikeBuffer(entry.second))
+				names.push_back(entry.first);
 		}
 		ReleaseSRWLockShared(&gModLock);
 	}
