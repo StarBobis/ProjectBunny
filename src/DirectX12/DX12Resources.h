@@ -3725,7 +3725,7 @@ public:
 		const uint8_t *base,
 		UINT64 sourceRowPitch,
 		UINT64 sourceRowBytes,
-		UINT sourceRowCount,
+		UINT64 sourceRowCount,
 		uint32_t *hashOut)
 	{
 		if (!hashOut)

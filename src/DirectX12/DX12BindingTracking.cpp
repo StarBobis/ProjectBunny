@@ -1124,10 +1124,11 @@ static bool TryGetRuntimePreSkinBindings(
 				if (!table.valid || !table.runtimeHeapResolved ||
 						table.runtimeHeapIncrement == 0)
 					return false;
-				const UINT currentSlot =
+				const UINT64 currentSlot64 =
 					table.runtimeTableBaseIndex + observed.offset;
-				if (currentSlot >= table.runtimeHeapNumDescriptors)
+				if (currentSlot64 >= table.runtimeHeapNumDescriptors)
 					return false;
+				const UINT currentSlot = static_cast<UINT>(currentSlot64);
 				DescriptorHeapRecord::StateLocks *stateLocks =
 					stateLocksByRoot[observed.root];
 				if (!stateLocks &&
