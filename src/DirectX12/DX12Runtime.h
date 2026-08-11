@@ -1545,35 +1545,39 @@ public:
 			else
 				ReleaseSRWLockShared(held.lock);
 		};
-		auto collectHeldLock = [](std::vector<HeldShardLock> *locks,
-			SRWLOCK *lock, bool exclusive) {
-			if (!locks || !lock)
+		auto collectHeldLock = [](HeldShardLock *locks, size_t *count,
+			size_t capacity, SRWLOCK *lock, bool exclusive) {
+			if (!locks || !count || !lock)
 				return;
-			for (HeldShardLock &held : *locks) {
-				if (held.lock != lock)
+			for (size_t i = 0; i < *count; ++i) {
+				if (locks[i].lock != lock)
 					continue;
-				held.exclusive = held.exclusive || exclusive;
+				locks[i].exclusive = locks[i].exclusive || exclusive;
 				return;
 			}
-			HeldShardLock held;
-			held.lock = lock;
-			held.exclusive = exclusive;
-			std::vector<HeldShardLock>::iterator insertAt = locks->begin();
-			for (; insertAt != locks->end(); ++insertAt) {
+			if (*count >= capacity)
+				return;
+			size_t insertAt = *count;
+			for (size_t i = 0; i < *count; ++i) {
 				if (reinterpret_cast<uintptr_t>(lock) <
-						reinterpret_cast<uintptr_t>(insertAt->lock))
+						reinterpret_cast<uintptr_t>(locks[i].lock)) {
+					insertAt = i;
 					break;
+				}
 			}
-			locks->insert(insertAt, held);
+			for (size_t i = *count; i > insertAt; --i)
+				locks[i] = locks[i - 1];
+			locks[insertAt].lock = lock;
+			locks[insertAt].exclusive = exclusive;
+			++*count;
 		};
-		auto acquireHeldLocks = [&](const std::vector<HeldShardLock> &locks) {
-			for (const HeldShardLock &held : locks)
-				acquireHeldLock(held);
+		auto acquireHeldLocks = [&](const HeldShardLock *locks, size_t count) {
+			for (size_t i = 0; i < count; ++i)
+				acquireHeldLock(locks[i]);
 		};
-		auto releaseHeldLocks = [&](const std::vector<HeldShardLock> &locks) {
-			for (std::vector<HeldShardLock>::const_reverse_iterator it =
-					locks.rbegin(); it != locks.rend(); ++it)
-				releaseHeldLock(*it);
+		auto releaseHeldLocks = [&](const HeldShardLock *locks, size_t count) {
+			for (size_t i = count; i > 0; --i)
+				releaseHeldLock(locks[i - 1]);
 		};
 		auto lockSlotPair = [&](UINT sSlot, UINT dSlot,
 			HeldShardLock *first, HeldShardLock *second) {
@@ -1652,25 +1656,34 @@ public:
 			// hot-path lock traffic by turning O(slots) acquisitions into O(shards).
 			UINT dirtyStart = UINT_MAX;
 			bool rangeAborted = false;
+			// Descriptor lock striping is fixed per heap
+			// (DX12SparseDescriptorStore::ShardCount), so a dirty span can touch
+			// at most 2x that many distinct shard locks (source + destination).
+			// Collect them into a stack buffer instead of heap-allocating a
+			// vector per dirty span: CopyDescriptors is a per-frame hot path and
+			// every dirty span previously paid one allocation.
+			constexpr size_t kMaxHeldShardLocks =
+				2 * DX12SparseDescriptorStore<DescriptorSlotBinding>::ShardCount;
+			HeldShardLock heldLocks[kMaxHeldShardLocks];
+			size_t heldLockCount = 0;
 			auto flushDirtySpan = [&](UINT dirtyEnd) {
 				if (dirtyStart == UINT_MAX || dirtyStart >= dirtyEnd)
 					return;
-				std::vector<HeldShardLock> heldLocks;
-				heldLocks.reserve((dirtyEnd - dirtyStart) * 2);
+				heldLockCount = 0;
 				for (UINT dirtyIndex = dirtyStart; dirtyIndex < dirtyEnd; ++dirtyIndex) {
 					collectHeldLock(
-						&heldLocks,
+						heldLocks, &heldLockCount, kMaxHeldShardLocks,
 						HeapLock(&srcHeap, srcSlot + dirtyIndex),
 						false);
 					collectHeldLock(
-						&heldLocks,
+						heldLocks, &heldLockCount, kMaxHeldShardLocks,
 						HeapLock(&destHeap, destSlot + dirtyIndex),
 						true);
 				}
-				acquireHeldLocks(heldLocks);
+				acquireHeldLocks(heldLocks, heldLockCount);
 				if (!srcHeap.stateLocks->IsActive() ||
 						!destHeap.stateLocks->IsActive()) {
-					releaseHeldLocks(heldLocks);
+					releaseHeldLocks(heldLocks, heldLockCount);
 					rangeAborted = true;
 					dirtyStart = UINT_MAX;
 					return;
@@ -1691,7 +1704,7 @@ public:
 						currentDestSlot,
 						publishedValueId);
 				}
-				releaseHeldLocks(heldLocks);
+				releaseHeldLocks(heldLocks, heldLockCount);
 				dirtyStart = UINT_MAX;
 			};
 			for (UINT i = 0; i < count; ++i) {
