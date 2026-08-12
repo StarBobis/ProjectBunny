@@ -3733,6 +3733,10 @@ public:
 		UINT64 reloadGeneration = 0;
 		uint64_t csHash = 0;
 		UINT64 fingerprint = 0;
+		UINT64 bindingDependencyFingerprint = 0;
+		UINT64 bufferContentGeneration = 0;
+		UINT64 iaContentEpoch = 0;
+		UINT64 bindingSerial = 0;
 		bool applied = false;
 		bool valid = false;
 		bool handlingSkip = false;
@@ -7727,6 +7731,7 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
+	UINT64 bindingDependencyFingerprint,
 	bool matched,
 	const DX12PreSkinDispatchOverride *dispatchOverride = nullptr);
 
@@ -8059,7 +8064,8 @@ public:
 bool DX12ModGetCachedPreSkinProbeResult(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
-	UINT64 computeBindingSerial,
+	UINT64 bindingHash,
+	UINT64 bindingDependencyFingerprint,
 	DX12PreSkinProbeCacheEntry *result);
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
@@ -8072,7 +8078,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT *overrideVertexCount = nullptr,
 	DX12PreSkinDispatchOverride *dispatchOverride = nullptr,
 	ID3D12Device *cachedDevice = nullptr,
-	UINT64 bindingFingerprint = 0);
+	UINT64 bindingFingerprint = 0,
+	UINT64 bindingDependencyFingerprint = 0);
 bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandList);
 bool DX12ModCanDeferPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList);
@@ -8329,15 +8336,22 @@ public:
 	}
 
 	// Cross-frame stable fingerprint: uses only fields that survive across frames.
-	// Strips GPU VA, resource pointer, resourceOffset, viewSize, and other per-
-	// frame-volatile fields. The result is safe because different resources with
-	// the same shader binding pattern produce identical PreSkin replacement results.
+	// Strips GPU VA, resource pointer, and resourceOffset, but keeps the complete
+	// descriptor shape. Different SRV/UAV/CBV view shapes can select different
+	// PreSkin replacements, so they must not collide in the probe cache key.
 	static uint64_t AppendStableDescriptor(uint64_t hash, const DX12DescriptorSummary &descriptor)
 	{
 		hash = HashString(hash, descriptor.kind);
 		hash = HashCombine(hash, descriptor.hasDesc ? 1 : 0);
 		hash = HashCombine(hash, descriptor.viewFormat);
 		hash = HashCombine(hash, descriptor.viewDimension);
+		hash = HashCombine(hash, descriptor.viewSize);
+		hash = HashCombine(hash, descriptor.cbvSize);
+		hash = HashCombine(hash, descriptor.firstElement);
+		hash = HashCombine(hash, descriptor.numElements);
+		hash = HashCombine(hash, descriptor.structureByteStride);
+		hash = HashCombine(hash, descriptor.bufferViewOffset);
+		hash = HashCombine(hash, descriptor.bufferViewBytes);
 		if (descriptor.hasResourceDesc) {
 			hash = HashCombine(hash, descriptor.resourceDesc.Dimension);
 			hash = HashCombine(hash, descriptor.resourceDesc.Width);

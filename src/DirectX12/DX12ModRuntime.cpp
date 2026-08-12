@@ -496,13 +496,16 @@ static size_t gPreSkinUavMatchCacheGrowthBudget = MaxPreSkinUavMatchCacheEntries
 
 
 static UINT64 MakePreSkinUavMatchCacheKey(
-	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash)
+	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash,
+	UINT64 bindingDependencyFingerprint)
 {
 	(void)commandList;
 	UINT64 key = 0x4f1bbcdc9cb7a2c5ull;
 	key = HashCombine64(key, gReloadGeneration);
 	key = HashCombine64(key, csHash);
 	key = HashCombine64(key, bindingHash);
+	key = HashCombine64(key, bindingDependencyFingerprint);
+	key = HashCombine64(key, DX12GetIaHashContentGeneration());
 	return key;
 }
 static volatile LONG gDx12SafeMode = 0;
@@ -11292,7 +11295,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT *overrideVertexCount,
 	DX12PreSkinDispatchOverride *dispatchOverride,
 	ID3D12Device *cachedDevice,
-	UINT64 bindingFingerprint)
+	UINT64 bindingFingerprint,
+	UINT64 bindingDependencyFingerprint)
 {
 	if (originalVertexCount)
 		*originalVertexCount = 0;
@@ -11333,6 +11337,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		ID3D12GraphicsCommandList *commandList = nullptr;
 		UINT64 reloadGeneration = 0;
 		UINT64 bindingFingerprint = 0;
+		UINT64 bindingDependencyFingerprint = 0;
+		UINT64 bufferContentGeneration = 0;
 		uint64_t computeShaderHash = 0;
 		DX12ComputeUavProducer producer;
 		DX12VertexLimitRaiseConfig vlr;
@@ -11352,6 +11358,10 @@ bool DX12ModApplyPreSkinningUavReplacement(
 								 tlsMatchPlan.commandList == commandList &&
 								 tlsMatchPlan.reloadGeneration == reloadGeneration &&
 								 tlsMatchPlan.bindingFingerprint == bindingFingerprint &&
+								 tlsMatchPlan.bindingDependencyFingerprint ==
+									 bindingDependencyFingerprint &&
+								 tlsMatchPlan.bufferContentGeneration ==
+									 DX12GetIaHashContentGeneration() &&
 								 tlsMatchPlan.computeShaderHash == computeShaderHash;
 
 	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
@@ -11400,6 +11410,10 @@ bool DX12ModApplyPreSkinningUavReplacement(
 			tlsMatchPlan.commandList = commandList;
 			tlsMatchPlan.reloadGeneration = reloadGeneration;
 			tlsMatchPlan.bindingFingerprint = bindingFingerprint;
+			tlsMatchPlan.bindingDependencyFingerprint =
+				bindingDependencyFingerprint;
+			tlsMatchPlan.bufferContentGeneration =
+				DX12GetIaHashContentGeneration();
 			tlsMatchPlan.computeShaderHash = computeShaderHash;
 			tlsMatchPlan.producer = producer;
 			tlsMatchPlan.vlr = vlr;
@@ -12260,7 +12274,7 @@ bool DX12ModHasCachedPreSkinningUavMatch(
 		return false;
 
 	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
-		commandList, computeShaderHash, computeBindingSerial);
+		commandList, computeShaderHash, computeBindingSerial, 0);
 	AcquireSRWLockShared(&gModLock);
 	auto cached = gPreSkinUavMatchCache.find(cacheKey);
 	if (cached != gPreSkinUavMatchCache.end() &&
@@ -12278,11 +12292,13 @@ static void UpdatePreSkinningUavMatchCacheLocked(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
+	UINT64 bindingDependencyFingerprint,
 	bool matched,
 	const DX12PreSkinDispatchOverride *dispatchOverride)
 {
 	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
-		commandList, computeShaderHash, computeBindingSerial);
+		commandList, computeShaderHash, computeBindingSerial,
+		bindingDependencyFingerprint);
 	DX12PreSkinUavMatchCacheEntry &entry = gPreSkinUavMatchCache[cacheKey];
 	bool isNewEntry = !entry.valid;
 	entry.computeShaderHash = computeShaderHash;
@@ -12313,6 +12329,7 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
 	UINT64 computeBindingSerial,
+	UINT64 bindingDependencyFingerprint,
 	bool matched,
 	const DX12PreSkinDispatchOverride *dispatchOverride)
 {
@@ -12321,21 +12338,24 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 
 	AcquireSRWLockExclusive(&gModLock);
 	UpdatePreSkinningUavMatchCacheLocked(
-		commandList, computeShaderHash, computeBindingSerial, matched, dispatchOverride);
+		commandList, computeShaderHash, computeBindingSerial,
+		bindingDependencyFingerprint, matched, dispatchOverride);
 	ReleaseSRWLockExclusive(&gModLock);
 }
 
 bool DX12ModGetCachedPreSkinProbeResult(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
-	UINT64 computeBindingSerial,
+	UINT64 bindingHash,
+	UINT64 bindingDependencyFingerprint,
 	DX12PreSkinProbeCacheEntry *result)
 {
-	if (!result || !commandList || !computeShaderHash || computeBindingSerial == 0)
+	if (!result || !commandList || !computeShaderHash || bindingHash == 0)
 		return false;
 
 	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
-		commandList, computeShaderHash, computeBindingSerial);
+		commandList, computeShaderHash, bindingHash,
+		bindingDependencyFingerprint);
 	AcquireSRWLockShared(&gModLock);
 	auto cached = gPreSkinUavMatchCache.find(cacheKey);
 	if (cached != gPreSkinUavMatchCache.end() &&
@@ -13695,7 +13715,122 @@ static void PreloadPreSkinReplacementResources(ID3D12Device *device)
 	std::sort(names.begin(), names.end());
 	names.erase(std::unique(names.begin(), names.end()), names.end());
 	for (const std::wstring &name : names)
-		EnsureLoadedResourceForPreSkin(device, name);
+	{
+		DX12LoadedResource *resource =
+			EnsureLoadedResourceForPreSkin(device, name);
+		if (resource && resource->resource && resource->stride &&
+			resource->byteWidth)
+			EnsureResourceSrvLocked(
+				device, resource, resource->stride, resource->byteWidth);
+	}
+}
+
+static bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
+{
+	if (!device || gHasPreSkinTextureOverrideCandidates == 0)
+		return false;
+
+	struct PreSkinOutputResizeCandidate
+	{
+		UINT64 byteWidth = 0;
+		UINT stride = 0;
+	};
+	std::vector<PreSkinOutputResizeCandidate> candidates;
+	{
+		AcquireSRWLockShared(&gModLock);
+		candidates.reserve(gPreSkinTextureOverrides.size() * 2);
+		for (const DX12PreSkinTextureOverrideCandidate &overrideCandidate :
+				gPreSkinTextureOverrides)
+		{
+			const Bunny::TextureOverrideConfig *config = overrideCandidate.config;
+			if (!config || !IsComputePreSkinTextureOverride(*config))
+				continue;
+			for (const auto &entry : config->preSkinCsSrvResources)
+			{
+				auto loaded = gLoadedResources.find(entry.second);
+				if (loaded == gLoadedResources.end() || loaded->second.failed ||
+				    !loaded->second.resource || !loaded->second.byteWidth ||
+				    !loaded->second.stride)
+					continue;
+				candidates.push_back({
+					loaded->second.byteWidth,
+					loaded->second.stride});
+			}
+		}
+		ReleaseSRWLockShared(&gModLock);
+	}
+	if (candidates.empty())
+		return false;
+
+	std::sort(candidates.begin(), candidates.end(),
+		[](const PreSkinOutputResizeCandidate &a,
+		   const PreSkinOutputResizeCandidate &b) {
+			if (a.byteWidth != b.byteWidth)
+				return a.byteWidth < b.byteWidth;
+			return a.stride < b.stride;
+		});
+	candidates.erase(
+		std::unique(candidates.begin(), candidates.end(),
+			[](const PreSkinOutputResizeCandidate &a,
+			   const PreSkinOutputResizeCandidate &b) {
+				return a.byteWidth == b.byteWidth && a.stride == b.stride;
+			}),
+		candidates.end());
+
+	std::vector<DX12ResourceSummary> resources;
+	DX12GetRetainedTrackedResourceSnapshot(&resources);
+	bool madeProgress = false;
+	for (const DX12ResourceSummary &resourceSummary : resources)
+	{
+		if (!resourceSummary.resource || !resourceSummary.hasResourceDesc ||
+			resourceSummary.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+			(resourceSummary.resourceDesc.Flags &
+				D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+			continue;
+
+		for (const PreSkinOutputResizeCandidate &candidate : candidates)
+		{
+			if (!candidate.stride ||
+				resourceSummary.resourceDesc.Width >= candidate.byteWidth ||
+				resourceSummary.resourceDesc.Width + candidate.stride <
+					candidate.byteWidth)
+				continue;
+			const UINT64 elementCount64 = candidate.byteWidth / candidate.stride;
+			if (elementCount64 == 0 ||
+				elementCount64 > static_cast<UINT64>(UINT_MAX))
+				continue;
+
+			ID3D12Resource *resizedUav = nullptr;
+			ID3D12Resource *resizedVertex = nullptr;
+			ID3D12DescriptorHeap *resizedHeap = nullptr;
+			D3D12_CPU_DESCRIPTOR_HANDLE resizedCpu = {};
+			bool cacheHit = false;
+			UINT ringSlot = 0;
+			if (!AcquirePreSkinOutputResizeCacheEntry(
+					device, nullptr, resourceSummary.resource,
+					candidate.byteWidth, candidate.stride,
+					static_cast<UINT>(elementCount64),
+					&resizedUav, &resizedVertex, &resizedHeap, &resizedCpu,
+					&cacheHit, &ringSlot))
+				continue;
+
+			DX12ModRegisterPreSkinOutputResize(
+				nullptr, resourceSummary.resource, resizedVertex,
+				resourceSummary.resourceDesc.Width,
+				candidate.byteWidth, candidate.stride);
+			if (!cacheHit)
+				madeProgress = true;
+			if (resizedUav)
+				resizedUav->Release();
+			if (resizedVertex)
+				resizedVertex->Release();
+			if (resizedHeap)
+				resizedHeap->Release();
+			break;
+		}
+	}
+	DX12ReleaseTrackedResourceSnapshot(&resources);
+	return madeProgress;
 }
 
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
@@ -13757,6 +13892,8 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// the command-recording thread.
 	{
 		static UINT64 sPreSkinResourcesPreloadedGeneration = 0;
+		static UINT64 sOutputResizePreloadGeneration = 0;
+		static LONG sOutputResizePreloadIdleFrames = 0;
 		const UINT64 preloadGeneration = DX12ModGetReloadGenerationFast();
 		if (gHasPreSkinTextureOverrideCandidates != 0 &&
 			sPreSkinResourcesPreloadedGeneration != preloadGeneration)
@@ -13769,6 +13906,28 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 				PreloadPreSkinReplacementResources(preloadDevice);
 				preloadDevice->Release();
 				sPreSkinResourcesPreloadedGeneration = preloadGeneration;
+			}
+		}
+		if (gHasPreSkinTextureOverrideCandidates != 0)
+		{
+			if (sOutputResizePreloadGeneration != preloadGeneration)
+			{
+				sOutputResizePreloadGeneration = preloadGeneration;
+				sOutputResizePreloadIdleFrames = 0;
+			}
+			if (sOutputResizePreloadIdleFrames < 30)
+			{
+				ID3D12Device *preloadDevice = nullptr;
+				if (swapChain &&
+					SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
+					preloadDevice)
+				{
+					const bool progress =
+						PreloadPreSkinOutputResizeCache(preloadDevice);
+					sOutputResizePreloadIdleFrames =
+						progress ? 0 : sOutputResizePreloadIdleFrames + 1;
+					preloadDevice->Release();
+				}
 			}
 		}
 	}

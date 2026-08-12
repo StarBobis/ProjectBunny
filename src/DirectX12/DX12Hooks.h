@@ -2279,6 +2279,12 @@ public:
 				localEntry.reloadGeneration = reloadGeneration;
 				localEntry.csHash = computeShaderHash;
 				localEntry.fingerprint = computeIaFingerprint;
+				localEntry.bindingDependencyFingerprint =
+					probe ? probe->bindingDependencyFingerprint : 0;
+				localEntry.bufferContentGeneration =
+					DX12GetIaHashContentGeneration();
+				localEntry.iaContentEpoch = probeIaContentEpoch;
+				localEntry.bindingSerial = probeBindingSerial;
 				localEntry.applied = applied;
 				localEntry.handlingSkip = dispatchOverride.handlingSkip;
 				localEntry.hasDispatch = dispatchOverride.hasDispatch;
@@ -2292,7 +2298,13 @@ public:
 			runtimeState->resolvedCompute.probeFingerprint ==
 				computeIaFingerprint &&
 			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
-			runtimeState->resolvedCompute.probeReloadGeneration == reloadGeneration) {
+			runtimeState->resolvedCompute.probeReloadGeneration == reloadGeneration &&
+			runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
+				(probe ? probe->bindingDependencyFingerprint : 0) &&
+			runtimeState->resolvedCompute.probeBufferContentGeneration ==
+				DX12GetIaHashContentGeneration() &&
+			runtimeState->resolvedCompute.probeIaContentEpoch == probeIaContentEpoch &&
+			runtimeState->resolvedCompute.probeBindingSerial == probeBindingSerial) {
 			cacheEntry.applied = runtimeState->resolvedCompute.probeApplied;
 			cacheEntry.dispatchOverride.handlingSkip =
 				runtimeState->resolvedCompute.probeDispatchHandlingSkip;
@@ -2320,7 +2332,13 @@ public:
 			if (localEntry.valid &&
 			    localEntry.reloadGeneration == reloadGeneration &&
 			    localEntry.csHash == probe->computeShaderHash &&
-			    localEntry.fingerprint == computeIaFingerprint) {
+			    localEntry.fingerprint == computeIaFingerprint &&
+			    localEntry.bindingDependencyFingerprint ==
+				    (probe ? probe->bindingDependencyFingerprint : 0) &&
+			    localEntry.bufferContentGeneration ==
+				    DX12GetIaHashContentGeneration() &&
+			    localEntry.iaContentEpoch == probeIaContentEpoch &&
+			    localEntry.bindingSerial == probeBindingSerial) {
 				cacheEntry.applied = localEntry.applied;
 				cacheEntry.dispatchOverride.handlingSkip =
 					localEntry.handlingSkip;
@@ -2334,7 +2352,8 @@ public:
 		}
 		if (runtimeProbeCacheHit || localProbeCacheHit ||
 		    DX12ModGetCachedPreSkinProbeResult(
-			    commandList, probe->computeShaderHash, computeIaFingerprint, &cacheEntry)) {
+			    commandList, probe->computeShaderHash, computeIaFingerprint,
+			    probe ? probe->bindingDependencyFingerprint : 0, &cacheEntry)) {
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
 				cacheEntry.applied ? "probe_cache_positive_hit" : "probe_cache_negative_hit",
@@ -2415,7 +2434,8 @@ public:
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride,
 			runtimeState ? runtimeState->device : nullptr,
-			computeIaFingerprint);
+			computeIaFingerprint,
+			probe ? probe->bindingDependencyFingerprint : 0);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
@@ -2434,6 +2454,7 @@ public:
 			LARGE_INTEGER storeCacheBegin = DX12OuterTimingProbeUtils::Now();
 			DX12ModStoreCachedPreSkinningUavMatch(
 				commandList, probe->computeShaderHash, computeIaFingerprint,
+				probe ? probe->bindingDependencyFingerprint : 0,
 				probe->applied, &probe->dispatchOverride);
 			DX12OuterTimingProbeUtils::LogCpuStage(
 				"PreSkin",
