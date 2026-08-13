@@ -2436,20 +2436,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 
 	// Cache root signature summary per ID3D12RootSignature* pointer.
 	// Parse the blob once, reuse across all dispatches with the same signature.
-	static std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary> s_rootSigCache;
-	static SRWLOCK s_rootSigCacheLock = SRWLOCK_INIT;
-	static volatile LONG64 s_rootSigCacheReloadGen = 0;
+	// Thread-local: the summary only changes on a root-signature/PSO transition,
+	// so per-thread caching removes the global SRW lock + shared unordered_map
+	// lookup from the per-dispatch PreSkin hot path. Reloads invalidate via the
+	// reload generation, matching the surrounding resident-state pattern.
+	static thread_local std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary> s_rootSigCache;
+	static thread_local UINT64 s_rootSigCacheReloadGen = 0;
 	UINT64 reloadGen = DX12ModGetReloadGeneration();
-	if (static_cast<UINT64>(InterlockedCompareExchange64(
-			&s_rootSigCacheReloadGen, 0, 0)) != reloadGen) {
-		AcquireSRWLockExclusive(&s_rootSigCacheLock);
-		if (static_cast<UINT64>(s_rootSigCacheReloadGen) != reloadGen) {
-			s_rootSigCache.clear();
-			InterlockedExchange64(
-				&s_rootSigCacheReloadGen,
-				static_cast<LONG64>(reloadGen));
-		}
-		ReleaseSRWLockExclusive(&s_rootSigCacheLock);
+	if (s_rootSigCacheReloadGen != reloadGen) {
+		s_rootSigCache.clear();
+		s_rootSigCacheReloadGen = reloadGen;
 	}
 
 	ID3D12RootSignature *computeRootSig = snapshot.computeRootSignature;
@@ -2466,34 +2462,16 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	DX12RootSignatureSummary rootSignatureSummary;
 	const DX12RootSignatureSummary *cachedSummary = nullptr;
 	if (computeRootSig) {
-		AcquireSRWLockShared(&s_rootSigCacheLock);
 		std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::const_iterator sigIt =
 			s_rootSigCache.find(computeRootSig);
 		if (sigIt != s_rootSigCache.end()) {
 			rootSignatureSummary = sigIt->second;
 			cachedSummary = &rootSignatureSummary;
-		}
-		ReleaseSRWLockShared(&s_rootSigCacheLock);
-
-		if (!cachedSummary) {
+		} else {
 			DX12RootSignatureSummary parsed;
 			if (DX12GetRootSignatureSummary(computeRootSig, &parsed)) {
-				AcquireSRWLockExclusive(&s_rootSigCacheLock);
-				if (static_cast<UINT64>(s_rootSigCacheReloadGen) != reloadGen) {
-					s_rootSigCache.clear();
-					InterlockedExchange64(
-						&s_rootSigCacheReloadGen,
-						static_cast<LONG64>(reloadGen));
-				}
-				std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::iterator storeIt =
-					s_rootSigCache.find(computeRootSig);
-				if (storeIt == s_rootSigCache.end()) {
-					s_rootSigCache[computeRootSig] = parsed;
-					rootSignatureSummary = parsed;
-				} else {
-					rootSignatureSummary = storeIt->second;
-				}
-				ReleaseSRWLockExclusive(&s_rootSigCacheLock);
+				s_rootSigCache[computeRootSig] = parsed;
+				rootSignatureSummary = parsed;
 				cachedSummary = &rootSignatureSummary;
 			}
 		}

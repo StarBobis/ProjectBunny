@@ -547,8 +547,9 @@ public:
 	HRESULT STDMETHODCALLTYPE Close() override
 	{
 		DX12_HOTPATH_TIME_BEGIN(CloseCmdListTotal);
-		return DX12WrapperRuntimeUtils::CloseCommandList(mCommandList, mOrigClose);
+		HRESULT hr = DX12WrapperRuntimeUtils::CloseCommandList(mCommandList, mOrigClose);
 		DX12_HOTPATH_TIME_END(CloseCmdListTotal);
+		return hr;
 	}
 
 	HRESULT STDMETHODCALLTYPE Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState) override
@@ -556,8 +557,8 @@ public:
 		DX12_HOTPATH_TIME_BEGIN(ResetCmdListTotal);
 		HRESULT hr = DX12WrapperRuntimeUtils::ResetCommandList(
 			mCommandList, &mRuntimeState, pAllocator, pInitialState, mOrigReset);
-		return hr;
 		DX12_HOTPATH_TIME_END(ResetCmdListTotal);
+		return hr;
 	}
 
 	void STDMETHODCALLTYPE ClearState(ID3D12PipelineState *pPipelineState) override
@@ -1163,6 +1164,7 @@ public:
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
 			mOrigIASetIndexBuffer(mCommandList, pView);
+			DX12_HOTPATH_TIME_END(IASetIndexBufTotal);
 			return;
 		}
 		DX12WrapperRuntimeUtils::IASetIndexBuffer(
@@ -1178,6 +1180,7 @@ public:
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
 			mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
+			DX12_HOTPATH_TIME_END(IASetVertexBufTotal);
 			return;
 		}
 		DX12WrapperRuntimeUtils::IASetVertexBuffers(
