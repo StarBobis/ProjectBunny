@@ -9374,6 +9374,9 @@ static uint64_t HashComputeCbvListForProbe(
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs);
 static uint64_t HashComputeRootConstantsForProbe(
 	const std::vector<DX12CurrentRootConstants> &rootConstants);
+static uint64_t HashPreSkinMatchSrvKeysForProbe(
+	const std::vector<DX12CurrentComputeUavBinding> &srvs,
+	const Bunny::TextureOverrideConfig &config);
 static uint64_t MakePreSkinMatchCsInputCacheKey(
 	uint64_t csHash, const DX12PreSkinTextureOverrideCandidate &candidate,
 	UINT64 uavViewBytes,
@@ -9385,10 +9388,22 @@ static uint64_t MakePreSkinMatchCsInputCacheKey(
 	uint64_t key = HashCombine64(gReloadGeneration, csHash);
 	key = HashCombine64(key, candidate.identity);
 	key = HashCombine64(key, uavViewBytes);
-	key = HashCombine64(key, HashComputeBindingListForProbe(uavs, false));
-	key = HashCombine64(key, HashComputeBindingListForProbe(srvs, true));
-	key = HashCombine64(key, HashComputeCbvListForProbe(cbvs));
-	key = HashCombine64(key, HashComputeRootConstantsForProbe(rootConstants));
+	// match_cs_t0_hash style input matching only observes the SRV bindings
+	// for the configured registers. Hash just those instead of the full
+	// binding set: games rewrite unrelated descriptor slots every frame, and
+	// a full-binding key invalidates this cache even when the matching SRV
+	// inputs are unchanged (observed 42/43 candidate dispatches re-probing
+	// every frame). Fall back to the full binding hash when a candidate has
+	// no SRV-hash inputs (the pre-skin path always has them, this is
+	// defensive for the shared log-dedup call site).
+	if (candidate.config && !candidate.config->preSkinMatchCsSrvHashes.empty())
+		key = HashCombine64(key, HashPreSkinMatchSrvKeysForProbe(srvs, *candidate.config));
+	else {
+		key = HashCombine64(key, HashComputeBindingListForProbe(uavs, false));
+		key = HashCombine64(key, HashComputeBindingListForProbe(srvs, true));
+		key = HashCombine64(key, HashComputeCbvListForProbe(cbvs));
+		key = HashCombine64(key, HashComputeRootConstantsForProbe(rootConstants));
+	}
 	return key;
 }
 
@@ -9565,6 +9580,35 @@ static bool FindComputeSrvByRegister(
 		return true;
 	}
 	return false;
+}
+
+static uint64_t HashPreSkinMatchSrvKeysForProbe(
+	const std::vector<DX12CurrentComputeUavBinding> &srvs,
+	const Bunny::TextureOverrideConfig &config)
+{
+	// Key on the exact bindings MatchComputeInputSrvsTextureOverrideLocked
+	// observes: the SRV at each configured register. A missing binding makes
+	// the match fail, so that must invalidate the key too. sourceOffset /
+	// viewBytes / stride are the same fields the hash probe reports; they are
+	// subsumed by descriptorHash but kept as a cheap collision guard.
+	uint64_t key = 0x5a3d9f21c7e4b608ull;
+	for (const auto &expected : config.preSkinMatchCsSrvHashes)
+	{
+		key = HashCombine64(key, expected.first);
+		key = HashCombine64(key, expected.second);
+		const DX12CurrentComputeUavBinding *binding = nullptr;
+		DX12PreSkinSrvHashResult actual = {};
+		if (!FindComputeSrvByRegister(srvs, expected.first, &binding, &actual))
+		{
+			key = HashCombine64(key, 0xffffffffu);
+			continue;
+		}
+		key = HashCombine64(key, actual.descriptorHash);
+		key = HashCombine64(key, actual.sourceOffset);
+		key = HashCombine64(key, actual.viewBytes);
+		key = HashCombine64(key, actual.stride);
+	}
+	return key;
 }
 
 static void LogPreSkinSrvHashProbeLimited(
@@ -14858,12 +14902,14 @@ static bool HasPotentialIaTextureOverrideCandidateLocked(
 	uint32_t instanceCount,
 	uint32_t firstVertex,
 	uint32_t firstIndex,
-	uint32_t firstInstance)
+	uint32_t firstInstance,
+	std::vector<size_t> *prefilterScratch = nullptr)
 {
-	std::vector<size_t> prefilterScratch;
+	std::vector<size_t> localScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
-			indexBuffer, vertexSlot, vertexCount, indexCount, &prefilterScratch);
+			indexBuffer, vertexSlot, vertexCount, indexCount,
+			prefilterScratch ? prefilterScratch : &localScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
 
@@ -15710,6 +15756,11 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 		return true;
 	}
 
+	// Reuse one scratch vector across the index-buffer probe and all
+	// vertex-buffer slot probes so the merged prefilter buckets do not
+	// allocate a fresh buffer for every slot.
+	std::vector<size_t> prefilterScratch;
+
 	if (targetPlan.RequiresIndexBuffer(indexed) &&
 	    ia.hasIndexBuffer &&
 	    HasPotentialIaTextureOverrideCandidateLocked(
@@ -15720,7 +15771,8 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 			instanceCount,
 			firstVertex,
 			firstIndex,
-			firstInstance)) {
+			firstInstance,
+			&prefilterScratch)) {
 		return true;
 	}
 
@@ -15735,7 +15787,8 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 				instanceCount,
 				firstVertex,
 				firstIndex,
-				firstInstance)) {
+				firstInstance,
+				&prefilterScratch)) {
 			return true;
 		}
 	}
