@@ -26,7 +26,7 @@
 #include "MigotoKeyBindingUtils.hpp"
 #include <Windows.h>
 #include <d3d12.h>
-// ===================== pasted: Implementation/DX12ModState.inl =====================
+
 static DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format)
 {
 	std::wstring value = Bunny::IniDocumentText::ToLower(Bunny::IniDocumentText::Trim(format));
@@ -2595,8 +2595,6 @@ enum class DX12PsoKind
 
 static void ProcessDx12KeyBindingsForFrame();
 
-// ===================== end pasted: Implementation/DX12ModState.inl =====================
-// ===================== pasted: Implementation/DX12ModConfiguration.inl =====================
 class DX12StoredPso
 {
 public:
@@ -5037,8 +5035,6 @@ bool DX12ModRuntimeReload()
 }
 
 
-// ===================== end pasted: Implementation/DX12ModConfiguration.inl =====================
-// ===================== pasted: Implementation/DX12ModResources.inl =====================
 static std::wstring ResolveResourcePath(
 	const Bunny::ResourceConfig &config, const std::wstring &baseDir,
 	bool rootFallback)
@@ -7457,8 +7453,6 @@ bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash)
 		table->byHash.find(originalHash) != table->byHash.end();
 }
 
-// ===================== end pasted: Implementation/DX12ModResources.inl =====================
-// ===================== pasted: Implementation/DX12DrawReplacement.inl =====================
 class DX12DrawSrvPatchRequest
 {
 public:
@@ -8696,8 +8690,6 @@ public:
 	}
 };
 
-// ===================== end pasted: Implementation/DX12DrawReplacement.inl =====================
-// ===================== pasted: Implementation/DX12PreSkinRuntime.inl =====================
 static UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor)
 {
 	if (descriptor.viewSize)
@@ -12402,8 +12394,6 @@ void DX12ModRecordComputeUavs(
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 }
 
-// ===================== end pasted: Implementation/DX12PreSkinRuntime.inl =====================
-// ===================== pasted: Implementation/DX12IaRuntime.inl =====================
 static bool NumericMatchSatisfied(const Bunny::NumericMatch &match, uint32_t actual)
 {
 	if (!match.enabled)
@@ -15843,8 +15833,6 @@ bool DX12ModIaPrefilterCountSensitive()
 	return gIaPrefilterCountSensitive != 0;
 }
 
-// ===================== end pasted: Implementation/DX12IaRuntime.inl =====================
-// ===================== pasted: Implementation/DX12CommandExecution.inl =====================
 static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 LoadCommandExecutionRuntimeSnapshot()
 {
@@ -21419,5 +21407,3 @@ void DX12ModClearPreSkinOutputResizeMap()
 	for (ID3D12Resource *resource : releaseResources)
 		resource->Release();
 }
-
-// ===================== end pasted: Implementation/DX12CommandExecution.inl =====================

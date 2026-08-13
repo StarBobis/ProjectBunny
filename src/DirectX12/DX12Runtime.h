@@ -7,8 +7,6 @@
 
 #include "DX12Tracking.h"
 
-// ===================== Runtime/DX12DeviceRuntime.hpp =====================
-
 
 // ---------------------------------------------------------------------------
 // DX12DescriptorHeapShadowUtils
@@ -2270,9 +2268,6 @@ inline void DX12DeviceHooks::HookDeviceFromCommandQueue(IUnknown *commandQueue)
 }
 
 
-
-// ===================== Mods/DX12ConfigModel.hpp =====================
-
 #include "MigotoIniCommandListUtils.hpp"
 
 #include <cwctype>
@@ -3963,9 +3958,6 @@ inline void MigotoTextureOverrideParser::ParseSections(
 } // namespace Bunny
 
 
-
-// ===================== Runtime/DX12ExecutionAnalysis.hpp =====================
-
 #include "MigotoCommandVmUtils.hpp"
 
 class DX12TextureOverrideMatch
@@ -5110,10 +5102,6 @@ public:
 			frame.effectiveDpi);
 	}
 };
-
-
-
-// ===================== Presentation/DX12UiRuntime.hpp =====================
 
 
 class DX12Overlay

@@ -10,7 +10,8 @@
 #include <unordered_map>
 #include <vector>
 #include <d3d12sdklayers.h>
-// ===================== pasted: Implementation/DX12WrapperCore.inl =====================
+#include <intrin.h>
+
 namespace DX12Wrapper
 {
 	namespace
@@ -2125,9 +2126,6 @@ namespace DX12Wrapper
 			ID3D12DeviceFactory *mFactory = nullptr;
 		};
 
-// ===================== end pasted: Implementation/DX12WrapperCore.inl =====================
-// ===================== pasted: Implementation/DX12DxgiAndObjectWrappers.inl =====================
-#include <intrin.h>
 class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 		{
 		public:
@@ -4960,8 +4958,6 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			ID3D12ShaderCacheSession *mSession = nullptr;
 		};
 
-// ===================== end pasted: Implementation/DX12DxgiAndObjectWrappers.inl =====================
-// ===================== pasted: Implementation/DX12CommandListWrapper.inl =====================
 class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, public WrapperBase
 		{
 		public:
@@ -6594,8 +6590,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			DX12SimulateContext mRuntimeState;
 		};
 
-// ===================== end pasted: Implementation/DX12CommandListWrapper.inl =====================
-// ===================== pasted: Implementation/DX12DeviceInternals.inl =====================
 class DeviceWrapper
 		{
 		public:
@@ -9191,8 +9185,6 @@ class DeviceWrapper
 		}
 	}
 
-// ===================== end pasted: Implementation/DX12DeviceInternals.inl =====================
-// ===================== pasted: Implementation/DX12WrapperExports.inl =====================
 bool WrapD3D12DeviceResult(REFIID riid, void **device)
 	{
 		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
@@ -9776,9 +9768,6 @@ void DX12StoreWrapperIaHash(
 		contentGeneration, resolveGeneration, hash);
 }
 
-// ===================== end pasted: Implementation/DX12WrapperExports.inl =====================
-
-// ===================== merged from DXGIHooks.cpp =====================
 HRESULT WINAPI DXGIHookCallbacks::HookedCreateDXGIFactory(REFIID riid, void **factory)
 {
 	DXGIHookDiagnostics::LogHookCall("CreateDXGIFactory", nullptr);
@@ -9851,7 +9840,6 @@ void DXGIHooks::Shutdown()
 {
 }
 
-// ===================== merged from DX12WaitHooks.cpp =====================
 class DX12WaitHookState
 {
 public:

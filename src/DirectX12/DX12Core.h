@@ -5,8 +5,6 @@
 // ============================================================
 #pragma once
 
-// ===================== Core/DX12Platform.hpp =====================
-
 #include <Windows.h>
 #include <Shlwapi.h>
 #include <d3d12.h>
@@ -34,10 +32,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-
-
-// ===================== Core/DX12CoreState.hpp =====================
 
 
 class DX12PsoInputElementInfo
@@ -1144,10 +1138,6 @@ public:
 };
 
 
-
-// ===================== Runtime/DX12RuntimeCore.hpp =====================
-
-
 // DX11-aligned global log utilities
 //
 // DX12LogInfo and DX12LogDebug use direct fprintf without timestamps.
@@ -2157,9 +2147,6 @@ public:
 	}
 };
 
-
-
-// ===================== Commands/DX12CommandRuntime.hpp =====================
 
 #include <memory>
 
@@ -4770,9 +4757,6 @@ public:
 };
 
 
-
-// ===================== Diagnostics/DX12HangWatchdog.hpp =====================
-
 #include <dbghelp.h>
 
 
@@ -4939,10 +4923,6 @@ private:
 	inline static DWORD sThresholdMs = 8000;
 	inline static HANDLE sThread = nullptr;
 };
-
-
-
-// ===================== Diagnostics/DX12Profiling.hpp =====================
 
 
 class DX12Profiling
@@ -5630,10 +5610,6 @@ inline void DX12Profiling::FlushFrameState()
 		FastForwardHits.calls,
 		all.calls > 0 ? (double)FastForwardHits.calls * 100.0 / (double)all.calls : 0.0);
 }
-
-
-
-// ===================== Commands/DX12CommandServices.hpp =====================
 
 
 void DX12ModRestorePreSkinningUavReplacement(
@@ -7672,10 +7648,6 @@ public:
 };
 
 
-
-// ===================== Mods/DX12ModInterfaces.hpp =====================
-
-
 namespace Bunny {
 class TextureOverrideConfig;
 }
@@ -8487,7 +8459,7 @@ void DX12InvalidateTextureHash(ID3D12Resource *resource);
 // (DX12CacheBufferContentRange / DX12CacheTextureHash) when the fence lands.
 // Draw-time consumers therefore see content one frame late, which is exact
 // for static resources and self-corrects for streaming ones.
-// Implemented in the tracking TU (DX12AsyncContentReadback.inl).
+// Implemented in the tracking TU (DX12ResourceTracking.cpp).
 bool DX12AsyncReadbackQueueBufferCapture(
 	ID3D12Resource *resource, UINT64 offset, UINT64 size);
 bool DX12AsyncReadbackQueueTextureCapture(

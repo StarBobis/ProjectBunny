@@ -11,8 +11,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-// ===================== pasted: Implementation/DX12BindingEventQueue.inl =====================
-
 
 SRWLOCK DX12CaptureLedger::Lock = SRWLOCK_INIT;
 bool DX12CaptureLedger::Active = false;
@@ -823,8 +821,6 @@ static thread_local BindingTlsStateCache tlsStateCache;
 // for the same command list. Generation counter guards against pointer
 // invalidation due to unordered_map rehash on other threads.
 
-// ===================== end pasted: Implementation/DX12BindingEventQueue.inl =====================
-// ===================== pasted: Implementation/DX12BindingState.inl =====================
 static CommandListBindingState* GetOrResolveBindingState(
 	ID3D12GraphicsCommandList *commandList)
 {
@@ -5222,8 +5218,6 @@ UINT64 DX12BindingTracker::GetBindingQuerySerial(ID3D12GraphicsCommandList *comm
 	return serial;
 }
 
-// ===================== end pasted: Implementation/DX12BindingState.inl =====================
-// ===================== pasted: Implementation/DX12BindingExports.inl =====================
 static bool PopulatePreferredFrameEventSource(DX12FrameEventSource *source, const char *reason)
 {
 	if (!source)
@@ -6981,4 +6975,3 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 		static_cast<unsigned long long>(dropped));
 }
 
-// ===================== end pasted: Implementation/DX12BindingExports.inl =====================

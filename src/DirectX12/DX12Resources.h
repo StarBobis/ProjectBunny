@@ -7,8 +7,6 @@
 
 #include "DX12Runtime.h"
 
-// ===================== Core/DX12FeatureCore.hpp =====================
-
 #include <d3d11.h>
 
 bool DX12NativeOverlayRender(IDXGISwapChain *swapChain);
@@ -1355,10 +1353,6 @@ public:
 };
 
 
-
-// ===================== Resources/DX12ResourceServices.hpp =====================
-
-
 enum class DX12ResourceCollectTaskKind
 {
 	Resource,
@@ -2426,10 +2420,6 @@ public:
 		swprintf_s(fileName, fileNameCount, L"%08x.%s", static_cast<UINT>(fileHash), extension);
 	}
 };
-
-
-
-// ===================== Resources/DX12ResourceFormats.hpp =====================
 
 
 #pragma pack(push, 1)
@@ -3525,10 +3515,6 @@ static bool BuildIaBufferDedupeKey(
 };
 
 
-
-// ===================== Resources/DX12ResourceFileIO.hpp =====================
-
-
 class DX12TextureHashUtils
 {
 public:
@@ -4612,10 +4598,6 @@ static bool MapAndWriteTask(
 
 
 };
-
-
-
-// ===================== Resources/DX12ResourceDump.hpp =====================
 
 
 class DX12ResourceDumpPrepare
@@ -6629,14 +6611,9 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 };
 
 
-
-// ===================== Runtime/DX12ResourceRuntime.hpp =====================
-
-
 // Deferred initial mod load (startup hang workaround). Declared here so every
 // TU that compiles DX12ResourceRuntime.hpp sees them regardless of include
-// order; the (extern) definitions live in DX12ModState.inl /
-// DX12ModConfiguration.inl, which are only included by DX12ModRuntime.cpp.
+// order; the (extern) definitions live in DX12ModRuntime.cpp.
 extern DWORD gDeferredInitialModLoadDelayMs;
 extern void DX12ModScheduleInitialLoad(const wchar_t *configPath);
 extern void DX12ModMaybeRunDeferredInitialLoad();

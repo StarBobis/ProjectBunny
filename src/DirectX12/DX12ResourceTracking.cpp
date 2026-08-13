@@ -7,9 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <unordered_set>
-// ===================== pasted: Implementation/DX12ResourceTrackingCore.inl =====================
-
-
+#include <intrin.h>
 
 static constexpr uint64_t kResourceQueueStatsInterval = 4096;
 static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
@@ -3232,12 +3230,9 @@ bool DX12GetResourceCurrentState(
 // RecordDescriptorMerged removed - dead code.  Hooks now call
 // DX12DescriptorHeapShadowUtils::RecordDescriptor directly.
 
-// ===================== end pasted: Implementation/DX12ResourceTrackingCore.inl =====================
-// ===================== pasted: Implementation/DX12ResourceHooks.inl =====================
 // Buffer Content Capture via Map/Unmap hooks
 // Like DX11: capture UPLOAD buffer data at Unmap time so Tier 1
 // (content CRC32) hashing works.  Maps are tracked per-thread.
-#include <intrin.h>
 struct DX12ResourceMapTracking
 {
 	ID3D12Resource *resource = nullptr;
@@ -5004,8 +4999,6 @@ void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 	}
 }
 
-// ===================== end pasted: Implementation/DX12ResourceHooks.inl =====================
-// ===================== pasted: Implementation/DX12ResourceQueries.inl =====================
 bool DX12GetRootSignatureSummary(
 	ID3D12RootSignature *rootSignature, DX12RootSignatureSummary *summary)
 {
@@ -7879,8 +7872,6 @@ void DX12ReleaseRetainedResource(ID3D12Resource *resource)
 	DX12ResourceSnapshotUtils::Release(resource);
 }
 
-// ===================== end pasted: Implementation/DX12ResourceQueries.inl =====================
-// ===================== pasted: Implementation/DX12AsyncContentReadback.inl =====================
 // ---------------------------------------------------------------------------
 // Async content capture via copy-queue readback (DX12AsyncContentReadback).
 //
@@ -8759,5 +8750,3 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		SetEvent(gReadbackWorkerEvent);
 	device->Release();
 }
-
-// ===================== end pasted: Implementation/DX12AsyncContentReadback.inl =====================

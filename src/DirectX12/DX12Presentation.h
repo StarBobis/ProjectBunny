@@ -7,8 +7,6 @@
 
 #include "DX12Resources.h"
 
-// ===================== Presentation/DX12PresentationRuntime.hpp =====================
-
 
 namespace DX12Wrapper
 {
@@ -2603,10 +2601,6 @@ public:
 	inline static DXGIHookSignatures::CreateDXGIFactory OrigCreateDXGIFactory1 = nullptr;
 	inline static DXGIHookSignatures::CreateDXGIFactory2 OrigCreateDXGIFactory2 = nullptr;
 };
-
-
-
-// ===================== Mods/DX12ConfigResources.hpp =====================
 
 
 #include <set>

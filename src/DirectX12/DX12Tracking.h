@@ -7,8 +7,6 @@
 
 #include "DX12Hooks.h"
 
-// ===================== Tracking/DX12BindingInfrastructure.hpp =====================
-
 
 enum class DX12BindingCollectTaskKind
 {
@@ -1354,10 +1352,6 @@ public:
 };
 
 
-
-// ===================== Tracking/DX12DescriptorInfrastructure.hpp =====================
-
-
 class DX12DescriptorArenaUtils
 {
 public:
@@ -1555,10 +1549,6 @@ private:
 
 	std::unique_ptr<Set[]> sets_;
 };
-
-
-
-// ===================== Tracking/DX12ResourceInfrastructure.hpp =====================
 
 
 class DX12FrameAnalysis

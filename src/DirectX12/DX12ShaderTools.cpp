@@ -7,6 +7,8 @@
 
 #include <Windows.h>
 #include <Shlwapi.h>
+#include <CommCtrl.h>
+#include <dwmapi.h>
 #include <d3dcompiler.h>
 #include <dxcapi.h>
 #include <stdint.h>
@@ -22,10 +24,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-// ===================== pasted: Implementation/DX12ShaderAnalysis.inl =====================
-
-
 
 struct ShaderRecord
 {
@@ -1370,8 +1368,6 @@ static const char *PipelineStateStreamShaderStage(D3D12_PIPELINE_STATE_SUBOBJECT
 }
 
 
-// ===================== end pasted: Implementation/DX12ShaderAnalysis.inl =====================
-// ===================== pasted: Implementation/DX12PipelineStateTracking.inl =====================
 void DX12RecordGraphicsPipelineState(
 	ID3D12PipelineState *pipelineState, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc)
 {
@@ -1566,8 +1562,6 @@ bool DX12GetPsoInputLayout(UINT64 psoIndex, DX12PsoInputLayoutInfo *layout)
 }
 
 
-// ===================== end pasted: Implementation/DX12PipelineStateTracking.inl =====================
-// ===================== pasted: Implementation/DX12ShaderDumpRuntime.inl =====================
 static bool ShaderInfoContainsHash(const DX12PsoShaderInfo &info, const ShaderRecord &shader)
 {
 	if (info.hasVS && shader.stage == "vs" && shader.hash == info.vs)
@@ -1942,8 +1936,6 @@ void DX12DumpCapturedFrameShaders()
 	CloseHandle(thread);
 }
 
-// ===================== end pasted: Implementation/DX12ShaderDumpRuntime.inl =====================
-// ===================== pasted: Implementation/DX12ShaderHuntState.inl =====================
 enum class HuntStage
 {
 	VS,
@@ -2287,8 +2279,6 @@ static HuntIaState BuildHuntIaState(const DX12ActiveIaState &ia)
 }
 
 
-// ===================== end pasted: Implementation/DX12ShaderHuntState.inl =====================
-// ===================== pasted: Implementation/DX12ShaderHuntRuntime.inl =====================
 static bool PsoShouldSkip(ID3D12PipelineState *pipelineState, bool dispatch, UINT64 vs, UINT64 ps, UINT64 cs)
 {
 	DX12PsoShaderInfo info = {};
@@ -2842,8 +2832,6 @@ void DX12HuntRefreshOverlay()
 	DX12OverlayStatusState::SetStatus(status);
 }
 
-// ===================== end pasted: Implementation/DX12ShaderHuntRuntime.inl =====================
-// ===================== pasted: Implementation/DX12ShaderHuntUi.inl =====================
 static void FormatStageItem(
 	DX12HuntListItem *item, size_t displayIndex, UINT64 hash, const StageSelection &selection)
 {
@@ -3060,14 +3048,6 @@ void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash)
 	if (selected)
 		DX12HuntRefreshOverlay();
 }
-
-// ===================== end pasted: Implementation/DX12ShaderHuntUi.inl =====================
-
-// ===================== merged from DX12NativeOverlay.cpp =====================
-#include <CommCtrl.h>
-#include <dwmapi.h>
-#include <stdint.h>
-#include <vector>
 
 static constexpr wchar_t kOverlayWindowClass[] = L"ProjectBunnyDX12ToolWindow";
 static constexpr UINT kOverlayClientWidth = 860;

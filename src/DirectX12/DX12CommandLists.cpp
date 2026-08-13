@@ -6,7 +6,6 @@
 #include "DX12Presentation.h"
 #include <d3d12.h>
 #include <unordered_set>
-// ===================== pasted: Implementation/DX12CommandHooks.inl =====================
 
 DX12CommandListHookSignatures::CreateCommandQueue DX12CommandListHookState::OrigCreateCommandQueue = nullptr;
 DX12CommandListHookSignatures::CreateCommandAllocator DX12CommandListHookState::OrigCreateCommandAllocator = nullptr;
@@ -92,6 +91,11 @@ thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::Comman
 thread_local DX12VtableBaseCache DX12CommandListHookState::VtableBaseCache;
 thread_local DX12ThreadLocalIaCallbacksCache DX12CommandListHookState::IaCallbacksCache;
 
+// DX12CommandListRuntime static state
+DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
+volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
+thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
+
 void DX12CommandListHookState::ReleaseKnownCommandQueue()
 {
 	IUnknown *queue = nullptr;
@@ -131,17 +135,6 @@ void DX12CommandListHooks::RememberCommandQueueForHotPath(IUnknown *commandQueue
 	if (oldQueue)
 		oldQueue->Release();
 }
-
-// ===================== end pasted: Implementation/DX12CommandHooks.inl =====================
-// ===================== pasted: Implementation/DX12CommandRuntime.inl =====================
-DX12CommandListRuntimeShard DX12CommandListRuntime::Shards[DX12CommandListRuntime::kRuntimeShardCount];
-volatile UINT64 DX12CommandListRuntime::TrackingGenerationValue = 1;
-thread_local DX12CommandListRuntimeTlsCache DX12CommandListRuntime::Tls;
-
-std::shared_ptr<const DX12ModIaReplacement>
-DX12ModFindStaticReplacementSnapshotForPso(
-	ID3D12PipelineState *pipelineState,
-	UINT64 reloadGeneration);
 
 void DX12CommandListRuntime::RegisterDirectState(
 	ID3D12GraphicsCommandList *commandList, DX12SimulateContext *state)
@@ -3219,4 +3212,3 @@ void DX12CommandListStateCapture::VertexBuffers(
 	}
 }
 
-// ===================== end pasted: Implementation/DX12CommandRuntime.inl =====================

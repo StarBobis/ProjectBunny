@@ -7,8 +7,6 @@
 
 #include "DX12Core.h"
 
-// ===================== Hooks/DX12CommandFlow.hpp =====================
-
 #include "Nektra/NktHookLib.h"
 #include "util_min.h"
 #include "crc32c.h"
@@ -5260,10 +5258,6 @@ public:
 			draw.vertexCount, draw.instanceCount, draw.firstVertex, draw.firstInstance);
 	}
 };
-
-
-
-// ===================== Hooks/DX12HookRuntime.hpp =====================
 
 
 class DX12HookRegistry
