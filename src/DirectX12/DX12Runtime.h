@@ -2721,6 +2721,7 @@ enum class CommandListActionKind
 	SetVertexBuffer,
 	Draw,
 	DrawIndexed,
+	DrawIndexedAuto,
 	DrawFromCaller,
 	DrawIndexedFromCaller,
 	Dispatch,
@@ -3092,6 +3093,12 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 	if (key == L"drawindexed") {
 		if (IniDocumentText::ToLower(value) == L"from_caller") {
 			action->kind = CommandListActionKind::DrawIndexedFromCaller;
+			return true;
+		}
+		// `drawindexed = auto` recomputes the index count from the replaced
+		// index buffer at draw time (mirrors DX11 get_index_count_from_current_ib).
+		if (IniDocumentText::ToLower(value) == L"auto") {
+			action->kind = CommandListActionKind::DrawIndexedAuto;
 			return true;
 		}
 		action->kind = CommandListActionKind::DrawIndexed;

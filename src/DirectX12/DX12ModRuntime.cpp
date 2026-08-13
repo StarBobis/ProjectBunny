@@ -4119,6 +4119,7 @@ static bool CommandListActionHasRuntimeEffect(
 	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawIndexedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	case Bunny::CommandListActionKind::Dispatch:
@@ -4170,6 +4171,7 @@ static bool TextureOverrideActionsHaveRuntimeEffect(
 		case Bunny::CommandListActionKind::HandlingSkip:
 		case Bunny::CommandListActionKind::Draw:
 		case Bunny::CommandListActionKind::DrawIndexed:
+		case Bunny::CommandListActionKind::DrawIndexedAuto:
 		case Bunny::CommandListActionKind::DrawFromCaller:
 		case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 			if (executeDrawActions)
@@ -4264,6 +4266,7 @@ static bool CommandListActionHasPhaseRuntimeEffect(
 	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawIndexedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	case Bunny::CommandListActionKind::Dispatch:
@@ -12866,25 +12869,65 @@ static const std::vector<size_t> *FindIaTextureOverrideCandidatesLocked(
 }
 
 static const std::vector<size_t> *FindIaTextureOverridePrefilterCandidatesLocked(
-	bool indexBuffer, uint32_t vertexSlot, uint32_t vertexCount, uint32_t indexCount)
+	bool indexBuffer, uint32_t vertexSlot, uint32_t vertexCount, uint32_t indexCount,
+	std::vector<size_t> *scratch)
 {
+	if (scratch)
+		scratch->clear();
+
 	if (indexBuffer) {
 		auto indexedByCount =
 			gIaIndexTextureOverridePrefilterByIndexCount.find(indexCount);
-		if (indexedByCount != gIaIndexTextureOverridePrefilterByIndexCount.end())
-			return &indexedByCount->second;
+		if (indexedByCount != gIaIndexTextureOverridePrefilterByIndexCount.end()) {
+			// The exact-count bucket and the generic list (candidates without
+			// an exact match_index_count) are mutually exclusive in the build,
+			// but generic overrides match every draw count. Returning only the
+			// exact-count bucket starves generic overrides whenever a draw
+			// happens to use a configured exact count, which shows up as
+			// intermittent missing matches (flicker). The buckets are disjoint
+			// by construction, so no dedup is required.
+			if (!scratch)
+				return &indexedByCount->second;
+			*scratch = indexedByCount->second;
+			if (!gIaIndexTextureOverridePrefilterIndex.empty())
+				scratch->insert(scratch->end(),
+					gIaIndexTextureOverridePrefilterIndex.begin(),
+					gIaIndexTextureOverridePrefilterIndex.end());
+			return scratch;
+		}
 		return &gIaIndexTextureOverridePrefilterIndex;
 	}
 
 	auto mergedByCount = gIaMergedVertexTextureOverridePrefilterByVertexCount.find(
 		MakeIaVertexIndexKey(vertexCount, vertexSlot));
-	if (mergedByCount != gIaMergedVertexTextureOverridePrefilterByVertexCount.end())
-		return &mergedByCount->second;
+	if (mergedByCount != gIaMergedVertexTextureOverridePrefilterByVertexCount.end()) {
+		// Same rationale as the index side: also consider the generic merged
+		// candidates for this slot, which match any vertex count.
+		if (!scratch)
+			return &mergedByCount->second;
+		*scratch = mergedByCount->second;
+		auto mergedGeneric =
+			gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
+		if (mergedGeneric != gIaMergedVertexTextureOverridePrefilterIndex.end())
+			scratch->insert(scratch->end(),
+				mergedGeneric->second.begin(),
+				mergedGeneric->second.end());
+		return scratch;
+	}
 
 	auto anySlotByCount =
 		gIaAnyVertexTextureOverridePrefilterByVertexCount.find(vertexCount);
-	if (anySlotByCount != gIaAnyVertexTextureOverridePrefilterByVertexCount.end())
-		return &anySlotByCount->second;
+	if (anySlotByCount != gIaAnyVertexTextureOverridePrefilterByVertexCount.end()) {
+		// Merge in the generic any-slot candidates, which match any count.
+		if (!scratch)
+			return &anySlotByCount->second;
+		*scratch = anySlotByCount->second;
+		if (!gIaAnyVertexTextureOverridePrefilterIndex.empty())
+			scratch->insert(scratch->end(),
+				gIaAnyVertexTextureOverridePrefilterIndex.begin(),
+				gIaAnyVertexTextureOverridePrefilterIndex.end());
+		return scratch;
+	}
 
 	auto merged = gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
 	if (merged != gIaMergedVertexTextureOverridePrefilterIndex.end())
@@ -12981,15 +13024,18 @@ static bool AppendActionToCompiledPlan(
 	}
 	case Bunny::CommandListActionKind::Draw:
 	case Bunny::CommandListActionKind::DrawIndexed:
+	case Bunny::CommandListActionKind::DrawIndexedAuto:
 	case Bunny::CommandListActionKind::DrawFromCaller:
 	case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 	{
 		DX12ModIaReplacement::DrawCall draw;
 		draw.indexed = (action.kind == Bunny::CommandListActionKind::DrawIndexed ||
+						action.kind == Bunny::CommandListActionKind::DrawIndexedAuto ||
 						action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
 		draw.fromCaller = (action.kind == Bunny::CommandListActionKind::DrawFromCaller ||
 						   action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller);
-		if (!draw.fromCaller)
+		draw.autoCount = (action.kind == Bunny::CommandListActionKind::DrawIndexedAuto);
+		if (!draw.fromCaller && !draw.autoCount)
 		{
 			draw.count = action.args[0];
 			draw.start = action.args[1];
@@ -14056,12 +14102,14 @@ static void CollectIaTriggeredTextureOverrideCandidates(
 		return;
 	candidateTriggers->clear();
 
+	std::vector<size_t> prefilterScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
 			indexBuffer,
 			vertexSlot,
 			vertexCount,
-			indexCount);
+			indexCount,
+			&prefilterScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return;
 
@@ -14822,9 +14870,10 @@ static bool HasPotentialIaTextureOverrideCandidateLocked(
 	uint32_t firstIndex,
 	uint32_t firstInstance)
 {
+	std::vector<size_t> prefilterScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
-			indexBuffer, vertexSlot, vertexCount, indexCount);
+			indexBuffer, vertexSlot, vertexCount, indexCount, &prefilterScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
 
@@ -14866,12 +14915,14 @@ static bool HasPotentialHashedIaTextureOverrideCandidateLocked(
 	uint32_t vertexCount,
 	uint32_t indexCount)
 {
+	std::vector<size_t> prefilterScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
 			indexBuffer,
 			vertexSlot,
 			vertexCount,
-			indexCount);
+			indexCount,
+			&prefilterScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
 
@@ -14905,12 +14956,14 @@ bool DX12ModHasPotentialIaTextureOverrideTargetByCount(
 	uint32_t vertexCount,
 	uint32_t indexCount)
 {
+	std::vector<size_t> prefilterScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
 			indexBuffer,
 			vertexSlot,
 			vertexCount,
-			indexCount);
+			indexCount,
+			&prefilterScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return false;
 
@@ -15713,9 +15766,10 @@ static bool IaHashDefinitelyHasNoCandidate(
 	uint32_t vertexSlot,
 	uint32_t hash)
 {
+	std::vector<size_t> prefilterScratch;
 	const std::vector<size_t> *candidateIndexes =
 		FindIaTextureOverridePrefilterCandidatesLocked(
-			indexBuffer, vertexSlot, 0, 0);
+			indexBuffer, vertexSlot, 0, 0, &prefilterScratch);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return true;
 
@@ -17276,11 +17330,13 @@ public:
 		DX12ModIaReplacement::DrawCall draw;
 		draw.indexed =
 			action.kind == Bunny::CommandListActionKind::DrawIndexed ||
+			action.kind == Bunny::CommandListActionKind::DrawIndexedAuto ||
 			action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller;
 		draw.fromCaller =
 			action.kind == Bunny::CommandListActionKind::DrawFromCaller ||
 			action.kind == Bunny::CommandListActionKind::DrawIndexedFromCaller;
-		if (!draw.fromCaller) {
+		draw.autoCount = action.kind == Bunny::CommandListActionKind::DrawIndexedAuto;
+		if (!draw.fromCaller && !draw.autoCount) {
 			draw.count = action.args[0];
 			draw.start = action.args[1];
 			draw.baseVertex = draw.indexed ? static_cast<INT>(action.args[2]) : 0;
@@ -18277,6 +18333,7 @@ public:
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
+			case Bunny::CommandListActionKind::DrawIndexedAuto:
 			case Bunny::CommandListActionKind::DrawFromCaller:
 			case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 				if (mReplacement)
@@ -18358,6 +18415,7 @@ public:
 				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
+			case Bunny::CommandListActionKind::DrawIndexedAuto:
 			case Bunny::CommandListActionKind::DrawFromCaller:
 			case Bunny::CommandListActionKind::DrawIndexedFromCaller:
 				if (executeActions)

@@ -2662,6 +2662,20 @@ public:
 				}
 				if (!count)
 					continue;
+			} else if (draw.autoCount) {
+				// `drawindexed = auto`: recompute the index count from the
+				// replaced index buffer view, mirroring DX11's
+				// get_index_count_from_current_ib (ByteWidth - offset) / 2|4.
+				if (!draw.indexed || !replacement.hasIndexBuffer) {
+					continue;
+				}
+				const UINT elementSize =
+					(replacement.indexBuffer.Format == DXGI_FORMAT_R16_UINT) ? 2u : 4u;
+				count = replacement.indexBuffer.SizeInBytes / elementSize;
+				start = 0;
+				baseVertex = 0;
+				if (!count)
+					continue;
 			} else {
 				if (!draw.count)
 					continue;
@@ -4293,7 +4307,11 @@ public:
 		const DX12IaHashState *activeIaState = &iaState;
 		const uint32_t vertexCount = draw.indexed ? 0 : draw.vertexCount;
 		const uint32_t indexCount = draw.indexed ? draw.indexCount : 0;
-		const uint32_t firstVertex = draw.indexed ? 0 : draw.firstVertex;
+		// DX11 reports FirstVertex = BaseVertexLocation for indexed draws
+		// (HackerContext::DrawContext), so match_first_vertex applies to the
+		// base vertex there. Mirror that semantic instead of pinning it to 0.
+		const uint32_t firstVertex = draw.indexed ?
+			static_cast<uint32_t>(draw.baseVertex) : draw.firstVertex;
 		const uint32_t firstIndex = draw.indexed ? draw.firstIndex : 0;
 
 		// Cheap negative cache lookup uses PSO, IA view identity, and draw args

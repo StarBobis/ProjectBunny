@@ -7932,6 +7932,9 @@ public:
 		UINT start = 0;
 		INT baseVertex = 0;
 		bool fromCaller = false;
+		// `drawindexed = auto`: count is recomputed from the replaced index
+		// buffer view at execution time instead of using a literal value.
+		bool autoCount = false;
 	};
 	class DispatchCall
 	{
