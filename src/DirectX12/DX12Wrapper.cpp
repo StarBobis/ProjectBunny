@@ -5609,6 +5609,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				// synchronously. The readback executes after this submit, so
 				// it always observes the post-copy bytes.
 				if (DX12HotPathState::NeedsIaBufferContentTracking(flags)) {
+					// Synchronously invalidate the destination's content generation:
+					// the IA hash cache key uses the per-resource content generation
+					// (not the command-list iaContentEpoch above), and the async
+					// readback only refreshes it a frame later. Without this bump a
+					// GPU-uploaded vertex/index buffer keeps a stale hash for one
+					// frame -> intermittent wrong IA replacement / model flicker.
+					DX12InvalidateBufferContent(dstResource);
 					DX12AsyncReadbackQueueBufferCapture(
 						dstResource, DstOffset, NumBytes);
 				}

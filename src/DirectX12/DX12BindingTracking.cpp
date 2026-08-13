@@ -2478,10 +2478,9 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	}
 	const bool hasParsedRootSignatureSummary =
 		cachedSummary && cachedSummary->parsed;
-	const UINT64 descriptorQuerySerialBefore = CurrentDescriptorQuerySerial();
 	// The runtime state caches the heap content version at SetDescriptorHeaps
 	// time, so the runtime path does not need the global descriptor lock to
-	// re-read it here; descriptor writes are still caught by the query serial.
+	// re-read it here.
 	const UINT64 descriptorHeapVersionBefore =
 		preferRuntimeSnapshot ?
 			runtimeState->cbvSrvUavHeapVersion :
@@ -2874,9 +2873,15 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			runtimeState->cbvSrvUavHeapVersion :
 			DX12GetDescriptorHeapVersion(snapshot.cbvSrvUavHeap);
 	const UINT64 descriptorQuerySerialAfter = CurrentDescriptorQuerySerial();
+	// The global descriptor-query serial bumps on any descriptor write anywhere
+	// in the process, including slots this dispatch never observes. Requiring it
+	// to stay constant across the collect pass made the cache un-storeable in
+	// descriptor-churn games (observed 0% hit rate): the serial changed mid-collect
+	// even when every observed slot was stable. The load path already re-reads each
+	// observed slot's version/value-id to prove correctness, so keep only the
+	// heap-structure stability check here.
 	const bool descriptorStateStable =
-		descriptorHeapVersionAfter == descriptorHeapVersionBefore &&
-		descriptorQuerySerialAfter == descriptorQuerySerialBefore;
+		descriptorHeapVersionAfter == descriptorHeapVersionBefore;
 	if (allRuntimeDescriptorsStable && descriptorStateStable) {
 		DX12PreSkinBindingCacheUtils::Store(
 			&tlsPreSkinBindingCache,

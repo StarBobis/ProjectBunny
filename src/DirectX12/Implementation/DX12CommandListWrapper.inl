@@ -662,6 +662,13 @@ public:
 		// it always observes the post-copy bytes.
 		if (DX12HotPathState::NeedsIaBufferContentTracking(flags))
 		{
+			// Invalidate the destination's cached content generation now. The IA
+			// hash cache key is built from the per-resource content generation
+			// (not the command-list iaContentEpoch above), and the async readback
+			// only refreshes it a frame later. Without this synchronous bump a
+			// GPU-uploaded vertex/index buffer keeps its stale hash for one frame,
+			// producing intermittent wrong IA replacement (model "explosion").
+			DX12InvalidateBufferContent(dstResource);
 			DX12AsyncReadbackQueueBufferCapture(
 				dstResource, DstOffset, NumBytes);
 		}

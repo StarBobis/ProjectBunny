@@ -6017,14 +6017,18 @@ void DX12InvalidateBufferContent(ID3D12Resource *resource)
 	if (!resource)
 		return;
 	AcquireSRWLockExclusive(&gBufferContentLock);
-	const bool erased = gBufferContentByResource.erase(resource) != 0;
+	gBufferContentByResource.erase(resource);
 	gBufferRegionHashesByResource.erase(resource);
 	ReleaseSRWLockExclusive(&gBufferContentLock);
 	// Thread-local IA caches use this epoch as the cheap indication that a
 	// per-resource generation must be re-read. Without it, a released or
 	// GPU-written resource can retain a stale content hash indefinitely.
-	if (erased)
-		gBufferContentGeneration.fetch_add(1, std::memory_order_release);
+	// Bump unconditionally: GPU copy paths (CopyBufferRegion) may target a
+	// resource that was never CPU-tracked, and unresolved-IA fallback keys
+	// still need the global epoch to advance even when the erase above was a
+	// no-op (otherwise a stale IA hash survives until the async readback lands
+	// a frame later, causing a one-frame wrong IA replacement / model flicker).
+	gBufferContentGeneration.fetch_add(1, std::memory_order_release);
 }
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	const uint8_t **outData, size_t *outDataSize)
