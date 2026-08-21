@@ -11817,6 +11817,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	DX12InternalReplayScope internalReplay;
 	DX12PreSkinReplacementState state = {};
 	bool found = false;
+	bool erased = false;
 	AcquireSRWLockExclusive(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
 	if (it != gActivePreSkinReplacements.end())
@@ -11824,11 +11825,21 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		state = std::move(it->second);
 		gActivePreSkinReplacements.erase(it);
 		found = state.active;
+		erased = true;
 	}
 	if (gActivePreSkinReplacements.empty())
 		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
-	BumpPreSkinReplacementMutationGeneration();
+	// Only bump the generation when the map actually changed. This lookup
+	// runs on every draw/dispatch of every command list while any pre-skin
+	// replacement is pending; an unconditional bump would invalidate the
+	// TLS negative cache of every other list on each call, forcing them all
+	// back onto the exclusive lock plus a map lookup for no reason (and it
+	// would also make DX12ModIsPreSkinReplacementReusable observe a phantom
+	// mutation). Same conditional-bump pattern as
+	// DX12ModClearPreSkinOutputResizeMap.
+	if (erased)
+		BumpPreSkinReplacementMutationGeneration();
 
 	// Re-read the generation after the mutation so the negative entry stays
 	// valid for exactly the state we just observed.
