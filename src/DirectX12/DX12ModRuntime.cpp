@@ -7667,7 +7667,10 @@ public:
 		if (!commandList)
 			return false;
 
-		CommandListBindingState snapshot;
+		// thread_local: SnapshotBindingState fully overwrites the object on
+		// success, so zero-initializing the ~60KB NSDMI arrays on every call
+		// is wasted work on this per-draw query path.
+		static thread_local CommandListBindingState snapshot;
 		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
 			return false;
 
@@ -8287,7 +8290,8 @@ public:
 			return false;
 		}
 		const LARGE_INTEGER planBegin = DX12OuterTimingProbeUtils::Now();
-		CommandListBindingState snapshot;
+		// thread_local: see the note above for why this is safe and cheaper.
+		static thread_local CommandListBindingState snapshot;
 		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=binding_snapshot");

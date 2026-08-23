@@ -276,10 +276,9 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	UINT64 descriptorEpoch,
 	UINT64 captureSessionId)
 {
-	DX12BindingCollectTask task;
+	DX12BindingCollectTask task(state);
 	task.kind = DX12BindingCollectTaskKind::StateEvent;
 	task.commandList = commandList;
-	task.state = state;
 	task.eventKind = kind;
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
@@ -302,10 +301,9 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	INT baseVertexLocation,
 	UINT startInstanceLocation)
 {
-	DX12BindingCollectTask task;
+	DX12BindingCollectTask task(state);
 	task.kind = DX12BindingCollectTaskKind::DrawEvent;
 	task.commandList = commandList;
-	task.state = state;
 	task.eventKind = kind;
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
@@ -330,10 +328,9 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	UINT threadGroupCountY,
 	UINT threadGroupCountZ)
 {
-	DX12BindingCollectTask task;
+	DX12BindingCollectTask task(state);
 	task.kind = DX12BindingCollectTaskKind::DispatchEvent;
 	task.commandList = commandList;
-	task.state = state;
 	task.eventKind = "dispatch";
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
@@ -354,10 +351,9 @@ bool DX12BindingCollectQueue::EnqueueOutputEvent(
 	UINT64 drawId,
 	UINT64 captureSessionId)
 {
-	DX12BindingCollectTask task;
+	DX12BindingCollectTask task(state);
 	task.kind = DX12BindingCollectTaskKind::OutputEvent;
 	task.commandList = commandList;
-	task.state = state;
 	task.eventKind = kind;
 	task.slot = slot;
 	task.cpuHandle = cpuHandle;
@@ -1555,7 +1551,11 @@ static bool BuildRuntimeBindingSnapshot(
 	if (!runtimeState || !snapshot)
 		return false;
 
-	*snapshot = CommandListBindingState();
+	// Reconstruct in place: assigning a default-constructed temporary would
+	// zero the ~60KB of NSDMI arrays once for the temporary and again copy
+	// them over *snapshot on this per-query hot path.
+	std::destroy_at(snapshot);
+	new (snapshot) CommandListBindingState();
 	snapshot->pipelineState = runtimeState->pipelineState;
 	snapshot->graphicsRootSignature = runtimeState->graphicsRootSignature;
 	snapshot->computeRootSignature = runtimeState->computeRootSignature;
@@ -1912,7 +1912,8 @@ public:
 	{
 		if (!event)
 			return;
-		*event = BindingEvent();
+		// Callers always pass a freshly default-constructed event, so there is
+		// no need to reset it here; doing so would zero ~60KB of arrays twice.
 		event->pipelineState = snapshot.pipelineState;
 		event->graphicsRootSignature = snapshot.graphicsRootSignature;
 		event->computeRootSignature = snapshot.computeRootSignature;
@@ -2417,7 +2418,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	} else {
 		// Non-runtime tracked lists snapshot the full state, then only the
 		// compute fields this collector observes are carried over.
-		CommandListBindingState fullSnapshot;
+		// thread_local: SnapshotBindingState fully overwrites the object on
+		// success, so a fresh zero-init of the ~60KB NSDMI arrays per call is
+		// wasted work on this per-dispatch path.
+		static thread_local CommandListBindingState fullSnapshot;
 		if (DX12BindingTracker::SnapshotBindingState(
 				commandList, &fullSnapshot)) {
 			FillPreSkinComputeSnapshotFromFull(fullSnapshot, &snapshot);
@@ -3194,11 +3198,16 @@ bool DX12BindingTracker::SnapshotBindingState(
 	}
 	ReleaseSRWLockShared(&shard.lock);
 	if (runtimeState) {
-		CommandListBindingState runtimeSnapshot;
-		if (BuildRuntimeBindingSnapshot(runtimeState, &runtimeSnapshot)) {
+		// With no shard state to merge, build directly into the output and
+		// skip a full ~60KB copy of the scratch snapshot. The merge case uses
+		// a thread_local scratch: BuildRuntimeBindingSnapshot reconstructs it
+		// in place, so zero-initializing a fresh local per call is wasted.
+		static thread_local CommandListBindingState runtimeSnapshot;
+		CommandListBindingState *runtimeTarget =
+			found ? &runtimeSnapshot : snapshot;
+		if (BuildRuntimeBindingSnapshot(runtimeState, runtimeTarget)) {
 			if (!found) {
-				*snapshot = runtimeSnapshot;
-				serial = runtimeSnapshot.bindingQuerySerial;
+				serial = snapshot->bindingQuerySerial;
 				found = true;
 			} else {
 				snapshot->graphicsRootSignature =
@@ -3320,7 +3329,8 @@ bool DX12BindingTracker::BuildEvent(
 {
 	if (!event)
 		return false;
-	*event = BindingEvent();
+	// Callers always pass a freshly default-constructed event, so there is no
+	// need to reset it here; doing so would zero ~60KB of arrays twice.
 	event->kind = kind ? kind : "";
 	event->captureSessionId = captureSessionId;
 	const bool isDrawKind = kind && (!strcmp(kind, "draw") || !strcmp(kind, "draw_indexed"));
@@ -3706,7 +3716,10 @@ void DX12BindingTracker::ResetCommandList(
 	CommandListBindingState &state = shard.states[commandList];
 	DX12BindingTracker::ReleaseRecordedEventsLocked(&shard, commandList);
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
-	state = CommandListBindingState();
+	// Reconstruct in place; see BuildRuntimeBindingSnapshot for why assigning
+	// a temporary is wasteful here.
+	std::destroy_at(&state);
+	new (&state) CommandListBindingState();
 	state.pipelineState = initialState;
 	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RefreshPipelineShaderInfo(&state);
@@ -3866,7 +3879,8 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 	if (!commandList)
 		return;
 
-	CommandListBindingState snapshot;
+	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
+	static thread_local CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
 		return;
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
@@ -4219,18 +4233,15 @@ void DX12BindingTracker::RecordOutputTargets(
 	if (!commandList)
 		return;
 
-	CommandListBindingState snapshot;
-	bool found = false;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end()) {
-		snapshot = it->second;
-		found = true;
-	}
+	const auto it = shard.states.find(commandList);
+	const bool found = it != shard.states.end();
+	// Copy-construct directly to avoid zero-initializing ~60KB of NSDMI
+	// arrays before the copy overwrites them.
+	const CommandListBindingState snapshot =
+		found ? it->second : CommandListBindingState();
 	ReleaseSRWLockShared(&shard.lock);
-	if (!found)
-		snapshot = CommandListBindingState();
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
@@ -4307,18 +4318,16 @@ void DX12BindingTracker::RecordRenderTargetClear(
 	if (!commandList || !renderTargetView.ptr)
 		return;
 
-	CommandListBindingState snapshot;
-	bool found = false;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end()) {
-		snapshot = it->second;
-		found = true;
-	}
-	ReleaseSRWLockShared(&shard.lock);
-	if (!found)
+	const auto it = shard.states.find(commandList);
+	if (it == shard.states.end()) {
+		ReleaseSRWLockShared(&shard.lock);
 		return;
+	}
+	// Copy-construct directly; see RecordDrawInstanced for why.
+	const CommandListBindingState snapshot(it->second);
+	ReleaseSRWLockShared(&shard.lock);
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	if (DX12BindingCollectQueue::EnqueueOutputEvent(
 			commandList,
@@ -4346,18 +4355,16 @@ void DX12BindingTracker::RecordDepthStencilClear(
 	if (!commandList || !depthStencilView.ptr)
 		return;
 
-	CommandListBindingState snapshot;
-	bool found = false;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end()) {
-		snapshot = it->second;
-		found = true;
-	}
-	ReleaseSRWLockShared(&shard.lock);
-	if (!found)
+	const auto it = shard.states.find(commandList);
+	if (it == shard.states.end()) {
+		ReleaseSRWLockShared(&shard.lock);
 		return;
+	}
+	// Copy-construct directly; see RecordDrawInstanced for why.
+	const CommandListBindingState snapshot(it->second);
+	ReleaseSRWLockShared(&shard.lock);
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	if (DX12BindingCollectQueue::EnqueueOutputEvent(
 			commandList,
@@ -4386,7 +4393,8 @@ bool DX12BindingTracker::GetCurrentIaState(
 		return false;
 
 	*state = DX12CurrentIaState();
-	CommandListBindingState snapshot;
+	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
+	static thread_local CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
 		return false;
 
@@ -4460,7 +4468,8 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		}
 	}
 
-	CommandListBindingState snapshot;
+	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
+	static thread_local CommandListBindingState snapshot;
 	UINT64 bindingQuerySerial = 0;
 	const bool snapshotReady = preferRuntimeSnapshot ?
 		BuildRuntimeBindingSnapshot(runtimeState, &snapshot) :
@@ -4606,7 +4615,8 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	if (cbvs) cbvs->clear();
 	if (constants) constants->clear();
 
-	CommandListBindingState snapshot;
+	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
+	static thread_local CommandListBindingState snapshot;
 	UINT64 bindingQuerySerial = 0;
 	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial)) {
@@ -4748,7 +4758,9 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 			DX12CommandListRuntime::GetTrackingState(runtimeState) :
 			DX12CommandListTrackingState();
 	if (runtimeState && !tracking.trackBindings) {
-		CommandListBindingState snapshot;
+		// thread_local: BuildRuntimeBindingSnapshot resets the object before
+		// filling it, so a per-call zero-init is wasted work.
+		static thread_local CommandListBindingState snapshot;
 		if (!BuildRuntimeBindingSnapshot(runtimeState, &snapshot))
 			return false;
 		return DX12BindingTrackerQueryCacheUtils::CollectDescriptorBindingsByRegister(
@@ -4762,7 +4774,8 @@ bool DX12BindingTracker::GetCurrentShaderResourceBindingsByRegister(
 			bindings);
 	}
 
-	CommandListBindingState snapshot;
+	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
+	static thread_local CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, nullptr))
 		return false;
 
@@ -4793,7 +4806,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 	if (!commandList)
 		return;
 
-	CommandListBindingState snapshot;
 	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
@@ -4809,7 +4821,9 @@ void DX12BindingTracker::RecordDrawInstanced(
 	// eagerly in SetVertexBuffers/SetIndexBuffer; deferred to here for ~90%
 	// per-call cost reduction).
 	ResolveDeferredIaResources(&state);
-	snapshot = state;
+	// Copy-construct directly: default-constructing first would zero ~60KB
+	// (NSDMI arrays) that the copy then overwrites on every draw call.
+	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
@@ -4854,7 +4868,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	if (!commandList)
 		return;
 
-	CommandListBindingState snapshot;
 	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
@@ -4868,7 +4881,8 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	state.drawSerial = drawSerial;
 	// Resolve deferred VB/IB resources before snapshot; see RecordDrawInstanced.
 	ResolveDeferredIaResources(&state);
-	snapshot = state;
+	// Copy-construct directly; see RecordDrawInstanced for why.
+	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
@@ -4913,7 +4927,6 @@ void DX12BindingTracker::RecordDispatch(
 	if (!commandList)
 		return;
 
-	CommandListBindingState snapshot;
 	const UINT64 dispatchSerial =
 		static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDispatchSerial));
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
@@ -4926,7 +4939,8 @@ void DX12BindingTracker::RecordDispatch(
 	}
 	CommandListBindingState &state = *statePtr;
 	state.dispatchSerial = dispatchSerial;
-	snapshot = state;
+	// Copy-construct directly; see RecordDrawInstanced for why.
+	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
@@ -5161,18 +5175,16 @@ bool DX12BindingTracker::GetCurrentComputeRootConstants(
 		return false;
 
 	constants->clear();
-	CommandListBindingState snapshot;
-	bool found = false;
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end()) {
-		snapshot = it->second;
-		found = true;
-	}
-	ReleaseSRWLockShared(&shard.lock);
-	if (!found)
+	const auto it = shard.states.find(commandList);
+	if (it == shard.states.end()) {
+		ReleaseSRWLockShared(&shard.lock);
 		return false;
+	}
+	// Copy-construct directly; see RecordDrawInstanced for why.
+	const CommandListBindingState snapshot(it->second);
+	ReleaseSRWLockShared(&shard.lock);
 
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		const RootConstantsState &source = snapshot.computeRootConstants[root];

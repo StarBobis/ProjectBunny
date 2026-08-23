@@ -19,12 +19,21 @@ enum class DX12BindingCollectTaskKind
 class DX12BindingCollectTask
 {
 public:
+	DX12BindingCollectTask() = default;
+	// Copy-constructs state in place: default-constructing first would zero
+	// ~60KB of NSDMI arrays in CommandListBindingState that the subsequent
+	// assignment then overwrites on every queued event.
+	explicit DX12BindingCollectTask(const CommandListBindingState &initialState)
+		: state(initialState)
+	{
+	}
+
 	DX12BindingCollectTaskKind kind = DX12BindingCollectTaskKind::StateEvent;
 	UINT64 sequence = 0;
 	UINT64 captureSessionId = 0;
 	DWORD enqueueThreadId = 0;
 	ID3D12GraphicsCommandList *commandList = nullptr;
-	CommandListBindingState state = {};
+	CommandListBindingState state;
 	UINT64 descriptorEpoch = 0;
 	const char *eventKind = nullptr;
 	UINT vertexCountPerInstance = 0;
