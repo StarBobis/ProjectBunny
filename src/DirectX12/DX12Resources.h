@@ -7313,7 +7313,7 @@ inline void DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode mode)
 	const LONG value = mode == DX12RuntimeMode::Hunting ?
 		static_cast<LONG>(DX12RuntimeMode::Hunting) :
 		static_cast<LONG>(DX12RuntimeMode::Mod);
-	const LONG old = InterlockedExchange(&runtimeMode, value);
+	const LONG old = runtimeMode.exchange(value);
 	if (old != value) {
 		DX12LogManager::Fields("DX12RuntimeMode",
 			"\"mode\":\"%s\"",

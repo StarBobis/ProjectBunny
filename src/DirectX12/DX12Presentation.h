@@ -349,7 +349,7 @@ public:
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
 		// skipAll: present normally but skip all mod/frame work; still advance
 		// the present counter, run the lightweight post-present runtime and
@@ -495,7 +495,7 @@ public:
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
 		if (DX12HotPathState::skipAll) {
 			DX12PresentSkipLogUtils::Record("Present1", "BeforeOriginalSkip", swapChain, S_OK);
@@ -1112,7 +1112,7 @@ public:
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
 		// Deferred mod load must run on EVERY present, including the skipAll
 		// fast path. When no mod is loaded skipAll==1, so the call cannot live
@@ -1251,7 +1251,7 @@ public:
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
-				swapChain, syncInterval, flags, DX12HotPathState::skipAll);
+				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
 		// Deferred mod load must run on EVERY present, including the skipAll
 		// fast path. When no mod is loaded skipAll==1, so the call cannot live

@@ -1098,7 +1098,7 @@ public:
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"enter\",\"queue\":\"%p\",\"count\":%u,\"skipAll\":%ld,\"internalReplay\":%s",
-				queue, numCommandLists, DX12HotPathState::skipAll,
+				queue, numCommandLists, DX12HotPathState::skipAll.load(),
 				DX12InternalReplayState::IsActive() ? "true" : "false");
 	#endif
 

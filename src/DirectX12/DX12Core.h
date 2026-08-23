@@ -1222,10 +1222,20 @@ class DX12RuntimeState
 {
 public:
 	inline static HINSTANCE module = nullptr;
-	inline static volatile LONG presentCount = 0;
-	inline static volatile LONG runtimeMode = static_cast<LONG>(DX12RuntimeMode::Mod);
-	inline static volatile LONG perFrameTotalDraws = 0;
-	inline static volatile LONG perFrameTotalDispatches = 0;
+	inline static std::atomic<LONG> presentCount{ 0 };
+	inline static std::atomic<LONG> runtimeMode{ static_cast<LONG>(DX12RuntimeMode::Mod) };
+
+	// Per-frame draw/dispatch counters feed diagnostics logs only. Sharded by
+	// recording thread so the per-draw increment cannot ping-pong one cache
+	// line across cores when the game records command lists from workers.
+	struct alignas(64) FrameCounterShard
+	{
+		std::atomic<LONG> draws{ 0 };
+		std::atomic<LONG> dispatches{ 0 };
+	};
+	static constexpr UINT FrameCounterShardCount = 64;
+	inline static FrameCounterShard frameCounterShards[FrameCounterShardCount] = {};
+	inline static std::atomic<UINT> frameCounterShardNext{ 0 };
 
 	static void SetModule(HINSTANCE module)
 	{
@@ -1239,17 +1249,17 @@ public:
 
 	static LONG IncrementPresentCount()
 	{
-		return InterlockedIncrement(&presentCount);
+		return presentCount.fetch_add(1, std::memory_order_relaxed) + 1;
 	}
 
 	static LONG GetPresentCount()
 	{
-		return InterlockedCompareExchange(&presentCount, 0, 0);
+		return presentCount.load(std::memory_order_relaxed);
 	}
 
 	static DX12RuntimeMode GetRuntimeMode()
 	{
-		const LONG mode = InterlockedCompareExchange(&runtimeMode, 0, 0);
+		const LONG mode = runtimeMode.load(std::memory_order_relaxed);
 		return mode == static_cast<LONG>(DX12RuntimeMode::Hunting) ?
 			DX12RuntimeMode::Hunting : DX12RuntimeMode::Mod;
 	}
@@ -1266,24 +1276,42 @@ public:
 		return GetRuntimeMode() == DX12RuntimeMode::Hunting;
 	}
 
+	static FrameCounterShard *FrameCounterShardForThread()
+	{
+		static thread_local FrameCounterShard *shard = nullptr;
+		if (!shard) {
+			const UINT index =
+				frameCounterShardNext.fetch_add(1, std::memory_order_relaxed) %
+				FrameCounterShardCount;
+			shard = &frameCounterShards[index];
+		}
+		return shard;
+	}
+
 	static void IncrementFrameDraws()
 	{
-		InterlockedIncrement(&perFrameTotalDraws);
+		FrameCounterShardForThread()->draws.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	static void IncrementFrameDispatches()
 	{
-		InterlockedIncrement(&perFrameTotalDispatches);
+		FrameCounterShardForThread()->dispatches.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	static LONG TakeFrameDraws()
 	{
-		return InterlockedExchange(&perFrameTotalDraws, 0);
+		LONG total = 0;
+		for (UINT i = 0; i < FrameCounterShardCount; ++i)
+			total += frameCounterShards[i].draws.exchange(0, std::memory_order_relaxed);
+		return total;
 	}
 
 	static LONG TakeFrameDispatches()
 	{
-		return InterlockedExchange(&perFrameTotalDispatches, 0);
+		LONG total = 0;
+		for (UINT i = 0; i < FrameCounterShardCount; ++i)
+			total += frameCounterShards[i].dispatches.exchange(0, std::memory_order_relaxed);
+		return total;
 	}
 };
 
@@ -4199,7 +4227,7 @@ public:
 	inline static bool capturing = false;
 	inline static bool dumpPending = false;
 	inline static UINT captureFramesRemaining = 0;
-	inline static volatile LONG fastStateFlags = 0;
+	inline static std::atomic<LONG> fastStateFlags{ 0 };
 	inline static wchar_t path[MAX_PATH] = {};
 	inline static FILE *log = nullptr;
 	inline static unsigned long long lineNo = 0;
@@ -4217,12 +4245,12 @@ public:
 			flags |= FLAG_CAPTURE_REQUESTED;
 		if (capturing)
 			flags |= FLAG_CAPTURING;
-		InterlockedExchange(&fastStateFlags, flags);
+		fastStateFlags.store(flags, std::memory_order_release);
 	}
 
 	static LONG GetFastFlags()
 	{
-		return InterlockedCompareExchange(&fastStateFlags, 0, 0);
+		return fastStateFlags.load(std::memory_order_acquire);
 	}
 
 	static bool Begin()
@@ -4433,15 +4461,15 @@ void DX12ActivateCommandListHotPathHooks();
 class DX12HotPathState
 {
 public:
-	inline static volatile LONG skipAll = 1;
-	inline static volatile LONG skipBindings = 1;
-	inline static volatile LONG skipGraphicsBindings = 1;
-	inline static volatile LONG trackResourceMetadata = 0;
-	inline static volatile LONG stateMask = -1;
+	inline static std::atomic<LONG> skipAll{ 1 };
+	inline static std::atomic<LONG> skipBindings{ 1 };
+	inline static std::atomic<LONG> skipGraphicsBindings{ 1 };
+	inline static std::atomic<LONG> trackResourceMetadata{ 0 };
+	inline static std::atomic<LONG> stateMask{ -1 };
 
 	// A single flags word replaces nine independent hot-path checks.
 	// Update publishes it from Present-time frame actions and state transitions.
-	inline static volatile UINT64 HookWorkFlags = 0;
+	inline static std::atomic<UINT64> HookWorkFlags{ 0 };
 
 	// Individual work bits.
 	static constexpr UINT64 FLAG_NEEDS_MOD_WORK          = 1ull << 0;
@@ -4724,20 +4752,18 @@ public:
 			source.NeedsHeavyTracking() ? 1 : 0;
 		const UINT64 flags = source.BuildHookWorkFlags();
 
-		InterlockedExchange(&DX12HotPathState::skipAll, skipAll);
-		InterlockedExchange(&DX12HotPathState::skipBindings, skipBindings);
-		InterlockedExchange(&DX12HotPathState::skipGraphicsBindings, skipGraphicsBindings);
-		InterlockedExchange(&DX12HotPathState::trackResourceMetadata, trackResourceMetadata);
-		InterlockedExchange64(
-			reinterpret_cast<volatile LONG64*>(&HookWorkFlags),
-			static_cast<LONG64>(flags));
+		DX12HotPathState::skipAll.store(skipAll);
+		DX12HotPathState::skipBindings.store(skipBindings);
+		DX12HotPathState::skipGraphicsBindings.store(skipGraphicsBindings);
+		DX12HotPathState::trackResourceMetadata.store(trackResourceMetadata);
+		HookWorkFlags.store(flags);
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |
 			(skipBindings ? 2 : 0) |
 			(skipGraphicsBindings ? 4 : 0) |
 			(trackResourceMetadata ? 8 : 0);
-		if (InterlockedExchange(&stateMask, mask) != mask) {
+		if (stateMask.exchange(mask) != mask) {
 			// Command lists cache binding-capture decisions. Mode or capture-state
 			// changes must invalidate that cache, otherwise Hunting can keep using
 			// a Mod-era "do not track bindings" decision and lose SRV texture tables.
@@ -4751,8 +4777,8 @@ public:
 
 	static bool HooksNeeded()
 	{
-		return InterlockedCompareExchange(&skipAll, 0, 0) == 0 ||
-			HasAnyFlag(HookWorkFlags, FLAG_HUNT_ENABLED);
+		return skipAll.load() == 0 ||
+			HasAnyFlag(HookWorkFlags.load(), FLAG_HUNT_ENABLED);
 	}
 };
 
