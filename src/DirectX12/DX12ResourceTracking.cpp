@@ -7415,6 +7415,21 @@ bool DX12AsyncReadbackQueueTextureCapture(
 	gReadbackPendingEvents.push_back(event);
 	ReleaseSRWLockExclusive(&gReadbackEventLock);
 	gReadbackPendingCount.fetch_add(1, std::memory_order_relaxed);
+	{
+		static volatile LONG textureEnqueueLogCounter = 0;
+		if ((InterlockedIncrement(&textureEnqueueLogCounter) & 0xFFF) == 1) {
+			DX12LogManager::Fields("DX12ReadbackEnqueue",
+				"stage=enqueued,kind=texture,resource=%p,width=%llu,height=%u,"
+				"format=%u,bytes=%llu,flags=0x%llx",
+				texture,
+				static_cast<unsigned long long>(desc->Width),
+				desc->Height,
+				static_cast<UINT>(desc->Format),
+				static_cast<unsigned long long>(totalBytes),
+				static_cast<unsigned long long>(
+					DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed)));
+		}
+	}
 	return true;
 }
 

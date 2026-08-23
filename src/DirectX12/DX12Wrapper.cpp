@@ -9845,10 +9845,14 @@ class DX12WaitHookState
 public:
 	using WaitForSingleObjectFn = DWORD(WINAPI *)(HANDLE, DWORD);
 	using WaitForMultipleObjectsFn = DWORD(WINAPI *)(DWORD, const HANDLE *, BOOL, DWORD);
+	using WaitForSingleObjectExFn = DWORD(WINAPI *)(HANDLE, DWORD, BOOL);
+	using WaitForMultipleObjectsExFn = DWORD(WINAPI *)(DWORD, const HANDLE *, BOOL, DWORD, BOOL);
 	using SignalObjectAndWaitFn = DWORD(WINAPI *)(HANDLE, HANDLE, DWORD, BOOL);
 
 	inline static WaitForSingleObjectFn OrigWaitForSingleObject = nullptr;
 	inline static WaitForMultipleObjectsFn OrigWaitForMultipleObjects = nullptr;
+	inline static WaitForSingleObjectExFn OrigWaitForSingleObjectEx = nullptr;
+	inline static WaitForMultipleObjectsExFn OrigWaitForMultipleObjectsEx = nullptr;
 	inline static SignalObjectAndWaitFn OrigSignalObjectAndWait = nullptr;
 	inline static SRWLOCK HookLock = SRWLOCK_INIT;
 	inline static bool HookAttempted = false;
@@ -10026,6 +10030,84 @@ public:
 		return result;
 	}
 
+	static DWORD WINAPI HookedWaitForSingleObjectEx(
+		HANDLE hHandle, DWORD dwMilliseconds, BOOL bAlertable)
+	{
+		if (!DX12WaitHookState::OrigWaitForSingleObjectEx)
+			return WAIT_FAILED;
+
+		thread_local LONG reentryDepth = 0;
+		if (InterlockedIncrement(&reentryDepth) != 1) {
+			const DWORD result = DX12WaitHookState::OrigWaitForSingleObjectEx(
+				hHandle, dwMilliseconds, bAlertable);
+			InterlockedDecrement(&reentryDepth);
+			return result;
+		}
+
+		bool matchesFenceEvent = false;
+		bool matchesFrameLatency = false;
+		const bool probeHandle = ShouldProbeHandle(
+			hHandle, &matchesFenceEvent, &matchesFrameLatency);
+		const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		const DWORD result = DX12WaitHookState::OrigWaitForSingleObjectEx(
+			hHandle, dwMilliseconds, bAlertable);
+		const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		const LONG64 us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+		DX12OuterTimingProbeUtils::RegisterSystemWait(
+			4, hHandle, nullptr, result, lastError, us,
+			matchesFenceEvent, matchesFrameLatency);
+		if (probeHandle || us >= 50000) {
+			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+				"WaitForSingleObjectEx", hHandle, nullptr, dwMilliseconds,
+				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
+			if (probeHandle || us >= 50000)
+				LogMatchedWaitStack("WaitForSingleObjectEx", hHandle, result, us);
+		}
+		InterlockedDecrement(&reentryDepth);
+		return result;
+	}
+
+	static DWORD WINAPI HookedWaitForMultipleObjectsEx(
+		DWORD nCount, const HANDLE *lpHandles, BOOL bWaitAll,
+		DWORD dwMilliseconds, BOOL bAlertable)
+	{
+		if (!DX12WaitHookState::OrigWaitForMultipleObjectsEx)
+			return WAIT_FAILED;
+
+		thread_local LONG reentryDepth = 0;
+		if (InterlockedIncrement(&reentryDepth) != 1) {
+			const DWORD result = DX12WaitHookState::OrigWaitForMultipleObjectsEx(
+				nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable);
+			InterlockedDecrement(&reentryDepth);
+			return result;
+		}
+
+		HANDLE matchedHandle = nullptr;
+		bool matchesFenceEvent = false;
+		bool matchesFrameLatency = false;
+		const bool probeHandle = ShouldProbeHandles(
+			nCount, lpHandles, &matchedHandle, &matchesFenceEvent, &matchesFrameLatency);
+		const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		const DWORD result = DX12WaitHookState::OrigWaitForMultipleObjectsEx(
+			nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable);
+		const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		const LONG64 us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+		DX12OuterTimingProbeUtils::RegisterSystemWait(
+			5, matchedHandle, nullptr, result, lastError, us,
+			matchesFenceEvent, matchesFrameLatency);
+		if (probeHandle || us >= 50000) {
+			const char *api = bWaitAll ?
+				"WaitForMultipleObjectsEx(all)" : "WaitForMultipleObjectsEx(any)";
+			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+				api, matchedHandle, nullptr, dwMilliseconds,
+				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
+			if (probeHandle || us >= 50000)
+				LogMatchedWaitStack(api, matchedHandle, result, us);
+		}
+		InterlockedDecrement(&reentryDepth);
+		return result;
+	}
+
 	static DWORD WINAPI HookedSignalObjectAndWait(
 		HANDLE hObjectToSignal, HANDLE hObjectToWaitOn, DWORD dwMilliseconds, BOOL bAlertable)
 	{
@@ -10107,6 +10189,16 @@ void DX12WaitHooks::Install()
 		"WaitForMultipleObjects",
 		reinterpret_cast<void**>(&DX12WaitHookState::OrigWaitForMultipleObjects),
 		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedWaitForMultipleObjects));
+	DX12HookManager::InstallExportHook(
+		kernel32,
+		"WaitForSingleObjectEx",
+		reinterpret_cast<void**>(&DX12WaitHookState::OrigWaitForSingleObjectEx),
+		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedWaitForSingleObjectEx));
+	DX12HookManager::InstallExportHook(
+		kernel32,
+		"WaitForMultipleObjectsEx",
+		reinterpret_cast<void**>(&DX12WaitHookState::OrigWaitForMultipleObjectsEx),
+		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedWaitForMultipleObjectsEx));
 	DX12HookManager::InstallExportHook(
 		kernel32,
 		"SignalObjectAndWait",

@@ -6564,7 +6564,7 @@ public:
 			// patching (DX12HookRegistry ctor), eliminating the torn-patch race
 			// that previously corrupted waits (permanent 100ms timeout polling,
 			// GPU pegged, flicker).
-			// DX12WaitHooks::Install(); // CONTROLLED-EXPERIMENT: disabled
+			DX12WaitHooks::Install();
 #endif
 			Sleep(50);
 		}

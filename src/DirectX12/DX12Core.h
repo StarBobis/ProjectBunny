@@ -4306,6 +4306,7 @@ public:
 	inline static std::atomic<LONG> skipGraphicsBindings{ 1 };
 	inline static std::atomic<LONG> trackResourceMetadata{ 0 };
 	inline static std::atomic<LONG> stateMask{ -1 };
+	inline static std::atomic<UINT64> loggedHookWorkFlags{ UINT64_MAX };
 
 	// A single flags word replaces nine independent hot-path checks.
 	// Update publishes it from Present-time frame actions and state transitions.
@@ -4547,11 +4548,11 @@ public:
 	{
 		// Only maintain the resource-content hash cache on copy paths when a
 		// consumer can actually read it. Generic shader overrides and PreSkin
-		// probing do not consume this cache; including them here queues a top-mip
-		// GPU readback for every streamed texture upload.
+		// probing do not consume this cache. IA resident tracking only consumes
+		// buffer hashes through its separate gate. Including any of them here
+		// queues a top-mip GPU readback for every streamed texture upload.
 		return HasAnyFlag(
 			flags,
-			FLAG_IA_RESIDENT_STATE |
 			FLAG_HUNT_ENABLED |
 			FLAG_FRAME_ANALYSIS_ACTIVE |
 			FLAG_SHADER_DUMP_ACTIVE |
@@ -4595,15 +4596,34 @@ public:
 			(skipBindings ? 2 : 0) |
 			(skipGraphicsBindings ? 4 : 0) |
 			(trackResourceMetadata ? 8 : 0);
-		if (stateMask.exchange(mask) != mask) {
+		const LONG previousMask = stateMask.exchange(mask);
+		const UINT64 previousFlags = loggedHookWorkFlags.exchange(flags);
+		if (previousMask != mask) {
 			// Command lists cache binding-capture decisions. Mode or capture-state
 			// changes must invalidate that cache, otherwise Hunting can keep using
 			// a Mod-era "do not track bindings" decision and lose SRV texture tables.
 			DX12CommandListRuntime::BumpTrackingGeneration();
+		}
+		if (previousMask != mask || previousFlags != flags) {
 			DX12LogManager::Fields("DX12HotPathState",
-				"\"mode\":\"%s\",\"skipAll\":%ld,\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,\"trackResourceMetadata\":%ld",
+				"\"mode\":\"%s\",\"flags\":\"0x%llx\",\"skipAll\":%ld,"
+				"\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,"
+				"\"trackResourceMetadata\":%ld,\"hunt\":%s,\"frameAnalysis\":%s,"
+				"\"shaderDump\":%s,\"shaderOverrides\":%s,\"preSkinProbe\":%s,"
+				"\"preSkinBindingTrack\":%s,\"iaResidentState\":%s,"
+				"\"shaderDescriptorTrack\":%s,\"drawSrvSlotReplacement\":%s",
 				source.ModeName(),
-				skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata);
+				static_cast<unsigned long long>(flags),
+				skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata,
+				source.huntEnabled ? "true" : "false",
+				source.frameAnalysisActive ? "true" : "false",
+				source.shaderDumpActive ? "true" : "false",
+				source.shaderOverrides ? "true" : "false",
+				source.preSkinProbe ? "true" : "false",
+				source.preSkinBindingTrack ? "true" : "false",
+				source.iaResidentState ? "true" : "false",
+				source.shaderDescriptorTrack ? "true" : "false",
+				source.drawSrvSlotReplacement ? "true" : "false");
 		}
 	}
 
@@ -8712,6 +8732,10 @@ public:
 			return "WaitForMultipleObjects";
 		case 3:
 			return "SignalObjectAndWait";
+		case 4:
+			return "WaitForSingleObjectEx";
+		case 5:
+			return "WaitForMultipleObjectsEx";
 		default:
 			return "Unknown";
 		}
