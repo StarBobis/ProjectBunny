@@ -13,10 +13,10 @@
 #include <vector>
 
 SRWLOCK DX12CaptureLedger::Lock = SRWLOCK_INIT;
-bool DX12CaptureLedger::Active = false;
+std::atomic<UINT64> DX12CaptureLedger::ActiveSessionId{0};
 UINT64 DX12CaptureLedger::BeginPresent = 0;
 UINT64 DX12CaptureLedger::LedgerEpoch = 0;
-UINT64 DX12CaptureLedger::CaptureSessionId = 0;
+std::atomic<UINT64> DX12CaptureLedger::CaptureSessionId{0};
 UINT64 DX12CaptureLedger::EventSerial = 0;
 UINT64 DX12CaptureLedger::OutputEventSerial = 0;
 UINT64 DX12CaptureLedger::DroppedEvents = 0;
@@ -39,10 +39,13 @@ void DX12CaptureLedger::BeginCapture(UINT64 present)
 	OutputEventSerial = 0;
 	BeginPresent = present;
 	++LedgerEpoch;
-	++CaptureSessionId;
-	Active = true;
+	const UINT64 captureSessionId =
+		CaptureSessionId.load(std::memory_order_relaxed) + 1;
+	CaptureSessionId.store(captureSessionId, std::memory_order_relaxed);
+	// Publish last: a lock-free reader that observes a non-zero
+	// ActiveSessionId must see the fully-initialized session above.
+	ActiveSessionId.store(captureSessionId, std::memory_order_release);
 	const UINT64 epoch = LedgerEpoch;
-	const UINT64 captureSessionId = CaptureSessionId;
 	ReleaseSRWLockExclusive(&Lock);
 
 	DX12FrameAnalysis::LogJsonFunc("CaptureLedgerBegin",
@@ -55,13 +58,14 @@ void DX12CaptureLedger::BeginCapture(UINT64 present)
 void DX12CaptureLedger::EndCapture()
 {
 	AcquireSRWLockExclusive(&Lock);
-	Active = false;
+	ActiveSessionId.store(0, std::memory_order_release);
 	const size_t events = Events.size();
 	const size_t outputs = OutputEvents.size();
 	const UINT64 droppedEvents = DroppedEvents;
 	const UINT64 droppedOutputs = DroppedOutputEvents;
 	const UINT64 epoch = LedgerEpoch;
-	const UINT64 captureSessionId = CaptureSessionId;
+	const UINT64 captureSessionId =
+		CaptureSessionId.load(std::memory_order_relaxed);
 	ReleaseSRWLockExclusive(&Lock);
 
 	DX12FrameAnalysis::LogJsonFunc("CaptureLedgerEnd",
@@ -83,42 +87,29 @@ void DX12CaptureLedger::Clear()
 	DroppedOutputEvents = 0;
 	EventSerial = 0;
 	OutputEventSerial = 0;
-	Active = false;
+	ActiveSessionId.store(0, std::memory_order_release);
 	ReleaseSRWLockExclusive(&Lock);
 }
 
 bool DX12CaptureLedger::IsActive()
 {
-	AcquireSRWLockShared(&Lock);
-	const bool active = Active;
-	ReleaseSRWLockShared(&Lock);
-	return active;
+	return ActiveSessionId.load(std::memory_order_acquire) != 0;
 }
 
 UINT64 DX12CaptureLedger::CurrentCaptureSessionId()
 {
-	AcquireSRWLockShared(&Lock);
-	const UINT64 captureSessionId = Active ? CaptureSessionId : 0;
-	ReleaseSRWLockShared(&Lock);
-	return captureSessionId;
+	return ActiveSessionId.load(std::memory_order_acquire);
 }
 
 UINT64 DX12CaptureLedger::LastCaptureSessionId()
 {
-	AcquireSRWLockShared(&Lock);
-	const UINT64 captureSessionId = CaptureSessionId;
-	ReleaseSRWLockShared(&Lock);
-	return captureSessionId;
+	return CaptureSessionId.load(std::memory_order_acquire);
 }
 
 bool DX12CaptureLedger::IsSessionCurrent(UINT64 captureSessionId)
 {
-	if (captureSessionId == 0)
-		return false;
-	AcquireSRWLockShared(&Lock);
-	const bool current = Active && CaptureSessionId == captureSessionId;
-	ReleaseSRWLockShared(&Lock);
-	return current;
+	return captureSessionId != 0 &&
+		ActiveSessionId.load(std::memory_order_acquire) == captureSessionId;
 }
 
 DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event)
@@ -127,11 +118,13 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event
 		return DX12CaptureLedgerRecordResult::NotActive;
 
 	AcquireSRWLockExclusive(&Lock);
-	if (!Active) {
+	if (ActiveSessionId.load(std::memory_order_relaxed) == 0) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::NotActive;
 	}
-	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
+	if (event->captureSessionId == 0 ||
+		event->captureSessionId !=
+			CaptureSessionId.load(std::memory_order_relaxed)) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
@@ -147,11 +140,13 @@ DX12CaptureLedgerRecordResult DX12CaptureLedger::TryStoreOutputEvent(OutputBindi
 		return DX12CaptureLedgerRecordResult::NotActive;
 
 	AcquireSRWLockExclusive(&Lock);
-	if (!Active) {
+	if (ActiveSessionId.load(std::memory_order_relaxed) == 0) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::NotActive;
 	}
-	if (event->captureSessionId == 0 || event->captureSessionId != CaptureSessionId) {
+	if (event->captureSessionId == 0 ||
+		event->captureSessionId !=
+			CaptureSessionId.load(std::memory_order_relaxed)) {
 		ReleaseSRWLockExclusive(&Lock);
 		return DX12CaptureLedgerRecordResult::InactiveSession;
 	}
@@ -187,7 +182,8 @@ void DX12CaptureLedger::GetSnapshot(DX12CaptureLedgerSnapshot *snapshot)
 	snapshot->droppedOutputEvents = DroppedOutputEvents;
 	snapshot->beginPresent = BeginPresent;
 	snapshot->ledgerEpoch = LedgerEpoch;
-	snapshot->captureSessionId = CaptureSessionId;
+	snapshot->captureSessionId =
+		CaptureSessionId.load(std::memory_order_relaxed);
 	ReleaseSRWLockShared(&Lock);
 }
 

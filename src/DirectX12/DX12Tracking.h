@@ -6,6 +6,7 @@
 #pragma once
 
 #include "DX12Hooks.h"
+#include <atomic>
 
 
 enum class DX12BindingCollectTaskKind
@@ -361,10 +362,15 @@ class DX12CaptureLedger
 {
 public:
 	static SRWLOCK Lock;
-	static bool Active;
+	// Lock-free mirror of the capture session state: 0 means no capture is
+	// active, otherwise the id of the currently active capture session.
+	// Maintained under Lock by the writers; read without Lock on the hot
+	// submit/recording paths where it is only an advisory gate - RecordEvent
+	// and TryStoreOutputEvent re-validate the session under Lock.
+	static std::atomic<UINT64> ActiveSessionId;
 	static UINT64 BeginPresent;
 	static UINT64 LedgerEpoch;
-	static UINT64 CaptureSessionId;
+	static std::atomic<UINT64> CaptureSessionId;
 	static UINT64 EventSerial;
 	static UINT64 OutputEventSerial;
 	static UINT64 DroppedEvents;
