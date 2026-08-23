@@ -8410,6 +8410,22 @@ public:
 
 		DX12InternalReplayScope internalReplay;
 		const LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
+		// Batch every table-mirror copy into one CopyDescriptors call. The
+		// destinations are disjoint slots in the freshly allocated temp ring
+		// range and the sources live in other heaps, so merging the ranges is
+		// identical to issuing one CopyDescriptorsSimple per table.
+		static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsCopyDestStarts;
+		static thread_local std::vector<UINT> tlsCopyDestSizes;
+		static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsCopySrcStarts;
+		static thread_local std::vector<UINT> tlsCopySrcSizes;
+		std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &copyDestStarts = tlsCopyDestStarts;
+		std::vector<UINT> &copyDestSizes = tlsCopyDestSizes;
+		std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &copySrcStarts = tlsCopySrcStarts;
+		std::vector<UINT> &copySrcSizes = tlsCopySrcSizes;
+		copyDestStarts.clear();
+		copyDestSizes.clear();
+		copySrcStarts.clear();
+		copySrcSizes.clear();
 		for (const DX12DrawSrvPatchTable &table : tables) {
 			if (table.sampler)
 				continue;
@@ -8417,10 +8433,23 @@ public:
 			source.ptr = table.cpuStart;
 			D3D12_CPU_DESCRIPTOR_HANDLE destination = tempCpuBase;
 			destination.ptr += static_cast<SIZE_T>(table.tempOffset) * tempIncrement;
-			device->CopyDescriptorsSimple(
-				table.count, destination, source,
+			copyDestStarts.push_back(destination);
+			copyDestSizes.push_back(table.count);
+			copySrcStarts.push_back(source);
+			copySrcSizes.push_back(table.count);
+		}
+		if (!copyDestStarts.empty()) {
+			device->CopyDescriptors(
+				static_cast<UINT>(copyDestStarts.size()), copyDestStarts.data(),
+				copyDestSizes.data(),
+				static_cast<UINT>(copySrcStarts.size()), copySrcStarts.data(),
+				copySrcSizes.data(),
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		}
+		copyDestStarts.clear();
+		copyDestSizes.clear();
+		copySrcStarts.clear();
+		copySrcSizes.clear();
 		for (DX12ModIaReplacement::DrawSrvTablePatch &request :
 				replacement->drawSrvPatches) {
 			for (const DX12DrawSrvPatchTable &table : tables) {
@@ -8432,9 +8461,10 @@ public:
 				D3D12_CPU_DESCRIPTOR_HANDLE destination = tempCpuBase;
 				destination.ptr += static_cast<SIZE_T>(
 					table.tempOffset + request.binding.descriptorOffset) * tempIncrement;
-				device->CopyDescriptorsSimple(
-					1, destination, request.replacementCpu,
-					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				copyDestStarts.push_back(destination);
+				copyDestSizes.push_back(1);
+				copySrcStarts.push_back(request.replacementCpu);
+				copySrcSizes.push_back(1);
 				request.targetCpu = destination;
 #if defined(_DEBUG)
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
@@ -8447,6 +8477,16 @@ public:
 #endif
 				break;
 			}
+		}
+		// Flush after the mirror batch so patched slots still overwrite the
+		// mirrored originals, exactly like the sequential calls did.
+		if (!copyDestStarts.empty()) {
+			device->CopyDescriptors(
+				static_cast<UINT>(copyDestStarts.size()), copyDestStarts.data(),
+				copyDestSizes.data(),
+				static_cast<UINT>(copySrcStarts.size()), copySrcStarts.data(),
+				copySrcSizes.data(),
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"DrawSrv",
@@ -10701,16 +10741,44 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	logStage("ring_allocated", static_cast<UINT>(tables.size()), totalDescriptors);
 	DX12_HOTPATH_TIME_END(PreSkinRingAlloc);
+	// Batch all table copies into one CopyDescriptors call: destinations are
+	// disjoint slots in the fresh ring range, sources live in other heaps.
+	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsTableCopyDestStarts;
+	static thread_local std::vector<UINT> tlsTableCopyDestSizes;
+	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsTableCopySrcStarts;
+	static thread_local std::vector<UINT> tlsTableCopySrcSizes;
+	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopyDestStarts = tlsTableCopyDestStarts;
+	std::vector<UINT> &tableCopyDestSizes = tlsTableCopyDestSizes;
+	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopySrcStarts = tlsTableCopySrcStarts;
+	std::vector<UINT> &tableCopySrcSizes = tlsTableCopySrcSizes;
+	tableCopyDestStarts.clear();
+	tableCopyDestSizes.clear();
+	tableCopySrcStarts.clear();
+	tableCopySrcSizes.clear();
 	for (const TableCopy &table : tables)
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE src = {};
 		src.ptr = table.cpuStart;
 		D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
 		dst.ptr += static_cast<SIZE_T>(table.tempOffset) * tempIncrement;
-		device->CopyDescriptorsSimple(
-			table.count, dst, src,
+		tableCopyDestStarts.push_back(dst);
+		tableCopyDestSizes.push_back(table.count);
+		tableCopySrcStarts.push_back(src);
+		tableCopySrcSizes.push_back(table.count);
+	}
+	if (!tableCopyDestStarts.empty())
+	{
+		device->CopyDescriptors(
+			static_cast<UINT>(tableCopyDestStarts.size()), tableCopyDestStarts.data(),
+			tableCopyDestSizes.data(),
+			static_cast<UINT>(tableCopySrcStarts.size()), tableCopySrcStarts.data(),
+			tableCopySrcSizes.data(),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
+	tableCopyDestStarts.clear();
+	tableCopyDestSizes.clear();
+	tableCopySrcStarts.clear();
+	tableCopySrcSizes.clear();
 	logStage("tables_copied", static_cast<UINT>(tables.size()), totalDescriptors);
 
 	DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
@@ -10845,10 +10913,23 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		}
 		D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
 		dst.ptr += static_cast<SIZE_T>(table->tempOffset + srv.descriptorOffset) * tempIncrement;
-		device->CopyDescriptorsSimple(
-			1, dst, resource->srvCpu,
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		tableCopyDestStarts.push_back(dst);
+		tableCopyDestSizes.push_back(1);
+		tableCopySrcStarts.push_back(resource->srvCpu);
+		tableCopySrcSizes.push_back(1);
 		patchedAnySrv = true;
+	}
+
+	// Flush the collected SRV patches as one batched copy before the CBV
+	// count-patch phase; destination slots are distinct table offsets.
+	if (!tableCopyDestStarts.empty())
+	{
+		device->CopyDescriptors(
+			static_cast<UINT>(tableCopyDestStarts.size()), tableCopyDestStarts.data(),
+			tableCopyDestSizes.data(),
+			static_cast<UINT>(tableCopySrcStarts.size()), tableCopySrcStarts.data(),
+			tableCopySrcSizes.data(),
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
 
 	if (!patchedAnySrv)
