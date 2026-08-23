@@ -2164,6 +2164,19 @@ public:
 			}
 		}
 		if (!ShouldSkipComputeBinding()) {
+			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
+			if (runtimeState &&
+				runtimeState->computeRootSignature == unwrapped &&
+				DX12HotPathState::NeedsComputeResidentBindingState(hookFlags) &&
+				DX12HotPathState::skipBindings &&
+				!DX12InternalReplayState::IsActive()) {
+				// Same root signature as the resident state: capture would drop
+				// this call after redundant bookkeeping, so keep only the
+				// deferred pre-skin restore and return.
+				DX12CommandListComputeBindingFlow::
+					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+				return;
+			}
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, false);
 			if (!changed)
@@ -2214,6 +2227,23 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		}
 		else {
+			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
+			if (runtimeState &&
+				runtimeState->graphicsRootSignature == unwrapped &&
+				DX12HotPathState::NeedsGraphicsResidentDescriptorState(hookFlags) &&
+				!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(hookFlags) &&
+				!DX12InternalReplayState::IsActive()) {
+				// Same root signature as the resident state: capture would drop
+				// this call after redundant bookkeeping, so keep only the
+				// deferred pre-skin restore and return.
+				rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
+				DX12CommandListComputeBindingFlow::
+					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"RootSig", "capture_fastpath", 1, 1,
+					DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
+				return;
+			}
 			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, true);
