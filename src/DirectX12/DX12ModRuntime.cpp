@@ -1418,6 +1418,7 @@ static std::map<DX12PreSkinOutputResizeCacheIdentity, DX12PreSkinOutputResizeCac
 static UINT64 gPreSkinOutputResizeCacheUseSerial = 0;
 static constexpr size_t PreSkinOutputResizeCacheCapacity = 32;
 static volatile LONG gHasPendingPreSkinOutputResizeSubmissionWorkFast = 0;
+static volatile LONG gHasPreSkinOutputResizeCacheEntriesFast = 0;
 
 static IUnknown *PreSkinCommandListIdentity(IUnknown *commandList);
 
@@ -1481,6 +1482,7 @@ static void ClearPreSkinOutputResizeCache()
 	gPreSkinOutputResizeCacheUseSerial = 0;
 	InterlockedExchange(
 		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0);
+	InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 	for (DX12PreSkinOutputResizeCacheEntry &entry : releaseEntries)
 		ReleasePreSkinOutputResizeCacheEntry(&entry);
@@ -1659,6 +1661,7 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		}
 		entry.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 		cached = gPreSkinOutputResizeCache.emplace(key, entry).first;
+		InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 1);
 		createdResource = nullptr;
 		createdVertexResource = nullptr;
 		createdHeap = nullptr;
@@ -11481,7 +11484,19 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	if (state.outputUavResized && state.resource &&
 		state.outputVertexResource && state.byteWidth)
 	{
-		D3D12_RESOURCE_BARRIER beforeCopy[2] = {};
+		// Restore the game invariant on the original output buffer too. The
+		// dispatch wrote the resized UAV instead, so the original still holds
+		// stale bytes; any consumer whose IA view misses the VA-alias redirect
+		// (another command list, or recording after Present cleared the publish
+		// map) then reads garbage vertices and explodes into full-screen
+		// triangles. Copy the leading original-capacity span back so a missed
+		// redirect degrades to un-skinned original vertices instead. The game
+		// left this buffer in UNORDERED_ACCESS for the dispatch, and this
+		// restore runs before its next command, so transitioning from and back
+		// to UAV keeps the game's own barrier bookkeeping intact.
+		const bool copyBackOriginal =
+			state.originalOutputResource && state.originalOutputByteWidth != 0;
+		D3D12_RESOURCE_BARRIER beforeCopy[3] = {};
 		beforeCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		beforeCopy[0].Transition.pResource = state.resource;
 		beforeCopy[0].Transition.StateBefore =
@@ -11495,11 +11510,27 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		beforeCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 		beforeCopy[1].Transition.Subresource =
 			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		commandList->ResourceBarrier(2, beforeCopy);
+		UINT beforeCopyCount = 2;
+		if (copyBackOriginal)
+		{
+			beforeCopy[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			beforeCopy[2].Transition.pResource = state.originalOutputResource;
+			beforeCopy[2].Transition.StateBefore =
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			beforeCopy[2].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			beforeCopy[2].Transition.Subresource =
+				D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			beforeCopyCount = 3;
+		}
+		commandList->ResourceBarrier(beforeCopyCount, beforeCopy);
 		commandList->CopyBufferRegion(
 			state.outputVertexResource, 0, state.resource, 0, state.byteWidth);
+		if (copyBackOriginal)
+			commandList->CopyBufferRegion(
+				state.originalOutputResource, 0, state.resource, 0,
+				(std::min)(state.originalOutputByteWidth, state.byteWidth));
 
-		D3D12_RESOURCE_BARRIER afterCopy[2] = {};
+		D3D12_RESOURCE_BARRIER afterCopy[3] = {};
 		afterCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 		afterCopy[0].Transition.pResource = state.resource;
 		afterCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -11513,7 +11544,19 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		afterCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
 		afterCopy[1].Transition.Subresource =
 			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		commandList->ResourceBarrier(2, afterCopy);
+		UINT afterCopyCount = 2;
+		if (copyBackOriginal)
+		{
+			afterCopy[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			afterCopy[2].Transition.pResource = state.originalOutputResource;
+			afterCopy[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			afterCopy[2].Transition.StateAfter =
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			afterCopy[2].Transition.Subresource =
+				D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			afterCopyCount = 3;
+		}
+		commandList->ResourceBarrier(afterCopyCount, afterCopy);
 
 		DX12ModRegisterPreSkinOutputResize(
 			commandList,
@@ -20396,6 +20439,18 @@ UINT64 DX12ModGetPreSkinOutputResizeGeneration()
 bool DX12ModHasPreSkinOutputResizeBindings()
 {
 	return gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire);
+}
+
+// Plain volatile probe: the flag only ever goes 0->1 on the first cache entry
+// after a clear and is reset under the cache lock, so a stale 1 is
+// conservative (the IA replay gate does a lookup and finds nothing), never a
+// missed redirect. Present clears the frame-local publish map, so this
+// fence-owned-cache hint is what keeps the gate trying when producer and
+// consumer record on opposite sides of that boundary.
+bool DX12ModHasPreSkinOutputResizeCacheEntries()
+{
+	return InterlockedCompareExchange(
+		&gHasPreSkinOutputResizeCacheEntriesFast, 0, 0) != 0;
 }
 
 void DX12ModForgetPreSkinOutputResizesForCommandList(

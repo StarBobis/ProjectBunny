@@ -7950,6 +7950,11 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	ID3D12GraphicsCommandList *commandList,
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding);
 bool DX12ModHasPreSkinOutputResizeBindings();
+// Cheap hint that the fence-owned resize cache holds at least one entry. The
+// publish map above is frame-local (cleared by Present); the IA replay gate
+// uses this to keep resolving through the cache for consumers recorded on the
+// other side of that boundary.
+bool DX12ModHasPreSkinOutputResizeCacheEntries();
 UINT64 DX12ModGetPreSkinOutputResizeGeneration();
 void DX12ModForgetPreSkinOutputResizesForCommandList(
 	ID3D12GraphicsCommandList *commandList);

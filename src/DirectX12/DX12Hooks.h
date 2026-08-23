@@ -3676,6 +3676,7 @@ public:
 		// resize cache make the lookup cheap and independent of recording order.
 		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		if (DX12ModHasPreSkinOutputResizeBindings() ||
+			DX12ModHasPreSkinOutputResizeCacheEntries() ||
 			DX12ModMayNeedPreSkinIaViewExpansion(
 				runtimeState.ia.vertexBuffers,
 				runtimeState.ia.hasVertexBuffer,
@@ -3759,6 +3760,7 @@ public:
 		// configured PreSkin work must still replay IA so metadata/cache fallback
 		// can recover a consumer recorded on the other side of that boundary.
 		if (DX12ModHasPreSkinOutputResizeBindings() ||
+			DX12ModHasPreSkinOutputResizeCacheEntries() ||
 			DX12ModMayNeedPreSkinIaViewExpansion(
 				runtimeState.ia.vertexBuffers,
 				runtimeState.ia.hasVertexBuffer,
@@ -5755,4 +5757,4 @@ public:
 	static bool VerifyIntendedTarget(HINSTANCE module);
 };
 
-
+
