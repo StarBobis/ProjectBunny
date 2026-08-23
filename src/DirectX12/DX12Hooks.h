@@ -4300,7 +4300,11 @@ public:
 		};
 
 		DX12Profiling::RecordIaDrawOverrideCheck();
-		DX12ModIaReplacement iaReplacement;
+		// DX12ModIaReplacement embeds CommandListBindingState (~14KB of
+		// zero-initialized root/descriptor arrays), so it is deliberately
+		// NOT constructed here: 99%+ of draws exit through the negative
+		// caches below and never need it. It is declared right before the
+		// prepare/apply block that actually uses it.
 		DX12IaHashState iaState;
 		const DX12IaHashState *activeIaState = &iaState;
 		const uint32_t vertexCount = draw.indexed ? 0 : draw.vertexCount;
@@ -4930,6 +4934,10 @@ public:
 
 			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
 			LARGE_INTEGER prepareBegin = DX12OuterTimingProbeUtils::Now();
+			// Constructed only on the (rare) path that reaches shader
+			// override evaluation: the ~14KB embedded binding state would
+			// otherwise be zero-initialized on every draw.
+			DX12ModIaReplacement iaReplacement;
 			std::shared_ptr<const DX12ModIaReplacement> generatedStaticReplacement;
 			const bool preparedReplacement = DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, activeShaderOverrides,
