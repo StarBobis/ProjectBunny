@@ -3972,6 +3972,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	UINT destOffset = 0;
 	UINT srcOffset = 0;
 	DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
+	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
 	// The increment is a device constant per heap type; query the device only
 	// once per type instead of paying a COM vtable call on every
 	// CopyDescriptors.
@@ -4006,7 +4007,8 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			pendingDest,
 			pendingSrc,
 			pendingCount,
-			&copyTelemetry);
+			&copyTelemetry,
+			&versionCommits);
 		pendingCount = 0;
 	};
 	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
@@ -4046,6 +4048,9 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		srcOffset += count;
 	}
 	flushPendingRange();
+	// One shared invalidation bump per destination heap for the whole API
+	// call, instead of one fetch_add per copied descriptor slot.
+	versionCommits.CommitAll();
 	copyTelemetry.Flush();
 }
 
@@ -4064,9 +4069,11 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 		if (numDescriptors != 0 &&
 				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
 			return;
+		DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
 		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 			descriptorHeapsType, destDescriptorRangeStart,
-			srcDescriptorRangeStart, numDescriptors);
+			srcDescriptorRangeStart, numDescriptors, nullptr, &versionCommits);
+		versionCommits.CommitAll();
 	}
 }
 

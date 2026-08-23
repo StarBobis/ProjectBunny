@@ -115,6 +115,43 @@ public:
 		}
 	};
 
+	// CopyDescriptors API calls routinely carry dozens of single-slot ranges
+	// into the same destination heap. Publishing each changed slot with
+	// PublishValue also pays a fetch_add on the shared heap-wide invalidation
+	// token, which is a contended RMW once several worker threads copy into
+	// the same ring heap. Consumers only require that token to change once
+	// per completed API call - the guarantee the multi-range path already
+	// provides via CommitPublishedRange - so queue the touched heaps here and
+	// let the caller commit each of them once after the range walk.
+	struct HeapVersionCommitSet
+	{
+		static constexpr size_t Capacity = 16;
+		std::array<DescriptorHeapRecord *, Capacity> heaps = {};
+		size_t count = 0;
+
+		void Add(DescriptorHeapRecord *heap)
+		{
+			if (!heap)
+				return;
+			for (size_t index = 0; index < count; ++index)
+				if (heaps[index] == heap)
+					return;
+			if (count < Capacity) {
+				heaps[count++] = heap;
+				return;
+			}
+			// Overflow keeps correct (unbatched) semantics.
+			DX12DescriptorHeapStateUtils::CommitPublishedRange(heap);
+		}
+
+		void CommitAll()
+		{
+			for (size_t index = 0; index < count; ++index)
+				DX12DescriptorHeapStateUtils::CommitPublishedRange(heaps[index]);
+			count = 0;
+		}
+	};
+
 	// Descriptor handle increments are device constants per heap type
 	// (ID3D12Device::GetDescriptorHandleIncrementSize). Cache them per type so
 	// descriptor-copy bookkeeping never pays a COM call (multi-range copy path)
@@ -1077,7 +1114,8 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
 		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
 		UINT count,
-		CopyTelemetryBatch *telemetryBatch = nullptr)
+		CopyTelemetryBatch *telemetryBatch = nullptr,
+		HeapVersionCommitSet *versionCommits = nullptr)
 	{
 		if (count == 0) {
 			return;
@@ -1133,11 +1171,13 @@ public:
 			// mirroring DXVK's views[slot] != resView comparison.
 			uint64_t flatDestValueId = 0;
 			uint64_t flatSrcValueId = 0;
-			if (srcHeap.stateLocks && destHeap.stateLocks &&
+			const bool flatIdentitiesResolved =
+				srcHeap.stateLocks && destHeap.stateLocks &&
 				destHeap.stateLocks->ReadFlatValueId(
 					destSlot, &flatDestValueId) &&
 				srcHeap.stateLocks->ReadFlatValueId(
-					srcSlot, &flatSrcValueId) &&
+					srcSlot, &flatSrcValueId);
+			if (flatIdentitiesResolved &&
 				flatDestValueId == flatSrcValueId) {
 				if (telemetryBatch) {
 					telemetryBatch->RecordRepeatHit();
@@ -1161,76 +1201,102 @@ public:
 				}
 				return;
 			}
-			// Single-descriptor copies are 99.5% of all copy ranges. The
-			// 1024-slot RangeMemo below keys on (srcHeap, srcSlot,
-			// destHeap, destSlot) and validates freshness with two cheap
-			// ReadSlotVersion loads instead of the seqlock identity reads.
-			// Games re-issue the same descriptor copies every frame, so the
-			// same pair recurs with unchanged slot versions and the memo
-			// serves the overwhelming majority of calls.
-			UINT memoSourceFound = 0;
-			UINT memoSourceMissing = 0;
-			UINT memoUnchanged = 0;
-			UINT memoAlreadyEmpty = 0;
-			if (RangeMemo().TryLoad(
-					srcHeap, srcSlot, destHeap, destSlot, 1,
-					&memoSourceFound, &memoSourceMissing,
-					&memoUnchanged, &memoAlreadyEmpty)) {
-				if (telemetryBatch) {
-					telemetryBatch->RecordRepeatHit();
-					telemetryBatch->RecordMemo(true);
-					telemetryBatch->RecordResults(
-						memoSourceFound, memoSourceMissing,
-						0, memoUnchanged, 0, memoAlreadyEmpty);
-				} else {
-					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-						memoSourceFound, memoSourceMissing,
-						0, memoUnchanged, 0, memoAlreadyEmpty);
+			// When both flat identities are current and already differ, the
+			// destination provably needs the copy: a RangeMemo entry can only
+			// hit while both slots still hold the versions it stored (which
+			// would make the identities equal), and the seqlock identity
+			// compare would just re-observe the same difference. Skip both
+			// for genuinely-changed slots - the common case when the game
+			// republishes its descriptor ring every frame - and go straight
+			// to the copy, which revalidates via SameRecordValueAtSlot
+			// before storing.
+			if (!flatIdentitiesResolved) {
+				// Single-descriptor copies are 99.5% of all copy ranges. The
+				// 1024-slot RangeMemo below keys on (srcHeap, srcSlot,
+				// destHeap, destSlot) and validates freshness with two cheap
+				// ReadSlotVersion loads instead of the seqlock identity reads.
+				// Games re-issue the same descriptor copies every frame, so the
+				// same pair recurs with unchanged slot versions and the memo
+				// serves the overwhelming majority of calls.
+				UINT memoSourceFound = 0;
+				UINT memoSourceMissing = 0;
+				UINT memoUnchanged = 0;
+				UINT memoAlreadyEmpty = 0;
+				if (RangeMemo().TryLoad(
+						srcHeap, srcSlot, destHeap, destSlot, 1,
+						&memoSourceFound, &memoSourceMissing,
+						&memoUnchanged, &memoAlreadyEmpty)) {
+					if (telemetryBatch) {
+						telemetryBatch->RecordRepeatHit();
+						telemetryBatch->RecordMemo(true);
+						telemetryBatch->RecordResults(
+							memoSourceFound, memoSourceMissing,
+							0, memoUnchanged, 0, memoAlreadyEmpty);
+					} else {
+						DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+							memoSourceFound, memoSourceMissing,
+							0, memoUnchanged, 0, memoAlreadyEmpty);
+					}
+					return;
 				}
-				return;
-			}
-			UINT64 srcVersion = 0;
-			UINT64 destVersion = 0;
-			const CopyIdentityResult identityResult =
-				ComparePublishedSlotIdentities(
-					srcHeap, srcSlot, destHeap, destSlot,
-					&srcVersion, &destVersion);
-			if (identityResult != CopyIdentityResult::Unknown) {
-				// Seed the RangeMemo so the next identical copy skips the
-				// seqlock identity reads entirely.
-				RangeMemo().Store(
-					srcHeap, srcSlot, destHeap, destSlot, 1,
-					identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-					identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-					identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-					identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				if (telemetryBatch)
-					telemetryBatch->RecordMemo(true);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
-				if (telemetryBatch)
-					telemetryBatch->RecordResults(
+				UINT64 srcVersion = 0;
+				UINT64 destVersion = 0;
+				const CopyIdentityResult identityResult =
+					ComparePublishedSlotIdentities(
+						srcHeap, srcSlot, destHeap, destSlot,
+						&srcVersion, &destVersion);
+				if (identityResult != CopyIdentityResult::Unknown) {
+					// Seed the RangeMemo so the next identical copy skips the
+					// seqlock identity reads entirely.
+					RangeMemo().Store(
+						srcHeap, srcSlot, destHeap, destSlot, 1,
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
 						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-						0,
 						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						0,
 						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				else
-					DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
-						0,
-						identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
-				return;
+					if (telemetryBatch)
+						telemetryBatch->RecordMemo(true);
+					else
+						DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(true);
+					if (telemetryBatch)
+						telemetryBatch->RecordResults(
+							identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+							identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+							0,
+							identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+							0,
+							identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+					else
+						DX12DescriptorShadowTelemetryUtils::RecordCopyResults(
+							identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+							identityResult == CopyIdentityResult::Unchanged ? 0 : 1,
+							0,
+							identityResult == CopyIdentityResult::Unchanged ? 1 : 0,
+							0,
+							identityResult == CopyIdentityResult::Unchanged ? 0 : 1);
+					return;
+				}
 			}
 			if (telemetryBatch)
 				telemetryBatch->RecordMemo(false);
 			else
 				DX12DescriptorShadowTelemetryUtils::RecordCopyMemo(false);
+			// Batch the heap-wide invalidation token bump: consumers only
+			// need it to change once per completed API call (the multi-range
+			// path below already provides exactly that), while single-slot
+			// ranges would otherwise pay a contended fetch_add on the shared
+			// per-heap token for every changed slot.
+			auto publishDestSlot = [&](UINT64 valueId) {
+				if (versionCommits) {
+					DX12DescriptorHeapStateUtils::PublishRangeValue(
+						&destHeap, destSlot, valueId);
+					versionCommits->Add(&destHeap);
+				} else {
+					DX12DescriptorHeapStateUtils::PublishValue(
+						&destHeap, destSlot, valueId);
+				}
+			};
 			// Dense fast path: once both heaps have materialized their slot
 			// arrays they are stable for the heap lifetime, so the copy is a
 			// plain seqlock-published write with no shard locks. Sparse heaps
@@ -1251,23 +1317,21 @@ public:
 						DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 							&destHeap, destSlot, srcHeap, srcSlot,
 							destStart.ptr, &publishedValueId);
-					if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
-						sourceFound = 1;
-						changed = 1;
-						DX12DescriptorHeapStateUtils::PublishValue(
-							&destHeap, destSlot, publishedValueId);
-					} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
-						sourceFound = 1;
-						unchanged = 1;
-					} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
-						sourceMissing = 1;
-						erased = 1;
-						DX12DescriptorHeapStateUtils::PublishValue(
-							&destHeap, destSlot, 0);
-					} else {
-						sourceMissing = 1;
-						alreadyEmpty = 1;
-					}
+				if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
+					sourceFound = 1;
+					changed = 1;
+					publishDestSlot(publishedValueId);
+				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+					sourceFound = 1;
+					unchanged = 1;
+				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+					sourceMissing = 1;
+					erased = 1;
+					publishDestSlot(0);
+				} else {
+					sourceMissing = 1;
+					alreadyEmpty = 1;
+				}
 				}
 				if (telemetryBatch)
 					telemetryBatch->RecordResults(
@@ -1332,19 +1396,18 @@ public:
 					DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 						&destHeap, destSlot, srcHeap, srcSlot, destStart.ptr,
 						&publishedValueId);
-				if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
-					sourceFound = 1;
-					changed = 1;
-					DX12DescriptorHeapStateUtils::PublishValue(
-						&destHeap, destSlot, publishedValueId);
-				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
-					sourceFound = 1;
-					unchanged = 1;
-				} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
-					sourceMissing = 1;
-					erased = 1;
-					DX12DescriptorHeapStateUtils::PublishValue(&destHeap, destSlot, 0);
-				} else {
+			if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed) {
+				sourceFound = 1;
+				changed = 1;
+				publishDestSlot(publishedValueId);
+			} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Unchanged) {
+				sourceFound = 1;
+				unchanged = 1;
+			} else if (copyResult == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+				sourceMissing = 1;
+				erased = 1;
+				publishDestSlot(0);
+			} else {
 					sourceMissing = 1;
 					alreadyEmpty = 1;
 				}
