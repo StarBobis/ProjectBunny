@@ -1402,6 +1402,9 @@ public:
 	ID3D12Resource *originalResource = nullptr;
 	ID3D12Resource *resizedResource = nullptr;
 	ID3D12Resource *vertexResource = nullptr;
+	UINT64 originalGpuVa = 0;
+	UINT64 originalByteWidth = 0;
+	UINT64 vertexGpuVa = 0;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptorCpu = {};
 	std::vector<IUnknown*> pendingCommandLists;
@@ -1508,6 +1511,11 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 	if (!device || !originalResource || !requiredByteWidth || !stride || !elementCount ||
 	    !resizedResourceOut || !vertexResourceOut || !descriptorHeapOut ||
 	    !descriptorCpuOut)
+		return false;
+	const D3D12_RESOURCE_DESC originalDesc = originalResource->GetDesc();
+	const UINT64 originalGpuVa = originalResource->GetGPUVirtualAddress();
+	if (originalDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+		!originalGpuVa || !originalDesc.Width)
 		return false;
 
 	DX12PreSkinOutputResizeCacheIdentity baseKey = {
@@ -1639,6 +1647,9 @@ static bool AcquirePreSkinOutputResizeCacheEntry(
 		entry.originalResource = originalResource;
 		entry.resizedResource = createdResource;
 		entry.vertexResource = createdVertexResource;
+		entry.originalGpuVa = originalGpuVa;
+		entry.originalByteWidth = originalDesc.Width;
+		entry.vertexGpuVa = createdVertexResource->GetGPUVirtualAddress();
 		entry.descriptorHeap = createdHeap;
 		entry.descriptorCpu = createdCpu;
 		if (commandListIdentity) {
@@ -1980,18 +1991,14 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	// and keeps the fallback consistent with the publish map's last writer.
 	for (auto &item : gPreSkinOutputResizeCache) {
 		DX12PreSkinOutputResizeCacheEntry &candidate = item.second;
-		if (!candidate.originalResource || !candidate.vertexResource)
+		if (!candidate.originalResource || !candidate.vertexResource ||
+			!candidate.originalGpuVa || !candidate.originalByteWidth ||
+			!candidate.vertexGpuVa)
 			continue;
-		const D3D12_RESOURCE_DESC originalDesc =
-			candidate.originalResource->GetDesc();
-		if (originalDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		if (viewGpuVa < candidate.originalGpuVa)
 			continue;
-		const UINT64 originalGpuVa =
-			candidate.originalResource->GetGPUVirtualAddress();
-		if (!originalGpuVa || viewGpuVa < originalGpuVa)
-			continue;
-		const UINT64 sourceOffset = viewGpuVa - originalGpuVa;
-		if (sourceOffset >= originalDesc.Width ||
+		const UINT64 sourceOffset = viewGpuVa - candidate.originalGpuVa;
+		if (sourceOffset >= candidate.originalByteWidth ||
 		    sourceOffset >= item.first.requiredByteWidth)
 			continue;
 		if (!bestEntry || candidate.useSerial > bestEntry->useSerial) {
@@ -2005,13 +2012,6 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 		return false;
 	}
-	const D3D12_RESOURCE_DESC originalDesc = bestEntry->originalResource->GetDesc();
-	const UINT64 originalGpuVa = bestEntry->originalResource->GetGPUVirtualAddress();
-	const UINT64 resizedGpuVa = bestEntry->vertexResource->GetGPUVirtualAddress();
-	if (!originalGpuVa || !resizedGpuVa) {
-		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-		return false;
-	}
 
 	// Bind vertexResource, not resizedResource. PreSkin writes the UAV resource,
 	// then records the required barriers and a copy into this COMMON-state
@@ -2019,9 +2019,9 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	bestEntry->vertexResource->AddRef();
 	binding->resizedResource = bestEntry->vertexResource;
 	binding->retainedResource = true;
-	binding->originalGpuVa = originalGpuVa;
-	binding->originalByteWidth = originalDesc.Width;
-	binding->resizedGpuVa = resizedGpuVa;
+	binding->originalGpuVa = bestEntry->originalGpuVa;
+	binding->originalByteWidth = bestEntry->originalByteWidth;
+	binding->resizedGpuVa = bestEntry->vertexGpuVa;
 	binding->resizedByteWidth = bestKey->requiredByteWidth;
 	binding->sourceOffset = bestOffset;
 	binding->stride = bestKey->stride;
