@@ -106,11 +106,6 @@ UINT64 DX12CaptureLedger::LastCaptureSessionId()
 	return CaptureSessionId.load(std::memory_order_acquire);
 }
 
-bool DX12CaptureLedger::IsSessionCurrent(UINT64 captureSessionId)
-{
-	return captureSessionId != 0 &&
-		ActiveSessionId.load(std::memory_order_acquire) == captureSessionId;
-}
 
 DX12CaptureLedgerRecordResult DX12CaptureLedger::RecordEvent(BindingEvent *event)
 {
@@ -214,8 +209,6 @@ void DX12CaptureLedger::LogSnapshotHealth(const char *stage, const DX12CaptureLe
 }
 
 
-
-
 static constexpr uint64_t kBindingQueueStatsInterval = 4096;
 static constexpr int64_t kBindingQueueSlowTaskUs = 1000;
 static constexpr int64_t kBindingQueueSlowDrainUs = 1000;
@@ -258,11 +251,6 @@ void DX12BindingCollectQueue::Stop()
 void DX12BindingCollectQueue::DrainForSnapshot(const char *reason)
 {
 	WaitForIdle(reason ? reason : "Snapshot");
-}
-
-void DX12BindingCollectQueue::BeginFrameDrain()
-{
-	WaitForIdle("BeginFrame");
 }
 
 bool DX12BindingCollectQueue::EnqueueStateEvent(
@@ -338,25 +326,6 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	return EnqueueTask(std::move(task));
 }
 
-bool DX12BindingCollectQueue::EnqueueOutputEvent(
-	ID3D12GraphicsCommandList *commandList,
-	const CommandListBindingState &state,
-	const char *kind,
-	UINT slot,
-	SIZE_T cpuHandle,
-	UINT64 drawId,
-	UINT64 captureSessionId)
-{
-	DX12BindingCollectTask task(state);
-	task.kind = DX12BindingCollectTaskKind::OutputEvent;
-	task.commandList = commandList;
-	task.eventKind = kind;
-	task.slot = slot;
-	task.cpuHandle = cpuHandle;
-	task.drawId = drawId;
-	task.captureSessionId = captureSessionId;
-	return EnqueueTask(std::move(task));
-}
 
 size_t DX12BindingCollectQueue::PendingCount()
 {
@@ -791,8 +760,6 @@ void DX12BindingCollectQueue::LogStats(const char *event, uint64_t sequence, siz
 }
 
 
-
-
 FILE *DX12LogUtils::LogFile = nullptr;
 
 BindingShard DX12BindingTrackerState::Shards[kBindingShardCount];
@@ -834,31 +801,6 @@ static CommandListBindingState* GetOrResolveBindingState(
 	tlsStateCache.shardIndex = static_cast<size_t>(&shard - DX12BindingTrackerState::Shards);
 	ReleaseSRWLockExclusive(&shard.lock);
 	return &state;
-}
-
-static UINT64 MixPreSkinDependencyFingerprint(UINT64 fingerprint, UINT64 value)
-{
-	return fingerprint ^ (value + 0x9e3779b97f4a7c15ull +
-		(fingerprint << 6) + (fingerprint >> 2));
-}
-
-static UINT64 BuildRuntimePreSkinDependencyFingerprint(
-	UINT64 computeBindingSerial,
-	ID3D12DescriptorHeap *heap,
-	const UINT64 *slotVersions,
-	const UINT64 *slotValueIds,
-	size_t slotCount)
-{
-	UINT64 fingerprint = 14695981039346656037ull;
-	fingerprint = MixPreSkinDependencyFingerprint(fingerprint, computeBindingSerial);
-	fingerprint = MixPreSkinDependencyFingerprint(
-		fingerprint,
-		static_cast<UINT64>(reinterpret_cast<uintptr_t>(heap)));
-	for (size_t index = 0; index < slotCount; ++index) {
-		fingerprint = MixPreSkinDependencyFingerprint(fingerprint, slotVersions[index]);
-		fingerprint = MixPreSkinDependencyFingerprint(fingerprint, slotValueIds[index]);
-	}
-	return fingerprint ? fingerprint : 1;
 }
 
 static bool RuntimeSlotIdentityMatches(
@@ -4221,214 +4163,6 @@ void DX12BindingTracker::SetVertexBuffers(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-void DX12BindingTracker::RecordOutputTargets(
-	ID3D12GraphicsCommandList *commandList, UINT numRenderTargetDescriptors,
-	const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors,
-	BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor)
-{
-	if (!commandList)
-		return;
-
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	const auto it = shard.states.find(commandList);
-	const bool found = it != shard.states.end();
-	// Copy-construct directly to avoid zero-initializing ~60KB of NSDMI
-	// arrays before the copy overwrites them.
-	const CommandListBindingState snapshot =
-		found ? it->second : CommandListBindingState();
-	ReleaseSRWLockShared(&shard.lock);
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	for (UINT i = 0; i < numRenderTargetDescriptors && renderTargetDescriptors; ++i) {
-		D3D12_CPU_DESCRIPTOR_HANDLE handle = renderTargetDescriptors[i];
-		if (singleHandleToDescriptorRange && i > 0) {
-			DX12DescriptorHeapSummary heap = {};
-			if (!DX12FindDescriptorHeapByCpuHandle(
-					renderTargetDescriptors[0], D3D12_DESCRIPTOR_HEAP_TYPE_RTV, &heap) ||
-				!heap.increment)
-				continue;
-			handle.ptr = renderTargetDescriptors[0].ptr +
-				static_cast<SIZE_T>(i) * heap.increment;
-		}
-		if (DX12BindingCollectQueue::EnqueueOutputEvent(
-				commandList,
-				snapshot,
-				"RTV",
-				i,
-				handle.ptr,
-				0,
-				captureSessionId))
-			continue;
-		DX12BindingTracker::StoreOutputEventLocked(
-			"RTV",
-			commandList,
-			snapshot,
-			i,
-			handle.ptr,
-			0,
-			captureSessionId);
-	}
-	if (depthStencilDescriptor &&
-		!DX12BindingCollectQueue::EnqueueOutputEvent(commandList, snapshot, "DSV", 0,
-			depthStencilDescriptor->ptr, 0, captureSessionId)) {
-		DX12BindingTracker::StoreOutputEventLocked("DSV", commandList, snapshot, 0,
-			depthStencilDescriptor->ptr, 0, captureSessionId);
-	}
-
-	AcquireSRWLockExclusive(&shard.lock);
-	CommandListBindingState &state = shard.states[commandList];
-	for (UINT i = 0; i < MaxRenderTargetSlots; ++i) {
-		state.renderTargets[i] = {};
-		state.renderTargetValid[i] = false;
-	}
-	for (UINT i = 0; i < numRenderTargetDescriptors && i < MaxRenderTargetSlots; ++i) {
-		D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
-		if (renderTargetDescriptors) {
-			handle = renderTargetDescriptors[i];
-			if (singleHandleToDescriptorRange && i > 0) {
-				DX12DescriptorHeapSummary heap = {};
-				if (DX12FindDescriptorHeapByCpuHandle(
-						renderTargetDescriptors[0], D3D12_DESCRIPTOR_HEAP_TYPE_RTV, &heap) &&
-					heap.increment) {
-					handle.ptr = renderTargetDescriptors[0].ptr +
-						static_cast<SIZE_T>(i) * heap.increment;
-				}
-			}
-		}
-		state.renderTargets[i] = handle;
-		state.renderTargetValid[i] = handle.ptr != 0;
-	}
-	if (depthStencilDescriptor) {
-		state.depthStencil = *depthStencilDescriptor;
-		state.depthStencilValid = depthStencilDescriptor->ptr != 0;
-	} else {
-		state.depthStencil = {};
-		state.depthStencilValid = false;
-	}
-	ReleaseSRWLockExclusive(&shard.lock);
-}
-
-void DX12BindingTracker::RecordRenderTargetClear(
-	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView)
-{
-	if (!commandList || !renderTargetView.ptr)
-		return;
-
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	const auto it = shard.states.find(commandList);
-	if (it == shard.states.end()) {
-		ReleaseSRWLockShared(&shard.lock);
-		return;
-	}
-	// Copy-construct directly; see RecordDrawInstanced for why.
-	const CommandListBindingState snapshot(it->second);
-	ReleaseSRWLockShared(&shard.lock);
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueOutputEvent(
-			commandList,
-			snapshot,
-			"RTV",
-			0,
-			renderTargetView.ptr,
-			0,
-			captureSessionId))
-		return;
-
-	DX12BindingTracker::StoreOutputEventLocked(
-		"RTV",
-		commandList,
-		snapshot,
-		0,
-		renderTargetView.ptr,
-		0,
-		captureSessionId);
-}
-
-void DX12BindingTracker::RecordDepthStencilClear(
-	ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView)
-{
-	if (!commandList || !depthStencilView.ptr)
-		return;
-
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	const auto it = shard.states.find(commandList);
-	if (it == shard.states.end()) {
-		ReleaseSRWLockShared(&shard.lock);
-		return;
-	}
-	// Copy-construct directly; see RecordDrawInstanced for why.
-	const CommandListBindingState snapshot(it->second);
-	ReleaseSRWLockShared(&shard.lock);
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueOutputEvent(
-			commandList,
-			snapshot,
-			"DSV",
-			0,
-			depthStencilView.ptr,
-			0,
-			captureSessionId))
-		return;
-
-	DX12BindingTracker::StoreOutputEventLocked(
-		"DSV",
-		commandList,
-		snapshot,
-		0,
-		depthStencilView.ptr,
-		0,
-		captureSessionId);
-}
-
-bool DX12BindingTracker::GetCurrentIaState(
-	ID3D12GraphicsCommandList *commandList, DX12CurrentIaState *state)
-{
-	if (!commandList || !state)
-		return false;
-
-	*state = DX12CurrentIaState();
-	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
-	static thread_local CommandListBindingState snapshot;
-	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
-		return false;
-
-	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
-		if (!snapshot.vertexBufferValid[slot])
-			continue;
-		const D3D12_VERTEX_BUFFER_VIEW &view = snapshot.vertexBuffers[slot];
-		DX12CurrentIaBuffer buffer;
-		buffer.role = "VB";
-		buffer.gpuVa = view.BufferLocation;
-		buffer.size = view.SizeInBytes;
-		buffer.stride = view.StrideInBytes;
-		buffer.slot = slot;
-		buffer.resolved = snapshot.vertexBufferResolved[slot];
-		buffer.resource = snapshot.vertexBufferResources[slot];
-		if (!buffer.resolved)
-			buffer.resolved = DX12ResolveBufferResourceByGpuVa(
-				buffer.gpuVa, buffer.size, &buffer.resource);
-		state->vertexBuffers.push_back(buffer);
-	}
-
-	if (snapshot.indexBufferValid && snapshot.indexBuffer.BufferLocation &&
-		snapshot.indexBuffer.SizeInBytes) {
-		state->hasIndexBuffer = true;
-		state->indexBuffer.role = "IB";
-		state->indexBuffer.gpuVa = snapshot.indexBuffer.BufferLocation;
-		state->indexBuffer.size = snapshot.indexBuffer.SizeInBytes;
-		state->indexBuffer.format = static_cast<UINT>(snapshot.indexBuffer.Format);
-		state->indexBuffer.resolved = snapshot.indexBufferResolved;
-		state->indexBuffer.resource = snapshot.indexBufferResource;
-		if (!state->indexBuffer.resolved)
-			state->indexBuffer.resolved = DX12ResolveBufferResourceByGpuVa(
-				state->indexBuffer.gpuVa, state->indexBuffer.size, &state->indexBuffer.resource);
-	}
-
-	return true;
-}
-
 
 bool DX12BindingTracker::GetCurrentDescriptors(
 	ID3D12GraphicsCommandList *commandList,
@@ -4570,32 +4304,6 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 	return foundAny;
 }
 
-bool DX12BindingTracker::GetCurrentComputeUavs(
-	ID3D12GraphicsCommandList *commandList,
-	std::vector<DX12CurrentComputeUavBinding> *uavs)
-{
-	return DX12BindingTracker::GetCurrentDescriptors(
-		commandList, true, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, "UAV",
-		D3D12_ROOT_PARAMETER_TYPE_UAV, uavs);
-}
-
-bool DX12BindingTracker::GetCurrentComputeSrvs(
-	ID3D12GraphicsCommandList *commandList,
-	std::vector<DX12CurrentComputeUavBinding> *srvs)
-{
-	return DX12BindingTracker::GetCurrentDescriptors(
-		commandList, true, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, "SRV",
-		D3D12_ROOT_PARAMETER_TYPE_SRV, srvs);
-}
-
-bool DX12BindingTracker::GetCurrentComputeCbvs(
-	ID3D12GraphicsCommandList *commandList,
-	std::vector<DX12CurrentComputeUavBinding> *cbvs)
-{
-	return DX12BindingTracker::GetCurrentDescriptors(
-		commandList, true, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, "CBV",
-		D3D12_ROOT_PARAMETER_TYPE_CBV, cbvs);
-}
 
 bool DX12BindingTracker::GetCurrentComputeAll(
 	ID3D12GraphicsCommandList *commandList,
@@ -5163,38 +4871,6 @@ void DX12BindingTracker::SetComputeRoot32BitConstants(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
-bool DX12BindingTracker::GetCurrentComputeRootConstants(
-	ID3D12GraphicsCommandList *commandList,
-	std::vector<DX12CurrentRootConstants> *constants)
-{
-	if (!commandList || !constants)
-		return false;
-
-	constants->clear();
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	const auto it = shard.states.find(commandList);
-	if (it == shard.states.end()) {
-		ReleaseSRWLockShared(&shard.lock);
-		return false;
-	}
-	// Copy-construct directly; see RecordDrawInstanced for why.
-	const CommandListBindingState snapshot(it->second);
-	ReleaseSRWLockShared(&shard.lock);
-
-	for (UINT root = 0; root < MaxRootParameters; ++root) {
-		const RootConstantsState &source = snapshot.computeRootConstants[root];
-		if (!source.valid)
-			continue;
-		DX12CurrentRootConstants current;
-		current.rootParameterIndex = root;
-		current.maxSet = source.maxSet;
-		memcpy(current.values, source.values, sizeof(current.values));
-		memcpy(current.valueValid, source.valueValid, sizeof(current.valueValid));
-		constants->push_back(current);
-	}
-	return !constants->empty();
-}
 
 UINT64 DX12BindingTracker::GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList)
 {
@@ -5211,20 +4887,6 @@ UINT64 DX12BindingTracker::GetComputeBindingSerial(ID3D12GraphicsCommandList *co
 	return serial;
 }
 
-UINT64 DX12BindingTracker::GetBindingQuerySerial(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return 0;
-
-	UINT64 serial = 0;
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.states.find(commandList);
-	if (it != shard.states.end())
-		serial = it->second.bindingQuerySerial;
-	ReleaseSRWLockShared(&shard.lock);
-	return serial;
-}
 
 static bool PopulatePreferredFrameEventSource(DX12FrameEventSource *source, const char *reason)
 {
@@ -5260,32 +4922,6 @@ void DX12BindingFrameExport::GetCurrentFrameShaderInfos(std::vector<DX12PsoShade
 	}
 }
 
-void DX12BindingFrameExport::WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info)
-{
-	if (!file)
-		return;
-
-	fprintf(file, "%llu,",
-		static_cast<unsigned long long>(info.psoIndex));
-	if (info.hasVS)
-		fprintf(file, "%016llx", static_cast<unsigned long long>(info.vs));
-	fprintf(file, ",");
-	if (info.hasPS)
-		fprintf(file, "%016llx", static_cast<unsigned long long>(info.ps));
-	fprintf(file, ",");
-	if (info.hasCS)
-		fprintf(file, "%016llx", static_cast<unsigned long long>(info.cs));
-}
-
-void DX12BindingFrameExport::FormatOptionalHashText(bool hasHash, UINT64 hash, char *text, size_t textCount)
-{
-	if (!text || textCount == 0)
-		return;
-	if (hasHash)
-		sprintf_s(text, textCount, "%016llx", static_cast<unsigned long long>(hash));
-	else
-		sprintf_s(text, textCount, "-");
-}
 
 void DX12BindingFrameExport::AppendShaderHashNamePart(
 	wchar_t *text, size_t textCount, const char *stage, bool hasHash, UINT64 hash)
@@ -5310,38 +4946,6 @@ void DX12BindingFrameExport::BuildShaderHashNamePart(
 	DX12BindingFrameExport::AppendShaderHashNamePart(text, textCount, "cs", info.hasCS, info.cs);
 }
 
-void DX12BindingFrameExport::WriteRootTables(FILE *file, const RootTableState *tables)
-{
-	bool first = true;
-	for (UINT i = 0; i < MaxRootParameters; ++i) {
-		if (!tables[i].valid)
-			continue;
-		if (!first)
-			fprintf(file, ";");
-		fprintf(file, "%u=0x%llx",
-			tables[i].rootParameterIndex,
-			static_cast<unsigned long long>(tables[i].baseDescriptor.ptr));
-		first = false;
-	}
-}
-
-void DX12BindingFrameExport::WriteVertexBufferSlots(FILE *file, const BindingEvent &event)
-{
-	bool first = true;
-	for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
-		if (!event.vertexBufferValid[slot])
-			continue;
-		const D3D12_VERTEX_BUFFER_VIEW &view = event.vertexBuffers[slot];
-		if (!first)
-			fprintf(file, ";");
-		fprintf(file, "%u:0x%llx:%u:%u",
-			slot,
-			static_cast<unsigned long long>(view.BufferLocation),
-			view.SizeInBytes,
-			view.StrideInBytes);
-		first = false;
-	}
-}
 
 const char *DX12BindingFrameExport::TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology)
 {
@@ -5966,12 +5570,6 @@ void DX12BindingFrameExport::BuildIaBufferFileName(
 		buffer.format);
 }
 
-void DX12BindingFrameExport::GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers)
-{
-	std::vector<DX12FrameResourceBinding> resourceBindings;
-	DX12BindingResourceExport::GetCurrentFrameResourceBindings(&resourceBindings);
-	DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(buffers, resourceBindings);
-}
 
 void DX12BindingFrameExport::GetCurrentFrameIaBuffersWithResourceBindings(
 	std::vector<DX12FrameIaBufferBinding> *buffers,
@@ -6053,9 +5651,6 @@ DX12FrameAnalysisDumpResult DX12BindingFrameExport::DumpBindingTrace(const wchar
 	result.skipped = static_cast<size_t>(droppedEvents);
 	return result;
 }
-
-
-
 
 
 static bool PopulatePreferredResourceEventSource(DX12FrameEventSource *source, const char *reason)
@@ -6157,169 +5752,6 @@ const char *DX12BindingResourceExport::ExpectedBindingKind(const DX12FrameResour
 	return "";
 }
 
-bool DX12BindingResourceExport::IsBufferResourceSummary(const DX12ResourceSummary &resource)
-{
-	return resource.resource &&
-		resource.hasResourceDesc &&
-		resource.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
-		resource.size != 0;
-}
-
-void DX12BindingResourceExport::CollectHuntingUavStateResourceUsages(
-	std::vector<DX12FrameResourceBinding> *bindings,
-	const std::vector<BindingEvent> &events)
-{
-	if (!bindings || !DX12RuntimeState::IsHuntingMode())
-		return;
-
-	std::vector<DX12ResourceSummary> resources;
-	DX12GetTrackedResourceSnapshot(&resources);
-	if (resources.empty())
-		return;
-
-	std::vector<const BindingEvent*> dispatches;
-	dispatches.reserve(events.size());
-	for (const BindingEvent &event : events) {
-		if (DX12BindingTrackerQuery::IsDispatchEvent(event))
-			dispatches.push_back(&event);
-	}
-	if (dispatches.empty())
-		return;
-
-	std::unordered_set<std::string> seen;
-	size_t candidates = 0;
-	size_t emitted = 0;
-	for (const DX12ResourceSummary &resource : resources) {
-		if (!DX12BindingResourceExport::IsBufferResourceSummary(resource) ||
-				!resource.hasCurrentState ||
-				!(resource.currentState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
-			continue;
-		candidates++;
-
-		const BindingEvent *producerEvent = dispatches.back();
-		char key[96];
-		sprintf_s(key, "%p|%llu|%llu",
-			resource.resource,
-			static_cast<unsigned long long>(resource.gpuVirtualAddress),
-			static_cast<unsigned long long>(resource.size));
-		if (!seen.insert(key).second)
-			continue;
-
-		DX12FrameResourceBinding binding;
-		binding.eventSerial = producerEvent->serial;
-		binding.dispatchId = producerEvent->dispatchId;
-		binding.psoIndex = producerEvent->shaderInfo.psoIndex;
-		binding.shaderInfo = producerEvent->shaderInfo;
-		binding.bindSpace = "hunting_uav_state";
-		binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-		binding.shaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-		binding.shaderRegister = UINT_MAX;
-		binding.usageClass = "UAV";
-		binding.usageBegin = resource.gpuVirtualAddress;
-		binding.usageBytes = resource.size;
-		binding.gpuVirtualAddress = resource.gpuVirtualAddress;
-		binding.descriptor.kind = DescriptorKind::UAV;
-		binding.descriptor.resource = resource.resource;
-		binding.descriptor.resourceDesc = resource.resourceDesc;
-		binding.descriptor.hasResourceDesc = true;
-		binding.descriptor.resourceHeapType = resource.resourceHeapType;
-		binding.descriptor.hasResourceHeapType = resource.hasResourceHeapType;
-		binding.descriptor.gpuVirtualAddress = resource.gpuVirtualAddress;
-		binding.descriptor.resourceOffset = 0;
-		binding.descriptor.viewSize = resource.size;
-		binding.descriptor.currentState = resource.currentState;
-		binding.descriptor.hasCurrentState = resource.hasCurrentState;
-		binding.hasDescriptor = true;
-		bindings->push_back(std::move(binding));
-		emitted++;
-	}
-
-	DX12FrameAnalysis::LogJsonFunc("HuntingUavStateResourceUsages",
-		"resources=%zu,dispatches=%zu,candidates=%zu,emitted=%zu",
-		resources.size(), dispatches.size(), candidates, emitted);
-}
-
-void DX12BindingResourceExport::CollectActivePreSkinProducerBindings(
-	std::vector<DX12FrameResourceBinding> *bindings)
-{
-	if (!bindings)
-		return;
-
-	size_t candidates = 0;
-	size_t emitted = 0;
-	std::unordered_set<std::string> seen;
-	const size_t initialCount = bindings->size();
-	for (size_t i = 0; i < initialCount; ++i) {
-		const DX12FrameResourceBinding &source = (*bindings)[i];
-		if (source.bindSpace != "hunting_uav_state" ||
-		    source.descriptor.kind != DescriptorKind::UAV ||
-		    !source.hasDescriptor ||
-		    !source.descriptor.resource ||
-		    !source.descriptor.hasResourceDesc ||
-		    source.descriptor.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-			continue;
-		candidates++;
-
-		DX12ModPreSkinProducerSummary producer = {};
-		if (!DX12ModFindActivePreSkinProducerForOutput(
-				source.descriptor.resource, source.descriptor.viewSize, 0, &producer))
-			continue;
-		if (!producer.hasDescriptor ||
-		    producer.descriptor.kind != DescriptorKind::UAV ||
-		    producer.shaderRegister == UINT_MAX)
-			continue;
-
-		char key[128];
-		sprintf_s(key, "%llu|%p|%u|%u|%u|%u",
-			static_cast<unsigned long long>(source.eventSerial),
-			source.descriptor.resource,
-			producer.rootParameterIndex,
-			producer.rangeIndex,
-			producer.shaderRegister,
-			producer.registerSpace);
-		if (!seen.insert(key).second)
-			continue;
-
-		DX12FrameResourceBinding binding = source;
-		binding.bindSpace = "compute_cbv_srv_uav";
-		binding.rootParameterIndex = producer.rootParameterIndex;
-		binding.rangeIndex = producer.rangeIndex;
-		binding.rangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-		binding.shaderRegister = producer.shaderRegister;
-		binding.registerSpace = producer.registerSpace;
-		binding.descriptorOffset = producer.descriptorOffset;
-		binding.rootDescriptor = producer.rootDescriptor;
-		binding.gpuVirtualAddress = producer.gpuVirtualAddress;
-		binding.usageClass.clear();
-		binding.usageBegin = 0;
-		binding.usageBytes = 0;
-		binding.descriptor.structureByteStride =
-			producer.outputStride ? producer.outputStride :
-			(source.descriptor.structureByteStride ?
-			 source.descriptor.structureByteStride :
-			 producer.descriptor.structureByteStride);
-		if (!binding.descriptor.structureByteStride && producer.descriptor.numElements)
-			binding.descriptor.structureByteStride =
-				static_cast<UINT>(source.descriptor.viewSize / producer.descriptor.numElements);
-		binding.descriptor.numElements =
-			binding.descriptor.structureByteStride ?
-			static_cast<UINT>(source.descriptor.viewSize / binding.descriptor.structureByteStride) :
-			source.descriptor.numElements;
-		binding.descriptor.bufferViewOffset = 0;
-		binding.descriptor.bufferViewBytes = source.descriptor.viewSize;
-		binding.descriptor.viewDimension = D3D12_UAV_DIMENSION_BUFFER;
-		binding.descriptor.viewSize = source.descriptor.viewSize;
-		binding.descriptor.resourceOffset = source.descriptor.resourceOffset;
-		binding.descriptor.gpuVirtualAddress = source.descriptor.gpuVirtualAddress;
-		binding.hasDescriptor = true;
-		bindings->push_back(std::move(binding));
-		emitted++;
-	}
-
-	DX12FrameAnalysis::LogJsonFunc("ActivePreSkinProducerBindings",
-		"candidates=%zu,emitted=%zu",
-		candidates, emitted);
-}
 
 bool DX12BindingResourceExport::DescriptorBelongsToHeap(
 	const DX12DescriptorSummary &descriptor, const DX12DescriptorHeapSummary &heap,

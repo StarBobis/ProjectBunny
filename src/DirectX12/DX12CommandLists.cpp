@@ -107,34 +107,6 @@ void DX12CommandListHookState::ReleaseKnownCommandQueue()
 		queue->Release();
 }
 
-void DX12CommandListHooks::HookCommandQueue(IUnknown *commandQueue)
-{
-	if (!commandQueue)
-		return;
-
-	ID3D12CommandQueue *queue = nullptr;
-	if (FAILED(commandQueue->QueryInterface(IID_PPV_ARGS(&queue))))
-		return;
-	// Wrapper-only mode: CommandQueueWrapper intercepts queue methods; no
-	// vtable patching.  Keep the runtime bookkeeping the hot path relies on.
-	DX12CommandQueueState::Set(queue);
-	RememberCommandQueueForHotPath(queue);
-	queue->Release();
-}
-
-void DX12CommandListHooks::RememberCommandQueueForHotPath(IUnknown *commandQueue)
-{
-	if (!commandQueue)
-		return;
-	commandQueue->AddRef();
-	IUnknown *oldQueue = nullptr;
-	AcquireSRWLockExclusive(&DX12CommandListHookState::KnownCommandQueueLock);
-	oldQueue = DX12CommandListHookState::KnownCommandQueue;
-	DX12CommandListHookState::KnownCommandQueue = commandQueue;
-	ReleaseSRWLockExclusive(&DX12CommandListHookState::KnownCommandQueueLock);
-	if (oldQueue)
-		oldQueue->Release();
-}
 
 void DX12CommandListRuntime::RegisterDirectState(
 	ID3D12GraphicsCommandList *commandList, DX12SimulateContext *state)
@@ -169,20 +141,6 @@ void DX12CommandListRuntime::UnregisterDirectState(ID3D12GraphicsCommandList *co
 	DX12CommandListRuntime::TlsInvalidateIfMatch(commandList);
 }
 
-DX12SimulateContext *DX12CommandListRuntime::GetDirectStatePtr(
-	ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return nullptr;
-
-	DX12CommandListRuntimeShard &shard = DX12CommandListRuntime::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext*>::iterator it =
-		shard.directStates.find(commandList);
-	DX12SimulateContext *state = it != shard.directStates.end() ? it->second : nullptr;
-	ReleaseSRWLockShared(&shard.lock);
-	return state;
-}
 
 IUnknown *DX12CommandListRuntime::GetCommandListIdentity(
 	ID3D12GraphicsCommandList *commandList)
@@ -471,10 +429,6 @@ void DX12CommandListRuntime::TlsInvalidateIfMatch(ID3D12GraphicsCommandList *com
 	}
 }
 
-UINT64 DX12CommandListRuntime::TrackingGeneration()
-{
-	return TrackingGenerationValue;
-}
 
 void DX12CommandListRuntime::BumpTrackingGeneration()
 {
@@ -520,14 +474,6 @@ void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 	state->boundDrawResult.Reset();
 }
 
-void DX12ResolvedDrawRuntimeStateUtils::EnsureScene(
-	DX12SimulateContextDrawTemplate *state)
-{
-	// Deliberately preserve draw caches across Present/scene churn.
-	// Their keys already encode reload/content/resolve/IA epochs, so DX11-style
-	// fine-grained invalidation is sufficient and avoids heuristic full clears.
-	(void)state;
-}
 
 void DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
 	DX12SimulateContextDrawTemplate *state,
@@ -1377,82 +1323,6 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 	return filteredPlan;
 }
 
-bool DX12CommandListRuntime::BuildIaHashState(
-	const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount,
-	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
-{
-	DX12IaHashTargetPlan targetPlan;
-	targetPlan.RequireAll();
-	return DX12CommandListRuntime::BuildIaHashStateForTargets(
-		ia, targetPlan, indexed, vertexCount, indexCount,
-		firstVertex, firstIndex, baseVertex, state);
-}
-
-bool DX12CommandListRuntime::BuildIaHashStateForTargets(
-	const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan,
-	bool indexed, UINT vertexCount, UINT indexCount,
-	UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state)
-{
-	if (!state)
-		return false;
-	*state = DX12IaHashState();
-	state->vertexBuffers.reserve(8);
-	(void)vertexCount;
-	(void)indexCount;
-	(void)firstVertex;
-	(void)firstIndex;
-	(void)baseVertex;
-	const DX12IaHashTargetPlan filteredTargetPlan =
-		FilterIaHashTargetPlanForDrawCounts(
-			targetPlan,
-			indexed,
-			vertexCount,
-			indexCount);
-
-	if (filteredTargetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer) {
-		const bool requireIndexHash =
-			filteredTargetPlan.RequiresIndexBufferHash(indexed) &&
-			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
-				true,
-				0,
-				vertexCount,
-				indexCount);
-		const uint32_t indexHash = requireIndexHash ?
-		// DX11 resident mod matching keys CheckTextureOverride IB/VB tests by the
-		// bound buffer/view identity plus tracked content, then uses draw-context
-		// filters like match_first_index to narrow the match. Using the whole bound
-		// view here keeps the hash stable across repeated draws and avoids
-		// re-hashing a new draw subrange every call.
-			DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(
-				const_cast<DX12ActiveIaState*>(&ia)) : 0;
-		state->hasIndexBuffer = true;
-		state->indexHash = indexHash;
-		state->indexView = ia.indexBuffer;
-	}
-
-	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
-		if (!ia.hasVertexBuffer[slot])
-			continue;
-		if (!filteredTargetPlan.RequiresVertexBuffer(slot))
-			continue;
-		const bool requireVertexHash =
-			DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
-				false,
-				slot,
-				vertexCount,
-				indexCount);
-		const uint32_t vertexHash = requireVertexHash ?
-			DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
-				const_cast<DX12ActiveIaState*>(&ia), slot) : 0;
-		DX12IaBufferHash item;
-		item.slot = slot;
-		item.hash = vertexHash;
-		item.vertexView = ia.vertexBuffers[slot];
-		state->vertexBuffers.push_back(item);
-	}
-
-	return state->hasIndexBuffer || !state->vertexBuffers.empty();
-}
 
 uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState *ia)
 {
@@ -2534,7 +2404,6 @@ bool DX12CommandListRuntime::GetDescriptorHeaps(
 }
 
 
-
 void DX12CommandListLifecycle::Register(
 	ID3D12GraphicsCommandList *commandList,
 	ID3D12PipelineState *initialState)
@@ -2655,7 +2524,6 @@ void DX12CommandListLifecycle::InvalidateAfterExecuteBundle(
 }
 
 
-
 void DX12CommandListCommandRecorder::RecordResourceBarrier(
 	UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers)
 {
@@ -2675,16 +2543,6 @@ void DX12CommandListCommandRecorder::RecordExecuteBundle(
 	// details for secondary command lists.
 	DX12CommandListLifecycle::Register(bundle, initialState);
 }
-
-void DX12CommandListCommandRecorder::RecordExecuteIndirect(
-	ID3D12GraphicsCommandList *commandList)
-{
-	// ExecuteIndirect can expand into draw or dispatch work on the GPU. Shader
-	// hunting treats it as both graphics and compute usage without inspecting
-	// the command signature on the CPU hot path.
-	DX12HuntRecordExecuteIndirect(commandList);
-}
-
 
 
 bool DX12CommandListStateCapture::ShouldTrackBindings()

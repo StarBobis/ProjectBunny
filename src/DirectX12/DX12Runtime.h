@@ -23,7 +23,6 @@
 // are static; all data members are public (per project convention).
 
 
-
 class DX12DescriptorHeapShadowUtils
 {
 public:
@@ -412,20 +411,6 @@ public:
 		return gDescriptorHeaps[heapIndex].stateLocks->LockForSlot(slot);
 	}
 
-	// ---- Lock helpers (per-heap descriptor shard) ----
-	static void LockExclusive(size_t heapIndex, UINT slot)
-	{
-		SRWLOCK *lock = HeapLock(heapIndex, slot);
-		if (lock)
-			DX12DescriptorShadowTelemetryUtils::AcquireHeapExclusive(lock);
-	}
-
-	static void UnlockExclusive(size_t heapIndex, UINT slot)
-	{
-		SRWLOCK *lock = HeapLock(heapIndex, slot);
-		if (lock)
-			ReleaseSRWLockExclusive(lock);
-	}
 
 	static void LockShared(size_t heapIndex, UINT slot)
 	{
@@ -2049,7 +2034,6 @@ public:
 };
 
 
-
 class DX12GraphicsPsoReplacement
 {
 public:
@@ -2085,8 +2069,6 @@ public:
 		REFIID riid,
 		void **pipelineState);
 	static void HookDevice(IUnknown *device);
-	static void HookDeviceFactory(IUnknown *factory);
-	static void HookDeviceFromCommandQueue(IUnknown *commandQueue);
 };
 
 
@@ -2112,7 +2094,6 @@ public:
 		static constexpr UINT CreateDevice = 9;
 	};
 };
-
 
 
 class DX12DeviceHookCallbacks
@@ -2144,140 +2125,7 @@ public:
 		return original ? original(device, desc, riid, pipelineState) : E_FAIL;
 	}
 
-	static HRESULT STDMETHODCALLTYPE HookedCreateGraphicsPipelineState(
-		ID3D12Device *device,
-		const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc,
-		REFIID riid,
-		void **pipelineState)
-	{
-		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device::CreateGraphicsPipelineState", device);
-		if (DX12InternalReplayState::IsActive())
-			return CreateGraphicsPipelineStateOriginal(device, desc, riid, pipelineState);
-		DX12GraphicsPsoReplacement replacement;
-		const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc = desc;
-		{
-			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Prepare);
-			if (desc) {
-				replacement.desc = *desc;
-				if (DX12ModReplaceShaderBytecode("vs", desc->VS, &replacement.vs, &replacement.vsBytes)) {
-					replacement.desc.VS = replacement.vs;
-					replacement.changed = true;
-				}
-				if (DX12ModReplaceShaderBytecode("ps", desc->PS, &replacement.ps, &replacement.psBytes)) {
-					replacement.desc.PS = replacement.ps;
-					replacement.changed = true;
-				}
-				if (replacement.changed)
-					activeDesc = &replacement.desc;
-			}
-		}
 
-		HRESULT hr = E_FAIL;
-		{
-			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Original);
-			hr = CreateGraphicsPipelineStateOriginal(device, activeDesc, riid, pipelineState);
-		}
-		{
-			DX12_CREATE_TIMING_SCOPE(GraphicsPsoHook, Record);
-			if (SUCCEEDED(hr) && activeDesc) {
-				ID3D12PipelineState *created =
-					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
-				if (desc)
-					DX12ModRecordGraphicsPipelineState(device, created, desc);
-				DX12RecordGraphicsPipelineState(created, activeDesc);
-			}
-		}
-		return hr;
-	}
-
-	static HRESULT STDMETHODCALLTYPE HookedCreateComputePipelineState(
-		ID3D12Device *device,
-		const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc,
-		REFIID riid,
-		void **pipelineState)
-	{
-		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device::CreateComputePipelineState", device);
-		if (DX12InternalReplayState::IsActive())
-			return CreateComputePipelineStateOriginal(device, desc, riid, pipelineState);
-		DX12ComputePsoReplacement replacement;
-		const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc = desc;
-		{
-			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Prepare);
-			if (desc) {
-				replacement.desc = *desc;
-				if (DX12ModReplaceShaderBytecode("cs", desc->CS, &replacement.cs, &replacement.csBytes)) {
-					replacement.desc.CS = replacement.cs;
-					replacement.changed = true;
-					activeDesc = &replacement.desc;
-				}
-			}
-		}
-
-		HRESULT hr = E_FAIL;
-		{
-			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Original);
-			hr = CreateComputePipelineStateOriginal(device, activeDesc, riid, pipelineState);
-		}
-		{
-			DX12_CREATE_TIMING_SCOPE(ComputePsoHook, Record);
-			if (SUCCEEDED(hr) && activeDesc) {
-				ID3D12PipelineState *created =
-					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr;
-				if (desc)
-					DX12ModRecordComputePipelineState(device, created, desc);
-				DX12RecordComputePipelineState(created, activeDesc);
-			}
-		}
-		return hr;
-	}
-
-	static HRESULT STDMETHODCALLTYPE HookedCreatePipelineState(
-		ID3D12Device2 *device,
-		const D3D12_PIPELINE_STATE_STREAM_DESC *desc,
-		REFIID riid,
-		void **pipelineState)
-	{
-		DX12OriginalFunctionRegistry::LogHookCall("ID3D12Device2::CreatePipelineState", device);
-		auto original = DX12OriginalFunctionRegistry::Resolve(
-			device, DX12DeviceHookSlotTypes::ID3D12Device2::CreatePipelineState,
-			DX12DeviceHookState::OrigCreatePipelineState,
-			"ID3D12Device2::CreatePipelineState");
-		if (DX12InternalReplayState::IsActive())
-			return original ? original(device, desc, riid, pipelineState) : E_FAIL;
-		HRESULT hr = E_FAIL;
-		{
-			DX12_CREATE_TIMING_SCOPE(PsoStreamHook, Original);
-			hr = original ? original(device, desc, riid, pipelineState) : E_FAIL;
-		}
-		{
-			DX12_CREATE_TIMING_SCOPE(PsoStreamHook, Record);
-			if (SUCCEEDED(hr) && desc)
-				DX12RecordPipelineStateStream(
-					pipelineState ? static_cast<ID3D12PipelineState*>(*pipelineState) : nullptr, desc);
-		}
-		return hr;
-	}
-
-	static HRESULT STDMETHODCALLTYPE HookedDeviceFactoryCreateDevice(
-		ID3D12DeviceFactory *factory,
-		IUnknown *adapter,
-		D3D_FEATURE_LEVEL featureLevel,
-		REFIID riid,
-		void **device)
-	{
-		DX12OriginalFunctionRegistry::LogHookCall("ID3D12DeviceFactory::CreateDevice", factory);
-		auto original = DX12OriginalFunctionRegistry::Resolve(
-			factory, DX12DeviceHookSlotTypes::ID3D12DeviceFactory::CreateDevice,
-			DX12DeviceHookState::OrigDeviceFactoryCreateDevice,
-			"ID3D12DeviceFactory::CreateDevice");
-		HRESULT hr = original ? original(factory, adapter, featureLevel, riid, device) : E_FAIL;
-		DX12LogManager::Fields("ID3D12DeviceFactory::CreateDevice",
-			"\"adapter\":\"%p\",\"featureLevel\":\"0x%x\",\"hr\":\"0x%lx\",\"device\":\"%p\"",
-			adapter, featureLevel, hr, device ? *device : nullptr);
-		if (SUCCEEDED(hr) && device && *device)
-			DX12DeviceHooks::HookDevice(static_cast<IUnknown*>(*device));
-		return hr;
-	}
 };
 
 
@@ -2286,7 +2134,6 @@ class DX12ResourceTrackerHooks
 public:
 	static void Install(ID3D12Device *device);
 };
-
 
 
 inline HRESULT DX12DeviceHooks::CreateGraphicsPipelineStateOriginal(
@@ -2318,16 +2165,6 @@ inline void DX12DeviceHooks::HookDevice(IUnknown *device)
 
 	DX12LogManager::Fields("DeviceHooksReady", "\"device\":\"%p\",\"mode\":\"wrapper_only\"", baseDevice);
 	baseDevice->Release();
-}
-
-inline void DX12DeviceHooks::HookDeviceFactory(IUnknown *factory)
-{
-	(void)factory;
-}
-
-inline void DX12DeviceHooks::HookDeviceFromCommandQueue(IUnknown *commandQueue)
-{
-	(void)commandQueue;
 }
 
 
@@ -2404,7 +2241,6 @@ public:
 };
 
 } // namespace Bunny
-
 
 
 namespace Bunny {
@@ -2738,8 +2574,6 @@ inline bool IniDocument::GetInt(const wchar_t *section, const wchar_t *key, int 
 }
 
 } // namespace Bunny
-
-
 
 
 namespace Bunny {
@@ -3337,8 +3171,6 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 }
 
 
-
-
 namespace Bunny {
 
 class ShaderOverrideConfig
@@ -3483,8 +3315,6 @@ inline void MigotoShaderOverrideParser::ParseSections(
 }
 
 
-
-
 namespace Bunny {
 
 enum class NumericMatchOp
@@ -3565,7 +3395,6 @@ public:
 };
 
 } // namespace Bunny
-
 
 
 namespace Bunny {
@@ -4038,8 +3867,6 @@ public:
 };
 
 
-
-
 class DX12ExecuteIndirectRuntime
 {
 public:
@@ -4280,16 +4107,6 @@ public:
 			sprintf_s(text, textCount, "-");
 	}
 
-	static void FormatTextPath(const wchar_t *filePath, wchar_t *textPath, size_t textPathCount)
-	{
-		if (!textPath || textPathCount == 0)
-			return;
-		textPath[0] = L'\0';
-		if (!filePath || !filePath[0])
-			return;
-		wcsncpy_s(textPath, textPathCount, filePath, _TRUNCATE);
-		wcscat_s(textPath, textPathCount, L".txt");
-	}
 
 	static bool IsHashChar(wchar_t value)
 	{
@@ -4365,16 +4182,6 @@ public:
 		return name ? name + 1 : filePath;
 	}
 
-	static void FormatDedupedTextName(
-		const wchar_t *filePath, wchar_t *textPath, size_t textPathCount)
-	{
-		if (!textPath || textPathCount == 0)
-			return;
-		textPath[0] = L'\0';
-		wcsncpy_s(textPath, textPathCount, DedupedFileName(filePath), _TRUNCATE);
-		if (textPath[0])
-			wcscat_s(textPath, textPathCount, L".txt");
-	}
 
 	static const char *ApiFunctionName(const char *kind)
 	{
@@ -4400,7 +4207,6 @@ public:
 		return "";
 	}
 };
-
 
 
 class DX12FrameAnalysisManifest
@@ -4866,7 +4672,6 @@ public:
 };
 
 
-
 class DX12VmFrameVariablesUtils
 {
 public:
@@ -5181,9 +4986,6 @@ public:
 		return 0;
 	}
 
-	static void EnsureWindow()
-	{
-	}
 
 	static void Show()
 	{
@@ -5197,17 +4999,11 @@ public:
 	{
 	}
 
-	static bool UpdateWindowForSwapChain(IDXGISwapChain *swapChain)
-	{
-		(void)swapChain;
-		return false;
-	}
 
 	static void Close()
 	{
 	}
 };
-
 
 
 class DX12OverlayStatusState
@@ -5235,10 +5031,6 @@ public:
 		Get().overlayWindow = hwnd;
 	}
 
-	static HWND GetWindow()
-	{
-		return Get().overlayWindow;
-	}
 
 	static void SetStatusColorLocked(const wchar_t *status, COLORREF color)
 	{
@@ -5297,24 +5089,6 @@ public:
 		InvalidateStatus();
 	}
 
-	static void ClearExpired()
-	{
-		bool changed = false;
-		DX12OverlayStatusState &state = Get();
-		AcquireSRWLockExclusive(&state.lock);
-		if (state.statusExpireTick) {
-			const DWORD now = GetTickCount();
-			if (static_cast<LONG>(now - state.statusExpireTick) >= 0) {
-				wcsncpy_s(state.status, L"3DMigoto DX12 hook alive", _TRUNCATE);
-				state.statusColor = RGB(0, 255, 0);
-				state.statusExpireTick = 0;
-				changed = true;
-			}
-		}
-		ReleaseSRWLockExclusive(&state.lock);
-		if (changed)
-			InvalidateStatus();
-	}
 
 	static void GetStatus(wchar_t *status, size_t statusCount)
 	{
@@ -5327,16 +5101,7 @@ public:
 		ReleaseSRWLockShared(&state.lock);
 	}
 
-	static COLORREF GetColor()
-	{
-		DX12OverlayStatusState &state = Get();
-		AcquireSRWLockShared(&state.lock);
-		COLORREF color = state.statusColor;
-		ReleaseSRWLockShared(&state.lock);
-		return color;
-	}
 };
-
 
 
 class DX12Input
@@ -5378,5 +5143,4 @@ public:
 	}
 };
 
-
-
+

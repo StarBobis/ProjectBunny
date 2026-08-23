@@ -36,7 +36,6 @@ namespace DX12Wrapper
 }
 
 
-
 class DXGIHookDiagnostics
 {
 public:
@@ -76,7 +75,6 @@ public:
 		device->Release();
 	}
 };
-
 
 
 class DXGIHookRuntime
@@ -592,8 +590,6 @@ public:
 };
 
 
-
-
 class DX12WrapperRuntimeUtils
 {
 public:
@@ -1039,23 +1035,6 @@ public:
 		return callbacks;
 	}
 
-	static bool TryExecutePresentReplacementOnReset(
-		ID3D12GraphicsCommandList *commandList,
-		DX12SimulateContext *runtimeState,
-		const DX12IaReplacementExecutorCallbacks &callbacks)
-	{
-		if (!commandList || !runtimeState)
-			return false;
-		if (!(DX12HotPathState::HookWorkFlags &
-			DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
-			return false;
-		if (DX12InternalReplayState::IsActive())
-			return false;
-		if (commandList->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
-			return false;
-		return DX12IaReplacementExecutor::ExecutePresent(
-			commandList, *runtimeState, callbacks);
-	}
 
 	static void RegisterSubmittedCommandListDirect(IUnknown *commandList)
 	{
@@ -2639,7 +2618,6 @@ public:
 };
 
 
-
 class DXGIHookState
 {
 public:
@@ -2671,7 +2649,6 @@ public:
 };
 
 } // namespace Bunny
-
 
 
 namespace Bunny {
@@ -2968,8 +2945,6 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 } // namespace Bunny
 
 
-
-
 namespace Bunny {
 
 class ResourceConfig
@@ -3094,8 +3069,6 @@ inline void MigotoResourceParser::ParseSections(const IniDocument &ini, Resource
 }
 
 } // namespace Bunny
-
-
 
 
 namespace Bunny {
@@ -3303,5 +3276,4 @@ inline void MigotoShaderRegexParser::ParseSections(
 
 }
 
-
-
+

@@ -764,14 +764,6 @@ static const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
 	return cache.sections;
 }
 
-static UINT64 SnapshotActivePreSkinSections(std::unordered_set<std::wstring> *sections)
-{
-	if (!sections)
-		return CurrentPreSkinActiveGeneration();
-	const UINT64 generation = CurrentPreSkinActiveGeneration();
-	*sections = GetActivePreSkinSectionsSnapshot();
-	return generation;
-}
 
 static void BumpPreSkinActiveGeneration()
 {
@@ -2263,13 +2255,6 @@ void DX12ModTrackPreSkinOutputResizeCacheUse(
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 }
 
-static void RequeuePendingPreSkinSubmissionLocked(DX12PreSkinPendingSubmission *pending)
-{
-	if (!pending)
-		return;
-	DX12PreSkinPendingSubmission &globalPending = gPendingPreSkinSubmissions[nullptr];
-	MovePendingPreSkinSubmission(pending, &globalPending);
-}
 
 static void RetirePreSkinResource(ID3D12Resource *resource)
 {
@@ -2295,14 +2280,6 @@ static void RetirePreSkinResourceForCommandList(
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 }
 
-static void RetainPreSkinResourceForCommandList(
-	ID3D12GraphicsCommandList *commandList, ID3D12Resource *resource)
-{
-	if (!resource)
-		return;
-	resource->AddRef();
-	RetirePreSkinResourceForCommandList(commandList, resource);
-}
 
 static void RetirePreSkinDescriptorHeap(ID3D12DescriptorHeap *heap)
 {
@@ -2960,13 +2937,6 @@ static bool HasPreSkinTextureOverrideCandidates(
 	return found;
 }
 
-static bool ResourceUsedByExplicitMatchCsLocked(const std::wstring &resourceName)
-{
-	if (resourceName.empty())
-		return false;
-	return gExplicitMatchCsResourceSections.find(Bunny::IniDocumentText::ToLower(resourceName)) !=
-		gExplicitMatchCsResourceSections.end();
-}
 
 static bool ResourceBlockedByInactiveExplicitMatchCsLocked(
 	const std::wstring &resourceName,
@@ -3070,33 +3040,6 @@ static void ClearPreSkinRuntimeState()
 	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
 
-static bool DescriptorOverlapsView(
-	const DX12DescriptorSummary &descriptor, UINT64 gpuVa, UINT64 size)
-{
-	if (!descriptor.resource || gpuVa == 0 || size == 0)
-		return false;
-
-	UINT64 descriptorBegin = descriptor.gpuVirtualAddress + descriptor.resourceOffset;
-	UINT64 descriptorSize = descriptor.viewSize;
-	if (!descriptorSize && descriptor.hasResourceDesc &&
-		descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-		descriptorSize = descriptor.resourceDesc.Width;
-	if (!descriptorSize)
-		return false;
-
-	const UINT64 descriptorEnd = descriptorBegin + descriptorSize;
-	const UINT64 viewEnd = gpuVa + size;
-	return gpuVa < descriptorEnd && descriptorBegin < viewEnd;
-}
-
-static bool ProducerMatchesIaBuffer(
-	const DX12ComputeUavProducer &producer, const DX12IaBufferHash &buffer)
-{
-	if (!producer.hasDescriptor)
-		return false;
-	const D3D12_VERTEX_BUFFER_VIEW &view = buffer.vertexView;
-	return DescriptorOverlapsView(producer.descriptor, view.BufferLocation, view.SizeInBytes);
-}
 
 static bool ProducerMatchesReplacementTarget(
 	const DX12ComputeUavProducer &producer, const DX12VertexLimitRaiseConfig &vlr)
@@ -4078,15 +4021,6 @@ static bool TextureOverridesHaveDrawSrvReplacement(
 	return false;
 }
 
-static bool CompiledTextureOverridePlansNeedResidentIaState(
-	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &plans)
-{
-	for (const auto &entry : plans) {
-		if (entry.second.NeedsResidentIaState())
-			return true;
-	}
-	return false;
-}
 
 static bool CompiledShaderOverridePlansNeedResidentIaState(
 	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &plans)
@@ -5126,12 +5060,6 @@ static bool LoadResourceBytes(
 		bytes->push_back(static_cast<unsigned char>(parsed));
 	}
 	return !bytes->empty();
-}
-
-static bool LoadResourceBytesLocked(
-	const Bunny::ResourceConfig &config, std::vector<unsigned char> *bytes, std::wstring *path)
-{
-	return LoadResourceBytes(config, gBaseDir, bytes, path);
 }
 
 static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
@@ -6601,126 +6529,6 @@ static bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::
 	return available;
 }
 
-static DX12LoadedResource *EnsureLoadedResourceLocked(
-	ID3D12Device *device, const std::wstring &name)
-{
-	if (!device || name.empty())
-		return nullptr;
-
-	auto loaded = gLoadedResources.find(name);
-	if (loaded != gLoadedResources.end())
-		return loaded->second.resource && !loaded->second.failed ? &loaded->second : nullptr;
-
-	auto configIt = gModResources.find(name);
-	if (configIt == gModResources.end())
-		return nullptr;
-
-	const Bunny::ResourceConfig &config = configIt->second;
-	if (!ResourceConfigLooksLikeBuffer(config))
-		return nullptr;
-
-	std::vector<unsigned char> bytes;
-	std::wstring path;
-	if (!LoadResourceBytesLocked(config, &bytes, &path)) {
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		gLoadedResources[name] = failedResource;
-		DX12LogManager::Fields("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
-			config.section.c_str(), path.c_str());
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod warning: failed to read resource\n%ls\n%ls",
-			config.section.c_str(), path.c_str());
-		DX12OverlayStatusState::SetWarning(status);
-		return nullptr;
-	}
-
-	UINT64 byteWidth = config.hasByteWidth ? config.byteWidth : bytes.size();
-	if (byteWidth < bytes.size())
-		byteWidth = bytes.size();
-	if (byteWidth == 0)
-		return nullptr;
-
-	D3D12_HEAP_PROPERTIES heap = {};
-	heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-	heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-	heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-	heap.CreationNodeMask = 1;
-	heap.VisibleNodeMask = 1;
-
-	D3D12_RESOURCE_DESC desc = {};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = byteWidth;
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_UNKNOWN;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	ID3D12Resource *resource = nullptr;
-	HRESULT hr = device->CreateCommittedResource(
-		&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr, IID_PPV_ARGS(&resource));
-	if (FAILED(hr) || !resource) {
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		gLoadedResources[name] = failedResource;
-		DX12LogManager::Fields("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
-			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod error: failed to create resource\n%ls hr=0x%lx",
-			config.section.c_str(), hr);
-		DX12OverlayStatusState::SetError(status);
-		return nullptr;
-	}
-
-	void *mapped = nullptr;
-	D3D12_RANGE readRange = {};
-	hr = resource->Map(0, &readRange, &mapped);
-	if (SUCCEEDED(hr) && mapped) {
-		memcpy(mapped, bytes.data(), bytes.size());
-		if (byteWidth > bytes.size())
-			memset(static_cast<unsigned char*>(mapped) + bytes.size(), 0, byteWidth - bytes.size());
-		resource->Unmap(0, nullptr);
-	} else {
-		resource->Release();
-		DX12LoadedResource failedResource;
-		failedResource.failed = true;
-		failedResource.name = name;
-		failedResource.path = path;
-		gLoadedResources[name] = failedResource;
-		DX12LogManager::Fields("DX12ResourceLoad",
-			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
-			config.section.c_str(), hr);
-		wchar_t status[512];
-		swprintf_s(status, L"DX12 mod error: failed to map resource\n%ls hr=0x%lx",
-			config.section.c_str(), hr);
-		DX12OverlayStatusState::SetError(status);
-		return nullptr;
-	}
-
-	DX12LoadedResource loadedResource;
-	loadedResource.resource = resource;
-	loadedResource.byteWidth = byteWidth;
-	loadedResource.stride = config.hasStride ? config.stride : 0;
-	loadedResource.format = ParseDx12ResourceFormat(config.format);
-	loadedResource.name = name;
-	loadedResource.path = path;
-	auto inserted = gLoadedResources.emplace(name, loadedResource);
-	DX12LogManager::Fields("DX12ResourceLoad",
-		"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
-		config.section.c_str(), name.c_str(), path.c_str(),
-		static_cast<unsigned long long>(byteWidth), loadedResource.stride,
-		static_cast<UINT>(loadedResource.format));
-	return &inserted.first->second;
-}
-
 static DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	ID3D12Device *device, const std::wstring &name)
 {
@@ -7117,28 +6925,6 @@ static bool EnsureResourceSrvLocked(
 	return true;
 }
 
-static DX12LoadedResource *FindReplacementResourceForVlrLocked(
-	ID3D12Device *device, const DX12VertexLimitRaiseConfig &vlr)
-{
-	DX12LoadedResource *best = nullptr;
-	for (const std::wstring &name : gVlrResourceCandidates) {
-		auto configIt = gModResources.find(name);
-		if (configIt == gModResources.end())
-			continue;
-		const Bunny::ResourceConfig &config = configIt->second;
-		if (config.hasStride && vlr.overrideByteStride &&
-		    config.stride != vlr.overrideByteStride)
-			continue;
-		DX12LoadedResource *resource = EnsureLoadedResourceLocked(device, name);
-		if (!resource || !resource->resource)
-			continue;
-		if (resource->byteWidth < vlr.overrideByteWidth)
-			continue;
-		if (!best || resource->byteWidth < best->byteWidth)
-			best = resource;
-	}
-	return best;
-}
 
 static bool FindReplacementResourceNameForVlrLocked(
 	const DX12VertexLimitRaiseConfig &vlr, std::wstring *resourceName)
@@ -8833,99 +8619,6 @@ static void LogPreSkinSrvProbe(
 #endif
 }
 
-static void LogPreSkinCbvProbe(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
-	const DX12CurrentComputeUavBinding &cbv,
-	const Bunny::TextureOverrideConfig &config)
-{
-#if defined(_DEBUG)
-	(void)device;
-	(void)commandList;
-
-	UINT64 gpuVa = cbv.gpuVirtualAddress;
-	UINT64 viewBytes = 0;
-	ID3D12Resource *resource = nullptr;
-	UINT64 resourceOffset = 0;
-	UINT heapType = 0;
-	bool hasHeapType = false;
-	if (cbv.hasDescriptor && cbv.descriptor.kind == "CBV")
-	{
-		gpuVa = cbv.descriptor.gpuVirtualAddress;
-		viewBytes = cbv.descriptor.viewSize;
-		resource = cbv.descriptor.resource;
-		resourceOffset = cbv.descriptor.resourceOffset;
-		heapType = cbv.descriptor.resourceHeapType;
-		hasHeapType = cbv.descriptor.hasResourceHeapType;
-	}
-	else if (gpuVa)
-	{
-		DX12BufferResourceSummary summary = {};
-		if (DX12ResolveBufferResourceByGpuVa(gpuVa, 256, &summary))
-		{
-			resource = summary.resource;
-			resourceOffset = summary.resourceOffset;
-			viewBytes = summary.viewSize;
-			heapType = summary.resourceHeapType;
-			hasHeapType = summary.hasResourceHeapType;
-		}
-	}
-
-	UINT32 words[16] = {};
-	bool mapped = false;
-	HRESULT mapHr = E_FAIL;
-	if (resource)
-	{
-		const UINT64 bytesToRead = (std::min<UINT64>)(sizeof(words),
-													  viewBytes ? viewBytes : sizeof(words));
-		D3D12_RANGE readRange = {
-			static_cast<SIZE_T>(resourceOffset),
-			static_cast<SIZE_T>(resourceOffset + bytesToRead)};
-		void *mappedPtr = nullptr;
-		mapHr = resource->Map(0, &readRange, &mappedPtr);
-		if (SUCCEEDED(mapHr) && mappedPtr)
-		{
-			memcpy(words, static_cast<const unsigned char *>(mappedPtr) + resourceOffset,
-				   static_cast<size_t>(bytesToRead));
-			D3D12_RANGE writtenRange = {};
-			resource->Unmap(0, &writtenRange);
-			mapped = true;
-		}
-	}
-
-	DX12LogManager::DebugFields("DX12PreSkinCbvProbe",
-								"\"section\":\"%S\",\"root\":%u,\"range\":%u,\"bRegister\":%u,\"space\":%u,\"offset\":%u,\"rootDescriptor\":%s,\"hasDescriptor\":%s,\"resource\":\"%p\",\"gpuVa\":\"0x%llx\",\"resourceOffset\":%llu,\"viewBytes\":%llu,\"heapType\":%u,\"hasHeapType\":%s,\"mapped\":%s,\"mapHr\":\"0x%lx\",\"u32\":\"%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\",\"u64_0\":\"0x%016llx\",\"u64_1\":\"0x%016llx\",\"u64_2\":\"0x%016llx\",\"u64_3\":\"0x%016llx\"",
-								config.section.c_str(),
-								cbv.rootParameterIndex, cbv.rangeIndex,
-								cbv.shaderRegister, cbv.registerSpace, cbv.descriptorOffset,
-								cbv.rootDescriptor ? "true" : "false",
-								cbv.hasDescriptor ? "true" : "false",
-								resource,
-								static_cast<unsigned long long>(gpuVa),
-								static_cast<unsigned long long>(resourceOffset),
-								static_cast<unsigned long long>(viewBytes),
-								heapType,
-								hasHeapType ? "true" : "false",
-								mapped ? "true" : "false",
-								mapHr,
-								words[0], words[1], words[2], words[3],
-								words[4], words[5], words[6], words[7],
-								words[8], words[9], words[10], words[11],
-								words[12], words[13], words[14], words[15],
-								static_cast<unsigned long long>(
-									(static_cast<UINT64>(words[1]) << 32) | words[0]),
-								static_cast<unsigned long long>(
-									(static_cast<UINT64>(words[3]) << 32) | words[2]),
-								static_cast<unsigned long long>(
-									(static_cast<UINT64>(words[5]) << 32) | words[4]),
-								static_cast<unsigned long long>(
-									(static_cast<UINT64>(words[7]) << 32) | words[6]));
-#else
-	(void)device;
-	(void)commandList;
-	(void)cbv;
-	(void)config;
-#endif
-}
 
 static UINT AlignCbvSize(UINT size)
 {
@@ -9249,85 +8942,6 @@ static uint32_t HashComputeUavBinding(const DX12CurrentComputeUavBinding &uav)
 	return HashComputeBufferBinding(uav);
 }
 
-static bool FindUavHashTextureOverrideLocked(
-	uint32_t hash, DX12UavHashTextureOverrideMatch *match)
-{
-	if (!hash)
-		return false;
-	auto indexed = gPreSkinUavHashTextureOverrideIndex.find(hash);
-	if (indexed == gPreSkinUavHashTextureOverrideIndex.end())
-		return false;
-
-	for (size_t index : indexed->second)
-	{
-		if (index >= gPreSkinTextureOverrides.size())
-			continue;
-		const DX12PreSkinTextureOverrideCandidate &candidate =
-			gPreSkinTextureOverrides[index];
-		const Bunny::TextureOverrideConfig *config = candidate.config;
-		if (!config || config->hasMatchCs || config->vertexBufferResources.empty())
-			continue;
-		if (match)
-		{
-			match->config = config;
-			match->hash = hash;
-			match->resourceName = candidate.resourceName;
-		}
-		return true;
-	}
-	return false;
-}
-
-static bool FindPreSkinProducerByUavHashLocked(
-	const std::vector<DX12CurrentComputeUavBinding> &uavs,
-	DX12ComputeUavProducer *producer,
-	DX12CurrentComputeUavBinding *binding,
-	DX12UavHashTextureOverrideMatch *match)
-{
-	for (auto it = uavs.rbegin(); it != uavs.rend(); ++it)
-	{
-		if (!it->hasDescriptor || it->rootDescriptor || !it->descriptorIncrement ||
-			!it->tableCpuStart || !it->tableGpuStart.ptr)
-			continue;
-		if (!it->descriptor.resource || it->descriptor.viewSize == 0)
-			continue;
-
-		const uint32_t hash = HashComputeUavBinding(*it);
-		DX12UavHashTextureOverrideMatch candidateMatch;
-		const bool matched = FindUavHashTextureOverrideLocked(hash, &candidateMatch);
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinUavHashCandidate",
-									"\"hash\":\"%08x\",\"matched\":%s,\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"viewBytes\":%llu,\"stride\":%u,\"resource\":\"%p\"",
-									hash, matched ? "true" : "false",
-									it->rootParameterIndex, it->rangeIndex, it->shaderRegister,
-									it->registerSpace,
-									static_cast<unsigned long long>(it->descriptor.viewSize),
-									it->descriptor.structureByteStride,
-									it->descriptor.resource);
-#endif
-		if (!matched)
-			continue;
-
-		DX12ComputeUavProducer candidate = {};
-		candidate.rootParameterIndex = it->rootParameterIndex;
-		candidate.rangeIndex = it->rangeIndex;
-		candidate.shaderRegister = it->shaderRegister;
-		candidate.registerSpace = it->registerSpace;
-		candidate.descriptorOffset = it->descriptorOffset;
-		candidate.rootDescriptor = it->rootDescriptor;
-		candidate.gpuVirtualAddress = it->gpuVirtualAddress;
-		candidate.hasDescriptor = it->hasDescriptor;
-		candidate.descriptor = it->descriptor;
-		if (producer)
-			*producer = candidate;
-		if (binding)
-			*binding = *it;
-		if (match)
-			*match = candidateMatch;
-		return true;
-	}
-	return false;
-}
 
 static void AppendComputeBindingHashList(
 	const std::vector<DX12CurrentComputeUavBinding> &bindings,
@@ -11331,82 +10945,6 @@ static bool ApplyPreSkinBindingPatchLocked(
 	return true;
 }
 
-static bool ApplyPreSkinSrvInputPatchesLocked(
-	ID3D12Device *device, const std::vector<DX12CurrentComputeUavBinding> &srvs,
-	const Bunny::TextureOverrideConfig &config,
-	const std::vector<DX12PreSkinSrvReplacementBinding> &srvReplacements,
-	std::vector<DX12PreSkinReplacementState::DescriptorRestore> *descriptorRestores)
-{
-	if (!device || srvs.empty())
-		return false;
-
-	bool changed = false;
-	for (const DX12CurrentComputeUavBinding &srv : srvs)
-	{
-		if (!srv.hasDescriptor || !srv.descriptor.cpuHandle ||
-			srv.descriptor.kind != "SRV" ||
-			srv.descriptor.viewDimension != D3D12_SRV_DIMENSION_BUFFER)
-			continue;
-
-		const DX12PreSkinSrvReplacementBinding *replacementBinding = nullptr;
-		for (const DX12PreSkinSrvReplacementBinding &binding : srvReplacements)
-		{
-			if (binding.shaderRegister == srv.shaderRegister)
-			{
-				replacementBinding = &binding;
-				break;
-			}
-		}
-		if (!replacementBinding)
-			continue;
-
-		DX12LoadedResource *resource = EnsureLoadedResourceForPreSkin(device, replacementBinding->resource);
-		const UINT elementStride =
-			srv.descriptor.structureByteStride ? srv.descriptor.structureByteStride : (resource ? resource->stride : 0);
-		const UINT64 srvByteWidth = DescriptorViewSize(srv.descriptor);
-		if (!resource || !EnsureResourceSrvLocked(device, resource, elementStride, srvByteWidth) ||
-			!resource->srvCpu.ptr)
-			continue;
-
-		D3D12_CPU_DESCRIPTOR_HANDLE target = {};
-		target.ptr = srv.descriptor.cpuHandle;
-		if (descriptorRestores)
-		{
-			ID3D12DescriptorHeap *restoreHeap = nullptr;
-			ID3D12Device *restoreDevice = nullptr;
-			if (!AcquirePreSkinDescriptorRestoreHeap(
-					device,
-					&restoreHeap,
-					&restoreDevice) ||
-				!restoreHeap || !restoreDevice)
-				continue;
-			DX12PreSkinReplacementState::DescriptorRestore restore;
-			restore.targetCpu = target.ptr;
-			restore.device = restoreDevice;
-			restore.heap = restoreHeap;
-			restore.cpu = restoreHeap->GetCPUDescriptorHandleForHeapStart();
-			device->CopyDescriptorsSimple(
-				1, restore.cpu, target,
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-			descriptorRestores->push_back(restore);
-		}
-		device->CopyDescriptorsSimple(
-			1, target, resource->srvCpu,
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		changed = true;
-
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinningSrvPatch",
-									"\"status\":\"patched\",\"resource\":\"%S\",\"csTRegister\":%u,\"tRegister\":%u,\"targetCpu\":\"0x%zx\",\"bytes\":%llu,\"srvBytes\":%llu,\"stride\":%u",
-									resource->name.c_str(), replacementBinding->replaceSlot, srv.shaderRegister,
-									srv.descriptor.cpuHandle,
-									static_cast<unsigned long long>(resource->byteWidth),
-									static_cast<unsigned long long>(resource->srvByteWidth),
-									elementStride);
-#endif
-	}
-	return changed;
-}
 
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
@@ -12598,23 +12136,6 @@ public:
 	}
 };
 
-static DX12TextureOverrideDrawKeyUsage BuildIaCandidateDrawKeyUsageLocked(
-	const std::vector<size_t> *candidateIndexes)
-{
-	DX12TextureOverrideDrawKeyUsage usage;
-	if (!candidateIndexes)
-		return usage;
-	for (size_t index : *candidateIndexes) {
-		if (index >= gIaTextureOverrides.size())
-			continue;
-		const Bunny::TextureOverrideConfig *config = gIaTextureOverrides[index].config;
-		if (!config)
-			continue;
-		usage.MergeConfig(*config);
-	}
-	return usage;
-}
-
 static DX12TextureOverrideDrawKeyUsage BuildTriggeredDrawKeyUsage(
 	const std::vector<DX12TriggeredTextureOverride> *candidateTriggers)
 {
@@ -12980,24 +12501,6 @@ static void BuildDx12IaTextureOverrideIndex(
 	}
 }
 
-static const std::vector<size_t> *FindIaTextureOverrideCandidatesLocked(
-	uint32_t hash, bool indexBuffer, uint32_t vertexSlot)
-{
-	if (indexBuffer)
-	{
-		auto indexed = gIaIndexTextureOverrideIndex.find(hash);
-		return indexed != gIaIndexTextureOverrideIndex.end() ? &indexed->second : nullptr;
-	}
-
-	auto merged = gIaMergedVertexTextureOverrideIndex.find(
-		MakeIaVertexIndexKey(hash, vertexSlot));
-	if (merged != gIaMergedVertexTextureOverrideIndex.end())
-		return &merged->second;
-
-	auto anySlot = gIaAnyVertexTextureOverrideIndex.find(hash);
-	return anySlot != gIaAnyVertexTextureOverrideIndex.end() ? &anySlot->second : nullptr;
-}
-
 static const std::vector<size_t> *FindIaTextureOverridePrefilterCandidatesLocked(
 	bool indexBuffer, uint32_t vertexSlot, uint32_t vertexCount, uint32_t indexCount,
 	std::vector<size_t> *scratch)
@@ -13260,20 +12763,6 @@ static bool AppendCompiledCommandListLinksPlan(
 	return appended;
 }
 
-static void AppendCompiledCommandListToTexturePlan(
-	DX12CompiledTextureOverridePlan *dst, const DX12CompiledCommandListPlan &src)
-{
-	if (!dst)
-		return;
-	dst->handlingSkip = dst->handlingSkip || src.handlingSkip;
-	if (!src.indexResource.empty())
-		dst->indexResource = src.indexResource;
-	for (const auto &item : src.vertexResources)
-		SetCompiledVertexResourceBinding(&dst->vertexResources, item.slot, item.resource);
-	dst->draws.insert(dst->draws.end(), src.draws.begin(), src.draws.end());
-	dst->dispatches.insert(dst->dispatches.end(), src.dispatches.begin(), src.dispatches.end());
-}
-
 static void AppendLegacyTextureOverrideStateToPlan(
 	const Bunny::TextureOverrideConfig &config,
 	DX12CompiledCommandListPlan *plan)
@@ -13307,25 +12796,6 @@ static void AppendLegacyTextureOverrideStateToPlan(
 	}
 }
 
-static bool AppendCompiledCommandListLinksToTexturePlan(
-	const std::vector<std::wstring> &links,
-	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
-	DX12CompiledTextureOverridePlan *dst)
-{
-	if (!dst)
-		return false;
-	bool appended = false;
-	for (const std::wstring &link : links) {
-		auto commandPlan = compiledCommandListPlans.find(link);
-		if (commandPlan == compiledCommandListPlans.end() ||
-		    commandPlan->second.unsupported) {
-			return false;
-		}
-		AppendCompiledCommandListToTexturePlan(dst, commandPlan->second);
-		appended = true;
-	}
-	return appended;
-}
 
 static void BuildCompiledShaderOverridePlanFromParts(
 	bool handlingSkip,
@@ -13652,81 +13122,6 @@ static void LogShaderOverrideCommandListLimited(
 #endif
 }
 
-static void LogPreSkinningCandidatesLimited(const DX12IaHashState &iaState)
-{
-#if defined(_DEBUG)
-	std::vector<DX12ComputeUavProducer> producers;
-	AcquireSRWLockShared(&gPreSkinLock);
-	producers.assign(gRecentComputeUavs.begin(), gRecentComputeUavs.end());
-	ReleaseSRWLockShared(&gPreSkinLock);
-
-	if (producers.empty())
-	{
-		DX12LogManager::DebugFields("DX12PreSkinningCandidate",
-									  "\"status\":\"none\",\"recentUavs\":0,\"overlapCount\":0,\"vlrLike\":0,\"vbCount\":%zu",
-									  iaState.vertexBuffers.size());
-		return;
-	}
-
-	std::vector<DX12VertexLimitRaiseConfig> vlrs;
-	AcquireSRWLockShared(&gModLock);
-	vlrs = gVertexLimitRaiseConfigs;
-	ReleaseSRWLockShared(&gModLock);
-
-	size_t overlapping = 0;
-	size_t vlrLike = 0;
-	DX12ComputeUavProducer best = {};
-	DX12IaBufferHash bestBuffer = {};
-	bool hasBest = false;
-
-	for (auto it = producers.rbegin(); it != producers.rend(); ++it)
-	{
-		const DX12ComputeUavProducer &producer = *it;
-		for (const DX12VertexLimitRaiseConfig &vlr : vlrs)
-		{
-			if (ProducerMatchesReplacementTarget(producer, vlr))
-			{
-				vlrLike++;
-				break;
-			}
-		}
-		for (const DX12IaBufferHash &buffer : iaState.vertexBuffers)
-		{
-			if (!ProducerMatchesIaBuffer(producer, buffer))
-				continue;
-			overlapping++;
-			if (!hasBest)
-			{
-				best = producer;
-				bestBuffer = buffer;
-				hasBest = true;
-			}
-		}
-	}
-
-	if (hasBest && best.hasDescriptor)
-	{
-		const DX12DescriptorSummary &d = best.descriptor;
-		DX12LogManager::DebugFields("DX12PreSkinningCandidate",
-									  "\"status\":\"matched\",\"recentUavs\":%zu,\"overlapCount\":%zu,\"vlrLike\":%zu,\"vbSlot\":%u,\"vbHash\":\"%08x\",\"producerSerial\":%llu,\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"resource\":\"%p\",\"resourceWidth\":%llu,\"viewBytes\":%llu,\"viewOffset\":%llu,\"numElements\":%u,\"stride\":%u",
-									  producers.size(), overlapping, vlrLike, bestBuffer.slot, bestBuffer.hash,
-									  static_cast<unsigned long long>(best.serial),
-									  best.rootParameterIndex, best.rangeIndex, best.shaderRegister, best.registerSpace,
-									  best.descriptor.resource,
-									  static_cast<unsigned long long>(d.hasResourceDesc ? d.resourceDesc.Width : 0),
-									  static_cast<unsigned long long>(d.viewSize),
-									  static_cast<unsigned long long>(d.resourceOffset),
-									  d.numElements, d.structureByteStride);
-		return;
-	}
-
-	DX12LogManager::DebugFields("DX12PreSkinningCandidate",
-								  "\"status\":\"none\",\"recentUavs\":%zu,\"overlapCount\":%zu,\"vlrLike\":%zu,\"vbCount\":%zu",
-								  producers.size(), overlapping, vlrLike, iaState.vertexBuffers.size());
-#else
-	(void)iaState;
-#endif
-}
 
 static void ReleaseLoadedResourcesLocked()
 {
@@ -14202,23 +13597,6 @@ LoadTextureOverrideRuntimeSnapshot()
 		std::memory_order_acquire);
 }
 
-static const std::vector<DX12TriggeredTextureOverride> *
-FindIaTriggeredTextureOverrideCandidates(
-	const DX12CommandExecutionRuntimeSnapshot &snapshot,
-	uint32_t hash, bool indexBuffer, uint32_t vertexSlot)
-{
-	if (indexBuffer) {
-		auto indexed = snapshot.iaIndexTriggeredTextureOverrides.find(hash);
-		return indexed != snapshot.iaIndexTriggeredTextureOverrides.end() ?
-			&indexed->second : nullptr;
-	}
-
-	auto merged = snapshot.iaMergedVertexTriggeredTextureOverrides.find(
-		MakeIaVertexIndexKey(hash, vertexSlot));
-	return merged != snapshot.iaMergedVertexTriggeredTextureOverrides.end() ?
-		&merged->second : nullptr;
-}
-
 static void CollectIaTriggeredTextureOverrideCandidates(
 	const DX12CommandExecutionRuntimeSnapshot &snapshot,
 	uint32_t hash,
@@ -14269,156 +13647,6 @@ static void CollectIaTriggeredTextureOverrideCandidates(
 	}
 }
 
-static const Bunny::TextureOverrideConfig *ConfigFromIaCandidateIndexLocked(size_t index)
-{
-	if (index >= gIaTextureOverrides.size())
-		return nullptr;
-	return gIaTextureOverrides[index].config;
-}
-
-static bool TryFindCachedIaTextureOverrideLocked(
-	const DX12TextureOverrideLookupCacheKey &key,
-	bool *matched,
-	std::vector<const Bunny::TextureOverrideConfig*> *configs)
-{
-	if (matched)
-		*matched = false;
-	if (configs)
-		configs->clear();
-	auto cached = gTextureOverrideLookupCache.find(key);
-	if (cached == gTextureOverrideLookupCache.end())
-		return false;
-	if (matched)
-		*matched = cached->second.matched;
-	if (!cached->second.matched)
-		return true;
-	if (configs)
-		configs->reserve(cached->second.iaCandidateIndexes.size());
-	for (size_t index : cached->second.iaCandidateIndexes) {
-		const Bunny::TextureOverrideConfig *cachedConfig =
-			ConfigFromIaCandidateIndexLocked(index);
-		if (!cachedConfig)
-			return false;
-		if (configs)
-			configs->push_back(cachedConfig);
-	}
-	return true;
-}
-
-static void StoreIaTextureOverrideLookupCacheLocked(
-	const DX12TextureOverrideLookupCacheKey &key, const std::vector<size_t> &candidateIndexes)
-{
-	DX12TextureOverrideLookupCacheEntry entry = {};
-	entry.matched = !candidateIndexes.empty();
-	entry.iaCandidateIndexes = candidateIndexes;
-	auto existing = gTextureOverrideLookupCache.find(key);
-	if (existing != gTextureOverrideLookupCache.end()) {
-		existing->second = std::move(entry);
-		return;
-	}
-	if (gTextureOverrideLookupCache.size() >= MaxTextureOverrideLookupCacheEntries)
-		gTextureOverrideLookupCache.erase(gTextureOverrideLookupCache.begin());
-	gTextureOverrideLookupCache.emplace(key, std::move(entry));
-}
-
-static bool FindIaTextureOverridesCachedLocked(
-	const Bunny::CommandListTarget &target, uint32_t hash,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	bool indexBuffer, uint32_t vertexSlot,
-	const std::unordered_set<std::wstring> &activePreSkinSections,
-	UINT64 preSkinGeneration,
-	std::vector<const Bunny::TextureOverrideConfig*> *configs)
-{
-	if (configs)
-		configs->clear();
-	const std::vector<size_t> *candidateIndexes =
-		FindIaTextureOverrideCandidatesLocked(hash, indexBuffer, vertexSlot);
-	const bool dependsOnActivePreSkin =
-		candidateIndexes &&
-		IaCandidateIndexesDependOnActivePreSkin(*candidateIndexes);
-	const UINT64 effectivePreSkinGeneration =
-		dependsOnActivePreSkin ? preSkinGeneration : 0;
-	const std::unordered_set<std::wstring> &effectiveActivePreSkinSections =
-		dependsOnActivePreSkin ?
-			activePreSkinSections :
-			EmptyActivePreSkinSections();
-	const DX12TextureOverrideDrawKeyUsage keyUsage =
-		BuildIaCandidateDrawKeyUsageLocked(candidateIndexes);
-	const DX12TextureOverrideLookupCacheKey key =
-		MakeIaTextureOverrideLookupCacheKey(
-			target, hash, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance,
-			effectivePreSkinGeneration,
-			keyUsage);
-	bool cachedMatched = false;
-	if (TryFindCachedIaTextureOverrideLocked(key, &cachedMatched, configs)) {
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaOverrideLookup",
-			"\"stage\":\"cache_hit\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\",\"found\":%s",
-			indexBuffer ? "ib" : "vb", vertexSlot, hash,
-			cachedMatched ? "true" : "false");
-#endif
-		return cachedMatched;
-	}
-	if (!candidateIndexes || candidateIndexes->empty()) {
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaOverrideLookup",
-			"\"stage\":\"no_candidates\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\"",
-			indexBuffer ? "ib" : "vb", vertexSlot, hash);
-#endif
-		// Cache the hash as having no candidates until configuration reload.
-		const UINT64 hashNoCandidateKey =
-			(static_cast<UINT64>(hash)) |
-			(indexBuffer ? (1ull << 32) : 0) |
-			(static_cast<UINT64>(vertexSlot) << 33);
-		gIaTextureOverrideHashNoCandidates.insert(hashNoCandidateKey);
-		StoreIaTextureOverrideLookupCacheLocked(key, std::vector<size_t>());
-		return false;
-	}
-
-	std::vector<size_t> matchedIndexes;
-	size_t filteredByMatchCs = 0;
-	size_t filteredByIaBinding = 0;
-	size_t filteredByDrawContext = 0;
-	for (size_t index : *candidateIndexes) {
-		if (index >= gIaTextureOverrides.size())
-			continue;
-		const DX12IaTextureOverrideCandidate &candidate = gIaTextureOverrides[index];
-		const Bunny::TextureOverrideConfig *config = candidate.config;
-		if (!config)
-			continue;
-		if (!TextureOverrideMatchCsSatisfied(
-				*config, effectiveActivePreSkinSections)) {
-			filteredByMatchCs++;
-			continue;
-		}
-		if (!TextureOverrideMatchesIaBinding(*config, indexBuffer, vertexSlot)) {
-			filteredByIaBinding++;
-			continue;
-		}
-		if (!TextureOverrideMatchesDrawContext(
-			*config, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance)) {
-			filteredByDrawContext++;
-			continue;
-		}
-		matchedIndexes.push_back(index);
-		if (configs)
-			configs->push_back(config);
-	}
-
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12IaOverrideLookup",
-		"\"stage\":\"candidates_filtered\",\"target\":\"%s\",\"slot\":%u,\"hash\":\"%08x\",\"candidates\":%zu,\"matched\":%zu,\"filteredByMatchCs\":%zu,\"filteredByIaBinding\":%zu,\"filteredByDrawContext\":%zu",
-		indexBuffer ? "ib" : "vb", vertexSlot, hash,
-		candidateIndexes->size(), matchedIndexes.size(),
-		filteredByMatchCs, filteredByIaBinding, filteredByDrawContext);
-#endif
-
-	StoreIaTextureOverrideLookupCacheLocked(key, matchedIndexes);
-	return !matchedIndexes.empty();
-}
 
 static bool FindIaTextureOverridesCached(
 	const Bunny::CommandListTarget &target, uint32_t hash,
@@ -14927,68 +14155,6 @@ static bool FilterDescriptorTextureOverrideCandidates(
 	return found;
 }
 
-static bool FindTextureOverridesByHashLocked(
-	uint32_t hash, uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	const std::unordered_set<std::wstring> &activePreSkinSections,
-	std::vector<const Bunny::TextureOverrideConfig*> *configs)
-{
-	if (configs)
-		configs->clear();
-	if (!hash)
-		return false;
-
-	auto bucket = gTextureOverrides.find(hash);
-	if (bucket == gTextureOverrides.end())
-		return false;
-
-	for (const Bunny::TextureOverrideConfig &config : bucket->second) {
-		if (!TextureOverrideMatchCsSatisfied(config, activePreSkinSections))
-			continue;
-		if (!TextureOverrideMatchesDrawContext(
-			config, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance))
-			continue;
-		if (configs)
-			configs->push_back(&config);
-	}
-	return configs && !configs->empty();
-}
-
-static bool FindTextureOverridesByHash(
-	uint32_t hash, uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	std::vector<const Bunny::TextureOverrideConfig*> *configs)
-{
-	if (configs)
-		configs->clear();
-	if (!hash)
-		return false;
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadTextureOverrideRuntimeSnapshot();
-	if (!snapshot)
-		return false;
-	const std::unordered_set<std::wstring> &activePreSkinSections =
-		GetActivePreSkinSectionsSnapshot();
-	auto bucket = snapshot->textureOverridesByHash.find(hash);
-	if (bucket == snapshot->textureOverridesByHash.end())
-		return false;
-
-	for (const DX12TriggeredTextureOverride &triggered : bucket->second) {
-		const Bunny::TextureOverrideConfig *config = triggered.config;
-		if (!config)
-			continue;
-		if (!TextureOverrideMatchCsSatisfied(*config, activePreSkinSections))
-			continue;
-		if (!TextureOverrideMatchesDrawContext(
-			*config, vertexCount, indexCount, instanceCount,
-			firstVertex, firstIndex, firstInstance))
-			continue;
-		if (configs)
-			configs->push_back(config);
-	}
-	return configs && !configs->empty();
-}
 
 static bool HasPotentialIaTextureOverrideCandidateLocked(
 	bool indexBuffer,
@@ -15136,50 +14302,6 @@ bool DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 		indexCount);
 }
 
-static void AppendTextureOverrideMatchesByHash(
-	uint32_t hash,
-	uint32_t resourceHash,
-	uint32_t descriptorHash,
-	const DX12CurrentShaderResourceBinding *binding,
-	bool compute,
-	uint32_t vertexCount,
-	uint32_t indexCount,
-	uint32_t instanceCount,
-	uint32_t firstVertex,
-	uint32_t firstIndex,
-	uint32_t firstInstance,
-	std::vector<DX12TextureOverrideMatch> *matches)
-{
-	if (!hash || !matches)
-		return;
-	std::vector<const Bunny::TextureOverrideConfig*> configs;
-	if (!FindTextureOverridesByHash(
-		    hash, vertexCount, indexCount, instanceCount,
-		    firstVertex, firstIndex, firstInstance, &configs))
-		return;
-	for (const Bunny::TextureOverrideConfig *config : configs) {
-		if (!config)
-			continue;
-		DX12TextureOverrideMatch match;
-		match.config = config;
-		match.preRuntimeEffect =
-			LookupRuntimeEffect(gTextureOverridePreRuntimeEffect, config->section);
-		match.postRuntimeEffect =
-			LookupRuntimeEffect(gTextureOverridePostRuntimeEffect, config->section);
-		match.matchedHash = hash;
-		match.resourceHash = resourceHash;
-		match.descriptorHash = descriptorHash;
-		if (binding) {
-			match.hasThisSrvTarget =
-				binding->hasDescriptor &&
-				binding->descriptor.kind == DescriptorKind::SRV &&
-				!binding->rootDescriptor;
-			match.compute = compute;
-			match.thisSrvBinding = *binding;
-		}
-		matches->push_back(match);
-	}
-}
 
 static bool FindDescriptorTextureOverrides(
 	ID3D12GraphicsCommandList *commandList,
@@ -16017,11 +15139,6 @@ static bool CommandListRuntimeEffectLocked(
 	return CommandListRuntimeEffectLocked(snapshot, name);
 }
 
-static bool CommandListRuntimeEffect(const std::wstring &name)
-{
-	return CommandListRuntimeEffectLocked(
-		LoadCommandExecutionRuntimeSnapshot(), name);
-}
 
 static bool CommandListRuntimeEffect(
 	const std::wstring &name, bool includePost)
@@ -16030,16 +15147,6 @@ static bool CommandListRuntimeEffect(
 		LoadCommandExecutionRuntimeSnapshot(), name, includePost);
 }
 
-static bool AnyTextureOverrideRuntimeEffectForPhase(bool includePost)
-{
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (!snapshot)
-		return true;
-	return includePost ?
-		snapshot->anyTextureOverridePostRuntimeEffect :
-		snapshot->anyTextureOverridePreRuntimeEffect;
-}
 
 static std::shared_ptr<const Bunny::CommandListConfig>
 SnapshotCommandListConfig(const std::wstring &name)
@@ -16050,42 +15157,6 @@ SnapshotCommandListConfig(const std::wstring &name)
 		return nullptr;
 	auto it = snapshot->commandLists.find(name);
 	return it == snapshot->commandLists.end() ? nullptr : it->second;
-}
-
-static std::shared_ptr<const DX12CompiledTextureOverridePlan>
-SnapshotCompiledTextureOverridePlan(const Bunny::TextureOverrideConfig &config)
-{
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (!snapshot)
-		return nullptr;
-	auto planIt = snapshot->compiledTextureOverridePlans.find(config.section);
-	return planIt == snapshot->compiledTextureOverridePlans.end() ?
-		nullptr : planIt->second;
-}
-
-static std::shared_ptr<const DX12CompiledCommandListPlan>
-SnapshotCompiledCommandListPlan(const std::wstring &name)
-{
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (!snapshot)
-		return nullptr;
-	auto planIt = snapshot->compiledCommandListPlans.find(name);
-	return planIt == snapshot->compiledCommandListPlans.end() ?
-		nullptr : planIt->second;
-}
-
-static std::shared_ptr<const DX12CompiledShaderOverridePlan>
-SnapshotCompiledShaderOverridePlan(const std::wstring &section)
-{
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (!snapshot)
-		return nullptr;
-	auto planIt = snapshot->compiledShaderOverridePlans.find(section);
-	return planIt == snapshot->compiledShaderOverridePlans.end() ?
-		nullptr : planIt->second;
 }
 
 static void AppendResolvedDescriptorPrefilterSectionIds(
@@ -16660,61 +15731,6 @@ static void FillSyntheticTextureBinding(
 	binding->descriptor.viewFormat = static_cast<UINT>(format);
 }
 
-static bool BuildResolvedSrvBindingsForResourceOverride(
-	ID3D12Device *device,
-	ID3D12GraphicsCommandList *commandList,
-	const Bunny::CommandListTarget &target,
-	const std::wstring &resourceName,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> *baseBindings,
-	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings)
-{
-	if (!resolvedBindings)
-		return false;
-	resolvedBindings->clear();
-	if (!device || !commandList || resourceName.empty())
-		return false;
-
-	DX12LoadedResource *resource =
-		DX12DdsTextureLoadUtils::EnsureLoadedDrawTextureSrv(
-			device, commandList, resourceName);
-	if (!resource)
-		return false;
-	ID3D12Resource *texture = resource->drawSrvTextureResource ?
-		resource->drawSrvTextureResource : resource->resource;
-	uint32_t textureHash = 0;
-	if (!texture || !DX12TryGetTextureHash(texture, &textureHash) || !textureHash)
-		return false;
-
-	if (baseBindings && !baseBindings->empty()) {
-		for (const DX12ResolvedGraphicsSrvBinding &base : *baseBindings) {
-			DX12ResolvedGraphicsSrvBinding resolved = base;
-			resolved.resourceHash = textureHash;
-			resolved.descriptorHash = textureHash;
-			FillSyntheticTextureBinding(
-				target,
-				texture,
-				resource->drawSrvFormat,
-				resource->drawSrvWidth,
-				resource->drawSrvHeight,
-				&resolved.binding);
-			resolvedBindings->push_back(std::move(resolved));
-		}
-		return !resolvedBindings->empty();
-	}
-
-	DX12ResolvedGraphicsSrvBinding synthetic;
-	FillSyntheticTextureBinding(
-		target,
-		texture,
-		resource->drawSrvFormat,
-		resource->drawSrvWidth,
-		resource->drawSrvHeight,
-		&synthetic.binding);
-	synthetic.resourceHash = textureHash;
-	synthetic.descriptorHash = textureHash;
-	resolvedBindings->push_back(std::move(synthetic));
-	return true;
-}
 
 static bool FindDescriptorTextureOverridesFromResolvedBindings(
 	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
@@ -16886,90 +15902,6 @@ static void AppendResolvedBindingsToDescriptorTextureOverrideCache(
 	}
 }
 
-static void BuildGraphicsSrvTextureOverrideCacheFromResolvedBindings(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
-	uint32_t vertexCount,
-	uint32_t indexCount,
-	uint32_t instanceCount,
-	uint32_t firstVertex,
-	uint32_t firstIndex,
-	uint32_t firstInstance,
-	std::unordered_map<
-		DX12TextureOverrideTargetCacheKey,
-		std::vector<DX12TextureOverrideMatch>,
-		DX12TextureOverrideTargetCacheKeyHash> *matchesByTarget)
-{
-	if (!matchesByTarget)
-		return;
-	matchesByTarget->clear();
-	if (!snapshot || resolvedBindings.empty())
-		return;
-	if (!HasPotentialResolvedDescriptorPrefilterCandidates(
-			*snapshot,
-			vertexCount,
-			indexCount))
-		return;
-
-	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
-	CollectResolvedDescriptorPrefilterSectionIds(
-		*snapshot,
-		vertexCount,
-		indexCount,
-		&tlsAllowedSectionIds);
-	if (tlsAllowedSectionIds.empty())
-		return;
-
-	for (const DX12ResolvedGraphicsSrvBinding &resolved : resolvedBindings) {
-		if (resolved.binding.registerSpace != 0)
-			continue;
-		if (resolved.binding.shaderVisibility == D3D12_SHADER_VISIBILITY_VERTEX ||
-			resolved.binding.shaderVisibility == D3D12_SHADER_VISIBILITY_ALL) {
-			AppendGraphicsSrvTextureOverrideCandidatesForTarget(
-				snapshot,
-				resolved,
-				DX12TextureOverrideTargetCacheKey{
-					static_cast<uint32_t>(Bunny::CommandListTargetKind::ShaderResource),
-					static_cast<uint32_t>(Bunny::CommandListShaderStage::Vertex),
-					resolved.binding.shaderRegister
-				},
-				tlsAllowedSectionIds,
-				matchesByTarget);
-		}
-		if (resolved.binding.shaderVisibility == D3D12_SHADER_VISIBILITY_PIXEL ||
-			resolved.binding.shaderVisibility == D3D12_SHADER_VISIBILITY_ALL) {
-			AppendGraphicsSrvTextureOverrideCandidatesForTarget(
-				snapshot,
-				resolved,
-				DX12TextureOverrideTargetCacheKey{
-					static_cast<uint32_t>(Bunny::CommandListTargetKind::ShaderResource),
-					static_cast<uint32_t>(Bunny::CommandListShaderStage::Pixel),
-					resolved.binding.shaderRegister
-				},
-				tlsAllowedSectionIds,
-				matchesByTarget);
-		}
-	}
-
-	for (auto it = matchesByTarget->begin(); it != matchesByTarget->end();) {
-		std::vector<DX12TextureOverrideMatch> filtered;
-		FilterDescriptorTextureOverrideCandidates(
-			it->second,
-			vertexCount,
-			indexCount,
-			instanceCount,
-			firstVertex,
-			firstIndex,
-			firstInstance,
-			&filtered);
-		if (filtered.empty()) {
-			it = matchesByTarget->erase(it);
-			continue;
-		}
-		it->second = std::move(filtered);
-		++it;
-	}
-}
 
 static void FillSyntheticBufferBinding(
 	const Bunny::CommandListTarget &target,
@@ -19021,29 +17953,6 @@ static void CollectCheckTextureOverrideTargetsFromShaderOverrideLocked(
 	}
 }
 
-static void MergeAllTextureOverrideDrawMatchUsageLocked(
-	DX12DrawMatchUsage *usage)
-{
-	if (!usage)
-		return;
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (snapshot) {
-		std::unordered_map<uint32_t, std::shared_ptr<const Bunny::TextureOverrideConfig>>::const_iterator it =
-			snapshot->textureOverridesBySectionId.begin();
-		for (; it != snapshot->textureOverridesBySectionId.end(); ++it) {
-			if (it->second)
-				MergeTextureOverrideDrawMatchUsage(*it->second, usage);
-		}
-		return;
-	}
-	Bunny::TextureOverrideMap::const_iterator bucket = gTextureOverrides.begin();
-	for (; bucket != gTextureOverrides.end(); ++bucket) {
-		const std::vector<Bunny::TextureOverrideConfig> &configs = bucket->second;
-		for (const Bunny::TextureOverrideConfig &config : configs)
-			MergeTextureOverrideDrawMatchUsage(config, usage);
-	}
-}
 
 static void MergeDescriptorTextureOverrideDrawMatchUsageLocked(
 	DX12DrawMatchUsage *usage)
@@ -20856,17 +19765,6 @@ static bool ShaderBytecodeHasSkipLocked(const D3D12_SHADER_BYTECODE &bytecode)
 		DX12ModHashShaderBytecode(bytecode.pShaderBytecode, bytecode.BytecodeLength));
 }
 
-static bool StoredPsoHasSkipLocked(const DX12StoredPso &record, bool dispatch)
-{
-	if (dispatch) {
-		return record.kind == DX12PsoKind::Compute &&
-			ShaderBytecodeHasSkipLocked(record.computeDesc.CS);
-	}
-
-	return record.kind == DX12PsoKind::Graphics &&
-		(ShaderBytecodeHasSkipLocked(record.graphicsDesc.VS) ||
-		 ShaderBytecodeHasSkipLocked(record.graphicsDesc.PS));
-}
 
 static void UpdateStoredPsoSkipLocked(DX12StoredPso *record)
 {

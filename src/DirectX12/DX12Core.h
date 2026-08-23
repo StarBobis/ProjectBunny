@@ -86,7 +86,6 @@ public:
 };
 
 
-
 class DX12RootDescriptorRangeSummary
 {
 public:
@@ -253,9 +252,6 @@ public:
 };
 
 
-
-
-
 class DX12FrameResourceBinding
 {
 public:
@@ -396,9 +392,6 @@ public:
 	UINT values[64] = {};
 	bool valueValid[64] = {};
 };
-
-
-
 
 
 constexpr UINT MaxRootParameters = 64;
@@ -652,7 +645,6 @@ public:
 };
 
 
-
 class DX12BindingTrackerState
 {
 public:
@@ -833,8 +825,6 @@ public:
 };
 
 
-
-
 class DX12BindingTableRef
 {
 public:
@@ -981,16 +971,8 @@ public:
 	static void SetPrimitiveTopology(ID3D12GraphicsCommandList *commandList, D3D12_PRIMITIVE_TOPOLOGY topology);
 	static void SetIndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
 	static void SetVertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
-	static void RecordOutputTargets(ID3D12GraphicsCommandList *commandList, UINT numRenderTargetDescriptors, const D3D12_CPU_DESCRIPTOR_HANDLE *renderTargetDescriptors, BOOL singleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *depthStencilDescriptor);
-	static void RecordRenderTargetClear(ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE renderTargetView);
-	static void RecordDepthStencilClear(ID3D12GraphicsCommandList *commandList, D3D12_CPU_DESCRIPTOR_HANDLE depthStencilView);
-	static bool GetCurrentIaState(ID3D12GraphicsCommandList *commandList, DX12CurrentIaState *state);
-	static bool GetCurrentComputeUavs(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *uavs);
-	static bool GetCurrentComputeSrvs(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *srvs);
-	static bool GetCurrentComputeCbvs(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *cbvs);
 	static bool GetCurrentShaderResourceBindings(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, std::vector<DX12CurrentShaderResourceBinding> *bindings);
 	static bool GetCurrentShaderResourceBindingsByRegister(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, UINT shaderRegister, UINT registerSpace, std::vector<DX12CurrentShaderResourceBinding> *bindings);
-	static bool GetCurrentComputeRootConstants(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentRootConstants> *constants);
 	static bool GetCurrentComputeAll(ID3D12GraphicsCommandList *commandList, std::vector<DX12CurrentComputeUavBinding> *uavs, std::vector<DX12CurrentComputeUavBinding> *srvs, std::vector<DX12CurrentComputeUavBinding> *cbvs, std::vector<DX12CurrentRootConstants> *constants);
 	static bool CollectPreSkinBindings(
 		ID3D12GraphicsCommandList *commandList,
@@ -1008,7 +990,6 @@ public:
 		UINT64 *dependencyFingerprint = nullptr,
 		bool *foundAny = nullptr);
 	static UINT64 GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
-	static UINT64 GetBindingQuerySerial(ID3D12GraphicsCommandList *commandList);
 	static bool GetCurrentDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 	static void RecordDrawInstanced(ID3D12GraphicsCommandList *commandList, UINT vertexCountPerInstance, UINT instanceCount, UINT startVertexLocation, UINT startInstanceLocation);
 	static void RecordDrawIndexedInstanced(ID3D12GraphicsCommandList *commandList, UINT indexCountPerInstance, UINT instanceCount, UINT startIndexLocation, INT baseVertexLocation, UINT startInstanceLocation);
@@ -1059,19 +1040,14 @@ class DX12BindingFrameExport
 {
 public:
 	static void GetCurrentFrameShaderInfos(std::vector<DX12PsoShaderInfo> *shaderInfos);
-	static void GetCurrentFrameIaBuffers(std::vector<DX12FrameIaBufferBinding> *buffers);
 	static void GetCurrentFrameIaBuffersWithResourceBindings(
 		std::vector<DX12FrameIaBufferBinding> *buffers,
 		const std::vector<DX12FrameResourceBinding> &resourceBindings);
 	static void BuildIaBufferFileName(const DX12FrameIaBufferBinding &buffer, wchar_t *fileName, size_t fileNameCount);
 	static DX12FrameAnalysisDumpResult DumpBindingTrace(const wchar_t *dir);
 
-	static void WriteShaderInfo(FILE *file, const DX12PsoShaderInfo &info);
-	static void FormatOptionalHashText(bool hasHash, UINT64 hash, char *text, size_t textCount);
 	static void AppendShaderHashNamePart(wchar_t *text, size_t textCount, const char *stage, bool hasHash, UINT64 hash);
 	static void BuildShaderHashNamePart(const DX12PsoShaderInfo &info, wchar_t *text, size_t textCount);
-	static void WriteRootTables(FILE *file, const RootTableState *tables);
-	static void WriteVertexBufferSlots(FILE *file, const BindingEvent &event);
 	static const char *TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology);
 	static std::string NextBufferId(const char *prefix, UINT *nextId);
 	static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event);
@@ -1118,9 +1094,6 @@ public:
 	static const DX12DescriptorSummary *DescriptorForExpectedRange(const DX12DescriptorSummary *descriptor, UINT rangeType);
 	static const char *DescriptorKindForRangeType(UINT rangeType);
 	static const char *ExpectedBindingKind(const DX12FrameResourceBinding &binding);
-	static bool IsBufferResourceSummary(const DX12ResourceSummary &resource);
-	static void CollectHuntingUavStateResourceUsages(std::vector<DX12FrameResourceBinding> *bindings, const std::vector<BindingEvent> &events);
-	static void CollectActivePreSkinProducerBindings(std::vector<DX12FrameResourceBinding> *bindings);
 	static bool DescriptorBelongsToHeap(const DX12DescriptorSummary &descriptor, const DX12DescriptorHeapSummary &heap, UINT64 *descriptorIndex);
 	static void BuildDescriptorLookup(const std::vector<DX12DescriptorSummary> &descriptors, const std::vector<DX12DescriptorHeapSummary> &heaps, DescriptorLookup *lookup);
 	static const DX12DescriptorSummary *FindDescriptorForSlot(const DescriptorLookup &lookup, const DX12DescriptorHeapSummary *heap, UINT64 descriptorIndex, SIZE_T cpuHandle);
@@ -1391,7 +1364,6 @@ constexpr bool kTimingEnabled =
 #else
 	false;
 #endif
-
 
 
 class DX12LogManager
@@ -1913,19 +1885,6 @@ public:
 		return true;
 	}
 
-	static bool IsHexText(const char *value)
-	{
-		if (!value || value[0] != '0' || (value[1] != 'x' && value[1] != 'X'))
-			return false;
-		value += 2;
-		if (!*value)
-			return false;
-		for (; *value; ++value) {
-			if (!isxdigit(static_cast<unsigned char>(*value)))
-				return false;
-		}
-		return true;
-	}
 
 	static bool IsIdentifierKeyChar(char c)
 	{
@@ -2111,7 +2070,6 @@ public:
 			AppendStringField(dst, dstSize, "text", clean);
 	}
 };
-
 
 
 class DX12CommandListFlowDiagnostics
@@ -2405,7 +2363,6 @@ public:
 };
 
 
-
 class DX12IaHashTargetPlan
 {
 public:
@@ -2545,7 +2502,6 @@ public:
 		return cachedFingerprint;
 	}
 };
-
 
 
 enum class DX12CompiledDrawDecisionKind : uint32_t
@@ -2712,7 +2668,6 @@ public:
 };
 
 
-
 class DX12CommandListTrackingCache : public DX12CommandListTrackingState
 {
 public:
@@ -2746,17 +2701,6 @@ public:
 	static constexpr std::uint64_t NoDescriptorHeapVersion =
 		~std::uint64_t{0};
 
-	static bool CanReuseBindings(
-		bool hasCachedBindings,
-		const DX12PreSkinBindingCacheIdentity &cached,
-		const DX12PreSkinBindingCacheIdentity &current)
-	{
-		// A bound heap with version 0 is unknown to the resource tracker. Reusing
-		// its descriptor snapshot could hide a later descriptor update from Mod
-		// matching, so keep the conservative rebuild behavior in that case.
-		return hasCachedBindings && current.descriptorHeapVersion != 0 &&
-			cached == current;
-	}
 
 	static std::uint64_t MakeProbeFingerprint(
 		std::uint64_t bindingFingerprint,
@@ -2778,8 +2722,6 @@ public:
 	uint32_t hash = 0;
 	D3D12_VERTEX_BUFFER_VIEW vertexView = {};
 };
-
-
 
 
 class DX12IaHashState
@@ -2833,7 +2775,6 @@ public:
 		return draw;
 	}
 };
-
 
 
 class DX12ResidentCacheGrowthUtils
@@ -3000,82 +2941,7 @@ public:
 class DX12DirectIaFastRejectCacheUtils
 {
 public:
-	static DX12DirectIaFastRejectCache &ThreadCache()
-	{
-		static thread_local DX12DirectIaFastRejectCache cache;
-		return cache;
-	}
 
-	static UINT64 MixViewValue(UINT64 fingerprint, UINT64 value)
-	{
-		return fingerprint ^ (value + 0x9e3779b97f4a7c15ull +
-			(fingerprint << 6) + (fingerprint >> 2));
-	}
-
-	static DX12DirectIaFastRejectCacheKey MakeKey(
-		UINT64 reloadGeneration,
-		UINT64 preSkinGeneration,
-		UINT64 contentGeneration,
-		UINT64 resolveGeneration,
-		const DX12ActiveIaState &ia,
-		const DX12IaHashTargetPlan &targetPlan,
-		const DX12IaDrawInvocation &draw)
-	{
-		DX12DirectIaFastRejectCacheKey key;
-		key.reloadGeneration = reloadGeneration;
-		key.preSkinGeneration = preSkinGeneration;
-		key.targetPlanFingerprint = targetPlan.Fingerprint();
-		key.contentGeneration = contentGeneration;
-		key.resolveGeneration = resolveGeneration;
-		key.requiresIndexBuffer = targetPlan.RequiresIndexBuffer(draw.indexed);
-		UINT64 viewFingerprint = 0x84222325a9582d75ull;
-		if (key.requiresIndexBuffer) {
-			viewFingerprint = MixViewValue(
-				viewFingerprint, ia.hasIndexBuffer ? 1 : 0);
-			if (ia.hasIndexBuffer) {
-				viewFingerprint = MixViewValue(
-					viewFingerprint, ia.indexBuffer.BufferLocation);
-				viewFingerprint = MixViewValue(
-					viewFingerprint, ia.indexBuffer.SizeInBytes);
-				viewFingerprint = MixViewValue(
-					viewFingerprint, ia.indexBuffer.Format);
-			}
-		}
-		key.hasIndexBuffer = key.requiresIndexBuffer && ia.hasIndexBuffer;
-		if (key.hasIndexBuffer) {
-			key.indexBufferLocation = ia.indexBuffer.BufferLocation;
-			key.indexBufferSize = ia.indexBuffer.SizeInBytes;
-			key.indexBufferFormat = ia.indexBuffer.Format;
-		}
-		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
-			if (!targetPlan.RequiresVertexBuffer(slot))
-				continue;
-			key.requiredVertexMask |= 1u << slot;
-			viewFingerprint = MixViewValue(viewFingerprint, slot + 1);
-			viewFingerprint = MixViewValue(
-				viewFingerprint, ia.hasVertexBuffer[slot] ? 1 : 0);
-			if (!ia.hasVertexBuffer[slot])
-				continue;
-			const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
-			key.vertexBufferMask |= 1u << slot;
-			key.vertexBufferLocations[slot] = view.BufferLocation;
-			key.vertexBufferSizes[slot] = view.SizeInBytes;
-			key.vertexBufferStrides[slot] = view.StrideInBytes;
-			viewFingerprint = MixViewValue(viewFingerprint, view.BufferLocation);
-			viewFingerprint = MixViewValue(viewFingerprint, view.SizeInBytes);
-			viewFingerprint = MixViewValue(viewFingerprint, view.StrideInBytes);
-		}
-		key.iaViewFingerprint = viewFingerprint;
-		key.indexed = draw.indexed;
-		key.vertexCount = draw.vertexCount;
-		key.indexCount = draw.indexCount;
-		key.instanceCount = draw.instanceCount;
-		key.firstVertex = draw.firstVertex;
-		key.firstIndex = draw.firstIndex;
-		key.baseVertex = draw.baseVertex;
-		key.firstInstance = draw.firstInstance;
-		return key;
-	}
 
 	static bool Contains(
 		DX12DirectIaFastRejectCache *cache,
@@ -3126,8 +2992,6 @@ private:
 		cache->scopeReloadGeneration = reloadGeneration;
 	}
 };
-
-
 
 
 class DX12IaHashStateCacheKey
@@ -3310,15 +3174,6 @@ public:
 class DX12IaHashStateCacheUtils
 {
 public:
-	// Command lists recorded on the same CPU thread commonly reference identical
-	// immutable IA regions. The full key already carries view identity, resource
-	// lifetime/content generations, target plan, and draw range, so cache ownership
-	// does not need to be restricted to one command list.
-	static DX12IaHashStateCache &ThreadCache()
-	{
-		static thread_local DX12IaHashStateCache cache;
-		return cache;
-	}
 
 	static __forceinline bool TryLoad(
 		DX12IaHashStateCache *cache,
@@ -3391,8 +3246,6 @@ public:
 		cache->lruKeys.clear();
 	}
 };
-
-
 
 
 // Exact, command-list-local negative result. Unlike the legacy unordered cache,
@@ -3681,7 +3534,6 @@ class DX12ResolvedDrawRuntimeStateUtils
 public:
 	static void Clear(DX12SimulateContextDrawTemplate *state);
 	static void InvalidatePlan(DX12SimulateContextDrawTemplate *state);
-	static void EnsureScene(DX12SimulateContextDrawTemplate *state);
 	static void NoteLookup(
 		DX12SimulateContextDrawTemplate *state,
 		bool hit);
@@ -3971,8 +3823,6 @@ public:
 };
 
 
-
-
 class DX12CommandListRuntimeShard
 {
 public:
@@ -3980,7 +3830,6 @@ public:
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext*> directStates;
 	std::unordered_map<ID3D12GraphicsCommandList*, DX12SimulateContext> states;
 };
-
 
 
 class DX12CommandListRuntimeTlsCache
@@ -4060,8 +3909,6 @@ public:
 };
 
 
-
-
 class DX12CommandListRuntime
 {
 public:
@@ -4073,10 +3920,8 @@ public:
 
 	static void RegisterDirectState(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *state);
 	static void UnregisterDirectState(ID3D12GraphicsCommandList *commandList);
-	static DX12SimulateContext *GetDirectStatePtr(ID3D12GraphicsCommandList *commandList);
 	static IUnknown *GetCommandListIdentity(ID3D12GraphicsCommandList *commandList);
 
-	static UINT64 TrackingGeneration();
 	static void BumpTrackingGeneration();
 	static DX12CommandListRuntimeShard &ShardFor(ID3D12GraphicsCommandList *commandList);
 	static void RefreshTrackingCache(DX12CommandListTrackingCache &cache);
@@ -4133,8 +3978,6 @@ public:
 	static void BumpIaEpoch(DX12SimulateContext *state);
 	static void BumpIaContentEpoch(DX12SimulateContext *state);
 	static void BumpIaContentEpoch(ID3D12GraphicsCommandList *commandList);
-	static bool BuildIaHashState(const DX12ActiveIaState &ia, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
-	static bool BuildIaHashStateForTargets(const DX12ActiveIaState &ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static bool BuildIaHashStateForTargetsCached(DX12ActiveIaState *ia, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex, DX12IaHashState *state);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargets(const DX12ActiveIaState &ia, UINT64 iaContentEpoch, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 
@@ -4164,7 +4007,6 @@ public:
 	static void RememberComputeRoot32BitConstants(ID3D12GraphicsCommandList *commandList, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 	static bool GetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 };
-
 
 
 class DX12CommandListStateCapture
@@ -4215,7 +4057,6 @@ public:
 	static void VertexBuffers(ID3D12GraphicsCommandList *commandList, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 	static void VertexBuffers(ID3D12GraphicsCommandList *commandList, DX12SimulateContext *runtimeState, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
 };
-
 
 
 class DX12FrameAnalysisState
@@ -4420,7 +4261,6 @@ public:
 		ReleaseSRWLockExclusive(&lock);
 	}
 };
-
 
 
 bool DX12ShaderDumpIsCapturingFrame();
@@ -4692,10 +4532,6 @@ public:
 			!HasAnyFlag(flags, FLAG_SHADER_OVERRIDES);
 	}
 
-	static bool NeedsPreSkinBindingTracking(UINT64 flags)
-	{
-		return HasAnyFlag(flags, FLAG_PRE_SKIN_BINDING_TRACK);
-	}
 
 	static bool NeedsPreSkinProbe(UINT64 flags)
 	{
@@ -4775,11 +4611,6 @@ public:
 		}
 	}
 
-	static bool HooksNeeded()
-	{
-		return skipAll.load() == 0 ||
-			HasAnyFlag(HookWorkFlags.load(), FLAG_HUNT_ENABLED);
-	}
 };
 
 
@@ -5050,20 +4881,14 @@ public:
 	static void End(State *state);
 	static void RecordIaDrawOverrideCheck();
 	static void RecordIaHashStateResult(bool hit);
-	static void RecordIaTextureMayMatchResult(bool hit);
-	static void RecordIaPrepareCall();
 	static void RecordIaApplied();
-	static void RecordIaCandidateTest(bool hit);
 	static void RecordIaHuntIaUpdate();
 	static void RecordIaReplacementDraw(bool indexed);
 	static void RecordIaReplacementDispatch();
 	static void RecordPreSkinCsTest(bool hit);
 	static void RecordPreSkinUavTest(bool hit);
 	static void RecordPreSkinApplied();
-	static void RecordPreSkinDispatchResized();
-	static void LogFrameStats();
 	static void FlushFrame();
-	static const wchar_t *OverlayText();
 	static void RecordFastForwardHit();
 	static void RecordBindingQueueTaskUs(LONG64 elapsedUs);
 	static void RecordBindingQueueDrainUs(LONG64 elapsedUs, LONG pending);
@@ -5184,20 +5009,6 @@ inline void DX12Profiling::RecordIaHashStateResult(bool hit)
 	(hit ? profiling.IaHashStateHits : profiling.IaHashStateMisses).IncrementCalls();
 }
 
-inline void DX12Profiling::RecordIaTextureMayMatchResult(bool hit)
-{
-	if (!ShouldCollectCounters())
-		return;
-	DX12Profiling &profiling = Get();
-	(hit ? profiling.IaTextureMayHits : profiling.IaTextureMayMisses).IncrementCalls();
-}
-
-inline void DX12Profiling::RecordIaPrepareCall()
-{
-	if (!ShouldCollectCounters())
-		return;
-	Get().IaPrepareCalls.IncrementCalls();
-}
 
 inline void DX12Profiling::RecordIaApplied()
 {
@@ -5206,15 +5017,6 @@ inline void DX12Profiling::RecordIaApplied()
 	Get().IaApplied.IncrementCalls();
 }
 
-inline void DX12Profiling::RecordIaCandidateTest(bool hit)
-{
-	if (!ShouldCollectCounters())
-		return;
-	DX12Profiling &profiling = Get();
-	profiling.IaCandidateTests.IncrementCalls();
-	if (hit)
-		profiling.IaCandidateHits.IncrementCalls();
-}
 
 inline void DX12Profiling::RecordIaHuntIaUpdate()
 {
@@ -5265,27 +5067,12 @@ inline void DX12Profiling::RecordPreSkinApplied()
 	Get().PreSkinApplied.IncrementCalls();
 }
 
-inline void DX12Profiling::RecordPreSkinDispatchResized()
-{
-	if (!ShouldCollectCounters())
-		return;
-	Get().PreSkinDispatchResized.IncrementCalls();
-}
-
-inline void DX12Profiling::LogFrameStats()
-{
-	Get().LogFrameStatsState();
-}
 
 inline void DX12Profiling::FlushFrame()
 {
 	Get().FlushFrameState();
 }
 
-inline const wchar_t *DX12Profiling::OverlayText()
-{
-	return Get().overlayText;
-}
 
 inline void DX12Profiling::RecordFastForwardHit()
 {
@@ -6210,9 +5997,7 @@ class DX12CommandListCommandRecorder
 public:
 	static void RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers);
 	static void RecordExecuteBundle(ID3D12GraphicsCommandList *bundle, ID3D12PipelineState *initialState);
-	static void RecordExecuteIndirect(ID3D12GraphicsCommandList *commandList);
 };
-
 
 
 enum DX12HuntListCategory
@@ -6268,7 +6053,6 @@ size_t DX12HuntGetListItems(
 	DX12HuntListCategory category, DX12HuntListItem *items, size_t itemCount);
 void DX12HuntSelectListItem(DX12HuntListCategory category, size_t index);
 void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash);
-
 
 
 class DX12ResidentMaintenanceTelemetryUtils
@@ -6795,10 +6579,6 @@ public:
 		Add64(&PreSkinBindingRanges, 1);
 	}
 
-	static void RecordPreSkinBindingLightDescriptorLookup()
-	{
-		Add64(&PreSkinBindingLightDescriptorLookups, 1);
-	}
 
 	static void RecordPreSkinBindingFullDescriptorLookup()
 	{
@@ -6834,17 +6614,6 @@ public:
 		Add64(&PreSkinBindingWaitAvoided, hitCount + missCount + pendingCount);
 	}
 
-	static void RecordRuntimeDescriptorWrite()
-	{
-		Add64(&RuntimeDescriptorWrites, 1);
-	}
-
-	static void RecordRuntimeDescriptorCopy(UINT copied, UINT misses)
-	{
-		Add64(&RuntimeDescriptorCopyCalls, 1);
-		Add64(&RuntimeDescriptorCopied, static_cast<LONG64>(copied));
-		Add64(&RuntimeDescriptorCopyMisses, static_cast<LONG64>(misses));
-	}
 
 	static void RecordDispatchDecisionCacheHit()
 	{
@@ -7475,7 +7244,6 @@ inline void DX12RecordDescriptorRecordFastSkip()
 {
 	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorRecordFastSkip();
 }
-
 
 
 class DX12CommandListStateFlow
@@ -8177,8 +7945,6 @@ void DX12ModTrackPreSkinOutputResizeCacheUse(
 void DX12ModClearPreSkinOutputResizeMap();
 
 
-
-
 class DX12PreSkinPlanUtils
 {
 public:
@@ -8192,99 +7958,6 @@ public:
 	{
 		for (size_t index = 0; index < value.size(); ++index) {
 			hash = HashCombine(hash, static_cast<unsigned char>(value[index]));
-		}
-		return hash;
-	}
-
-	static uint64_t AppendDescriptor(uint64_t hash, const DX12DescriptorSummary &descriptor)
-	{
-		hash = HashString(hash, descriptor.kind);
-		hash = HashCombine(hash, descriptor.hasDesc ? 1 : 0);
-		hash = HashCombine(hash, reinterpret_cast<uint64_t>(descriptor.resource));
-		hash = HashCombine(hash, reinterpret_cast<uint64_t>(descriptor.counterResource));
-		hash = HashCombine(hash, descriptor.gpuVirtualAddress);
-		hash = HashCombine(hash, descriptor.resourceOffset);
-		hash = HashCombine(hash, descriptor.viewSize);
-		hash = HashCombine(hash, descriptor.hasResourceHeapType ? 1 : 0);
-		hash = HashCombine(hash, descriptor.hasResourceHeapType ?
-			descriptor.resourceHeapType : 0);
-		hash = HashCombine(hash, descriptor.viewFormat);
-		hash = HashCombine(hash, descriptor.viewDimension);
-		hash = HashCombine(hash, descriptor.cbvSize);
-		hash = HashCombine(hash, descriptor.firstElement);
-		hash = HashCombine(hash, descriptor.numElements);
-		hash = HashCombine(hash, descriptor.structureByteStride);
-		hash = HashCombine(hash, descriptor.bufferViewOffset);
-		hash = HashCombine(hash, descriptor.bufferViewBytes);
-		if (descriptor.hasResourceDesc) {
-			hash = HashCombine(hash, descriptor.resourceDesc.Dimension);
-			hash = HashCombine(hash, descriptor.resourceDesc.Alignment);
-			hash = HashCombine(hash, descriptor.resourceDesc.Width);
-			hash = HashCombine(hash, descriptor.resourceDesc.Height);
-			hash = HashCombine(hash, descriptor.resourceDesc.DepthOrArraySize);
-			hash = HashCombine(hash, descriptor.resourceDesc.MipLevels);
-			hash = HashCombine(hash, descriptor.resourceDesc.Format);
-			hash = HashCombine(hash, descriptor.resourceDesc.Layout);
-			hash = HashCombine(hash, descriptor.resourceDesc.Flags);
-		}
-		return hash;
-	}
-
-	static bool BindingLess(
-		const DX12CurrentComputeUavBinding &left,
-		const DX12CurrentComputeUavBinding &right)
-	{
-		if (left.rootParameterIndex != right.rootParameterIndex)
-			return left.rootParameterIndex < right.rootParameterIndex;
-		if (left.registerSpace != right.registerSpace)
-			return left.registerSpace < right.registerSpace;
-		if (left.shaderRegister != right.shaderRegister)
-			return left.shaderRegister < right.shaderRegister;
-		if (left.rangeIndex != right.rangeIndex)
-			return left.rangeIndex < right.rangeIndex;
-		if (left.descriptorOffset != right.descriptorOffset)
-			return left.descriptorOffset < right.descriptorOffset;
-		if (left.rootDescriptor != right.rootDescriptor)
-			return left.rootDescriptor < right.rootDescriptor;
-		return left.gpuVirtualAddress < right.gpuVirtualAddress;
-	}
-
-	static uint64_t AppendBinding(
-		uint64_t hash,
-		const DX12CurrentComputeUavBinding &binding,
-		uint64_t listSalt)
-	{
-		hash = HashCombine(hash, listSalt);
-		hash = HashCombine(hash, binding.rootParameterIndex);
-		hash = HashCombine(hash, binding.rangeIndex);
-		hash = HashCombine(hash, binding.shaderVisibility);
-		hash = HashCombine(hash, binding.shaderRegister);
-		hash = HashCombine(hash, binding.registerSpace);
-		hash = HashCombine(hash, binding.descriptorOffset);
-		hash = HashCombine(hash, binding.rootDescriptor ? 1 : 0);
-		hash = HashCombine(hash, binding.gpuVirtualAddress);
-		hash = HashCombine(hash, binding.hasDescriptor ? 1 : 0);
-		if (binding.hasDescriptor) {
-			hash = AppendDescriptor(hash, binding.descriptor);
-		} else {
-			hash = HashCombine(hash, binding.rootDescriptor ? 0x726f6f7464657363ull : 0x756e7265736f6c76ull);
-		}
-		return hash;
-	}
-
-	static uint64_t AppendBindingList(
-		uint64_t hash,
-		const std::vector<DX12CurrentComputeUavBinding> &bindings,
-		uint64_t listSalt)
-	{
-		std::vector<DX12CurrentComputeUavBinding> sortedBindings = bindings;
-		std::sort(
-			sortedBindings.begin(),
-			sortedBindings.end(),
-			DX12PreSkinPlanUtils::BindingLess);
-		hash = HashCombine(hash, sortedBindings.size());
-		for (size_t index = 0; index < sortedBindings.size(); ++index) {
-			hash = AppendBinding(hash, sortedBindings[index], listSalt);
 		}
 		return hash;
 	}
@@ -8320,21 +7993,6 @@ public:
 		return hash;
 	}
 
-	static uint64_t BuildStableBindingFingerprint(
-		const std::vector<DX12CurrentComputeUavBinding> &uavs,
-		const std::vector<DX12CurrentComputeUavBinding> &srvs,
-		const std::vector<DX12CurrentComputeUavBinding> &cbvs,
-		const std::vector<DX12CurrentRootConstants> &rootConstants)
-	{
-		uint64_t hash = 0x7a4d17e6b90f8c35ull;
-		hash = AppendBindingList(hash, uavs, 0x5541565full);
-		hash = AppendBindingList(hash, srvs, 0x5352565full);
-		hash = AppendBindingList(hash, cbvs, 0x4342565full);
-		hash = AppendRootConstants(hash, rootConstants);
-		if (hash == 0)
-			hash = 1;
-		return hash;
-	}
 
 	// Cross-frame stable fingerprint: uses only fields that survive across frames.
 	// Strips GPU VA, resource pointer, and resourceOffset, but keeps the complete
@@ -8422,8 +8080,6 @@ public:
 		return hash;
 	}
 };
-
-
 
 
 void DX12RecordPsoRootSignature(
@@ -8565,8 +8221,6 @@ UINT64 DX12GetIaHashResolveGeneration();
 class DX12BufferResolveValidationUtils
 {
 public:
-	static bool IsRangeStillValid(
-		UINT64 observedEpoch, UINT64 gpuVirtualAddress, UINT64 size);
 };
 uint32_t DX12HashDescriptorBufferView(
 	const DX12DescriptorSummary *descriptor, UINT64 fallbackGpuVirtualAddress,
@@ -8641,7 +8295,6 @@ void DX12BeginFrameAnalysisMetadataCache();
 void DX12EndFrameAnalysisMetadataCache();
 
 
-
 void DX12RecordGraphicsPipelineState(
 	ID3D12PipelineState *pipelineState, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc);
 void DX12RecordComputePipelineState(
@@ -8660,7 +8313,6 @@ bool DX12ShaderDumpEndCapture();
 bool DX12ShaderDumpIsCapturingFrame();
 bool DX12ShaderDumpIsBusy();
 void DX12DumpCapturedFrameShaders();
-
 
 
 class DX12OuterTimingProbeUtils
@@ -9327,13 +8979,6 @@ public:
 		return stage && value && strcmp(stage, value) == 0;
 	}
 
-	static bool StageStartsWith(const char *stage, const char *prefix)
-	{
-		if (!stage || !prefix)
-			return false;
-		const size_t prefixLength = strlen(prefix);
-		return strncmp(stage, prefix, prefixLength) == 0;
-	}
 
 	static bool LabelEquals(const char *left, const char *right)
 	{
@@ -10563,6 +10208,5 @@ public:
 		LogLogCostState(present, frameWallUs);
 	}
 };
-
 
 

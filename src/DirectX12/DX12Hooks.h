@@ -916,8 +916,6 @@ public:
 #endif
 
 
-
-
 // Hot-path stage timing.
 // Thread-local accumulators. QPC-based. Logged per-frame at Present.
 // Detailed per-call QPC timing is opt-in, including in debug builds.
@@ -1424,8 +1422,6 @@ public:
 #endif
 
 
-
-
 #if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
 #define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
 #else
@@ -1521,19 +1517,6 @@ class DX12DispatchHookFlow
 public:
 	inline static thread_local bool InDispatchHookFlow = false;
 
-	static bool TryExecuteSkipAll(
-		ID3D12GraphicsCommandList *commandList,
-		UINT threadGroupCountX,
-		UINT threadGroupCountY,
-		UINT threadGroupCountZ,
-		DX12DispatchHookFlowDispatch::Fn originalDispatch)
-	{
-		if (!DX12HotPathState::skipAll)
-			return false;
-		if (originalDispatch)
-			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-		return true;
-	}
 
 	static void ExecuteHook(
 		ID3D12GraphicsCommandList *commandList,
@@ -1905,18 +1888,6 @@ public:
 		return shaderInfo.cs;
 	}
 
-	static bool HasConfiguredPreSkinCs(
-		ID3D12GraphicsCommandList *commandList,
-		const DX12SimulateContext *runtimeState)
-	{
-		ID3D12PipelineState *pipelineState = runtimeState ? runtimeState->pipelineState :
-			DX12CommandListRuntime::GetPipelineState(commandList);
-		if (!pipelineState)
-			return false;
-		uint64_t csHash = (runtimeState && runtimeState->cachedCsHashValid) ?
-			runtimeState->cachedCsHash : GetCachedCsHash(pipelineState);
-		return csHash != 0 && DX12ModShouldTrackPreSkinBindingsForCs(csHash);
-	}
 
 	static DX12DispatchPreSkinProbe &ScratchProbe()
 	{
@@ -2593,7 +2564,6 @@ public:
 };
 
 
-
 class DX12IaReplacementDrawExecutor
 {
 public:
@@ -2710,7 +2680,6 @@ public:
 };
 
 
-
 class DX12IaReplacementBindingExecutor
 {
 public:
@@ -2791,8 +2760,6 @@ public:
 		}
 	}
 };
-
-
 
 
 class DX12PreSkinIaRedirectUtils
@@ -3107,8 +3074,6 @@ public:
 		return replayed;
 	}
 };
-
-
 
 
 // Legacy stub - referenced by compiled code but definition was never provided.
@@ -3640,7 +3605,6 @@ public:
 		entry.key = key;
 		entry.valid = true;
 	}
-
 
 
 	static void ClearPsoDrawFastRejectCache()
@@ -5035,20 +4999,9 @@ public:
 };
 
 
-
 class DX12DrawHookFlow
 {
 public:
-	static bool TryExecuteSkipAll(
-		ID3D12GraphicsCommandList *commandList,
-		const DX12IaDrawInvocation &draw,
-		const DX12IaReplacementExecutorCallbacks &callbacks)
-	{
-		if (!DX12HotPathState::skipAll)
-			return false;
-		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-		return true;
-	}
 
 	static void ExecuteHook(
 		ID3D12GraphicsCommandList *commandList,
@@ -5482,7 +5435,6 @@ public:
 };
 
 
-
 enum D3D12ProcessGateRole
 {
 	D3D12ProcessGateRoleReject = 0,
@@ -5782,7 +5734,6 @@ public:
 };
 
 
-
 class D3D12ProxyState
 {
 public:
@@ -5804,5 +5755,4 @@ public:
 	static bool VerifyIntendedTarget(HINSTANCE module);
 };
 
-
-
+

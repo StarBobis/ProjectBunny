@@ -79,7 +79,6 @@ public:
 	static void Start();
 	static void Stop();
 	static void DrainForSnapshot(const char *reason);
-	static void BeginFrameDrain();
 	static bool EnqueueStateEvent(
 		ID3D12GraphicsCommandList *commandList,
 		const CommandListBindingState &state,
@@ -107,14 +106,6 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ);
-	static bool EnqueueOutputEvent(
-		ID3D12GraphicsCommandList *commandList,
-		const CommandListBindingState &state,
-		const char *kind,
-		UINT slot,
-		SIZE_T cpuHandle,
-		UINT64 drawId,
-		UINT64 captureSessionId);
 	static size_t PendingCount();
 	static UINT64 LastSubmittedSequence();
 
@@ -135,8 +126,6 @@ public:
 };
 
 
-
-
 class DX12BindingTrackerQuery
 {
 public:
@@ -154,22 +143,6 @@ public:
 			range.numDescriptors == UINT_MAX ? heapAvailable : range.numDescriptors;
 		const UINT64 boundedCount = min(declaredCount, heapAvailable);
 		return boundedCount > UINT_MAX ? UINT_MAX : static_cast<UINT>(boundedCount);
-	}
-	static const char *HeapTypeName(UINT type)
-	{
-		switch (type)
-		{
-		case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
-			return "CBV_SRV_UAV";
-		case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
-			return "SAMPLER";
-		case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
-			return "RTV";
-		case D3D12_DESCRIPTOR_HEAP_TYPE_DSV:
-			return "DSV";
-		default:
-			return "UNKNOWN";
-		}
 	}
 
 	static const char *ResourceDimensionName(D3D12_RESOURCE_DIMENSION dimension)
@@ -260,13 +233,6 @@ public:
 		return nullptr;
 	}
 
-	static const DX12DescriptorSummary *FindDescriptorByCpuHandle(
-		const std::unordered_map<SIZE_T, const DX12DescriptorSummary *> &descriptorsByCpuHandle,
-		SIZE_T cpuHandle)
-	{
-		auto it = descriptorsByCpuHandle.find(cpuHandle);
-		return it != descriptorsByCpuHandle.end() ? it->second : nullptr;
-	}
 
 	static void BuildDescriptorLookup(
 		const std::vector<DX12DescriptorSummary> &descriptors,
@@ -291,8 +257,6 @@ public:
 		return event.kind == "dispatch";
 	}
 };
-
-
 
 
 class DX12CaptureLedgerSnapshot
@@ -386,15 +350,12 @@ public:
 	static bool IsActive();
 	static UINT64 CurrentCaptureSessionId();
 	static UINT64 LastCaptureSessionId();
-	static bool IsSessionCurrent(UINT64 captureSessionId);
 	static DX12CaptureLedgerRecordResult RecordEvent(BindingEvent *event);
 	static DX12CaptureLedgerRecordResult TryStoreOutputEvent(OutputBindingEvent *event);
 	static void GetSnapshot(DX12CaptureLedgerSnapshot *snapshot);
 	static void ReleaseEventsLocked();
 	static void LogSnapshotHealth(const char *stage, const DX12CaptureLedgerSnapshot &snapshot);
 };
-
-
 
 
 class DX12CommandListHookSignatures
@@ -469,7 +430,6 @@ public:
 };
 
 
-
 class DX12ThreadLocalIaCallbacksCache
 {
 public:
@@ -485,8 +445,6 @@ public:
 	std::array<void*, 256> originals{};
 	std::array<bool, 256> slotResolved{};
 };
-
-
 
 
 class DX12CommandListHookState
@@ -582,7 +540,6 @@ public:
 };
 
 
-
 class DX12CommandListHookDiagnostics
 {
 public:
@@ -666,15 +623,6 @@ public:
 #endif
 	}
 
-	static void LogCommandListStageEdge(
-		const char *api, const char *stage, ID3D12GraphicsCommandList *commandList)
-	{
-		if (!kVerboseEnabled)
-			return;
-		DX12LogManager::DebugFields("DX12CommandListStage",
-			"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"commandList\":\"%p\"",
-			api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), commandList);
-	}
 
 	static void FlushIaReplacementExecuteSummaryIfNeeded()
 	{
@@ -723,7 +671,6 @@ public:
 #endif
 	}
 };
-
 
 
 class DX12OriginalFunctionRegistry
@@ -942,49 +889,10 @@ public:
 };
 
 
-
 class DX12CommandListHookRegistry
 {
 public:
-	static bool ShouldRegisterCommandListPointer(void *commandList)
-	{
-		if (!commandList)
-			return false;
 
-		AcquireSRWLockShared(&DX12CommandListHookState::RegisteredListLock);
-		const bool alreadyRegistered =
-			DX12CommandListHookState::RegisteredCommandLists.find(commandList) !=
-			DX12CommandListHookState::RegisteredCommandLists.end();
-		ReleaseSRWLockShared(&DX12CommandListHookState::RegisteredListLock);
-		if (alreadyRegistered)
-			return false;
-
-		bool shouldRegister = false;
-		AcquireSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
-		shouldRegister = DX12CommandListHookState::RegisteredCommandLists.insert(commandList).second;
-		ReleaseSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
-		return shouldRegister;
-	}
-
-	static void ForgetRegisteredCommandListPointer(void *commandList)
-	{
-		if (!commandList)
-			return;
-
-		AcquireSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
-		DX12CommandListHookState::RegisteredCommandLists.erase(commandList);
-		ReleaseSRWLockExclusive(&DX12CommandListHookState::RegisteredListLock);
-	}
-
-	template <typename T>
-	static T GetCommandQueueOriginal(ID3D12CommandQueue *queue, UINT slot, T fallback, const char *name)
-	{
-		return DX12OriginalFunctionRegistry::ResolveCached(
-			queue, slot, fallback, name,
-			DX12CommandListHookState::CommandQueueOriginals,
-			ARRAYSIZE(DX12CommandListHookState::CommandQueueOriginals),
-			&DX12CommandListHookState::VtableBaseCache);
-	}
 
 	template <typename T>
 	static T GetCommandListOriginal(
@@ -1002,8 +910,6 @@ public:
 class DX12CommandListHooks
 {
 public:
-	static void HookCommandQueue(IUnknown *commandQueue);
-	static void RememberCommandQueueForHotPath(IUnknown *commandQueue);
 };
 
 
@@ -1012,7 +918,6 @@ class DX12CommandQueueExecutionState
 public:
 	inline static volatile LONG FirstExecuteLog = 0;
 };
-
 
 
 class DX12CommandQueueExecutionFlow
@@ -1304,7 +1209,6 @@ public:
 			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
 	}
 };
-
 
 
 class DX12CommandQueueState
@@ -1616,23 +1520,6 @@ public:
 		return DX12FrameAnalysisState::GetPath(path, pathCount);
 	}
 
-	static void LogEvent(const char *fmt, ...)
-	{
-		va_list args;
-		char buffer[1024];
-		char fields[4096];
-
-		if (!IsActive())
-			return;
-
-		va_start(args, fmt);
-		vsnprintf(buffer, sizeof(buffer), fmt, args);
-		va_end(args);
-
-		strcpy_s(fields, sizeof(fields), "\"func\":\"Event\"");
-		DX12JsonUtils::AppendLogFieldsFromText(fields, sizeof(fields), buffer);
-		LogJsonFields(fields);
-	}
 
 	static void LogInfo(const char *fmt, ...)
 	{
@@ -1682,7 +1569,6 @@ public:
 		DX12FrameAnalysisState::LogJsonFields(fields);
 	}
 };
-
 
 
 class DX12ResourceStateTracker
@@ -1818,19 +1704,7 @@ public:
 			NeedsDescriptorTracking();
 	}
 
-	// Runtime recording (gRuntimeDescriptorByCpuHandle) is a fast cache for
-	// draw-time descriptor queries.  It is only required when capture/dump/hunt
-	// is actively inspecting every descriptor.  During normal Mod operation the
-	// Worker pipeline + EnsureDescriptorHandlesVisible provides equivalent data
-	// via gDescriptorByCpuHandle / gDescriptorHeaps.
-	static bool NeedsRuntimeDescriptorRecording()
-	{
-		return NeedsFrameDumpTracking() ||
-			NeedsShaderDumpTracking() ||
-			DX12HuntNeedsHotPath();
-	}
 };
-
 
 
 // Lock and version storage for one descriptor heap. Each shard occupies its
@@ -2168,7 +2042,6 @@ private:
 };
 
 
-
 // Sparse current-value storage used by Descriptor State. The old layout kept
 // 1024 unordered_maps per heap so independently locked slots could be updated
 // concurrently. Real descriptor rings issue tens of thousands of single-slot
@@ -2460,8 +2333,6 @@ private:
 	uint32_t pageCount_ = 0;
 	uint32_t maxSlots_ = 0;
 };
-
-
 
 
 struct RootSignatureRecord
@@ -3041,27 +2912,6 @@ static bool CopyCurrentRecord(
 	return false;
 }
 
-static void StoreCurrentRecord(
-	DescriptorHeapRecord *heap,
-	UINT slot,
-	const DescriptorRecord &source,
-	SIZE_T destCpuHandle)
-{
-	if (!heap || slot >= heap->desc.NumDescriptors)
-		return;
-	if (!heap->slots.empty() && slot < heap->slots.size() &&
-			slot < heap->occupied.size()) {
-		DescriptorRecord stored;
-		CopyRecordValueForSlot(&stored, source, destCpuHandle);
-		const bool wasOccupied = heap->occupied[slot] != 0;
-		heap->slots[slot] = std::move(stored);
-		heap->occupied[slot] = 1;
-		if (!wasOccupied)
-			IncrementLiveSlots(heap);
-		return;
-	}
-	StoreCurrentRecordIfChanged(heap, slot, source, destCpuHandle);
-}
 
 static bool StoreCurrentRecordIfChanged(
 	DescriptorHeapRecord *heap,
@@ -3803,5 +3653,4 @@ void DX12RecordPsoRootSignatureImmediate(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature);
 
-
-
+
