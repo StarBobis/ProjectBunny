@@ -2166,21 +2166,30 @@ public:
 		if (!ShouldSkipComputeBinding()) {
 			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
 			if (runtimeState &&
-				runtimeState->computeRootSignature == unwrapped &&
-				DX12HotPathState::NeedsComputeResidentBindingState(hookFlags) &&
 				DX12HotPathState::skipBindings &&
 				!DX12InternalReplayState::IsActive()) {
-				// Same root signature as the resident state: capture would drop
-				// this call after redundant bookkeeping, so keep only the
-				// deferred pre-skin restore and return.
+				// Fast path mirroring CaptureRootSignature's skip branch without
+				// the shared fast-skip bookkeeping: keep the deferred pre-skin
+				// restore, resident state and binding hash updates, then drop
+				// redundant calls.
 				DX12CommandListComputeBindingFlow::
 					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
-				return;
+				bool changed = true;
+				if (DX12HotPathState::NeedsComputeResidentBindingState(hookFlags))
+					changed = DX12CommandListRuntime::RememberComputeRootSignature(
+						runtimeState, unwrapped);
+				if (changed)
+					DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
+						runtimeState, reinterpret_cast<uint64_t>(unwrapped));
+				if (!changed)
+					return;
 			}
-			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
-				commandList, runtimeState, unwrapped, false);
-			if (!changed)
-				return;
+			else {
+				const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
+					commandList, runtimeState, unwrapped, false);
+				if (!changed)
+					return;
+			}
 		}
 		if (original) original(commandList, unwrapped);
 		else commandList->SetComputeRootSignature(unwrapped);
@@ -2229,18 +2238,27 @@ public:
 		else {
 			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
 			if (runtimeState &&
-				runtimeState->graphicsRootSignature == unwrapped &&
-				DX12HotPathState::NeedsGraphicsResidentDescriptorState(hookFlags) &&
 				!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(hookFlags) &&
 				!DX12InternalReplayState::IsActive()) {
-				// Same root signature as the resident state: capture would drop
-				// this call after redundant bookkeeping, so keep only the
-				// deferred pre-skin restore and return.
+				// Fast path mirroring CaptureRootSignature's skip branch without
+				// the shared fast-skip bookkeeping: keep the deferred pre-skin
+				// restore and resident state update, then drop redundant calls.
 				rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 				DX12CommandListComputeBindingFlow::
 					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+				bool changed = true;
+				if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(hookFlags))
+					changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
+						runtimeState, unwrapped);
 				DX12OuterTimingProbeUtils::LogCpuStage(
 					"RootSig", "capture_fastpath", 1, 1,
+					DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
+				if (!changed)
+					return;
+				rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
+				if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"RootSig", "original", 1, 1,
 					DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 				return;
 			}
