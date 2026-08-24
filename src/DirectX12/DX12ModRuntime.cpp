@@ -937,7 +937,6 @@ bool DX12ModFindActivePreSkinProducerForOutput(
 	return found;
 }
 
-static std::map<std::wstring, LONG> gPreSkinSectionAppliedPresent;
 
 class DX12PreSkinCbvReadCacheKey
 
@@ -4741,7 +4740,6 @@ bool DX12ModRuntimeLoad(
 	ReleaseLoadedResourcesLocked();
 	gShaderOverridePsoMatchCache.clear();
 	gPresentCommandListExecutedPresent = -1;
-	gPreSkinSectionAppliedPresent.clear();
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
@@ -12869,21 +12867,6 @@ static bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
-	LARGE_INTEGER t0, t1;
-	QueryPerformanceCounter(&t0);
-
-	// Frame interval is the actual elapsed time between Present calls.
-	static LARGE_INTEGER s_lastFrameTime = {};
-	static bool s_hasLastFrame = false;
-	static LARGE_INTEGER s_perfFrequency = {};
-	if (s_perfFrequency.QuadPart == 0)
-		QueryPerformanceFrequency(&s_perfFrequency);
-	LONG64 frameIntervalUs = 0;
-	if (s_hasLastFrame)
-		frameIntervalUs = (t0.QuadPart - s_lastFrameTime.QuadPart) * 1000000 / s_perfFrequency.QuadPart;
-	s_lastFrameTime = t0;
-	s_hasLastFrame = true;
-
 	DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
 	ProcessDx12KeyBindingsForFrame();
 
@@ -12900,21 +12883,9 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 		InterlockedExchange(&gPreSkinBindingIdleFrames, 0);
 	}
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
-	// PreSkin CBV and SRV caches persist while the mod configuration is stable.
-	// DX12ModRuntimeLoader clears them only when the mod is reloaded.
-	// Per-frame clearing previously recreated descriptors and CBVs unnecessarily.
-	// gPreSkinCbvReadCache.clear();
-	// gPreSkinSrvNegativeCache.clear();
-	// gPreSkinSrvPositiveCache.clear();
-	// The PSO IA negative cache persists while configuration is unchanged.
-	// DX12ModRuntimeLoader clears it only on a mod reload.
-	// DX12IaReplacementExecutor::ClearPsoIaNegativeCache();
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
 	AcquireSRWLockExclusive(&gModLock);
-	// Frame-local UAV state is epoch tagged by the writer. Avoid an O(number of
-	// loaded mod resources) clear under gModLock on every Present.
-	gPreSkinSectionAppliedPresent.clear();
 	MoveExpiredRetiredLoadedResourcesLocked(&expired);
 	ReleaseSRWLockExclusive(&gModLock);
 	for (DX12RetiredLoadedResource &resource : expired)
@@ -12966,21 +12937,6 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 		}
 	}
 
-	QueryPerformanceCounter(&t1);
-	const LONG frameDraws = DX12RuntimeState::TakeFrameDraws();
-	const LONG frameDispatches = DX12RuntimeState::TakeFrameDispatches();
-	// Throttle the per-frame perf log line: one entry every 120 frames keeps
-	// the data usable without paying a log write on every single Present.
-	static LONG s_modBeginFrameLogCountdown = 0;
-	if (--s_modBeginFrameLogCountdown <= 0) {
-		s_modBeginFrameLogCountdown = 120;
-		DX12LogManager::Fields("DX12Perf",
-			"\"scope\":\"ModBeginFrame\",\"us\":%lld,\"frameIntervalUs\":%lld,\"frameDraws\":%ld,\"frameDispatches\":%ld",
-			static_cast<long long>((t1.QuadPart - t0.QuadPart) * 1000000 / s_perfFrequency.QuadPart),
-			static_cast<long long>(frameIntervalUs),
-			frameDraws,
-			frameDispatches);
-	}
 }
 
 bool DX12ModPreparePresentReplacement(
