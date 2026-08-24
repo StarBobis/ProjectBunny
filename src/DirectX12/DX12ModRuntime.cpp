@@ -5947,33 +5947,43 @@ public:
 			return false;
 		}
 
-		// Pick a slot whose previous work completed; when all slots are
-		// still busy (more concurrent uploads than slots) block on the
-		// oldest - rare, and equivalent to the old synchronous path.
+		// Select under the lock, but never wait for GPU progress while holding
+		// it. The old DX11-style critical section made every concurrent upload
+		// thread queue behind one fence wait. Release, wait, then reselect after
+		// reacquiring so another producer can submit work in the meantime.
 		UINT slotIndex = UINT_MAX;
-		UINT oldestIndex = UINT_MAX;
-		UINT64 oldestValue = UINT64_MAX;
-		const UINT64 completedValue = s_uploadFence->GetCompletedValue();
-		for (UINT i = 0; i < kUploadChannelSlots; ++i) {
-			UploadChannelSlot &slot = s_uploadSlots[i];
-			if (slot.busyUntilFence == 0 || completedValue >= slot.busyUntilFence) {
-				slotIndex = i;
+		for (;;) {
+			UINT oldestIndex = UINT_MAX;
+			UINT64 oldestValue = UINT64_MAX;
+			const UINT64 completedValue = s_uploadFence->GetCompletedValue();
+			for (UINT i = 0; i < kUploadChannelSlots; ++i) {
+				UploadChannelSlot &slot = s_uploadSlots[i];
+				if (slot.busyUntilFence == 0 || completedValue >= slot.busyUntilFence) {
+					slotIndex = i;
+					break;
+				}
+				if (slot.busyUntilFence < oldestValue) {
+					oldestValue = slot.busyUntilFence;
+					oldestIndex = i;
+				}
+			}
+			if (slotIndex != UINT_MAX)
 				break;
-			}
-			if (slot.busyUntilFence < oldestValue) {
-				oldestValue = slot.busyUntilFence;
-				oldestIndex = i;
-			}
-		}
-		if (slotIndex == UINT_MAX) {
-			slotIndex = oldestIndex;
-			if (!WaitUploadFence(oldestValue, 5000)) {
+
+			// The fence wait is deliberately outside s_uploadLock. No slot is
+			// modified while unlocked, so reselecting after the wait is enough to
+			// preserve allocator/list ownership correctness.
+			ReleaseSRWLockExclusive(&s_uploadLock);
+			const bool completed = WaitUploadFence(oldestValue, 5000);
+			AcquireSRWLockExclusive(&s_uploadLock);
+			if (!completed) {
 				DX12LogManager::Fields("DX12TextureUpload",
 					"stage=slot_wait_failed,fenceValue=%llu",
 					static_cast<unsigned long long>(oldestValue));
 				ReleaseSRWLockExclusive(&s_uploadLock);
 				return false;
 			}
+			slotIndex = UINT_MAX;
 		}
 
 		UploadChannelSlot &slot = s_uploadSlots[slotIndex];
