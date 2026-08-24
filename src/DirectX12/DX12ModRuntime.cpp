@@ -2410,12 +2410,6 @@ void DX12ModNotifyCommandListsSubmitted(
 		InterlockedExchange(&gHasRetiredPreSkinObjectsFast, 1);
 	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
-	DX12LogManager::DebugFields("DX12PreSkinRetireSubmit",
-		"present=%ld,queue=%p,commandLists=%u,resources=%zu,descriptorHeaps=%zu,fence=%p,fenceValue=%llu,fallback=%s",
-		retirePresent, queue, numCommandLists,
-		pending.resources.size(), pending.descriptorHeaps.size(), fenceTracked ? fence : nullptr,
-		static_cast<unsigned long long>(fenceTracked ? fenceValue : 0),
-		fenceTracked ? "false" : "true");
 	if (fence)
 		fence->Release();
 	ReleasePreSkinReleaseBatch(&releaseBatch);
@@ -2511,14 +2505,6 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			*heapOut = usedHeap;
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
 			RetainPreSkinDescriptorHeapForCommandList(commandList, usedHeap);
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinDescriptorRing",
-				"status=reuse,required=%u,capacity=%u,offset=%u,present=%ld",
-				requiredDescriptors,
-				gPreSkinDescriptorRing.capacity,
-				gPreSkinDescriptorRing.offset,
-				DX12RuntimeState::GetPresentCount());
-#endif
 			return true;
 		}
 		capacityToCreate = DX12DescriptorArenaUtils::NextCapacity(
@@ -2552,14 +2538,6 @@ static bool EnsurePreSkinDescriptorRingLocked(
 			gPreSkinDescriptorRing.offset + requiredDescriptors > gPreSkinDescriptorRing.capacity;
 		if (!stillNeedsNewHeap) {
 			ReleaseSRWLockExclusive(&gPreSkinDescriptorRingLock);
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinDescriptorRing",
-				"status=create_raced,required=%u,capacity=%u,elapsedUs=%lld,present=%ld",
-				requiredDescriptors,
-				capacityToCreate,
-				static_cast<long long>(createElapsedUs),
-				DX12RuntimeState::GetPresentCount());
-#endif
 			newHeap->Release();
 			continue;
 		}
@@ -2587,13 +2565,6 @@ static bool EnsurePreSkinDescriptorRingLocked(
 		if (oldDevice)
 			oldDevice->Release();
 		RetainPreSkinDescriptorHeapForCommandList(commandList, usedHeap);
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinDescriptorRing",
-			"status=created,capacity=%u,required=%u,elapsedUs=%lld,present=%ld",
-			capacityToCreate, requiredDescriptors,
-			static_cast<long long>(createElapsedUs),
-			DX12RuntimeState::GetPresentCount());
-#endif
 		return true;
 	}
 }
@@ -3341,19 +3312,7 @@ static bool AdjustBufferResourceDescCommon(D3D12_RESOURCE_DESC *desc, const char
 	if (!found)
 		return false;
 
-#if defined(_DEBUG)
-	const UINT64 oldWidth = desc->Width;
-#endif
 	desc->Width = match.overrideByteWidth;
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12VertexLimitRaiseResize",
-		"\"source\":\"%s\",\"section\":\"%S\",\"oldWidth\":%llu,\"newWidth\":%llu,\"overrideByteStride\":%u,\"overrideVertexCount\":%u,\"flags\":%u",
-		source ? source : "", match.section.c_str(),
-		static_cast<unsigned long long>(oldWidth),
-		static_cast<unsigned long long>(desc->Width),
-		match.overrideByteStride, match.overrideVertexCount,
-		static_cast<unsigned>(desc->Flags));
-#endif
 	return true;
 }
 
@@ -3494,17 +3453,7 @@ bool DX12ModAdjustUavDesc(
 	resource->SetPrivateData(
 		DX12ExpandedPreSkinBufferPrivateDataGuid, sizeof(info), &info);
 
-#if defined(_DEBUG)
-	const UINT oldNumElements = desc->Buffer.NumElements;
-#endif
 	desc->Buffer.NumElements = static_cast<UINT>(match.overrideNumElements);
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12VertexLimitRaiseUav",
-		"\"source\":\"%s\",\"section\":\"%S\",\"oldNumElements\":%u,\"newNumElements\":%u,\"bytesPerElement\":%u,\"resourceWidth\":%llu",
-		source ? source : "", match.section.c_str(), oldNumElements,
-		desc->Buffer.NumElements, bytesPerElement,
-		static_cast<unsigned long long>(resourceDesc.Width));
-#endif
 	return true;
 }
 
@@ -4641,9 +4590,6 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
 	DX12ConstantsVmInitializerUtils::Initialize(commandLists);
 
-	DX12LogManager::DebugFields("DX12ModRuntimeLoadParse",
-		"\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"keyBindings\":%zu",
-		shaderOverrides.size(), shaderRegexes.size(), textureOverrides.size(), resources.size(), commandLists.size(), keyBindings.size());
 
 	std::vector<DX12VertexLimitRaiseConfig> vertexLimitRaiseConfigs =
 		CollectVertexLimitRaiseConfigs(textureOverrides);
@@ -4665,13 +4611,6 @@ bool DX12ModRuntimeLoad(
 		(ShaderOverridesHaveIaTextureOverrideTrigger(shaderOverrides, commandLists) ||
 		 ShaderRegexesHaveIaTextureOverrideTrigger(shaderRegexes, commandLists));
 
-	DX12LogManager::DebugFields("DX12ModRuntimeLoadFlags",
-		"\"hasShaderTriggeredTextureOverrides\":%s,\"hasExecutableShaderRegexes\":%s,\"hasPreSkinCandidates\":%s,\"hasDrawSrvTextureReplacementOverrides\":%s,\"hasShaderIaTextureOverrideTriggers\":%s",
-		hasShaderTriggeredTextureOverrides ? "true" : "false",
-		hasExecutableShaderRegexes ? "true" : "false",
-		hasPreSkinTextureOverrideCandidates ? "true" : "false",
-		hasDrawSrvTextureReplacementOverrides ? "true" : "false",
-		hasShaderIaTextureOverrideTriggers ? "true" : "false");
 
 	bool hasShaderDescriptorTextureOverrideTriggers =
 		hasShaderTriggeredTextureOverrides &&
@@ -6783,9 +6722,6 @@ static bool EnsureResourceUavLocked(
 	ID3D12DescriptorHeap *heap = nullptr;
 	HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
 	if (FAILED(hr) || !heap) {
-		DX12LogManager::DebugFields("DX12PreSkinningUav",
-			"\"status\":\"failed\",\"reason\":\"create_heap_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
-			hr, resource->name.c_str());
 		return false;
 	}
 
@@ -6810,9 +6746,6 @@ static bool EnsureResourceUavLocked(
 		&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		nullptr, IID_PPV_ARGS(&uavResource));
 	if (FAILED(hr) || !uavResource) {
-		DX12LogManager::DebugFields("DX12PreSkinningUav",
-			"\"status\":\"failed\",\"reason\":\"create_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\",\"bytes\":%llu",
-			hr, resource->name.c_str(), static_cast<unsigned long long>(uavByteWidth));
 		heap->Release();
 		return false;
 	}
@@ -6835,12 +6768,6 @@ static bool EnsureResourceUavLocked(
 	resource->uavStride = elementStride;
 	resource->uavInitialized = true;
 	resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	DX12LogManager::DebugFields("DX12PreSkinningUav",
-		"\"status\":\"created\",\"resource\":\"%S\",\"bytes\":%llu,\"uavBytes\":%llu,\"stride\":%u,\"elements\":%u",
-		resource->name.c_str(),
-		static_cast<unsigned long long>(resource->byteWidth),
-		static_cast<unsigned long long>(uavByteWidth),
-		elementStride, uavDesc.Buffer.NumElements);
 	return true;
 }
 
@@ -6880,9 +6807,6 @@ static bool EnsureResourceSrvLocked(
 	ID3D12DescriptorHeap *heap = nullptr;
 	HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
 	if (FAILED(hr) || !heap) {
-		DX12LogManager::DebugFields("DX12PreSkinningSrv",
-			"\"status\":\"failed\",\"reason\":\"create_heap_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
-			hr, resource->name.c_str());
 		return false;
 	}
 
@@ -6908,9 +6832,6 @@ static bool EnsureResourceSrvLocked(
 			nullptr, IID_PPV_ARGS(&srvBacking));
 		if (FAILED(hr) || !srvBacking) {
 			heap->Release();
-			DX12LogManager::DebugFields("DX12PreSkinningSrv",
-				"\"status\":\"failed\",\"reason\":\"create_padded_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\",\"bytes\":%llu",
-				hr, resource->name.c_str(), static_cast<unsigned long long>(srvByteWidth));
 			return false;
 		}
 
@@ -6935,9 +6856,6 @@ static bool EnsureResourceSrvLocked(
 		if (FAILED(hr) || !src) {
 			srvBacking->Release();
 			heap->Release();
-			DX12LogManager::DebugFields("DX12PreSkinningSrv",
-				"\"status\":\"failed\",\"reason\":\"copy_padded_resource_failed\",\"hr\":\"0x%lx\",\"resource\":\"%S\"",
-				hr, resource->name.c_str());
 			return false;
 		}
 		resource->srvResource = srvBacking;
@@ -6958,12 +6876,6 @@ static bool EnsureResourceSrvLocked(
 	resource->srvHeap = heap;
 	resource->srvStride = elementStride;
 	resource->srvByteWidth = srvByteWidth;
-	DX12LogManager::DebugFields("DX12PreSkinningSrv",
-		"\"status\":\"created\",\"resource\":\"%S\",\"bytes\":%llu,\"srvBytes\":%llu,\"stride\":%u,\"elements\":%u",
-		resource->name.c_str(),
-		static_cast<unsigned long long>(resource->byteWidth),
-		static_cast<unsigned long long>(srvByteWidth),
-		elementStride, srvDesc.Buffer.NumElements);
 	return true;
 }
 
@@ -7607,24 +7519,10 @@ public:
 		if (!DX12ModNeedsShaderDescriptorTracking() &&
 		    DX12DrawSrvReplacementUtils::CollectSrvBindingsFromRuntimeLayout(
 				commandList, compute, bindings)) {
-#if defined(_DEBUG)
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
-				"stage=collect_srvs_runtime,bindSpace=%s,count=%zu,present=%ld",
-				compute ? "compute" : "graphics",
-				bindings->size(),
-				DX12RuntimeState::GetPresentCount());
-#endif
 			return;
 		}
 		DX12BindingTracker::GetCurrentShaderResourceBindings(
 			commandList, compute, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, bindings);
-#if defined(_DEBUG)
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
-			"stage=collect_srvs,bindSpace=%s,count=%zu,present=%ld",
-			compute ? "compute" : "graphics",
-			bindings->size(),
-			DX12RuntimeState::GetPresentCount());
-#endif
 	}
 
 	static uint64_t BindingKey(const DX12CurrentShaderResourceBinding &binding, bool compute)
@@ -7977,11 +7875,6 @@ public:
 			const DX12DrawSrvRootPlanTemplate &rootPlan =
 				cachedPlan.roots[root];
 			if (!rootPlan.valid) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=root_parameter,pipeline=%s,root=%u",
-					compute ? "compute" : "graphics", root);
-#endif
 				return false;
 			}
 			const D3D12_DESCRIPTOR_HEAP_TYPE type = rootPlan.sampler ?
@@ -7993,16 +7886,6 @@ public:
 			if (!ResolvePatchTableLocation(
 					snapshot, state, type,
 					&heap, &tableBaseIndex, &tableCpuStart)) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=heap,pipeline=%s,root=%u,"
-					"resolvedHeap=%p,boundHeap=%p,cpuStart=0x%zx,gpuStart=0x%llx,table=0x%llx",
-					compute ? "compute" : "graphics", root, heap.heap,
-					type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ?
-						snapshot.samplerHeap : snapshot.cbvSrvUavHeap,
-					heap.cpuStart, static_cast<unsigned long long>(heap.gpuStart),
-					static_cast<unsigned long long>(state.baseDescriptor.ptr));
-#endif
 				return false;
 			}
 			UINT count = 0;
@@ -8011,11 +7894,6 @@ public:
 					DX12DrawSrvReplacementUtils::FindRootParameterSummary(
 						rootSignature, root);
 				if (!parameter) {
-#if defined(_DEBUG)
-					DX12LogManager::Fields("DX12DrawSrvReplacement",
-						"stage=table_plan_fail,reason=root_parameter,pipeline=%s,root=%u",
-						compute ? "compute" : "graphics", root);
-#endif
 					return false;
 				}
 				count = DescriptorCountForTable(
@@ -8029,13 +7907,6 @@ public:
 					UINT_MAX : static_cast<UINT>(clampedCount);
 			}
 			if (!count) {
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=table_plan_fail,reason=empty_count,pipeline=%s,root=%u,"
-					"tableBaseIndex=%llu,heapDescriptors=%u",
-					compute ? "compute" : "graphics", root,
-					static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors);
-#endif
 				return false;
 			}
 			DX12DrawSrvPatchTable table;
@@ -8050,29 +7921,12 @@ public:
 			if (!rootPlan.sampler) {
 				if (*totalDescriptors > MaxMirroredDescriptors ||
 						count > MaxMirroredDescriptors - *totalDescriptors) {
-#if defined(_DEBUG)
-					DX12LogManager::Fields("DX12DrawSrvReplacement",
-						"stage=table_plan_fail,reason=mirror_limit,pipeline=%s,root=%u,"
-						"tableBaseIndex=%llu,heapDescriptors=%u,count=%u,total=%u,limit=%u",
-						compute ? "compute" : "graphics", root,
-						static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors,
-						count, *totalDescriptors, MaxMirroredDescriptors);
-#endif
 					return false;
 				}
 				table.tempOffset = *totalDescriptors;
 				*totalDescriptors += count;
 			}
 			tables->push_back(table);
-#if defined(_DEBUG)
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
-				"stage=table_plan,pipeline=%s,root=%u,sampler=%s,"
-				"tableBaseIndex=%llu,heapDescriptors=%u,count=%u,tempOffset=%u,total=%u",
-				compute ? "compute" : "graphics", root,
-				rootPlan.sampler ? "true" : "false",
-				static_cast<unsigned long long>(tableBaseIndex), heap.numDescriptors,
-				count, table.tempOffset, *totalDescriptors);
-#endif
 		}
 		return true;
 	}
@@ -8298,15 +8152,6 @@ public:
 				copySrcStarts.push_back(request.replacementCpu);
 				copySrcSizes.push_back(1);
 				request.targetCpu = destination;
-#if defined(_DEBUG)
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
-					"stage=slot_patched,mode=mirrored_table,source=%s,"
-					"slot=%u,root=%u,offset=%u,resource=%S,cpu=0x%zx",
-					request.source.c_str(), request.binding.shaderRegister,
-					request.binding.rootParameterIndex,
-					request.binding.descriptorOffset,
-					request.resourceName.c_str(), destination.ptr);
-#endif
 				break;
 			}
 		}
@@ -8358,13 +8203,6 @@ public:
 			0,
 			totalDescriptors,
 			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
-#if defined(_DEBUG)
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
-			"stage=descriptors_patched,mode=mirrored_tables,requests=%zu,"
-			"tables=%zu,descriptors=%u,present=%ld",
-			replacement->drawSrvPatches.size(), tables.size(), totalDescriptors,
-			DX12RuntimeState::GetPresentCount());
-#endif
 		return true;
 	}
 
@@ -8551,12 +8389,6 @@ public:
 			static_cast<size_t>(snapshot.graphicsTableValidCount) +
 				snapshot.computeTableValidCount,
 			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
-#if defined(_DEBUG)
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
-			"stage=descriptor_tables_restored,requests=%zu,snapshot=saved,present=%ld",
-			replacement->drawSrvPatches.size(),
-			DX12RuntimeState::GetPresentCount());
-#endif
 		replacement->drawSrvPatches.clear();
 		state = DX12ModIaReplacement::DrawSrvApplyState();
 	}
@@ -8618,49 +8450,6 @@ static void SyncPreSkinComputeRootDescriptorTable(
 	DX12BindingTracker::SetComputeRootDescriptorTable(
 		commandList, rootParameterIndex, table);
 }
-
-static void LogPreSkinSrvProbe(
-	const char *status, const DX12CurrentComputeUavBinding *binding,
-	const Bunny::TextureOverrideConfig *config, uint32_t srvRegister,
-	UINT64 viewBytes, UINT elementStride)
-{
-#if defined(_DEBUG)
-	if (!binding)
-	{
-		DX12LogManager::DebugFields("DX12PreSkinSrvProbe",
-									"\"status\":\"%s\"", status ? status : "");
-		return;
-	}
-
-	DX12LogManager::DebugFields("DX12PreSkinSrvProbe",
-								"\"status\":\"%s\",\"section\":\"%S\",\"root\":%u,\"range\":%u,\"tRegister\":%u,\"space\":%u,\"offset\":%u,\"rootDescriptor\":%s,\"hasDescriptor\":%s,\"kind\":\"%s\",\"viewDimension\":%u,\"resource\":\"%p\",\"gpuVa\":\"0x%llx\",\"viewBytes\":%llu,\"stride\":%u,\"srvRegister\":%u,\"hasMappedResource\":%s",
-								status ? status : "",
-								config ? config->section.c_str() : L"",
-								binding->rootParameterIndex, binding->rangeIndex,
-								binding->shaderRegister, binding->registerSpace,
-								binding->descriptorOffset,
-								binding->rootDescriptor ? "true" : "false",
-								binding->hasDescriptor ? "true" : "false",
-								binding->descriptor.kind.c_str(),
-								binding->descriptor.viewDimension,
-								binding->descriptor.resource,
-								static_cast<unsigned long long>(binding->descriptor.gpuVirtualAddress),
-								static_cast<unsigned long long>(viewBytes),
-								elementStride, srvRegister,
-								(config && srvRegister != UINT_MAX &&
-								 config->preSkinCsSrvResources.find(srvRegister) != config->preSkinCsSrvResources.end())
-									? "true"
-									: "false");
-#else
-	(void)status;
-	(void)binding;
-	(void)config;
-	(void)srvRegister;
-	(void)viewBytes;
-	(void)elementStride;
-#endif
-}
-
 
 static UINT AlignCbvSize(UINT size)
 {
@@ -8756,11 +8545,6 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	HRESULT hr = E_FAIL;
 	if (!ReadPreSkinCbvBytesLocked(cbv.descriptor.resource, sourceOffset, viewBytes, &bytes, &hr))
 	{
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
-									"\"status\":\"skip_map_failed\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"hr\":\"0x%lx\"",
-									config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister, hr);
-#endif
 		return false;
 	}
 
@@ -8790,12 +8574,6 @@ static bool PatchPreSkinVertexCountCbvLocked(
 		UINT32 firstDword = 0;
 		if (bytes.size() >= sizeof(firstDword))
 			memcpy(&firstDword, bytes.data(), sizeof(firstDword));
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
-									"\"status\":\"skip_count_mismatch\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"expected\":%u,\"new\":%u,\"bytes\":%u",
-									config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
-									firstDword, expectedOriginalVertexCount, overrideVertexCount, viewBytes);
-#endif
 		return false;
 	}
 	for (UINT offset : patchOffsets)
@@ -8840,12 +8618,6 @@ static bool PatchPreSkinVertexCountCbvLocked(
 				*originalVertexCountOut = originalVertexCount;
 			if (overrideVertexCountOut)
 				*overrideVertexCountOut = overrideVertexCount;
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
-										"\"status\":\"patched_cache_hit\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u",
-										config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
-										originalVertexCount, overrideVertexCount, viewBytes);
-#endif
 			return true;
 		}
 	}
@@ -8931,25 +8703,6 @@ static bool PatchPreSkinVertexCountCbvLocked(
 	if (overrideVertexCountOut)
 		*overrideVertexCountOut = overrideVertexCount;
 
-#if defined(_DEBUG)
-	char offsetText[256] = {};
-	size_t offsetUsed = 0;
-	for (size_t i = 0; i < patchOffsets.size(); ++i)
-	{
-		int written = sprintf_s(
-			offsetText + offsetUsed, sizeof(offsetText) - offsetUsed,
-			"%s%u", i ? "," : "", patchOffsets[i]);
-		if (written <= 0)
-			break;
-		offsetUsed += static_cast<size_t>(written);
-		if (offsetUsed >= sizeof(offsetText) - 1)
-			break;
-	}
-	DX12LogManager::DebugFields("DX12PreSkinCbvPatch",
-								"\"status\":\"patched\",\"section\":\"%S\",\"root\":%u,\"bRegister\":%u,\"old\":%u,\"new\":%u,\"bytes\":%u,\"offsets\":\"%s\",\"patches\":%zu",
-								config.section.c_str(), cbv.rootParameterIndex, cbv.shaderRegister,
-								originalVertexCount, overrideVertexCount, viewBytes, offsetText, patchOffsets.size());
-#endif
 	return true;
 }
 
@@ -9130,25 +8883,6 @@ static void LogPreSkinMatchCsProbeLimited(
 	ReleaseSRWLockExclusive(&gPreSkinMatchCsProbeLogLock);
 	if (!emit)
 		return;
-#if defined(_DEBUG)
-	char uavText[512] = {};
-	char srvText[768] = {};
-	char cbvText[768] = {};
-	char rootText[512] = {};
-	AppendComputeBindingHashList(uavs, false, uavText, sizeof(uavText));
-	AppendComputeBindingHashList(srvs, true, srvText, sizeof(srvText));
-	AppendComputeCbvList(cbvs, cbvText, sizeof(cbvText));
-	AppendComputeRootConstantsList(rootConstants, rootText, sizeof(rootText));
-	DX12LogManager::Fields("DX12PreSkinMatchCsProbe",
-						   "\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"candidateIdentity\":\"%016llx\",\"uavBytes\":%llu,\"matchUavBytes\":%llu,\"inputMatched\":%s,\"uavs\":\"%s\",\"srvs\":\"%s\",\"cbvs\":\"%s\",\"rootConstants\":\"%s\"",
-						   static_cast<unsigned long long>(csHash),
-						   (candidate.config && candidate.config->originalSection.empty()) ? candidate.config->section.c_str() : (candidate.config ? candidate.config->originalSection.c_str() : L""),
-						   candidate.hash,
-						   static_cast<unsigned long long>(candidate.identity),
-						   static_cast<unsigned long long>(uavViewBytes),
-						   (candidate.config && candidate.config->hasMatchUavBytes) ? static_cast<unsigned long long>(candidate.config->matchUavBytes) : 0ull,
-						   inputMatched ? "true" : "false", uavText, srvText, cbvText, rootText);
-#endif
 }
 static void AppendComputeCbvList(
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs, char *text, size_t textSize)
@@ -9311,56 +9045,6 @@ static uint64_t HashPreSkinMatchSrvKeysForProbe(
 	return key;
 }
 
-static void LogPreSkinSrvHashProbeLimited(
-	const Bunny::TextureOverrideConfig &config, uint32_t shaderRegister,
-	uint32_t expectedHash, const DX12CurrentComputeUavBinding *binding,
-	const DX12PreSkinSrvHashResult *hash, bool matched, const char *status)
-{
-#if defined(_DEBUG)
-	if (!matched && status && (!strcmp(status, "descriptor_hash") || !strcmp(status, "hash_failed")))
-		return;
-	static SRWLOCK logLock = SRWLOCK_INIT;
-	static std::unordered_set<uint64_t> logged;
-	uint64_t key = 0x6e47f2cb0d45a31bull;
-	key = HashCombine64(key, shaderRegister);
-	key = HashCombine64(key, expectedHash);
-	key = HashCombine64(key, hash ? hash->descriptorHash : 0);
-	key = HashCombine64(key, binding ? reinterpret_cast<uint64_t>(binding->descriptor.resource) : 0);
-	key = HashCombine64(key, binding ? binding->descriptor.resourceOffset : 0);
-	key = HashCombine64(key, hash ? hash->viewBytes : 0);
-	bool emit = false;
-	AcquireSRWLockExclusive(&logLock);
-	if (logged.size() > 512)
-		logged.clear();
-	emit = logged.insert(key).second;
-	ReleaseSRWLockExclusive(&logLock);
-	if (!emit)
-		return;
-	DX12LogManager::DebugFields("DX12PreSkinSrvHashProbe",
-								"\"section\":\"%S\",\"status\":\"%s\",\"tRegister\":%u,\"expected\":\"%08x\",\"matched\":%s,\"descriptorHash\":\"%08x\",\"offset\":%llu,\"bytes\":%llu,\"stride\":%u,\"root\":%u,\"range\":%u,\"space\":%u,\"descriptorOffset\":%u,\"resource\":\"%p\"",
-								config.originalSection.empty() ? config.section.c_str() : config.originalSection.c_str(),
-								status ? status : "",
-								shaderRegister, expectedHash, matched ? "true" : "false",
-								hash ? hash->descriptorHash : 0,
-								hash ? static_cast<unsigned long long>(hash->sourceOffset) : 0ull,
-								hash ? static_cast<unsigned long long>(hash->viewBytes) : 0ull,
-								hash ? hash->stride : 0,
-								binding ? binding->rootParameterIndex : UINT_MAX,
-								binding ? binding->rangeIndex : UINT_MAX,
-								binding ? binding->registerSpace : UINT_MAX,
-								binding ? binding->descriptorOffset : UINT_MAX,
-								binding ? binding->descriptor.resource : nullptr);
-#else
-	(void)config;
-	(void)shaderRegister;
-	(void)expectedHash;
-	(void)binding;
-	(void)hash;
-	(void)matched;
-	(void)status;
-#endif
-}
-
 static bool MatchComputeInputSrvsTextureOverrideLocked(
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const Bunny::TextureOverrideConfig &config)
@@ -9373,16 +9057,10 @@ static bool MatchComputeInputSrvsTextureOverrideLocked(
 		DX12PreSkinSrvHashResult actual = {};
 		if (!FindComputeSrvByRegister(srvs, expected.first, &binding, &actual))
 		{
-			LogPreSkinSrvHashProbeLimited(
-				config, expected.first, expected.second, nullptr, nullptr,
-				false, "missing_srv");
-			return false;
+						return false;
 		}
 		const bool matched = actual.descriptorHash == expected.second;
-		LogPreSkinSrvHashProbeLimited(
-			config, expected.first, expected.second, binding, &actual,
-			matched, actual.descriptorHash ? "descriptor_hash" : "hash_failed");
-		if (!matched)
+				if (!matched)
 			return false;
 	}
 	return true;
@@ -9407,10 +9085,7 @@ static bool BuildPreSkinSrvReplacementBindingsTextureOverrideLocked(
 		if (!FindComputeSrvByRegister(srvs, expected.first, &binding, &actual))
 			return false;
 		const bool matched = actual.descriptorHash == expected.second;
-		LogPreSkinSrvHashProbeLimited(
-			config, expected.first, expected.second, binding, &actual,
-			matched, actual.descriptorHash ? "descriptor_hash" : "hash_failed");
-		if (!matched)
+				if (!matched)
 			return false;
 	}
 
@@ -9494,49 +9169,6 @@ static bool HasMatchCsTextureOverrideLocked(uint64_t csHash)
 	auto indexed = gPreSkinMatchCsTextureOverrideIndex.find(csHash);
 	return indexed != gPreSkinMatchCsTextureOverrideIndex.end() &&
 		   !indexed->second.empty();
-}
-
-static void LogPreSkinMatchCsOutputProbeLimited(
-	uint64_t csHash,
-	const DX12UavHashTextureOverrideMatch &match,
-	const std::vector<DX12CurrentComputeUavBinding> &uavs)
-{
-#if defined(_DEBUG)
-	static SRWLOCK logLock = SRWLOCK_INIT;
-	static std::unordered_set<uint64_t> logged;
-	uint64_t key = HashCombine64(csHash, match.hash);
-	key = HashCombine64(key, uavs.size());
-	for (const DX12CurrentComputeUavBinding &uav : uavs)
-	{
-		key = HashCombine64(key, uav.rootParameterIndex);
-		key = HashCombine64(key, uav.rangeIndex);
-		key = HashCombine64(key, uav.shaderRegister);
-		key = HashCombine64(key, uav.descriptorOffset);
-		key = HashCombine64(key, reinterpret_cast<uint64_t>(uav.descriptor.resource));
-		key = HashCombine64(key, uav.hasDescriptor ? 1 : 0);
-		key = HashCombine64(key, uav.rootDescriptor ? 1 : 0);
-		key = HashCombine64(key, uav.tableGpuStart.ptr);
-	}
-	bool emit = false;
-	AcquireSRWLockExclusive(&logLock);
-	if (logged.size() > 256)
-		logged.clear();
-	emit = logged.insert(key).second;
-	ReleaseSRWLockExclusive(&logLock);
-	if (!emit)
-		return;
-	char uavText[768] = {};
-	AppendComputeBindingHashList(uavs, false, uavText, sizeof(uavText));
-	DX12LogManager::DebugFields("DX12PreSkinMatchCsOutput",
-								"\"status\":\"no_uav_output\",\"cs\":\"%016llx\",\"section\":\"%S\",\"targetHash\":\"%08x\",\"uavs\":%zu,\"uavList\":\"%s\"",
-								static_cast<unsigned long long>(csHash),
-								(match.config && match.config->originalSection.empty()) ? match.config->section.c_str() : (match.config ? match.config->originalSection.c_str() : L""),
-								match.hash, uavs.size(), uavText);
-#else
-	(void)csHash;
-	(void)match;
-	(void)uavs;
-#endif
 }
 
 static bool IsPreSkinMatchCsUavCandidate(const DX12CurrentComputeUavBinding &binding)
@@ -9703,8 +9335,7 @@ static bool FindPreSkinProducerByMatchCsLocked(
 	}
 	if (!chosenBinding)
 	{
-		LogPreSkinMatchCsOutputProbeLimited(csHash, candidateMatch, uavs);
-		return false;
+				return false;
 	}
 
 	DX12ComputeUavProducer candidate = {};
@@ -10056,29 +9687,9 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 	auto logStage = [&config, section, triggerHash](const char *stage, UINT tables = 0, UINT descriptors = 0)
 	{
-#if defined(_DEBUG)
-		static SRWLOCK logLock = SRWLOCK_INIT;
-		static std::unordered_set<uint64_t> logged;
-		uint64_t key = HashCombine64(triggerHash, reinterpret_cast<uint64_t>(stage));
-		key = HashCombine64(key, tables);
-		key = HashCombine64(key, descriptors);
-		bool emit = false;
-		AcquireSRWLockExclusive(&logLock);
-		if (logged.size() > 512)
-			logged.clear();
-		emit = logged.insert(key).second;
-		ReleaseSRWLockExclusive(&logLock);
-		if (!emit)
-			return;
-		DX12LogManager::DebugFields("DX12PreSkinDescriptorPatch",
-									"\"stage\":\"%s\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%u,\"descriptors\":%u",
-									stage ? stage : "", section ? section : (config.originalSection.empty() ? config.section.c_str() : config.originalSection.c_str()),
-									triggerHash, tables, descriptors);
-#else
 		(void)stage;
 		(void)tables;
 		(void)descriptors;
-#endif
 	};
 	logStage("enter");
 
@@ -10138,8 +9749,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 
 	if (srvs.empty())
 	{
-		LogPreSkinSrvProbe("no_srvs", nullptr, &config, UINT_MAX, 0, 0);
-	}
+			}
 	(void)rootConstants;
 
 	const UINT64 abortCacheKey = MakePreSkinDescriptorPatchAbortCacheKey(
@@ -10148,16 +9758,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		gPreSkinDescriptorPatchAbortCache.end())
 	{
 		logStage("abort_cache_hit", 0, 0);
-#if defined(_DEBUG)
-		const LONG hitLogCount = InterlockedIncrement(&gPreSkinDescriptorAbortCacheHitLogCount);
-		if (hitLogCount <= 32)
-		{
-			DX12LogManager::DebugFields("DX12PreSkinningApply",
-										"\"status\":\"abort_cache_hit\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%u,\"descriptors\":%u,\"cbvs\":%zu",
-										section ? section : L"", triggerHash,
-										0u, 0u, cbvs.size());
-		}
-#endif
 		return false;
 	}
 
@@ -10213,12 +9813,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		if (!canPatchCount)
 		{
 			StorePreSkinDescriptorPatchAbort(abortCacheKey);
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinningApply",
-										"\"status\":\"resized_count_unpatchable\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"old\":%u,\"new\":%u,\"cbvs\":%zu",
-										section ? section : L"", triggerHash,
-										originalVertexCount, overrideVertexCount, cbvs.size());
-#endif
 			return false;
 		}
 	}
@@ -10511,15 +10105,13 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 				gPreSkinSrvStableNegativeCache.clear();
 			gPreSkinSrvStableNegativeCache.insert(stableNegativeKey);
 			gPreSkinSrvNegativeCache.insert(negativeKey);
-			LogPreSkinSrvProbe("skip_not_buffer_srv", &srv, &config, srv.shaderRegister, srvByteWidth, 0);
-			continue;
+						continue;
 		}
 		const TableCopy *table = findTable(srv);
 		if (!table)
 		{
 			gPreSkinSrvNegativeCache.insert(negativeKey);
-			LogPreSkinSrvProbe("skip_no_table", &srv, &config, srv.shaderRegister, srvByteWidth, 0);
-			continue;
+						continue;
 		}
 		DX12LoadedResource *resource = nullptr;
 		UINT elementStride = 0;
@@ -10546,8 +10138,7 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 					!resource->srvCpu.ptr)
 				{
 					gPreSkinSrvNegativeCache.insert(negativeKey);
-					LogPreSkinSrvProbe("skip_srv_create_failed", &srv, &config, srv.shaderRegister, srvByteWidth, elementStride);
-					continue;
+										continue;
 				}
 				if (gPreSkinSrvPositiveCache.size() > 256)
 					gPreSkinSrvPositiveCache.clear();
@@ -10562,14 +10153,12 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 		if (!resource || !resource->srvCpu.ptr)
 		{
 			gPreSkinSrvNegativeCache.insert(negativeKey);
-			LogPreSkinSrvProbe("skip_srv_create_failed", &srv, &config, srv.shaderRegister, srvByteWidth, elementStride);
-			continue;
+						continue;
 		}
 		if (!elementStride)
 		{
 			gPreSkinSrvNegativeCache.insert(negativeKey);
-			LogPreSkinSrvProbe("skip_invalid_stride", &srv, &config, srv.shaderRegister, srvByteWidth, elementStride);
-			continue;
+						continue;
 		}
 		D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
 		dst.ptr += static_cast<SIZE_T>(table->tempOffset + srv.descriptorOffset) * tempIncrement;
@@ -10594,12 +10183,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 
 	if (!patchedAnySrv)
 	{
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12PreSkinningApply",
-									"\"status\":\"skip_no_srv_patched\",\"section\":\"%S\",\"triggerHash\":\"%08x\"",
-									section ? section : L"", triggerHash);
-		DX12_HOTPATH_TIME_END(PreSkinLoadResource);
-#endif
 		return false;
 	}
 
@@ -10629,12 +10212,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 			}
 			temporaryResources.clear();
 			StorePreSkinDescriptorPatchAbort(abortCacheKey);
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinningApply",
-										"\"status\":\"resized_count_unpatched\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"old\":%u,\"new\":%u,\"cbvs\":%zu",
-										section ? section : L"", triggerHash,
-										originalVertexCount, overrideVertexCount, cbvs.size());
-#endif
 			return false;
 		}
 	}
@@ -10648,27 +10225,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	bool resizedUavCacheHit = false;
 	UINT resizedOutputSlot = 0;
 	bool outputUavResized = false;
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12PreSkinningApply",
-								"\"status\":\"output_uav_probe\","
-								"\"section\":\"%S\","
-								"\"overrideVc\":%u,"
-								"\"originalVc\":%u,"
-								"\"hasDesc\":%s,"
-								"\"rootDesc\":%s,"
-								"\"kind\":\"%s\","
-								"\"stride\":%u,"
-								"\"currentBytes\":%llu",
-								section ? section : L"",
-								overrideVertexCount,
-								originalVertexCount,
-								uavBinding.hasDescriptor ? "true" : "false",
-								uavBinding.rootDescriptor ? "true" : "false",
-								uavBinding.descriptor.kind.empty() ? "(empty)" : uavBinding.descriptor.kind.c_str(),
-								uavBinding.descriptor.structureByteStride,
-								static_cast<unsigned long long>(
-									DescriptorViewSize(uavBinding.descriptor)));
-#endif
 	if (overrideVertexCount && originalVertexCount &&
 		overrideVertexCount > originalVertexCount &&
 		uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
@@ -10706,28 +10262,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 					resizedUavHeap->Release();
 					resizedUavHeap = nullptr;
 				}
-#if defined(_DEBUG)
-				DX12LogManager::DebugFields(
-					"DX12PreSkinningApply",
-					"\"status\":\"output_uav_resized\","
-					"\"section\":\"%S\","
-					"\"triggerHash\":\"%08x\","
-					"\"oldBytes\":%llu,"
-					"\"newBytes\":%llu,"
-					"\"oldVertices\":%u,"
-					"\"newVertices\":%u,"
-					"\"stride\":%u,\"slot\":%u,"
-					"\"cache\":\"%s\"",
-					section ? section : L"",
-					triggerHash,
-					static_cast<unsigned long long>(currentByteWidth),
-					static_cast<unsigned long long>(requiredByteWidth),
-					originalVertexCount,
-					overrideVertexCount,
-					uavStride,
-					resizedOutputSlot,
-					resizedUavCacheHit ? "hit" : "miss");
-#endif
 			}
 			if (!outputUavResized)
 			{
@@ -10836,11 +10370,6 @@ static bool ApplyPreSkinDescriptorTablePatchLocked(
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 	BumpPreSkinReplacementMutationGeneration();
 
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12PreSkinningApply",
-								"\"status\":\"srv_table_patched\",\"section\":\"%S\",\"triggerHash\":\"%08x\",\"tables\":%zu,\"descriptors\":%u",
-								section ? section : L"", triggerHash, tables.size(), totalDescriptors);
-#endif
 	return true;
 }
 
@@ -10966,24 +10495,7 @@ static bool ApplyPreSkinBindingPatchLocked(
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 	BumpPreSkinReplacementMutationGeneration();
 
-#if defined(_DEBUG)
-	if (!alreadyPatched)
-	{
-		DX12LogManager::DebugFields("DX12PreSkinningApply",
-									"\"status\":\"patched\",\"section\":\"%S\",\"resource\":\"%S\",\"triggerHash\":\"%08x\",\"root\":%u,\"range\":%u,\"uRegister\":%u,\"space\":%u,\"targetCpu\":\"0x%zx\",\"bytes\":%llu,\"stride\":%u,\"producerResource\":\"%p\",\"producerBytes\":%llu,\"producerStride\":%u",
-									section ? section : L"", replacement->name.c_str(), triggerHash,
-									binding.rootParameterIndex, binding.rangeIndex,
-									binding.shaderRegister, binding.registerSpace,
-									binding.descriptor.cpuHandle,
-									static_cast<unsigned long long>(replacement->byteWidth),
-									replacement->stride,
-									producer.descriptor.resource,
-									static_cast<unsigned long long>(producer.descriptor.viewSize),
-									producer.descriptor.structureByteStride);
-	}
-#else
 	(void)alreadyPatched;
-#endif
 	return true;
 }
 
@@ -11142,12 +10654,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	{
 		if (!hasExplicitDispatch)
 		{
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12PreSkinningApply",
-										"\"status\":\"skip_missing_explicit_dispatch\",\"section\":\"%S\",\"handlingSkip\":%s",
-										hashMatch.config ? hashMatch.config->section.c_str() : L"",
-										(hashMatch.config && hashMatch.config->handlingSkip) ? "true" : "false");
-#endif
 		}
 		else
 		{
@@ -11604,25 +11110,8 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 			state.originalOutputByteWidth,
 			state.byteWidth,
 			state.stride);
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields(
-			"DX12PreSkinningApply",
-			"\"status\":\"output_copy_ready\","
-			"\"present\":%ld,\"producerGpuVa\":\"0x%llx\","
-			"\"consumerGpuVa\":\"0x%llx\",\"bytes\":%llu,\"slot\":%u",
-			DX12RuntimeState::GetPresentCount(),
-			static_cast<unsigned long long>(state.resource->GetGPUVirtualAddress()),
-			static_cast<unsigned long long>(
-				state.outputVertexResource->GetGPUVirtualAddress()),
-			static_cast<unsigned long long>(state.byteWidth),
-			state.outputResizeSlot);
-#endif
 	}
 
-#if defined(_DEBUG)
-	const size_t restoredDescriptorCount = state.descriptorRestores.size();
-	const size_t restoredTableCount = state.tableRestores.size();
-#endif
 	if (state.patchHeap)
 	{
 		ID3D12DescriptorHeap *restoreCbvSrvUavHeap =
@@ -11707,15 +11196,6 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		ReleaseMovedPreSkinResources(&releasePreSkinResources);
 	}
 
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12PreSkinningApply",
-								"\"status\":\"post_dispatch\",\"section\":\"%S\",\"present\":%ld,\"root\":%u,\"bytes\":%llu,\"stride\":%u,\"restoredDescriptors\":%zu,\"restoredTables\":%zu",
-								state.activeConfig.section.c_str(),
-								DX12RuntimeState::GetPresentCount(),
-								state.rootParameterIndex,
-								static_cast<unsigned long long>(state.byteWidth), state.stride,
-								restoredDescriptorCount, restoredTableCount);
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -11812,18 +11292,12 @@ bool DX12ModReplaceShaderBytecode(
 	std::vector<unsigned char> bytes;
 	if (!ReadFileBytes(path, &bytes))
 	{
-		DX12LogManager::DebugFields("DX12ShaderOverrideMissingReplacement",
-									"\"section\":\"%S\",\"stage\":\"%s\",\"hash\":\"%016llx\",\"path\":\"%S\"",
-									section.c_str(), stage, static_cast<unsigned long long>(hash), path);
 		return false;
 	}
 
 	storage->swap(bytes);
 	replacement->pShaderBytecode = storage->data();
 	replacement->BytecodeLength = storage->size();
-	DX12LogManager::DebugFields("DX12ShaderOverrideApplied",
-								"\"section\":\"%S\",\"stage\":\"%s\",\"hash\":\"%016llx\",\"path\":\"%S\",\"bytes\":%zu",
-								section.c_str(), stage, static_cast<unsigned long long>(hash), path, storage->size());
 	return true;
 }
 
@@ -13149,62 +12623,6 @@ static void BuildDx12CompiledShaderOverridePlans(
 	}
 }
 
-static void LogShaderOverrideCommandListLimited(
-	const char *phase, const std::vector<const Bunny::ShaderOverrideConfig *> &configs,
-	const DX12ModIaReplacement &replacement)
-{
-#if defined(_DEBUG)
-	if (!kVerboseEnabled)
-		return;
-	static volatile LONG logCount = 0;
-	if (InterlockedIncrement(&logCount) > 512)
-		return;
-
-	std::wstring sections;
-	for (const Bunny::ShaderOverrideConfig *config : configs)
-	{
-		if (!config)
-			continue;
-		if (!sections.empty())
-			sections += L";";
-		sections += config->section;
-	}
-
-	char drawText[512] = {};
-	size_t used = 0;
-	for (const DX12ModIaReplacement::DrawCall &draw : replacement.draws)
-	{
-		int written = 0;
-		if (draw.indexed)
-		{
-			written = sprintf_s(drawText + used, sizeof(drawText) - used,
-								"%sDI:%u,%u,%d", used ? ";" : "", draw.count, draw.start,
-								draw.baseVertex);
-		}
-		else
-		{
-			written = sprintf_s(drawText + used, sizeof(drawText) - used,
-								"%sD:%u,%u", used ? ";" : "", draw.count, draw.start);
-		}
-		if (written <= 0)
-			break;
-		used += static_cast<size_t>(written);
-		if (used >= sizeof(drawText) - 1)
-			break;
-	}
-
-	DX12LogManager::DebugFields("DX12ShaderOverrideCommandList",
-								  "\"phase\":\"%s\",\"matches\":%zu,\"skip\":%s,\"draws\":%zu,\"drawList\":\"%s\",\"sections\":\"%S\"",
-								  phase ? phase : "", configs.size(), replacement.skip ? "true" : "false",
-								  replacement.draws.size(), drawText, sections.c_str());
-#else
-	(void)phase;
-	(void)configs;
-	(void)replacement;
-#endif
-}
-
-
 static void ReleaseLoadedResourcesLocked()
 {
 	for (auto &item : gLoadedResources) {
@@ -14050,13 +13468,6 @@ static uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBin
 		uint32_t hash = 0;
 		if (DX12TryGetTextureHash(binding.descriptor.resource, &hash))
 			return hash;
-		DX12LogManager::DebugFields("DX12TextureHashCache",
-			"\"stage\":\"runtime_hash_miss\",\"resource\":\"%p\",\"dimension\":%u,\"format\":%u,\"width\":%llu,\"height\":%u",
-			binding.descriptor.resource,
-			static_cast<UINT>(binding.descriptor.resourceDesc.Dimension),
-			static_cast<UINT>(binding.descriptor.resourceDesc.Format),
-			static_cast<unsigned long long>(binding.descriptor.resourceDesc.Width),
-			binding.descriptor.resourceDesc.Height);
 	}
 	return 0;
 }
@@ -14512,23 +13923,6 @@ static bool FindDescriptorTextureOverrides(
 			(resourceHashes[index] = HashDescriptorBindingResource(binding));
 		const uint32_t descriptorHash =
 			HashDescriptorBinding(commandList, cachedDevice, binding);
-#if defined(_DEBUG)
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
-			"stage=this_candidate,targetSlot=%u,bindSpace=%s,slot=%u,root=%u,offset=%u,resourceHash=%08x,descriptorHash=%08x,resource=0x%p,dimension=%u,resourceFormat=%u,viewFormat=%u,width=%llu,height=%u",
-			target.slot,
-			compute ? "compute" : "graphics",
-			binding.shaderRegister,
-			binding.rootParameterIndex,
-			binding.descriptorOffset,
-			resourceHash,
-			descriptorHash,
-			binding.descriptor.resource,
-			binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Dimension) : 0,
-			binding.descriptor.hasResourceDesc ? static_cast<UINT>(binding.descriptor.resourceDesc.Format) : 0,
-			binding.descriptor.viewFormat,
-			binding.descriptor.hasResourceDesc ? static_cast<unsigned long long>(binding.descriptor.resourceDesc.Width) : 0ull,
-			binding.descriptor.hasResourceDesc ? binding.descriptor.resourceDesc.Height : 0);
-#endif
 		AppendTextureOverrideCandidateMatchesByHash(
 			*snapshot,
 			resourceHash,
@@ -14656,30 +14050,6 @@ static UINT IaViewByteWidthForResource(const DX12LoadedResource &resource, ID3D1
 		byteWidth = resource.srvByteWidth;
 	return static_cast<UINT>((std::min)(byteWidth, static_cast<UINT64>(UINT_MAX)));
 }
-static void LogIaResourceBindLimited(
-	const char *target, uint32_t slot, const DX12LoadedResource &resource,
-	ID3D12Resource *iaResource)
-{
-#if defined(_DEBUG)
-	const bool usingUav = resource.uavResource && iaResource == resource.uavResource;
-	const bool usingSrv = resource.srvResource && iaResource == resource.srvResource;
-	DX12LogManager::DebugFields("DX12IaResourceBind",
-		"\"target\":\"%s\",\"slot\":%u,\"resource\":\"%S\",\"source\":\"%s\",\"bytes\":%llu,\"viewBytes\":%u,\"uavBytes\":%llu,\"stride\":%u,\"gpuVa\":\"0x%llx\"",
-		target ? target : "", slot, resource.name.c_str(),
-		usingUav ? "uav" : (usingSrv ? "srv" : "upload"),
-		static_cast<unsigned long long>(resource.byteWidth),
-		IaViewByteWidthForResource(resource, iaResource),
-		static_cast<unsigned long long>(resource.uavByteWidth),
-		resource.stride,
-		iaResource ? static_cast<unsigned long long>(iaResource->GetGPUVirtualAddress()) : 0ull);
-#else
-	(void)target;
-	(void)slot;
-	(void)resource;
-	(void)iaResource;
-#endif
-}
-
 static void ApplyIaResourceBarriers(
 	ID3D12GraphicsCommandList *commandList, const DX12IaResourceViewSnapshot &snapshot)
 {
@@ -14741,8 +14111,7 @@ static bool AppendResourceViewsForCommandList(
 					iaState.indexView.Format : DXGI_FORMAT_R32_UINT);
 			replacement->RetainResource(snapshot.resource);
 			replacement->hasIndexBuffer = true;
-			LogIaResourceBindLimited("ib", 0, snapshot.metadata, snapshot.resource);
-			changed = true;
+						changed = true;
 		}
 		ReleaseIaResourceViewSnapshot(&snapshot);
 	}
@@ -14797,8 +14166,7 @@ static bool AppendResourceViewsForCommandList(
 				view.StrideInBytes = snapshot.metadata.stride ? snapshot.metadata.stride :
 					(sourceSlot ? sourceSlot->vertexView.StrideInBytes : 0);
 				replacement->RetainResource(snapshot.resource);
-				LogIaResourceBindLimited("vb", item.slot, snapshot.metadata, snapshot.resource);
-				changed = true;
+								changed = true;
 				ReleaseIaResourceViewSnapshot(&snapshot);
 			}
 		}
@@ -14878,10 +14246,6 @@ static bool FindTargetTextureOverride(
 		matches->clear();
 	if (target.kind == Bunny::CommandListTargetKind::IndexBuffer) {
 		if (!iaState.hasIndexBuffer) {
-#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12IaOverrideCheck",
-				"\"target\":\"ib\",\"result\":\"no_ib\",\"hash\":\"%08x\"", iaState.indexHash);
-#endif
 			return false;
 		}
 		const DX12IaTargetTextureOverrideCacheKey cacheKey =
@@ -14940,23 +14304,11 @@ static bool FindTargetTextureOverride(
 		StoreIaTargetTextureOverrideCache(cacheKey, resolvedMatches);
 		if (matches)
 			*matches = resolvedMatches;
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaOverrideCheck",
-			"\"target\":\"ib\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
-			matchedHash, found ? "true" : "false",
-			resolvedMatches.size());
-#endif
 		return found;
 	}
 
 	if (target.kind == Bunny::CommandListTargetKind::VertexBuffer) {
 		const DX12IaBufferHash *slot = FindIaVertexSlot(iaState, target.slot);
-#if defined(_DEBUG)
-		if (!slot) {
-			DX12LogManager::DebugFields("DX12IaOverrideCheck",
-				"\"target\":\"vb%u\",\"result\":\"no_slot\"", target.slot);
-		}
-#endif
 		if (!slot)
 			return false;
 		const DX12IaTargetTextureOverrideCacheKey cacheKey =
@@ -15015,12 +14367,6 @@ static bool FindTargetTextureOverride(
 		StoreIaTargetTextureOverrideCache(cacheKey, resolvedMatches);
 		if (matches)
 			*matches = resolvedMatches;
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaOverrideCheck",
-			"\"target\":\"vb%u\",\"hash\":\"%08x\",\"found\":%s,\"configs\":%zu",
-			target.slot, matchedHash, found ? "true" : "false",
-			resolvedMatches.size());
-#endif
 		return found;
 	}
 
@@ -17668,11 +17014,6 @@ public:
 			mCommandListStack.push_back(name);
 			return true;
 		}
-#if defined(_DEBUG)
-		DX12LogManager::Fields("DX12CommandListCycleSuppressed",
-			"\"section\":\"%S\",\"depth\":%zu", name.c_str(),
-			mCommandListStack.size());
-#endif
 		return false;
 	}
 
@@ -17779,11 +17120,6 @@ static void ProcessDx12KeyBindingsForFrame()
 		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
 	ReleaseSRWLockExclusive(&gModLock);
 
-#if defined(_DEBUG)
-	if (!actions.empty())
-		DX12LogManager::DebugFields("DX12KeyBindings",
-			"\"actions\":%zu", actions.size());
-#endif
 
 	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
 		RunNamedCommandListVmOnly(action.commandList, action.includePost);
@@ -17824,14 +17160,8 @@ static volatile LONG gShaderOverrideNegativeCacheDynamicBlockedLogCount = 0;
 
 static bool AllowShaderOverrideHotPathLog(volatile LONG *counter)
 {
-#if defined(_DEBUG)
-	if (!kVerboseEnabled)
-		return false;
-	return InterlockedIncrement(counter) <= ShaderOverrideHotPathLogLimit;
-#else
 	(void)counter;
 	return false;
-#endif
 }
 
 static Bunny::ShaderOverrideConfig MakeShaderOverrideFromRegex(
@@ -17866,14 +17196,6 @@ static void AppendShaderRegexForShaderLocked(
 		if (!seen->insert(regex.section).second)
 			continue;
 		regexConfigs->push_back(MakeShaderOverrideFromRegex(regex, hash));
-#if defined(_DEBUG)
-		if (kVerboseEnabled) {
-			DX12LogManager::DebugFields("DX12ShaderRegexMatch",
-				"\"section\":\"%S\",\"hash\":\"%016llx\",\"model\":\"%S\"",
-				regex.section.c_str(), static_cast<unsigned long long>(hash),
-				std::wstring(shaderModel.begin(), shaderModel.end()).c_str());
-		}
-#endif
 	}
 }
 
@@ -18794,23 +18116,6 @@ inline void DX12ShaderOverrideIaTargetPlanUtils::CollectCommandListLocked(
 		commandListStack->erase(name);
 }
 
-static void LogShaderOverrideCommandListSnapshotLimited(
-	const char *phase, const std::vector<Bunny::ShaderOverrideConfig> &configs,
-	const DX12ModIaReplacement &replacement)
-{
-#if defined(_DEBUG)
-	std::vector<const Bunny::ShaderOverrideConfig*> pointers;
-	pointers.reserve(configs.size());
-	for (const Bunny::ShaderOverrideConfig &config : configs)
-		pointers.push_back(&config);
-	LogShaderOverrideCommandListLimited(phase, pointers, replacement);
-#else
-	(void)phase;
-	(void)configs;
-	(void)replacement;
-#endif
-}
-
 static bool ShaderOverrideNegativeCacheEnabled(
 	bool allowDescriptorIndependentNegativeCache)
 {
@@ -18935,13 +18240,6 @@ static bool TryFindCachedShaderOverridesForPsoLocked(
 	if (cached != gShaderOverridePsoMatchCache.end() &&
 	    cached->second.generation == gReloadGeneration) {
 		BuildShaderOverrideConfigPointers(&cached->second, dispatch, configs);
-#if defined(_DEBUG)
-		if (AllowShaderOverrideHotPathLog(&gShaderOverridePsoCacheHitLogCount)) {
-			DX12LogManager::DebugFields("DX12ShaderOverridePsoMatchCache",
-				"\"status\":\"hit\",\"pso\":\"%p\",\"dispatch\":%s,\"matches\":%zu",
-				pipelineState, dispatch ? "true" : "false", configs->size());
-		}
-#endif
 		return true;
 	}
 	return false;
@@ -19654,12 +18952,6 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			firstVertex, firstIndex, firstInstance,
 			drawMatchUsage);
 		if (TryFindShaderOverrideNegativeCache(negativeCacheKey)) {
-#if defined(_DEBUG)
-			if (AllowShaderOverrideHotPathLog(&gShaderOverrideNegativeCacheHitLogCount)) {
-				DX12LogManager::DebugFields("DX12ShaderOverrideNegativeCache",
-					"\"status\":\"hit\",\"pso\":\"%p\"", pipelineState);
-			}
-#endif
 			return false;
 		}
 	}
@@ -19742,8 +19034,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		device, commandList, iaState, pendingResourceViews, replacement);
 	if (resourcesChanged)
 		executor.MarkExternalChange();
-	LogShaderOverrideCommandListSnapshotLimited("pre", configSnapshot, *replacement);
-	const bool changed = executor.Changed() || ReplacementHasAnyEffect(*replacement);
+		const bool changed = executor.Changed() || ReplacementHasAnyEffect(*replacement);
 	if (!deviceFromCache)
 		device->Release();
 
@@ -19767,30 +19058,8 @@ bool DX12ModPrepareShaderOverrideReplacement(
 		!executor.observedDynamicCommandState;
 	if (negativeCacheStoreSafe) {
 		StoreShaderOverrideNegativeCache(negativeCacheKey);
-#if defined(_DEBUG)
-		if (AllowShaderOverrideHotPathLog(&gShaderOverrideNegativeCacheStoreLogCount)) {
-			DX12LogManager::DebugFields("DX12ShaderOverrideNegativeCache",
-				"\"status\":\"store\",\"pso\":\"%p\"", pipelineState);
-		}
-#endif
 	} else if (negativeCacheEnabled && !changed && executor.observedDescriptorTarget) {
-#if defined(_DEBUG)
-		if (AllowShaderOverrideHotPathLog(
-				&gShaderOverrideNegativeCacheDescriptorBlockedLogCount)) {
-			DX12LogManager::DebugFields("DX12ShaderOverrideNegativeCache",
-				"\"status\":\"descriptor_blocked\",\"pso\":\"%p\"",
-				pipelineState);
-		}
-#endif
 	} else if (negativeCacheEnabled && !changed && executor.observedDynamicCommandState) {
-#if defined(_DEBUG)
-		if (AllowShaderOverrideHotPathLog(
-				&gShaderOverrideNegativeCacheDynamicBlockedLogCount)) {
-			DX12LogManager::DebugFields("DX12ShaderOverrideNegativeCache",
-				"\"status\":\"dynamic_state_blocked\",\"pso\":\"%p\"",
-				pipelineState);
-		}
-#endif
 	}
 
 	return changed;
@@ -20081,9 +19350,6 @@ static ID3D12PipelineState *CreateGraphicsReplacement(DX12StoredPso *record)
 	ID3D12PipelineState *replacement = nullptr;
 	HRESULT hr = DX12DeviceHooks::CreateGraphicsPipelineStateOriginal(
 		record->device, &desc, IID_PPV_ARGS(&replacement));
-	DX12LogManager::DebugFields("DX12ReplacementPsoCreate",
-		"\"kind\":\"graphics\",\"hr\":\"0x%lx\",\"pso\":\"%p\"",
-		hr, replacement);
 	return SUCCEEDED(hr) ? replacement : nullptr;
 }
 
@@ -20099,9 +19365,6 @@ static ID3D12PipelineState *CreateComputeReplacement(DX12StoredPso *record)
 	ID3D12PipelineState *replacement = nullptr;
 	HRESULT hr = DX12DeviceHooks::CreateComputePipelineStateOriginal(
 		record->device, &desc, IID_PPV_ARGS(&replacement));
-	DX12LogManager::DebugFields("DX12ReplacementPsoCreate",
-		"\"kind\":\"compute\",\"hr\":\"0x%lx\",\"pso\":\"%p\"",
-		hr, replacement);
 	return SUCCEEDED(hr) ? replacement : nullptr;
 }
 

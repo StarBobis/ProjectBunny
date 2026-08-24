@@ -969,7 +969,7 @@ public:
 		ApiWallBucketCount
 	};
 
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 	class ApiWallScope
 	{
 	public:
@@ -1199,7 +1199,7 @@ public:
 	static LARGE_INTEGER Now()
 	{
 		LARGE_INTEGER value = {};
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		QueryPerformanceCounter(&value);
 	#endif
 		return value;
@@ -1215,7 +1215,7 @@ public:
 
 	static LONG64 ElapsedUs(const LARGE_INTEGER &begin)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		const LARGE_INTEGER end = Now();
 		return DeltaUs(begin.QuadPart, end.QuadPart);
 	#else
@@ -1233,7 +1233,7 @@ public:
 
 	static UINT64 TimingFenceCompletedValue(ID3D12Fence *fence)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		return FenceCompletedValue(fence);
 	#else
 		(void)fence;
@@ -1260,7 +1260,7 @@ public:
 			*kernelUs = 0;
 		if (userUs)
 			*userUs = 0;
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		FILETIME createTime = {};
 		FILETIME exitTime = {};
 		FILETIME kernelTime = {};
@@ -1308,7 +1308,7 @@ public:
 		DWORD threadId,
 		ULONG skipFrames = 0)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		void *frames[24] = {};
 		const USHORT captured = CaptureStackBackTrace(
 			static_cast<DWORD>(skipFrames + 1),
@@ -1403,7 +1403,7 @@ public:
 
 	static void RegisterFrameLatencyWaitableObject(IDXGISwapChain *swapChain, HANDLE handle)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		InterlockedExchange64(&LastFrameLatencyHandle,
 			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(handle)));
 		InterlockedExchange64(&LastFrameLatencySwapChain,
@@ -1432,7 +1432,7 @@ public:
 		UINT64 completedAfter,
 		HRESULT hr)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		InterlockedExchange64(&LastFenceEventHandle,
 			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(eventHandle)));
 		InterlockedExchange64(&LastFenceEventFence,
@@ -1476,7 +1476,7 @@ public:
 		bool matchesFenceEvent,
 		bool matchesFrameLatency)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		InterlockedExchange64(&LastSystemWaitHandle,
 			static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(primaryHandle)));
 		InterlockedExchange64(&LastSystemWaitSecondaryHandle,
@@ -1513,7 +1513,7 @@ public:
 		bool matchesFenceEvent,
 		bool matchesFrameLatency)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		const LONG64 safeUs = ClampUs(us);
 		InterlockedIncrement64(&SystemWaitCalls);
 		AddUs(&SystemWaitTotalUs, safeUs);
@@ -2232,7 +2232,7 @@ public:
 		size_t itemCount,
 		LONG64 us)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		const LONG64 safeUs = ClampUs(us);
 		const LONG index = FindCpuStageBucketCached(category, stage, kind);
 		if (index >= 0) {
@@ -2295,7 +2295,7 @@ public:
 	{
 		DX12LogManager::DX12LogCostSnapshot snapshot = {};
 		DX12LogManager::TakeLogCostSnapshot(&snapshot);
-		if (!snapshot.fieldCalls && !snapshot.textCalls && !snapshot.debugFieldCalls &&
+		if (!snapshot.fieldCalls && !snapshot.textCalls &&
 				!snapshot.enqueueCalls && !snapshot.formatUs && !snapshot.enqueueUs &&
 				!snapshot.droppedLines) {
 			return;
@@ -2305,13 +2305,12 @@ public:
 			return;
 		DX12LogManager::Fields("DX12LogCost",
 			"\"present\":%ld,\"fieldCalls\":%lld,\"textCalls\":%lld,"
-			"\"debugFieldCalls\":%lld,\"enqueueCalls\":%lld,\"formatUs\":%lld,"
+			"\"enqueueCalls\":%lld,\"formatUs\":%lld,"
 			"\"enqueueUs\":%lld,\"totalUs\":%lld,\"droppedLines\":%lld,"
 			"\"frameWallUs\":%lld,\"framePctX100\":%lld",
 			present,
 			static_cast<long long>(snapshot.fieldCalls),
 			static_cast<long long>(snapshot.textCalls),
-			static_cast<long long>(snapshot.debugFieldCalls),
 			static_cast<long long>(snapshot.enqueueCalls),
 			static_cast<long long>(snapshot.formatUs),
 			static_cast<long long>(snapshot.enqueueUs),
@@ -2323,7 +2322,7 @@ public:
 
 	static void LogPresentEnter(const char *api, IDXGISwapChain *swapChain, UINT syncInterval, UINT flags)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)api;
 		(void)swapChain;
 		(void)syncInterval;
@@ -2352,7 +2351,7 @@ public:
 
 	static void LogPresentLeave(const char *api, IDXGISwapChain *swapChain, HRESULT hr)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		const LARGE_INTEGER now = Now();
 		const LONGLONG enter = InterlockedCompareExchange64(&CurrentPresentEnterQpc, 0, 0);
 		const LONGLONG previousLeave = InterlockedCompareExchange64(&LastPresentLeaveQpc, 0, 0);
@@ -2382,7 +2381,7 @@ public:
 
 	static void LogPresentSlice(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr, LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)api;
 		(void)swapChain;
 		(void)hr;
@@ -2430,7 +2429,7 @@ public:
 
 	static void LogQueueExecuteSlice(const char *stage, ID3D12CommandQueue *queue, UINT numCommandLists, LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)queue;
 
 		const LONG64 safeUs = ClampUs(us);
@@ -2491,7 +2490,7 @@ public:
 		HRESULT hr,
 		LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)stage;
 		(void)queue;
 		(void)fence;
@@ -2530,7 +2529,7 @@ public:
 		HRESULT hr,
 		LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)api;
 		(void)stage;
 		(void)fence;
@@ -2555,7 +2554,7 @@ public:
 
 	static void LogEventWaitSlice(const char *api, const char *stage, HANDLE eventHandle, DWORD waitMs, DWORD waitResult, DWORD lastError, LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)api;
 		(void)stage;
 		(void)eventHandle;
@@ -2578,7 +2577,7 @@ public:
 
 	static void LogWorkerTask(const char *queueName, const char *stage, UINT taskKind, UINT64 sequence, size_t batchSize, size_t pending, DWORD enqueueThreadId, LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)taskKind;
 		(void)sequence;
 		(void)batchSize;
@@ -2602,7 +2601,7 @@ public:
 
 	static void LogWorkerWait(const char *queueName, const char *reason, const char *mode, UINT64 targetSequence, UINT64 completedSequence, size_t pending, LONG64 us)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		(void)queueName;
 		(void)reason;
 		(void)targetSequence;

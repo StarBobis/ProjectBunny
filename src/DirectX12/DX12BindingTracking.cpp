@@ -2896,12 +2896,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
 		}
 	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
-		DX12LogManager::DebugFields("DX12PreSkinRuntimeDescriptorSnapshot",
-			"event=skip_cache_unstable,commandList=%p,uavs=%zu,srvs=%zu,cbvs=%zu",
-			commandList,
-			localUavs.size(),
-			localSrvs.size(),
-			localCbvs.size());
 	}
 
 	if (uavs) *uavs = std::move(localUavs);
@@ -3920,13 +3914,6 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	tlsComputeTableCache.cl = nullptr;
 	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsChanged(
 		invalidatedGraphicsTables, invalidatedComputeTables);
-	DX12LogManager::DebugFields("DX12BindingDescriptorHeapsChanged",
-		"commandList=%p,cbvSrvUavHeap=%p,samplerHeap=%p,invalidatedGraphicsTables=%u,invalidatedComputeTables=%u",
-		commandList,
-		cbvSrvUavHeap,
-		samplerHeap,
-		invalidatedGraphicsTables,
-		invalidatedComputeTables);
 	return true;
 }
 
@@ -5064,15 +5051,6 @@ bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
 		if (DX12ResolveBufferResourceByGpuVa(drawGpuVa, drawSize, &drawResource) &&
 			DX12BindingFrameExport::ProjectResolvedIaResourceToView(
 				viewGpuVa, viewSize, drawGpuVa, drawSize, drawResource, resource)) {
-#if defined(_DEBUG)
-			DX12FrameAnalysis::LogJsonFunc("IaBufferResolveFallback",
-				"\"mode\":\"draw_range\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"resource\":\"%p\"",
-				static_cast<unsigned long long>(viewGpuVa),
-				static_cast<unsigned long long>(viewSize),
-				static_cast<unsigned long long>(drawGpuVa),
-				static_cast<unsigned long long>(drawSize),
-				resource->resource);
-#endif
 			return true;
 		}
 	}
@@ -5083,15 +5061,6 @@ bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
 			drawGpuVa,
 			drawSize,
 			resource)) {
-#if defined(_DEBUG)
-		DX12FrameAnalysis::LogJsonFunc("IaBufferResolveFallback",
-			"\"mode\":\"combined_range\",\"view_gpu\":\"0x%llx\",\"view_bytes\":%llu,\"draw_gpu\":\"0x%llx\",\"draw_bytes\":%llu,\"resource\":\"%p\"",
-			static_cast<unsigned long long>(viewGpuVa),
-			static_cast<unsigned long long>(viewSize),
-			static_cast<unsigned long long>(drawGpuVa),
-			static_cast<unsigned long long>(drawSize),
-			resource->resource);
-#endif
 		return true;
 	}
 

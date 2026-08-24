@@ -1277,7 +1277,7 @@ public:
 
 		for (int i = 0; i < 200; ++i) {
 			DXGIHooks::Install();
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			// Wait-object instrumentation hooks kernel32 exports process-wide;
 			// it exists to attribute stall stacks in TIMING builds and must not
 			// ship in normal Release (DX11 has no equivalent global wait hook).
@@ -1352,7 +1352,7 @@ public:
 		DX12HangWatchdog::Stop();
 		DX12AsyncReadbackShutdown();
 		DX12NativeOverlayShutdown();
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12WaitHooks::Shutdown();
 #endif
 		DXGIHooks::Shutdown();

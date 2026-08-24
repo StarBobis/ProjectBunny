@@ -41,27 +41,12 @@ public:
 // No-timestamp macros pure fprintf, DX11 speed
 // Prefixed DX12 to avoid collision with DX12FrameAnalysis::LogInfo etc.
 
-#if defined(_DEBUG)
-#define DX12LogDebug(fmt, ...) \
-	do { if (DX12LogUtils::LogFile) fprintf(DX12LogUtils::LogFile, fmt, __VA_ARGS__); } while (0)
-#else
-#define DX12LogDebug(fmt, ...) do {} while (0)
-#endif
-
 #define DX12LogInfo(fmt, ...) \
 	do { if (DX12LogUtils::LogFile) fprintf(DX12LogUtils::LogFile, fmt, __VA_ARGS__); } while (0)
 
 // Timestamped macros GetTickCount64() prefix + direct fprintf
 // Format:  raw_tick\tmessage\n
 // Uses string-literal concatenation: "%llu\t" fmt
-
-#if defined(_DEBUG)
-#define DX12LogDebugTS(fmt, ...) \
-	do { if (DX12LogUtils::LogFile) fprintf(DX12LogUtils::LogFile, "%llu\t" fmt, \
-		static_cast<unsigned long long>(GetTickCount64()), __VA_ARGS__); } while (0)
-#else
-#define DX12LogDebugTS(fmt, ...) do {} while (0)
-#endif
 
 #define DX12LogInfoTS(fmt, ...) \
 	do { if (DX12LogUtils::LogFile) fprintf(DX12LogUtils::LogFile, "%llu\t" fmt, \
@@ -231,18 +216,16 @@ enum class DX12LogMode : unsigned char
 constexpr DX12LogMode gLogMode =
 #if defined(DX12_RELEASE_TIMING)
 	DX12LogMode::ReleaseTiming;
-#elif defined(_DEBUG)
-	DX12LogMode::Debug;
 #else
 	DX12LogMode::Release;
 #endif
 
 // Verbose per-call/per-present diagnostics: Debug only.
-constexpr bool kVerboseEnabled = gLogMode == DX12LogMode::Debug;
+constexpr bool kVerboseEnabled = false;
 
 // Detailed timing tables (ApiWall/HotPath/FrameTimeline): Debug + Timing.
 constexpr bool kTimingEnabled =
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 	true;
 #else
 	false;
@@ -257,7 +240,6 @@ public:
 	public:
 		LONG64 fieldCalls = 0;
 		LONG64 textCalls = 0;
-		LONG64 debugFieldCalls = 0;
 		LONG64 enqueueCalls = 0;
 		LONG64 formatUs = 0;
 		LONG64 enqueueUs = 0;
@@ -271,12 +253,9 @@ public:
 	std::deque<std::string> queue;
 	volatile LONG droppedLines = 0;
 	volatile LONG stopRequested = 0;
-#if !defined(_DEBUG)
 	std::atomic<bool> releaseStartupLogging{ true };
-#endif
 	inline static volatile LONG64 LogCostFieldCalls = 0;
 	inline static volatile LONG64 LogCostTextCalls = 0;
-	inline static volatile LONG64 LogCostDebugFieldCalls = 0;
 	inline static volatile LONG64 LogCostEnqueueCalls = 0;
 	inline static volatile LONG64 LogCostFormatUs = 0;
 	inline static volatile LONG64 LogCostEnqueueUs = 0;
@@ -295,11 +274,7 @@ public:
 
 	static size_t MaxQueuedLogLines()
 	{
-#if defined(_DEBUG)
-		return 262144;
-#else
 		return 8192;
-#endif
 	}
 
 	static LARGE_INTEGER LogFrequency()
@@ -348,7 +323,6 @@ public:
 			return;
 		snapshot->fieldCalls = TakeLong64(&LogCostFieldCalls);
 		snapshot->textCalls = TakeLong64(&LogCostTextCalls);
-		snapshot->debugFieldCalls = TakeLong64(&LogCostDebugFieldCalls);
 		snapshot->enqueueCalls = TakeLong64(&LogCostEnqueueCalls);
 		snapshot->formatUs = TakeLong64(&LogCostFormatUs);
 		snapshot->enqueueUs = TakeLong64(&LogCostEnqueueUs);
@@ -398,9 +372,7 @@ public:
 	static bool Open()
 	{
 		DX12LogManager &state = Get();
-#if !defined(_DEBUG)
 		state.releaseStartupLogging.store(true, std::memory_order_relaxed);
-#endif
 		wchar_t path[MAX_PATH];
 		if (!GetModuleFileNameW(DX12RuntimeState::GetModule(), path, MAX_PATH))
 			return false;
@@ -465,18 +437,7 @@ public:
 
 	static void EndReleaseStartupLogging()
 	{
-#if !defined(_DEBUG)
 		Get().releaseStartupLogging.store(false, std::memory_order_relaxed);
-#endif
-	}
-
-	static bool ShouldLogHookCall(const char *api)
-	{
-		if (!kVerboseEnabled)
-			return false;
-		if (!api || !api[0] || DX12InternalReplayState::IsActive())
-			return false;
-		return true;
 	}
 
 	static bool ReleaseShouldLogFunction(const char *func)
@@ -486,7 +447,7 @@ public:
 		// by kVerboseEnabled instead), so the timing tables are never dropped.
 		(void)func;
 		return true;
-#elif !defined(_DEBUG)
+#else
 		if (Get().releaseStartupLogging.load(std::memory_order_relaxed))
 			return true;
 		if (!func)
@@ -513,10 +474,7 @@ public:
 				return true;
 		}
 		return false;
-#else
-		(void)func;
-		return true;
-#endif
+	#endif
 	}
 
 	static void EnqueueLogLine(const char *line)
@@ -608,10 +566,8 @@ public:
 	{
 		if (!Get().log)
 			return;
-#if !defined(_DEBUG)
 		if (!ReleaseShouldLogFunction("Log"))
 			return;
-#endif
 
 		va_list args;
 		char message[2048];
@@ -627,22 +583,17 @@ public:
 		WriteLogLine("Log", fields, false);
 	}
 
-	static void FieldsV(const char *func, const char *fmt, va_list args, bool flush, bool debugCall)
+	static void FieldsV(const char *func, const char *fmt, va_list args, bool flush)
 	{
 		if (!Get().log)
 			return;
-#if !defined(_DEBUG)
 		if (!ReleaseShouldLogFunction(func))
 			return;
-#endif
 
 		const char *safeFunc = func ? func : "Unknown";
 		char extra[4096];
 		extra[0] = '\0';
-		if (debugCall)
-			InterlockedIncrement64(&LogCostDebugFieldCalls);
-		else
-			InterlockedIncrement64(&LogCostFieldCalls);
+		InterlockedIncrement64(&LogCostFieldCalls);
 
 		if (fmt && fmt[0]) {
 			const LARGE_INTEGER formatBegin = LogNow();
@@ -657,7 +608,7 @@ public:
 	{
 		va_list args;
 		va_start(args, fmt);
-		FieldsV(func, fmt, args, false, false);
+		FieldsV(func, fmt, args, false);
 		va_end(args);
 	}
 
@@ -665,43 +616,9 @@ public:
 	{
 		va_list args;
 		va_start(args, fmt);
-		FieldsV(func, fmt, args, true, false);
+		FieldsV(func, fmt, args, true);
 		va_end(args);
 	}
-
-#if defined(_DEBUG)
-	static void DebugFields(const char *func, const char *fmt, ...)
-	{
-		if (!Get().log || !kVerboseEnabled)
-			return;
-		va_list args;
-		va_start(args, fmt);
-		FieldsV(func, fmt, args, false, true);
-		va_end(args);
-	}
-
-	static void DebugFieldsFlush(const char *func, const char *fmt, ...)
-	{
-		if (!Get().log || !kVerboseEnabled)
-			return;
-		va_list args;
-		va_start(args, fmt);
-		FieldsV(func, fmt, args, true, true);
-		va_end(args);
-	}
-#else
-	static void DebugFields(const char *func, const char *fmt, ...)
-	{
-		(void)func;
-		(void)fmt;
-	}
-
-	static void DebugFieldsFlush(const char *func, const char *fmt, ...)
-	{
-		(void)func;
-		(void)fmt;
-	}
-#endif
 
 	static void Flush()
 	{
@@ -951,67 +868,5 @@ public:
 
 		if (!wroteKeyValue && !wroteText)
 			AppendStringField(dst, dstSize, "text", clean);
-	}
-};
-
-
-class DX12CommandListFlowDiagnostics
-{
-public:
-#if defined(_DEBUG)
-	static void LogDX12Call(const char *api, const void *object, const char *fmt = nullptr, ...)
-	{
-		if (!DX12LogManager::ShouldLogHookCall(api))
-			return;
-
-		char detail[1024];
-		detail[0] = '\0';
-		if (fmt && fmt[0]) {
-			va_list args;
-			va_start(args, fmt);
-			vsnprintf(detail, sizeof(detail), fmt, args);
-			va_end(args);
-		}
-
-		char apiJson[256];
-		char detailJson[2048];
-		DX12JsonUtils::EscapeString(apiJson, sizeof(apiJson), api ? api : "");
-		DX12JsonUtils::EscapeString(detailJson, sizeof(detailJson), detail);
-		DX12LogManager::DebugFields("DX12HookCall",
-			"\"api\":%s,\"present\":%ld,\"this\":\"%p\",\"detail\":%s",
-			apiJson, DX12RuntimeState::GetPresentCount(), object, detailJson);
-	}
-#else
-	static __forceinline void LogDX12Call(const char *, const void *, const char * = nullptr, ...) {}
-#endif
-
-	static void LogQueueStage(
-		const char *api, const char *stage, ID3D12CommandQueue *queue,
-		UINT count = 0, ID3D12Fence *fence = nullptr, UINT64 value = 0, HRESULT hr = S_OK,
-		ULONGLONG elapsedMs = 0)
-	{
-#if defined(_DEBUG)
-		if (!kVerboseEnabled)
-			return;
-		if (SUCCEEDED(hr) && elapsedMs < 4 && stage && !strcmp(stage, "beforeOriginal"))
-			return;
-		if (SUCCEEDED(hr) && elapsedMs < 4 && api)
-			return;
-		DX12LogManager::DebugFields("DX12QueueStage",
-			"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"queue\":\"%p\","
-			"\"count\":%u,\"fence\":\"%p\",\"value\":%llu,\"hr\":\"0x%lx\",\"elapsedMs\":%llu",
-			api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), queue,
-			count, fence, static_cast<unsigned long long>(value), hr,
-			static_cast<unsigned long long>(elapsedMs));
-#else
-		(void)api;
-		(void)stage;
-		(void)queue;
-		(void)count;
-		(void)fence;
-		(void)value;
-		(void)hr;
-		(void)elapsedMs;
-#endif
 	}
 };

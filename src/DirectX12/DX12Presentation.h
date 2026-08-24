@@ -37,47 +37,6 @@ namespace DX12Wrapper
 }
 
 
-class DXGIHookDiagnostics
-{
-public:
-	static void LogHookCall(const char *api, const void *object)
-	{
-		DX12OriginalFunctionRegistry::LogHookCall(api, object);
-	}
-
-	static void LogPresentStage(
-		const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr = S_OK)
-	{
-		if (!kVerboseEnabled)
-			return;
-		DX12LogManager::DebugFieldsFlush("DX12PresentStage",
-			"\"api\":\"%s\",\"stage\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"hr\":\"0x%lx\"",
-			api ? api : "", stage ? stage : "", DX12RuntimeState::GetPresentCount(), swapChain, hr);
-	}
-
-	static void LogPresentDeviceRemovedReason(const char *api, IDXGISwapChain *swapChain, HRESULT presentHr)
-	{
-		if (SUCCEEDED(presentHr) || !swapChain)
-			return;
-
-		ID3D12Device *device = nullptr;
-		HRESULT queryHr = swapChain->GetDevice(IID_PPV_ARGS(&device));
-		if (FAILED(queryHr) || !device) {
-			DX12LogManager::DebugFieldsFlush("DX12DeviceRemoved",
-				"\"api\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"presentHr\":\"0x%lx\",\"queryHr\":\"0x%lx\"",
-				api ? api : "", DX12RuntimeState::GetPresentCount(), swapChain, presentHr, queryHr);
-			return;
-		}
-
-		const HRESULT reason = device->GetDeviceRemovedReason();
-		DX12LogManager::DebugFieldsFlush("DX12DeviceRemoved",
-			"\"api\":\"%s\",\"present\":%ld,\"swapchain\":\"%p\",\"presentHr\":\"0x%lx\",\"reason\":\"0x%lx\"",
-			api ? api : "", DX12RuntimeState::GetPresentCount(), swapChain, presentHr, reason);
-		device->Release();
-	}
-};
-
-
 class DXGIHookRuntime
 {
 public:
@@ -285,8 +244,7 @@ public:
 			BeginShaderDumpCapture();
 		} else if (DX12ShaderDumpIsCapturingFrame() || DX12ModNeedsPreSkinningUavProbe()) {
 			DX12BindingTracker::BeginFrame();
-			DXGIHookDiagnostics::LogPresentStage(api, "afterBindingBeginFrame", swapChain, hr);
-		}
+					}
 		// DX11 publishes feature changes from its Present-time frame actions.
 		// Capture begin/end transitions happen above, so publish them here rather
 		// than rebuilding global work flags at every queue submission.
@@ -295,8 +253,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			api, "hotpath_update", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(updateBegin));
-		DXGIHookDiagnostics::LogPresentStage(api, "afterHotPathUpdate", swapChain, hr);
-	}
+			}
 
 	// DXGI Present hook for the primary game swapchain.
 	//
@@ -390,7 +347,6 @@ public:
 			return skipHr;
 		}
 
-		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
 
 		// Reset per-frame counters (draws, dispatches, fast-forward hits, ...).
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -410,7 +366,6 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present", "beforeOriginal", swapChain);
 
 		// Call the real Present; time only the driver wait (profile timer is
 		// paused around it so the counter measures our wrapper, not the stall).
@@ -420,7 +375,7 @@ public:
 		_profile_timer.Resume();
 		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));
@@ -428,8 +383,6 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "original_present", swapChain, hr,
 			presentUs);
-		DXGIHookDiagnostics::LogPresentStage("Present", "afterOriginal", swapChain, hr);
-		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
 
 		// Present failed: finish profiling, flush logs and return the error.
 		if (FAILED(hr)) {
@@ -446,8 +399,7 @@ public:
 		RunPostPresentRuntime("Present", swapChain, hr, true);
 
 		// Advance the mod frame epoch (PreSkin producer set, per-frame mods).
-		DXGIHookDiagnostics::LogPresentStage("Present", "beforeModBeginFrame", swapChain, hr);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "mod_begin_frame", swapChain, hr,
@@ -468,7 +420,6 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present", "end", swapChain, hr);
 
 		// Close the per-frame timing timeline and return the Present result.
 		DX12OuterTimingProbeUtils::LogPresentLeave("Present", swapChain, hr);
@@ -533,7 +484,6 @@ public:
 			return skipHr;
 		}
 
-		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain1::Present1", swapChain);
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		LogAndResetPerFrameCounters();
@@ -551,22 +501,19 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present1", "beforeOriginal", swapChain);
-		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
+				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
 		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld", static_cast<long long>(presentUs));
 	#endif
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "original_present", swapChain, hr, presentUs);
-		DXGIHookDiagnostics::LogPresentStage("Present1", "afterOriginal", swapChain, hr);
-		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
-		if (FAILED(hr)) {
+						if (FAILED(hr)) {
 			_profile_timer.Finish();
 			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present1", swapChain, hr);
@@ -576,8 +523,7 @@ public:
 		DX12RuntimeState::IncrementPresentCount();
 		RunPostPresentRuntime("Present1", swapChain, hr, true);
 
-		DXGIHookDiagnostics::LogPresentStage("Present1", "beforeModBeginFrame", swapChain, hr);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "mod_begin_frame", swapChain, hr,
@@ -594,8 +540,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present1", "end", swapChain, hr);
-		DX12OuterTimingProbeUtils::LogPresentLeave("Present1", swapChain, hr);
+				DX12OuterTimingProbeUtils::LogPresentLeave("Present1", swapChain, hr);
 		return hr;
 	}
 };
@@ -1143,7 +1088,6 @@ public:
 		}
 
 		DX12_HOTPATH_TIME_BEGIN(PresentTotal);
-		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain::Present", swapChain);
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DXGIHookRuntime::LogAndResetPerFrameCounters();
@@ -1161,14 +1105,13 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperBeforeOriginal", swapChain);
-		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
+				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
 		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));
@@ -1176,9 +1119,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "original_present", swapChain, hr,
 			presentUs);
-		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperAfterOriginal", swapChain, hr);
-		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present", swapChain, hr);
-		if (FAILED(hr)) {
+						if (FAILED(hr)) {
 			_profile_timer.Finish();
 			DX12_HOTPATH_TIME_END(PresentTotal);
 			DX12Profiler::FlushFrame();
@@ -1193,8 +1134,7 @@ public:
 			"PresentWrapper", "post_original_runtime", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
-		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperBeforeModBeginFrame", swapChain, hr);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "mod_begin_frame", swapChain, hr,
@@ -1212,8 +1152,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present", "wrapperEnd", swapChain, hr);
-		DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+				DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
 		return hr;
 	}
 
@@ -1281,7 +1220,6 @@ public:
 			return skipHr;
 		}
 
-		DXGIHookDiagnostics::LogHookCall("IDXGISwapChain1::Present1", swapChain);
 
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DXGIHookRuntime::LogAndResetPerFrameCounters();
@@ -1299,14 +1237,13 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperBeforeOriginal", swapChain);
-		LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
+				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
 		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PresentWait\",\"us\":%lld",
 			static_cast<long long>(presentUs));
@@ -1314,9 +1251,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "original_present", swapChain, hr,
 			presentUs);
-		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperAfterOriginal", swapChain, hr);
-		DXGIHookDiagnostics::LogPresentDeviceRemovedReason("Present1", swapChain, hr);
-		if (FAILED(hr)) {
+						if (FAILED(hr)) {
 			_profile_timer.Finish();
 			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
@@ -1330,8 +1265,7 @@ public:
 			"Present1Wrapper", "post_original_runtime", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 
-		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperBeforeModBeginFrame", swapChain, hr);
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModBeginFrame(swapChain);
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "mod_begin_frame", swapChain, hr,
@@ -1348,8 +1282,7 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		DXGIHookDiagnostics::LogPresentStage("Present1", "wrapperEnd", swapChain, hr);
-		DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+				DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
 		return hr;
 	}
 
@@ -1395,7 +1328,7 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		// One QPC pair feeds both the API wall bucket and the ExecuteCL hot-path
 		// stage (previously two independent timers measured the same span).
 		DX12Profiler::Scope apiWallScope(
@@ -2659,5 +2592,4 @@ public:
 	inline static DXGIHookSignatures::CreateDXGIFactory OrigCreateDXGIFactory1 = nullptr;
 	inline static DXGIHookSignatures::CreateDXGIFactory2 OrigCreateDXGIFactory2 = nullptr;
 };
-
 

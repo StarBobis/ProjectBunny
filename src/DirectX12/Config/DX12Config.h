@@ -1917,9 +1917,6 @@ inline void MigotoShaderRegexParser::ParseSections(
 		const bool isMain = MigotoShaderRegexParserText::IsShaderRegexMainSection(section.name);
 		if (!isMain) {
 			config.hasPattern = true;
-			DX12LogManager::DebugFields("MigotoShaderRegexParse",
-				"\"stage\":\"sub_section\",\"section\":\"%S\",\"group\":\"%S\"",
-				section.name.c_str(), groupName.c_str());
 			continue;
 		}
 
@@ -1928,9 +1925,6 @@ inline void MigotoShaderRegexParser::ParseSections(
 		config.sourceDir = section.sourceDir;
 		config.iniNamespace = section.iniNamespace;
 
-		DX12LogManager::DebugFields("MigotoShaderRegexParse",
-			"\"stage\":\"main_section_found\",\"section\":\"%S\",\"group\":\"%S\",\"entries\":%zu",
-			section.name.c_str(), groupName.c_str(), section.entries.size());
 
 			for (const IniEntry &entry : section.entries) {
 				CommandListAction rawAction;
@@ -1941,9 +1935,6 @@ inline void MigotoShaderRegexParser::ParseSections(
 					continue;
 				}
 				if (!entry.hasEquals) {
-					DX12LogManager::DebugFields("MigotoShaderRegexParse",
-						"\"stage\":\"entry_no_equals\",\"section\":\"%S\",\"raw\":\"%S\"",
-						section.name.c_str(), entry.rawLine.c_str());
 					continue;
 				}
 
@@ -1952,9 +1943,6 @@ inline void MigotoShaderRegexParser::ParseSections(
 			if (key == L"shader_model") {
 				size_t before = config.shaderModels.size();
 				MigotoShaderRegexParserText::AppendShaderModels(value, &config.shaderModels);
-				DX12LogManager::DebugFields("MigotoShaderRegexParse",
-					"\"stage\":\"shader_model\",\"section\":\"%S\",\"value\":\"%S\",\"before\":%zu,\"after\":%zu",
-					section.name.c_str(), value.c_str(), before, config.shaderModels.size());
 				continue;
 			}
 			if (key == L"temps" || key == L"filter_index")
@@ -1989,18 +1977,12 @@ inline void MigotoShaderRegexParser::ParseSections(
 	size_t erasedCount = 0;
 	for (auto it = shaderRegexes->begin(); it != shaderRegexes->end();) {
 		if (it->second.shaderModels.empty()) {
-			DX12LogManager::DebugFields("MigotoShaderRegexParse",
-				"\"stage\":\"erase_empty_models\",\"section\":\"%S\"",
-				it->second.section.c_str());
 			it = shaderRegexes->erase(it);
 			++erasedCount;
 		} else {
 			++it;
 		}
 	}
-	DX12LogManager::DebugFields("MigotoShaderRegexParse",
-		"\"stage\":\"final\",\"count\":%zu,\"erased\":%zu",
-		shaderRegexes->size(), erasedCount);
 }
 
 

@@ -552,26 +552,7 @@ public:
 class DX12OriginalFunctionRegistry
 {
 public:
-	static void LogHookCall(const char *api, const void *object)
-	{
-		if (!DX12LogManager::ShouldLogHookCall(api))
-			return;
-		DX12LogManager::DebugFields("DX12HookCall",
-			"\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\"",
-			api ? api : "", DX12RuntimeState::GetPresentCount(), object);
-	}
-
-	static void LogOriginalFallback(const char *api, const void *object, UINT slot, const void *fallback)
-	{
-		if (!DX12LogManager::ShouldLogHookCall(api))
-			return;
-		DX12LogManager::DebugFields("DX12FallbackPath",
-			"\"kind\":\"original_lookup\",\"api\":\"%s\",\"present\":%ld,\"this\":\"%p\","
-			"\"slot\":%u,\"fallback\":\"%p\"",
-			api ? api : "", DX12RuntimeState::GetPresentCount(), object, slot, fallback);
-	}
-
-	static void *GetVTableSlotTarget(void *object, UINT slot)
+static void *GetVTableSlotTarget(void *object, UINT slot)
 	{
 		if (!object)
 			return nullptr;
@@ -649,8 +630,7 @@ public:
 		}
 
 		if (fallback) {
-			LogOriginalFallback(name, object, slot, reinterpret_cast<const void*>(fallback));
-			return fallback;
+						return fallback;
 		}
 
 		DX12LogManager::Fields(name ? name : "DX12::UnknownOriginal",
@@ -753,8 +733,7 @@ public:
 		}
 
 		if (fallback) {
-			LogOriginalFallback(name, object, slot, reinterpret_cast<const void*>(fallback));
-			return fallback;
+						return fallback;
 		}
 
 		DX12LogManager::Fields(name ? name : "DX12::UnknownOriginal",
@@ -851,7 +830,7 @@ public:
 	{
 		DX12_PROFILE_FUNCTION(ExecuteCommandLists);
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		// Submission-gap probe: wall clock and this thread's CPU time since the
 		// previous ExecuteCommandLists. A large wall gap with a small CPU delta
 		// means the recording thread was blocked (fence wait / lock / game-side
@@ -931,7 +910,7 @@ public:
 			if (original) {
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "BeforeOriginalSkip");
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
 					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -946,7 +925,7 @@ public:
 					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12ExecuteSkipLogUtils::Record(
 					queue, numCommandLists, "AfterOriginalSkip");
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
 					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
@@ -1007,9 +986,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12CommandQueue::ExecuteCommandLists", queue, " count=%u", numCommandLists);
-		if (!original) {
+				if (!original) {
 			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
 				"total_no_original",
 				queue,
@@ -1018,16 +995,14 @@ public:
 			return;
 		}
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 	#endif
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
-		DX12CommandListFlowDiagnostics::LogQueueStage(
-			"ExecuteCommandLists", "beforeOriginal", queue, numCommandLists);
-		ULONGLONG startTick = GetTickCount64();
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+				ULONGLONG startTick = GetTickCount64();
 #endif
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		original(queue, numCommandLists, commandLists);
@@ -1036,17 +1011,14 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
 			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
 	#endif
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		ULONGLONG originalEndTick = GetTickCount64();
-		DX12CommandListFlowDiagnostics::LogQueueStage(
-			"ExecuteCommandLists", "afterOriginal", queue, numCommandLists,
-			nullptr, 0, S_OK, originalEndTick - startTick);
 #endif
 		// Async content capture: submit readback events queued during
 		// recording, ordered after the game's lists via Signal/Wait on the
@@ -1073,11 +1045,6 @@ public:
 				numCommandLists,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 		}
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
-		DX12CommandListFlowDiagnostics::LogQueueStage(
-			"ExecuteCommandLists", "afterNotify", queue, numCommandLists,
-			nullptr, 0, S_OK, GetTickCount64() - originalEndTick);
-#endif
 		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
 			"total",
 			queue,
@@ -3388,18 +3355,6 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 			DX12BufferResolveCacheUtils::RangeEnd(*newRecord));
 	if (!oldHasRange && stats.removedEntries == 0) {
 		gBufferResolveIndexNoopUpdates++;
-		DX12LogManager::DebugFields("BufferResolveCacheInvalidated",
-			"\"reason\":\"%s\",\"mode\":\"range_noop_new\",\"present\":%ld,\"threadId\":%lu,"
-			"\"resource\":\"%p\",\"newBegin\":\"0x%llx\",\"newEnd\":\"0x%llx\","
-			"\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
-			reason ? reason : "",
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId(),
-			resource,
-			newHasRange ? static_cast<unsigned long long>(newRecord->gpuVirtualAddress) : 0ull,
-			newHasRange ? static_cast<unsigned long long>(DX12BufferResolveCacheUtils::RangeEnd(*newRecord)) : 0ull,
-			gBufferResourceByGpuVa.size(),
-			gLiveResourceCount);
 		return stats;
 	}
 
@@ -3419,23 +3374,6 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 	gBufferResolveCacheInvalidationEntries += stats.removedEntries;
 	gBufferResolveRangeInvalidations++;
 	gBufferResolveRangeInvalidationEntries += stats.removedEntries;
-	DX12LogManager::DebugFields("BufferResolveCacheInvalidated",
-		"\"reason\":\"%s\",\"mode\":\"range\",\"present\":%ld,\"threadId\":%lu,"
-		"\"entriesRemoved\":%zu,\"generation\":%llu,\"resource\":\"%p\","
-		"\"oldBegin\":\"0x%llx\",\"oldEnd\":\"0x%llx\",\"newBegin\":\"0x%llx\",\"newEnd\":\"0x%llx\","
-		"\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
-		reason ? reason : "",
-		DX12RuntimeState::GetPresentCount(),
-		GetCurrentThreadId(),
-		stats.removedEntries,
-		static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
-		resource,
-		oldHasRange ? static_cast<unsigned long long>(oldRecord->gpuVirtualAddress) : 0ull,
-		oldHasRange ? static_cast<unsigned long long>(DX12BufferResolveCacheUtils::RangeEnd(*oldRecord)) : 0ull,
-		newHasRange ? static_cast<unsigned long long>(newRecord->gpuVirtualAddress) : 0ull,
-		newHasRange ? static_cast<unsigned long long>(DX12BufferResolveCacheUtils::RangeEnd(*newRecord)) : 0ull,
-		gBufferResourceByGpuVa.size(),
-		gLiveResourceCount);
 	return stats;
 }
 
@@ -3448,16 +3386,6 @@ static void InvalidateAllLocked(const char *reason)
 	gBufferResolveCacheInvalidations++;
 	gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
 	gBufferResolveGenerationResets++;
-	DX12LogManager::DebugFields("BufferResolveCacheInvalidated",
-		"\"reason\":\"%s\",\"mode\":\"global\",\"present\":%ld,\"threadId\":%lu,"
-		"\"cacheEntriesBeforeClear\":%zu,\"generation\":%llu,\"gpuVaIndexSize\":%zu,\"liveResources\":%zu",
-		reason ? reason : "",
-		DX12RuntimeState::GetPresentCount(),
-		GetCurrentThreadId(),
-		cacheEntriesBeforeClear,
-		static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
-		gBufferResourceByGpuVa.size(),
-		gLiveResourceCount);
 }
 
 static void RecordStateOnlyUpdateLocked()
@@ -3528,5 +3456,3 @@ void BumpDescriptorQuerySerial();
 void DX12RecordPsoRootSignatureImmediate(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature);
-
-

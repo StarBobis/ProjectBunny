@@ -1311,12 +1311,6 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	if (!record.resource)
 		return;
 	if (record.resource != resource && record.resource != canonical) {
-		DX12LogManager::DebugFields("DX12ResourceInvalidateSkipped",
-			"reason=resource_mismatch,resource=%p,canonical=%p,recordResource=%p,index=%zu",
-			resource,
-			canonical,
-			record.resource,
-			index);
 		return;
 	}
 	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
@@ -1357,13 +1351,6 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		gLiveResourceCount--;
 	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
 		&oldRecord, nullptr, "resource_invalidate", resource);
-	DX12LogManager::DebugFields("DX12ResourceInvalidated",
-		"resource=%p,canonical=%p,index=%zu,gpuVa=0x%llx,liveResources=%zu",
-		resource,
-		canonical,
-		index,
-		static_cast<unsigned long long>(invalidatedGpuVa),
-		gLiveResourceCount);
 }
 
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
@@ -1654,12 +1641,6 @@ void RecordResource(
 		gResourceExclusiveLockSlowCount++;
 		if (static_cast<UINT64>(elapsedUs) > gResourceExclusiveLockSlowMaxUs)
 			gResourceExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
-		DX12LogManager::DebugFields("DX12ResourceLockSlow",
-			"source=RecordResource,elapsedUs=%lld,resource=%p,present=%ld,threadId=%lu",
-			static_cast<long long>(elapsedUs),
-			resource,
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId());
 	}
 }
 
@@ -2186,65 +2167,6 @@ void LogResourceTrackerStatsLocked()
 		return;
 	if (InterlockedCompareExchange(&gLastResourceStatsPresent, present, last) != last)
 		return;
-	DX12LogManager::DebugFields("DX12ResourceTrackerStats",
-		"present=%ld,roots=%zu,rootRecordsSeen=%llu,"
-		"heaps=%zu,heapRecordsSeen=%llu,"
-		"descriptorSlots=%zu,shaderVisibleDescriptorSlots=%zu,descriptorSlotCapacity=%zu,descriptorHistoryEntries=%zu,"
-		"descriptorHeapRanges=%zu,"
-		"descriptorRecordsSeen=%llu,descriptorCopyRecordsSeen=%llu,"
-		"descriptorCopySpanFastPathCalls=%llu,descriptorCopySpanFastPathSlots=%llu,descriptorCopySpanFallbackCalls=%llu,"
-		"bufferResolveCacheEntries=%zu,bufferResolveGeneration=%llu,"
-		"bufferResolveInvalidations=%llu,bufferResolveInvalidationEntries=%llu,"
-		"bufferResolveRangeInvalidations=%llu,bufferResolveRangeInvalidationEntries=%llu,"
-		"bufferResolveIndexNoopUpdates=%llu,bufferResolveStateOnlyUpdates=%llu,"
-		"bufferResolveInvalidationEpoch=%llu,bufferResolveInvalidationHistoryLost=%llu,"
-		"bufferResolveTlsHits=%llu,bufferResolveGlobalHits=%llu,bufferResolveBackwardScanHits=%llu,bufferResolveFallbackScanHits=%llu,bufferResolveMisses=%llu,bufferResolveGenerationResets=%llu,"
-		"resourceExclusiveLockSlowCount=%llu,resourceExclusiveLockSlowMaxUs=%llu,descriptorExclusiveLockSlowCount=%llu,descriptorExclusiveLockSlowMaxUs=%llu,"
-		"resources=%zu,resourceSlots=%zu,freeResourceSlots=%zu,"
-		"resourcesFromCreate=%llu,cpuDescriptorLedger=%zu,"
-		"psoRoots=%zu,psoRootRecordsSeen=%llu",
-		present,
-		gRootSignatures.size(),
-		static_cast<unsigned long long>(gRootSignatureRecordsSeen),
-		gDescriptorHeaps.size(),
-		static_cast<unsigned long long>(gDescriptorHeapRecordsSeen),
-		LiveDescriptorHeapSlotsLocked(),
-		LiveShaderVisibleDescriptorHeapSlotsLocked(),
-		DescriptorHeapSlotCapacityLocked(),
-		DescriptorHeapHistoryEntriesLocked(),
-		gDescriptorHeapByCpuStart.size(),
-		static_cast<unsigned long long>(gDescriptorRecordsSeen),
-		static_cast<unsigned long long>(gDescriptorCopyRecordsSeen),
-		static_cast<unsigned long long>(gDescriptorCopySpanFastPathCalls),
-		static_cast<unsigned long long>(gDescriptorCopySpanFastPathSlots),
-		static_cast<unsigned long long>(gDescriptorCopySpanFallbackCalls),
-		gBufferResolveCache.size(),
-		static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
-		static_cast<unsigned long long>(gBufferResolveCacheInvalidations),
-		static_cast<unsigned long long>(gBufferResolveCacheInvalidationEntries),
-		static_cast<unsigned long long>(gBufferResolveRangeInvalidations),
-		static_cast<unsigned long long>(gBufferResolveRangeInvalidationEntries),
-		static_cast<unsigned long long>(gBufferResolveIndexNoopUpdates),
-		static_cast<unsigned long long>(gBufferResolveStateOnlyUpdates),
-		static_cast<unsigned long long>(gBufferResolveInvalidationEpoch),
-		static_cast<unsigned long long>(gBufferResolveInvalidationHistoryLost),
-		static_cast<unsigned long long>(gBufferResolveTlsHits),
-		static_cast<unsigned long long>(gBufferResolveGlobalHits),
-		static_cast<unsigned long long>(gBufferResolveBackwardScanHits),
-		static_cast<unsigned long long>(gBufferResolveFallbackScanHits),
-		static_cast<unsigned long long>(gBufferResolveMisses),
-		static_cast<unsigned long long>(gBufferResolveGenerationResets),
-		static_cast<unsigned long long>(gResourceExclusiveLockSlowCount),
-		static_cast<unsigned long long>(gResourceExclusiveLockSlowMaxUs),
-		static_cast<unsigned long long>(gDescriptorExclusiveLockSlowCount),
-		static_cast<unsigned long long>(gDescriptorExclusiveLockSlowMaxUs),
-		gLiveResourceCount,
-		gResources.size(),
-		gFreeResourceSlots.size(),
-		static_cast<unsigned long long>(gResourcesRecordedFromCreate),
-		gDescriptorByCpuHandle.size(),
-		gPsoRoots.size(),
-		static_cast<unsigned long long>(gPsoRootRecordsSeen));
 }
 
 static bool DescriptorSlotFromHeapLocked(
@@ -2375,11 +2297,6 @@ void RecordDescriptor(DescriptorRecord &&record)
 		gDescriptorExclusiveLockSlowCount++;
 		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
 			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
-		DX12LogManager::DebugFields("DX12DescriptorLockSlow",
-			"source=RecordDescriptor,elapsedUs=%lld,present=%ld,threadId=%lu",
-			static_cast<long long>(elapsedUs),
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId());
 	}
 }
 
@@ -2408,12 +2325,6 @@ void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
 		gDescriptorExclusiveLockSlowCount++;
 		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
 			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
-		DX12LogManager::DebugFields("DX12DescriptorLockSlow",
-			"source=RecordDescriptorBatch,elapsedUs=%lld,records=%zu,present=%ld,threadId=%lu",
-			static_cast<long long>(elapsedUs),
-			recordCount,
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId());
 	}
 }
 
@@ -2984,14 +2895,6 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 	}
 	if (resourceStateChanged) {
 		DX12BufferResolveCacheUtils::RecordStateOnlyUpdateLocked();
-		DX12LogManager::DebugFields("BufferResolveCacheInvalidated",
-			"reason=resource_barrier_state_update,mode=state_only,present=%ld,"
-			"threadId=%lu,generation=%llu,gpuVaIndexSize=%zu,liveResources=%zu",
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId(),
-			static_cast<unsigned long long>(gBufferResolveGeneration.load(std::memory_order_relaxed)),
-			gBufferResourceByGpuVa.size(),
-			gLiveResourceCount);
 	}
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
@@ -4834,17 +4737,6 @@ bool DX12CacheBufferContentRange(
 	if (!committed)
 		return false;
 
-#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12BufferContentCache",
-		"stage=%s,resource=0x%p,offset=%llu,bytes=%zu,changedBytes=%zu,changedPages=%zu,gpuVaBase=0x%llx",
-		changedPages != 0 ? "stored" : "unchanged",
-		resource,
-		static_cast<unsigned long long>(resourceOffset),
-		dataSize,
-		changedBytes,
-		changedPages,
-		static_cast<unsigned long long>(storedGpuVaBase));
-#endif
 	return true;
 }
 
@@ -5132,15 +5024,6 @@ bool DX12CacheTextureHash(
 	gTextureHashByResource[resource] = entry;
 	ReleaseSRWLockExclusive(&gTextureHashLock);
 
-	DX12LogManager::DebugFields("DX12TextureHashCache",
-		"\"stage\":\"stored\",\"source\":\"%s\",\"resource\":\"%p\",\"hash\":\"%08x\",\"generation\":%llu,\"width\":%llu,\"height\":%u,\"format\":%u",
-		source ? source : "",
-		resource,
-		hash,
-		static_cast<unsigned long long>(entry.generation),
-		desc ? static_cast<unsigned long long>(desc->Width) : 0ull,
-		desc ? desc->Height : 0u,
-		desc ? static_cast<UINT>(desc->Format) : 0u);
 	return true;
 }
 
@@ -5178,10 +5061,6 @@ void DX12InvalidateTextureHash(ID3D12Resource *resource)
 	ReleaseSRWLockExclusive(&gTextureHashLock);
 	if (erased) {
 		gTextureHashGeneration.fetch_add(1, std::memory_order_relaxed);
-		DX12LogManager::DebugFields("DX12TextureHashCache",
-			"\"stage\":\"invalidated\",\"resource\":\"%p\",\"erased\":%zu",
-			resource,
-			erased);
 	}
 }
 
@@ -5518,14 +5397,6 @@ uint32_t DX12HashIaBufferContentView(
 			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaHashResolve",
-			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
-			"stride=%u,format=%u,slot=%u,hash=%08x",
-			static_cast<unsigned long long>(gpuVirtualAddress),
-			static_cast<unsigned long long>(size),
-			stride, format, slot, hash);
-#endif
 		return hash;
 	}
 
@@ -5567,14 +5438,6 @@ uint32_t DX12HashIaBufferContentView(
 			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaHashResolve",
-			"stage=content_crc32,gpuVa=0x%llx,size=%llu,"
-			"stride=%u,format=%u,slot=%u,hash=%08x",
-			static_cast<unsigned long long>(gpuVirtualAddress),
-			static_cast<unsigned long long>(size),
-			stride, format, slot, hash);
-#endif
 		return hash;
 	}
 
@@ -5625,28 +5488,8 @@ uint32_t DX12HashIaBufferContentView(
 			hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
 			s_cacheL3Resolved[keyL3] = hash;
 		}
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaHashResolve",
-			"stage=resolved,gpuVa=0x%llx,size=%llu,"
-			"offset=%llu,viewSize=%llu,stride=%u,format=%u,"
-			"slot=%u,hash=%08x",
-			static_cast<unsigned long long>(gpuVirtualAddress),
-			static_cast<unsigned long long>(size),
-			static_cast<unsigned long long>(summary.resourceOffset),
-			static_cast<unsigned long long>(summary.viewSize),
-			stride, format, slot, hash);
-#endif
 	} else {
 		hash = HashBytes(hash, &size, sizeof(size));
-#if defined(_DEBUG)
-		DX12LogManager::DebugFields("DX12IaHashResolve",
-			"stage=fallback_no_gpuva,gpuVa=0x%llx,"
-			"size=%llu,stride=%u,format=%u,slot=%u,"
-			"hash=%08x",
-			static_cast<unsigned long long>(gpuVirtualAddress),
-			static_cast<unsigned long long>(size),
-			stride, format, slot, hash);
-#endif
 	}
 
 	hash = HashBytes(hash, &stride, sizeof(stride));
@@ -7676,9 +7519,8 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	gReadbackPendingBatches.push_back(batch);
 	ReleaseSRWLockExclusive(&gReadbackChannelLock);
 
-	// Rate-limited pipeline visibility: the readback pipeline has no other
-	// release-build diagnostics (DebugFields is compiled out), so this is the
-	// only way to confirm events are flowing and the submit cost is bounded.
+	// Rate-limited pipeline visibility keeps readback activity observable without
+	// flooding the log.
 	{
 		static volatile LONG submitLogCounter = 0;
 		if ((InterlockedIncrement(&submitLogCounter) & 0xFF) == 1) {

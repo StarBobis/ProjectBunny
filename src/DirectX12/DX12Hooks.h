@@ -20,7 +20,7 @@
 #include <mutex>
 #include <thread>
 
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 
 
 class DX12CreateTimingTelemetryUtils
@@ -403,7 +403,7 @@ public:
 #endif
 
 
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 
 
 class DX12DescriptorShadowTelemetryUtils
@@ -926,7 +926,7 @@ public:
 //   ... work ...
 //   DX12_HOTPATH_TIME_END(DrawHook);
 
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 
 #define DX12_HOTPATH_TIME_ENABLED 1
 
@@ -1206,7 +1206,7 @@ public:
 
 #endif // DX12_HOTPATH_TIME_ENABLED (timing build)
 
-#else // !(DX12_ENABLE_DETAILED_TIMING && (_DEBUG || DX12_RELEASE_TIMING))
+#else // !(DX12_ENABLE_DETAILED_TIMING && DX12_RELEASE_TIMING)
 
 #define DX12_HOTPATH_TIME_ENABLED 0
 
@@ -1255,7 +1255,7 @@ public:
 			  active(true)
 		{
 			if (kind == Api) {
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				begin = DX12OuterTimingProbeUtils::Now();
 				DX12OuterTimingProbeUtils::LogApiScopeBegin(apiBucket, begin.QuadPart);
 #else
@@ -1276,7 +1276,7 @@ public:
 			: kind(kindValue), apiBucket(apiValue), stage(stageValue),
 			  counter(nullptr), active(true)
 		{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 #if DX12_HOTPATH_TIME_ENABLED
 			begin = DX12OuterTimingProbeUtils::Now();
 			DX12OuterTimingProbeUtils::LogApiScopeBegin(apiBucket, begin.QuadPart);
@@ -1319,7 +1319,7 @@ public:
 				DX12Profiling::End(&state);
 				break;
 			case Api:
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				{
 					const LARGE_INTEGER end = DX12OuterTimingProbeUtils::Now();
 					DX12OuterTimingProbeUtils::LogApiScopeEnd(
@@ -1333,7 +1333,7 @@ public:
 #endif
 				break;
 			case ApiStage:
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 #if DX12_HOTPATH_TIME_ENABLED
 				{
 					const LARGE_INTEGER end = DX12OuterTimingProbeUtils::Now();
@@ -1421,12 +1421,6 @@ public:
 
 #endif
 
-
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
-#define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do { stmt; } while (0)
-#else
-#define DX12_DISPATCH_DEBUG_VERBOSE_LOG(stmt) do {} while (0)
-#endif
 
 class DX12DispatchHookFlowDispatch
 {
@@ -1598,10 +1592,7 @@ public:
 				return;
 			}
 
-			DX12CommandListFlowDiagnostics::LogDX12Call(
-				"ID3D12GraphicsCommandList::Dispatch", commandList,
-				" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			if (shouldRecordBindingEvents) {
+						if (shouldRecordBindingEvents) {
 				const DX12CommandListTrackingState tracking =
 					DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 				if (tracking.recordBindingEvents)
@@ -1652,10 +1643,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12GraphicsCommandList::Dispatch", commandList,
-			" groups=%u,%u,%u", threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-		if (shouldRecordBindingEvents) {
+				if (shouldRecordBindingEvents) {
 			const DX12CommandListTrackingState tracking =
 				DX12CommandListStateCapture::GetTrackingState(commandList, runtimeState);
 			if (tracking.recordBindingEvents)
@@ -1719,7 +1707,7 @@ public:
 		DX12SimulateContext fallbackState = {};
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
-		#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+		#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
 #endif
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
@@ -1918,18 +1906,12 @@ public:
 		UINT64 computeBindingSerial,
 		size_t uavCount)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		if (reason && (!strcmp(reason, "uav_filter_miss") ||
 		    !strcmp(reason, "cached_no_uav_match") ||
 		    !strcmp(reason, "cs_not_configured"))) {
 			return;
 		}
-		DX12LogManager::DebugFields("DX12PreSkinDispatchProbe",
-			"\"reason\":\"%s\",\"cs\":\"%016llx\",\"bindingSerial\":%llu,\"uavs\":%zu",
-			reason ? reason : "unknown",
-			static_cast<unsigned long long>(computeShaderHash),
-			static_cast<unsigned long long>(computeBindingSerial),
-			uavCount);
 #else
 		(void)reason;
 		(void)computeShaderHash;
@@ -1945,7 +1927,7 @@ public:
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
 			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
 	#endif
 			return;
@@ -1965,7 +1947,7 @@ public:
 			probe->computeShaderHash ? 1 : 0,
 			DX12OuterTimingProbeUtils::ElapsedUs(csHashBegin));
 		if (!probe->computeShaderHash) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
 #endif
 			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
@@ -2388,7 +2370,7 @@ public:
 				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(
 				cacheEntry.applied);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
 				cacheEntry.applied ? 1 : 0,
 				static_cast<unsigned long long>(computeIaFingerprint));
@@ -2401,7 +2383,7 @@ public:
 			}
 			if (!cacheEntry.applied) {
 				probe->applied = false;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				DX12LogManager::Fields("DX12Perf",
 					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit\",\"us\":%lld",
 					static_cast<unsigned long long>(probe->computeShaderHash),
@@ -2411,7 +2393,7 @@ public:
 			}
 			positiveCacheHit = true;
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
 				static_cast<unsigned long long>(computeIaFingerprint));
 #endif
@@ -2431,10 +2413,10 @@ public:
 				1,
 				0);
 		}
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		probe->shouldLog = true;
 	#endif
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
 			probe->uavsFound ? 1 : 0, uavs.size(), srvs.size(), cbvs.size());
 
@@ -2445,7 +2427,7 @@ public:
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
 #endif
 		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
@@ -2495,7 +2477,7 @@ public:
 			probe->applied,
 			probe->dispatchOverride);
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
 			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"%s\",\"us\":%lld",
 			static_cast<unsigned long long>(probe->computeShaderHash),
@@ -2536,34 +2518,9 @@ public:
 			0,
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
-#if defined(_DEBUG)
-		if (probe.uavsFound) {
-			LARGE_INTEGER recordUavBegin = DX12OuterTimingProbeUtils::Now();
-			DX12ModRecordComputeUavs(commandList, uavs);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"PreSkin",
-				"record_compute_uavs",
-				0,
-				uavs.size(),
-				DX12OuterTimingProbeUtils::ElapsedUs(recordUavBegin));
-		}
-	#endif
 		if (!probe.applied)
 			return;
 
-		DX12_DISPATCH_DEBUG_VERBOSE_LOG(
-			DX12LogManager::DebugFields("DX12DispatchUavProbe",
-				"\"found\":%s,\"uavs\":%zu,\"srvs\":%zu,\"cbvs\":%zu,\"rootConstants\":%zu,\"preSkinApplied\":%s,\"handlingSkip\":%s,\"explicitDispatch\":%s,\"cs\":\"%016llx\",\"originalGroups\":\"%u,%u,%u\",\"groups\":\"%u,%u,%u\"",
-				probe.uavsFound ? "true" : "false", uavs.size(),
-				probe.srvsFound ? srvs.size() : 0,
-				probe.cbvsFound ? cbvs.size() : 0,
-				probe.rootConstantsFound ? rootConstants.size() : 0,
-				probe.applied ? "true" : "false",
-				probe.dispatchOverride.handlingSkip ? "true" : "false",
-				probe.dispatchOverride.hasDispatch ? "true" : "false",
-				static_cast<unsigned long long>(probe.computeShaderHash),
-				originalThreadGroupCountX, originalThreadGroupCountY, originalThreadGroupCountZ,
-				threadGroupCountX, threadGroupCountY, threadGroupCountZ));
 	}
 };
 
@@ -2951,17 +2908,6 @@ public:
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
 					activeIa->preSkinRedirectNegativeValid[slot] = false;
 				anyRedirected = true;
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
-				DX12LogManager::DebugFields("DX12PreSkinningApply",
-					"\"status\":\"vb_view_expanded\","
-					"\"slot\":%u,\"gpuVa\":\"0x%llx\","
-					"\"oldBytes\":%u,\"newBytes\":%u,\"stride\":%u",
-					slot,
-					static_cast<unsigned long long>(sourceView.BufferLocation),
-					sourceView.SizeInBytes,
-					redirectedViews[i].SizeInBytes,
-					redirectedViews[i].StrideInBytes);
-#endif
 				continue;
 			}
 			DX12PreSkinOutputResizeBinding binding;
@@ -2991,28 +2937,6 @@ public:
 			if (!redirectedViews[i].StrideInBytes && binding.stride)
 				redirectedViews[i].StrideInBytes = binding.stride;
 			anyRedirected = true;
-#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
-			DX12LogManager::DebugFields("DX12PreSkinningApply",
-				"\"status\":\"vb_redirected\","
-				"\"slot\":%u,"
-				"\"oldGpuVa\":\"0x%llx\","
-				"\"newGpuVa\":\"0x%llx\","
-				"\"oldBytes\":%u,"
-				"\"newBytes\":%u,"
-				"\"stride\":%u,"
-				"\"offset\":%llu,"
-				"\"uavBarrier\":%s,"
-				"\"transition\":%s",
-				startSlot + i,
-				static_cast<unsigned long long>(sourceView.BufferLocation),
-				static_cast<unsigned long long>(redirectedGpuVa),
-				sourceView.SizeInBytes,
-				redirectedViews[i].SizeInBytes,
-				redirectedViews[i].StrideInBytes,
-				static_cast<unsigned long long>(binding.sourceOffset),
-				binding.uavBarrierPending ? "true" : "false",
-				binding.transitionToVertex ? "true" : "false");
-#endif
 		}
 		return anyRedirected;
 	}
@@ -5268,18 +5192,9 @@ public:
 		const DX12IaDrawInvocation &draw)
 	{
 		if (draw.indexed) {
-			DX12CommandListFlowDiagnostics::LogDX12Call(
-				"ID3D12GraphicsCommandList::DrawIndexedInstanced", commandList,
-				" indices=%u instances=%u startIndex=%u baseVertex=%d startInstance=%u",
-				draw.indexCount, draw.instanceCount, draw.firstIndex,
-				draw.baseVertex, draw.firstInstance);
-			return;
+						return;
 		}
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12GraphicsCommandList::DrawInstanced", commandList,
-			" vertices=%u instances=%u startVertex=%u startInstance=%u",
-			draw.vertexCount, draw.instanceCount, draw.firstVertex, draw.firstInstance);
-	}
+			}
 };
 
 
@@ -5816,5 +5731,3 @@ class D3D12ProxyTargetHelper
 public:
 	static bool VerifyIntendedTarget(HINSTANCE module);
 };
-
-

@@ -358,37 +358,6 @@ inline void DX12Profiling::LogFrameStatsState()
 	LONG total = draws + Dispatch.calls + SetPipelineState.calls + bindings +
 		ResourceBarrier.calls;
 
-	DX12LogManager::DebugFields("DX12FrameStats",
-		"\"present\":%ld,"
-		"\"draws\":%ld,\"dispatch\":%ld,\"setPSO\":%ld,\"bindings\":%ld,"
-		"\"rootTables\":%ld,\"rootCBV_SRV_UAV\":%ld,"
-		"\"iaSet\":%ld,\"barriers\":%ld,"
-		"\"execCL\":%ld,\"reset\":%ld,"
-		"\"total\":%ld,\"ffHits\":%ld,"
-		"\"iaOverrideChecks\":%ld,\"iaHashHits\":%ld,\"iaHashMisses\":%ld,"
-		"\"iaMayHits\":%ld,\"iaMayMisses\":%ld,\"iaPrepareCalls\":%ld,\"iaApplied\":%ld,"
-		"\"iaCandidateTests\":%ld,\"iaCandidateHits\":%ld,\"iaHuntIaUpdates\":%ld,"
-		"\"iaReplacementDraws\":%ld,\"iaReplacementIndexedDraws\":%ld,\"iaReplacementDispatches\":%ld,"
-		"\"preSkinCsTests\":%ld,\"preSkinUavTests\":%ld,\"preSkinUavHits\":%ld,"
-		"\"preSkinApplied\":%ld,\"preSkinDispatchResized\":%ld",
-		present,
-		draws, Dispatch.calls, SetPipelineState.calls, bindings,
-		SetComputeRootDescriptorTable.calls + SetGraphicsRootDescriptorTable.calls,
-		SetComputeRootConstantBufferView.calls + SetGraphicsRootConstantBufferView.calls +
-			SetComputeRootShaderResourceView.calls + SetGraphicsRootShaderResourceView.calls +
-			SetComputeRootUnorderedAccessView.calls + SetGraphicsRootUnorderedAccessView.calls,
-		IASetIndexBuffer.calls + IASetVertexBuffers.calls + IASetPrimitiveTopology.calls,
-		ResourceBarrier.calls,
-		ExecuteCommandLists.calls, ResetCommandList.calls,
-		total, FastForwardHits.calls,
-		IaDrawOverrideChecks.calls, IaHashStateHits.calls, IaHashStateMisses.calls,
-		IaTextureMayHits.calls, IaTextureMayMisses.calls,
-		IaPrepareCalls.calls, IaApplied.calls,
-		IaCandidateTests.calls, IaCandidateHits.calls, IaHuntIaUpdates.calls,
-		IaReplacementDraws.calls, IaReplacementIndexedDraws.calls,
-		IaReplacementDispatches.calls,
-		PreSkinCsTests.calls, PreSkinUavTests.calls, PreSkinUavHits.calls,
-		PreSkinApplied.calls, PreSkinDispatchResized.calls);
 }
 
 inline void DX12Profiling::FlushFrameState()
@@ -425,52 +394,6 @@ inline void DX12Profiling::FlushFrameState()
 	all.AccumulateFrom(bindings);
 	all.AccumulateFrom(ResourceBarrier);
 
-	DX12LogManager::DebugFields("DX12ProfilingFrame",
-		"\"present\":%ld,"
-		"\"drawInstanced\":%ld,\"drawIndexedInstanced\":%ld,\"drawTotal\":%ld,"
-		"\"dispatch\":%ld,"
-		"\"setPipelineState\":%ld,"
-		"\"setDescriptorHeaps\":%ld,"
-		"\"setRootSignatures\":%ld,"
-		"\"setRootDescriptorTables\":%ld,"
-		"\"setRootCBV\":%ld,\"setRootSRV\":%ld,\"setRootUAV\":%ld,"
-		"\"iaSetIndexBuffer\":%ld,\"iaSetVertexBuffers\":%ld,\"iaSetPrimitiveTopology\":%ld,"
-		"\"bindingsTotal\":%ld,"
-		"\"resourceBarrier\":%ld,"
-		"\"executeCommandLists\":%ld,\"resetCommandList\":%ld,\"presentCalls\":%ld,"
-		"\"commandsTotal\":%ld,"
-		"\"fastForwardHits\":%ld,"
-		"\"cpuUs_total\":%.1f,\"cpuUs_draws\":%.1f,\"cpuUs_bindings\":%.1f,\"cpuUs_dispatch\":%.1f,"
-		"\"bindingQueueTasks\":%ld,\"bindingQueueTaskUs\":%.1f,\"bindingQueueMaxTaskUs\":%.1f,"
-		"\"bindingQueueDrains\":%ld,\"bindingQueueDrainUs\":%.1f,\"bindingQueueMaxDrainUs\":%.1f,"
-		"\"bindingQueueMaxPending\":%ld",
-		present,
-		DrawInstanced.calls, DrawIndexedInstanced.calls, draws.calls,
-		Dispatch.calls,
-		SetPipelineState.calls,
-		SetDescriptorHeaps.calls,
-		SetComputeRootSignature.calls + SetGraphicsRootSignature.calls,
-		SetComputeRootDescriptorTable.calls + SetGraphicsRootDescriptorTable.calls,
-		SetComputeRootConstantBufferView.calls + SetGraphicsRootConstantBufferView.calls,
-		SetComputeRootShaderResourceView.calls + SetGraphicsRootShaderResourceView.calls,
-		SetComputeRootUnorderedAccessView.calls + SetGraphicsRootUnorderedAccessView.calls,
-		IASetIndexBuffer.calls, IASetVertexBuffers.calls, IASetPrimitiveTopology.calls,
-		bindings.calls,
-		ResourceBarrier.calls,
-		ExecuteCommandLists.calls, ResetCommandList.calls, Present.calls,
-		all.calls,
-		FastForwardHits.calls,
-		TicksToUs(all.cpuTicks),
-		TicksToUs(draws.cpuTicks),
-		TicksToUs(bindings.cpuTicks),
-		TicksToUs(Dispatch.cpuTicks),
-		BindingQueueTasks,
-		static_cast<double>(BindingQueueTaskUs),
-		static_cast<double>(BindingQueueMaxTaskUs),
-		BindingQueueDrains,
-		static_cast<double>(BindingQueueDrainUs),
-		static_cast<double>(BindingQueueMaxDrainUs),
-		BindingQueueMaxPending);
 
 	wchar_t drawsBuf[32];
 	wchar_t dispatchBuf[32];
@@ -649,10 +572,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12GraphicsCommandList::SetDescriptorHeaps", commandList,
-			" count=%u", count);
-		DX12CommandListStateCapture::DescriptorHeaps(
+				DX12CommandListStateCapture::DescriptorHeaps(
 			commandList, runtimeState, cbvSrvUav, sampler);
 	}
 
@@ -745,11 +665,7 @@ public:
 			return changed;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			graphics ? "ID3D12GraphicsCommandList::SetGraphicsRootSignature" :
-				"ID3D12GraphicsCommandList::SetComputeRootSignature",
-			commandList, " rootSignature=%p", rootSignature);
-		if (graphics) {
+				if (graphics) {
 			DX12CommandListStateCapture::GraphicsRootSignature(
 				commandList, runtimeState, rootSignature);
 		} else {
@@ -821,12 +737,7 @@ public:
 			return changed;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			graphics ? "ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable" :
-				"ID3D12GraphicsCommandList::SetComputeRootDescriptorTable",
-			commandList, " root=%u gpu=0x%llx",
-			rootParameterIndex, static_cast<unsigned long long>(baseDescriptor.ptr));
-		if (graphics) {
+				if (graphics) {
 			DX12CommandListStateCapture::GraphicsRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor);
 		} else {
@@ -900,11 +811,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			graphics ? "ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstant" :
-				"ID3D12GraphicsCommandList::SetComputeRoot32BitConstant",
-			commandList, " root=%u destOffset=%u", rootParameterIndex, destOffset);
-		if (graphics)
+				if (graphics)
 			DX12CommandListStateCapture::GraphicsRoot32BitConstant(
 				commandList, runtimeState, rootParameterIndex, srcData, destOffset);
 		else
@@ -983,12 +890,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			graphics ? "ID3D12GraphicsCommandList::SetGraphicsRoot32BitConstants" :
-				"ID3D12GraphicsCommandList::SetComputeRoot32BitConstants",
-			commandList, " root=%u values=%u destOffset=%u",
-			rootParameterIndex, num32BitValuesToSet, destOffset);
-		if (graphics)
+				if (graphics)
 			DX12CommandListStateCapture::GraphicsRoot32BitConstants(
 				commandList, runtimeState, rootParameterIndex, num32BitValuesToSet, srcData, destOffset);
 		else
@@ -1062,10 +964,7 @@ public:
 			return;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			api, commandList, " root=%u gpu=0x%llx",
-			rootParameterIndex, static_cast<unsigned long long>(address));
-		if (graphics)
+				if (graphics)
 			DX12CommandListStateCapture::GraphicsRootDescriptor(
 				commandList, runtimeState, rootParameterIndex, type, address);
 		else
@@ -1332,7 +1231,7 @@ public:
 	// counters only run in an actual timing build. Defining
 	// DX12_ENABLE_DETAILED_TIMING alone must never enable atomic counting in
 	// a plain Release build.
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		InterlockedIncrement(value);
 	#else
 		(void)value;
@@ -1341,7 +1240,7 @@ public:
 
 	static void Add64(volatile LONG64 *value, LONG64 amount)
 	{
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && (defined(_DEBUG) || defined(DX12_RELEASE_TIMING))
+	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		if (amount)
 			InterlockedExchangeAdd64(value, amount);
 	#else
@@ -2385,10 +2284,7 @@ public:
 
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateCapture::PipelineState(commandList, runtimeState, pipelineState);
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12GraphicsCommandList::SetPipelineState", commandList,
-			" pso=%p active=%p", pipelineState, activePipelineState);
-		return activePipelineState;
+				return activePipelineState;
 	}
 
 	static bool CaptureResourceBarrier(
@@ -2412,10 +2308,7 @@ public:
 			return false;
 		}
 
-		DX12CommandListFlowDiagnostics::LogDX12Call(
-			"ID3D12GraphicsCommandList::ResourceBarrier", commandList,
-			" count=%u", numBarriers);
-		DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
+				DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
 		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierRecorded(numBarriers);
 		return true;
 	}
@@ -2437,10 +2330,7 @@ public:
 		if (DX12InternalReplayState::IsActive())
 			return true;
 		if (!DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12CommandListFlowDiagnostics::LogDX12Call(
-				"ID3D12GraphicsCommandList::IASetPrimitiveTopology", commandList,
-				" topology=%u", static_cast<UINT>(topology));
-			DX12CommandListStateCapture::PrimitiveTopology(commandList, runtimeState, topology);
+						DX12CommandListStateCapture::PrimitiveTopology(commandList, runtimeState, topology);
 			return true;
 		}
 
@@ -2470,13 +2360,7 @@ public:
 		if (DX12InternalReplayState::IsActive())
 			return true;
 		if (!DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12CommandListFlowDiagnostics::LogDX12Call(
-				"ID3D12GraphicsCommandList::IASetIndexBuffer", commandList,
-				" gpu=0x%llx size=%u format=%u",
-				view ? static_cast<unsigned long long>(view->BufferLocation) : 0ull,
-				view ? view->SizeInBytes : 0,
-				view ? static_cast<UINT>(view->Format) : 0);
-			DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
+						DX12CommandListStateCapture::IndexBuffer(commandList, runtimeState, view);
 			return true;
 		}
 
@@ -2514,10 +2398,7 @@ public:
 		if (DX12InternalReplayState::IsActive())
 			return true;
 		if (!DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12CommandListFlowDiagnostics::LogDX12Call(
-				"ID3D12GraphicsCommandList::IASetVertexBuffers", commandList,
-				" start=%u count=%u", startSlot, count);
-			DX12CommandListStateCapture::VertexBuffers(
+						DX12CommandListStateCapture::VertexBuffers(
 				commandList, runtimeState, startSlot, count, views);
 			return true;
 		}

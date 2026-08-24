@@ -153,7 +153,6 @@ extern "C" HRESULT WINAPI D3D12GetDebugInterface(REFIID riid, void **debug)
 {
 	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12GetDebugInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetDebugInterface)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigGetDebugInterface(riid, debug);
@@ -170,7 +169,6 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 {
 	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12SerializeRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeRootSignature(desc, version, blob, errorBlob);
@@ -184,7 +182,6 @@ extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 {
 	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12CreateRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateRootSignatureDeserializer(
@@ -201,7 +198,6 @@ extern "C" HRESULT WINAPI D3D12SerializeVersionedRootSignature(
 {
 	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12SerializeVersionedRootSignature,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigSerializeVersionedRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeVersionedRootSignature(desc, blob, errorBlob);
@@ -214,7 +210,6 @@ extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 {
 	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12CreateVersionedRootSignatureDeserializer,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer(
@@ -231,7 +226,6 @@ extern "C" HRESULT WINAPI D3D12EnableExperimentalFeatures(
 {
 	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12EnableExperimentalFeatures,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigEnableExperimentalFeatures)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigEnableExperimentalFeatures(
@@ -245,7 +239,6 @@ extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **
 {
 	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
-	DX12LogManager::DebugFields("DX12HookCall", "api=D3D12GetInterface,this=%p", nullptr);
 	if (!D3D12ProxyState::OrigGetInterface)
 		return E_NOINTERFACE;
 	HRESULT hr = D3D12ProxyState::OrigGetInterface(clsid, riid, object);

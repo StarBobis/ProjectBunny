@@ -3195,14 +3195,6 @@ static bool UpdateTextureContentHashFromMappedData(DumpTask *task, const void *m
 		return true;
 	}
 	if (!hash) {
-		DX12LogManager::DebugFields("DX12TextureHashCache",
-			"\"stage\":\"dump_hash_miss\",\"source\":\"%p\",\"dimension\":%u,\"format\":%u,\"width\":%llu,\"height\":%u,\"layouts\":%zu",
-			task->source,
-			static_cast<UINT>(task->desc.Dimension),
-			static_cast<UINT>(task->desc.Format),
-			static_cast<unsigned long long>(task->desc.Width),
-			task->desc.Height,
-			task->textureLayouts.size());
 		return false;
 	}
 
