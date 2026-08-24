@@ -3090,6 +3090,7 @@ static HWND gStatusLabel = nullptr;
 static HWND gHuntToggleButton = nullptr;
 static HWND gProfilingButton = nullptr;
 static HWND gHashList = nullptr;
+static bool gNumpad0Down = false;
 static HWND gCategoryButtons[5] = {};
 static HWND gMainLabels[4] = {};
 static HFONT gUiFont = nullptr;
@@ -3280,11 +3281,12 @@ static void UpdateStatusText()
 static void FollowGameWindow()
 {
 	HWND overlay = gOverlayWindow;
+	if (!overlay || !IsWindowVisible(overlay))
+		return;
 	HWND game = GetSharedGameWindow();
 	RECT rect = {};
-	if (!overlay || !IsGameWindowDisplayable(game, &rect)) {
-		if (overlay)
-			ShowWindow(overlay, SW_HIDE);
+	if (!IsGameWindowDisplayable(game, &rect)) {
+		ShowWindow(overlay, SW_HIDE);
 		return;
 	}
 
@@ -3293,6 +3295,22 @@ static void FollowGameWindow()
 	GetOverlayWindowSize(&width, &height);
 	SetWindowPos(overlay, HWND_TOPMOST, rect.right + kOverlayGap, rect.top,
 		width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+static void HandleOverlayHotkey(HWND hwnd)
+{
+	const bool down = (GetAsyncKeyState(VK_NUMPAD0) & 0x8000) != 0;
+	if (down && !gNumpad0Down) {
+		if (IsWindowVisible(hwnd)) {
+			ShowWindow(hwnd, SW_HIDE);
+			DX12LogManager::Fields("DX12NativeOverlay", "event=hidden,hotkey=NUMPAD0");
+		} else {
+			ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+			FollowGameWindow();
+			DX12LogManager::Fields("DX12NativeOverlay", "event=shown,hotkey=NUMPAD0");
+		}
+	}
+	gNumpad0Down = down;
 }
 
 static void RunCommand(int id)
@@ -3405,8 +3423,11 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
 		return 0;
 	case WM_TIMER:
 		if (wparam == kUiRefreshTimer) {
-			UpdateStatusText();
-			LayoutStatusBar(hwnd);
+			HandleOverlayHotkey(hwnd);
+			if (IsWindowVisible(hwnd)) {
+				UpdateStatusText();
+				LayoutStatusBar(hwnd);
+			}
 			FollowGameWindow();
 		}
 		return 0;
@@ -3490,7 +3511,7 @@ static DWORD WINAPI UiThreadProc(void*)
 	SetSharedOverlayWindow(hwnd);
 	DX12LogManager::Fields("DX12NativeOverlay",
 		"event=thread_started,hwnd=%p", hwnd);
-	FollowGameWindow();
+	ShowWindow(hwnd, SW_HIDE);
 
 	MSG msg = {};
 	while (InterlockedCompareExchange(&gShutdownRequested, 0, 0) == 0 &&
