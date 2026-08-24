@@ -3063,28 +3063,29 @@ public:
 
 	static void ApplyGlobals(const FrameSnapshot &frame)
 	{
-		MigotoCommandVmUtils::SetGlobal(L"window_width", frame.windowWidth);
-		MigotoCommandVmUtils::SetGlobal(L"window_height", frame.windowHeight);
-		MigotoCommandVmUtils::SetGlobal(L"res_width", frame.resWidth);
-		MigotoCommandVmUtils::SetGlobal(L"res_height", frame.resHeight);
-		MigotoCommandVmUtils::SetGlobal(L"rt_width", frame.rtWidth);
-		MigotoCommandVmUtils::SetGlobal(L"rt_height", frame.rtHeight);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_screen_x", frame.cursorScreenX);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_screen_y", frame.cursorScreenY);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_window_x", frame.cursorWindowX);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_window_y", frame.cursorWindowY);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_x", frame.cursorX);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_y", frame.cursorY);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_showing", frame.cursorShowing);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_visible", frame.cursorShowing);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_hotspot_x", frame.cursorHotspotX);
-		MigotoCommandVmUtils::SetGlobal(L"cursor_hotspot_y", frame.cursorHotspotY);
-		MigotoCommandVmUtils::SetGlobal(L"effective_dpi", frame.effectiveDpi);
-		MigotoCommandVmUtils::SetGlobal(L"hunting", 0.0);
-		MigotoCommandVmUtils::SetGlobal(L"frame_analysis", 0.0);
-		MigotoCommandVmUtils::SetGlobal(L"sli", 0.0);
-		MigotoCommandVmUtils::SetGlobal(L"stereo_active", 0.0);
-		MigotoCommandVmUtils::SetGlobal(L"stereo_available", 0.0);
+		MigotoCommandVmUtils::SetGlobals({
+			{L"window_width", frame.windowWidth},
+			{L"window_height", frame.windowHeight},
+			{L"res_width", frame.resWidth},
+			{L"res_height", frame.resHeight},
+			{L"rt_width", frame.rtWidth},
+			{L"rt_height", frame.rtHeight},
+			{L"cursor_screen_x", frame.cursorScreenX},
+			{L"cursor_screen_y", frame.cursorScreenY},
+			{L"cursor_window_x", frame.cursorWindowX},
+			{L"cursor_window_y", frame.cursorWindowY},
+			{L"cursor_x", frame.cursorX},
+			{L"cursor_y", frame.cursorY},
+			{L"cursor_showing", frame.cursorShowing},
+			{L"cursor_visible", frame.cursorShowing},
+			{L"cursor_hotspot_x", frame.cursorHotspotX},
+			{L"cursor_hotspot_y", frame.cursorHotspotY},
+			{L"effective_dpi", frame.effectiveDpi},
+			{L"hunting", 0.0},
+			{L"frame_analysis", 0.0},
+			{L"sli", 0.0},
+			{L"stereo_active", 0.0},
+			{L"stereo_available", 0.0}});
 	}
 
 	static void CollectSwapChain1Size(IDXGISwapChain *swapChain, FrameSnapshot *frame)
@@ -3158,12 +3159,31 @@ public:
 		if (!cursor || !frame)
 			return;
 
-		ICONINFO iconInfo = {};
-		if (!GetIconInfo(cursor, &iconInfo))
+		// The cursor handle and hotspot are stable for long periods. GetIconInfo
+		// allocates two GDI bitmaps, so doing it on every Present is needlessly
+		// expensive on the render thread.
+		thread_local HCURSOR cachedCursor = nullptr;
+		thread_local LONG cachedHotspotX = 0;
+		thread_local LONG cachedHotspotY = 0;
+		if (cursor == cachedCursor) {
+			frame->cursorHotspotX = static_cast<double>(cachedHotspotX);
+			frame->cursorHotspotY = static_cast<double>(cachedHotspotY);
 			return;
+		}
 
-		frame->cursorHotspotX = static_cast<double>(iconInfo.xHotspot);
-		frame->cursorHotspotY = static_cast<double>(iconInfo.yHotspot);
+		ICONINFO iconInfo = {};
+		if (!GetIconInfo(cursor, &iconInfo)) {
+			cachedCursor = cursor;
+			cachedHotspotX = 0;
+			cachedHotspotY = 0;
+			return;
+		}
+		cachedCursor = cursor;
+		cachedHotspotX = static_cast<LONG>(iconInfo.xHotspot);
+		cachedHotspotY = static_cast<LONG>(iconInfo.yHotspot);
+
+		frame->cursorHotspotX = static_cast<double>(cachedHotspotX);
+		frame->cursorHotspotY = static_cast<double>(cachedHotspotY);
 		if (iconInfo.hbmMask)
 			DeleteObject(iconInfo.hbmMask);
 		if (iconInfo.hbmColor)
@@ -3264,6 +3284,11 @@ public:
 
 	static void LogFrameVariables(const FrameSnapshot &frame, bool collected)
 	{
+		// This is diagnostic output, not runtime behavior. Logging one formatted
+		// record per Present can serialize the render thread on the log mutex and
+		// turn a normal frame into a multi-millisecond CPU stall.
+		if (!kVerboseEnabled)
+			return;
 		DX12LogManager::Fields("DX12VmFrameVariables",
 			"\"status\":\"%s\",\"hwnd\":\"%p\",\"windowWidth\":%.0f,\"windowHeight\":%.0f,"
 			"\"resWidth\":%.0f,\"resHeight\":%.0f,\"rtWidth\":%.0f,\"rtHeight\":%.0f,"
@@ -3460,5 +3485,3 @@ public:
 		CompleteReload();
 	}
 };
-
-

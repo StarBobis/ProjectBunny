@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cwchar>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -416,6 +417,13 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		VariableStore::globals[NormalizeVariableName(name)] = value;
+	}
+
+	static void SetGlobals(std::initializer_list<std::pair<const wchar_t *, double>> values)
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		for (const auto &value : values)
+			VariableStore::globals[NormalizeVariableName(value.first)] = value.second;
 	}
 
 	static void ClearGlobals()
