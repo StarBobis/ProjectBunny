@@ -6557,9 +6557,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 					&textureStorage,
 					&bufferStorage,
 					&activeBarrierGroups);
-				DX12WrapperRuntimeUtils::LogCommandListStage("Barrier", "before", mCommandList);
 				commandList7->Barrier(NumBarrierGroups, activeBarrierGroups);
-				DX12WrapperRuntimeUtils::LogCommandListStage("Barrier", "after", mCommandList);
 			}
 
 			void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) override

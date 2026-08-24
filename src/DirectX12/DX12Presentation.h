@@ -940,27 +940,6 @@ public:
 		*result = groupStorage->data();
 	}
 
-	static void LogCommandListStage(
-		const char *method,
-		const char *stage,
-		ID3D12GraphicsCommandList *commandList)
-	{
-#if defined(_DEBUG)
-		if (!DX12LogManager::ShouldLogHookCall(method))
-			return;
-		DX12LogManager::Fields("DX12GraphicsCommandListWrapper",
-			"\"method\":\"%s\",\"stage\":\"%s\",\"commandList\":\"%p\",\"threadId\":%lu",
-			method ? method : "",
-			stage ? stage : "",
-			commandList,
-			GetCurrentThreadId());
-#else
-		(void)method;
-		(void)stage;
-		(void)commandList;
-#endif
-	}
-
 	static void STDMETHODCALLTYPE DirectQueueExecuteCommandLists(
 		ID3D12CommandQueue *queue,
 		UINT numCommandLists,
@@ -1835,7 +1814,6 @@ public:
 			UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
 			DX12_HOTPATH_TIME_END(BarrierUnwrap);
 		}
-		LogCommandListStage("ResourceBarrier", "before", commandList);
 		DX12_HOTPATH_TIME_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);
 		DX12_HOTPATH_TIME_END(BarrierCapture);
@@ -1843,7 +1821,6 @@ public:
 			original(commandList, numBarriers, activeBarriers);
 		else
 			commandList->ResourceBarrier(numBarriers, activeBarriers);
-		LogCommandListStage("ResourceBarrier", "after", commandList);
 		DX12_HOTPATH_TIME_END(ResourceBarrierTotal);
 	}
 

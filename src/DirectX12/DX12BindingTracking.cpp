@@ -4236,13 +4236,6 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 		if (heapVersionAfterHit != cbvSrvUavHeapVersion) {
 			uavs->clear();
 		} else {
-	#if defined(_DEBUG)
-			DX12LogManager::DebugFields("DX12DescriptorQueryCache",
-			"\"stage\":\"hit\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
-			cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
-			static_cast<unsigned long long>(bindingQuerySerial),
-			static_cast<unsigned long long>(cbvSrvUavHeapVersion), uavs->size());
-	#endif
 			return !uavs->empty();
 		}
 	}
@@ -4301,13 +4294,6 @@ bool DX12BindingTracker::GetCurrentDescriptors(
 				*uavs);
 		}
 	}
-	#if defined(_DEBUG)
-	DX12LogManager::DebugFields("DX12DescriptorQueryCache",
-		"\"stage\":\"miss\",\"slot\":%u,\"compute\":%s,\"rangeType\":%u,\"serial\":%llu,\"heapVersion\":%llu,\"bindings\":%zu",
-		cacheSlot, compute ? "true" : "false", static_cast<UINT>(rangeType),
-		static_cast<unsigned long long>(bindingQuerySerial),
-		static_cast<unsigned long long>(cbvSrvUavHeapVersionAfter), uavs->size());
-	#endif
 	return foundAny;
 }
 

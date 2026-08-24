@@ -75,11 +75,6 @@ DX12CommandListHookSignatures::CommandListBeginEvent DX12CommandListHookState::O
 DX12CommandListHookSignatures::CommandListEndEvent DX12CommandListHookState::OrigCommandListEndEvent = nullptr;
 DX12CommandListHookSignatures::ExecuteIndirect DX12CommandListHookState::OrigExecuteIndirect = nullptr;
 
-SRWLOCK DX12CommandListHookState::IaReplacementSummaryLock = SRWLOCK_INIT;
-LONG DX12CommandListHookState::IaReplacementSummaryPresent = -1;
-volatile LONG DX12CommandListHookState::IaReplacementSummaryDraws = 0;
-volatile LONG DX12CommandListHookState::IaReplacementSummaryIndexedDraws = 0;
-volatile LONG DX12CommandListHookState::IaReplacementSummaryDispatches = 0;
 
 SRWLOCK DX12CommandListHookState::RegisteredListLock = SRWLOCK_INIT;
 std::unordered_set<void*> DX12CommandListHookState::RegisteredCommandLists;

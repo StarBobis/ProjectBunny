@@ -356,19 +356,6 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 			break;
 		}
 
-		// Suppress Debug STL abort() popups and redirect them to debugger output.
-		// The MSVC Debug STL (_ITERATOR_DEBUG_LEVEL=2) calls abort() on
-		// container misuse (e.g. vector out-of-bounds). This does not
-		// indicate a crash or memory corruption; the game continues
-		// running after clicking Ignore. Redirect to stderr so the dialog
-		// does not block automated test runs.
-#if _DEBUG
-		_set_abort_behavior(0, _WRITE_ABORT_MSG);
-		_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
-		_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_DEBUG);
-		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_DEBUG);
-#endif
-
 		D3D12ProxyRuntime::Initialize(module);
 		gD3D12ProxyRuntimeInitialized = true;
 		break;
