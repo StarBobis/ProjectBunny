@@ -941,158 +941,9 @@ public:
 		return true;
 	}
 
+	// Copy the descriptor range into the shadow heap. Snapshot sources first so
+	// overlapping ranges keep memmove semantics.
 	static void CopyDescriptorRange(
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		UINT count,
-		CopyTelemetryBatch *telemetryBatch = nullptr,
-		HeapVersionCommitSet *versionCommits = nullptr)
-	{
-		(void)versionCommits;
-		if (count == 0) {
-			return;
-		}
-		ResolvedHeapSlot destResolved;
-		ResolvedHeapSlot srcResolved;
-		const bool hasDestination = ResolveHeapSlotFast(
-			destStart.ptr, type, &destResolved);
-		const bool hasSource = ResolveHeapSlotFast(
-			srcStart.ptr, type, &srcResolved);
-
-		// If either range endpoint cannot be resolved to a known heap slot,
-		// fall back to per-descriptor lookup via FindLatestDescriptor which
-		// checks both heap slots and the CPU ledger.
-		if (!hasDestination || !hasSource) {
-			if (telemetryBatch)
-				telemetryBatch->RecordRange(count, false, false, false);
-			else
-				DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-					count, false, false, false);
-			DX12DescriptorShadowTelemetryUtils::RecordFallback(count);
-			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
-			return;
-		}
-
-		DescriptorHeapRecord &destHeap = *destResolved.heap;
-		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
-		const UINT destSlot = destResolved.slot;
-		const UINT srcSlot = srcResolved.slot;
-		const UINT64 srcEnd = static_cast<UINT64>(srcSlot) + count;
-		const UINT64 destEnd = static_cast<UINT64>(destSlot) + count;
-		const bool sameHeap = &destHeap == &srcHeap;
-		const bool overlaps = sameHeap &&
-			static_cast<UINT64>(destSlot) < srcEnd &&
-			static_cast<UINT64>(srcSlot) < destEnd;
-		if (telemetryBatch)
-			telemetryBatch->RecordRange(count, true, sameHeap, overlaps);
-		else
-			DX12DescriptorShadowTelemetryUtils::RecordCopyRange(
-				count, true, sameHeap, overlaps);
-
-		// Keep descriptor shadowing on one straightforward implementation.  The
-		// copy helper snapshots overlapping ranges and publishes changed slots;
-		// the old memo/dense/striped-lock paths only duplicated that logic.
-		if (!CopyDescriptorRangeSimple(type, destStart, srcStart, count)) {
-			DX12DescriptorShadowTelemetryUtils::RecordFallback(count);
-			CopyDescriptorRangeWithFallback(type, destStart, srcStart, count);
-		}
-		return;
-	}
-
-	// Minimal CopyDescriptors shadow mirror. Resolve each heap once, copy the
-	// common non-overlapping case directly, and snapshot only overlapping ranges.
-	static bool CopyDescriptorRangeSimple(
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		UINT count)
-	{
-		if (!count)
-			return true;
-		ResolvedHeapSlot destResolved;
-		ResolvedHeapSlot srcResolved;
-		if (!ResolveHeapSlotFast(destStart.ptr, type, &destResolved) ||
-			!ResolveHeapSlotFast(srcStart.ptr, type, &srcResolved) ||
-			!destResolved.heap || !srcResolved.heap)
-			return false;
-
-		DescriptorHeapRecord &destHeap = *destResolved.heap;
-		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
-		if (destResolved.slot > destHeap.desc.NumDescriptors ||
-			count > destHeap.desc.NumDescriptors - destResolved.slot ||
-			srcResolved.slot > srcHeap.desc.NumDescriptors ||
-			count > srcHeap.desc.NumDescriptors - srcResolved.slot)
-			return false;
-		if (destHeap.slots.empty())
-			EnsureDescriptorHeapStorageLocked(&destHeap);
-
-		if (count == 1) {
-			DescriptorRecord source;
-			const bool present = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
-				srcHeap, srcResolved.slot, &source);
-			const SIZE_T handle = destStart.ptr;
-			const bool changed = present ?
-				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&destHeap, destResolved.slot, source, handle) :
-				DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
-					&destHeap, destResolved.slot);
-			if (changed) {
-				DX12DescriptorHeapStateUtils::PublishRangeValue(
-					&destHeap, destResolved.slot, present ? source.valueId : 0);
-				DX12DescriptorHeapStateUtils::CommitPublishedRange(&destHeap);
-			}
-			return true;
-		}
-
-		const bool sameHeap = &srcHeap == &destHeap;
-		const UINT srcEnd = srcResolved.slot + count;
-		const UINT destEnd = destResolved.slot + count;
-		const bool overlaps = sameHeap && srcResolved.slot < destEnd &&
-			destResolved.slot < srcEnd;
-		std::vector<DescriptorRecord> source;
-		std::vector<uint8_t> present;
-		if (overlaps) {
-			// A same-heap overlapping copy has memmove semantics.
-			source.resize(count);
-			present.assign(count, 0);
-			for (UINT i = 0; i < count; ++i)
-				present[i] = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
-					srcHeap, srcResolved.slot + i, &source[i]) ? 1 : 0;
-		}
-
-		bool changed = false;
-		for (UINT i = 0; i < count; ++i) {
-			DescriptorRecord copied;
-			const bool occupied = overlaps ? present[i] :
-				DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
-					srcHeap, srcResolved.slot + i, &copied);
-			const DescriptorRecord *value = overlaps ?
-				(occupied ? &source[i] : nullptr) :
-				(occupied ? &copied : nullptr);
-			const UINT slot = destResolved.slot + i;
-			const SIZE_T handle = destStart.ptr +
-				static_cast<SIZE_T>(i) * destHeap.increment;
-			const bool slotChanged = value ?
-				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&destHeap, slot, *value, handle) :
-				DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
-					&destHeap, slot);
-			if (slotChanged) {
-				changed = true;
-				DX12DescriptorHeapStateUtils::PublishRangeValue(
-					&destHeap, slot, value ? value->valueId : 0);
-			}
-		}
-		if (changed)
-			DX12DescriptorHeapStateUtils::CommitPublishedRange(&destHeap);
-		return true;
-	}
-
-	// Per-descriptor fallback when bulk heap-slot resolution fails.
-	// Uses FindLatestDescriptor for each source and WriteDescriptorToSlot
-	// for each destination.
-	static void CopyDescriptorRangeWithFallback(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
 		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
@@ -1118,28 +969,30 @@ public:
 			CacheIncrementForType(type, increment);
 		}
 
-		UINT copiedCount = 0;
+		std::vector<DescriptorRecord> sources(count);
+		std::vector<uint8_t> present(count, 0);
 		for (UINT i = 0; i < count; ++i) {
 			const SIZE_T srcHandle = srcStart.ptr +
 				(increment ? static_cast<SIZE_T>(i) * increment : 0);
+			present[i] = FindLatestDescriptor(srcHandle, &sources[i]) ? 1 : 0;
+		}
+
+		for (UINT i = 0; i < count; ++i) {
 			const SIZE_T destHandle = destStart.ptr +
 				(increment ? static_cast<SIZE_T>(i) * increment : 0);
-
-			DescriptorRecord srcRecord;
-			if (FindLatestDescriptor(srcHandle, &srcRecord)) {
-				if (DescriptorValueUnchanged(destHandle, srcRecord.valueId)) {
-					ReleaseDescriptorRecordResources(&srcRecord);
-					continue;
-				}
-				srcRecord.cpuHandle = destHandle;
-				if (!WriteDescriptorToSlot(destHandle, std::move(srcRecord)))
-					WriteToCpuLedger(std::move(srcRecord));
-				copiedCount++;
-			} else {
+			if (!present[i]) {
 				EraseDescriptor(destHandle);
+				continue;
 			}
+			DescriptorRecord &source = sources[i];
+			if (DescriptorValueUnchanged(destHandle, source.valueId)) {
+				ReleaseDescriptorRecordResources(&source);
+				continue;
+			}
+			source.cpuHandle = destHandle;
+			if (!WriteDescriptorToSlot(destHandle, std::move(source)))
+				WriteToCpuLedger(std::move(source));
 		}
-		(void)copiedCount;
 	}
 
 	// ---- Find latest descriptor (2-tier lookup) ----

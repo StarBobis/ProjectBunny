@@ -1029,9 +1029,8 @@ static bool DescriptorHeapIsShaderVisible(const DescriptorHeapRecord &heap)
 
 static bool ShouldStoreCreatedDescriptorInHeapSlot(const DescriptorHeapRecord &heap)
 {
-	return DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() &&
-		(DescriptorHeapIsShaderVisible(heap) ||
-		 DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory());
+	return DescriptorHeapIsShaderVisible(heap) ||
+		DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
 }
 
 static DescriptorRecord *DescriptorHeapSlot(DescriptorHeapRecord *heap, UINT slot)
@@ -3604,8 +3603,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	const UINT *srcDescriptorRangeSizes,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	if (!DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() ||
-			!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
+	if (!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
 		return;
 	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
 			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
@@ -3641,8 +3639,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-		if (dest.ptr != src.ptr && !DX12DescriptorHeapShadowUtils::CopyDescriptorRangeSimple(
-				descriptorHeapsType, dest, src, count))
+		if (dest.ptr != src.ptr)
 			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
 				descriptorHeapsType, dest, src, count);
 		destOffset += count;
@@ -3657,22 +3654,15 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking()) {
-		if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
-				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
-			return;
-		if (numDescriptors != 0 &&
-				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
-			return;
-		if (!DX12DescriptorHeapShadowUtils::CopyDescriptorRangeSimple(
-				descriptorHeapsType, destDescriptorRangeStart,
-				srcDescriptorRangeStart, numDescriptors)) {
-			// Unknown/retiring heaps keep the existing compatibility path.
-			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-				descriptorHeapsType, destDescriptorRangeStart,
-				srcDescriptorRangeStart, numDescriptors);
-		}
-	}
+	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
+		return;
+	if (numDescriptors != 0 &&
+			destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
+		return;
+	DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+		descriptorHeapsType, destDescriptorRangeStart,
+		srcDescriptorRangeStart, numDescriptors);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource(

@@ -4,6 +4,11 @@
 - 代码要优雅且高性能
 
 
-# 构建验证
+# 构建验证TIMING版
 
 - 正常情况下使用build_release_timing_x64.ps1构建即可
+- 请不要把临时的构建结果输出直接放在根目录，应该放在build目录下边
+
+# TIMING版运行日志
+
+一般在 D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12 下面的d3d12_log.txt里

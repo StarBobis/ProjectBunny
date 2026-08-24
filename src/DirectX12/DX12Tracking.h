@@ -1523,13 +1523,6 @@ public:
 		return DX12ModHasConfiguredTextureOverrides();
 	}
 
-	static bool NeedsDescriptorTracking()
-	{
-		return NeedsDumpOrHuntingTracking() ||
-			DX12ModNeedsPreSkinningUavProbe() ||
-			DX12ModNeedsShaderDescriptorTracking();
-	}
-
 	static bool NeedsFullDescriptorHistory()
 	{
 		return NeedsFrameDumpTracking();
@@ -1542,9 +1535,7 @@ public:
 
 	static bool NeedsTextureResourceTracking()
 	{
-		return NeedsFullResourceMetadata() ||
-			NeedsIaContentTracking() ||
-			NeedsDescriptorTracking();
+		return true;
 	}
 
 };
