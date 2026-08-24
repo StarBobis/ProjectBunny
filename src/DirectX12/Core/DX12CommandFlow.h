@@ -2292,14 +2292,13 @@ public:
 		UINT numBarriers,
 		const D3D12_RESOURCE_BARRIER *barriers)
 	{
+		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
+			DX12_PROFILE_FAST_FORWARD();
+			return false;
+		}
 		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureCall(numBarriers);
 		if (DX12InternalReplayState::IsActive()) {
 			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedInternalReplay();
-			return false;
-		}
-		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedHotPath();
 			return false;
 		}
 		if (!DX12CommandListStateCapture::ShouldTrackResourceStates()) {

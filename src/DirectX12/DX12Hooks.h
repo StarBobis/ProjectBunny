@@ -1786,16 +1786,18 @@ public:
 		UINT dispatchGroupX = threadGroupCountX;
 		UINT dispatchGroupY = threadGroupCountY;
 		UINT dispatchGroupZ = threadGroupCountZ;
-		DX12LogManager::Fields("DX12DispatchExecDetail",
-			"applied=%d,skip=%d,hasD=%d,gx=%u,gy=%u,gz=%u,origX=%u,origY=%u,origZ=%u,cs=%llx",
-			probe.applied ? 1 : 0,
-			probe.dispatchOverride.handlingSkip ? 1 : 0,
-			probe.dispatchOverride.hasDispatch ? 1 : 0,
-			probe.dispatchOverride.groupsX,
-			probe.dispatchOverride.groupsY,
-			probe.dispatchOverride.groupsZ,
-			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-			static_cast<unsigned long long>(probe.computeShaderHash));
+		if constexpr (kVerboseEnabled) {
+			DX12LogManager::Fields("DX12DispatchExecDetail",
+				"applied=%d,skip=%d,hasD=%d,gx=%u,gy=%u,gz=%u,origX=%u,origY=%u,origZ=%u,cs=%llx",
+				probe.applied ? 1 : 0,
+				probe.dispatchOverride.handlingSkip ? 1 : 0,
+				probe.dispatchOverride.hasDispatch ? 1 : 0,
+				probe.dispatchOverride.groupsX,
+				probe.dispatchOverride.groupsY,
+				probe.dispatchOverride.groupsZ,
+				threadGroupCountX, threadGroupCountY, threadGroupCountZ,
+				static_cast<unsigned long long>(probe.computeShaderHash));
+		}
 		if (probe.applied && probe.dispatchOverride.handlingSkip) {
 			if (probe.dispatchOverride.hasDispatch) {
 				dispatchGroupX = probe.dispatchOverride.groupsX;

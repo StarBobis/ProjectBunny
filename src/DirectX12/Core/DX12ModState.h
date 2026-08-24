@@ -1123,7 +1123,10 @@ public:
 	inline static volatile LONG64 ApiWallCalls[ApiWallBucketCount] = {};
 	inline static volatile LONG64 ApiWallTotalUs[ApiWallBucketCount] = {};
 	inline static volatile LONG64 ApiWallMaxUs[ApiWallBucketCount] = {};
-	inline static volatile LONG64 ApiScopeActiveDepth = 0;
+	// Nesting is a property of one recording thread.  The old process-wide
+	// counter classified unrelated scopes on parallel Unity threads as nested,
+	// which made exclusive totals lose most of the frame and hid the real cost.
+	inline static thread_local LONG ApiScopeActiveDepth = 0;
 	inline static volatile LONG64 ApiScopeCalls = 0;
 	inline static volatile LONG64 ApiScopeTotalUs = 0;
 	inline static volatile LONG64 ApiScopeNestedCalls = 0;
@@ -1775,7 +1778,7 @@ public:
 	static void LogApiScopeBegin(int bucket, LONGLONG beginQpc)
 	{
 		RecordApiThreadScopeBegin(beginQpc);
-		const LONG64 activeDepth = InterlockedIncrement64(&ApiScopeActiveDepth);
+		const LONG activeDepth = ++ApiScopeActiveDepth;
 		if (activeDepth > 1) {
 			InterlockedIncrement64(&ApiScopeNestedCalls);
 			return;
@@ -1863,7 +1866,7 @@ public:
 	{
 		RecordApiThreadScopeEnd(bucket, endQpc);
 		const LONG64 elapsedUs = DeltaUs(beginQpc, endQpc);
-		const LONG64 activeDepth = InterlockedCompareExchange64(&ApiScopeActiveDepth, 0, 0);
+		const LONG activeDepth = ApiScopeActiveDepth;
 		if (activeDepth <= 1) {
 			AddUs(&ApiScopeTotalUs, elapsedUs);
 			LONG64 observed = InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
@@ -1889,7 +1892,8 @@ public:
 			}
 		}
 		LogApiWallSlice(bucket, elapsedUs);
-		InterlockedDecrement64(&ApiScopeActiveDepth);
+		if (ApiScopeActiveDepth > 0)
+			--ApiScopeActiveDepth;
 	}
 
 	static void LogApiWallSlice(int bucket, LONG64 us)
@@ -2783,4 +2787,3 @@ public:
 		LogLogCostState(present, frameWallUs);
 	}
 };
-

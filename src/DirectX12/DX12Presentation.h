@@ -802,38 +802,45 @@ public:
 		if (!source || !storage || !count)
 			return;
 		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierUnwrap(count);
-		// DX12 callers overwhelmingly submit native resources.  Do the cheap
-		// identity probe first so the common case stays on the original array:
-		// no vector growth, barrier copies, or pointer chasing through scratch.
-		bool requiresCopy = false;
-		for (UINT i = 0; i < count && !requiresCopy; ++i) {
+		// DX12 callers overwhelmingly submit native resources. Keep that common
+		// case on the original array. If a wrapped resource is encountered,
+		// switch to copy mode in the same pass instead of probing every element
+		// once and then looking it up again during the second pass.
+		for (UINT i = 0; i < count; ++i) {
 			const D3D12_RESOURCE_BARRIER &barrier = source[i];
+			ID3D12Resource *before = nullptr;
+			ID3D12Resource *after = nullptr;
 			switch (barrier.Type) {
 			case D3D12_RESOURCE_BARRIER_TYPE_TRANSITION:
-				requiresCopy = UnwrapResource(barrier.Transition.pResource) !=
-					barrier.Transition.pResource;
+				before = barrier.Transition.pResource;
+				after = UnwrapResource(before);
 				break;
 			case D3D12_RESOURCE_BARRIER_TYPE_ALIASING:
-				requiresCopy =
-					UnwrapResource(barrier.Aliasing.pResourceBefore) !=
-						barrier.Aliasing.pResourceBefore ||
-					UnwrapResource(barrier.Aliasing.pResourceAfter) !=
-						barrier.Aliasing.pResourceAfter;
+				before = barrier.Aliasing.pResourceBefore;
+				after = UnwrapResource(before);
+				if (after == before) {
+					before = barrier.Aliasing.pResourceAfter;
+					after = UnwrapResource(before);
+				}
 				break;
 			case D3D12_RESOURCE_BARRIER_TYPE_UAV:
-				requiresCopy = UnwrapResource(barrier.UAV.pResource) !=
-					barrier.UAV.pResource;
+				before = barrier.UAV.pResource;
+				after = UnwrapResource(before);
 				break;
 			default:
 				break;
 			}
-		}
-		if (!requiresCopy)
-			return;
-		storage->resize(count);
-		for (UINT i = 0; i < count; ++i)
+
+			if (*result == source && after == before)
+				continue;
+			if (*result == source) {
+				storage->resize(count);
+				for (UINT previous = 0; previous < i; ++previous)
+					(*storage)[previous] = source[previous];
+				*result = storage->data();
+			}
 			UnwrapResourceBarrier(&source[i], &(*storage)[i]);
-		*result = storage->data();
+		}
 	}
 
 	static void UnwrapBarrierGroups(
@@ -2158,7 +2165,6 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootSignature);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
-		LARGE_INTEGER rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 		ID3D12RootSignature *unwrapped = nullptr;
 		if (runtimeState && runtimeState->lastWrappedGraphicsRootSignature == rootSignature)
 			unwrapped = runtimeState->lastUnwrappedGraphicsRootSignature;
@@ -2169,15 +2175,8 @@ public:
 				runtimeState->lastUnwrappedGraphicsRootSignature = unwrapped;
 			}
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"RootSig", "unwrap", 1, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		if (ShouldSkipGraphicsBinding()) {
-			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"RootSig", "original_skip", 1, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		}
 		else {
 			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
@@ -2187,38 +2186,22 @@ public:
 				// Fast path mirroring CaptureRootSignature's skip branch without
 				// the shared fast-skip bookkeeping: keep the deferred pre-skin
 				// restore and resident state update, then drop redundant calls.
-				rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 				DX12CommandListComputeBindingFlow::
 					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
 				bool changed = true;
 				if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(hookFlags))
 					changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
 						runtimeState, unwrapped);
-				DX12OuterTimingProbeUtils::LogCpuStage(
-					"RootSig", "capture_fastpath", 1, 1,
-					DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 				if (!changed)
 					return;
-				rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 				if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
-				DX12OuterTimingProbeUtils::LogCpuStage(
-					"RootSig", "original", 1, 1,
-					DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 				return;
 			}
-			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootSignature(
 				commandList, runtimeState, unwrapped, true);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"RootSig", "capture", 1, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 			if (!changed)
 				return;
-			rootsigSegmentBegin = DX12OuterTimingProbeUtils::Now();
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"RootSig", "original", 1, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(rootsigSegmentBegin));
 		}
 	}
 
@@ -2592,4 +2575,3 @@ public:
 	inline static DXGIHookSignatures::CreateDXGIFactory OrigCreateDXGIFactory1 = nullptr;
 	inline static DXGIHookSignatures::CreateDXGIFactory2 OrigCreateDXGIFactory2 = nullptr;
 };
-
