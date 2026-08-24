@@ -691,15 +691,6 @@ public:
 	UINT outputStride = 0;
 };
 
-class DX12ActivePreSkinOutputState
-
-{
-
-public:
-	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	bool uavBarrierPending = false;
-};
-
 static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTextureOverrides;
 // Plan fix C: reverse index from pre-skin output resource to the configured
 // sections publishing it. DX12ModFindActivePreSkinProducerForOutput used to
@@ -709,7 +700,6 @@ static std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTe
 // stores section names (not pointers) because the map entries are rewritten
 // in place on every store and section names are the stable identity.
 static std::unordered_map<ID3D12Resource*, std::vector<std::wstring>> gPreSkinProducerSectionsByOutputResource;
-static std::unordered_map<ID3D12Resource*, DX12ActivePreSkinOutputState> gActivePreSkinOutputStates;
 // A successful producer match proves that this configured section participates
 // in PreSkin for the current mod configuration. Keep that proof independently
 // from the frame-local resource binding below: DX12 command lists may be recorded
@@ -768,20 +758,6 @@ static void BumpPreSkinActiveGeneration()
 	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&gPreSkinActiveGeneration));
 }
 
-static bool ActivePreSkinResourceReferencedLocked(
-	const std::wstring &skipSection, ID3D12Resource *resource)
-{
-	if (!resource)
-		return false;
-	for (const auto &item : gActivePreSkinTextureOverrides) {
-		if (item.first == skipSection)
-			continue;
-		if (item.second.outputResource == resource)
-			return true;
-	}
-	return false;
-}
-
 static void MoveActivePreSkinTextureOverrideResourceLocked(
 	const std::wstring &section, DX12ActivePreSkinTextureOverride *active,
 	std::vector<ID3D12Resource*> *releaseResources)
@@ -820,12 +796,11 @@ static void ClearActivePreSkinTextureOverridesLocked(
 	std::vector<ID3D12Resource*> *releaseResources)
 {
 	const bool changed =
-		!gActivePreSkinTextureOverrides.empty() || !gActivePreSkinOutputStates.empty();
+		!gActivePreSkinTextureOverrides.empty();
 	for (auto &item : gActivePreSkinTextureOverrides)
 		MoveActivePreSkinTextureOverrideResourceLocked(item.first, &item.second, releaseResources);
 	gActivePreSkinTextureOverrides.clear();
 	gPreSkinProducerSectionsByOutputResource.clear();
-	gActivePreSkinOutputStates.clear();
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
 	// This clears only the transient producer publication. Never clear
 	// gPreSkinOutputResizeCache here: Present calls this function every frame,
@@ -865,33 +840,21 @@ static void StoreActivePreSkinTextureOverrideLocked(
 		existingPtr->producer.shaderRegister == active.producer.shaderRegister &&
 		existingPtr->producer.descriptorOffset == active.producer.descriptorOffset;
 	if (sameContent) {
-		// Refresh the entry in place (producer details may be republished)
-		// and keep the barrier bookkeeping, but do not bump the generation.
+		// Keep the existing identity and generation, while releasing the old
+		// reference after replacing the published metadata.
+		ID3D12Resource *oldResource = existingPtr->outputResource;
 		gActivePreSkinTextureOverrides[section] = active;
-		if (active.outputResource) {
-			DX12ActivePreSkinOutputState &state =
-				gActivePreSkinOutputStates[active.outputResource];
-			state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-			state.uavBarrierPending = true;
-		}
+		if (releaseResources && oldResource)
+			releaseResources->push_back(oldResource);
 		return;
 	}
-	ID3D12Resource *oldResource = existingPtr ? existingPtr->outputResource : nullptr;
 	if (existing != gActivePreSkinTextureOverrides.end())
 		MoveActivePreSkinTextureOverrideResourceLocked(section, &existing->second, releaseResources);
-	if (oldResource && oldResource != active.outputResource &&
-	    !ActivePreSkinResourceReferencedLocked(section, oldResource))
-		gActivePreSkinOutputStates.erase(oldResource);
-	DX12ActivePreSkinTextureOverride stored = active;
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 1);
-	gActivePreSkinTextureOverrides[section] = stored;
+	gActivePreSkinTextureOverrides[section] = active;
 	// Plan fix C: publish the reverse index entry for the new output resource.
-	if (stored.outputResource) {
-		gPreSkinProducerSectionsByOutputResource[stored.outputResource].push_back(section);
-		DX12ActivePreSkinOutputState &state =
-			gActivePreSkinOutputStates[stored.outputResource];
-		state.state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-		state.uavBarrierPending = true;
+	if (active.outputResource) {
+		gPreSkinProducerSectionsByOutputResource[active.outputResource].push_back(section);
 	}
 	BumpPreSkinActiveGeneration();
 }
