@@ -1694,6 +1694,63 @@ public:
 		}
 	}
 
+	// Minimal CopyDescriptorsSimple shadow mirror. Resolve each heap once,
+	// snapshot the source range (so overlapping copies behave like memmove),
+	// then write the destination slots and commit one heap version.
+	static bool CopyDescriptorRangeSimple(
+		D3D12_DESCRIPTOR_HEAP_TYPE type,
+		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
+		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
+		UINT count)
+	{
+		if (!count)
+			return true;
+		ResolvedHeapSlot destResolved;
+		ResolvedHeapSlot srcResolved;
+		if (!ResolveHeapSlotFast(destStart.ptr, type, &destResolved) ||
+			!ResolveHeapSlotFast(srcStart.ptr, type, &srcResolved) ||
+			!destResolved.heap || !srcResolved.heap)
+			return false;
+
+		DescriptorHeapRecord &destHeap = *destResolved.heap;
+		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
+		if (destResolved.slot + count > destHeap.desc.NumDescriptors ||
+			srcResolved.slot + count > srcHeap.desc.NumDescriptors)
+			return false;
+		if (destHeap.slots.empty())
+			EnsureDescriptorHeapStorageLocked(&destHeap);
+
+		std::vector<DescriptorRecord> source(count);
+		std::vector<uint8_t> present(count, 0);
+		for (UINT i = 0; i < count; ++i) {
+			present[i] = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+				srcHeap, srcResolved.slot + i, &source[i]) ? 1 : 0;
+		}
+
+		bool changed = false;
+		for (UINT i = 0; i < count; ++i) {
+			const UINT slot = destResolved.slot + i;
+			const SIZE_T handle = destStart.ptr +
+				static_cast<SIZE_T>(i) * destHeap.increment;
+			bool slotChanged = false;
+			if (present[i]) {
+				slotChanged = DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&destHeap, slot, source[i], handle);
+			} else {
+				slotChanged = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+					&destHeap, slot);
+			}
+			if (slotChanged) {
+				changed = true;
+				DX12DescriptorHeapStateUtils::PublishRangeValue(
+					&destHeap, slot, present[i] ? source[i].valueId : 0);
+			}
+		}
+		if (changed)
+			DX12DescriptorHeapStateUtils::CommitPublishedRange(&destHeap);
+		return true;
+	}
+
 	// Per-descriptor fallback when bulk heap-slot resolution fails.
 	// Uses FindLatestDescriptor for each source and WriteDescriptorToSlot
 	// for each destination.

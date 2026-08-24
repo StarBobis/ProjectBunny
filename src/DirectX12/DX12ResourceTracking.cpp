@@ -3735,18 +3735,20 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
 	if (DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking()) {
-		DX12DescriptorShadowTelemetryUtils::RecordCopyTypeCall(descriptorHeapsType);
 		if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
 				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
 			return;
 		if (numDescriptors != 0 &&
 				destDescriptorRangeStart.ptr == srcDescriptorRangeStart.ptr)
 			return;
-		DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
-		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-			descriptorHeapsType, destDescriptorRangeStart,
-			srcDescriptorRangeStart, numDescriptors, nullptr, &versionCommits);
-		versionCommits.CommitAll();
+		if (!DX12DescriptorHeapShadowUtils::CopyDescriptorRangeSimple(
+				descriptorHeapsType, destDescriptorRangeStart,
+				srcDescriptorRangeStart, numDescriptors)) {
+			// Unknown/retiring heaps keep the existing compatibility path.
+			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+				descriptorHeapsType, destDescriptorRangeStart,
+				srcDescriptorRangeStart, numDescriptors);
+		}
 	}
 }
 
