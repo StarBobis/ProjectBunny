@@ -3607,48 +3607,13 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	if (!DX12ResourceTrackingPolicyUtils::NeedsDescriptorTracking() ||
 			!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
 		return;
-	DX12DescriptorShadowTelemetryUtils::RecordCopyTypeCall(descriptorHeapsType);
-	// Mod descriptor matching (match_cs_t0_hash / PreSkin UAV probe) only
-	// reads the CBV/SRV/UAV shadow; RTV/DSV/Sampler copies are pure overhead
-	// unless a capture/hunt pass needs the full descriptor history.
 	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
 			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
 		return;
 
-	// The game overwhelmingly submits CopyDescriptors as one flattened source
-	// range into one flattened destination range.  Keep that DX12-native shape
-	// on the direct range path instead of constructing the general range walker
-	// state for every call.  The general path below remains for mixed ranges.
-	if (numDestDescriptorRanges == 1 && numSrcDescriptorRanges == 1 &&
-			destDescriptorRangeStarts && srcDescriptorRangeStarts) {
-		const UINT destCount = destDescriptorRangeSizes ?
-			destDescriptorRangeSizes[0] : 1;
-		const UINT srcCount = srcDescriptorRangeSizes ?
-			srcDescriptorRangeSizes[0] : 1;
-		const UINT count = (std::min)(destCount, srcCount);
-		if (!count || destDescriptorRangeStarts[0].ptr == srcDescriptorRangeStarts[0].ptr)
-			return;
-
-		DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
-		DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
-		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-			descriptorHeapsType,
-			destDescriptorRangeStarts[0], srcDescriptorRangeStarts[0], count,
-			&copyTelemetry, &versionCommits);
-		versionCommits.CommitAll();
-		copyTelemetry.Flush();
-		return;
-	}
-
-	UINT destRange = 0;
-	UINT srcRange = 0;
-	UINT destOffset = 0;
-	UINT srcOffset = 0;
-	DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
-	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
-	// The increment is a device constant per heap type; query the device only
-	// once per type instead of paying a COM vtable call on every
-	// CopyDescriptors.
+	// Keep only the required flattened range mapping. Each mapped block uses the
+	// minimal shadow copy path; no memoization or per-call telemetry is needed.
+	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
 	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
 		descriptorHeapsType);
 	if (!increment && device)
@@ -3657,33 +3622,6 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		return;
 	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
 		descriptorHeapsType, increment);
-	D3D12_CPU_DESCRIPTOR_HANDLE pendingDest = {};
-	D3D12_CPU_DESCRIPTOR_HANDLE pendingSrc = {};
-	UINT pendingCount = 0;
-	auto flushPendingRange = [&]() {
-		if (!pendingCount)
-			return;
-		if (pendingDest.ptr == pendingSrc.ptr) {
-			copyTelemetry.RecordRange(pendingCount, false, false, false);
-			copyTelemetry.RecordResults(
-				pendingCount,
-				0,
-				0,
-				pendingCount,
-				0,
-				0);
-			pendingCount = 0;
-			return;
-		}
-		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
-			descriptorHeapsType,
-			pendingDest,
-			pendingSrc,
-			pendingCount,
-			&copyTelemetry,
-			&versionCommits);
-		pendingCount = 0;
-	};
 	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
 		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
 		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
@@ -3703,28 +3641,13 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-		const SIZE_T pendingBytes =
-			static_cast<SIZE_T>(pendingCount) * increment;
-		const bool contiguous = pendingCount != 0 &&
-			dest.ptr == pendingDest.ptr + pendingBytes &&
-			src.ptr == pendingSrc.ptr + pendingBytes &&
-			count <= UINT_MAX - pendingCount;
-		if (contiguous) {
-			pendingCount += count;
-		} else {
-			flushPendingRange();
-			pendingDest = dest;
-			pendingSrc = src;
-			pendingCount = count;
-		}
+		if (dest.ptr != src.ptr && !DX12DescriptorHeapShadowUtils::CopyDescriptorRangeSimple(
+				descriptorHeapsType, dest, src, count))
+			DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+				descriptorHeapsType, dest, src, count);
 		destOffset += count;
 		srcOffset += count;
 	}
-	flushPendingRange();
-	// One shared invalidation bump per destination heap for the whole API
-	// call, instead of one fetch_add per copied descriptor slot.
-	versionCommits.CommitAll();
-	copyTelemetry.Flush();
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(

@@ -1694,9 +1694,8 @@ public:
 		}
 	}
 
-	// Minimal CopyDescriptorsSimple shadow mirror. Resolve each heap once,
-	// snapshot the source range (so overlapping copies behave like memmove),
-	// then write the destination slots and commit one heap version.
+	// Minimal CopyDescriptors shadow mirror. Resolve each heap once, copy the
+	// common non-overlapping case directly, and snapshot only overlapping ranges.
 	static bool CopyDescriptorRangeSimple(
 		D3D12_DESCRIPTOR_HEAP_TYPE type,
 		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
@@ -1714,36 +1713,69 @@ public:
 
 		DescriptorHeapRecord &destHeap = *destResolved.heap;
 		DescriptorHeapRecord &srcHeap = *srcResolved.heap;
-		if (destResolved.slot + count > destHeap.desc.NumDescriptors ||
-			srcResolved.slot + count > srcHeap.desc.NumDescriptors)
+		if (destResolved.slot > destHeap.desc.NumDescriptors ||
+			count > destHeap.desc.NumDescriptors - destResolved.slot ||
+			srcResolved.slot > srcHeap.desc.NumDescriptors ||
+			count > srcHeap.desc.NumDescriptors - srcResolved.slot)
 			return false;
 		if (destHeap.slots.empty())
 			EnsureDescriptorHeapStorageLocked(&destHeap);
 
-		std::vector<DescriptorRecord> source(count);
-		std::vector<uint8_t> present(count, 0);
-		for (UINT i = 0; i < count; ++i) {
-			present[i] = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
-				srcHeap, srcResolved.slot + i, &source[i]) ? 1 : 0;
+		if (count == 1) {
+			DescriptorRecord source;
+			const bool present = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+				srcHeap, srcResolved.slot, &source);
+			const SIZE_T handle = destStart.ptr;
+			const bool changed = present ?
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&destHeap, destResolved.slot, source, handle) :
+				DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+					&destHeap, destResolved.slot);
+			if (changed) {
+				DX12DescriptorHeapStateUtils::PublishRangeValue(
+					&destHeap, destResolved.slot, present ? source.valueId : 0);
+				DX12DescriptorHeapStateUtils::CommitPublishedRange(&destHeap);
+			}
+			return true;
+		}
+
+		const bool sameHeap = &srcHeap == &destHeap;
+		const UINT srcEnd = srcResolved.slot + count;
+		const UINT destEnd = destResolved.slot + count;
+		const bool overlaps = sameHeap && srcResolved.slot < destEnd &&
+			destResolved.slot < srcEnd;
+		std::vector<DescriptorRecord> source;
+		std::vector<uint8_t> present;
+		if (overlaps) {
+			// A same-heap overlapping copy has memmove semantics.
+			source.resize(count);
+			present.assign(count, 0);
+			for (UINT i = 0; i < count; ++i)
+				present[i] = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+					srcHeap, srcResolved.slot + i, &source[i]) ? 1 : 0;
 		}
 
 		bool changed = false;
 		for (UINT i = 0; i < count; ++i) {
+			DescriptorRecord copied;
+			const bool occupied = overlaps ? present[i] :
+				DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+					srcHeap, srcResolved.slot + i, &copied);
+			const DescriptorRecord *value = overlaps ?
+				(occupied ? &source[i] : nullptr) :
+				(occupied ? &copied : nullptr);
 			const UINT slot = destResolved.slot + i;
 			const SIZE_T handle = destStart.ptr +
 				static_cast<SIZE_T>(i) * destHeap.increment;
-			bool slotChanged = false;
-			if (present[i]) {
-				slotChanged = DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&destHeap, slot, source[i], handle);
-			} else {
-				slotChanged = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+			const bool slotChanged = value ?
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&destHeap, slot, *value, handle) :
+				DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
 					&destHeap, slot);
-			}
 			if (slotChanged) {
 				changed = true;
 				DX12DescriptorHeapStateUtils::PublishRangeValue(
-					&destHeap, slot, present[i] ? source[i].valueId : 0);
+					&destHeap, slot, value ? value->valueId : 0);
 			}
 		}
 		if (changed)
