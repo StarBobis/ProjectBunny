@@ -9,6 +9,16 @@ add_library(DirectX12 SHARED
     DX12Runtime.h
     DX12Resources.h
     DX12Presentation.h
+    Core/DX12Platform.h
+    Core/DX12CoreModels.h
+    Core/DX12Diagnostics.h
+    Core/DX12CommandState.h
+    Core/DX12HotPath.h
+    Core/DX12CommandFlow.h
+    Core/DX12ModState.h
+    Config/DX12Config.h
+    Config/DX12ConfigLoader.h
+    Resources/DX12ResourceDump.h
 
     # Proxy and presentation integration
     D3D12Proxy.cpp
