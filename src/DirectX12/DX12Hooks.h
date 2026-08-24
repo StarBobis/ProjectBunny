@@ -1706,19 +1706,16 @@ public:
 			return;
 		}
 		bool shouldSkipDispatch = false;
-		if (hasShaderOverrides) {
-			if (dispatchDecision)
-				shouldSkipDispatch = dispatchDecision->hasShaderOverrideSkip;
-			else if (runtimeState)
-				shouldSkipDispatch = DX12ModShouldSkipPipelineState(runtimeState->pipelineState, true);
-		}
+		// ExecuteHook resolves a decision before entering this function.  Keep the
+		// hot path on the command-list-local immutable decision instead of falling
+		// back to DX12ModShouldSkipPipelineState(), which takes gModLock again.
+		if (hasShaderOverrides && dispatchDecision)
+			shouldSkipDispatch = dispatchDecision->hasShaderOverrideSkip;
 		if (shouldSkipDispatch)
 			return;
 
 		DX12DispatchHookFlowGuard guard(InDispatchHookFlow);
 
-		// Design debt: this keeps old behavior for untracked command lists. The cleaner module seam is
-		// to guarantee runtime state before entering dispatch flow, then remove this fallback entirely.
 		DX12SimulateContext fallbackState = {};
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
