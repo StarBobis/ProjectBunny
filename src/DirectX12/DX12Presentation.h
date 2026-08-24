@@ -857,6 +857,34 @@ public:
 		if (!source || !storage || !count)
 			return;
 		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierUnwrap(count);
+		// DX12 callers overwhelmingly submit native resources.  Do the cheap
+		// identity probe first so the common case stays on the original array:
+		// no vector growth, barrier copies, or pointer chasing through scratch.
+		bool requiresCopy = false;
+		for (UINT i = 0; i < count && !requiresCopy; ++i) {
+			const D3D12_RESOURCE_BARRIER &barrier = source[i];
+			switch (barrier.Type) {
+			case D3D12_RESOURCE_BARRIER_TYPE_TRANSITION:
+				requiresCopy = UnwrapResource(barrier.Transition.pResource) !=
+					barrier.Transition.pResource;
+				break;
+			case D3D12_RESOURCE_BARRIER_TYPE_ALIASING:
+				requiresCopy =
+					UnwrapResource(barrier.Aliasing.pResourceBefore) !=
+						barrier.Aliasing.pResourceBefore ||
+					UnwrapResource(barrier.Aliasing.pResourceAfter) !=
+						barrier.Aliasing.pResourceAfter;
+				break;
+			case D3D12_RESOURCE_BARRIER_TYPE_UAV:
+				requiresCopy = UnwrapResource(barrier.UAV.pResource) !=
+					barrier.UAV.pResource;
+				break;
+			default:
+				break;
+			}
+		}
+		if (!requiresCopy)
+			return;
 		storage->resize(count);
 		for (UINT i = 0; i < count; ++i)
 			UnwrapResourceBarrier(&source[i], &(*storage)[i]);
@@ -2030,6 +2058,22 @@ public:
 			callbacks.setVertexBuffers = DirectSetVertexBuffers;
 			DX12IaReplacementExecutor::RestoreStaticTemplateIa(
 				commandList, runtimeState, callbacks);
+		}
+		// When neither bind-time static IA replacement nor PreSkin output
+		// resizing is active, the redirect probes cannot produce a different
+		// view. Keep the DX12 resident IA capture, but avoid constructing two
+		// full temporary view arrays and walking both redirect pipelines.
+		if (!DX12HasStaticIaReplacements() &&
+			!DX12ModHasPreSkinOutputResizeBindings()) {
+			const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
+				commandList, runtimeState, startSlot, count, views);
+			if (!changed)
+				return;
+			if (original)
+				original(commandList, startSlot, count, views);
+			else
+				commandList->IASetVertexBuffers(startSlot, count, views);
+			return;
 		}
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};

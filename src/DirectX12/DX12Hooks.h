@@ -5140,8 +5140,6 @@ public:
 			} else {
 				const bool activeShaderOverrides =
 					(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
-				DX12IaReplacementExecutor::RestoreStaleStaticIaBindings(
-					commandList, runtimeState, callbacks);
 				const DX12CompiledDrawDecision *decision =
 					DX12CommandListRuntime::EnsureDrawDecision(
 						runtimeState, activeShaderOverrides);
@@ -5149,6 +5147,11 @@ public:
 				if (!decision) {
 					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoDecision();
 				} else if (decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
+					// The generic draw path performs this watchdog before matching.
+					// For a PSO-proven Noop draw it is only needed immediately before
+					// forwarding, avoiding a duplicate check on every non-noop draw.
+					DX12IaReplacementExecutor::RestoreStaleStaticIaBindings(
+						commandList, runtimeState, callbacks);
 					if (runtimeState->staticTemplateIaApplied) {
 						DX12IaReplacementExecutor::RestoreStaticTemplateIa(
 							commandList, runtimeState, callbacks);
