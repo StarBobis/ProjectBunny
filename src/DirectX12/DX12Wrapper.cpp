@@ -7975,7 +7975,10 @@ class DeviceWrapper
 					mDevice->CopyDescriptorsSimple(
 						NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart, DescriptorHeapsType);
 				}
-				{
+				if (NumDescriptors &&
+						DestDescriptorRangeStart.ptr != SrcDescriptorRangeStart.ptr &&
+						(DescriptorHeapsType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
+							DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())) {
 					DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleWrapper, Record);
 					DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 						mDevice, NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart, DescriptorHeapsType);

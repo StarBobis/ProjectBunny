@@ -941,60 +941,6 @@ public:
 		return true;
 	}
 
-	// Copy the descriptor range into the shadow heap. Snapshot sources first so
-	// overlapping ranges keep memmove semantics.
-	static void CopyDescriptorRange(
-		D3D12_DESCRIPTOR_HEAP_TYPE type,
-		D3D12_CPU_DESCRIPTOR_HANDLE destStart,
-		D3D12_CPU_DESCRIPTOR_HANDLE srcStart,
-		UINT count)
-	{
-		(void)type;
-
-		// The descriptor handle increment is a device constant per heap type.
-		// Use the cached value so the fallback path does not take the global
-		// lock and linearly scan every registered heap just to step CPU
-		// handles; the scan only runs once as the cache fill.
-		UINT increment = CachedIncrementForType(type);
-		if (!increment) {
-			AcquireSRWLockShared(&gDescriptorLock);
-			for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
-				if (gDescriptorHeaps[hi].desc.Type == type &&
-					gDescriptorHeaps[hi].increment > 0) {
-					increment = gDescriptorHeaps[hi].increment;
-					break;
-				}
-			}
-			ReleaseSRWLockShared(&gDescriptorLock);
-			CacheIncrementForType(type, increment);
-		}
-
-		std::vector<DescriptorRecord> sources(count);
-		std::vector<uint8_t> present(count, 0);
-		for (UINT i = 0; i < count; ++i) {
-			const SIZE_T srcHandle = srcStart.ptr +
-				(increment ? static_cast<SIZE_T>(i) * increment : 0);
-			present[i] = FindLatestDescriptor(srcHandle, &sources[i]) ? 1 : 0;
-		}
-
-		for (UINT i = 0; i < count; ++i) {
-			const SIZE_T destHandle = destStart.ptr +
-				(increment ? static_cast<SIZE_T>(i) * increment : 0);
-			if (!present[i]) {
-				EraseDescriptor(destHandle);
-				continue;
-			}
-			DescriptorRecord &source = sources[i];
-			if (DescriptorValueUnchanged(destHandle, source.valueId)) {
-				ReleaseDescriptorRecordResources(&source);
-				continue;
-			}
-			source.cpuHandle = destHandle;
-			if (!WriteDescriptorToSlot(destHandle, std::move(source)))
-				WriteToCpuLedger(std::move(source));
-		}
-	}
-
 	// ---- Find latest descriptor (2-tier lookup) ----
 
 	static bool FindLatestDescriptor(

@@ -1820,7 +1820,8 @@ private:
 			// version store completes. Readers compare flatVersion against
 			// the live version: when they match, the slot has not been
 			// republished since the snapshot, so flatValueId is the
-			// authoritative current valueId. This gives CopyDescriptorRange
+			// authoritative current valueId. This gives descriptor copy
+			// tracking (RecordCopiedDescriptorsSimple)
 			// a lock-free O(1) "is dest already identical to src" check
 			// indexed by slot - the same design as DXVK's
 			// views[slot] != resView compare - without the seqlock's
@@ -3442,8 +3443,8 @@ void DX12RecordRootSignatureImmediate(
 	SIZE_T blobLength);
 void DX12PrimeDescriptorHistoryForHunting();
 void BumpDescriptorQuerySerial();
-// RecordDescriptorCopyRange and RecordRuntimeDescriptorCopyRange replaced by
-// DX12DescriptorHeapShadowUtils::CopyDescriptorRange
+// Descriptor copy recording lives in
+// DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple.
 void DX12RecordPsoRootSignatureImmediate(
 	UINT64 psoIndex, const char *kind, ID3D12PipelineState *pipelineState,
 	ID3D12RootSignature *rootSignature);
