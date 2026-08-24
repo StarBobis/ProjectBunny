@@ -2107,14 +2107,37 @@ static bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 		*completionValueOut = 0;
 	if (!queue || !numCommandLists || !commandLists)
 		return false;
-	std::vector<IUnknown*> submittedIdentities;
-	submittedIdentities.reserve(numCommandLists);
+	// Submission notifications are on the queue hot path.  Most submissions
+	// have no resize-cache users; avoid allocating the identity/use vectors and
+	// taking the cache lock in that overwhelmingly common case.  The flag is
+	// published whenever a command list is associated with a cache entry and
+	// cleared after the last pending use is consumed or abandoned.
+	if (InterlockedCompareExchange(
+		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0, 0) == 0)
+		return false;
+	// ExecuteCommandLists batches are normally small.  Keep the common path
+	// allocation-free while retaining support for arbitrarily large batches.
+	static constexpr UINT kStackIdentityCount = 8;
+	IUnknown *stackIdentities[kStackIdentityCount] = {};
+	std::vector<IUnknown*> heapIdentities;
+	IUnknown **identityStorage = stackIdentities;
+	if (numCommandLists > kStackIdentityCount) {
+		heapIdentities.resize(numCommandLists);
+		identityStorage = heapIdentities.data();
+	}
 	for (UINT i = 0; i < numCommandLists; ++i) {
 		IUnknown *identity = PreSkinCommandListIdentity(commandLists[i]);
 		if (identity)
-			submittedIdentities.push_back(identity);
+			identityStorage[i] = identity;
 	}
-	if (submittedIdentities.empty())
+	const UINT identityCount = [&]() {
+		UINT count = 0;
+		for (UINT i = 0; i < numCommandLists; ++i)
+			if (identityStorage[i])
+				++count;
+		return count;
+	}();
+	if (identityCount == 0)
 		return false;
 
 	std::vector<DX12PreSkinOutputResizeSubmittedUse> submittedUses;
@@ -2123,8 +2146,8 @@ static bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 		const DX12PreSkinOutputResizeCacheEntry &entry = item.second;
 		bool hasSubmittedUse = false;
 		for (IUnknown *pending : entry.pendingCommandLists) {
-			if (std::find(submittedIdentities.begin(), submittedIdentities.end(),
-					pending) != submittedIdentities.end()) {
+			if (std::find(identityStorage, identityStorage + numCommandLists,
+					pending) != identityStorage + numCommandLists) {
 				hasSubmittedUse = true;
 				break;
 			}
@@ -2165,11 +2188,11 @@ static bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 			std::remove_if(
 				entry.pendingCommandLists.begin(),
 				entry.pendingCommandLists.end(),
-				[&submittedIdentities](IUnknown *pending) {
+				[identityStorage, numCommandLists](IUnknown *pending) {
 					return std::find(
-						submittedIdentities.begin(),
-						submittedIdentities.end(),
-						pending) != submittedIdentities.end();
+						identityStorage,
+						identityStorage + numCommandLists,
+						pending) != identityStorage + numCommandLists;
 				}),
 			entry.pendingCommandLists.end());
 		if (entry.pendingCommandLists.size() == oldPendingCount)
