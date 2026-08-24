@@ -355,7 +355,7 @@ public:
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledShaderOverridePlan>>
 		compiledShaderOverridePlans;
 };
-static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+static std::atomic<std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>>
 	gCommandExecutionRuntimeSnapshot;
 
 // Static texture replacement table (plan step 3.1): hash of the original
@@ -390,7 +390,7 @@ public:
 	// gModLock.
 	std::unordered_map<uint32_t, DX12StaticTextureReplacementEntry> byHash;
 };
-static std::shared_ptr<const DX12StaticTextureReplacementTable>
+static std::atomic<std::shared_ptr<const DX12StaticTextureReplacementTable>>
 	gStaticTextureReplacementSnapshot;
 // Low-cost gate mirroring the snapshot for hot paths that must not pay the
 // shared_ptr atomic load when no static replacement exists at all.
@@ -415,7 +415,7 @@ public:
 	// (vertexSlot << 32) | VB content hash -> mod buffer resource name.
 	std::unordered_map<uint64_t, std::wstring> vertexByHashAndSlot;
 };
-static std::shared_ptr<const DX12StaticIaReplacementTable>
+static std::atomic<std::shared_ptr<const DX12StaticIaReplacementTable>>
 	gStaticIaReplacementSnapshot;
 // Low-cost gate for the IASet bind hot path.
 static volatile LONG gHasStaticIaReplacements = 0;
@@ -423,15 +423,13 @@ static volatile LONG gHasStaticIaReplacements = 0;
 static std::shared_ptr<const DX12StaticIaReplacementTable>
 LoadStaticIaReplacementSnapshot()
 {
-	return std::atomic_load_explicit(
-		&gStaticIaReplacementSnapshot, std::memory_order_acquire);
+	return gStaticIaReplacementSnapshot.load(std::memory_order_acquire);
 }
 
 static std::shared_ptr<const DX12StaticTextureReplacementTable>
 LoadStaticTextureReplacementSnapshot()
 {
-	return std::atomic_load_explicit(
-		&gStaticTextureReplacementSnapshot, std::memory_order_acquire);
+	return gStaticTextureReplacementSnapshot.load(std::memory_order_acquire);
 }
 
 // Defined in DX12ModResources.inl (same TU); resets the resolved
@@ -4776,22 +4774,19 @@ bool DX12ModRuntimeLoad(
 	DX12ModClearIaReplacementRuntimeCaches();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
 	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
-	std::atomic_store_explicit(
-		&gCommandExecutionRuntimeSnapshot,
+	gCommandExecutionRuntimeSnapshot.store(
 		commandExecutionRuntimeSnapshot,
 		std::memory_order_release);
 	// Publish the write-time static texture replacement table (plan step 3.1)
 	// and drop resolved descriptor handles cached against the old table.
-	std::atomic_store_explicit(
-		&gStaticTextureReplacementSnapshot,
+	gStaticTextureReplacementSnapshot.store(
 		std::shared_ptr<const DX12StaticTextureReplacementTable>(
 			staticTextureReplacements),
 		std::memory_order_release);
 	InterlockedExchange(&gHasStaticTextureReplacements,
 		staticTextureReplacements->enabled ? 1 : 0);
 	DX12NoteStaticTextureReplacementTablePublished();
-	std::atomic_store_explicit(
-		&gStaticIaReplacementSnapshot,
+	gStaticIaReplacementSnapshot.store(
 		std::shared_ptr<const DX12StaticIaReplacementTable>(
 			staticIaReplacements),
 		std::memory_order_release);
@@ -13635,9 +13630,7 @@ static DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(
 static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 LoadTextureOverrideRuntimeSnapshot()
 {
-	return std::atomic_load_explicit(
-		&gCommandExecutionRuntimeSnapshot,
-		std::memory_order_acquire);
+	return gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
 }
 
 static void CollectIaTriggeredTextureOverrideCandidates(
@@ -15150,9 +15143,7 @@ bool DX12ModIaPrefilterCountSensitive()
 static std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 LoadCommandExecutionRuntimeSnapshot()
 {
-	return std::atomic_load_explicit(
-		&gCommandExecutionRuntimeSnapshot,
-		std::memory_order_acquire);
+	return gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
 }
 
 static bool CommandListRuntimeEffectLocked(

@@ -5612,7 +5612,7 @@ public:
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return true;
@@ -5660,7 +5660,7 @@ public:
 		}
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12RecordDescriptorRecordFastSkip();
@@ -5694,7 +5694,7 @@ public:
 			DX12HotPathState::NeedsComputeResidentDescriptorState(flags);
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentTable && skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return true;
@@ -5736,7 +5736,7 @@ public:
 		}
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipTrackedCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12RecordDescriptorRecordFastSkip();
@@ -5772,7 +5772,7 @@ public:
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -5815,7 +5815,7 @@ public:
 		}
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12RecordDescriptorRecordFastSkip();
@@ -5849,7 +5849,7 @@ public:
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -5898,7 +5898,7 @@ public:
 		}
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12RecordDescriptorRecordFastSkip();
@@ -5933,7 +5933,7 @@ public:
 			DX12HotPathState::NeedsComputeResidentBindingState(flags);
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			return;
@@ -5977,7 +5977,7 @@ public:
 		}
 		const bool skipBindingCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
-			DX12HotPathState::skipBindings;
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12RecordDescriptorRecordFastSkip();

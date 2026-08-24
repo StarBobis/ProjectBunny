@@ -51,7 +51,7 @@ target_link_libraries(DirectX12 PRIVATE
     dbghelp.lib
 )
 
-target_compile_features(DirectX12 PRIVATE cxx_std_17)
+target_compile_features(DirectX12 PRIVATE cxx_std_20)
 
 target_sources(DirectX12 PRIVATE
     d3d12Wrapper.def

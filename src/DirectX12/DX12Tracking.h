@@ -1818,7 +1818,7 @@ public:
 				std::memory_order_acquire);
 			if (!page)
 				continue;
-			for (VersionPage::SlotState &slot : page->slots) {
+			for (typename VersionPage::SlotState &slot : page->slots) {
 				slot.version.store(2, std::memory_order_release);
 				slot.valueId.store(0, std::memory_order_release);
 				slot.flatValueId.store(0, std::memory_order_release);
@@ -1846,7 +1846,7 @@ public:
 	{
 		VersionPage *page = EnsureVersionPage(slot);
 		if (page) {
-			VersionPage::SlotState &state =
+			typename VersionPage::SlotState &state =
 				page->slots[slot & (VersionPageSize - 1)];
 			// Odd means a publication is in progress. Readers only accept the
 			// value when the same even version brackets the Value ID load. Slot
@@ -1884,7 +1884,7 @@ public:
 			std::memory_order_acquire);
 		if (!page)
 			return false;
-		const VersionPage::SlotState &state =
+		const typename VersionPage::SlotState &state =
 			page->slots[slot & (VersionPageSize - 1)];
 		const uint64_t flatVersion =
 			state.flatVersion.load(std::memory_order_relaxed);
@@ -1920,7 +1920,7 @@ public:
 			identity->valueId = 0;
 			return true;
 		}
-		const VersionPage::SlotState &state =
+		const typename VersionPage::SlotState &state =
 			page->slots[slot & (VersionPageSize - 1)];
 		const uint64_t before = state.version.load(
 			std::memory_order_acquire);

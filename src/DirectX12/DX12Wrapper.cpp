@@ -3406,6 +3406,15 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				: WrapperBase(heap)
 			{
 				mHeap = heap;
+				// Descriptor heap metadata and start handles are immutable after
+				// creation. Cache them so SetDescriptorHeaps and descriptor-copy
+				// paths do not cross the wrapper/native COM boundary repeatedly.
+				if (mHeap) {
+					mDesc = mHeap->GetDesc();
+					mCpuStart = mHeap->GetCPUDescriptorHandleForHeapStart();
+					if ((mDesc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) != 0)
+						mGpuStart = mHeap->GetGPUDescriptorHandleForHeapStart();
+				}
 				RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 				RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
@@ -3483,22 +3492,25 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 
 			D3D12_DESCRIPTOR_HEAP_DESC STDMETHODCALLTYPE GetDesc() override
 			{
-				return mHeap->GetDesc();
+				return mDesc;
 			}
 
 			D3D12_CPU_DESCRIPTOR_HANDLE STDMETHODCALLTYPE GetCPUDescriptorHandleForHeapStart() override
 			{
-				return mHeap->GetCPUDescriptorHandleForHeapStart();
+				return mCpuStart;
 			}
 
 			D3D12_GPU_DESCRIPTOR_HANDLE STDMETHODCALLTYPE GetGPUDescriptorHandleForHeapStart() override
 			{
-				return mHeap->GetGPUDescriptorHandleForHeapStart();
+				return mGpuStart;
 			}
 
 		public:
 			std::atomic<long> mRefCount{1};
 			ID3D12DescriptorHeap *mHeap = nullptr;
+			D3D12_DESCRIPTOR_HEAP_DESC mDesc = {};
+			D3D12_CPU_DESCRIPTOR_HANDLE mCpuStart = {};
+			D3D12_GPU_DESCRIPTOR_HANDLE mGpuStart = {};
 		};
 
 		class ResourceWrapper final : public ID3D12Resource2, public WrapperBase
@@ -3650,13 +3662,13 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			D3D12_RESOURCE_DESC STDMETHODCALLTYPE GetDesc() override
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
-				return mResource->GetDesc();
+				return mRecord.desc;
 			}
 
 			D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE GetGPUVirtualAddress() override
 			{
 				DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
-				return mResource->GetGPUVirtualAddress();
+				return mRecord.gpuVirtualAddress;
 			}
 
 			HRESULT STDMETHODCALLTYPE WriteToSubresource(
@@ -3667,7 +3679,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				HRESULT hr = mResource->WriteToSubresource(
 					DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
 				if (SUCCEEDED(hr) && pSrcData) {
-					const D3D12_RESOURCE_DESC desc = mResource->GetDesc();
+					const D3D12_RESOURCE_DESC desc = mRecord.desc;
 					if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
 					    DstSubresource == 0) {
 						UINT64 offset = 0;
