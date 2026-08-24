@@ -289,7 +289,7 @@ public:
 	static void Update()
 	{
 		const SourceState source = SourceState::Capture();
-		if (skipAll && !source.HasAnyWork())
+		if (skipAll.load(std::memory_order_relaxed) && !source.HasAnyWork())
 			return;
 
 		// As in DX11, skipAll controls draw, state, and copy hooks.
@@ -304,19 +304,22 @@ public:
 			source.NeedsHeavyTracking() ? 1 : 0;
 		const UINT64 flags = source.BuildHookWorkFlags();
 
-		DX12HotPathState::skipAll.store(skipAll);
-		DX12HotPathState::skipBindings.store(skipBindings);
-		DX12HotPathState::skipGraphicsBindings.store(skipGraphicsBindings);
-		DX12HotPathState::trackResourceMetadata.store(trackResourceMetadata);
-		HookWorkFlags.store(flags);
+		// These atomics are independent hot-path gates. Hook threads can tolerate
+		// observing the previous frame's gate briefly, so no acquire/release
+		// ordering is needed and a full fence is avoided on every refresh.
+		DX12HotPathState::skipAll.store(skipAll, std::memory_order_relaxed);
+		DX12HotPathState::skipBindings.store(skipBindings, std::memory_order_relaxed);
+		DX12HotPathState::skipGraphicsBindings.store(skipGraphicsBindings, std::memory_order_relaxed);
+		DX12HotPathState::trackResourceMetadata.store(trackResourceMetadata, std::memory_order_relaxed);
+		HookWorkFlags.store(flags, std::memory_order_relaxed);
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |
 			(skipBindings ? 2 : 0) |
 			(skipGraphicsBindings ? 4 : 0) |
 			(trackResourceMetadata ? 8 : 0);
-		const LONG previousMask = stateMask.exchange(mask);
-		const UINT64 previousFlags = loggedHookWorkFlags.exchange(flags);
+		const LONG previousMask = stateMask.exchange(mask, std::memory_order_relaxed);
+		const UINT64 previousFlags = loggedHookWorkFlags.exchange(flags, std::memory_order_relaxed);
 		if (previousMask != mask) {
 			// Command lists cache binding-capture decisions. Mode or capture-state
 			// changes must invalidate that cache, otherwise Hunting can keep using
