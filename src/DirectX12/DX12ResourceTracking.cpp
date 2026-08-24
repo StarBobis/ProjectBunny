@@ -3720,6 +3720,31 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
 		return;
 
+	// The game overwhelmingly submits CopyDescriptors as one flattened source
+	// range into one flattened destination range.  Keep that DX12-native shape
+	// on the direct range path instead of constructing the general range walker
+	// state for every call.  The general path below remains for mixed ranges.
+	if (numDestDescriptorRanges == 1 && numSrcDescriptorRanges == 1 &&
+			destDescriptorRangeStarts && srcDescriptorRangeStarts) {
+		const UINT destCount = destDescriptorRangeSizes ?
+			destDescriptorRangeSizes[0] : 1;
+		const UINT srcCount = srcDescriptorRangeSizes ?
+			srcDescriptorRangeSizes[0] : 1;
+		const UINT count = (std::min)(destCount, srcCount);
+		if (!count || destDescriptorRangeStarts[0].ptr == srcDescriptorRangeStarts[0].ptr)
+			return;
+
+		DX12DescriptorHeapShadowUtils::CopyTelemetryBatch copyTelemetry;
+		DX12DescriptorHeapShadowUtils::HeapVersionCommitSet versionCommits;
+		DX12DescriptorHeapShadowUtils::CopyDescriptorRange(
+			descriptorHeapsType,
+			destDescriptorRangeStarts[0], srcDescriptorRangeStarts[0], count,
+			&copyTelemetry, &versionCommits);
+		versionCommits.CommitAll();
+		copyTelemetry.Flush();
+		return;
+	}
+
 	UINT destRange = 0;
 	UINT srcRange = 0;
 	UINT destOffset = 0;
