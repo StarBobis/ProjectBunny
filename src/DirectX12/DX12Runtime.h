@@ -694,9 +694,8 @@ public:
 		return changed;
 	}
 
-	// CBVs dominate descriptor creation in the target workload. Build the same
-	// content hash as the generic DescriptorRecord path, but keep the hot path
-	// free of std::string construction and full-record materialization.
+	// Keep CBV recording on the common descriptor path so slot updates,
+	// deduplication, and heap-version invalidation have one implementation.
 	static bool RecordCreatedConstantBufferViewIfChanged(
 		const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
@@ -704,160 +703,9 @@ public:
 		if (!desc || !destDescriptor.ptr)
 			return false;
 
-		// CBV content-hash TLS cache: games re-create the same constant
-		// buffer views every frame (ZZZ issues ~18K CreateCBV per frame, most
-		// repeating the same BufferLocation/SizeInBytes). Hashing the desc is
-		// cheap, but 18K hash computations per frame still add up; caching
-		// the last desc + hash skips the Mix chain when the view repeats.
-		struct CbvHashCache
-		{
-			D3D12_CONSTANT_BUFFER_VIEW_DESC desc = {};
-			UINT64 valueId = 0;
-			bool valid = false;
-		};
-		static thread_local CbvHashCache hashCache;
-		UINT64 valueId = 0;
-		if (hashCache.valid &&
-			hashCache.desc.BufferLocation == desc->BufferLocation &&
-			hashCache.desc.SizeInBytes == desc->SizeInBytes) {
-			valueId = hashCache.valueId;
-		} else {
-			valueId = DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
-			hashCache.desc = *desc;
-			hashCache.valueId = valueId;
-			hashCache.valid = true;
-		}
+		const UINT64 valueId =
+			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
 
-		// Sequential-slot TLS fast path: engines fill descriptor arenas
-		// front-to-back every frame, so the workload is thousands of CreateCBV
-		// calls landing on consecutive slots of the same heap (the ZZZ
-		// character scene issues ~18K CreateCBV per frame). When the
-		// destination is exactly the next slot of the same heap, resolve the
-		// slot from the previous call's identity and skip the heap-resolve
-		// scan entirely; the seqlock value compare below still guards against
-		// redundant shadow writes.
-		struct CbvSequentialState
-		{
-			SIZE_T lastHandle = 0;
-			UINT increment = 0;
-			UINT numDescriptors = 0;
-			UINT slot = 0;
-			DescriptorHeapRecord *heap = nullptr;
-			size_t heapIndex = 0;
-			bool valid = false;
-		};
-		static thread_local CbvSequentialState seq;
-
-		ResolvedHeapSlot resolved;
-		bool resolvedKnownHeap = false;
-		if (seq.valid && seq.heap && seq.increment &&
-			destDescriptor.ptr == seq.lastHandle + seq.increment &&
-			seq.slot + 1 < seq.numDescriptors &&
-			seq.heap->stateLocks && seq.heap->stateLocks->IsActive()) {
-			resolved.heap = seq.heap;
-			resolved.heapIndex = seq.heapIndex;
-			resolved.slot = seq.slot + 1;
-			resolvedKnownHeap = true;
-		} else {
-			resolvedKnownHeap = ResolveHeapSlotFast(
-				destDescriptor.ptr,
-				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-				&resolved);
-			if (resolvedKnownHeap && resolved.heap) {
-				seq.valid = true;
-				seq.heap = resolved.heap;
-				seq.heapIndex = resolved.heapIndex;
-				seq.increment = resolved.heap->increment;
-				seq.numDescriptors = resolved.heap->desc.NumDescriptors;
-				seq.slot = resolved.slot;
-			} else {
-				seq.valid = false;
-			}
-		}
-		if (resolvedKnownHeap) {
-			seq.lastHandle = destDescriptor.ptr;
-			seq.slot = resolved.slot;
-		}
-		// ResolveHeapSlotFast already validates the heap activity immediately
-		// before returning. Prefer the flat post-publication snapshot over the
-		// seqlock read when available: every publish writes flatValueIds +
-		// flatVersions atomically with the completing version, so a slot whose
-		// version is unchanged since its last publication has an authoritative
-		// flat valueId. Re-creating the same CBV into the same slot therefore
-		// hits a couple of loads instead of the full three-load seqlock
-		// protocol. When the slot was never published, or was republished
-		// (content changed), fall back to the seqlock identity read.
-		if (resolvedKnownHeap &&
-				resolved.heap && resolved.heap->stateLocks) {
-			UINT64 flatValueId = 0;
-			const bool hasFlatValue =
-				resolved.heap->stateLocks->ReadFlatValueId(
-					resolved.slot, &flatValueId);
-			if (hasFlatValue) {
-				if (flatValueId == valueId)
-					return false;
-			} else if (resolved.heap->stateLocks->PublishedSlotValueEquals(
-						resolved.slot, valueId)) {
-				return false;
-			}
-		}
-		// Ensure the dense shadow array exists BEFORE taking the per-slot
-		// shard lock: StoreCurrentValueIfChanged then takes the array path
-		// instead of the global sparse store / value pool, and
-		// EnsureDescriptorHeapStorageLocked needs the all-shard lock, which
-		// must not be acquired while a single shard is held (non-reentrant
-		// SRWLOCK). The empty() check is a cheap lock-free gate; the function
-		// itself re-checks under the lock.
-		if (resolvedKnownHeap && resolved.heap &&
-				resolved.heap->slots.empty()) {
-			EnsureDescriptorHeapStorageLocked(resolved.heap);
-		}
-		// Lock-free dense write once the heap is materialized.
-		if (resolvedKnownHeap && resolved.heap &&
-				resolved.heap->IsMaterialized() &&
-				resolved.heap->stateLocks &&
-				resolved.heap->stateLocks->IsActive()) {
-			DescriptorHeapRecord &heap = *resolved.heap;
-			const DX12DescriptorValue value =
-				DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
-					*desc, valueId);
-			const bool changed =
-				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
-					&heap, resolved.slot, value, destDescriptor.ptr);
-			if (changed)
-				DX12DescriptorHeapStateUtils::BumpVersion(
-					&heap, resolved.slot);
-			return changed;
-		}
-		ResolvedHeapSlot locked;
-		bool lockedKnownHeap = resolvedKnownHeap &&
-			LockResolvedHeapSlotExclusive(resolved, &locked);
-		// A heap can retire between the optimistic identity read and its shard
-		// lock. Re-resolve in that rare case instead of misclassifying the handle
-		// as a CPU-ledger-only descriptor.
-		if (!lockedKnownHeap)
-			lockedKnownHeap = ResolveAndLockHeapSlot(
-				destDescriptor.ptr,
-				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-				true,
-				&locked);
-		if (lockedKnownHeap) {
-			resolved = locked;
-			DescriptorHeapRecord &heap = *resolved.heap;
-			const DX12DescriptorValue value =
-				DX12DescriptorSlotArrayUtils::MakeConstantBufferViewValue(
-					*desc, valueId);
-			const bool changed =
-				DX12DescriptorSlotArrayUtils::StoreCurrentValueIfChanged(
-					&heap, resolved.slot, value, destDescriptor.ptr);
-			if (changed)
-				DX12DescriptorHeapStateUtils::BumpVersion(
-					&heap, resolved.slot);
-			UnlockHeapSlot(resolved, true);
-			return changed;
-		}
-
-		// Handles outside known heaps retain the legacy CPU-ledger behavior.
 		DescriptorRecord record;
 		SetDescriptorKind(&record, DescriptorKind::CBV_ID);
 		record.valueId = valueId;
@@ -866,10 +714,7 @@ public:
 		record.hasDesc = true;
 		record.gpuVirtualAddress = desc->BufferLocation;
 		record.viewSize = desc->SizeInBytes;
-		if (DescriptorValueUnchanged(destDescriptor.ptr, valueId))
-			return false;
-		WriteToCpuLedger(std::move(record));
-		return true;
+		return RecordCreatedDescriptorIfChanged(std::move(record));
 	}
 
 	// Unified entry point for Create*View hooks.
