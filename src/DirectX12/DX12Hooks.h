@@ -2013,11 +2013,12 @@ public:
 				DX12GetIaHashContentGeneration() &&
 			runtimeState->resolvedCompute.bindingsValid &&
 			!runtimeState->resolvedCompute.bindingsUseRootValues &&
-			runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
-			runtimeState->resolvedCompute.bindingsRootSignature ==
-				runtimeState->computeRootSignature &&
-			runtimeState->resolvedCompute.bindingsDescriptorVersion ==
-				runtimeState->computeDescriptorBindingVersion) {
+				runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
+				runtimeState->resolvedCompute.bindingsRootSignature ==
+					runtimeState->computeRootSignature &&
+				runtimeState->resolvedCompute.bindingsDescriptorVersion ==
+					runtimeState->computeDescriptorBindingVersion &&
+				DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
 			probe->applied = false;
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
 			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
@@ -2034,22 +2035,75 @@ public:
 		if (!probe->uavsFound) {
 			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
 			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
+			// DX12 command lists keep resident binding state. When the descriptor
+			// version, heap/root signature, and every previously observed table
+			// base are unchanged, the cached snapshot is already authoritative.
+			// This avoids re-entering the generic DX11-style binding collector on
+			// every Dispatch while preserving invalidation on descriptor writes or
+			// descriptor-ring rotation.
+			bool residentSnapshotLoaded = false;
+			if (runtimeState &&
+				runtimeState->resolvedCompute.bindingsValid &&
+				!runtimeState->resolvedCompute.bindingsUseRootValues &&
+				runtimeState->resolvedCompute.bindingsHeap ==
+					runtimeState->cbvSrvUavHeap &&
+				runtimeState->resolvedCompute.bindingsRootSignature ==
+					runtimeState->computeRootSignature &&
+				runtimeState->resolvedCompute.bindingsDescriptorVersion ==
+					runtimeState->computeDescriptorBindingVersion) {
+				residentSnapshotLoaded = true;
+				for (const DX12SimulateContextComputeTemplate::RuntimeObservedSlot &observed :
+					runtimeState->resolvedCompute.bindingsObservedSlots) {
+					if (observed.root >= MaxRootParameters) {
+						residentSnapshotLoaded = false;
+						break;
+					}
+					const RootTableState &table =
+						runtimeState->computeRootTables[observed.root];
+					if (!table.valid ||
+						table.baseDescriptor.ptr !=
+							runtimeState->resolvedCompute.bindingsRootTableBases[observed.root]) {
+						residentSnapshotLoaded = false;
+						break;
+					}
+				}
+			}
+			if (residentSnapshotLoaded) {
+				DX12SimulateContextComputeTemplate &cached =
+					runtimeState->resolvedCompute;
+				probe->cachedUavs = &cached.uavs;
+				probe->cachedSrvs = &cached.srvs;
+				probe->cachedCbvs = &cached.cbvs;
+				probe->cachedRootConstants = &cached.rootConstants;
+				probe->bindingDependencyFingerprint =
+					cached.bindingsDependencyFingerprint;
+				probe->uavsFound = cached.bindingsFoundAny;
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+				DX12OuterTimingProbeUtils::LogCpuStage(
+					"PreSkin", "resident_binding_snapshot_hit", 0,
+					cached.uavs.size() + cached.srvs.size() + cached.cbvs.size(),
+					DX12OuterTimingProbeUtils::ElapsedUs(collectBegin));
+			}
 
 			// Consume the validated recording-context template directly. The
 			// collector remains the cold path that materializes a missing template.
-			probe->cachedUavs = nullptr;
-			probe->cachedSrvs = nullptr;
-			probe->cachedCbvs = nullptr;
-			probe->cachedRootConstants = nullptr;
-			bool computeTemplateLoaded =
-				DX12BindingTracker::GetSimulateContextPreSkinBindings(
-				commandList,
-				&probe->cachedUavs,
-				&probe->cachedSrvs,
-				&probe->cachedCbvs,
-				&probe->cachedRootConstants,
-				&probe->bindingDependencyFingerprint,
-				&probe->uavsFound);
+			bool computeTemplateLoaded = residentSnapshotLoaded;
+			if (!computeTemplateLoaded) {
+				probe->cachedUavs = nullptr;
+				probe->cachedSrvs = nullptr;
+				probe->cachedCbvs = nullptr;
+				probe->cachedRootConstants = nullptr;
+				computeTemplateLoaded =
+					DX12BindingTracker::GetSimulateContextPreSkinBindings(
+						commandList,
+						&probe->cachedUavs,
+						&probe->cachedSrvs,
+						&probe->cachedCbvs,
+						&probe->cachedRootConstants,
+						&probe->bindingDependencyFingerprint,
+						&probe->uavsFound);
+			}
 			if (computeTemplateLoaded &&
 				runtimeState &&
 				runtimeState->resolvedCompute.probeResultValid &&

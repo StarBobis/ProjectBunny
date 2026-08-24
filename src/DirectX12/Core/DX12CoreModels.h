@@ -4,6 +4,8 @@
 
 // Pipeline, descriptor, binding, and frame-analysis data models.
 
+class DX12SimulateContext;
+
 class DX12PsoInputElementInfo
 {
 public:
@@ -959,6 +961,8 @@ public:
 		const std::vector<DX12CurrentRootConstants> **constants,
 		UINT64 *dependencyFingerprint = nullptr,
 		bool *foundAny = nullptr);
+	static bool ValidateRuntimePreSkinBindingState(
+		const DX12SimulateContext *runtimeState);
 	static UINT64 GetComputeBindingSerial(ID3D12GraphicsCommandList *commandList);
 	static bool GetCurrentDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap **cbvSrvUavHeap, ID3D12DescriptorHeap **samplerHeap);
 	static void RecordDrawInstanced(ID3D12GraphicsCommandList *commandList, UINT vertexCountPerInstance, UINT instanceCount, UINT startVertexLocation, UINT startInstanceLocation);

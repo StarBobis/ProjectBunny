@@ -949,6 +949,13 @@ static bool RuntimeConstantsMatch(
 	return true;
 }
 
+bool DX12BindingTracker::ValidateRuntimePreSkinBindingState(
+	const DX12SimulateContext *runtimeState)
+{
+	return RuntimeDescriptorRootsMatch(runtimeState) &&
+		RuntimeConstantsMatch(runtimeState);
+}
+
 static void RebaseRuntimePreSkinBindings(
 	DX12SimulateContext *runtimeState)
 {
