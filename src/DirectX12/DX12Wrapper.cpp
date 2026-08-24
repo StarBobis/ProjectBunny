@@ -2532,8 +2532,12 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				// Present1 is a per-frame hot path. Keep the native v1 interface
 				// for the lifetime of the wrapper instead of querying it on every
 				// call (the wrapper itself already guarantees this interface).
-				if (mSwapChain)
+				if (mSwapChain) {
 					mSwapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain1));
+					mSwapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain2));
+					mSwapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain3));
+					mSwapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain4));
+				}
 				RegisterWrapperPointer(static_cast<IDXGIObject*>(this));
 				RegisterWrapperPointer(static_cast<IDXGIDeviceSubObject*>(this));
 				RegisterWrapperPointer(static_cast<IDXGISwapChain*>(this));
@@ -2555,6 +2559,18 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 					mSwapChain1->Release();
 					mSwapChain1 = nullptr;
 				}
+				if (mSwapChain2) {
+					mSwapChain2->Release();
+					mSwapChain2 = nullptr;
+				}
+				if (mSwapChain3) {
+					mSwapChain3->Release();
+					mSwapChain3 = nullptr;
+				}
+				if (mSwapChain4) {
+					mSwapChain4->Release();
+					mSwapChain4 = nullptr;
+				}
 			}
 
 			HRESULT QuerySwapChain1(IDXGISwapChain1 **swapChain)
@@ -2571,17 +2587,38 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 
 			HRESULT QuerySwapChain2(IDXGISwapChain2 **swapChain)
 			{
-				return mSwapChain->QueryInterface(IID_PPV_ARGS(swapChain));
+				if (!swapChain)
+					return E_POINTER;
+				*swapChain = nullptr;
+				if (!mSwapChain2)
+					return E_NOINTERFACE;
+				mSwapChain2->AddRef();
+				*swapChain = mSwapChain2;
+				return S_OK;
 			}
 
 			HRESULT QuerySwapChain3(IDXGISwapChain3 **swapChain)
 			{
-				return mSwapChain->QueryInterface(IID_PPV_ARGS(swapChain));
+				if (!swapChain)
+					return E_POINTER;
+				*swapChain = nullptr;
+				if (!mSwapChain3)
+					return E_NOINTERFACE;
+				mSwapChain3->AddRef();
+				*swapChain = mSwapChain3;
+				return S_OK;
 			}
 
 			HRESULT QuerySwapChain4(IDXGISwapChain4 **swapChain)
 			{
-				return mSwapChain->QueryInterface(IID_PPV_ARGS(swapChain));
+				if (!swapChain)
+					return E_POINTER;
+				*swapChain = nullptr;
+				if (!mSwapChain4)
+					return E_NOINTERFACE;
+				mSwapChain4->AddRef();
+				*swapChain = mSwapChain4;
+				return S_OK;
 			}
 
 			void *GetSwapChainWrapperInterface(REFIID riid)
@@ -2986,6 +3023,9 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			std::atomic<long> mRefCount{1};
 			IDXGISwapChain *mSwapChain = nullptr;
 			IDXGISwapChain1 *mSwapChain1 = nullptr;
+			IDXGISwapChain2 *mSwapChain2 = nullptr;
+			IDXGISwapChain3 *mSwapChain3 = nullptr;
+			IDXGISwapChain4 *mSwapChain4 = nullptr;
 		};
 
 		class CommandQueueWrapper final : public ID3D12CommandQueue, public WrapperBase

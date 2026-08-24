@@ -83,6 +83,10 @@ class DXGIHookRuntime
 public:
 	inline static SRWLOCK PrimarySwapChainLock = SRWLOCK_INIT;
 	inline static IUnknown *PrimarySwapChainIdentity = nullptr;
+	// The native swap-chain pointer is stable across Present calls. This avoids
+	// a QueryInterface(IUnknown) on the DX12 Present hot path; identity probing
+	// remains available for aliases and newly-created swap chains.
+	inline static std::atomic<IDXGISwapChain*> PrimarySwapChainObject{ nullptr };
 	inline static volatile LONG SecondarySwapChainLogged = 0;
 
 	static IUnknown *GetSwapChainIdentity(IDXGISwapChain *swapChain)
@@ -98,6 +102,10 @@ public:
 
 	static bool IsPrimarySwapChain(const char *api, IDXGISwapChain *swapChain)
 	{
+		if (!swapChain)
+			return false;
+		if (PrimarySwapChainObject.load(std::memory_order_acquire) == swapChain)
+			return true;
 		IUnknown *identity = GetSwapChainIdentity(swapChain);
 		if (!identity)
 			return false;
@@ -108,6 +116,7 @@ public:
 		AcquireSRWLockExclusive(&PrimarySwapChainLock);
 		if (!PrimarySwapChainIdentity) {
 			PrimarySwapChainIdentity = identity;
+			PrimarySwapChainObject.store(swapChain, std::memory_order_release);
 			selected = true;
 		}
 		primary = PrimarySwapChainIdentity == identity;
@@ -134,6 +143,7 @@ public:
 		bool forgotten = false;
 		AcquireSRWLockExclusive(&PrimarySwapChainLock);
 		if (PrimarySwapChainIdentity == identity) {
+			PrimarySwapChainObject.store(nullptr, std::memory_order_release);
 			PrimarySwapChainIdentity = nullptr;
 			forgotten = true;
 		}
