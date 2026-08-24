@@ -1832,6 +1832,19 @@ static void DX12RuntimeBumpComputeDescriptorQuerySerial(
 	DX12RuntimeBumpDescriptorQuerySerial(&state->computeDescriptorQuerySerial);
 }
 
+// Descriptor queries only depend on root parameters that can expose CBV/SRV/UAV
+// bindings to the compute shader.  Keep the conservative behaviour until the
+// current root signature has been parsed; once the mask is known, churn on an
+// unrelated parameter must not invalidate the descriptor-query cache.
+static bool DX12RuntimeComputeDescriptorQueryUsesRoot(
+	const DX12SimulateContext *state, UINT rootParameterIndex)
+{
+	if (!state || rootParameterIndex >= MaxRootParameters ||
+		!state->computeRootUsedMaskValid)
+		return true;
+	return (state->computeRootUsedMask & (1ull << rootParameterIndex)) != 0;
+}
+
 static void DX12RuntimeBumpComputeDescriptorBindingVersion(
 	DX12SimulateContext *state)
 {
@@ -2108,8 +2121,13 @@ bool DX12CommandListRuntime::RememberRootDescriptorTable(
 		// the global serial alone. The mask lets probe/collect skip bindings
 		// that the current root signature does not use.
 		state->computeRootDirtyMask |= 1ull << rootParameterIndex;
-		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
-		DX12RuntimeBumpComputeDescriptorBindingVersion(state);
+		const bool affectsDescriptorQueries =
+			DX12RuntimeComputeDescriptorQueryUsesRoot(
+				state, rootParameterIndex);
+		if (affectsDescriptorQueries)
+			DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+		if (affectsDescriptorQueries)
+			DX12RuntimeBumpComputeDescriptorBindingVersion(state);
 		DX12RuntimeBumpRootBindingRevision(
 			&state->computeRootBindingRevisions, rootParameterIndex);
 	} else {
@@ -2232,7 +2250,9 @@ void DX12CommandListRuntime::RememberComputeRootDescriptor(
 	descriptor.address = address;
 	state->computeRootDirtyMask |= 1ull << rootParameterIndex;
 	DX12RuntimeBumpComputeBindingSerial(state);
-	DX12RuntimeBumpComputeDescriptorQuerySerial(state);
+	if (DX12RuntimeComputeDescriptorQueryUsesRoot(
+			state, rootParameterIndex))
+		DX12RuntimeBumpComputeDescriptorQuerySerial(state);
 	DX12RuntimeBumpRootBindingRevision(
 		&state->computeRootBindingRevisions, rootParameterIndex);
 	DX12RuntimeBumpBindingQuerySerial(state);
@@ -3068,4 +3088,3 @@ void DX12CommandListStateCapture::VertexBuffers(
 			DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);
 	}
 }
-
