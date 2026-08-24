@@ -2529,6 +2529,11 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				: WrapperBase(swapChain)
 			{
 				mSwapChain = swapChain;
+				// Present1 is a per-frame hot path. Keep the native v1 interface
+				// for the lifetime of the wrapper instead of querying it on every
+				// call (the wrapper itself already guarantees this interface).
+				if (mSwapChain)
+					mSwapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain1));
 				RegisterWrapperPointer(static_cast<IDXGIObject*>(this));
 				RegisterWrapperPointer(static_cast<IDXGIDeviceSubObject*>(this));
 				RegisterWrapperPointer(static_cast<IDXGISwapChain*>(this));
@@ -2546,11 +2551,22 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				// Release the frame-lifecycle owner before WrapperBase releases the
 				// native object so a genuine game swapchain recreation can be selected.
 				DXGIHookRuntime::ForgetSwapChain(mSwapChain);
+				if (mSwapChain1) {
+					mSwapChain1->Release();
+					mSwapChain1 = nullptr;
+				}
 			}
 
 			HRESULT QuerySwapChain1(IDXGISwapChain1 **swapChain)
 			{
-				return mSwapChain->QueryInterface(IID_PPV_ARGS(swapChain));
+				if (!swapChain)
+					return E_POINTER;
+				*swapChain = nullptr;
+				if (!mSwapChain1)
+					return E_NOINTERFACE;
+				mSwapChain1->AddRef();
+				*swapChain = mSwapChain1;
+				return S_OK;
 			}
 
 			HRESULT QuerySwapChain2(IDXGISwapChain2 **swapChain)
@@ -2750,14 +2766,10 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			HRESULT STDMETHODCALLTYPE Present1(
 				UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) override
 			{
-				IDXGISwapChain1 *swapChain1 = nullptr;
-				HRESULT hr = QuerySwapChain1(&swapChain1);
-				if (FAILED(hr))
-					return hr;
-				hr = DX12WrapperRuntimeUtils::Present1(
-					swapChain1, SyncInterval, PresentFlags, pPresentParameters);
-				swapChain1->Release();
-				return hr;
+				if (!mSwapChain1)
+					return DXGI_ERROR_UNSUPPORTED;
+				return DX12WrapperRuntimeUtils::Present1(
+					mSwapChain1, SyncInterval, PresentFlags, pPresentParameters);
 			}
 
 			BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override
@@ -2973,6 +2985,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 		public:
 			std::atomic<long> mRefCount{1};
 			IDXGISwapChain *mSwapChain = nullptr;
+			IDXGISwapChain1 *mSwapChain1 = nullptr;
 		};
 
 		class CommandQueueWrapper final : public ID3D12CommandQueue, public WrapperBase
