@@ -7840,7 +7840,8 @@ class DeviceWrapper
 				}
 				{
 					DX12_CREATE_TIMING_SCOPE(DescriptorCbvWrapper, Record);
-					DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(pDesc, DestDescriptor);
+					DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(
+						pDesc, DestDescriptor);
 				}
 			}
 

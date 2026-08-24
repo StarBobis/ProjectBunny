@@ -3430,14 +3430,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 		blobLength);
 }
 
-void DX12ResourceTrackerHookRuntime::RecordCreatedConstantBufferView(
-	const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
-	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor)
-{
-	DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(
-		desc, destDescriptor);
-}
-
 static void ApplyStaticReplacementToRecordedSrv(
 	ID3D12Device *device, D3D12_CPU_DESCRIPTOR_HANDLE destDescriptor);
 
