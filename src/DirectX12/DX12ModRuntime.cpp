@@ -19172,8 +19172,11 @@ bool DX12ModCompileDrawDecision(
 			directTargetPlan.ResetKnown();
 	}
 
-	const bool shaderOverrideSkip =
-		DX12ModShouldSkipPipelineState(pipelineState, false);
+	bool skipDraw = false;
+	bool skipDispatch = false;
+	DX12ModGetPipelineStateSkipFlags(
+		pipelineState, nullptr, &skipDraw, &skipDispatch);
+	const bool shaderOverrideSkip = skipDraw;
 	const bool descriptorTrackingNeeded =
 		DX12ModNeedsShaderDescriptorTracking();
 	decision->SetFromTargetPlan(
@@ -19817,19 +19820,29 @@ static void UpdateStoredPsoSkipLocked(DX12StoredPso *record)
 	record->skipGeneration = gReloadGeneration;
 }
 
-bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch)
+bool DX12ModGetPipelineStateSkipFlags(
+	ID3D12PipelineState *pipelineState,
+	const DX12PsoShaderInfo *shaderInfo,
+	bool *skipDraw,
+	bool *skipDispatch)
 {
+	if (skipDraw)
+		*skipDraw = false;
+	if (skipDispatch)
+		*skipDispatch = false;
 	if (!pipelineState || !DX12ModHasActiveShaderOverrides())
 		return false;
 
-	bool skip = false;
 	AcquireSRWLockShared(&gModLock);
 	auto record = gPsoRecords.find(pipelineState);
 	if (record != gPsoRecords.end()) {
 		if (record->second.skipGeneration == gReloadGeneration) {
-			skip = dispatch ? record->second.skipDispatch : record->second.skipDraw;
+			if (skipDraw)
+				*skipDraw = record->second.skipDraw;
+			if (skipDispatch)
+				*skipDispatch = record->second.skipDispatch;
 			ReleaseSRWLockShared(&gModLock);
-			return skip;
+			return true;
 		}
 	}
 	ReleaseSRWLockShared(&gModLock);
@@ -19838,25 +19851,40 @@ bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dis
 	record = gPsoRecords.find(pipelineState);
 	if (record != gPsoRecords.end()) {
 		UpdateStoredPsoSkipLocked(&record->second);
-		skip = dispatch ? record->second.skipDispatch : record->second.skipDraw;
+		if (skipDraw)
+			*skipDraw = record->second.skipDraw;
+		if (skipDispatch)
+			*skipDispatch = record->second.skipDispatch;
 		ReleaseSRWLockExclusive(&gModLock);
-		return skip;
+		return true;
 	}
 	ReleaseSRWLockExclusive(&gModLock);
 
-	DX12PsoShaderInfo info = {};
-	if (!DX12GetPipelineStateShaderInfo(pipelineState, &info))
-		return false;
+	DX12PsoShaderInfo queriedInfo = {};
+	if (!shaderInfo) {
+		if (!DX12GetPipelineStateShaderInfo(pipelineState, &queriedInfo))
+			return false;
+		shaderInfo = &queriedInfo;
+	}
 
 	AcquireSRWLockShared(&gModLock);
-	if (dispatch) {
-		skip = info.hasCS && ShaderOverrideHasSkipLocked(info.cs);
-	} else {
-		skip = (info.hasVS && ShaderOverrideHasSkipLocked(info.vs)) ||
-			(info.hasPS && ShaderOverrideHasSkipLocked(info.ps));
-	}
+	if (skipDispatch)
+		*skipDispatch = shaderInfo->hasCS && ShaderOverrideHasSkipLocked(shaderInfo->cs);
+	if (skipDraw)
+		*skipDraw = (shaderInfo->hasVS && ShaderOverrideHasSkipLocked(shaderInfo->vs)) ||
+			(shaderInfo->hasPS && ShaderOverrideHasSkipLocked(shaderInfo->ps));
 	ReleaseSRWLockShared(&gModLock);
-	return skip;
+	return true;
+}
+
+bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch)
+{
+	bool skipDraw = false;
+	bool skipDispatch = false;
+	if (!DX12ModGetPipelineStateSkipFlags(
+			pipelineState, nullptr, &skipDraw, &skipDispatch))
+		return false;
+	return dispatch ? skipDispatch : skipDraw;
 }
 
 UINT64 DX12ModGetReloadGeneration()

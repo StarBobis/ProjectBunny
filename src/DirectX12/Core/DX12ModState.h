@@ -30,6 +30,11 @@ bool DX12ModCompileDrawDecision(
 	ID3D12PipelineState *pipelineState,
 	DX12CompiledDrawDecision *decision);
 bool DX12ModNeedsShaderDescriptorTracking();
+bool DX12ModGetPipelineStateSkipFlags(
+	ID3D12PipelineState *pipelineState,
+	const DX12PsoShaderInfo *shaderInfo,
+	bool *skipDraw,
+	bool *skipDispatch);
 UINT64 DX12ModGetReloadGeneration();
 UINT64 DX12ModGetReloadGenerationFast();
 UINT64 DX12ModGetPreSkinActiveGenerationFast();
@@ -2779,5 +2784,4 @@ public:
 		LogLogCostState(present, frameWallUs);
 	}
 };
-
 

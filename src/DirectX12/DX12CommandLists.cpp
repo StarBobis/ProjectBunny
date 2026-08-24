@@ -738,8 +738,12 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	}
 
 	const uint64_t csHash = shaderInfo.cs;
-	const bool shaderOverrideSkip = hasShaderOverrides ?
-		DX12ModShouldSkipPipelineState(pipelineState, true) : false;
+	bool skipDraw = false;
+	bool skipDispatch = false;
+	if (hasShaderOverrides)
+		DX12ModGetPipelineStateSkipFlags(
+			pipelineState, &shaderInfo, &skipDraw, &skipDispatch);
+	const bool shaderOverrideSkip = skipDispatch;
 	const bool preSkinCandidate = needsPreSkinProbe && csHash != 0 ?
 		DX12ModShouldTrackPreSkinBindingsForCs(csHash) : false;
 
