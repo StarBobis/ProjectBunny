@@ -2324,7 +2324,12 @@ public:
 			runtimeState->resolvedCompute.probeBufferContentGeneration ==
 				DX12GetIaHashContentGeneration() &&
 			runtimeState->resolvedCompute.probeIaContentEpoch == probeIaContentEpoch &&
-			runtimeState->resolvedCompute.probeBindingSerial == probeBindingSerial) {
+			// A negative verdict is safe to reuse when the descriptor
+			// fingerprint is unchanged, even if the command-list binding serial
+			// advanced due to unrelated root-state writes. Positive verdicts
+			// still require the serial because they carry commands to reapply.
+			(!runtimeState->resolvedCompute.probeApplied ||
+			 runtimeState->resolvedCompute.probeBindingSerial == probeBindingSerial)) {
 			cacheEntry.applied = runtimeState->resolvedCompute.probeApplied;
 			cacheEntry.dispatchOverride.handlingSkip =
 				runtimeState->resolvedCompute.probeDispatchHandlingSkip;
@@ -2358,7 +2363,8 @@ public:
 			    localEntry.bufferContentGeneration ==
 				    DX12GetIaHashContentGeneration() &&
 			    localEntry.iaContentEpoch == probeIaContentEpoch &&
-			    localEntry.bindingSerial == probeBindingSerial) {
+			    (!localEntry.applied ||
+			     localEntry.bindingSerial == probeBindingSerial)) {
 				cacheEntry.applied = localEntry.applied;
 				cacheEntry.dispatchOverride.handlingSkip =
 					localEntry.handlingSkip;
