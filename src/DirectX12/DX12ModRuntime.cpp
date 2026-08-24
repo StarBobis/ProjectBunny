@@ -1385,6 +1385,9 @@ public:
 	LONG retirePresent = 0;
 };
 static std::deque<DX12RetiredPreSkinResource> gRetiredPreSkinResources;
+// Present maintenance is called once per frame. Avoid taking the retirement
+// lock when the GPU has nothing pending to reclaim.
+static volatile LONG gHasRetiredPreSkinObjectsFast = 0;
 static constexpr LONG PreSkinRetiredObjectPresentDelay = 120;
 
 class DX12PreSkinOutputResizeCacheEntry
@@ -2380,6 +2383,8 @@ void DX12ModNotifyCommandListsSubmitted(
 			{ heap, fenceTracked ? fence : nullptr,
 				fenceTracked ? fenceValue : 0, retirePresent });
 	}
+	if (!pending.resources.empty() || !pending.descriptorHeaps.empty())
+		InterlockedExchange(&gHasRetiredPreSkinObjectsFast, 1);
 	PublishPendingPreSkinSubmissionWorkLocked();
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	DX12LogManager::DebugFields("DX12PreSkinRetireSubmit",
@@ -2407,9 +2412,14 @@ bool DX12ModNeedsCommandListSubmissionNotifications()
 
 void DX12ModRunPresentMaintenance()
 {
+	if (InterlockedCompareExchange(&gHasRetiredPreSkinObjectsFast, 0, 0) == 0)
+		return;
 	DX12PreSkinReleaseBatch releaseBatch;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
 	CleanupRetiredPreSkinObjectsLocked(&releaseBatch);
+	if (gRetiredPreSkinResources.empty() &&
+		gRetiredPreSkinDescriptorHeaps.empty())
+		InterlockedExchange(&gHasRetiredPreSkinObjectsFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
@@ -3026,6 +3036,7 @@ static void ClearPreSkinRuntimeState()
 			releaseBatch.fences.push_back(retired.completionFence);
 	}
 	gRetiredPreSkinDescriptorHeaps.clear();
+	InterlockedExchange(&gHasRetiredPreSkinObjectsFast, 0);
 	InterlockedExchange(&gHasPendingPreSkinSubmissionWorkFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 
