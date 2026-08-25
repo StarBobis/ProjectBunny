@@ -1,23 +1,19 @@
 name: Release d3d12
 
-# Automated release pipeline. The release version is controlled manually
-# via the file .github/workflows/version.txt on the main branch: bump the
-# number in that file and push to main, and this workflow builds the clean
-# Release x64 d3d12.dll and publishes a GitHub Release tagged v<version>.
-# Pushes that do not change the version are skipped automatically.
-# You can also run the workflow manually from the Actions tab (optionally
-# overriding the tag), or push a v* tag directly.
+# Automated release pipeline. Pushing a v<version> tag (e.g. via
+# publish_release.ps1) builds the clean Release x64 d3d12.dll and publishes a
+# GitHub Release tagged v<version>. You can also run the workflow manually
+# from the Actions tab; without an explicit tag input the patch version is
+# auto-bumped from the newest v* tag on origin.
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish (default: from version.txt)"
+        description: "Release tag to publish (default: auto-bump patch of latest v* tag)"
         required: false
         type: string
 
@@ -40,26 +36,38 @@ jobs:
             $tag = "${{ github.ref_name }}"
           }
           if (-not $tag) {
-            $version = (Get-Content ".github/workflows/version.txt" -Raw).Trim()
-            if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              Write-Error "version.txt content '$version' must look like 1.2.3"
+            $tags = git ls-remote --tags origin "refs/tags/v*"
+            $versions = @()
+            foreach ($line in $tags) {
+              if ($line -match 'refs/tags/v(\d+)\.(\d+)\.(\d+)$') {
+                $versions += [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])"
+              }
+            }
+            if ($versions.Count -eq 0) {
+              Write-Error "No v* tags found on origin. Provide the tag input explicitly."
               exit 1
             }
-            $tag = "v$version"
+            $latest = ($versions | Sort-Object | Select-Object -Last 1)
+            $tag = "v{0}.{1}.{2}" -f $latest.Major, $latest.Minor, ($latest.Build + 1)
+            Write-Host "Auto-bumped patch version -> $tag"
           }
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
             Write-Error "Release tag '$tag' must look like v1.2.3"
             exit 1
           }
-          $existing = git ls-remote --tags origin "refs/tags/$tag"
-          if ($existing -and "${{ github.ref_type }}" -ne "tag") {
-            Write-Host "Tag $tag already exists, nothing to release. Bump .github/workflows/version.txt to publish a new release."
-            "skip=true" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-          } else {
+          if ("${{ github.ref_type }}" -eq "tag") {
             "skip=false" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            $existing = git ls-remote --tags origin "refs/tags/$tag"
+            if ($existing) {
+              Write-Host "Tag $tag already exists, nothing to release."
+              "skip=true" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+            } else {
+              "skip=false" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+            }
           }
           "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Release tag: $tag (skip=$([bool]$existing))"
+          Write-Host "Release tag: $tag"
 
       - name: Warn on CMakeLists version drift
         if: steps.resolve.outputs.skip != 'true'
@@ -99,6 +107,7 @@ jobs:
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item $dll "$stage/d3d12.dll"
           Copy-Item "LICENSE.txt" "$stage/LICENSE.txt"
+          Copy-Item "config/d3dx.ini" "$stage/d3dx.ini"
           $zipName = "ProjectBunny-$env:RELEASE_TAG-d3d12-x64.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath "build/$zipName" -CompressionLevel Optimal -Force
           Write-Host "Packaged: build/$zipName"
