@@ -150,8 +150,6 @@ void DX12ModRecordComputePipelineState(
 	const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc);
 ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pipelineState);
 bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch);
-void DX12ModRecordComputeUavs(
-	ID3D12GraphicsCommandList *commandList, const std::vector<DX12CurrentComputeUavBinding> &uavs);
 #include "ModState/DX12PreSkinDispatchOverride.h"
 bool DX12ModGetCachedPreSkinProbeResult(
 	ID3D12GraphicsCommandList *commandList,

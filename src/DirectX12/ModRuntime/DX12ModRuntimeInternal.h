@@ -751,7 +751,6 @@ class DX12ComputeUavProducer
 {
 
 public:
-	UINT64 serial = 0;
 	UINT rootParameterIndex = 0;
 	UINT rangeIndex = UINT_MAX;
 	UINT shaderRegister = UINT_MAX;
@@ -765,12 +764,6 @@ public:
 
 
 inline SRWLOCK gPreSkinLock = SRWLOCK_INIT;
-
-inline UINT64 gComputeUavSerial = 0;
-
-inline std::deque<DX12ComputeUavProducer> gRecentComputeUavs;
-
-inline constexpr size_t MaxRecentComputeUavs = 512;
 
 inline std::set<SIZE_T> gPatchedPreSkinDescriptors;
 
@@ -1134,7 +1127,6 @@ public:
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	bool outputUavResized = false;
-	UINT64 producerSerial = 0;
 	uint64_t computeShaderHash = 0;
 	UINT64 bindingFingerprint = 0;
 	uint32_t triggerHash = 0;
@@ -3088,11 +3080,7 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	uint64_t computeShaderHash,
 	UINT64 bindingHash,
 	UINT64 bindingDependencyFingerprint,
-	DX12PreSkinProbeCacheEntry *result);
-
-
-void DX12ModRecordComputeUavs(
-	ID3D12GraphicsCommandList *commandList, const std::vector<DX12CurrentComputeUavBinding> &uavs);
+DX12PreSkinProbeCacheEntry *result);
 
 
 bool NumericMatchSatisfied(const Bunny::NumericMatch &match, uint32_t actual);

@@ -1566,8 +1566,6 @@ void ClearPreSkinRuntimeState()
 {
 	std::vector<ID3D12Resource*> releasePreSkinResources;
 	AcquireSRWLockExclusive(&gPreSkinLock);
-	gRecentComputeUavs.clear();
-	gComputeUavSerial = 0;
 	gPatchedPreSkinDescriptors.clear();
 	gKnownPreSkinDescriptorPatches.clear();
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
@@ -3771,7 +3769,6 @@ bool ApplyPreSkinBindingPatchLocked(
 	state.resource = replacement->uavResource;
 	state.byteWidth = replacement->byteWidth;
 	state.stride = replacement->stride;
-	state.producerSerial = gComputeUavSerial + 1;
 	state.hasActiveTextureOverride =
 		state.resource && state.byteWidth && state.stride &&
 		producer.hasDescriptor && section && section[0];
@@ -4897,36 +4894,6 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	}
 	ReleaseSRWLockShared(&gModLock);
 	return false;
-}
-
-
-void DX12ModRecordComputeUavs(
-	ID3D12GraphicsCommandList *commandList, const std::vector<DX12CurrentComputeUavBinding> &uavs)
-{
-	if (!commandList || uavs.empty() || !DX12ModNeedsPreSkinningUavProbe())
-		return;
-
-	AcquireSRWLockExclusive(&gPreSkinLock);
-	for (const DX12CurrentComputeUavBinding &uav : uavs)
-	{
-		DX12ComputeUavProducer producer;
-		producer.serial = ++gComputeUavSerial;
-		producer.rootParameterIndex = uav.rootParameterIndex;
-		producer.rangeIndex = uav.rangeIndex;
-		producer.shaderRegister = uav.shaderRegister;
-		producer.registerSpace = uav.registerSpace;
-		producer.descriptorOffset = uav.descriptorOffset;
-		producer.rootDescriptor = uav.rootDescriptor;
-		producer.gpuVirtualAddress = uav.gpuVirtualAddress;
-		producer.hasDescriptor = uav.hasDescriptor;
-		producer.descriptor = uav.descriptor;
-		gRecentComputeUavs.push_back(std::move(producer));
-	}
-	while (gRecentComputeUavs.size() > MaxRecentComputeUavs)
-	{
-		gRecentComputeUavs.pop_front();
-	}
-	ReleaseSRWLockExclusive(&gPreSkinLock);
 }
 
 
