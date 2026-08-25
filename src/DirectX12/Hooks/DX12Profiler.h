@@ -19,12 +19,12 @@
 #include <thread>
 
 // ---------------------------------------------------------------------------
-// DX12Profiler - single instrumentation engine.
+// DX12Profiler - thin routing shell over DX12Profiling.
 //
-// All three profiling styles (DX12Profiling counters, API wall buckets and
-// hot-path stages) share one RAII scope and one per-frame flush. Existing
-// macro families remain as thin aliases so call sites did not need to change;
-// new code should use DX12_PROFILE_SCOPE / DX12_PROFILE_API / DX12_PROFILE_STAGE.
+// All scope kinds funnel into DX12Profiling (named buckets, batched flush);
+// Api/ApiStage additionally feed the outer timing probe until that header is
+// migrated (docs/DX12ProfilingRefactorPlan.md). Existing macro families
+// remain as thin aliases so call sites did not need to change.
 // ---------------------------------------------------------------------------
 class DX12Profiler
 {
@@ -43,20 +43,22 @@ public:
 		Kind kind;
 		int apiBucket;
 		int stage;
-		DX12Profiling::Counter *counter;
-		DX12Profiling::State state = {};
+		const char *name;
 		LARGE_INTEGER begin = {};
 		bool active;
 
-		Scope(Kind kindValue, DX12Profiling::Counter *counterValue)
-			: kind(kindValue), apiBucket(0), stage(0), counter(counterValue),
+		Scope(Kind kindValue, const char *scopeName)
+			: kind(kindValue), apiBucket(0), stage(0), name(scopeName),
 			  active(true)
 		{
-			DX12Profiling::Start(&state, counter);
+			if (kind == Counter)
+				DX12Profiling::Start(name);
+			else
+				active = false;
 		}
 
 		Scope(Kind kindValue, int index)
-			: kind(kindValue), apiBucket(index), stage(index), counter(nullptr),
+			: kind(kindValue), apiBucket(index), stage(index), name(nullptr),
 			  active(true)
 		{
 			if (kind == Api) {
@@ -67,29 +69,23 @@ public:
 				active = false;
 #endif
 			} else if (kind == Stage) {
-#if DX12_HOTPATH_TIME_ENABLED
-				DX12HotPathTimingUtils::Begin(static_cast<DX12HotPathStage::Id>(stage));
-#else
-				active = false;
-#endif
+				name = DX12HotPathStage::Name(static_cast<DX12HotPathStage::Id>(stage));
+				DX12Profiling::Start(name);
 			} else {
 				active = false;
 			}
 		}
 
 		Scope(Kind kindValue, int apiValue, int stageValue)
-			: kind(kindValue), apiBucket(apiValue), stage(stageValue),
-			  counter(nullptr), active(true)
+			: kind(kindValue), apiBucket(apiValue), stage(stageValue), active(true)
 		{
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-#if DX12_HOTPATH_TIME_ENABLED
 			begin = DX12OuterTimingProbeUtils::Now();
 			DX12OuterTimingProbeUtils::LogApiScopeBegin(apiBucket, begin.QuadPart);
-			DX12HotPathTimingUtils::BeginAt(static_cast<DX12HotPathStage::Id>(stage), begin);
+			name = DX12HotPathStage::Name(static_cast<DX12HotPathStage::Id>(stage));
+			DX12Profiling::Start(name);
 #else
-			active = false;
-#endif
-#else
+			name = nullptr;
 			active = false;
 #endif
 		}
@@ -103,7 +99,7 @@ public:
 		{
 			if (!active || kind != Counter)
 				return;
-			DX12Profiling::End(&state);
+			DX12Profiling::End(name);
 			active = false;
 		}
 
@@ -111,7 +107,7 @@ public:
 		{
 			if (active || kind != Counter)
 				return;
-			DX12Profiling::Start(&state, state.counter);
+			DX12Profiling::Start(name);
 			active = true;
 		}
 
@@ -121,7 +117,7 @@ public:
 				return;
 			switch (kind) {
 			case Counter:
-				DX12Profiling::End(&state);
+				DX12Profiling::End(name);
 				break;
 			case Api:
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
@@ -133,23 +129,16 @@ public:
 #endif
 				break;
 			case Stage:
-#if DX12_HOTPATH_TIME_ENABLED
-				DX12HotPathTimingUtils::End(static_cast<DX12HotPathStage::Id>(stage));
-#endif
+				DX12Profiling::End(name);
 				break;
 			case ApiStage:
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-#if DX12_HOTPATH_TIME_ENABLED
 				{
 					const LARGE_INTEGER end = DX12OuterTimingProbeUtils::Now();
 					DX12OuterTimingProbeUtils::LogApiScopeEnd(
 						apiBucket, begin.QuadPart, end.QuadPart);
-					DX12HotPathTimingUtils::EndAt(
-						static_cast<DX12HotPathStage::Id>(stage),
-						begin.QuadPart,
-						end.QuadPart);
 				}
-#endif
+				DX12Profiling::End(name);
 #endif
 				break;
 			}
@@ -159,30 +148,23 @@ public:
 
 	static void BeginStage(int stage)
 	{
-#if DX12_HOTPATH_TIME_ENABLED
-		DX12HotPathTimingUtils::Begin(static_cast<DX12HotPathStage::Id>(stage));
-#else
-		(void)stage;
-#endif
+		DX12Profiling::Start(DX12HotPathStage::Name(static_cast<DX12HotPathStage::Id>(stage)));
 	}
 
 	static void EndStage(int stage)
 	{
-#if DX12_HOTPATH_TIME_ENABLED
-		DX12HotPathTimingUtils::End(static_cast<DX12HotPathStage::Id>(stage));
-#else
-		(void)stage;
-#endif
+		DX12Profiling::End(DX12HotPathStage::Name(static_cast<DX12HotPathStage::Id>(stage)));
 	}
 
-	// Single per-frame flush: profiling counters, hot-path stages, create/
-	// descriptor/resident telemetry and frame CPU diagnostics. API wall
-	// buckets are flushed from LogPresentLeave via LogFrameTimeline.
+	// Single per-frame flush: batched profiling block plus the legacy
+	// telemetry logs (until stage 4 of the refactor migrates them).
 	static void FlushFrame()
 	{
-		DX12Profiling::EndFrame();
-#if DX12_HOTPATH_TIME_ENABLED
-		DX12HotPathTimingUtils::LogAndResetAll();
+		DX12Profiling::FlushBatch();
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+		DX12CreateTimingTelemetryUtils::LogAndReset();
+		DX12DescriptorShadowTelemetryUtils::LogAndReset();
+		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
 #endif
 	}
 };
@@ -192,7 +174,7 @@ public:
 // aliases and all route through DX12Profiler above.
 #define DX12_PROFILE_SCOPE(counter) \
 	DX12Profiler::Scope _profile_scope( \
-		DX12Profiler::Counter, &DX12Profiling::Get().counter)
+		DX12Profiler::Counter, #counter)
 
 #define DX12_PROFILE_API(api) \
 	DX12Profiler::Scope _profile_api( \
@@ -201,8 +183,6 @@ public:
 #define DX12_PROFILE_STAGE(stage) \
 	DX12Profiler::Scope _profile_stage( \
 		DX12Profiler::Stage, static_cast<int>(stage))
-
-#if DX12_HOTPATH_TIME_ENABLED
 
 #define DX12_HOTPATH_TIME_BEGIN(stage) \
 	DX12Profiler::BeginStage(static_cast<int>(DX12HotPathStage::stage))
@@ -215,13 +195,4 @@ public:
 		DX12Profiler::Stage, static_cast<int>(DX12HotPathStage::stage))
 
 #define DX12_HOTPATH_LOG_AND_RESET() \
-	DX12HotPathTimingUtils::LogAndResetAll()
-
-#else
-
-#define DX12_HOTPATH_TIME_BEGIN(stage) do {} while (0)
-#define DX12_HOTPATH_TIME_END(stage) do {} while (0)
-#define DX12_HOTPATH_TIME_SCOPE(stage) do {} while (0)
-#define DX12_HOTPATH_LOG_AND_RESET() do {} while (0)
-
-#endif
+	DX12Profiler::FlushFrame()
