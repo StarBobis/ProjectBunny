@@ -276,6 +276,40 @@ public:
 	inline static Accumulator accumulators[
 		static_cast<UINT>(Api::Count)][static_cast<UINT>(Stage::Count)] = {};
 
+	// Per-thread accumulator tables, claimed once per calling thread and
+	// drained once per present. The previous process-wide interlocked
+	// accumulators serialized every scoped wrapper call from every thread on
+	// shared cache lines (2-4 locked ops per scope). Same pool idiom as
+	// DX12OuterTimingProbe's ApiWallThreadTable: plain per-thread adds on the
+	// hot path, drain with InterlockedExchange64 at flush; a racing increment
+	// can be attributed one frame late (diagnostics only). Threads beyond the
+	// pool share the interlocked fallback accumulators above.
+	static constexpr UINT kThreadTableCount = 64;
+	struct alignas(64) ThreadTable
+	{
+		DWORD threadId = 0;
+		LONG64 calls[static_cast<UINT>(Api::Count)][static_cast<UINT>(Stage::Count)] = {};
+		LONG64 totalTicks[static_cast<UINT>(Api::Count)][static_cast<UINT>(Stage::Count)] = {};
+		LONG64 maxTicks[static_cast<UINT>(Api::Count)][static_cast<UINT>(Stage::Count)] = {};
+	};
+	inline static ThreadTable ThreadTables[kThreadTableCount] = {};
+	inline static volatile LONG ThreadTableCount = 0;
+
+	static ThreadTable *AcquireThreadTable()
+	{
+		const LONG index = InterlockedIncrement(&ThreadTableCount) - 1;
+		if (index < 0 || index >= static_cast<LONG>(kThreadTableCount))
+			return nullptr;
+		ThreadTables[index].threadId = GetCurrentThreadId();
+		return &ThreadTables[index];
+	}
+
+	static ThreadTable *GetThreadTable()
+	{
+		static thread_local ThreadTable *table = AcquireThreadTable();
+		return table;
+	}
+
 	static LONG64 Frequency()
 	{
 		static const LONG64 frequency = []() {
@@ -290,8 +324,18 @@ public:
 	{
 		if (ticks < 0)
 			ticks = 0;
-		Accumulator &accumulator =
-			accumulators[static_cast<UINT>(api)][static_cast<UINT>(stage)];
+		const UINT apiIndex = static_cast<UINT>(api);
+		const UINT stageIndex = static_cast<UINT>(stage);
+		ThreadTable *table = GetThreadTable();
+		if (table) {
+			table->calls[apiIndex][stageIndex] += 1;
+			table->totalTicks[apiIndex][stageIndex] += ticks;
+			if (ticks > table->maxTicks[apiIndex][stageIndex])
+				table->maxTicks[apiIndex][stageIndex] = ticks;
+			return;
+		}
+		// Overflow threads share the interlocked fallback accumulators.
+		Accumulator &accumulator = accumulators[apiIndex][stageIndex];
 		InterlockedIncrement(&accumulator.calls);
 		InterlockedExchangeAdd64(&accumulator.totalTicks, ticks);
 		LONG64 observed = InterlockedCompareExchange64(&accumulator.maxTicks, 0, 0);
@@ -359,12 +403,31 @@ public:
 	static void LogAndReset()
 	{
 		const LONG64 frequency = Frequency();
+		const LONG tableCount = InterlockedCompareExchange(&ThreadTableCount, 0, 0);
+		const LONG tablesToScan = tableCount < static_cast<LONG>(kThreadTableCount)
+			? tableCount : static_cast<LONG>(kThreadTableCount);
 		for (UINT apiIndex = 0; apiIndex < static_cast<UINT>(Api::Count); ++apiIndex) {
 			for (UINT stageIndex = 0; stageIndex < static_cast<UINT>(Stage::Count); ++stageIndex) {
+				LONG64 calls = 0;
+				LONG64 totalTicks = 0;
+				LONG64 maxTicks = 0;
+				for (LONG t = 0; t < tablesToScan; ++t) {
+					ThreadTable &table = ThreadTables[t];
+					calls += InterlockedExchange64(&table.calls[apiIndex][stageIndex], 0);
+					totalTicks += InterlockedExchange64(&table.totalTicks[apiIndex][stageIndex], 0);
+					const LONG64 tableMaxTicks =
+						InterlockedExchange64(&table.maxTicks[apiIndex][stageIndex], 0);
+					if (tableMaxTicks > maxTicks)
+						maxTicks = tableMaxTicks;
+				}
+				// Overflow threads share the interlocked fallback accumulators.
 				Accumulator &accumulator = accumulators[apiIndex][stageIndex];
-				const LONG calls = InterlockedExchange(&accumulator.calls, 0);
-				const LONG64 totalTicks = InterlockedExchange64(&accumulator.totalTicks, 0);
-				const LONG64 maxTicks = InterlockedExchange64(&accumulator.maxTicks, 0);
+				calls += InterlockedExchange(&accumulator.calls, 0);
+				totalTicks += InterlockedExchange64(&accumulator.totalTicks, 0);
+				const LONG64 fallbackMaxTicks =
+					InterlockedExchange64(&accumulator.maxTicks, 0);
+				if (fallbackMaxTicks > maxTicks)
+					maxTicks = fallbackMaxTicks;
 				if (calls <= 0)
 					continue;
 				const LONG64 totalUs = totalTicks * 1000000 / frequency;
@@ -373,11 +436,11 @@ public:
 					continue;
 				DX12LogManager::Fields("DX12CreateTiming",
 					"\"present\":%ld,\"api\":\"%s\",\"stage\":\"%s\","
-					"\"calls\":%ld,\"totalUs\":%lld,\"avgUs\":%lld,\"maxUs\":%lld",
+					"\"calls\":%lld,\"totalUs\":%lld,\"avgUs\":%lld,\"maxUs\":%lld",
 					DX12RuntimeState::GetPresentCount(),
 					ApiName(static_cast<Api>(apiIndex)),
 					StageName(static_cast<Stage>(stageIndex)),
-					calls,
+					static_cast<long long>(calls),
 					static_cast<long long>(totalUs),
 					static_cast<long long>(totalUs / calls),
 					static_cast<long long>(maxUs));
