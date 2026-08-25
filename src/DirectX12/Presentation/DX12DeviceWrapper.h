@@ -54,712 +54,189 @@ class DeviceWrapper
 
 		static bool TryWrapCommandAllocator(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12CommandAllocatorIid(riid))
+			if (!IsD3D12CommandAllocatorIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12CommandAllocator *allocator = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&allocator))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(allocator);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				CommandAllocatorWrapper *wrapper = dynamic_cast<CommandAllocatorWrapper*>(existing);
-				if (!wrapper) {
-					allocator->Release();
-					return false;
-				}
-				*object = static_cast<ID3D12CommandAllocator*>(wrapper);
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				allocator->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			*object = static_cast<ID3D12CommandAllocator*>(new CommandAllocatorWrapper(allocator));
-			allocator->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<CommandAllocatorWrapper, ID3D12CommandAllocator>(
+				riid, object,
+				[](CommandAllocatorWrapper *wrapper, REFIID) {
+					return static_cast<ID3D12CommandAllocator*>(wrapper);
+				});
 		}
 
 		static bool TryWrapFence(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12FenceIid(riid))
+			if (!IsD3D12FenceIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12Fence *fence = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&fence))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(fence);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				FenceWrapper *wrapper = dynamic_cast<FenceWrapper*>(existing);
-				if (!wrapper) {
-					fence->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetFenceWrapperInterface(riid);
-				if (!wrapperInterface) {
-					fence->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				fence->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			FenceWrapper *wrapper = new FenceWrapper(fence);
-			void *wrapperInterface = wrapper->GetFenceWrapperInterface(riid);
-			if (!wrapperInterface) {
-				fence->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			fence->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<FenceWrapper, ID3D12Fence>(
+				riid, object,
+				[](FenceWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetFenceWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapDescriptorHeap(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12DescriptorHeapIid(riid))
+			if (!IsD3D12DescriptorHeapIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12DescriptorHeap *heap = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&heap))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(heap);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				DescriptorHeapWrapper *wrapper = dynamic_cast<DescriptorHeapWrapper*>(existing);
-				if (!wrapper) {
-					heap->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetDescriptorHeapWrapperInterface(riid);
-				if (!wrapperInterface) {
-					heap->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				heap->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			DescriptorHeapWrapper *wrapper = new DescriptorHeapWrapper(heap);
-			void *wrapperInterface = wrapper->GetDescriptorHeapWrapperInterface(riid);
-			if (!wrapperInterface) {
-				heap->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			heap->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<DescriptorHeapWrapper, ID3D12DescriptorHeap>(
+				riid, object,
+				[](DescriptorHeapWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetDescriptorHeapWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapResource(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12ResourceIid(riid))
+			if (!IsD3D12ResourceIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12Resource *resource = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&resource))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(resource);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				ResourceWrapper *wrapper = dynamic_cast<ResourceWrapper*>(existing);
-				if (!wrapper) {
-					resource->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetResourceWrapperInterface(riid);
-				if (!wrapperInterface) {
-					resource->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				resource->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			ResourceWrapper *wrapper = new ResourceWrapper(resource);
-			void *wrapperInterface = wrapper->GetResourceWrapperInterface(riid);
-			if (!wrapperInterface) {
-				resource->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			resource->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<ResourceWrapper, ID3D12Resource>(
+				riid, object,
+				[](ResourceWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetResourceWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapCommandQueue(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12CommandQueueIid(riid))
+			if (!IsD3D12CommandQueueIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12CommandQueue *queue = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&queue))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(queue);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				CommandQueueWrapper *wrapper = dynamic_cast<CommandQueueWrapper*>(existing);
-				if (!wrapper) {
-					queue->Release();
-					return false;
-				}
-				*object = static_cast<ID3D12CommandQueue*>(wrapper);
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				queue->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			*object = static_cast<ID3D12CommandQueue*>(new CommandQueueWrapper(queue));
-			queue->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<CommandQueueWrapper, ID3D12CommandQueue>(
+				riid, object,
+				[](CommandQueueWrapper *wrapper, REFIID) {
+					return static_cast<ID3D12CommandQueue*>(wrapper);
+				});
 		}
 
 		static bool TryWrapGraphicsCommandList(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12GraphicsCommandListIid(riid))
+			if (!IsD3D12GraphicsCommandListIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12GraphicsCommandList *commandList = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&commandList))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(commandList);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				GraphicsCommandListWrapper *wrapper = dynamic_cast<GraphicsCommandListWrapper*>(existing);
-				if (!wrapper) {
-					commandList->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetGraphicsCommandListWrapperInterface(riid);
-				if (!wrapperInterface) {
-					commandList->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				commandList->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			GraphicsCommandListWrapper *wrapper = new GraphicsCommandListWrapper(commandList);
-			void *wrapperInterface = wrapper->GetGraphicsCommandListWrapperInterface(riid);
-			if (!wrapperInterface) {
-				commandList->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			commandList->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<GraphicsCommandListWrapper, ID3D12GraphicsCommandList>(
+				riid, object,
+				[](GraphicsCommandListWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetGraphicsCommandListWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapHeap(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12HeapIid(riid))
+			if (!IsD3D12HeapIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12Heap *heap = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&heap))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(heap);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				HeapWrapper *wrapper = dynamic_cast<HeapWrapper*>(existing);
-				if (!wrapper) {
-					heap->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetHeapWrapperInterface(riid);
-				if (!wrapperInterface) {
-					heap->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				heap->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			HeapWrapper *wrapper = new HeapWrapper(heap);
-			void *wrapperInterface = wrapper->GetHeapWrapperInterface(riid);
-			if (!wrapperInterface) {
-				heap->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			heap->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<HeapWrapper, ID3D12Heap>(
+				riid, object,
+				[](HeapWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetHeapWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapPipelineState(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12PipelineStateIid(riid))
+			if (!IsD3D12PipelineStateIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12PipelineState *pipelineState = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&pipelineState))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(pipelineState);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				PipelineStateWrapper *wrapper = dynamic_cast<PipelineStateWrapper*>(existing);
-				if (!wrapper) {
-					pipelineState->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetPipelineStateWrapperInterface(riid);
-				if (!wrapperInterface) {
-					pipelineState->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				pipelineState->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			PipelineStateWrapper *wrapper = new PipelineStateWrapper(pipelineState);
-			void *wrapperInterface = wrapper->GetPipelineStateWrapperInterface(riid);
-			if (!wrapperInterface) {
-				pipelineState->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			pipelineState->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<PipelineStateWrapper, ID3D12PipelineState>(
+				riid, object,
+				[](PipelineStateWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetPipelineStateWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapRootSignature(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12RootSignatureIid(riid))
+			if (!IsD3D12RootSignatureIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12RootSignature *rootSignature = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&rootSignature))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(rootSignature);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				RootSignatureWrapper *wrapper = dynamic_cast<RootSignatureWrapper*>(existing);
-				if (!wrapper) {
-					rootSignature->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetRootSignatureWrapperInterface(riid);
-				if (!wrapperInterface) {
-					rootSignature->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				rootSignature->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			RootSignatureWrapper *wrapper = new RootSignatureWrapper(rootSignature);
-			void *wrapperInterface = wrapper->GetRootSignatureWrapperInterface(riid);
-			if (!wrapperInterface) {
-				rootSignature->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			rootSignature->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<RootSignatureWrapper, ID3D12RootSignature>(
+				riid, object,
+				[](RootSignatureWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetRootSignatureWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapQueryHeap(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12QueryHeapIid(riid))
+			if (!IsD3D12QueryHeapIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12QueryHeap *queryHeap = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&queryHeap))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(queryHeap);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				QueryHeapWrapper *wrapper = dynamic_cast<QueryHeapWrapper*>(existing);
-				if (!wrapper) {
-					queryHeap->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetQueryHeapWrapperInterface(riid);
-				if (!wrapperInterface) {
-					queryHeap->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				queryHeap->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			QueryHeapWrapper *wrapper = new QueryHeapWrapper(queryHeap);
-			void *wrapperInterface = wrapper->GetQueryHeapWrapperInterface(riid);
-			if (!wrapperInterface) {
-				queryHeap->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			queryHeap->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<QueryHeapWrapper, ID3D12QueryHeap>(
+				riid, object,
+				[](QueryHeapWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetQueryHeapWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapCommandSignature(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12CommandSignatureIid(riid))
+			if (!IsD3D12CommandSignatureIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12CommandSignature *commandSignature = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&commandSignature))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(commandSignature);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				CommandSignatureWrapper *wrapper = dynamic_cast<CommandSignatureWrapper*>(existing);
-				if (!wrapper) {
-					commandSignature->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetCommandSignatureWrapperInterface(riid);
-				if (!wrapperInterface) {
-					commandSignature->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				commandSignature->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			CommandSignatureWrapper *wrapper = new CommandSignatureWrapper(commandSignature);
-			void *wrapperInterface = wrapper->GetCommandSignatureWrapperInterface(riid);
-			if (!wrapperInterface) {
-				commandSignature->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			commandSignature->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<CommandSignatureWrapper, ID3D12CommandSignature>(
+				riid, object,
+				[](CommandSignatureWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetCommandSignatureWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapLifetimeTracker(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12LifetimeTrackerIid(riid))
+			if (!IsD3D12LifetimeTrackerIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12LifetimeTracker *tracker = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&tracker))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(tracker);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				LifetimeTrackerWrapper *wrapper = dynamic_cast<LifetimeTrackerWrapper*>(existing);
-				if (!wrapper) {
-					tracker->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetLifetimeTrackerWrapperInterface(riid);
-				if (!wrapperInterface) {
-					tracker->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				tracker->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			LifetimeTrackerWrapper *wrapper = new LifetimeTrackerWrapper(tracker);
-			void *wrapperInterface = wrapper->GetLifetimeTrackerWrapperInterface(riid);
-			if (!wrapperInterface) {
-				tracker->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			tracker->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<LifetimeTrackerWrapper, ID3D12LifetimeTracker>(
+				riid, object,
+				[](LifetimeTrackerWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetLifetimeTrackerWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapProtectedResourceSession(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12ProtectedResourceSessionIid(riid))
+			if (!IsD3D12ProtectedResourceSessionIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12ProtectedResourceSession *session = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&session))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(session);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				ProtectedResourceSessionWrapper *wrapper =
-					dynamic_cast<ProtectedResourceSessionWrapper*>(existing);
-				if (!wrapper) {
-					session->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetProtectedResourceSessionWrapperInterface(riid);
-				if (!wrapperInterface) {
-					session->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				session->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			ProtectedResourceSessionWrapper *wrapper = new ProtectedResourceSessionWrapper(session);
-			void *wrapperInterface = wrapper->GetProtectedResourceSessionWrapperInterface(riid);
-			if (!wrapperInterface) {
-				session->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			session->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<ProtectedResourceSessionWrapper, ID3D12ProtectedResourceSession>(
+				riid, object,
+				[](ProtectedResourceSessionWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetProtectedResourceSessionWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapMetaCommand(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12MetaCommandIid(riid))
+			if (!IsD3D12MetaCommandIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12MetaCommand *metaCommand = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&metaCommand))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(metaCommand);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				MetaCommandWrapper *wrapper = dynamic_cast<MetaCommandWrapper*>(existing);
-				if (!wrapper) {
-					metaCommand->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetMetaCommandWrapperInterface(riid);
-				if (!wrapperInterface) {
-					metaCommand->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				metaCommand->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			MetaCommandWrapper *wrapper = new MetaCommandWrapper(metaCommand);
-			void *wrapperInterface = wrapper->GetMetaCommandWrapperInterface(riid);
-			if (!wrapperInterface) {
-				metaCommand->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			metaCommand->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<MetaCommandWrapper, ID3D12MetaCommand>(
+				riid, object,
+				[](MetaCommandWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetMetaCommandWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapStateObject(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12StateObjectIid(riid))
+			if (!IsD3D12StateObjectIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12StateObject *stateObject = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&stateObject))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(stateObject);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				StateObjectWrapper *wrapper = dynamic_cast<StateObjectWrapper*>(existing);
-				if (!wrapper) {
-					stateObject->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetStateObjectWrapperInterface(riid);
-				if (!wrapperInterface) {
-					stateObject->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				stateObject->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			StateObjectWrapper *wrapper = new StateObjectWrapper(stateObject);
-			void *wrapperInterface = wrapper->GetStateObjectWrapperInterface(riid);
-			if (!wrapperInterface) {
-				stateObject->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			stateObject->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<StateObjectWrapper, ID3D12StateObject>(
+				riid, object,
+				[](StateObjectWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetStateObjectWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapPipelineLibrary(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12PipelineLibraryIid(riid))
+			if (!IsD3D12PipelineLibraryIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12PipelineLibrary *library = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&library))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(library);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				PipelineLibraryWrapper *wrapper = dynamic_cast<PipelineLibraryWrapper*>(existing);
-				if (!wrapper) {
-					library->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetPipelineLibraryWrapperInterface(riid);
-				if (!wrapperInterface) {
-					library->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				library->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			PipelineLibraryWrapper *wrapper = new PipelineLibraryWrapper(library);
-			void *wrapperInterface = wrapper->GetPipelineLibraryWrapperInterface(riid);
-			if (!wrapperInterface) {
-				library->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			library->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<PipelineLibraryWrapper, ID3D12PipelineLibrary>(
+				riid, object,
+				[](PipelineLibraryWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetPipelineLibraryWrapperInterface(interfaceIid);
+				});
 		}
 
 		static bool TryWrapShaderCacheSession(REFIID riid, void **object)
 		{
-			if (!object || !*object || !IsD3D12ShaderCacheSessionIid(riid))
+			if (!IsD3D12ShaderCacheSessionIid(riid))
 				return false;
-
-			IUnknown *originalObject = static_cast<IUnknown*>(*object);
-			ID3D12ShaderCacheSession *session = nullptr;
-			if (FAILED(static_cast<IUnknown*>(*object)->QueryInterface(IID_PPV_ARGS(&session))))
-				return false;
-
-			WrapperBase *existing = WrapperBase::FindByIdentity(session);
-
-			ScopedWrapperReference existingReference(existing);
-			if (existing) {
-				ShaderCacheSessionWrapper *wrapper = dynamic_cast<ShaderCacheSessionWrapper*>(existing);
-				if (!wrapper) {
-					session->Release();
-					return false;
-				}
-				void *wrapperInterface = wrapper->GetShaderCacheSessionWrapperInterface(riid);
-				if (!wrapperInterface) {
-					session->Release();
-					return false;
-				}
-				*object = wrapperInterface;
-				reinterpret_cast<IUnknown*>(*object)->AddRef();
-				session->Release();
-				originalObject->Release();
-				return true;
-			}
-
-			ShaderCacheSessionWrapper *wrapper = new ShaderCacheSessionWrapper(session);
-			void *wrapperInterface = wrapper->GetShaderCacheSessionWrapperInterface(riid);
-			if (!wrapperInterface) {
-				session->Release();
-				return false;
-			}
-			*object = wrapperInterface;
-			session->Release();
-			originalObject->Release();
-			return true;
+			return TryWrapDeviceChild<ShaderCacheSessionWrapper, ID3D12ShaderCacheSession>(
+				riid, object,
+				[](ShaderCacheSessionWrapper *wrapper, REFIID interfaceIid) {
+					return wrapper->GetShaderCacheSessionWrapperInterface(interfaceIid);
+				});
 		}
 	};
 
@@ -2537,8 +2014,28 @@ class DeviceWrapper
 		if (!object || !outInterface)
 			return false;
 
-		WrapperBase *existing = WrapperBase::FindByIdentity(object);
+		// Fast path: reuse an existing wrapper without any creation lock.
+		{
+			WrapperBase *existing = WrapperBase::FindByIdentity(object);
+			ScopedWrapperReference existingReference(existing);
+			if (existing) {
+				TWrapper *wrapper = dynamic_cast<TWrapper*>(existing);
+				if (!wrapper)
+					return false;
+				*outInterface = static_cast<TInterface*>(wrapper);
+				reinterpret_cast<IUnknown*>(*outInterface)->AddRef();
+				return true;
+			}
+		}
 
+		IUnknown *identity = GetIdentity(object);
+		std::lock_guard<std::recursive_mutex> creationLock(
+			WrapperCreationShardFor(identity));
+		if (identity)
+			identity->Release();
+
+		// Re-check under the shard before creating.
+		WrapperBase *existing = WrapperBase::FindByIdentity(object);
 		ScopedWrapperReference existingReference(existing);
 		if (existing) {
 			TWrapper *wrapper = dynamic_cast<TWrapper*>(existing);
@@ -2579,6 +2076,14 @@ class DeviceWrapper
 		TQueried *queried = nullptr;
 		if (FAILED(originalObject->QueryInterface(IID_PPV_ARGS(&queried))))
 			return false;
+
+		// Serialize find-then-create per identity shard; the lock-free
+		// by-pointer path above already handled the common repeat case.
+		IUnknown *creationIdentity = GetIdentity(queried);
+		std::lock_guard<std::recursive_mutex> creationLock(
+			WrapperCreationShardFor(creationIdentity));
+		if (creationIdentity)
+			creationIdentity->Release();
 
 		WrapperBase *existingByIdentity = WrapperBase::FindByIdentity(queried);
 

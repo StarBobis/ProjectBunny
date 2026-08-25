@@ -22,10 +22,28 @@ namespace DX12WrapperDetail
 	class WrapperBase;
 
 	inline SRWLOCK gWrapperLock = SRWLOCK_INIT;
-	inline std::recursive_mutex gWrapperCreationMutex;
 	inline std::atomic<UINT64> gWrapperRegistryGeneration{1};
 	inline std::unordered_map<IUnknown*, WrapperBase*> gIdentityMap;
 	inline std::unordered_map<IUnknown*, WrapperBase*> gWrapperMap;
+
+	// Wrapper creation is serialized per identity shard, not on one global
+	// mutex. The registry maps are already protected by gWrapperLock, so a
+	// shard mutex only needs to make the find-then-create sequence atomic
+	// for a single identity; threads wrapping different objects never
+	// contend. A single global creation mutex (DX11-style thinking)
+	// serializes every parallel loading thread's resource/PSO/heap
+	// wrapping against each other.
+	inline constexpr UINT kWrapperCreationShardCount = 64;
+	inline std::recursive_mutex
+		gWrapperCreationShardMutexes[kWrapperCreationShardCount];
+
+	inline std::recursive_mutex &WrapperCreationShardFor(IUnknown *identity)
+	{
+		const UINT shard = static_cast<UINT>(
+			(reinterpret_cast<UINT_PTR>(identity) >> 4) &
+			(kWrapperCreationShardCount - 1));
+		return gWrapperCreationShardMutexes[shard];
+	}
 
 	inline IUnknown *GetIdentity(IUnknown *object)
 	{
@@ -735,6 +753,79 @@ namespace DX12WrapperDetail
 	private:
 		WrapperBase *mWrapper = nullptr;
 	};
+
+	// Wraps a device-child result (Create*/Get*/QueryInterface output) with
+	// the family's wrapper type. Reusing an existing wrapper needs no
+	// creation lock at all (the registry is self-synchronized and the
+	// lookup retains the wrapper); only find-then-create for the same
+	// identity serializes, on a per-identity shard mutex. The creation
+	// reference of a freshly created wrapper is transferred to the caller,
+	// matching the hand-written paths this replaces.
+	template <typename TWrapper, typename TNative, typename GetInterfaceFn>
+	bool TryWrapDeviceChild(
+		REFIID riid, void **object, GetInterfaceFn &&getInterface)
+	{
+		if (!object || !*object)
+			return false;
+
+		IUnknown *originalObject = static_cast<IUnknown*>(*object);
+		TNative *native = nullptr;
+		if (FAILED(originalObject->QueryInterface(IID_PPV_ARGS(&native))))
+			return false;
+
+		void *wrapperInterface = nullptr;
+
+		// Fast path: the wrapper already exists.
+		{
+			WrapperBase *existing = WrapperBase::FindByIdentity(native);
+			ScopedWrapperReference existingReference(existing);
+			if (existing) {
+				TWrapper *wrapper = dynamic_cast<TWrapper*>(existing);
+				if (wrapper) {
+					void *candidate = getInterface(wrapper, riid);
+					if (candidate) {
+						reinterpret_cast<IUnknown*>(candidate)->AddRef();
+						wrapperInterface = candidate;
+					}
+				}
+			}
+		}
+
+		if (!wrapperInterface) {
+			IUnknown *identity = GetIdentity(native);
+			std::lock_guard<std::recursive_mutex> creationLock(
+				WrapperCreationShardFor(identity));
+			if (identity)
+				identity->Release();
+
+			// Re-check under the shard: a concurrent thread may have
+			// wrapped the same identity before we acquired the mutex.
+			WrapperBase *existing = WrapperBase::FindByIdentity(native);
+			ScopedWrapperReference existingReference(existing);
+			TWrapper *wrapper =
+				existing ? dynamic_cast<TWrapper*>(existing) : nullptr;
+			bool created = false;
+			if (!wrapper && !existing) {
+				wrapper = new TWrapper(native);
+				created = true;
+			}
+			if (wrapper) {
+				void *candidate = getInterface(wrapper, riid);
+				if (candidate) {
+					if (!created)
+						reinterpret_cast<IUnknown*>(candidate)->AddRef();
+					wrapperInterface = candidate;
+				}
+			}
+		}
+
+		native->Release();
+		if (!wrapperInterface)
+			return false;
+		*object = wrapperInterface;
+		originalObject->Release();
+		return true;
+	}
 
 
 } // namespace DX12WrapperDetail

@@ -23,7 +23,6 @@ namespace DX12Wrapper
 {
 bool WrapD3D12DeviceResult(REFIID riid, void **device)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!device || !*device)
 			return false;
 
@@ -118,140 +117,90 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 		if (!IsD3D12DeviceIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown)))
 			return false;
 
-		IUnknown *originalObject = static_cast<IUnknown*>(*device);
-		ID3D12Device *baseDevice = nullptr;
-		if (FAILED(originalObject->QueryInterface(IID_PPV_ARGS(&baseDevice))))
-			return false;
-
-		WrapperBase *existing = WrapperBase::FindByIdentity(baseDevice);
-
-		ScopedWrapperReference existingReference(existing);
-		if (existing) {
-			D3D12DeviceWrapper *wrapper = dynamic_cast<D3D12DeviceWrapper*>(existing);
-			if (!wrapper) {
-				baseDevice->Release();
-				return false;
-			}
-			void *wrapperInterface = wrapper->GetDeviceWrapperInterface(riid);
-			if (!wrapperInterface) {
-				baseDevice->Release();
-				return false;
-			}
-			*device = wrapperInterface;
-			reinterpret_cast<IUnknown*>(*device)->AddRef();
-			baseDevice->Release();
-			originalObject->Release();
-			return true;
-		}
-
-		D3D12DeviceWrapper *wrapper = new D3D12DeviceWrapper(baseDevice);
-		void *wrapperInterface = wrapper->GetDeviceWrapperInterface(riid);
-		if (!wrapperInterface) {
-			baseDevice->Release();
-			return false;
-		}
-		*device = wrapperInterface;
-		baseDevice->Release();
-		originalObject->Release();
-		DX12LogManager::Fields("DX12Wrapper",
-			"kind=device,stage=wrapped,wrapper=%p,object=%p",
-			*device, originalObject);
-		return true;
+		return TryWrapDeviceChild<D3D12DeviceWrapper, ID3D12Device>(
+			riid, device,
+			[](D3D12DeviceWrapper *wrapper, REFIID interfaceIid) {
+				return wrapper->GetDeviceWrapperInterface(interfaceIid);
+			});
 	}
 
 	bool WrapD3D12CommandAllocatorResult(REFIID riid, void **allocator)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapCommandAllocator(riid, allocator);
 	}
 
 	bool WrapD3D12FenceResult(REFIID riid, void **fence)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapFence(riid, fence);
 	}
 
 	bool WrapD3D12DescriptorHeapResult(REFIID riid, void **heap)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapDescriptorHeap(riid, heap);
 	}
 
 	bool WrapD3D12ResourceResult(REFIID riid, void **resource)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapResource(riid, resource);
 	}
 
 	bool WrapD3D12HeapResult(REFIID riid, void **heap)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapHeap(riid, heap);
 	}
 
 	bool WrapD3D12PipelineStateResult(REFIID riid, void **pipelineState)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapPipelineState(riid, pipelineState);
 	}
 
 	bool WrapD3D12RootSignatureResult(REFIID riid, void **rootSignature)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapRootSignature(riid, rootSignature);
 	}
 
 	bool WrapD3D12QueryHeapResult(REFIID riid, void **queryHeap)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapQueryHeap(riid, queryHeap);
 	}
 
 	bool WrapD3D12CommandSignatureResult(REFIID riid, void **commandSignature)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapCommandSignature(riid, commandSignature);
 	}
 
 	bool WrapD3D12LifetimeTrackerResult(REFIID riid, void **tracker)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapLifetimeTracker(riid, tracker);
 	}
 
 	bool WrapD3D12ProtectedResourceSessionResult(REFIID riid, void **session)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapProtectedResourceSession(riid, session);
 	}
 
 	bool WrapD3D12MetaCommandResult(REFIID riid, void **metaCommand)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapMetaCommand(riid, metaCommand);
 	}
 
 	bool WrapD3D12StateObjectResult(REFIID riid, void **stateObject)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapStateObject(riid, stateObject);
 	}
 
 	bool WrapD3D12PipelineLibraryResult(REFIID riid, void **library)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapPipelineLibrary(riid, library);
 	}
 
 	bool WrapD3D12ShaderCacheSessionResult(REFIID riid, void **session)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		return DeviceWrapper::TryWrapShaderCacheSession(riid, session);
 	}
 
 	bool WrapD3D12DebugInterfaceResult(REFIID riid, void **object)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object ||
 			(!IsD3D12DebugInterfaceIid(riid) && !IsD3D12DredSettingsIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
@@ -276,7 +225,6 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 	bool WrapD3D12AuxiliaryResult(REFIID riid, void **object)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object)
 			return false;
 
@@ -346,7 +294,6 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 	bool WrapD3D12DeviceFactoryResult(REFIID riid, void **object)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!object || !*object || (!IsEqualIID(riid, __uuidof(ID3D12DeviceFactory)) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
@@ -367,90 +314,26 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 	bool WrapDXGIFactoryResult(REFIID riid, void **factory)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!factory || !*factory || (!IsDxgiFactoryIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
-		IDXGIFactory *baseFactory = nullptr;
-		IUnknown *originalObject = static_cast<IUnknown*>(*factory);
-		if (FAILED(static_cast<IUnknown*>(*factory)->QueryInterface(IID_PPV_ARGS(&baseFactory))))
-			return false;
-
-		WrapperBase *existing = WrapperBase::FindByIdentity(baseFactory);
-
-		ScopedWrapperReference existingReference(existing);
-		if (existing) {
-			FactoryWrapper *wrapper = dynamic_cast<FactoryWrapper*>(existing);
-			if (!wrapper) {
-				baseFactory->Release();
-				return false;
-			}
-			void *wrapperInterface = wrapper->GetFactoryWrapperInterface(riid);
-			if (!wrapperInterface) {
-				baseFactory->Release();
-				return false;
-			}
-			*factory = wrapperInterface;
-			reinterpret_cast<IUnknown*>(*factory)->AddRef();
-			baseFactory->Release();
-			originalObject->Release();
-			return true;
-		}
-
-		FactoryWrapper *wrapper = new FactoryWrapper(baseFactory);
-		void *wrapperInterface = wrapper->GetFactoryWrapperInterface(riid);
-		if (!wrapperInterface) {
-			baseFactory->Release();
-			return false;
-		}
-		*factory = wrapperInterface;
-		baseFactory->Release();
-		originalObject->Release();
-		return true;
+		return TryWrapDeviceChild<FactoryWrapper, IDXGIFactory>(
+			riid, factory,
+			[](FactoryWrapper *wrapper, REFIID interfaceIid) {
+				return wrapper->GetFactoryWrapperInterface(interfaceIid);
+			});
 	}
 
 	bool WrapDXGISwapChainResult(REFIID riid, void **swapChain)
 	{
-		std::lock_guard<std::recursive_mutex> creationLock(gWrapperCreationMutex);
 		if (!swapChain || !*swapChain || (!IsDxgiSwapChainIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
-		IDXGISwapChain *baseSwapChain = nullptr;
-		IUnknown *originalObject = static_cast<IUnknown*>(*swapChain);
-		if (FAILED(static_cast<IUnknown*>(*swapChain)->QueryInterface(IID_PPV_ARGS(&baseSwapChain))))
-			return false;
-
-		WrapperBase *existing = WrapperBase::FindByIdentity(baseSwapChain);
-
-		ScopedWrapperReference existingReference(existing);
-		if (existing) {
-			SwapChainWrapper *wrapper = dynamic_cast<SwapChainWrapper*>(existing);
-			if (!wrapper) {
-				baseSwapChain->Release();
-				return false;
-			}
-			void *wrapperInterface = wrapper->GetSwapChainWrapperInterface(riid);
-			if (!wrapperInterface) {
-				baseSwapChain->Release();
-				return false;
-			}
-			*swapChain = wrapperInterface;
-			reinterpret_cast<IUnknown*>(*swapChain)->AddRef();
-			baseSwapChain->Release();
-			originalObject->Release();
-			return true;
-		}
-
-		SwapChainWrapper *wrapper = new SwapChainWrapper(baseSwapChain);
-		void *wrapperInterface = wrapper->GetSwapChainWrapperInterface(riid);
-		if (!wrapperInterface) {
-			baseSwapChain->Release();
-			return false;
-		}
-		*swapChain = wrapperInterface;
-		baseSwapChain->Release();
-		originalObject->Release();
-		return true;
+		return TryWrapDeviceChild<SwapChainWrapper, IDXGISwapChain>(
+			riid, swapChain,
+			[](SwapChainWrapper *wrapper, REFIID interfaceIid) {
+				return wrapper->GetSwapChainWrapperInterface(interfaceIid);
+			});
 	}
 
 	IUnknown *Unwrap(IUnknown *object)
