@@ -20,7 +20,7 @@ This project is used to refactor and improve the original 3Dmigoto project, espe
 - Windows 11 Pro
 - VSCode
 - C++ Extension Pack [VSCode extension]
-- C++ 14 Standard
+- C++ 20 Standard
 
 # Build
 

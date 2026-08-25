@@ -2362,6 +2362,7 @@ void DX12CommandListLifecycle::Unregister(ID3D12GraphicsCommandList *commandList
 
 	DX12ModForgetPreSkinOutputResizesForCommandList(commandList);
 	DX12ModForgetPreSkinReplacementForCommandList(commandList);
+	DX12ModForgetPendingPreSkinSubmissionsForCommandList(commandList);
 	DX12BindingTracker::UnregisterCommandList(commandList);
 	DX12HuntUnregisterCommandList(commandList);
 	DX12CommandListRuntime::Unregister(commandList);
@@ -2376,6 +2377,7 @@ void DX12CommandListLifecycle::Reset(
 
 	DX12ModForgetPreSkinOutputResizesForCommandList(commandList);
 	DX12ModForgetPreSkinReplacementForCommandList(commandList);
+	DX12ModForgetPendingPreSkinSubmissionsForCommandList(commandList);
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||

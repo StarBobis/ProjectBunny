@@ -1270,6 +1270,46 @@ void RetainPreSkinDescriptorHeapForCommandList(
 }
 
 
+void DX12ModForgetPendingPreSkinSubmissionsForCommandList(
+	ID3D12GraphicsCommandList *commandList)
+{
+	if (!commandList)
+		return;
+	if (InterlockedCompareExchange(
+			&gHasPendingPreSkinSubmissionWorkFast, 0, 0) == 0)
+		return;
+	IUnknown *identity = PreSkinCommandListIdentity(commandList);
+	AcquireSRWLockExclusive(&gPreSkinRetireLock);
+	auto it = gPendingPreSkinSubmissions.find(identity);
+	if (it != gPendingPreSkinSubmissions.end()) {
+		// The list is being torn down, so no future ExecuteCommandLists will
+		// ever consume this bucket. Draining it through the retired deques
+		// (Present-cadence fallback, no fence) avoids leaking until config
+		// reload and avoids the bucket being inherited by a command list that
+		// later reuses this address.
+		const LONG present = DX12RuntimeState::GetPresentCount();
+		for (ID3D12Resource *resource : it->second.resources) {
+			DX12RetiredPreSkinResource retired;
+			retired.resource = resource;
+			retired.retirePresent = present;
+			gRetiredPreSkinResources.push_back(retired);
+		}
+		for (ID3D12DescriptorHeap *heap : it->second.descriptorHeaps) {
+			DX12RetiredPreSkinDescriptorHeap retired;
+			retired.heap = heap;
+			retired.retirePresent = present;
+			gRetiredPreSkinDescriptorHeaps.push_back(retired);
+		}
+		if (!it->second.resources.empty() ||
+			!it->second.descriptorHeaps.empty())
+			InterlockedExchange(&gHasRetiredPreSkinObjectsFast, 1);
+		gPendingPreSkinSubmissions.erase(it);
+		PublishPendingPreSkinSubmissionWorkLocked();
+	}
+	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
+}
+
+
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists)
 {
