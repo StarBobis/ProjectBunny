@@ -254,6 +254,61 @@ void SnapshotIaResourceViewLocked(
 }
 
 
+static bool IaResourceViewSnapshotRequiresWrite(const DX12LoadedResource &resource)
+{
+	return resource.uavResource && resource.uavValid &&
+		resource.uavValidPresent == DX12RuntimeState::GetPresentCount();
+}
+
+
+static void SnapshotIaResourceViewReadOnlyLocked(
+	const DX12LoadedResource &resource, DX12IaResourceViewSnapshot *snapshot)
+{
+	ReleaseIaResourceViewSnapshot(snapshot);
+	if (resource.srvResource && resource.srvByteWidth > resource.byteWidth) {
+		snapshot->resource = resource.srvResource;
+		snapshot->metadata = resource;
+		return;
+	}
+	if (resource.resource) {
+		snapshot->resource = resource.resource;
+		snapshot->metadata = resource;
+	}
+}
+
+
+void SnapshotIaResourceViewForCommandList(
+	const std::wstring &name, DX12IaResourceViewSnapshot *snapshot)
+{
+	if (!snapshot)
+		return;
+	// Fast path: most IA replacement resources are plain buffers whose
+	// snapshot is a pure read. A shared lock lets concurrent recording
+	// threads resolve them in parallel instead of serializing every modded
+	// draw on the global exclusive gModLock (a DX11-style single-thread
+	// pattern; DX12 resolves resource metadata without a global write lock).
+	AcquireSRWLockShared(&gModLock);
+	auto loaded = gLoadedResources.find(name);
+	if (loaded != gLoadedResources.end() &&
+	    !IaResourceViewSnapshotRequiresWrite(loaded->second)) {
+		SnapshotIaResourceViewReadOnlyLocked(loaded->second, snapshot);
+		ReleaseSRWLockShared(&gModLock);
+		return;
+	}
+	ReleaseSRWLockShared(&gModLock);
+
+	// UAV-backed entries update tracking state while snapshotting (transition
+	// to VERTEX_AND_CONSTANT_BUFFER and clear the pending-barrier flag), which
+	// needs the exclusive lock. Re-find and re-check: another thread may have
+	// changed the entry between the two acquisitions.
+	AcquireSRWLockExclusive(&gModLock);
+	loaded = gLoadedResources.find(name);
+	if (loaded != gLoadedResources.end())
+		SnapshotIaResourceViewLocked(&loaded->second, snapshot);
+	ReleaseSRWLockExclusive(&gModLock);
+}
+
+
 UINT IaViewByteWidthForResource(const DX12LoadedResource &resource, ID3D12Resource *iaResource)
 {
 	UINT64 byteWidth = resource.byteWidth;
@@ -306,11 +361,7 @@ bool AppendResourceViewsForCommandList(
 		DX12IaResourceViewSnapshot snapshot;
 		{
 			DX12LoadedResourceSnapshotReadScope scope;
-			AcquireSRWLockExclusive(&gModLock);
-			auto loaded = gLoadedResources.find(indexResource);
-			if (loaded != gLoadedResources.end())
-				SnapshotIaResourceViewLocked(&loaded->second, &snapshot);
-			ReleaseSRWLockExclusive(&gModLock);
+			SnapshotIaResourceViewForCommandList(indexResource, &snapshot);
 			AddRefIaResourceViewSnapshot(&snapshot);
 		}
 		if (snapshot.resource) {
@@ -361,11 +412,7 @@ bool AppendResourceViewsForCommandList(
 				DX12IaResourceViewSnapshot snapshot;
 				{
 					DX12LoadedResourceSnapshotReadScope scope;
-					AcquireSRWLockExclusive(&gModLock);
-					auto loaded = gLoadedResources.find(item.resource);
-					if (loaded != gLoadedResources.end())
-						SnapshotIaResourceViewLocked(&loaded->second, &snapshot);
-					ReleaseSRWLockExclusive(&gModLock);
+					SnapshotIaResourceViewForCommandList(item.resource, &snapshot);
 					AddRefIaResourceViewSnapshot(&snapshot);
 				}
 				if (!snapshot.resource) {

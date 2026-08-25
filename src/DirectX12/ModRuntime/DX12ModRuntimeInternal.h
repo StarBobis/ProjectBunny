@@ -3633,6 +3633,10 @@ void SnapshotIaResourceViewLocked(
 	DX12LoadedResource *resource, DX12IaResourceViewSnapshot *snapshot);
 
 
+void SnapshotIaResourceViewForCommandList(
+	const std::wstring &name, DX12IaResourceViewSnapshot *snapshot);
+
+
 UINT IaViewByteWidthForResource(const DX12LoadedResource &resource, ID3D12Resource *iaResource);
 
 void ApplyIaResourceBarriers(
