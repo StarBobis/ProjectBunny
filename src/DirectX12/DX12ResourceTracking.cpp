@@ -3639,54 +3639,26 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
 	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
 {
-	(void)device; // Shadow utils resolves handles via the heap registry.
-
-	// The descriptor handle increment is a device constant per heap type.
-	// Use the cached value so the fallback path does not take the global
-	// lock and linearly scan every registered heap just to step CPU
-	// handles; the scan only runs once as the cache fill.
-	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
+	const UINT increment = device->GetDescriptorHandleIncrementSize(
 		descriptorHeapsType);
-	if (!increment) {
-		AcquireSRWLockShared(&gDescriptorLock);
-		for (size_t hi = 0; hi < gDescriptorHeaps.size(); ++hi) {
-			if (gDescriptorHeaps[hi].desc.Type == descriptorHeapsType &&
-				gDescriptorHeaps[hi].increment > 0) {
-				increment = gDescriptorHeaps[hi].increment;
-				break;
-			}
-		}
-		ReleaseSRWLockShared(&gDescriptorLock);
-		DX12DescriptorHeapShadowUtils::CacheIncrementForType(
-			descriptorHeapsType, increment);
-	}
-
-	// Snapshot sources first so overlapping ranges keep memmove semantics.
-	std::vector<DescriptorRecord> sources(numDescriptors);
-	std::vector<uint8_t> present(numDescriptors, 0);
-	for (UINT i = 0; i < numDescriptors; ++i) {
+	if (!increment)
+		return;
+	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
+	for (UINT n = 0; n < numDescriptors; ++n) {
+		const UINT i = reverse ? numDescriptors - n - 1 : n;
 		const SIZE_T srcHandle = srcDescriptorRangeStart.ptr +
-			(increment ? static_cast<SIZE_T>(i) * increment : 0);
-		present[i] = DX12DescriptorHeapShadowUtils::FindLatestDescriptor(
-			srcHandle, &sources[i]) ? 1 : 0;
-	}
-
-	for (UINT i = 0; i < numDescriptors; ++i) {
+			static_cast<SIZE_T>(i) * increment;
 		const SIZE_T destHandle = destDescriptorRangeStart.ptr +
-			(increment ? static_cast<SIZE_T>(i) * increment : 0);
-		if (!present[i]) {
+			static_cast<SIZE_T>(i) * increment;
+		DescriptorRecord record;
+		if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(srcHandle, &record)) {
 			DX12DescriptorHeapShadowUtils::EraseDescriptor(destHandle);
 			continue;
 		}
-		DescriptorRecord &source = sources[i];
-		if (DescriptorValueUnchanged(destHandle, source.valueId)) {
-			ReleaseDescriptorRecordResources(&source);
-			continue;
-		}
-		source.cpuHandle = destHandle;
+		record.cpuHandle = destHandle;
 		if (!DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(
-				destHandle, std::move(source)))
-			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(source));
+				destHandle, std::move(record)))
+			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(record));
 	}
 }
 
