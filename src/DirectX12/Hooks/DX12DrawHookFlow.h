@@ -196,7 +196,6 @@ public:
 			return;
 		}
 
-		LogDrawCall(commandList, draw);
 		const bool shouldRecordBindingEvents =
 			DX12HotPathState::NeedsBindingEventRecording(flagsWord) &&
 			(runtimeState ?
@@ -279,15 +278,4 @@ public:
 			commandList, draw.vertexCount, draw.instanceCount,
 			draw.firstVertex, draw.firstInstance);
 	}
-
-	static void LogDrawCall(
-		ID3D12GraphicsCommandList *commandList,
-		const DX12IaDrawInvocation &draw)
-	{
-		if (draw.indexed) {
-						return;
-		}
-			}
 };
-
-
