@@ -215,8 +215,23 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	Bunny::ResourceConfig config;
 	std::wstring baseDir;
 	UINT64 generation = 0;
-	AcquireSRWLockExclusive(&gModLock);
+	// Read-only fast path first: once loaded, this availability check runs
+	// per resource per draw on every recording thread. A shared lock keeps
+	// those threads off the global exclusive gModLock (DX11 checks loaded
+	// resources without taking a global write lock).
+	AcquireSRWLockShared(&gModLock);
 	auto loaded = gLoadedResources.find(name);
+	if (loaded != gLoadedResources.end()) {
+		const bool available = loaded->second.resource && !loaded->second.failed;
+		ReleaseSRWLockShared(&gModLock);
+		return available;
+	}
+	ReleaseSRWLockShared(&gModLock);
+
+	AcquireSRWLockExclusive(&gModLock);
+	// Another thread may have loaded the resource between the two
+	// acquisitions; re-check before doing the (expensive) load.
+	loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		const bool available = loaded->second.resource && !loaded->second.failed;
 		ReleaseSRWLockExclusive(&gModLock);
