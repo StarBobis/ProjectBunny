@@ -139,6 +139,58 @@ static void SetCurrentSlotOccupied(DescriptorHeapRecord &heap, UINT slot, bool o
 	heap.chunkedSlots.SetOccupied(slot, occupied);
 }
 
+// One-load slot access for the copy hot path. Resolves the chunk pointer (or
+// the dense-vector bounds) exactly once and reports storage presence and
+// occupancy together; the individual helpers above would re-load the chunk
+// pointer up to four times per slot.
+struct CurrentSlotAccess
+{
+	DescriptorRecord *value = nullptr; // non-null when the storage exists
+	bool occupied = false;
+};
+
+static CurrentSlotAccess LoadCurrentSlotAccess(DescriptorHeapRecord &heap, UINT slot)
+{
+	CurrentSlotAccess access;
+	if (!heap.slots.empty()) {
+		if (slot < heap.slots.size() && slot < heap.occupied.size()) {
+			access.value = &heap.slots[slot];
+			access.occupied = heap.occupied[slot] != 0;
+		}
+		return access;
+	}
+	const DX12ChunkedDescriptorStore<DescriptorRecord>::Chunk *chunk =
+		heap.chunkedSlots.ChunkForSlot(slot);
+	if (chunk) {
+		const uint32_t offset =
+			slot & (DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots - 1);
+		access.value = const_cast<DescriptorRecord*>(&chunk->values[offset]);
+		access.occupied = chunk->occupied[offset] != 0;
+	}
+	return access;
+}
+
+static CurrentSlotAccess LoadCurrentSlotAccess(const DescriptorHeapRecord &heap, UINT slot)
+{
+	CurrentSlotAccess access;
+	if (!heap.slots.empty()) {
+		if (slot < heap.slots.size() && slot < heap.occupied.size()) {
+			access.value = const_cast<DescriptorRecord*>(&heap.slots[slot]);
+			access.occupied = heap.occupied[slot] != 0;
+		}
+		return access;
+	}
+	const DX12ChunkedDescriptorStore<DescriptorRecord>::Chunk *chunk =
+		heap.chunkedSlots.ChunkForSlot(slot);
+	if (chunk) {
+		const uint32_t offset =
+			slot & (DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots - 1);
+		access.value = const_cast<DescriptorRecord*>(&chunk->values[offset]);
+		access.occupied = chunk->occupied[offset] != 0;
+	}
+	return access;
+}
+
 static bool CopyCurrentRecord(
 	const DescriptorHeapRecord &heap, UINT slot, DescriptorRecord *record)
 {
@@ -217,28 +269,35 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 	// (CopyCurrentRecord -> StoreCurrentRecordIfChanged), which paid the full
 	// field copy twice per descriptor. This mirrors RenderDoc's single
 	// dst.CopyFrom(src) per descriptor.
-	const DescriptorRecord *srcRecord =
-		CurrentSlotOccupied(srcHeap, srcSlot) ?
-			CurrentSlotPtr(srcHeap, srcSlot) : nullptr;
-	if (!srcRecord)
+	const CurrentSlotAccess src = LoadCurrentSlotAccess(srcHeap, srcSlot);
+	if (!src.occupied)
 		return SourceMissingResult(destHeap, destSlot);
-	if (CurrentSlotStoragePresent(*destHeap, destSlot)) {
-		DescriptorRecord *destRecord = CurrentSlotPtr(*destHeap, destSlot);
-		if (publishedValueId)
-			*publishedValueId = srcRecord->valueId;
-		const bool wasOccupied = CurrentSlotOccupied(*destHeap, destSlot);
-		if (wasOccupied && SameRecordValueAtSlot(*destRecord, *srcRecord, destCpuHandle))
-			return CopyCurrentSlotResult::Unchanged;
-		CopyRecordValueForSlot(destRecord, *srcRecord, destCpuHandle);
-		SetCurrentSlotOccupied(*destHeap, destSlot, true);
-		if (!wasOccupied)
-			IncrementLiveSlots(destHeap);
-		return CopyCurrentSlotResult::Changed;
-	}
+	if (publishedValueId)
+		*publishedValueId = src.value->valueId;
 
-	// Destination storage is missing: the caller must allocate the chunk
-	// under the destination shard lock and retry.
-	return CopyCurrentSlotResult::LockRequired;
+	// Flat-identity early-out: when the destination's post-publication
+	// snapshot still carries the source value, the copy would be a no-op
+	// (SameRecordValueAtSlot compares valueId and the canonical cpuHandle,
+	// which every slot write uses). Skip the record copy and the identity
+	// publication entirely - two relaxed loads instead of a full copy.
+	UINT64 flatValueId = 0;
+	if (destHeap->stateLocks &&
+			destHeap->stateLocks->ReadFlatValueId(destSlot, &flatValueId) &&
+			flatValueId != 0 &&
+			flatValueId == src.value->valueId)
+		return CopyCurrentSlotResult::Unchanged;
+
+	const CurrentSlotAccess dest = LoadCurrentSlotAccess(*destHeap, destSlot);
+	if (!dest.value)
+		return CopyCurrentSlotResult::LockRequired;
+	if (dest.occupied &&
+			SameRecordValueAtSlot(*dest.value, *src.value, destCpuHandle))
+		return CopyCurrentSlotResult::Unchanged;
+	CopyRecordValueForSlot(dest.value, *src.value, destCpuHandle);
+	SetCurrentSlotOccupied(*destHeap, destSlot, true);
+	if (!dest.occupied)
+		IncrementLiveSlots(destHeap);
+	return CopyCurrentSlotResult::Changed;
 }
 
 static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)

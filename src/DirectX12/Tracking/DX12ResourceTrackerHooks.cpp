@@ -448,7 +448,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 		destination.heap->stateLocks->IsActive();
 	const bool bothMaterialized = heapsActive &&
 		source.heap->IsMaterialized() && destination.heap->IsMaterialized();
-	// Chunk-mode direct copies are lock-free per slot. They are only enabled
+	// Chunk-mode direct copies are lock-free per slot and only enabled
 	// outside Dump/Hunt tracking, where whole-heap materialization never runs
 	// concurrently with the chunked store (see
 	// DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged).
@@ -456,34 +456,62 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 		!source.heap->IsMaterialized() && !destination.heap->IsMaterialized() &&
 		!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
 	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
+	// Chunk presence is cached per 4096-slot chunk boundary, so a contiguous
+	// range pays two chunk-pointer loads per chunk instead of per slot.
+	// Heap-version publication is batched: changed slots publish their seqlock
+	// identities immediately (readers rely on them), while the heap-wide
+	// invalidation token - which consumers only require to change once per
+	// completed API call - is bumped once per destination heap at the end.
+	constexpr UINT kChunkSlots = DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots;
+	UINT curSrcChunk = UINT_MAX;
+	UINT curDstChunk = UINT_MAX;
+	bool curSrcChunkOk = false;
+	bool curDstChunkOk = false;
+	bool curDstMaterialized = false;
+	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet commitSet;
 	for (UINT n = 0; n < numDescriptors; ++n) {
 		const UINT i = reverse ? numDescriptors - n - 1 : n;
 		const SIZE_T srcHandle = srcDescriptorRangeStart.ptr +
 			static_cast<SIZE_T>(i) * increment;
 		const SIZE_T destHandle = destDescriptorRangeStart.ptr +
 			static_cast<SIZE_T>(i) * increment;
+		const UINT srcSlot = source.slot + i;
+		const UINT dstSlot = destination.slot + i;
+		const UINT srcChunk = srcSlot / kChunkSlots;
+		const UINT dstChunk = dstSlot / kChunkSlots;
+		if (srcChunk != curSrcChunk) {
+			curSrcChunk = srcChunk;
+			curSrcChunkOk = chunkFast &&
+				source.heap->chunkedSlots.ChunkExists(srcSlot);
+		}
+		if (dstChunk != curDstChunk) {
+			curDstChunk = dstChunk;
+			curDstChunkOk = chunkFast &&
+				destination.heap->chunkedSlots.ChunkExists(dstSlot);
+			// A hunt/dump materialization can land on the destination while
+			// this call is in flight; the dense adapter is then authoritative,
+			// so the remaining slots must take the locked path.
+			curDstMaterialized = destination.heap->IsMaterialized();
+		}
 		const bool directCopy = bothMaterialized ||
-			(chunkFast &&
-				source.heap->chunkedSlots.ChunkExists(source.slot + i) &&
-				destination.heap->chunkedSlots.ChunkExists(destination.slot + i));
+			(chunkFast && curSrcChunkOk && curDstChunkOk &&
+				!curDstMaterialized);
 		if (directCopy) {
+			UINT64 publishedValueId = 0;
 			const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
-					destination.heap,
-					destination.slot + i,
-					*source.heap, source.slot + i, destHandle, nullptr);
+					destination.heap, dstSlot,
+					*source.heap, srcSlot, destHandle, &publishedValueId);
 			// LockRequired is unreachable here (chunks never disappear while
-			// the heap is active). In chunk mode a hunt/dump materialization
-			// can land on the destination mid-copy; the dense adapter is then
-			// authoritative, so redo this slot through the locked path.
-			const bool racedMaterialization =
-				!bothMaterialized && destination.heap->IsMaterialized();
-			if (result != DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::LockRequired &&
-					!racedMaterialization) {
+			// the heap is active); fall through to the locked path if it ever
+			// happens.
+			if (result != DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::LockRequired) {
 				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
-					result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased)
-					DX12DescriptorHeapStateUtils::BumpVersion(
-						destination.heap, destination.slot + i);
+					result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+					DX12DescriptorHeapStateUtils::PublishRangeValue(
+						destination.heap, dstSlot, publishedValueId);
+					commitSet.Add(destination.heap);
+				}
 				continue;
 			}
 		}
@@ -497,6 +525,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 				destHandle, std::move(record)))
 			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(record));
 	}
+	commitSet.CommitAll();
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource(

@@ -1,4 +1,4 @@
-﻿// Wrapper runtime utilities for frame presentation and overlay wiring.
+// Wrapper runtime utilities for frame presentation and overlay wiring.
 // Split from DX12Presentation.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -844,14 +844,15 @@ public:
 		UINT instanceCount,
 		UINT startVertexLocation,
 		UINT startInstanceLocation,
-		DX12CommandListHookSignatures::DrawInstanced original)
+		DX12CommandListHookSignatures::DrawInstanced original,
+		UINT64 drawFlags)
 	{
 		DX12SimulateContext *runtimeState = nullptr;
-		if (DX12HotPathState::HookWorkFlags &
+		if (drawFlags &
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		if ((DX12HotPathState::HookWorkFlags &
+		if ((drawFlags &
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
 			DX12ModPresentReplacementPendingForCurrentPresent()) {
 			const DX12IaReplacementExecutorCallbacks callbacks =
@@ -866,7 +867,8 @@ public:
 			instanceCount,
 			startVertexLocation,
 			startInstanceLocation,
-			original);
+			original,
+			drawFlags);
 	}
 
 	static void DrawInstanced(
@@ -876,11 +878,11 @@ public:
 		UINT instanceCount,
 		UINT startVertexLocation,
 		UINT startInstanceLocation,
-		DX12CommandListHookSignatures::DrawInstanced original)
+		DX12CommandListHookSignatures::DrawInstanced original,
+		UINT64 drawFlags)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
-		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -904,7 +906,7 @@ public:
 		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawInstanced(
 			vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
-		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks, drawFlags);
 	}
 
 	static void DrawIndexedInstanced(
@@ -914,14 +916,15 @@ public:
 		UINT startIndexLocation,
 		INT baseVertexLocation,
 		UINT startInstanceLocation,
-		DX12CommandListHookSignatures::DrawIndexedInstanced original)
+		DX12CommandListHookSignatures::DrawIndexedInstanced original,
+		UINT64 drawFlags)
 	{
 		DX12SimulateContext *runtimeState = nullptr;
-		if (DX12HotPathState::HookWorkFlags &
+		if (drawFlags &
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		if ((DX12HotPathState::HookWorkFlags &
+		if ((drawFlags &
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
 			DX12ModPresentReplacementPendingForCurrentPresent()) {
 			const DX12IaReplacementExecutorCallbacks callbacks =
@@ -937,7 +940,8 @@ public:
 			startIndexLocation,
 			baseVertexLocation,
 			startInstanceLocation,
-			original);
+			original,
+			drawFlags);
 	}
 
 	static void DrawIndexedInstanced(
@@ -948,11 +952,11 @@ public:
 		UINT startIndexLocation,
 		INT baseVertexLocation,
 		UINT startInstanceLocation,
-		DX12CommandListHookSignatures::DrawIndexedInstanced original)
+		DX12CommandListHookSignatures::DrawIndexedInstanced original,
+		UINT64 drawFlags)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
-		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -974,7 +978,7 @@ public:
 		callbacks.recordReplacementDispatch = DX12CommandListHookDiagnostics::RecordIaReplacementDispatchExecute;
 		DX12IaDrawInvocation draw = DX12IaDrawInvocation::ForDrawIndexedInstanced(
 			indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
-		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks);
+		DX12DrawHookFlow::ExecuteHook(commandList, runtimeState, draw, callbacks, drawFlags);
 	}
 
 	static void Dispatch(

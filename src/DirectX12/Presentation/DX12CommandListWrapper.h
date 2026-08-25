@@ -1,4 +1,4 @@
-﻿// Graphics command list wrapper (draw/dispatch hook forwarding).
+// Graphics command list wrapper (draw/dispatch hook forwarding).
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -578,6 +578,19 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				StartVertexLocation, StartInstanceLocation);
 			return;
 		}
+		// Per-PSO noop fast path: the compiled draw decision proves this PSO
+		// can never match any override, so forward without entering the
+		// generic draw interpreter (see DX12DrawHookFlow::TryForwardNoopDraw).
+		if (mOrigDrawInstanced &&
+			DX12DrawHookFlow::TryForwardNoopDraw(
+				&mRuntimeState, drawFlags,
+				[this, VertexCountPerInstance, InstanceCount,
+					StartVertexLocation, StartInstanceLocation]() {
+					mOrigDrawInstanced(mCommandList, VertexCountPerInstance,
+						InstanceCount, StartVertexLocation, StartInstanceLocation);
+				})) {
+			return;
+		}
 		DX12WrapperRuntimeUtils::DrawInstanced(
 			mCommandList,
 			&mRuntimeState,
@@ -585,7 +598,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			InstanceCount,
 			StartVertexLocation,
 			StartInstanceLocation,
-			mOrigDrawInstanced);
+			mOrigDrawInstanced,
+			drawFlags);
 	}
 
 	void STDMETHODCALLTYPE DrawIndexedInstanced(
@@ -601,6 +615,18 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 			return;
 		}
+		// Per-PSO noop fast path (see DX12DrawHookFlow::TryForwardNoopDraw).
+		if (mOrigDrawIndexedInstanced &&
+			DX12DrawHookFlow::TryForwardNoopDraw(
+				&mRuntimeState, drawFlags,
+				[this, IndexCountPerInstance, InstanceCount,
+					StartIndexLocation, BaseVertexLocation, StartInstanceLocation]() {
+					mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance,
+						InstanceCount, StartIndexLocation, BaseVertexLocation,
+						StartInstanceLocation);
+				})) {
+			return;
+		}
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 			mCommandList,
 			&mRuntimeState,
@@ -609,7 +635,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			StartIndexLocation,
 			BaseVertexLocation,
 			StartInstanceLocation,
-			mOrigDrawIndexedInstanced);
+			mOrigDrawIndexedInstanced,
+			drawFlags);
 	}
 
 	void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override

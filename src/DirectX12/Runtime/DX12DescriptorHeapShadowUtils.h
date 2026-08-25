@@ -480,6 +480,27 @@ public:
 	{
 		if (!cpuHandle || !out)
 			return false;
+		// Sequential-handle prediction: descriptor rings are usually written
+		// with monotonically increasing handles, so the very next handle
+		// resolves to the very next slot of the same heap. This skips the
+		// 32-entry TLS scan for the dominant CBV/copy ring pattern. The memo
+		// is refreshed on every successful resolve below and validated against
+		// the same invariants the cache scan uses (activity, type, range).
+		const SequentialResolveMemo &memo = sSequentialResolve;
+		if (memo.heap && memo.handle != 0 &&
+				cpuHandle == memo.handle + memo.increment &&
+				memo.slot + 1 < memo.numDescriptors &&
+				(requiredType == D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES ||
+					memo.type == requiredType) &&
+				memo.heap->stateLocks &&
+				memo.heap->stateLocks->IsActive()) {
+			out->heap = memo.heap;
+			out->heapIndex = memo.heapIndex;
+			out->slot = memo.slot + 1;
+			sSequentialResolve.handle = cpuHandle;
+			sSequentialResolve.slot = out->slot;
+			return true;
+		}
 		static thread_local HeapResolveTlsCache cache;
 		for (size_t index = 0; index < cache.entries.size(); ++index) {
 			HeapResolveCacheEntry &entry = cache.entries[index];
@@ -510,6 +531,7 @@ public:
 			// exchange both cache records twice for every copied slot.
 			if (index > 1)
 				std::swap(cache.entries[0], cache.entries[index]);
+			RememberSequentialResolve(cpuHandle, *out);
 			return true;
 		}
 
@@ -528,6 +550,7 @@ public:
 			victim.increment = out->heap->increment;
 			victim.numDescriptors = out->heap->desc.NumDescriptors;
 			victim.type = out->heap->desc.Type;
+			RememberSequentialResolve(cpuHandle, *out);
 			return true;
 		}
 
@@ -558,8 +581,43 @@ public:
 		out->slot = slot;
 		HeapCacheStore(cpuHandle, *out);
 		ReleaseSRWLockShared(&gDescriptorLock);
+		RememberSequentialResolve(cpuHandle, *out);
 		return true;
 	}
+
+private:
+	// Refresh the sequential-handle prediction memo from a fully validated
+	// resolve. The remembered heap record stays alive in gDescriptorHeaps for
+	// the process lifetime; the activity check on the prediction path rejects
+	// retired heaps.
+	struct SequentialResolveMemo
+	{
+		SIZE_T handle = 0;
+		UINT slot = 0;
+		UINT increment = 0;
+		UINT numDescriptors = 0;
+		D3D12_DESCRIPTOR_HEAP_TYPE type = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
+		size_t heapIndex = 0;
+		DescriptorHeapRecord *heap = nullptr;
+	};
+	inline static thread_local SequentialResolveMemo sSequentialResolve;
+
+	static void RememberSequentialResolve(
+		SIZE_T cpuHandle, const ResolvedHeapSlot &resolved)
+	{
+		if (!resolved.heap)
+			return;
+		SequentialResolveMemo &memo = sSequentialResolve;
+		memo.handle = cpuHandle;
+		memo.slot = resolved.slot;
+		memo.increment = resolved.heap->increment;
+		memo.numDescriptors = resolved.heap->desc.NumDescriptors;
+		memo.type = resolved.heap->desc.Type;
+		memo.heapIndex = resolved.heapIndex;
+		memo.heap = resolved.heap;
+	}
+
+public:
 
 	static bool ResolveAndLockHeapSlot(
 		SIZE_T cpuHandle,
@@ -668,12 +726,13 @@ public:
 		// so the per-chunk dense store provides the same single-writer seqlock
 		// protocol as the materialized path. This fast path is only enabled
 		// outside Dump/Hunt tracking, where whole-heap materialization can
-		// never run concurrently with chunked accesses.
+		// never run concurrently with chunked accesses. Chunk presence is
+		// handled by StoreCurrentRecordIfChanged itself: a missing chunk
+		// yields LockRequired and falls through to the locked allocation path.
 		if (resolvedKnownHeap && resolved.heap &&
 				resolved.heap->stateLocks &&
 				resolved.heap->stateLocks->IsActive() &&
-				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
-				resolved.heap->chunkedSlots.ChunkExists(resolved.slot)) {
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking()) {
 			DescriptorHeapRecord &heap = *resolved.heap;
 			const DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
@@ -805,11 +864,11 @@ public:
 			return true;
 		}
 		// Chunked lock-free write (normal Mod mode); see
-		// RecordCreatedDescriptorIfChanged for the gating rationale.
+		// RecordCreatedDescriptorIfChanged for the gating rationale. A missing
+		// chunk yields LockRequired and falls through to the locked path.
 		if (heap.stateLocks &&
 				heap.stateLocks->IsActive() &&
-				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
-				heap.chunkedSlots.ChunkExists(resolved.slot)) {
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking()) {
 			const DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
 					&heap, resolved.slot, record, cpuHandle);

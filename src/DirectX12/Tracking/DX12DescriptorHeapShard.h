@@ -242,6 +242,13 @@ public:
 	{
 		if (valueId == 0)
 			return false;
+		// Flat snapshot fast path: the post-publication snapshot is
+		// authoritative whenever the live version still matches it - the
+		// common steady-state case for repeatedly re-created descriptors.
+		// Two relaxed loads instead of the seqlock's three-load protocol.
+		UINT64 flatValueId = 0;
+		if (ReadFlatValueId(slot, &flatValueId))
+			return flatValueId == valueId;
 		SlotIdentity identity;
 		return ObserveSlotIdentity(slot, &identity) &&
 			identity.valueId == valueId;
