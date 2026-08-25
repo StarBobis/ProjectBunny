@@ -31,6 +31,16 @@ public:
 	// Update publishes it from Present-time frame actions and state transitions.
 	inline static std::atomic<UINT64> HookWorkFlags{ 0 };
 
+	// Serializes capture+publish in Update(). Update() runs concurrently on
+	// the Present thread, input-thread toggles (hunt/dump) and render-thread
+	// state transitions; without this, two Updates that captured different
+	// source states can interleave the individual atomic stores below and
+	// publish a torn combination (e.g. skipAll=1 with a HookWorkFlags word
+	// still requesting hunt work), or let a stale capture overwrite a newer
+	// publish (lost update) until the next transition re-publishes.
+	// Cold path only: contended at most once per frame transition.
+	inline static SRWLOCK updateLock = SRWLOCK_INIT;
+
 	// Individual work bits.
 	static constexpr UINT64 FLAG_NEEDS_MOD_WORK          = 1ull << 0;
 	static constexpr UINT64 FLAG_HUNT_ENABLED            = 1ull << 1;
@@ -288,9 +298,12 @@ public:
 
 	static void Update()
 	{
+		AcquireSRWLockExclusive(&updateLock);
 		const SourceState source = SourceState::Capture();
-		if (skipAll.load(std::memory_order_relaxed) && !source.HasAnyWork())
+		if (skipAll.load(std::memory_order_relaxed) && !source.HasAnyWork()) {
+			ReleaseSRWLockExclusive(&updateLock);
 			return;
+		}
 
 		// As in DX11, skipAll controls draw, state, and copy hooks.
 		// PreSkin only needs dispatch hooks and compute binding tracking;
@@ -343,10 +356,11 @@ public:
 				source.shaderOverrides ? "true" : "false",
 				source.preSkinProbe ? "true" : "false",
 				source.preSkinBindingTrack ? "true" : "false",
-				source.iaResidentState ? "true" : "false",
+			source.iaResidentState ? "true" : "false",
 				source.shaderDescriptorTrack ? "true" : "false",
 				source.drawSrvSlotReplacement ? "true" : "false");
 		}
+		ReleaseSRWLockExclusive(&updateLock);
 	}
 
 };
