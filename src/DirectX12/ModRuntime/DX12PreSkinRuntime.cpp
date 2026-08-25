@@ -1152,6 +1152,16 @@ bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 void DX12ModAbandonPreSkinOutputResizeCacheUses(
 	ID3D12GraphicsCommandList *commandList)
 {
+	// Fast out when the cache is empty: no entry can reference this list,
+	// and the pending-work flag is already 0 (it only ever goes 1 alongside
+	// a cache entry's pendingCommandLists and is reset when the cache
+	// clears). The entries flag is set under the cache lock before the
+	// entry becomes visible to other threads, and an entry naming this
+	// list's identity can only be published by the thread recording this
+	// list, which the game must externally synchronize with Reset/Release.
+	if (InterlockedCompareExchange(
+			&gHasPreSkinOutputResizeCacheEntriesFast, 0, 0) == 0)
+		return;
 	IUnknown *identity = PreSkinCommandListIdentity(commandList);
 	if (!identity)
 		return;
@@ -5180,6 +5190,14 @@ void DX12ModForgetPreSkinOutputResizesForCommandList(
 	ID3D12GraphicsCommandList *commandList)
 {
 	DX12ModAbandonPreSkinOutputResizeCacheUses(commandList);
+	// No resize bindings published this frame: the per-list map is
+	// guaranteed empty (the flag is stored under gPreSkinOutputResizeLock
+	// on every publish and only cleared when both maps are emptied), so
+	// skip the identity unwrap and the global exclusive lock entirely.
+	// Any entry for this list's identity is published by the thread
+	// recording this list, which is externally synchronized with Reset.
+	if (!gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire))
+		return;
 	IUnknown *identity = PreSkinOutputResizeCommandListIdentity(commandList);
 	if (!identity)
 		return;
