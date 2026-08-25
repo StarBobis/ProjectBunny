@@ -4168,27 +4168,44 @@ void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandLi
 	// generation (see DX12ModRegisterPreSkinOutputResize).
 	if (!commandList || gHasActivePreSkinReplacement == 0)
 		return;
+	// Snapshot the fields under the shared lock. The restore path erases this
+	// entry under the exclusive lock, so dereferencing the map node after
+	// release is a use-after-free the moment an erase ever runs on another
+	// thread (today erases happen on the list's own recording thread, but
+	// nothing enforces that here).
+	ID3D12Resource *originalOutputResource = nullptr;
+	ID3D12Resource *outputVertexResource = nullptr;
+	UINT64 originalOutputByteWidth = 0;
+	UINT64 byteWidth = 0;
+	UINT stride = 0;
+	bool canPublish = false;
 	AcquireSRWLockShared(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
-	if (it == gActivePreSkinReplacements.end())
+	if (it != gActivePreSkinReplacements.end())
 	{
-		ReleaseSRWLockShared(&gPreSkinLock);
-		return;
+		const DX12PreSkinReplacementState &state = it->second;
+		canPublish = state.active && state.outputUavResized &&
+					 state.resource && state.outputVertexResource && state.byteWidth &&
+					 state.originalOutputResource && state.originalOutputByteWidth;
+		if (canPublish)
+		{
+			originalOutputResource = state.originalOutputResource;
+			outputVertexResource = state.outputVertexResource;
+			originalOutputByteWidth = state.originalOutputByteWidth;
+			byteWidth = state.byteWidth;
+			stride = state.stride;
+		}
 	}
-	const DX12PreSkinReplacementState &state = it->second;
-	const bool canPublish = state.active && state.outputUavResized &&
-							state.resource && state.outputVertexResource && state.byteWidth &&
-							state.originalOutputResource && state.originalOutputByteWidth;
 	ReleaseSRWLockShared(&gPreSkinLock);
 	if (!canPublish)
 		return;
 	DX12ModRegisterPreSkinOutputResize(
 		commandList,
-		state.originalOutputResource,
-		state.outputVertexResource,
-		state.originalOutputByteWidth,
-		state.byteWidth,
-		state.stride);
+		originalOutputResource,
+		outputVertexResource,
+		originalOutputByteWidth,
+		byteWidth,
+		stride);
 }
 
 
