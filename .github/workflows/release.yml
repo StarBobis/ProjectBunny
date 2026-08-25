@@ -88,9 +88,9 @@ jobs:
         if: steps.resolve.outputs.skip != 'true'
         run: cmake -S . -B build/ci-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DDX12_RELEASE_TIMING=OFF
 
-      - name: Build d3d12.dll
+      - name: Build d3d12.dll and Run.exe
         if: steps.resolve.outputs.skip != 'true'
-        run: cmake --build build/ci-release --target DirectX12
+        run: cmake --build build/ci-release --target DirectX12 3Dmigoto-Injector-V2
 
       - name: Package zip
         if: steps.resolve.outputs.skip != 'true'
@@ -103,9 +103,15 @@ jobs:
             Write-Error "Expected build output not found: $dll"
             exit 1
           }
+          $runExe = "build/ci-release/src/3Dmigoto-Injector-V2/Run.exe"
+          if (-not (Test-Path $runExe)) {
+            Write-Error "Expected build output not found: $runExe"
+            exit 1
+          }
           $stage = "build/release-stage"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item $dll "$stage/d3d12.dll"
+          Copy-Item $runExe "$stage/Run.exe"
           Copy-Item "LICENSE.txt" "$stage/LICENSE.txt"
           Copy-Item "config/d3dx.ini" "$stage/d3dx.ini"
           $zipName = "ProjectBunny-$env:RELEASE_TAG-d3d12-x64.zip"

@@ -128,7 +128,7 @@ call "$vcvars" > nul
 if errorlevel 1 exit /b 1
 "$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_MAKE_PROGRAM="$ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
 if errorlevel 1 exit /b 1
-"$cmake" --build "$buildDir" --target DirectX12
+"$cmake" --build "$buildDir" --target DirectX12 3Dmigoto-Injector-V2
 "@
 
 Write-Host "===== Configuring CMake ($Configuration|$Platform) =====" -ForegroundColor Cyan
@@ -152,7 +152,8 @@ $files = @(
     "src/DirectX11/d3d11.dll",
     "src/DirectX12/d3d12.dll",
     "src/D3DCompiler_46/d3dcompiler_47.dll",
-    "src/DirectXGI/dxgi.dll"
+    "src/DirectXGI/dxgi.dll",
+    "src/3Dmigoto-Injector-V2/Run.exe"
 )
 foreach ($f in $files) {
     $src = "$buildDir/$f"
@@ -316,6 +317,20 @@ if ($Platform -eq 'x64') {
                 Write-Host "  Failed to copy DX12 DLL: $dx12TargetDll" -ForegroundColor Red
                 Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
                 throw
+            }
+
+            # Ship the loader next to the DLL so the deployed folder is
+            # launch-ready (Run.exe reads d3dx.ini from its own directory).
+            $runExe = "$outDir\Run.exe"
+            if (Test-Path $runExe) {
+                try {
+                    Copy-Item $runExe "$dx12TestDir\Run.exe" -Force -ErrorAction Stop
+                    Write-Host "  Copied loader: $dx12TestDir\Run.exe" -ForegroundColor Gray
+                } catch {
+                    Write-Host "  Failed to copy loader: $dx12TestDir\Run.exe" -ForegroundColor Red
+                    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+                    throw
+                }
             }
         }
     } elseif (($copyToTargetDirectory -or $extraCopyTargets.Count -gt 0) -and -not (Test-Path $dx12Dll)) {

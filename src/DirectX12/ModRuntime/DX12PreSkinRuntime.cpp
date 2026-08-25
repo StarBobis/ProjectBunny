@@ -1194,21 +1194,35 @@ void DX12ModTrackPreSkinOutputResizeCacheUse(
 	IUnknown *identity = PreSkinCommandListIdentity(commandList);
 	if (!identity || !vertexResource)
 		return;
-	AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
-	for (auto &item : gPreSkinOutputResizeCache) {
-		DX12PreSkinOutputResizeCacheEntry &entry = item.second;
+	// 快路径：消费端绘制线程只读扫描，命中已登记的记录则共享锁放行，
+	// 避免每次绘制都抢占全局独占锁、把并行录制线程串行化。
+	AcquireSRWLockShared(&gPreSkinOutputResizeCacheLock);
+	for (const auto &item : gPreSkinOutputResizeCache) {
+		const DX12PreSkinOutputResizeCacheEntry &entry = item.second;
 		if (entry.vertexResource != vertexResource)
 			continue;
-		if (std::find(entry.pendingCommandLists.begin(),
-				entry.pendingCommandLists.end(), identity) ==
-			entry.pendingCommandLists.end()) {
-			entry.pendingCommandLists.push_back(identity);
-			InterlockedExchange(
-				&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 1);
+		const bool alreadyTracked =
+			std::find(entry.pendingCommandLists.begin(),
+				entry.pendingCommandLists.end(), identity) !=
+			entry.pendingCommandLists.end();
+		ReleaseSRWLockShared(&gPreSkinOutputResizeCacheLock);
+		if (alreadyTracked)
+			return;
+		// 需要登记：升级前条目可能已被容量回收淘汰，独占锁下重新查找。
+		AcquireSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+		for (auto &exclusiveItem : gPreSkinOutputResizeCache) {
+			DX12PreSkinOutputResizeCacheEntry &exclusiveEntry =
+				exclusiveItem.second;
+			if (exclusiveEntry.vertexResource != vertexResource)
+				continue;
+			TrackPreSkinOutputResizeCacheEntryUse(
+				&exclusiveEntry, identity);
+			break;
 		}
-		break;
+		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+		return;
 	}
-	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	ReleaseSRWLockShared(&gPreSkinOutputResizeCacheLock);
 }
 
 
