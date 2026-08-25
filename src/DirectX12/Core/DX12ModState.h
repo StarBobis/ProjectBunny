@@ -226,6 +226,8 @@ bool DX12ModHasPreSkinOutputResizeCacheEntries();
 UINT64 DX12ModGetPreSkinOutputResizeGeneration();
 void DX12ModForgetPreSkinOutputResizesForCommandList(
 	ID3D12GraphicsCommandList *commandList);
+void DX12ModForgetPreSkinReplacementForCommandList(
+	ID3D12GraphicsCommandList *commandList);
 void DX12ModAbandonPreSkinOutputResizeCacheUses(
 	ID3D12GraphicsCommandList *commandList);
 void DX12ModTrackPreSkinOutputResizeCacheUse(

@@ -4460,6 +4460,77 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 }
 
 
+void DX12ModForgetPreSkinReplacementForCommandList(
+	ID3D12GraphicsCommandList *commandList)
+{
+	// Teardown half of the lazy restore: DX12ModRestorePreSkinningUavReplacement
+	// only runs on the next dispatch/draw/binding mutation on the same list,
+	// so a list that is destroyed or reset while a replacement is still
+	// pending would otherwise keep the entry (and every reference it owns)
+	// forever, pin gHasActivePreSkinReplacement at 1, and let a recycled list
+	// pointer "restore" state belonging to the dead list (ABA). Reset also
+	// makes the pending state meaningless: it refers to a recording session
+	// and descriptor-heap bindings that no longer exist. This performs the
+	// quiet half of the restore only: undo CPU-side descriptor patches and
+	// release owned references, recording no GPU commands on the list.
+	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable.
+	if (!commandList || gHasActivePreSkinReplacement == 0)
+		return;
+
+	DX12PreSkinReplacementState state = {};
+	bool erased = false;
+	AcquireSRWLockExclusive(&gPreSkinLock);
+	auto it = gActivePreSkinReplacements.find(commandList);
+	if (it != gActivePreSkinReplacements.end())
+	{
+		state = std::move(it->second);
+		gActivePreSkinReplacements.erase(it);
+		erased = true;
+	}
+	if (gActivePreSkinReplacements.empty())
+		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
+	ReleaseSRWLockExclusive(&gPreSkinLock);
+	if (!erased)
+		return;
+	// The map changed, so other lists' TLS negative caches must re-check
+	// (same conditional-bump contract as the restore path).
+	BumpPreSkinReplacementMutationGeneration();
+
+	// Undo the CPU-side descriptor patch: the game's heap outlives this
+	// command list, so leaving our UAV descriptor behind would bind a
+	// recycled mod resource to later draws. restore.device holds the
+	// pool-retained reference (AcquirePreSkinDescriptorRestoreHeap AddRefs
+	// it), so it stays valid here even while the list is being destroyed.
+	for (const auto &restore : state.descriptorRestores)
+	{
+		if (!restore.device || !restore.cpu.ptr || !restore.targetCpu)
+			continue;
+		D3D12_CPU_DESCRIPTOR_HANDLE target = {};
+		target.ptr = restore.targetCpu;
+		restore.device->CopyDescriptorsSimple(
+			1, target, restore.cpu,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	}
+	ReleasePreSkinDescriptorRestores(&state.descriptorRestores);
+
+	// Retire through the global bucket rather than this list's: nothing is
+	// recorded onto the list anymore, so the next submission fence (or the
+	// present-count fallback) is a safe release point, and a dead list's
+	// per-identity bucket would never be consumed by NotifySubmitted.
+	for (ID3D12Resource *resource : state.temporaryResources)
+	{
+		if (resource)
+			RetirePreSkinResource(resource);
+	}
+	state.temporaryResources.clear();
+
+	// The active-override AddRef normally transfers to the override store
+	// during restore; here nothing consumes it, so drop it.
+	if (state.hasActiveTextureOverride && state.resource)
+		state.resource->Release();
+}
+
+
 // ---------------------------------------------------------------------------
 // DX12ModComputePreSkinMatchOnly performs matching off the critical path.
 // Runs only the data-structure lookup phase of PreSkinProbe without emitting
