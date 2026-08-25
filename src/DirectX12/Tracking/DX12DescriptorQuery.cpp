@@ -1,4 +1,4 @@
-﻿// DX12DescriptorQuery: descriptor summary, metadata snapshot and tracked-resource query API.
+// DX12DescriptorQuery: descriptor summary, metadata snapshot and tracked-resource query API.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -325,19 +325,18 @@ static void BuildResourceMetadataSnapshot(
 			stateLocks->UnlockAllExclusive();
 			continue;
 		}
-		heap.currentDescriptors.ForEach(
-			[&heapDescriptors, &heapDescriptorHandles, &heap](
-				uint32_t slot, const DescriptorSlotBinding &binding) {
-				if (!binding.value)
-					return;
-				const SIZE_T cpuHandle = heap.cpuStart +
-					static_cast<SIZE_T>(slot) * heap.increment;
-				heapDescriptors.push_back(DescriptorRecord());
-				DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-					&heapDescriptors.back(), binding.value->value,
-					cpuHandle);
-				heapDescriptorHandles.insert(cpuHandle);
-			});
+		// Chunked current values exist only before whole-heap materialization;
+		// after it the dense vectors below are the authoritative snapshot.
+		if (!heap.IsMaterialized()) {
+			heap.chunkedSlots.ForEachOccupied(
+				[&heapDescriptors, &heapDescriptorHandles](
+					uint32_t slot, const DescriptorRecord &value) {
+					heapDescriptors.push_back(DescriptorRecord());
+					DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
+						&heapDescriptors.back(), value, value.cpuHandle);
+					heapDescriptorHandles.insert(value.cpuHandle);
+				});
+		}
 		for (UINT slot = 0; slot < heap.occupied.size() && slot < heap.slots.size(); ++slot) {
 			if (!heap.occupied[slot])
 				continue;

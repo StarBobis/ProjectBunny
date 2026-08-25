@@ -1,4 +1,4 @@
-﻿// Sharded descriptor heap state and the sparse descriptor store.
+// Sharded descriptor heap state and the sparse descriptor store.
 // Split from DX12Tracking.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -340,268 +340,97 @@ private:
 };
 
 
-// Sparse current-value storage used by Descriptor State. The old layout kept
-// 1024 unordered_maps per heap so independently locked slots could be updated
-// concurrently. Real descriptor rings issue tens of thousands of single-slot
-// copies per frame, making two hash-table probes per copy the dominant CPU
-// cost. This layout retains sparse allocation, but resolves a slot through a
-// pre-sized page-pointer table and one direct array index instead.
+// Chunked dense current-value storage used by Descriptor State. This is the
+// single source of truth for descriptor values in normal Mod mode.
+//
+// The previous design kept a sparse hash-like store (per-slot value nodes with
+// refcounts) because whole-heap dense arrays would allocate megabytes for
+// million-slot heaps. That store forced every descriptor write under the
+// per-shard exclusive lock and paid a value-pool acquire/copy/release per slot.
+//
+// This store keeps the dense-array access pattern (one direct index, plain
+// field copies, no per-slot allocation) but allocates the storage lazily in
+// 4096-slot chunks: the heap owns only a small chunk-pointer table (2 KB for a
+// million-slot heap) and each chunk body is CAS-allocated on first write to
+// any of its slots. Memory therefore covers exactly the regions the game
+// actually touches.
 //
 // The store deliberately contains no per-slot locking. The owning descriptor
-// heap supplies that policy. Page publication is atomic because different slot
-// locks can touch the same page for the first time concurrently.
+// heap supplies that policy: writers serialize an individual slot through the
+// shard lock while the chunk is missing, and are lock-free afterwards (D3D12
+// requires applications to serialize writes to the same descriptor handle,
+// exactly the single-writer assumption the materialized dense path already
+// uses). Chunk publication is atomic because different slot locks can touch
+// the same chunk for the first time concurrently.
 template <typename Value>
-class DX12SparseDescriptorStore
+class DX12ChunkedDescriptorStore
 {
 public:
-	// Kept in sync with the owning heap's lock striping contract.
-	// Descriptor writes are short and command recording normally has only a
-	// handful of producer threads.  1024 cache-line-sized locks gave every heap
-	// a 64 KiB lock working set; sequential descriptor rings consequently
-	// touched a different cache line for virtually every CopyDescriptors slot.
-	// 64 stripes still provide substantially more concurrency than the wrapper
-	// can use while keeping the complete lock set in a small L1/L2 footprint.
-	static constexpr uint32_t ShardCount = 64;
-	static constexpr uint32_t PageSize = 256;
+	static constexpr uint32_t ChunkSlots = 4096;
+	static_assert((ChunkSlots & (ChunkSlots - 1)) == 0,
+		"descriptor chunk slot count must be a power of two");
 
-	static_assert((ShardCount & (ShardCount - 1)) == 0,
-		"descriptor shard count must be a power of two");
-	static_assert((PageSize & (PageSize - 1)) == 0,
-		"descriptor page size must be a power of two");
-
-	static constexpr uint32_t ShardForSlot(uint32_t slot)
+	struct Chunk
 	{
-		return slot & (ShardCount - 1);
-	}
-
-	struct SnapshotEntry
-	{
-		bool occupied = false;
-		Value value = {};
+		std::array<Value, ChunkSlots> values = {};
+		std::array<uint8_t, ChunkSlots> occupied = {};
 	};
 
-	DX12SparseDescriptorStore() = default;
+	DX12ChunkedDescriptorStore() = default;
 
-	DX12SparseDescriptorStore(const DX12SparseDescriptorStore&) = delete;
-	DX12SparseDescriptorStore &operator=(
-		const DX12SparseDescriptorStore&) = delete;
+	DX12ChunkedDescriptorStore(const DX12ChunkedDescriptorStore&) = delete;
+	DX12ChunkedDescriptorStore &operator=(
+		const DX12ChunkedDescriptorStore&) = delete;
 
-	DX12SparseDescriptorStore(DX12SparseDescriptorStore &&other) noexcept
+	DX12ChunkedDescriptorStore(DX12ChunkedDescriptorStore &&other) noexcept
 	{
 		MoveFrom(std::move(other));
 	}
 
-	DX12SparseDescriptorStore &operator=(
-		DX12SparseDescriptorStore &&other) noexcept
+	DX12ChunkedDescriptorStore &operator=(
+		DX12ChunkedDescriptorStore &&other) noexcept
 	{
 		if (this == &other)
 			return *this;
-		ResetStorage();
+		Reset();
 		MoveFrom(std::move(other));
 		return *this;
 	}
 
-	~DX12SparseDescriptorStore()
+	~DX12ChunkedDescriptorStore()
 	{
-		ResetStorage();
+		Reset();
 	}
 
 	// Called once when the descriptor heap boundary becomes known. Only the
-	// small page-pointer index is allocated here; Value pages remain lazy.
+	// small chunk-pointer table is allocated here; chunk bodies stay lazy.
 	void Initialize(uint32_t maxSlots)
 	{
-		ResetStorage();
+		Reset();
 		maxSlots_ = maxSlots;
-		pageCount_ = maxSlots == 0 ? 0 : static_cast<uint32_t>(
-			(static_cast<uint64_t>(maxSlots) + PageSize - 1) / PageSize);
-		if (pageCount_ == 0)
+		chunkCount_ = maxSlots == 0 ? 0 : static_cast<uint32_t>(
+			(static_cast<uint64_t>(maxSlots) + ChunkSlots - 1) / ChunkSlots);
+		if (chunkCount_ == 0)
 			return;
-		pages_ = std::make_unique<std::atomic<Page*>[]>(pageCount_);
-		for (uint32_t index = 0; index < pageCount_; ++index)
-			pages_[index].store(nullptr, std::memory_order_relaxed);
+		chunks_ = std::make_unique<std::atomic<Chunk*>[]>(chunkCount_);
+		for (uint32_t index = 0; index < chunkCount_; ++index)
+			chunks_[index].store(nullptr, std::memory_order_relaxed);
 	}
 
-	const Value *Find(uint32_t slot) const
+	// CAS-allocates the chunk containing slot on first touch. Callers already
+	// serialize the owning slot, so the returned chunk address remains stable.
+	Chunk *EnsureChunkForSlot(uint32_t slot)
 	{
-		const Page *page = PageForSlot(slot);
-		if (!page)
+		if (!chunks_ || slot >= maxSlots_)
 			return nullptr;
-		const uint32_t offset = OffsetForSlot(slot);
-		return page->occupied[offset] ? &page->values[offset] : nullptr;
-	}
+		std::atomic<Chunk*> &cell = chunks_[slot / ChunkSlots];
+		Chunk *chunk = cell.load(std::memory_order_acquire);
+		if (chunk)
+			return chunk;
 
-	Value *Find(uint32_t slot)
-	{
-		Page *page = PageForSlot(slot);
-		if (!page)
-			return nullptr;
-		const uint32_t offset = OffsetForSlot(slot);
-		return page->occupied[offset] ? &page->values[offset] : nullptr;
-	}
-
-	// Returns the existing value or inserts one default value. Callers already
-	// serialize the owning slot, so the returned address remains stable.
-	Value *FindOrInsertDefault(uint32_t slot, bool *inserted)
-	{
-		Page *page = EnsurePageForSlot(slot);
-		if (!page) {
-			if (inserted)
-				*inserted = false;
-			return nullptr;
-		}
-		const uint32_t offset = OffsetForSlot(slot);
-		const bool created = page->occupied[offset] == 0;
-		if (created) {
-			page->values[offset] = Value();
-			page->occupied[offset] = 1;
-		}
-		if (inserted)
-			*inserted = created;
-		return &page->values[offset];
-	}
-
-	bool Store(uint32_t slot, Value value)
-	{
-		bool inserted = false;
-		Value *stored = FindOrInsertDefault(slot, &inserted);
-		if (!stored)
-			return false;
-		*stored = std::move(value);
-		return inserted;
-	}
-
-	bool Erase(uint32_t slot)
-	{
-		Page *page = PageForSlot(slot);
-		if (!page)
-			return false;
-		const uint32_t offset = OffsetForSlot(slot);
-		if (!page->occupied[offset])
-			return false;
-		page->values[offset] = Value();
-		page->occupied[offset] = 0;
-		return true;
-	}
-
-	void SnapshotRange(
-		uint32_t firstSlot,
-		uint32_t count,
-		std::vector<SnapshotEntry> *snapshot) const
-	{
-		if (!snapshot)
-			return;
-		snapshot->clear();
-		snapshot->resize(count);
-		for (uint32_t i = 0; i < count; ++i) {
-			const Value *value = Find(firstSlot + i);
-			if (!value)
-				continue;
-			(*snapshot)[i].occupied = true;
-			(*snapshot)[i].value = *value;
-		}
-	}
-
-	template <typename Visitor>
-	void ForEach(Visitor visitor) const
-	{
-		for (uint32_t pageIndex = 0; pageIndex < pageCount_; ++pageIndex) {
-			const Page *page = pages_[pageIndex].load(std::memory_order_acquire);
-			if (!page)
-				continue;
-			const uint32_t firstSlot = pageIndex * PageSize;
-			const uint32_t slotsInPage =
-				maxSlots_ - firstSlot < PageSize ? maxSlots_ - firstSlot : PageSize;
-			for (uint32_t offset = 0; offset < slotsInPage; ++offset) {
-				if (page->occupied[offset])
-					visitor(firstSlot + offset, page->values[offset]);
-			}
-		}
-	}
-
-	size_t Size() const
-	{
-		size_t size = 0;
-		ForEach([&size](uint32_t, const Value&) { ++size; });
-		return size;
-	}
-
-	bool Empty() const
-	{
-		for (uint32_t pageIndex = 0; pageIndex < pageCount_; ++pageIndex) {
-			const Page *page = pages_[pageIndex].load(std::memory_order_acquire);
-			if (!page)
-				continue;
-			const uint32_t firstSlot = pageIndex * PageSize;
-			const uint32_t slotsInPage =
-				maxSlots_ - firstSlot < PageSize ? maxSlots_ - firstSlot : PageSize;
-			for (uint32_t offset = 0; offset < slotsInPage; ++offset) {
-				if (page->occupied[offset])
-					return false;
-			}
-		}
-		return true;
-	}
-
-	// Releases only allocated pages while retaining the small page index, so a
-	// cleared active heap can be populated again without rebuilding capacity.
-	void Clear()
-	{
-		if (!pages_)
-			return;
-		for (uint32_t index = 0; index < pageCount_; ++index) {
-			Page *page = pages_[index].exchange(
-				nullptr, std::memory_order_acq_rel);
-			delete page;
-		}
-	}
-
-	uint32_t AllocatedPageCount() const
-	{
-		uint32_t count = 0;
-		for (uint32_t index = 0; index < pageCount_; ++index) {
-			if (pages_[index].load(std::memory_order_acquire))
-				++count;
-		}
-		return count;
-	}
-
-private:
-	struct Page
-	{
-		std::array<Value, PageSize> values = {};
-		std::array<uint8_t, PageSize> occupied = {};
-	};
-
-	static constexpr uint32_t OffsetForSlot(uint32_t slot)
-	{
-		return slot & (PageSize - 1);
-	}
-
-	Page *PageForSlot(uint32_t slot)
-	{
-		return const_cast<Page*>(
-			static_cast<const DX12SparseDescriptorStore*>(this)->PageForSlot(slot));
-	}
-
-	const Page *PageForSlot(uint32_t slot) const
-	{
-		if (!pages_ || slot >= maxSlots_)
-			return nullptr;
-		return pages_[slot / PageSize].load(std::memory_order_acquire);
-	}
-
-	Page *EnsurePageForSlot(uint32_t slot)
-	{
-		if (!pages_ || slot >= maxSlots_)
-			return nullptr;
-		std::atomic<Page*> &pageCell = pages_[slot / PageSize];
-		Page *page = pageCell.load(std::memory_order_acquire);
-		if (page)
-			return page;
-
-		Page *candidate = new Page();
-		Page *expected = nullptr;
-		if (pageCell.compare_exchange_strong(
+		Chunk *candidate = new Chunk();
+		Chunk *expected = nullptr;
+		if (cell.compare_exchange_strong(
 				expected, candidate,
 				std::memory_order_release,
 				std::memory_order_acquire))
@@ -610,25 +439,149 @@ private:
 		return expected;
 	}
 
-	void ResetStorage()
+	Chunk *ChunkForSlot(uint32_t slot)
 	{
-		Clear();
-		pages_.reset();
-		pageCount_ = 0;
+		return const_cast<Chunk*>(
+			static_cast<const DX12ChunkedDescriptorStore*>(this)->
+				ChunkForSlot(slot));
+	}
+
+	const Chunk *ChunkForSlot(uint32_t slot) const
+	{
+		if (!chunks_ || slot >= maxSlots_)
+			return nullptr;
+		return chunks_[slot / ChunkSlots].load(std::memory_order_acquire);
+	}
+
+	bool ChunkExists(uint32_t slot) const
+	{
+		return ChunkForSlot(slot) != nullptr;
+	}
+
+	// Raw slot pointer when the chunk exists, regardless of occupancy.
+	// Lock-free writers/readers use this under the per-slot seqlock contract.
+	Value *SlotPtr(uint32_t slot)
+	{
+		return const_cast<Value*>(
+			static_cast<const DX12ChunkedDescriptorStore*>(this)->
+				SlotPtr(slot));
+	}
+
+	const Value *SlotPtr(uint32_t slot) const
+	{
+		const Chunk *chunk = ChunkForSlot(slot);
+		return chunk ? &chunk->values[slot & (ChunkSlots - 1)] : nullptr;
+	}
+
+	// Occupied-slot access.
+	Value *Find(uint32_t slot)
+	{
+		return const_cast<Value*>(
+			static_cast<const DX12ChunkedDescriptorStore*>(this)->Find(slot));
+	}
+
+	const Value *Find(uint32_t slot) const
+	{
+		const Chunk *chunk = ChunkForSlot(slot);
+		if (!chunk)
+			return nullptr;
+		const uint32_t offset = slot & (ChunkSlots - 1);
+		return chunk->occupied[offset] ? &chunk->values[offset] : nullptr;
+	}
+
+	bool IsOccupied(uint32_t slot) const
+	{
+		return Find(slot) != nullptr;
+	}
+
+	void SetOccupied(uint32_t slot, bool occupied)
+	{
+		Chunk *chunk = ChunkForSlot(slot);
+		if (chunk)
+			chunk->occupied[slot & (ChunkSlots - 1)] = occupied ? 1 : 0;
+	}
+
+	template <typename Visitor>
+	void ForEachOccupied(Visitor visitor)
+	{
+		for (uint32_t chunkIndex = 0; chunkIndex < chunkCount_; ++chunkIndex) {
+			Chunk *chunk = chunks_[chunkIndex].load(std::memory_order_acquire);
+			if (!chunk)
+				continue;
+			const uint32_t firstSlot = chunkIndex * ChunkSlots;
+			const uint32_t slotsInChunk = firstSlot + ChunkSlots <= maxSlots_ ?
+				ChunkSlots : maxSlots_ - firstSlot;
+			for (uint32_t offset = 0; offset < slotsInChunk; ++offset) {
+				if (chunk->occupied[offset])
+					visitor(firstSlot + offset, chunk->values[offset]);
+			}
+		}
+	}
+
+	template <typename Visitor>
+	void ForEachOccupied(Visitor visitor) const
+	{
+		for (uint32_t chunkIndex = 0; chunkIndex < chunkCount_; ++chunkIndex) {
+			const Chunk *chunk = chunks_[chunkIndex].load(
+				std::memory_order_acquire);
+			if (!chunk)
+				continue;
+			const uint32_t firstSlot = chunkIndex * ChunkSlots;
+			const uint32_t slotsInChunk = firstSlot + ChunkSlots <= maxSlots_ ?
+				ChunkSlots : maxSlots_ - firstSlot;
+			for (uint32_t offset = 0; offset < slotsInChunk; ++offset) {
+				if (chunk->occupied[offset])
+					visitor(firstSlot + offset, chunk->values[offset]);
+			}
+		}
+	}
+
+	size_t OccupiedCount() const
+	{
+		size_t count = 0;
+		ForEachOccupied([&count](uint32_t, const Value&) { ++count; });
+		return count;
+	}
+
+	uint32_t AllocatedChunkCount() const
+	{
+		uint32_t count = 0;
+		for (uint32_t index = 0; index < chunkCount_; ++index) {
+			if (chunks_[index].load(std::memory_order_acquire))
+				++count;
+		}
+		return count;
+	}
+
+	// Releases every chunk and the pointer table. Only called when the owning
+	// heap record is retired or tracking is cleaned up; chunk bodies are never
+	// released at materialization so in-flight lock-free accesses cannot dangle.
+	void Reset()
+	{
+		if (!chunks_)
+			return;
+		for (uint32_t index = 0; index < chunkCount_; ++index) {
+			Chunk *chunk = chunks_[index].exchange(
+				nullptr, std::memory_order_acq_rel);
+			delete chunk;
+		}
+		chunks_.reset();
+		chunkCount_ = 0;
 		maxSlots_ = 0;
 	}
 
-	void MoveFrom(DX12SparseDescriptorStore &&other)
+private:
+	void MoveFrom(DX12ChunkedDescriptorStore &&other)
 	{
-		pages_ = std::move(other.pages_);
-		pageCount_ = other.pageCount_;
+		chunks_ = std::move(other.chunks_);
+		chunkCount_ = other.chunkCount_;
 		maxSlots_ = other.maxSlots_;
-		other.pageCount_ = 0;
+		other.chunkCount_ = 0;
 		other.maxSlots_ = 0;
 	}
 
-	std::unique_ptr<std::atomic<Page*>[]> pages_;
-	uint32_t pageCount_ = 0;
+	std::unique_ptr<std::atomic<Chunk*>[]> chunks_;
+	uint32_t chunkCount_ = 0;
 	uint32_t maxSlots_ = 0;
 };
 

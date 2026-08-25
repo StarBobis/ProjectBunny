@@ -1,4 +1,4 @@
-﻿// Heap-slot shadow storage for runtime descriptors (replaces the CPU-handle hash map).
+// Heap-slot shadow storage for runtime descriptors (replaces the CPU-handle hash map).
 // Split from DX12Runtime.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -657,11 +657,71 @@ public:
 			DescriptorHeapRecord &heap = *resolved.heap;
 			const bool changed =
 				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&heap, resolved.slot, record, cpuHandle);
+					&heap, resolved.slot, record, cpuHandle) ==
+					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 			if (changed)
 				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
 			ReleaseDescriptorRecordResources(&record);
 			return changed;
+		}
+		// Chunked lock-free write: normal Mod mode keeps heaps unmaterialized,
+		// so the per-chunk dense store provides the same single-writer seqlock
+		// protocol as the materialized path. This fast path is only enabled
+		// outside Dump/Hunt tracking, where whole-heap materialization can
+		// never run concurrently with chunked accesses.
+		if (resolvedKnownHeap && resolved.heap &&
+				resolved.heap->stateLocks &&
+				resolved.heap->stateLocks->IsActive() &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+				resolved.heap->chunkedSlots.ChunkExists(resolved.slot)) {
+			DescriptorHeapRecord &heap = *resolved.heap;
+			const DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult result =
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&heap, resolved.slot, record, cpuHandle);
+			if (result ==
+					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored) {
+				// A hunt/dump activation can materialize this heap while this
+				// write is in flight (the mode gate above was still clean).
+				// Redo under the shard lock so the materialized dense adapter
+				// - now authoritative - holds the record, and publish
+				// unconditionally; otherwise publish lock-free.
+				if (!heap.IsMaterialized()) {
+					DX12DescriptorHeapStateUtils::PublishValue(
+						&heap, resolved.slot, record.valueId);
+					ReleaseDescriptorRecordResources(&record);
+					return true;
+				}
+				ResolvedHeapSlot locked;
+				bool lockedKnownHeap =
+					LockResolvedHeapSlotExclusive(resolved, &locked);
+				if (!lockedKnownHeap)
+					lockedKnownHeap = ResolveAndLockHeapSlot(
+						cpuHandle,
+						D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+						true,
+						&locked);
+				if (lockedKnownHeap) {
+					DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+						locked.heap, locked.slot, record, cpuHandle);
+					DX12DescriptorHeapStateUtils::BumpVersion(
+						locked.heap, locked.slot);
+					UnlockHeapSlot(locked, true);
+					ReleaseDescriptorRecordResources(&record);
+				} else {
+					// Heap retired mid-write: keep the value reachable through
+					// the CPU ledger, matching the slow-path fallback.
+					WriteToCpuLedger(std::move(record));
+				}
+				return true;
+			}
+			if (result ==
+					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Unchanged) {
+				ReleaseDescriptorRecordResources(&record);
+				return false;
+			}
+			// LockRequired: fall through to the locked path. Races a chunk
+			// first-touch only; chunks never disappear while the heap is
+			// active.
 		}
 		ResolvedHeapSlot locked;
 		bool lockedKnownHeap = resolvedKnownHeap &&
@@ -679,9 +739,12 @@ public:
 		resolved = locked;
 
 		DescriptorHeapRecord &heap = *resolved.heap;
+		if (!heap.IsMaterialized())
+			heap.chunkedSlots.EnsureChunkForSlot(resolved.slot);
 		const bool changed =
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-				&heap, resolved.slot, record, cpuHandle);
+				&heap, resolved.slot, record, cpuHandle) ==
+				DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 		if (changed)
 			DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
 		UnlockHeapSlot(resolved, true);
@@ -734,22 +797,53 @@ public:
 		if (heap.IsMaterialized()) {
 			const bool changed =
 				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-					&heap, resolved.slot, record, cpuHandle);
+					&heap, resolved.slot, record, cpuHandle) ==
+					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 			if (changed)
 				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
 			ReleaseDescriptorRecordResources(&record);
 			return true;
+		}
+		// Chunked lock-free write (normal Mod mode); see
+		// RecordCreatedDescriptorIfChanged for the gating rationale.
+		if (heap.stateLocks &&
+				heap.stateLocks->IsActive() &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+				heap.chunkedSlots.ChunkExists(resolved.slot)) {
+			const DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult result =
+				DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
+					&heap, resolved.slot, record, cpuHandle);
+			if (result ==
+					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored &&
+					!heap.IsMaterialized()) {
+				DX12DescriptorHeapStateUtils::PublishValue(
+					&heap, resolved.slot, record.valueId);
+				ReleaseDescriptorRecordResources(&record);
+				return true;
+			}
+			// Stored but a hunt/dump materialization landed mid-write, or the
+			// slot was unchanged: fall through to the locked path, which
+			// ensures the authoritative store receives the record and
+			// publishes it.
 		}
 
 		if (!ResolveAndLockHeapSlot(cpuHandle,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, true, &resolved)) {
 			return false;
 		}
+		if (!heap.IsMaterialized())
+			heap.chunkedSlots.EnsureChunkForSlot(resolved.slot);
 
 		const bool changed =
 			DX12DescriptorSlotArrayUtils::StoreCurrentRecordIfChanged(
-				&heap, resolved.slot, record, cpuHandle);
+				&heap, resolved.slot, record, cpuHandle) ==
+				DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 		if (changed)
+			DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
+		else if (heap.IsMaterialized())
+			// Raced a materialization after a lock-free chunk write: the dense
+			// adapter already holds the record from the lock-free pass, but the
+			// identity must be republished so readers see the new value.
 			DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
 
 		UnlockHeapSlot(resolved, true);
@@ -780,6 +874,34 @@ public:
 				if (!heap.stateLocks ||
 						!heap.stateLocks->ObserveSlotIdentity(
 							resolved.slot, &before))
+					break;
+				DescriptorRecord record;
+				const bool found =
+					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+						heap, resolved.slot, &record);
+				DescriptorHeapRecord::StateLocks::SlotIdentity after;
+				if (heap.stateLocks->ObserveSlotIdentity(
+						resolved.slot, &after) &&
+						before.version == after.version) {
+					if (found)
+						*outRecord = std::move(record);
+					return found;
+				}
+			}
+			return false;
+		}
+
+		// Chunked lock-free read (normal Mod mode): writers publish the same
+		// per-slot seqlock identity, so the read needs no shard lock. Gated on
+		// !NeedsDumpOrHuntingTracking like the chunked write path so a
+		// whole-heap materialization can never race the chunked store.
+		if (heap.stateLocks &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+				heap.chunkedSlots.ChunkExists(resolved.slot)) {
+			for (UINT attempt = 0; attempt < 4; ++attempt) {
+				DescriptorHeapRecord::StateLocks::SlotIdentity before;
+				if (!heap.stateLocks->ObserveSlotIdentity(
+						resolved.slot, &before))
 					break;
 				DescriptorRecord record;
 				const bool found =
@@ -836,6 +958,29 @@ public:
 				DescriptorHeapRecord::StateLocks::SlotIdentity after;
 				if (heap.stateLocks->ObserveSlotIdentity(
 						slot, &after) &&
+						before.version == after.version) {
+					if (found)
+						*outRecord = std::move(record);
+					return found;
+				}
+			}
+			return false;
+		}
+		// Chunked lock-free read (normal Mod mode); the caller already holds
+		// gDescriptorLock shared, but the seqlock read itself needs no lock.
+		if (heap.stateLocks &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+				heap.chunkedSlots.ChunkExists(slot)) {
+			for (UINT attempt = 0; attempt < 4; ++attempt) {
+				DescriptorHeapRecord::StateLocks::SlotIdentity before;
+				if (!heap.stateLocks->ObserveSlotIdentity(slot, &before))
+					break;
+				DescriptorRecord record;
+				const bool found =
+					DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
+						heap, slot, &record);
+				DescriptorHeapRecord::StateLocks::SlotIdentity after;
+				if (heap.stateLocks->ObserveSlotIdentity(slot, &after) &&
 						before.version == after.version) {
 					if (found)
 						*outRecord = std::move(record);
@@ -974,15 +1119,35 @@ public:
 			return false;
 		ResolvedHeapSlot resolved;
 		if (ResolveHeapSlotFast(cpuHandle,
-				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &resolved) &&
-				resolved.heap->IsMaterialized()) {
-			const bool erased = DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
-				resolved.heap, resolved.slot);
-			if (erased) {
-				DX12DescriptorHeapStateUtils::BumpVersion(
-					resolved.heap, resolved.slot);
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, &resolved)) {
+			DescriptorHeapRecord &heap = *resolved.heap;
+			const bool chunkedErase = heap.stateLocks &&
+				heap.stateLocks->IsActive() &&
+				!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking() &&
+				heap.chunkedSlots.ChunkExists(resolved.slot);
+			if (heap.IsMaterialized() || chunkedErase) {
+				const bool erased =
+					DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+						&heap, resolved.slot);
+				if (erased) {
+					DX12DescriptorHeapStateUtils::BumpVersion(
+						&heap, resolved.slot);
+				}
+				// A hunt/dump materialization can land mid-erase; redo under
+				// the shard lock so the dense adapter (now authoritative)
+				// reflects the erase and republishes the identity.
+				if (chunkedErase && heap.IsMaterialized()) {
+					ResolvedHeapSlot locked;
+					if (LockResolvedHeapSlotExclusive(resolved, &locked)) {
+						DX12DescriptorSlotArrayUtils::EraseCurrentRecord(
+							locked.heap, locked.slot);
+						DX12DescriptorHeapStateUtils::BumpVersion(
+							locked.heap, locked.slot);
+						UnlockHeapSlot(locked, true);
+					}
+				}
+				return erased;
 			}
-			return erased;
 		}
 		if (ResolveAndLockHeapSlot(cpuHandle,
 				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, true, &resolved)) {

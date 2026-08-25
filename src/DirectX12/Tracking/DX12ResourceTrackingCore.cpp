@@ -1,4 +1,4 @@
-﻿// DX12ResourceTrackingCore: resource/descriptor tracking state, recording and invalidation.
+// DX12ResourceTrackingCore: resource/descriptor tracking state, recording and invalidation.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -288,7 +288,13 @@ static void ClearDescriptorHeapLocked(DescriptorHeapRecord *heap)
 	}
 	heap->slots.clear();
 	heap->occupied.clear();
-	DX12DescriptorSlotArrayUtils::ClearSparseRecords(heap);
+	// Chunked store: release any resources the records may carry (slot records
+	// normally do not own), then drop every chunk and the pointer table.
+	heap->chunkedSlots.ForEachOccupied(
+		[](uint32_t, DescriptorRecord &record) {
+			ReleaseDescriptorRecordResources(&record);
+		});
+	heap->chunkedSlots.Reset();
 	heap->slotHistory.clear();
 	heap->slotHistoryEpochs.clear();
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(heap, 0);
@@ -298,7 +304,7 @@ void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record)
 {
 	if (!record || record->desc.NumDescriptors == 0)
 		return;
-	record->currentDescriptors.Initialize(record->desc.NumDescriptors);
+	record->chunkedSlots.Initialize(record->desc.NumDescriptors);
 	record->stateLocks = std::make_unique<DescriptorHeapRecord::StateLocks>(
 		record->desc.NumDescriptors);
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(record, 0);
@@ -356,19 +362,23 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	}
 	record->slots.swap(newSlots);
 	record->occupied.swap(newOccupied);
-	const size_t sparseCount = record->currentDescriptors.Size();
-	record->currentDescriptors.ForEach(
-		[record](uint32_t slot, const DescriptorSlotBinding &binding) {
-			if (slot >= record->slots.size() || !binding.value)
+	// Migrate the current chunked values into the dense adapter. The chunked
+	// store is left intact: this materialization only runs under Dump/Hunt
+	// tracking, where the lock-free chunked fast path is disabled, and keeping
+	// the chunks alive removes any lifetime hazard for in-flight accesses.
+	// Every access prefers the materialized vectors once they exist.
+	size_t denseCount = 0;
+	record->chunkedSlots.ForEachOccupied(
+		[record, &denseCount](uint32_t slot, const DescriptorRecord &value) {
+			if (slot >= record->slots.size())
 				return;
 			DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-				&record->slots[slot], binding.value->value,
-				record->cpuStart + static_cast<SIZE_T>(slot) * record->increment);
+				&record->slots[slot], value, value.cpuHandle);
 			record->occupied[slot] = 1;
+			++denseCount;
 		});
-	DX12DescriptorSlotArrayUtils::ClearSparseRecords(record);
 	DX12DescriptorSlotArrayUtils::SetLiveSlots(
-		record, static_cast<LONG64>(sparseCount));
+		record, static_cast<LONG64>(denseCount));
 	// Publish dense readiness before releasing the all-shard lock so any
 	// thread that acquires the flag can safely access slots/occupied.
 	if (record->stateLocks)

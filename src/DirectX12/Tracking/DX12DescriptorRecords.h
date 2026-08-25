@@ -1,4 +1,4 @@
-﻿// Descriptor value records, pools and heap state utils.
+// Descriptor value records, pools and heap state utils.
 // Split from DX12Tracking.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -78,63 +78,6 @@ struct DescriptorRecord : public DX12DescriptorViewPayload
 	bool hasDesc = false;
 };
 
-struct DX12ExtendedDescriptorValue : public DX12DescriptorViewPayload
-{
-	UINT64 staticReplacementGeneration = 0;
-	ID3D12Resource *resource = nullptr;
-	ID3D12Resource *counterResource = nullptr;
-	D3D12_RESOURCE_DESC resourceDesc = {};
-	bool hasResourceDesc = false;
-	UINT resourceHeapType = 0;
-	bool hasResourceHeapType = false;
-	UINT64 gpuVirtualAddress = 0;
-	UINT64 resourceOffset = 0;
-	UINT64 viewSize = 0;
-	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
-	bool hasCurrentState = false;
-	bool stateTrackedByBarrier = false;
-	bool hasDesc = false;
-};
-
-// Immutable descriptor payload kept by normal Mod-mode Descriptor State.
-// CBVs are overwhelmingly dominant and need only 40 bytes here. Rich metadata
-// is allocated only for SRV/UAV/RTV/DSV/sampler values, while slot identity,
-// presentation strings and snapshot ownership are materialized on query.
-struct DX12DescriptorValue
-{
-	UINT kindId = 0;
-	UINT64 valueId = 0;
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = {};
-	std::unique_ptr<DX12ExtendedDescriptorValue> extended;
-
-	DX12DescriptorValue() = default;
-	DX12DescriptorValue(DX12DescriptorValue &&) noexcept = default;
-	DX12DescriptorValue &operator=(DX12DescriptorValue &&) noexcept = default;
-
-	DX12DescriptorValue(const DX12DescriptorValue &other)
-		: kindId(other.kindId), valueId(other.valueId), cbv(other.cbv)
-	{
-		if (other.extended)
-			extended = std::make_unique<DX12ExtendedDescriptorValue>(
-				*other.extended);
-	}
-
-	DX12DescriptorValue &operator=(const DX12DescriptorValue &other)
-	{
-		if (this == &other)
-			return *this;
-		kindId = other.kindId;
-		valueId = other.valueId;
-		cbv = other.cbv;
-		if (other.extended)
-			extended = std::make_unique<DX12ExtendedDescriptorValue>(
-				*other.extended);
-		else
-			extended.reset();
-		return *this;
-	}
-};
-
 class DX12DescriptorValueHashUtils
 {
 private:
@@ -204,65 +147,10 @@ public:
 	}
 };
 
-// Normal Mod mode stores one immutable Descriptor Value and lets every copied
-// Descriptor State reference it. CopyDescriptors then moves a pointer-sized
-// binding instead of duplicating the full DescriptorRecord payload.
-struct alignas(MEMORY_ALLOCATION_ALIGNMENT) DX12DescriptorValueNode
-{
-	SLIST_ENTRY freeEntry = {};
-	volatile LONG references = 0;
-	DX12DescriptorValue value;
-};
-
-class DX12DescriptorValuePool
-{
-private:
-	static BOOL CALLBACK InitializeFreeList(
-		PINIT_ONCE, PVOID parameter, PVOID*)
-	{
-		InitializeSListHead(static_cast<PSLIST_HEADER>(parameter));
-		return TRUE;
-	}
-
-	static PSLIST_HEADER FreeList()
-	{
-		alignas(MEMORY_ALLOCATION_ALIGNMENT) static SLIST_HEADER freeList;
-		static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
-		InitOnceExecuteOnce(&once, InitializeFreeList, &freeList, nullptr);
-		return &freeList;
-	}
-
-public:
-	static DX12DescriptorValueNode *Acquire()
-	{
-		PSLIST_ENTRY entry = InterlockedPopEntrySList(FreeList());
-		DX12DescriptorValueNode *node = entry ?
-			CONTAINING_RECORD(entry, DX12DescriptorValueNode, freeEntry) :
-			new DX12DescriptorValueNode();
-		InterlockedExchange(&node->references, 1);
-		return node;
-	}
-
-	static void Retain(DX12DescriptorValueNode *node)
-	{
-		if (node)
-			InterlockedIncrement(&node->references);
-	}
-
-	static void Release(DX12DescriptorValueNode *node)
-	{
-		if (!node || InterlockedDecrement(&node->references) != 0)
-			return;
-		node->value = DX12DescriptorValue();
-		InterlockedPushEntrySList(FreeList(), &node->freeEntry);
-	}
-};
-
-struct DescriptorSlotBinding
-{
-	DX12DescriptorValueNode *value = nullptr;
-};
-
+// Normal Mod mode stores one DescriptorRecord per occupied slot directly in the
+// heap's chunked dense store. Descriptor copies then move the record with a
+// plain field copy (mirroring RenderDoc's dst.CopyFrom(src)) instead of
+// duplicating an immutable value node per copy.
 struct DescriptorHeapRecord
 {
 	ID3D12DescriptorHeap *heap = nullptr;
@@ -270,14 +158,23 @@ struct DescriptorHeapRecord
 	SIZE_T cpuStart = 0;
 	UINT64 gpuStart = 0;
 	UINT increment = 0;
-	using StateLocks = DX12DescriptorHeapShardState<
-		DX12SparseDescriptorStore<DescriptorSlotBinding>::ShardCount>;
+	// 64 shard locks: descriptor writes are short and command recording
+	// normally has only a handful of producer threads, while sequential
+	// descriptor rings touch a different stripe for virtually every slot.
+	using StateLocks = DX12DescriptorHeapShardState<64>;
 	// Lock striping follows the heap record when gDescriptorHeaps grows or
 	// reuses a slot. Sequential descriptor slots land in different shards.
 	std::unique_ptr<StateLocks> stateLocks;
+	// Chunked dense current-value storage: the primary store in normal Mod
+	// mode. Chunk bodies are allocated lazily, so multi-million-slot heaps
+	// only pay for the regions the game actually writes.
+	DX12ChunkedDescriptorStore<DescriptorRecord> chunkedSlots;
+	// Whole-heap dense compatibility adapter, materialized only when
+	// Dump/Hunt tracking needs the full descriptor history. The chunked store
+	// stays alive (and stale) after materialization; every access prefers the
+	// materialized vectors once they exist.
 	std::vector<DescriptorRecord> slots;
 	std::vector<uint8_t> occupied;
-	DX12SparseDescriptorStore<DescriptorSlotBinding> currentDescriptors;
 	std::vector<std::vector<DescriptorRecord>> slotHistory;
 	std::vector<std::vector<UINT64>> slotHistoryEpochs;
 	volatile LONG64 liveSlots = 0;
@@ -307,10 +204,9 @@ static void BumpVersion(DescriptorHeapRecord *record, UINT slot)
 			slot < record->occupied.size() && record->occupied[slot]) {
 		valueId = record->slots[slot].valueId;
 	} else {
-		const DescriptorSlotBinding *binding =
-			record->currentDescriptors.Find(slot);
-		if (binding && binding->value)
-			valueId = binding->value->value.valueId;
+		const DescriptorRecord *value = record->chunkedSlots.Find(slot);
+		if (value)
+			valueId = value->valueId;
 	}
 	record->stateLocks->PublishSlotValue(slot, valueId);
 }

@@ -1,4 +1,4 @@
-﻿// DX12ResourceTrackerHooks: hook-runtime recording of created/copied resources and descriptors.
+// DX12ResourceTrackerHooks: hook-runtime recording of created/copied resources and descriptors.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -437,15 +437,24 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot source;
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot destination;
-	const bool denseCopy =
+	const bool resolvedBoth =
 		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
 			srcDescriptorRangeStart.ptr, descriptorHeapsType, &source) &&
 		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-			destDescriptorRangeStart.ptr, descriptorHeapsType, &destination) &&
-		source.heap->IsMaterialized() && destination.heap->IsMaterialized() &&
+			destDescriptorRangeStart.ptr, descriptorHeapsType, &destination);
+	const bool heapsActive = resolvedBoth &&
 		source.heap->stateLocks && destination.heap->stateLocks &&
 		source.heap->stateLocks->IsActive() &&
 		destination.heap->stateLocks->IsActive();
+	const bool bothMaterialized = heapsActive &&
+		source.heap->IsMaterialized() && destination.heap->IsMaterialized();
+	// Chunk-mode direct copies are lock-free per slot. They are only enabled
+	// outside Dump/Hunt tracking, where whole-heap materialization never runs
+	// concurrently with the chunked store (see
+	// DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged).
+	const bool chunkFast = heapsActive && !bothMaterialized &&
+		!source.heap->IsMaterialized() && !destination.heap->IsMaterialized() &&
+		!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
 	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
 	for (UINT n = 0; n < numDescriptors; ++n) {
 		const UINT i = reverse ? numDescriptors - n - 1 : n;
@@ -453,17 +462,30 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 			static_cast<SIZE_T>(i) * increment;
 		const SIZE_T destHandle = destDescriptorRangeStart.ptr +
 			static_cast<SIZE_T>(i) * increment;
-		if (denseCopy) {
+		const bool directCopy = bothMaterialized ||
+			(chunkFast &&
+				source.heap->chunkedSlots.ChunkExists(source.slot + i) &&
+				destination.heap->chunkedSlots.ChunkExists(destination.slot + i));
+		if (directCopy) {
 			const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
 					destination.heap,
 					destination.slot + i,
 					*source.heap, source.slot + i, destHandle, nullptr);
-			if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
-				result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased)
-				DX12DescriptorHeapStateUtils::BumpVersion(
-					destination.heap, destination.slot + i);
-			continue;
+			// LockRequired is unreachable here (chunks never disappear while
+			// the heap is active). In chunk mode a hunt/dump materialization
+			// can land on the destination mid-copy; the dense adapter is then
+			// authoritative, so redo this slot through the locked path.
+			const bool racedMaterialization =
+				!bothMaterialized && destination.heap->IsMaterialized();
+			if (result != DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::LockRequired &&
+					!racedMaterialization) {
+				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
+					result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased)
+					DX12DescriptorHeapStateUtils::BumpVersion(
+						destination.heap, destination.slot + i);
+				continue;
+			}
 		}
 		DescriptorRecord record;
 		if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(srcHandle, &record)) {
