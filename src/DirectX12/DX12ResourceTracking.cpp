@@ -3376,7 +3376,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
 		if (dest.ptr != src.ptr)
 			RecordCopiedDescriptorsSimple(
-				device, count, dest, src, descriptorHeapsType);
+				count, dest, src, descriptorHeapsType, increment);
 		destOffset += count;
 		srcOffset += count;
 		if (destOffset == destRangeSize) {
@@ -3391,14 +3391,12 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
-	ID3D12Device *device,
 	UINT numDescriptors,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
 	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
-	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
+	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType,
+	UINT increment)
 {
-	const UINT increment = device->GetDescriptorHandleIncrementSize(
-		descriptorHeapsType);
 	if (!increment)
 		return;
 

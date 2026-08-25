@@ -7981,7 +7981,9 @@ class DeviceWrapper
 							DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())) {
 					DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleWrapper, Record);
 					DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
-						mDevice, NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart, DescriptorHeapsType);
+						NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart,
+						DescriptorHeapsType,
+						mDevice->GetDescriptorHandleIncrementSize(DescriptorHeapsType));
 				}
 			}
 

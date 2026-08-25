@@ -1049,11 +1049,11 @@ public:
 		const UINT *srcDescriptorRangeSizes,
 		D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType);
 	static void RecordCopiedDescriptorsSimple(
-		ID3D12Device *device,
 		UINT numDescriptors,
 		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
 		D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
-		D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType);
+		D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType,
+		UINT descriptorIncrement);
 	static void RecordCreatedResource(
 		HRESULT hr,
 		void **resource,
