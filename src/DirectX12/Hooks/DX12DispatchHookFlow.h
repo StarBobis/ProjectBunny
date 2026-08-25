@@ -454,9 +454,13 @@ public:
 		if (!pipelineState)
 			return 0;
 		// Fallback cache for command lists without an embedded runtime state.
-		static std::unordered_map<ID3D12PipelineState*, uint64_t> cache;
-		static UINT64 lastReloadGen = 0;
-		UINT64 reloadGen = DX12ModGetReloadGeneration();
+		// This runs on arbitrary game recording threads, so keep the cache
+		// thread-local: the previous process-wide static map raced on
+		// concurrent find/insert, and the reload check below took gModLock
+		// on every call even though a volatile generation read is enough.
+		static thread_local std::unordered_map<ID3D12PipelineState*, uint64_t> cache;
+		static thread_local UINT64 lastReloadGen = 0;
+		const UINT64 reloadGen = DX12ModGetReloadGenerationFast();
 		if (reloadGen != lastReloadGen) {
 			cache.clear();
 			lastReloadGen = reloadGen;

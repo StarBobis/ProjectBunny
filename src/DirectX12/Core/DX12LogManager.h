@@ -298,6 +298,7 @@ public:
 		DX12LogManager &state = Get();
 		InterlockedIncrement64(&LogCostEnqueueCalls);
 		AcquireSRWLockExclusive(&state.queueLock);
+		const bool wasEmpty = state.queue.empty();
 		if (state.queue.size() < MaxQueuedLogLines()) {
 			state.queue.emplace_back(line);
 		} else {
@@ -305,7 +306,10 @@ public:
 			InterlockedIncrement64(&LogCostDroppedLines);
 		}
 		ReleaseSRWLockExclusive(&state.queueLock);
-		if (state.event)
+		// The writer thread polls on a timeout, so signaling is only a
+		// latency hint; waking it once per empty->non-empty transition
+		// instead of once per line keeps present-time log bursts cheap.
+		if (wasEmpty && state.event)
 			SetEvent(state.event);
 		AddLogCost(&LogCostEnqueueUs, LogDeltaUs(begin, LogNow()));
 	}
@@ -373,6 +377,45 @@ public:
 		if (flush)
 			Flush();
 	}
+
+	// Batches formatted lines and enqueues them under one lock acquisition.
+	// The per-present frame-timeline tables emit dozens of Fields lines back
+	// to back on the render thread; routing them through a batch turns
+	// dozens of exclusive-lock + SetEvent rounds into a single one while
+	// keeping every emitted line byte-identical to WriteLogLine output.
+	class LogBatch
+	{
+	public:
+		~LogBatch() { Commit(); }
+
+		void Append(const char *func, const char *extra)
+		{
+			const LARGE_INTEGER formatBegin = LogNow();
+			char timePlain[32] = {};
+			DX12LogUtils::MakeLogTimePlain(timePlain, sizeof(timePlain));
+			char fields[6144];
+			NormalizeFields(extra, fields, sizeof(fields));
+			char line[8192];
+			if (extra && extra[0]) {
+				snprintf(line, sizeof(line), "time=%s,func=%s,%s\n", timePlain, func, fields);
+			} else {
+				snprintf(line, sizeof(line), "time=%s,func=%s\n", timePlain, func);
+			}
+			AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
+			mBuffer += line;
+		}
+
+		void Commit()
+		{
+			if (mBuffer.empty())
+				return;
+			EnqueueLogLine(mBuffer.c_str());
+			mBuffer.clear();
+		}
+
+	private:
+		std::string mBuffer;
+	};
 
 	static void Text(const char *fmt, ...)
 	{

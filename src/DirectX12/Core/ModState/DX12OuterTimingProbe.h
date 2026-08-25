@@ -117,6 +117,26 @@ public:
 	};
 #endif
 
+	// Per-thread API wall-clock buckets, claimed once per recording thread
+	// and merged once per present. The previous process-wide interlocked
+	// buckets serialized every hooked API call from every thread on shared
+	// cache lines (~10-20 locked ops per call), which was the dominant
+	// TIMING-build stutter. Same pool idiom as DX12Profiling: plain
+	// per-thread RMW on the hot path, drain with InterlockedExchange64 at
+	// flush; a racing increment can be attributed one frame late
+	// (diagnostics only).
+	static constexpr UINT kApiWallThreadTables = 64;
+	struct alignas(64) ApiWallThreadTable
+	{
+		DWORD threadId = 0;
+		LONG64 calls[ApiWallBucketCount] = {};
+		LONG64 totalUs[ApiWallBucketCount] = {};
+		LONG64 maxUs[ApiWallBucketCount] = {};
+		LONG64 scopeCalls = 0;
+		LONG64 scopeNestedCalls = 0;
+		LONG64 scopeTotalUs = 0;
+	};
+
 	class CpuStageBucket
 	{
 	public:
@@ -237,16 +257,22 @@ public:
 	inline static volatile LONG64 WorkerWaitUs = 0;
 	inline static volatile LONG64 WorkerIdleWaitUs = 0;
 	inline static volatile LONG64 WorkerDrainWaitUs = 0;
-	inline static volatile LONG64 ApiWallCalls[ApiWallBucketCount] = {};
-	inline static volatile LONG64 ApiWallTotalUs[ApiWallBucketCount] = {};
-	inline static volatile LONG64 ApiWallMaxUs[ApiWallBucketCount] = {};
+	inline static ApiWallThreadTable
+		ApiWallThreadTables[kApiWallThreadTables] = {};
+	inline static volatile LONG ApiWallThreadTableCount = 0;
+	// Overflow fallback for threads beyond the table pool. Unused in
+	// practice (games record on a handful of threads); kept so overflow
+	// threads never alias another thread's plain-RMW table.
+	inline static volatile LONG64 ApiWallFallbackCalls[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiWallFallbackTotalUs[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiWallFallbackMaxUs[ApiWallBucketCount] = {};
+	inline static volatile LONG64 ApiWallFallbackScopeCalls = 0;
+	inline static volatile LONG64 ApiWallFallbackScopeTotalUs = 0;
+	inline static volatile LONG64 ApiWallFallbackScopeNestedCalls = 0;
 	// Nesting is a property of one recording thread.  The old process-wide
 	// counter classified unrelated scopes on parallel Unity threads as nested,
 	// which made exclusive totals lose most of the frame and hid the real cost.
 	inline static thread_local LONG ApiScopeActiveDepth = 0;
-	inline static volatile LONG64 ApiScopeCalls = 0;
-	inline static volatile LONG64 ApiScopeTotalUs = 0;
-	inline static volatile LONG64 ApiScopeNestedCalls = 0;
 	inline static volatile LONG64 ApiScopeFirstBeginQpc = 0;
 	inline static volatile LONG64 ApiScopeLastEndQpc = 0;
 	inline static volatile LONG64 ApiScopeMaxGapUs = 0;
@@ -255,9 +281,12 @@ public:
 	inline static volatile LONG64 ApiScopeLastEndThreadKernelUs = 0;
 	inline static volatile LONG64 ApiScopeLastEndThreadUserUs = 0;
 	// Set by LogApiScopeBegin when a gap is worth recording; the matching End
-	// then samples thread CPU times once. Keeps the GetThreadTimes syscall
-	// (hundreds of ns each) off the per-API-call path.
-	inline static volatile LONG ApiScopeEndCpuSamplePending = 0;
+	// on the same thread then samples thread CPU times once. Keeps the
+	// GetThreadTimes syscall (hundreds of ns each) off the per-API-call path.
+	// Thread-local because a Begin/End pair always runs on one thread; the
+	// previous process-wide flag cross-fired between threads and cost two
+	// interlocked ops per API call.
+	inline static thread_local LONG ApiScopeEndCpuSamplePending = 0;
 	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadKernelUs = 0;
 	inline static volatile LONG64 ApiScopeMaxGapBeforeThreadUserUs = 0;
 	inline static volatile LONG64 ApiScopeMaxGapAfterThreadKernelUs = 0;
@@ -816,6 +845,75 @@ public:
 		}
 	}
 
+	// Plain volatile reads: full-fence CAS reads on shared lines are the
+	// per-API-call cost this probe exists to avoid; a slightly stale
+	// diagnostic value is fine. x86-64 aligned loads are atomic.
+	static LONG64 ReadLong64(volatile LONG64 *value)
+	{
+		return *value;
+	}
+
+	static LONG ReadLong(volatile LONG *value)
+	{
+		return *value;
+	}
+
+	static ApiWallThreadTable *AcquireApiWallThreadTable()
+	{
+		const LONG index = InterlockedIncrement(&ApiWallThreadTableCount) - 1;
+		if (index < 0 || index >= static_cast<LONG>(kApiWallThreadTables))
+			return nullptr;
+		ApiWallThreadTables[index].threadId = GetCurrentThreadId();
+		return &ApiWallThreadTables[index];
+	}
+
+	static ApiWallThreadTable *GetApiWallThreadTable()
+	{
+		static thread_local ApiWallThreadTable *table = AcquireApiWallThreadTable();
+		return table;
+	}
+
+	struct ApiWallDrainResult
+	{
+		LONG64 calls[ApiWallBucketCount] = {};
+		LONG64 totalUs[ApiWallBucketCount] = {};
+		LONG64 maxUs[ApiWallBucketCount] = {};
+		LONG64 scopeCalls = 0;
+		LONG64 scopeNestedCalls = 0;
+		LONG64 scopeTotalUs = 0;
+	};
+
+	static void DrainApiWallThreadTables(ApiWallDrainResult *drain)
+	{
+		const LONG tableCount = InterlockedCompareExchange(&ApiWallThreadTableCount, 0, 0);
+		const LONG tablesToScan = tableCount < static_cast<LONG>(kApiWallThreadTables)
+			? tableCount : static_cast<LONG>(kApiWallThreadTables);
+		for (LONG t = 0; t < tablesToScan; ++t) {
+			ApiWallThreadTable &table = ApiWallThreadTables[t];
+			drain->scopeCalls += InterlockedExchange64(&table.scopeCalls, 0);
+			drain->scopeNestedCalls += InterlockedExchange64(&table.scopeNestedCalls, 0);
+			drain->scopeTotalUs += InterlockedExchange64(&table.scopeTotalUs, 0);
+			for (int bucket = 0; bucket < ApiWallBucketCount; ++bucket) {
+				drain->calls[bucket] += InterlockedExchange64(&table.calls[bucket], 0);
+				drain->totalUs[bucket] += InterlockedExchange64(&table.totalUs[bucket], 0);
+				const LONG64 tableMaxUs = InterlockedExchange64(&table.maxUs[bucket], 0);
+				if (tableMaxUs > drain->maxUs[bucket])
+					drain->maxUs[bucket] = tableMaxUs;
+			}
+		}
+		// Overflow threads share the interlocked fallback counters.
+		drain->scopeCalls += TakeLong64(&ApiWallFallbackScopeCalls);
+		drain->scopeNestedCalls += TakeLong64(&ApiWallFallbackScopeNestedCalls);
+		drain->scopeTotalUs += TakeLong64(&ApiWallFallbackScopeTotalUs);
+		for (int bucket = 0; bucket < ApiWallBucketCount; ++bucket) {
+			drain->calls[bucket] += TakeLong64(&ApiWallFallbackCalls[bucket]);
+			drain->totalUs[bucket] += TakeLong64(&ApiWallFallbackTotalUs[bucket]);
+			const LONG64 fallbackMaxUs = TakeLong64(&ApiWallFallbackMaxUs[bucket]);
+			if (fallbackMaxUs > drain->maxUs[bucket])
+				drain->maxUs[bucket] = fallbackMaxUs;
+		}
+	}
+
 	static ApiThreadTimelineLocal &GetApiThreadTimelineLocal()
 	{
 		static thread_local ApiThreadTimelineLocal local;
@@ -896,65 +994,78 @@ public:
 	{
 		RecordApiThreadScopeBegin(beginQpc);
 		const LONG activeDepth = ++ApiScopeActiveDepth;
+		ApiWallThreadTable *table = GetApiWallThreadTable();
 		if (activeDepth > 1) {
-			InterlockedIncrement64(&ApiScopeNestedCalls);
+			if (table)
+				++table->scopeNestedCalls;
+			else
+				InterlockedIncrement64(&ApiWallFallbackScopeNestedCalls);
 			return;
 		}
-		InterlockedIncrement64(&ApiScopeCalls);
-		const LONG64 firstBegin = InterlockedCompareExchange64(
-			&ApiScopeFirstBeginQpc,
-			static_cast<LONG64>(beginQpc),
-			0);
-		if (firstBegin == 0)
+		if (table)
+			++table->scopeCalls;
+		else
+			InterlockedIncrement64(&ApiWallFallbackScopeCalls);
+		// Plain volatile reads for the shared gap state below: the full-fence
+		// CAS reads used here before serialized every recording thread on the
+		// same cache lines for every single API call.  A slightly stale read
+		// only blurs a diagnostic gap record, never the wall totals.
+		if (ReadLong64(&ApiScopeFirstBeginQpc) == 0 &&
+				InterlockedCompareExchange64(
+					&ApiScopeFirstBeginQpc,
+					static_cast<LONG64>(beginQpc),
+					0) == 0) {
 			InterlockedExchange(&ApiScopeFirstBucket, bucket);
-		const LONG64 previousEndQpc =
-			InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
+		}
+		const LONG64 previousEndQpc = ReadLong64(&ApiScopeLastEndQpc);
 		if (previousEndQpc > 0 && beginQpc > previousEndQpc) {
 			const LONG64 gapUs = DeltaUs(previousEndQpc, beginQpc);
-			const LONG beforeBucket = InterlockedCompareExchange(&ApiScopeLastBucket, 0, 0);
-			const LONG beforeThreadId = InterlockedCompareExchange(&ApiScopeLastThreadId, 0, 0);
-			const LONG64 beforeKernelUs =
-				InterlockedCompareExchange64(&ApiScopeLastEndThreadKernelUs, 0, 0);
-			const LONG64 beforeUserUs =
-				InterlockedCompareExchange64(&ApiScopeLastEndThreadUserUs, 0, 0);
+			const LONG currentThreadId = static_cast<LONG>(GetCurrentThreadId());
+			const LONG beforeBucket = ReadLong(&ApiScopeLastBucket);
+			const LONG beforeThreadId = ReadLong(&ApiScopeLastThreadId);
+			LONG64 beforeKernelUs = 0;
+			LONG64 beforeUserUs = 0;
 			LONG64 afterKernelUs = 0;
 			LONG64 afterUserUs = 0;
 			// GetThreadTimes is a syscall (hundreds of ns each); sampling it on
 			// every API call dominates the TIMING build cost while the 50ms
 			// IsInterestingGap threshold almost never fires. Only sample when
 			// this gap can actually be logged or beat the recorded maximum.
-			const LONG64 observedMaxGap =
-				InterlockedCompareExchange64(&ApiScopeMaxGapUs, 0, 0);
-			if (IsInterestingGap(gapUs) || gapUs > observedMaxGap) {
+			const bool recordGap =
+				IsInterestingGap(gapUs) || gapUs > ReadLong64(&ApiScopeMaxGapUs);
+			if (recordGap) {
+				beforeKernelUs = ReadLong64(&ApiScopeLastEndThreadKernelUs);
+				beforeUserUs = ReadLong64(&ApiScopeLastEndThreadUserUs);
 				GetCurrentThreadCpuUs(&afterKernelUs, &afterUserUs);
-				InterlockedExchange(&ApiScopeEndCpuSamplePending, 1);
+				ApiScopeEndCpuSamplePending = 1;
 			}
 			const LONG64 threadKernelDeltaUs =
-				static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId ?
+				currentThreadId == beforeThreadId ?
 					SafeSubtract(afterKernelUs, beforeKernelUs) : 0;
 			const LONG64 threadUserDeltaUs =
-				static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId ?
+				currentThreadId == beforeThreadId ?
 					SafeSubtract(afterUserUs, beforeUserUs) : 0;
 			const LONG64 threadCpuDeltaUs = threadKernelDeltaUs + threadUserDeltaUs;
-			LONG64 observed = InterlockedCompareExchange64(&ApiScopeMaxGapUs, 0, 0);
-			while (gapUs > observed) {
-				const LONG64 previous = InterlockedCompareExchange64(
-					&ApiScopeMaxGapUs, gapUs, observed);
-				if (previous == observed) {
-					InterlockedExchange64(&ApiScopeMaxGapBeginQpc, previousEndQpc);
-					InterlockedExchange64(&ApiScopeMaxGapEndQpc, beginQpc);
-					InterlockedExchange64(&ApiScopeMaxGapBeforeThreadKernelUs, beforeKernelUs);
-					InterlockedExchange64(&ApiScopeMaxGapBeforeThreadUserUs, beforeUserUs);
-					InterlockedExchange64(&ApiScopeMaxGapAfterThreadKernelUs, afterKernelUs);
-					InterlockedExchange64(&ApiScopeMaxGapAfterThreadUserUs, afterUserUs);
-					InterlockedExchange(&ApiScopeMaxGapBeforeBucket, beforeBucket);
-					InterlockedExchange(&ApiScopeMaxGapAfterBucket, bucket);
-					InterlockedExchange(&ApiScopeMaxGapBeforeThreadId, beforeThreadId);
-					InterlockedExchange(&ApiScopeMaxGapAfterThreadId,
-						static_cast<LONG>(GetCurrentThreadId()));
-					break;
+			if (recordGap) {
+				LONG64 observed = ReadLong64(&ApiScopeMaxGapUs);
+				while (gapUs > observed) {
+					const LONG64 previous = InterlockedCompareExchange64(
+						&ApiScopeMaxGapUs, gapUs, observed);
+					if (previous == observed) {
+						InterlockedExchange64(&ApiScopeMaxGapBeginQpc, previousEndQpc);
+						InterlockedExchange64(&ApiScopeMaxGapEndQpc, beginQpc);
+						InterlockedExchange64(&ApiScopeMaxGapBeforeThreadKernelUs, beforeKernelUs);
+						InterlockedExchange64(&ApiScopeMaxGapBeforeThreadUserUs, beforeUserUs);
+						InterlockedExchange64(&ApiScopeMaxGapAfterThreadKernelUs, afterKernelUs);
+						InterlockedExchange64(&ApiScopeMaxGapAfterThreadUserUs, afterUserUs);
+						InterlockedExchange(&ApiScopeMaxGapBeforeBucket, beforeBucket);
+						InterlockedExchange(&ApiScopeMaxGapAfterBucket, bucket);
+						InterlockedExchange(&ApiScopeMaxGapBeforeThreadId, beforeThreadId);
+						InterlockedExchange(&ApiScopeMaxGapAfterThreadId, currentThreadId);
+						break;
+					}
+					observed = previous;
 				}
-				observed = previous;
 			}
 			if (IsInterestingGap(gapUs)) {
 				DX12LogManager::Fields("DX12CpuGapProbe",
@@ -968,8 +1079,8 @@ public:
 					ApiWallBucketName(beforeBucket),
 					ApiWallBucketName(bucket),
 					beforeThreadId,
-					static_cast<LONG>(GetCurrentThreadId()),
-					static_cast<LONG>(static_cast<LONG>(GetCurrentThreadId()) == beforeThreadId),
+					currentThreadId,
+					static_cast<LONG>(currentThreadId == beforeThreadId),
 					static_cast<long long>(threadKernelDeltaUs),
 					static_cast<long long>(threadUserDeltaUs),
 					static_cast<long long>(threadCpuDeltaUs),
@@ -985,27 +1096,40 @@ public:
 		const LONG64 elapsedUs = DeltaUs(beginQpc, endQpc);
 		const LONG activeDepth = ApiScopeActiveDepth;
 		if (activeDepth <= 1) {
-			AddUs(&ApiScopeTotalUs, elapsedUs);
-			LONG64 observed = InterlockedCompareExchange64(&ApiScopeLastEndQpc, 0, 0);
-			while (endQpc > observed) {
-				const LONG64 previous = InterlockedCompareExchange64(
-					&ApiScopeLastEndQpc, endQpc, observed);
-				if (previous == observed) {
-					InterlockedExchange(&ApiScopeLastBucket, bucket);
-					InterlockedExchange(&ApiScopeLastThreadId,
-						static_cast<LONG>(GetCurrentThreadId()));
-					LONG64 kernelUs = 0;
-					LONG64 userUs = 0;
-					// Only sample when the matching Begin flagged a recordable
-					// gap; see ApiScopeEndCpuSamplePending in LogApiScopeBegin.
-					if (InterlockedExchange(&ApiScopeEndCpuSamplePending, 0)) {
-						GetCurrentThreadCpuUs(&kernelUs, &userUs);
-						InterlockedExchange64(&ApiScopeLastEndThreadKernelUs, kernelUs);
-						InterlockedExchange64(&ApiScopeLastEndThreadUserUs, userUs);
+			ApiWallThreadTable *table = GetApiWallThreadTable();
+			const LONG64 safeUs = ClampUs(elapsedUs);
+			if (safeUs > 0) {
+				if (table)
+					table->scopeTotalUs += safeUs;
+				else
+					InterlockedAdd64(&ApiWallFallbackScopeTotalUs, safeUs);
+			}
+			// Plain-read gate: skip the CAS entirely when another thread
+			// already recorded a later end.
+			if (endQpc > ReadLong64(&ApiScopeLastEndQpc)) {
+				LONG64 observed = ReadLong64(&ApiScopeLastEndQpc);
+				while (endQpc > observed) {
+					const LONG64 previous = InterlockedCompareExchange64(
+						&ApiScopeLastEndQpc, endQpc, observed);
+					if (previous == observed) {
+						InterlockedExchange(&ApiScopeLastBucket, bucket);
+						InterlockedExchange(&ApiScopeLastThreadId,
+							static_cast<LONG>(GetCurrentThreadId()));
+						LONG64 kernelUs = 0;
+						LONG64 userUs = 0;
+						// Only sample when the matching Begin flagged a
+						// recordable gap; see ApiScopeEndCpuSamplePending in
+						// LogApiScopeBegin.
+						if (ApiScopeEndCpuSamplePending) {
+							ApiScopeEndCpuSamplePending = 0;
+							GetCurrentThreadCpuUs(&kernelUs, &userUs);
+							InterlockedExchange64(&ApiScopeLastEndThreadKernelUs, kernelUs);
+							InterlockedExchange64(&ApiScopeLastEndThreadUserUs, userUs);
+						}
+						break;
 					}
-					break;
+					observed = previous;
 				}
-				observed = previous;
 			}
 		}
 		LogApiWallSlice(bucket, elapsedUs);
@@ -1020,20 +1144,51 @@ public:
 		const LONG64 safeUs = ClampUs(us);
 		if (safeUs <= 0)
 			return;
-		InterlockedIncrement64(&ApiWallCalls[bucket]);
-		InterlockedAdd64(&ApiWallTotalUs[bucket], safeUs);
-		MaxUs(&ApiWallMaxUs[bucket], safeUs);
+		ApiWallThreadTable *table = GetApiWallThreadTable();
+		if (table) {
+			++table->calls[bucket];
+			table->totalUs[bucket] += safeUs;
+			if (safeUs > table->maxUs[bucket])
+				table->maxUs[bucket] = safeUs;
+			return;
+		}
+		InterlockedIncrement64(&ApiWallFallbackCalls[bucket]);
+		InterlockedAdd64(&ApiWallFallbackTotalUs[bucket], safeUs);
+		MaxUs(&ApiWallFallbackMaxUs[bucket], safeUs);
 	}
 
-	static void LogApiWallTimingState(LONG present, LONG64 frameWallUs)
+	// Routes one timing-table line through the per-frame batch (single
+	// queue lock + SetEvent per present) or straight to the log manager.
+	static void LogTimingFields(
+		DX12LogManager::LogBatch *batch, const char *func, const char *fmt, ...)
+	{
+		va_list args;
+		va_start(args, fmt);
+		if (batch) {
+			char extra[4096];
+			extra[0] = '\0';
+			if (fmt && fmt[0])
+				vsnprintf(extra, sizeof(extra), fmt, args);
+			batch->Append(func, extra);
+		} else {
+			DX12LogManager::FieldsV(func, fmt, args, false);
+		}
+		va_end(args);
+	}
+
+	static void LogApiWallTimingState(
+		LONG present,
+		LONG64 frameWallUs,
+		const ApiWallDrainResult &drain,
+		DX12LogManager::LogBatch *batch)
 	{
 		for (int bucket = 0; bucket < ApiWallBucketCount; ++bucket) {
-			const LONG64 calls = TakeLong64(&ApiWallCalls[bucket]);
-			const LONG64 totalUs = TakeLong64(&ApiWallTotalUs[bucket]);
-			const LONG64 maxUs = TakeLong64(&ApiWallMaxUs[bucket]);
+			const LONG64 calls = drain.calls[bucket];
+			const LONG64 totalUs = drain.totalUs[bucket];
+			const LONG64 maxUs = drain.maxUs[bucket];
 			if (!calls && !totalUs && !maxUs)
 				continue;
-			DX12LogManager::Fields("DX12ApiWallTiming",
+			LogTimingFields(batch, "DX12ApiWallTiming",
 				"\"present\":%ld,\"bucket\":\"%s\",\"calls\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,\"frameWallUs\":%lld,\"framePctX100\":%lld",
 				present,
 				ApiWallBucketName(bucket),
@@ -1050,7 +1205,8 @@ public:
 		LONG present,
 		LONGLONG frameStartQpc,
 		LONGLONG frameEndQpc,
-		LONG64 frameWallUs)
+		LONG64 frameWallUs,
+		DX12LogManager::LogBatch *batch)
 	{
 		for (UINT index = 0; index < ApiThreadTimelineSlotCount; ++index) {
 			ApiThreadTimelineSlot &slot = ApiThreadTimelineSlots[index];
@@ -1073,7 +1229,7 @@ public:
 				DeltaUs(frameStartQpc, firstBeginQpc) : 0;
 			const LONG64 endSlackUs = frameEndQpc > lastEndQpc && lastEndQpc > 0 ?
 				DeltaUs(lastEndQpc, frameEndQpc) : 0;
-			DX12LogManager::Fields("DX12CpuThreadTimeline",
+			LogTimingFields(batch, "DX12CpuThreadTimeline",
 				"\"present\":%ld,\"threadId\":%ld,\"outerCalls\":%lld,"
 				"\"outerTotalUs\":%lld,\"spanUs\":%lld,\"startOffsetUs\":%lld,"
 				"\"endSlackUs\":%lld,\"maxScopeUs\":%lld,"
@@ -1102,11 +1258,13 @@ public:
 		LONGLONG frameStartQpc,
 		LONGLONG frameEndQpc,
 		LONG64 frameWallUs,
-		LONG64 presentWallUs)
+		LONG64 presentWallUs,
+		const ApiWallDrainResult &drain,
+		DX12LogManager::LogBatch *batch)
 	{
-		const LONG64 calls = TakeLong64(&ApiScopeCalls);
-		const LONG64 totalUs = TakeLong64(&ApiScopeTotalUs);
-		const LONG64 nestedCalls = TakeLong64(&ApiScopeNestedCalls);
+		const LONG64 calls = drain.scopeCalls;
+		const LONG64 totalUs = drain.scopeTotalUs;
+		const LONG64 nestedCalls = drain.scopeNestedCalls;
 		const LONG64 firstBeginQpc = TakeLong64(&ApiScopeFirstBeginQpc);
 		const LONG64 lastEndQpc = TakeLong64(&ApiScopeLastEndQpc);
 		const LONG64 maxGapUs = TakeLong64(&ApiScopeMaxGapUs);
@@ -1183,7 +1341,7 @@ public:
 			(lastEndQpc > 0 && frameEndQpc > lastEndQpc) ?
 				DeltaUs(lastEndQpc, frameEndQpc) : 0;
 
-		DX12LogManager::Fields("DX12CpuTimelineCoverage",
+		LogTimingFields(batch, "DX12CpuTimelineCoverage",
 			"\"present\":%ld,\"apiScopeCalls\":%lld,\"apiScopeNestedCalls\":%lld,"
 			"\"apiScopeTotalUs\":%lld,\"apiScopeSpanUs\":%lld,\"apiScopeMaxGapUs\":%lld,"
 			"\"apiScopeFirstBucket\":\"%s\",\"apiScopeLastBucket\":\"%s\","
@@ -1372,7 +1530,8 @@ public:
 #endif
 	}
 
-	static void LogCpuStageTimingState(LONG present, LONG64 frameWallUs)
+	static void LogCpuStageTimingState(
+		LONG present, LONG64 frameWallUs, DX12LogManager::LogBatch *batch)
 	{
 		CpuStageBucket snapshot[160] = {};
 		LONG snapshotCount = 0;
@@ -1394,7 +1553,7 @@ public:
 				continue;
 			if (snapshot[index].totalUs < 40 && snapshot[index].maxUs < 10)
 				continue;
-			DX12LogManager::Fields("DX12CpuStageTiming",
+			LogTimingFields(batch, "DX12CpuStageTiming",
 				"\"present\":%ld,\"category\":\"%s\",\"stage\":\"%s\",\"kind\":%u,"
 				"\"calls\":%lld,\"items\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,"
 				"\"frameWallUs\":%lld,\"framePctX100\":%lld",
@@ -1412,7 +1571,8 @@ public:
 		}
 	}
 
-	static void LogLogCostState(LONG present, LONG64 frameWallUs)
+	static void LogLogCostState(
+		LONG present, LONG64 frameWallUs, DX12LogManager::LogBatch *batch)
 	{
 		DX12LogManager::DX12LogCostSnapshot snapshot = {};
 		DX12LogManager::TakeLogCostSnapshot(&snapshot);
@@ -1424,7 +1584,7 @@ public:
 		const LONG64 totalUs = snapshot.formatUs + snapshot.enqueueUs;
 		if (totalUs < 40 && !snapshot.droppedLines)
 			return;
-		DX12LogManager::Fields("DX12LogCost",
+		LogTimingFields(batch, "DX12LogCost",
 			"\"present\":%ld,\"fieldCalls\":%lld,\"textCalls\":%lld,"
 			"\"enqueueCalls\":%lld,\"formatUs\":%lld,"
 			"\"enqueueUs\":%lld,\"totalUs\":%lld,\"droppedLines\":%lld,"
@@ -1772,6 +1932,11 @@ public:
 		LONGLONG frameEndQpc)
 	{
 		const LONG present = DX12RuntimeState::GetPresentCount();
+		// One batch per present: all per-frame timing tables below enqueue
+		// under a single queue lock instead of one lock + SetEvent per line.
+		DX12LogManager::LogBatch batch;
+		ApiWallDrainResult drain;
+		DrainApiWallThreadTables(&drain);
 		const LONG presentEnterCalls = TakeLong(&PresentEnterCalls);
 		const LONG presentLeaveCalls = TakeLong(&PresentLeaveCalls);
 		const LONG64 presentSliceKnownUs = TakeLong64(&PresentSliceKnownUs);
@@ -1821,16 +1986,19 @@ public:
 			frameStartQpc,
 			frameEndQpc,
 			frameWallUs,
-			presentWallUs);
+			presentWallUs,
+			drain,
+			&batch);
 		LogApiThreadTimelineState(
 			present,
 			frameStartQpc,
 			frameEndQpc,
-			frameWallUs);
-		LogApiWallTimingState(present, frameWallUs);
-		LogCpuStageTimingState(present, frameWallUs);
+			frameWallUs,
+			&batch);
+		LogApiWallTimingState(present, frameWallUs, drain, &batch);
+		LogCpuStageTimingState(present, frameWallUs, &batch);
 
-		DX12LogManager::Fields("DX12FrameTimeline",
+		LogTimingFields(&batch, "DX12FrameTimeline",
 			"\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
 			"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,"
 			"\"outsidePresentUs\":%lld,"
@@ -1901,6 +2069,6 @@ public:
 			static_cast<long long>(workerIdleWaitUs),
 			static_cast<long long>(workerDrainWaitUs),
 			static_cast<long long>(SafeSubtract(presentWallUs, presentSliceKnownUs)));
-		LogLogCostState(present, frameWallUs);
+		LogLogCostState(present, frameWallUs, &batch);
 	}
 };
