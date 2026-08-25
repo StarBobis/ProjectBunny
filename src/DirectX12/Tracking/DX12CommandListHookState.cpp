@@ -79,23 +79,7 @@ DX12CommandListHookSignatures::CommandListEndEvent DX12CommandListHookState::Ori
 DX12CommandListHookSignatures::ExecuteIndirect DX12CommandListHookState::OrigExecuteIndirect = nullptr;
 
 
-SRWLOCK DX12CommandListHookState::RegisteredListLock = SRWLOCK_INIT;
-std::unordered_set<void*> DX12CommandListHookState::RegisteredCommandLists;
-SRWLOCK DX12CommandListHookState::KnownCommandQueueLock = SRWLOCK_INIT;
-IUnknown *DX12CommandListHookState::KnownCommandQueue = nullptr;
-
 thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandListOriginals[64];
 thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandQueueOriginals[32];
 thread_local DX12VtableBaseCache DX12CommandListHookState::VtableBaseCache;
 thread_local DX12ThreadLocalIaCallbacksCache DX12CommandListHookState::IaCallbacksCache;
-
-void DX12CommandListHookState::ReleaseKnownCommandQueue()
-{
-	IUnknown *queue = nullptr;
-	AcquireSRWLockExclusive(&KnownCommandQueueLock);
-	queue = KnownCommandQueue;
-	KnownCommandQueue = nullptr;
-	ReleaseSRWLockExclusive(&KnownCommandQueueLock);
-	if (queue)
-		queue->Release();
-}

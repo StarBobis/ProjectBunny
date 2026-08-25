@@ -164,15 +164,6 @@ public:
 	static DX12CommandListHookSignatures::CommandListEndEvent OrigCommandListEndEvent;
 	static DX12CommandListHookSignatures::ExecuteIndirect OrigExecuteIndirect;
 
-	static SRWLOCK HookedVTableLock;
-	static std::unordered_set<void*> HookedCommandListVTables;
-	static std::unordered_map<void*, UINT32> CommandListVTableHookMasks;
-	static SRWLOCK RegisteredListLock;
-	static std::unordered_set<void*> RegisteredCommandLists;
-	static SRWLOCK KnownCommandQueueLock;
-	static IUnknown *KnownCommandQueue;
-	static void ReleaseKnownCommandQueue();
-
 	static thread_local DX12ThreadLocalCommandListOriginal CommandListOriginals[64];
 	static thread_local DX12ThreadLocalCommandListOriginal CommandQueueOriginals[32];
 	static thread_local DX12VtableBaseCache VtableBaseCache;

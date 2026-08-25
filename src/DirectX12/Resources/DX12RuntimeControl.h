@@ -120,7 +120,6 @@ public:
 		DX12WaitHooks::Shutdown();
 #endif
 		DXGIHooks::Shutdown();
-		DX12CommandListHookState::ReleaseKnownCommandQueue();
 		DX12HookRegistry::UnhookAll();
 		DX12LogManager::Close();
 		DX12LogUtils::Close();
