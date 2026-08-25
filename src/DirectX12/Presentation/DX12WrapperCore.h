@@ -623,10 +623,18 @@ namespace DX12WrapperDetail
 			AcquireSRWLockExclusive(&gWrapperLock);
 			gWrapperMap[wrapperPointer] = this;
 			mWrapperPointers.push_back(wrapperPointer);
-			// No generation bump here: a wrapper-pointer -> object mapping is
-			// immutable for the wrapper's lifetime, so registrations cannot
-			// invalidate the unwrap TLS caches. Only destruction (which frees
-			// the address for reuse) may do so - see RemoveRegistryEntriesLocked.
+			// Registrations MUST bump the registry generation. UnwrapObject's
+			// TLS cache also stores negative entries (native pointer -> same
+			// pointer), and destruction-side invalidation cannot see native
+			// COM frees: if a native object at address A dies and a new
+			// wrapper is later registered at the same address A, another
+			// thread's stale (A -> A) entry would hand the wrapper pointer to
+			// code expecting the native object (ABA). The bump is inside the
+			// exclusive lock, so UnwrapObject's find + generation re-read
+			// under the shared lock stay airtight: any registration either
+			// precedes the find (visible in the map) or follows the re-read
+			// (visible as a newer generation on the next lookup).
+			gWrapperRegistryGeneration.fetch_add(1, std::memory_order_release);
 			ReleaseSRWLockExclusive(&gWrapperLock);
 		}
 
