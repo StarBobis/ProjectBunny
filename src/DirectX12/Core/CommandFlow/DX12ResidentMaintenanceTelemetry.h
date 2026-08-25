@@ -7,549 +7,612 @@
 class DX12ResidentMaintenanceTelemetryUtils
 {
 public:
-	inline static volatile LONG PsoCalls = 0;
-	inline static volatile LONG PsoChanged = 0;
-	inline static volatile LONG PsoNoChange = 0;
-	inline static volatile LONG RuntimePsoCalls = 0;
-	inline static volatile LONG RuntimePsoChanged = 0;
-	inline static volatile LONG RuntimePsoNoChange = 0;
-	inline static volatile LONG RuntimeLookupTlsHits = 0;
-	inline static volatile LONG RuntimeLookupDirectHits = 0;
-	inline static volatile LONG RuntimeLookupShardHits = 0;
-	inline static volatile LONG RuntimeLookupMisses = 0;
+	enum class Counter
+	{
+		PsoCalls,
+		PsoChanged,
+		PsoNoChange,
+		RuntimePsoCalls,
+		RuntimePsoChanged,
+		RuntimePsoNoChange,
+		RuntimeLookupTlsHits,
+		RuntimeLookupDirectHits,
+		RuntimeLookupShardHits,
+		RuntimeLookupMisses,
 
-	inline static volatile LONG GraphicsRootSignatureCalls = 0;
-	inline static volatile LONG GraphicsRootSignatureChanged = 0;
-	inline static volatile LONG GraphicsRootSignatureNoChange = 0;
-	inline static volatile LONG ComputeRootSignatureCalls = 0;
-	inline static volatile LONG ComputeRootSignatureChanged = 0;
-	inline static volatile LONG ComputeRootSignatureNoChange = 0;
+		GraphicsRootSignatureCalls,
+		GraphicsRootSignatureChanged,
+		GraphicsRootSignatureNoChange,
+		ComputeRootSignatureCalls,
+		ComputeRootSignatureChanged,
+		ComputeRootSignatureNoChange,
 
-	inline static volatile LONG DescriptorHeapResolveCalls = 0;
-	inline static volatile LONG64 DescriptorHeapResolveSlots = 0;
-	inline static volatile LONG DescriptorHeapCalls = 0;
-	inline static volatile LONG DescriptorHeapChanged = 0;
-	inline static volatile LONG DescriptorHeapNoChange = 0;
-	inline static volatile LONG64 DescriptorHeapInvalidatedGraphicsTables = 0;
-	inline static volatile LONG64 DescriptorHeapInvalidatedComputeTables = 0;
+		DescriptorHeapResolveCalls,
+		DescriptorHeapResolveSlots,
+		DescriptorHeapCalls,
+		DescriptorHeapChanged,
+		DescriptorHeapNoChange,
+		DescriptorHeapInvalidatedGraphicsTables,
+		DescriptorHeapInvalidatedComputeTables,
 
-	inline static volatile LONG GraphicsRootTableCalls = 0;
-	inline static volatile LONG GraphicsRootTableTlsHits = 0;
-	inline static volatile LONG GraphicsRootTableChanged = 0;
-	inline static volatile LONG GraphicsRootTableNoChange = 0;
-	inline static volatile LONG ComputeRootTableCalls = 0;
-	inline static volatile LONG ComputeRootTableTlsHits = 0;
-	inline static volatile LONG ComputeRootTableChanged = 0;
-	inline static volatile LONG ComputeRootTableNoChange = 0;
+		GraphicsRootTableCalls,
+		GraphicsRootTableTlsHits,
+		GraphicsRootTableChanged,
+		GraphicsRootTableNoChange,
+		ComputeRootTableCalls,
+		ComputeRootTableTlsHits,
+		ComputeRootTableChanged,
+		ComputeRootTableNoChange,
 
-	inline static volatile LONG GraphicsRootDescriptorCalls = 0;
-	inline static volatile LONG GraphicsRootDescriptorTlsHits = 0;
-	inline static volatile LONG GraphicsRootDescriptorChanged = 0;
-	inline static volatile LONG GraphicsRootDescriptorNoChange = 0;
-	inline static volatile LONG ComputeRootDescriptorCalls = 0;
-	inline static volatile LONG ComputeRootDescriptorTlsHits = 0;
-	inline static volatile LONG ComputeRootDescriptorChanged = 0;
-	inline static volatile LONG ComputeRootDescriptorNoChange = 0;
+		GraphicsRootDescriptorCalls,
+		GraphicsRootDescriptorTlsHits,
+		GraphicsRootDescriptorChanged,
+		GraphicsRootDescriptorNoChange,
+		ComputeRootDescriptorCalls,
+		ComputeRootDescriptorTlsHits,
+		ComputeRootDescriptorChanged,
+		ComputeRootDescriptorNoChange,
 
-	inline static volatile LONG GraphicsRootConstantsCalls = 0;
-	inline static volatile LONG64 GraphicsRootConstantsValues = 0;
-	inline static volatile LONG ComputeRootConstantsCalls = 0;
-	inline static volatile LONG64 ComputeRootConstantsValues = 0;
+		GraphicsRootConstantsCalls,
+		GraphicsRootConstantsValues,
+		ComputeRootConstantsCalls,
+		ComputeRootConstantsValues,
 
-	inline static volatile LONG PrimitiveTopologyCalls = 0;
-	inline static volatile LONG PrimitiveTopologyChanged = 0;
-	inline static volatile LONG PrimitiveTopologyNoChange = 0;
-	inline static volatile LONG RuntimePrimitiveTopologyCalls = 0;
-	inline static volatile LONG RuntimePrimitiveTopologyChanged = 0;
-	inline static volatile LONG RuntimePrimitiveTopologyNoChange = 0;
+		PrimitiveTopologyCalls,
+		PrimitiveTopologyChanged,
+		PrimitiveTopologyNoChange,
+		RuntimePrimitiveTopologyCalls,
+		RuntimePrimitiveTopologyChanged,
+		RuntimePrimitiveTopologyNoChange,
 
-	inline static volatile LONG IndexBufferCalls = 0;
-	inline static volatile LONG IndexBufferChanged = 0;
-	inline static volatile LONG IndexBufferNoChange = 0;
-	inline static volatile LONG IndexBufferResolvedReleased = 0;
-	inline static volatile LONG RuntimeIndexBufferCalls = 0;
-	inline static volatile LONG RuntimeIndexBufferChanged = 0;
-	inline static volatile LONG RuntimeIndexBufferNoChange = 0;
+		IndexBufferCalls,
+		IndexBufferChanged,
+		IndexBufferNoChange,
+		IndexBufferResolvedReleased,
+		RuntimeIndexBufferCalls,
+		RuntimeIndexBufferChanged,
+		RuntimeIndexBufferNoChange,
 
-	inline static volatile LONG VertexBufferCalls = 0;
-	inline static volatile LONG64 VertexBufferSlots = 0;
-	inline static volatile LONG64 VertexBufferChangedSlots = 0;
-	inline static volatile LONG64 VertexBufferNoChangeSlots = 0;
-	inline static volatile LONG VertexBufferResolvedReleased = 0;
-	inline static volatile LONG RuntimeVertexBufferCalls = 0;
-	inline static volatile LONG64 RuntimeVertexBufferSlots = 0;
-	inline static volatile LONG64 RuntimeVertexBufferChangedSlots = 0;
-	inline static volatile LONG64 RuntimeVertexBufferNoChangeSlots = 0;
+		VertexBufferCalls,
+		VertexBufferSlots,
+		VertexBufferChangedSlots,
+		VertexBufferNoChangeSlots,
+		VertexBufferResolvedReleased,
+		RuntimeVertexBufferCalls,
+		RuntimeVertexBufferSlots,
+		RuntimeVertexBufferChangedSlots,
+		RuntimeVertexBufferNoChangeSlots,
 
-	inline static volatile LONG BarrierCaptureCalls = 0;
-	inline static volatile LONG64 BarrierCaptureItems = 0;
-	inline static volatile LONG BarrierCaptureSkippedInternalReplay = 0;
-	inline static volatile LONG BarrierCaptureSkippedHotPath = 0;
-	inline static volatile LONG BarrierCaptureSkippedStatePolicy = 0;
-	inline static volatile LONG BarrierRecordedCalls = 0;
-	inline static volatile LONG64 BarrierRecordedItems = 0;
-	inline static volatile LONG BarrierUnwrapCalls = 0;
-	inline static volatile LONG64 BarrierUnwrapItems = 0;
+		BarrierCaptureCalls,
+		BarrierCaptureItems,
+		BarrierCaptureSkippedInternalReplay,
+		BarrierCaptureSkippedHotPath,
+		BarrierCaptureSkippedStatePolicy,
+		BarrierRecordedCalls,
+		BarrierRecordedItems,
+		BarrierUnwrapCalls,
+		BarrierUnwrapItems,
 
-	inline static volatile LONG PreSkinBindingCacheCalls = 0;
-	inline static volatile LONG PreSkinBindingCacheHits = 0;
-	inline static volatile LONG PreSkinBindingCacheMisses = 0;
-	inline static volatile LONG PreSkinBindingCacheStores = 0;
-	inline static volatile LONG64 PreSkinBindingRootTables = 0;
-	inline static volatile LONG64 PreSkinBindingRanges = 0;
-	inline static volatile LONG64 PreSkinBindingLightDescriptorLookups = 0;
-	inline static volatile LONG64 PreSkinBindingFullDescriptorLookups = 0;
-	inline static volatile LONG64 PreSkinBindingConstants = 0;
-	inline static volatile LONG64 PreSkinBindingRootDescriptors = 0;
-	inline static volatile LONG64 PreSkinBindingRuntimeResolved = 0;
-	inline static volatile LONG64 PreSkinBindingRuntimeUnresolved = 0;
-	inline static volatile LONG64 PreSkinBindingDescriptorHits = 0;
-	inline static volatile LONG64 PreSkinBindingDescriptorMisses = 0;
-	inline static volatile LONG64 PreSkinBindingDescriptorPending = 0;
-	inline static volatile LONG64 PreSkinBindingWaitAvoided = 0;
-	inline static volatile LONG64 RuntimeDescriptorWrites = 0;
-	inline static volatile LONG64 RuntimeDescriptorCopyCalls = 0;
-	inline static volatile LONG64 RuntimeDescriptorCopied = 0;
-	inline static volatile LONG64 RuntimeDescriptorCopyMisses = 0;
+		PreSkinBindingCacheCalls,
+		PreSkinBindingCacheHits,
+		PreSkinBindingCacheMisses,
+		PreSkinBindingCacheStores,
+		PreSkinBindingRootTables,
+		PreSkinBindingRanges,
+		PreSkinBindingLightDescriptorLookups,
+		PreSkinBindingFullDescriptorLookups,
+		PreSkinBindingConstants,
+		PreSkinBindingRootDescriptors,
+		PreSkinBindingRuntimeResolved,
+		PreSkinBindingRuntimeUnresolved,
+		PreSkinBindingDescriptorHits,
+		PreSkinBindingDescriptorMisses,
+		PreSkinBindingDescriptorPending,
+		PreSkinBindingWaitAvoided,
+		RuntimeDescriptorWrites,
+		RuntimeDescriptorCopyCalls,
+		RuntimeDescriptorCopied,
+		RuntimeDescriptorCopyMisses,
 
-	inline static volatile LONG DispatchDecisionCacheHits = 0;
-	inline static volatile LONG DispatchDecisionCacheMisses = 0;
-	inline static volatile LONG DispatchDecisionPsoCacheHits = 0;
-	inline static volatile LONG DispatchDecisionPsoCacheMisses = 0;
-	inline static volatile LONG DispatchDecisionBuilds = 0;
-	inline static volatile LONG DispatchDecisionNoCompute = 0;
-	inline static volatile LONG DispatchDecisionNoPreSkinCandidate = 0;
-	inline static volatile LONG DispatchDecisionPreSkinCandidate = 0;
-	inline static volatile LONG DispatchDecisionPreSkinCandidateDispatches = 0;
-	inline static volatile LONG DispatchDecisionShaderOverrideWork = 0;
-	inline static volatile LONG DispatchDecisionFastRejects = 0;
+		DispatchDecisionCacheHits,
+		DispatchDecisionCacheMisses,
+		DispatchDecisionPsoCacheHits,
+		DispatchDecisionPsoCacheMisses,
+		DispatchDecisionBuilds,
+		DispatchDecisionNoCompute,
+		DispatchDecisionNoPreSkinCandidate,
+		DispatchDecisionPreSkinCandidate,
+		DispatchDecisionPreSkinCandidateDispatches,
+		DispatchDecisionShaderOverrideWork,
+		DispatchDecisionFastRejects,
 
-	inline static volatile LONG PreSkinPlanCacheLookups = 0;
-	inline static volatile LONG PreSkinPlanCacheHits = 0;
-	inline static volatile LONG PreSkinPlanCacheNegativeHits = 0;
-	inline static volatile LONG PreSkinPlanCachePositiveHits = 0;
-	inline static volatile LONG PreSkinPlanCacheMisses = 0;
-	inline static volatile LONG PreSkinPlanCacheStores = 0;
-	inline static volatile LONG PreSkinPlanFingerprintBuilds = 0;
+		PreSkinPlanCacheLookups,
+		PreSkinPlanCacheHits,
+		PreSkinPlanCacheNegativeHits,
+		PreSkinPlanCachePositiveHits,
+		PreSkinPlanCacheMisses,
+		PreSkinPlanCacheStores,
+		PreSkinPlanFingerprintBuilds,
 
-	inline static volatile LONG DrawDecisionCacheHits = 0;
-	inline static volatile LONG DrawDecisionCacheMisses = 0;
-	inline static volatile LONG DrawDecisionPsoCacheHits = 0;
-	inline static volatile LONG DrawDecisionPsoCacheMisses = 0;
-	inline static volatile LONG DrawDecisionBuilds = 0;
-	inline static volatile LONG DrawDecisionNoPso = 0;
-	inline static volatile LONG DrawDecisionNoShaderOverride = 0;
-	inline static volatile LONG DrawDecisionNoDrawOverride = 0;
-	inline static volatile LONG DrawDecisionNeedsIaHash = 0;
-	inline static volatile LONG DrawDecisionNeedsDescriptorMatch = 0;
-	inline static volatile LONG DrawDecisionNeedsReplacement = 0;
-	inline static volatile LONG DrawDecisionSkipOriginal = 0;
-	inline static volatile LONG DrawDecisionIaHashDraws = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheLookups = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheHits = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheMisses = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheStores = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheEvictions = 0;
-	inline static volatile LONG DrawDecisionIaHashCacheNegativeHits = 0;
-	inline static volatile LONG DrawDecisionDescriptorDraws = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheLookups = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheHits = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheMisses = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCachePositiveHits = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheNegativeHits = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheStores = 0;
-	inline static volatile LONG DrawDecisionDirectProbeCacheEvictions = 0;
+		DrawDecisionCacheHits,
+		DrawDecisionCacheMisses,
+		DrawDecisionPsoCacheHits,
+		DrawDecisionPsoCacheMisses,
+		DrawDecisionBuilds,
+		DrawDecisionNoPso,
+		DrawDecisionNoShaderOverride,
+		DrawDecisionNoDrawOverride,
+		DrawDecisionNeedsIaHash,
+		DrawDecisionNeedsDescriptorMatch,
+		DrawDecisionNeedsReplacement,
+		DrawDecisionSkipOriginal,
+		DrawDecisionIaHashDraws,
+		DrawDecisionIaHashCacheLookups,
+		DrawDecisionIaHashCacheHits,
+		DrawDecisionIaHashCacheMisses,
+		DrawDecisionIaHashCacheStores,
+		DrawDecisionIaHashCacheEvictions,
+		DrawDecisionIaHashCacheNegativeHits,
+		DrawDecisionDescriptorDraws,
+		DrawDecisionDirectProbeCacheLookups,
+		DrawDecisionDirectProbeCacheHits,
+		DrawDecisionDirectProbeCacheMisses,
+		DrawDecisionDirectProbeCachePositiveHits,
+		DrawDecisionDirectProbeCacheNegativeHits,
+		DrawDecisionDirectProbeCacheStores,
+		DrawDecisionDirectProbeCacheEvictions,
 
 	// Draw-hook no-op forwarding diagnostics. These are per-frame counters in
 	// timing builds so a rejected PSO-level fast path never requires per-draw
 	// logging to diagnose.
-	inline static volatile LONG DrawNoopFastPathAttempts = 0;
-	inline static volatile LONG DrawNoopFastPathForwarded = 0;
-	inline static volatile LONG DrawNoopFastPathHuntBlocked = 0;
-	inline static volatile LONG DrawNoopFastPathCaptureBlocked = 0;
-	inline static volatile LONG DrawNoopFastPathShaderDumpBlocked = 0;
-	inline static volatile LONG DrawNoopFastPathNoRuntime = 0;
-	inline static volatile LONG DrawNoopFastPathNoDecision = 0;
-	inline static volatile LONG DrawNoopFastPathNonNoopDecision = 0;
+		DrawNoopFastPathAttempts,
+		DrawNoopFastPathForwarded,
+		DrawNoopFastPathHuntBlocked,
+		DrawNoopFastPathCaptureBlocked,
+		DrawNoopFastPathShaderDumpBlocked,
+		DrawNoopFastPathNoRuntime,
+		DrawNoopFastPathNoDecision,
+		DrawNoopFastPathNonNoopDecision,
 
 	// Zero-work-path verification (docs/DX11_ARCHITECTURE_MIGRATION_TO_DX12.md
 	// Stage A): binding events, descriptor epoch writes and Hunt visited-set
 	// writes must stay 0 in plain Mod mode; descriptor record fast-skips should
 	// cover nearly every binding call when no capture is active.
-	inline static volatile LONG BindingEventsRecorded = 0;
-	inline static volatile LONG DescriptorEpochWrites = 0;
-	inline static volatile LONG HuntVisitedWrites = 0;
-	inline static volatile LONG DescriptorRecordFastSkips = 0;
+		BindingEventsRecorded,
+		DescriptorEpochWrites,
+		HuntVisitedWrites,
+		DescriptorRecordFastSkips,
+		Count
+	};
 
-	static void Inc(volatile LONG *value)
+	// Per-thread counter tables, claimed once per calling thread and drained
+	// once per present. The previous process-wide interlocked counters
+	// serialized every record call from every thread on shared cache lines.
+	// Same pool idiom as DX12CreateTimingTelemetryUtils: plain per-thread
+	// adds on the hot path, drain with InterlockedExchange64 at flush; a
+	// racing increment can be attributed one frame late (diagnostics only).
+	// Threads beyond the pool share the interlocked fallback counters. The
+	// counters only run in an actual timing build (DX12CommandFlow.hpp
+	// convention): defining DX12_ENABLE_DETAILED_TIMING alone must never
+	// enable counting in a plain Release build.
+	static constexpr UINT kThreadTableCount = 64;
+	static constexpr UINT kCounterCount = static_cast<UINT>(Counter::Count);
+	struct alignas(64) ThreadTable
 	{
-	// Match the hot-path timing macro convention (DX12CommandFlow.hpp): the
-	// counters only run in an actual timing build. Defining
-	// DX12_ENABLE_DETAILED_TIMING alone must never enable atomic counting in
-	// a plain Release build.
+		DWORD threadId = 0;
+		LONG64 values[kCounterCount] = {};
+	};
+	inline static ThreadTable ThreadTables[kThreadTableCount] = {};
+	inline static volatile LONG ThreadTableCount = 0;
+	inline static volatile LONG64 FallbackCounters[kCounterCount] = {};
+
+	static ThreadTable *AcquireThreadTable()
+	{
+		const LONG index = InterlockedIncrement(&ThreadTableCount) - 1;
+		if (index < 0 || index >= static_cast<LONG>(kThreadTableCount))
+			return nullptr;
+		ThreadTables[index].threadId = GetCurrentThreadId();
+		return &ThreadTables[index];
+	}
+
+	static ThreadTable *GetThreadTable()
+	{
+		static thread_local ThreadTable *table = AcquireThreadTable();
+		return table;
+	}
+
+	static void Inc(Counter counter)
+	{
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		InterlockedIncrement(value);
+		const UINT index = static_cast<UINT>(counter);
+		ThreadTable *table = GetThreadTable();
+		if (table) {
+			table->values[index] += 1;
+			return;
+		}
+		// Overflow threads share the interlocked fallback counters.
+		InterlockedExchangeAdd64(&FallbackCounters[index], 1);
 	#else
-		(void)value;
+		(void)counter;
 	#endif
 	}
 
-	static void Add64(volatile LONG64 *value, LONG64 amount)
+	static void Add64(Counter counter, LONG64 amount)
 	{
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		if (amount)
-			InterlockedExchangeAdd64(value, amount);
+		if (!amount)
+			return;
+		const UINT index = static_cast<UINT>(counter);
+		ThreadTable *table = GetThreadTable();
+		if (table) {
+			table->values[index] += amount;
+			return;
+		}
+		InterlockedExchangeAdd64(&FallbackCounters[index], amount);
 	#else
-		(void)value;
+		(void)counter;
 		(void)amount;
 	#endif
 	}
 
-	static LONG Take(volatile LONG *value)
+	static LONG64 Drain(Counter counter)
 	{
-		return InterlockedExchange(value, 0);
+		const UINT index = static_cast<UINT>(counter);
+		LONG64 total = 0;
+		const LONG tableCount = InterlockedCompareExchange(&ThreadTableCount, 0, 0);
+		const LONG tablesToScan = tableCount < static_cast<LONG>(kThreadTableCount)
+			? tableCount : static_cast<LONG>(kThreadTableCount);
+		for (LONG t = 0; t < tablesToScan; ++t)
+			total += InterlockedExchange64(&ThreadTables[t].values[index], 0);
+		total += InterlockedExchange64(&FallbackCounters[index], 0);
+		return total;
 	}
 
-	static LONG64 Take64(volatile LONG64 *value)
+	static LONG Take(Counter counter)
 	{
-		return InterlockedExchange64(value, 0);
+		return static_cast<LONG>(Drain(counter));
+	}
+
+	static LONG64 Take64(Counter counter)
+	{
+		return Drain(counter);
 	}
 
 	static void RecordPsoCall()
 	{
-		Inc(&PsoCalls);
+		Inc(Counter::PsoCalls);
 	}
 
 	static void RecordPsoChanged()
 	{
-		Inc(&PsoChanged);
+		Inc(Counter::PsoChanged);
 	}
 
 	static void RecordPsoNoChange()
 	{
-		Inc(&PsoNoChange);
+		Inc(Counter::PsoNoChange);
 	}
 
 	static void RecordRuntimePso(bool changed)
 	{
-		Inc(&RuntimePsoCalls);
+		Inc(Counter::RuntimePsoCalls);
 		if (changed)
-			Inc(&RuntimePsoChanged);
+			Inc(Counter::RuntimePsoChanged);
 		else
-			Inc(&RuntimePsoNoChange);
+			Inc(Counter::RuntimePsoNoChange);
 	}
 
 	static void RecordRuntimeLookupTlsHit()
 	{
-		Inc(&RuntimeLookupTlsHits);
+		Inc(Counter::RuntimeLookupTlsHits);
 	}
 
 	static void RecordRuntimeLookupDirectHit()
 	{
-		Inc(&RuntimeLookupDirectHits);
+		Inc(Counter::RuntimeLookupDirectHits);
 	}
 
 	static void RecordRuntimeLookupShardHit()
 	{
-		Inc(&RuntimeLookupShardHits);
+		Inc(Counter::RuntimeLookupShardHits);
 	}
 
 	static void RecordRuntimeLookupMiss()
 	{
-		Inc(&RuntimeLookupMisses);
+		Inc(Counter::RuntimeLookupMisses);
 	}
 
 	static void RecordGraphicsRootSignature(bool changed)
 	{
-		Inc(&GraphicsRootSignatureCalls);
+		Inc(Counter::GraphicsRootSignatureCalls);
 		if (changed)
-			Inc(&GraphicsRootSignatureChanged);
+			Inc(Counter::GraphicsRootSignatureChanged);
 		else
-			Inc(&GraphicsRootSignatureNoChange);
+			Inc(Counter::GraphicsRootSignatureNoChange);
 	}
 
 	static void RecordComputeRootSignature(bool changed)
 	{
-		Inc(&ComputeRootSignatureCalls);
+		Inc(Counter::ComputeRootSignatureCalls);
 		if (changed)
-			Inc(&ComputeRootSignatureChanged);
+			Inc(Counter::ComputeRootSignatureChanged);
 		else
-			Inc(&ComputeRootSignatureNoChange);
+			Inc(Counter::ComputeRootSignatureNoChange);
 	}
 
 	static void RecordDescriptorHeapResolve(UINT count)
 	{
-		Inc(&DescriptorHeapResolveCalls);
-		Add64(&DescriptorHeapResolveSlots, static_cast<LONG64>(count));
+		Inc(Counter::DescriptorHeapResolveCalls);
+		Add64(Counter::DescriptorHeapResolveSlots, static_cast<LONG64>(count));
 	}
 
 	static void RecordDescriptorHeapsChanged(
 		UINT graphicsInvalidated,
 		UINT computeInvalidated)
 	{
-		Inc(&DescriptorHeapCalls);
-		Inc(&DescriptorHeapChanged);
-		Add64(&DescriptorHeapInvalidatedGraphicsTables, static_cast<LONG64>(graphicsInvalidated));
-		Add64(&DescriptorHeapInvalidatedComputeTables, static_cast<LONG64>(computeInvalidated));
+		Inc(Counter::DescriptorHeapCalls);
+		Inc(Counter::DescriptorHeapChanged);
+		Add64(Counter::DescriptorHeapInvalidatedGraphicsTables, static_cast<LONG64>(graphicsInvalidated));
+		Add64(Counter::DescriptorHeapInvalidatedComputeTables, static_cast<LONG64>(computeInvalidated));
 	}
 
 	static void RecordDescriptorHeapsNoChange()
 	{
-		Inc(&DescriptorHeapCalls);
-		Inc(&DescriptorHeapNoChange);
+		Inc(Counter::DescriptorHeapCalls);
+		Inc(Counter::DescriptorHeapNoChange);
 	}
 
 	static void RecordGraphicsRootTableCall()
 	{
-		Inc(&GraphicsRootTableCalls);
+		Inc(Counter::GraphicsRootTableCalls);
 	}
 
 	static void RecordGraphicsRootTableTlsHit()
 	{
-		Inc(&GraphicsRootTableTlsHits);
+		Inc(Counter::GraphicsRootTableTlsHits);
 	}
 
 	static void RecordGraphicsRootTableChanged()
 	{
-		Inc(&GraphicsRootTableChanged);
+		Inc(Counter::GraphicsRootTableChanged);
 	}
 
 	static void RecordGraphicsRootTableNoChange()
 	{
-		Inc(&GraphicsRootTableNoChange);
+		Inc(Counter::GraphicsRootTableNoChange);
 	}
 
 	static void RecordComputeRootTableCall()
 	{
-		Inc(&ComputeRootTableCalls);
+		Inc(Counter::ComputeRootTableCalls);
 	}
 
 	static void RecordComputeRootTableTlsHit()
 	{
-		Inc(&ComputeRootTableTlsHits);
+		Inc(Counter::ComputeRootTableTlsHits);
 	}
 
 	static void RecordComputeRootTableChanged()
 	{
-		Inc(&ComputeRootTableChanged);
+		Inc(Counter::ComputeRootTableChanged);
 	}
 
 	static void RecordComputeRootTableNoChange()
 	{
-		Inc(&ComputeRootTableNoChange);
+		Inc(Counter::ComputeRootTableNoChange);
 	}
 
 	static void RecordGraphicsRootDescriptorCall()
 	{
-		Inc(&GraphicsRootDescriptorCalls);
+		Inc(Counter::GraphicsRootDescriptorCalls);
 	}
 
 	static void RecordGraphicsRootDescriptorTlsHit()
 	{
-		Inc(&GraphicsRootDescriptorTlsHits);
+		Inc(Counter::GraphicsRootDescriptorTlsHits);
 	}
 
 	static void RecordGraphicsRootDescriptorChanged()
 	{
-		Inc(&GraphicsRootDescriptorChanged);
+		Inc(Counter::GraphicsRootDescriptorChanged);
 	}
 
 	static void RecordGraphicsRootDescriptorNoChange()
 	{
-		Inc(&GraphicsRootDescriptorNoChange);
+		Inc(Counter::GraphicsRootDescriptorNoChange);
 	}
 
 	static void RecordComputeRootDescriptorCall()
 	{
-		Inc(&ComputeRootDescriptorCalls);
+		Inc(Counter::ComputeRootDescriptorCalls);
 	}
 
 	static void RecordComputeRootDescriptorTlsHit()
 	{
-		Inc(&ComputeRootDescriptorTlsHits);
+		Inc(Counter::ComputeRootDescriptorTlsHits);
 	}
 
 	static void RecordComputeRootDescriptorChanged()
 	{
-		Inc(&ComputeRootDescriptorChanged);
+		Inc(Counter::ComputeRootDescriptorChanged);
 	}
 
 	static void RecordComputeRootDescriptorNoChange()
 	{
-		Inc(&ComputeRootDescriptorNoChange);
+		Inc(Counter::ComputeRootDescriptorNoChange);
 	}
 
 	static void RecordGraphicsRootConstants(UINT count)
 	{
-		Inc(&GraphicsRootConstantsCalls);
-		Add64(&GraphicsRootConstantsValues, static_cast<LONG64>(count));
+		Inc(Counter::GraphicsRootConstantsCalls);
+		Add64(Counter::GraphicsRootConstantsValues, static_cast<LONG64>(count));
 	}
 
 	static void RecordComputeRootConstants(UINT count)
 	{
-		Inc(&ComputeRootConstantsCalls);
-		Add64(&ComputeRootConstantsValues, static_cast<LONG64>(count));
+		Inc(Counter::ComputeRootConstantsCalls);
+		Add64(Counter::ComputeRootConstantsValues, static_cast<LONG64>(count));
 	}
 
 	static void RecordPrimitiveTopology(bool changed)
 	{
-		Inc(&PrimitiveTopologyCalls);
+		Inc(Counter::PrimitiveTopologyCalls);
 		if (changed)
-			Inc(&PrimitiveTopologyChanged);
+			Inc(Counter::PrimitiveTopologyChanged);
 		else
-			Inc(&PrimitiveTopologyNoChange);
+			Inc(Counter::PrimitiveTopologyNoChange);
 	}
 
 	static void RecordRuntimePrimitiveTopology(bool changed)
 	{
-		Inc(&RuntimePrimitiveTopologyCalls);
+		Inc(Counter::RuntimePrimitiveTopologyCalls);
 		if (changed)
-			Inc(&RuntimePrimitiveTopologyChanged);
+			Inc(Counter::RuntimePrimitiveTopologyChanged);
 		else
-			Inc(&RuntimePrimitiveTopologyNoChange);
+			Inc(Counter::RuntimePrimitiveTopologyNoChange);
 	}
 
 	static void RecordIndexBuffer(bool changed)
 	{
-		Inc(&IndexBufferCalls);
+		Inc(Counter::IndexBufferCalls);
 		if (changed)
-			Inc(&IndexBufferChanged);
+			Inc(Counter::IndexBufferChanged);
 		else
-			Inc(&IndexBufferNoChange);
+			Inc(Counter::IndexBufferNoChange);
 	}
 
 	static void RecordIndexBufferResolvedReleased()
 	{
-		Inc(&IndexBufferResolvedReleased);
+		Inc(Counter::IndexBufferResolvedReleased);
 	}
 
 	static void RecordRuntimeIndexBuffer(bool changed)
 	{
-		Inc(&RuntimeIndexBufferCalls);
+		Inc(Counter::RuntimeIndexBufferCalls);
 		if (changed)
-			Inc(&RuntimeIndexBufferChanged);
+			Inc(Counter::RuntimeIndexBufferChanged);
 		else
-			Inc(&RuntimeIndexBufferNoChange);
+			Inc(Counter::RuntimeIndexBufferNoChange);
 	}
 
 	static void RecordVertexBufferCall(UINT slots)
 	{
-		Inc(&VertexBufferCalls);
-		Add64(&VertexBufferSlots, static_cast<LONG64>(slots));
+		Inc(Counter::VertexBufferCalls);
+		Add64(Counter::VertexBufferSlots, static_cast<LONG64>(slots));
 	}
 
 	static void RecordVertexBufferSlot(bool changed)
 	{
 		if (changed)
-			Add64(&VertexBufferChangedSlots, 1);
+			Add64(Counter::VertexBufferChangedSlots, 1);
 		else
-			Add64(&VertexBufferNoChangeSlots, 1);
+			Add64(Counter::VertexBufferNoChangeSlots, 1);
 	}
 
 	static void RecordVertexBufferResolvedReleased()
 	{
-		Inc(&VertexBufferResolvedReleased);
+		Inc(Counter::VertexBufferResolvedReleased);
 	}
 
 	static void RecordRuntimeVertexBufferCall(UINT slots)
 	{
-		Inc(&RuntimeVertexBufferCalls);
-		Add64(&RuntimeVertexBufferSlots, static_cast<LONG64>(slots));
+		Inc(Counter::RuntimeVertexBufferCalls);
+		Add64(Counter::RuntimeVertexBufferSlots, static_cast<LONG64>(slots));
 	}
 
 	static void RecordRuntimeVertexBufferSlot(bool changed)
 	{
 		if (changed)
-			Add64(&RuntimeVertexBufferChangedSlots, 1);
+			Add64(Counter::RuntimeVertexBufferChangedSlots, 1);
 		else
-			Add64(&RuntimeVertexBufferNoChangeSlots, 1);
+			Add64(Counter::RuntimeVertexBufferNoChangeSlots, 1);
 	}
 
 	static void RecordBarrierCaptureCall(UINT count)
 	{
-		Inc(&BarrierCaptureCalls);
-		Add64(&BarrierCaptureItems, static_cast<LONG64>(count));
+		Inc(Counter::BarrierCaptureCalls);
+		Add64(Counter::BarrierCaptureItems, static_cast<LONG64>(count));
 	}
 
 	static void RecordBarrierCaptureSkippedInternalReplay()
 	{
-		Inc(&BarrierCaptureSkippedInternalReplay);
+		Inc(Counter::BarrierCaptureSkippedInternalReplay);
 	}
 
 	static void RecordBarrierCaptureSkippedHotPath()
 	{
-		Inc(&BarrierCaptureSkippedHotPath);
+		Inc(Counter::BarrierCaptureSkippedHotPath);
 	}
 
 	static void RecordBarrierCaptureSkippedStatePolicy()
 	{
-		Inc(&BarrierCaptureSkippedStatePolicy);
+		Inc(Counter::BarrierCaptureSkippedStatePolicy);
 	}
 
 	static void RecordBarrierRecorded(UINT count)
 	{
-		Inc(&BarrierRecordedCalls);
-		Add64(&BarrierRecordedItems, static_cast<LONG64>(count));
+		Inc(Counter::BarrierRecordedCalls);
+		Add64(Counter::BarrierRecordedItems, static_cast<LONG64>(count));
 	}
 
 	static void RecordBarrierUnwrap(UINT count)
 	{
-		Inc(&BarrierUnwrapCalls);
-		Add64(&BarrierUnwrapItems, static_cast<LONG64>(count));
+		Inc(Counter::BarrierUnwrapCalls);
+		Add64(Counter::BarrierUnwrapItems, static_cast<LONG64>(count));
 	}
 
 	static void RecordPreSkinBindingCacheCall()
 	{
-		Inc(&PreSkinBindingCacheCalls);
+		Inc(Counter::PreSkinBindingCacheCalls);
 	}
 
 	static void RecordPreSkinBindingCacheHit()
 	{
-		Inc(&PreSkinBindingCacheHits);
+		Inc(Counter::PreSkinBindingCacheHits);
 	}
 
 	static void RecordPreSkinBindingCacheMiss()
 	{
-		Inc(&PreSkinBindingCacheMisses);
+		Inc(Counter::PreSkinBindingCacheMisses);
 	}
 
 	static void RecordPreSkinBindingCacheStore()
 	{
-		Inc(&PreSkinBindingCacheStores);
+		Inc(Counter::PreSkinBindingCacheStores);
 	}
 
 	static void RecordPreSkinBindingRootTable()
 	{
-		Add64(&PreSkinBindingRootTables, 1);
+		Add64(Counter::PreSkinBindingRootTables, 1);
 	}
 
 	static void RecordPreSkinBindingRange()
 	{
-		Add64(&PreSkinBindingRanges, 1);
+		Add64(Counter::PreSkinBindingRanges, 1);
 	}
 
 
 	static void RecordPreSkinBindingFullDescriptorLookup()
 	{
-		Add64(&PreSkinBindingFullDescriptorLookups, 1);
+		Add64(Counter::PreSkinBindingFullDescriptorLookups, 1);
 	}
 
 	static void RecordPreSkinBindingConstant()
 	{
-		Add64(&PreSkinBindingConstants, 1);
+		Add64(Counter::PreSkinBindingConstants, 1);
 	}
 
 	static void RecordPreSkinBindingRootDescriptor()
 	{
-		Add64(&PreSkinBindingRootDescriptors, 1);
+		Add64(Counter::PreSkinBindingRootDescriptors, 1);
 	}
 
 	static void RecordPreSkinBindingRuntimeTable(bool resolved)
 	{
 		if (resolved)
-			Add64(&PreSkinBindingRuntimeResolved, 1);
+			Add64(Counter::PreSkinBindingRuntimeResolved, 1);
 		else
-			Add64(&PreSkinBindingRuntimeUnresolved, 1);
+			Add64(Counter::PreSkinBindingRuntimeUnresolved, 1);
 	}
 
 	static void RecordPreSkinBindingDescriptorLookupResult(
@@ -557,268 +620,268 @@ public:
 		LONG64 missCount,
 		LONG64 pendingCount)
 	{
-		Add64(&PreSkinBindingDescriptorHits, hitCount);
-		Add64(&PreSkinBindingDescriptorMisses, missCount);
-		Add64(&PreSkinBindingDescriptorPending, pendingCount);
-		Add64(&PreSkinBindingWaitAvoided, hitCount + missCount + pendingCount);
+		Add64(Counter::PreSkinBindingDescriptorHits, hitCount);
+		Add64(Counter::PreSkinBindingDescriptorMisses, missCount);
+		Add64(Counter::PreSkinBindingDescriptorPending, pendingCount);
+		Add64(Counter::PreSkinBindingWaitAvoided, hitCount + missCount + pendingCount);
 	}
 
 
 	static void RecordDispatchDecisionCacheHit()
 	{
-		Inc(&DispatchDecisionCacheHits);
+		Inc(Counter::DispatchDecisionCacheHits);
 	}
 
 	static void RecordDispatchDecisionCacheMiss()
 	{
-		Inc(&DispatchDecisionCacheMisses);
+		Inc(Counter::DispatchDecisionCacheMisses);
 	}
 
 	static void RecordDispatchDecisionPsoCacheHit()
 	{
-		Inc(&DispatchDecisionPsoCacheHits);
+		Inc(Counter::DispatchDecisionPsoCacheHits);
 	}
 
 	static void RecordDispatchDecisionPsoCacheMiss()
 	{
-		Inc(&DispatchDecisionPsoCacheMisses);
+		Inc(Counter::DispatchDecisionPsoCacheMisses);
 	}
 
 	static void RecordDispatchDecisionBuild()
 	{
-		Inc(&DispatchDecisionBuilds);
+		Inc(Counter::DispatchDecisionBuilds);
 	}
 
 	static void RecordDispatchDecisionNoCompute()
 	{
-		Inc(&DispatchDecisionNoCompute);
+		Inc(Counter::DispatchDecisionNoCompute);
 	}
 
 	static void RecordDispatchDecisionNoPreSkinCandidate()
 	{
-		Inc(&DispatchDecisionNoPreSkinCandidate);
+		Inc(Counter::DispatchDecisionNoPreSkinCandidate);
 	}
 
 	static void RecordDispatchDecisionPreSkinCandidate()
 	{
-		Inc(&DispatchDecisionPreSkinCandidate);
+		Inc(Counter::DispatchDecisionPreSkinCandidate);
 	}
 
 	static void RecordDispatchDecisionPreSkinCandidateDispatch()
 	{
-		Inc(&DispatchDecisionPreSkinCandidateDispatches);
+		Inc(Counter::DispatchDecisionPreSkinCandidateDispatches);
 	}
 
 	static void RecordDispatchDecisionShaderOverrideWork()
 	{
-		Inc(&DispatchDecisionShaderOverrideWork);
+		Inc(Counter::DispatchDecisionShaderOverrideWork);
 	}
 
 	static void RecordDispatchDecisionFastReject()
 	{
-		Inc(&DispatchDecisionFastRejects);
+		Inc(Counter::DispatchDecisionFastRejects);
 	}
 
 	static void RecordPreSkinPlanCacheLookup()
 	{
-		Inc(&PreSkinPlanCacheLookups);
+		Inc(Counter::PreSkinPlanCacheLookups);
 	}
 
 	static void RecordPreSkinPlanCacheHit(bool positive)
 	{
-		Inc(&PreSkinPlanCacheHits);
+		Inc(Counter::PreSkinPlanCacheHits);
 		if (positive)
-			Inc(&PreSkinPlanCachePositiveHits);
+			Inc(Counter::PreSkinPlanCachePositiveHits);
 		else
-			Inc(&PreSkinPlanCacheNegativeHits);
+			Inc(Counter::PreSkinPlanCacheNegativeHits);
 	}
 
 	static void RecordPreSkinPlanCacheMiss()
 	{
-		Inc(&PreSkinPlanCacheMisses);
+		Inc(Counter::PreSkinPlanCacheMisses);
 	}
 
 	static void RecordPreSkinPlanCacheStore()
 	{
-		Inc(&PreSkinPlanCacheStores);
+		Inc(Counter::PreSkinPlanCacheStores);
 	}
 
 	static void RecordPreSkinPlanFingerprintBuild()
 	{
-		Inc(&PreSkinPlanFingerprintBuilds);
+		Inc(Counter::PreSkinPlanFingerprintBuilds);
 	}
 
 	static void RecordDrawDecisionCacheHit()
 	{
-		Inc(&DrawDecisionCacheHits);
+		Inc(Counter::DrawDecisionCacheHits);
 	}
 
 	static void RecordDrawDecisionCacheMiss()
 	{
-		Inc(&DrawDecisionCacheMisses);
+		Inc(Counter::DrawDecisionCacheMisses);
 	}
 
 	static void RecordDrawDecisionPsoCacheHit()
 	{
-		Inc(&DrawDecisionPsoCacheHits);
+		Inc(Counter::DrawDecisionPsoCacheHits);
 	}
 
 	static void RecordDrawDecisionPsoCacheMiss()
 	{
-		Inc(&DrawDecisionPsoCacheMisses);
+		Inc(Counter::DrawDecisionPsoCacheMisses);
 	}
 
 	static void RecordDrawDecisionBuild()
 	{
-		Inc(&DrawDecisionBuilds);
+		Inc(Counter::DrawDecisionBuilds);
 	}
 
 	static void RecordDrawDecisionNoPso()
 	{
-		Inc(&DrawDecisionNoPso);
+		Inc(Counter::DrawDecisionNoPso);
 	}
 
 	static void RecordDrawDecisionNoShaderOverride()
 	{
-		Inc(&DrawDecisionNoShaderOverride);
+		Inc(Counter::DrawDecisionNoShaderOverride);
 	}
 
 	static void RecordDrawDecisionNoDrawOverride()
 	{
-		Inc(&DrawDecisionNoDrawOverride);
+		Inc(Counter::DrawDecisionNoDrawOverride);
 	}
 
 	static void RecordDrawDecisionNeedsIaHash()
 	{
-		Inc(&DrawDecisionNeedsIaHash);
+		Inc(Counter::DrawDecisionNeedsIaHash);
 	}
 
 	static void RecordDrawDecisionNeedsDescriptorMatch()
 	{
-		Inc(&DrawDecisionNeedsDescriptorMatch);
+		Inc(Counter::DrawDecisionNeedsDescriptorMatch);
 	}
 
 	static void RecordDrawDecisionNeedsReplacement()
 	{
-		Inc(&DrawDecisionNeedsReplacement);
+		Inc(Counter::DrawDecisionNeedsReplacement);
 	}
 
 	static void RecordDrawDecisionSkipOriginal()
 	{
-		Inc(&DrawDecisionSkipOriginal);
+		Inc(Counter::DrawDecisionSkipOriginal);
 	}
 
 	static void RecordDrawDecisionIaHashDraw()
 	{
-		Inc(&DrawDecisionIaHashDraws);
+		Inc(Counter::DrawDecisionIaHashDraws);
 	}
 
 	static void RecordDrawDecisionIaHashCacheLookup()
 	{
-		Inc(&DrawDecisionIaHashCacheLookups);
+		Inc(Counter::DrawDecisionIaHashCacheLookups);
 	}
 
 	static void RecordDrawDecisionIaHashCacheHit(bool hasIaHashState)
 	{
-		Inc(&DrawDecisionIaHashCacheHits);
+		Inc(Counter::DrawDecisionIaHashCacheHits);
 		if (!hasIaHashState)
-			Inc(&DrawDecisionIaHashCacheNegativeHits);
+			Inc(Counter::DrawDecisionIaHashCacheNegativeHits);
 	}
 
 	static void RecordDrawDecisionIaHashCacheMiss()
 	{
-		Inc(&DrawDecisionIaHashCacheMisses);
+		Inc(Counter::DrawDecisionIaHashCacheMisses);
 	}
 
 	static void RecordDrawDecisionIaHashCacheStore()
 	{
-		Inc(&DrawDecisionIaHashCacheStores);
+		Inc(Counter::DrawDecisionIaHashCacheStores);
 	}
 
 	static void RecordDrawDecisionIaHashCacheEviction()
 	{
-		Inc(&DrawDecisionIaHashCacheEvictions);
+		Inc(Counter::DrawDecisionIaHashCacheEvictions);
 	}
 
 	static void RecordDrawDecisionDescriptorDraw()
 	{
-		Inc(&DrawDecisionDescriptorDraws);
+		Inc(Counter::DrawDecisionDescriptorDraws);
 	}
 
 	static void RecordDrawDecisionDirectProbeCacheLookup()
 	{
-		Inc(&DrawDecisionDirectProbeCacheLookups);
+		Inc(Counter::DrawDecisionDirectProbeCacheLookups);
 	}
 
 	static void RecordDrawDecisionDirectProbeCacheHit(bool hasDirectCandidate)
 	{
-		Inc(&DrawDecisionDirectProbeCacheHits);
+		Inc(Counter::DrawDecisionDirectProbeCacheHits);
 		if (hasDirectCandidate)
-			Inc(&DrawDecisionDirectProbeCachePositiveHits);
+			Inc(Counter::DrawDecisionDirectProbeCachePositiveHits);
 		else
-			Inc(&DrawDecisionDirectProbeCacheNegativeHits);
+			Inc(Counter::DrawDecisionDirectProbeCacheNegativeHits);
 	}
 
 	static void RecordDrawDecisionDirectProbeCacheMiss()
 	{
-		Inc(&DrawDecisionDirectProbeCacheMisses);
+		Inc(Counter::DrawDecisionDirectProbeCacheMisses);
 	}
 
 	static void RecordDrawDecisionDirectProbeCacheStore(bool evicted)
 	{
-		Inc(&DrawDecisionDirectProbeCacheStores);
+		Inc(Counter::DrawDecisionDirectProbeCacheStores);
 		if (evicted)
-			Inc(&DrawDecisionDirectProbeCacheEvictions);
+			Inc(Counter::DrawDecisionDirectProbeCacheEvictions);
 	}
 
 	static void RecordDrawNoopFastPathAttempt()
 	{
-		Inc(&DrawNoopFastPathAttempts);
+		Inc(Counter::DrawNoopFastPathAttempts);
 	}
 
 	static void RecordDrawNoopFastPathForwarded()
 	{
-		Inc(&DrawNoopFastPathForwarded);
+		Inc(Counter::DrawNoopFastPathForwarded);
 	}
 
 	static void RecordDrawNoopFastPathHuntBlocked()
 	{
-		Inc(&DrawNoopFastPathHuntBlocked);
+		Inc(Counter::DrawNoopFastPathHuntBlocked);
 	}
 
 	static void RecordDrawNoopFastPathCaptureBlocked()
 	{
-		Inc(&DrawNoopFastPathCaptureBlocked);
+		Inc(Counter::DrawNoopFastPathCaptureBlocked);
 	}
 
 	static void RecordDrawNoopFastPathShaderDumpBlocked()
 	{
-		Inc(&DrawNoopFastPathShaderDumpBlocked);
+		Inc(Counter::DrawNoopFastPathShaderDumpBlocked);
 	}
 
 	static void RecordDrawNoopFastPathNoRuntime()
 	{
-		Inc(&DrawNoopFastPathNoRuntime);
+		Inc(Counter::DrawNoopFastPathNoRuntime);
 	}
 
 	static void RecordDrawNoopFastPathNoDecision()
 	{
-		Inc(&DrawNoopFastPathNoDecision);
+		Inc(Counter::DrawNoopFastPathNoDecision);
 	}
 
 	static void RecordDrawNoopFastPathNonNoopDecision()
 	{
-		Inc(&DrawNoopFastPathNonNoopDecision);
+		Inc(Counter::DrawNoopFastPathNonNoopDecision);
 	}
 
 	static void LogPso()
 	{
-		LONG psoCalls = Take(&PsoCalls);
-		LONG psoChanged = Take(&PsoChanged);
-		LONG psoNoChange = Take(&PsoNoChange);
-		LONG runtimePsoCalls = Take(&RuntimePsoCalls);
-		LONG runtimePsoChanged = Take(&RuntimePsoChanged);
-		LONG runtimePsoNoChange = Take(&RuntimePsoNoChange);
+		LONG psoCalls = Take(Counter::PsoCalls);
+		LONG psoChanged = Take(Counter::PsoChanged);
+		LONG psoNoChange = Take(Counter::PsoNoChange);
+		LONG runtimePsoCalls = Take(Counter::RuntimePsoCalls);
+		LONG runtimePsoChanged = Take(Counter::RuntimePsoChanged);
+		LONG runtimePsoNoChange = Take(Counter::RuntimePsoNoChange);
 		if (!psoCalls && !psoChanged && !psoNoChange &&
 			!runtimePsoCalls && !runtimePsoChanged && !runtimePsoNoChange)
 			return;
@@ -830,20 +893,20 @@ public:
 
 	static void LogRootState()
 	{
-		LONG graphicsRootSignatureCalls = Take(&GraphicsRootSignatureCalls);
-		LONG graphicsRootSignatureChanged = Take(&GraphicsRootSignatureChanged);
-		LONG graphicsRootSignatureNoChange = Take(&GraphicsRootSignatureNoChange);
-		LONG computeRootSignatureCalls = Take(&ComputeRootSignatureCalls);
-		LONG computeRootSignatureChanged = Take(&ComputeRootSignatureChanged);
-		LONG computeRootSignatureNoChange = Take(&ComputeRootSignatureNoChange);
-		LONG graphicsRootTableCalls = Take(&GraphicsRootTableCalls);
-		LONG graphicsRootTableTlsHits = Take(&GraphicsRootTableTlsHits);
-		LONG graphicsRootTableChanged = Take(&GraphicsRootTableChanged);
-		LONG graphicsRootTableNoChange = Take(&GraphicsRootTableNoChange);
-		LONG computeRootTableCalls = Take(&ComputeRootTableCalls);
-		LONG computeRootTableTlsHits = Take(&ComputeRootTableTlsHits);
-		LONG computeRootTableChanged = Take(&ComputeRootTableChanged);
-		LONG computeRootTableNoChange = Take(&ComputeRootTableNoChange);
+		LONG graphicsRootSignatureCalls = Take(Counter::GraphicsRootSignatureCalls);
+		LONG graphicsRootSignatureChanged = Take(Counter::GraphicsRootSignatureChanged);
+		LONG graphicsRootSignatureNoChange = Take(Counter::GraphicsRootSignatureNoChange);
+		LONG computeRootSignatureCalls = Take(Counter::ComputeRootSignatureCalls);
+		LONG computeRootSignatureChanged = Take(Counter::ComputeRootSignatureChanged);
+		LONG computeRootSignatureNoChange = Take(Counter::ComputeRootSignatureNoChange);
+		LONG graphicsRootTableCalls = Take(Counter::GraphicsRootTableCalls);
+		LONG graphicsRootTableTlsHits = Take(Counter::GraphicsRootTableTlsHits);
+		LONG graphicsRootTableChanged = Take(Counter::GraphicsRootTableChanged);
+		LONG graphicsRootTableNoChange = Take(Counter::GraphicsRootTableNoChange);
+		LONG computeRootTableCalls = Take(Counter::ComputeRootTableCalls);
+		LONG computeRootTableTlsHits = Take(Counter::ComputeRootTableTlsHits);
+		LONG computeRootTableChanged = Take(Counter::ComputeRootTableChanged);
+		LONG computeRootTableNoChange = Take(Counter::ComputeRootTableNoChange);
 		if (!graphicsRootSignatureCalls && !computeRootSignatureCalls &&
 			!graphicsRootTableCalls && !computeRootTableCalls)
 			return;
@@ -857,25 +920,25 @@ public:
 
 	static void LogDescriptorState()
 	{
-		LONG descriptorHeapResolveCalls = Take(&DescriptorHeapResolveCalls);
-		LONG64 descriptorHeapResolveSlots = Take64(&DescriptorHeapResolveSlots);
-		LONG descriptorHeapCalls = Take(&DescriptorHeapCalls);
-		LONG descriptorHeapChanged = Take(&DescriptorHeapChanged);
-		LONG descriptorHeapNoChange = Take(&DescriptorHeapNoChange);
-		LONG64 descriptorHeapInvalidatedGraphicsTables = Take64(&DescriptorHeapInvalidatedGraphicsTables);
-		LONG64 descriptorHeapInvalidatedComputeTables = Take64(&DescriptorHeapInvalidatedComputeTables);
-		LONG graphicsRootDescriptorCalls = Take(&GraphicsRootDescriptorCalls);
-		LONG graphicsRootDescriptorTlsHits = Take(&GraphicsRootDescriptorTlsHits);
-		LONG graphicsRootDescriptorChanged = Take(&GraphicsRootDescriptorChanged);
-		LONG graphicsRootDescriptorNoChange = Take(&GraphicsRootDescriptorNoChange);
-		LONG computeRootDescriptorCalls = Take(&ComputeRootDescriptorCalls);
-		LONG computeRootDescriptorTlsHits = Take(&ComputeRootDescriptorTlsHits);
-		LONG computeRootDescriptorChanged = Take(&ComputeRootDescriptorChanged);
-		LONG computeRootDescriptorNoChange = Take(&ComputeRootDescriptorNoChange);
-		LONG graphicsRootConstantsCalls = Take(&GraphicsRootConstantsCalls);
-		LONG64 graphicsRootConstantsValues = Take64(&GraphicsRootConstantsValues);
-		LONG computeRootConstantsCalls = Take(&ComputeRootConstantsCalls);
-		LONG64 computeRootConstantsValues = Take64(&ComputeRootConstantsValues);
+		LONG descriptorHeapResolveCalls = Take(Counter::DescriptorHeapResolveCalls);
+		LONG64 descriptorHeapResolveSlots = Take64(Counter::DescriptorHeapResolveSlots);
+		LONG descriptorHeapCalls = Take(Counter::DescriptorHeapCalls);
+		LONG descriptorHeapChanged = Take(Counter::DescriptorHeapChanged);
+		LONG descriptorHeapNoChange = Take(Counter::DescriptorHeapNoChange);
+		LONG64 descriptorHeapInvalidatedGraphicsTables = Take64(Counter::DescriptorHeapInvalidatedGraphicsTables);
+		LONG64 descriptorHeapInvalidatedComputeTables = Take64(Counter::DescriptorHeapInvalidatedComputeTables);
+		LONG graphicsRootDescriptorCalls = Take(Counter::GraphicsRootDescriptorCalls);
+		LONG graphicsRootDescriptorTlsHits = Take(Counter::GraphicsRootDescriptorTlsHits);
+		LONG graphicsRootDescriptorChanged = Take(Counter::GraphicsRootDescriptorChanged);
+		LONG graphicsRootDescriptorNoChange = Take(Counter::GraphicsRootDescriptorNoChange);
+		LONG computeRootDescriptorCalls = Take(Counter::ComputeRootDescriptorCalls);
+		LONG computeRootDescriptorTlsHits = Take(Counter::ComputeRootDescriptorTlsHits);
+		LONG computeRootDescriptorChanged = Take(Counter::ComputeRootDescriptorChanged);
+		LONG computeRootDescriptorNoChange = Take(Counter::ComputeRootDescriptorNoChange);
+		LONG graphicsRootConstantsCalls = Take(Counter::GraphicsRootConstantsCalls);
+		LONG64 graphicsRootConstantsValues = Take64(Counter::GraphicsRootConstantsValues);
+		LONG computeRootConstantsCalls = Take(Counter::ComputeRootConstantsCalls);
+		LONG64 computeRootConstantsValues = Take64(Counter::ComputeRootConstantsValues);
 		if (!descriptorHeapResolveCalls && !descriptorHeapCalls &&
 			!graphicsRootDescriptorCalls && !computeRootDescriptorCalls &&
 			!graphicsRootConstantsCalls && !computeRootConstantsCalls)
@@ -896,28 +959,28 @@ public:
 
 	static void LogIaState()
 	{
-		LONG primitiveTopologyCalls = Take(&PrimitiveTopologyCalls);
-		LONG primitiveTopologyChanged = Take(&PrimitiveTopologyChanged);
-		LONG primitiveTopologyNoChange = Take(&PrimitiveTopologyNoChange);
-		LONG runtimePrimitiveTopologyCalls = Take(&RuntimePrimitiveTopologyCalls);
-		LONG runtimePrimitiveTopologyChanged = Take(&RuntimePrimitiveTopologyChanged);
-		LONG runtimePrimitiveTopologyNoChange = Take(&RuntimePrimitiveTopologyNoChange);
-		LONG indexBufferCalls = Take(&IndexBufferCalls);
-		LONG indexBufferChanged = Take(&IndexBufferChanged);
-		LONG indexBufferNoChange = Take(&IndexBufferNoChange);
-		LONG indexBufferResolvedReleased = Take(&IndexBufferResolvedReleased);
-		LONG runtimeIndexBufferCalls = Take(&RuntimeIndexBufferCalls);
-		LONG runtimeIndexBufferChanged = Take(&RuntimeIndexBufferChanged);
-		LONG runtimeIndexBufferNoChange = Take(&RuntimeIndexBufferNoChange);
-		LONG vertexBufferCalls = Take(&VertexBufferCalls);
-		LONG64 vertexBufferSlots = Take64(&VertexBufferSlots);
-		LONG64 vertexBufferChangedSlots = Take64(&VertexBufferChangedSlots);
-		LONG64 vertexBufferNoChangeSlots = Take64(&VertexBufferNoChangeSlots);
-		LONG vertexBufferResolvedReleased = Take(&VertexBufferResolvedReleased);
-		LONG runtimeVertexBufferCalls = Take(&RuntimeVertexBufferCalls);
-		LONG64 runtimeVertexBufferSlots = Take64(&RuntimeVertexBufferSlots);
-		LONG64 runtimeVertexBufferChangedSlots = Take64(&RuntimeVertexBufferChangedSlots);
-		LONG64 runtimeVertexBufferNoChangeSlots = Take64(&RuntimeVertexBufferNoChangeSlots);
+		LONG primitiveTopologyCalls = Take(Counter::PrimitiveTopologyCalls);
+		LONG primitiveTopologyChanged = Take(Counter::PrimitiveTopologyChanged);
+		LONG primitiveTopologyNoChange = Take(Counter::PrimitiveTopologyNoChange);
+		LONG runtimePrimitiveTopologyCalls = Take(Counter::RuntimePrimitiveTopologyCalls);
+		LONG runtimePrimitiveTopologyChanged = Take(Counter::RuntimePrimitiveTopologyChanged);
+		LONG runtimePrimitiveTopologyNoChange = Take(Counter::RuntimePrimitiveTopologyNoChange);
+		LONG indexBufferCalls = Take(Counter::IndexBufferCalls);
+		LONG indexBufferChanged = Take(Counter::IndexBufferChanged);
+		LONG indexBufferNoChange = Take(Counter::IndexBufferNoChange);
+		LONG indexBufferResolvedReleased = Take(Counter::IndexBufferResolvedReleased);
+		LONG runtimeIndexBufferCalls = Take(Counter::RuntimeIndexBufferCalls);
+		LONG runtimeIndexBufferChanged = Take(Counter::RuntimeIndexBufferChanged);
+		LONG runtimeIndexBufferNoChange = Take(Counter::RuntimeIndexBufferNoChange);
+		LONG vertexBufferCalls = Take(Counter::VertexBufferCalls);
+		LONG64 vertexBufferSlots = Take64(Counter::VertexBufferSlots);
+		LONG64 vertexBufferChangedSlots = Take64(Counter::VertexBufferChangedSlots);
+		LONG64 vertexBufferNoChangeSlots = Take64(Counter::VertexBufferNoChangeSlots);
+		LONG vertexBufferResolvedReleased = Take(Counter::VertexBufferResolvedReleased);
+		LONG runtimeVertexBufferCalls = Take(Counter::RuntimeVertexBufferCalls);
+		LONG64 runtimeVertexBufferSlots = Take64(Counter::RuntimeVertexBufferSlots);
+		LONG64 runtimeVertexBufferChangedSlots = Take64(Counter::RuntimeVertexBufferChangedSlots);
+		LONG64 runtimeVertexBufferNoChangeSlots = Take64(Counter::RuntimeVertexBufferNoChangeSlots);
 		if (!primitiveTopologyCalls && !runtimePrimitiveTopologyCalls &&
 			!indexBufferCalls && !runtimeIndexBufferCalls &&
 			!vertexBufferCalls && !runtimeVertexBufferCalls)
@@ -939,15 +1002,15 @@ public:
 
 	static void LogBarrierState()
 	{
-		LONG barrierCaptureCalls = Take(&BarrierCaptureCalls);
-		LONG64 barrierCaptureItems = Take64(&BarrierCaptureItems);
-		LONG barrierCaptureSkippedInternalReplay = Take(&BarrierCaptureSkippedInternalReplay);
-		LONG barrierCaptureSkippedHotPath = Take(&BarrierCaptureSkippedHotPath);
-		LONG barrierCaptureSkippedStatePolicy = Take(&BarrierCaptureSkippedStatePolicy);
-		LONG barrierRecordedCalls = Take(&BarrierRecordedCalls);
-		LONG64 barrierRecordedItems = Take64(&BarrierRecordedItems);
-		LONG barrierUnwrapCalls = Take(&BarrierUnwrapCalls);
-		LONG64 barrierUnwrapItems = Take64(&BarrierUnwrapItems);
+		LONG barrierCaptureCalls = Take(Counter::BarrierCaptureCalls);
+		LONG64 barrierCaptureItems = Take64(Counter::BarrierCaptureItems);
+		LONG barrierCaptureSkippedInternalReplay = Take(Counter::BarrierCaptureSkippedInternalReplay);
+		LONG barrierCaptureSkippedHotPath = Take(Counter::BarrierCaptureSkippedHotPath);
+		LONG barrierCaptureSkippedStatePolicy = Take(Counter::BarrierCaptureSkippedStatePolicy);
+		LONG barrierRecordedCalls = Take(Counter::BarrierRecordedCalls);
+		LONG64 barrierRecordedItems = Take64(Counter::BarrierRecordedItems);
+		LONG barrierUnwrapCalls = Take(Counter::BarrierUnwrapCalls);
+		LONG64 barrierUnwrapItems = Take64(Counter::BarrierUnwrapItems);
 		if (!barrierCaptureCalls && !barrierRecordedCalls && !barrierUnwrapCalls)
 			return;
 		DX12LogManager::Fields("DX12ResidentMaintenance",
@@ -961,26 +1024,26 @@ public:
 
 	static void LogPreSkinBindingState()
 	{
-		LONG preSkinBindingCacheCalls = Take(&PreSkinBindingCacheCalls);
-		LONG preSkinBindingCacheHits = Take(&PreSkinBindingCacheHits);
-		LONG preSkinBindingCacheMisses = Take(&PreSkinBindingCacheMisses);
-		LONG preSkinBindingCacheStores = Take(&PreSkinBindingCacheStores);
-		LONG64 preSkinBindingRootTables = Take64(&PreSkinBindingRootTables);
-		LONG64 preSkinBindingRanges = Take64(&PreSkinBindingRanges);
-		LONG64 preSkinBindingLightDescriptorLookups = Take64(&PreSkinBindingLightDescriptorLookups);
-		LONG64 preSkinBindingFullDescriptorLookups = Take64(&PreSkinBindingFullDescriptorLookups);
-		LONG64 preSkinBindingConstants = Take64(&PreSkinBindingConstants);
-		LONG64 preSkinBindingRootDescriptors = Take64(&PreSkinBindingRootDescriptors);
-		LONG64 preSkinBindingRuntimeResolved = Take64(&PreSkinBindingRuntimeResolved);
-		LONG64 preSkinBindingRuntimeUnresolved = Take64(&PreSkinBindingRuntimeUnresolved);
-		LONG64 preSkinBindingDescriptorHits = Take64(&PreSkinBindingDescriptorHits);
-		LONG64 preSkinBindingDescriptorMisses = Take64(&PreSkinBindingDescriptorMisses);
-		LONG64 preSkinBindingDescriptorPending = Take64(&PreSkinBindingDescriptorPending);
-		LONG64 preSkinBindingWaitAvoided = Take64(&PreSkinBindingWaitAvoided);
-		LONG64 runtimeDescriptorWrites = Take64(&RuntimeDescriptorWrites);
-		LONG64 runtimeDescriptorCopyCalls = Take64(&RuntimeDescriptorCopyCalls);
-		LONG64 runtimeDescriptorCopied = Take64(&RuntimeDescriptorCopied);
-		LONG64 runtimeDescriptorCopyMisses = Take64(&RuntimeDescriptorCopyMisses);
+		LONG preSkinBindingCacheCalls = Take(Counter::PreSkinBindingCacheCalls);
+		LONG preSkinBindingCacheHits = Take(Counter::PreSkinBindingCacheHits);
+		LONG preSkinBindingCacheMisses = Take(Counter::PreSkinBindingCacheMisses);
+		LONG preSkinBindingCacheStores = Take(Counter::PreSkinBindingCacheStores);
+		LONG64 preSkinBindingRootTables = Take64(Counter::PreSkinBindingRootTables);
+		LONG64 preSkinBindingRanges = Take64(Counter::PreSkinBindingRanges);
+		LONG64 preSkinBindingLightDescriptorLookups = Take64(Counter::PreSkinBindingLightDescriptorLookups);
+		LONG64 preSkinBindingFullDescriptorLookups = Take64(Counter::PreSkinBindingFullDescriptorLookups);
+		LONG64 preSkinBindingConstants = Take64(Counter::PreSkinBindingConstants);
+		LONG64 preSkinBindingRootDescriptors = Take64(Counter::PreSkinBindingRootDescriptors);
+		LONG64 preSkinBindingRuntimeResolved = Take64(Counter::PreSkinBindingRuntimeResolved);
+		LONG64 preSkinBindingRuntimeUnresolved = Take64(Counter::PreSkinBindingRuntimeUnresolved);
+		LONG64 preSkinBindingDescriptorHits = Take64(Counter::PreSkinBindingDescriptorHits);
+		LONG64 preSkinBindingDescriptorMisses = Take64(Counter::PreSkinBindingDescriptorMisses);
+		LONG64 preSkinBindingDescriptorPending = Take64(Counter::PreSkinBindingDescriptorPending);
+		LONG64 preSkinBindingWaitAvoided = Take64(Counter::PreSkinBindingWaitAvoided);
+		LONG64 runtimeDescriptorWrites = Take64(Counter::RuntimeDescriptorWrites);
+		LONG64 runtimeDescriptorCopyCalls = Take64(Counter::RuntimeDescriptorCopyCalls);
+		LONG64 runtimeDescriptorCopied = Take64(Counter::RuntimeDescriptorCopied);
+		LONG64 runtimeDescriptorCopyMisses = Take64(Counter::RuntimeDescriptorCopyMisses);
 		if (!preSkinBindingCacheCalls && !preSkinBindingCacheHits &&
 			!preSkinBindingCacheMisses && !preSkinBindingCacheStores &&
 			!preSkinBindingRuntimeResolved && !preSkinBindingRuntimeUnresolved &&
@@ -1011,10 +1074,10 @@ public:
 
 	static void LogRuntimeLookup()
 	{
-		LONG tlsHits = Take(&RuntimeLookupTlsHits);
-		LONG directHits = Take(&RuntimeLookupDirectHits);
-		LONG shardHits = Take(&RuntimeLookupShardHits);
-		LONG misses = Take(&RuntimeLookupMisses);
+		LONG tlsHits = Take(Counter::RuntimeLookupTlsHits);
+		LONG directHits = Take(Counter::RuntimeLookupDirectHits);
+		LONG shardHits = Take(Counter::RuntimeLookupShardHits);
+		LONG misses = Take(Counter::RuntimeLookupMisses);
 		if (!tlsHits && !directHits && !shardHits && !misses)
 			return;
 		DX12LogManager::Fields("DX12ResidentMaintenance",
@@ -1024,17 +1087,17 @@ public:
 
 	static void LogDispatchDecisionState()
 	{
-		LONG cacheHits = Take(&DispatchDecisionCacheHits);
-		LONG cacheMisses = Take(&DispatchDecisionCacheMisses);
-		LONG psoCacheHits = Take(&DispatchDecisionPsoCacheHits);
-		LONG psoCacheMisses = Take(&DispatchDecisionPsoCacheMisses);
-		LONG builds = Take(&DispatchDecisionBuilds);
-		LONG noCompute = Take(&DispatchDecisionNoCompute);
-		LONG noPreSkinCandidate = Take(&DispatchDecisionNoPreSkinCandidate);
-		LONG preSkinCandidate = Take(&DispatchDecisionPreSkinCandidate);
-		LONG preSkinCandidateDispatches = Take(&DispatchDecisionPreSkinCandidateDispatches);
-		LONG shaderOverrideWork = Take(&DispatchDecisionShaderOverrideWork);
-		LONG fastRejects = Take(&DispatchDecisionFastRejects);
+		LONG cacheHits = Take(Counter::DispatchDecisionCacheHits);
+		LONG cacheMisses = Take(Counter::DispatchDecisionCacheMisses);
+		LONG psoCacheHits = Take(Counter::DispatchDecisionPsoCacheHits);
+		LONG psoCacheMisses = Take(Counter::DispatchDecisionPsoCacheMisses);
+		LONG builds = Take(Counter::DispatchDecisionBuilds);
+		LONG noCompute = Take(Counter::DispatchDecisionNoCompute);
+		LONG noPreSkinCandidate = Take(Counter::DispatchDecisionNoPreSkinCandidate);
+		LONG preSkinCandidate = Take(Counter::DispatchDecisionPreSkinCandidate);
+		LONG preSkinCandidateDispatches = Take(Counter::DispatchDecisionPreSkinCandidateDispatches);
+		LONG shaderOverrideWork = Take(Counter::DispatchDecisionShaderOverrideWork);
+		LONG fastRejects = Take(Counter::DispatchDecisionFastRejects);
 		if (!cacheHits && !cacheMisses && !psoCacheHits && !psoCacheMisses &&
 			!builds && !noCompute &&
 			!noPreSkinCandidate && !preSkinCandidate && !preSkinCandidateDispatches &&
@@ -1049,13 +1112,13 @@ public:
 
 	static void LogPreSkinPlanState()
 	{
-		LONG lookups = Take(&PreSkinPlanCacheLookups);
-		LONG hits = Take(&PreSkinPlanCacheHits);
-		LONG negativeHits = Take(&PreSkinPlanCacheNegativeHits);
-		LONG positiveHits = Take(&PreSkinPlanCachePositiveHits);
-		LONG misses = Take(&PreSkinPlanCacheMisses);
-		LONG stores = Take(&PreSkinPlanCacheStores);
-		LONG fingerprints = Take(&PreSkinPlanFingerprintBuilds);
+		LONG lookups = Take(Counter::PreSkinPlanCacheLookups);
+		LONG hits = Take(Counter::PreSkinPlanCacheHits);
+		LONG negativeHits = Take(Counter::PreSkinPlanCacheNegativeHits);
+		LONG positiveHits = Take(Counter::PreSkinPlanCachePositiveHits);
+		LONG misses = Take(Counter::PreSkinPlanCacheMisses);
+		LONG stores = Take(Counter::PreSkinPlanCacheStores);
+		LONG fingerprints = Take(Counter::PreSkinPlanFingerprintBuilds);
 		if (!lookups && !hits && !negativeHits && !positiveHits &&
 			!misses && !stores && !fingerprints)
 			return;
@@ -1067,33 +1130,33 @@ public:
 
 	static void LogDrawDecisionState()
 	{
-		LONG cacheHits = Take(&DrawDecisionCacheHits);
-		LONG cacheMisses = Take(&DrawDecisionCacheMisses);
-		LONG psoCacheHits = Take(&DrawDecisionPsoCacheHits);
-		LONG psoCacheMisses = Take(&DrawDecisionPsoCacheMisses);
-		LONG builds = Take(&DrawDecisionBuilds);
-		LONG noPso = Take(&DrawDecisionNoPso);
-		LONG noShaderOverride = Take(&DrawDecisionNoShaderOverride);
-		LONG noDrawOverride = Take(&DrawDecisionNoDrawOverride);
-		LONG needsIaHash = Take(&DrawDecisionNeedsIaHash);
-		LONG needsDescriptorMatch = Take(&DrawDecisionNeedsDescriptorMatch);
-		LONG needsReplacement = Take(&DrawDecisionNeedsReplacement);
-		LONG skipOriginal = Take(&DrawDecisionSkipOriginal);
-		LONG iaHashDraws = Take(&DrawDecisionIaHashDraws);
-		LONG iaHashCacheLookups = Take(&DrawDecisionIaHashCacheLookups);
-		LONG iaHashCacheHits = Take(&DrawDecisionIaHashCacheHits);
-		LONG iaHashCacheMisses = Take(&DrawDecisionIaHashCacheMisses);
-		LONG iaHashCacheStores = Take(&DrawDecisionIaHashCacheStores);
-		LONG iaHashCacheEvictions = Take(&DrawDecisionIaHashCacheEvictions);
-		LONG iaHashCacheNegativeHits = Take(&DrawDecisionIaHashCacheNegativeHits);
-		LONG descriptorDraws = Take(&DrawDecisionDescriptorDraws);
-		LONG directProbeCacheLookups = Take(&DrawDecisionDirectProbeCacheLookups);
-		LONG directProbeCacheHits = Take(&DrawDecisionDirectProbeCacheHits);
-		LONG directProbeCacheMisses = Take(&DrawDecisionDirectProbeCacheMisses);
-		LONG directProbeCachePositiveHits = Take(&DrawDecisionDirectProbeCachePositiveHits);
-		LONG directProbeCacheNegativeHits = Take(&DrawDecisionDirectProbeCacheNegativeHits);
-		LONG directProbeCacheStores = Take(&DrawDecisionDirectProbeCacheStores);
-		LONG directProbeCacheEvictions = Take(&DrawDecisionDirectProbeCacheEvictions);
+		LONG cacheHits = Take(Counter::DrawDecisionCacheHits);
+		LONG cacheMisses = Take(Counter::DrawDecisionCacheMisses);
+		LONG psoCacheHits = Take(Counter::DrawDecisionPsoCacheHits);
+		LONG psoCacheMisses = Take(Counter::DrawDecisionPsoCacheMisses);
+		LONG builds = Take(Counter::DrawDecisionBuilds);
+		LONG noPso = Take(Counter::DrawDecisionNoPso);
+		LONG noShaderOverride = Take(Counter::DrawDecisionNoShaderOverride);
+		LONG noDrawOverride = Take(Counter::DrawDecisionNoDrawOverride);
+		LONG needsIaHash = Take(Counter::DrawDecisionNeedsIaHash);
+		LONG needsDescriptorMatch = Take(Counter::DrawDecisionNeedsDescriptorMatch);
+		LONG needsReplacement = Take(Counter::DrawDecisionNeedsReplacement);
+		LONG skipOriginal = Take(Counter::DrawDecisionSkipOriginal);
+		LONG iaHashDraws = Take(Counter::DrawDecisionIaHashDraws);
+		LONG iaHashCacheLookups = Take(Counter::DrawDecisionIaHashCacheLookups);
+		LONG iaHashCacheHits = Take(Counter::DrawDecisionIaHashCacheHits);
+		LONG iaHashCacheMisses = Take(Counter::DrawDecisionIaHashCacheMisses);
+		LONG iaHashCacheStores = Take(Counter::DrawDecisionIaHashCacheStores);
+		LONG iaHashCacheEvictions = Take(Counter::DrawDecisionIaHashCacheEvictions);
+		LONG iaHashCacheNegativeHits = Take(Counter::DrawDecisionIaHashCacheNegativeHits);
+		LONG descriptorDraws = Take(Counter::DrawDecisionDescriptorDraws);
+		LONG directProbeCacheLookups = Take(Counter::DrawDecisionDirectProbeCacheLookups);
+		LONG directProbeCacheHits = Take(Counter::DrawDecisionDirectProbeCacheHits);
+		LONG directProbeCacheMisses = Take(Counter::DrawDecisionDirectProbeCacheMisses);
+		LONG directProbeCachePositiveHits = Take(Counter::DrawDecisionDirectProbeCachePositiveHits);
+		LONG directProbeCacheNegativeHits = Take(Counter::DrawDecisionDirectProbeCacheNegativeHits);
+		LONG directProbeCacheStores = Take(Counter::DrawDecisionDirectProbeCacheStores);
+		LONG directProbeCacheEvictions = Take(Counter::DrawDecisionDirectProbeCacheEvictions);
 		if (!cacheHits && !cacheMisses && !psoCacheHits && !psoCacheMisses &&
 			!builds && !noPso &&
 			!noShaderOverride && !noDrawOverride && !needsIaHash &&
@@ -1122,14 +1185,14 @@ public:
 
 	static void LogDrawNoopFastPathState()
 	{
-		LONG attempts = Take(&DrawNoopFastPathAttempts);
-		LONG forwarded = Take(&DrawNoopFastPathForwarded);
-		LONG huntBlocked = Take(&DrawNoopFastPathHuntBlocked);
-		LONG captureBlocked = Take(&DrawNoopFastPathCaptureBlocked);
-		LONG shaderDumpBlocked = Take(&DrawNoopFastPathShaderDumpBlocked);
-		LONG noRuntime = Take(&DrawNoopFastPathNoRuntime);
-		LONG noDecision = Take(&DrawNoopFastPathNoDecision);
-		LONG nonNoopDecision = Take(&DrawNoopFastPathNonNoopDecision);
+		LONG attempts = Take(Counter::DrawNoopFastPathAttempts);
+		LONG forwarded = Take(Counter::DrawNoopFastPathForwarded);
+		LONG huntBlocked = Take(Counter::DrawNoopFastPathHuntBlocked);
+		LONG captureBlocked = Take(Counter::DrawNoopFastPathCaptureBlocked);
+		LONG shaderDumpBlocked = Take(Counter::DrawNoopFastPathShaderDumpBlocked);
+		LONG noRuntime = Take(Counter::DrawNoopFastPathNoRuntime);
+		LONG noDecision = Take(Counter::DrawNoopFastPathNoDecision);
+		LONG nonNoopDecision = Take(Counter::DrawNoopFastPathNonNoopDecision);
 		if (!attempts && !forwarded && !huntBlocked && !captureBlocked &&
 			!shaderDumpBlocked && !noRuntime && !noDecision && !nonNoopDecision)
 			return;
@@ -1141,30 +1204,30 @@ public:
 
 	static void RecordBindingEventRecorded()
 	{
-		Inc(&BindingEventsRecorded);
+		Inc(Counter::BindingEventsRecorded);
 	}
 
 	static void RecordDescriptorEpochWrite()
 	{
-		Inc(&DescriptorEpochWrites);
+		Inc(Counter::DescriptorEpochWrites);
 	}
 
 	static void RecordHuntVisitedWrite()
 	{
-		Inc(&HuntVisitedWrites);
+		Inc(Counter::HuntVisitedWrites);
 	}
 
 	static void RecordDescriptorRecordFastSkip()
 	{
-		Inc(&DescriptorRecordFastSkips);
+		Inc(Counter::DescriptorRecordFastSkips);
 	}
 
 	static void LogZeroWorkState()
 	{
-		LONG bindingEvents = Take(&BindingEventsRecorded);
-		LONG epochWrites = Take(&DescriptorEpochWrites);
-		LONG visitedWrites = Take(&HuntVisitedWrites);
-		LONG descriptorFastSkips = Take(&DescriptorRecordFastSkips);
+		LONG bindingEvents = Take(Counter::BindingEventsRecorded);
+		LONG epochWrites = Take(Counter::DescriptorEpochWrites);
+		LONG visitedWrites = Take(Counter::HuntVisitedWrites);
+		LONG descriptorFastSkips = Take(Counter::DescriptorRecordFastSkips);
 		if (!bindingEvents && !epochWrites && !visitedWrites && !descriptorFastSkips)
 			return;
 		DX12LogManager::Fields("DX12ResidentMaintenance",
