@@ -1470,13 +1470,15 @@ bool DX12ModRuntimeLoad(
 	gShaderOverridePsoMatchCache.clear();
 	gPresentCommandListExecutedPresent = -1;
 	gPreSkinCbvReadCache.clear();
+	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
+	gPreSkinSrvPositiveCache.clear();
+	gPreSkinSrvStablePositiveCache.clear();
+	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
-	gPreSkinSrvPositiveCache.clear();
-	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
 	gPreSkinUavMatchCache.clear();
 	gPreSkinUavMatchCacheLru.clear();

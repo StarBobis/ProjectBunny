@@ -962,6 +962,8 @@ inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvPositiveCac
 
 inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvStablePositiveCache;
 
+inline SRWLOCK gPreSkinSrvProbeCacheLock = SRWLOCK_INIT;
+
 
 UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor);
 
@@ -1002,6 +1004,16 @@ UINT64 MakePreSkinSrvProbeCacheKey(
 	const DX12CurrentComputeUavBinding &srv,
 	const Bunny::TextureOverrideConfig &config,
 	UINT64 srvByteWidth);
+
+
+void StorePreSkinSrvProbeNegative(UINT64 negativeKey);
+
+void StorePreSkinSrvStableProbeNegative(UINT64 stableNegativeKey, UINT64 negativeKey);
+
+void StorePreSkinSrvProbePositive(
+	UINT64 negativeKey,
+	UINT64 stableNegativeKey,
+	const DX12PreSkinSrvPositiveCacheValue &value);
 
 
 class DX12UavHashTextureOverrideMatch

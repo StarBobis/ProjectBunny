@@ -329,6 +329,41 @@ void StorePreSkinDescriptorPatchAbort(UINT64 key)
 }
 
 
+void StorePreSkinSrvProbeNegative(UINT64 negativeKey)
+{
+	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+	gPreSkinSrvNegativeCache.insert(negativeKey);
+	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+}
+
+
+void StorePreSkinSrvStableProbeNegative(UINT64 stableNegativeKey, UINT64 negativeKey)
+{
+	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+	if (gPreSkinSrvStableNegativeCache.size() > 1024)
+		gPreSkinSrvStableNegativeCache.clear();
+	gPreSkinSrvStableNegativeCache.insert(stableNegativeKey);
+	gPreSkinSrvNegativeCache.insert(negativeKey);
+	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+}
+
+
+void StorePreSkinSrvProbePositive(
+	UINT64 negativeKey,
+	UINT64 stableNegativeKey,
+	const DX12PreSkinSrvPositiveCacheValue &value)
+{
+	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+	if (gPreSkinSrvPositiveCache.size() > 256)
+		gPreSkinSrvPositiveCache.clear();
+	if (gPreSkinSrvStablePositiveCache.size() > 512)
+		gPreSkinSrvStablePositiveCache.clear();
+	gPreSkinSrvPositiveCache[negativeKey] = value;
+	gPreSkinSrvStablePositiveCache[stableNegativeKey] = value;
+	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
+}
+
+
 UINT64 MakePreSkinSrvStableProbeCacheKey(
 	const DX12CurrentComputeUavBinding &srv,
 	const Bunny::TextureOverrideConfig &config,
@@ -1582,13 +1617,15 @@ void ClearPreSkinRuntimeState()
 		BumpPreSkinActiveGeneration();
 	}
 	gPreSkinCbvReadCache.clear();
+	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
+	gPreSkinSrvPositiveCache.clear();
+	gPreSkinSrvStablePositiveCache.clear();
+	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
-	gPreSkinSrvPositiveCache.clear();
-	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
 	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -3392,72 +3429,73 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		const UINT64 negativeKey = MakePreSkinSrvProbeCacheKey(srv, config, srvByteWidth);
 		const UINT64 stableNegativeKey =
 			MakePreSkinSrvStableProbeCacheKey(srv, config, srvByteWidth);
+		bool probeKnownBad = false;
+		DX12LoadedResource *resource = nullptr;
+		UINT elementStride = 0;
+		AcquireSRWLockShared(&gPreSkinSrvProbeCacheLock);
 		if (gPreSkinSrvStableNegativeCache.find(stableNegativeKey) !=
-			gPreSkinSrvStableNegativeCache.end())
-			continue;
-		if (gPreSkinSrvNegativeCache.find(negativeKey) != gPreSkinSrvNegativeCache.end())
+				gPreSkinSrvStableNegativeCache.end() ||
+			gPreSkinSrvNegativeCache.find(negativeKey) != gPreSkinSrvNegativeCache.end())
+		{
+			probeKnownBad = true;
+		}
+		else
+		{
+			const auto stablePositiveIt = gPreSkinSrvStablePositiveCache.find(stableNegativeKey);
+			if (stablePositiveIt != gPreSkinSrvStablePositiveCache.end())
+			{
+				resource = stablePositiveIt->second.resource;
+				elementStride = stablePositiveIt->second.elementStride;
+			}
+			else
+			{
+				const auto positiveIt = gPreSkinSrvPositiveCache.find(negativeKey);
+				if (positiveIt != gPreSkinSrvPositiveCache.end())
+				{
+					resource = positiveIt->second.resource;
+					elementStride = positiveIt->second.elementStride;
+				}
+			}
+		}
+		ReleaseSRWLockShared(&gPreSkinSrvProbeCacheLock);
+		if (probeKnownBad)
 			continue;
 		if (!srv.hasDescriptor || srv.descriptor.kind != "SRV" ||
 			srv.descriptor.viewDimension != D3D12_SRV_DIMENSION_BUFFER)
 		{
-			if (gPreSkinSrvStableNegativeCache.size() > 1024)
-				gPreSkinSrvStableNegativeCache.clear();
-			gPreSkinSrvStableNegativeCache.insert(stableNegativeKey);
-			gPreSkinSrvNegativeCache.insert(negativeKey);
-						continue;
+			StorePreSkinSrvStableProbeNegative(stableNegativeKey, negativeKey);
+			continue;
 		}
 		const TableCopy *table = findTable(srv);
 		if (!table)
 		{
-			gPreSkinSrvNegativeCache.insert(negativeKey);
-						continue;
+			StorePreSkinSrvProbeNegative(negativeKey);
+			continue;
 		}
-		DX12LoadedResource *resource = nullptr;
-		UINT elementStride = 0;
-		auto stablePositiveIt = gPreSkinSrvStablePositiveCache.find(stableNegativeKey);
-		if (stablePositiveIt != gPreSkinSrvStablePositiveCache.end())
+		if (!resource)
 		{
-			resource = stablePositiveIt->second.resource;
-			elementStride = stablePositiveIt->second.elementStride;
-		}
-		else
-		{
-			auto positiveIt = gPreSkinSrvPositiveCache.find(negativeKey);
-			if (positiveIt != gPreSkinSrvPositiveCache.end())
+			resource = EnsureLoadedResourceForPreSkin(device, replacementBinding->resource);
+			elementStride =
+				srv.descriptor.structureByteStride ? srv.descriptor.structureByteStride : (resource ? resource->stride : 0);
+			if (!resource || !EnsureResourceSrvLocked(device, resource, elementStride, srvByteWidth) ||
+				!resource->srvCpu.ptr)
 			{
-				resource = positiveIt->second.resource;
-				elementStride = positiveIt->second.elementStride;
+				StorePreSkinSrvProbeNegative(negativeKey);
+				continue;
 			}
-			else
-			{
-				resource = EnsureLoadedResourceForPreSkin(device, replacementBinding->resource);
-				elementStride =
-					srv.descriptor.structureByteStride ? srv.descriptor.structureByteStride : (resource ? resource->stride : 0);
-				if (!resource || !EnsureResourceSrvLocked(device, resource, elementStride, srvByteWidth) ||
-					!resource->srvCpu.ptr)
-				{
-					gPreSkinSrvNegativeCache.insert(negativeKey);
-										continue;
-				}
-				if (gPreSkinSrvPositiveCache.size() > 256)
-					gPreSkinSrvPositiveCache.clear();
-				if (gPreSkinSrvStablePositiveCache.size() > 512)
-					gPreSkinSrvStablePositiveCache.clear();
-				const DX12PreSkinSrvPositiveCacheValue cacheValue =
-					{resource, elementStride, srvByteWidth, srv.shaderRegister};
-				gPreSkinSrvPositiveCache[negativeKey] = cacheValue;
-				gPreSkinSrvStablePositiveCache[stableNegativeKey] = cacheValue;
-			}
+			const DX12PreSkinSrvPositiveCacheValue cacheValue =
+				{resource, elementStride, srvByteWidth, srv.shaderRegister};
+			StorePreSkinSrvProbePositive(negativeKey, stableNegativeKey, cacheValue);
 		}
 		if (!resource || !resource->srvCpu.ptr)
 		{
-			gPreSkinSrvNegativeCache.insert(negativeKey);
-						continue;
+			StorePreSkinSrvProbeNegative(negativeKey);
+			continue;
 		}
 		if (!elementStride)
 		{
-			gPreSkinSrvNegativeCache.insert(negativeKey);
-						continue;
+			StorePreSkinSrvProbeNegative(negativeKey);
+			continue;
 		}
 		D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
 		dst.ptr += static_cast<SIZE_T>(table->tempOffset + srv.descriptorOffset) * tempIncrement;
