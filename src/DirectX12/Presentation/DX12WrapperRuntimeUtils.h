@@ -532,7 +532,6 @@ public:
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
 			_profile_timer.Resume();
-			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"PresentWrapper", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -574,7 +573,6 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
-		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
@@ -665,7 +663,6 @@ public:
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
 			_profile_timer.Resume();
-			DX12HangWatchdog::NotifyPresentCompleted();
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present1Wrapper", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
@@ -706,7 +703,6 @@ public:
 		_profile_timer.Pause();
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
-		DX12HangWatchdog::NotifyPresentCompleted();
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",

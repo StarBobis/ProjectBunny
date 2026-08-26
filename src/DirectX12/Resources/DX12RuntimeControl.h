@@ -1,4 +1,4 @@
-﻿// DXGI/wait hooks, the DX12 runtime shell and UI actions.
+// DXGI/wait hooks, the DX12 runtime shell and UI actions.
 // Split from DX12Resources.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -69,7 +69,6 @@ public:
 		DX12LogManager::Open();
 		DX12LogManager::Text(
 			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");
-		DX12HangWatchdog::Start();
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
@@ -113,7 +112,6 @@ public:
 	static void Shutdown()
 	{
 		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
-		DX12HangWatchdog::Stop();
 		DX12AsyncReadbackShutdown();
 		DX12NativeOverlayShutdown();
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)

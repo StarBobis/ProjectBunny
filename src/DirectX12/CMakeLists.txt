@@ -76,7 +76,6 @@ add_library(DirectX12 SHARED
     Core/CommandState/DX12FrameAnalysisState.h
     Core/DX12HotPath.h
     Core/HotPath/DX12HotPathState.h
-    Core/HotPath/DX12HangWatchdog.h
     Core/HotPath/DX12Profiling.h
     Core/DX12CommandFlow.h
     Core/CommandFlow/DX12ProfilingImpl.h
