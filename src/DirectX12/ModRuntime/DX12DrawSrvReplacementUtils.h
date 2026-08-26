@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // DX12DrawSrvReplacementUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
 // Not meant to be included directly.
@@ -159,6 +159,25 @@ public:
 		if (!plan || !rootSignature.rootSignature)
 			return false;
 
+		// TLS fast path: draw-SRV replacement resolves the signature plan on
+		// every draw, and the same root signature repeats across draws. A
+		// thread-local snapshot serves the common case with a pointer compare
+		// instead of the shared cache lock + hash lookup (the previous
+		// DX11-style global table cost two locked ops and a map probe per
+		// draw, serializing parallel recording threads).
+		struct TlsSignaturePlanEntry
+		{
+			ID3D12RootSignature *rootSignature = nullptr;
+			UINT64 rootSignatureHash = 0;
+			DX12DrawSrvSignaturePlanTemplate plan;
+		};
+		static thread_local TlsSignaturePlanEntry tls;
+		if (tls.rootSignature == rootSignature.rootSignature &&
+		    tls.rootSignatureHash == rootSignature.hash) {
+			*plan = tls.plan;
+			return true;
+		}
+
 		static SRWLOCK s_planCacheLock = SRWLOCK_INIT;
 		static std::unordered_map<ID3D12RootSignature*,
 			DX12DrawSrvSignaturePlanTemplate> s_planCache;
@@ -169,6 +188,9 @@ public:
 		    found->second.rootSignatureHash == rootSignature.hash) {
 			*plan = found->second;
 			ReleaseSRWLockShared(&s_planCacheLock);
+			tls.rootSignature = rootSignature.rootSignature;
+			tls.rootSignatureHash = rootSignature.hash;
+			tls.plan = *plan;
 			return true;
 		}
 		ReleaseSRWLockShared(&s_planCacheLock);
@@ -183,6 +205,10 @@ public:
 		stored = built;
 		*plan = stored;
 		ReleaseSRWLockExclusive(&s_planCacheLock);
+
+		tls.rootSignature = rootSignature.rootSignature;
+		tls.rootSignatureHash = rootSignature.hash;
+		tls.plan = built;
 		return true;
 	}
 
