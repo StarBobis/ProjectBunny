@@ -848,36 +848,6 @@ bool DX12ModFindActivePreSkinProducerForOutput(
 
 
 
-class DX12PreSkinCbvReadCacheKey
-
-{
-
-public:
-	ID3D12Resource *resource = nullptr;
-	UINT64 offset = 0;
-	UINT size = 0;
-
-	bool operator<(const DX12PreSkinCbvReadCacheKey &rhs) const
-	{
-		if (resource != rhs.resource)
-			return resource < rhs.resource;
-		if (offset != rhs.offset)
-			return offset < rhs.offset;
-		return size < rhs.size;
-	}
-};
-
-
-class DX12PreSkinCbvReadCacheValue
-
-{
-
-public:
-	HRESULT hr = E_FAIL;
-	std::vector<unsigned char> bytes;
-};
-
-
 class DX12PreSkinSrvHashResult
 
 {
@@ -903,11 +873,6 @@ public:
 	UINT64 srvByteWidth = 0;
 	uint32_t srvRegister = UINT_MAX;
 };
-
-
-inline std::map<DX12PreSkinCbvReadCacheKey, DX12PreSkinCbvReadCacheValue> gPreSkinCbvReadCache;
-
-inline UINT64 gPreSkinCbvReadCacheReloadGen = 0;
 
 
 // Cross-frame cache for patched CBV buffers.

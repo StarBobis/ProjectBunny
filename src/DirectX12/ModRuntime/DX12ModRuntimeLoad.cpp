@@ -1469,7 +1469,6 @@ bool DX12ModRuntimeLoad(
 	ReleaseLoadedResourcesLocked();
 	gShaderOverridePsoMatchCache.clear();
 	gPresentCommandListExecutedPresent = -1;
-	gPreSkinCbvReadCache.clear();
 	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();

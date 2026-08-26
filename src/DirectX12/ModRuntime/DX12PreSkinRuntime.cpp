@@ -1616,7 +1616,6 @@ void ClearPreSkinRuntimeState()
 		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 0);
 		BumpPreSkinActiveGeneration();
 	}
-	gPreSkinCbvReadCache.clear();
 	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
