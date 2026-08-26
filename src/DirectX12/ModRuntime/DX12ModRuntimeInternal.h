@@ -3319,7 +3319,7 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 	const std::vector<DX12TriggeredTextureOverride> &candidateTriggers);
 
 
-void PreloadPreSkinReplacementResources(ID3D12Device *device);
+bool PreloadPreSkinReplacementResources(ID3D12Device *device);
 
 
 bool PreloadPreSkinOutputResizeCache(ID3D12Device *device);

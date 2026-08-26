@@ -565,6 +565,41 @@ void ReleasePreSkinOutputResizeCacheEntry(
 }
 
 
+// Bumped whenever the resize cache entry set changes (create/evict/clear).
+// Guards the TLS fast path in DX12ModResolvePreSkinOutputResizeCacheByGpuVa.
+inline static volatile LONG64 gPreSkinOutputResizeCacheGeneration = 0;
+
+static void BumpPreSkinOutputResizeCacheGeneration()
+{
+	InterlockedIncrement64(&gPreSkinOutputResizeCacheGeneration);
+}
+
+// TLS fast path for the per-bind output-resize resolve. The previous
+// implementation took the global cache lock and linearly scanned the whole
+// cache for EVERY IA bind while pre-skin output resizing is active. Binding
+// patterns are highly repetitive (the same view VA every frame), so a
+// thread-local snapshot guarded by the cache generation serves the common
+// case with two loads and no lock. The retained resource reference keeps the
+// binding alive even if the cache entry is later evicted.
+struct TlsPreSkinResizeResolve
+{
+	UINT64 generation = 0;
+	UINT64 viewGpuVa = 0;
+	ID3D12Resource *vertexResource = nullptr; // retained
+	UINT64 resizedGpuVa = 0;
+	UINT64 resizedByteWidth = 0;
+	UINT64 sourceOffset = 0;
+	UINT stride = 0;
+
+	~TlsPreSkinResizeResolve()
+	{
+		if (vertexResource)
+			vertexResource->Release();
+	}
+};
+thread_local TlsPreSkinResizeResolve tlsPreSkinResizeResolve;
+
+
 void ClearPreSkinOutputResizeCache()
 {
 	std::vector<DX12PreSkinOutputResizeCacheEntry> releaseEntries;
@@ -578,6 +613,7 @@ void ClearPreSkinOutputResizeCache()
 		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0);
 	InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 0);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+	BumpPreSkinOutputResizeCacheGeneration();
 	for (DX12PreSkinOutputResizeCacheEntry &entry : releaseEntries)
 		ReleasePreSkinOutputResizeCacheEntry(&entry);
 }
@@ -743,6 +779,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 			if (oldest != gPreSkinOutputResizeCache.end()) {
 				releaseEntry = oldest->second;
 				gPreSkinOutputResizeCache.erase(oldest);
+				BumpPreSkinOutputResizeCacheGeneration();
 			}
 		}
 		DX12PreSkinOutputResizeCacheEntry entry;
@@ -764,6 +801,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 		entry.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 		cached = gPreSkinOutputResizeCache.emplace(key, entry).first;
 		InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 1);
+		BumpPreSkinOutputResizeCacheGeneration();
 		createdResource = nullptr;
 		createdVertexResource = nullptr;
 		createdHeap = nullptr;
@@ -1028,6 +1066,27 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		return false;
 	binding->Clear();
 
+	// TLS fast path: repeated binds of the same view resolve without the
+	// cache lock and the linear scan (the previous code paid both on every
+	// IA bind while pre-skin output resizing was active). The cache
+	// generation bumps on every create/evict/clear, so a stale snapshot
+	// falls back to the locked scan; the retained reference keeps the
+	// binding alive across eviction.
+	const UINT64 generation = InterlockedCompareExchange64(
+		&gPreSkinOutputResizeCacheGeneration, 0, 0);
+	TlsPreSkinResizeResolve &tls = tlsPreSkinResizeResolve;
+	if (tls.generation == generation && tls.viewGpuVa == viewGpuVa &&
+	    tls.vertexResource) {
+		tls.vertexResource->AddRef();
+		binding->resizedResource = tls.vertexResource;
+		binding->retainedResource = true;
+		binding->resizedGpuVa = tls.resizedGpuVa;
+		binding->resizedByteWidth = tls.resizedByteWidth;
+		binding->sourceOffset = tls.sourceOffset;
+		binding->stride = tls.stride;
+		return true;
+	}
+
 	// The publish map is intentionally frame-local, but the resize cache owns a
 	// stable replacement for the original output resource until fence-safe
 	// eviction or configuration reload. Resolve through that owner when Present,
@@ -1069,6 +1128,14 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 
 	if (!bestEntry || !bestKey) {
 		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+		// Negative result: remember it so the same VA does not re-enter the
+		// locked scan until the cache set changes.
+		tls.generation = generation;
+		tls.viewGpuVa = viewGpuVa;
+		if (tls.vertexResource) {
+			tls.vertexResource->Release();
+			tls.vertexResource = nullptr;
+		}
 		return false;
 	}
 
@@ -1090,6 +1157,20 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	bestEntry->useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 	TrackPreSkinOutputResizeCacheEntryUse(bestEntry, commandListIdentity);
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
+
+	// Refresh the TLS snapshot under the same lock the entry was read under.
+	if (tls.vertexResource != bestEntry->vertexResource) {
+		if (tls.vertexResource)
+			tls.vertexResource->Release();
+		tls.vertexResource = bestEntry->vertexResource;
+		tls.vertexResource->AddRef();
+	}
+	tls.generation = generation;
+	tls.viewGpuVa = viewGpuVa;
+	tls.resizedGpuVa = bestEntry->vertexGpuVa;
+	tls.resizedByteWidth = bestKey->requiredByteWidth;
+	tls.sourceOffset = bestOffset;
+	tls.stride = bestKey->stride;
 	return true;
 }
 
@@ -5112,17 +5193,23 @@ bool DX12ModGetCachedPreSkinProbeResult(
 }
 
 
-void PreloadPreSkinReplacementResources(ID3D12Device *device)
+// Returns true when every candidate has been loaded. The preload used to run
+// to completion in a single Present (synchronous file I/O + resource creation
+// for every mod buffer at once), which froze the first frame for seconds with
+// a large mod. Loading is now spread over several frames, kPreloadBatchSize
+// resources at a time; the caller invokes this once per frame until it
+// returns true.
+bool PreloadPreSkinReplacementResources(ID3D12Device *device)
 {
 	if (!device)
-		return;
+		return true;
+	static constexpr size_t kPreloadBatchSize = 32;
 	// Collect every buffer-like mod resource under the shared mod lock
 	// (stable within a reload generation), then load each once outside the
 	// lock. This covers preSkinCsSrvResources, vertexBufferResources, VLR
 	// candidates and any other lazy EnsureLoadedResource* path, and moves the
 	// first-match synchronous file I/O + resource creation off the
-	// command-recording thread (multi-second freeze) to the first frame after
-	// the mod is (re)loaded.
+	// command-recording thread to the frame boundary, spread across frames.
 	std::vector<std::wstring> names;
 	{
 		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
@@ -5136,8 +5223,23 @@ void PreloadPreSkinReplacementResources(ID3D12Device *device)
 	}
 	std::sort(names.begin(), names.end());
 	names.erase(std::unique(names.begin(), names.end()), names.end());
-	for (const std::wstring &name : names)
+
+	// Progress state is reset when the reload generation changes (the caller
+	// only invokes this for a new generation, but keep the guard here so a
+	// re-entrant call after reload cannot resume stale offsets).
+	static UINT64 sPreloadGeneration = 0;
+	static size_t sPreloadNextIndex = 0;
+	const UINT64 generation = DX12ModGetReloadGenerationFast();
+	if (sPreloadGeneration != generation) {
+		sPreloadGeneration = generation;
+		sPreloadNextIndex = 0;
+	}
+
+	const size_t end = (std::min)(
+		names.size(), sPreloadNextIndex + kPreloadBatchSize);
+	for (; sPreloadNextIndex < end; ++sPreloadNextIndex)
 	{
+		const std::wstring &name = names[sPreloadNextIndex];
 		DX12LoadedResource *resource =
 			EnsureLoadedResourceForPreSkin(device, name);
 		if (resource && resource->resource && resource->stride &&
@@ -5145,6 +5247,7 @@ void PreloadPreSkinReplacementResources(ID3D12Device *device)
 			EnsureResourceSrvLocked(
 				device, resource, resource->stride, resource->byteWidth);
 	}
+	return sPreloadNextIndex >= names.size();
 }
 
 
@@ -5203,8 +5306,16 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 	std::vector<DX12ResourceSummary> resources;
 	DX12GetRetainedTrackedResourceSnapshot(&resources);
 	bool madeProgress = false;
+	// Cap the synchronous GPU resource creation per frame: the previous
+	// implementation created every missing entry in a single Present, which
+	// froze the frame boundary for milliseconds at a time while the preload
+	// warmed up.
+	static constexpr UINT kPreloadMaxCreatePerFrame = 8;
+	UINT createdThisFrame = 0;
 	for (const DX12ResourceSummary &resourceSummary : resources)
 	{
+		if (createdThisFrame >= kPreloadMaxCreatePerFrame)
+			break;
 		if (!resourceSummary.resource || !resourceSummary.hasResourceDesc ||
 			resourceSummary.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
 			(resourceSummary.resourceDesc.Flags &
@@ -5242,8 +5353,10 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 				nullptr, resourceSummary.resource, resizedVertex,
 				resourceSummary.resourceDesc.Width,
 				candidate.byteWidth, candidate.stride);
-			if (!cacheHit)
+			if (!cacheHit) {
 				madeProgress = true;
+				++createdThisFrame;
+			}
 			if (resizedUav)
 				resizedUav->Release();
 			if (resizedVertex)
@@ -5252,6 +5365,8 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 				resizedHeap->Release();
 			break;
 		}
+		if (createdThisFrame >= kPreloadMaxCreatePerFrame)
+			break;
 	}
 	DX12ReleaseTrackedResourceSnapshot(&resources);
 	return madeProgress;

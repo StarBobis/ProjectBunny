@@ -1,4 +1,4 @@
-﻿// DX12CommandListExecutor.cpp: command list execution entry points, frame begin and present replacement.
+// DX12CommandListExecutor.cpp: command list execution entry points, frame begin and present replacement.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -74,20 +74,27 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
-	MoveExpiredRetiredLoadedResourcesLocked(&expired);
-	ReleaseSRWLockExclusive(&gModLock);
+	// Best-effort: deferring expired-resource retirement by one frame is
+	// harmless, and the frame boundary must never block on the global mod
+	// lock while recording threads contend for shared acquisitions.
+	if (TryAcquireSRWLockExclusive(&gModLock)) {
+		MoveExpiredRetiredLoadedResourcesLocked(&expired);
+		ReleaseSRWLockExclusive(&gModLock);
+	}
 	for (DX12RetiredLoadedResource &resource : expired)
 		ReleaseLoadedResourceObjects(&resource.resource);
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
 
 	// Preload pre-skin replacement resources once per mod generation so the
 	// first match does not pay synchronous file I/O + resource creation on
-	// the command-recording thread.
+	// the command-recording thread. Loading is spread across frames (a fixed
+	// batch per Present) so a large mod cannot freeze a single frame; the
+	// generation is only marked complete when the batch loop finishes.
 	{
 		UINT64 sPreSkinResourcesPreloadedGeneration = 0;
 		static UINT64 sOutputResizePreloadGeneration = 0;
 		static LONG sOutputResizePreloadIdleFrames = 0;
+		static UINT sOutputResizePreloadFrameBudget = 0;
 		const UINT64 preloadGeneration = DX12ModGetReloadGenerationFast();
 		if (gHasPreSkinTextureOverrideCandidates != 0 &&
 			sPreSkinResourcesPreloadedGeneration != preloadGeneration)
@@ -97,9 +104,9 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 				SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
 				preloadDevice)
 			{
-				PreloadPreSkinReplacementResources(preloadDevice);
+				if (PreloadPreSkinReplacementResources(preloadDevice))
+					sPreSkinResourcesPreloadedGeneration = preloadGeneration;
 				preloadDevice->Release();
-				sPreSkinResourcesPreloadedGeneration = preloadGeneration;
 			}
 		}
 		if (gHasPreSkinTextureOverrideCandidates != 0)
@@ -108,9 +115,16 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 			{
 				sOutputResizePreloadGeneration = preloadGeneration;
 				sOutputResizePreloadIdleFrames = 0;
+				sOutputResizePreloadFrameBudget = 0;
 			}
-			if (sOutputResizePreloadIdleFrames < 30)
+			// Idle-frame gate plus a hard frame budget: progress-based
+			// re-arming alone could keep the preload loop alive indefinitely
+			// when new tracked resources keep appearing, charging the frame
+			// boundary with a full resource scan every Present.
+			if (sOutputResizePreloadIdleFrames < 30 &&
+			    sOutputResizePreloadFrameBudget < 120)
 			{
+				++sOutputResizePreloadFrameBudget;
 				ID3D12Device *preloadDevice = nullptr;
 				if (swapChain &&
 					SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
@@ -603,7 +617,12 @@ bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 void ProcessDx12KeyBindingsForFrame()
 {
 	std::vector<Bunny::MigotoKeyBindingUtils::RuntimeAction> actions;
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	// Key processing is best-effort input handling; it must never block the
+	// frame boundary on the global mod lock while recording threads take
+	// shared acquisitions on every draw/dispatch. A skipped round simply
+	// delays a hotkey by one frame.
+	if (!TryAcquireSRWLockExclusive(&gModLock))
+		return;
 	if (gLoaded)
 		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
 	ReleaseSRWLockExclusive(&gModLock);
