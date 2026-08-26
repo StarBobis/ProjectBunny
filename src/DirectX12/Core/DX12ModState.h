@@ -272,12 +272,6 @@ UINT64 DX12GetBufferContentGenerationForResource(ID3D12Resource *resource);
 void DX12InvalidateBufferContentRange(
 	ID3D12Resource *resource, UINT64 offset, UINT64 size);
 void DX12InvalidateBufferContent(ID3D12Resource *resource);
-// Request an asynchronous GPU readback of a buffer region whose content cache
-// is missing/invalid (e.g. buffers recreated by a scene switch through
-// GPU-only paths). IA content hashing calls this on a Tier-1 content miss;
-// throttled to at most one request per resource per 120 presents.
-void DX12RequestBufferContentReadback(
-	ID3D12Resource *resource, UINT64 offset, UINT64 size);
 bool DX12CacheTextureHash(
 	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source);
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
