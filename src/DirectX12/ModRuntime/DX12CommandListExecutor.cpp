@@ -56,24 +56,32 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
-	DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
+	// Frame-variable collection (window/cursor snapshot + ~20 global writes
+	// per frame) only matters when command lists can actually read the
+	// variables; skip the whole snapshot when the mod has none.
+	if (gHasCommandLists.load(std::memory_order_relaxed))
+		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
 	ProcessDx12KeyBindingsForFrame();
 
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;
-	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-	// Track idle frames: if no active pre-skin overrides existed last frame, count idle.
-	// If pre-skin was actively matching, reset idle counter immediately.
-	if (gActivePreSkinTextureOverrides.empty()) {
-		LONG idle = InterlockedIncrement(&gPreSkinBindingIdleFrames);
-		if (idle > kPreSkinBindingIdleMax)
-			InterlockedExchange(&gPreSkinBindingIdleFrames, kPreSkinBindingIdleMax);
-	} else {
-		InterlockedExchange(&gPreSkinBindingIdleFrames, 0);
+	// Without pre-skin candidates there is no active-producer set to clear
+	// and no idle tracking to maintain: skip the per-frame exclusive lock
+	// entirely instead of serializing recording threads on it for nothing.
+	if (gHasPreSkinTextureOverrideCandidates != 0) {
+		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
+		// Track idle frames: if no active pre-skin overrides existed last frame, count idle.
+		// If pre-skin was actively matching, reset idle counter immediately.
+		if (gActivePreSkinTextureOverrides.empty()) {
+			LONG idle = InterlockedIncrement(&gPreSkinBindingIdleFrames);
+			if (idle > kPreSkinBindingIdleMax)
+				InterlockedExchange(&gPreSkinBindingIdleFrames, kPreSkinBindingIdleMax);
+		} else {
+			InterlockedExchange(&gPreSkinBindingIdleFrames, 0);
+		}
+		ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
+		ReleaseSRWLockExclusive(&gPreSkinLock);
 	}
-	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
-	ReleaseSRWLockExclusive(&gPreSkinLock);
-
 	// Best-effort: deferring expired-resource retirement by one frame is
 	// harmless, and the frame boundary must never block on the global mod
 	// lock while recording threads contend for shared acquisitions.

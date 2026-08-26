@@ -1,4 +1,4 @@
-﻿// Migoto command-VM frame variable helpers.
+// Migoto command-VM frame variable helpers.
 // Split from DX12Runtime.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -77,29 +77,31 @@ public:
 
 	static void ApplyGlobals(const FrameSnapshot &frame)
 	{
-		MigotoCommandVmUtils::SetGlobals({
-			{L"window_width", frame.windowWidth},
-			{L"window_height", frame.windowHeight},
-			{L"res_width", frame.resWidth},
-			{L"res_height", frame.resHeight},
-			{L"rt_width", frame.rtWidth},
-			{L"rt_height", frame.rtHeight},
-			{L"cursor_screen_x", frame.cursorScreenX},
-			{L"cursor_screen_y", frame.cursorScreenY},
-			{L"cursor_window_x", frame.cursorWindowX},
-			{L"cursor_window_y", frame.cursorWindowY},
-			{L"cursor_x", frame.cursorX},
-			{L"cursor_y", frame.cursorY},
-			{L"cursor_showing", frame.cursorShowing},
-			{L"cursor_visible", frame.cursorShowing},
-			{L"cursor_hotspot_x", frame.cursorHotspotX},
-			{L"cursor_hotspot_y", frame.cursorHotspotY},
-			{L"effective_dpi", frame.effectiveDpi},
-			{L"hunting", 0.0},
-			{L"frame_analysis", 0.0},
-			{L"sli", 0.0},
-			{L"stereo_active", 0.0},
-			{L"stereo_available", 0.0}});
+		// Keys are already normalized (lower-case literals); write only the
+		// values that actually changed so a typical frame touches just the
+		// cursor entries instead of re-inserting every key into the map.
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"window_width", frame.windowWidth);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"window_height", frame.windowHeight);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"res_width", frame.resWidth);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"res_height", frame.resHeight);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"rt_width", frame.rtWidth);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"rt_height", frame.rtHeight);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_screen_x", frame.cursorScreenX);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_screen_y", frame.cursorScreenY);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_window_x", frame.cursorWindowX);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_window_y", frame.cursorWindowY);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_x", frame.cursorX);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_y", frame.cursorY);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_showing", frame.cursorShowing);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_visible", frame.cursorShowing);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_hotspot_x", frame.cursorHotspotX);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"cursor_hotspot_y", frame.cursorHotspotY);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"effective_dpi", frame.effectiveDpi);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"hunting", 0.0);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"frame_analysis", 0.0);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"sli", 0.0);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"stereo_active", 0.0);
+		MigotoCommandVmUtils::SetGlobalIfChanged(L"stereo_available", 0.0);
 	}
 
 	static void CollectSwapChain1Size(IDXGISwapChain *swapChain, FrameSnapshot *frame)

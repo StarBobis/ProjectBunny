@@ -426,6 +426,19 @@ public:
 			VariableStore::globals[NormalizeVariableName(value.first)] = value.second;
 	}
 
+	// Writes a normalized variable name only when its value changed. The
+	// per-frame frame-variable update used to insert all ~20 keys into the
+	// map on every Present (wstring hash + node alloc each), even though only
+	// the cursor coordinates move between frames.
+	static void SetGlobalIfChanged(const std::wstring &normalizedName, double value)
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		auto found = VariableStore::globals.find(normalizedName);
+		if (found != VariableStore::globals.end() && found->second == value)
+			return;
+		VariableStore::globals[normalizedName] = value;
+	}
+
 	static void ClearGlobals()
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);

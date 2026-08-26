@@ -586,6 +586,7 @@ struct TlsPreSkinResizeResolve
 	UINT64 generation = 0;
 	UINT64 viewGpuVa = 0;
 	ID3D12Resource *vertexResource = nullptr; // retained
+	const ID3D12Resource *originalResource = nullptr; // identity only, not retained
 	UINT64 resizedGpuVa = 0;
 	UINT64 resizedByteWidth = 0;
 	UINT64 sourceOffset = 0;
@@ -1072,10 +1073,32 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	// generation bumps on every create/evict/clear, so a stale snapshot
 	// falls back to the locked scan; the retained reference keeps the
 	// binding alive across eviction.
+	//
+	// VA-reuse guard: the cache retains the original resource, so entries
+	// outlive the game's release of the buffer. After a scene switch D3D12
+	// can hand the freed VA to a NEW buffer; the VA-range match below would
+	// then redirect the new scene's vertex buffer to the old scene's resize
+	// output (whole-model flicker / warping). DX11 never had this problem:
+	// the UAV view was resized at CreateUnorderedAccessView time with no
+	// cross-frame cache. The owner check is the DX12 equivalent of that
+	// immediacy - resolve who owns viewGpuVa right now and require it to be
+	// the entry's original resource.
+	DX12BufferResourceSummary currentOwnerSummary = {};
+	const bool ownerResolved = DX12ResolveBufferResourceByGpuVa(
+		viewGpuVa, 1, &currentOwnerSummary);
+	const ID3D12Resource *currentOwner = ownerResolved ?
+		currentOwnerSummary.resource : nullptr;
+	if (!currentOwner) {
+		// The VA is not tracked by any live buffer: never redirect (a
+		// missing replacement is preferable to a corrupted mesh).
+		return false;
+	}
+
 	const UINT64 generation = InterlockedCompareExchange64(
 		&gPreSkinOutputResizeCacheGeneration, 0, 0);
 	TlsPreSkinResizeResolve &tls = tlsPreSkinResizeResolve;
 	if (tls.generation == generation && tls.viewGpuVa == viewGpuVa &&
+	    tls.originalResource == currentOwner &&
 	    tls.vertexResource) {
 		tls.vertexResource->AddRef();
 		binding->resizedResource = tls.vertexResource;
@@ -1106,6 +1129,10 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 			!candidate.originalGpuVa || !candidate.originalByteWidth ||
 			!candidate.vertexGpuVa)
 			continue;
+		// VA-reuse guard: skip entries whose original resource no longer
+		// owns this VA (scene switch handed the freed VA to a new buffer).
+		if (candidate.originalResource != currentOwner)
+			continue;
 		if (viewGpuVa < candidate.originalGpuVa)
 			continue;
 		const UINT64 sourceOffset = viewGpuVa - candidate.originalGpuVa;
@@ -1132,6 +1159,7 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		// locked scan until the cache set changes.
 		tls.generation = generation;
 		tls.viewGpuVa = viewGpuVa;
+		tls.originalResource = currentOwner;
 		if (tls.vertexResource) {
 			tls.vertexResource->Release();
 			tls.vertexResource = nullptr;
@@ -1167,6 +1195,7 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	}
 	tls.generation = generation;
 	tls.viewGpuVa = viewGpuVa;
+	tls.originalResource = currentOwner;
 	tls.resizedGpuVa = bestEntry->vertexGpuVa;
 	tls.resizedByteWidth = bestKey->requiredByteWidth;
 	tls.sourceOffset = bestOffset;
@@ -1610,14 +1639,11 @@ void DX12ModNotifyCommandListsSubmitted(
 
 bool DX12ModNeedsCommandListSubmissionNotifications()
 {
-	return InterlockedCompareExchange(
-		&gHasPendingPreSkinSubmissionWorkFast,
-		0,
-		0) != 0 ||
-		InterlockedCompareExchange(
-			&gHasPendingPreSkinOutputResizeSubmissionWorkFast,
-			0,
-			0) != 0;
+	// Plain volatile reads: these flags only gate submission bookkeeping,
+	// and every ExecuteCommandLists used to pay two full-fence CAS reads
+	// for them on the game's submission thread.
+	return gHasPendingPreSkinSubmissionWorkFast != 0 ||
+		gHasPendingPreSkinOutputResizeSubmissionWorkFast != 0;
 }
 
 

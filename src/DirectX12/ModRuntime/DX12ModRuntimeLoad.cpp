@@ -1394,6 +1394,7 @@ bool DX12ModRuntimeLoad(
 	gTextureOverrides.swap(textureOverrides);
 	gModResources.swap(resources);
 	gCommandLists.swap(commandLists);
+	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
 	gKeyBindings.swap(keyBindings);
 	gVlrResourceCandidates.swap(vlrResourceCandidates);
 	gCommandListRuntimeEffect.swap(commandListRuntimeEffect);

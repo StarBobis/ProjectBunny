@@ -66,6 +66,12 @@ inline Bunny::ResourceMap gModResources;
 
 inline Bunny::CommandListMap gCommandLists;
 
+// Published by reload under gModLock: true when any [CommandList] exists.
+// Frame-variable collection and key-binding VM execution are only useful
+// when command lists exist, so hot-path code gates on this instead of
+// touching gCommandLists itself.
+inline std::atomic<bool> gHasCommandLists{ false };
+
 inline std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 
 inline std::vector<std::wstring> gVlrResourceCandidates;

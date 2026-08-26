@@ -153,9 +153,15 @@ public:
 
 	static void LogAndResetPerFrameCounters()
 	{
-		const LONG draws = DX12RuntimeState::TakeFrameDraws();
-		const LONG dispatches = DX12RuntimeState::TakeFrameDispatches();
+		// The per-frame draw/dispatch shards are only drained for the verbose
+		// counter log; kVerboseEnabled is false in Release/Timing builds, so
+		// the drain (one InterlockedExchange per shard, twice) was pure
+		// per-frame overhead with no consumer. IncrementFrameDraws still
+		// accumulates into the shards for the verbose path and for
+		// DX12RuntimeState consumers that read them directly.
 		if (kVerboseEnabled) {
+			const LONG draws = DX12RuntimeState::TakeFrameDraws();
+			const LONG dispatches = DX12RuntimeState::TakeFrameDispatches();
 			DX12LogManager::Fields("DX12PerFrameCounters",
 				"\"draws\":%ld,\"dispatches\":%ld", draws, dispatches);
 		}
