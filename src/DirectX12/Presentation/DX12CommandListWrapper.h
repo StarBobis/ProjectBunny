@@ -569,8 +569,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			UINT StartVertexLocation, UINT StartInstanceLocation) override
 		{
 		// Fast-path: no draw-level work -> call driver directly, bypass hook entirely.
+		// MASK_DRAW_WORK==0 implies skipAll==1 (Update() publishes them
+		// together), so the single flags read covers both gates.
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-			if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) &&
+			if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
 				mOrigDrawInstanced) {
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiDrawInstanced);
@@ -607,7 +609,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		INT BaseVertexLocation, UINT StartInstanceLocation) override
 	{
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		if ((DX12HotPathState::skipAll || !(drawFlags & DX12HotPathState::MASK_DRAW_WORK)) &&
+		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
 			mOrigDrawIndexedInstanced) {
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);

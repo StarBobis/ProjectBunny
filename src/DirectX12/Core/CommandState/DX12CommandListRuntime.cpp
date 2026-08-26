@@ -1,4 +1,4 @@
-﻿// DX12CommandListRuntime: per-list runtime state, binding resolution and lifecycle.
+// DX12CommandListRuntime: per-list runtime state, binding resolution and lifecycle.
 // Split from DX12CommandLists.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -626,14 +626,6 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 
 	DX12PsoShaderInfo shaderInfo = {};
 	if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) || !shaderInfo.hasCS) {
-		DX12LogManager::Fields("DX12DispatchDecisionNoCompute",
-			"pso=%p,reloadGeneration=%llu,hasShaderOverrides=%d,needsPreSkinProbe=%d,infoFound=%d,hasCS=%d",
-			pipelineState,
-			static_cast<unsigned long long>(reloadGeneration),
-			hasShaderOverrides ? 1 : 0,
-			needsPreSkinProbe ? 1 : 0,
-			shaderInfo.hasCS ? 1 : 0,
-			shaderInfo.cs != 0 ? 1 : 0);
 		decision.SetNoComputeShader(
 			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
@@ -684,13 +676,6 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 		return decision;
 	}
 
-	DX12LogManager::Fields("DX12DispatchDecisionNoPreSkinCandidate",
-		"pso=%p,csHash=%016llx,reloadGeneration=%llu,hasShaderOverrides=%d,needsPreSkinProbe=%d",
-		pipelineState,
-		static_cast<unsigned long long>(csHash),
-		static_cast<unsigned long long>(reloadGeneration),
-		hasShaderOverrides ? 1 : 0,
-		needsPreSkinProbe ? 1 : 0);
 	decision.SetNoPreSkinCandidate(
 		pipelineState, reloadGeneration, csHash,
 		hasShaderOverrides, needsPreSkinProbe);

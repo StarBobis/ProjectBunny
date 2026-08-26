@@ -13,90 +13,6 @@
 
 
 
-class DX12ResourceCreateLogUtils
-{
-public:
-	inline static volatile LONG64 StageCalls = 0;
-	inline static volatile LONG64 RecordCalls = 0;
-	inline static volatile LONG64 RecordTracked = 0;
-	inline static volatile LONG64 RecordSkipped = 0;
-	static constexpr LONG64 StatsInterval = 4096;
-
-	static bool ShouldLogSample(LONG64 value)
-	{
-		return value <= 8 || (value % StatsInterval) == 0;
-	}
-
-	static void LogStage(
-		const char *api,
-		const char *stage,
-		ID3D12Device *device,
-		HRESULT hr,
-		const D3D12_RESOURCE_DESC *desc,
-		const D3D12_HEAP_PROPERTIES *heapProperties,
-		D3D12_RESOURCE_STATES initialState,
-		void **resource)
-	{
-		const LONG64 calls = InterlockedIncrement64(&StageCalls);
-		if (SUCCEEDED(hr) && !ShouldLogSample(calls))
-			return;
-		DX12LogManager::Fields("DX12ResourceCreateStage",
-			"api=%s,stage=%s,stageCalls=%lld,present=%ld,threadId=%lu,"
-			"device=%p,hr=0x%lx,resourcePtr=%p,resource=%p,"
-			"hasDesc=%u,dimension=%u,width=%llu,height=%u,format=%u,flags=0x%llx,"
-			"hasHeap=%u,heapType=%u,initialState=%u,skipAll=%ld",
-			api ? api : "",
-			stage ? stage : "",
-			static_cast<long long>(calls),
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId(),
-			device,
-			hr,
-			resource,
-			(resource && *resource) ? *resource : nullptr,
-			desc ? 1 : 0,
-			desc ? static_cast<UINT>(desc->Dimension) : 0,
-			desc ? static_cast<unsigned long long>(desc->Width) : 0,
-			desc ? desc->Height : 0,
-			desc ? static_cast<UINT>(desc->Format) : 0,
-			desc ? static_cast<unsigned long long>(desc->Flags) : 0,
-			heapProperties ? 1 : 0,
-			heapProperties ? static_cast<UINT>(heapProperties->Type) : 0,
-			static_cast<UINT>(initialState),
-			DX12HotPathState::skipAll.load());
-	}
-
-	static void LogRecordStats(const char *stage, HRESULT hr, void **resource, bool shouldTrack)
-	{
-		const LONG64 calls = InterlockedIncrement64(&RecordCalls);
-		if (shouldTrack)
-			InterlockedIncrement64(&RecordTracked);
-		else
-			InterlockedIncrement64(&RecordSkipped);
-		if (SUCCEEDED(hr) && shouldTrack && !ShouldLogSample(calls))
-			return;
-		DX12LogManager::Fields("DX12ResourceCreateRecord",
-			"stage=%s,recordCalls=%lld,tracked=%lld,skipped=%lld,present=%ld,threadId=%lu,hr=0x%lx,resourcePtr=%p,resource=%p,shouldTrack=%u",
-			stage ? stage : "",
-			static_cast<long long>(calls),
-			static_cast<long long>(InterlockedCompareExchange64(&RecordTracked, 0, 0)),
-			static_cast<long long>(InterlockedCompareExchange64(&RecordSkipped, 0, 0)),
-			DX12RuntimeState::GetPresentCount(),
-			GetCurrentThreadId(),
-			hr,
-			resource,
-			(resource && *resource) ? *resource : nullptr,
-			shouldTrack ? 1 : 0);
-	}
-
-	static void LogFallback(ID3D12Resource *resource)
-	{
-		DX12LogManager::Fields("DX12ResourceCollectQueue",
-			"event=FallbackInlineRecord,resource=%p",
-			resource);
-	}
-};
-
 const D3D12_UNORDERED_ACCESS_VIEW_DESC *DX12ResourceTrackerHookRuntime::PrepareUavDesc(
 	ID3D12Resource *resource,
 	const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc,
@@ -537,7 +453,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 	D3D12_RESOURCE_STATES initialState)
 {
 	const bool shouldTrack = !FAILED(hr) && resource && *resource && ShouldRecordCreatedResource(desc);
-	DX12ResourceCreateLogUtils::LogRecordStats("Record", hr, resource, shouldTrack);
 	if (!shouldTrack)
 	{
 		return;

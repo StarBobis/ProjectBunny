@@ -66,12 +66,22 @@ public:
 	volatile LONG droppedLines = 0;
 	volatile LONG stopRequested = 0;
 	std::atomic<bool> releaseStartupLogging{ true };
+
+	// Shared cost counters are merged from per-thread TLS deltas when a TLS
+	// buffer is published; the hot path never touches these cache lines.
 	inline static volatile LONG64 LogCostFieldCalls = 0;
 	inline static volatile LONG64 LogCostTextCalls = 0;
 	inline static volatile LONG64 LogCostEnqueueCalls = 0;
 	inline static volatile LONG64 LogCostFormatUs = 0;
 	inline static volatile LONG64 LogCostEnqueueUs = 0;
 	inline static volatile LONG64 LogCostDroppedLines = 0;
+
+	// The writer thread parks on this event with a 100ms timeout. The
+	// process-wide wait hooks would otherwise measure and log every one of
+	// those idle polls (a self-inflicted 10 lines/s of "system_wait" noise
+	// plus the interlocked snapshot tax per poll). Registered once at Open
+	// before the hooks are installed; plain volatile read on the hot path.
+	inline static volatile LONG64 InternalEventHandle = 0;
 
 	DX12LogManager()
 	{
@@ -118,10 +128,47 @@ public:
 			(end.QuadPart - begin.QuadPart) * 1000000 / frequency.QuadPart);
 	}
 
-	static void AddLogCost(volatile LONG64 *target, LONG64 us)
+	// Per-thread log-cost deltas. Every Fields call used to InterlockedAdd on
+	// the shared counters above, which made all logging threads hammer the
+	// same cache lines; deltas stay private and are merged once per publish.
+	struct TlsLogCost
 	{
-		if (target && us > 0)
-			InterlockedAdd64(target, us);
+		LONG64 fieldCalls = 0;
+		LONG64 textCalls = 0;
+		LONG64 enqueueCalls = 0;
+		LONG64 formatUs = 0;
+		LONG64 enqueueUs = 0;
+	};
+
+	static TlsLogCost &TlsCost()
+	{
+		static thread_local TlsLogCost cost;
+		return cost;
+	}
+
+	static void MergeTlsCost()
+	{
+		TlsLogCost &cost = TlsCost();
+		if (cost.fieldCalls) {
+			InterlockedAdd64(&LogCostFieldCalls, cost.fieldCalls);
+			cost.fieldCalls = 0;
+		}
+		if (cost.textCalls) {
+			InterlockedAdd64(&LogCostTextCalls, cost.textCalls);
+			cost.textCalls = 0;
+		}
+		if (cost.enqueueCalls) {
+			InterlockedAdd64(&LogCostEnqueueCalls, cost.enqueueCalls);
+			cost.enqueueCalls = 0;
+		}
+		if (cost.formatUs) {
+			InterlockedAdd64(&LogCostFormatUs, cost.formatUs);
+			cost.formatUs = 0;
+		}
+		if (cost.enqueueUs) {
+			InterlockedAdd64(&LogCostEnqueueUs, cost.enqueueUs);
+			cost.enqueueUs = 0;
+		}
 	}
 
 	static LONG64 TakeLong64(volatile LONG64 *value)
@@ -139,6 +186,20 @@ public:
 		snapshot->formatUs = TakeLong64(&LogCostFormatUs);
 		snapshot->enqueueUs = TakeLong64(&LogCostEnqueueUs);
 		snapshot->droppedLines = TakeLong64(&LogCostDroppedLines);
+	}
+
+	static void RegisterInternalEventHandle(HANDLE handle)
+	{
+		InternalEventHandle = static_cast<LONG64>(
+			reinterpret_cast<ULONG_PTR>(handle));
+	}
+
+	static bool IsInternalEventHandle(HANDLE handle)
+	{
+		const ULONG_PTR internalHandle =
+			static_cast<ULONG_PTR>(InternalEventHandle);
+		return internalHandle != 0 &&
+			reinterpret_cast<ULONG_PTR>(handle) == internalHandle;
 	}
 
 	static DWORD WINAPI ThreadProc(void*)
@@ -212,10 +273,12 @@ public:
 			state.log = nullptr;
 			return false;
 		}
+		RegisterInternalEventHandle(state.event);
 		state.thread = CreateThread(nullptr, 0, ThreadProc, nullptr, 0, nullptr);
 		if (!state.thread) {
 			CloseHandle(state.event);
 			state.event = nullptr;
+			RegisterInternalEventHandle(nullptr);
 			fclose(state.log);
 			state.log = nullptr;
 			return false;
@@ -237,6 +300,7 @@ public:
 		if (state.event) {
 			CloseHandle(state.event);
 			state.event = nullptr;
+			RegisterInternalEventHandle(nullptr);
 		}
 		if (state.log) {
 			fclose(state.log);
@@ -289,29 +353,71 @@ public:
 	#endif
 	}
 
+	// -----------------------------------------------------------------------
+	// Enqueue path.
+	//
+	// Every line used to acquire the global queue lock, allocate a std::string
+	// and signal the writer individually, so N logging threads serialized on
+	// one SRWLOCK per line and the render thread paid the full cost inside the
+	// frame (DX12LogCost showed >2x the frame wall time in timing builds).
+	//
+	// Now each thread appends into its own TLS buffer (no lock, no alloc) and
+	// publishes the whole buffer under the lock only when it grows past
+	// kTlsBufferFlushBytes or an explicit flush (batch commit / Flush) is
+	// requested. N lines therefore cost one lock acquisition, one deque entry
+	// and one SetEvent. Lines from one thread keep their order; cross-thread
+	// interleaving changes slightly (each line still carries its own
+	// timestamp), which no log consumer depends on.
+	// -----------------------------------------------------------------------
+	static constexpr size_t kTlsBufferFlushBytes = 8192;
+
+	static std::string &TlsLineBuffer()
+	{
+		static thread_local std::string buffer;
+		if (buffer.capacity() < kTlsBufferFlushBytes)
+			buffer.reserve(kTlsBufferFlushBytes);
+		return buffer;
+	}
+
+	// Publishes the calling thread's buffered lines into the global queue.
+	// One lock acquisition per publish; the buffer keeps its allocation.
+	static void PublishTlsBuffer()
+	{
+		std::string &buffer = TlsLineBuffer();
+		if (buffer.empty())
+			return;
+		MergeTlsCost();
+		DX12LogManager &state = Get();
+		AcquireSRWLockExclusive(&state.queueLock);
+		const bool wasEmpty = state.queue.empty();
+		if (state.queue.size() < MaxQueuedLogLines()) {
+			state.queue.emplace_back();
+			state.queue.back().swap(buffer);
+		} else {
+			InterlockedIncrement(&state.droppedLines);
+			InterlockedIncrement64(&LogCostDroppedLines);
+			buffer.clear();
+		}
+		ReleaseSRWLockExclusive(&state.queueLock);
+		// The writer thread polls on a timeout, so signaling is only a
+		// latency hint; waking it once per publish instead of once per line
+		// keeps present-time log bursts cheap.
+		if (wasEmpty && state.event)
+			SetEvent(state.event);
+	}
+
 	static void EnqueueLogLine(const char *line)
 	{
 		if (!line || !line[0])
 			return;
 
 		const LARGE_INTEGER begin = LogNow();
-		DX12LogManager &state = Get();
-		InterlockedIncrement64(&LogCostEnqueueCalls);
-		AcquireSRWLockExclusive(&state.queueLock);
-		const bool wasEmpty = state.queue.empty();
-		if (state.queue.size() < MaxQueuedLogLines()) {
-			state.queue.emplace_back(line);
-		} else {
-			InterlockedIncrement(&state.droppedLines);
-			InterlockedIncrement64(&LogCostDroppedLines);
-		}
-		ReleaseSRWLockExclusive(&state.queueLock);
-		// The writer thread polls on a timeout, so signaling is only a
-		// latency hint; waking it once per empty->non-empty transition
-		// instead of once per line keeps present-time log bursts cheap.
-		if (wasEmpty && state.event)
-			SetEvent(state.event);
-		AddLogCost(&LogCostEnqueueUs, LogDeltaUs(begin, LogNow()));
+		++TlsCost().enqueueCalls;
+		std::string &buffer = TlsLineBuffer();
+		buffer += line;
+		if (buffer.size() >= kTlsBufferFlushBytes)
+			PublishTlsBuffer();
+		TlsCost().enqueueUs += LogDeltaUs(begin, LogNow());
 	}
 
 	// Plain text fields: time=...,func=...,key=value,key2=value2.
@@ -372,17 +478,18 @@ public:
 		} else {
 			snprintf(line, sizeof(line), "time=%s,func=%s\n", timePlain, func);
 		}
-		AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
+		TlsCost().formatUs += LogDeltaUs(formatBegin, LogNow());
 		EnqueueLogLine(line);
 		if (flush)
 			Flush();
 	}
 
-	// Batches formatted lines and enqueues them under one lock acquisition.
-	// The per-present frame-timeline tables emit dozens of Fields lines back
-	// to back on the render thread; routing them through a batch turns
-	// dozens of exclusive-lock + SetEvent rounds into a single one while
-	// keeping every emitted line byte-identical to WriteLogLine output.
+	// Formats lines into the calling thread's TLS buffer and publishes them
+	// under one lock acquisition. The per-present frame-timeline tables emit
+	// dozens of Fields lines back to back on the render thread; routing them
+	// through a batch turns dozens of exclusive-lock + SetEvent rounds into a
+	// single one while keeping every emitted line byte-identical to
+	// WriteLogLine output.
 	class LogBatch
 	{
 	public:
@@ -401,20 +508,14 @@ public:
 			} else {
 				snprintf(line, sizeof(line), "time=%s,func=%s\n", timePlain, func);
 			}
-			AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
-			mBuffer += line;
+			TlsCost().formatUs += LogDeltaUs(formatBegin, LogNow());
+			EnqueueLogLine(line);
 		}
 
 		void Commit()
 		{
-			if (mBuffer.empty())
-				return;
-			EnqueueLogLine(mBuffer.c_str());
-			mBuffer.clear();
+			PublishTlsBuffer();
 		}
-
-	private:
-		std::string mBuffer;
 	};
 
 	static void Text(const char *fmt, ...)
@@ -426,12 +527,12 @@ public:
 
 		va_list args;
 		char message[2048];
-		InterlockedIncrement64(&LogCostTextCalls);
+		++TlsCost().textCalls;
 		const LARGE_INTEGER formatBegin = LogNow();
 		va_start(args, fmt);
 		vsnprintf(message, sizeof(message), fmt, args);
 		va_end(args);
-		AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
+		TlsCost().formatUs += LogDeltaUs(formatBegin, LogNow());
 
 		char fields[2304];
 		snprintf(fields, sizeof(fields), "message=%s", message);
@@ -448,12 +549,12 @@ public:
 		const char *safeFunc = func ? func : "Unknown";
 		char extra[4096];
 		extra[0] = '\0';
-		InterlockedIncrement64(&LogCostFieldCalls);
+		++TlsCost().fieldCalls;
 
 		if (fmt && fmt[0]) {
 			const LARGE_INTEGER formatBegin = LogNow();
 			vsnprintf(extra, sizeof(extra), fmt, args);
-			AddLogCost(&LogCostFormatUs, LogDeltaUs(formatBegin, LogNow()));
+			TlsCost().formatUs += LogDeltaUs(formatBegin, LogNow());
 		}
 
 		WriteLogLine(safeFunc, extra, flush);
@@ -477,6 +578,7 @@ public:
 
 	static void Flush()
 	{
+		PublishTlsBuffer();
 		if (Get().event)
 			SetEvent(Get().event);
 	}

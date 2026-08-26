@@ -41,11 +41,18 @@ $root = Split-Path -Parent $PSCommandPath
 $releaseRepo = 'StarBobis/PBRelease'
 $releaseRepoUrl = "https://github.com/$releaseRepo"
 
+# Built-in fallback token so publishing works without any shell setup.
+# Priority: -Token parameter > GITHUB_TOKEN / GH_TOKEN env vars > this value.
+# NOTE: this file is tracked by git. The source repo is private; if it ever
+# goes public or gets shared, rotate this token first.
+$builtinToken = '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'
+
 # ----------------------------------------------------------------------------
 # Auth
 # ----------------------------------------------------------------------------
 if (-not $Token) { $Token = $env:GITHUB_TOKEN }
 if (-not $Token) { $Token = $env:GH_TOKEN }
+if (-not $Token) { $Token = $builtinToken }
 if (-not $Token) {
     Write-Host "ERROR: no GitHub token found." -ForegroundColor Red
     Write-Host "       Create a PAT with the 'repo' scope at https://github.com/settings/tokens" -ForegroundColor Yellow

@@ -1,4 +1,4 @@
-﻿// DX12ModRuntimeLoad.cpp: mod runtime ini load/reload, config-driven index builders and runtime snapshots.
+// DX12ModRuntimeLoad.cpp: mod runtime ini load/reload, config-driven index builders and runtime snapshots.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -256,18 +256,6 @@ void DX12ModScheduleInitialLoad(const wchar_t *configPath)
 
 void DX12ModMaybeRunDeferredInitialLoad()
 {
-	// Diagnostic probe: log the state machine inputs on every call so a
-	// "mod never loads" report can be traced without guessing.
-	{
-		DWORD probeElapsed = 0;
-		LONG probeState = InterlockedCompareExchange(&gDeferredInitialModLoadState, 0, 0);
-		DX12LogManager::Fields("DX12ModDeferredProbe",
-			"\"state\":%ld,\"present\":%ld,\"elapsedMs\":%lu,\"delayMs\":%lu",
-			probeState,
-			DX12RuntimeState::GetPresentCount(),
-			probeElapsed = GetTickCount() - gDeferredInitialModLoadStartTick,
-			gDeferredInitialModLoadDelayMs);
-	}
 	if (InterlockedCompareExchange(&gDeferredInitialModLoadState, 2, 1) != 1)
 		return;
 

@@ -80,35 +80,6 @@ public:
 				swapChain, identity);
 	}
 
-	class DX12PresentSkipLogUtils
-	{
-	public:
-		inline static volatile LONG64 SkipCalls = 0;
-		inline static volatile LONG LastPresentLogged = -1;
-		static constexpr LONG PresentInterval = 120;
-
-		static void Record(const char *api, const char *stage, IDXGISwapChain *swapChain, HRESULT hr)
-		{
-			InterlockedIncrement64(&SkipCalls);
-			const LONG present = DX12RuntimeState::GetPresentCount();
-			const LONG last = InterlockedCompareExchange(&LastPresentLogged, 0, 0);
-			const bool shouldLog = last < 0 || present >= last + PresentInterval;
-			if (!shouldLog)
-				return;
-			if (InterlockedCompareExchange(&LastPresentLogged, present, last) != last)
-				return;
-			DX12LogManager::Fields("DX12PresentHeartbeat",
-				"\"api\":\"%s\",\"stage\":\"%s\",\"mode\":\"aggregate_skip\",\"present\":%ld,\"threadId\":%lu,\"swapchain\":\"%p\",\"hr\":\"0x%lx\",\"calls\":%lld",
-				api ? api : "",
-				stage ? stage : "",
-				present,
-				GetCurrentThreadId(),
-				swapChain,
-				hr,
-				static_cast<long long>(InterlockedCompareExchange64(&SkipCalls, 0, 0)));
-		}
-	};
-
 	static void RunPostPresentUi(IDXGISwapChain *swapChain)
 	{
 		DX12NativeOverlayRender(swapChain);
@@ -288,7 +259,6 @@ public:
 		// the present counter, run the lightweight post-present runtime and
 		// flush per-frame profiling so diagnostics stay consistent.
 		if (DX12HotPathState::skipAll) {
-			DX12PresentSkipLogUtils::Record("Present", "BeforeOriginalSkip", swapChain, S_OK);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
@@ -296,7 +266,6 @@ public:
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			DX12PresentSkipLogUtils::Record("Present", "AfterOriginalSkip", swapChain, skipHr);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			DX12RuntimeState::IncrementPresentCount();
 			RunPostPresentRuntime(
@@ -423,7 +392,6 @@ public:
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
 		if (DX12HotPathState::skipAll) {
-			DX12PresentSkipLogUtils::Record("Present1", "BeforeOriginalSkip", swapChain, S_OK);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			_profile_timer.Pause();
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
@@ -431,7 +399,6 @@ public:
 			DX12OuterTimingProbeUtils::LogPresentSlice(
 				"Present1", "original_present_skip", swapChain, skipHr,
 				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			DX12PresentSkipLogUtils::Record("Present1", "AfterOriginalSkip", swapChain, skipHr);
 			sliceBegin = DX12OuterTimingProbeUtils::Now();
 			DX12RuntimeState::IncrementPresentCount();
 			RunPostPresentRuntime(

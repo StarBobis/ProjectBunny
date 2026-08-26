@@ -1559,33 +1559,6 @@ public:
 			commandList, runtimeState, startSlot, count, activeViews);
 		if (!changed)
 			return;
-		// Audit: log every slot whose final bound view differs from the game's
-		// original, with the modifier that produced it. slot 1 (texcoords)
-		// must show the mod buffer (static replace); a resize_redirect on the
-		// texcoord slot means the pre-skin redirect grabbed the wrong stream.
-		for (UINT index = 0; index < count; ++index) {
-			const UINT slot = startSlot + index;
-			const D3D12_VERTEX_BUFFER_VIEW &in = views[index];
-			const D3D12_VERTEX_BUFFER_VIEW &out = activeViews[index];
-			if (in.BufferLocation == out.BufferLocation &&
-			    in.SizeInBytes == out.SizeInBytes &&
-			    in.StrideInBytes == out.StrideInBytes)
-				continue;
-			const char *reason = "unknown";
-			if (out.BufferLocation == in.BufferLocation)
-				reason = "size_change";
-			if (runtimeState && slot < 32 &&
-			    runtimeState->ia.vertexBufferStaticReplaced[slot] &&
-			    runtimeState->ia.vertexBufferStaticReplacedView[slot].BufferLocation == out.BufferLocation)
-				reason = "static_replace";
-			DX12LogManager::Fields("DX12IaAudit",
-				"stage=vb_bind,slot=%u,reason=%s,stride=%u->%u,va=0x%llx->0x%llx,size=%u->%u",
-				slot, reason,
-				in.StrideInBytes, out.StrideInBytes,
-				static_cast<unsigned long long>(in.BufferLocation),
-				static_cast<unsigned long long>(out.BufferLocation),
-				in.SizeInBytes, out.SizeInBytes);
-		}
 		if (original)
 			original(commandList, startSlot, count, activeViews);
 		else

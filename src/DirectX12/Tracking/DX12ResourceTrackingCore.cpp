@@ -199,40 +199,6 @@ static DX12ResourcePublishedState *EnsureResourcePublishedStateLocked(size_t ind
 	return gResourcePublishedStates[index].get();
 }
 
-class DX12BufferAddressRangeLogUtils
-{
-public:
-	inline static volatile LONG64 AddedCalls = 0;
-	inline static volatile LONG64 AddedBytes = 0;
-	inline static volatile LONG LastPresentLogged = -1;
-	static constexpr LONG PresentInterval = 300;
-
-	static void Record(ID3D12Resource *resource, const ResourceRecord &record)
-	{
-		InterlockedIncrement64(&AddedCalls);
-		InterlockedAdd64(&AddedBytes, static_cast<LONG64>(record.size));
-		const LONG present = DX12RuntimeState::GetPresentCount();
-		const LONG last = InterlockedCompareExchange(&LastPresentLogged, 0, 0);
-		const bool shouldLog = last < 0 || present >= last + PresentInterval;
-		if (!shouldLog)
-			return;
-		if (InterlockedCompareExchange(&LastPresentLogged, present, last) != last)
-			return;
-		DX12LogManager::Fields("DX12BufferAddressRangeAdded",
-			"mode=aggregate,present=%ld,threadId=%lu,resource=%p,gpuVa=0x%llX,size=%llu,realEnd=0x%llX,oobEnd=0x%llX,calls=%lld,bytes=%lld,hasPlacedHeap=%u",
-			present,
-			GetCurrentThreadId(),
-			resource,
-			static_cast<unsigned long long>(record.gpuVirtualAddress),
-			static_cast<unsigned long long>(record.size),
-			static_cast<unsigned long long>(record.gpuVirtualAddressRealEnd),
-			static_cast<unsigned long long>(record.gpuVirtualAddressOobEnd),
-			static_cast<long long>(InterlockedCompareExchange64(&AddedCalls, 0, 0)),
-			static_cast<long long>(InterlockedCompareExchange64(&AddedBytes, 0, 0)),
-			record.hasPlacedHeapRange ? 1 : 0);
-	}
-};
-
 void LogResourceTrackerStatsLocked();
 
 static bool DescriptorHeapSlotOccupied(const DescriptorHeapRecord &heap, UINT slot)
@@ -771,7 +737,6 @@ void RecordResource(
 			if (record.gpuVirtualAddressOobEnd < record.gpuVirtualAddressRealEnd)
 				record.gpuVirtualAddressOobEnd = record.gpuVirtualAddressRealEnd;
 		}
-		DX12BufferAddressRangeLogUtils::Record(resource, record);
 		if (record.gpuVirtualAddress >= 0x10a4000000ull &&
 			record.gpuVirtualAddress <= 0x10aaffffffull &&
 			record.size >= 65536ull) {

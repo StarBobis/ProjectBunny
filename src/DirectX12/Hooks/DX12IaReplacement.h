@@ -402,12 +402,6 @@ public:
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
 					activeIa->preSkinRedirectNegativeValid[slot] = false;
 				anyRedirected = true;
-				// Audit: in-place VBV expansion (resource-private metadata).
-				DX12LogManager::Fields("DX12IaAudit",
-					"stage=expand_in_place,slot=%u,stride=%u,va=0x%llx,size=%u->%u",
-					slot, sourceView.StrideInBytes,
-					static_cast<unsigned long long>(sourceView.BufferLocation),
-					sourceView.SizeInBytes, redirectedViews[i].SizeInBytes);
 				continue;
 			}
 			DX12PreSkinOutputResizeBinding binding;
@@ -452,17 +446,6 @@ public:
 			if (!redirectedViews[i].StrideInBytes && binding.stride)
 				redirectedViews[i].StrideInBytes = binding.stride;
 			anyRedirected = true;
-			// Audit: a vertex-buffer view is retargeted to the resized
-			// pre-skin output. stride must match the pre-skin output layout;
-			// a mismatched stream (e.g. texcoords) redirected here would read
-			// position data as UVs.
-			DX12LogManager::Fields("DX12IaAudit",
-				"stage=resize_redirect,slot=%u,stride=%u,va=0x%llx->0x%llx,size=%u->%u,bindingStride=%u",
-				slot, sourceView.StrideInBytes,
-				static_cast<unsigned long long>(sourceView.BufferLocation),
-				static_cast<unsigned long long>(redirectedGpuVa),
-				sourceView.SizeInBytes, redirectedViews[i].SizeInBytes,
-				binding.stride);
 		}
 		return anyRedirected;
 	}
@@ -1524,20 +1507,6 @@ public:
 			}
 			if (!stale)
 				continue;
-			// Audit: a static IA replacement is being rolled back. If this
-			// fires after a scene switch, the draw falls back to the game's
-			// original (small) texcoord buffer while the mod's oversized index
-			// buffer stays applied - broken UVs beyond the original count.
-			DX12LogManager::Fields("DX12IaAudit",
-				"stage=restore_stale_static,slot=%u,wasVa=0x%llx,wasStride=%u,wasSize=%u,"
-				"restoredVa=0x%llx,restoredStride=%u,restoredSize=%u",
-				slot,
-				static_cast<unsigned long long>(ia.vertexBuffers[slot].BufferLocation),
-				ia.vertexBuffers[slot].StrideInBytes,
-				ia.vertexBuffers[slot].SizeInBytes,
-				static_cast<unsigned long long>(ia.vertexBufferStaticOriginal[slot].BufferLocation),
-				ia.vertexBufferStaticOriginal[slot].StrideInBytes,
-				ia.vertexBufferStaticOriginal[slot].SizeInBytes);
 			if (callbacks.setVertexBuffers) {
 				callbacks.setVertexBuffers(
 					commandList, slot, 1,

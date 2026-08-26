@@ -394,22 +394,6 @@ public:
 				threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 				static_cast<unsigned long long>(probe.computeShaderHash));
 		}
-		// Always-on pre-skin dispatch audit: one line per candidate dispatch
-		// (a handful per frame). Lets a broken session be diagnosed from the
-		// log without re-instrumenting: applied + handlingSkip + hasDispatch
-		// must all be 1 for the override dispatch to run; anything else means
-		// the CS executes with the game's original group count while the
-		// patched SRV/CBV are bound (partial skinning write -> garbage IA).
-		DX12LogManager::Fields("DX12PreSkinDispatchAudit",
-			"applied=%d,skip=%d,hasD=%d,gx=%u,gy=%u,gz=%u,origX=%u,origY=%u,origZ=%u,cs=%016llx",
-			probe.applied ? 1 : 0,
-			probe.dispatchOverride.handlingSkip ? 1 : 0,
-			probe.dispatchOverride.hasDispatch ? 1 : 0,
-			probe.dispatchOverride.groupsX,
-			probe.dispatchOverride.groupsY,
-			probe.dispatchOverride.groupsZ,
-			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-			static_cast<unsigned long long>(probe.computeShaderHash));
 		if (probe.applied && probe.dispatchOverride.handlingSkip) {
 			if (probe.dispatchOverride.hasDispatch) {
 				dispatchGroupX = probe.dispatchOverride.groupsX;

@@ -1,4 +1,4 @@
-﻿// Resource/heap release trackers and object lifetime utilities.
+// Resource/heap release trackers and object lifetime utilities.
 // Split from DX12Resources.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -122,10 +122,6 @@ public:
 		if (SUCCEEDED(hr))
 			tracker->mInstalled = true;
 		tracker->Release();
-
-		DX12LogManager::Fields("DX12ObjectLifetimeTracker",
-			"kind=resource,stage=install,resource=%p,hr=0x%lx",
-			resource, hr);
 		return hr;
 	}
 
@@ -145,10 +141,6 @@ public:
 		if (SUCCEEDED(hr))
 			tracker->mInstalled = true;
 		tracker->Release();
-
-		DX12LogManager::Fields("DX12ObjectLifetimeTracker",
-			"kind=descriptor_heap,stage=install,heap=%p,hr=0x%lx",
-			heap, hr);
 		return hr;
 	}
 };

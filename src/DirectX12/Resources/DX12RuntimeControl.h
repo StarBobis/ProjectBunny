@@ -170,6 +170,12 @@ public:
 
 	static bool Consume()
 	{
+		// Fast path: UI actions are rare (hotkeys / overlay requests only).
+		// The previous code exchanged the shared flag on every present; a
+		// plain volatile read keeps the common no-action frame lock-free.
+		const LONG pending = PendingActions;
+		if (!pending)
+			return false;
 		const LONG actions = InterlockedExchange(&PendingActions, 0);
 		if (!actions)
 			return false;

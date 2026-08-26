@@ -137,36 +137,35 @@ public:
 		LONG64 scopeTotalUs = 0;
 	};
 
-	class CpuStageBucket
+	// Per-thread CPU-stage counters, claimed once per recording thread and
+	// drained once per present. The previous process-wide interlocked buckets
+	// serialized every LogCpuStage call from every thread (render thread +
+	// collector workers) on the same cache lines - on the draw hot path that
+	// was ~4 locked RMW ops per call. Same pool idiom as
+	// DX12ResidentMaintenanceTelemetryUtils: plain per-thread RMW on the hot
+	// path, drain with InterlockedExchange64 at flush; a racing increment can
+	// be attributed one frame late (diagnostics only).
+	static constexpr UINT kCpuStageThreadTables = 64;
+	static constexpr UINT kCpuStageEntriesPerTable = 128; // power of two
+	struct CpuStageEntry
 	{
-	public:
-		char category[48] = {};
-		char stage[64] = {};
+		const char *category = nullptr;
+		const char *stage = nullptr;
 		UINT kind = 0;
+		UINT64 hash = 0; // 0 marks an empty slot
 		LONG64 calls = 0;
 		LONG64 totalUs = 0;
 		LONG64 maxUs = 0;
 		LONG64 items = 0;
 	};
-
-	class CpuStageLookupEntry
+	struct alignas(64) CpuStageThreadTable
 	{
-	public:
-		const char *category = nullptr;
-		const char *stage = nullptr;
-		UINT kind = 0;
-		LONG index = -1;
-		// Combined content hash; 0 marks an empty slot (index < 0 also checked).
-		UINT64 hash = 0;
+		DWORD threadId = 0;
+		CpuStageEntry entries[kCpuStageEntriesPerTable];
 	};
-
-	class CpuStageLookupCache
-	{
-	public:
-		// Power of two so lookups use a mask instead of a modulo.
-		CpuStageLookupEntry entries[128] = {};
-		LONG count = 0;
-	};
+	inline static CpuStageThreadTable
+		CpuStageThreadTables[kCpuStageThreadTables] = {};
+	inline static volatile LONG CpuStageThreadTableCount = 0;
 
 	// ApiScopeActiveDepth is intentionally retained for the legacy aggregate
 	// coverage log, but it cannot distinguish independent recording threads.
@@ -326,11 +325,6 @@ public:
 	static constexpr UINT ApiThreadTimelineSlotCount = 32;
 	inline static ApiThreadTimelineSlot
 		ApiThreadTimelineSlots[ApiThreadTimelineSlotCount] = {};
-
-	inline static SRWLOCK CpuStageLock = SRWLOCK_INIT;
-	inline static CpuStageBucket CpuStageBuckets[160] = {};
-	inline static LONG CpuStageBucketCount = 0;
-	inline static thread_local CpuStageLookupCache CpuStageCache = {};
 
 	static LARGE_INTEGER Frequency()
 	{
@@ -516,11 +510,16 @@ public:
 
 	static bool IsTrackedWaitHandle(HANDLE handle, bool *matchesFenceEvent, bool *matchesFrameLatency)
 	{
+		// Plain volatile reads instead of full-fence CAS reads: the handles
+		// are written once per registration (rare), while every wait call in
+		// the process reads them. Aligned 64-bit reads are atomic on x64 and
+		// a stale diagnostic value is fine - the CAS reads here used to cost
+		// two locked ops on shared cache lines per wait call.
 		const ULONG_PTR rawHandle = reinterpret_cast<ULONG_PTR>(handle);
 		const ULONG_PTR rawFenceHandle = static_cast<ULONG_PTR>(
-			InterlockedCompareExchange64(&LastFenceEventHandle, 0, 0));
+			ReadLong64(&LastFenceEventHandle));
 		const ULONG_PTR rawFrameLatencyHandle = static_cast<ULONG_PTR>(
-			InterlockedCompareExchange64(&LastFrameLatencyHandle, 0, 0));
+			ReadLong64(&LastFrameLatencyHandle));
 		const bool fenceMatch = rawHandle != 0 && rawHandle == rawFenceHandle;
 		const bool frameLatencyMatch = rawHandle != 0 && rawHandle == rawFrameLatencyHandle;
 		if (matchesFenceEvent)
@@ -528,6 +527,16 @@ public:
 		if (matchesFrameLatency)
 			*matchesFrameLatency = frameLatencyMatch;
 		return fenceMatch || frameLatencyMatch;
+	}
+
+	// Handles owned by the wrapper itself (the async log writer's 100ms poll
+	// event). Waits on them are the wrapper's own sleep, never the game's:
+	// skip measurement, registration and logging entirely so the hook does
+	// not feed its own log (every idle writer poll used to emit a
+	// "system_wait" line through the global log lock).
+	static bool IsInternalWaitHandle(HANDLE handle)
+	{
+		return DX12LogManager::IsInternalEventHandle(handle);
 	}
 
 	static void SnapshotLastFenceEvent(
@@ -714,16 +723,6 @@ public:
 		return strcmp(left, right) == 0;
 	}
 
-	static void CopyLabel(char *target, size_t targetSize, const char *source)
-	{
-		if (!target || targetSize == 0)
-			return;
-		target[0] = '\0';
-		if (!source)
-			source = "";
-		strncpy_s(target, targetSize, source, _TRUNCATE);
-	}
-
 	static LONG64 TakeLong64(volatile LONG64 *value)
 	{
 		return InterlockedExchange64(value, 0);
@@ -827,18 +826,6 @@ public:
 		while (value > oldValue) {
 			const LONG64 previous =
 				InterlockedCompareExchange64(target, value, oldValue);
-			if (previous == oldValue)
-				break;
-			oldValue = previous;
-		}
-	}
-
-	static void MaxQpc(volatile LONG64 *target, LONGLONG value)
-	{
-		LONG64 oldValue = InterlockedCompareExchange64(target, 0, 0);
-		while (value > oldValue) {
-			const LONG64 previous =
-				InterlockedCompareExchange64(target, static_cast<LONG64>(value), oldValue);
 			if (previous == oldValue)
 				break;
 			oldValue = previous;
@@ -956,14 +943,21 @@ public:
 		if (++local.depth != 1 || !slot)
 			return;
 
+		// The slot is claimed once per thread (GetApiThreadTimelineSlot) and
+		// written only by its owner; the present-time drain exchanges it once
+		// per frame. Plain RMW keeps the per-API-call cost off the interlocked
+		// path - same trade the ApiWallThreadTable pool documents: a racing
+		// increment during the drain is attributed one frame late.
 		local.outerBeginQpc = beginQpc;
-		InterlockedIncrement64(&slot->outerCalls);
-		InterlockedCompareExchange64(
-			&slot->firstBeginQpc, static_cast<LONG64>(beginQpc), 0);
-		const LONG64 previousEndQpc = InterlockedCompareExchange64(
-			&slot->lastEndQpc, 0, 0);
-		if (previousEndQpc > 0 && beginQpc > previousEndQpc)
-			MaxUs(&slot->maxGapUs, DeltaUs(previousEndQpc, beginQpc));
+		++slot->outerCalls;
+		if (!slot->firstBeginQpc)
+			slot->firstBeginQpc = beginQpc;
+		const LONG64 previousEndQpc = slot->lastEndQpc;
+		if (previousEndQpc > 0 && beginQpc > previousEndQpc) {
+			const LONG64 gapUs = DeltaUs(previousEndQpc, beginQpc);
+			if (gapUs > slot->maxGapUs)
+				slot->maxGapUs = gapUs;
+		}
 	}
 
 	static void RecordApiThreadScopeEnd(int bucket, LONGLONG endQpc)
@@ -976,18 +970,13 @@ public:
 
 		ApiThreadTimelineSlot *slot = local.slot;
 		const LONG64 elapsedUs = DeltaUs(local.outerBeginQpc, endQpc);
-		AddUs(&slot->outerTotalUs, elapsedUs);
-		LONG64 observed = InterlockedCompareExchange64(&slot->maxScopeUs, 0, 0);
-		while (elapsedUs > observed) {
-			const LONG64 previous = InterlockedCompareExchange64(
-				&slot->maxScopeUs, elapsedUs, observed);
-			if (previous == observed) {
-				InterlockedExchange(&slot->maxScopeBucket, bucket);
-				break;
-			}
-			observed = previous;
+		slot->outerTotalUs += elapsedUs;
+		if (elapsedUs > slot->maxScopeUs) {
+			slot->maxScopeUs = elapsedUs;
+			slot->maxScopeBucket = bucket;
 		}
-		MaxQpc(&slot->lastEndQpc, endQpc);
+		if (endQpc > slot->lastEndQpc)
+			slot->lastEndQpc = endQpc;
 	}
 
 	static void LogApiScopeBegin(int bucket, LONGLONG beginQpc)
@@ -1422,86 +1411,70 @@ public:
 			static_cast<long long>(frameWallUs > 0 ? (apiSpanUs * 10000 / frameWallUs) : 0));
 	}
 
-	static LONG FindCpuStageBucketLocked(const char *category, const char *stage, UINT kind)
+	static CpuStageThreadTable *AcquireCpuStageThreadTable()
 	{
-		for (LONG index = 0; index < CpuStageBucketCount; ++index) {
-			if (CpuStageBuckets[index].kind == kind &&
-					LabelEquals(CpuStageBuckets[index].category, category) &&
-					LabelEquals(CpuStageBuckets[index].stage, stage)) {
-				return index;
-			}
-		}
-		if (CpuStageBucketCount >= static_cast<LONG>(sizeof(CpuStageBuckets) / sizeof(CpuStageBuckets[0])))
-			return -1;
-		const LONG newIndex = CpuStageBucketCount;
-		++CpuStageBucketCount;
-		CopyLabel(CpuStageBuckets[newIndex].category, sizeof(CpuStageBuckets[newIndex].category), category);
-		CopyLabel(CpuStageBuckets[newIndex].stage, sizeof(CpuStageBuckets[newIndex].stage), stage);
-		CpuStageBuckets[newIndex].kind = kind;
-		return newIndex;
+		const LONG index = InterlockedIncrement(&CpuStageThreadTableCount) - 1;
+		if (index < 0 || index >= static_cast<LONG>(kCpuStageThreadTables))
+			return nullptr;
+		CpuStageThreadTables[index].threadId = GetCurrentThreadId();
+		return &CpuStageThreadTables[index];
 	}
 
-	static LONG FindCpuStageBucketCached(const char *category, const char *stage, UINT kind)
+	static CpuStageThreadTable *GetCpuStageThreadTable()
+	{
+		static thread_local CpuStageThreadTable *table = AcquireCpuStageThreadTable();
+		return table;
+	}
+
+	static CpuStageEntry *FindCpuStageEntryCached(
+		const char *category, const char *stage, UINT kind)
 	{
 		// Thread-local open-addressed hash table keyed on label content.
-		// The previous linear scan paid up to ~34 strcmp pairs per call;
-		// on the draw hot path LogCpuStage runs 2-3 times per draw, which
-		// made the measurement itself dominate the numbers it was reporting.
-		// Pointer equality short-circuits the common case (the same literal
-		// is passed from the same call site every time); the content hash +
-		// strcmp fallback only runs on collision or distinct-literal aliases.
+		// The previous design paid a process-wide linear scan + SRW lock +
+		// ~4 interlocked RMW per call; on the draw hot path LogCpuStage runs
+		// 2-3 times per draw, which made the measurement itself dominate the
+		// numbers it was reporting. Each thread owns its table (single
+		// writer), so lookup and insert are lock-free plain ops. Pointer
+		// equality short-circuits the common case (the same literal is passed
+		// from the same call site every time); the content hash + strcmp
+		// fallback only runs on collision or distinct-literal aliases.
+		CpuStageThreadTable *table = GetCpuStageThreadTable();
+		if (!table)
+			return nullptr;
 		const UINT64 hash = HashCpuStageLabel(category) ^
 			(HashCpuStageLabel(stage) * 0x9e3779b97f4a7c15ull) ^
 			(static_cast<UINT64>(kind) * 0xbf58476d1ce4e5b9ull);
-		const UINT slotMask = static_cast<UINT>(
-			ARRAYSIZE(CpuStageCache.entries)) - 1;
+		const UINT slotMask = static_cast<UINT>(kCpuStageEntriesPerTable) - 1;
 		UINT slot = static_cast<UINT>(hash) & slotMask;
-		for (UINT probe = 0; probe < ARRAYSIZE(CpuStageCache.entries); ++probe) {
-			const CpuStageLookupEntry &entry = CpuStageCache.entries[slot];
-			if (entry.hash == 0 && entry.index < 0)
+		for (UINT probe = 0; probe < kCpuStageEntriesPerTable; ++probe) {
+			const CpuStageEntry &entry = table->entries[slot];
+			if (entry.hash == 0)
 				break; // empty slot: not cached
 			if (entry.hash == hash && entry.kind == kind) {
 				if (entry.category == category && entry.stage == stage)
-					return entry.index;
+					return &table->entries[slot];
 				if (LabelEquals(entry.category, category) &&
 						LabelEquals(entry.stage, stage))
-					return entry.index;
+					return &table->entries[slot];
 			}
 			slot = (slot + 1) & slotMask;
 		}
 
-		AcquireSRWLockExclusive(&CpuStageLock);
-		const LONG bucketIndex = FindCpuStageBucketLocked(category, stage, kind);
-		ReleaseSRWLockExclusive(&CpuStageLock);
-		if (bucketIndex >= 0) {
-			UINT insertSlot = static_cast<UINT>(hash) & slotMask;
-			for (UINT probe = 0; probe < ARRAYSIZE(CpuStageCache.entries); ++probe) {
-				CpuStageLookupEntry &entry = CpuStageCache.entries[insertSlot];
-				if (entry.hash == 0 && entry.index < 0) {
-					entry.hash = hash;
-					entry.category = category;
-					entry.stage = stage;
-					entry.kind = kind;
-					entry.index = bucketIndex;
-					break;
-				}
-				insertSlot = (insertSlot + 1) & slotMask;
+		// Insert into the owning thread's table (single writer, no lock).
+		UINT insertSlot = static_cast<UINT>(hash) & slotMask;
+		for (UINT probe = 0; probe < kCpuStageEntriesPerTable; ++probe) {
+			CpuStageEntry &entry = table->entries[insertSlot];
+			if (entry.hash == 0) {
+				entry.hash = hash;
+				entry.category = category;
+				entry.stage = stage;
+				entry.kind = kind;
+				return &entry;
 			}
-			// A full table simply stops caching; lookups still resolve
-			// correctly through the locked path above.
+			insertSlot = (insertSlot + 1) & slotMask;
 		}
-		return bucketIndex;
-	}
-
-	static void UpdateCpuStageMax(LONG64 *maximum, LONG64 value)
-	{
-		LONG64 observed = InterlockedCompareExchange64(maximum, 0, 0);
-		while (value > observed) {
-			const LONG64 previous = InterlockedCompareExchange64(maximum, value, observed);
-			if (previous == observed)
-				break;
-			observed = previous;
-		}
+		// A full table simply drops the sample (diagnostics only).
+		return nullptr;
 	}
 
 	static void LogCpuStage(
@@ -1513,13 +1486,13 @@ public:
 	{
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		const LONG64 safeUs = ClampUs(us);
-		const LONG index = FindCpuStageBucketCached(category, stage, kind);
-		if (index >= 0) {
-			CpuStageBucket &bucket = CpuStageBuckets[index];
-			InterlockedIncrement64(&bucket.calls);
-			InterlockedExchangeAdd64(&bucket.totalUs, safeUs);
-			UpdateCpuStageMax(&bucket.maxUs, safeUs);
-			InterlockedExchangeAdd64(&bucket.items, static_cast<LONG64>(itemCount));
+		CpuStageEntry *entry = FindCpuStageEntryCached(category, stage, kind);
+		if (entry) {
+			++entry->calls;
+			entry->totalUs += safeUs;
+			if (safeUs > entry->maxUs)
+				entry->maxUs = safeUs;
+			entry->items += static_cast<LONG64>(itemCount);
 		}
 #else
 		(void)category;
@@ -1533,41 +1506,91 @@ public:
 	static void LogCpuStageTimingState(
 		LONG present, LONG64 frameWallUs, DX12LogManager::LogBatch *batch)
 	{
-		CpuStageBucket snapshot[160] = {};
-		LONG snapshotCount = 0;
-		AcquireSRWLockExclusive(&CpuStageLock);
-		snapshotCount = CpuStageBucketCount;
-		for (LONG index = 0; index < snapshotCount; ++index) {
-			CopyLabel(snapshot[index].category, sizeof(snapshot[index].category), CpuStageBuckets[index].category);
-			CopyLabel(snapshot[index].stage, sizeof(snapshot[index].stage), CpuStageBuckets[index].stage);
-			snapshot[index].kind = CpuStageBuckets[index].kind;
-			snapshot[index].calls = InterlockedExchange64(&CpuStageBuckets[index].calls, 0);
-			snapshot[index].totalUs = InterlockedExchange64(&CpuStageBuckets[index].totalUs, 0);
-			snapshot[index].maxUs = InterlockedExchange64(&CpuStageBuckets[index].maxUs, 0);
-			snapshot[index].items = InterlockedExchange64(&CpuStageBuckets[index].items, 0);
+		// Merge every registered thread table into a label-keyed snapshot.
+		// Each table is written by exactly one thread; the drain exchanges
+		// the counters, so a racing increment lands one frame late.
+		struct MergedCpuStage
+		{
+			const char *category = nullptr;
+			const char *stage = nullptr;
+			UINT kind = 0;
+			UINT64 hash = 0;
+			LONG64 calls = 0;
+			LONG64 totalUs = 0;
+			LONG64 maxUs = 0;
+			LONG64 items = 0;
+		};
+		MergedCpuStage merged[256] = {};
+		const UINT mergedMask = static_cast<UINT>(ARRAYSIZE(merged)) - 1;
+		const LONG tableCount = InterlockedCompareExchange(&CpuStageThreadTableCount, 0, 0);
+		const LONG tablesToScan = tableCount < static_cast<LONG>(kCpuStageThreadTables)
+			? tableCount : static_cast<LONG>(kCpuStageThreadTables);
+		for (LONG t = 0; t < tablesToScan; ++t) {
+			CpuStageThreadTable &table = CpuStageThreadTables[t];
+			for (UINT i = 0; i < kCpuStageEntriesPerTable; ++i) {
+				CpuStageEntry &src = table.entries[i];
+				if (!src.hash)
+					continue;
+				const LONG64 calls = InterlockedExchange64(
+					reinterpret_cast<volatile LONG64*>(&src.calls), 0);
+				const LONG64 totalUs = InterlockedExchange64(
+					reinterpret_cast<volatile LONG64*>(&src.totalUs), 0);
+				const LONG64 maxUs = InterlockedExchange64(
+					reinterpret_cast<volatile LONG64*>(&src.maxUs), 0);
+				const LONG64 items = InterlockedExchange64(
+					reinterpret_cast<volatile LONG64*>(&src.items), 0);
+				if (!calls && !totalUs)
+					continue;
+				UINT slot = static_cast<UINT>(src.hash) & mergedMask;
+				for (UINT probe = 0; probe < ARRAYSIZE(merged); ++probe) {
+					MergedCpuStage &dst = merged[slot];
+					if (dst.hash == src.hash && dst.kind == src.kind &&
+							LabelEquals(dst.category, src.category) &&
+							LabelEquals(dst.stage, src.stage)) {
+						dst.calls += calls;
+						dst.totalUs += totalUs;
+						if (maxUs > dst.maxUs)
+							dst.maxUs = maxUs;
+						dst.items += items;
+						break;
+					}
+					if (!dst.hash) {
+						dst.hash = src.hash;
+						dst.category = src.category;
+						dst.stage = src.stage;
+						dst.kind = src.kind;
+						dst.calls = calls;
+						dst.totalUs = totalUs;
+						dst.maxUs = maxUs;
+						dst.items = items;
+						break;
+					}
+					slot = (slot + 1) & mergedMask;
+				}
+			}
 		}
-		ReleaseSRWLockExclusive(&CpuStageLock);
 
-		for (LONG index = 0; index < snapshotCount; ++index) {
-			if (!snapshot[index].calls && !snapshot[index].totalUs)
+		for (UINT i = 0; i < ARRAYSIZE(merged); ++i) {
+			const MergedCpuStage &entry = merged[i];
+			if (!entry.hash || (!entry.calls && !entry.totalUs))
 				continue;
-			if (snapshot[index].totalUs < 40 && snapshot[index].maxUs < 10)
+			if (entry.totalUs < 40 && entry.maxUs < 10)
 				continue;
 			LogTimingFields(batch, "DX12CpuStageTiming",
 				"\"present\":%ld,\"category\":\"%s\",\"stage\":\"%s\",\"kind\":%u,"
 				"\"calls\":%lld,\"items\":%lld,\"totalUs\":%lld,\"maxUs\":%lld,"
 				"\"frameWallUs\":%lld,\"framePctX100\":%lld",
 				present,
-				snapshot[index].category,
-				snapshot[index].stage,
-				snapshot[index].kind,
-				static_cast<long long>(snapshot[index].calls),
-				static_cast<long long>(snapshot[index].items),
-				static_cast<long long>(snapshot[index].totalUs),
-				static_cast<long long>(snapshot[index].maxUs),
+				entry.category,
+				entry.stage,
+				entry.kind,
+				static_cast<long long>(entry.calls),
+				static_cast<long long>(entry.items),
+				static_cast<long long>(entry.totalUs),
+				static_cast<long long>(entry.maxUs),
 				static_cast<long long>(frameWallUs),
 				static_cast<long long>(
-					frameWallUs > 0 ? (snapshot[index].totalUs * 10000 / frameWallUs) : 0));
+					frameWallUs > 0 ? (entry.totalUs * 10000 / frameWallUs) : 0));
 		}
 	}
 
