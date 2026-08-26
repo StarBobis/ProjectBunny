@@ -85,7 +85,7 @@ uint64_t DX12ModHashShaderBytecode(const void *data, size_t size)
 
 bool DX12ModHasShaderOverride(uint64_t hash)
 {
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	bool found = gShaderOverrides.find(hash) != gShaderOverrides.end();
 	ReleaseSRWLockShared(&gModLock);
 	return found;
@@ -1036,7 +1036,7 @@ bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
 		return false;
 	std::vector<const Bunny::ShaderOverrideConfig*> configs;
 	bool cached = false;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
 	ReleaseSRWLockShared(&gModLock);
 	return !cached || !configs.empty();
@@ -1117,7 +1117,7 @@ bool DX12ModCollectShaderOverrideIaHashTargets(
 	if (!pipelineState || !DX12ModHasActiveShaderOverrides())
 		return false;
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	const bool cachedPlan =
 		TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
 			pipelineState, targetPlan);
@@ -1126,7 +1126,7 @@ bool DX12ModCollectShaderOverrideIaHashTargets(
 		return true;
 
 	std::vector<const Bunny::ShaderOverrideConfig*> configs;
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
 	const bool builtPlan =
 		TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
@@ -1180,7 +1180,7 @@ bool DX12ModCompileDrawDecision(
 	}
 
 	if (!compiledMetadataHit) {
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		cached = TryFindCachedShaderOverridesForPsoLocked(
 			pipelineState, false, &configs);
 		if (cached) {
@@ -1199,7 +1199,7 @@ bool DX12ModCompileDrawDecision(
 	}
 
 	if (!cached) {
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
 		cached = TryFindCachedShaderOverridesForPsoLocked(
 			pipelineState, false, &configs);
@@ -1622,7 +1622,7 @@ void BackfillCompiledPsoPlanFromFallback(
 		return;
 	}
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	if (DX12ModGetReloadGenerationFast() == reloadGeneration) {
 		bool drawDirectHasNonTextureEffect = false;
 		DX12IaHashTargetPlan drawDirectTargetPlan =
@@ -1708,7 +1708,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	if (!compiledPlanHit) {
 		// Fallback: legacy PSO config cache lookup (first draw after mod reload).
 		std::vector<const Bunny::ShaderOverrideConfig*> configs;
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
 		if (cached)
 			CopyShaderOverrideConfigs(configs, configView.MutableFallbackSnapshot());
@@ -1718,7 +1718,7 @@ bool DX12ModPrepareShaderOverrideReplacement(
 			return false;
 
 		if (!cached) {
-			AcquireSRWLockExclusive(&gModLock);
+			DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 			FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
 			CopyShaderOverrideConfigs(configs, configView.MutableFallbackSnapshot());
 			ReleaseSRWLockExclusive(&gModLock);
@@ -1881,7 +1881,7 @@ bool DX12ModGetPipelineStateSkipFlags(
 	if (!pipelineState || !DX12ModHasActiveShaderOverrides())
 		return false;
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	auto record = gPsoRecords.find(pipelineState);
 	if (record != gPsoRecords.end()) {
 		if (record->second.skipGeneration == gReloadGeneration) {
@@ -1895,7 +1895,7 @@ bool DX12ModGetPipelineStateSkipFlags(
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	record = gPsoRecords.find(pipelineState);
 	if (record != gPsoRecords.end()) {
 		UpdateStoredPsoSkipLocked(&record->second);
@@ -1915,7 +1915,7 @@ bool DX12ModGetPipelineStateSkipFlags(
 		shaderInfo = &queriedInfo;
 	}
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	if (skipDispatch)
 		*skipDispatch = shaderInfo->hasCS && ShaderOverrideHasSkipLocked(shaderInfo->cs);
 	if (skipDraw)
@@ -1939,7 +1939,7 @@ bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dis
 
 UINT64 DX12ModGetReloadGeneration()
 {
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	UINT64 generation = gReloadGeneration;
 	ReleaseSRWLockShared(&gModLock);
 	return generation;
@@ -1968,7 +1968,7 @@ void DX12ModRecordGraphicsPipelineState(
 	record.device->AddRef();
 	DeepCopyGraphicsDesc(desc, &record);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	auto existing = gPsoRecords.find(pipelineState);
 	if (existing != gPsoRecords.end())
 		ReleaseStoredPso(&existing->second);
@@ -2019,7 +2019,7 @@ void DX12ModRecordComputePipelineState(
 	record.device->AddRef();
 	DeepCopyComputeDesc(desc, &record);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	auto existing = gPsoRecords.find(pipelineState);
 	if (existing != gPsoRecords.end())
 		ReleaseStoredPso(&existing->second);
@@ -2123,7 +2123,7 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	bool shouldCreate = false;
 	UINT64 generation = 0;
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	std::unordered_map<ID3D12PipelineState*, DX12StoredPso>::iterator cached =
 		gPsoRecords.find(pipelineState);
 	if (cached == gPsoRecords.end()) {
@@ -2142,7 +2142,7 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	std::unordered_map<ID3D12PipelineState*, DX12StoredPso>::iterator it =
 		gPsoRecords.find(pipelineState);
 	if (it == gPsoRecords.end()) {
@@ -2226,7 +2226,7 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	if (!newReplacement)
 		return nullptr;
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	it = gPsoRecords.find(pipelineState);
 	if (it == gPsoRecords.end() || gReloadGeneration != generation) {
 		ReleaseSRWLockExclusive(&gModLock);

@@ -244,7 +244,7 @@ void BuildDx12VlrResourceCandidates(
 
 void DX12ModScheduleInitialLoad(const wchar_t *configPath)
 {
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	SetBasePaths(configPath);
 	gPendingInitialConfigPath = configPath ? configPath : L"";
 	gDeferredInitialModLoadStartTick = GetTickCount();
@@ -274,7 +274,7 @@ void DX12ModMaybeRunDeferredInitialLoad()
 	std::wstring configPath;
 	DWORD delayMs = 0;
 	DWORD startTick = 0;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	configPath = gPendingInitialConfigPath;
 	delayMs = gDeferredInitialModLoadDelayMs;
 	startTick = gDeferredInitialModLoadStartTick;
@@ -301,7 +301,7 @@ void DX12ModMaybeRunDeferredInitialLoad()
 	if (ok)
 		DX12ModRefreshRuntimeStateAfterReload();
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	if (ok)
 		gPendingInitialConfigPath.clear();
 	else
@@ -1400,7 +1400,7 @@ bool DX12ModRuntimeLoad(
 	BuildDx12VlrResourceCandidates(
 		resources, explicitMatchCsResourceSections, &vlrResourceCandidates);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	gShaderOverrides.swap(shaderOverrides);
 	gShaderRegexes.swap(shaderRegexes);
 	gTextureOverrides.swap(textureOverrides);
@@ -1482,9 +1482,10 @@ bool DX12ModRuntimeLoad(
 	AcquireSRWLockExclusive(&gPreSkinUavMatchCacheLock);
 	gPreSkinUavMatchCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinUavMatchCacheLock);
-	gPreSkinMatchCsInputCache.clear();
+	AcquireSRWLockExclusive(&gPreSkinMatchCsProbeLogLock);
 	gPreSkinMatchCsProbeKeys.clear();
 	InterlockedExchange(&gPreSkinMatchCsProbeLogCount, 0);
+	ReleaseSRWLockExclusive(&gPreSkinMatchCsProbeLogLock);
 	ClearPreSkinStickyMatchCache();
 	BumpPreSkinActiveGeneration();
 	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -1610,7 +1611,7 @@ bool DX12ModRuntimeLoad(
 bool DX12ModRuntimeReload()
 {
 	std::wstring configPath;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	configPath = gConfigPath;
 	ReleaseSRWLockShared(&gModLock);
 	if (configPath.empty()) {

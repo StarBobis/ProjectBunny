@@ -4,6 +4,7 @@
 // Split out of DX12Hooks.h; include that umbrella header from existing code.
 
 #include "../DX12Core.h"
+#include "../ModRuntime/DX12ModLockTelemetry.h"
 
 #include "Nektra/NktHookLib.h"
 #include "util_min.h"
@@ -164,6 +165,7 @@ public:
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12CreateTimingTelemetryUtils::LogAndReset();
 		DX12DescriptorShadowTelemetryUtils::LogAndReset();
+		DX12ModLockTelemetryUtils::LogAndReset();
 		DX12ResidentMaintenanceTelemetryUtils::LogAndReset();
 #endif
 	}

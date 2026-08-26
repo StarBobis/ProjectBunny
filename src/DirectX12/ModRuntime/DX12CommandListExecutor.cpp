@@ -61,7 +61,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	// Track idle frames: if no active pre-skin overrides existed last frame, count idle.
 	// If pre-skin was actively matching, reset idle counter immediately.
 	if (gActivePreSkinTextureOverrides.empty()) {
@@ -74,7 +74,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	MoveExpiredRetiredLoadedResourcesLocked(&expired);
 	ReleaseSRWLockExclusive(&gModLock);
 	for (DX12RetiredLoadedResource &resource : expired)
@@ -287,7 +287,7 @@ void SnapshotIaResourceViewForCommandList(
 	// threads resolve them in parallel instead of serializing every modded
 	// draw on the global exclusive gModLock (a DX11-style single-thread
 	// pattern; DX12 resolves resource metadata without a global write lock).
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end() &&
 	    !IaResourceViewSnapshotRequiresWrite(loaded->second)) {
@@ -301,7 +301,7 @@ void SnapshotIaResourceViewForCommandList(
 	// to VERTEX_AND_CONSTANT_BUFFER and clear the pending-barrier flag), which
 	// needs the exclusive lock. Re-find and re-check: another thread may have
 	// changed the entry between the two acquisitions.
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end())
 		SnapshotIaResourceViewLocked(&loaded->second, snapshot);
@@ -603,7 +603,7 @@ bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 void ProcessDx12KeyBindingsForFrame()
 {
 	std::vector<Bunny::MigotoKeyBindingUtils::RuntimeAction> actions;
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	if (gLoaded)
 		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
 	ReleaseSRWLockExclusive(&gModLock);

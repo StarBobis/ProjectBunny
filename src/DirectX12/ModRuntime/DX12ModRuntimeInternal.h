@@ -10,6 +10,7 @@
 #include "DX12Runtime.h"
 #include "DX12Resources.h"
 #include "DX12Presentation.h"
+#include "DX12ModLockTelemetry.h"
 #include <Shlwapi.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -587,8 +588,6 @@ inline volatile LONG gPreSkinMatchCsProbeLogCount = 0;
 inline SRWLOCK gPreSkinMatchCsProbeLogLock = SRWLOCK_INIT;
 
 inline std::unordered_set<uint64_t> gPreSkinMatchCsProbeKeys;
-
-inline std::unordered_map<uint64_t, bool> gPreSkinMatchCsInputCache;
 
 void ClearPreSkinStickyMatchCache();
 

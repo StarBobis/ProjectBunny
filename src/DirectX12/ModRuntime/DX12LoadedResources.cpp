@@ -219,7 +219,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	// per resource per draw on every recording thread. A shared lock keeps
 	// those threads off the global exclusive gModLock (DX11 checks loaded
 	// resources without taking a global write lock).
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		const bool available = loaded->second.resource && !loaded->second.failed;
@@ -228,7 +228,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	// Another thread may have loaded the resource between the two
 	// acquisitions; re-check before doing the (expensive) load.
 	loaded = gLoadedResources.find(name);
@@ -251,7 +251,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	result.generation = generation;
 	BuildLoadedBufferResource(device, name, config, baseDir, &result);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	ID3D12Resource *discardResource = nullptr;
 	const bool available = StoreLoadedResourceResultLocked(
 		name, generation, &result.resource, &discardResource);
@@ -274,7 +274,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	// apply, every frame. A shared lock lets concurrent recording threads and
 	// the UI thread read it without serializing on the exclusive gModLock
 	// (DX11 reads resource metadata without taking a global write lock).
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		DX12LoadedResource *resource =
@@ -284,7 +284,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	// Another thread may have loaded the resource while we held the shared
 	// lock; re-check before doing the (expensive) load.
 	loaded = gLoadedResources.find(name);
@@ -310,7 +310,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		auto inserted = gLoadedResources.emplace(name, failedResource);
 		DX12LoadedResource *result =
 			inserted.first->second.resource && !inserted.first->second.failed ?
@@ -358,7 +358,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
 		DX12LogManager::Fields("DX12ResourceLoad",
@@ -385,7 +385,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
 		DX12LogManager::Fields("DX12ResourceLoad",
@@ -406,7 +406,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	loadedResource.name = name;
 	loadedResource.path = path;
 
-	AcquireSRWLockExclusive(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 	auto inserted = gLoadedResources.emplace(name, loadedResource);
 	if (!inserted.second)
 		resource->Release();

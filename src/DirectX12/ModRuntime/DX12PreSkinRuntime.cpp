@@ -48,7 +48,7 @@ const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
 	    InterlockedCompareExchange(&gHasConfirmedPreSkinSectionsFast, 0, 0) == 0)
 		return cache.sections;
 
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	cache.sections.reserve(
 		gActivePreSkinTextureOverrides.size() + gConfirmedPreSkinSections.size());
 	for (const auto &item : gActivePreSkinTextureOverrides)
@@ -179,7 +179,7 @@ bool DX12ModMayNeedPreSkinIaViewExpansion(
 		InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0)
 		return false;
 
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	for (const auto &item : gActivePreSkinTextureOverrides) {
 		const DX12ActivePreSkinTextureOverride &active = item.second;
 		if (!active.outputResource || !active.outputByteWidth)
@@ -215,7 +215,7 @@ bool DX12ModFindActivePreSkinProducerForOutput(
 		return false;
 
 	bool found = false;
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	// Plan fix C: O(1) reverse-index lookup instead of a locked linear scan
 	// of the whole active table (which the pre-skin IA replay path hit once
 	// per VB slot per matching draw).
@@ -1604,7 +1604,7 @@ bool EnsurePreSkinDescriptorRingLocked(
 void ClearPreSkinRuntimeState()
 {
 	std::vector<ID3D12Resource*> releasePreSkinResources;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	gPatchedPreSkinDescriptors.clear();
 	gKnownPreSkinDescriptorPatches.clear();
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
@@ -1731,7 +1731,7 @@ bool DX12ModResolveExpandedPreSkinBufferWidth(
 	// be reloaded while that resource remains alive. Require a current VLR with
 	// the same shape so stale tags cannot reactivate a removed configuration.
 	bool configured = false;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	for (const DX12VertexLimitRaiseConfig &vlr : gVertexLimitRaiseConfigs) {
 		if (vlr.overrideByteWidth == info.outputByteWidth &&
 		    (!info.vertexStride || vlr.overrideByteStride == info.vertexStride)) {
@@ -2948,7 +2948,7 @@ bool TryReuseDeferredPreSkinDescriptorTable(
 	// avoids a LOCK CMPXCHG on every hot-path call.
 	if (gHasActivePreSkinReplacement == 0)
 		return false;
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList *, DX12PreSkinReplacementState>::const_iterator
 		it = gActivePreSkinReplacements.find(commandList);
 	if (it == gActivePreSkinReplacements.end())
@@ -2978,7 +2978,7 @@ bool DX12ModCanDeferPreSkinningUavReplacement(
 	// ordering argument.
 	if (gHasActivePreSkinReplacement == 0)
 		return false;
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	std::unordered_map<ID3D12GraphicsCommandList *, DX12PreSkinReplacementState>::const_iterator
 		it = gActivePreSkinReplacements.find(commandList);
 	const bool canDefer = it != gActivePreSkinReplacements.end() &&
@@ -3234,7 +3234,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				*originalVertexCountOut = originalVertexCount;
 			if (overrideVertexCountOut)
 				*overrideVertexCountOut = overrideVertexCount;
-			AcquireSRWLockExclusive(&gPreSkinLock);
+			DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 			gActivePreSkinReplacements[commandList] = std::move(state);
 			InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 			ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -3295,7 +3295,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			*originalVertexCountOut = originalVertexCount;
 		if (overrideVertexCountOut)
 			*overrideVertexCountOut = overrideVertexCount;
-		AcquireSRWLockExclusive(&gPreSkinLock);
+		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 		gActivePreSkinReplacements[commandList] = std::move(state);
 		InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 		ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -3700,7 +3700,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	*originalVertexCountOut = originalVertexCount;
 	if (overrideVertexCountOut)
 		*overrideVertexCountOut = overrideVertexCount;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	gActivePreSkinReplacements[commandList] = std::move(state);
 	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -3771,7 +3771,7 @@ bool ApplyPreSkinBindingPatchLocked(
 	replacement->uavValid = false;
 
 	bool alreadyPatched = false;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	alreadyPatched = !gPatchedPreSkinDescriptors.insert(
 													binding.descriptor.cpuHandle)
 						  .second;
@@ -3827,7 +3827,7 @@ bool ApplyPreSkinBindingPatchLocked(
 	}
 	if (descriptorRestores)
 		state.descriptorRestores.swap(*descriptorRestores);
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	gActivePreSkinReplacements[commandList] = std::move(state);
 	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -3934,7 +3934,7 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	}
 	else
 	{
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
 		explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 		hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
@@ -4127,7 +4127,7 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 
 	std::vector<std::pair<SIZE_T, std::wstring>> patches;
 	LARGE_INTEGER snapshotBegin = DX12OuterTimingProbeUtils::Now();
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	patches.assign(gKnownPreSkinDescriptorPatches.begin(), gKnownPreSkinDescriptorPatches.end());
 	ReleaseSRWLockShared(&gPreSkinLock);
 	DX12OuterTimingProbeUtils::LogCpuStage(
@@ -4164,7 +4164,7 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 	for (const auto &patch : patches)
 	{
 		LARGE_INTEGER blockedBegin = DX12OuterTimingProbeUtils::Now();
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		const bool blocked =
 			ResourceBlockedByInactiveExplicitMatchCsLocked(patch.second, activePreSkinSections);
 		ReleaseSRWLockExclusive(&gModLock);
@@ -4187,7 +4187,7 @@ bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandLi
 		if (!resource)
 			continue;
 		LARGE_INTEGER strideBegin = DX12OuterTimingProbeUtils::Now();
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		const UINT elementStride =
 			FindPreSkinUavElementStrideLocked(*resource, activePreSkinSections);
 		ReleaseSRWLockExclusive(&gModLock);
@@ -4287,7 +4287,7 @@ void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandLi
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	bool canPublish = false;
-	AcquireSRWLockShared(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
 	if (it != gActivePreSkinReplacements.end())
 	{
@@ -4348,7 +4348,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	DX12PreSkinReplacementState state = {};
 	bool found = false;
 	bool erased = false;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
 	if (it != gActivePreSkinReplacements.end())
 	{
@@ -4547,7 +4547,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 		active.outputResource = state.resource;
 		active.outputByteWidth = state.byteWidth;
 		active.outputStride = state.stride;
-		AcquireSRWLockExclusive(&gPreSkinLock);
+		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 		StoreActivePreSkinTextureOverrideLocked(
 			active.config.section, active, &releasePreSkinResources);
 		ReleaseSRWLockExclusive(&gPreSkinLock);
@@ -4577,7 +4577,7 @@ void DX12ModForgetPreSkinReplacementForCommandList(
 
 	DX12PreSkinReplacementState state = {};
 	bool erased = false;
-	AcquireSRWLockExclusive(&gPreSkinLock);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
 	auto it = gActivePreSkinReplacements.find(commandList);
 	if (it != gActivePreSkinReplacements.end())
 	{
@@ -4664,7 +4664,7 @@ bool DX12ModComputePreSkinMatchOnly(
 	const std::unordered_set<std::wstring> &activePreSkinSections =
 		GetActivePreSkinSectionsSnapshot();
 
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	explicitMatchCs = HasMatchCsTextureOverrideLocked(computeShaderHash);
 	hashMatched = explicitMatchCs && FindPreSkinProducerByMatchCsLocked(
 										 uavs, srvs, cbvs, rootConstants, computeShaderHash, &producer, &hashBinding, &hashMatch);
@@ -4706,7 +4706,7 @@ bool DX12ModReplaceShaderBytecode(
 
 	std::wstring section;
 	std::wstring shaderFixesDir;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	auto it = gShaderOverrides.find(hash);
 	if (it == gShaderOverrides.end())
 	{
@@ -4796,7 +4796,7 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 		return tlsEntry.result;
 
 	bool shouldProbe = false;
-	AcquireSRWLockShared(&gModLock);
+	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 	if (gHasPreSkinVlrWithoutMatchCs)
 	{
 		shouldProbe = true;
@@ -4932,7 +4932,7 @@ void PreloadPreSkinReplacementResources(ID3D12Device *device)
 	// the mod is (re)loaded.
 	std::vector<std::wstring> names;
 	{
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		names.reserve(gModResources.size());
 		for (const auto &entry : gModResources)
 		{
@@ -4967,7 +4967,7 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 	};
 	std::vector<PreSkinOutputResizeCandidate> candidates;
 	{
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		candidates.reserve(gPreSkinTextureOverrides.size() * 2);
 		for (const DX12PreSkinTextureOverrideCandidate &overrideCandidate :
 				gPreSkinTextureOverrides)

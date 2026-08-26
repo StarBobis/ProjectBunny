@@ -426,7 +426,7 @@ public:
 
 		Bunny::ResourceConfig config;
 		std::wstring baseDir;
-		AcquireSRWLockShared(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		Bunny::ResourceMap::iterator configIt = gModResources.find(name);
 		if (configIt != gModResources.end()) {
 			config = configIt->second;
@@ -703,7 +703,7 @@ public:
 	{
 		if (name.empty())
 			return nullptr;
-		AcquireSRWLockExclusive(&gModLock);
+		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
 		std::unordered_map<std::wstring, DX12LoadedResource>::iterator loadedIt =
 			gLoadedResources.find(name);
 		if (loadedIt != gLoadedResources.end()) {
