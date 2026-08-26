@@ -59,11 +59,6 @@ bool DX12ModPreSkinningUavProducerMayMatch(
 	uint64_t computeShaderHash,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs);
 class DX12PreSkinDispatchOverride;
-bool DX12ModHasCachedPreSkinningUavMatch(
-	ID3D12GraphicsCommandList *commandList,
-	uint64_t computeShaderHash,
-	UINT64 computeBindingSerial,
-	bool *matched);
 void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,

@@ -4834,31 +4834,6 @@ bool DX12ModPreSkinningUavProducerMayMatch(
 }
 
 
-bool DX12ModHasCachedPreSkinningUavMatch(
-	ID3D12GraphicsCommandList *commandList,
-	uint64_t computeShaderHash,
-	UINT64 computeBindingSerial,
-	bool *matched)
-{
-	if (!matched || !commandList || !computeShaderHash || computeBindingSerial == 0)
-		return false;
-
-	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
-		commandList, computeShaderHash, computeBindingSerial, 0);
-	AcquireSRWLockShared(&gModLock);
-	auto cached = gPreSkinUavMatchCache.find(cacheKey);
-	if (cached != gPreSkinUavMatchCache.end() &&
-		cached->second.valid)
-	{
-		*matched = cached->second.matched;
-		ReleaseSRWLockShared(&gModLock);
-		return true;
-	}
-	ReleaseSRWLockShared(&gModLock);
-	return false;
-}
-
-
 void UpdatePreSkinningUavMatchCacheLocked(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,

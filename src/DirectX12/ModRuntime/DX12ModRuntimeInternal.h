@@ -560,8 +560,6 @@ public:
 // stores match decisions, not reusable command-list commands.
 inline std::unordered_map<UINT64, DX12PreSkinUavMatchCacheEntry> gPreSkinUavMatchCache;
 
-inline std::deque<UINT64> gPreSkinUavMatchCacheLru;
-
 inline constexpr size_t MaxPreSkinUavMatchCacheEntries = 4096;
 
 inline size_t gPreSkinUavMatchCacheGrowthBudget = MaxPreSkinUavMatchCacheEntries;
@@ -3027,13 +3025,6 @@ bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash);
 bool DX12ModPreSkinningUavProducerMayMatch(
 	uint64_t computeShaderHash,
 	const std::vector<DX12CurrentComputeUavBinding> &uavs);
-
-
-bool DX12ModHasCachedPreSkinningUavMatch(
-	ID3D12GraphicsCommandList *commandList,
-	uint64_t computeShaderHash,
-	UINT64 computeBindingSerial,
-	bool *matched);
 
 
 void UpdatePreSkinningUavMatchCacheLocked(
