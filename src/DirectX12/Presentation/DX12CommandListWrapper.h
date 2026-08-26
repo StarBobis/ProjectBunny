@@ -1163,13 +1163,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(IASetIndexBufTotal);
 			if (DX12HotPathState::skipAll && mOrigIASetIndexBuffer) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
 				mOrigIASetIndexBuffer(mCommandList, pView);
 				return;
 			}
+		DX12_HOTPATH_TIME_BEGIN(IASetIndexBufTotal);
 			DX12WrapperRuntimeUtils::IASetIndexBuffer(
 				mCommandList, &mRuntimeState, pView, mOrigIASetIndexBuffer);
 		DX12_HOTPATH_TIME_END(IASetIndexBufTotal);
@@ -1177,13 +1177,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE IASetVertexBuffers(UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW *pViews) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(IASetVertexBufTotal);
 			if (DX12HotPathState::skipAll && mOrigIASetVertexBuffers) {
 				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 					DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
 				mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
 				return;
 			}
+		DX12_HOTPATH_TIME_BEGIN(IASetVertexBufTotal);
 			DX12WrapperRuntimeUtils::IASetVertexBuffers(
 				mCommandList, &mRuntimeState, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
 		DX12_HOTPATH_TIME_END(IASetVertexBufTotal);

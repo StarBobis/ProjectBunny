@@ -1,4 +1,4 @@
-﻿// DX12LoadedResources.cpp: mod resource upload channel, GPU resource construction and static replacement resolve.
+// DX12LoadedResources.cpp: mod resource upload channel, GPU resource construction and static replacement resolve.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -880,6 +880,17 @@ bool DX12ResolveStaticIaReplacement(
 		if (it != table->vertexByHashAndSlot.end())
 			resourceName = &it->second;
 	}
+	// Audit: content-hash lookup result for every bind-time static IA probe.
+	// A miss here (expected hash mismatch) means the draw keeps the game's
+	// original (small) texcoord/index buffer while the mod's oversized index
+	// buffer stays applied -> broken UVs beyond the original vertex count.
+	DX12LogManager::Fields("DX12StaticIaAudit",
+		"kind=%s,slot=%u,hash=%08x,found=%d,resource=%S",
+		indexBuffer ? "ib" : "vb",
+		vertexSlot,
+		contentHash,
+		(resourceName && !resourceName->empty()) ? 1 : 0,
+		(resourceName && !resourceName->empty()) ? resourceName->c_str() : L"");
 	if (!resourceName || resourceName->empty())
 		return false;
 

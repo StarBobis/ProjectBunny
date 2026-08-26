@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // DX12ModRuntimeInternal.h: shared state, types and internal declarations for the
 // mod runtime implementation units under DirectX12/ModRuntime/.
@@ -776,6 +776,14 @@ public:
 	ID3D12Resource *outputResource = nullptr;
 	UINT64 outputByteWidth = 0;
 	UINT outputStride = 0;
+	// Immutable output-resource facts cached when the resource identity is
+	// stored. The IA view-expansion gate (DX12ModMayNeedPreSkinIaViewExpansion)
+	// runs per matching draw on the render thread; without the cache it paid
+	// a GetDesc + GetGPUVirtualAddress COM pair for every table entry on
+	// every call.
+	UINT64 outputGpuVirtualAddress = 0;
+	UINT64 outputResourceWidth = 0;
+	bool outputResourceFactsValid = false;
 };
 
 
@@ -789,6 +797,22 @@ inline std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTe
 // stores section names (not pointers) because the map entries are rewritten
 // in place on every store and section names are the stable identity.
 inline std::unordered_map<ID3D12Resource*, std::vector<std::wstring>> gPreSkinProducerSectionsByOutputResource;
+
+// Snapshot of just the expanded pre-skin output VA ranges (published
+// outputByteWidth exceeds the backing resource width), keyed by section.
+// DX12ModMayNeedPreSkinIaViewExpansion runs per matching draw on the render
+// thread; probing this handful of ranges under a shared read replaces the
+// old locked full-table scan. Maintained under gPreSkinLock by the
+// store/move/clear paths in DX12PreSkinRuntime.cpp; the fast flag is only a
+// conservative hint (1 means "worth taking the lock and scanning").
+class DX12PreSkinExpandedOutputRange
+{
+public:
+	UINT64 gpuVirtualAddress = 0;
+	UINT64 width = 0;
+};
+inline std::unordered_map<std::wstring, DX12PreSkinExpandedOutputRange> gPreSkinExpandedOutputRangesBySection;
+inline LONG gHasPreSkinExpandedOutputRangesFast = 0;
 
 // A successful producer match proves that this configured section participates
 // in PreSkin for the current mod configuration. Keep that proof independently
@@ -1185,6 +1209,13 @@ public:
 	ID3D12Resource *vertexResource = nullptr;
 	UINT64 originalGpuVa = 0;
 	UINT64 originalByteWidth = 0;
+	// Readable extent of the original buffer as the game's consumer views see
+	// it (the producer UAV view size). The fallback GPU-VA scan must only
+	// redirect views inside this range: the same resource can pack other
+	// streams (texcoords, normals) beyond the UAV view, and retargeting those
+	// to the resized positions buffer corrupts them. Falls back to the
+	// resource width (0) for preload-created entries that lack view info.
+	UINT64 originalViewBytes = 0;
 	UINT64 vertexGpuVa = 0;
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptorCpu = {};
@@ -1231,6 +1262,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource,
 	UINT64 requiredByteWidth, UINT stride, UINT elementCount,
+	UINT64 originalViewBytes,
 	ID3D12Resource **resizedResourceOut,
 	ID3D12Resource **vertexResourceOut,
 	ID3D12DescriptorHeap **descriptorHeapOut,
@@ -1635,6 +1667,20 @@ BuildDx12StaticIaReplacementTable(
 			const bool hasIaSwap =
 				!config.indexBufferResource.empty() ||
 				!config.vertexBufferResources.empty();
+			// vbN=/ib= produce a ResourceAssignment action alongside
+			// vertexBufferResources/indexBufferResource; those ARE the
+			// replacement and must not disqualify the section (DX11 applies
+			// hash + vbN=/ib= at draw time). Any other action (handling=skip,
+			// draw*, dispatch, run, checks, control flow...) makes the section
+			// draw-time dependent and keeps it on the dynamic path.
+			const bool hasNonGeometryAction = std::any_of(
+				config.actions.begin(), config.actions.end(),
+				[](const Bunny::CommandListAction &action) {
+					return action.kind != Bunny::CommandListActionKind::ResourceAssignment &&
+						action.kind != Bunny::CommandListActionKind::VariableAssignment &&
+						action.kind != Bunny::CommandListActionKind::LocalVariableAssignment &&
+						action.kind != Bunny::CommandListActionKind::PostVariableAssignment;
+				});
 			const bool clean =
 				!config.handlingSkip &&
 				!config.hasMatchVertexCount && !config.hasMatchIndexCount &&
@@ -1648,7 +1694,7 @@ BuildDx12StaticIaReplacementTable(
 				config.commandLists.pre.empty() &&
 				config.commandLists.main.empty() &&
 				config.commandLists.post.empty() &&
-				config.actions.empty() &&
+				!hasNonGeometryAction &&
 				config.drawPsSrvResources.empty() &&
 				config.drawVsSrvResources.empty() &&
 				config.drawReplaceThisResource.empty();
@@ -1687,6 +1733,12 @@ BuildDx12StaticIaReplacementTable(
 	}
 	table->enabled =
 		!table->indexByHash.empty() || !table->vertexByHashAndSlot.empty();
+	DX12LogManager::Fields("DX12StaticIaReplacement",
+		"enabled=%d,indexEntries=%zu,vertexEntries=%zu,blockedByShaderIaTriggers=%d",
+		table->enabled ? 1 : 0,
+		table->indexByHash.size(),
+		table->vertexByHashAndSlot.size(),
+		hasShaderIaTextureOverrideTriggers ? 1 : 0);
 	return table;
 }
 

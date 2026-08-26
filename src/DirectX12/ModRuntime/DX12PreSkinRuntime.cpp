@@ -1,4 +1,4 @@
-﻿// DX12PreSkinRuntime.cpp: pre-skinning state, descriptor patches, caches, retirement and output resize tracking.
+// DX12PreSkinRuntime.cpp: pre-skinning state, descriptor patches, caches, retirement and output resize tracking.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -67,12 +67,73 @@ void BumpPreSkinActiveGeneration()
 }
 
 
+// Resource facts are immutable for a committed resource, so they are cached
+// once when the output identity changes instead of being queried per draw.
+static void CachePreSkinOutputResourceFacts(DX12ActivePreSkinTextureOverride *active)
+{
+	if (!active)
+		return;
+	active->outputGpuVirtualAddress = 0;
+	active->outputResourceWidth = 0;
+	active->outputResourceFactsValid = false;
+	if (!active->outputResource)
+		return;
+	const D3D12_RESOURCE_DESC desc = active->outputResource->GetDesc();
+	if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		return;
+	const UINT64 gpuVirtualAddress =
+		active->outputResource->GetGPUVirtualAddress();
+	if (!gpuVirtualAddress)
+		return;
+	active->outputGpuVirtualAddress = gpuVirtualAddress;
+	active->outputResourceWidth = desc.Width;
+	active->outputResourceFactsValid = true;
+}
+
+static bool IsExpandedPreSkinOutput(const DX12ActivePreSkinTextureOverride &active)
+{
+	return active.outputResource && active.outputByteWidth &&
+		active.outputResourceFactsValid &&
+		active.outputByteWidth > active.outputResourceWidth;
+}
+
+static void PublishPreSkinExpandedOutputRangeLocked(
+	const std::wstring &section, const DX12ActivePreSkinTextureOverride &active)
+{
+	if (!IsExpandedPreSkinOutput(active)) {
+		auto found = gPreSkinExpandedOutputRangesBySection.find(section);
+		if (found != gPreSkinExpandedOutputRangesBySection.end()) {
+			gPreSkinExpandedOutputRangesBySection.erase(found);
+			if (gPreSkinExpandedOutputRangesBySection.empty())
+				InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 0);
+		}
+		return;
+	}
+	DX12PreSkinExpandedOutputRange &range =
+		gPreSkinExpandedOutputRangesBySection[section];
+	range.gpuVirtualAddress = active.outputGpuVirtualAddress;
+	range.width = active.outputResourceWidth;
+	InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 1);
+}
+
+static void RemovePreSkinExpandedOutputRangeLocked(const std::wstring &section)
+{
+	auto found = gPreSkinExpandedOutputRangesBySection.find(section);
+	if (found == gPreSkinExpandedOutputRangesBySection.end())
+		return;
+	gPreSkinExpandedOutputRangesBySection.erase(found);
+	if (gPreSkinExpandedOutputRangesBySection.empty())
+		InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 0);
+}
+
+
 void MoveActivePreSkinTextureOverrideResourceLocked(
 	const std::wstring &section, DX12ActivePreSkinTextureOverride *active,
 	std::vector<ID3D12Resource*> *releaseResources)
 {
 	if (!active)
 		return;
+	RemovePreSkinExpandedOutputRangeLocked(section);
 	// Plan fix C: keep the output-resource reverse index in sync.
 	if (active->outputResource) {
 		auto indexIt = gPreSkinProducerSectionsByOutputResource.find(active->outputResource);
@@ -88,6 +149,9 @@ void MoveActivePreSkinTextureOverrideResourceLocked(
 	}
 	active->outputByteWidth = 0;
 	active->outputStride = 0;
+	active->outputGpuVirtualAddress = 0;
+	active->outputResourceWidth = 0;
+	active->outputResourceFactsValid = false;
 }
 
 
@@ -155,7 +219,13 @@ void StoreActivePreSkinTextureOverrideLocked(
 		// Keep the existing identity and generation, while releasing the old
 		// reference after replacing the published metadata.
 		ID3D12Resource *oldResource = existingPtr->outputResource;
-		gActivePreSkinTextureOverrides[section] = active;
+		// The output identity is unchanged, so the cached resource facts and
+		// the expanded-range snapshot entry carry over as-is.
+		DX12ActivePreSkinTextureOverride stored = active;
+		stored.outputGpuVirtualAddress = existingPtr->outputGpuVirtualAddress;
+		stored.outputResourceWidth = existingPtr->outputResourceWidth;
+		stored.outputResourceFactsValid = existingPtr->outputResourceFactsValid;
+		gActivePreSkinTextureOverrides[section] = stored;
 		if (releaseResources && oldResource)
 			releaseResources->push_back(oldResource);
 		return;
@@ -163,11 +233,14 @@ void StoreActivePreSkinTextureOverrideLocked(
 	if (existing != gActivePreSkinTextureOverrides.end())
 		MoveActivePreSkinTextureOverrideResourceLocked(section, &existing->second, releaseResources);
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 1);
-	gActivePreSkinTextureOverrides[section] = active;
+	DX12ActivePreSkinTextureOverride stored = active;
+	CachePreSkinOutputResourceFacts(&stored);
+	gActivePreSkinTextureOverrides[section] = stored;
 	// Plan fix C: publish the reverse index entry for the new output resource.
-	if (active.outputResource) {
-		gPreSkinProducerSectionsByOutputResource[active.outputResource].push_back(section);
+	if (stored.outputResource) {
+		gPreSkinProducerSectionsByOutputResource[stored.outputResource].push_back(section);
 	}
+	PublishPreSkinExpandedOutputRangeLocked(section, stored);
 	BumpPreSkinActiveGeneration();
 }
 
@@ -175,26 +248,23 @@ void StoreActivePreSkinTextureOverrideLocked(
 bool DX12ModMayNeedPreSkinIaViewExpansion(
 	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count)
 {
-	if (!views || !hasViews || !count ||
-		InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0)
+	if (!views || !hasViews || !count)
+		return false;
+	// Only outputs whose published byte width exceeds the backing resource can
+	// ever require view expansion; the snapshot keeps exactly those ranges
+	// (usually zero to a handful), so the common case is a single lock-free
+	// flag read instead of a locked full-table scan with per-entry COM calls.
+	if (InterlockedCompareExchange(&gHasPreSkinExpandedOutputRangesFast, 0, 0) == 0)
 		return false;
 
 	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
-	for (const auto &item : gActivePreSkinTextureOverrides) {
-		const DX12ActivePreSkinTextureOverride &active = item.second;
-		if (!active.outputResource || !active.outputByteWidth)
-			continue;
-		const D3D12_RESOURCE_DESC desc = active.outputResource->GetDesc();
-		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-			active.outputByteWidth <= desc.Width)
-			continue;
-		const UINT64 outputGpuVa = active.outputResource->GetGPUVirtualAddress();
-		if (!outputGpuVa)
-			continue;
+	for (const auto &item : gPreSkinExpandedOutputRangesBySection) {
+		const DX12PreSkinExpandedOutputRange &range = item.second;
 		for (UINT slot = 0; slot < count; ++slot) {
-			if (!hasViews[slot] || views[slot].BufferLocation < outputGpuVa)
+			if (!hasViews[slot] ||
+				views[slot].BufferLocation < range.gpuVirtualAddress)
 				continue;
-			if (views[slot].BufferLocation - outputGpuVa < desc.Width) {
+			if (views[slot].BufferLocation - range.gpuVirtualAddress < range.width) {
 				ReleaseSRWLockShared(&gPreSkinLock);
 				return true;
 			}
@@ -517,6 +587,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	ID3D12Resource *originalResource,
 	UINT64 requiredByteWidth, UINT stride, UINT elementCount,
+	UINT64 originalViewBytes,
 	ID3D12Resource **resizedResourceOut,
 	ID3D12Resource **vertexResourceOut,
 	ID3D12DescriptorHeap **descriptorHeapOut,
@@ -570,6 +641,11 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 	if (cached != gPreSkinOutputResizeCache.end()) {
 		key = cached->first;
 		cached->second.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
+		// Keep the readable fallback extent current: the same original
+		// allocation can be preloaded without view info, then acquired by the
+		// actual producer which knows the exact UAV view bytes.
+		if (originalViewBytes)
+			cached->second.originalViewBytes = originalViewBytes;
 		TrackPreSkinOutputResizeCacheEntryUse(
 			&cached->second, commandListIdentity);
 		const bool retained = retainEntry(cached->second);
@@ -676,6 +752,7 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 		entry.vertexResource = createdVertexResource;
 		entry.originalGpuVa = originalGpuVa;
 		entry.originalByteWidth = originalDesc.Width;
+		entry.originalViewBytes = originalViewBytes;
 		entry.vertexGpuVa = createdVertexResource->GetGPUVirtualAddress();
 		entry.descriptorHeap = createdHeap;
 		entry.descriptorCpu = createdCpu;
@@ -973,7 +1050,14 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		if (viewGpuVa < candidate.originalGpuVa)
 			continue;
 		const UINT64 sourceOffset = viewGpuVa - candidate.originalGpuVa;
-		if (sourceOffset >= candidate.originalByteWidth ||
+		// Redirect only views inside the extent the game's consumers actually
+		// read (the producer UAV view). The original resource can pack other
+		// streams beyond that view (texcoords/normals); retargeting those to
+		// the resized positions buffer corrupts them. Entries created without
+		// view info (preload) fall back to the resource width.
+		const UINT64 readableBytes = candidate.originalViewBytes ?
+			candidate.originalViewBytes : candidate.originalByteWidth;
+		if (sourceOffset >= readableBytes ||
 		    sourceOffset >= item.first.requiredByteWidth)
 			continue;
 		if (!bestEntry || candidate.useSerial > bestEntry->useSerial) {
@@ -1942,6 +2026,34 @@ void ClearPreSkinCbvPatchCache()
 }
 
 
+// Re-resolves the resource backing a compute binding from its GPU VA. The
+// pre-skin binding caches are validated by content-addressed descriptor value
+// IDs which do not capture the resource LIFETIME: after a scene switch the
+// game can destroy a buffer and recreate it at the same VA (pooled
+// allocations, COM-address reuse), leaving a cached binding with a dangling
+// resource pointer while every value ID - and therefore every cache - still
+// matches. Dereferencing that stale pointer (Map/GetDesc/GetGPUVirtualAddress)
+// is undefined behaviour that corrupts the vertex-count patch and the output
+// resize. Resolving by the resource VA always yields the current allocation
+// at that address; the embedded pointer is used only when the VA is unknown
+// or the tracker cannot resolve it.
+static ID3D12Resource *ResolvePreSkinBindingResource(
+	const DX12DescriptorSummary &descriptor)
+{
+	ID3D12Resource *resource = descriptor.resource;
+	const UINT64 gpuVa = descriptor.gpuVirtualAddress;
+	if (!resource || !gpuVa)
+		return resource;
+	DX12BufferResourceSummary resolved;
+	if (DX12ResolveBufferResourceByGpuVa(
+			gpuVa, descriptor.viewSize ? descriptor.viewSize : 1,
+			&resolved) &&
+		resolved.resource)
+		return resolved.resource;
+	return resource;
+}
+
+
 bool PatchPreSkinVertexCountCbvLocked(
 	ID3D12Device *device, const DX12CurrentComputeUavBinding &cbv,
 	const Bunny::TextureOverrideConfig &config, UINT expectedOriginalVertexCount, UINT overrideVertexCount,
@@ -1952,8 +2064,13 @@ bool PatchPreSkinVertexCountCbvLocked(
 {
 	if (!device || !overrideVertexCount || !dst.ptr || !temporaryResources)
 		return false;
-	if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV" ||
-		!cbv.descriptor.resource)
+	if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV")
+		return false;
+	// The cached binding can embed a resource that was freed and recreated at
+	// the same VA after a scene switch; always read through the current
+	// allocation at the descriptor's GPU VA (see ResolvePreSkinBindingResource).
+	ID3D12Resource *cbvResource = ResolvePreSkinBindingResource(cbv.descriptor);
+	if (!cbvResource)
 		return false;
 
 	const UINT64 sourceOffset = cbv.descriptor.resourceOffset;
@@ -1966,7 +2083,7 @@ bool PatchPreSkinVertexCountCbvLocked(
 
 	std::vector<unsigned char> bytes;
 	HRESULT hr = E_FAIL;
-	if (!ReadPreSkinCbvBytesLocked(cbv.descriptor.resource, sourceOffset, viewBytes, &bytes, &hr))
+	if (!ReadPreSkinCbvBytesLocked(cbvResource, sourceOffset, viewBytes, &bytes, &hr))
 	{
 		return false;
 	}
@@ -2008,7 +2125,7 @@ bool PatchPreSkinVertexCountCbvLocked(
 	// Map/Write/Unmap CPU-only CreateCommittedResource
 	{
 		DX12PreSkinCbvPatchCacheKey patchKey;
-		patchKey.resource = cbv.descriptor.resource;
+		patchKey.resource = cbvResource;
 		patchKey.sourceOffset = sourceOffset;
 		patchKey.viewBytes = viewBytes;
 		patchKey.overrideVertexCount = overrideVertexCount;
@@ -2221,8 +2338,13 @@ bool CanPatchPreSkinVertexCountCbvLocked(
 {
 	if (!expectedOriginalVertexCount)
 		return true;
-	if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV" ||
-		!cbv.descriptor.resource)
+	if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV")
+		return false;
+	// Read through the current allocation at the descriptor's GPU VA; the
+	// cached binding may embed a resource freed and recreated at the same VA
+	// after a scene switch (see ResolvePreSkinBindingResource).
+	ID3D12Resource *cbvResource = ResolvePreSkinBindingResource(cbv.descriptor);
+	if (!cbvResource)
 		return false;
 
 	const UINT64 sourceOffset = cbv.descriptor.resourceOffset;
@@ -2235,7 +2357,7 @@ bool CanPatchPreSkinVertexCountCbvLocked(
 
 	std::vector<unsigned char> bytes;
 	HRESULT hr = E_FAIL;
-	if (!ReadPreSkinCbvBytesLocked(cbv.descriptor.resource, sourceOffset, viewBytes, &bytes, &hr))
+	if (!ReadPreSkinCbvBytesLocked(cbvResource, sourceOffset, viewBytes, &bytes, &hr))
 		return false;
 
 	for (UINT offset = 0; offset + sizeof(UINT32) <= bytes.size(); offset += sizeof(UINT32))
@@ -3561,6 +3683,14 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	bool resizedUavCacheHit = false;
 	UINT resizedOutputSlot = 0;
 	bool outputUavResized = false;
+	// The binding may embed a resource freed and recreated at the same VA
+	// after a scene switch; resolve the current allocation once so every
+	// dereference below (resize cache GetDesc/VA query, active-override
+	// publication, restore-time copy-back) targets live memory.
+	ID3D12Resource *uavResource =
+		uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
+				uavBinding.descriptor.kind == "UAV" ?
+			ResolvePreSkinBindingResource(uavBinding.descriptor) : nullptr;
 	if (overrideVertexCount && originalVertexCount &&
 		overrideVertexCount > originalVertexCount &&
 		uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
@@ -3574,12 +3704,14 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		if (requiredByteWidth > currentByteWidth)
 		{
 			const TableCopy *uavTable = findTable(uavBinding);
-			if (uavTable && AcquirePreSkinOutputResizeCacheEntry(
-								device, commandList, uavBinding.descriptor.resource,
-								requiredByteWidth, uavStride, overrideVertexCount,
-								&resizedUavResource, &resizedVertexResource,
-								&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
-								&resizedOutputSlot))
+			if (uavResource && uavTable &&
+				AcquirePreSkinOutputResizeCacheEntry(
+					device, commandList, uavResource,
+					requiredByteWidth, uavStride, overrideVertexCount,
+					currentByteWidth,
+					&resizedUavResource, &resizedVertexResource,
+					&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
+					&resizedOutputSlot))
 			{
 				D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
 				uavDst.ptr += static_cast<SIZE_T>(
@@ -3637,9 +3769,9 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	DX12_HOTPATH_TIME_BEGIN(PreSkinBindHeaps);
 	state.originalTable = uavBinding.tableGpuStart;
 	state.originalHeap = uavBinding.tableHeap;
-	state.resource = outputUavResized ? resizedUavResource : uavBinding.descriptor.resource;
+	state.resource = outputUavResized ? resizedUavResource : uavResource;
 	state.outputVertexResource = outputUavResized ? resizedVertexResource : nullptr;
-	state.originalOutputResource = outputUavResized ? uavBinding.descriptor.resource : nullptr;
+	state.originalOutputResource = outputUavResized ? uavResource : nullptr;
 	state.originalOutputByteWidth = outputUavResized ? DescriptorViewSize(uavBinding.descriptor) : 0;
 	state.outputResizeSlot = outputUavResized ? resizedOutputSlot : 0;
 	state.byteWidth = outputUavResized ? (static_cast<UINT64>(uavBinding.descriptor.structureByteStride) * overrideVertexCount) : DescriptorViewSize(uavBinding.descriptor);
@@ -3908,16 +4040,26 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	};
 	thread_local PreSkinMatchPlanCache tlsMatchPlan;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	const bool matchPlanCached = bindingFingerprint != 0 &&
-								 tlsMatchPlan.valid &&
-								 tlsMatchPlan.commandList == commandList &&
-								 tlsMatchPlan.reloadGeneration == reloadGeneration &&
-								 tlsMatchPlan.bindingFingerprint == bindingFingerprint &&
-								 tlsMatchPlan.bindingDependencyFingerprint ==
-									 bindingDependencyFingerprint &&
-								 tlsMatchPlan.bufferContentGeneration ==
-									 DX12GetIaHashContentGeneration() &&
-								 tlsMatchPlan.computeShaderHash == computeShaderHash;
+	// The plan key deliberately uses the cross-frame stable binding
+	// fingerprint plus the content-addressed descriptor value IDs, which do
+	// NOT capture the descriptor-ring location. The game rewrites its ring
+	// every frame, and after a scene switch the same logical bindings can be
+	// re-copied at different ring positions with identical value IDs (pooled
+	// buffers recreated at reused pointers/GPU VAs) - the plan then hits with
+	// the OLD ring location stored when it was built. hashBinding/producer
+	// are therefore re-validated against the LIVE bindings of this dispatch
+	// below; a plan whose cached slot is no longer present is treated as
+	// stale and re-matched from scratch.
+	bool matchPlanCached = bindingFingerprint != 0 &&
+						   tlsMatchPlan.valid &&
+						   tlsMatchPlan.commandList == commandList &&
+						   tlsMatchPlan.reloadGeneration == reloadGeneration &&
+						   tlsMatchPlan.bindingFingerprint == bindingFingerprint &&
+						   tlsMatchPlan.bindingDependencyFingerprint ==
+							   bindingDependencyFingerprint &&
+						   tlsMatchPlan.bufferContentGeneration ==
+							   DX12GetIaHashContentGeneration() &&
+						   tlsMatchPlan.computeShaderHash == computeShaderHash;
 
 	LARGE_INTEGER matchBegin = DX12OuterTimingProbeUtils::Now();
 	if (matchPlanCached)
@@ -3931,8 +4073,57 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		explicitMatchCs = tlsMatchPlan.explicitMatchCs;
 		hasExplicitDispatch = tlsMatchPlan.hasExplicitDispatch;
 		vlrMatched = tlsMatchPlan.vlrMatched;
+
+		// Re-select the producer UAV binding from the LIVE bindings of this
+		// dispatch by the cached slot identity (root/range/descriptor offset),
+		// mirroring the VLR path's binding lookup below. This keeps the
+		// clone-table patch - and the output-UAV resize / active-override
+		// publication that follow from it - anchored to the CURRENT ring
+		// location instead of the one captured when the plan was stored. The
+		// cached slot can legitimately move: the descriptor arena is rewritten
+		// every frame and can relocate after a scene switch while the value
+		// IDs (and therefore every fingerprint in the plan key) stay equal.
+		// If the slot is missing from the live bindings, the plan is stale:
+		// fall through to the full match, which also re-validates the SRV
+		// input hashes against the current descriptors.
+		if (hashMatched && !uavs.empty())
+		{
+			const DX12CurrentComputeUavBinding *liveBinding = nullptr;
+			for (const DX12CurrentComputeUavBinding &uav : uavs)
+			{
+				if (uav.rootParameterIndex != producer.rootParameterIndex ||
+				    uav.rangeIndex != producer.rangeIndex ||
+				    uav.descriptorOffset != producer.descriptorOffset)
+					continue;
+				if (!IsPreSkinMatchCsUavCandidate(uav))
+					continue;
+				liveBinding = &uav;
+				break;
+			}
+			if (liveBinding)
+			{
+				hashBinding = *liveBinding;
+				producer.rootParameterIndex = liveBinding->rootParameterIndex;
+				producer.rangeIndex = liveBinding->rangeIndex;
+				producer.shaderRegister = liveBinding->shaderRegister;
+				producer.registerSpace = liveBinding->registerSpace;
+				producer.descriptorOffset = liveBinding->descriptorOffset;
+				producer.rootDescriptor = liveBinding->rootDescriptor;
+				producer.gpuVirtualAddress = liveBinding->gpuVirtualAddress;
+				producer.hasDescriptor = liveBinding->hasDescriptor;
+				producer.descriptor = liveBinding->descriptor;
+				// Keep the plan warm with the fresh binding so the next
+				// dispatch hits with an already-correct location.
+				tlsMatchPlan.hashBinding = hashBinding;
+				tlsMatchPlan.producer = producer;
+			}
+			else
+			{
+				matchPlanCached = false;
+			}
+		}
 	}
-	else
+	if (!matchPlanCached)
 	{
 		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
 		LARGE_INTEGER matchCsBegin = DX12OuterTimingProbeUtils::Now();
@@ -3996,6 +4187,16 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		}
 		else
 		{
+			// Fill the dispatch override unconditionally from the matched
+			// config BEFORE running the table patch. The override is a
+			// property of the config (handling=skip + dispatch=...), not of
+			// the patch result: if the patch succeeds but the override is
+			// missing, the dispatch flow below would either skip the CS
+			// entirely or run it with the game's original thread-group count
+			// while the SRV/CBV are already patched for the mod vertex count,
+			// leaving the skinning output partially written and the IA stage
+			// reading garbage (exploding/spherical geometry + broken UVs).
+			FillPreSkinDispatchOverrideFromConfig(*hashMatch.config, dispatchOverride);
 			if (!hashMatch.srvReplacements.empty())
 			{
 				LARGE_INTEGER patchBegin = DX12OuterTimingProbeUtils::Now();
@@ -4015,14 +4216,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 			}
 			if (applied)
 			{
-				LARGE_INTEGER dispatchOverrideBegin = DX12OuterTimingProbeUtils::Now();
-				FillPreSkinDispatchOverrideFromConfig(*hashMatch.config, dispatchOverride);
-				DX12OuterTimingProbeUtils::LogCpuStage(
-					"PreSkinRuntime",
-					"fill_dispatch_override",
-					0,
-					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(dispatchOverrideBegin));
 				DX12Profiling::RecordPreSkinApplied();
 			}
 		}
@@ -5040,6 +5233,7 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 					device, nullptr, resourceSummary.resource,
 					candidate.byteWidth, candidate.stride,
 					static_cast<UINT>(elementCount64),
+					0, // no producer view info at preload time
 					&resizedUav, &resizedVertex, &resizedHeap, &resizedCpu,
 					&cacheHit, &ringSlot))
 				continue;

@@ -1456,24 +1456,19 @@ public:
 		}
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		D3D12_VERTEX_BUFFER_VIEW staticRedirectedViews[
+			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 		const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
-		if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
-			    commandList,
-			    startSlot,
-			    count,
-			    views,
-			    redirectedViews,
-			    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
-			    runtimeState ? &runtimeState->ia : nullptr)) {
-			activeViews = redirectedViews;
-		}
-		// Plan step 3.2: bind-time static IA replacement. Only evaluated when
-		// the PreSkin redirect above left the original views untouched; when
-		// PreSkin takes over a bind, the static bookkeeping for those slots no
-		// longer reflects the live binding and must be dropped.
-		if (activeViews == views) {
-			D3D12_VERTEX_BUFFER_VIEW staticRedirectedViews[
-				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		// Plan step 3.2: bind-time static IA replacement runs FIRST and per
+		// slot. The PreSkin redirect below must not gate it: a character draw
+		// binds the skinned positions (slot 0, pre-skin redirected) together
+		// with the static texcoords (slot 1, content-hash replaced). When the
+		// PreSkin VA map is already populated at bind time, the old
+		// all-or-nothing ordering skipped the static replacement for EVERY
+		// slot, so the draw read the game's small original texcoord buffer
+		// with the mod's oversized index buffer - broken UVs beyond the
+		// original vertex count.
+		if (DX12HasStaticIaReplacements()) {
 			if (TryRedirectStaticIaVertexBuffers(
 				    commandList,
 				    runtimeState,
@@ -1484,17 +1479,60 @@ public:
 				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
 				activeViews = staticRedirectedViews;
 			}
-		} else if (runtimeState) {
-			for (UINT index = 0; index < count && startSlot + index < 32; ++index) {
-				const UINT slot = startSlot + index;
-				runtimeState->ia.vertexBufferStaticReplaced[slot] = false;
-				runtimeState->ia.vertexBufferStaticReplacedMask &= ~(1u << slot);
+		}
+		// PreSkin output-resize redirect runs on the static-replaced views:
+		// the pre-skinned slots have no static entry (their content hash is
+		// rewritten every frame) and are retargeted to the resized buffer,
+		// while static-replaced slots (mod buffers) miss the pre-skin VA map
+		// and keep the replacement.
+		if (activeViews == views || activeViews == staticRedirectedViews) {
+			D3D12_VERTEX_BUFFER_VIEW preSkinRedirectedViews[
+				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+			const D3D12_VERTEX_BUFFER_VIEW *preSkinInput = activeViews;
+			D3D12_VERTEX_BUFFER_VIEW *preSkinOutput = preSkinInput == views ?
+				redirectedViews : preSkinRedirectedViews;
+			if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
+				    commandList,
+				    startSlot,
+				    count,
+				    preSkinInput,
+				    preSkinOutput,
+				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+				    runtimeState ? &runtimeState->ia : nullptr)) {
+				activeViews = preSkinOutput;
 			}
 		}
 		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, activeViews);
 		if (!changed)
 			return;
+		// Audit: log every slot whose final bound view differs from the game's
+		// original, with the modifier that produced it. slot 1 (texcoords)
+		// must show the mod buffer (static replace); a resize_redirect on the
+		// texcoord slot means the pre-skin redirect grabbed the wrong stream.
+		for (UINT index = 0; index < count; ++index) {
+			const UINT slot = startSlot + index;
+			const D3D12_VERTEX_BUFFER_VIEW &in = views[index];
+			const D3D12_VERTEX_BUFFER_VIEW &out = activeViews[index];
+			if (in.BufferLocation == out.BufferLocation &&
+			    in.SizeInBytes == out.SizeInBytes &&
+			    in.StrideInBytes == out.StrideInBytes)
+				continue;
+			const char *reason = "unknown";
+			if (out.BufferLocation == in.BufferLocation)
+				reason = "size_change";
+			if (runtimeState && slot < 32 &&
+			    runtimeState->ia.vertexBufferStaticReplaced[slot] &&
+			    runtimeState->ia.vertexBufferStaticReplacedView[slot].BufferLocation == out.BufferLocation)
+				reason = "static_replace";
+			DX12LogManager::Fields("DX12IaAudit",
+				"stage=vb_bind,slot=%u,reason=%s,stride=%u->%u,va=0x%llx->0x%llx,size=%u->%u",
+				slot, reason,
+				in.StrideInBytes, out.StrideInBytes,
+				static_cast<unsigned long long>(in.BufferLocation),
+				static_cast<unsigned long long>(out.BufferLocation),
+				in.SizeInBytes, out.SizeInBytes);
+		}
 		if (original)
 			original(commandList, startSlot, count, activeViews);
 		else
