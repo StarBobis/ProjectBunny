@@ -564,6 +564,8 @@ inline constexpr size_t MaxPreSkinUavMatchCacheEntries = 4096;
 
 inline size_t gPreSkinUavMatchCacheGrowthBudget = MaxPreSkinUavMatchCacheEntries;
 
+inline SRWLOCK gPreSkinUavMatchCacheLock = SRWLOCK_INIT;
+
 
 
 UINT64 MakePreSkinUavMatchCacheKey(

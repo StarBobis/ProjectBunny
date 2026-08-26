@@ -4883,11 +4883,11 @@ void DX12ModStoreCachedPreSkinningUavMatch(
 	if (!commandList || !computeShaderHash || computeBindingSerial == 0)
 		return;
 
-	AcquireSRWLockExclusive(&gModLock);
+	AcquireSRWLockExclusive(&gPreSkinUavMatchCacheLock);
 	UpdatePreSkinningUavMatchCacheLocked(
 		commandList, computeShaderHash, computeBindingSerial,
 		bindingDependencyFingerprint, matched, dispatchOverride);
-	ReleaseSRWLockExclusive(&gModLock);
+	ReleaseSRWLockExclusive(&gPreSkinUavMatchCacheLock);
 }
 
 
@@ -4904,17 +4904,17 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	UINT64 cacheKey = MakePreSkinUavMatchCacheKey(
 		commandList, computeShaderHash, bindingHash,
 		bindingDependencyFingerprint);
-	AcquireSRWLockShared(&gModLock);
+	AcquireSRWLockShared(&gPreSkinUavMatchCacheLock);
 	auto cached = gPreSkinUavMatchCache.find(cacheKey);
 	if (cached != gPreSkinUavMatchCache.end() &&
 		cached->second.valid)
 	{
 		result->applied = cached->second.matched;
 		result->dispatchOverride = cached->second.dispatchOverride;
-		ReleaseSRWLockShared(&gModLock);
+		ReleaseSRWLockShared(&gPreSkinUavMatchCacheLock);
 		return true;
 	}
-	ReleaseSRWLockShared(&gModLock);
+	ReleaseSRWLockShared(&gPreSkinUavMatchCacheLock);
 	return false;
 }
 
