@@ -1485,7 +1485,7 @@ bool DX12ModRuntimeLoad(
 	InterlockedExchange(&gPreSkinMatchCsProbeLogCount, 0);
 	ClearPreSkinStickyMatchCache();
 	BumpPreSkinActiveGeneration();
-	++gPreSkinSrvCacheGeneration;
+	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);
 	InterlockedExchange(&gHasShaderOverrides, gShaderOverrides.empty() ? 0 : 1);
 	InterlockedExchange(&gHasShaderRegexes, hasExecutableShaderRegexes ? 1 : 0);
 	InterlockedExchange(&gHasTextureOverrides, gTextureOverrides.empty() ? 0 : 1);

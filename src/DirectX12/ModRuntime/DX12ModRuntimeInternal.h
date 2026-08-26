@@ -578,7 +578,7 @@ inline volatile LONG gPresentCommandListExecutedPresent = -1;
 
 inline volatile UINT64 gPreSkinActiveGeneration = 1;
 
-inline UINT64 gPreSkinSrvCacheGeneration = 1;
+inline std::atomic<UINT64> gPreSkinSrvCacheGeneration{1};
 
 inline volatile LONG gPreSkinDescriptorAbortCacheHitLogCount = 0;
 

@@ -301,7 +301,9 @@ UINT64 MakePreSkinDescriptorPatchAbortCacheKey(
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs)
 {
-	UINT64 key = HashCombine64(gPreSkinSrvCacheGeneration, 0x7d9a4c6b2f1e8351ull);
+	UINT64 key = HashCombine64(
+		gPreSkinSrvCacheGeneration.load(std::memory_order_relaxed),
+		0x7d9a4c6b2f1e8351ull);
 	key = HashWideString(key, config.section);
 	key = HashCombine64(key, srvReplacements.size());
 	for (const DX12PreSkinSrvReplacementBinding &replacement : srvReplacements) {
@@ -339,7 +341,7 @@ UINT64 MakePreSkinSrvStableProbeCacheKey(
 			key *= 1099511628211ull;
 		}
 	};
-	append(static_cast<UINT64>(gPreSkinSrvCacheGeneration));
+	append(gPreSkinSrvCacheGeneration.load(std::memory_order_relaxed));
 	append(static_cast<UINT64>(srv.rootParameterIndex));
 	append(static_cast<UINT64>(srv.rangeIndex));
 	append(static_cast<UINT64>(srv.shaderRegister));
@@ -380,7 +382,7 @@ UINT64 MakePreSkinSrvProbeCacheKey(
 		}
 	};
 	append(static_cast<UINT64>(DX12RuntimeState::GetPresentCount()));
-	append(static_cast<UINT64>(gPreSkinSrvCacheGeneration));
+	append(gPreSkinSrvCacheGeneration.load(std::memory_order_relaxed));
 	append(static_cast<UINT64>(srv.rootParameterIndex));
 	append(static_cast<UINT64>(srv.rangeIndex));
 	append(static_cast<UINT64>(srv.shaderRegister));
@@ -1588,7 +1590,7 @@ void ClearPreSkinRuntimeState()
 	gPreSkinSrvPositiveCache.clear();
 	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
-	++gPreSkinSrvCacheGeneration;
+	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
 
