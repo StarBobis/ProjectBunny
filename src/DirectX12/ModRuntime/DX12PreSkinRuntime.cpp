@@ -1567,11 +1567,23 @@ void DX12ModNotifyCommandListsSubmitted(
 	MarkPreSkinOutputResizeCacheUsesSubmitted(
 		queue, numCommandLists, commandLists, &fence, &fenceValue);
 
-	DX12PreSkinReleaseBatch releaseBatch;
+	// Fast path: nothing is waiting on a future submission. The flag mirrors
+	// gPendingPreSkinSubmissions emptiness; the executor gate has already paid
+	// the CAS reads for the combined flags, so this is one plain volatile read
+	// that skips the retire lock and the map lookups below.
+	if (gHasPendingPreSkinSubmissionWorkFast == 0) {
+		if (fence)
+			fence->Release();
+		return;
+	}
+
+	// Retirement of the moved objects is drained by DX12ModRunPresentMaintenance
+	// (flag-gated, once per present). A cleanup here would be redundant: entries
+	// retired by this very submission cannot be fence-complete yet, and a scan
+	// on every ExecuteCommandLists pays a GetCompletedValue driver call per
+	// retired entry while pre-skin is active.
 	DX12PreSkinPendingSubmission pending;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
-	CleanupRetiredPreSkinObjectsLocked(&releaseBatch);
-
 	auto globalIt = gPendingPreSkinSubmissions.find(nullptr);
 	if (globalIt != gPendingPreSkinSubmissions.end()) {
 		MovePendingPreSkinSubmission(&globalIt->second, &pending);
@@ -1589,7 +1601,6 @@ void DX12ModNotifyCommandListsSubmitted(
 	if (pending.resources.empty() && pending.descriptorHeaps.empty()) {
 		PublishPendingPreSkinSubmissionWorkLocked();
 		ReleaseSRWLockExclusive(&gPreSkinRetireLock);
-		ReleasePreSkinReleaseBatch(&releaseBatch);
 		return;
 	}
 
@@ -1633,7 +1644,6 @@ void DX12ModNotifyCommandListsSubmitted(
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	if (fence)
 		fence->Release();
-	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
 
 
