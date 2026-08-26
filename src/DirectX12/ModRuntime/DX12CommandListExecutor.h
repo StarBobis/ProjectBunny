@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // DX12CommandListExecutor.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
 // Not meant to be included directly.
@@ -406,7 +406,12 @@ public:
 				mCurrentIaState.indexView.SizeInBytes = static_cast<UINT>(
 					(std::min)(resource->byteWidth, static_cast<UINT64>(UINT_MAX)));
 				mCurrentIaState.indexView.Format = indexFormat;
-				mCurrentIaState.indexHash = DX12HashIaBufferView(
+				// Must use the same hash function as Hunting/Dump/runtime
+				// matching (DX12HashIaBufferContentView, full-resource
+				// semantics): the state produced here feeds
+				// FindTargetTextureOverride, which compares against hashes
+				// recorded from the hunting overlay / SSMT dumps.
+				mCurrentIaState.indexHash = DX12HashIaBufferContentView(
 					mCurrentIaState.indexView.BufferLocation,
 					mCurrentIaState.indexView.SizeInBytes,
 					0,
@@ -444,7 +449,7 @@ public:
 			existing->vertexView.SizeInBytes = static_cast<UINT>(
 				(std::min)(resource->byteWidth, static_cast<UINT64>(UINT_MAX)));
 			existing->vertexView.StrideInBytes = stride;
-			existing->hash = DX12HashIaBufferView(
+			existing->hash = DX12HashIaBufferContentView(
 				existing->vertexView.BufferLocation,
 				existing->vertexView.SizeInBytes,
 				existing->vertexView.StrideInBytes,

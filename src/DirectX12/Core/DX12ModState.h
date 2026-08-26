@@ -253,8 +253,6 @@ uint32_t DX12HashBufferResourceView(
 uint32_t DX12HashBufferView(
 	const DX12BufferResourceSummary *summary, UINT64 fallbackGpuVirtualAddress,
 	UINT64 fallbackSize, UINT stride, UINT format, UINT slot);
-uint32_t DX12HashIaBufferView(
-	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 uint32_t DX12HashIaBufferContentView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t dataSize);

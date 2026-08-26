@@ -128,8 +128,6 @@ public:
 };
 
 
-uint32_t DX12HashIaBufferView(
-	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 uint32_t DX12HashIaBufferContentView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot);
 
