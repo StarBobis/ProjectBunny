@@ -1,29 +1,101 @@
-# publish_release.ps1 - one-click release to GitHub.
+# publish_release.ps1 - one-click closed-source release to GitHub.
 #
-# Resolves the next release version (latest v* tag on origin, patch bumped by
-# one), creates and pushes the v<version> tag, which triggers the
-# "Release d3d12" GitHub Actions workflow (clean Release x64 d3d12.dll ->
-# zip -> GitHub Release tagged v<version>). Then watches the workflow run
-# until it finishes and prints the release URL.
+# Builds the clean Release x64 d3d12.dll + Run.exe locally, packages the
+# shippable files into a zip, and publishes a GitHub Release tagged
+# v<version> on the dedicated public release repository:
+#
+#     https://github.com/StarBobis/PBRelease
+#
+# Only the packaged zip ever leaves this machine - the source code stays
+# private. The old "push a tag and let GitHub Actions build from source"
+# flow is gone, because that required the source repo to be reachable by
+# the release audience.
 #
 # Version rule: when -Version is not given, only the last (patch) number is
-# bumped, e.g. 0.1.2 -> 0.1.3, based on the newest vX.Y.Z tag on origin.
+# bumped, e.g. 0.1.2 -> 0.1.3, based on the newest vX.Y.Z release tag on
+# the StarBobis/PBRelease repository.
+#
+# Authentication: a GitHub personal access token with the "repo" scope is
+# required. Provide it via -Token or the GITHUB_TOKEN / GH_TOKEN
+# environment variables. Create one at https://github.com/settings/tokens
 #
 # Usage:
-#   .\publish_release.ps1                    # auto-bump the patch version
+#   .\publish_release.ps1                    # build + auto-bump the patch version
 #   .\publish_release.ps1 -Version 0.2.0     # publish an explicit version
-#   .\publish_release.ps1 -VerifyLocalBuild  # run a local Release build first
-#   .\publish_release.ps1 -NoWait            # push and exit without watching
+#   .\publish_release.ps1 -SkipBuild         # reuse the existing x64\Release artifacts
+#   .\publish_release.ps1 -Token <pat>       # pass the token explicitly
 
 param(
     [string]$Version = "",
-    [switch]$VerifyLocalBuild,
-    [switch]$NoWait
+    [string]$Token = "",
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $root = Split-Path -Parent $PSCommandPath
 
+# The public repository that hosts the binary releases. Keep this in sync
+# with the URL at the top of this file.
+$releaseRepo = 'StarBobis/PBRelease'
+$releaseRepoUrl = "https://github.com/$releaseRepo"
+
+# ----------------------------------------------------------------------------
+# Auth
+# ----------------------------------------------------------------------------
+if (-not $Token) { $Token = $env:GITHUB_TOKEN }
+if (-not $Token) { $Token = $env:GH_TOKEN }
+if (-not $Token) {
+    Write-Host "ERROR: no GitHub token found." -ForegroundColor Red
+    Write-Host "       Create a PAT with the 'repo' scope at https://github.com/settings/tokens" -ForegroundColor Yellow
+    Write-Host "       and set it via `$env:GITHUB_TOKEN (or pass -Token)." -ForegroundColor Yellow
+    exit 1
+}
+
+$apiHeaders = @{
+    'Authorization'        = "Bearer $Token"
+    'Accept'               = 'application/vnd.github+json'
+    'X-GitHub-Api-Version' = '2022-11-28'
+    'User-Agent'           = 'publish_release.ps1'
+}
+
+function Invoke-GitHubApi {
+    param(
+        [string]$Method,
+        [string]$Uri,
+        [object]$Body = $null,
+        [string]$ContentType = 'application/json'
+    )
+    try {
+        $params = @{
+            Method      = $Method
+            Uri         = $Uri
+            Headers     = $apiHeaders
+            ContentType = $ContentType
+        }
+        if ($null -ne $Body) {
+            if ($Body -is [byte[]]) {
+                $params.Body = $Body
+            } else {
+                $params.Body = ($Body | ConvertTo-Json -Depth 10)
+            }
+        }
+        return Invoke-RestMethod @params
+    } catch {
+        Write-Host "ERROR: GitHub API call failed: $Method $Uri" -ForegroundColor Red
+        Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.ErrorDetails.Message) {
+            Write-Host "       $($_.ErrorDetails.Message)" -ForegroundColor Red
+        }
+        exit 1
+    }
+}
+
+# ----------------------------------------------------------------------------
+# Working tree sanity checks (the release ships whatever is built locally,
+# including uncommitted changes, so warn loudly about those)
+# ----------------------------------------------------------------------------
 $branch = (git -C $root rev-parse --abbrev-ref HEAD).Trim()
 if ($branch -ne 'main') {
     Write-Host "ERROR: releases must be published from main (current branch: $branch)." -ForegroundColor Red
@@ -38,25 +110,22 @@ if ($remote -ne $base) {
     exit 1
 }
 
-# Warn (not fail) when uncommitted changes exist: the release is built from
-# the tag, so anything left uncommitted will NOT be part of the release.
 $dirty = git -C $root status --porcelain
 if ($dirty) {
-    Write-Host "WARNING: uncommitted changes detected - they will NOT be included in this release:" -ForegroundColor Yellow
+    Write-Host "WARNING: uncommitted changes detected - they WILL be built into this release:" -ForegroundColor Yellow
     Write-Host $dirty -ForegroundColor Yellow
-    Write-Host "Commit and push them first if they should ship in this release." -ForegroundColor Yellow
+    Write-Host "Commit them first if the release should match a pushed commit." -ForegroundColor Yellow
 }
 
+# ----------------------------------------------------------------------------
+# Resolve the version to publish
+# ----------------------------------------------------------------------------
 function Get-LatestReleaseVersion {
-    # Returns the newest vX.Y.Z tag on origin as a [version], or $null if none.
-    $tags = git -C $root ls-remote --tags origin "refs/tags/v*" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: cannot query origin tags (network issue?). Pass -Version explicitly." -ForegroundColor Red
-        exit 1
-    }
+    # Returns the newest vX.Y.Z release tag on the release repo, or $null.
+    $releases = Invoke-GitHubApi -Method Get -Uri "https://api.github.com/repos/$releaseRepo/releases?per_page=100"
     $versions = @()
-    foreach ($line in $tags) {
-        if ($line -match 'refs/tags/v(\d+)\.(\d+)\.(\d+)$') {
+    foreach ($rel in $releases) {
+        if ($rel.tag_name -match '^v(\d+)\.(\d+)\.(\d+)$') {
             $versions += [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])"
         }
     }
@@ -71,7 +140,7 @@ if ($Version) {
 } else {
     $latest = Get-LatestReleaseVersion
     if (-not $latest) {
-        Write-Host "ERROR: no v* tags found on origin to bump from. Pass -Version explicitly for the first release (e.g. -Version 0.1.0)." -ForegroundColor Red
+        Write-Host "ERROR: no v* releases found on $releaseRepo to bump from. Pass -Version explicitly for the first release (e.g. -Version 0.1.0)." -ForegroundColor Red
         exit 1
     }
     $newVersion = "{0}.{1}.{2}" -f $latest.Major, $latest.Minor, ($latest.Build + 1)
@@ -81,77 +150,95 @@ if ($newVersion -notmatch '^\d+\.\d+\.\d+$') {
     Write-Host "ERROR: version '$newVersion' must look like 1.2.3" -ForegroundColor Red
     exit 1
 }
+$tag = "v$newVersion"
 
-$existing = git -C $root ls-remote --tags origin "refs/tags/v$newVersion"
-if ($existing) {
-    Write-Host "ERROR: tag v$newVersion already exists on origin. Pick a new version." -ForegroundColor Red
+# Refuse to overwrite an existing tag on the release repo.
+$existingRef = $null
+try {
+    $existingRef = Invoke-RestMethod -Method Get -Headers $apiHeaders `
+        -Uri "https://api.github.com/repos/$releaseRepo/git/ref/tags/$tag"
+} catch {
+    if ($_.Exception.Response.StatusCode.value__ -ne 404) {
+        Write-Host "ERROR: could not check existing tags on $releaseRepo." -ForegroundColor Red
+        Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.ErrorDetails.Message) {
+            Write-Host "       $($_.ErrorDetails.Message)" -ForegroundColor Red
+        }
+        exit 1
+    }
+}
+if ($existingRef) {
+    Write-Host "ERROR: tag $tag already exists on $releaseRepo. Pick a new version." -ForegroundColor Red
     exit 1
 }
 
-if ($VerifyLocalBuild) {
-    Write-Host "===== Local Release build verification =====" -ForegroundColor Cyan
-    & "$root\build_release_x64.ps1"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "FAILED: local build verification, aborting release." -ForegroundColor Red
-        exit $LASTEXITCODE
+# Warn (not fail) when CMakeLists.txt version drifts from the release tag:
+# the DLL reports the CMake project version.
+$cmakeLine = Select-String -Path "$root\CMakeLists.txt" -Pattern 'VERSION\s+(\d+\.\d+\.\d+)' | Select-Object -First 1
+if ($cmakeLine) {
+    $cmakeVersion = $cmakeLine.Matches[0].Groups[1].Value
+    if ($cmakeVersion -ne $newVersion) {
+        Write-Host "WARNING: CMakeLists.txt project version is $cmakeVersion but the release tag is $tag. The DLL will report $cmakeVersion." -ForegroundColor Yellow
     }
 }
 
-Write-Host "===== Publishing v$newVersion =====" -ForegroundColor Cyan
-git -C $root tag "v$newVersion"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "FAILED: git tag" -ForegroundColor Red
-    exit $LASTEXITCODE
-}
-git -C $root push origin "v$newVersion"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "FAILED: git push tag. Rolling back local tag..." -ForegroundColor Red
-    git -C $root tag -d "v$newVersion" 2>$null
-    exit $LASTEXITCODE
-}
-$headSha = (git -C $root rev-parse "v$newVersion").Trim()
-
-$slug = $null
-$remoteUrl = (git -C $root remote get-url origin).Trim()
-if ($remoteUrl -match 'github\.com[:/](?<owner>[^/]+)/(?<repo>[^/]+?)(\.git)?$') {
-    $slug = "$($Matches.owner)/$($Matches.repo)"
-}
-$releaseUrl = "https://github.com/$slug/releases/tag/v$newVersion"
-
-if ($NoWait -or -not $slug) {
-    Write-Host "Pushed tag v$newVersion. Release will appear at: $releaseUrl" -ForegroundColor Green
-    exit 0
+# ----------------------------------------------------------------------------
+# Build + package
+# ----------------------------------------------------------------------------
+if (-not $SkipBuild) {
+    Write-Host "===== Local Release x64 build =====" -ForegroundColor Cyan
+    & "$root\build_release_x64.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAILED: local Release build, aborting release." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+} else {
+    Write-Host "SkipBuild: reusing existing artifacts under x64\Release." -ForegroundColor Yellow
 }
 
-# Watch the workflow run triggered by this tag push. Unauthenticated GitHub
-# API access is rate limited (~60 req/hour), so keep the poll interval modest.
-$headers = @{ 'User-Agent' = 'publish_release.ps1' }
-$deadline = (Get-Date).AddMinutes(25)
-$run = $null
-Write-Host "Waiting for the Release d3d12 workflow run..." -ForegroundColor Cyan
-while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 15
-    try {
-        $runs = Invoke-RestMethod -Uri "https://api.github.com/repos/$slug/actions/runs?per_page=10" -Headers $headers
-        $run = $runs.workflow_runs | Where-Object { $_.head_sha -eq $headSha } | Select-Object -First 1
-        if ($run) { break }
-    } catch { }
-}
-if (-not $run) {
-    Write-Host "Could not find the workflow run via the API. Check: https://github.com/$slug/actions" -ForegroundColor Yellow
-    exit 0
+$outDir = "$root\x64\Release"
+$stage = "$root\build\release-stage"
+$zipName = "ProjectBunny-$tag-d3d12-x64.zip"
+$zipPath = "$root\build\$zipName"
+
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
+Get-ChildItem $stage -File -ErrorAction SilentlyContinue | Remove-Item -Force
+
+$shipFiles = @(
+    @{ Src = "$outDir\d3d12.dll"; Dst = 'd3d12.dll' },
+    @{ Src = "$outDir\Run.exe"; Dst = 'Run.exe' },
+    @{ Src = "$root\LICENSE.txt"; Dst = 'LICENSE.txt' },
+    @{ Src = "$root\config\d3dx.ini"; Dst = 'd3dx.ini' }
+)
+foreach ($f in $shipFiles) {
+    if (-not (Test-Path $f.Src)) {
+        Write-Host "ERROR: expected file not found: $($f.Src)" -ForegroundColor Red
+        Write-Host "       Build first (drop -SkipBuild) or restore the missing file." -ForegroundColor Yellow
+        exit 1
+    }
+    Copy-Item $f.Src (Join-Path $stage $f.Dst) -Force
 }
 
-while ((Get-Date) -lt $deadline) {
-    $run = Invoke-RestMethod -Uri "https://api.github.com/repos/$slug/actions/runs/$($run.id)" -Headers $headers
-    if ($run.status -eq 'completed') { break }
-    Write-Host "  status: $($run.status) ..."
-    Start-Sleep -Seconds 30
-}
+Compress-Archive -Path "$stage\*" -DestinationPath $zipPath -CompressionLevel Optimal -Force
+Write-Host "Packaged: $zipPath" -ForegroundColor Green
 
-if ($run.conclusion -eq 'success') {
-    Write-Host "Release published: $releaseUrl" -ForegroundColor Green
-    exit 0
-}
-Write-Host "Workflow finished with $($run.status)/$($run.conclusion). Logs: $($run.html_url)" -ForegroundColor Red
-exit 1
+# ----------------------------------------------------------------------------
+# Create the GitHub Release and upload the zip
+# ----------------------------------------------------------------------------
+Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cyan
+
+$release = Invoke-GitHubApi -Method Post `
+    -Uri "https://api.github.com/repos/$releaseRepo/releases" `
+    -Body @{
+        tag_name   = $tag
+        name       = "ProjectBunny $tag"
+        body       = "ProjectBunny $tag - d3d12 x64 binary release."
+        draft      = $false
+        prerelease = $false
+    }
+
+$uploadUri = ($release.upload_url -replace '\{\?name,label\}$', '') + "?name=$zipName"
+$zipBytes = [System.IO.File]::ReadAllBytes($zipPath)
+Invoke-GitHubApi -Method Post -Uri $uploadUri -Body $zipBytes -ContentType 'application/zip' | Out-Null
+
+Write-Host "Release published: $($release.html_url)" -ForegroundColor Green

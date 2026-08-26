@@ -1175,46 +1175,6 @@ uint32_t DX12HashIaBufferContentView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
-	// TLS-throttled audit: one line per (va,size,stride,format,slot) per
-	// stage/hash change. Makes scene-switch hash degradation visible
-	// (content -> content_miss -> metadata) without logging every bind.
-	struct IaHashAuditEntry
-	{
-		UINT64 key = 0;
-		const char *stage = nullptr;
-		uint32_t hash = 0;
-		bool valid = false;
-	};
-	static thread_local IaHashAuditEntry tlsIaHashAudit[1024];
-	auto iaHashAudit = [&](const char *stage, uint32_t hashValue) {
-		const UINT64 auditKey = gpuVirtualAddress ^
-			(static_cast<UINT64>(size) << 8) ^
-			(static_cast<UINT64>(stride) << 20) ^
-			(static_cast<UINT64>(format) << 28) ^
-			(static_cast<UINT64>(slot) << 36);
-		// auditKey's low bits are always zero: GPU virtual addresses are
-		// page-aligned and every shifted field starts at bit 8 or higher, so
-		// "auditKey & (N-1)" collapses to slot 0 for every buffer and the
-		// direct-mapped cache degrades to a single-entry "same as last call"
-		// check that logs once per distinct bind. Fold the key with a
-		// multiply-xor mixer so entries actually spread across the table.
-		const UINT64 mixed = auditKey * 0x9E3779B97F4A7C15ull;
-		IaHashAuditEntry &entry = tlsIaHashAudit[(mixed >> 54) & 1023];
-		if (entry.valid && entry.key == auditKey && entry.stage == stage &&
-		    entry.hash == hashValue)
-			return;
-		entry.valid = true;
-		entry.key = auditKey;
-		entry.stage = stage;
-		entry.hash = hashValue;
-		DX12LogManager::Fields("DX12IaHashAudit",
-			"stage=%s,va=0x%llx,size=%u,stride=%u,format=%u,slot=%u,hash=%08x",
-			stage,
-			static_cast<unsigned long long>(gpuVirtualAddress),
-			static_cast<UINT>(size),
-			stride, format, slot, hashValue);
-	};
-
 	// L1 uses GPUVA to exploit temporal locality.
 	// L2 uses resource identity, offset, and size for stable reuse.
 	// This matches the DX11 resource, offset, and size key model.
@@ -1374,7 +1334,6 @@ uint32_t DX12HashIaBufferContentView(
 			}
 		}
 		if (!invalidated) {
-			iaHashAudit("cache", cacheValue.hash);
 			return cacheValue.hash;
 		}
 		s_cacheL1.erase(itL1);
@@ -1434,7 +1393,6 @@ uint32_t DX12HashIaBufferContentView(
 			}
 			if (!invalidated) {
 				s_cacheL1[keyL1] = cacheValue;
-				iaHashAudit("cache", cacheValue.hash);
 				return cacheValue.hash;
 			}
 			s_cacheL2.erase(itL2);
@@ -1535,7 +1493,6 @@ uint32_t DX12HashIaBufferContentView(
 		s_cacheL2.erase(s_cacheL2.begin());
 	if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 		s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
-	iaHashAudit("metadata", hash);
 	return hash;
 }
 
