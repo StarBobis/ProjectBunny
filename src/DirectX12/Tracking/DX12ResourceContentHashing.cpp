@@ -1185,14 +1185,21 @@ uint32_t DX12HashIaBufferContentView(
 		uint32_t hash = 0;
 		bool valid = false;
 	};
-	static thread_local IaHashAuditEntry tlsIaHashAudit[64];
+	static thread_local IaHashAuditEntry tlsIaHashAudit[1024];
 	auto iaHashAudit = [&](const char *stage, uint32_t hashValue) {
 		const UINT64 auditKey = gpuVirtualAddress ^
 			(static_cast<UINT64>(size) << 8) ^
 			(static_cast<UINT64>(stride) << 20) ^
 			(static_cast<UINT64>(format) << 28) ^
 			(static_cast<UINT64>(slot) << 36);
-		IaHashAuditEntry &entry = tlsIaHashAudit[auditKey & 63];
+		// auditKey's low bits are always zero: GPU virtual addresses are
+		// page-aligned and every shifted field starts at bit 8 or higher, so
+		// "auditKey & (N-1)" collapses to slot 0 for every buffer and the
+		// direct-mapped cache degrades to a single-entry "same as last call"
+		// check that logs once per distinct bind. Fold the key with a
+		// multiply-xor mixer so entries actually spread across the table.
+		const UINT64 mixed = auditKey * 0x9E3779B97F4A7C15ull;
+		IaHashAuditEntry &entry = tlsIaHashAudit[(mixed >> 54) & 1023];
 		if (entry.valid && entry.key == auditKey && entry.stage == stage &&
 		    entry.hash == hashValue)
 			return;

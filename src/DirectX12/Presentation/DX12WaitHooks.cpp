@@ -234,7 +234,13 @@ public:
 			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
 				"WaitForSingleObjectEx", hHandle, nullptr, dwMilliseconds,
 				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
-			if (probeHandle || us >= 50000)
+			// Stack capture is expensive (walk + per-frame module lookup +
+			// one log line per frame); only pay it for waits on handles we
+			// actually track, mirroring the non-Ex hook. The previous
+			// condition captured a 24-frame stack for every >=50ms wait,
+			// which made every 100ms polling wait in the process emit a
+			// multi-line stack burst through the global log lock.
+			if (matchesFenceEvent || matchesFrameLatency)
 				LogMatchedWaitStack("WaitForSingleObjectEx", hHandle, result, us);
 		}
 		InterlockedDecrement(&reentryDepth);
@@ -275,7 +281,7 @@ public:
 			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
 				api, matchedHandle, nullptr, dwMilliseconds,
 				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
-			if (probeHandle || us >= 50000)
+			if (matchesFenceEvent || matchesFrameLatency)
 				LogMatchedWaitStack(api, matchedHandle, result, us);
 		}
 		InterlockedDecrement(&reentryDepth);
