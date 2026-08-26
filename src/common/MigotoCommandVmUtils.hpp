@@ -2,6 +2,7 @@
 
 #include <math.h>
 
+#include <atomic>
 #include <chrono>
 #include <cwchar>
 #include <initializer_list>
@@ -20,6 +21,14 @@ public:
 	public:
 		inline static std::mutex globalsMutex;
 		inline static std::unordered_map<std::wstring, double> globals;
+		// Set once a command-list expression references any per-frame variable
+		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
+		// these lazily at match time; DX12 pre-collects them at Present, so
+		// without this gate a game with command lists that never reference
+		// frame variables still pays swap-chain desc queries, cursor polls and
+		// ~20 global-map writes on every frame. Cleared on reload; re-armed by
+		// the next expression evaluation.
+		inline static std::atomic<int> frameVariableReferenced = 0;
 	};
 
 	class ExpressionContext
@@ -375,6 +384,35 @@ public:
 		return MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
 	}
 
+	// Cold path: runs once per referenced variable per command-list execution,
+	// so a linear scan over the ~22 per-frame variable names is fine. The flag
+	// gate first makes the common case (already referenced) a single relaxed
+	// load.
+	static void MarkFrameVariableReferenced(const std::wstring &normalized)
+	{
+		if (VariableStore::frameVariableReferenced.load(std::memory_order_relaxed))
+			return;
+		static const wchar_t *const kFrameVariables[] = {
+			L"window_width", L"window_height",
+			L"res_width", L"res_height",
+			L"rt_width", L"rt_height",
+			L"cursor_screen_x", L"cursor_screen_y",
+			L"cursor_window_x", L"cursor_window_y",
+			L"cursor_x", L"cursor_y",
+			L"cursor_showing", L"cursor_visible",
+			L"cursor_hotspot_x", L"cursor_hotspot_y",
+			L"effective_dpi", L"hunting", L"frame_analysis", L"sli",
+			L"stereo_active", L"stereo_available",
+		};
+		for (const wchar_t *candidate : kFrameVariables) {
+			if (normalized == candidate) {
+				VariableStore::frameVariableReferenced.store(
+					1, std::memory_order_release);
+				return;
+			}
+		}
+	}
+
 	static std::wstring ExtractVariableName(const std::wstring &key)
 	{
 		std::wstring text = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(key));
@@ -407,6 +445,8 @@ public:
 		}
 		if (normalized == L"draw_type")
 			return 1.0;
+
+		MarkFrameVariableReferenced(normalized);
 
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		auto found = VariableStore::globals.find(normalized);
@@ -443,5 +483,9 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		VariableStore::globals.clear();
+		// A reload may have dropped the command lists that referenced frame
+		// variables; re-arm the lazy-collection gate. The next expression
+		// evaluation re-registers if the new config still uses them.
+		VariableStore::frameVariableReferenced.store(0, std::memory_order_release);
 	}
 };

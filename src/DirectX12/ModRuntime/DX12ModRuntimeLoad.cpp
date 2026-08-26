@@ -1510,7 +1510,7 @@ bool DX12ModRuntimeLoad(
 	loadedPreSkinTextureOverrideCandidates = hasPreSkinTextureOverrideCandidates;
 	loadedShaderTriggeredTextureOverrides = hasShaderTriggeredTextureOverrides;
 	loadedPresentRuntimeEffect = presentRuntimeEffect;
-	safeModeActive = InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0;
+	safeModeActive = gDx12SafeMode != 0;
 	activeShaderOverrides = !safeModeActive &&
 		(!gShaderOverrides.empty() || hasExecutableShaderRegexes);
 	activeTextureOverrides =

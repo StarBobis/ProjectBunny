@@ -44,8 +44,8 @@ const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
 
 	cache.generation = generation;
 	cache.sections.clear();
-	if (InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) == 0 &&
-	    InterlockedCompareExchange(&gHasConfirmedPreSkinSectionsFast, 0, 0) == 0)
+	if (gHasActivePreSkinTextureOverridesFast == 0 &&
+	    gHasConfirmedPreSkinSectionsFast == 0)
 		return cache.sections;
 
 	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
@@ -1577,13 +1577,11 @@ void DX12ModNotifyCommandListsSubmitted(
 		return;
 	}
 
-	// Retirement of the moved objects is drained by DX12ModRunPresentMaintenance
-	// (flag-gated, once per present). A cleanup here would be redundant: entries
-	// retired by this very submission cannot be fence-complete yet, and a scan
-	// on every ExecuteCommandLists pays a GetCompletedValue driver call per
-	// retired entry while pre-skin is active.
+	DX12PreSkinReleaseBatch releaseBatch;
 	DX12PreSkinPendingSubmission pending;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
+	CleanupRetiredPreSkinObjectsLocked(&releaseBatch);
+
 	auto globalIt = gPendingPreSkinSubmissions.find(nullptr);
 	if (globalIt != gPendingPreSkinSubmissions.end()) {
 		MovePendingPreSkinSubmission(&globalIt->second, &pending);
@@ -1601,6 +1599,7 @@ void DX12ModNotifyCommandListsSubmitted(
 	if (pending.resources.empty() && pending.descriptorHeaps.empty()) {
 		PublishPendingPreSkinSubmissionWorkLocked();
 		ReleaseSRWLockExclusive(&gPreSkinRetireLock);
+		ReleasePreSkinReleaseBatch(&releaseBatch);
 		return;
 	}
 
@@ -1644,6 +1643,7 @@ void DX12ModNotifyCommandListsSubmitted(
 	ReleaseSRWLockExclusive(&gPreSkinRetireLock);
 	if (fence)
 		fence->Release();
+	ReleasePreSkinReleaseBatch(&releaseBatch);
 }
 
 
@@ -1659,7 +1659,7 @@ bool DX12ModNeedsCommandListSubmissionNotifications()
 
 void DX12ModRunPresentMaintenance()
 {
-	if (InterlockedCompareExchange(&gHasRetiredPreSkinObjectsFast, 0, 0) == 0)
+	if (gHasRetiredPreSkinObjectsFast == 0)
 		return;
 	DX12PreSkinReleaseBatch releaseBatch;
 	AcquireSRWLockExclusive(&gPreSkinRetireLock);
@@ -5064,15 +5064,15 @@ bool DX12ModNeedsPreSkinningBindingTracking()
 
 bool DX12ModHasActivePreSkinTextureOverrides()
 {
-	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)
+	if (gDx12SafeMode != 0)
 		return false;
-	return InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) != 0;
+	return gHasActivePreSkinTextureOverridesFast != 0;
 }
 
 
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 {
-	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0 ||
+	if (gDx12SafeMode != 0 ||
 		gHasTextureOverrides == 0 ||
 		gHasShaderTriggeredTextureOverrides == 0 ||
 		gHasPreSkinTextureOverrideCandidates == 0)

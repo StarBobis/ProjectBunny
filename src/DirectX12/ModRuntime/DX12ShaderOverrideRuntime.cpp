@@ -1,4 +1,4 @@
-﻿// DX12ShaderOverrideRuntime.cpp: shader override runtime: PSO records, override plans, caches and pipeline replacement.
+// DX12ShaderOverrideRuntime.cpp: shader override runtime: PSO records, override plans, caches and pipeline replacement.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -109,20 +109,20 @@ bool DX12ModHasActiveTextureOverrides()
 {
 	return gHasTextureOverrides != 0 &&
 		   gHasShaderTriggeredTextureOverrides != 0 &&
-		   InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+		   gDx12SafeMode == 0;
 }
 
 
 bool DX12ModHasConfiguredTextureOverrides()
 {
 	return gHasTextureOverrides != 0 &&
-		   InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0;
+		   gDx12SafeMode == 0;
 }
 
 
 bool DX12ModHasAnyActiveOverrides()
 {
-	return InterlockedCompareExchange(&gDx12SafeMode, 0, 0) == 0 &&
+	return gDx12SafeMode == 0 &&
 		   (gHasShaderOverrides != 0 ||
 			gHasShaderRegexes != 0 ||
 			(gHasTextureOverrides != 0 && gHasShaderTriggeredTextureOverrides != 0));
@@ -138,7 +138,7 @@ bool DX12ModNeedsPresentReplacement()
 
 UINT32 DX12ModGetHotPathFlags()
 {
-	if (InterlockedCompareExchange(&gDx12SafeMode, 0, 0) != 0)
+	if (gDx12SafeMode != 0)
 		return 0;
 
 	UINT32 flags = 0;
@@ -161,10 +161,9 @@ UINT32 DX12ModGetHotPathFlags()
 	{
 		flags |= DX12_MOD_HOT_PRE_SKIN_PROBE;
 		const bool hasActivePreSkinOverrides =
-			InterlockedCompareExchange(&gHasActivePreSkinTextureOverridesFast, 0, 0) != 0;
+			gHasActivePreSkinTextureOverridesFast != 0;
 		if (hasActivePreSkinOverrides ||
-			InterlockedCompareExchange(&gPreSkinBindingIdleFrames, 0, 0) <
-				kPreSkinBindingIdleMax)
+			gPreSkinBindingIdleFrames < kPreSkinBindingIdleMax)
 		{
 			flags |= DX12_MOD_HOT_PRE_SKIN_BINDING_TRACK;
 		}

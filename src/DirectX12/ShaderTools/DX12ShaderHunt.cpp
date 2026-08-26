@@ -662,7 +662,7 @@ bool DX12HuntIsEnabled()
 
 bool DX12HuntNeedsHotPath()
 {
-	return InterlockedCompareExchange(&gHuntingActive, 0, 0) != 0;
+	return gHuntingActive != 0;
 }
 
 bool DX12HuntShouldDrawOverlay()

@@ -830,8 +830,11 @@ UINT64 DX12StaticTextureReplacementGeneration()
 
 bool DX12HasStaticIaReplacements()
 {
-	return InterlockedCompareExchange(
-		&gHasStaticIaReplacements, 0, 0) != 0;
+	// Plain volatile load: the flag is published with interlocked stores and
+	// only ever read here, and this runs on every IA bind (the game binds
+	// vertex/index buffers hundreds of times per frame), so the LOCK CMPXCHG
+	// read-modify-write fence buys nothing.
+	return gHasStaticIaReplacements != 0;
 }
 
 
@@ -951,7 +954,7 @@ void MoveExpiredRetiredLoadedResourcesLocked(
 	if (!expired)
 		return;
 	expired->clear();
-	if (InterlockedCompareExchange(&gActiveLoadedResourceSnapshots, 0, 0) != 0)
+	if (gActiveLoadedResourceSnapshots != 0)
 		return;
 	const LONG present = DX12RuntimeState::GetPresentCount();
 	auto it = gRetiredLoadedResources.begin();

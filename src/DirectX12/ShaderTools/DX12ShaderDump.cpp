@@ -1822,7 +1822,10 @@ static void DX12RefreshShaderDumpStateFlags()
 
 static LONG DX12ReadShaderDumpStateFlags()
 {
-	return InterlockedCompareExchange(&gShaderDumpStateFlags, 0, 0);
+	// Plain volatile load: the flags word is published with interlocked
+	// stores and only ever read here, so a LOCK CMPXCHG (read-modify-write
+	// fence) on every Present buys nothing.
+	return gShaderDumpStateFlags;
 }
 
 static DWORD WINAPI DX12ShaderDumpThreadProc(void *param)
@@ -1875,6 +1878,11 @@ void DX12ShaderDumpBeginCapture()
 
 bool DX12ShaderDumpEndCapture()
 {
+	// Plain volatile probe: the CAS only wins while a dump is actually
+	// capturing; the common per-Present call otherwise paid a full LOCK
+	// CMPXCHG for a guaranteed miss.
+	if (gShaderDumpCapturing == 0)
+		return false;
 	if (InterlockedCompareExchange(&gShaderDumpCapturing, 0, 1) == 1) {
 		DX12RefreshShaderDumpStateFlags();
 		DX12HotPathState::Update();

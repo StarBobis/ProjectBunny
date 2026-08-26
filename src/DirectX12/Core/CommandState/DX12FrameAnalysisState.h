@@ -116,6 +116,12 @@ public:
 
 	static bool EndCapture()
 	{
+		// Fast gate: capture is inactive in the overwhelmingly common case, and
+		// the locked path below would otherwise be an unconditional exclusive
+		// lock on the per-Present boundary. The flag is published under the
+		// same lock, so a zero read means the locked body would return false.
+		if (!(GetFastFlags() & FLAG_ACTIVE))
+			return false;
 		AcquireSRWLockExclusive(&lock);
 		if (active && capturing) {
 			if (captureFramesRemaining > 1) {

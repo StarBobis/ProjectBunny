@@ -4,6 +4,8 @@
 
 #include "DX12FrameAnalysisManifest.h"
 
+#include "../../common/MigotoCommandVmUtils.hpp"
+
 class DX12VmFrameVariablesUtils
 {
 public:
@@ -31,6 +33,13 @@ public:
 
 	static void UpdateForSwapChain(IDXGISwapChain *swapChain)
 	{
+		// DX11 evaluates frame variables lazily at match time. DX12 pre-collects
+		// them at Present; when no command list references them, skip the whole
+		// snapshot (swap-chain desc queries, cursor poll, ~20 global writes) so
+		// the frame boundary only pays one relaxed load.
+		if (!MigotoCommandVmUtils::VariableStore::frameVariableReferenced.load(
+				std::memory_order_relaxed))
+			return;
 		FrameSnapshot frame;
 		const bool collected = CollectFrameSnapshot(swapChain, &frame);
 		ApplyGlobals(frame);
