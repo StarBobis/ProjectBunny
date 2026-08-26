@@ -99,7 +99,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// batch per Present) so a large mod cannot freeze a single frame; the
 	// generation is only marked complete when the batch loop finishes.
 	{
-		UINT64 sPreSkinResourcesPreloadedGeneration = 0;
+		static UINT64 sPreSkinResourcesPreloadedGeneration = 0;
 		static UINT64 sOutputResizePreloadGeneration = 0;
 		static LONG sOutputResizePreloadIdleFrames = 0;
 		static UINT sOutputResizePreloadFrameBudget = 0;
