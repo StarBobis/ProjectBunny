@@ -1257,6 +1257,35 @@ public:
 		if (hash && device) {
 			redirected = DX12ResolveStaticIaReplacement(
 				device, true, 0, hash, view, redirectedView, nullptr, nullptr);
+			// Resource-level fallback: DX11 matches buffers by the full
+			// resource hash (view-size independent). DX12's hash includes the
+			// bound view size, so a scene switch that changes the bound view
+			// range of the same buffer silently loses the replacement. Retry
+			// with the full-resource extent so mods marked with the
+			// resource-level hash keep matching under any view range.
+			if (!redirected) {
+				DX12BufferResourceSummary summary = {};
+				if (DX12ResolveBufferResourceByGpuVa(
+						view->BufferLocation, view->SizeInBytes, &summary) &&
+				    summary.resource && summary.hasResourceDesc &&
+				    summary.resourceDesc.Dimension ==
+					    D3D12_RESOURCE_DIMENSION_BUFFER &&
+				    summary.resourceDesc.Width > summary.resourceOffset) {
+					const UINT64 fullBytes =
+						summary.resourceDesc.Width - summary.resourceOffset;
+					if (fullBytes != view->SizeInBytes) {
+						const uint32_t resourceHash =
+							DX12HashIaBufferContentView(
+								view->BufferLocation, fullBytes, 0,
+								static_cast<UINT>(view->Format), 0);
+						if (resourceHash && resourceHash != hash) {
+							redirected = DX12ResolveStaticIaReplacement(
+								device, true, 0, resourceHash, view,
+								redirectedView, nullptr, nullptr);
+						}
+					}
+				}
+			}
 		}
 		if (queriedDevice)
 			queriedDevice->Release();
@@ -1328,6 +1357,34 @@ public:
 				redirected = DX12ResolveStaticIaReplacement(
 					device, false, slot, hash,
 					nullptr, nullptr, &view, &redirectedViews[index]);
+				// Resource-level fallback (see TryRedirectStaticIaIndexBuffer):
+				// the hash includes the bound view size; retry with the full
+				// resource extent so a scene-switch view-range change of the
+				// same buffer keeps matching resource-level mod hashes.
+				if (!redirected) {
+					DX12BufferResourceSummary summary = {};
+					if (DX12ResolveBufferResourceByGpuVa(
+							view.BufferLocation, view.SizeInBytes, &summary) &&
+					    summary.resource && summary.hasResourceDesc &&
+					    summary.resourceDesc.Dimension ==
+						    D3D12_RESOURCE_DIMENSION_BUFFER &&
+					    summary.resourceDesc.Width > summary.resourceOffset) {
+						const UINT64 fullBytes =
+							summary.resourceDesc.Width - summary.resourceOffset;
+						if (fullBytes != view.SizeInBytes) {
+							const uint32_t resourceHash =
+								DX12HashIaBufferContentView(
+									view.BufferLocation, fullBytes,
+									view.StrideInBytes, 0, slot);
+							if (resourceHash && resourceHash != hash) {
+								redirected = DX12ResolveStaticIaReplacement(
+									device, false, slot, resourceHash,
+									nullptr, nullptr, &view,
+									&redirectedViews[index]);
+							}
+						}
+					}
+				}
 			}
 			if (!redirected)
 				redirectedViews[index] = view;

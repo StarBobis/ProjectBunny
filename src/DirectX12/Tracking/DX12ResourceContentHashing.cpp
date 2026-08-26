@@ -1,4 +1,4 @@
-﻿// DX12ResourceContentHashing: GPU-VA resolve, buffer content cache, texture hash and IA hash.
+// DX12ResourceContentHashing: GPU-VA resolve, buffer content cache, texture hash and IA hash.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -992,6 +992,43 @@ void DX12InvalidateBufferContent(ID3D12Resource *resource)
 	// a frame later, causing a one-frame wrong IA replacement / model flicker).
 	gBufferContentGeneration.fetch_add(1, std::memory_order_release);
 }
+
+
+// -- Readback-on-miss for buffer content hashing ----------------------------
+//
+// Scene switches recreate mesh buffers through GPU-only paths (streaming,
+// pool copies) that never touch the CPU content cache. IA content hashing
+// then falls back to metadata and mod replacements (keyed on content hashes
+// like 1be79644) silently stop matching after switching scenes back. Request
+// an asynchronous GPU readback so the content cache recovers; the request is
+// throttled to at most one per resource per 120 presents so a permanently
+// uncapturable buffer cannot enqueue a readback every frame.
+static SRWLOCK gBufferReadbackRequestLock = SRWLOCK_INIT;
+static std::unordered_map<ID3D12Resource*, LONG> gBufferReadbackRequestPresent;
+
+void DX12RequestBufferContentReadback(
+	ID3D12Resource *resource, UINT64 offset, UINT64 size)
+{
+	if (!resource || !size)
+		return;
+	const LONG present = DX12RuntimeState::GetPresentCount();
+	AcquireSRWLockExclusive(&gBufferReadbackRequestLock);
+	auto it = gBufferReadbackRequestPresent.find(resource);
+	const bool allow = it == gBufferReadbackRequestPresent.end() ||
+		present - it->second >= 120;
+	if (allow)
+		gBufferReadbackRequestPresent[resource] = present;
+	ReleaseSRWLockExclusive(&gBufferReadbackRequestLock);
+	if (!allow)
+		return;
+	if (DX12AsyncReadbackQueueBufferCapture(resource, offset, size)) {
+		DX12LogManager::Fields("DX12IaHashAudit",
+			"stage=readback_request,resource=%p,offset=%llu,bytes=%llu",
+			resource,
+			static_cast<unsigned long long>(offset),
+			static_cast<unsigned long long>(size));
+	}
+}
 bool DX12TryGetBufferContent(UINT64 gpuVirtualAddress, UINT64 size,
 	const uint8_t **outData, size_t *outDataSize)
 {
@@ -1055,6 +1092,15 @@ static bool DX12TryHashResolvedBufferContentRegion(
 	auto contentIt = gBufferContentByResource.find(summary.resource);
 	if (contentIt == gBufferContentByResource.end()) {
 		ReleaseSRWLockShared(&gBufferContentLock);
+		// Scene switches recreate buffers through GPU-only paths (no Map /
+		// no tracked copy), leaving the CPU content cache empty. Without the
+		// content the IA hash falls back to metadata, which never matches the
+		// content hashes recorded in mod configs - the draw then silently
+		// loses its texcoord/IB replacement after switching scenes back.
+		// Request an asynchronous GPU readback so the content cache (and the
+		// content-based IA hash) recovers one frame later.
+		DX12RequestBufferContentReadback(
+			summary.resource, summary.resourceOffset, size);
 		return false;
 	}
 	const CachedBufferContent &content = contentIt->second;
@@ -1077,6 +1123,10 @@ static bool DX12TryHashResolvedBufferContentRegion(
 			summary.resourceOffset,
 			size)) {
 		ReleaseSRWLockShared(&gBufferContentLock);
+		// Content exists but the requested pages are invalid (GPU writes
+		// since capture, or a partial capture). Re-request a readback.
+		DX12RequestBufferContentReadback(
+			summary.resource, summary.resourceOffset, size);
 		return false;
 	}
 	const UINT64 capturedPageStamp =
@@ -1273,6 +1323,39 @@ uint32_t DX12HashIaBufferContentView(
 	if (!gpuVirtualAddress || !size)
 		return 0;
 
+	// TLS-throttled audit: one line per (va,size,stride,format,slot) per
+	// stage/hash change. Makes scene-switch hash degradation visible
+	// (content -> content_miss -> metadata) without logging every bind.
+	struct IaHashAuditEntry
+	{
+		UINT64 key = 0;
+		const char *stage = nullptr;
+		uint32_t hash = 0;
+		bool valid = false;
+	};
+	static thread_local IaHashAuditEntry tlsIaHashAudit[64];
+	auto iaHashAudit = [&](const char *stage, uint32_t hashValue) {
+		const UINT64 auditKey = gpuVirtualAddress ^
+			(static_cast<UINT64>(size) << 8) ^
+			(static_cast<UINT64>(stride) << 20) ^
+			(static_cast<UINT64>(format) << 28) ^
+			(static_cast<UINT64>(slot) << 36);
+		IaHashAuditEntry &entry = tlsIaHashAudit[auditKey & 63];
+		if (entry.valid && entry.key == auditKey && entry.stage == stage &&
+		    entry.hash == hashValue)
+			return;
+		entry.valid = true;
+		entry.key = auditKey;
+		entry.stage = stage;
+		entry.hash = hashValue;
+		DX12LogManager::Fields("DX12IaHashAudit",
+			"stage=%s,va=0x%llx,size=%u,stride=%u,format=%u,slot=%u,hash=%08x",
+			stage,
+			static_cast<unsigned long long>(gpuVirtualAddress),
+			static_cast<UINT>(size),
+			stride, format, slot, hashValue);
+	};
+
 	// L1 uses GPUVA to exploit temporal locality.
 	// L2 uses resource identity, offset, and size for stable reuse.
 	// This matches the DX11 resource, offset, and size key model.
@@ -1431,8 +1514,10 @@ uint32_t DX12HashIaBufferContentView(
 				}
 			}
 		}
-		if (!invalidated)
+		if (!invalidated) {
+			iaHashAudit("cache", cacheValue.hash);
 			return cacheValue.hash;
+		}
 		s_cacheL1.erase(itL1);
 	}
 
@@ -1440,9 +1525,18 @@ uint32_t DX12HashIaBufferContentView(
 	// DX11: (resource, offset, viewSize) gpuVa
 	DX12BufferResourceSummary summary = {};
 	const bool resolved = DX12ResolveBufferResourceByGpuVa(gpuVirtualAddress, size, &summary);
+	// DX11 (track_region_hashes off) matches buffers by the FULL RESOURCE
+	// hash: the bound view range does not participate. Align DX12 with that
+	// semantic - hash the full resource extent so a scene switch that changes
+	// the bound view range of the same buffer (e.g. texcoords 9027 vs 15715
+	// vertices) keeps matching the same mod hash.
+	const UINT64 fullViewSize = resolved && summary.hasResourceDesc &&
+			summary.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+			summary.resourceDesc.Width > summary.resourceOffset ?
+		summary.resourceDesc.Width - summary.resourceOffset : size;
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,
-			summary.resourceOffset, summary.viewSize,
+			summary.resourceOffset, fullViewSize,
 			stride, format, slot };
 		std::unordered_map<IaHashKeyL2, IaHashCacheValue, IaHashKeyL2Hasher>::iterator itL2 = s_cacheL2.find(keyL2);
 		if (itL2 != s_cacheL2.end()) {
@@ -1481,6 +1575,7 @@ uint32_t DX12HashIaBufferContentView(
 			}
 			if (!invalidated) {
 				s_cacheL1[keyL1] = cacheValue;
+				iaHashAudit("cache", cacheValue.hash);
 				return cacheValue.hash;
 			}
 			s_cacheL2.erase(itL2);
@@ -1495,7 +1590,7 @@ uint32_t DX12HashIaBufferContentView(
 	if (resolved && summary.resource &&
 	    DX12TryHashResolvedBufferContentRegion(
 			summary,
-			size,
+			fullViewSize,
 			stride,
 			format,
 			slot,
@@ -1506,14 +1601,14 @@ uint32_t DX12HashIaBufferContentView(
 		contentCacheValue.contentGeneration = contentGeneration;
 		contentCacheValue.observedGlobalContentGeneration = globalContentGeneration;
 		contentCacheValue.gpuVa = gpuVirtualAddress;
-		contentCacheValue.size = size;
+		contentCacheValue.size = fullViewSize;
 		contentCacheValue.resource = summary.resource;
 		contentCacheValue.resourceGeneration = summary.resourceGeneration;
 		contentCacheValue.publishedState = summary.publishedState;
 		contentCacheValue.tracksContent = true;
 		s_cacheL1[keyL1] = contentCacheValue;
 		IaHashKeyL2 keyL2 = { summary.resource,
-			summary.resourceOffset, summary.viewSize,
+			summary.resourceOffset, fullViewSize,
 			stride, format, slot };
 		s_cacheL2[keyL2] = contentCacheValue;
 		if (s_cacheL1.size() > MaxL1Entries)
@@ -1522,6 +1617,7 @@ uint32_t DX12HashIaBufferContentView(
 			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
+		iaHashAudit("content", hash);
 		return hash;
 	}
 
@@ -1529,7 +1625,7 @@ uint32_t DX12HashIaBufferContentView(
 	// IA candidates; the default steady-state IA path uses DX12HashIaBufferView.
 	const uint8_t *contentData = nullptr;
 	size_t contentSize = 0;
-	if (DX12TryGetBufferContent(gpuVirtualAddress, size, &contentData, &contentSize))
+	if (DX12TryGetBufferContent(gpuVirtualAddress, fullViewSize, &contentData, &contentSize))
 	{
 		const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'C');
 		hash = HashBytes(hash, &tag, sizeof(tag));
@@ -1543,7 +1639,7 @@ uint32_t DX12HashIaBufferContentView(
 		contentCacheValue.contentGeneration = contentGeneration;
 		contentCacheValue.observedGlobalContentGeneration = globalContentGeneration;
 		contentCacheValue.gpuVa = gpuVirtualAddress;
-		contentCacheValue.size = size;
+		contentCacheValue.size = fullViewSize;
 		contentCacheValue.resource = resolved ? summary.resource : nullptr;
 		contentCacheValue.resourceGeneration =
 			resolved ? summary.resourceGeneration : 0;
@@ -1553,7 +1649,7 @@ uint32_t DX12HashIaBufferContentView(
 		s_cacheL1[keyL1] = contentCacheValue;
 		if (resolved && summary.resource) {
 			IaHashKeyL2 keyL2 = { summary.resource,
-				summary.resourceOffset, summary.viewSize,
+				summary.resourceOffset, fullViewSize,
 				stride, format, slot };
 			s_cacheL2[keyL2] = contentCacheValue;
 		}
@@ -1563,8 +1659,10 @@ uint32_t DX12HashIaBufferContentView(
 			s_cacheL2.erase(s_cacheL2.begin());
 		if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 			s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
+		iaHashAudit("content", hash);
 		return hash;
 	}
+	iaHashAudit("content_miss", 0);
 
 	// Tiers 2 and 3 use metadata-based hashing.
 	const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'A');
@@ -1585,7 +1683,7 @@ uint32_t DX12HashIaBufferContentView(
 			static_cast<UINT>(desc.Flags),
 			summary.resourceHeapType,
 			summary.resourceOffset,
-			summary.viewSize,
+			fullViewSize,
 			stride,
 			format,
 			slot
@@ -1610,11 +1708,11 @@ uint32_t DX12HashIaBufferContentView(
 			hash = HashBytes(hash, &desc.Flags, sizeof(desc.Flags));
 			hash = HashBytes(hash, &summary.resourceHeapType, sizeof(summary.resourceHeapType));
 			hash = HashBytes(hash, &summary.resourceOffset, sizeof(summary.resourceOffset));
-			hash = HashBytes(hash, &summary.viewSize, sizeof(summary.viewSize));
+			hash = HashBytes(hash, &fullViewSize, sizeof(fullViewSize));
 			s_cacheL3Resolved[keyL3] = hash;
 		}
 	} else {
-		hash = HashBytes(hash, &size, sizeof(size));
+		hash = HashBytes(hash, &fullViewSize, sizeof(fullViewSize));
 	}
 
 	hash = HashBytes(hash, &stride, sizeof(stride));
@@ -1627,7 +1725,7 @@ uint32_t DX12HashIaBufferContentView(
 	cacheValue.contentGeneration = contentGeneration;
 	cacheValue.observedGlobalContentGeneration = globalContentGeneration;
 	cacheValue.gpuVa = gpuVirtualAddress;
-	cacheValue.size = size;
+	cacheValue.size = fullViewSize;
 	cacheValue.resource = resolved ? summary.resource : nullptr;
 	cacheValue.resourceGeneration =
 		resolved ? summary.resourceGeneration : 0;
@@ -1636,7 +1734,7 @@ uint32_t DX12HashIaBufferContentView(
 	s_cacheL1[keyL1] = cacheValue;
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,
-			summary.resourceOffset, summary.viewSize,
+			summary.resourceOffset, fullViewSize,
 			stride, format, slot };
 		s_cacheL2[keyL2] = cacheValue;
 	}
@@ -1646,6 +1744,7 @@ uint32_t DX12HashIaBufferContentView(
 		s_cacheL2.erase(s_cacheL2.begin());
 	if (s_cacheL3Resolved.size() > MaxL3ResolvedEntries)
 		s_cacheL3Resolved.erase(s_cacheL3Resolved.begin());
+	iaHashAudit("metadata", hash);
 	return hash;
 }
 
