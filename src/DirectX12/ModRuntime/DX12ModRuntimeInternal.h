@@ -956,6 +956,8 @@ inline std::set<UINT64> gPreSkinSrvStableNegativeCache;
 
 inline std::set<UINT64> gPreSkinDescriptorPatchAbortCache;
 
+inline SRWLOCK gPreSkinDescriptorPatchAbortLock = SRWLOCK_INIT;
+
 inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvPositiveCache;
 
 inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvStablePositiveCache;

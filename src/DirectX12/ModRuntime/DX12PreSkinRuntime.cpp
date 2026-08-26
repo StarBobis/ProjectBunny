@@ -319,9 +319,11 @@ UINT64 MakePreSkinDescriptorPatchAbortCacheKey(
 
 void StorePreSkinDescriptorPatchAbort(UINT64 key)
 {
+	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	if (gPreSkinDescriptorPatchAbortCache.size() > 1024)
 		gPreSkinDescriptorPatchAbortCache.clear();
 	gPreSkinDescriptorPatchAbortCache.insert(key);
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 }
 
 
@@ -1580,7 +1582,9 @@ void ClearPreSkinRuntimeState()
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
+	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinSrvPositiveCache.clear();
 	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
@@ -3043,8 +3047,12 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 
 	const UINT64 abortCacheKey = MakePreSkinDescriptorPatchAbortCacheKey(
 		config, srvReplacements, srvs, cbvs);
-	if (gPreSkinDescriptorPatchAbortCache.find(abortCacheKey) !=
-		gPreSkinDescriptorPatchAbortCache.end())
+	bool abortCacheHit = false;
+	AcquireSRWLockShared(&gPreSkinDescriptorPatchAbortLock);
+	abortCacheHit = gPreSkinDescriptorPatchAbortCache.find(abortCacheKey) !=
+		gPreSkinDescriptorPatchAbortCache.end();
+	ReleaseSRWLockShared(&gPreSkinDescriptorPatchAbortLock);
+	if (abortCacheHit)
 	{
 		logStage("abort_cache_hit", 0, 0);
 		return false;

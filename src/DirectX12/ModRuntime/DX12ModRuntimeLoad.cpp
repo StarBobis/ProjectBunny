@@ -1472,7 +1472,9 @@ bool DX12ModRuntimeLoad(
 	gPreSkinCbvReadCache.clear();
 	gPreSkinSrvNegativeCache.clear();
 	gPreSkinSrvStableNegativeCache.clear();
+	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
+	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinSrvPositiveCache.clear();
 	gPreSkinSrvStablePositiveCache.clear();
 	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
