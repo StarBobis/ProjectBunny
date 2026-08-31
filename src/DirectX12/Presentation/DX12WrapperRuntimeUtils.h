@@ -880,7 +880,8 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawInstanced);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, vertexCountPerInstance, instanceCount,
@@ -954,7 +955,8 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))) {
+				DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, indexCountPerInstance, instanceCount,
@@ -1007,7 +1009,8 @@ public:
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
 		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
-		if (!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK)) {
+		if (!(dispatchFlags & (DX12HotPathState::MASK_DISPATCH_WORK |
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
 			DX12_PROFILE_FAST_FORWARD();
 			if (original)
 				original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
@@ -1650,7 +1653,7 @@ public:
 				// restore, resident state and binding hash updates, then drop
 				// redundant calls.
 				DX12CommandListComputeBindingFlow::
-					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+					RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 				bool changed = true;
 				if (DX12HotPathState::NeedsComputeResidentBindingState(hookFlags))
 					changed = DX12CommandListRuntime::RememberComputeRootSignature(
@@ -1667,6 +1670,10 @@ public:
 				if (!changed)
 					return;
 			}
+		} else {
+			// Binding capture is skipped, so the deferred-restore guard in the
+			// capture flow does not run (reload race safety net).
+			DX12ModFlushDrawSrvReplacement(commandList);
 		}
 		if (original) original(commandList, unwrapped);
 		else commandList->SetComputeRootSignature(unwrapped);
@@ -1702,6 +1709,9 @@ public:
 			}
 		}
 		if (ShouldSkipGraphicsBinding()) {
+			// Binding capture is skipped, so the deferred-restore guard in the
+			// capture flow does not run (reload race safety net).
+			DX12ModFlushDrawSrvReplacement(commandList);
 			if (original) original(commandList, unwrapped); else commandList->SetGraphicsRootSignature(unwrapped);
 		}
 		else {
@@ -1713,7 +1723,7 @@ public:
 				// the shared fast-skip bookkeeping: keep the deferred pre-skin
 				// restore and resident state update, then drop redundant calls.
 				DX12CommandListComputeBindingFlow::
-					RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+					RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 				bool changed = true;
 				if (DX12HotPathState::NeedsGraphicsResidentDescriptorState(hookFlags))
 					changed = DX12CommandListRuntime::RememberGraphicsRootSignature(
@@ -1757,6 +1767,10 @@ public:
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, false);
 			if (!changed)
 				return;
+		} else {
+			// Same deferred-restore safety net as the graphics path: the
+			// game's handle targets its own heap.
+			DX12ModFlushDrawSrvReplacement(commandList);
 		}
 		if (original) original(commandList, rootParameterIndex, baseDescriptor);
 		else commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
@@ -1783,9 +1797,16 @@ public:
 		DX12_PROFILE_FUNCTION(SetGraphicsRootDescriptorTable);
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
-		if (ShouldSkipGraphicsBinding())
+		if (ShouldSkipGraphicsBinding()) {
+			// Binding capture is skipped, so the deferred-restore guard in the
+			// capture flow does not run. The game's handle targets its own
+			// heap; restore it before forwarding if a patched mirror is still
+			// bound (reload race safety net - the DrawSrv feature normally
+			// keeps graphics binding capture enabled).
+			DX12ModFlushDrawSrvReplacement(commandList);
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
+		}
 		else {
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, true);

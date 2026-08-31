@@ -6,6 +6,8 @@
 
 void DX12ModRestorePreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList);
+void DX12ModFlushDrawSrvReplacement(
+	ID3D12GraphicsCommandList *commandList);
 
 // Forward-declared so the hot binding flow above can count descriptor-record
 // fast skips before DX12ResidentMaintenanceTelemetryUtils is defined.
@@ -14,11 +16,17 @@ static inline void DX12RecordDescriptorRecordFastSkip();
 class DX12CommandListComputeBindingFlow
 {
 public:
-	static void RestoreDeferredPreSkinBeforeBindingMutation(
+	// Every game binding mutation funnels here before the capture updates any
+	// shadow state. Deferred descriptor replacements must restore first: the
+	// game's handles target its own heaps, which a deferred patched mirror
+	// has currently unbound on this list.
+	static void RestoreDeferredReplacementsBeforeBindingMutation(
 		ID3D12GraphicsCommandList *commandList)
 	{
-		if (!DX12InternalReplayState::IsActive())
-			DX12ModRestorePreSkinningUavReplacement(commandList);
+		if (DX12InternalReplayState::IsActive())
+			return;
+		DX12ModRestorePreSkinningUavReplacement(commandList);
+		DX12ModFlushDrawSrvReplacement(commandList);
 	}
 
 	static void ResolveDescriptorHeaps(
@@ -53,7 +61,7 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (!DX12HotPathState::NeedsAnyResidentDescriptorState(flags) &&
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
@@ -75,7 +83,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool skipComputeBinding =
 			DX12HotPathState::skipAll.load(std::memory_order_relaxed) &&
@@ -165,7 +173,7 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -189,7 +197,7 @@ public:
 		ID3D12RootSignature *rootSignature,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		if (DX12InternalReplayState::IsActive())
 			return true;
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
@@ -243,7 +251,7 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -270,7 +278,7 @@ public:
 	{
 		if (DX12InternalReplayState::IsActive())
 			return true;
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -316,7 +324,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -342,7 +350,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -389,7 +397,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -417,7 +425,7 @@ public:
 		UINT destOffset,
 		bool graphics)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -468,7 +476,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :
@@ -495,7 +503,7 @@ public:
 		bool graphics,
 		const char *api)
 	{
-		RestoreDeferredPreSkinBeforeBindingMutation(commandList);
+		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :

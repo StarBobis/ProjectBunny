@@ -176,6 +176,7 @@ public:
 		// capture, stay on the straight-through path and skip PSO policy rebuilds.
 		if (!needsDispatchDecision) {
 			DX12ModRestorePreSkinningUavReplacement(commandList);
+			DX12ModFlushDrawSrvReplacement(commandList);
 			if (DX12HotPathState::skipBindings && huntEnabled) {
 				DX12_PROFILE_FAST_FORWARD();
 				DX12HuntRecordDispatch(commandList);
@@ -229,6 +230,7 @@ public:
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
 			DX12_PROFILE_FAST_FORWARD();
 			DX12ModRestorePreSkinningUavReplacement(commandList);
+			DX12ModFlushDrawSrvReplacement(commandList);
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList)) {
 				DX12_HOTPATH_TIME_END(DispatchHookTotal);
@@ -258,6 +260,7 @@ public:
 				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
 			DX12_PROFILE_FAST_FORWARD();
 			DX12ModRestorePreSkinningUavReplacement(commandList);
+			DX12ModFlushDrawSrvReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
@@ -323,12 +326,20 @@ public:
 			if (needsPreSkinProbe && effectiveDecision && effectiveDecision->IsPreSkinRejected())
 				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
 			DX12ModRestorePreSkinningUavReplacement(commandList);
+			DX12ModFlushDrawSrvReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
 		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidateDispatch();
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
+		// A deferred draw-SRV restore must flush before any dispatch is
+		// recorded: the PreSkin probe below re-reads the (logically restored)
+		// shadow bindings and its apply switches heaps again, while every
+		// originalDispatch path in this function observes descriptor-heap
+		// state. One flush here covers the negative-cache, override and
+		// fail-safe forwards below.
+		DX12ModFlushDrawSrvReplacement(commandList);
 		const UINT64 outerReloadGeneration = DX12ModGetReloadGenerationFast();
 		if (effectiveState && effectiveDecision &&
 			effectiveState->resolvedCompute.probeResultValid &&
@@ -419,6 +430,7 @@ public:
 				// un-modded result instead of a never-written / partially
 				// written skinning buffer (spherical geometry + broken UVs).
 				DX12ModRestorePreSkinningUavReplacement(commandList);
+				DX12ModFlushDrawSrvReplacement(commandList);
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			}
 			LARGE_INTEGER finishBegin = DX12OuterTimingProbeUtils::Now();

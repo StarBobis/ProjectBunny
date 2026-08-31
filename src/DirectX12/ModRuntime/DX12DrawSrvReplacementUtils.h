@@ -4,6 +4,77 @@
 // Not meant to be included directly.
 
 
+// ---------------------------------------------------------------------------
+// Deferred draw-SRV restore (lazy heap switch).
+//
+// ApplyPending switches the command list to a private mirror heap and rebinds
+// every root table for a patched draw; the stock Restore immediately switched
+// back to the game's heap and rebound every table again. That is two
+// SetDescriptorHeaps round trips plus two full root-table rebinds per modded
+// draw, while Microsoft recommends setting descriptor heaps as few times as
+// possible per command list (a heap switch invalidates every root table
+// binding and can stall the GPU):
+// https://learn.microsoft.com/en-us/windows/win32/direct3d12/setting-descriptor-heaps
+//
+// Restore therefore now performs only the *logical* half immediately (the
+// shadow trackers return to the game's bindings) and defers the GPU-side
+// half: the mirror heap and patched tables stay bound on the list. The
+// deferred entry is flushed (physically restored) lazily before any command
+// that observes descriptor-heap state:
+//   - original/replacement draws and dispatches (DX12IaReplacementDrawExecutor),
+//   - game dispatches and ExecuteIndirect / ExecuteBundle,
+//   - ClearUnorderedAccessView* (GPU handle resolved against the bound heap),
+//   - every game binding mutation (root tables/signatures/constants),
+//   - command-list Reset/Unregister/ClearState (quiet drop, no GPU commands).
+// A consecutive patched draw whose plan fingerprint matches the pending entry
+// reuses the still-bound mirror and emits nothing at all.
+// ---------------------------------------------------------------------------
+
+class DX12DrawSrvPendingRestore
+{
+public:
+	// Set while a consecutive ApplyPending has borrowed the still-bound
+	// mirror for the in-flight draw; flush probes must leave it untouched.
+	bool borrowedByApply = false;
+	// Original game heaps, AddRef'd while pending: the physical restore may
+	// rebind them after the game's own binding scope has moved on.
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	// Mirror ring heap currently bound on the list. Not owned here; the ring
+	// retains it for the command list and never rewinds in place.
+	ID3D12DescriptorHeap *patchHeap = nullptr;
+	UINT64 planFingerprint = 0;
+	UINT64 reloadGeneration = 0;
+	CommandListBindingState originalBindings;
+};
+
+// Sharded pending table (per command list), same contract as
+// DX12PreSkinReplacementShard: every access targets exactly one list key, so
+// the table is sharded by list pointer with a per-shard lock and mutation
+// generation for the TLS negative cache in FlushPendingRestore.
+class DX12DrawSrvPendingRestoreShard
+{
+public:
+	SRWLOCK lock = SRWLOCK_INIT;
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12DrawSrvPendingRestore> entries;
+	std::atomic<UINT64> mutationGeneration{0};
+};
+
+inline DX12DrawSrvPendingRestoreShard gDrawSrvPendingRestoreShards[64];
+// Count of pending entries across all shards; readers only test zero. The
+// count also drives FLAG_DRAWSRV_PENDING_RESTORE in HookWorkFlags so the
+// per-draw fast paths notice a pending restore with no extra load.
+inline volatile LONG gDrawSrvPendingRestoreCount = 0;
+
+inline DX12DrawSrvPendingRestoreShard &DrawSrvPendingRestoreShardFor(
+	ID3D12GraphicsCommandList *commandList)
+{
+	constexpr size_t kShardCount =
+		sizeof(gDrawSrvPendingRestoreShards) / sizeof(gDrawSrvPendingRestoreShards[0]);
+	const UINT_PTR key = reinterpret_cast<UINT_PTR>(commandList);
+	return gDrawSrvPendingRestoreShards[(key >> 4) % kShardCount];
+}
+
 class DX12DrawSrvPatchRequest
 {
 public:
@@ -103,6 +174,274 @@ public:
 			DX12BindingTracker::SetGraphicsRootDescriptorTable(
 				commandList, rootParameterIndex, table);
 		}
+	}
+
+	// -- deferred-restore pending table -------------------------------------
+
+	static void NotePendingRestorePublished()
+	{
+		if (InterlockedIncrement(&gDrawSrvPendingRestoreCount) == 1)
+			DX12HotPathState::HookWorkFlags.fetch_or(
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE,
+				std::memory_order_relaxed);
+	}
+
+	static void NotePendingRestoreCleared()
+	{
+		if (InterlockedDecrement(&gDrawSrvPendingRestoreCount) == 0)
+			DX12HotPathState::HookWorkFlags.fetch_and(
+				~DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE,
+				std::memory_order_relaxed);
+	}
+
+	static void ReleasePendingRestoreEntry(DX12DrawSrvPendingRestore *entry)
+	{
+		if (!entry)
+			return;
+		if (entry->cbvSrvUavHeap)
+			entry->cbvSrvUavHeap->Release();
+		if (entry->samplerHeap)
+			entry->samplerHeap->Release();
+		entry->cbvSrvUavHeap = nullptr;
+		entry->samplerHeap = nullptr;
+	}
+
+	// FNV-1a over everything that determines the physical state an Apply
+	// emits: bound heaps, root signatures, the mirrored table set and the
+	// patch set. Descriptor *contents* behind the table handles are not
+	// covered; the reuse window is the same list with no intercepted command
+	// in between, the same assumption class the pre-skin persistent patch
+	// cache already makes across frames.
+	static UINT64 ComputePlanFingerprint(
+		const CommandListBindingState &snapshot,
+		const std::vector<DX12DrawSrvPatchTable> &tables,
+		const std::vector<DX12ModIaReplacement::DrawSrvTablePatch> &patches)
+	{
+		UINT64 hash = 14695981039346656037ull;
+		auto append = [&hash](UINT64 value) {
+			for (size_t i = 0; i < sizeof(value); ++i) {
+				hash ^= static_cast<unsigned char>((value >> (i * 8)) & 0xff);
+				hash *= 1099511628211ull;
+			}
+		};
+		append(reinterpret_cast<UINT64>(snapshot.cbvSrvUavHeap));
+		append(reinterpret_cast<UINT64>(snapshot.samplerHeap));
+		append(reinterpret_cast<UINT64>(snapshot.graphicsRootSignature));
+		append(reinterpret_cast<UINT64>(snapshot.computeRootSignature));
+		for (const DX12DrawSrvPatchTable &table : tables) {
+			append(table.compute ? 1ull : 0ull);
+			append(table.sampler ? 1ull : 0ull);
+			append(table.rootParameterIndex);
+			append(table.gpuStart.ptr);
+			append(table.count);
+		}
+		for (const DX12ModIaReplacement::DrawSrvTablePatch &patch : patches) {
+			append(patch.compute ? 1ull : 0ull);
+			append(patch.binding.rootParameterIndex);
+			append(patch.binding.descriptorOffset);
+			append(patch.replacementCpu.ptr);
+			append(static_cast<UINT64>(patch.replacementViewFormat));
+		}
+		return hash;
+	}
+
+	// Moves any pending entry for this list out of the shard map without
+	// emitting GPU commands. Returns true when an entry was taken.
+	static bool TakePendingRestore(
+		ID3D12GraphicsCommandList *commandList,
+		DX12DrawSrvPendingRestore *entryOut)
+	{
+		if (!commandList || !entryOut || gDrawSrvPendingRestoreCount == 0)
+			return false;
+		bool taken = false;
+		DX12DrawSrvPendingRestoreShard &shard =
+			DrawSrvPendingRestoreShardFor(commandList);
+		AcquireSRWLockExclusive(&shard.lock);
+		auto it = shard.entries.find(commandList);
+		if (it != shard.entries.end()) {
+			*entryOut = std::move(it->second);
+			shard.entries.erase(it);
+			shard.mutationGeneration.fetch_add(1, std::memory_order_release);
+			taken = true;
+		}
+		ReleaseSRWLockExclusive(&shard.lock);
+		if (taken)
+			NotePendingRestoreCleared();
+		return taken;
+	}
+
+	static void PutBackPendingRestore(
+		ID3D12GraphicsCommandList *commandList,
+		DX12DrawSrvPendingRestore &&entry)
+	{
+		if (!commandList)
+			return;
+		DX12DrawSrvPendingRestoreShard &shard =
+			DrawSrvPendingRestoreShardFor(commandList);
+		AcquireSRWLockExclusive(&shard.lock);
+		shard.entries[commandList] = std::move(entry);
+		shard.mutationGeneration.fetch_add(1, std::memory_order_release);
+		ReleaseSRWLockExclusive(&shard.lock);
+		NotePendingRestorePublished();
+	}
+
+	static void DeferPendingRestore(
+		ID3D12GraphicsCommandList *commandList,
+		DX12ModIaReplacement::DrawSrvApplyState *applyState)
+	{
+		if (!commandList || !applyState)
+			return;
+		DX12DrawSrvPendingRestore entry;
+		entry.planFingerprint = applyState->planFingerprint;
+		entry.reloadGeneration = applyState->reloadGeneration;
+		entry.patchHeap = applyState->patchHeap;
+		entry.cbvSrvUavHeap = applyState->originalBindings.cbvSrvUavHeap;
+		entry.samplerHeap = applyState->originalBindings.samplerHeap;
+		if (entry.cbvSrvUavHeap)
+			entry.cbvSrvUavHeap->AddRef();
+		if (entry.samplerHeap)
+			entry.samplerHeap->AddRef();
+		entry.originalBindings = std::move(applyState->originalBindings);
+		PutBackPendingRestore(commandList, std::move(entry));
+	}
+
+	// Physical half of the deferred restore: rebind the game's heaps and root
+	// tables exactly like the stock Restore did, then release the entry.
+	static void FlushPendingRestore(ID3D12GraphicsCommandList *commandList)
+	{
+		if (!commandList || gDrawSrvPendingRestoreCount == 0)
+			return;
+
+		// TLS negative cache (same contract as the pre-skin restore probe):
+		// recording is single-threaded per command list, so (list, shard
+		// generation) exactly proves "no pending entry for this list" and
+		// keeps the per-draw cost at two loads while a restore is pending
+		// anywhere in the process.
+		struct TlsNoPendingRestore
+		{
+			ID3D12GraphicsCommandList *commandList = nullptr;
+			UINT64 generation = 0;
+		};
+		thread_local TlsNoPendingRestore tlsNoPendingRestore;
+		DX12DrawSrvPendingRestoreShard &shard =
+			DrawSrvPendingRestoreShardFor(commandList);
+		const UINT64 mutationGeneration =
+			shard.mutationGeneration.load(std::memory_order_acquire);
+		if (tlsNoPendingRestore.commandList == commandList &&
+			tlsNoPendingRestore.generation == mutationGeneration)
+			return;
+
+		const LARGE_INTEGER flushBegin = DX12OuterTimingProbeUtils::Now();
+		DX12DrawSrvPendingRestore entry;
+		bool found = false;
+		bool borrowed = false;
+		AcquireSRWLockExclusive(&shard.lock);
+		auto it = shard.entries.find(commandList);
+		if (it != shard.entries.end()) {
+			if (it->second.borrowedByApply) {
+				borrowed = true;
+			} else {
+				entry = std::move(it->second);
+				shard.entries.erase(it);
+				shard.mutationGeneration.fetch_add(1, std::memory_order_release);
+				found = true;
+			}
+		}
+		ReleaseSRWLockExclusive(&shard.lock);
+		if (found)
+			NotePendingRestoreCleared();
+
+		// Re-read after any mutation so a negative entry stays valid for
+		// exactly the state just observed. A borrowed entry must never be
+		// cached: it becomes flushable again once the in-flight draw
+		// restores, with no generation bump on that transition.
+		if (!found && !borrowed) {
+			tlsNoPendingRestore.commandList = commandList;
+			tlsNoPendingRestore.generation =
+				shard.mutationGeneration.load(std::memory_order_relaxed);
+		}
+		if (!found)
+			return;
+
+		DX12InternalReplayScope internalReplay;
+		const CommandListBindingState &snapshot = entry.originalBindings;
+		ID3D12DescriptorHeap *heaps[2] = {};
+		UINT heapCount = 0;
+		if (snapshot.cbvSrvUavHeap)
+			heaps[heapCount++] = snapshot.cbvSrvUavHeap;
+		if (snapshot.samplerHeap)
+			heaps[heapCount++] = snapshot.samplerHeap;
+		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
+		SyncDescriptorHeaps(
+			commandList, snapshot.cbvSrvUavHeap, snapshot.samplerHeap);
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			if (snapshot.graphicsTables[root].valid) {
+				commandList->SetGraphicsRootDescriptorTable(
+					root, snapshot.graphicsTables[root].baseDescriptor);
+				SyncRootDescriptorTable(
+					commandList, false, root,
+					snapshot.graphicsTables[root].baseDescriptor);
+			}
+			if (snapshot.computeTables[root].valid) {
+				commandList->SetComputeRootDescriptorTable(
+					root, snapshot.computeTables[root].baseDescriptor);
+				SyncRootDescriptorTable(
+					commandList, true, root,
+					snapshot.computeTables[root].baseDescriptor);
+			}
+		}
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"DrawSrv",
+			"flush_deferred_restore",
+			0,
+			static_cast<size_t>(snapshot.graphicsTableValidCount) +
+				snapshot.computeTableValidCount,
+			DX12OuterTimingProbeUtils::ElapsedUs(flushBegin));
+		ReleasePendingRestoreEntry(&entry);
+	}
+
+	// Quiet half of the deferred restore: drop the pending entry without
+	// emitting GPU commands. Used when the game re-establishes heap state
+	// itself (SetDescriptorHeaps) or the recording session ends
+	// (Reset/Unregister/ClearState); the shadow trackers were already
+	// logically restored at defer time.
+	static void DropPendingRestore(ID3D12GraphicsCommandList *commandList)
+	{
+		if (!commandList || gDrawSrvPendingRestoreCount == 0)
+			return;
+		DX12DrawSrvPendingRestoreShard &shard =
+			DrawSrvPendingRestoreShardFor(commandList);
+		DX12DrawSrvPendingRestore entry;
+		bool dropped = false;
+		AcquireSRWLockExclusive(&shard.lock);
+		auto it = shard.entries.find(commandList);
+		if (it != shard.entries.end()) {
+			entry = std::move(it->second);
+			shard.entries.erase(it);
+			shard.mutationGeneration.fetch_add(1, std::memory_order_release);
+			dropped = true;
+		}
+		ReleaseSRWLockExclusive(&shard.lock);
+		if (!dropped)
+			return;
+		NotePendingRestoreCleared();
+		ReleasePendingRestoreEntry(&entry);
+	}
+
+	// A borrowed mirror survived its draw: make the pending entry flushable
+	// again. No generation bump - the entry never left the map, and flush
+	// probes never publish a negative cache entry for a borrowed one.
+	static void ReleaseBorrowedPendingMirror(ID3D12GraphicsCommandList *commandList)
+	{
+		if (!commandList || gDrawSrvPendingRestoreCount == 0)
+			return;
+		DX12DrawSrvPendingRestoreShard &shard =
+			DrawSrvPendingRestoreShardFor(commandList);
+		AcquireSRWLockExclusive(&shard.lock);
+		auto it = shard.entries.find(commandList);
+		if (it != shard.entries.end() && it->second.borrowedByApply)
+			it->second.borrowedByApply = false;
+		ReleaseSRWLockExclusive(&shard.lock);
 	}
 
 	static DX12DrawSrvSignaturePlanTemplate BuildSignaturePlanTemplate(
@@ -812,13 +1151,26 @@ public:
 				"stage=table_patch_fail,reason=bundle_requires_parent_replay");
 			return false;
 		}
+		// Take any deferred restore for this list up front. On every failure
+		// path below it is put back and flushed so the original draw never
+		// executes against the stale patched mirror; on success the new apply
+		// fully supersedes it and it is dropped silently.
+		DX12DrawSrvPendingRestore takenPending;
+		const bool hadPending = TakePendingRestore(commandList, &takenPending);
+		auto failWithPendingRestore = [&hadPending, &takenPending, commandList]() {
+			if (hadPending) {
+				PutBackPendingRestore(commandList, std::move(takenPending));
+				FlushPendingRestore(commandList);
+			}
+			return false;
+		};
 		const LARGE_INTEGER planBegin = DX12OuterTimingProbeUtils::Now();
 		// thread_local: see the note above for why this is safe and cheaper.
 		static thread_local CommandListBindingState snapshot;
 		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=binding_snapshot");
-			return false;
+			return failWithPendingRestore();
 		}
 		bool needsGraphicsTables = executeOriginalDraw || !replacement->draws.empty();
 		bool needsComputeTables = !replacement->dispatches.empty();
@@ -843,7 +1195,7 @@ public:
 						&tables, &totalDescriptors)) {
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=graphics_root_signature");
-				return false;
+				return failWithPendingRestore();
 			}
 			hasGraphicsRootSignature = true;
 		}
@@ -855,14 +1207,14 @@ public:
 						&tables, &totalDescriptors)) {
 				DX12LogManager::Fields("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=compute_root_signature");
-				return false;
+				return failWithPendingRestore();
 			}
 			hasComputeRootSignature = true;
 		}
 		if (tables.empty() || !totalDescriptors) {
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=table_plan");
-			return false;
+			return failWithPendingRestore();
 		}
 		for (const DX12ModIaReplacement::DrawSrvTablePatch &request :
 				replacement->drawSrvPatches) {
@@ -881,7 +1233,7 @@ public:
 					request.binding.shaderRegister,
 					request.binding.registerSpace,
 					request.binding.descriptorOffset);
-				return false;
+				return failWithPendingRestore();
 			}
 			bool found = false;
 			for (const DX12DrawSrvPatchTable &table : tables) {
@@ -891,7 +1243,7 @@ public:
 						table.gpuStart.ptr != request.binding.tableGpuStart.ptr)
 					continue;
 				if (request.binding.descriptorOffset >= table.count)
-					return false;
+					return failWithPendingRestore();
 				found = true;
 				break;
 			}
@@ -900,7 +1252,7 @@ public:
 					"stage=table_patch_fail,reason=request_table,root=%u,offset=%u",
 					request.binding.rootParameterIndex,
 					request.binding.descriptorOffset);
-				return false;
+				return failWithPendingRestore();
 			}
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
@@ -909,6 +1261,38 @@ public:
 			0,
 			totalDescriptors,
 			DX12OuterTimingProbeUtils::ElapsedUs(planBegin));
+
+		// Deferred-restore reuse: a pending entry whose plan fingerprint
+		// matches this draw means the previous patched draw's mirror heap and
+		// patched tables are still bound on this list - any game command that
+		// could have changed that physical state would have flushed or dropped
+		// the entry. The draw executes with exactly that state: emit nothing,
+		// skip the mirror copy, the heap switch and every root-table rebind.
+		const UINT64 planFingerprint =
+			ComputePlanFingerprint(snapshot, tables, replacement->drawSrvPatches);
+		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+		if (hadPending &&
+				takenPending.planFingerprint == planFingerprint &&
+				takenPending.reloadGeneration == reloadGeneration &&
+				takenPending.patchHeap) {
+			ID3D12DescriptorHeap *patchHeap = takenPending.patchHeap;
+			takenPending.borrowedByApply = true;
+			PutBackPendingRestore(commandList, std::move(takenPending));
+			DX12ModIaReplacement::DrawSrvApplyState &reuseState =
+				replacement->drawSrvApplyState;
+			reuseState.applied = true;
+			reuseState.borrowedPendingMirror = true;
+			reuseState.patchHeap = patchHeap;
+			reuseState.planFingerprint = planFingerprint;
+			reuseState.reloadGeneration = reloadGeneration;
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"DrawSrv",
+				"reuse_deferred_mirror",
+				0,
+				totalDescriptors,
+				DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+			return true;
+		}
 
 		D3D12_CPU_DESCRIPTOR_HANDLE tempCpuBase = {};
 		D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
@@ -921,7 +1305,7 @@ public:
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=descriptor_ring,count=%u",
 				totalDescriptors);
-			return false;
+			return failWithPendingRestore();
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"DrawSrv",
@@ -934,6 +1318,8 @@ public:
 		// second, potentially stale snapshot.
 		replacement->drawSrvApplyState.originalBindings = snapshot;
 		replacement->drawSrvApplyState.patchHeap = tempHeap;
+		replacement->drawSrvApplyState.planFingerprint = planFingerprint;
+		replacement->drawSrvApplyState.reloadGeneration = reloadGeneration;
 
 		DX12InternalReplayScope internalReplay;
 		const LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
@@ -1044,6 +1430,10 @@ public:
 			0,
 			totalDescriptors,
 			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+		// The new apply fully superseded any stale deferred restore: the heap
+		// set and root-table rebinds above overwrote every piece of physical
+		// state the old entry covered. Drop it without emitting anything.
+		ReleasePendingRestoreEntry(&takenPending);
 		return true;
 	}
 
@@ -1196,40 +1586,45 @@ public:
 			state = DX12ModIaReplacement::DrawSrvApplyState();
 			return;
 		}
-		const CommandListBindingState &snapshot = state.originalBindings;
-		DX12InternalReplayScope internalReplay;
-		ID3D12DescriptorHeap *heaps[2] = {};
-		UINT heapCount = 0;
-		if (snapshot.cbvSrvUavHeap)
-			heaps[heapCount++] = snapshot.cbvSrvUavHeap;
-		if (snapshot.samplerHeap)
-			heaps[heapCount++] = snapshot.samplerHeap;
-		commandList->SetDescriptorHeaps(heapCount, heapCount ? heaps : nullptr);
-		SyncDescriptorHeaps(
-			commandList, snapshot.cbvSrvUavHeap, snapshot.samplerHeap);
-		for (UINT root = 0; root < MaxRootParameters; ++root) {
-			if (snapshot.graphicsTables[root].valid) {
-				commandList->SetGraphicsRootDescriptorTable(
-					root, snapshot.graphicsTables[root].baseDescriptor);
-				SyncRootDescriptorTable(
-					commandList, false, root,
-					snapshot.graphicsTables[root].baseDescriptor);
-			}
-			if (snapshot.computeTables[root].valid) {
-				commandList->SetComputeRootDescriptorTable(
-					root, snapshot.computeTables[root].baseDescriptor);
-				SyncRootDescriptorTable(
-					commandList, true, root,
-					snapshot.computeTables[root].baseDescriptor);
-			}
+		if (state.borrowedPendingMirror) {
+			// This draw reused the still-bound deferred mirror: nothing was
+			// emitted for it, so there is nothing to undo. Release the
+			// borrow; the pending entry stays live for the next draw.
+			ReleaseBorrowedPendingMirror(commandList);
+			replacement->drawSrvPatches.clear();
+			state = DX12ModIaReplacement::DrawSrvApplyState();
+			return;
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"DrawSrv",
-			"restore_original_tables",
-			0,
-			static_cast<size_t>(snapshot.graphicsTableValidCount) +
-				snapshot.computeTableValidCount,
-			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
+		// Logical restore only: the shadow trackers return to the game's
+		// bindings immediately, while the GPU-side heap/table restore is
+		// deferred (see the deferred-restore comment at the top of this
+		// file). Any later command that observes descriptor-heap state
+		// flushes the pending entry before it is recorded.
+		{
+			const CommandListBindingState &snapshot = state.originalBindings;
+			SyncDescriptorHeaps(
+				commandList, snapshot.cbvSrvUavHeap, snapshot.samplerHeap);
+			for (UINT root = 0; root < MaxRootParameters; ++root) {
+				if (snapshot.graphicsTables[root].valid) {
+					SyncRootDescriptorTable(
+						commandList, false, root,
+						snapshot.graphicsTables[root].baseDescriptor);
+				}
+				if (snapshot.computeTables[root].valid) {
+					SyncRootDescriptorTable(
+						commandList, true, root,
+						snapshot.computeTables[root].baseDescriptor);
+				}
+			}
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"DrawSrv",
+				"restore_logical",
+				0,
+				static_cast<size_t>(snapshot.graphicsTableValidCount) +
+					snapshot.computeTableValidCount,
+				DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
+		}
+		DeferPendingRestore(commandList, &state);
 		replacement->drawSrvPatches.clear();
 		state = DX12ModIaReplacement::DrawSrvApplyState();
 	}

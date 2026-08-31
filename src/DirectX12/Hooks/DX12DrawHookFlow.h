@@ -45,6 +45,10 @@ public:
 	{
 		if (!runtimeState)
 			return false;
+		// A pending deferred draw-SRV restore must flush before any draw; the
+		// generic path routes through the draw executor, which flushes.
+		if (drawFlags & DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)
+			return false;
 		if (drawFlags & (DX12HotPathState::FLAG_HUNT_ENABLED |
 				DX12HotPathState::FLAG_FRAME_ANALYSIS_ACTIVE |
 				DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE |

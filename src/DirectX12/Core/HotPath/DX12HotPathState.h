@@ -15,6 +15,11 @@ enum DX12ModHotPathFlagBits : UINT32
 	DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT = 1u << 6
 };
 UINT32 DX12ModGetHotPathFlags();
+// Owned by the draw-SRV deferred restore (DX12DrawSrvReplacementUtils.h):
+// true while any command list has a patched mirror heap still bound. Read by
+// SourceState::Capture so the published HookWorkFlags word keeps the
+// pending-restore bit across Update() republishes.
+bool DX12ModHasPendingDrawSrvRestore();
 void DX12ActivateCommandListHotPathHooks();
 
 class DX12HotPathState
@@ -53,6 +58,12 @@ public:
 	static constexpr UINT64 FLAG_IA_RESIDENT_STATE        = 1ull << 8;
 	static constexpr UINT64 FLAG_SHADER_DESCRIPTOR_TRACK  = 1ull << 9;
 	static constexpr UINT64 FLAG_DRAW_SRV_SLOT_REPLACEMENT = 1ull << 10;
+	// A draw-SRV deferred restore is pending on some command list (patched
+	// mirror heap still bound). Not mod work by itself; it only forces the
+	// draw/dispatch fast paths into the hook so the deferred restore flushes
+	// before the next heap-observing command. Maintained by the pending
+	// table on transitions and re-published by Update().
+	static constexpr UINT64 FLAG_DRAWSRV_PENDING_RESTORE = 1ull << 11;
 
 	// Combined masks allow one branch for draw or dispatch hook work.
 	static constexpr UINT64 MASK_DRAW_WORK =
@@ -74,6 +85,7 @@ public:
 		bool shaderDescriptorTrack = false;
 		bool iaResidentState = false;
 		bool drawSrvSlotReplacement = false;
+		bool drawSrvPendingRestore = false;
 
 		static SourceState Capture()
 		{
@@ -96,6 +108,7 @@ public:
 				(modFlags & DX12_MOD_HOT_IA_RESIDENT_STATE) != 0;
 			state.drawSrvSlotReplacement =
 				(modFlags & DX12_MOD_HOT_DRAW_SRV_SLOT_REPLACEMENT) != 0;
+			state.drawSrvPendingRestore = DX12ModHasPendingDrawSrvRestore();
 			return state;
 		}
 
@@ -124,6 +137,8 @@ public:
 				flags |= FLAG_SHADER_DESCRIPTOR_TRACK;
 			if (drawSrvSlotReplacement)
 				flags |= FLAG_DRAW_SRV_SLOT_REPLACEMENT;
+			if (drawSrvPendingRestore)
+				flags |= FLAG_DRAWSRV_PENDING_RESTORE;
 			return flags;
 		}
 

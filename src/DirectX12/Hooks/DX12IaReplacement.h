@@ -92,6 +92,11 @@ public:
 	{
 		if (!commandList || !callbacks)
 			return;
+		// A deferred draw-SRV restore may still have a patched mirror heap
+		// bound on this list; the original draw must observe the game's own
+		// bindings. No-op probe when nothing is pending (and after a
+		// successful ApplyPending, which supersedes or borrows the entry).
+		DX12ModFlushDrawSrvReplacement(commandList);
 
 		if (draw.indexed) {
 			if (callbacks->drawIndexedInstanced) {
@@ -113,6 +118,11 @@ public:
 	{
 		if (!commandList || !callbacks)
 			return;
+		// Same deferred-restore guard as ExecuteOriginalDraw: replacement
+		// work recorded without a successful ApplyPending (e.g. a failed
+		// apply with handling=skip) must not execute against the stale
+		// patched mirror. Probe is a no-op after a successful apply.
+		DX12ModFlushDrawSrvReplacement(commandList);
 
 		for (const DX12ModIaReplacement::DispatchCall &dispatch : replacement.dispatches) {
 			if (!dispatch.groupsX || !dispatch.groupsY || !dispatch.groupsZ || !callbacks->dispatch)

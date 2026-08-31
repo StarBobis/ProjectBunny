@@ -136,6 +136,16 @@ void DX12ModRunPostShaderOverrideReplacement(
 void DX12ModRestoreDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	DX12ModIaReplacement *replacement);
+// Deferred draw-SRV restore (lazy heap switch): Restore performs only the
+// logical shadow restore and leaves the patched mirror heap bound on the
+// list. Flush replays the GPU-side restore before a command that observes
+// descriptor-heap state; Drop discards it silently when the game rebinds
+// descriptor heaps itself; Forget is the teardown half for
+// Reset/Unregister/ClearState.
+void DX12ModFlushDrawSrvReplacement(ID3D12GraphicsCommandList *commandList);
+void DX12ModDropDrawSrvReplacementForHeapChange(ID3D12GraphicsCommandList *commandList);
+void DX12ModForgetDrawSrvReplacementForCommandList(ID3D12GraphicsCommandList *commandList);
+bool DX12ModHasPendingDrawSrvRestore();
 void DX12ModClearIaReplacementRuntimeCaches();
 void DX12ModRecordGraphicsPipelineState(
 	ID3D12Device *device, ID3D12PipelineState *pipelineState,

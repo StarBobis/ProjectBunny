@@ -2347,6 +2347,7 @@ void DX12CommandListLifecycle::Unregister(ID3D12GraphicsCommandList *commandList
 
 	DX12ModForgetPreSkinOutputResizesForCommandList(commandList);
 	DX12ModForgetPreSkinReplacementForCommandList(commandList);
+	DX12ModForgetDrawSrvReplacementForCommandList(commandList);
 	DX12ModForgetPendingPreSkinSubmissionsForCommandList(commandList);
 	DX12BindingTracker::UnregisterCommandList(commandList);
 	DX12HuntUnregisterCommandList(commandList);
@@ -2362,6 +2363,7 @@ void DX12CommandListLifecycle::Reset(
 
 	DX12ModForgetPreSkinOutputResizesForCommandList(commandList);
 	DX12ModForgetPreSkinReplacementForCommandList(commandList);
+	DX12ModForgetDrawSrvReplacementForCommandList(commandList);
 	DX12ModForgetPendingPreSkinSubmissionsForCommandList(commandList);
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
@@ -2415,6 +2417,10 @@ void DX12CommandListLifecycle::ClearState(
 	if (!commandList)
 		return;
 
+	// ClearState resets every binding including descriptor heaps: a deferred
+	// draw-SRV restore refers to a binding session that no longer exists.
+	// Drop it quietly; the shadow trackers are reset below.
+	DX12ModForgetDrawSrvReplacementForCommandList(commandList);
 	const DX12CommandListTrackingState tracking =
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.recordBindingEvents)

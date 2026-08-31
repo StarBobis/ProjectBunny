@@ -1,4 +1,4 @@
-﻿// DX12DrawSrvReplacement.cpp: draw SRV replacement entry points.
+// DX12DrawSrvReplacement.cpp: draw SRV replacement entry points.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -27,4 +27,36 @@ void DX12ModRestoreDrawSrvReplacement(
 	DX12ModIaReplacement *replacement)
 {
 	DX12DrawSrvReplacementUtils::Restore(commandList, replacement);
+}
+
+
+
+void DX12ModFlushDrawSrvReplacement(ID3D12GraphicsCommandList *commandList)
+{
+	DX12DrawSrvReplacementUtils::FlushPendingRestore(commandList);
+}
+
+
+
+void DX12ModDropDrawSrvReplacementForHeapChange(ID3D12GraphicsCommandList *commandList)
+{
+	DX12DrawSrvReplacementUtils::DropPendingRestore(commandList);
+}
+
+
+
+void DX12ModForgetDrawSrvReplacementForCommandList(ID3D12GraphicsCommandList *commandList)
+{
+	DX12DrawSrvReplacementUtils::DropPendingRestore(commandList);
+}
+
+
+
+bool DX12ModHasPendingDrawSrvRestore()
+{
+	// Plain volatile probe (same ordering argument as the pre-skin active
+	// flag): a same-thread reader always observes its own writes in program
+	// order, and a stale cross-thread value only changes how much work a
+	// probe does, never its correctness.
+	return gDrawSrvPendingRestoreCount != 0;
 }

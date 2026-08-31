@@ -1,4 +1,4 @@
-﻿// Texture override matching and ExecuteIndirect runtime patching.
+// Texture override matching and ExecuteIndirect runtime patching.
 // Split from DX12Runtime.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -49,6 +49,9 @@ public:
 		UINT64 countBufferOffset,
 		Fn originalExecuteIndirect)
 	{
+		// Indirect draws/dispatches read descriptor tables: flush any
+		// deferred draw-SRV restore before either forward below.
+		DX12ModFlushDrawSrvReplacement(commandList);
 		if (!DX12ModNeedsPreSkinningUavProbe()) {
 			if (originalExecuteIndirect) {
 				originalExecuteIndirect(commandList, commandSignature, maxCommandCount,

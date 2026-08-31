@@ -572,7 +572,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		// MASK_DRAW_WORK==0 implies skipAll==1 (Update() publishes them
 		// together), so the single flags read covers both gates.
 			const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-			if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
+			// A pending draw-SRV deferred restore forces the slow path so it
+			// flushes before this draw observes descriptor-heap state.
+			if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
+					DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
 				mOrigDrawInstanced) {
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiDrawInstanced);
@@ -609,7 +612,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		INT BaseVertexLocation, UINT StartInstanceLocation) override
 	{
 		const UINT64 drawFlags = DX12HotPathState::HookWorkFlags;
-		if (!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
+		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
 			mOrigDrawIndexedInstanced) {
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
@@ -644,7 +648,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 	void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 	{
 		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
-		if ((!(dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK)) && mOrigDispatch) {
+		if ((!(dispatchFlags & (DX12HotPathState::MASK_DISPATCH_WORK |
+				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) && mOrigDispatch) {
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiDispatch);
 			mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
@@ -878,6 +883,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		DX12_HOTPATH_TIME_BEGIN(ExecuteBundleTotal);
 			ID3D12GraphicsCommandList *bundle =
 				DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList);
+			// The bundle's tables were recorded against the game's heap:
+			// restore it before the bundle observes descriptor-heap state.
+			DX12ModFlushDrawSrvReplacement(mCommandList);
 			DX12CommandListCommandRecorder::RecordExecuteBundle(bundle, nullptr);
 			mCommandList->ExecuteBundle(bundle);
 			DX12CommandListLifecycle::InvalidateAfterExecuteBundle(mCommandList);
@@ -888,6 +896,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
+			// The game re-establishes heap state itself here: drop any
+			// deferred draw-SRV restore silently (restoring first would be
+			// overwritten by this very call, and the spec invalidates all
+			// root table bindings on a heap change either way).
+			DX12ModDropDrawSrvReplacementForHeapChange(mCommandList);
 			// Four heaps fit on the stack; larger calls use heap storage.
 			ID3D12DescriptorHeap *stackUnwrapped[4];
 			ID3D12DescriptorHeap *const *activeHeaps = ppDescriptorHeaps;
@@ -1229,6 +1242,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+			// The GPU handle resolves against the currently bound heap:
+			// flush a deferred draw-SRV restore first.
+			DX12ModFlushDrawSrvReplacement(mCommandList);
 			if (DX12HotPathState::NeedsPreSkinProbe(
 					DX12HotPathState::HookWorkFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
@@ -1244,6 +1260,9 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 				DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+			// The GPU handle resolves against the currently bound heap:
+			// flush a deferred draw-SRV restore first.
+			DX12ModFlushDrawSrvReplacement(mCommandList);
 			if (DX12HotPathState::NeedsPreSkinProbe(
 					DX12HotPathState::HookWorkFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);

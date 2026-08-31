@@ -232,7 +232,16 @@ public:
 	{
 	public:
 		bool applied = false;
+		// This draw borrowed the still-bound mirror of the pending deferred
+		// restore (see DX12DrawSrvReplacementUtils.h): ApplyPending emitted
+		// nothing and Restore only releases the borrow.
+		bool borrowedPendingMirror = false;
 		ID3D12DescriptorHeap *patchHeap = nullptr;
+		// Plan identity of the emitted mirror; a pending deferred restore
+		// reuses the still-bound mirror when the next apply's fingerprint
+		// and reload generation match.
+		UINT64 planFingerprint = 0;
+		UINT64 reloadGeneration = 0;
 		CommandListBindingState originalBindings;
 	};
 	DrawSrvApplyState drawSrvApplyState;
