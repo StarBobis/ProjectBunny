@@ -121,6 +121,33 @@ public:
 };
 
 
+// TLS negative-cache entry for the flush probe (same contract as the
+// pre-skin restore probe): recording is single-threaded per command list,
+// so (list, shard generation) exactly proves "no pending entry for this
+// list" and keeps the per-draw cost at two loads while a restore is pending
+// anywhere in the process.
+class DX12DrawSrvTlsNoPendingRestore
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 generation = 0;
+};
+
+
+// TLS fast-path entry for the signature plan resolve: the same root
+// signature repeats across draws, so a thread-local snapshot serves the
+// common case with a pointer compare instead of the shared cache lock +
+// hash lookup (the previous DX11-style global table cost two locked ops and
+// a map probe per draw, serializing parallel recording threads).
+class DX12DrawSrvTlsSignaturePlanEntry
+{
+public:
+	ID3D12RootSignature *rootSignature = nullptr;
+	UINT64 rootSignatureHash = 0;
+	DX12DrawSrvSignaturePlanTemplate plan;
+};
+
+
 class DX12DrawSrvReplacementUtils
 {
 public:
@@ -312,17 +339,7 @@ public:
 		if (!commandList || gDrawSrvPendingRestoreCount == 0)
 			return;
 
-		// TLS negative cache (same contract as the pre-skin restore probe):
-		// recording is single-threaded per command list, so (list, shard
-		// generation) exactly proves "no pending entry for this list" and
-		// keeps the per-draw cost at two loads while a restore is pending
-		// anywhere in the process.
-		struct TlsNoPendingRestore
-		{
-			ID3D12GraphicsCommandList *commandList = nullptr;
-			UINT64 generation = 0;
-		};
-		thread_local TlsNoPendingRestore tlsNoPendingRestore;
+		thread_local DX12DrawSrvTlsNoPendingRestore tlsNoPendingRestore;
 		DX12DrawSrvPendingRestoreShard &shard =
 			DrawSrvPendingRestoreShardFor(commandList);
 		const UINT64 mutationGeneration =
@@ -498,19 +515,7 @@ public:
 		if (!plan || !rootSignature.rootSignature)
 			return false;
 
-		// TLS fast path: draw-SRV replacement resolves the signature plan on
-		// every draw, and the same root signature repeats across draws. A
-		// thread-local snapshot serves the common case with a pointer compare
-		// instead of the shared cache lock + hash lookup (the previous
-		// DX11-style global table cost two locked ops and a map probe per
-		// draw, serializing parallel recording threads).
-		struct TlsSignaturePlanEntry
-		{
-			ID3D12RootSignature *rootSignature = nullptr;
-			UINT64 rootSignatureHash = 0;
-			DX12DrawSrvSignaturePlanTemplate plan;
-		};
-		static thread_local TlsSignaturePlanEntry tls;
+		static thread_local DX12DrawSrvTlsSignaturePlanEntry tls;
 		if (tls.rootSignature == rootSignature.rootSignature &&
 		    tls.rootSignatureHash == rootSignature.hash) {
 			*plan = tls.plan;

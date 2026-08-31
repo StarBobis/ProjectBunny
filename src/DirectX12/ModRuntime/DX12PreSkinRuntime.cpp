@@ -3264,6 +3264,42 @@ bool DX12ModHasActivePreSkinningUavReplacement()
 }
 
 
+// Descriptor-table copy plan for ApplyPreSkinDescriptorTablePatchLocked:
+// one entry per root table mirrored into the descriptor ring.
+class DX12PreSkinTableCopy
+{
+public:
+	UINT root = 0;
+	SIZE_T cpuStart = 0;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = {};
+	ID3D12DescriptorHeap *heap = nullptr;
+	UINT increment = 0;
+	UINT count = 0;
+	UINT tempOffset = 0;
+};
+
+// Hash key over the identity of a DX12PreSkinTableCopy entry.
+class DX12PreSkinTableLookupKey
+{
+public:
+	static UINT64 Build(const DX12CurrentComputeUavBinding &binding)
+	{
+		UINT64 hash = binding.rootParameterIndex;
+		hash = HashCombine64(hash, static_cast<UINT64>(binding.tableCpuStart));
+		hash = HashCombine64(hash, binding.tableGpuStart.ptr);
+		return hash;
+	}
+
+	static UINT64 Build(const DX12PreSkinTableCopy &table)
+	{
+		UINT64 hash = table.root;
+		hash = HashCombine64(hash, static_cast<UINT64>(table.cpuStart));
+		hash = HashCombine64(hash, table.gpuStart.ptr);
+		return hash;
+	}
+};
+
+
 bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &uavBinding, const DX12ComputeUavProducer &producer,
@@ -3281,21 +3317,8 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
 
-	class TableCopy
-
-	{
-
-	public:
-		UINT root = 0;
-		SIZE_T cpuStart = 0;
-		D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = {};
-		ID3D12DescriptorHeap *heap = nullptr;
-		UINT increment = 0;
-		UINT count = 0;
-		UINT tempOffset = 0;
-	};
-	static thread_local std::vector<TableCopy> tlsTables;
-	std::vector<TableCopy> &tables = tlsTables;
+	static thread_local std::vector<DX12PreSkinTableCopy> tlsTables;
+	std::vector<DX12PreSkinTableCopy> &tables = tlsTables;
 	tables.clear();
 	auto addTable = [&tables](const DX12CurrentComputeUavBinding &binding)
 	{
@@ -3304,7 +3327,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			return;
 		const UINT needed = (std::max)(binding.tableCopyCount ? binding.tableCopyCount : 1,
 									   binding.descriptorOffset + 1);
-		for (TableCopy &table : tables)
+		for (DX12PreSkinTableCopy &table : tables)
 		{
 			if (table.root == binding.rootParameterIndex &&
 				table.cpuStart == binding.tableCpuStart &&
@@ -3314,7 +3337,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				return;
 			}
 		}
-		TableCopy table;
+		DX12PreSkinTableCopy table;
 		table.root = binding.rootParameterIndex;
 		table.cpuStart = binding.tableCpuStart;
 		table.gpuStart = binding.tableGpuStart;
@@ -3570,7 +3593,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 
 	UINT totalDescriptors = 0;
-	for (TableCopy &table : tables)
+	for (DX12PreSkinTableCopy &table : tables)
 	{
 		table.tempOffset = totalDescriptors;
 		totalDescriptors += table.count;
@@ -3594,19 +3617,19 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	DX12_HOTPATH_TIME_END(PreSkinRingAlloc);
 	// Batch all table copies into one CopyDescriptors call: destinations are
 	// disjoint slots in the fresh ring range, sources live in other heaps.
-	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsTableCopyDestStarts;
-	static thread_local std::vector<UINT> tlsTableCopyDestSizes;
-	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsTableCopySrcStarts;
-	static thread_local std::vector<UINT> tlsTableCopySrcSizes;
-	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopyDestStarts = tlsTableCopyDestStarts;
-	std::vector<UINT> &tableCopyDestSizes = tlsTableCopyDestSizes;
-	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopySrcStarts = tlsTableCopySrcStarts;
-	std::vector<UINT> &tableCopySrcSizes = tlsTableCopySrcSizes;
+	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsDX12PreSkinTableCopyDestStarts;
+	static thread_local std::vector<UINT> tlsDX12PreSkinTableCopyDestSizes;
+	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsDX12PreSkinTableCopySrcStarts;
+	static thread_local std::vector<UINT> tlsDX12PreSkinTableCopySrcSizes;
+	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopyDestStarts = tlsDX12PreSkinTableCopyDestStarts;
+	std::vector<UINT> &tableCopyDestSizes = tlsDX12PreSkinTableCopyDestSizes;
+	std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> &tableCopySrcStarts = tlsDX12PreSkinTableCopySrcStarts;
+	std::vector<UINT> &tableCopySrcSizes = tlsDX12PreSkinTableCopySrcSizes;
 	tableCopyDestStarts.clear();
 	tableCopyDestSizes.clear();
 	tableCopySrcStarts.clear();
 	tableCopySrcSizes.clear();
-	for (const TableCopy &table : tables)
+	for (const DX12PreSkinTableCopy &table : tables)
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE src = {};
 		src.ptr = table.cpuStart;
@@ -3632,34 +3655,15 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	tableCopySrcSizes.clear();
 
 	DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
-	class TableCopyLookupKeyUtils
-	{
-	public:
-		static UINT64 Build(const DX12CurrentComputeUavBinding &binding)
-		{
-			UINT64 hash = binding.rootParameterIndex;
-			hash = HashCombine64(hash, static_cast<UINT64>(binding.tableCpuStart));
-			hash = HashCombine64(hash, binding.tableGpuStart.ptr);
-			return hash;
-		}
-
-		static UINT64 Build(const TableCopy &table)
-		{
-			UINT64 hash = table.root;
-			hash = HashCombine64(hash, static_cast<UINT64>(table.cpuStart));
-			hash = HashCombine64(hash, table.gpuStart.ptr);
-			return hash;
-		}
-	};
 	static thread_local std::unordered_map<UINT64, size_t> tlsTableLookup;
 	std::unordered_map<UINT64, size_t> &tableLookup = tlsTableLookup;
 	tableLookup.clear();
 	tableLookup.reserve(tables.size());
 	for (size_t tableIndex = 0; tableIndex < tables.size(); ++tableIndex)
-		tableLookup[TableCopyLookupKeyUtils::Build(tables[tableIndex])] = tableIndex;
-	auto findTable = [&tables, &tableLookup](const DX12CurrentComputeUavBinding &binding) -> const TableCopy *
+		tableLookup[DX12PreSkinTableLookupKey::Build(tables[tableIndex])] = tableIndex;
+	auto findTable = [&tables, &tableLookup](const DX12CurrentComputeUavBinding &binding) -> const DX12PreSkinTableCopy *
 	{
-		const auto found = tableLookup.find(TableCopyLookupKeyUtils::Build(binding));
+		const auto found = tableLookup.find(DX12PreSkinTableLookupKey::Build(binding));
 		if (found == tableLookup.end() || found->second >= tables.size())
 			return nullptr;
 		return &tables[found->second];
@@ -3726,7 +3730,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			StorePreSkinSrvStableProbeNegative(stableNegativeKey, negativeKey);
 			continue;
 		}
-		const TableCopy *table = findTable(srv);
+		const DX12PreSkinTableCopy *table = findTable(srv);
 		if (!table)
 		{
 			StorePreSkinSrvProbeNegative(negativeKey);
@@ -3790,7 +3794,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		{
 			if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV")
 				continue;
-			const TableCopy *table = findTable(cbv);
+			const DX12PreSkinTableCopy *table = findTable(cbv);
 			if (!table)
 				continue;
 			D3D12_CPU_DESCRIPTOR_HANDLE dst = tempCpuBase;
@@ -3842,7 +3846,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		const UINT64 currentByteWidth = DescriptorViewSize(uavBinding.descriptor);
 		if (requiredByteWidth > currentByteWidth)
 		{
-			const TableCopy *uavTable = findTable(uavBinding);
+			const DX12PreSkinTableCopy *uavTable = findTable(uavBinding);
 			if (uavResource && uavTable &&
 				AcquirePreSkinOutputResizeCacheEntry(
 					device, commandList, uavResource,
@@ -3926,7 +3930,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	state.restoreCbvSrvUavHeap = restoreCbvSrvUavHeap;
 	state.restoreSamplerHeap = restoreSamplerHeap;
 	state.temporaryResources = temporaryResources;
-	for (const TableCopy &table : tables)
+	for (const DX12PreSkinTableCopy &table : tables)
 	{
 		D3D12_GPU_DESCRIPTOR_HANDLE gpu = tempGpuBase;
 		gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
@@ -3949,7 +3953,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		tlsCloneCache.heap = tempHeap;
 		tlsCloneCache.tableRestores = state.tableRestores;
 		tlsCloneCache.patchedTables.reserve(tables.size());
-		for (const TableCopy &table : tables)
+		for (const DX12PreSkinTableCopy &table : tables)
 		{
 			D3D12_GPU_DESCRIPTOR_HANDLE gpu = tempGpuBase;
 			gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
@@ -4120,6 +4124,31 @@ bool ApplyPreSkinBindingPatchLocked(
 
 
 
+// TLS plan cache for DX12ModApplyPreSkinningUavReplacement: the full match
+// outcome of the previous dispatch on this thread, re-validated against the
+// live bindings before reuse.
+class PreSkinMatchPlanCache
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 reloadGeneration = 0;
+	UINT64 bindingFingerprint = 0;
+	UINT64 bindingDependencyFingerprint = 0;
+	UINT64 bufferContentGeneration = 0;
+	uint64_t computeShaderHash = 0;
+	DX12ComputeUavProducer producer;
+	DX12VertexLimitRaiseConfig vlr;
+	std::wstring vlrResourceName;
+	DX12CurrentComputeUavBinding hashBinding;
+	DX12UavHashTextureOverrideMatch hashMatch;
+	bool valid = false;
+	bool hashMatched = false;
+	bool explicitMatchCs = false;
+	bool hasExplicitDispatch = false;
+	bool vlrMatched = false;
+};
+
+
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
@@ -4167,26 +4196,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	bool explicitMatchCs = false;
 	bool hasExplicitDispatch = false;
 	bool vlrMatched = false;
-	class PreSkinMatchPlanCache
-	{
-	public:
-		ID3D12GraphicsCommandList *commandList = nullptr;
-		UINT64 reloadGeneration = 0;
-		UINT64 bindingFingerprint = 0;
-		UINT64 bindingDependencyFingerprint = 0;
-		UINT64 bufferContentGeneration = 0;
-		uint64_t computeShaderHash = 0;
-		DX12ComputeUavProducer producer;
-		DX12VertexLimitRaiseConfig vlr;
-		std::wstring vlrResourceName;
-		DX12CurrentComputeUavBinding hashBinding;
-		DX12UavHashTextureOverrideMatch hashMatch;
-		bool valid = false;
-		bool hashMatched = false;
-		bool explicitMatchCs = false;
-		bool hasExplicitDispatch = false;
-		bool vlrMatched = false;
-	};
 	thread_local PreSkinMatchPlanCache tlsMatchPlan;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	// The plan key deliberately uses the cross-frame stable binding
@@ -4517,6 +4526,24 @@ void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandLi
 }
 
 
+// Command-list-local negative cache entry for the restore probe below: while
+// no mutation has happened on THIS list's shard, "this list has no pending
+// restore" cannot change. Recording is single-threaded per command list, so
+// a thread-local entry keyed by the list pointer plus its shard's mutation
+// generation is exact; inserts/erases on other shards no longer invalidate
+// it (a pre-skin apply on one list used to force every other recording
+// thread back onto the global exclusive lock on its next draw). This keeps
+// the per-draw cost at two loads instead of an SRW lock + unordered_map
+// lookup on every draw/dispatch/binding mutation while any pre-skin
+// replacement is pending anywhere in the process.
+class DX12PreSkinTlsNoPendingRestore
+{
+public:
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	UINT64 generation = 0;
+};
+
+
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList)
 {
 	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
@@ -4524,22 +4551,7 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	if (!commandList || gHasActivePreSkinReplacement == 0)
 		return;
 
-	// Command-list-local negative cache: while no mutation has happened on
-	// THIS list's shard, "this list has no pending restore" cannot change.
-	// Recording is single-threaded per command list, so a thread-local entry
-	// keyed by the list pointer plus its shard's mutation generation is
-	// exact; inserts/erases on other shards no longer invalidate it (a
-	// pre-skin apply on one list used to force every other recording thread
-	// back onto the global exclusive lock on its next draw). This keeps the
-	// per-draw cost at two loads instead of an SRW lock + unordered_map
-	// lookup on every draw/dispatch/binding mutation while any pre-skin
-	// replacement is pending anywhere in the process.
-	struct TlsNoPendingRestore
-	{
-		ID3D12GraphicsCommandList *commandList = nullptr;
-		UINT64 generation = 0;
-	};
-	thread_local TlsNoPendingRestore tlsNoPendingRestore;
+	thread_local DX12PreSkinTlsNoPendingRestore tlsNoPendingRestore;
 	DX12PreSkinReplacementShard &restoreShard =
 		PreSkinReplacementShardFor(commandList);
 	const UINT64 mutationGeneration =
@@ -4962,6 +4974,19 @@ bool DX12ModHasActivePreSkinTextureOverrides()
 }
 
 
+// TLS verdict cache entry for the CS-hash probe below: the configured CS
+// hash set only changes on mod reload, so the dispatch hot path does not
+// take the global mod lock on every dispatch (this predicate is consulted
+// 2-3 times per dispatch and the game rotates through a small CS set).
+class DX12PreSkinTlsProbeCsCacheEntry
+{
+public:
+	uint64_t hash = 0;
+	bool result = false;
+	bool valid = false;
+};
+
+
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 {
 	if (gDx12SafeMode != 0 ||
@@ -4970,17 +4995,7 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 		gHasPreSkinTextureOverrideCandidates == 0)
 		return false;
 
-	// The configured CS hash set only changes on mod reload. Cache the
-	// verdict per CS hash in TLS so the dispatch hot path does not take the
-	// global mod lock on every dispatch (this predicate is consulted 2-3
-	// times per dispatch and the game rotates through a small CS set).
-	struct TlsProbeCsCacheEntry
-	{
-		uint64_t hash = 0;
-		bool result = false;
-		bool valid = false;
-	};
-	thread_local std::array<TlsProbeCsCacheEntry, 32> tlsProbeCsCache;
+	thread_local std::array<DX12PreSkinTlsProbeCsCacheEntry, 32> tlsProbeCsCache;
 	static thread_local UINT64 tlsProbeCsReloadGeneration = 0;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	if (reloadGeneration != tlsProbeCsReloadGeneration)
@@ -4993,7 +5008,7 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 	const UINT slot = static_cast<UINT>(computeShaderHash ^
 										(computeShaderHash >> 32)) &
 					  slotMask;
-	TlsProbeCsCacheEntry &tlsEntry = tlsProbeCsCache[slot];
+	DX12PreSkinTlsProbeCsCacheEntry &tlsEntry = tlsProbeCsCache[slot];
 	if (tlsEntry.valid && tlsEntry.hash == computeShaderHash)
 		return tlsEntry.result;
 
@@ -5179,16 +5194,20 @@ bool PreloadPreSkinReplacementResources(ID3D12Device *device)
 }
 
 
+// (byteWidth, stride) pair offered by a configured pre-skin texture override,
+// used by the preload pass below to size the output-resize cache.
+struct PreSkinOutputResizeCandidate
+{
+	UINT64 byteWidth = 0;
+	UINT stride = 0;
+};
+
+
 bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 {
 	if (!device || gHasPreSkinTextureOverrideCandidates == 0)
 		return false;
 
-	struct PreSkinOutputResizeCandidate
-	{
-		UINT64 byteWidth = 0;
-		UINT stride = 0;
-	};
 	std::vector<PreSkinOutputResizeCandidate> candidates;
 	{
 		DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);

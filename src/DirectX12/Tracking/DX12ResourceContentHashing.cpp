@@ -127,6 +127,15 @@ static bool SearchBackwardForCoveringBuffer(
 }
 };
 
+// Small TLS ring of recently resolved buffer ranges for
+// DX12ResolveBufferResourceByGpuVa: streamer uploads walk VAs in bursts, so
+// the last 32 resolutions cover most lookups without touching the maps.
+struct DX12LocalBufferResolveCache
+{
+	size_t next = 0;
+	std::array<BufferResolveCacheEntry, 32> entries = {};
+};
+
 bool DX12ResolveBufferResourceByGpuVa(
 	UINT64 gpuVirtualAddress, UINT64 size, DX12BufferResourceSummary *summary)
 {
@@ -144,12 +153,7 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (DX12TryResolveFromGpuVaWrapper(gpuVirtualAddress, size, summary))
 		return true;
 
-	struct LocalBufferResolveCache
-	{
-		size_t next = 0;
-		std::array<BufferResolveCacheEntry, 32> entries = {};
-	};
-	static thread_local LocalBufferResolveCache localCache;
+	static thread_local DX12LocalBufferResolveCache localCache;
 	for (size_t cacheIndex = 0;
 			cacheIndex < localCache.entries.size();
 			++cacheIndex) {
@@ -732,6 +736,17 @@ bool DX12CacheBufferContent(ID3D12Resource *resource, const void *data, size_t d
 	return DX12CacheBufferContentRange(resource, 0, data, dataSize);
 }
 
+// One modified page collected during the readback pass of
+// DX12CacheBufferContentRange and committed under the exclusive lock.
+struct DX12ChangedBufferPage
+{
+	size_t index = 0;
+	UINT64 copyBegin = 0;
+	UINT64 copyEnd = 0;
+	bool wasValid = false;
+	std::array<uint8_t, DX12BufferContentCacheUtils::PageSize> data = {};
+};
+
 bool DX12CacheBufferContentRange(
 	ID3D12Resource *resource, UINT64 resourceOffset, const void *data, size_t dataSize)
 {
@@ -760,15 +775,7 @@ bool DX12CacheBufferContentRange(
 	DX12BufferContentCacheUtils::PageRange(
 		resourceOffset, static_cast<UINT64>(dataSize), &firstPage, &lastPage);
 
-	struct ChangedPage
-	{
-		size_t index = 0;
-		UINT64 copyBegin = 0;
-		UINT64 copyEnd = 0;
-		bool wasValid = false;
-		std::array<uint8_t, DX12BufferContentCacheUtils::PageSize> data = {};
-	};
-	std::vector<ChangedPage> changed;
+	std::vector<DX12ChangedBufferPage> changed;
 	changed.reserve(64);
 	size_t changedPages = 0;
 	size_t changedBytes = 0;
@@ -807,7 +814,7 @@ bool DX12CacheBufferContentRange(
 			if (oldValid && memcmp(oldPage->data.data() + pageOffset,
 				static_cast<const uint8_t*>(data) + srcOffset, copySize) == 0)
 				continue;
-			ChangedPage update;
+			DX12ChangedBufferPage update;
 			update.index = page;
 			update.copyBegin = copyBegin;
 			update.copyEnd = copyEnd;
@@ -833,7 +840,7 @@ bool DX12CacheBufferContentRange(
 			gBufferRegionHashesByResource[resource].clear();
 		}
 		DX12BufferContentCacheUtils::EnsureEntryStorage(&entry, requiredSize);
-		for (const ChangedPage &update : changed) {
+		for (const DX12ChangedBufferPage &update : changed) {
 			CachedBufferContent::Page &page = entry.pages[update.index];
 			page.data = update.data;
 			if (page.version == UINT32_MAX)
@@ -849,7 +856,7 @@ bool DX12CacheBufferContentRange(
 		}
 		changedPages = changed.size();
 		changedBytes = 0;
-		for (const ChangedPage &update : changed)
+		for (const DX12ChangedBufferPage &update : changed)
 			changedBytes += static_cast<size_t>(update.copyEnd - update.copyBegin);
 		if (changedPages != 0)
 			entry.generation = gBufferContentGeneration.fetch_add(

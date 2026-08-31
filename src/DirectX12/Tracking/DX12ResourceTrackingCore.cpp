@@ -1391,13 +1391,11 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 {
 	if (!cpuHandle || !location)
 		return false;
-	struct DescriptorHeapLookupCache
-	{
-		size_t heapIndex = SIZE_MAX;
-	};
-	static thread_local DescriptorHeapLookupCache cache;
+	// One-entry TLS cache of the heap that resolved the previous handle:
+	// games walk descriptors sequentially, so most lookups hit it directly.
+	static thread_local size_t cachedHeapIndex = SIZE_MAX;
 	if (DescriptorSlotFromHeapLocked(
-			cache.heapIndex, cpuHandle, requiredType, location, slotsAvailable))
+			cachedHeapIndex, cpuHandle, requiredType, location, slotsAvailable))
 		return true;
 	auto heapByStart = gDescriptorHeapByCpuStart.upper_bound(cpuHandle);
 	if (heapByStart == gDescriptorHeapByCpuStart.begin())
@@ -1405,7 +1403,7 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	--heapByStart;
 	if (DescriptorSlotFromHeapLocked(
 			heapByStart->second, cpuHandle, requiredType, location, slotsAvailable)) {
-		cache.heapIndex = heapByStart->second;
+		cachedHeapIndex = heapByStart->second;
 		return true;
 	}
 	return false;

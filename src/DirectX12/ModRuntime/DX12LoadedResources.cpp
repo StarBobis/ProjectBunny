@@ -838,6 +838,24 @@ bool DX12HasStaticIaReplacements()
 }
 
 
+// TLS resolution cache entry. Within one reload generation the resolution of
+// a content hash to the mod buffer (GPU VA / byte width / stride / format)
+// is stable: the static IA table is published once per reload and the loaded
+// resources it points at are resident UPLOAD-heap buffers that are only
+// retired during the next reload (which also bumps gReloadGeneration).
+// Caching per thread keeps every IA bind off the atomic<shared_ptr> snapshot
+// load (MSVC spinlock + shared control-block cache line) and off gModLock:
+// one volatile generation read plus a map lookup, instead of a snapshot load
+// + hash find + shared lock per bind per slot on every recording thread.
+struct DX12StaticIaResolvedView
+{
+	bool resolved = false;
+	D3D12_GPU_VIRTUAL_ADDRESS gpuVa = 0;
+	UINT64 byteWidth = 0;
+	UINT stride = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+
 // Bind-time static IA replacement (plan step 3.2). Resolves the mod buffer
 // for a bound IB/VB whose content hash matches an unconditional static
 // geometry override, and builds the replacement view exactly the way the
@@ -865,24 +883,6 @@ bool DX12ResolveStaticIaReplacement(
 	if (!indexBuffer && vertexSlot >= 32)
 		return false;
 
-	// TLS resolution cache. Within one reload generation the resolution of a
-	// content hash to the mod buffer (GPU VA / byte width / stride / format)
-	// is stable: the static IA table is published once per reload and the
-	// loaded resources it points at are resident UPLOAD-heap buffers that are
-	// only retired during the next reload (which also bumps
-	// gReloadGeneration). Caching per thread keeps every IA bind off the
-	// atomic<shared_ptr> snapshot load (MSVC spinlock + shared control-block
-	// cache line) and off gModLock: one volatile generation read plus a map
-	// lookup, instead of a snapshot load + hash find + shared lock per bind
-	// per slot on every recording thread.
-	struct DX12StaticIaResolvedView
-	{
-		bool resolved = false;
-		D3D12_GPU_VIRTUAL_ADDRESS gpuVa = 0;
-		UINT64 byteWidth = 0;
-		UINT stride = 0;
-		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-	};
 	static thread_local UINT64 tlsStaticIaGeneration = 0;
 	static thread_local std::unordered_map<UINT64, DX12StaticIaResolvedView>
 		tlsStaticIaCache;
