@@ -36,7 +36,7 @@
       "LaunchArguments": "",
       "CopyToTargetDirectoryPath": "D:\\Dev\\ssmt4\\src-tauri\\resources\\DX12\\",
       "ExtraCopyToTargetDirectoryPaths": [
-        "D:\\SSMTCacheFolder\\3Dmigoto\\ZZMIDX12"
+        "D:\\SSMT5CacheFolder\\3Dmigoto\\ZZZ\\"
       ],
       "CopyToTargetDirectory": true,
       "LaunchGame": false,

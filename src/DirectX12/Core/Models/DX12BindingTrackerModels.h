@@ -481,12 +481,15 @@ public:
 	static void ResolveAndRetainIaResource(
 		UINT64 gpuVirtualAddress, UINT64 size,
 		DX12BufferResourceSummary *summary, bool *resolved);
+	// Resolves deferred IA views on a snapshot copy (used by the queue's
+	// full-state packets); safe without the shard lock on a private copy.
+	static void ResolveDeferredIaResourcesForSnapshot(CommandListBindingState *state);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 descriptorEpoch, UINT64 captureSessionId = 0);
 	static bool BuildEvent(BindingEvent *event, const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreEventLocked(const BindingEvent &event);
 	static void StoreEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state);
 	static void StoreOutputEventLocked(const char *kind, ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT slot, SIZE_T cpuHandle, UINT64 drawId, UINT64 captureSessionId = 0);
-	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId = 0);
+	static void StoreCurrentOutputTargetsLocked(ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId = 0, UINT64 drawSerial = 0);
 	static bool GetCurrentDescriptors(ID3D12GraphicsCommandList *commandList, bool compute, D3D12_DESCRIPTOR_RANGE_TYPE rangeType, const char *descriptorKind, D3D12_ROOT_PARAMETER_TYPE rootDescriptorType, std::vector<DX12CurrentComputeUavBinding> *uavs);
 	static bool SetRootConstantsLocked(RootConstantsState *constants, UINT rootParameterIndex, UINT destOffset, UINT count, const void *values);
 };

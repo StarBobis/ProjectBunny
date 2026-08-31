@@ -1,4 +1,4 @@
-﻿// DX12BindingTracker: sharded binding state, runtime snapshots and query caches.
+// DX12BindingTracker: sharded binding state, runtime snapshots and query caches.
 // Split from DX12BindingTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -7,6 +7,7 @@
 #include "DX12Resources.h"
 #include "DX12Presentation.h"
 #include <chrono>
+#include <memory>
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -2494,6 +2495,17 @@ static void ResolveDeferredIaResources(CommandListBindingState *state)
 	}
 }
 
+void DX12BindingTracker::ResolveDeferredIaResourcesForSnapshot(
+	CommandListBindingState *state)
+{
+	if (!state)
+		return;
+	// Snapshot copies are owned by the caller; resolving them is safe without
+	// the shard lock because the resource database lookups take their own
+	// locks and the copy is not shared.
+	ResolveDeferredIaResources(state);
+}
+
 void DX12BindingTracker::ResolveAndRetainIaResource(
 	UINT64 gpuVirtualAddress, UINT64 size,
 	DX12BufferResourceSummary *summary, bool *resolved)
@@ -2646,18 +2658,18 @@ void DX12BindingTracker::StoreOutputEventLocked(
 }
 
 void DX12BindingTracker::StoreCurrentOutputTargetsLocked(
-	ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId)
+	ID3D12GraphicsCommandList *commandList, const CommandListBindingState &state, UINT64 captureSessionId, UINT64 drawSerial)
 {
 	if (captureSessionId == 0)
 		captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	for (UINT i = 0; i < MaxRenderTargetSlots; ++i) {
 		if (state.renderTargetValid[i])
 			DX12BindingTracker::StoreOutputEventLocked("RTV", commandList, state, i,
-				state.renderTargets[i].ptr, state.drawSerial, captureSessionId);
+				state.renderTargets[i].ptr, drawSerial, captureSessionId);
 	}
 	if (state.depthStencilValid)
 		DX12BindingTracker::StoreOutputEventLocked("DSV", commandList, state, 0,
-			state.depthStencil.ptr, state.drawSerial, captureSessionId);
+			state.depthStencil.ptr, drawSerial, captureSessionId);
 }
 
 void DX12BindingTracker::ReleaseRecordedEvent(CommandListRecordedEvent *event)
@@ -2690,7 +2702,9 @@ void DX12BindingTracker::RecordTemplateEvent(
 	recorded.kind = CommandListRecordedEventKind::Binding;
 	recorded.binding = event;
 	recorded.binding.commandList = commandList;
-	recorded.binding.captureSessionId = 0;
+	// Stamp the session at record time: a lagged submit marker can then move
+	// only this session's events and can never pollute a newer capture.
+	recorded.binding.captureSessionId = event.captureSessionId;
 	recorded.binding.serial = 0;
 	DX12BindingTracker::RetainEventIaResources(&recorded.binding);
 	const std::string kind = recorded.binding.kind;
@@ -2717,7 +2731,8 @@ void DX12BindingTracker::RecordTemplateOutputEvent(
 	recorded.kind = CommandListRecordedEventKind::Output;
 	recorded.output = event;
 	recorded.output.commandList = commandList;
-	recorded.output.captureSessionId = 0;
+	// Stamp the session at record time; see RecordTemplateEvent.
+	recorded.output.captureSessionId = event.captureSessionId;
 	recorded.output.serial = 0;
 	const std::string kind = recorded.output.kind;
 
@@ -2794,36 +2809,12 @@ void DX12BindingTracker::SubmitCommandList(ID3D12GraphicsCommandList *commandLis
 	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
 	if (captureSessionId == 0)
 		return;
-	const UINT64 targetSequence = DX12BindingCollectQueue::LastSubmittedSequence();
-	if (targetSequence != 0) {
-		DX12BindingCollectQueue::WaitForSubmittedSequence(
-			targetSequence,
-			"SubmitCommandList");
-	}
-
-	std::vector<CommandListRecordedEvent> events;
-	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
-	AcquireSRWLockShared(&shard.lock);
-	auto it = shard.recordedEvents.find(commandList);
-	if (it != shard.recordedEvents.end()) {
-		events = it->second;
-		for (CommandListRecordedEvent &event : events) {
-			if (event.kind == CommandListRecordedEventKind::Binding)
-				DX12BindingTracker::RetainEventIaResources(&event.binding);
-		}
-	}
-	ReleaseSRWLockShared(&shard.lock);
-
-	for (const CommandListRecordedEvent &event : events)
-		DX12BindingTracker::SubmitRecordedEvent(event, captureSessionId);
-	for (CommandListRecordedEvent &event : events)
-		DX12BindingTracker::ReleaseRecordedEvent(&event);
-
-	DX12FrameAnalysis::LogJsonFunc("BindingSubmitCommandList",
-		"\"commandList\":\"%p\",\"captureSessionId\":%llu,\"templates\":%zu",
-		commandList,
-		static_cast<unsigned long long>(captureSessionId),
-		events.size());
+	// Submission is a queue marker: the worker moves this command list's
+	// recorded events into the ledger after every event task enqueued before
+	// this submit (FIFO), so the recording thread never waits on the worker.
+	// D3D12 guarantees recording stopped (Close) before ExecuteCommandLists,
+	// so no event task for this CL can follow the marker in the queue.
+	DX12BindingCollectQueue::EnqueueSubmitCommandList(commandList, captureSessionId);
 }
 
 bool DX12BindingTracker::RegisterCommandList(ID3D12GraphicsCommandList *commandList)
@@ -2889,6 +2880,10 @@ bool DX12BindingTracker::UnregisterCommandList(ID3D12GraphicsCommandList *comman
 		tlsStateCache.state = nullptr;
 	}
 
+	// Drop the recorder-side delta stream and order the worker's
+	// materialized-state cleanup behind any in-flight events for this CL.
+	DX12BindingCollectQueue::EraseRecorderState(commandList);
+
 	if (removedState || removedEvents) {
 		DX12LogManager::Fields("DX12BindingTracker",
 			"stage=unregister_command_list,commandList=%p,state=%u,recordedEvents=%zu",
@@ -2930,6 +2925,11 @@ void DX12BindingTracker::ResetCommandList(
 	tlsComputeAllQueryCache.commandList = nullptr;
 	tlsStateCache.commandList = nullptr;
 	tlsStateCache.state = nullptr;
+
+	// The re-recorded stream starts from a clean slate: the next event sends
+	// a full snapshot so the worker's materialized state cannot carry state
+	// from the previous recording pass.
+	DX12BindingCollectQueue::ResetRecorderState(commandList);
 }
 
 bool DX12BindingTracker::SetPipelineState(
@@ -2971,6 +2971,12 @@ bool DX12BindingTracker::SetPipelineState(
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordPsoChanged();
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	// Shadow stream: record the mutation for the async worker's replay.
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::PipelineState;
+	entry.pipelineState = pipelineState;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3011,17 +3017,19 @@ bool DX12BindingTracker::SetGraphicsRootSignature(
 	// D3D12 root arguments become stale when the root signature changes. Keep
 	// Binding State subject to the same rule so a table from the previous root
 	// signature can never be matched or replayed against the new layout.
-	for (UINT root = 0; root < MaxRootParameters; ++root) {
-		state.graphicsTables[root] = RootTableState();
-		state.graphicsRootDescriptors[root] = RootDescriptorState();
-		state.graphicsRootConstants[root] = RootConstantsState();
-	}
-	state.graphicsTableValidCount = 0;
+	// Shared with the queue's delta replay so the live state and the
+	// materialized state can never diverge.
+	DX12BindingCollectQueue::ResetGraphicsRootArguments(&state);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(true);
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsGraphicsTableCache.cl = nullptr;
 	tlsGraphicsDescCache.cl = nullptr;
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::GraphicsRootSignature;
+	entry.rootSignature = rootSignature;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3055,11 +3063,8 @@ bool DX12BindingTracker::SetComputeRootSignature(
 		return false;
 	}
 	state.computeRootSignature = rootSignature;
-	for (UINT root = 0; root < MaxRootParameters; ++root) {
-		state.computeTables[root] = RootTableState();
-		state.computeRootDescriptors[root] = RootDescriptorState();
-		state.computeRootConstants[root] = RootConstantsState();
-	}
+	// Shared with the queue's delta replay; see SetGraphicsRootSignature.
+	DX12BindingCollectQueue::ResetComputeRootArguments(&state);
 	state.computeTableValidCount = 0;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
@@ -3067,6 +3072,11 @@ bool DX12BindingTracker::SetComputeRootSignature(
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsComputeTableCache.cl = nullptr;
 	tlsComputeDescCache.cl = nullptr;
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::ComputeRootSignature;
+	entry.rootSignature = rootSignature;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3075,20 +3085,38 @@ void DX12BindingTracker::RecordStateEvent(ID3D12GraphicsCommandList *commandList
 	if (!commandList)
 		return;
 
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0)
+		return;
+
+	// Async path: bundle the accumulated state changes into a compact delta
+	// packet; no 60KB snapshot is taken on the recording thread.
+	std::vector<DX12BindingDeltaEntry> packet;
+	std::unique_ptr<CommandListBindingState> fullState;
+	if (DX12BindingCollectQueue::BuildEventPacket(commandList, &packet, &fullState)) {
+		if (DX12BindingCollectQueue::EnqueueStateEvent(
+				commandList,
+				&packet,
+				&fullState,
+				kind ? kind : "state",
+				descriptorEpoch,
+				captureSessionId))
+			return;
+		// Queue full / stopping: put the entries back so the async stream
+		// stays consistent, then process synchronously from a live snapshot.
+		// The full-state snapshot is dropped here (its references released);
+		// the recorder state still requires a full snapshot, so the next
+		// event rebuilds it.
+		DX12BindingCollectQueue::RestoreEventPacket(commandList, &packet);
+		if (fullState)
+			DX12BindingTracker::ReleaseRetainedIaResources(fullState.get());
+	}
+
 	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
 	static thread_local CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot))
 		return;
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueStateEvent(
-			commandList,
-			snapshot,
-			kind ? kind : "state",
-			descriptorEpoch,
-			captureSessionId))
-		return;
-
 	BindingEvent event;
 	if (DX12BindingTracker::BuildEvent(
 			&event,
@@ -3143,27 +3171,10 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	}
 	UINT invalidatedGraphicsTables = state.graphicsTableValidCount;
 	UINT invalidatedComputeTables = state.computeTableValidCount;
-	if (state.graphicsTableValidCount || state.computeTableValidCount) {
-		for (UINT root = 0; root < MaxRootParameters; ++root) {
-			if (state.graphicsTables[root].valid)
-				state.graphicsTables[root] = RootTableState();
-			if (state.computeTables[root].valid)
-				state.computeTables[root] = RootTableState();
-		}
-		state.graphicsTableValidCount = 0;
-		state.computeTableValidCount = 0;
-	}
-	state.cbvSrvUavHeap = cbvSrvUavHeap;
-	state.samplerHeap = samplerHeap;
-	// Keep the hot path to pointer swaps only. Heap summaries are resolved
-	// lazily by the query path when a capture or replacement actually needs to
-	// inspect descriptor contents.
-	DX12BindingTrackerQueryCacheUtils::StoreRuntimeHeapSummaries(
-		&state,
-		nullptr,
-		false,
-		nullptr,
-		false);
+	// Shared with the queue's delta replay so the live state and the
+	// materialized state can never diverge.
+	DX12BindingCollectQueue::ApplyDescriptorHeapsChange(
+		&state, cbvSrvUavHeap, samplerHeap);
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -3171,6 +3182,12 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	tlsComputeTableCache.cl = nullptr;
 	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsChanged(
 		invalidatedGraphicsTables, invalidatedComputeTables);
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::DescriptorHeaps;
+	entry.heaps.cbvSrvUavHeap = cbvSrvUavHeap;
+	entry.heaps.samplerHeap = samplerHeap;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3211,6 +3228,7 @@ bool DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	stateTable.valid = true;
 	stateTable.rootParameterIndex = rootParameterIndex;
 	stateTable.baseDescriptor = baseDescriptor;
+	const RootTableState recordedTable = stateTable;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	if (tlsGraphicsTableCache.cl != commandList) {
@@ -3221,6 +3239,12 @@ bool DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	tlsGraphicsTableCache.valid[rootParameterIndex] = true;
 	tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
 	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableChanged();
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::GraphicsTable;
+	entry.index = rootParameterIndex;
+	entry.table = recordedTable;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3261,6 +3285,7 @@ bool DX12BindingTracker::SetComputeRootDescriptorTable(
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
+	const RootTableState recordedTable = table;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -3272,6 +3297,12 @@ bool DX12BindingTracker::SetComputeRootDescriptorTable(
 	tlsComputeTableCache.valid[rootParameterIndex] = true;
 	tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
 	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableChanged();
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::ComputeTable;
+	entry.index = rootParameterIndex;
+	entry.table = recordedTable;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 	return true;
 }
 
@@ -3299,6 +3330,11 @@ void DX12BindingTracker::SetPrimitiveTopology(
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordPrimitiveTopology(true);
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::PrimitiveTopology;
+	entry.topology = topology;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 }
 
 void DX12BindingTracker::SetIndexBuffer(
@@ -3347,6 +3383,9 @@ void DX12BindingTracker::SetIndexBuffer(
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(true);
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	DX12BindingCollectQueue::RecordIndexBufferChange(
+		commandList, view, newValid);
 }
 
 void DX12BindingTracker::SetVertexBuffers(
@@ -3408,6 +3447,8 @@ void DX12BindingTracker::SetVertexBuffers(
 		//   Old: ReleaseResolvedIaResource + ResolveAndRetainIaResource
 		//        -> DX12ReleaseRetainedResource + DX12ResolveBufferResourceByGpuVa + DX12RetainResource
 		//   New: trivial struct copy (D3D12_VERTEX_BUFFER_VIEW = 3x UINT64)
+		DX12BindingCollectQueue::RecordVertexBufferChange(
+			commandList, slot, newView, newValid);
 	}
 	if (anyChanged)
 		DX12BindingTracker::BumpBindingQuerySerial(&state);
@@ -3748,6 +3789,40 @@ void DX12BindingTracker::RecordDrawInstanced(
 		return;
 
 	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0)
+		return;
+
+	// Async path: the recording thread only bundles the accumulated state
+	// changes into a compact packet (no shard lock, no 60KB snapshot); the
+	// worker replays it and builds the event.
+	std::vector<DX12BindingDeltaEntry> packet;
+	std::unique_ptr<CommandListBindingState> fullState;
+	if (DX12BindingCollectQueue::BuildEventPacket(commandList, &packet, &fullState)) {
+		if (DX12BindingCollectQueue::EnqueueDrawEvent(
+				commandList,
+				&packet,
+				&fullState,
+				"draw",
+				descriptorEpoch,
+				captureSessionId,
+				drawSerial,
+				vertexCountPerInstance,
+				0,
+				instanceCount,
+				startVertexLocation,
+				0,
+				0,
+				startInstanceLocation))
+			return;
+		// Queue full / stopping: restore the log and fall back to the
+		// synchronous snapshot path (the pre-queue behavior).
+		DX12BindingCollectQueue::RestoreEventPacket(commandList, &packet);
+		if (fullState)
+			DX12BindingTracker::ReleaseRetainedIaResources(fullState.get());
+	}
+
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 	AcquireSRWLockExclusive(&shard.lock);
@@ -3766,22 +3841,6 @@ void DX12BindingTracker::RecordDrawInstanced(
 	// (NSDMI arrays) that the copy then overwrites on every draw call.
 	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueDrawEvent(
-			commandList,
-			snapshot,
-			"draw",
-			descriptorEpoch,
-			captureSessionId,
-			vertexCountPerInstance,
-			0,
-			instanceCount,
-			startVertexLocation,
-			0,
-			0,
-			startInstanceLocation))
-		return;
 
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
@@ -3798,7 +3857,8 @@ void DX12BindingTracker::RecordDrawInstanced(
 	event.startVertexLocation = startVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
 	DX12BindingTracker::StoreEventLocked(event);
-	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot, captureSessionId);
+	DX12BindingTracker::StoreCurrentOutputTargetsLocked(
+		commandList, snapshot, captureSessionId, drawSerial);
 }
 
 void DX12BindingTracker::RecordDrawIndexedInstanced(
@@ -3810,6 +3870,35 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 		return;
 
 	const UINT64 drawSerial = static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDrawSerial));
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0)
+		return;
+
+	std::vector<DX12BindingDeltaEntry> packet;
+	std::unique_ptr<CommandListBindingState> fullState;
+	if (DX12BindingCollectQueue::BuildEventPacket(commandList, &packet, &fullState)) {
+		if (DX12BindingCollectQueue::EnqueueDrawEvent(
+				commandList,
+				&packet,
+				&fullState,
+				"draw_indexed",
+				descriptorEpoch,
+				captureSessionId,
+				drawSerial,
+				0,
+				indexCountPerInstance,
+				instanceCount,
+				0,
+				startIndexLocation,
+				baseVertexLocation,
+				startInstanceLocation))
+			return;
+		DX12BindingCollectQueue::RestoreEventPacket(commandList, &packet);
+		if (fullState)
+			DX12BindingTracker::ReleaseRetainedIaResources(fullState.get());
+	}
+
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 	AcquireSRWLockExclusive(&shard.lock);
@@ -3825,22 +3914,6 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	// Copy-construct directly; see RecordDrawInstanced for why.
 	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueDrawEvent(
-			commandList,
-			snapshot,
-			"draw_indexed",
-			descriptorEpoch,
-			captureSessionId,
-			0,
-			indexCountPerInstance,
-			instanceCount,
-			0,
-			startIndexLocation,
-			baseVertexLocation,
-			startInstanceLocation))
-		return;
 
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
@@ -3858,7 +3931,8 @@ void DX12BindingTracker::RecordDrawIndexedInstanced(
 	event.baseVertexLocation = baseVertexLocation;
 	event.startInstanceLocation = startInstanceLocation;
 	DX12BindingTracker::StoreEventLocked(event);
-	DX12BindingTracker::StoreCurrentOutputTargetsLocked(commandList, snapshot, captureSessionId);
+	DX12BindingTracker::StoreCurrentOutputTargetsLocked(
+		commandList, snapshot, captureSessionId, drawSerial);
 }
 
 void DX12BindingTracker::RecordDispatch(
@@ -3870,6 +3944,30 @@ void DX12BindingTracker::RecordDispatch(
 
 	const UINT64 dispatchSerial =
 		static_cast<UINT64>(InterlockedIncrement64(&DX12BindingTrackerState::GlobalDispatchSerial));
+	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
+	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
+	if (captureSessionId == 0)
+		return;
+
+	std::vector<DX12BindingDeltaEntry> packet;
+	std::unique_ptr<CommandListBindingState> fullState;
+	if (DX12BindingCollectQueue::BuildEventPacket(commandList, &packet, &fullState)) {
+		if (DX12BindingCollectQueue::EnqueueDispatchEvent(
+				commandList,
+				&packet,
+				&fullState,
+				descriptorEpoch,
+				captureSessionId,
+				dispatchSerial,
+				threadGroupCountX,
+				threadGroupCountY,
+				threadGroupCountZ))
+			return;
+		DX12BindingCollectQueue::RestoreEventPacket(commandList, &packet);
+		if (fullState)
+			DX12BindingTracker::ReleaseRetainedIaResources(fullState.get());
+	}
+
 	CommandListBindingState *statePtr = GetOrResolveBindingState(commandList);
 	BindingShard &shard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 	AcquireSRWLockExclusive(&shard.lock);
@@ -3883,17 +3981,6 @@ void DX12BindingTracker::RecordDispatch(
 	// Copy-construct directly; see RecordDrawInstanced for why.
 	const CommandListBindingState snapshot(state);
 	ReleaseSRWLockExclusive(&shard.lock);
-	const UINT64 descriptorEpoch = CurrentDescriptorEpoch();
-	const UINT64 captureSessionId = DX12BindingTracker::CurrentCaptureSessionId();
-	if (DX12BindingCollectQueue::EnqueueDispatchEvent(
-			commandList,
-			snapshot,
-			descriptorEpoch,
-			captureSessionId,
-			threadGroupCountX,
-			threadGroupCountY,
-			threadGroupCountZ))
-		return;
 
 	BindingEvent event;
 	if (!DX12BindingTracker::BuildEvent(
@@ -3959,6 +4046,7 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
+	const RootDescriptorState recordedDescriptor = descriptor;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
 	if (tlsGraphicsDescCache.cl != commandList) {
@@ -3971,6 +4059,12 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 	tlsGraphicsDescCache.address[rootParameterIndex] = address;
 	tlsGraphicsDescCache.type[rootParameterIndex] = type;
 	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorChanged();
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::GraphicsRootDescriptor;
+	entry.index = rootParameterIndex;
+	entry.descriptor = recordedDescriptor;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 }
 
 void DX12BindingTracker::SetComputeRootDescriptor(
@@ -4015,6 +4109,7 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 	descriptor.rootParameterIndex = rootParameterIndex;
 	descriptor.type = type;
 	descriptor.address = address;
+	const RootDescriptorState recordedDescriptor = descriptor;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
@@ -4028,6 +4123,12 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 	tlsComputeDescCache.address[rootParameterIndex] = address;
 	tlsComputeDescCache.type[rootParameterIndex] = type;
 	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorChanged();
+
+	DX12BindingDeltaEntry entry;
+	entry.kind = DX12BindingDeltaKind::ComputeRootDescriptor;
+	entry.index = rootParameterIndex;
+	entry.descriptor = recordedDescriptor;
+	DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
 }
 
 bool DX12BindingTracker::SetRootConstantsLocked(
@@ -4082,10 +4183,24 @@ void DX12BindingTracker::SetGraphicsRoot32BitConstants(
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootConstantsState &constants = state.graphicsRootConstants[rootParameterIndex];
-	if (DX12BindingTracker::SetRootConstantsLocked(
-			&constants, rootParameterIndex, destOffset, count, values))
+	const bool changed = DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values);
+	if (changed)
 		DX12BindingTracker::BumpBindingQuerySerial(&state);
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	if (changed) {
+		DX12BindingDeltaEntry entry;
+		entry.kind = DX12BindingDeltaKind::GraphicsRootConstants;
+		entry.index = rootParameterIndex;
+		entry.offset = destOffset;
+		entry.count = min(count, 64 - destOffset);
+		memcpy(
+			entry.constants.values,
+			values,
+			entry.count * sizeof(UINT));
+		DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
+	}
 }
 
 void DX12BindingTracker::SetComputeRoot32BitConstants(
@@ -4100,12 +4215,26 @@ void DX12BindingTracker::SetComputeRoot32BitConstants(
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
 	RootConstantsState &constants = state.computeRootConstants[rootParameterIndex];
-	if (DX12BindingTracker::SetRootConstantsLocked(
-			&constants, rootParameterIndex, destOffset, count, values)) {
+	const bool changed = DX12BindingTracker::SetRootConstantsLocked(
+			&constants, rootParameterIndex, destOffset, count, values);
+	if (changed) {
 		++state.computeBindingSerial;
 		DX12BindingTracker::BumpBindingQuerySerial(&state);
 	}
 	ReleaseSRWLockExclusive(&shard.lock);
+
+	if (changed) {
+		DX12BindingDeltaEntry entry;
+		entry.kind = DX12BindingDeltaKind::ComputeRootConstants;
+		entry.index = rootParameterIndex;
+		entry.offset = destOffset;
+		entry.count = min(count, 64 - destOffset);
+		memcpy(
+			entry.constants.values,
+			values,
+			entry.count * sizeof(UINT));
+		DX12BindingCollectQueue::AppendDeltaEntry(commandList, entry);
+	}
 }
 
 

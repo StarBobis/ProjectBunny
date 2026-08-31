@@ -31,7 +31,36 @@ if (-not $?) {
 $localCmake = Join-Path $root ".tools\cmake\bin\cmake.exe"
 $localNinja = Join-Path $root ".tools\ninja\ninja.exe"
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
-$cmake = if (Test-Path $localCmake) { $localCmake } elseif ($cmakeCommand) { $cmakeCommand.Source } else { $null }
+$ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
+
+# Fall back to the CMake/Ninja bundled with Visual Studio (Common7\IDE\
+# CommonExtensions\Microsoft\CMake) and to standalone installs, so the build
+# works on machines that do not vendor the tools under .tools and do not have
+# them on PATH. Same vswhere lookup the vcvars probe below uses.
+$vsCmake = $null
+$vsNinja = $null
+$vswherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswherePath) {
+    $vsInstallPath = & $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    if ($vsInstallPath) {
+        $vsCmakeCandidate = Join-Path $vsInstallPath "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+        $vsNinjaCandidate = Join-Path $vsInstallPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+        if (Test-Path $vsCmakeCandidate) { $vsCmake = $vsCmakeCandidate }
+        if (Test-Path $vsNinjaCandidate) { $vsNinja = $vsNinjaCandidate }
+    }
+}
+$standaloneCmake = "C:\Program Files\CMake\bin\cmake.exe"
+if (-not (Test-Path $standaloneCmake)) { $standaloneCmake = $null }
+
+$cmake = if (Test-Path $localCmake) { $localCmake }
+    elseif ($cmakeCommand) { $cmakeCommand.Source }
+    elseif ($vsCmake) { $vsCmake }
+    elseif ($standaloneCmake) { $standaloneCmake }
+    else { $null }
+$ninja = if (Test-Path $localNinja) { $localNinja }
+    elseif ($ninjaCommand) { $ninjaCommand.Source }
+    elseif ($vsNinja) { $vsNinja }
+    else { $null }
 
 $buildDirSuffix = if ($ReleaseTiming) { '-timing' } else { '' }
 $buildDir = "$root\build\cmake-$Platform-$($Configuration.ToLower())$buildDirSuffix"
@@ -51,17 +80,18 @@ if (Test-Path $cacheFile) {
 
 if (-not $cmake -or -not (Test-Path $cmake)) {
     Write-Host "ERROR: CMake not found." -ForegroundColor Red
-    Write-Host "Install it in .tools\cmake or ensure cmake is in your system PATH." -ForegroundColor Red
+    Write-Host "Install it in .tools\cmake, put it on PATH, or install Visual Studio with the CMake tools (bundled CMake/Ninja are auto-detected)." -ForegroundColor Red
     exit 1
 }
 
-$ninjaCommand = Get-Command ninja -ErrorAction SilentlyContinue
-$ninja = if (Test-Path $localNinja) { $localNinja } elseif ($ninjaCommand) { $ninjaCommand.Source } else { $null }
 if (-not $ninja -or -not (Test-Path $ninja)) {
     Write-Host "ERROR: Ninja not found." -ForegroundColor Red
-    Write-Host "Install it in .tools\ninja or ensure ninja is in your system PATH." -ForegroundColor Red
+    Write-Host "Install it in .tools\ninja, put it on PATH, or install Visual Studio with the CMake tools (bundled CMake/Ninja are auto-detected)." -ForegroundColor Red
     exit 1
 }
+
+Write-Host "INFO: Using CMake: $cmake" -ForegroundColor Green
+Write-Host "INFO: Using Ninja: $ninja" -ForegroundColor Green
 
 $vcvars = $null
 $vswherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
