@@ -404,6 +404,52 @@ public:
 inline std::atomic<std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>>
 	gCommandExecutionRuntimeSnapshot;
 
+// Publish generation for the snapshot above. Bumped (release) AFTER every
+// store so readers can detect a reload with a single plain atomic UINT64
+// load instead of touching the atomic<shared_ptr>.
+inline std::atomic<UINT64> gCommandExecutionRuntimeSnapshotGeneration{ 0 };
+
+
+// Thread-local snapshot cache. MSVC's std::atomic<std::shared_ptr> load is
+// NOT lock-free: it goes through an internal spinlock pool, and every copy
+// of the returned shared_ptr touches the shared control block
+// (InterlockedIncrement/Decrement on one global cache line). IA texture
+// override queries load this snapshot several times per draw per recording
+// thread, which made both a global contention point - a DX11 single-thread
+// assumption carried into the DX12 port. The snapshot only changes on mod
+// reload, so keep one owning reference per thread and only pay the atomic
+// shared_ptr load when the publish generation changes; steady-state reads
+// are one acquire UINT64 load plus a raw pointer reuse, with no spinlock
+// and no refcount traffic.
+inline const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &
+CommandExecutionRuntimeSnapshotTlsRef()
+{
+	thread_local UINT64 tlsGeneration = 0;
+	thread_local std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+		tlsSnapshot;
+
+	const UINT64 published = gCommandExecutionRuntimeSnapshotGeneration.load(
+		std::memory_order_acquire);
+	if (published == tlsGeneration)
+		return tlsSnapshot;
+	// Reload path: the generation may be bumped again while the shared_ptr
+	// load is in flight, so re-read it afterwards and retry on change to
+	// keep the (generation, snapshot) pair consistent.
+	for (;;) {
+		const UINT64 before = gCommandExecutionRuntimeSnapshotGeneration.load(
+			std::memory_order_acquire);
+		std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+			gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
+		const UINT64 after = gCommandExecutionRuntimeSnapshotGeneration.load(
+			std::memory_order_acquire);
+		if (before == after) {
+			tlsSnapshot = std::move(snapshot);
+			tlsGeneration = after;
+			return tlsSnapshot;
+		}
+	}
+}
+
 
 // Static texture replacement table (plan step 3.1): hash of the original
 // texture -> the mod resource that unconditionally replaces it. Only
@@ -1164,20 +1210,50 @@ public:
 };
 
 
-inline std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState> gActivePreSkinReplacements;
+// Sharded active-replacement table (per command list). A single global map
+// plus one global mutation generation meant every pre-skin apply on one
+// command list invalidated the restore TLS negative cache of EVERY other
+// list, forcing all recording threads back onto the global exclusive
+// gPreSkinLock on their next draw/dispatch - a DX11 single-thread
+// assumption carried into the port. Every access already targets exactly
+// one command-list key, so the table is sharded by list pointer: each
+// shard has its own SRWLOCK and mutation generation, and apply / restore /
+// forget only touch the owning list's shard and bump only that shard's
+// generation. Cross-list invalidation now only hits lists hashing to the
+// same shard (1/64), and the contended lock is shard-local.
+class DX12PreSkinReplacementShard
+{
+public:
+	SRWLOCK lock = SRWLOCK_INIT;
+	std::unordered_map<ID3D12GraphicsCommandList*, DX12PreSkinReplacementState> entries;
 
+	// Monotonic mutation generation for this shard's map. Every insert and
+	// erase bumps it, so a command-list-local TLS negative cache can prove
+	// "this list has no pending restore right now" without taking the shard
+	// lock on every draw while a replacement is pending anywhere (DX11 has
+	// no global lock on the draw path). Recording is single-threaded per
+	// command list, so a TLS cache keyed by the list pointer plus its own
+	// shard's generation is exact; inserts and erases on OTHER shards no
+	// longer invalidate it.
+	std::atomic<UINT64> mutationGeneration{0};
+};
+
+inline DX12PreSkinReplacementShard gPreSkinReplacementShards[64];
+
+inline DX12PreSkinReplacementShard &PreSkinReplacementShardFor(
+	ID3D12GraphicsCommandList *commandList)
+{
+	constexpr size_t kShardCount =
+		sizeof(gPreSkinReplacementShards) / sizeof(gPreSkinReplacementShards[0]);
+	const UINT_PTR key = reinterpret_cast<UINT_PTR>(commandList);
+	return gPreSkinReplacementShards[(key >> 4) % kShardCount];
+}
+
+// Approximate "any replacement pending anywhere" probe. Maintained as a
+// count of entries across all shards (incremented on insert of a new key,
+// decremented on erase); readers only test zero / non-zero, so the count
+// keeps the exact old flag semantics while the table is sharded.
 inline volatile LONG gHasActivePreSkinReplacement = 0;
-
-// Monotonic mutation generation for gActivePreSkinReplacements. Every insert
-// and erase bumps it, so a command-list-local TLS negative cache can prove
-// "this list has no pending restore right now" without taking gPreSkinLock on
-// every draw while a replacement is pending anywhere (DX11 has no global lock
-// on the draw path). Recording is single-threaded per command list, so a TLS
-// cache keyed by the list pointer is exact; the generation covers inserts and
-// erases made by other threads (cross-thread recording, list destruction).
-inline std::atomic<UINT64> gPreSkinReplacementMutationGeneration{0};
-
-void BumpPreSkinReplacementMutationGeneration();
 
 class DX12RetiredPreSkinResource
 {
@@ -3007,8 +3083,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT64 bindingDependencyFingerprint);
 
 
-bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandList);
-
 
 void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandList);
 
@@ -3349,10 +3423,14 @@ DX12TextureOverrideLookupCacheKey MakeIaTextureOverrideLookupCacheKey(
 	const DX12TextureOverrideDrawKeyUsage &usage);
 
 
-inline std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+inline const DX12CommandExecutionRuntimeSnapshot *
 LoadTextureOverrideRuntimeSnapshot()
 {
-	return gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
+	// TLS-cached: a plain generation check on the hot path, the atomic
+	// shared_ptr load only happens once per mod reload per thread. The
+	// returned pointer stays valid until this thread's next snapshot query
+	// (the TLS reference keeps the object alive).
+	return CommandExecutionRuntimeSnapshotTlsRef().get();
 }
 
 
@@ -3746,20 +3824,31 @@ bool DX12ModIaStateDefinitelyHasNoCandidate(
 bool DX12ModIaPrefilterCountSensitive();
 
 
-inline std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+inline const DX12CommandExecutionRuntimeSnapshot *
 LoadCommandExecutionRuntimeSnapshot()
 {
-	return gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
+	// See LoadTextureOverrideRuntimeSnapshot: TLS-cached, generation-checked.
+	return CommandExecutionRuntimeSnapshotTlsRef().get();
+}
+
+
+// Ownership-taking variant for callers that must hold the snapshot beyond
+// the current query (e.g. executor member caches). One refcount copy from
+// the TLS cache; NOT for per-draw hot paths.
+inline std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
+SnapshotCommandExecutionRuntimeShared()
+{
+	return CommandExecutionRuntimeSnapshotTlsRef();
 }
 
 
 bool CommandListRuntimeEffectLocked(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::wstring &name);
 
 
 bool CommandListRuntimeEffectLocked(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::wstring &name,
 	bool includePost);
 
@@ -3773,7 +3862,7 @@ bool CommandListRuntimeEffect(
 inline std::shared_ptr<const Bunny::CommandListConfig>
 SnapshotCommandListConfig(const std::wstring &name)
 {
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadCommandExecutionRuntimeSnapshot();
 	if (!snapshot)
 		return nullptr;
@@ -4102,7 +4191,7 @@ void FillSyntheticTextureBinding(
 
 
 bool FindDescriptorTextureOverridesFromResolvedBindings(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const Bunny::CommandListTarget &target,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
 	uint32_t vertexCount,
@@ -4115,7 +4204,7 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 
 
 void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const DX12ResolvedGraphicsSrvBinding &resolved,
 	const DX12TextureOverrideTargetCacheKey &cacheKey,
 	const std::vector<uint32_t> &allowedSectionIds,
@@ -4126,7 +4215,7 @@ void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
 
 
 void AppendResolvedBindingsToDescriptorTextureOverrideCache(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
 	Bunny::CommandListTargetKind kind,
 	bool compute,

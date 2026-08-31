@@ -596,7 +596,7 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	bool needsPreSkinProbe)
 {
 	DX12CompiledDispatchDecision decision;
-	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12PsoDecisionCacheUtils::ClearIfReloadChanged(reloadGeneration);
 	if (DX12PsoDecisionCacheUtils::TryLoadDispatch(
 			pipelineState,

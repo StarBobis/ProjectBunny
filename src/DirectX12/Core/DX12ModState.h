@@ -165,7 +165,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12Device *cachedDevice = nullptr,
 	UINT64 bindingFingerprint = 0,
 	UINT64 bindingDependencyFingerprint = 0);
-bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandList);
 bool DX12ModCanDeferPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList);
 bool DX12ModHasActivePreSkinningUavReplacement();

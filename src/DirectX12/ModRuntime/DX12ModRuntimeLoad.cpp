@@ -1430,6 +1430,11 @@ bool DX12ModRuntimeLoad(
 	gCommandExecutionRuntimeSnapshot.store(
 		commandExecutionRuntimeSnapshot,
 		std::memory_order_release);
+	// Bump the publish generation AFTER the store. TLS readers either observe
+	// the old generation (and keep using their cached old snapshot, still
+	// alive through their owning reference) or the new one and reload.
+	gCommandExecutionRuntimeSnapshotGeneration.fetch_add(
+		1, std::memory_order_release);
 	// Publish the write-time static texture replacement table (plan step 3.1)
 	// and drop resolved descriptor handles cached against the old table.
 	gStaticTextureReplacementSnapshot.store(

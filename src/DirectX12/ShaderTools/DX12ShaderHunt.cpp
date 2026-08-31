@@ -97,7 +97,26 @@ struct HuntCommandListVisits
 
 static SRWLOCK gHuntLock = SRWLOCK_INIT;
 static volatile LONG gHuntingActive = 0;
-static std::unordered_map<ID3D12GraphicsCommandList*, HuntCommandListVisits> gCommandListVisits;
+// Sharded per-list visit accumulators. DX11 assumed single-threaded
+// recording, so one global map + one global lock worked; under DX12 every
+// recording thread's every draw queued on the single gHuntLock. Visits are
+// keyed by command list and each access targets exactly one list, so shard
+// the map by list pointer: record paths only take their shard's lock,
+// cutting cross-thread contention to same-shard collisions (1/64).
+static constexpr size_t kHuntVisitsShardCount = 64;
+struct HuntVisitsShard
+{
+	SRWLOCK lock = SRWLOCK_INIT;
+	std::unordered_map<ID3D12GraphicsCommandList*, HuntCommandListVisits> entries;
+};
+static HuntVisitsShard gHuntVisitsShards[kHuntVisitsShardCount];
+
+static HuntVisitsShard &HuntVisitsShardFor(ID3D12GraphicsCommandList *commandList)
+{
+	const UINT_PTR key = reinterpret_cast<UINT_PTR>(commandList);
+	return gHuntVisitsShards[(key >> 4) % kHuntVisitsShardCount];
+}
+
 static StageSelection gVS;
 static StageSelection gPS;
 static StageSelection gCS;
@@ -391,13 +410,14 @@ void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12Pipe
 		return;
 
 	(void)pipelineState;
-	AcquireSRWLockExclusive(&gHuntLock);
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
 	if (!DX12HuntIsEnabled()) {
-		ReleaseSRWLockExclusive(&gHuntLock);
+		ReleaseSRWLockExclusive(&shard.lock);
 		return;
 	}
-	gCommandListVisits.erase(commandList);
-	ReleaseSRWLockExclusive(&gHuntLock);
+	shard.entries.erase(commandList);
+	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12HuntUnregisterCommandList(ID3D12GraphicsCommandList *commandList)
@@ -406,13 +426,14 @@ void DX12HuntUnregisterCommandList(ID3D12GraphicsCommandList *commandList)
 		return;
 
 	bool removed = false;
-	AcquireSRWLockExclusive(&gHuntLock);
-	auto it = gCommandListVisits.find(commandList);
-	if (it != gCommandListVisits.end()) {
-		gCommandListVisits.erase(it);
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
+	auto it = shard.entries.find(commandList);
+	if (it != shard.entries.end()) {
+		shard.entries.erase(it);
 		removed = true;
 	}
-	ReleaseSRWLockExclusive(&gHuntLock);
+	ReleaseSRWLockExclusive(&shard.lock);
 
 	if (removed) {
 		DX12LogManager::Fields("DX12ShaderHunt",
@@ -426,21 +447,21 @@ void DX12HuntObservePipelineState(ID3D12PipelineState *pipelineState)
 	if (!DX12HuntIsEnabled())
 		return;
 
+	// Resolve the shader info lock-free first (it does not touch hunt
+	// state), then take gHuntLock once for both the counter and the
+	// visited-mark instead of the old two exclusive acquisitions per bind.
+	DX12PsoShaderInfo info = {};
+	const bool hasInfo = pipelineState &&
+		DX12GetPipelineStateShaderInfo(pipelineState, &info);
 	AcquireSRWLockExclusive(&gHuntLock);
 	if (!DX12HuntIsEnabled()) {
 		ReleaseSRWLockExclusive(&gHuntLock);
 		return;
 	}
 	gPipelineStateBinds++;
+	if (hasInfo)
+		AddPsoVisitedLocked(info, true, true);
 	ReleaseSRWLockExclusive(&gHuntLock);
-
-	DX12PsoShaderInfo info = {};
-	if (DX12HuntIsEnabled() && pipelineState && DX12GetPipelineStateShaderInfo(pipelineState, &info)) {
-		AcquireSRWLockExclusive(&gHuntLock);
-		if (DX12HuntIsEnabled())
-			AddPsoVisitedLocked(info, true, true);
-		ReleaseSRWLockExclusive(&gHuntLock);
-	}
 }
 
 void DX12HuntRecordDraw(
@@ -476,9 +497,10 @@ void DX12HuntRecordDraw(
 		}
 	}
 
-	AcquireSRWLockExclusive(&gHuntLock);
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
 	if (DX12HuntIsEnabled()) {
-		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		HuntCommandListVisits &visits = shard.entries[commandList];
 		visits.draws++;
 		if (hasInfo) {
 			if (info.hasVS)
@@ -491,7 +513,7 @@ void DX12HuntRecordDraw(
 		for (uint32_t hash : vbHashes)
 			visits.vb.insert(hash);
 	}
-	ReleaseSRWLockExclusive(&gHuntLock);
+	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12HuntPublishCommandList(ID3D12GraphicsCommandList *commandList)
@@ -499,11 +521,18 @@ void DX12HuntPublishCommandList(ID3D12GraphicsCommandList *commandList)
 	if (!DX12HuntIsEnabled() || !commandList)
 		return;
 
+	// Read this list's accumulated visits under its shard lock, then merge
+	// into the global selections under gHuntLock. The two locks are never
+	// held together (shard first, release, then global), so there is no
+	// lock-order inversion against the record paths or the toggle clear.
 	HuntCommandListVisits visits;
-	AcquireSRWLockExclusive(&gHuntLock);
-	auto it = gCommandListVisits.find(commandList);
-	if (it != gCommandListVisits.end())
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockShared(&shard.lock);
+	auto it = shard.entries.find(commandList);
+	if (it != shard.entries.end())
 		visits = it->second;
+	ReleaseSRWLockShared(&shard.lock);
+	AcquireSRWLockExclusive(&gHuntLock);
 	if (DX12HuntIsEnabled()) {
 		gDrawCalls += visits.draws;
 		gDispatchCalls += visits.dispatches;
@@ -534,14 +563,15 @@ void DX12HuntRecordDispatch(ID3D12GraphicsCommandList *commandList)
 	const bool hasInfo = pipelineState &&
 		DX12GetPipelineStateShaderInfo(pipelineState, &info);
 
-	AcquireSRWLockExclusive(&gHuntLock);
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
 	if (DX12HuntIsEnabled()) {
-		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		HuntCommandListVisits &visits = shard.entries[commandList];
 		visits.dispatches++;
 		if (hasInfo && info.hasCS)
 			visits.cs.insert(info.cs);
 	}
-	ReleaseSRWLockExclusive(&gHuntLock);
+	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
@@ -556,9 +586,10 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 	const bool hasInfo = pipelineState &&
 		DX12GetPipelineStateShaderInfo(pipelineState, &info);
 
-	AcquireSRWLockExclusive(&gHuntLock);
+	HuntVisitsShard &shard = HuntVisitsShardFor(commandList);
+	AcquireSRWLockExclusive(&shard.lock);
 	if (DX12HuntIsEnabled()) {
-		HuntCommandListVisits &visits = gCommandListVisits[commandList];
+		HuntCommandListVisits &visits = shard.entries[commandList];
 		visits.indirects++;
 		if (hasInfo) {
 			if (info.hasVS)
@@ -569,7 +600,7 @@ void DX12HuntRecordExecuteIndirect(ID3D12GraphicsCommandList *commandList)
 				visits.cs.insert(info.cs);
 		}
 	}
-	ReleaseSRWLockExclusive(&gHuntLock);
+	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 bool DX12HuntShouldSkipDraw(
@@ -679,11 +710,15 @@ void DX12HuntToggle()
 	const bool enabled = InterlockedCompareExchange(&gHuntingActive, 0, 0) == 0;
 
 	if (enabled) {
+		for (HuntVisitsShard &visitsShard : gHuntVisitsShards) {
+			AcquireSRWLockExclusive(&visitsShard.lock);
+			oldIa += visitsShard.entries.size();
+			visitsShard.entries.clear();
+			ReleaseSRWLockExclusive(&visitsShard.lock);
+		}
 		AcquireSRWLockExclusive(&gHuntLock);
-		oldIa = gCommandListVisits.size();
 		oldIB = gIB.visited.size();
 		oldVB = gVB.visited.size();
-		gCommandListVisits.clear();
 		gVS = StageSelection();
 		gPS = StageSelection();
 		gCS = StageSelection();

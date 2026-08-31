@@ -562,7 +562,7 @@ bool FindIaTextureOverridesCached(
 	if (configs)
 		configs->clear();
 
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadTextureOverrideRuntimeSnapshot();
 	if (!snapshot)
 		return false;
@@ -1155,7 +1155,7 @@ bool FindDescriptorTextureOverrides(
 		}
 	}
 
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadTextureOverrideRuntimeSnapshot();
 	if (!snapshot)
 		return false;
@@ -1882,7 +1882,7 @@ void FillSyntheticTextureBinding(
 
 
 bool FindDescriptorTextureOverridesFromResolvedBindings(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const Bunny::CommandListTarget &target,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
 	uint32_t vertexCount,
@@ -1956,7 +1956,7 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 
 
 void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const DX12ResolvedGraphicsSrvBinding &resolved,
 	const DX12TextureOverrideTargetCacheKey &cacheKey,
 	const std::vector<uint32_t> &allowedSectionIds,
@@ -1996,7 +1996,7 @@ void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
 
 
 void AppendResolvedBindingsToDescriptorTextureOverrideCache(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
 	Bunny::CommandListTargetKind kind,
 	bool compute,

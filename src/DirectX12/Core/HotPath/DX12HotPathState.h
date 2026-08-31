@@ -300,10 +300,6 @@ public:
 	{
 		AcquireSRWLockExclusive(&updateLock);
 		const SourceState source = SourceState::Capture();
-		if (skipAll.load(std::memory_order_relaxed) && !source.HasAnyWork()) {
-			ReleaseSRWLockExclusive(&updateLock);
-			return;
-		}
 
 		// As in DX11, skipAll controls draw, state, and copy hooks.
 		// PreSkin only needs dispatch hooks and compute binding tracking;
@@ -316,6 +312,23 @@ public:
 		const LONG trackResourceMetadata =
 			source.NeedsHeavyTracking() ? 1 : 0;
 		const UINT64 flags = source.BuildHookWorkFlags();
+
+		// Source-state fingerprint short-circuit. The published gates are a
+		// deterministic function of the captured source (flags encode every
+		// source bit), so when the published values already match there is
+		// nothing to do. Present calls Update() several times per frame and
+		// input-thread toggles race it; without this every redundant call
+		// re-stored each gate, re-ran the exchanges below and re-logged, and a
+		// mask flip additionally bumped the tracking generation (invalidating
+		// every command list TLS cache for the next frame).
+		if (DX12HotPathState::skipAll.load(std::memory_order_relaxed) == skipAll &&
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed) == skipBindings &&
+			DX12HotPathState::skipGraphicsBindings.load(std::memory_order_relaxed) == skipGraphicsBindings &&
+			DX12HotPathState::trackResourceMetadata.load(std::memory_order_relaxed) == trackResourceMetadata &&
+			HookWorkFlags.load(std::memory_order_relaxed) == flags) {
+			ReleaseSRWLockExclusive(&updateLock);
+			return;
+		}
 
 		// These atomics are independent hot-path gates. Hook threads can tolerate
 		// observing the previous frame's gate briefly, so no acquire/release

@@ -476,7 +476,7 @@ bool ApplyPendingResourceViewsForCommandList(
 
 
 bool CommandListRuntimeEffectLocked(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::wstring &name)
 {
 	if (!snapshot)
@@ -487,7 +487,7 @@ bool CommandListRuntimeEffectLocked(
 
 
 bool CommandListRuntimeEffectLocked(
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot,
+	const DX12CommandExecutionRuntimeSnapshot *snapshot,
 	const std::wstring &name,
 	bool includePost)
 {

@@ -507,9 +507,14 @@ UINT64 MakePreSkinSrvProbeCacheKey(
 	return key;
 }
 
-void BumpPreSkinReplacementMutationGeneration()
+// Bump helper for the sharded active-replacement table (see
+// DX12PreSkinReplacementShard): inserts/erases only touch the owning
+// command list's shard, so only that shard's generation is bumped. Other
+// lists' restore TLS negative caches stay valid and off the lock.
+void BumpPreSkinReplacementShardMutation(
+	DX12PreSkinReplacementShard *shard)
 {
-	gPreSkinReplacementMutationGeneration.fetch_add(1, std::memory_order_relaxed);
+	shard->mutationGeneration.fetch_add(1, std::memory_order_release);
 }
 
 
@@ -1290,14 +1295,35 @@ bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 	if (identityCount == 0)
 		return false;
 
+	// Membership test for the submitted batch.  Small batches stay
+	// allocation-free with a linear scan over the stack array; large batches
+	// build a hash set once so the per-entry scans below are O(1) per lookup
+	// instead of O(batch) - the old code rescanned the identity array for
+	// every pending entry of every cache item (O(items x pending x batch))
+	// on the ExecuteCommandLists hot path.
+	std::unordered_set<IUnknown*> identitySet;
+	const bool useIdentitySet = numCommandLists > kStackIdentityCount;
+	if (useIdentitySet) {
+		identitySet.reserve(numCommandLists);
+		for (UINT i = 0; i < numCommandLists; ++i) {
+			if (identityStorage[i])
+				identitySet.insert(identityStorage[i]);
+		}
+	}
+	const auto isSubmittedIdentity = [&](IUnknown *pending) {
+		if (useIdentitySet)
+			return identitySet.find(pending) != identitySet.end();
+		return std::find(identityStorage, identityStorage + numCommandLists,
+			pending) != identityStorage + numCommandLists;
+	};
+
 	std::vector<DX12PreSkinOutputResizeSubmittedUse> submittedUses;
 	AcquireSRWLockShared(&gPreSkinOutputResizeCacheLock);
 	for (const auto &item : gPreSkinOutputResizeCache) {
 		const DX12PreSkinOutputResizeCacheEntry &entry = item.second;
 		bool hasSubmittedUse = false;
 		for (IUnknown *pending : entry.pendingCommandLists) {
-			if (std::find(identityStorage, identityStorage + numCommandLists,
-					pending) != identityStorage + numCommandLists) {
+			if (isSubmittedIdentity(pending)) {
 				hasSubmittedUse = true;
 				break;
 			}
@@ -1338,11 +1364,8 @@ bool MarkPreSkinOutputResizeCacheUsesSubmitted(
 			std::remove_if(
 				entry.pendingCommandLists.begin(),
 				entry.pendingCommandLists.end(),
-				[identityStorage, numCommandLists](IUnknown *pending) {
-					return std::find(
-						identityStorage,
-						identityStorage + numCommandLists,
-						pending) != identityStorage + numCommandLists;
+				[&isSubmittedIdentity](IUnknown *pending) {
+					return isSubmittedIdentity(pending);
 				}),
 			entry.pendingCommandLists.end());
 		if (entry.pendingCommandLists.size() == oldPendingCount)
@@ -3187,12 +3210,13 @@ bool TryReuseDeferredPreSkinDescriptorTable(
 	// avoids a LOCK CMPXCHG on every hot-path call.
 	if (gHasActivePreSkinReplacement == 0)
 		return false;
-	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
-	std::unordered_map<ID3D12GraphicsCommandList *, DX12PreSkinReplacementState>::const_iterator
-		it = gActivePreSkinReplacements.find(commandList);
-	if (it == gActivePreSkinReplacements.end())
+	DX12PreSkinReplacementShard &reusableShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&reusableShard.lock);
+	auto it = reusableShard.entries.find(commandList);
+	if (it == reusableShard.entries.end())
 	{
-		ReleaseSRWLockShared(&gPreSkinLock);
+		ReleaseSRWLockShared(&reusableShard.lock);
 		return false;
 	}
 	const DX12PreSkinReplacementState &state = it->second;
@@ -3203,7 +3227,7 @@ bool TryReuseDeferredPreSkinDescriptorTable(
 						  state.triggerHash == triggerHash;
 	if (hasPendingState)
 		*hasPendingState = true;
-	ReleaseSRWLockShared(&gPreSkinLock);
+	ReleaseSRWLockShared(&reusableShard.lock);
 	return reusable;
 }
 
@@ -3217,15 +3241,16 @@ bool DX12ModCanDeferPreSkinningUavReplacement(
 	// ordering argument.
 	if (gHasActivePreSkinReplacement == 0)
 		return false;
-	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
-	std::unordered_map<ID3D12GraphicsCommandList *, DX12PreSkinReplacementState>::const_iterator
-		it = gActivePreSkinReplacements.find(commandList);
-	const bool canDefer = it != gActivePreSkinReplacements.end() &&
+	DX12PreSkinReplacementShard &deferShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&deferShard.lock);
+	auto it = deferShard.entries.find(commandList);
+	const bool canDefer = it != deferShard.entries.end() &&
 						  it->second.active && it->second.patchHeap &&
 						  it->second.descriptorRestores.empty() &&
 						  it->second.temporaryResources.empty() &&
 						  it->second.bindingFingerprint != 0;
-	ReleaseSRWLockShared(&gPreSkinLock);
+	ReleaseSRWLockShared(&deferShard.lock);
 	return canDefer;
 }
 
@@ -3473,11 +3498,18 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				*originalVertexCountOut = originalVertexCount;
 			if (overrideVertexCountOut)
 				*overrideVertexCountOut = overrideVertexCount;
-			DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-			gActivePreSkinReplacements[commandList] = std::move(state);
-			InterlockedExchange(&gHasActivePreSkinReplacement, 1);
-			ReleaseSRWLockExclusive(&gPreSkinLock);
-			BumpPreSkinReplacementMutationGeneration();
+			DX12PreSkinReplacementShard &replacementShard =
+				PreSkinReplacementShardFor(commandList);
+			DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
+			auto existingReplacement = replacementShard.entries.find(commandList);
+			if (existingReplacement != replacementShard.entries.end())
+				existingReplacement->second = std::move(state);
+			else {
+				replacementShard.entries.emplace(commandList, std::move(state));
+				InterlockedIncrement(&gHasActivePreSkinReplacement);
+			}
+			ReleaseSRWLockExclusive(&replacementShard.lock);
+			BumpPreSkinReplacementShardMutation(&replacementShard);
 			return true;
 		}
 	}
@@ -3534,11 +3566,18 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			*originalVertexCountOut = originalVertexCount;
 		if (overrideVertexCountOut)
 			*overrideVertexCountOut = overrideVertexCount;
-		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-		gActivePreSkinReplacements[commandList] = std::move(state);
-		InterlockedExchange(&gHasActivePreSkinReplacement, 1);
-		ReleaseSRWLockExclusive(&gPreSkinLock);
-		BumpPreSkinReplacementMutationGeneration();
+		DX12PreSkinReplacementShard &replacementShard =
+			PreSkinReplacementShardFor(commandList);
+		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
+		auto existingReplacement = replacementShard.entries.find(commandList);
+		if (existingReplacement != replacementShard.entries.end())
+			existingReplacement->second = std::move(state);
+		else {
+			replacementShard.entries.emplace(commandList, std::move(state));
+			InterlockedIncrement(&gHasActivePreSkinReplacement);
+		}
+		ReleaseSRWLockExclusive(&replacementShard.lock);
+		BumpPreSkinReplacementShardMutation(&replacementShard);
 		return true;
 	}
 
@@ -3949,11 +3988,18 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	*originalVertexCountOut = originalVertexCount;
 	if (overrideVertexCountOut)
 		*overrideVertexCountOut = overrideVertexCount;
-	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-	gActivePreSkinReplacements[commandList] = std::move(state);
-	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
-	ReleaseSRWLockExclusive(&gPreSkinLock);
-	BumpPreSkinReplacementMutationGeneration();
+	DX12PreSkinReplacementShard &replacementShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
+	auto existingReplacement = replacementShard.entries.find(commandList);
+	if (existingReplacement != replacementShard.entries.end())
+		existingReplacement->second = std::move(state);
+	else {
+		replacementShard.entries.emplace(commandList, std::move(state));
+		InterlockedIncrement(&gHasActivePreSkinReplacement);
+	}
+	ReleaseSRWLockExclusive(&replacementShard.lock);
+	BumpPreSkinReplacementShardMutation(&replacementShard);
 
 	return true;
 }
@@ -4076,11 +4122,18 @@ bool ApplyPreSkinBindingPatchLocked(
 	}
 	if (descriptorRestores)
 		state.descriptorRestores.swap(*descriptorRestores);
-	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-	gActivePreSkinReplacements[commandList] = std::move(state);
-	InterlockedExchange(&gHasActivePreSkinReplacement, 1);
-	ReleaseSRWLockExclusive(&gPreSkinLock);
-	BumpPreSkinReplacementMutationGeneration();
+	DX12PreSkinReplacementShard &replacementShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
+	auto existingReplacement = replacementShard.entries.find(commandList);
+	if (existingReplacement != replacementShard.entries.end())
+		existingReplacement->second = std::move(state);
+	else {
+		replacementShard.entries.emplace(commandList, std::move(state));
+		InterlockedIncrement(&gHasActivePreSkinReplacement);
+	}
+	ReleaseSRWLockExclusive(&replacementShard.lock);
+	BumpPreSkinReplacementShardMutation(&replacementShard);
 
 	(void)alreadyPatched;
 	return true;
@@ -4430,150 +4483,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 }
 
 
-bool DX12ModApplyKnownPreSkinningUavPatches(ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList || !DX12ModHasActiveTextureOverrides())
-		return false;
-
-	std::vector<std::pair<SIZE_T, std::wstring>> patches;
-	LARGE_INTEGER snapshotBegin = DX12OuterTimingProbeUtils::Now();
-	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
-	patches.assign(gKnownPreSkinDescriptorPatches.begin(), gKnownPreSkinDescriptorPatches.end());
-	ReleaseSRWLockShared(&gPreSkinLock);
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		"known_patch_snapshot",
-		0,
-		patches.size(),
-		DX12OuterTimingProbeUtils::ElapsedUs(snapshotBegin));
-	if (patches.empty())
-		return false;
-
-	LARGE_INTEGER acquireDeviceBegin = DX12OuterTimingProbeUtils::Now();
-	ID3D12Device *device = AcquireModDevice(commandList);
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		"known_patch_acquire_device",
-		0,
-		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(acquireDeviceBegin));
-	if (!device)
-		return false;
-
-	DX12InternalReplayScope internalReplay;
-	bool applied = false;
-	LARGE_INTEGER activeSectionsBegin = DX12OuterTimingProbeUtils::Now();
-	const std::unordered_set<std::wstring> &activePreSkinSections =
-		GetActivePreSkinSectionsSnapshot();
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		"known_patch_active_sections",
-		0,
-		activePreSkinSections.size(),
-		DX12OuterTimingProbeUtils::ElapsedUs(activeSectionsBegin));
-	for (const auto &patch : patches)
-	{
-		LARGE_INTEGER blockedBegin = DX12OuterTimingProbeUtils::Now();
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
-		const bool blocked =
-			ResourceBlockedByInactiveExplicitMatchCsLocked(patch.second, activePreSkinSections);
-		ReleaseSRWLockExclusive(&gModLock);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkinRuntime",
-			blocked ? "known_patch_blocked" : "known_patch_allowed",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(blockedBegin));
-		if (blocked)
-			continue;
-		LARGE_INTEGER loadBegin = DX12OuterTimingProbeUtils::Now();
-		DX12LoadedResource *resource = EnsureLoadedResourceForPreSkin(device, patch.second);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkinRuntime",
-			resource ? "known_patch_load_resource_hit" : "known_patch_load_resource_miss",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(loadBegin));
-		if (!resource)
-			continue;
-		LARGE_INTEGER strideBegin = DX12OuterTimingProbeUtils::Now();
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
-		const UINT elementStride =
-			FindPreSkinUavElementStrideLocked(*resource, activePreSkinSections);
-		ReleaseSRWLockExclusive(&gModLock);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkinRuntime",
-			"known_patch_find_stride",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(strideBegin));
-		LARGE_INTEGER ensureBegin = DX12OuterTimingProbeUtils::Now();
-		if (!EnsureResourceUavLocked(
-				device, commandList, resource, elementStride, 0, true,
-				&activePreSkinSections))
-		{
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"PreSkinRuntime",
-				"known_patch_ensure_uav_miss",
-				0,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(ensureBegin));
-			continue;
-		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkinRuntime",
-			"known_patch_ensure_uav_hit",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(ensureBegin));
-		if (!resource->uavResource || !resource->uavCpu.ptr)
-			continue;
-		if (resource->uavState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-		{
-			LARGE_INTEGER barrierBegin = DX12OuterTimingProbeUtils::Now();
-			D3D12_RESOURCE_BARRIER barrier = {};
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = resource->uavResource;
-			barrier.Transition.StateBefore = resource->uavState;
-			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			commandList->ResourceBarrier(1, &barrier);
-			resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-			DX12OuterTimingProbeUtils::LogCpuStage(
-				"PreSkinRuntime",
-				"known_patch_resource_barrier",
-				0,
-				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(barrierBegin));
-		}
-		D3D12_CPU_DESCRIPTOR_HANDLE target = {};
-		target.ptr = patch.first;
-		LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
-		device->CopyDescriptorsSimple(
-			1, target, resource->uavCpu,
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"PreSkinRuntime",
-			"known_patch_copy_descriptor",
-			0,
-			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(copyBegin));
-		resource->uavWritten = true;
-		resource->uavValid = true;
-		resource->uavValidPresent = DX12RuntimeState::GetPresentCount();
-		applied = true;
-	}
-	LARGE_INTEGER releaseDeviceBegin = DX12OuterTimingProbeUtils::Now();
-	device->Release();
-	DX12OuterTimingProbeUtils::LogCpuStage(
-		"PreSkinRuntime",
-		"known_patch_release_device",
-		0,
-		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(releaseDeviceBegin));
-	return applied;
-}
-
 
 void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandList)
 {
@@ -4597,9 +4506,11 @@ void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandLi
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	bool canPublish = false;
-	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&gPreSkinLock);
-	auto it = gActivePreSkinReplacements.find(commandList);
-	if (it != gActivePreSkinReplacements.end())
+	DX12PreSkinReplacementShard &publishShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinShared(&publishShard.lock);
+	auto it = publishShard.entries.find(commandList);
+	if (it != publishShard.entries.end())
 	{
 		const DX12PreSkinReplacementState &state = it->second;
 		canPublish = state.active && state.outputUavResized &&
@@ -4614,7 +4525,7 @@ void DX12ModPublishPreSkinOutputResizeEarly(ID3D12GraphicsCommandList *commandLi
 			stride = state.stride;
 		}
 	}
-	ReleaseSRWLockShared(&gPreSkinLock);
+	ReleaseSRWLockShared(&publishShard.lock);
 	if (!canPublish)
 		return;
 	DX12ModRegisterPreSkinOutputResize(
@@ -4634,22 +4545,26 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	if (!commandList || gHasActivePreSkinReplacement == 0)
 		return;
 
-	// Command-list-local negative cache: while no map mutation has happened,
-	// "this list has no pending restore" cannot change. Recording is
-	// single-threaded per command list, so a thread-local entry keyed by the
-	// list pointer is exact; the mutation generation covers inserts/erases
-	// made by other threads. This keeps the per-draw cost at two loads
-	// instead of a global exclusive SRW lock + unordered_map lookup on every
-	// draw/dispatch/binding mutation while any pre-skin replacement is
-	// pending anywhere in the process.
+	// Command-list-local negative cache: while no mutation has happened on
+	// THIS list's shard, "this list has no pending restore" cannot change.
+	// Recording is single-threaded per command list, so a thread-local entry
+	// keyed by the list pointer plus its shard's mutation generation is
+	// exact; inserts/erases on other shards no longer invalidate it (a
+	// pre-skin apply on one list used to force every other recording thread
+	// back onto the global exclusive lock on its next draw). This keeps the
+	// per-draw cost at two loads instead of an SRW lock + unordered_map
+	// lookup on every draw/dispatch/binding mutation while any pre-skin
+	// replacement is pending anywhere in the process.
 	struct TlsNoPendingRestore
 	{
 		ID3D12GraphicsCommandList *commandList = nullptr;
 		UINT64 generation = 0;
 	};
 	thread_local TlsNoPendingRestore tlsNoPendingRestore;
+	DX12PreSkinReplacementShard &restoreShard =
+		PreSkinReplacementShardFor(commandList);
 	const UINT64 mutationGeneration =
-		gPreSkinReplacementMutationGeneration.load(std::memory_order_acquire);
+		restoreShard.mutationGeneration.load(std::memory_order_acquire);
 	if (tlsNoPendingRestore.commandList == commandList &&
 		tlsNoPendingRestore.generation == mutationGeneration)
 		return;
@@ -4658,34 +4573,31 @@ void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandL
 	DX12PreSkinReplacementState state = {};
 	bool found = false;
 	bool erased = false;
-	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-	auto it = gActivePreSkinReplacements.find(commandList);
-	if (it != gActivePreSkinReplacements.end())
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&restoreShard.lock);
+	auto it = restoreShard.entries.find(commandList);
+	if (it != restoreShard.entries.end())
 	{
 		state = std::move(it->second);
-		gActivePreSkinReplacements.erase(it);
+		restoreShard.entries.erase(it);
 		found = state.active;
 		erased = true;
+		InterlockedDecrement(&gHasActivePreSkinReplacement);
 	}
-	if (gActivePreSkinReplacements.empty())
-		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
-	ReleaseSRWLockExclusive(&gPreSkinLock);
+	ReleaseSRWLockExclusive(&restoreShard.lock);
 	// Only bump the generation when the map actually changed. This lookup
 	// runs on every draw/dispatch of every command list while any pre-skin
 	// replacement is pending; an unconditional bump would invalidate the
-	// TLS negative cache of every other list on each call, forcing them all
-	// back onto the exclusive lock plus a map lookup for no reason (and it
-	// would also make DX12ModIsPreSkinReplacementReusable observe a phantom
-	// mutation). Same conditional-bump pattern as
-	// DX12ModClearPreSkinOutputResizeMap.
+	// TLS negative cache of every other list on this shard on each call,
+	// forcing them back onto the lock plus a map lookup for no reason. Same
+	// conditional-bump pattern as DX12ModClearPreSkinOutputResizeMap.
 	if (erased)
-		BumpPreSkinReplacementMutationGeneration();
+		BumpPreSkinReplacementShardMutation(&restoreShard);
 
 	// Re-read the generation after the mutation so the negative entry stays
 	// valid for exactly the state we just observed.
 	tlsNoPendingRestore.commandList = commandList;
 	tlsNoPendingRestore.generation =
-		gPreSkinReplacementMutationGeneration.load(std::memory_order_relaxed);
+		restoreShard.mutationGeneration.load(std::memory_order_relaxed);
 
 	if (!found)
 		return;
@@ -4887,22 +4799,23 @@ void DX12ModForgetPreSkinReplacementForCommandList(
 
 	DX12PreSkinReplacementState state = {};
 	bool erased = false;
-	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
-	auto it = gActivePreSkinReplacements.find(commandList);
-	if (it != gActivePreSkinReplacements.end())
+	DX12PreSkinReplacementShard &forgetShard =
+		PreSkinReplacementShardFor(commandList);
+	DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&forgetShard.lock);
+	auto it = forgetShard.entries.find(commandList);
+	if (it != forgetShard.entries.end())
 	{
 		state = std::move(it->second);
-		gActivePreSkinReplacements.erase(it);
+		forgetShard.entries.erase(it);
 		erased = true;
+		InterlockedDecrement(&gHasActivePreSkinReplacement);
 	}
-	if (gActivePreSkinReplacements.empty())
-		InterlockedExchange(&gHasActivePreSkinReplacement, 0);
-	ReleaseSRWLockExclusive(&gPreSkinLock);
+	ReleaseSRWLockExclusive(&forgetShard.lock);
 	if (!erased)
 		return;
-	// The map changed, so other lists' TLS negative caches must re-check
-	// (same conditional-bump contract as the restore path).
-	BumpPreSkinReplacementMutationGeneration();
+	// The shard map changed, so other lists' TLS negative caches on this
+	// shard must re-check (same conditional-bump contract as the restore path).
+	BumpPreSkinReplacementShardMutation(&forgetShard);
 
 	// Undo the CPU-side descriptor patch: the game's heap outlives this
 	// command list, so leaving our UAV descriptor behind would bind a

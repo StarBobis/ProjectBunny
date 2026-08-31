@@ -412,7 +412,7 @@ void MergeDescriptorTextureOverrideDrawMatchUsageLocked(
 {
 	if (!usage)
 		return;
-	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadCommandExecutionRuntimeSnapshot();
 	if (snapshot) {
 		std::unordered_set<const Bunny::TextureOverrideConfig*> seenConfigs;
@@ -1143,7 +1143,7 @@ bool DX12ModCompileDrawDecision(
 		return false;
 
 	const bool activeShaderOverrides = DX12ModHasActiveShaderOverrides();
-	const UINT64 reloadGeneration = DX12ModGetReloadGeneration();
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	if (!pipelineState || !activeShaderOverrides) {
 		decision->SetNoopNeverMatches(
 			pipelineState, reloadGeneration, activeShaderOverrides);
@@ -1425,7 +1425,7 @@ bool DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
 		}
 	}
 
-	const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
+	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadTextureOverrideRuntimeSnapshot();
 	if (!snapshot ||
 		!HasPotentialResolvedDescriptorPrefilterCandidates(

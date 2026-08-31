@@ -767,7 +767,7 @@ public:
 
 			std::vector<DX12TextureOverrideMatch> resolvedMatches;
 			FindDescriptorTextureOverridesFromResolvedBindings(
-				snapshot,
+				snapshot.get(),
 				target,
 				*resolvedBindingsView,
 				mVertexCount,
@@ -970,7 +970,7 @@ public:
 	{
 		if (!mTextureOverrideRuntimeSnapshotResolved) {
 			mTextureOverrideRuntimeSnapshotResolved = true;
-			mTextureOverrideRuntimeSnapshot = LoadTextureOverrideRuntimeSnapshot();
+			mTextureOverrideRuntimeSnapshot = SnapshotCommandExecutionRuntimeShared();
 		}
 		return mTextureOverrideRuntimeSnapshot;
 	}
@@ -1024,7 +1024,7 @@ public:
 	{
 		const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &snapshot =
 			GetTextureOverrideRuntimeSnapshot();
-		return !snapshot || CommandListRuntimeEffectLocked(snapshot, name, includePost);
+		return !snapshot || CommandListRuntimeEffectLocked(snapshot.get(), name, includePost);
 	}
 
 	const std::vector<DX12ResolvedGraphicsSrvBinding> *GetResolvedGraphicsSrvBindings()
@@ -1150,7 +1150,7 @@ public:
 					GetResolvedGraphicsSrvBindings();
 				if (resolvedBindings && !resolvedBindings->empty()) {
 					AppendResolvedBindingsToDescriptorTextureOverrideCache(
-						snapshot,
+						snapshot.get(),
 						*resolvedBindings,
 						kind,
 						false,
@@ -1178,7 +1178,7 @@ public:
 			if (resolvedBindings.empty())
 				return;
 			AppendResolvedBindingsToDescriptorTextureOverrideCache(
-				snapshot,
+				snapshot.get(),
 				resolvedBindings,
 				kind,
 				compute,
@@ -1219,7 +1219,7 @@ public:
 			std::vector<DX12TextureOverrideMatch> resolvedMatches;
 			if (!overrideEntry.second.empty()) {
 				FindDescriptorTextureOverridesFromResolvedBindings(
-					snapshot,
+					snapshot.get(),
 					target,
 					overrideEntry.second,
 					mVertexCount,

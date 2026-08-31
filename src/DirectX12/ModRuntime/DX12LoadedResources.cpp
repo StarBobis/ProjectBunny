@@ -862,6 +862,82 @@ bool DX12ResolveStaticIaReplacement(
 		*outVertexView = {};
 	if (!device || !contentHash)
 		return false;
+	if (!indexBuffer && vertexSlot >= 32)
+		return false;
+
+	// TLS resolution cache. Within one reload generation the resolution of a
+	// content hash to the mod buffer (GPU VA / byte width / stride / format)
+	// is stable: the static IA table is published once per reload and the
+	// loaded resources it points at are resident UPLOAD-heap buffers that are
+	// only retired during the next reload (which also bumps
+	// gReloadGeneration). Caching per thread keeps every IA bind off the
+	// atomic<shared_ptr> snapshot load (MSVC spinlock + shared control-block
+	// cache line) and off gModLock: one volatile generation read plus a map
+	// lookup, instead of a snapshot load + hash find + shared lock per bind
+	// per slot on every recording thread.
+	struct DX12StaticIaResolvedView
+	{
+		bool resolved = false;
+		D3D12_GPU_VIRTUAL_ADDRESS gpuVa = 0;
+		UINT64 byteWidth = 0;
+		UINT stride = 0;
+		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	};
+	static thread_local UINT64 tlsStaticIaGeneration = 0;
+	static thread_local std::unordered_map<UINT64, DX12StaticIaResolvedView>
+		tlsStaticIaCache;
+	const UINT64 generation = DX12ModGetReloadGenerationFast();
+	if (tlsStaticIaGeneration != generation) {
+		tlsStaticIaCache.clear();
+		tlsStaticIaGeneration = generation;
+	}
+	// IB entries share the key space with VB entries by using slot
+	// 0xFFFFFFFF as the IB marker (real vertex slots are < 32).
+	const UINT64 cacheKey = indexBuffer ?
+		(0xFFFFFFFFull << 32) | contentHash :
+		((static_cast<UINT64>(vertexSlot) << 32) | contentHash);
+	auto applyCached = [&](const DX12StaticIaResolvedView &view) {
+		if (indexBuffer) {
+			if (!outIndexView)
+				return false;
+			outIndexView->BufferLocation = view.gpuVa;
+			outIndexView->SizeInBytes = static_cast<UINT>(view.byteWidth);
+			// Mirror the draw-time path: keep the mod resource's own R16/R32
+			// format when declared, otherwise reuse the game's view format.
+			outIndexView->Format =
+				(view.format == DXGI_FORMAT_R16_UINT ||
+				 view.format == DXGI_FORMAT_R32_UINT) ?
+					view.format :
+					(originalIndexView ? originalIndexView->Format :
+						DXGI_FORMAT_R32_UINT);
+			return true;
+		}
+		if (!outVertexView)
+			return false;
+		outVertexView->BufferLocation = view.gpuVa;
+		outVertexView->SizeInBytes = static_cast<UINT>(view.byteWidth);
+		outVertexView->StrideInBytes =
+			view.stride ? view.stride :
+				(originalVertexView ? originalVertexView->StrideInBytes : 0);
+		return outVertexView->StrideInBytes != 0;
+	};
+	auto cached = tlsStaticIaCache.find(cacheKey);
+	if (cached != tlsStaticIaCache.end()) {
+		if (!cached->second.resolved)
+			return false;
+		return applyCached(cached->second);
+	}
+
+	DX12StaticIaResolvedView resolvedView;
+	auto cacheAndReturn = [&](bool resolved) {
+		// Bound the TLS map: a game can touch many distinct buffers within one
+		// generation; clearing on overflow just re-resolves on next bind.
+		constexpr size_t kMaxTlsStaticIaEntries = 1024;
+		if (tlsStaticIaCache.size() >= kMaxTlsStaticIaEntries)
+			tlsStaticIaCache.clear();
+		tlsStaticIaCache.emplace(cacheKey, resolvedView);
+		return resolved;
+	};
 
 	const std::shared_ptr<const DX12StaticIaReplacementTable> table =
 		LoadStaticIaReplacementSnapshot();
@@ -874,8 +950,6 @@ bool DX12ResolveStaticIaReplacement(
 		if (it != table->indexByHash.end())
 			resourceName = &it->second;
 	} else {
-		if (vertexSlot >= 32)
-			return false;
 		const uint64_t key =
 			(static_cast<uint64_t>(vertexSlot) << 32) |
 			static_cast<uint64_t>(contentHash);
@@ -884,43 +958,23 @@ bool DX12ResolveStaticIaReplacement(
 			resourceName = &it->second;
 	}
 	if (!resourceName || resourceName->empty())
-		return false;
+		return cacheAndReturn(false);
 
 	DX12LoadedResource *resource =
 		EnsureLoadedResourceForPreSkin(device, *resourceName);
 	if (!resource || !resource->resource)
-		return false;
+		return cacheAndReturn(false);
 
 	const UINT64 byteWidth = resource->byteWidth;
 	if (!byteWidth || byteWidth > UINT_MAX)
-		return false;
+		return cacheAndReturn(false);
 
-	if (indexBuffer) {
-		if (!outIndexView)
-			return false;
-		outIndexView->BufferLocation =
-			resource->resource->GetGPUVirtualAddress();
-		outIndexView->SizeInBytes = static_cast<UINT>(byteWidth);
-		// Mirror the draw-time path: keep the mod resource's own R16/R32
-		// format when declared, otherwise reuse the game's view format.
-		outIndexView->Format =
-			(resource->format == DXGI_FORMAT_R16_UINT ||
-			 resource->format == DXGI_FORMAT_R32_UINT) ?
-				resource->format :
-				(originalIndexView ? originalIndexView->Format :
-					DXGI_FORMAT_R32_UINT);
-		return true;
-	}
-
-	if (!outVertexView)
-		return false;
-	outVertexView->BufferLocation =
-		resource->resource->GetGPUVirtualAddress();
-	outVertexView->SizeInBytes = static_cast<UINT>(byteWidth);
-	outVertexView->StrideInBytes =
-		resource->stride ? resource->stride :
-			(originalVertexView ? originalVertexView->StrideInBytes : 0);
-	return outVertexView->StrideInBytes != 0;
+	resolvedView.resolved = true;
+	resolvedView.gpuVa = resource->resource->GetGPUVirtualAddress();
+	resolvedView.byteWidth = byteWidth;
+	resolvedView.stride = resource->stride;
+	resolvedView.format = resource->format;
+	return cacheAndReturn(applyCached(resolvedView));
 }
 
 
