@@ -3280,13 +3280,6 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		return false;
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	auto logStage = [&config, section, triggerHash](const char *stage, UINT tables = 0, UINT descriptors = 0)
-	{
-		(void)stage;
-		(void)tables;
-		(void)descriptors;
-	};
-	logStage("enter");
 
 	class TableCopy
 
@@ -3338,13 +3331,9 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	addTable(uavBinding);
 	if (tables.empty())
 	{
-		logStage("no_tables");
 		return false;
 	}
 
-	if (srvs.empty())
-	{
-			}
 	(void)rootConstants;
 
 	const UINT64 abortCacheKey = MakePreSkinDescriptorPatchAbortCacheKey(
@@ -3356,7 +3345,6 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	ReleaseSRWLockShared(&gPreSkinDescriptorPatchAbortLock);
 	if (abortCacheHit)
 	{
-		logStage("abort_cache_hit", 0, 0);
 		return false;
 	}
 
@@ -3587,10 +3575,8 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		table.tempOffset = totalDescriptors;
 		totalDescriptors += table.count;
 	}
-	logStage("tables_built", static_cast<UINT>(tables.size()), totalDescriptors);
 	if (!totalDescriptors)
 	{
-		logStage("no_descriptors", static_cast<UINT>(tables.size()), totalDescriptors);
 		return false;
 	}
 
@@ -3603,10 +3589,8 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			device, commandList, totalDescriptors, &tempCpuBase, &tempGpuBase, &tempIncrement,
 			&tempHeap))
 	{
-		logStage("descriptor_ring_failed", static_cast<UINT>(tables.size()), totalDescriptors);
 		return false;
 	}
-	logStage("ring_allocated", static_cast<UINT>(tables.size()), totalDescriptors);
 	DX12_HOTPATH_TIME_END(PreSkinRingAlloc);
 	// Batch all table copies into one CopyDescriptors call: destinations are
 	// disjoint slots in the fresh ring range, sources live in other heaps.
@@ -3646,7 +3630,6 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	tableCopyDestSizes.clear();
 	tableCopySrcStarts.clear();
 	tableCopySrcSizes.clear();
-	logStage("tables_copied", static_cast<UINT>(tables.size()), totalDescriptors);
 
 	DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
 	class TableCopyLookupKeyUtils
@@ -3909,11 +3892,9 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	if (restoreCbvSrvUavHeap != tempHeap)
 	{
 		ID3D12DescriptorHeap *heaps[2] = {tempHeap, restoreSamplerHeap};
-		logStage("before_set_heaps", static_cast<UINT>(tables.size()), totalDescriptors);
 		commandList->SetDescriptorHeaps(restoreSamplerHeap ? 2 : 1, heaps);
 		SyncPreSkinDescriptorHeaps(
 			commandList, runtimeState, tempHeap, restoreSamplerHeap);
-		logStage("after_set_heaps", static_cast<UINT>(tables.size()), totalDescriptors);
 	}
 	DX12PreSkinReplacementState state;
 	state.active = true;
@@ -3949,11 +3930,9 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	{
 		D3D12_GPU_DESCRIPTOR_HANDLE gpu = tempGpuBase;
 		gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
-		logStage("before_set_root_table", static_cast<UINT>(tables.size()), totalDescriptors);
 		commandList->SetComputeRootDescriptorTable(table.root, gpu);
 		SyncPreSkinComputeRootDescriptorTable(
 			commandList, runtimeState, table.root, gpu);
-		logStage("after_set_root_table", static_cast<UINT>(tables.size()), totalDescriptors);
 		DX12PreSkinReplacementState::TableRestore restore;
 		restore.rootParameterIndex = table.root;
 		restore.originalTable = table.gpuStart;

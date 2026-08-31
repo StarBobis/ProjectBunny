@@ -661,7 +661,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			ThreadGroupCountX,
 			ThreadGroupCountY,
 			ThreadGroupCountZ,
-			mOrigDispatch);
+			mOrigDispatch,
+			dispatchFlags);
 	}
 
 		void STDMETHODCALLTYPE CopyBufferRegion(

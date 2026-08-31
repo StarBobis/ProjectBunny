@@ -854,7 +854,7 @@ public:
 			const DX12IaReplacementExecutorCallbacks callbacks =
 				MakeDirectIaReplacementCallbacks();
 			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
-				commandList, runtimeState, callbacks);
+				commandList, runtimeState, callbacks, drawFlags);
 		}
 		DX12WrapperRuntimeUtils::DrawInstanced(
 			commandList,
@@ -927,7 +927,7 @@ public:
 			const DX12IaReplacementExecutorCallbacks callbacks =
 				MakeDirectIaReplacementCallbacks();
 			DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
-				commandList, runtimeState, callbacks);
+				commandList, runtimeState, callbacks, drawFlags);
 		}
 		DX12WrapperRuntimeUtils::DrawIndexedInstanced(
 			commandList,
@@ -987,7 +987,8 @@ public:
 		DX12DispatchHookFlowDispatch::Fn original)
 	{
 		DX12SimulateContext *runtimeState = nullptr;
-		if (DX12HotPathState::HookWorkFlags & DX12HotPathState::MASK_DISPATCH_WORK)
+		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
+		if (dispatchFlags & DX12HotPathState::MASK_DISPATCH_WORK)
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12WrapperRuntimeUtils::Dispatch(
 			commandList,
@@ -995,7 +996,8 @@ public:
 			threadGroupCountX,
 			threadGroupCountY,
 			threadGroupCountZ,
-			original);
+			original,
+			dispatchFlags);
 	}
 
 	static void Dispatch(
@@ -1004,11 +1006,15 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
-		DX12DispatchHookFlowDispatch::Fn original)
+		DX12DispatchHookFlowDispatch::Fn original,
+		UINT64 dispatchFlags)
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiDispatch);
-		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
+		// The wrapper already evaluated this same mask on its fast path; only
+		// a null original (forward through DirectDispatch) can still take the
+		// no-work branch here, so re-check with the flags it passed down
+		// instead of loading the shared word a second time.
 		if (!(dispatchFlags & (DX12HotPathState::MASK_DISPATCH_WORK |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -1024,7 +1030,8 @@ public:
 			threadGroupCountX,
 			threadGroupCountY,
 			threadGroupCountZ,
-			original ? original : DirectDispatch);
+			original ? original : DirectDispatch,
+			dispatchFlags);
 	}
 
 	static void ExecuteIndirect(

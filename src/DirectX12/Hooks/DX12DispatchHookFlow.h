@@ -113,11 +113,11 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
-		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+		DX12DispatchHookFlowDispatch::Fn originalDispatch,
+		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
 		if (!originalDispatch)
 			return;
-		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		if (!(flagsWord & DX12HotPathState::MASK_DISPATCH_WORK) &&
 			!DX12Profiling::ShouldCollectCounters()) {
 			DX12_PROFILE_FAST_FORWARD();
@@ -136,7 +136,8 @@ public:
 			threadGroupCountX,
 			threadGroupCountY,
 			threadGroupCountZ,
-			originalDispatch);
+			originalDispatch,
+			flagsWord);
 	}
 
 	static void ExecuteHook(
@@ -145,14 +146,14 @@ public:
 		UINT threadGroupCountX,
 		UINT threadGroupCountY,
 		UINT threadGroupCountZ,
-		DX12DispatchHookFlowDispatch::Fn originalDispatch)
+		DX12DispatchHookFlowDispatch::Fn originalDispatch,
+		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
 		if (!originalDispatch)
 			return;
 
 		DX12_HOTPATH_TIME_BEGIN(DispatchHookTotal);
 
-		const UINT64 flagsWord = DX12HotPathState::HookWorkFlags;
 		const bool hasShaderOverrides =
 			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 		const bool needsPreSkinProbe = (flagsWord & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;

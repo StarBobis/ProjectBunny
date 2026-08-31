@@ -129,7 +129,7 @@ public:
 		// hot reloads while still allowing global resident descriptor/IA features
 		// to coexist with the fast reject.
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
-			commandList, runtimeState, callbacks);
+			commandList, runtimeState, callbacks, flagsWord);
 		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
 			DX12RuntimeState::IncrementFrameDraws();
 
@@ -237,7 +237,8 @@ public:
 			DX12IaReplacementExecutor::ExecutePresent(commandList, *runtimeState, callbacks);
 		if (runtimeState &&
 		    DX12IaReplacementExecutor::HandleDrawOverrides(
-				commandList, draw, *runtimeState, callbacks, residentDrawDecision))
+				commandList, draw, *runtimeState, callbacks,
+				residentDrawDecision, flagsWord))
 			return;
 		DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 	}

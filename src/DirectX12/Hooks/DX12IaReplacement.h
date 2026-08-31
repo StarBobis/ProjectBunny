@@ -1136,11 +1136,11 @@ public:
 	static void ExecutePendingPresentBeforeFastReject(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12SimulateContext *runtimeState,
-		const DX12IaReplacementExecutorCallbacks &callbacks)
+		const DX12IaReplacementExecutorCallbacks &callbacks,
+		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
 		if (!commandList || !runtimeState ||
-			!(DX12HotPathState::HookWorkFlags &
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) ||
+			!(flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) ||
 			!DX12ModPresentReplacementPendingForCurrentPresent())
 			return;
 
@@ -1541,7 +1541,8 @@ public:
 		const DX12IaDrawInvocation &draw,
 		const DX12SimulateContext &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks,
-		const DX12CompiledDrawDecision *precompiledDrawDecision = nullptr)
+		const DX12CompiledDrawDecision *precompiledDrawDecision = nullptr,
+		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
 		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
 
@@ -1549,9 +1550,11 @@ public:
 		// shader override metadata on every command.
 		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
 		LARGE_INTEGER psoDecisionBegin = DX12OuterTimingProbeUtils::Now();
+			// Gate bits come from the flags word the outer draw hook already
+			// loaded: one snapshot per draw keeps every layer's gating
+			// consistent even if an input-thread toggle lands mid-draw.
 			const bool activeShaderOverrides =
-				(DX12HotPathState::HookWorkFlags &
-				 DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
+				(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 			DX12SimulateContext *mutableRuntimeState =
 				const_cast<DX12SimulateContext*>(&runtimeState);
 			// The runtime deliberately preserves this cache across command-list Reset.
@@ -1688,7 +1691,7 @@ public:
 		const bool boundCacheCompareDescriptorState =
 			drawDecision->targetPlanHasDescriptorTargets ||
 			drawDecision->directTargetPlan.hasDescriptorTargets ||
-			(DX12HotPathState::HookWorkFlags &
+			(flagsWord &
 				(DX12HotPathState::FLAG_DRAW_SRV_SLOT_REPLACEMENT |
 				 DX12HotPathState::FLAG_PRE_SKIN_PROBE |
 				 DX12HotPathState::FLAG_PRE_SKIN_BINDING_TRACK |
