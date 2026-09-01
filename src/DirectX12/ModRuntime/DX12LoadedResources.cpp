@@ -815,8 +815,10 @@ bool DX12StaticTextureReplacementAllDescriptorOverridesStatic()
 
 bool DX12HasStaticTextureReplacements()
 {
-	return InterlockedCompareExchange(
-		&gHasStaticTextureReplacements, 0, 0) != 0;
+	// Plain volatile load, same rationale as DX12HasStaticIaReplacements
+	// below: the flag is published with interlocked stores and read on hot
+	// descriptor paths.
+	return gHasStaticTextureReplacements != 0;
 }
 
 

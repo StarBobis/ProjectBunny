@@ -164,8 +164,10 @@ public:
 			hasShaderOverrides || needsPreSkinProbe;
 		// No-candidate compute PSOs are resident state, just like DX11's current
 		// shader. Bypass tracking-state lookup and all decision/cache machinery.
-		if (DX12Profiling::ShouldCollectCounters() || needsDispatchDecision)
-			DX12RuntimeState::IncrementFrameDispatches();
+		if constexpr (kVerboseEnabled) {
+			if (DX12Profiling::ShouldCollectCounters() || needsDispatchDecision)
+				DX12RuntimeState::IncrementFrameDispatches();
+		}
 
 		if (DX12InternalReplayState::IsActive()) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);

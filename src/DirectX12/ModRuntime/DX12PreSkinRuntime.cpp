@@ -21,8 +21,10 @@ UINT64 MakePreSkinUavMatchCacheKey(
 
 UINT64 CurrentPreSkinActiveGeneration()
 {
-	return static_cast<UINT64>(InterlockedCompareExchange64(
-		reinterpret_cast<volatile LONG64*>(&gPreSkinActiveGeneration), 0, 0));
+	// Plain volatile load: the generation is only ever bumped with interlocked
+	// exchanges, and this runs on every draw (tens of thousands per frame), so
+	// the LOCK CMPXCHG read-modify-write fence buys nothing.
+	return static_cast<UINT64>(gPreSkinActiveGeneration);
 }
 
 
@@ -1216,16 +1218,25 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		&gPreSkinOutputResizeCacheGeneration, 0, 0);
 	TlsPreSkinResizeResolve &tls = tlsPreSkinResizeResolve;
 	if (tls.generation == generation && tls.viewGpuVa == viewGpuVa &&
-	    tls.originalResource == currentOwner &&
-	    tls.vertexResource) {
-		tls.vertexResource->AddRef();
-		binding->resizedResource = tls.vertexResource;
-		binding->retainedResource = true;
-		binding->resizedGpuVa = tls.resizedGpuVa;
-		binding->resizedByteWidth = tls.resizedByteWidth;
-		binding->sourceOffset = tls.sourceOffset;
-		binding->stride = tls.stride;
-		return true;
+	    tls.originalResource == currentOwner) {
+		if (tls.vertexResource) {
+			tls.vertexResource->AddRef();
+			binding->resizedResource = tls.vertexResource;
+			binding->retainedResource = true;
+			binding->resizedGpuVa = tls.resizedGpuVa;
+			binding->resizedByteWidth = tls.resizedByteWidth;
+			binding->sourceOffset = tls.sourceOffset;
+			binding->stride = tls.stride;
+			return true;
+		}
+		// Cached negative: this VA missed while the cache set was unchanged
+		// (generation bumps on create/evict/clear) and is still owned by the
+		// same resource, so it cannot have gained an entry. The negative was
+		// stored on every scan miss but the fast path below never consulted
+		// it, so each repeated bind of the same view re-entered the exclusive
+		// locked linear scan (~150-280us per slot, measured on pre-skin
+		// redirect binds/replays).
+		return false;
 	}
 
 	// The publish map is intentionally frame-local, but the resize cache owns a

@@ -110,6 +110,12 @@ public:
 	{
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12AsyncReadbackFlushFrameEnd();
+		DX12OuterTimingProbeUtils::LogPresentSlice(
+			api, "readback_frame_flush", swapChain, hr,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+
+		sliceBegin = DX12OuterTimingProbeUtils::Now();
 		DX12ModRunPresentMaintenance();
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			api, "present_maintenance", swapChain, hr,

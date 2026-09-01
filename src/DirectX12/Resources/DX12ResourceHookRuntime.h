@@ -1,4 +1,4 @@
-﻿// Resource tracker hook registry, runtime, signatures and state.
+// Resource tracker hook registry, runtime, signatures and state.
 // Split from DX12Resources.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -90,6 +90,15 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
 		D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType,
 		UINT descriptorIncrement);
+	// Resolves the increment from the per-type cache populated at heap
+	// creation; only falls back to a COM query on a cold cache. Preferred on
+	// hot paths (CopyDescriptorsSimple runs thousands of times per frame).
+	static void RecordCopiedDescriptorsSimple(
+		ID3D12Device *device,
+		UINT numDescriptors,
+		D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
+		D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
+		D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType);
 	static void RecordCreatedResource(
 		HRESULT hr,
 		void **resource,

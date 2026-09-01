@@ -447,7 +447,15 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 	state->lastWrappedGraphicsRootSignature = nullptr;
 	state->lastUnwrappedGraphicsRootSignature = nullptr;
 	state->computeBindingSerial = 0;
-	state->ia = DX12ActiveIaState();
+	// The pre-skin per-slot redirect negative cache ("this view needs no
+	// redirect") is keyed by (generation, source view) and therefore survives
+	// content changes by design; the full IA rebuild would wipe it, forcing
+	// every frame's first matching draw to re-run the whole 32-slot pre-skin
+	// lookup chain (~100-550us/frame in 32-slot scenes, measured). Preserve
+	// it across the rebuild: generation and view equality still invalidate
+	// entries exactly as before.
+	DX12CommandListRuntime::RebuildActiveIaStatePreservingRedirectNegatives(
+		&state->ia);
 	state->iaEpoch = 1;
 	state->iaContentEpoch = 1;
 
@@ -913,11 +921,40 @@ void DX12CommandListRuntime::RememberPipelineState(
 	ReleaseSRWLockExclusive(&shard.lock);
 }
 
+// Rebuild the IA state from scratch while keeping the pre-skin per-slot
+// redirect negative cache: entries are keyed by (generation, source view), so
+// they stay valid across command-list Reset (wiping them made every frame's
+// first matching draw re-run the full 32-slot pre-skin lookup chain, measured
+// at ~100-550us/frame in 32-slot scenes).
+void DX12CommandListRuntime::RebuildActiveIaStatePreservingRedirectNegatives(
+	DX12ActiveIaState *ia)
+{
+	if (!ia)
+		return;
+	constexpr UINT kIaSlotCount =
+		ARRAYSIZE(ia->preSkinRedirectNegativeValid);
+	bool savedNegativeValid[kIaSlotCount];
+	UINT64 savedNegativeGeneration[kIaSlotCount];
+	D3D12_VERTEX_BUFFER_VIEW savedNegativeSource[kIaSlotCount];
+	for (UINT slot = 0; slot < kIaSlotCount; ++slot) {
+		savedNegativeValid[slot] = ia->preSkinRedirectNegativeValid[slot];
+		savedNegativeGeneration[slot] = ia->preSkinRedirectNegativeGeneration[slot];
+		savedNegativeSource[slot] = ia->preSkinRedirectNegativeSource[slot];
+	}
+	*ia = DX12ActiveIaState();
+	for (UINT slot = 0; slot < kIaSlotCount; ++slot) {
+		ia->preSkinRedirectNegativeValid[slot] = savedNegativeValid[slot];
+		ia->preSkinRedirectNegativeGeneration[slot] = savedNegativeGeneration[slot];
+		ia->preSkinRedirectNegativeSource[slot] = savedNegativeSource[slot];
+	}
+}
+
 void DX12CommandListRuntime::ResetIa(DX12SimulateContext *state)
 {
 	if (!state)
 		return;
-	state->ia = DX12ActiveIaState();
+	DX12CommandListRuntime::RebuildActiveIaStatePreservingRedirectNegatives(
+		&state->ia);
 	// Plan fix A: the command list was reset, so any live static-template IA
 	// replacement must be forgotten (the driver-side IA state is gone too).
 	state->staticTemplateIaApplied = false;
@@ -2394,19 +2431,18 @@ void DX12CommandListLifecycle::Reset(
 			1,
 			DX12OuterTimingProbeUtils::ElapsedUs(begin));
 	}
-	if (tracking.trackPsoState) {
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
-		DX12CommandListRuntime::RememberPipelineState(commandList, initialState);
-		DX12OuterTimingProbeUtils::LogCpuStage(
-			"CommandListReset",
-			"remember_pipeline_state",
-			0,
-			initialState ? 1 : 0,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
-	}
+	// DX12CommandListRuntime::Reset (invoked by the wrapper just before this
+	// lifecycle pass) already ran RememberPipelineState with the same
+	// initialState and fully reset the IA/static-template state; repeating
+	// either here paid a second TLS lookup plus a redundant ~10KB IA rewrite
+	// per command-list Reset. Only the IA epoch bump remains unique: it
+	// invalidates IA-keyed caches from the previous recording.
 	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
 		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
-		DX12CommandListRuntime::ResetIa(commandList);
+		DX12SimulateContext *fastState =
+			DX12CommandListRuntime::GetStatePtrFast(commandList);
+		if (fastState)
+			DX12CommandListRuntime::BumpIaEpoch(fastState);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"CommandListReset",
 			"reset_ia",

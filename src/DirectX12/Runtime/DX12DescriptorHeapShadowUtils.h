@@ -823,6 +823,19 @@ public:
 
 		const UINT64 valueId =
 			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
+		// Unchanged early-out without materializing the 264-byte record: the
+		// game re-creates identical CBVs into ring slots thousands of times
+		// per frame, and the published-value probe only needs the hash.
+		ResolvedHeapSlot resolved;
+		if (ResolveHeapSlotFast(
+				destDescriptor.ptr,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+				&resolved) &&
+			resolved.heap && resolved.heap->stateLocks &&
+			resolved.heap->stateLocks->PublishedSlotValueEquals(
+				resolved.slot, valueId)) {
+			return false;
+		}
 
 		DescriptorRecord record;
 		SetDescriptorKind(&record, DescriptorKind::CBV_ID);

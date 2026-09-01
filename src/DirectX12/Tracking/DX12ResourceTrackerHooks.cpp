@@ -444,6 +444,30 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	commitSet.CommitAll();
 }
 
+void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
+	ID3D12Device *device,
+	UINT numDescriptors,
+	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
+	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
+	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
+{
+	UINT increment =
+		DX12DescriptorHeapShadowUtils::CachedIncrementForType(descriptorHeapsType);
+	if (!increment && device) {
+		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
+		if (increment) {
+			DX12DescriptorHeapShadowUtils::CacheIncrementForType(
+				descriptorHeapsType, increment);
+		}
+	}
+	RecordCopiedDescriptorsSimple(
+		numDescriptors,
+		destDescriptorRangeStart,
+		srcDescriptorRangeStart,
+		descriptorHeapsType,
+		increment);
+}
+
 void DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 	HRESULT hr,
 	void **resource,

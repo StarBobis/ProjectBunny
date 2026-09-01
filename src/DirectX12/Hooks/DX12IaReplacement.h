@@ -290,6 +290,31 @@ public:
 			: static_cast<UINT>(byteWidth);
 	}
 
+	// Per-call raw probe for the gated replay (runs 1-3 times per frame, so
+	// every call is logged). CpuStageTiming filtered sub-40us stages, which
+	// hid the fast replay body while the enclosing gated call showed
+	// ~1.2-2.2ms/frame; this line pins the exact split and loop counts.
+	static void LogReplayGateProbe(
+		const char *stage, LONG64 genUs, LONG64 fpUs,
+		LONG64 bodyUs, LONG64 lookupUs, LONG64 setUs,
+		UINT runs, UINT slotsScanned,
+		UINT64 resizeGen, UINT64 activeGen)
+	{
+		DX12LogManager::Fields("DX12ReplayProbe",
+			"stage=%s,genUs=%lld,fpUs=%lld,bodyUs=%lld,"
+			"lookupUs=%lld,setUs=%lld,runs=%u,slots=%u,"
+			"resizeGen=%llu,activeGen=%llu",
+			stage ? stage : "",
+			static_cast<long long>(genUs),
+			static_cast<long long>(fpUs),
+			static_cast<long long>(bodyUs),
+			static_cast<long long>(lookupUs),
+			static_cast<long long>(setUs),
+			runs, slotsScanned,
+			static_cast<unsigned long long>(resizeGen),
+			static_cast<unsigned long long>(activeGen));
+	}
+
 	static void ApplyReadBarriers(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12PreSkinOutputResizeBinding &binding)
@@ -315,6 +340,23 @@ public:
 		}
 	}
 
+	// Per-slot expand-chain probe: pins down which lookup step of
+	// ExpandInPlaceVertexBufferView eats the ~150us measured per pre-skin
+	// slot (GPUVA resolve vs producer lookup vs expanded-width resolve).
+	static void LogExpandStepProbe(
+		const char *stage, LONG64 gpuvaUs, LONG64 producerUs, LONG64 widthUs)
+	{
+		static volatile LONG expandProbeCounter = 0;
+		if ((InterlockedIncrement(&expandProbeCounter) & 0x3F) == 1) {
+			DX12LogManager::Fields("DX12ReplayProbe",
+				"stage=expand_%s,gpuvaUs=%lld,producerUs=%lld,widthUs=%lld",
+				stage ? stage : "",
+				static_cast<long long>(gpuvaUs),
+				static_cast<long long>(producerUs),
+				static_cast<long long>(widthUs));
+		}
+	}
+
 	static bool ExpandInPlaceVertexBufferView(
 		const D3D12_VERTEX_BUFFER_VIEW &sourceView,
 		D3D12_VERTEX_BUFFER_VIEW *expandedView)
@@ -334,31 +376,41 @@ public:
 		if (!DX12ModNeedsPreSkinningUavProbe())
 			return false;
 
+		LARGE_INTEGER expandStepBegin = DX12OuterTimingProbeUtils::Now();
 		DX12BufferResourceSummary resource;
 		if (!DX12ResolveBufferResourceByGpuVa(
 				sourceView.BufferLocation, 1, &resource) ||
 			!resource.hasResourceDesc ||
 			resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
-			resource.gpuVirtualAddress > sourceView.BufferLocation)
+			resource.gpuVirtualAddress > sourceView.BufferLocation) {
+			LogExpandStepProbe(
+				"gpuva_fail", DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin), 0, 0);
 			return false;
+		}
+		const LONG64 expandGpuvaUs = DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin);
 
 		const UINT64 offset = sourceView.BufferLocation - resource.gpuVirtualAddress;
+		expandStepBegin = DX12OuterTimingProbeUtils::Now();
 		UINT64 outputByteWidth = 0;
 		DX12ModPreSkinProducerSummary producer;
 		if (DX12ModFindActivePreSkinProducerForOutput(
 				resource.resource, 0, sourceView.StrideInBytes, &producer)) {
 			outputByteWidth = producer.outputByteWidth;
 		}
+		const LONG64 expandProducerUs = DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin);
 		// The active-producer table is only a fast path. It is keyed by Mod
 		// section, so a later frame can replace its output resource while an
 		// earlier frame's command list is still being recorded. DLSS Frame
 		// Generation and NVIDIA capture make that normal by increasing the number
 		// of in-flight resources. Recover the VLR size from resource-local metadata
 		// written when its UAV was expanded, matching DX11's buffer-local lifetime.
+		expandStepBegin = DX12OuterTimingProbeUtils::Now();
 		if (!outputByteWidth) {
 			DX12ModResolveExpandedPreSkinBufferWidth(
 				resource.resource, sourceView.StrideInBytes, &outputByteWidth);
 		}
+		const LONG64 expandWidthUs = DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin);
+		LogExpandStepProbe("total", expandGpuvaUs, expandProducerUs, expandWidthUs);
 		if (!outputByteWidth ||
 			outputByteWidth > resource.resourceDesc.Width ||
 			outputByteWidth <= offset)
@@ -384,6 +436,7 @@ public:
 		if (!views || !redirectedViews || !count || count > redirectedCapacity)
 			return false;
 		bool anyRedirected = false;
+		UINT viewRedirectedSlots = 0;
 		for (UINT i = 0; i < count; ++i)
 			redirectedViews[i] = views[i];
 		// A negative lookup is valid only while both the fallback map and the
@@ -392,11 +445,21 @@ public:
 		const UINT64 resizeGeneration =
 			DX12ModGetPreSkinOutputResizeGeneration() ^
 			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
+		// Per-slot probe (only for multi-slot calls, which run a few times per
+		// frame): logs the branch taken and its cost so the ~300-450us
+		// "expandUs" measured on 4-slot binds can be pinned to a slot/branch.
+		auto logSlotProbe = [count](UINT slot, const char *branch, LONG64 us) {
+			DX12LogManager::Fields("DX12ReplayProbe",
+				"stage=redirect_slot,slots=%u,slot=%u,branch=%s,us=%lld",
+				count, slot, branch ? branch : "",
+				static_cast<long long>(us));
+		};
 		for (UINT i = 0; i < count; ++i) {
 			const D3D12_VERTEX_BUFFER_VIEW &sourceView = views[i];
 			if (!sourceView.BufferLocation || !sourceView.SizeInBytes)
 				continue;
 			const UINT slot = startSlot + i;
+			LARGE_INTEGER slotProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT &&
 					activeIa->preSkinRedirectNegativeValid[slot] &&
 					activeIa->preSkinRedirectNegativeGeneration[slot] ==
@@ -405,18 +468,29 @@ public:
 					activeIa->preSkinRedirectNegativeSource[slot];
 				if (cached.BufferLocation == sourceView.BufferLocation &&
 						cached.SizeInBytes == sourceView.SizeInBytes &&
-						cached.StrideInBytes == sourceView.StrideInBytes)
+						cached.StrideInBytes == sourceView.StrideInBytes) {
+					if (count > 1)
+						logSlotProbe(slot, "negative_hit",
+							DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 					continue;
+				}
 			}
 			if (ExpandInPlaceVertexBufferView(sourceView, &redirectedViews[i])) {
+				if (count > 1)
+					logSlotProbe(slot, "expand",
+						DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
 					activeIa->preSkinRedirectNegativeValid[slot] = false;
 				anyRedirected = true;
+				++viewRedirectedSlots;
 				continue;
 			}
 			DX12PreSkinOutputResizeBinding binding;
 			if (!DX12ModResolvePreSkinOutputResizeByGpuVa(
 				    commandList, sourceView.BufferLocation, &binding)) {
+				if (count > 1)
+					logSlotProbe(slot, "resolve_miss",
+						DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
 					activeIa->preSkinRedirectNegativeValid[slot] = true;
 					activeIa->preSkinRedirectNegativeGeneration[slot] =
@@ -432,6 +506,9 @@ public:
 			// anything else must keep reading the original buffer.
 			if (binding.stride && sourceView.StrideInBytes &&
 			    binding.stride != sourceView.StrideInBytes) {
+				if (count > 1)
+					logSlotProbe(slot, "stride_mismatch",
+						DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
 					activeIa->preSkinRedirectNegativeValid[slot] = true;
 					activeIa->preSkinRedirectNegativeGeneration[slot] =
@@ -444,18 +521,26 @@ public:
 				binding.resizedByteWidth > binding.sourceOffset
 					? binding.resizedByteWidth - binding.sourceOffset
 					: 0;
-			if (!availableBytes)
+			if (!availableBytes) {
+				if (count > 1)
+					logSlotProbe(slot, "no_available_bytes",
+						DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 				continue;
+			}
 			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
 				activeIa->preSkinRedirectNegativeValid[slot] = false;
 			const UINT64 redirectedGpuVa =
 				binding.resizedGpuVa + binding.sourceOffset;
 			ApplyReadBarriers(commandList, binding);
+			if (count > 1)
+				logSlotProbe(slot, "redirect",
+					DX12OuterTimingProbeUtils::ElapsedUs(slotProbeBegin));
 			redirectedViews[i].BufferLocation = redirectedGpuVa;
 			redirectedViews[i].SizeInBytes = ClampViewBytes(availableBytes);
 			if (!redirectedViews[i].StrideInBytes && binding.stride)
 				redirectedViews[i].StrideInBytes = binding.stride;
 			anyRedirected = true;
+			++viewRedirectedSlots;
 		}
 		return anyRedirected;
 	}
@@ -463,12 +548,17 @@ public:
 	static bool ReplayActiveVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaReplacementExecutorCallbacks &callbacks,
-		DX12ActiveIaState *activeIa)
+		DX12ActiveIaState *activeIa,
+		LONG64 *lookupUsOut = nullptr,
+		LONG64 *setUsOut = nullptr,
+		UINT *runsOut = nullptr,
+		UINT *slotsOut = nullptr)
 	{
 		if (!commandList || !callbacks.setVertexBuffers || !activeIa)
 			return false;
 		bool replayedAny = false;
 		UINT slot = 0;
+		UINT runs = 0;
 		LARGE_INTEGER replaySegmentBegin = DX12OuterTimingProbeUtils::Now();
 		LONG64 replayLookupUs = 0;
 		LONG64 replaySetUs = 0;
@@ -483,6 +573,7 @@ public:
 			       activeIa->hasVertexBuffer[slot])
 				++slot;
 			const UINT runCount = slot - runStart;
+			++runs;
 			D3D12_VERTEX_BUFFER_VIEW redirected[
 				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 			replaySegmentBegin = DX12OuterTimingProbeUtils::Now();
@@ -510,6 +601,14 @@ public:
 			"IaReplacement", "apply_replay_lookup", 1, 1, replayLookupUs);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"IaReplacement", "apply_replay_setvb", 1, 1, replaySetUs);
+		if (lookupUsOut)
+			*lookupUsOut = replayLookupUs;
+		if (setUsOut)
+			*setUsOut = replaySetUs;
+		if (runsOut)
+			*runsOut = runs;
+		if (slotsOut)
+			*slotsOut = slot;
 		return replayedAny;
 	}
 
@@ -552,18 +651,52 @@ public:
 	{
 		if (!runtimeState)
 			return false;
+		LARGE_INTEGER gateProbeBegin = DX12OuterTimingProbeUtils::Now();
 		DX12SimulateContext *mutableState =
 			const_cast<DX12SimulateContext*>(runtimeState);
 		const UINT64 replayGeneration = DX12ModGetPreSkinOutputResizeGeneration() ^
 			(DX12ModGetPreSkinActiveGenerationFast() * 0x9e3779b97f4a7c15ull);
+		const UINT64 probeResizeGen = DX12ModGetPreSkinOutputResizeGeneration();
+		const UINT64 probeActiveGen = DX12ModGetPreSkinActiveGenerationFast();
 		DX12ActiveIaState &liveIa = mutableState->ia;
+		const LONG64 gateGenUs = DX12OuterTimingProbeUtils::ElapsedUs(gateProbeBegin);
+		gateProbeBegin = DX12OuterTimingProbeUtils::Now();
 		const UINT64 iaFingerprint = ComputeIaViewFingerprint(liveIa);
+		const LONG64 gateFpUs = DX12OuterTimingProbeUtils::ElapsedUs(gateProbeBegin);
 		if (liveIa.preSkinReplayApplied &&
 		    liveIa.preSkinReplayGeneration == replayGeneration &&
-		    liveIa.preSkinReplayIaFingerprint == iaFingerprint)
+		    liveIa.preSkinReplayIaFingerprint == iaFingerprint) {
+			LogReplayGateProbe(
+				"gated_hit", gateGenUs, gateFpUs, 0, 0, 0, 0, 0,
+				probeResizeGen, probeActiveGen);
 			return false;
+		}
+		gateProbeBegin = DX12OuterTimingProbeUtils::Now();
+		LONG64 replayLookupUs = 0;
+		LONG64 replaySetUs = 0;
+		UINT replayRuns = 0;
+		UINT replaySlots = 0;
 		const bool replayed = ReplayActiveVertexBuffers(
-			commandList, callbacks, redirectedIa);
+			commandList, callbacks, redirectedIa,
+			&replayLookupUs, &replaySetUs, &replayRuns, &replaySlots);
+		const LONG64 gateBodyUs = DX12OuterTimingProbeUtils::ElapsedUs(gateProbeBegin);
+		// The replay wrote its per-slot "no redirect needed" verdicts into the
+		// working copy, which ApplyAndExecute discards when it returns - so the
+		// negative cache never survived past the first draw of the frame, and
+		// every frame's first matching draw re-ran the full 32-slot lookup
+		// chain (~0.4-0.8ms/frame, measured). Mirror the verdicts back onto
+		// the live state; Reset preserves them (view-keyed, generation-guarded),
+		// so the next frame's replay hits them.
+		for (UINT slot = 0;
+		     slot < ARRAYSIZE(liveIa.preSkinRedirectNegativeValid); ++slot) {
+			liveIa.preSkinRedirectNegativeValid[slot] =
+				redirectedIa->preSkinRedirectNegativeValid[slot];
+			liveIa.preSkinRedirectNegativeGeneration[slot] =
+				redirectedIa->preSkinRedirectNegativeGeneration[slot];
+			liveIa.preSkinRedirectNegativeSource[slot] =
+				redirectedIa->preSkinRedirectNegativeSource[slot];
+		}
+		gateProbeBegin = DX12OuterTimingProbeUtils::Now();
 		liveIa.preSkinReplayApplied = true;
 		liveIa.preSkinReplayGeneration = replayGeneration;
 		// Replay updates liveIa to the redirected views, so the stored
@@ -571,6 +704,12 @@ public:
 		// hits on the next matching draw.
 		liveIa.preSkinReplayIaFingerprint =
 			ComputeIaViewFingerprint(liveIa);
+		const LONG64 gateStoreUs = DX12OuterTimingProbeUtils::ElapsedUs(gateProbeBegin);
+		LogReplayGateProbe(
+			replayed ? "gated_replay" : "gated_noop",
+			gateGenUs, gateFpUs, gateBodyUs,
+			replayLookupUs, replaySetUs, replayRuns, replaySlots,
+			probeResizeGen, probeActiveGen);
 		return replayed;
 	}
 };
@@ -1175,15 +1314,31 @@ public:
 		// configured PreSkin draws; durable resource metadata and the fence-owned
 		// resize cache make the lookup cheap and independent of recording order.
 		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
-		if (DX12ModHasPreSkinOutputResizeBindings() ||
-			DX12ModHasPreSkinOutputResizeCacheEntries() ||
-			DX12ModMayNeedPreSkinIaViewExpansion(
-				runtimeState.ia.vertexBuffers,
-				runtimeState.ia.hasVertexBuffer,
-				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
+		// Diagnostic sub-probes: apply_replay_ia measures ~1ms per matching draw
+		// while the replay body itself never runs; split the block to find the
+		// real cost (flags vs IA copy vs gated call).
+		const bool hasResizeBindings = DX12ModHasPreSkinOutputResizeBindings();
+		const bool hasResizeCacheEntries =
+			DX12ModHasPreSkinOutputResizeCacheEntries();
+		const bool mayNeedExpansion = DX12ModMayNeedPreSkinIaViewExpansion(
+			runtimeState.ia.vertexBuffers,
+			runtimeState.ia.hasVertexBuffer,
+			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
+		DX12OuterTimingProbeUtils::LogCpuStage(
+			"IaReplacement", "replay_cond_flags", draw.indexed ? 1u : 0u, 1,
+			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+		if (hasResizeBindings || hasResizeCacheEntries || mayNeedExpansion) {
+			LARGE_INTEGER replayCopyBegin = DX12OuterTimingProbeUtils::Now();
 			redirectedIa = runtimeState.ia;
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement", "replay_ia_copy", draw.indexed ? 1u : 0u, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(replayCopyBegin));
+			LARGE_INTEGER replayGatedBegin = DX12OuterTimingProbeUtils::Now();
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"IaReplacement", "replay_gated_call", draw.indexed ? 1u : 0u, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(replayGatedBegin));
 			restoreIa = &redirectedIa;
 		}
 		DX12OuterTimingProbeUtils::LogCpuStage(

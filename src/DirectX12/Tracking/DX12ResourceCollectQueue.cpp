@@ -1,4 +1,4 @@
-﻿// DX12ResourceCollectQueue: deferred resource-collect task queue.
+// DX12ResourceCollectQueue: deferred resource-collect task queue.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -87,6 +87,7 @@ bool DX12ResourceCollectQueue::Enqueue(
 	task.retainedResource = true;
 
 	size_t depth = 0;
+	bool needWake = false;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		if (!started.load(std::memory_order_acquire) ||
@@ -96,6 +97,10 @@ bool DX12ResourceCollectQueue::Enqueue(
 			task.retainedResource = false;
 			return false;
 		}
+		// Only the empty->non-empty transition needs a wake: the worker
+		// re-checks the predicate under the same mutex, so pushes made while
+		// it is draining are observed without a syscall.
+		needWake = tasks.empty();
 		tasks.push_back(std::move(task));
 		depth = tasks.size() + static_cast<size_t>(activeTasks);
 	}
@@ -103,7 +108,8 @@ bool DX12ResourceCollectQueue::Enqueue(
 	enqueued.fetch_add(1, std::memory_order_relaxed);
 	UpdateMaxDepth(depth);
 	LogStats("Enqueue", sequence, depth);
-	wake.notify_one();
+	if (needWake)
+		wake.notify_one();
 	return true;
 }
 
@@ -131,6 +137,7 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 		addRefFailed.fetch_add(1, std::memory_order_relaxed);
 
 	size_t depth = 0;
+	bool needWake = false;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
 		if (!started.load(std::memory_order_acquire) ||
@@ -140,6 +147,8 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 			task.barriers.clear();
 			return false;
 		}
+		// Only the empty->non-empty transition needs a wake (see Enqueue).
+		needWake = tasks.empty();
 		tasks.push_back(std::move(task));
 		depth = tasks.size() + static_cast<size_t>(activeTasks);
 	}
@@ -147,7 +156,8 @@ bool DX12ResourceCollectQueue::EnqueueResourceBarriers(
 	enqueued.fetch_add(1, std::memory_order_relaxed);
 	UpdateMaxDepth(depth);
 	LogStats("Enqueue", sequence, depth);
-	wake.notify_one();
+	if (needWake)
+		wake.notify_one();
 	return true;
 }
 

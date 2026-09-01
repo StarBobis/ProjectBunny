@@ -326,6 +326,10 @@ bool DX12AsyncReadbackHasPendingWork();
 // given (game) queue via Signal/Wait. Called after the original
 // ExecuteCommandLists call; pure queue operations on the mod-owned channel.
 void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue);
+// Once-per-frame flush of the gated pending captures, called from the
+// Present path. Collapses the per-submit fixed cost (queue Signal/Wait,
+// command list recording, event creation) to a single payment per frame.
+void DX12AsyncReadbackFlushFrameEnd();
 void DX12AsyncReadbackShutdown();
 
 // ---------------------------------------------------------------------------

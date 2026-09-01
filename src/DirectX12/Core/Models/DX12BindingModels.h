@@ -266,6 +266,59 @@ public:
 	D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
 	UINT64 drawSerial = 0;
 	UINT64 dispatchSerial = 0;
+
+	// Per-recording reset without the placement-new memset: the root-constant
+	// payloads (~41KB of values/valueValid arrays) are only read while
+	// valid==true, and the retained IA resources were already released and
+	// cleared by ReleaseRetainedIaResources, so clearing the validity and
+	// identity fields is semantically identical to reconstructing the state.
+	void ResetForRecording()
+	{
+		pipelineState = nullptr;
+		pipelineShaderInfo = DX12PsoShaderInfo();
+		pipelineShaderInfoValid = false;
+		graphicsRootSignature = nullptr;
+		computeRootSignature = nullptr;
+		cbvSrvUavHeap = nullptr;
+		samplerHeap = nullptr;
+		runtimeCbvSrvUavHeapResolved = false;
+		runtimeCbvSrvUavHeap = DX12DescriptorHeapSummary();
+		runtimeSamplerHeapResolved = false;
+		runtimeSamplerHeap = DX12DescriptorHeapSummary();
+		computeBindingSerial = 0;
+		bindingQuerySerial = 1;
+		graphicsTableValidCount = 0;
+		computeTableValidCount = 0;
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			graphicsTables[root] = RootTableState();
+			computeTables[root] = RootTableState();
+			graphicsRootDescriptors[root] = RootDescriptorState();
+			computeRootDescriptors[root] = RootDescriptorState();
+			graphicsRootConstants[root].valid = false;
+			graphicsRootConstants[root].rootParameterIndex = 0;
+			graphicsRootConstants[root].maxSet = 0;
+			computeRootConstants[root].valid = false;
+			computeRootConstants[root].rootParameterIndex = 0;
+			computeRootConstants[root].maxSet = 0;
+		}
+		for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
+			vertexBuffers[slot] = D3D12_VERTEX_BUFFER_VIEW();
+			vertexBufferValid[slot] = false;
+			vertexBufferResolved[slot] = false;
+		}
+		indexBuffer = D3D12_INDEX_BUFFER_VIEW();
+		indexBufferValid = false;
+		indexBufferResolved = false;
+		for (UINT slot = 0; slot < MaxRenderTargetSlots; ++slot) {
+			renderTargets[slot] = D3D12_CPU_DESCRIPTOR_HANDLE();
+			renderTargetValid[slot] = false;
+		}
+		depthStencil = D3D12_CPU_DESCRIPTOR_HANDLE();
+		depthStencilValid = false;
+		primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		drawSerial = 0;
+		dispatchSerial = 0;
+	}
 };
 
 class BindingEvent

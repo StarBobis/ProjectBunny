@@ -1,4 +1,4 @@
-﻿// DX12AsyncReadback: deferred GPU readback queue for hash/content capture.
+// DX12AsyncReadback: deferred GPU readback queue for hash/content capture.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -96,6 +96,18 @@ struct DX12ReadbackGameFence
 SRWLOCK gReadbackEventLock = SRWLOCK_INIT;
 std::vector<DX12ReadbackEvent> gReadbackPendingEvents;
 std::atomic<UINT> gReadbackPendingCount{0};
+// Approximate byte total behind gReadbackPendingCount, used by the batching
+// gate below (exact per-event sizes are recomputed at submit time).
+std::atomic<UINT64> gReadbackPendingBytes{0};
+// Streaming games enqueue a handful of small captures at nearly every copy
+// call; submitting a batch at every ExecuteCommandLists paid ~100-500us of
+// render-thread time several times per frame (queue Signal/Wait, list
+// recording, event creation). Consumers are documented to observe content
+// one frame late anyway, so the ECL path only flushes large bursts; the
+// regular per-frame submit happens once at Present (DX12AsyncReadbackFlushFrameEnd).
+// 16MB keeps streaming scenes (measured ~6MB of buffer copies per frame) on
+// the single per-Present submit; only multi-frame bursts trip the ECL path.
+constexpr UINT64 kReadbackEarlyFlushBytes = 16ull * 1024 * 1024;
 
 SRWLOCK gReadbackChannelLock = SRWLOCK_INIT;
 ID3D12Device *gReadbackDevice = nullptr;
@@ -296,22 +308,55 @@ bool DX12ReadbackRecordBufferCopyLocked(
 	if (!list || !ring || !event.resource)
 		return false;
 
+	// Live re-validation: the runtime rejects copy calls whose source is not
+	// a buffer or whose range exceeds the resource, failing the ENTIRE batch
+	// at Close with E_INVALIDARG (observed as whole-batch losses of up to
+	// 326 events). Buffer sizes are immutable, but an event can still arrive
+	// referencing a non-buffer resource (mis-cached mappable lookup) or a
+	// stale range; drop the event instead of poisoning the batch.
+	const D3D12_RESOURCE_DESC liveDesc = event.resource->GetDesc();
+	if (liveDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
+	    event.offset > liveDesc.Width ||
+	    event.size > liveDesc.Width - event.offset) {
+		return false;
+	}
+
 	// UPLOAD heaps are CPU-visible and always GPU-readable (GENERIC_READ
 	// includes COPY_SOURCE); no barrier needed. For other heaps transition to
-	// COPY_SOURCE using the tracked state and restore it afterwards. When the
-	// state is unknown, skip the capture (the consumer falls back to
+	// COPY_SOURCE via COMMON and restore to COMMON afterwards. When the
+	// tracked state is unknown, skip the capture (the consumer falls back to
 	// metadata-based hashing or a miss) rather than risking an invalid
 	// transition.
+	//
+	// The game-queue tracked state must never be named in these barriers:
+	// copy-queue command lists only accept transitions between COMMON,
+	// COPY_SOURCE and COPY_DEST, and a batch can contain several events for
+	// the same resource whose tracked states disagree (one verbatim
+	// COPY_SOURCE, another mapped from a read state) - conflicting StateBefore
+	// values within one list fail the entire batch at Close with
+	// E_INVALIDARG. COMMON is the runtime's default bookkeeping state for
+	// every resource on the copy queue (cross-queue states are not tracked),
+	// so COMMON -> COPY_SOURCE -> COMMON is both always valid and always
+	// self-consistent, and leaves the bookkeeping exactly where the next
+	// batch expects it.
 	D3D12_HEAP_PROPERTIES heapProps = {};
 	D3D12_HEAP_FLAGS heapFlags = {};
-	if (SUCCEEDED(event.resource->GetHeapProperties(&heapProps, &heapFlags)) &&
-	    heapProps.Type == D3D12_HEAP_TYPE_UPLOAD) {
+	const HRESULT heapHr =
+		event.resource->GetHeapProperties(&heapProps, &heapFlags);
+	if (SUCCEEDED(heapHr) && heapProps.Type == D3D12_HEAP_TYPE_UPLOAD) {
 		list->CopyBufferRegion(
 			ring, event.ringOffset,
 			event.resource, event.offset,
 			static_cast<UINT64>(event.size));
 		return true;
 	}
+	// READBACK-heap buffers are CPU-read-only: the GPU cannot use them as a
+	// copy source, and recording the copy fails the whole list at Close with
+	// E_INVALIDARG. The CopyBufferRegion hook captures the game's staging
+	// copies (default -> readback) by their destination, so these events are
+	// routine - drop them instead of poisoning the batch.
+	if (SUCCEEDED(heapHr) && heapProps.Type == D3D12_HEAP_TYPE_READBACK)
+		return false;
 
 	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
 	bool known = false;
@@ -319,12 +364,15 @@ bool DX12ReadbackRecordBufferCopyLocked(
 	DX12GetResourceCurrentState(event.resource, &state, &known, &barrierTracked);
 	if (!known)
 		return false;
+	// The tracked state only gates the capture (unknown state -> skip); the
+	// barriers themselves always go through COMMON (see the comment above).
+	(void)state;
 
 	D3D12_RESOURCE_BARRIER toCopy = {};
 	toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	toCopy.Transition.pResource = event.resource;
 	toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	toCopy.Transition.StateBefore = state;
+	toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
 	toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
 	list->ResourceBarrier(1, &toCopy);
 	list->CopyBufferRegion(
@@ -336,7 +384,7 @@ bool DX12ReadbackRecordBufferCopyLocked(
 	restore.Transition.pResource = event.resource;
 	restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 	restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-	restore.Transition.StateAfter = state;
+	restore.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
 	list->ResourceBarrier(1, &restore);
 	return true;
 }
@@ -374,12 +422,22 @@ bool DX12ReadbackRecordTextureCopyLocked(
 	DX12GetResourceCurrentState(event->resource, &state, &known, &barrierTracked);
 	if (!known)
 		return false;
+	// The tracked state only gates the capture (unknown state -> skip); the
+	// barriers themselves always go through COMMON (see below).
+	(void)state;
 
+	// Copy queues only accept transitions between COMMON, COPY_SOURCE and
+	// COPY_DEST. As on the buffer path, the tracked game-queue state is never
+	// named: the runtime's copy-queue bookkeeping for a resource is COMMON
+	// until this list touches it, so COMMON -> COPY_SOURCE -> COMMON is
+	// always valid and always self-consistent (naming any other state, or
+	// restoring to a non-COMMON state, fails the whole list at Close with
+	// E_INVALIDARG and can conflict across events/batches of one resource).
 	D3D12_RESOURCE_BARRIER toCopy = {};
 	toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	toCopy.Transition.pResource = event->resource;
 	toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	toCopy.Transition.StateBefore = state;
+	toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
 	toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
 	list->ResourceBarrier(1, &toCopy);
 
@@ -409,10 +467,94 @@ bool DX12ReadbackRecordTextureCopyLocked(
 	restore.Transition.pResource = event->resource;
 	restore.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 	restore.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-	restore.Transition.StateAfter = state;
+	restore.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
 	list->ResourceBarrier(1, &restore);
 	return true;
 }
+
+// Re-record events [begin, end) into a fresh list and Close it. Returns true
+// when the sub-batch is valid (Close succeeded) or empty.
+static bool DX12ReadbackProbeSubBatch(
+	ID3D12Device *device,
+	const std::vector<DX12ReadbackEvent> &events,
+	size_t begin,
+	size_t end,
+	ID3D12Resource *ring)
+{
+	if (begin >= end)
+		return true;
+	ID3D12CommandAllocator *allocator = nullptr;
+	ID3D12GraphicsCommandList *list = nullptr;
+	if (FAILED(device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&allocator))) ||
+		!allocator) {
+		return true;
+	}
+	HRESULT hr = device->CreateCommandList(
+		0, D3D12_COMMAND_LIST_TYPE_COPY, allocator,
+		nullptr, IID_PPV_ARGS(&list));
+	if (FAILED(hr) || !list) {
+		allocator->Release();
+		return true;
+	}
+	bool recordedAny = false;
+	for (size_t i = begin; i < end; ++i) {
+		const DX12ReadbackEvent &event = events[i];
+		const bool recorded = event.kind == DX12ReadbackEventKind::Buffer ?
+			DX12ReadbackRecordBufferCopyLocked(list, event, ring) :
+			DX12ReadbackRecordTextureCopyLocked(list, const_cast<DX12ReadbackEvent*>(&event), ring);
+		recordedAny = recordedAny || recorded;
+	}
+	hr = recordedAny ? list->Close() : S_OK;
+	list->Release();
+	allocator->Release();
+	return SUCCEEDED(hr);
+}
+
+// Binary-search the event that makes the runtime reject the list at Close
+// (failures are rare, so the extra probe lists are cheap). The isolated
+// event is dumped in full so the invalid pattern is identifiable.
+static void DX12ReadbackBisectCloseFailure(
+	ID3D12Device *device,
+	const std::vector<DX12ReadbackEvent> &events,
+	size_t begin,
+	size_t end,
+	ID3D12Resource *ring,
+	UINT depth)
+{
+	if (!device || !ring || begin >= end || depth >= 10)
+		return;
+	if (end - begin == 1) {
+		const DX12ReadbackEvent &event = events[begin];
+		D3D12_RESOURCE_DESC liveDesc = {};
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		D3D12_HEAP_FLAGS heapFlags = {};
+		if (event.resource) {
+			liveDesc = event.resource->GetDesc();
+			event.resource->GetHeapProperties(&heapProps, &heapFlags);
+		}
+		DX12LogManager::Fields("DX12ReadbackSubmit",
+			"stage=close_failure_isolated,kind=%u,resource=%p,"
+			"offset=%llu,bytes=%llu,descDim=%u,descWidth=%llu,"
+			"descHeight=%u,descMips=%u,heapType=%u",
+			static_cast<UINT>(event.kind), event.resource,
+			static_cast<unsigned long long>(event.offset),
+			static_cast<unsigned long long>(event.size),
+			static_cast<UINT>(liveDesc.Dimension),
+			static_cast<unsigned long long>(liveDesc.Width),
+			static_cast<UINT>(liveDesc.Height),
+			static_cast<UINT>(liveDesc.MipLevels),
+			static_cast<UINT>(heapProps.Type));
+		return;
+	}
+	const size_t mid = begin + (end - begin) / 2;
+	if (!DX12ReadbackProbeSubBatch(device, events, begin, mid, ring)) {
+		DX12ReadbackBisectCloseFailure(device, events, begin, mid, ring, depth + 1);
+	} else {
+		DX12ReadbackBisectCloseFailure(device, events, mid, end, ring, depth + 1);
+	}
+}
+
 
 // Publish one completed batch into the content caches (worker thread; no
 // readback channel locks held).
@@ -595,6 +737,7 @@ bool DX12AsyncReadbackQueueBufferCapture(
 	gReadbackPendingEvents.push_back(event);
 	ReleaseSRWLockExclusive(&gReadbackEventLock);
 	gReadbackPendingCount.fetch_add(1, std::memory_order_relaxed);
+	gReadbackPendingBytes.fetch_add(size, std::memory_order_relaxed);
 	{
 		static volatile LONG enqueueLogCounter = 0;
 		if ((InterlockedIncrement(&enqueueLogCounter) & 0xFFF) == 1) {
@@ -649,6 +792,7 @@ bool DX12AsyncReadbackQueueTextureCapture(
 	gReadbackPendingEvents.push_back(event);
 	ReleaseSRWLockExclusive(&gReadbackEventLock);
 	gReadbackPendingCount.fetch_add(1, std::memory_order_relaxed);
+	gReadbackPendingBytes.fetch_add(totalBytes, std::memory_order_relaxed);
 	{
 		static volatile LONG textureEnqueueLogCounter = 0;
 		if ((InterlockedIncrement(&textureEnqueueLogCounter) & 0xFFF) == 1) {
@@ -687,11 +831,18 @@ static void DX12ReadbackLogSubmitFailure(const char *stage, UINT64 a, UINT64 b)
 		static_cast<unsigned long long>(b));
 }
 
-void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
+void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 {
 	const LARGE_INTEGER submitBegin = DX12OuterTimingProbeUtils::Now();
 	if (!gameQueue || gReadbackPendingCount.load(std::memory_order_acquire) == 0)
 		return;
+	// Small captures wait for the per-frame Present flush; only large bursts
+	// pay an early submit on the ExecuteCommandLists path.
+	if (!force &&
+		gReadbackPendingBytes.load(std::memory_order_relaxed) <
+			kReadbackEarlyFlushBytes) {
+		return;
+	}
 
 	std::vector<DX12ReadbackEvent> events;
 	{
@@ -706,9 +857,16 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	// Subtract only the events we swapped out: captures queued concurrently by
 	// other recording threads after the swap must keep the pending count
 	// nonzero or their events would never be submitted.
+	UINT64 swappedBytes = 0;
+	for (const DX12ReadbackEvent &event : events) {
+		swappedBytes += event.kind == DX12ReadbackEventKind::Buffer ?
+			event.size : event.rowCount * event.ringPitch;
+	}
 	const UINT swappedCount = static_cast<UINT>(events.size());
 	if (swappedCount != 0)
 		gReadbackPendingCount.fetch_sub(swappedCount, std::memory_order_relaxed);
+	if (swappedBytes != 0)
+		gReadbackPendingBytes.fetch_sub(swappedBytes, std::memory_order_relaxed);
 	if (events.empty())
 		return;
 
@@ -722,6 +880,30 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		UINT64 bytes = event.kind == DX12ReadbackEventKind::Buffer ?
 			(event.size + kReadbackAlign - 1) & ~(kReadbackAlign - 1) :
 			event.rowCount * event.ringPitch;
+		// Placed-footprint copies into the ring require the destination
+		// offset to be a multiple of D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT
+		// (512); the 256-byte ring alignment alone made every texture event
+		// landing on a 256-not-512 boundary fail the whole list at Close
+		// with E_INVALIDARG (whole-batch losses of 222-334 events, observed).
+		if (event.kind == DX12ReadbackEventKind::Texture) {
+			constexpr UINT64 kPlacementAlign =
+				D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+			const UINT64 alignedUsed =
+				(ringUsed + kPlacementAlign - 1) & ~(kPlacementAlign - 1);
+			bytes = (bytes + kPlacementAlign - 1) & ~(kPlacementAlign - 1);
+			if (bytes == 0 || bytes > kReadbackSlotMaxBytes ||
+			    alignedUsed + bytes > kReadbackSlotMaxBytes ||
+			    submittedCount >= kReadbackSubmitEventCap) {
+				if (event.resource)
+					event.resource->Release();
+				continue;
+			}
+			event.ringOffset = alignedUsed;
+			ringUsed = alignedUsed + bytes;
+			++submittedCount;
+			kept.push_back(event);
+			continue;
+		}
 		if (bytes == 0 || bytes > kReadbackSlotMaxBytes ||
 		    ringUsed + bytes > kReadbackSlotMaxBytes ||
 		    submittedCount >= kReadbackSubmitEventCap) {
@@ -815,6 +997,48 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 		DX12ReadbackLogSubmitFailure(
 			kept.empty() ? "failed_all_state_unknown" : "failed_close",
 			kept.size(), static_cast<UINT64>(closeHr));
+		// Rate-limited batch composition: pin down which event pattern makes
+		// the runtime reject the list (buffer vs texture kinds, first ranges).
+		if (!kept.empty()) {
+			static volatile LONG closeDiagCounter = 0;
+			if ((InterlockedIncrement(&closeDiagCounter) & 0x1F) == 1) {
+				UINT textureEvents = 0;
+				for (const DX12ReadbackEvent &event : kept)
+					textureEvents += event.kind == DX12ReadbackEventKind::Texture ? 1u : 0u;
+				DX12LogManager::Fields("DX12ReadbackSubmit",
+					"stage=close_failure_diag,events=%zu,textures=%u,"
+					"firstKind=%u,firstResource=%p,firstOffset=%llu,firstBytes=%llu",
+					kept.size(), textureEvents,
+					static_cast<UINT>(kept.front().kind), kept.front().resource,
+					static_cast<unsigned long long>(kept.front().offset),
+					static_cast<unsigned long long>(kept.front().size));
+				// Dump the first few events in full (kind/range/desc dim) so
+				// the offending pattern is identifiable without a debug layer.
+				for (UINT i = 0; i < kept.size() && i < 12; ++i) {
+					const DX12ReadbackEvent &event = kept[i];
+					D3D12_RESOURCE_DESC liveDesc = {};
+					if (event.resource)
+						liveDesc = event.resource->GetDesc();
+					DX12LogManager::Fields("DX12ReadbackSubmit",
+						"stage=close_failure_event,index=%u,kind=%u,"
+						"resource=%p,offset=%llu,bytes=%llu,"
+						"descDim=%u,descWidth=%llu,descHeight=%u,descMips=%u",
+						i, static_cast<UINT>(event.kind), event.resource,
+						static_cast<unsigned long long>(event.offset),
+						static_cast<unsigned long long>(event.size),
+						static_cast<UINT>(liveDesc.Dimension),
+						static_cast<unsigned long long>(liveDesc.Width),
+						static_cast<UINT>(liveDesc.Height),
+						static_cast<UINT>(liveDesc.MipLevels));
+				}
+			}
+		}
+		// Binary-search the offending event: the runtime surfaces the
+		// validation error at Close without naming the bad call.
+		if (!kept.empty() && slot && slot->buffer) {
+			DX12ReadbackBisectCloseFailure(
+				device, kept, 0, kept.size(), slot->buffer, 0);
+		}
 		// The list may still be open; never return it to the pool (a pooled
 		// list must be closed so its allocator can be Reset).
 		allocator->Release();
@@ -904,4 +1128,21 @@ void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
 	if (gReadbackWorkerEvent)
 		SetEvent(gReadbackWorkerEvent);
 	device->Release();
+}
+
+void DX12AsyncReadbackSubmitPending(ID3D12CommandQueue *gameQueue)
+{
+	DX12ReadbackSubmitPendingImpl(gameQueue, false);
+}
+
+// Per-frame flush from the Present path: drains the small captures that the
+// ExecuteCommandLists gate deliberately held back. Uses the tracked game
+// direct queue for ordering; a no-op when nothing is pending.
+void DX12AsyncReadbackFlushFrameEnd()
+{
+	ID3D12CommandQueue *queue = DX12CommandQueueState::Acquire();
+	if (!queue)
+		return;
+	DX12ReadbackSubmitPendingImpl(queue, true);
+	queue->Release();
 }

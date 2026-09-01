@@ -2907,10 +2907,12 @@ void DX12BindingTracker::ResetCommandList(
 	CommandListBindingState &state = shard.states[commandList];
 	DX12BindingTracker::ReleaseRecordedEventsLocked(&shard, commandList);
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
-	// Reconstruct in place; see BuildRuntimeBindingSnapshot for why assigning
-	// a temporary is wasteful here.
-	std::destroy_at(&state);
-	new (&state) CommandListBindingState();
+	// Targeted reset instead of placement-new: reconstructing the ~58KB state
+	// zeroed the 41KB root-constant payload arrays on every command-list Reset
+	// (17 lists/frame), all under the exclusive shard lock. The payloads are
+	// only read while their valid flags are set, so clearing validity and
+	// identity fields is equivalent.
+	state.ResetForRecording();
 	state.pipelineState = initialState;
 	if (tracking.recordBindingEvents)
 		DX12BindingTracker::RefreshPipelineShaderInfo(&state);

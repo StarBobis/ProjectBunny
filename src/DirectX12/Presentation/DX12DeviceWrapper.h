@@ -1,4 +1,4 @@
-﻿// DeviceWrapper / D3D12DeviceWrapper plus WrapExisting / TryWrapAuxiliaryAs helpers.
+// DeviceWrapper / D3D12DeviceWrapper plus WrapExisting / TryWrapAuxiliaryAs helpers.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -816,9 +816,9 @@ class DeviceWrapper
 						DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())) {
 				DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
+					mDevice,
 					NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart,
-					DescriptorHeapsType,
-					mDevice->GetDescriptorHandleIncrementSize(DescriptorHeapsType));
+					DescriptorHeapsType);
 			}
 		}
 

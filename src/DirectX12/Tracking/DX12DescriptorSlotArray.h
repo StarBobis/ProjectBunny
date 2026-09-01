@@ -223,16 +223,20 @@ static StoreCurrentSlotResult StoreCurrentRecordIfChanged(
 {
 	if (!heap || slot >= heap->desc.NumDescriptors)
 		return StoreCurrentSlotResult::Invalid;
-	if (!CurrentSlotStoragePresent(*heap, slot))
+	// Resolve the slot storage exactly once: the individual accessors would
+	// re-load the chunk pointer up to four times per slot (presence, pointer,
+	// occupancy, then occupancy again on the write).
+	const CurrentSlotAccess access = LoadCurrentSlotAccess(*heap, slot);
+	if (!access.value)
 		return StoreCurrentSlotResult::LockRequired;
-	DescriptorRecord *dest = CurrentSlotPtr(*heap, slot);
-	const bool wasOccupied = CurrentSlotOccupied(*heap, slot);
-	if (wasOccupied && SameRecordValueAtSlot(*dest, source, destCpuHandle))
+	if (access.occupied &&
+			SameRecordValueAtSlot(*access.value, source, destCpuHandle))
 		return StoreCurrentSlotResult::Unchanged;
-	CopyRecordValueForSlot(dest, source, destCpuHandle);
-	SetCurrentSlotOccupied(*heap, slot, true);
-	if (!wasOccupied)
+	CopyRecordValueForSlot(access.value, source, destCpuHandle);
+	if (!access.occupied) {
+		SetCurrentSlotOccupied(*heap, slot, true);
 		IncrementLiveSlots(heap);
+	}
 	return StoreCurrentSlotResult::Stored;
 }
 

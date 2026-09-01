@@ -78,7 +78,10 @@ public:
 			return false;
 		// Keep frame-draw accounting identical to the interpreter path
 		// (needsModWork is necessarily set when this fast path is reached).
-		DX12RuntimeState::IncrementFrameDraws();
+		// The shards only feed the verbose per-frame counter log, so the
+		// increment compiles out when that log is disabled.
+		if constexpr (kVerboseEnabled)
+			DX12RuntimeState::IncrementFrameDraws();
 		executeOriginal();
 		return true;
 	}
@@ -130,8 +133,10 @@ public:
 		// to coexist with the fast reject.
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
 			commandList, runtimeState, callbacks, flagsWord);
-		if (DX12Profiling::ShouldCollectCounters() || needsModWork)
-			DX12RuntimeState::IncrementFrameDraws();
+		if constexpr (kVerboseEnabled) {
+			if (DX12Profiling::ShouldCollectCounters() || needsModWork)
+				DX12RuntimeState::IncrementFrameDraws();
+		}
 
 		if (DX12IaReplacementDrawScope::IsExecuting()) {
 			DX12_PROFILE_FAST_FORWARD();

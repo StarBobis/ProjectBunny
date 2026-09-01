@@ -150,6 +150,10 @@ public:
 	static void RememberPipelineState(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
 	static void ResetIa(DX12SimulateContext *state);
 	static void ResetIa(ID3D12GraphicsCommandList *commandList);
+	// Full IA rebuild that preserves the pre-skin redirect negative cache
+	// (view-keyed, generation-guarded; survives Reset by design).
+	static void RebuildActiveIaStatePreservingRedirectNegatives(
+		DX12ActiveIaState *ia);
 	static bool RememberIndexBuffer(DX12SimulateContext *state, const D3D12_INDEX_BUFFER_VIEW *view);
 	static bool RememberIndexBuffer(ID3D12GraphicsCommandList *commandList, const D3D12_INDEX_BUFFER_VIEW *view);
 	static bool RememberVertexBuffers(DX12SimulateContext *state, UINT startSlot, UINT count, const D3D12_VERTEX_BUFFER_VIEW *views);
