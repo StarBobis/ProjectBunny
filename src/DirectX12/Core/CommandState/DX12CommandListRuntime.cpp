@@ -465,6 +465,18 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 	state->graphicsDescriptorQuerySerial = 1;
 	state->computeDescriptorQuerySerial = 1;
 	state->computeDescriptorBindingVersion = 1;
+	// The serial/version counters above restart for the new recording, but a
+	// deterministic game replays the exact same bind sequence and lands on the
+	// exact same counter values. A probe verdict or binding snapshot captured
+	// under the previous recording's counters would then alias with an
+	// unrelated dispatch in this one: the previous recording's last negative
+	// verdict was observed swallowing the modded skinning dispatch every
+	// other frame (PreSkin visibly dropping frames). Drop the counter-keyed
+	// single-entry state here; the content-keyed caches (localProbeCache,
+	// stable fingerprints, shared probe cache) validate by fingerprint and
+	// legitimately survive Reset.
+	state->resolvedCompute.probeResultValid = false;
+	state->resolvedCompute.bindingsValid = false;
 	state->computeRootDirtyMask = 0;
 	state->computeRootUsedMask = 0;
 	state->computeRootUsedMaskValid = false;
@@ -535,12 +547,14 @@ void DX12CommandListRuntime::Reset(
 	// HackerContext state.
 	DX12SimulateContextDrawTemplate persistentResolvedDraw =
 		std::move(state->resolvedDraw);
-	// The compute binding template and probe verdicts are validated by
-	// semantic identity (root signature + heap + descriptor value IDs +
-	// fingerprint), not by per-recording serials, so they survive Reset and
-	// hit when the game re-records identical dispatches every frame. This is
-	// the DX12 equivalent of caching the decision at bind/write time instead
-	// of re-collecting state on every dispatch.
+	// The compute binding template and probe verdicts are kept for their
+	// content-keyed caches (descriptor value IDs + fingerprints), which
+	// re-validate semantically and hit when the game re-records identical
+	// dispatches every frame. The counter-keyed single-entry verdict and
+	// snapshot validity were already dropped in
+	// DX12RuntimeResetStateForRecording: the serial/version counters restart
+	// per recording, so keeping them would let a stale verdict alias an
+	// unrelated dispatch that replays the same counter values.
 	DX12SimulateContextComputeTemplate persistentResolvedCompute =
 		std::move(state->resolvedCompute);
 	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6>

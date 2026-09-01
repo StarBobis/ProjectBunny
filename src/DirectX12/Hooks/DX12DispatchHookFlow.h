@@ -342,6 +342,15 @@ public:
 		// fail-safe forwards below.
 		DX12ModFlushDrawSrvReplacement(commandList);
 		const UINT64 outerReloadGeneration = DX12ModGetReloadGenerationFast();
+		// A proven negative verdict is reusable without re-collecting bindings
+		// only while nothing the match can observe has changed since it was
+		// stored. The descriptor version alone cannot prove that: root-constant
+		// and root-descriptor writes bump computeBindingSerial but not
+		// computeDescriptorBindingVersion, so version equality still allows the
+		// bindings (and therefore the verdict) to differ. Requiring the binding
+		// serial covers every binding mutation; across a command-list Reset the
+		// counters restart, but Reset already invalidates probeResultValid, so
+		// the verdict can never alias a previous recording.
 		if (effectiveState && effectiveDecision &&
 			effectiveState->resolvedCompute.probeResultValid &&
 			!effectiveState->resolvedCompute.probeApplied &&
@@ -350,6 +359,8 @@ public:
 				effectiveDecision->computeShaderHash &&
 			effectiveState->resolvedCompute.probeReloadGeneration ==
 				outerReloadGeneration &&
+			effectiveState->resolvedCompute.probeBindingSerial ==
+				effectiveState->computeBindingSerial &&
 			effectiveState->resolvedCompute.probeIaContentEpoch ==
 				effectiveState->iaContentEpoch &&
 			effectiveState->resolvedCompute.probeBufferContentGeneration ==
