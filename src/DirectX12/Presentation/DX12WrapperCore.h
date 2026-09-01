@@ -1,4 +1,4 @@
-﻿// Wrapper identity registry, IID predicates and WrapperBase lifetime core.
+// Wrapper identity registry, IID predicates and WrapperBase lifetime core.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -550,20 +550,55 @@ namespace DX12WrapperDetail
 		virtual ~WrapperBase()
 		{
 			DX12_CREATE_TIMING_SCOPE(WrapperLifetime, Record);
+			LARGE_INTEGER dtorProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (!mRegistryEntriesRemoved) {
 				AcquireSRWLockExclusive(&gWrapperLock);
 				RemoveRegistryEntriesLocked();
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
-
+			const LONG64 dtorRegistryUs =
+				DX12OuterTimingProbeUtils::ElapsedUs(dtorProbeBegin);
+			dtorProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (mIdentity) {
 				mIdentity->Release();
 				mIdentity = nullptr;
 			}
+			const LONG64 dtorIdentityUs =
+				DX12OuterTimingProbeUtils::ElapsedUs(dtorProbeBegin);
+			dtorProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (mObject) {
 				mObject->Release();
 				mObject = nullptr;
 			}
+			const LONG64 dtorObjectUs =
+				DX12OuterTimingProbeUtils::ElapsedUs(dtorProbeBegin);
+			LogWrapperDtorProbe(
+				dtorRegistryUs, dtorIdentityUs, dtorObjectUs);
+		}
+
+		// Wrapper-destructor split probe (the ObjectLifetime API bucket):
+		// registry removal vs identity release vs the native object release
+		// (driver teardown). Rate-limited; slow calls log always.
+		static void LogWrapperDtorProbe(
+			LONG64 registryUs, LONG64 identityUs, LONG64 objectUs)
+		{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+			static volatile LONG dtorProbeCounter = 0;
+			const LONG64 totalUs = registryUs + identityUs + objectUs;
+			if (totalUs >= 100 ||
+				(InterlockedIncrement(&dtorProbeCounter) & 0x3F) == 1) {
+				DX12LogManager::Fields("DX12WrapperDtorProbe",
+					"registryUs=%lld,identityUs=%lld,objectUs=%lld,totalUs=%lld",
+					static_cast<long long>(registryUs),
+					static_cast<long long>(identityUs),
+					static_cast<long long>(objectUs),
+					static_cast<long long>(totalUs));
+			}
+#else
+			(void)registryUs;
+			(void)identityUs;
+			(void)objectUs;
+#endif
 		}
 
 		void RemoveRegistryEntriesLocked()

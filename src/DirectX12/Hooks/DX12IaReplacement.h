@@ -290,10 +290,11 @@ public:
 			: static_cast<UINT>(byteWidth);
 	}
 
-	// Per-call raw probe for the gated replay (runs 1-3 times per frame, so
-	// every call is logged). CpuStageTiming filtered sub-40us stages, which
-	// hid the fast replay body while the enclosing gated call showed
-	// ~1.2-2.2ms/frame; this line pins the exact split and loop counts.
+	// Per-call raw probe for the gated replay (runs ~13 times per frame).
+	// CpuStageTiming filtered sub-40us stages, which hid the fast replay body
+	// while the enclosing gated call showed ~1.2-2.2ms/frame; this line pins
+	// the exact split and loop counts. The replay is now fixed (body ~30us),
+	// so only slow calls log; a 1/256 sample keeps drift visible.
 	// TIMING-build only: compiles out of the user release.
 	static void LogReplayGateProbe(
 		const char *stage, LONG64 genUs, LONG64 fpUs,
@@ -302,19 +303,23 @@ public:
 		UINT64 resizeGen, UINT64 activeGen)
 	{
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12ReplayProbe",
-			"stage=%s,genUs=%lld,fpUs=%lld,bodyUs=%lld,"
-			"lookupUs=%lld,setUs=%lld,runs=%u,slots=%u,"
-			"resizeGen=%llu,activeGen=%llu",
-			stage ? stage : "",
-			static_cast<long long>(genUs),
-			static_cast<long long>(fpUs),
-			static_cast<long long>(bodyUs),
-			static_cast<long long>(lookupUs),
-			static_cast<long long>(setUs),
-			runs, slotsScanned,
-			static_cast<unsigned long long>(resizeGen),
-			static_cast<unsigned long long>(activeGen));
+		static volatile LONG replayGateProbeCounter = 0;
+		if (bodyUs >= 100 ||
+			(InterlockedIncrement(&replayGateProbeCounter) & 0xFF) == 1) {
+			DX12LogManager::Fields("DX12ReplayProbe",
+				"stage=%s,genUs=%lld,fpUs=%lld,bodyUs=%lld,"
+				"lookupUs=%lld,setUs=%lld,runs=%u,slots=%u,"
+				"resizeGen=%llu,activeGen=%llu",
+				stage ? stage : "",
+				static_cast<long long>(genUs),
+				static_cast<long long>(fpUs),
+				static_cast<long long>(bodyUs),
+				static_cast<long long>(lookupUs),
+				static_cast<long long>(setUs),
+				runs, slotsScanned,
+				static_cast<unsigned long long>(resizeGen),
+				static_cast<unsigned long long>(activeGen));
+		}
 #else
 		(void)stage;
 		(void)genUs;
@@ -476,13 +481,16 @@ public:
 		// Per-slot probe (only for multi-slot calls, which run a few times per
 		// frame): logs the branch taken and its cost so the ~300-450us
 		// "expandUs" measured on 4-slot binds can be pinned to a slot/branch.
+		// The slow branches are fixed; only >=50us calls log now.
 		// TIMING-build only; the calls below are elided in the user release.
 		auto logSlotProbe = [count](UINT slot, const char *branch, LONG64 us) {
 #if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Fields("DX12ReplayProbe",
-				"stage=redirect_slot,slots=%u,slot=%u,branch=%s,us=%lld",
-				count, slot, branch ? branch : "",
-				static_cast<long long>(us));
+			if (us >= 50) {
+				DX12LogManager::Fields("DX12ReplayProbe",
+					"stage=redirect_slot,slots=%u,slot=%u,branch=%s,us=%lld",
+					count, slot, branch ? branch : "",
+					static_cast<long long>(us));
+			}
 #else
 			(void)slot;
 			(void)branch;

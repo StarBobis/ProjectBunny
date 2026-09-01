@@ -3717,6 +3717,24 @@ static void MirrorPreSkinTablesIntoRing(
 	}
 }
 
+// Per-call probe for ApplyPreSkinDescriptorTablePatchLocked (runs ~1x per
+// frame): splits the ~570us patch into its internal phases so the slow one
+// can be identified. TIMING-build only.
+static void LogPreSkinPatchProbe(const char *stage, LONG64 us, UINT64 extra)
+{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+	DX12LogManager::Fields("DX12PreSkinPatchProbe",
+		"stage=%s,us=%lld,extra=%llu",
+		stage ? stage : "",
+		static_cast<long long>(us),
+		static_cast<unsigned long long>(extra));
+#else
+	(void)stage;
+	(void)us;
+	(void)extra;
+#endif
+}
+
 bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &uavBinding, const DX12ComputeUavProducer &producer,
@@ -3733,6 +3751,11 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		return false;
 	DX12SimulateContext *runtimeState =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
+	LARGE_INTEGER patchStepBegin = DX12OuterTimingProbeUtils::Now();
+	auto markPatchStep = [&patchStepBegin](const char *stage, UINT64 extra) {
+		LogPreSkinPatchProbe(stage, DX12OuterTimingProbeUtils::ElapsedUs(patchStepBegin), extra);
+		patchStepBegin = DX12OuterTimingProbeUtils::Now();
+	};
 
 	static thread_local std::vector<DX12PreSkinTableCopy> tlsTables;
 	std::vector<DX12PreSkinTableCopy> &tables = tlsTables;
@@ -3741,6 +3764,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	{
 		return false;
 	}
+	markPatchStep("collect_tables", tables.size());
 
 	(void)rootConstants;
 
@@ -3755,6 +3779,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	{
 		return false;
 	}
+	markPatchStep("abort_cache", abortCacheHit ? 1u : 0u);
 
 	UINT originalVertexCount = 0;
 	UINT overrideVertexCount = 0;
@@ -3811,6 +3836,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			return false;
 		}
 	}
+	markPatchStep("vertex_count_scan", originalVertexCount);
 	bool hasPendingState = false;
 	if (!requiresCountPatch && TryReuseDeferredPreSkinDescriptorTable(
 								   commandList, computeShaderHash, bindingFingerprint, triggerHash,
@@ -3820,8 +3846,10 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			*originalVertexCountOut = originalVertexCount;
 		if (overrideVertexCountOut)
 			*overrideVertexCountOut = overrideVertexCount;
+		markPatchStep("deferred_reuse", 1);
 		return true;
 	}
+	markPatchStep("deferred_reuse", 0);
 	if (hasPendingState)
 		DX12ModRestorePreSkinningUavReplacement(commandList);
 	static thread_local DX12PreSkinDescriptorTableCloneCache tlsCloneCache;
@@ -3894,6 +3922,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				*originalVertexCountOut = originalVertexCount;
 			if (overrideVertexCountOut)
 				*overrideVertexCountOut = overrideVertexCount;
+			markPatchStep("persistent_patch", persistentPatchedTables.size());
 			DX12PreSkinReplacementShard &replacementShard =
 				PreSkinReplacementShardFor(commandList);
 			DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
@@ -3962,6 +3991,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			*originalVertexCountOut = originalVertexCount;
 		if (overrideVertexCountOut)
 			*overrideVertexCountOut = overrideVertexCount;
+		markPatchStep("clone_cache_patch", tlsCloneCache.tableRestores.size());
 		DX12PreSkinReplacementShard &replacementShard =
 			PreSkinReplacementShardFor(commandList);
 		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&replacementShard.lock);
@@ -4000,6 +4030,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		return false;
 	}
 	DX12_HOTPATH_TIME_END(PreSkinRingAlloc);
+	markPatchStep("ring_alloc", totalDescriptors);
 	// Batch all table copies into one CopyDescriptors call: destinations are
 	// disjoint slots in the fresh ring range, sources live in other heaps.
 	static thread_local std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> tlsDX12PreSkinTableCopyDestStarts;
@@ -4038,6 +4069,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	tableCopyDestSizes.clear();
 	tableCopySrcStarts.clear();
 	tableCopySrcSizes.clear();
+	markPatchStep("copy_table_batch", tables.size());
 
 	DX12_HOTPATH_TIME_BEGIN(PreSkinCopyPatch);
 	static thread_local std::unordered_map<UINT64, size_t> tlsTableLookup;
@@ -4166,6 +4198,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 			tableCopySrcSizes.data(),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	}
+	markPatchStep("srv_patch_loop", srvs.size());
 
 	if (!patchedAnySrv)
 	{
@@ -4215,10 +4248,12 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	// after a scene switch; resolve the current allocation once so every
 	// dereference below (resize cache GetDesc/VA query, active-override
 	// publication, restore-time copy-back) targets live memory.
+	LARGE_INTEGER resizeStepBegin = DX12OuterTimingProbeUtils::Now();
 	ID3D12Resource *uavResource =
 		uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
 				uavBinding.descriptor.kind == "UAV" ?
 			ResolvePreSkinBindingResource(uavBinding.descriptor) : nullptr;
+	const LONG64 resizeResolveUs = DX12OuterTimingProbeUtils::ElapsedUs(resizeStepBegin);
 	if (overrideVertexCount && originalVertexCount &&
 		overrideVertexCount > originalVertexCount &&
 		uavBinding.hasDescriptor && !uavBinding.rootDescriptor &&
@@ -4231,16 +4266,23 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 		const UINT64 currentByteWidth = DescriptorViewSize(uavBinding.descriptor);
 		if (requiredByteWidth > currentByteWidth)
 		{
+			resizeStepBegin = DX12OuterTimingProbeUtils::Now();
 			const DX12PreSkinTableCopy *uavTable = findTable(uavBinding);
-			if (uavResource && uavTable &&
+			const LONG64 resizeFindTableUs = DX12OuterTimingProbeUtils::ElapsedUs(resizeStepBegin);
+			resizeStepBegin = DX12OuterTimingProbeUtils::Now();
+			const bool resizeAcquired =
+				uavResource && uavTable &&
 				AcquirePreSkinOutputResizeCacheEntry(
 					device, commandList, uavResource,
 					requiredByteWidth, uavStride, overrideVertexCount,
 					currentByteWidth,
 					&resizedUavResource, &resizedVertexResource,
 					&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
-					&resizedOutputSlot))
+					&resizedOutputSlot);
+			const LONG64 resizeAcquireUs = DX12OuterTimingProbeUtils::ElapsedUs(resizeStepBegin);
+			if (resizeAcquired)
 			{
+				resizeStepBegin = DX12OuterTimingProbeUtils::Now();
 				D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
 				uavDst.ptr += static_cast<SIZE_T>(
 								  uavTable->tempOffset + uavBinding.descriptorOffset) *
@@ -4248,6 +4290,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				device->CopyDescriptorsSimple(
 					1, uavDst, resizedUavCpu,
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+				const LONG64 resizeCopyUs = DX12OuterTimingProbeUtils::ElapsedUs(resizeStepBegin);
 				outputUavResized = true;
 				// Acquired references follow this command list through the existing
 				// delayed-retirement path. The cache owns separate base references.
@@ -4258,22 +4301,23 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 					resizedUavHeap->Release();
 					resizedUavHeap = nullptr;
 				}
-			}
-			if (!outputUavResized)
-			{
-				if (resizedUavResource)
-					resizedUavResource->Release();
-				if (resizedVertexResource)
-					resizedVertexResource->Release();
-				if (resizedUavHeap)
-					resizedUavHeap->Release();
-				resizedUavResource = nullptr;
-				resizedVertexResource = nullptr;
-				resizedUavHeap = nullptr;
-				resizedUavCpu = {};
+				LogPreSkinPatchProbe("resize_split_resolve", resizeResolveUs, 0);
+				LogPreSkinPatchProbe("resize_split_findtable", resizeFindTableUs, 0);
+				LogPreSkinPatchProbe("resize_split_acquire", resizeAcquireUs,
+					resizedUavCacheHit ? 1u : 0u);
+				LogPreSkinPatchProbe("resize_split_copy", resizeCopyUs, 0);
 			}
 		}
 	}
+	// resize_uav extra: 0 = no resize needed, 1 = resized (cache miss +
+	// resource creation), 3 = resized via cache hit. The per-frame miss +
+	// create is the ~400-560us cost; uavResource identifies the rotating
+	// original.
+	markPatchStep("resize_uav",
+		outputUavResized ? (resizedUavCacheHit ? 3u : 1u) : 0u);
+	LogPreSkinPatchProbe("resize_uav_resource",
+		DX12OuterTimingProbeUtils::ElapsedUs(patchStepBegin),
+		uavResource ? reinterpret_cast<UINT64>(uavResource) : 0);
 	ID3D12DescriptorHeap *restoreCbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *restoreSamplerHeap = nullptr;
 	DX12BindingTracker::GetCurrentDescriptorHeaps(
@@ -4390,6 +4434,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	}
 	ReleaseSRWLockExclusive(&replacementShard.lock);
 	BumpPreSkinReplacementShardMutation(&replacementShard);
+	markPatchStep("final_bind", tables.size());
 
 	return true;
 }
