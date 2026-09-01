@@ -146,6 +146,20 @@ void DX12ModFlushDrawSrvReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModDropDrawSrvReplacementForHeapChange(ID3D12GraphicsCommandList *commandList);
 void DX12ModForgetDrawSrvReplacementForCommandList(ID3D12GraphicsCommandList *commandList);
 bool DX12ModHasPendingDrawSrvRestore();
+// Bundle draw-SRV replacement (DX12BundleSrvMirror.h): record-time rewrite
+// of descriptor-table binds / SetDescriptorHeaps inside bundles, and the
+// ExecuteBundle parent replay that binds the bundle's mirror session heap.
+void DX12ModRewriteBundleRootDescriptorTable(
+	ID3D12GraphicsCommandList *commandList, bool graphics,
+	UINT rootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE *baseDescriptor);
+void DX12ModRewriteBundleDescriptorHeaps(
+	ID3D12GraphicsCommandList *commandList, UINT numHeaps,
+	ID3D12DescriptorHeap **heaps);
+bool DX12ModApplyBundleMirrorForExecuteBundle(
+	ID3D12GraphicsCommandList *parent, ID3D12GraphicsCommandList *bundle);
+void DX12ModRestoreBundleMirrorAfterExecuteBundle(
+	ID3D12GraphicsCommandList *parent, ID3D12GraphicsCommandList *bundle);
+void DX12ModForgetBundleMirrorSession(ID3D12GraphicsCommandList *commandList);
 void DX12ModClearIaReplacementRuntimeCaches();
 void DX12ModRecordGraphicsPipelineState(
 	ID3D12Device *device, ID3D12PipelineState *pipelineState,

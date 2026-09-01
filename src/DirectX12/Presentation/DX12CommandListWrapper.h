@@ -887,8 +887,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			// The bundle's tables were recorded against the game's heap:
 			// restore it before the bundle observes descriptor-heap state.
 			DX12ModFlushDrawSrvReplacement(mCommandList);
+			// A bundle recorded with a mirror session needs its session heap
+			// bound on this list while it executes (parent replay).
+			DX12ModApplyBundleMirrorForExecuteBundle(mCommandList, bundle);
 			DX12CommandListCommandRecorder::RecordExecuteBundle(bundle, nullptr);
 			mCommandList->ExecuteBundle(bundle);
+			DX12ModRestoreBundleMirrorAfterExecuteBundle(mCommandList, bundle);
 			DX12CommandListLifecycle::InvalidateAfterExecuteBundle(mCommandList);
 		DX12_HOTPATH_TIME_END(ExecuteBundleTotal);
 		}
@@ -920,6 +924,14 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 					mCommandList, &mRuntimeState, NumDescriptorHeaps, activeHeaps);
 			}
+			// Bundles with a mirror session must reference the session heap:
+			// swap it in for the emitted call (the trackers captured the
+			// game's logical heaps above). activeHeaps points to the mutable
+			// unwrapped copy whenever a rewrite is possible.
+			if (activeHeaps && NumDescriptorHeaps)
+				DX12ModRewriteBundleDescriptorHeaps(
+					mCommandList, NumDescriptorHeaps,
+					const_cast<ID3D12DescriptorHeap **>(activeHeaps));
 
 			if (mOrigSetDescriptorHeaps)
 				mOrigSetDescriptorHeaps(

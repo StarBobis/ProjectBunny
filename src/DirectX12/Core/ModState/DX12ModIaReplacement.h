@@ -228,6 +228,18 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE targetCpu = {};
 	};
 	std::vector<DrawSrvTablePatch> drawSrvPatches;
+	class DrawSrvBundleRestore
+	{
+	public:
+		UINT rootParameterIndex = 0;
+		bool compute = false;
+		// Physical handle emitted into the bundle to re-establish the pre-draw
+		// table (the session mirror of the logical game table).
+		D3D12_GPU_DESCRIPTOR_HANDLE emitTable = {};
+		// Logical game table the shadow trackers must keep: bundle bindings
+		// stay in game terms while the recorded stream uses mirror handles.
+		D3D12_GPU_DESCRIPTOR_HANDLE trackTable = {};
+	};
 	class DrawSrvApplyState
 	{
 	public:
@@ -236,6 +248,11 @@ public:
 		// restore (see DX12DrawSrvReplacementUtils.h): ApplyPending emitted
 		// nothing and Restore only releases the borrow.
 		bool borrowedPendingMirror = false;
+		// Applied inside a bundle (see DX12BundleSrvMirror.h): patch copies in
+		// the bundle's mirror session are bound for the draw and Restore
+		// rebinds the session mirrors immediately; no deferred restore exists
+		// on bundle lists.
+		bool bundleMode = false;
 		ID3D12DescriptorHeap *patchHeap = nullptr;
 		// Plan identity of the emitted mirror; a pending deferred restore
 		// reuses the still-bound mirror when the next apply's fingerprint
@@ -243,6 +260,7 @@ public:
 		UINT64 planFingerprint = 0;
 		UINT64 reloadGeneration = 0;
 		CommandListBindingState originalBindings;
+		std::vector<DrawSrvBundleRestore> bundleRestores;
 	};
 	DrawSrvApplyState drawSrvApplyState;
 	std::vector<ID3D12Resource*> retainedResources;

@@ -40,8 +40,10 @@ public:
 	// rebind them after the game's own binding scope has moved on.
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
-	// Mirror ring heap currently bound on the list. Not owned here; the ring
-	// retains it for the command list and never rewinds in place.
+	// Mirror ring heap currently bound on the list. Not owned here; the
+	// ring retains it for the command list and only rewinds offsets once no
+	// unsubmitted list references the heap anymore (this entry's list
+	// holds such a reference until submission).
 	ID3D12DescriptorHeap *patchHeap = nullptr;
 	UINT64 planFingerprint = 0;
 	UINT64 reloadGeneration = 0;
@@ -75,6 +77,59 @@ inline DX12DrawSrvPendingRestoreShard &DrawSrvPendingRestoreShardFor(
 	return gDrawSrvPendingRestoreShards[(key >> 4) % kShardCount];
 }
 
+// ---------------------------------------------------------------------------
+// Persistent cross-draw mirror cache (PERF: rebind instead of re-mirror).
+//
+// The ring-based mirror path below re-copies every graphics table on every
+// patched draw whose still-bound-mirror reuse missed - the DX11 equivalent
+// (ps-t0 = X) is a single PSSetShaderResources call. Most of those copies are
+// redundant: the plan fingerprint already covers each source heap's content
+// version, so an identical fingerprint means the source descriptors are
+// byte-identical to what an earlier apply mirrored. That earlier mirror can
+// simply be re-bound.
+//
+// A plan earns a dedicated shader-visible heap after being sighted twice
+// (identical fingerprint on two separate applies): single-sighting plans stay
+// on the transient ring so games that rewrite their descriptor arena every
+// frame (fingerprint changes every draw) never pay heap-creation churn, while
+// static or slowly-changing tables - exactly the bindless/large-table cases
+// that are most expensive to re-mirror - promote on their second draw and
+// cost only SetDescriptorHeaps + root-table rebinds afterwards.
+//
+// Lifetime: the cache holds one reference per heap; every command list that
+// binds a cached heap additionally retains it through
+// RetainPreSkinDescriptorHeapForCommandList, so eviction (clear-all on
+// overflow or reload-generation change) can never free a heap a not-yet-
+// submitted list still references - the retired-heap fence drain owns that
+// final release, same as ring heaps.
+// ---------------------------------------------------------------------------
+class DX12DrawSrvMirrorCacheEntry
+{
+public:
+ID3D12DescriptorHeap *heap = nullptr;
+// One GPU handle per plan table, in plan order; sampler tables keep
+// their original game handle (they are never mirrored).
+std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> tables;
+
+void Clear()
+{
+if (heap)
+heap->Release();
+heap = nullptr;
+tables.clear();
+}
+};
+
+inline SRWLOCK gDrawSrvMirrorCacheLock = SRWLOCK_INIT;
+inline std::unordered_map<UINT64, DX12DrawSrvMirrorCacheEntry> gDrawSrvMirrorCache;
+inline UINT64 gDrawSrvMirrorCacheGeneration = 0;
+// Promotion sightings per plan fingerprint; reset on reload generation and
+// capped so arena-churn fingerprints cannot grow it without bound.
+inline std::unordered_map<UINT64, UINT> gDrawSrvMirrorPlanSightings;
+inline constexpr size_t MaxDrawSrvMirrorCacheEntries = 32;
+inline constexpr size_t MaxDrawSrvMirrorPlanSightings = 256;
+inline constexpr UINT DrawSrvMirrorPromotionSightings = 2;
+
 class DX12DrawSrvPatchRequest
 {
 public:
@@ -99,6 +154,11 @@ public:
 	UINT increment = 0;
 	UINT count = 0;
 	UINT tempOffset = 0;
+	// Source-heap content version at plan time. Descriptor contents are not
+	// covered by the rest of the plan fingerprint; a game CopyDescriptors
+	// into the same table location between two draws must not reuse the
+	// stale mirror.
+	UINT64 heapVersion = 0;
 };
 
 
@@ -235,10 +295,12 @@ public:
 
 	// FNV-1a over everything that determines the physical state an Apply
 	// emits: bound heaps, root signatures, the mirrored table set and the
-	// patch set. Descriptor *contents* behind the table handles are not
-	// covered; the reuse window is the same list with no intercepted command
-	// in between, the same assumption class the pre-skin persistent patch
-	// cache already makes across frames.
+	// patch set. Descriptor *contents* behind the table handles are covered
+	// coarsely through each table's source-heap version: any
+	// CopyDescriptors into that heap between two draws invalidates the
+	// reuse, closing the stale-mirror window the deferred restore used to
+	// have when the game rewrote a table in place without a binding
+	// mutation in between.
 	static UINT64 ComputePlanFingerprint(
 		const CommandListBindingState &snapshot,
 		const std::vector<DX12DrawSrvPatchTable> &tables,
@@ -261,6 +323,7 @@ public:
 			append(table.rootParameterIndex);
 			append(table.gpuStart.ptr);
 			append(table.count);
+			append(table.heapVersion);
 		}
 		for (const DX12ModIaReplacement::DrawSrvTablePatch &patch : patches) {
 			append(patch.compute ? 1ull : 0ull);
@@ -461,6 +524,122 @@ public:
 		ReleaseSRWLockExclusive(&shard.lock);
 	}
 
+// -- persistent mirror cache -------------------------------------------
+
+static void ClearDrawSrvMirrorCacheLocked()
+{
+for (auto &item : gDrawSrvMirrorCache)
+item.second.Clear();
+gDrawSrvMirrorCache.clear();
+}
+
+// Runtime-reset boundary (config reload / device teardown): drop every
+// cached mirror and all promotion sightings.
+static void ClearDrawSrvMirrorCache()
+{
+AcquireSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+ClearDrawSrvMirrorCacheLocked();
+gDrawSrvMirrorPlanSightings.clear();
+gDrawSrvMirrorCacheGeneration = DX12ModGetReloadGenerationFast();
+ReleaseSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+}
+
+static bool TryGetDrawSrvMirrorCache(
+UINT64 reloadGeneration,
+UINT64 planFingerprint,
+size_t tableCount,
+ID3D12DescriptorHeap **heapOut,
+std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> *tablesOut)
+{
+if (heapOut)
+*heapOut = nullptr;
+if (tablesOut)
+tablesOut->clear();
+if (!planFingerprint || !heapOut || !tablesOut)
+return false;
+
+AcquireSRWLockShared(&gDrawSrvMirrorCacheLock);
+const bool generationMatches =
+gDrawSrvMirrorCacheGeneration == reloadGeneration;
+bool found = false;
+if (generationMatches)
+{
+auto it = gDrawSrvMirrorCache.find(planFingerprint);
+if (it != gDrawSrvMirrorCache.end() &&
+it->second.heap &&
+it->second.tables.size() == tableCount)
+{
+it->second.heap->AddRef();
+*heapOut = it->second.heap;
+*tablesOut = it->second.tables;
+found = true;
+}
+}
+ReleaseSRWLockShared(&gDrawSrvMirrorCacheLock);
+if (found)
+return true;
+
+if (!generationMatches)
+{
+AcquireSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+if (gDrawSrvMirrorCacheGeneration != reloadGeneration)
+{
+ClearDrawSrvMirrorCacheLocked();
+gDrawSrvMirrorPlanSightings.clear();
+gDrawSrvMirrorCacheGeneration = reloadGeneration;
+}
+ReleaseSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+}
+return false;
+}
+
+static void StoreDrawSrvMirrorCache(
+UINT64 reloadGeneration,
+UINT64 planFingerprint,
+ID3D12DescriptorHeap *heap,
+const std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> &tables)
+{
+if (!heap || !planFingerprint || tables.empty())
+return;
+
+AcquireSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+if (gDrawSrvMirrorCacheGeneration != reloadGeneration)
+{
+ClearDrawSrvMirrorCacheLocked();
+gDrawSrvMirrorPlanSightings.clear();
+gDrawSrvMirrorCacheGeneration = reloadGeneration;
+}
+if (gDrawSrvMirrorCache.size() >= MaxDrawSrvMirrorCacheEntries)
+ClearDrawSrvMirrorCacheLocked();
+DX12DrawSrvMirrorCacheEntry &entry = gDrawSrvMirrorCache[planFingerprint];
+entry.Clear();
+heap->AddRef();
+entry.heap = heap;
+entry.tables = tables;
+ReleaseSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+}
+
+// Count an apply of this plan; the caller promotes to a dedicated heap
+// once the same fingerprint recurs (identical source contents), so
+// per-frame arena churn never triggers heap creation.
+static UINT NoteDrawSrvMirrorPlanSighting(
+UINT64 reloadGeneration, UINT64 planFingerprint)
+{
+if (!planFingerprint)
+return 0;
+AcquireSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+if (gDrawSrvMirrorCacheGeneration != reloadGeneration)
+{
+ClearDrawSrvMirrorCacheLocked();
+gDrawSrvMirrorPlanSightings.clear();
+gDrawSrvMirrorCacheGeneration = reloadGeneration;
+}
+if (gDrawSrvMirrorPlanSightings.size() >= MaxDrawSrvMirrorPlanSightings)
+gDrawSrvMirrorPlanSightings.clear();
+const UINT sightings = ++gDrawSrvMirrorPlanSightings[planFingerprint];
+ReleaseSRWLockExclusive(&gDrawSrvMirrorCacheLock);
+return sightings;
+}
 	static DX12DrawSrvSignaturePlanTemplate BuildSignaturePlanTemplate(
 		const DX12RootSignatureSummary &rootSignature)
 	{
@@ -1047,7 +1226,14 @@ public:
 	{
 		if (!tables || !totalDescriptors)
 			return false;
-		static constexpr UINT MaxMirroredDescriptors = 65536;
+		// Mirrors land in the pre-skin descriptor ring, whose offsets are
+		// rewound once GPU references drain; the old 65536 hard refusal made
+		// bindless / large-table root signatures permanently ineligible for
+		// texture replacement (IA geometry replacement took another path and
+		// kept working). Cap at the ring's own maximum instead: oversized
+		// mirrors degrade to ring churn, not to a silently missing mod.
+		static constexpr UINT MaxMirroredDescriptors =
+			PreSkinDescriptorRingMaximumCapacity;
 		DX12DrawSrvSignaturePlanTemplate cachedPlan;
 		if (!DX12DrawSrvReplacementUtils::GetSignaturePlanTemplate(
 				rootSignature, &cachedPlan))
@@ -1103,6 +1289,7 @@ public:
 			table.heap = heap.heap;
 			table.increment = heap.increment;
 			table.count = count;
+			table.heapVersion = heap.version;
 			if (!rootPlan.sampler) {
 				if (*totalDescriptors > MaxMirroredDescriptors ||
 						count > MaxMirroredDescriptors - *totalDescriptors) {
@@ -1152,9 +1339,10 @@ public:
 			return false;
 		}
 		if (commandList->GetType() == D3D12_COMMAND_LIST_TYPE_BUNDLE) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
-				"stage=table_patch_fail,reason=bundle_requires_parent_replay");
-			return false;
+			// Bundles cannot swap heaps themselves: mirror into the bundle's
+			// session heap instead; the ExecuteBundle parent replay binds it.
+			return DX12ModApplyDrawSrvReplacementBundle(
+				device, commandList, replacement, executeOriginalDraw);
 		}
 		// Take any deferred restore for this list up front. On every failure
 		// path below it is put back and flushed so the original draw never
@@ -1299,6 +1487,53 @@ public:
 			return true;
 		}
 
+// Persistent mirror reuse: an earlier apply already mirrored and patched
+// exactly this plan into a dedicated heap (the fingerprint covers every
+// source heap's content version, so an identical fingerprint means the
+// source descriptors are unchanged). Rebind it and skip the ring
+// allocation plus both descriptor copy batches; restore is unchanged.
+static thread_local std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> tlsCachedTables;
+tlsCachedTables.clear();
+ID3D12DescriptorHeap *cachedHeap = nullptr;
+if (TryGetDrawSrvMirrorCache(
+reloadGeneration, planFingerprint, tables.size(),
+&cachedHeap, &tlsCachedTables)) {
+replacement->drawSrvApplyState.originalBindings = snapshot;
+replacement->drawSrvApplyState.patchHeap = cachedHeap;
+replacement->drawSrvApplyState.planFingerprint = planFingerprint;
+replacement->drawSrvApplyState.reloadGeneration = reloadGeneration;
+DX12InternalReplayScope internalReplay;
+ID3D12DescriptorHeap *heaps[2] = { cachedHeap, snapshot.samplerHeap };
+commandList->SetDescriptorHeaps(snapshot.samplerHeap ? 2 : 1, heaps);
+SyncDescriptorHeaps(commandList, cachedHeap, snapshot.samplerHeap);
+for (size_t index = 0; index < tables.size(); ++index) {
+const DX12DrawSrvPatchTable &table = tables[index];
+const D3D12_GPU_DESCRIPTOR_HANDLE tableGpu =
+table.sampler ? table.gpuStart : tlsCachedTables[index];
+if (table.compute)
+commandList->SetComputeRootDescriptorTable(
+table.rootParameterIndex, tableGpu);
+else
+commandList->SetGraphicsRootDescriptorTable(
+table.rootParameterIndex, tableGpu);
+SyncRootDescriptorTable(
+commandList, table.compute, table.rootParameterIndex, tableGpu);
+}
+RetainPreSkinDescriptorHeapForCommandList(commandList, cachedHeap);
+cachedHeap->Release();
+replacement->drawSrvApplyState.applied = true;
+DX12OuterTimingProbeUtils::LogCpuStage(
+"DrawSrv",
+"reuse_persistent_mirror",
+0,
+totalDescriptors,
+DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+// Same supersede contract as the ring path: the heap set and the
+// root-table rebinds above overwrote every piece of physical state
+// the old pending entry covered. Drop it without emitting anything.
+ReleasePendingRestoreEntry(&takenPending);
+return true;
+}
 		D3D12_CPU_DESCRIPTOR_HANDLE tempCpuBase = {};
 		D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
 		UINT tempIncrement = 0;
@@ -1435,6 +1670,41 @@ public:
 			0,
 			totalDescriptors,
 			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+// A plan sighted before with identical source contents earns a dedicated
+// mirror heap: later applies rebind it without any descriptor copies.
+// Single-sighting plans stay on the transient ring so per-frame arena
+// rewrites never pay heap-creation churn.
+if (NoteDrawSrvMirrorPlanSighting(reloadGeneration, planFingerprint) >=
+DrawSrvMirrorPromotionSightings) {
+D3D12_DESCRIPTOR_HEAP_DESC dedicatedDesc = {};
+dedicatedDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+dedicatedDesc.NumDescriptors = totalDescriptors;
+dedicatedDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+ID3D12DescriptorHeap *dedicatedHeap = nullptr;
+if (SUCCEEDED(device->CreateDescriptorHeap(
+&dedicatedDesc, IID_PPV_ARGS(&dedicatedHeap))) && dedicatedHeap) {
+device->CopyDescriptorsSimple(
+totalDescriptors,
+dedicatedHeap->GetCPUDescriptorHandleForHeapStart(),
+tempCpuBase,
+D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+const D3D12_GPU_DESCRIPTOR_HANDLE dedicatedGpuBase =
+dedicatedHeap->GetGPUDescriptorHandleForHeapStart();
+tlsCachedTables.clear();
+tlsCachedTables.reserve(tables.size());
+for (const DX12DrawSrvPatchTable &table : tables) {
+D3D12_GPU_DESCRIPTOR_HANDLE gpu = table.gpuStart;
+if (!table.sampler) {
+gpu = dedicatedGpuBase;
+gpu.ptr += static_cast<UINT64>(table.tempOffset) * tempIncrement;
+}
+tlsCachedTables.push_back(gpu);
+}
+StoreDrawSrvMirrorCache(
+reloadGeneration, planFingerprint, dedicatedHeap, tlsCachedTables);
+dedicatedHeap->Release();
+}
+}
 		// The new apply fully superseded any stale deferred restore: the heap
 		// set and root-table rebinds above overwrote every piece of physical
 		// state the old entry covered. Drop it without emitting anything.
@@ -1452,14 +1722,6 @@ public:
 	{
 		if (!device || !commandList || !replacement)
 			return false;
-		// A bundle cannot switch to a private descriptor heap unless its parent
-		// direct list binds that exact heap. Defer support to ExecuteBundle replay;
-		// do not record uploads or an incompatible SetDescriptorHeaps in a bundle.
-		if (commandList->GetType() == D3D12_COMMAND_LIST_TYPE_BUNDLE) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
-				"stage=slot_patch_fail,reason=bundle_requires_parent_replay");
-			return false;
-		}
 		if (config.drawPsSrvResources.empty() &&
 		    config.drawVsSrvResources.empty() &&
 		    config.drawReplaceThisResource.empty())
@@ -1586,6 +1848,12 @@ public:
 			return;
 		DX12ModIaReplacement::DrawSrvApplyState &state =
 			replacement->drawSrvApplyState;
+		if (state.bundleMode) {
+			// Bundle apply: rebind the session mirrors immediately (no
+			// deferred restore exists on bundle lists).
+			DX12ModRestoreDrawSrvReplacementBundle(commandList, replacement);
+			return;
+		}
 		if (!commandList || !state.applied || !state.patchHeap) {
 			replacement->drawSrvPatches.clear();
 			state = DX12ModIaReplacement::DrawSrvApplyState();

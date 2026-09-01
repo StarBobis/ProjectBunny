@@ -111,6 +111,7 @@ add_library(DirectX12 SHARED
     ModRuntime/DX12DrawTextureSrvViewUtils.h
     ModRuntime/DX12DdsTextureLoadUtils.h
     ModRuntime/DX12DrawSrvReplacementUtils.h
+    ModRuntime/DX12BundleSrvMirror.h
     ModRuntime/DX12CommandListExecutor.h
     ModRuntime/DX12ShaderOverrideIaTargetPlanUtils.h
 
@@ -146,6 +147,7 @@ add_library(DirectX12 SHARED
     ModRuntime/DX12PreSkinRuntime.cpp
     ModRuntime/DX12LoadedResources.cpp
     ModRuntime/DX12DrawSrvReplacement.cpp
+    ModRuntime/DX12BundleSrvMirror.cpp
     ModRuntime/DX12TextureOverrideMatching.cpp
     ModRuntime/DX12CommandListExecutor.cpp
     ModRuntime/DX12ShaderOverrideRuntime.cpp

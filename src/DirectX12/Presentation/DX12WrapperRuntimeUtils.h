@@ -1779,6 +1779,8 @@ public:
 			// game's handle targets its own heap.
 			DX12ModFlushDrawSrvReplacement(commandList);
 		}
+		DX12ModRewriteBundleRootDescriptorTable(
+			commandList, false, rootParameterIndex, &baseDescriptor);
 		if (original) original(commandList, rootParameterIndex, baseDescriptor);
 		else commandList->SetComputeRootDescriptorTable(rootParameterIndex, baseDescriptor);
 	}
@@ -1811,6 +1813,8 @@ public:
 			// bound (reload race safety net - the DrawSrv feature normally
 			// keeps graphics binding capture enabled).
 			DX12ModFlushDrawSrvReplacement(commandList);
+			DX12ModRewriteBundleRootDescriptorTable(
+				commandList, true, rootParameterIndex, &baseDescriptor);
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		}
@@ -1819,6 +1823,8 @@ public:
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, true);
 			if (!changed)
 				return;
+			DX12ModRewriteBundleRootDescriptorTable(
+				commandList, true, rootParameterIndex, &baseDescriptor);
 			if (original) original(commandList, rootParameterIndex, baseDescriptor);
 			else commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, baseDescriptor);
 		}

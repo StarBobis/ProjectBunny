@@ -1181,6 +1181,11 @@ public:
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	bool outputUavResized = false;
+	// Set when resource/outputVertexResource is a loaded mod resource whose
+	// uavState bookkeeping must follow the transitions the restore records
+	// (the VLR scratch output is both the dispatch target and the IA-read
+	// vertex source, so no separate vertex twin exists for it).
+	DX12LoadedResource *loadedReplacement = nullptr;
 	uint64_t computeShaderHash = 0;
 	UINT64 bindingFingerprint = 0;
 	uint32_t triggerHash = 0;
@@ -1426,6 +1431,31 @@ inline std::unordered_map<IUnknown*, DX12PreSkinPendingSubmission> gPendingPreSk
 
 inline volatile LONG gHasPendingPreSkinSubmissionWorkFast = 0;
 
+// Recycling bookkeeping for the pre-skin descriptor ring (guarded by
+// gPreSkinRetireLock). The ring's transient mirrors only have to survive
+// until every command list that recorded against them has been submitted
+// AND the GPU has consumed that submission; once both hold, a heap's
+// offsets can be rewound instead of growing the ring to its million-
+// descriptor cap and rebuilding a shader-visible heap every few seconds.
+//
+// gPreSkinRetainedHeapListCounts: how many unsubmitted command-list buckets
+// still reference each heap (incremented on retain, decremented when the
+// bucket leaves the pending table at submission or list teardown).
+// gPreSkinHeapCompletionPoints: queue-fence points of the submissions that
+// drained those buckets; a point is complete when its fence value passed
+// (present-count fallback when no fence could be signaled).
+class DX12PreSkinHeapCompletionPoint
+{
+public:
+	ID3D12Fence *fence = nullptr;
+	UINT64 value = 0;
+	LONG submittedPresent = 0;
+};
+
+inline std::unordered_map<ID3D12DescriptorHeap*, LONG> gPreSkinRetainedHeapListCounts;
+
+inline std::unordered_map<ID3D12DescriptorHeap*, std::vector<DX12PreSkinHeapCompletionPoint>>
+	gPreSkinHeapCompletionPoints;
 inline SRWLOCK gPreSkinDescriptorRestoreHeapPoolLock = SRWLOCK_INIT;
 
 inline std::vector<DX12PooledPreSkinDescriptorRestoreHeap> gPreSkinDescriptorRestoreHeapPool;
@@ -1540,6 +1570,13 @@ void RetirePreSkinResourceForCommandList(
 
 
 void RetirePreSkinDescriptorHeap(ID3D12DescriptorHeap *heap);
+
+// Ring-heap recycling helpers (defined in DX12PreSkinRuntime.cpp); the
+// bundle mirror sessions adopt retired heaps through the same drain checks.
+bool IsPreSkinRingHeapReusableLocked(
+	ID3D12DescriptorHeap *heap, UINT minCapacity);
+void ClearPreSkinHeapCompletionPointsLocked(
+	ID3D12DescriptorHeap *heap, std::vector<ID3D12Fence*> *fencesOut);
 
 
 void RetainPreSkinDescriptorHeapForCommandList(
@@ -2679,7 +2716,20 @@ bool DX12ResolveStaticIaReplacement(
 
 bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash);
 
+// Bundle draw-SRV replacement (DX12BundleSrvMirror.h, included below):
+// ApplyPending/Restore branch to these on bundle lists.
+inline bool DX12ModApplyDrawSrvReplacementBundle(
+	ID3D12Device *device,
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement,
+	bool executeOriginalDraw);
+inline void DX12ModRestoreDrawSrvReplacementBundle(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement);
+
 #include "DX12DrawSrvReplacementUtils.h"
+
+#include "DX12BundleSrvMirror.h"
 
 
 UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor);
@@ -2719,7 +2769,7 @@ void ClearPreSkinCbvPatchCache();
 
 bool PatchPreSkinVertexCountCbvLocked(
 	ID3D12Device *device, const DX12CurrentComputeUavBinding &cbv,
-	const Bunny::TextureOverrideConfig &config, UINT expectedOriginalVertexCount, UINT overrideVertexCount,
+	UINT expectedOriginalVertexCount, UINT overrideVertexCount,
 	D3D12_CPU_DESCRIPTOR_HANDLE dst,
 	std::vector<ID3D12Resource *> *temporaryResources,
 	UINT *originalVertexCountOut,
@@ -3063,8 +3113,11 @@ void FillPreSkinDispatchOverrideFromConfig(
 bool ApplyPreSkinBindingPatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &binding, const DX12ComputeUavProducer &producer,
-	DX12LoadedResource *replacement, const wchar_t *section, uint32_t triggerHash,
-	std::vector<DX12PreSkinReplacementState::DescriptorRestore> *descriptorRestores);
+	DX12LoadedResource *replacement, const DX12VertexLimitRaiseConfig &vlr,
+	const std::vector<DX12CurrentComputeUavBinding> &srvs,
+	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
+	const wchar_t *section, uint32_t triggerHash,
+	UINT *originalVertexCountOut, UINT *overrideVertexCountOut);
 
 
 
