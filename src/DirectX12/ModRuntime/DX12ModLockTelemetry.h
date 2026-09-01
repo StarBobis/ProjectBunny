@@ -45,56 +45,61 @@ public:
 		AcquireExclusive(lock, &preSkinExclusive);
 	}
 
+	static void AcquireUavMatchCacheShared(SRWLOCK *lock)
+	{
+		AcquireShared(lock, &uavMatchCacheShared);
+	}
+
+	static void AcquireUavMatchCacheExclusive(SRWLOCK *lock)
+	{
+		AcquireExclusive(lock, &uavMatchCacheExclusive);
+	}
+
+	static void AcquireSrvProbeCacheShared(SRWLOCK *lock)
+	{
+		AcquireShared(lock, &srvProbeCacheShared);
+	}
+
+	static void AcquireSrvProbeCacheExclusive(SRWLOCK *lock)
+	{
+		AcquireExclusive(lock, &srvProbeCacheExclusive);
+	}
+
+	static void AcquireOutputResizeShared(SRWLOCK *lock)
+	{
+		AcquireShared(lock, &outputResizeShared);
+	}
+
+	static void AcquireOutputResizeExclusive(SRWLOCK *lock)
+	{
+		AcquireExclusive(lock, &outputResizeExclusive);
+	}
+
+	static void AcquireOutputResizeCacheShared(SRWLOCK *lock)
+	{
+		AcquireShared(lock, &outputResizeCacheShared);
+	}
+
+	static void AcquireOutputResizeCacheExclusive(SRWLOCK *lock)
+	{
+		AcquireExclusive(lock, &outputResizeCacheExclusive);
+	}
+
 	static void LogAndReset()
 	{
 		const LONG64 frequency = Frequency();
-		const LONG64 modSharedContentions =
-			InterlockedExchange64(&modShared.contentions, 0);
-		const LONG64 modSharedTicks =
-			InterlockedExchange64(&modShared.waitTicks, 0);
-		const LONG64 modSharedMaxTicks =
-			InterlockedExchange64(&modShared.maxWaitTicks, 0);
-		const LONG64 modExclusiveContentions =
-			InterlockedExchange64(&modExclusive.contentions, 0);
-		const LONG64 modExclusiveTicks =
-			InterlockedExchange64(&modExclusive.waitTicks, 0);
-		const LONG64 modExclusiveMaxTicks =
-			InterlockedExchange64(&modExclusive.maxWaitTicks, 0);
-		const LONG64 preSkinSharedContentions =
-			InterlockedExchange64(&preSkinShared.contentions, 0);
-		const LONG64 preSkinSharedTicks =
-			InterlockedExchange64(&preSkinShared.waitTicks, 0);
-		const LONG64 preSkinSharedMaxTicks =
-			InterlockedExchange64(&preSkinShared.maxWaitTicks, 0);
-		const LONG64 preSkinExclusiveContentions =
-			InterlockedExchange64(&preSkinExclusive.contentions, 0);
-		const LONG64 preSkinExclusiveTicks =
-			InterlockedExchange64(&preSkinExclusive.waitTicks, 0);
-		const LONG64 preSkinExclusiveMaxTicks =
-			InterlockedExchange64(&preSkinExclusive.maxWaitTicks, 0);
-		if (modSharedContentions == 0 && modExclusiveContentions == 0 &&
-			preSkinSharedContentions == 0 && preSkinExclusiveContentions == 0)
-			return;
-
-		DX12LogManager::Fields("DX12ModLockTiming",
-			"\"present\":%ld,"
-			"\"modSharedContentions\":%lld,\"modSharedWaitUs\":%lld,\"modSharedMaxUs\":%lld,"
-			"\"modExclusiveContentions\":%lld,\"modExclusiveWaitUs\":%lld,\"modExclusiveMaxUs\":%lld,"
-			"\"preSkinSharedContentions\":%lld,\"preSkinSharedWaitUs\":%lld,\"preSkinSharedMaxUs\":%lld,"
-			"\"preSkinExclusiveContentions\":%lld,\"preSkinExclusiveWaitUs\":%lld,\"preSkinExclusiveMaxUs\":%lld",
-			DX12RuntimeState::GetPresentCount(),
-			static_cast<long long>(modSharedContentions),
-			static_cast<long long>(modSharedTicks * 1000000 / frequency),
-			static_cast<long long>(modSharedMaxTicks * 1000000 / frequency),
-			static_cast<long long>(modExclusiveContentions),
-			static_cast<long long>(modExclusiveTicks * 1000000 / frequency),
-			static_cast<long long>(modExclusiveMaxTicks * 1000000 / frequency),
-			static_cast<long long>(preSkinSharedContentions),
-			static_cast<long long>(preSkinSharedTicks * 1000000 / frequency),
-			static_cast<long long>(preSkinSharedMaxTicks * 1000000 / frequency),
-			static_cast<long long>(preSkinExclusiveContentions),
-			static_cast<long long>(preSkinExclusiveTicks * 1000000 / frequency),
-			static_cast<long long>(preSkinExclusiveMaxTicks * 1000000 / frequency));
+		LogLock(&modShared, "modShared", frequency);
+		LogLock(&modExclusive, "modExclusive", frequency);
+		LogLock(&preSkinShared, "preSkinShared", frequency);
+		LogLock(&preSkinExclusive, "preSkinExclusive", frequency);
+		LogLock(&uavMatchCacheShared, "uavMatchCacheShared", frequency);
+		LogLock(&uavMatchCacheExclusive, "uavMatchCacheExclusive", frequency);
+		LogLock(&srvProbeCacheShared, "srvProbeCacheShared", frequency);
+		LogLock(&srvProbeCacheExclusive, "srvProbeCacheExclusive", frequency);
+		LogLock(&outputResizeShared, "outputResizeShared", frequency);
+		LogLock(&outputResizeExclusive, "outputResizeExclusive", frequency);
+		LogLock(&outputResizeCacheShared, "outputResizeCacheShared", frequency);
+		LogLock(&outputResizeCacheExclusive, "outputResizeCacheExclusive", frequency);
 	}
 
 private:
@@ -102,6 +107,32 @@ private:
 	inline static WaitAccumulator modExclusive;
 	inline static WaitAccumulator preSkinShared;
 	inline static WaitAccumulator preSkinExclusive;
+	inline static WaitAccumulator uavMatchCacheShared;
+	inline static WaitAccumulator uavMatchCacheExclusive;
+	inline static WaitAccumulator srvProbeCacheShared;
+	inline static WaitAccumulator srvProbeCacheExclusive;
+	inline static WaitAccumulator outputResizeShared;
+	inline static WaitAccumulator outputResizeExclusive;
+	inline static WaitAccumulator outputResizeCacheShared;
+	inline static WaitAccumulator outputResizeCacheExclusive;
+
+	static void LogLock(WaitAccumulator *accumulator, const char *name, LONG64 frequency)
+	{
+		const LONG64 contentions =
+			InterlockedExchange64(&accumulator->contentions, 0);
+		if (contentions == 0)
+			return;
+		const LONG64 waitTicks =
+			InterlockedExchange64(&accumulator->waitTicks, 0);
+		const LONG64 maxTicks =
+			InterlockedExchange64(&accumulator->maxWaitTicks, 0);
+		DX12LogManager::Fields("DX12ModLockTiming",
+			"\"lock\":\"%s\",\"contentions\":%lld,\"waitUs\":%lld,\"maxUs\":%lld",
+			name ? name : "",
+			static_cast<long long>(contentions),
+			static_cast<long long>(waitTicks * 1000000 / frequency),
+			static_cast<long long>(maxTicks * 1000000 / frequency));
+	}
 
 	static LONG64 Frequency()
 	{
@@ -173,6 +204,38 @@ public:
 		AcquireSRWLockShared(lock);
 	}
 	static void AcquirePreSkinExclusive(SRWLOCK *lock)
+	{
+		AcquireSRWLockExclusive(lock);
+	}
+	static void AcquireUavMatchCacheShared(SRWLOCK *lock)
+	{
+		AcquireSRWLockShared(lock);
+	}
+	static void AcquireUavMatchCacheExclusive(SRWLOCK *lock)
+	{
+		AcquireSRWLockExclusive(lock);
+	}
+	static void AcquireSrvProbeCacheShared(SRWLOCK *lock)
+	{
+		AcquireSRWLockShared(lock);
+	}
+	static void AcquireSrvProbeCacheExclusive(SRWLOCK *lock)
+	{
+		AcquireSRWLockExclusive(lock);
+	}
+	static void AcquireOutputResizeShared(SRWLOCK *lock)
+	{
+		AcquireSRWLockShared(lock);
+	}
+	static void AcquireOutputResizeExclusive(SRWLOCK *lock)
+	{
+		AcquireSRWLockExclusive(lock);
+	}
+	static void AcquireOutputResizeCacheShared(SRWLOCK *lock)
+	{
+		AcquireSRWLockShared(lock);
+	}
+	static void AcquireOutputResizeCacheExclusive(SRWLOCK *lock)
 	{
 		AcquireSRWLockExclusive(lock);
 	}

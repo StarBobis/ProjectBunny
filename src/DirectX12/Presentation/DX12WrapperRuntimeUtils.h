@@ -1468,39 +1468,6 @@ public:
 			commandList->IASetIndexBuffer(activeView);
 	}
 
-	// Bind-path split probe (IASetVertexBuffers runs 1500+/frame): pin the
-	// per-call cost to one phase. Rate-limited; slow calls log always.
-	static void LogIaBindProbe(
-		LONG64 restoreUs, LONG64 staticUs, LONG64 preSkinUs,
-		LONG64 captureUs, LONG64 originalUs, UINT startSlot, UINT count)
-	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		static volatile LONG iaBindProbeCounter = 0;
-		const LONG64 totalUs =
-			restoreUs + staticUs + preSkinUs + captureUs + originalUs;
-		if (totalUs >= 50 || (InterlockedIncrement(&iaBindProbeCounter) & 0x7F) == 1) {
-			DX12LogManager::Fields("DX12IaBindProbe",
-				"restoreUs=%lld,staticUs=%lld,preSkinUs=%lld,"
-				"captureUs=%lld,originalUs=%lld,slot=%u,count=%u,totalUs=%lld",
-				static_cast<long long>(restoreUs),
-				static_cast<long long>(staticUs),
-				static_cast<long long>(preSkinUs),
-				static_cast<long long>(captureUs),
-				static_cast<long long>(originalUs),
-				startSlot, count,
-				static_cast<long long>(totalUs));
-		}
-#else
-		(void)restoreUs;
-		(void)staticUs;
-		(void)preSkinUs;
-		(void)captureUs;
-		(void)originalUs;
-		(void)startSlot;
-		(void)count;
-#endif
-	}
-
 	static void IASetVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
 		UINT startSlot,
@@ -1524,14 +1491,6 @@ public:
 	{
 		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
 			DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
-		// Bind-path split probe: the game binds 1500+ times per frame; pin
-		// the per-call cost to one phase. Rate-limited + slow-capturing.
-		LARGE_INTEGER bindProbeBegin = DX12OuterTimingProbeUtils::Now();
-		LONG64 bindRestoreUs = 0;
-		LONG64 bindStaticUs = 0;
-		LONG64 bindPreSkinUs = 0;
-		LONG64 bindCaptureUs = 0;
-		LONG64 bindOriginalUs = 0;
 		// Plan fix A: a game rebind supersedes a live static-template IA
 		// replacement. Restore the snapshotted original views first so slots
 		// this call does not cover do not keep the mod view.
@@ -1541,8 +1500,6 @@ public:
 			callbacks.setVertexBuffers = DirectSetVertexBuffers;
 			DX12IaReplacementExecutor::RestoreStaticTemplateIa(
 				commandList, runtimeState, callbacks);
-			bindRestoreUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
-			bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 		}
 		// When neither bind-time static IA replacement nor PreSkin output
 		// resizing is active, the redirect probes cannot produce a different
@@ -1552,17 +1509,12 @@ public:
 			!DX12ModHasPreSkinOutputResizeBindings()) {
 			const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 				commandList, runtimeState, startSlot, count, views);
-			bindCaptureUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
 			if (!changed)
 				return;
-			bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (original)
 				original(commandList, startSlot, count, views);
 			else
 				commandList->IASetVertexBuffers(startSlot, count, views);
-			bindOriginalUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
-			LogIaBindProbe(bindRestoreUs, bindStaticUs, bindPreSkinUs,
-				bindCaptureUs, bindOriginalUs, startSlot, count);
 			return;
 		}
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
@@ -1580,7 +1532,6 @@ public:
 		// with the mod's oversized index buffer - broken UVs beyond the
 		// original vertex count.
 		if (DX12HasStaticIaReplacements()) {
-			bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 			if (TryRedirectStaticIaVertexBuffers(
 				    commandList,
 				    runtimeState,
@@ -1591,8 +1542,6 @@ public:
 				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)) {
 				activeViews = staticRedirectedViews;
 			}
-			bindStaticUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
-			bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 		}
 		// PreSkin output-resize redirect runs on the static-replaced views:
 		// the pre-skinned slots have no static entry (their content hash is
@@ -1615,22 +1564,15 @@ public:
 				    runtimeState ? &runtimeState->ia : nullptr)) {
 				activeViews = preSkinOutput;
 			}
-			bindPreSkinUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
-			bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 		}
 		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
 			commandList, runtimeState, startSlot, count, activeViews);
-		bindCaptureUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
 		if (!changed)
 			return;
-		bindProbeBegin = DX12OuterTimingProbeUtils::Now();
 		if (original)
 			original(commandList, startSlot, count, activeViews);
 		else
 			commandList->IASetVertexBuffers(startSlot, count, activeViews);
-		bindOriginalUs = DX12OuterTimingProbeUtils::ElapsedUs(bindProbeBegin);
-		LogIaBindProbe(bindRestoreUs, bindStaticUs, bindPreSkinUs,
-			bindCaptureUs, bindOriginalUs, startSlot, count);
 	}
 
 	static bool ShouldSkipComputeBinding()
