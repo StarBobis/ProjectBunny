@@ -61,37 +61,65 @@ UINT64 gBufferResolveBackwardScanHits = 0;
 UINT64 gBufferResolveMisses = 0;
 UINT64 gBufferResolveFallbackScanHits = 0;
 
+// A buffer is registered in every 64KiB shard it spans (capped): views inside
+// a buffer (common for 100KB+ streaming vertex buffers) query their own
+// offset's shard, and a base-only registration made every such query miss the
+// wrapper index and fall through to the slow locked fallbacks.
+static constexpr UINT kMaxGpuVaWrapperShardSpan = 16;
+
+static UINT GpuVaWrapperShardIndex(UINT64 gpuVa)
+{
+	return static_cast<UINT>(
+		(gpuVa >> 16) & (kGpuVaWrapperShardCount - 1));
+}
+
 void RegisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, const ResourceRecord *record)
 {
 	if (!gpuVa || !wrapper || !record)
 		return;
-	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVa);
 	GpuVaWrapperEntry entry{gpuVa, wrapper, record,
 		gGpuVaWrapperSerial.fetch_add(1, std::memory_order_relaxed)};
-	AcquireSRWLockExclusive(&shard.lock);
-	auto it = std::lower_bound(shard.wrappers.begin(), shard.wrappers.end(), entry,
-		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) { return a.gpuVa < b.gpuVa; });
-	shard.wrappers.insert(it, entry);
-	ReleaseSRWLockExclusive(&shard.lock);
+	UINT shard = GpuVaWrapperShardIndex(gpuVa);
+	const UINT lastShard = record->size ?
+		GpuVaWrapperShardIndex(gpuVa + record->size - 1) :
+		shard;
+	UINT spanCount = 0;
+	for (;;) {
+		AcquireSRWLockExclusive(&gGpuVaWrapperShards[shard].lock);
+		gGpuVaWrapperShards[shard].wrappers.emplace(gpuVa, entry);
+		ReleaseSRWLockExclusive(&gGpuVaWrapperShards[shard].lock);
+		++spanCount;
+		if (shard == lastShard || spanCount >= kMaxGpuVaWrapperShardSpan)
+			break;
+		shard = (shard + 1) & (kGpuVaWrapperShardCount - 1);
+	}
 }
 
-void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper)
+void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, UINT64 size)
 {
 	if (!gpuVa || !wrapper)
 		return;
-	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVa);
-	GpuVaWrapperEntry entry{gpuVa, wrapper};
-	AcquireSRWLockExclusive(&shard.lock);
-	auto it = std::lower_bound(shard.wrappers.begin(), shard.wrappers.end(), entry,
-		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) { return a.gpuVa < b.gpuVa; });
-	while (it != shard.wrappers.end() && it->gpuVa == gpuVa) {
-		if (it->wrapper == wrapper) {
-			shard.wrappers.erase(it);
-			break;
+	UINT shard = GpuVaWrapperShardIndex(gpuVa);
+	const UINT lastShard = size ?
+		GpuVaWrapperShardIndex(gpuVa + size - 1) :
+		shard;
+	UINT spanCount = 0;
+	for (;;) {
+		GpuVaWrapperShard &current = gGpuVaWrapperShards[shard];
+		AcquireSRWLockExclusive(&current.lock);
+		auto range = current.wrappers.equal_range(gpuVa);
+		for (auto it = range.first; it != range.second; ++it) {
+			if (it->second.wrapper == wrapper) {
+				current.wrappers.erase(it);
+				break;
+			}
 		}
-		++it;
+		ReleaseSRWLockExclusive(&current.lock);
+		++spanCount;
+		if (shard == lastShard || spanCount >= kMaxGpuVaWrapperShardSpan)
+			break;
+		shard = (shard + 1) & (kGpuVaWrapperShardCount - 1);
 	}
-	ReleaseSRWLockExclusive(&shard.lock);
 }
 
 // Fast path: resolve GPU VA from the sorted per-shard wrapper vectors using
@@ -112,21 +140,16 @@ bool DX12TryResolveFromGpuVaWrapper(
 
 	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVirtualAddress);
 	AcquireSRWLockShared(&shard.lock);
-	GpuVaWrapperEntry key{gpuVirtualAddress, nullptr, nullptr, 0};
-	auto it = std::lower_bound(
-		shard.wrappers.begin(), shard.wrappers.end(), key,
-		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) {
-			return a.gpuVa < b.gpuVa;
-		});
+	auto it = shard.wrappers.lower_bound(gpuVirtualAddress);
 
 	if (it != shard.wrappers.begin() &&
-		(it == shard.wrappers.end() || it->gpuVa > gpuVirtualAddress))
+		(it == shard.wrappers.end() || it->first > gpuVirtualAddress))
 		--it;
 
 	const ResourceRecord *best = nullptr;
 	UINT64 bestSerial = 0;
-	for (; it != shard.wrappers.end() && it->gpuVa <= gpuVirtualAddress; ++it) {
-		const ResourceRecord *rec = it->record;
+	for (; it != shard.wrappers.end() && it->first <= gpuVirtualAddress; ++it) {
+		const ResourceRecord *rec = it->second.record;
 		if (!rec || !rec->resource)
 			continue;
 		if (rec->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
@@ -140,9 +163,9 @@ bool DX12TryResolveFromGpuVaWrapper(
 		// VA reuse: a stale entry from a released resource can share the same
 		// VA with the current resource.  The newest registration wins so a
 		// lingering entry can never shadow the live resource.
-		if (it->serial >= bestSerial) {
+		if (it->second.serial >= bestSerial) {
 			best = rec;
-			bestSerial = it->serial;
+			bestSerial = it->second.serial;
 		}
 	}
 

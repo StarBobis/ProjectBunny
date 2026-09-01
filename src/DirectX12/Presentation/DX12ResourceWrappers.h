@@ -1,4 +1,4 @@
-﻿// Resource and heap wrappers (incl. IA hash cache entry).
+// Resource and heap wrappers (incl. IA hash cache entry).
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -49,7 +49,8 @@ namespace DX12WrapperDetail
 			if (mVaRegistered) {
 				UnregisterGpuVaWrapper(
 					mRecord.gpuVirtualAddress,
-					static_cast<void*>(this));
+					static_cast<void*>(this),
+					mRecord.size);
 				mVaRegistered = false;
 			}
 		}

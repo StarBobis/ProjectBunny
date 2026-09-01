@@ -294,12 +294,14 @@ public:
 	// every call is logged). CpuStageTiming filtered sub-40us stages, which
 	// hid the fast replay body while the enclosing gated call showed
 	// ~1.2-2.2ms/frame; this line pins the exact split and loop counts.
+	// TIMING-build only: compiles out of the user release.
 	static void LogReplayGateProbe(
 		const char *stage, LONG64 genUs, LONG64 fpUs,
 		LONG64 bodyUs, LONG64 lookupUs, LONG64 setUs,
 		UINT runs, UINT slotsScanned,
 		UINT64 resizeGen, UINT64 activeGen)
 	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12ReplayProbe",
 			"stage=%s,genUs=%lld,fpUs=%lld,bodyUs=%lld,"
 			"lookupUs=%lld,setUs=%lld,runs=%u,slots=%u,"
@@ -313,6 +315,18 @@ public:
 			runs, slotsScanned,
 			static_cast<unsigned long long>(resizeGen),
 			static_cast<unsigned long long>(activeGen));
+#else
+		(void)stage;
+		(void)genUs;
+		(void)fpUs;
+		(void)bodyUs;
+		(void)lookupUs;
+		(void)setUs;
+		(void)runs;
+		(void)slotsScanned;
+		(void)resizeGen;
+		(void)activeGen;
+#endif
 	}
 
 	static void ApplyReadBarriers(
@@ -343,18 +357,31 @@ public:
 	// Per-slot expand-chain probe: pins down which lookup step of
 	// ExpandInPlaceVertexBufferView eats the ~150us measured per pre-skin
 	// slot (GPUVA resolve vs producer lookup vs expanded-width resolve).
+	// Slow calls log unconditionally (a 1/N sampler is starved by the fast
+	// per-slot calls and never samples them). TIMING-build only.
 	static void LogExpandStepProbe(
-		const char *stage, LONG64 gpuvaUs, LONG64 producerUs, LONG64 widthUs)
+		const char *stage, LONG64 gpuvaUs, LONG64 producerUs, LONG64 widthUs,
+		UINT64 viewGpuVa = 0)
 	{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		static volatile LONG expandProbeCounter = 0;
-		if ((InterlockedIncrement(&expandProbeCounter) & 0x3F) == 1) {
+		const LONG64 totalUs = gpuvaUs + producerUs + widthUs;
+		if (totalUs >= 50 || (InterlockedIncrement(&expandProbeCounter) & 0xFF) == 1) {
 			DX12LogManager::Fields("DX12ReplayProbe",
-				"stage=expand_%s,gpuvaUs=%lld,producerUs=%lld,widthUs=%lld",
+				"stage=expand_%s,gpuvaUs=%lld,producerUs=%lld,widthUs=%lld,va=0x%llx",
 				stage ? stage : "",
 				static_cast<long long>(gpuvaUs),
 				static_cast<long long>(producerUs),
-				static_cast<long long>(widthUs));
+				static_cast<long long>(widthUs),
+				static_cast<unsigned long long>(viewGpuVa));
 		}
+#else
+		(void)stage;
+		(void)gpuvaUs;
+		(void)producerUs;
+		(void)widthUs;
+		(void)viewGpuVa;
+#endif
 	}
 
 	static bool ExpandInPlaceVertexBufferView(
@@ -384,7 +411,8 @@ public:
 			resource.resourceDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER ||
 			resource.gpuVirtualAddress > sourceView.BufferLocation) {
 			LogExpandStepProbe(
-				"gpuva_fail", DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin), 0, 0);
+				"gpuva_fail", DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin),
+				0, 0, sourceView.BufferLocation);
 			return false;
 		}
 		const LONG64 expandGpuvaUs = DX12OuterTimingProbeUtils::ElapsedUs(expandStepBegin);
@@ -448,11 +476,18 @@ public:
 		// Per-slot probe (only for multi-slot calls, which run a few times per
 		// frame): logs the branch taken and its cost so the ~300-450us
 		// "expandUs" measured on 4-slot binds can be pinned to a slot/branch.
+		// TIMING-build only; the calls below are elided in the user release.
 		auto logSlotProbe = [count](UINT slot, const char *branch, LONG64 us) {
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 			DX12LogManager::Fields("DX12ReplayProbe",
 				"stage=redirect_slot,slots=%u,slot=%u,branch=%s,us=%lld",
 				count, slot, branch ? branch : "",
 				static_cast<long long>(us));
+#else
+			(void)slot;
+			(void)branch;
+			(void)us;
+#endif
 		};
 		for (UINT i = 0; i < count; ++i) {
 			const D3D12_VERTEX_BUFFER_VIEW &sourceView = views[i];

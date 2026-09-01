@@ -1,4 +1,4 @@
-﻿// GPU-VA buffer resolve cache, wrapper shards and stats.
+// GPU-VA buffer resolve cache, wrapper shards and stats.
 // Split from DX12Tracking.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -75,7 +75,14 @@ static constexpr UINT kGpuVaWrapperShardBits = 8;
 static constexpr UINT kGpuVaWrapperShardCount = 1u << kGpuVaWrapperShardBits;
 struct GpuVaWrapperShard {
 	SRWLOCK lock = SRWLOCK_INIT;
-	std::vector<GpuVaWrapperEntry> wrappers;
+	// Sorted by GPU VA. A multimap (not a sorted vector): the game's per-frame
+	// buffer churn registers/unregisters dozens of buffers, and the vector's
+	// O(n) middle insert/erase memmoves held the shard lock for tens-to-
+	// hundreds of microseconds, blocking every GPUVA resolve on the draw
+	// thread (measured 50-240us per pre-skin slot resolve). Tree mutations
+	// are O(log n), keeping mutator critical sections in the nanosecond
+	// range; the read path (lower_bound + forward scan) is unchanged in cost.
+	std::multimap<UINT64, GpuVaWrapperEntry> wrappers;
 };
 extern GpuVaWrapperShard gGpuVaWrapperShards[kGpuVaWrapperShardCount];
 extern std::atomic<UINT64> gGpuVaWrapperSerial;
@@ -89,8 +96,7 @@ inline GpuVaWrapperShard &GpuVaWrapperShardFor(UINT64 gpuVa)
 	return gGpuVaWrapperShards[index];
 }
 void RegisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, const ResourceRecord *record);
-void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper);
-// Returns the cached ResourceRecord for a resource that has an active wrapper,
+void UnregisterGpuVaWrapper(UINT64 gpuVa, void *wrapper, UINT64 size);// Returns the cached ResourceRecord for a resource that has an active wrapper,
 // or nullptr.  Skips the gResourceByPtr hash map and gResources array lookup.
 ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource);
 // Locked variants for Tracking TUs whose callers already hold gResourceLock

@@ -1203,6 +1203,22 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 	// cross-frame cache. The owner check is the DX12 equivalent of that
 	// immediacy - resolve who owns viewGpuVa right now and require it to be
 	// the entry's original resource.
+	//
+	// The TLS snapshot is consulted BEFORE the owner resolve: the resolve
+	// chain for an untracked VA (a mod-owned buffer created outside the
+	// wrapper tracker, e.g. 0xc73d10000 in ZZZ) ran the full locked
+	// fallbacks - 250-800us per slot per frame - and the old early return on
+	// "no owner" never stored a negative, so the next lookup paid it again.
+	const UINT64 generation = InterlockedCompareExchange64(
+		&gPreSkinOutputResizeCacheGeneration, 0, 0);
+	TlsPreSkinResizeResolve &tls = tlsPreSkinResizeResolve;
+	if (tls.generation == generation && tls.viewGpuVa == viewGpuVa &&
+	    !tls.originalResource && !tls.vertexResource) {
+		// Cached negative for an untracked VA: no owner exists, so no cache
+		// entry can apply while the generation is unchanged (any new entry
+		// for a reused VA bumps it).
+		return false;
+	}
 	DX12BufferResourceSummary currentOwnerSummary = {};
 	const bool ownerResolved = DX12ResolveBufferResourceByGpuVa(
 		viewGpuVa, 1, &currentOwnerSummary);
@@ -1210,13 +1226,18 @@ bool DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 		currentOwnerSummary.resource : nullptr;
 	if (!currentOwner) {
 		// The VA is not tracked by any live buffer: never redirect (a
-		// missing replacement is preferable to a corrupted mesh).
+		// missing replacement is preferable to a corrupted mesh). Remember
+		// the miss so repeated binds of the same VA skip the resolve chain.
+		tls.generation = generation;
+		tls.viewGpuVa = viewGpuVa;
+		tls.originalResource = nullptr;
+		if (tls.vertexResource) {
+			tls.vertexResource->Release();
+			tls.vertexResource = nullptr;
+		}
 		return false;
 	}
 
-	const UINT64 generation = InterlockedCompareExchange64(
-		&gPreSkinOutputResizeCacheGeneration, 0, 0);
-	TlsPreSkinResizeResolve &tls = tlsPreSkinResizeResolve;
 	if (tls.generation == generation && tls.viewGpuVa == viewGpuVa &&
 	    tls.originalResource == currentOwner) {
 		if (tls.vertexResource) {
@@ -6038,6 +6059,38 @@ DX12PreSkinOutputResizeEntry *FindPreSkinOutputResizeEntryLocked(
 }
 
 
+// Rate-limited probe for the pre-skin output-resize resolve chain: splits
+// identity lookup / publish-map find / cache-fallback so the ~150-400us
+// per-slot "resolve_miss" can be pinned to one step. Slow calls log
+// unconditionally (they are rare; a 1/N sampler is starved by the fast
+// per-slot calls and never samples them). TIMING-build only.
+static void LogResolveStepProbe(
+	const char *stage, LONG64 identityUs, LONG64 mapsUs,
+	LONG64 cacheUs, bool result, UINT64 viewGpuVa)
+{
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+	static volatile LONG resolveProbeCounter = 0;
+	const LONG64 totalUs = identityUs + mapsUs + cacheUs;
+	if (totalUs >= 50 || (InterlockedIncrement(&resolveProbeCounter) & 0xFF) == 1) {
+		DX12LogManager::Fields("DX12ResolveProbe",
+			"stage=%s,identityUs=%lld,mapsUs=%lld,cacheUs=%lld,result=%u,va=0x%llx",
+			stage ? stage : "",
+			static_cast<long long>(identityUs),
+			static_cast<long long>(mapsUs),
+			static_cast<long long>(cacheUs),
+			result ? 1u : 0u,
+			static_cast<unsigned long long>(viewGpuVa));
+	}
+#else
+	(void)stage;
+	(void)identityUs;
+	(void)mapsUs;
+	(void)cacheUs;
+	(void)result;
+	(void)viewGpuVa;
+#endif
+}
+
 bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	ID3D12GraphicsCommandList *commandList,
 	UINT64 viewGpuVa, DX12PreSkinOutputResizeBinding *binding)
@@ -6045,8 +6098,11 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	if (!viewGpuVa || !binding)
 		return false;
 	binding->Clear();
+	LARGE_INTEGER resolveStepBegin = DX12OuterTimingProbeUtils::Now();
 	IUnknown *commandListIdentity =
 		PreSkinOutputResizeCommandListIdentity(commandList);
+	const LONG64 resolveIdentityUs = DX12OuterTimingProbeUtils::ElapsedUs(resolveStepBegin);
+	resolveStepBegin = DX12OuterTimingProbeUtils::Now();
 	AcquireSRWLockShared(&gPreSkinOutputResizeLock);
 	DX12PreSkinOutputResizeEntry *entry = nullptr;
 	UINT64 sourceOffset = 0;
@@ -6060,15 +6116,24 @@ bool DX12ModResolvePreSkinOutputResizeByGpuVa(
 	if (!entry)
 		entry = FindPreSkinOutputResizeEntryLocked(
 			&gPreSkinOutputResizeMap, viewGpuVa, &sourceOffset);
+	const LONG64 resolveMapsUs = DX12OuterTimingProbeUtils::ElapsedUs(resolveStepBegin);
 	if (!entry || !entry->resizedResource || sourceOffset >= entry->resizedByteWidth) {
 		ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
 		// A miss is expected when Present/FG occurs between producer and consumer
 		// recording. Do not turn this into an immediate failure or republish a raw
 		// GPU VA globally; resolve through the cache that owns both COM lifetime and
 		// queue-fence completion for the stable replacement resource.
-		return DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
+		resolveStepBegin = DX12OuterTimingProbeUtils::Now();
+		const bool cacheResult = DX12ModResolvePreSkinOutputResizeCacheByGpuVa(
 			commandList, viewGpuVa, binding);
+		LogResolveStepProbe(
+			"miss", resolveIdentityUs, resolveMapsUs,
+			DX12OuterTimingProbeUtils::ElapsedUs(resolveStepBegin), cacheResult,
+			viewGpuVa);
+		return cacheResult;
 	}
+	LogResolveStepProbe(
+		"hit", resolveIdentityUs, resolveMapsUs, 0, true, viewGpuVa);
 	entry->resizedResource->AddRef();
 	binding->resizedResource = entry->resizedResource;
 	binding->retainedResource = true;

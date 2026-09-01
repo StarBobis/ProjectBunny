@@ -108,9 +108,20 @@ static bool SearchBackwardForCoveringBuffer(
 	if (!summary)
 		return false;
 
+	// The covering buffer of an interior VA is always the nearest predecessor
+	// (D3D12 allocations are disjoint, so no other buffer's begin can lie
+	// between it and the query). The walk therefore only runs long for VAs
+	// that are inside NO tracked buffer (mod-owned resources created outside
+	// the tracker, freed VAs, ...) - and for those it used to traverse the
+	// entire map under the lock: thousands of pointer-chasing probes, 300-800
+	// microseconds per pre-skin slot resolve in ZZZ. Bound the miss walk.
+	constexpr UINT kMaxResolveBackwardProbes = 64;
 	for (IteratorT it = current;;) {
-		if (probes)
+		if (probes) {
+			if (*probes >= kMaxResolveBackwardProbes)
+				break;
 			(*probes)++;
+		}
 		if (it->second < gResources.size()) {
 			const ResourceRecord &resource = gResources[it->second];
 			if (DX12BufferResolveRangeUtils::TryResolveSummaryFromResourceRecord(
@@ -217,8 +228,14 @@ bool DX12ResolveBufferResourceByGpuVa(
 	if (!resolved) {
 		AcquireSRWLockShared(&gResourceLock);
 		// Safety net for resources created before hook activation or temporarily
-		// absent from the synchronous normal-Mod index.
-		for (size_t i = 0; i < gResources.size(); ++i) {
+		// absent from the synchronous normal-Mod index. The scan is O(n) under
+		// the lock; bound it because games with heavy per-frame buffer churn
+		// (ring rotation) pay a full-array scan per untracked VA resolve -
+		// measured at 50-500us per pre-skin slot in ZZZ with zero hits, since
+		// the pre-hook resources are exactly the oldest entries (front).
+		const size_t scanLimit =
+			std::min<size_t>(gResources.size(), 512);
+		for (size_t i = 0; i < scanLimit; ++i) {
 			const ResourceRecord &resource = gResources[i];
 			if (!resource.resource)
 				continue;

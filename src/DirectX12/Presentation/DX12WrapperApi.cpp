@@ -1,4 +1,4 @@
-﻿// DX12WrapperApi: DX12Wrapper namespace wrap/unwrap entry points and global forwarding functions.
+// DX12WrapperApi: DX12Wrapper namespace wrap/unwrap entry points and global forwarding functions.
 // Split from DX12Wrapper.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -366,14 +366,9 @@ static ResourceWrapper *FindWrapperCoveringGpuVaInShard(
 {
 	if (!gpuVa)
 		return nullptr;
-	GpuVaWrapperEntry key{gpuVa, nullptr, nullptr, 0};
-	auto it = std::lower_bound(
-		shard.wrappers.begin(), shard.wrappers.end(), key,
-		[](const GpuVaWrapperEntry &a, const GpuVaWrapperEntry &b) {
-			return a.gpuVa < b.gpuVa;
-		});
+	auto it = shard.wrappers.lower_bound(gpuVa);
 	if (it != shard.wrappers.begin() &&
-		(it == shard.wrappers.end() || it->gpuVa > gpuVa))
+		(it == shard.wrappers.end() || it->first > gpuVa))
 		--it;
 	// VA reuse: a released resource's VA can be reused by a newer resource
 	// while the released wrapper is still registered.  IA hashes cached on
@@ -383,17 +378,17 @@ static ResourceWrapper *FindWrapperCoveringGpuVaInShard(
 	// that owns the current resource at this VA.
 	ResourceWrapper *best = nullptr;
 	UINT64 bestSerial = 0;
-	for (; it != shard.wrappers.end() && it->gpuVa <= gpuVa; ++it) {
-		const ResourceRecord *rec = it->record;
+	for (; it != shard.wrappers.end() && it->first <= gpuVa; ++it) {
+		const ResourceRecord *rec = it->second.record;
 		if (!rec || !rec->resource)
 			continue;
 		if (rec->desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
 			continue;
 		const UINT64 end = rec->gpuVirtualAddressRealEnd;
 		if (end > rec->gpuVirtualAddress && gpuVa < end &&
-		    it->serial >= bestSerial) {
-			best = static_cast<ResourceWrapper*>(it->wrapper);
-			bestSerial = it->serial;
+		    it->second.serial >= bestSerial) {
+			best = static_cast<ResourceWrapper*>(it->second.wrapper);
+			bestSerial = it->second.serial;
 		}
 	}
 	return best;
