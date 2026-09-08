@@ -9,6 +9,7 @@
 
 #include "DirectX12/DX12Runtime.h"
 #include "MigotoCommandVmUtils.hpp"
+#include "vkeys.h"
 
 namespace Bunny {
 
@@ -53,9 +54,15 @@ public:
 		std::wstring keyText;
 		BindingType type = BindingType::Activate;
 		KeyCombination key;
+		// Optional reverse ("back =") key combination. Mirrors the DX11
+		// semantics: it is only registered/used for type=cycle bindings,
+		// where a press steps the cycle backwards.
+		KeyCombination back;
+		bool hasBack = false;
 		std::vector<VariableValues> variables;
 		std::vector<std::wstring> runCommandLists;
 		bool wasDown = false;
+		bool wasBackDown = false;
 		bool active = false;
 		size_t cycleIndex = static_cast<size_t>(-1);
 	};
@@ -94,6 +101,15 @@ public:
 					ParseKeyCombination(value, &binding.key);
 					continue;
 				}
+				// "back = <combination>" supplies the reverse cycle key.
+				// It is stored unconditionally; ProcessBindings only makes
+				// use of it for type=cycle (DX11 behaviour), and a binding
+				// is kept if either combination resolved to a real key.
+				if (key == L"back") {
+					ParseKeyCombination(value, &binding.back);
+					binding.hasBack = true;
+					continue;
+				}
 				if (key == L"type") {
 					binding.type = ParseBindingType(value);
 					continue;
@@ -119,7 +135,8 @@ public:
 				}
 			}
 
-			if (binding.key.primaryVk)
+			if (binding.key.primaryVk ||
+			    (binding.hasBack && binding.back.primaryVk))
 				bindings->push_back(binding);
 		}
 	}
@@ -135,10 +152,20 @@ public:
 			const bool released = !down && binding.wasDown;
 			binding.wasDown = down;
 
+			const bool backDown = binding.hasBack && IsCombinationDown(binding.back);
+			const bool backPressed = backDown && !binding.wasBackDown;
+			binding.wasBackDown = backDown;
+
 			switch (binding.type) {
 			case BindingType::Cycle:
+				// The forward ("key =") and reverse ("back =")
+				// combinations both step the same cycle; reverse is only
+				// honoured for cycle bindings (matches DX11, where "back"
+				// keys are registered solely for KeyOverrideCycleBack).
 				if (pressed && ConditionActive(binding))
-					ActivateCycle(&binding, actions);
+					ActivateCycle(&binding, actions, 1);
+				if (binding.hasBack && backPressed && ConditionActive(binding))
+					ActivateCycle(&binding, actions, -1);
 				break;
 			case BindingType::Hold:
 				if (pressed && ConditionActive(binding))
@@ -269,79 +296,14 @@ public:
 		std::wstring key = token;
 		if (key.rfind(L"vk_", 0) == 0)
 			key = key.substr(3);
-		if (key.size() == 1) {
-			wchar_t ch = key[0];
-			if (ch >= L'a' && ch <= L'z')
-				return static_cast<int>(std::towupper(ch));
-			if (ch >= L'0' && ch <= L'9')
-				return static_cast<int>(ch);
-			if (ch == L'/')
-				return VK_OEM_2;
-			if (ch == L'\\')
-				return VK_OEM_5;
-			if (ch == L'.')
-				return VK_OEM_PERIOD;
-			if (ch == L',')
-				return VK_OEM_COMMA;
-			if (ch == L';')
-				return VK_OEM_1;
-			if (ch == L'\'')
-				return VK_OEM_7;
-			if (ch == L'[')
-				return VK_OEM_4;
-			if (ch == L']')
-				return VK_OEM_6;
-			if (ch == L'-')
-				return VK_OEM_MINUS;
-			if (ch == L'=')
-				return VK_OEM_PLUS;
-			if (ch == L'`')
-				return VK_OEM_3;
-		}
-
-		if (key.size() >= 2 && key[0] == L'f') {
-			int number = ParsePositiveInt(key.substr(1));
-			if (number >= 1 && number <= 24)
-				return VK_F1 + number - 1;
-		}
-
-		if (key == L"lbutton")
-			return VK_LBUTTON;
-		if (key == L"rbutton")
-			return VK_RBUTTON;
-		if (key == L"mbutton")
-			return VK_MBUTTON;
-		if (key == L"up")
-			return VK_UP;
-		if (key == L"down")
-			return VK_DOWN;
-		if (key == L"left")
-			return VK_LEFT;
-		if (key == L"right")
-			return VK_RIGHT;
-		if (key == L"space")
-			return VK_SPACE;
-		if (key == L"return" || key == L"enter")
-			return VK_RETURN;
-		if (key == L"escape" || key == L"esc")
+		// Legacy short alias not present in the shared VKMappings table:
+		if (key == L"esc")
 			return VK_ESCAPE;
-		if (key == L"tab")
-			return VK_TAB;
-		if (key == L"back")
-			return VK_BACK;
-		if (key == L"home")
-			return VK_HOME;
-		if (key == L"end")
-			return VK_END;
-		if (key == L"prior" || key == L"pageup")
-			return VK_PRIOR;
-		if (key == L"next" || key == L"pagedown")
-			return VK_NEXT;
-		if (key == L"insert")
-			return VK_INSERT;
-		if (key == L"delete")
-			return VK_DELETE;
-		return 0;
+		// Shared DX11/DX12 virtual key table (common/vkeys.h): full
+		// VK_* names (OEM keys included), single characters, 0x-hex codes,
+		// F1-F24, mouse/navigation aliases, etc.
+		const int vk = ParseVKey(key.c_str());
+		return vk < 0 ? 0 : vk;
 	}
 
 	static bool IsCombinationDown(const KeyCombination &combo)
@@ -403,7 +365,12 @@ public:
 		binding->active = false;
 	}
 
-	static void ActivateCycle(Binding *binding, std::vector<RuntimeAction> *actions)
+	// Steps the cycle by one. direction > 0 walks forward (the "key ="
+	// combination), direction < 0 walks backward (the "back =" combination).
+	// Stepping is wrap-around and re-syncs to the current variable values
+	// first, which matches the DX11 defaults (smart=true, wrap=true).
+	static void ActivateCycle(
+		Binding *binding, std::vector<RuntimeAction> *actions, int direction)
 	{
 		if (!binding || !actions)
 			return;
@@ -411,9 +378,16 @@ public:
 		if (!count)
 			return;
 		const size_t matched = FindCurrentCycleIndex(*binding, count);
-		const size_t next = matched == static_cast<size_t>(-1)
-			? ((binding->cycleIndex == static_cast<size_t>(-1)) ? 0 : ((binding->cycleIndex + 1) % count))
-			: ((matched + 1) % count);
+		size_t next;
+		if (direction > 0) {
+			next = matched == static_cast<size_t>(-1)
+				? ((binding->cycleIndex == static_cast<size_t>(-1)) ? 0 : ((binding->cycleIndex + 1) % count))
+				: ((matched + 1) % count);
+		} else {
+			next = matched == static_cast<size_t>(-1)
+				? ((binding->cycleIndex == static_cast<size_t>(-1)) ? count - 1 : ((binding->cycleIndex + count - 1) % count))
+				: ((matched + count - 1) % count);
+		}
 		binding->cycleIndex = next;
 		ApplyVariables(binding, next);
 		AppendRunAction(*binding, next, true, actions);
@@ -513,19 +487,6 @@ public:
 	static bool IsSpace(wchar_t ch)
 	{
 		return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
-	}
-
-	static int ParsePositiveInt(const std::wstring &text)
-	{
-		if (text.empty())
-			return 0;
-		int value = 0;
-		for (wchar_t ch : text) {
-			if (ch < L'0' || ch > L'9')
-				return 0;
-			value = value * 10 + static_cast<int>(ch - L'0');
-		}
-		return value;
 	}
 };
 

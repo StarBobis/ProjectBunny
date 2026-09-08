@@ -21,6 +21,12 @@ public:
 	public:
 		inline static std::mutex globalsMutex;
 		inline static std::unordered_map<std::wstring, double> globals;
+		// Values of variables declared with the "persist" prefix, captured
+		// just before a reload wipes globals and replayed after the
+		// [Constants] section re-runs. Mirrors the DX11 reload semantics
+		// (full d3dx_user.ini persistence is DX11-only); guarded by
+		// globalsMutex.
+		inline static std::unordered_map<std::wstring, double> persistSnapshot;
 		// Set once a command-list expression references any per-frame variable
 		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
 		// these lazily at match time; DX12 pre-collects them at Present, so
@@ -457,6 +463,32 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		VariableStore::globals[NormalizeVariableName(name)] = value;
+	}
+
+	// Captures the current values of the given persist-declared variables
+	// (normalized names, e.g. "$top") so they survive a reload. Names that
+	// do not currently exist in the global table are dropped, which keeps
+	// first-load defaults from the [Constants] replay intact.
+	static void SavePersistSnapshot(const std::vector<std::wstring> &names)
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		VariableStore::persistSnapshot.clear();
+		for (const std::wstring &name : names) {
+			const std::wstring normalized = NormalizeVariableName(name);
+			auto found = VariableStore::globals.find(normalized);
+			if (found != VariableStore::globals.end())
+				VariableStore::persistSnapshot[normalized] = found->second;
+		}
+	}
+
+	// Writes the captured persist values back into the global table. Must be
+	// called after the [Constants] defaults have been replayed so that
+	// runtime-modified persist values win over the ini defaults.
+	static void RestorePersistSnapshot()
+	{
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		for (const auto &entry : VariableStore::persistSnapshot)
+			VariableStore::globals[entry.first] = entry.second;
 	}
 
 	static void SetGlobals(std::initializer_list<std::pair<const wchar_t *, double>> values)

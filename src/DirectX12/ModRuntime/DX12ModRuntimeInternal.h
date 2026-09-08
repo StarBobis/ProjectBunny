@@ -2481,8 +2481,20 @@ class DX12ConstantsVmInitializerUtils
 public:
 	static void Initialize(const Bunny::CommandListMap &commandLists)
 	{
-		MigotoCommandVmUtils::ClearGlobals();
+		// Persist semantics: variables declared with a "persist" prefix in
+		// [Constants] keep their runtime-modified values across a reload.
+		// Values are snapshotted from the live global table before
+		// ClearGlobals() (the table still holds the previous generation's
+		// runtime state at this point), then replayed after the [Constants]
+		// defaults so the persisted value wins over the ini default - the
+		// same outcome DX11 gets from its d3dx_user.ini persistence.
+		std::vector<std::wstring> persistNames;
 		const Bunny::CommandListConfig *constants = FindConstants(commandLists);
+		if (constants)
+			CollectTopLevelPersistNames(constants, &persistNames);
+		MigotoCommandVmUtils::SavePersistSnapshot(persistNames);
+
+		MigotoCommandVmUtils::ClearGlobals();
 		if (!constants)
 			return;
 
@@ -2491,6 +2503,8 @@ public:
 		for (const Bunny::CommandListAction &action : constants->actions)
 			ApplyAction(&state, action);
 		state.PopLocalScope();
+
+		MigotoCommandVmUtils::RestorePersistSnapshot();
 	}
 
 	static const Bunny::CommandListConfig *FindConstants(
@@ -2501,6 +2515,41 @@ public:
 				return &item.second;
 		}
 		return nullptr;
+	}
+
+	// Collects the variable names of persist declarations that appear at the
+	// top level of the [Constants] section (not inside if/else blocks: those
+	// declarations may not be replayed on the next load, so persisting them
+	// would resurrect values the config no longer assigns).
+	static void CollectTopLevelPersistNames(
+		const Bunny::CommandListConfig *constants, std::vector<std::wstring> *out)
+	{
+		if (!constants || !out)
+			return;
+		int branchDepth = 0;
+		for (const Bunny::CommandListAction &action : constants->actions) {
+			if (action.kind == Bunny::CommandListActionKind::ControlFlow) {
+				const std::wstring line = Bunny::IniDocumentText::ToLower(
+					Bunny::IniDocumentText::Trim(
+						action.rawLine.empty() ? action.key : action.rawLine));
+				if (line.rfind(L"if ", 0) == 0)
+					++branchDepth;
+				else if (line == L"endif" && branchDepth > 0)
+					--branchDepth;
+				continue;
+			}
+			if (branchDepth != 0 ||
+			    action.kind != Bunny::CommandListActionKind::VariableAssignment)
+				continue;
+			const std::wstring key = Bunny::IniDocumentText::ToLower(
+				Bunny::IniDocumentText::Trim(action.key));
+			if (key.rfind(L"global persist $", 0) != 0 &&
+			    key.rfind(L"persist $", 0) != 0)
+				continue;
+			const std::wstring name = MigotoCommandVmUtils::ExtractVariableName(key);
+			if (!name.empty())
+				out->push_back(name);
+		}
 	}
 
 	static void ApplyAction(

@@ -1,10 +1,11 @@
 #pragma once
 
 #include <string>
-#include "util.h"
+#include <wchar.h>
+#include "util_min.h"
 
 // http://msdn.microsoft.com/en-us/library/windows/desktop/dd375731(v=vs.85).aspx
-static EnumName_t<wchar_t *, int> VKMappings[] = {
+static EnumName_t<const wchar_t *, int> VKMappings[] = {
 	{L"LBUTTON", 0x01},
 	{L"RBUTTON", 0x02},
 	{L"CANCEL", 0x03},
@@ -169,8 +170,6 @@ static EnumName_t<wchar_t *, int> VKMappings[] = {
 
 static int ParseVKey(const wchar_t *name)
 {
-	int i;
-
 	if (wcslen(name) == 1) {
 		wchar_t c = towupper(name[0]);
 		if ((c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'Z'))
@@ -186,7 +185,8 @@ static int ParseVKey(const wchar_t *name)
 	if (!_wcsnicmp(name, L"VK_", 3))
 		name += 3;
 
-	for (i = 0; i < ARRAYSIZE(VKMappings); i++) {
+	const size_t mappingCount = sizeof(VKMappings) / sizeof(VKMappings[0]);
+	for (size_t i = 0; i < mappingCount; i++) {
 		if (!_wcsicmp(name, VKMappings[i].name))
 			return VKMappings[i].val;
 	}
@@ -196,9 +196,10 @@ static int ParseVKey(const wchar_t *name)
 
 // Reverse lookup of key back to string name
 
-static wstring GetKeyName(int key)
+static std::wstring GetKeyName(int key)
 {
-	for (int i = 0; i < ARRAYSIZE(VKMappings); i++) {
+	const size_t mappingCount = sizeof(VKMappings) / sizeof(VKMappings[0]);
+	for (size_t i = 0; i < mappingCount; i++) {
 		if (VKMappings[i].val == key) {
 			return (VKMappings[i].name);
 		}
