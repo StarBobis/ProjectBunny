@@ -3133,7 +3133,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	DX12PreSkinDispatchOverride *dispatchOverride,
 	ID3D12Device *cachedDevice,
 	UINT64 bindingFingerprint,
-	UINT64 bindingDependencyFingerprint);
+	UINT64 bindingDependencyFingerprint,
+	bool *matchPhaseMiss);
 
 
 

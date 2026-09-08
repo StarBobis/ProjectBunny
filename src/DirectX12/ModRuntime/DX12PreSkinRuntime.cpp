@@ -3293,6 +3293,34 @@ bool TryLoadPreSkinStickyMatch(
 }
 
 
+// Lock-free prefix of TryLoadPreSkinStickyMatch: true only when a sticky
+// entry could pass the cheap checks (occupied, reload generation, CS hash,
+// UAV key, freshness). The geometry-keyed negative cache is honored only
+// when this returns false, so a cached negative can never suppress a
+// sticky-driven positive; the candidate validation itself stays under the
+// mod lock in TryLoadPreSkinStickyMatch. A false positive here only costs
+// one conservative full probe.
+bool MayMatchPreSkinStickyMatch(
+	uint64_t csHash,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs)
+{
+	const UINT64 uavKey = MakePreSkinStickyMatchUavKey(uavs);
+	if (!uavKey)
+		return false;
+	DX12PreSkinStickyMatchEntry &entry =
+		gPreSkinStickyMatch[PreSkinStickyMatchSlot(csHash, uavKey)];
+	if (InterlockedCompareExchange(&entry.occupied, 0, 0) == 0)
+		return false;
+	if (entry.reloadGeneration != DX12ModGetReloadGenerationFast() ||
+		entry.csHash != csHash || entry.uavKey != uavKey)
+		return false;
+	if (DX12RuntimeState::GetPresentCount() - entry.present >
+		kPreSkinStickyMatchFrames)
+		return false;
+	return true;
+}
+
+
 bool FindPreSkinProducerByMatchCsLocked(
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
@@ -4660,7 +4688,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	DX12PreSkinDispatchOverride *dispatchOverride,
 	ID3D12Device *cachedDevice,
 	UINT64 bindingFingerprint,
-	UINT64 bindingDependencyFingerprint)
+	UINT64 bindingDependencyFingerprint,
+	bool *matchPhaseMiss)
 {
 	if (originalVertexCount)
 		*originalVertexCount = 0;
@@ -4668,6 +4697,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		*overrideVertexCount = 0;
 	if (dispatchOverride)
 		*dispatchOverride = DX12PreSkinDispatchOverride();
+	if (matchPhaseMiss)
+		*matchPhaseMiss = false;
 	if (!commandList || !DX12ModHasActiveTextureOverrides())
 		return false;
 
@@ -4836,6 +4867,13 @@ bool DX12ModApplyPreSkinningUavReplacement(
 		0,
 		uavs.size() + srvs.size() + cbvs.size(),
 		DX12OuterTimingProbeUtils::ElapsedUs(matchBegin));
+	// A pure match-phase miss depends only on the inputs the match observes
+	// (reload/sticky generation, CS hash, live SRV view hashes, live UAV
+	// identities), so the caller may cache it on a geometry key. A positive
+	// that later fails its descriptor patch is content-dependent and must
+	// keep flowing through the full probe every time.
+	if (matchPhaseMiss)
+		*matchPhaseMiss = !hashMatched && !vlrMatched;
 
 	if (hashMatched)
 	{
@@ -5705,6 +5743,108 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	}
 	ReleaseSRWLockShared(&gPreSkinUavMatchCacheLock);
 	return false;
+}
+
+
+// ---------------------------------------------------------------------------
+// Geometry-keyed negative match verdict cache.
+//
+// The match phase (fresh match_cs SRV view-hash compare, sticky probe, VLR
+// producer scan) is a pure function of the reload generation, the CS hash,
+// the live SRV view hashes and the live UAV identities. The legacy verdict
+// caches additionally key on descriptor-ring generations and the global
+// buffer-content generation, which the game invalidates with every
+// descriptor rewrite / buffer copy, so they can never hit across frames.
+// Keying strictly on the inputs the match observes lets the repeated
+// non-matching dispatches (every non-modded character sharing the skinning
+// CS) skip the fingerprint build, the legacy lookups and the apply/store
+// round trip. The sticky probe is the only match input not folded into the
+// key, so callers must gate a hit on MayMatchPreSkinStickyMatch returning
+// false. Only match-phase misses are stored; a positive that fails its
+// descriptor patch is content-dependent and always re-probed.
+// ---------------------------------------------------------------------------
+static SRWLOCK gPreSkinNegativeMatchLock = SRWLOCK_INIT;
+static std::unordered_set<uint64_t> gPreSkinNegativeMatchKeys;
+static constexpr size_t kPreSkinNegativeMatchMaxKeys = 4096;
+
+uint64_t DX12ModMakePreSkinNegativeMatchKey(
+	uint64_t computeShaderHash,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs,
+	const std::vector<DX12CurrentComputeUavBinding> &srvs)
+{
+	if (!computeShaderHash)
+		return 0;
+	static thread_local std::vector<uint64_t> srvHashes;
+	srvHashes.clear();
+	if (srvHashes.capacity() < srvs.size())
+		srvHashes.reserve(srvs.size());
+	// Exactly the fresh-match inputs: FindComputeSrvByRegister only considers
+	// buffer SRVs at a shader register and only compares the view-geometry
+	// hash, so nothing else may enter the key (volatile extras - source
+	// offset, ring location - would just fragment it). Sorted so table
+	// iteration order cannot fragment the key.
+	for (const DX12CurrentComputeUavBinding &srv : srvs) {
+		if (!srv.hasDescriptor || srv.descriptor.kind != "SRV" ||
+			srv.descriptor.viewDimension != D3D12_SRV_DIMENSION_BUFFER)
+			continue;
+		uint64_t bindingHash = 0x517cc1b727220a95ull;
+		bindingHash = HashCombine64(bindingHash, srv.shaderRegister);
+		bindingHash = HashCombine64(bindingHash, HashComputeBufferBinding(srv));
+		srvHashes.push_back(bindingHash);
+	}
+	std::sort(srvHashes.begin(), srvHashes.end());
+	uint64_t key = 0x6a09e667f3bcc909ull;
+	key = HashCombine64(key, DX12ModGetReloadGenerationFast());
+	key = HashCombine64(key, computeShaderHash);
+	key = HashCombine64(key, srvHashes.size());
+	for (uint64_t bindingHash : srvHashes)
+		key = HashCombine64(key, bindingHash);
+	// UAV identity: the sticky key fields plus the candidacy bits the match
+	// and VLR scans read. Ring addresses only contribute their zero-ness;
+	// HashComputeBufferBinding covers the view shape.
+	for (const DX12CurrentComputeUavBinding &uav : uavs) {
+		key = HashCombine64(key, uav.rootParameterIndex);
+		key = HashCombine64(key, uav.rangeIndex);
+		key = HashCombine64(key, uav.shaderRegister);
+		key = HashCombine64(key, uav.registerSpace);
+		key = HashCombine64(key, uav.descriptorOffset);
+		key = HashCombine64(key, uav.rootDescriptor ? 1 : 0);
+		key = HashCombine64(key, uav.hasDescriptor ? 1 : 0);
+		key = HashCombine64(key, HashComputeBufferBinding(uav));
+		key = HashCombine64(key, uav.descriptorIncrement ? 1 : 0);
+		key = HashCombine64(key, uav.tableCpuStart ? 1 : 0);
+		key = HashCombine64(key, uav.tableGpuStart.ptr ? 1 : 0);
+		key = HashCombine64(key,
+			reinterpret_cast<uintptr_t>(uav.descriptor.resource));
+	}
+	if (!key)
+		key = 1;
+	return key;
+}
+
+bool DX12ModTestPreSkinNegativeMatch(uint64_t key)
+{
+	if (!key)
+		return false;
+	AcquireSRWLockShared(&gPreSkinNegativeMatchLock);
+	const bool found =
+		gPreSkinNegativeMatchKeys.find(key) != gPreSkinNegativeMatchKeys.end();
+	ReleaseSRWLockShared(&gPreSkinNegativeMatchLock);
+	return found;
+}
+
+void DX12ModStorePreSkinNegativeMatch(uint64_t key)
+{
+	if (!key)
+		return;
+	AcquireSRWLockExclusive(&gPreSkinNegativeMatchLock);
+	// Stale entries are unreachable anyway (the key carries the reload and
+	// sticky generations), so a full cache simply starts over.
+	if (gPreSkinNegativeMatchKeys.size() >= kPreSkinNegativeMatchMaxKeys &&
+		gPreSkinNegativeMatchKeys.find(key) == gPreSkinNegativeMatchKeys.end())
+		gPreSkinNegativeMatchKeys.clear();
+	gPreSkinNegativeMatchKeys.insert(key);
+	ReleaseSRWLockExclusive(&gPreSkinNegativeMatchLock);
 }
 
 

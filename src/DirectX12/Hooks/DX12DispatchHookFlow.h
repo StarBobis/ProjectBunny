@@ -829,6 +829,36 @@ public:
 		probe->cbvsFound = !cbvs.empty();
 		probe->rootConstantsFound = !rootConstants.empty();
 
+		// Geometry-keyed negative verdicts: the match phase observes only the
+		// CS hash, the reload generation, the live SRV view hashes and the
+		// live UAV identities - none of the ring-location or buffer-content
+		// generations that keep the legacy verdict caches below from ever
+		// hitting across frames. Repeated non-matching dispatches (every
+		// non-modded character sharing the skinning CS) skip the fingerprint
+		// build, the legacy lookups and the apply/store round trip entirely.
+		// The only match input outside the key is the sticky-match slot, so a
+		// hit is honored only when no sticky entry could drive a positive.
+		const UINT64 negativeMatchKey = DX12ModMakePreSkinNegativeMatchKey(
+			probe->computeShaderHash, uavs, srvs);
+		bool matchPhaseMiss = false;
+		if (negativeMatchKey &&
+			!MayMatchPreSkinStickyMatch(probe->computeShaderHash, uavs) &&
+			DX12ModTestPreSkinNegativeMatch(negativeMatchKey)) {
+			probe->applied = false;
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
+			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
+			DX12OuterTimingProbeUtils::LogCpuStage(
+				"PreSkin", "probe_cache_geometry_negative_hit", 0, 1,
+				DX12OuterTimingProbeUtils::ElapsedUs(t0));
+#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+			DX12LogManager::Fields("DX12Perf",
+				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit_geometry\",\"us\":%lld",
+				static_cast<unsigned long long>(probe->computeShaderHash),
+				static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
+#endif
+			return;
+		}
+
 		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
 		UINT64 computeIaFingerprint = 0;
 		if (templateStableBindingFingerprint) {
@@ -1054,20 +1084,9 @@ public:
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		probe->shouldLog = true;
 	#endif
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text("PreparePreSkinProbe: uavsFound=%d uavCount=%zu srvCount=%zu cbvCount=%zu\n",
-			probe->uavsFound ? 1 : 0, uavs.size(), srvs.size(), cbvs.size());
-
-		if (!probe->srvsFound) {
-			DX12LogManager::Text("PreparePreSkinProbe: warning no_compute_srvs\n");
-		}
-#endif
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text("PreparePreSkinProbe: calling DX12ModApplyPreSkinningUavReplacement\n");
-#endif
 		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
 		DX12_HOTPATH_TIME_BEGIN(PreSkinApply);
 		LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
@@ -1081,13 +1100,19 @@ public:
 			&probe->dispatchOverride,
 			runtimeState ? runtimeState->device : nullptr,
 			computeIaFingerprint,
-			probe ? probe->bindingDependencyFingerprint : 0);
+			probe ? probe->bindingDependencyFingerprint : 0,
+			&matchPhaseMiss);
 		DX12OuterTimingProbeUtils::LogCpuStage(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
 			0,
 			uavs.size() + srvs.size() + cbvs.size(),
 			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+		// Only match-phase misses go to the geometry cache: they depend solely
+		// on the inputs folded into negativeMatchKey. A positive that failed
+		// its descriptor patch is content-dependent and must keep re-probing.
+		if (matchPhaseMiss && negativeMatchKey)
+			DX12ModStorePreSkinNegativeMatch(negativeMatchKey);
 		if (positiveCacheHit && probe->applied && !probe->dispatchOverride.hasDispatch &&
 		    cachedDispatchOverride.hasDispatch) {
 			probe->dispatchOverride = cachedDispatchOverride;

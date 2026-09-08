@@ -176,6 +176,15 @@ bool DX12ModGetCachedPreSkinProbeResult(
 	UINT64 bindingHash,
 	UINT64 bindingDependencyFingerprint,
 	DX12PreSkinProbeCacheEntry *result);
+uint64_t DX12ModMakePreSkinNegativeMatchKey(
+	uint64_t computeShaderHash,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs,
+	const std::vector<DX12CurrentComputeUavBinding> &srvs);
+bool DX12ModTestPreSkinNegativeMatch(uint64_t key);
+void DX12ModStorePreSkinNegativeMatch(uint64_t key);
+bool MayMatchPreSkinStickyMatch(
+	uint64_t csHash,
+	const std::vector<DX12CurrentComputeUavBinding> &uavs);
 bool DX12ModApplyPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList,
 	uint64_t computeShaderHash,
@@ -188,7 +197,8 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	DX12PreSkinDispatchOverride *dispatchOverride = nullptr,
 	ID3D12Device *cachedDevice = nullptr,
 	UINT64 bindingFingerprint = 0,
-	UINT64 bindingDependencyFingerprint = 0);
+	UINT64 bindingDependencyFingerprint = 0,
+	bool *matchPhaseMiss = nullptr);
 bool DX12ModCanDeferPreSkinningUavReplacement(
 	ID3D12GraphicsCommandList *commandList);
 bool DX12ModHasActivePreSkinningUavReplacement();
