@@ -4454,6 +4454,101 @@ void FillPreSkinDispatchOverrideFromConfig(
 	}
 }
 
+
+// Runs the VM-level actions (control flow + variable assignments) of a
+// matched pre-skin TextureOverride section. DX11 executes the whole section
+// command list at match time, so mods publish per-frame state with plain
+// assignments such as "$active0 = 1" that [Key] conditions and draw command
+// lists then read. The DX12 pre-skin path consumed only handling=skip /
+// dispatch= / cs-tN and silently dropped these assignments, leaving every
+// key condition that depends on them permanently false.
+#if defined(DX12_RELEASE_TIMING)
+// TIMING-build trace: dump the post-match value of every variable the
+// matched pre-skin section assigns (e.g. "$active0 = 1") so the log shows
+// exactly when the "mesh is being replaced this frame" flag flips. Compiled
+// out of regular Release builds.
+static void TracePreSkinMatchVmValues(const Bunny::TextureOverrideConfig &config)
+{
+	std::vector<std::wstring> names;
+	names.reserve(8);
+	for (const Bunny::CommandListAction &action : config.actions) {
+		if (action.kind != Bunny::CommandListActionKind::VariableAssignment &&
+		    action.kind != Bunny::CommandListActionKind::PostVariableAssignment &&
+		    action.kind != Bunny::CommandListActionKind::LocalVariableAssignment)
+			continue;
+		const std::wstring name =
+			MigotoCommandVmUtils::ExtractVariableName(action.key);
+		if (name.empty() || names.size() >= 8)
+			continue;
+		bool already = false;
+		for (const std::wstring &existing : names) {
+			if (existing == name) {
+				already = true;
+				break;
+			}
+		}
+		if (!already)
+			names.push_back(name);
+	}
+	if (names.empty())
+		return;
+	char buffer[1024];
+	size_t used = 0;
+	buffer[0] = '\0';
+	MigotoCommandVmUtils::ExpressionContext context;
+	for (const std::wstring &name : names) {
+		const double value =
+			MigotoCommandVmUtils::LookupVariable(context, name);
+		const int written = snprintf(
+			buffer + used, sizeof(buffer) - used, "%s%ls=%g",
+			used ? " " : "", name.c_str(), value);
+		if (written <= 0)
+			break;
+		used += static_cast<size_t>(written);
+	}
+	if (used)
+		DX12LogManager::Fields("DX12PreSkinVmDiag",
+			"event=match_vm_values section=%S values=%s",
+			config.section.c_str(), buffer);
+}
+#endif
+
+void RunPreSkinMatchVmActions(
+	const Bunny::TextureOverrideConfig &config)
+{
+	MigotoCommandVmUtils::State state;
+	for (const Bunny::CommandListAction &action : config.actions)
+	{
+		switch (action.kind)
+		{
+		case Bunny::CommandListActionKind::ControlFlow:
+			state.ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
+			break;
+		case Bunny::CommandListActionKind::VariableAssignment:
+			if (state.Active())
+				state.Assign(action.key, action.value);
+			break;
+		case Bunny::CommandListActionKind::PostVariableAssignment:
+			if (state.Active())
+				state.QueuePostAssign(action.key, action.value);
+			break;
+		case Bunny::CommandListActionKind::LocalVariableAssignment:
+			if (state.Active())
+				state.DeclareLocal(action.key, action.value);
+			break;
+		default:
+			break;
+		}
+	}
+	// The section's dispatch is issued by the game immediately after the
+	// match, so queued post assignments flush here, mirroring DX11 running
+	// the post command list right after the API call returns.
+	state.FlushPostAssignments();
+#if defined(DX12_RELEASE_TIMING)
+	TracePreSkinMatchVmValues(config);
+#endif
+}
+
 bool ApplyPreSkinBindingPatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &binding, const DX12ComputeUavProducer &producer,
@@ -4877,6 +4972,12 @@ bool DX12ModApplyPreSkinningUavReplacement(
 
 	if (hashMatched)
 	{
+		// DX11 runs the matched section's command list at match time, which
+		// is how per-frame flags like "$active0 = 1" reach [Key] conditions.
+		// Replay the section's VM actions here so those conditions can ever
+		// become true; without this the cycle key is permanently dead.
+		if (hashMatch.config)
+			RunPreSkinMatchVmActions(*hashMatch.config);
 		// DX11 BeforeDispatch semantics: a match_cs command list runs
 		// unconditionally, so cs-tN replacements apply with or without an
 		// explicit handling=skip + dispatch= override. Gating the table patch

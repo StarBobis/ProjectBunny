@@ -1267,6 +1267,19 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
+#if defined(DX12_RELEASE_TIMING)
+	// TIMING-build trace: dump every registered hotkey binding so the log
+	// proves whether a binding was parsed and armed (key, modifiers, type,
+	// condition). Compiled out of regular Release builds.
+	for (const Bunny::MigotoKeyBindingUtils::Binding &binding : keyBindings) {
+		DX12LogManager::Fields("DX12KeyDiag",
+			"event=registered section=%S original=%S key=%S vk=%d type=%d conditionText=%S hasBack=%d vars=%zu",
+			binding.section.c_str(), binding.originalSection.c_str(),
+			binding.keyText.c_str(), binding.key.primaryVk,
+			static_cast<int>(binding.type), binding.condition.c_str(),
+			binding.hasBack ? 1 : 0, binding.variables.size());
+	}
+#endif
 	DX12ConstantsVmInitializerUtils::Initialize(commandLists);
 
 

@@ -3159,6 +3159,9 @@ void FillPreSkinDispatchOverrideFromConfig(
 	const Bunny::TextureOverrideConfig &config,
 	DX12PreSkinDispatchOverride *dispatchOverride);
 
+void RunPreSkinMatchVmActions(
+	const Bunny::TextureOverrideConfig &config);
+
 bool ApplyPreSkinBindingPatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &binding, const DX12ComputeUavProducer &producer,

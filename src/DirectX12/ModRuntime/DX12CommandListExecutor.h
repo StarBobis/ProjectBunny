@@ -607,6 +607,8 @@ public:
 					RunCommandListLinks(links, depth + 1, false, &match);
 				}
 			}
+			const size_t drawsBeforeAppend =
+				mReplacement ? mReplacement->draws.size() : 0;
 			RunTextureOverrideActions(*config, depth, includePost, &match);
 			if (mExecuteCommands) {
 				for (const std::wstring &list : config->commandLists.main) {
@@ -616,6 +618,26 @@ public:
 				}
 
 			}
+#if defined(DX12_RELEASE_TIMING)
+			// TIMING-build trace: log every replacement draw this dynamic
+			// (VM-executed) texture override appended, with the live
+			// $swapkey0 value, so "which mesh variant was actually replayed"
+			// is visible in d3d12_log.txt. Compiled out of Release builds.
+			if (mReplacement) {
+				MigotoCommandVmUtils::ExpressionContext context;
+				const double swapkey0 = MigotoCommandVmUtils::LookupVariable(
+					context, L"$swapkey0");
+				for (size_t i = drawsBeforeAppend;
+				     i < mReplacement->draws.size(); ++i) {
+					const DX12ModIaReplacement::DrawCall &draw =
+						mReplacement->draws[i];
+					DX12LogManager::Fields("DX12IaReplayDiag",
+						"event=append_draw section=%S indexed=%d count=%u start=%u base=%d swapkey0=%g",
+						config->section.c_str(), draw.indexed ? 1 : 0,
+						draw.count, draw.start, draw.baseVertex, swapkey0);
+				}
+			}
+#endif
 		}
 
 		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvBindings =

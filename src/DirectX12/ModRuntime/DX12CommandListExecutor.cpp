@@ -622,8 +622,61 @@ bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 }
 
 
+#if defined(DX12_RELEASE_TIMING)
+// TIMING-build key diagnostics: one line per hotkey press edge (with the
+// condition verdict) plus a frame-boundary snapshot of $active0/$swapkey0
+// whenever either changes, so hotkey gating questions are answerable from
+// d3d12_log.txt. Compiled out of regular Release builds.
+static void DX12KeyPressDiagSink(
+	const wchar_t *section, const wchar_t *keyText, int type,
+	const wchar_t *direction, const wchar_t *conditionText,
+	int conditionActive, const wchar_t *variablesState)
+{
+	DX12LogManager::Fields("DX12KeyDiag",
+		"event=press section=%S key=%S type=%d direction=%S conditionText=%S condition=%d vars=%S",
+		section ? section : L"", keyText ? keyText : L"", type,
+		direction ? direction : L"", conditionText ? conditionText : L"",
+		conditionActive, variablesState ? variablesState : L"");
+}
+
+static void DX12TraceFrameKeyVariables()
+{
+	static double lastActive0 = -1.0;
+	static double lastSwapkey0 = -1.0;
+	static LONG framesSinceLastTrace = 0;
+	MigotoCommandVmUtils::ExpressionContext context;
+	const double active0 =
+		MigotoCommandVmUtils::LookupVariable(context, L"$active0");
+	const double swapkey0 =
+		MigotoCommandVmUtils::LookupVariable(context, L"$swapkey0");
+	++framesSinceLastTrace;
+	// Log when either value changes or roughly every 4 seconds so steady
+	// states stay visible in the log.
+	if (active0 == lastActive0 && swapkey0 == lastSwapkey0 &&
+	    framesSinceLastTrace < 240)
+		return;
+	framesSinceLastTrace = 0;
+	lastActive0 = active0;
+	lastSwapkey0 = swapkey0;
+	DX12LogManager::Fields("DX12KeyDiag",
+		"event=frame_vars active0=%g swapkey0=%g", active0, swapkey0);
+}
+#endif
+
+
 void ProcessDx12KeyBindingsForFrame()
 {
+#if defined(DX12_RELEASE_TIMING)
+	// Register the key diagnostics sink lazily on the first frame so it is
+	// armed after the log file is already open.
+	{
+		static const bool registered = []() {
+			Bunny::MigotoKeyBindingUtils::SetKeyPressSink(DX12KeyPressDiagSink);
+			return true;
+		}();
+		(void)registered;
+	}
+#endif
 	std::vector<Bunny::MigotoKeyBindingUtils::RuntimeAction> actions;
 	// Key processing is best-effort input handling; it must never block the
 	// frame boundary on the global mod lock while recording threads take
@@ -638,6 +691,9 @@ void ProcessDx12KeyBindingsForFrame()
 
 	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
 		RunNamedCommandListVmOnly(action.commandList, action.includePost);
+#if defined(DX12_RELEASE_TIMING)
+	DX12TraceFrameKeyVariables();
+#endif
 }
 
 

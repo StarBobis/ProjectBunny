@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cwctype>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,21 @@ public:
 		std::wstring commandList;
 		bool includePost = false;
 	};
+
+	// Optional per-press diagnostic sink. Registered by the DX12 runtime in
+	// diagnostic (TIMING) builds so that hotkey edges, condition gating and
+	// the resulting variable state can be traced from d3d12_log.txt. A null
+	// sink keeps production overhead at exactly zero.
+	using KeyPressSink = void (*)(
+		const wchar_t *section, const wchar_t *keyText, int type,
+		const wchar_t *direction, const wchar_t *conditionText,
+		int conditionActive, const wchar_t *variablesState);
+	inline static KeyPressSink g_keyPressSink = nullptr;
+
+	static void SetKeyPressSink(KeyPressSink sink)
+	{
+		g_keyPressSink = sink;
+	}
 
 	static void ParseSections(const IniDocument &ini, std::vector<Binding> *bindings)
 	{
@@ -186,6 +202,17 @@ public:
 				if (pressed && ConditionActive(binding))
 					ActivateBinding(&binding, actions, false, true);
 				break;
+			}
+
+			// Diagnostic edge trace (TIMING builds only, sink may be null):
+			// report forward/back press edges together with the condition
+			// result and the post-action state of the binding's variables.
+			// ConditionActive is a pure expression evaluation, so tracing it
+			// here never changes the semantics of the cases above.
+			if (g_keyPressSink && (pressed || backPressed)) {
+				const bool conditionActive = ConditionActive(binding);
+				EmitKeyPressDiag(binding,
+					pressed ? L"forward" : L"back", conditionActive);
 			}
 		}
 	}
@@ -487,6 +514,31 @@ public:
 	static bool IsSpace(wchar_t ch)
 	{
 		return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
+	}
+
+	static void EmitKeyPressDiag(const Binding &binding, const wchar_t *direction, bool conditionActive)
+	{
+		if (!g_keyPressSink)
+			return;
+		std::wostringstream variables;
+		MigotoCommandVmUtils::ExpressionContext context;
+		size_t written = 0;
+		for (const VariableValues &variable : binding.variables) {
+			if (variable.name.empty())
+				continue;
+			if (written)
+				variables << L" ";
+			variables << variable.name << L"="
+					  << MigotoCommandVmUtils::LookupVariable(context, variable.name);
+			if (++written >= 32)
+				break;
+		}
+		const std::wstring variablesState = variables.str();
+		g_keyPressSink(
+			binding.section.c_str(), binding.keyText.c_str(),
+			static_cast<int>(binding.type), direction ? direction : L"",
+			binding.condition.c_str(), conditionActive ? 1 : 0,
+			variablesState.c_str());
 	}
 };
 

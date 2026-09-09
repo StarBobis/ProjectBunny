@@ -1,4 +1,4 @@
-﻿// DX12TextureOverrideMatching.cpp: texture override matching: IA/descriptor candidate lookup and resolved bindings.
+// DX12TextureOverrideMatching.cpp: texture override matching: IA/descriptor candidate lookup and resolved bindings.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
 
@@ -211,6 +211,14 @@ bool TextureOverrideMatchesIaBinding(
 			return !TextureOverrideHasDrawKind(config, Bunny::CommandListActionKind::Draw);
 		return TextureOverrideHasDrawKind(config, Bunny::CommandListActionKind::Draw);
 	}
+
+	// "hash + handling = skip" is the classic 3DMigoto skip section (e.g.
+	// [TextureOverride_IB_xxxxxxxx]): it binds no replacement buffer and
+	// issues no draw, so the resource/draw-kind requirements below would
+	// never let it match — yet skipping the original draw is precisely its
+	// job. A skip section matches whichever IA resource its hash names.
+	if (config.handlingSkip)
+		return true;
 
 	if (indexBuffer)
 	{

@@ -1173,6 +1173,31 @@ public:
 		    replacement->dispatches.empty() && replacement->drawSrvPatches.empty()) {
 			return true;
 		}
+#if defined(DX12_RELEASE_TIMING)
+		// TIMING-build trace: dump the exact replacement state that is about
+		// to be executed (skip flag, replacement IB view and every queued
+		// draw), so "the ini appended the right branch but the picture did
+		// not change" cases can be distinguished between "original draw was
+		// not skipped", "replacement IB was not bound" and "GPU args were
+		// wrong". Compiled out of regular Release builds.
+		DX12LogManager::Fields("DX12IaReplayDiag",
+			"event=execute_match skip=%d hasIb=%d ibSize=%u ibFmt=%d draws=%zu dispatches=%zu origIdx=%u origFirst=%u origBase=%d origInst=%u",
+			replacement->skip ? 1 : 0,
+			replacement->hasIndexBuffer ? 1 : 0,
+			replacement->hasIndexBuffer ? replacement->indexBuffer.SizeInBytes : 0u,
+			replacement->hasIndexBuffer ? static_cast<int>(replacement->indexBuffer.Format) : 0,
+			replacement->draws.size(), replacement->dispatches.size(),
+			draw.indexCount, draw.firstIndex, draw.baseVertex, draw.instanceCount);
+		for (const DX12ModIaReplacement::DrawCall &queuedDraw : replacement->draws) {
+			DX12LogManager::Fields("DX12IaReplayDiag",
+				"event=execute_draw indexed=%d count=%u start=%u base=%d fromCaller=%d autoCount=%d",
+				queuedDraw.indexed ? 1 : 0, queuedDraw.count, queuedDraw.start,
+				queuedDraw.baseVertex, queuedDraw.fromCaller ? 1 : 0,
+				queuedDraw.autoCount ? 1 : 0);
+		}
+		if (!replacement->skip)
+			DX12LogManager::Fields("DX12IaReplayDiag", "event=execute_original_draw");
+#endif
 
 		const bool modifiesIaBindings = replacement->hasIndexBuffer ||
 			!replacement->vertexBuffers.empty();
