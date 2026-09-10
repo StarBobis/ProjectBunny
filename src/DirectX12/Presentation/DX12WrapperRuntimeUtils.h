@@ -4,6 +4,11 @@
 
 #include "DXGIHookRuntime.h"
 
+// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
+// declaration (same pattern as DX12VmFrameVariablesUtils.h) so this header
+// does not need the mod-runtime umbrella.
+void DX12MarkStage(const char *stage);
+
 class DX12WrapperRuntimeUtils
 {
 public:
@@ -509,6 +514,7 @@ public:
 			_profile_timer.Pause();
 			return swapChain->Present(syncInterval, flags);
 		}
+		DX12MarkStage("present_enter");
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("PresentWrapper", swapChain, syncInterval, flags);
@@ -569,10 +575,19 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"PresentWrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
+		// [Present] custom shader elements replay here - after the game's
+		// rendering is submitted, before the original Present (DX11 parity).
+		DX12ModSubmitPresentOverlay(swapChain);
+		DX12OuterTimingProbeUtils::LogPresentSlice(
+			"PresentWrapper", "mod_present_overlay", swapChain, S_OK,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
+		DX12MarkStage("present_original_call");
 		HRESULT hr = swapChain->Present(syncInterval, flags);
 		_profile_timer.Resume();
+		DX12MarkStage("present_original_done");
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
@@ -587,6 +602,7 @@ public:
 			DX12_HOTPATH_TIME_END(PresentTotal);
 			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+			DX12MarkStage("present_leave");
 			return hr;
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -616,6 +632,7 @@ public:
 			"PresentWrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+		DX12MarkStage("present_leave");
 		return hr;
 	}
 
@@ -640,6 +657,7 @@ public:
 			_profile_timer.Pause();
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
+		DX12MarkStage("present_enter");
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
 		DX12OuterTimingProbeUtils::LogPresentEnter("Present1Wrapper", swapChain, syncInterval, flags);
@@ -699,10 +717,19 @@ public:
 		DX12OuterTimingProbeUtils::LogPresentSlice(
 			"Present1Wrapper", "capture_bookkeeping", swapChain, S_OK,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+				sliceBegin = DX12OuterTimingProbeUtils::Now();
+		// [Present] custom shader elements replay here - after the game's
+		// rendering is submitted, before the original Present (DX11 parity).
+		DX12ModSubmitPresentOverlay(swapChain);
+		DX12OuterTimingProbeUtils::LogPresentSlice(
+			"Present1Wrapper", "mod_present_overlay", swapChain, S_OK,
+			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
 		_profile_timer.Pause();
+		DX12MarkStage("present_original_call");
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
 		_profile_timer.Resume();
+		DX12MarkStage("present_original_done");
 		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		DX12LogManager::Fields("DX12Perf",
@@ -716,6 +743,7 @@ public:
 			_profile_timer.Finish();
 			DX12Profiler::FlushFrame();
 			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+			DX12MarkStage("present_leave");
 			return hr;
 		}
 		sliceBegin = DX12OuterTimingProbeUtils::Now();
@@ -744,6 +772,7 @@ public:
 			"Present1Wrapper", "profiling_and_hotpath_flush", swapChain, hr,
 			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
 				DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+		DX12MarkStage("present_leave");
 		return hr;
 	}
 
@@ -827,6 +856,10 @@ public:
 			activeCommandLists,
 			original ? original : DirectQueueExecuteCommandLists,
 			RegisterSubmittedCommandListDirect);
+		// The [Present] overlay submits on the same queue the game renders
+		// to; tracking the queue here (rare pointer changes only) keeps that
+		// submit a cheap atomic load.
+		DX12ModTrackGameDirectQueue(queue);
 		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
 			"wrapper_total",
 			queue,

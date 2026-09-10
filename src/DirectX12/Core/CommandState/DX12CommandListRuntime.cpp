@@ -461,6 +461,12 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 
 	state->cbvSrvUavHeap = nullptr;
 	state->samplerHeap = nullptr;
+	// OM/rasterizer shadow: a fresh command list has no render targets,
+	// viewports or scissor rects bound.
+	state->omRenderTargetCount = 0;
+	state->omHasDepthStencil = false;
+	state->viewportCount = 0;
+	state->scissorCount = 0;
 	state->cbvSrvUavHeapVersion = 0;
 	state->lastSetHeapsCount = 0xFFFFFFFF;
 	state->lastSetHeapsInput[0] = nullptr;

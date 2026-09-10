@@ -31,6 +31,12 @@
 #include "util.h"
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoKeyBindingUtils.hpp"
+#include "DX12CustomShaderElement.h"
+#include "DX12CustomShaderRegisters.h"
+#include "DX12CustomShaderCompile.h"
+#include "DX12CustomShaderPipeline.h"
+#include "DX12CustomShaderDevice.h"
+#include "DX12ResourceAliasStore.h"
 #include <Windows.h>
 #include <d3d12.h>
 
@@ -73,6 +79,23 @@ inline Bunny::CommandListMap gCommandLists;
 inline std::atomic<bool> gHasCommandLists{ false };
 
 inline std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
+
+// Custom shader elements ([CustomShaderX] sections with stage files/render
+// state) rebuilt on every load; consumed by the custom draw executor.
+inline std::unordered_map<std::wstring, Bunny::DX12CustomShaderElementSpec>
+	gCustomShaderElements;
+
+using DX12CustomShaderElementMap =
+	std::unordered_map<std::wstring, Bunny::DX12CustomShaderElementSpec>;
+
+// Immutable per-generation snapshot published with the other runtime
+// snapshots; recording threads read this instead of the mutable registry.
+inline std::atomic<std::shared_ptr<const DX12CustomShaderElementMap>>
+	gCustomShaderElementSnapshot;
+
+// Runtime resource alias table for "ResourceX = ref ResourceY" directives
+// (phase 3); cleared on reload with the other config globals.
+inline Bunny::DX12ResourceAliasStore gResourceAliases;
 
 inline std::vector<std::wstring> gVlrResourceCandidates;
 
@@ -1128,6 +1151,9 @@ public:
 	UINT drawSrvWidth = 0;
 	UINT drawSrvHeight = 0;
 	UINT drawSrvMipLevels = 0;
+	// Full desc of the captured texture (phase 3 "X = ref ps-tN"); zero for
+	// file-loaded resources.
+	D3D12_RESOURCE_DESC drawSrvResourceDesc = {};
 	D3D12_RESOURCE_STATES uavState = D3D12_RESOURCE_STATE_COPY_DEST;
 	std::wstring name;
 	std::wstring path;
@@ -2615,6 +2641,19 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	ID3D12Device *device, const std::wstring &name);
 
 #include "DX12DrawTextureSrvViewUtils.h"
+
+#include "DX12WicTextureDecodeUtils.h"
+
+// Frame-boundary breadcrumb (see DX12CommandListExecutor.cpp). A relaxed store
+// of a static string literal: no allocation, no lock, no log traffic, so it can
+// be dropped into any blockable path without perturbing what it measures. The
+// last marker left behind by a frozen process names the blocking call.
+void DX12MarkStage(const char *stage);
+
+// Prints the stage the previous frame boundary died in. Called at the top of
+// DX12ModBeginFrame: a frozen process stops emitting, so the last line this
+// prints names the frame that never finished.
+void DX12LogFrameBoundaryStage();
 
 #include "DX12DdsTextureLoadUtils.h"
 
@@ -4349,6 +4388,11 @@ bool BuildResolvedDescriptorBindingsForResourceOverride(
 	const std::wstring &resourceName,
 	const std::vector<DX12ResolvedGraphicsSrvBinding> *baseBindings,
 	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings);
+
+// Capture mode needs ReleaseLoadedResourceObjects (declared above with the
+// loaded-resource API) plus the SRV view utilities, so it sits just before
+// the executor that calls it.
+#include "DX12DrawTextureCaptureUtils.h"
 
 #include "DX12CommandListExecutor.h"
 

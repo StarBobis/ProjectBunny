@@ -29,6 +29,16 @@ public:
 	{
 	public:
 		int primaryVk = 0;
+		// DX11 InputButtonList semantics: every positive token in the combo
+		// must be held for the combination to count as down. The first
+		// non-modifier key becomes primaryVk; any further non-modifier keys
+		// accumulate here instead of silently overwriting it.
+		std::vector<int> extraVks;
+		// Generic VK of the most recent ctrl/shift/alt token. A combination
+		// made purely of modifiers (e.g. "CTRL ALT") has no natural primary
+		// key, so the last modifier is promoted to primaryVk after parsing -
+		// in DX11 those tokens are simply buttons of the combo like any other.
+		int lastModifierVk = 0;
 		bool requireCtrl = false;
 		bool requireShift = false;
 		bool requireAlt = false;
@@ -267,6 +277,12 @@ public:
 				continue;
 			ApplyKeyToken(value.substr(start, pos - start), combo);
 		}
+		// Modifier-only combinations ("CTRL ALT", "SHIFT", ...) still need a
+		// trigger key or the binding would be dropped at registration; the
+		// require* flags already constrain the rest of the combo, so promoting
+		// the last modifier reproduces DX11's all-buttons-down edge semantics.
+		if (!combo->primaryVk && combo->lastModifierVk)
+			combo->primaryVk = combo->lastModifierVk;
 	}
 
 	static void ApplyKeyToken(const std::wstring &token, KeyCombination *combo)
@@ -277,16 +293,19 @@ public:
 		if (lower == L"ctrl" || lower == L"control") {
 			combo->requireCtrl = true;
 			combo->forbidCtrl = false;
+			combo->lastModifierVk = VK_CONTROL;
 			return;
 		}
 		if (lower == L"shift") {
 			combo->requireShift = true;
 			combo->forbidShift = false;
+			combo->lastModifierVk = VK_SHIFT;
 			return;
 		}
 		if (lower == L"alt") {
 			combo->requireAlt = true;
 			combo->forbidAlt = false;
+			combo->lastModifierVk = VK_MENU;
 			return;
 		}
 		if (lower == L"no_ctrl" || lower == L"no_control") {
@@ -314,8 +333,12 @@ public:
 			return;
 		}
 		int vk = ParseVirtualKey(lower);
-		if (vk)
+		if (!vk)
+			return;
+		if (!combo->primaryVk)
 			combo->primaryVk = vk;
+		else if (vk != combo->primaryVk)
+			combo->extraVks.push_back(vk);
 	}
 
 	static int ParseVirtualKey(const std::wstring &token)
@@ -352,7 +375,13 @@ public:
 			return false;
 		if (combo.forbidAlt && alt)
 			return false;
-		return KeyDown(combo.primaryVk);
+		if (!KeyDown(combo.primaryVk))
+			return false;
+		for (int vk : combo.extraVks) {
+			if (!KeyDown(vk))
+				return false;
+		}
+		return true;
 	}
 
 	static bool KeyDown(int vk)

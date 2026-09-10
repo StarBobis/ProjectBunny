@@ -151,25 +151,49 @@ if (-not $tempDir) {
 if (-not $tempDir) {
     $tempDir = $root
 }
-$tmpScript = Join-Path $tempDir "cmake_build_$PID.bat"
-$content = @"
+$tmpConfigureScript = Join-Path $tempDir "cmake_configure_$PID.bat"
+$tmpBuildScript = Join-Path $tempDir "cmake_build_$PID.bat"
+$configureContent = @"
 @echo off
 call "$vcvars" > nul
 if errorlevel 1 exit /b 1
 "$cmake" -S "$root" -B "$buildDir" -G "Ninja" -DCMAKE_MAKE_PROGRAM="$ninja" -DCMAKE_BUILD_TYPE="$Configuration" -DDX12_RELEASE_TIMING=$(if ($ReleaseTiming) { 'ON' } else { 'OFF' })
 if errorlevel 1 exit /b 1
+"@
+$buildContent = @"
+@echo off
+call "$vcvars" > nul
+if errorlevel 1 exit /b 1
 "$cmake" --build "$buildDir" --target DirectX12 3Dmigoto-Injector-V2
+if errorlevel 1 exit /b 1
 "@
 
 Write-Host "===== Configuring CMake ($Configuration|$Platform) =====" -ForegroundColor Cyan
-if (-not $tmpScript) {
-    Write-Host "ERROR: Cannot determine temp directory for build script." -ForegroundColor Red
-    exit 1
-}
-$content | Set-Content -Path $tmpScript -Encoding ASCII
-cmd /c $tmpScript 2>&1
+$configureContent | Set-Content -Path $tmpConfigureScript -Encoding ASCII
+cmd /c $tmpConfigureScript 2>&1
 $exitCode = $LASTEXITCODE
-Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue
+if ($exitCode -ne 0) {
+    # Transient-failure guard: CMake's compiler detection generates a
+    # try_compile mini-project under the build dir and immediately builds it;
+    # a real-time AV / file-system race can make freshly generated files (e.g.
+    # CMakeFiles\rules.ninja) momentarily invisible to ninja, failing the
+    # configure spuriously. Wipe the half-generated build dir and retry once.
+    Write-Host "Configure failed; wiping $buildDir and retrying once in case of a transient file-system race..." -ForegroundColor Yellow
+    Remove-Item $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+    cmd /c $tmpConfigureScript 2>&1
+    $exitCode = $LASTEXITCODE
+}
+Remove-Item $tmpConfigureScript -Force -ErrorAction SilentlyContinue
+if ($exitCode -ne 0) {
+    Write-Host "FAILED: CMake $($Configuration) $($Platform)" -ForegroundColor Red
+    exit $exitCode
+}
+
+Write-Host "===== Building CMake ($Configuration|$Platform) =====" -ForegroundColor Cyan
+$buildContent | Set-Content -Path $tmpBuildScript -Encoding ASCII
+cmd /c $tmpBuildScript 2>&1
+$exitCode = $LASTEXITCODE
+Remove-Item $tmpBuildScript -Force -ErrorAction SilentlyContinue
 if ($exitCode -ne 0) {
     Write-Host "FAILED: CMake $($Configuration) $($Platform)" -ForegroundColor Red
     exit $exitCode
@@ -361,6 +385,30 @@ if ($Platform -eq 'x64') {
                     Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
                     throw
                 }
+            }
+
+            # Optional DXC backend for [CustomShaderX] runtime HLSL compile.
+            # Only the official dxcompiler/dxil pair is deployed, and only
+            # from a repo-local drop (third_party\dxc\): the VulkanSDK
+            # self-contained dxcompiler fail-fasts (0xC0000409) on the second
+            # in-process compile, which would take the game down, and
+            # LoadLibrary("dxcompiler.dll") would happily pick it up if we
+            # copied it next to d3d12.dll. With no pair deployed the compile
+            # degrades to a logged no-op and the custom element is skipped.
+            $dxcDrop = "$PSScriptRoot\..\third_party\dxc"
+            $dxcCompiler = "$dxcDrop\dxcompiler.dll"
+            $dxcDxil = "$dxcDrop\dxil.dll"
+            if ((Test-Path $dxcCompiler) -and (Test-Path $dxcDxil)) {
+                try {
+                    Copy-Item $dxcCompiler "$dx12TestDir\dxcompiler.dll" -Force -ErrorAction Stop
+                    Copy-Item $dxcDxil "$dx12TestDir\dxil.dll" -Force -ErrorAction Stop
+                    Write-Host "  Copied DXC backend: dxcompiler.dll + dxil.dll" -ForegroundColor Gray
+                } catch {
+                    Write-Host "  Failed to copy DXC backend (custom shaders will be skipped): $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "  DXC backend not deployed (third_party\dxc\dxcompiler.dll + dxil.dll missing);" -ForegroundColor DarkYellow
+                Write-Host "    [CustomShaderX] elements will log compile_backend_unavailable and be skipped." -ForegroundColor DarkYellow
             }
         }
     } elseif (($copyToTargetDirectory -or $extraCopyTargets.Count -gt 0) -and -not (Test-Path $dx12Dll)) {

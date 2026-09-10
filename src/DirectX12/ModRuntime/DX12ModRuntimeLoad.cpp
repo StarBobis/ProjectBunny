@@ -895,7 +895,8 @@ bool TextureOverridesHaveDrawSrvReplacement(
 			const Bunny::TextureOverrideConfig &config = configs[index];
 			if (!config.drawPsSrvResources.empty() ||
 			    !config.drawVsSrvResources.empty() ||
-			    !config.drawReplaceThisResource.empty())
+			    !config.drawReplaceThisResource.empty() ||
+			    config.hasConditionalThisReplacement)
 				return true;
 		}
 	}
@@ -981,6 +982,7 @@ bool TextureOverrideActionsHaveRuntimeEffect(
 		case Bunny::CommandListActionKind::SetIndexBuffer:
 		case Bunny::CommandListActionKind::SetVertexBuffer:
 		case Bunny::CommandListActionKind::SetShaderResource:
+		case Bunny::CommandListActionKind::SetThisResource:
 		case Bunny::CommandListActionKind::SetConstantBuffer:
 		case Bunny::CommandListActionKind::SetUnorderedAccessView:
 		case Bunny::CommandListActionKind::Dispatch:
@@ -1073,6 +1075,7 @@ bool CommandListActionHasPhaseRuntimeEffect(
 	case Bunny::CommandListActionKind::SetIndexBuffer:
 	case Bunny::CommandListActionKind::SetVertexBuffer:
 	case Bunny::CommandListActionKind::SetShaderResource:
+	case Bunny::CommandListActionKind::SetThisResource:
 	case Bunny::CommandListActionKind::SetConstantBuffer:
 	case Bunny::CommandListActionKind::SetUnorderedAccessView:
 	case Bunny::CommandListActionKind::Draw:
@@ -1267,6 +1270,13 @@ bool DX12ModRuntimeLoad(
 	Bunny::MigotoResourceParser::ParseSections(iniLoad.document, &resources);
 	Bunny::MigotoCommandListParser::ParseSections(iniLoad.document, &commandLists);
 	Bunny::MigotoKeyBindingUtils::ParseSections(iniLoad.document, &keyBindings);
+	// Custom shader elements are rebuilt from the parsed command lists (the
+	// same action stream the draw executor consumes) so the registry and the
+	// bodies can never diverge.
+	std::unordered_map<std::wstring, Bunny::DX12CustomShaderElementSpec>
+		customShaderElements;
+	Bunny::DX12CustomShaderElementParser::BuildRegistry(
+		commandLists, &customShaderElements);
 #if defined(DX12_RELEASE_TIMING)
 	// TIMING-build trace: dump every registered hotkey binding so the log
 	// proves whether a binding was parsed and armed (key, modifiers, type,
@@ -1278,6 +1288,26 @@ bool DX12ModRuntimeLoad(
 			binding.keyText.c_str(), binding.key.primaryVk,
 			static_cast<int>(binding.type), binding.condition.c_str(),
 			binding.hasBack ? 1 : 0, binding.variables.size());
+	}
+#endif
+#if defined(DX12_RELEASE_TIMING)
+	// TIMING-build trace: dump every registered custom shader element with
+	// its stage files and state overrides, so the log proves the element was
+	// discovered and how its pipeline will be assembled.
+	for (const auto &item : customShaderElements) {
+		const Bunny::DX12CustomShaderElementSpec &spec = item.second;
+		DX12LogManager::Fields("DX12CustomShaderDiag",
+			"event=element_registered section=%S vs=%S ps=%S blend=%d cull=%d topology=%d bb=%d draw=%d ctrl=%d states=%zu",
+			spec.section.c_str(),
+			spec.hasStage[0] ? spec.stageFiles[0].c_str() : L"",
+			spec.hasStage[4] ? spec.stageFiles[4].c_str() : L"",
+			spec.hasBlend ? 1 : 0,
+			spec.hasCull ? static_cast<int>(spec.cull) : -1,
+			spec.hasTopology ? static_cast<int>(spec.topology) : -1,
+			spec.hasBackbufferTarget ? 1 : 0,
+			spec.hasDrawCommand ? 1 : 0,
+			spec.hasControlFlow ? 1 : 0,
+			spec.stateLines.size());
 	}
 #endif
 	DX12ConstantsVmInitializerUtils::Initialize(commandLists);
@@ -1409,6 +1439,12 @@ bool DX12ModRuntimeLoad(
 	gCommandLists.swap(commandLists);
 	gHasCommandLists.store(!gCommandLists.empty(), std::memory_order_release);
 	gKeyBindings.swap(keyBindings);
+	gCustomShaderElements.swap(customShaderElements);
+	gCustomShaderElementSnapshot.store(
+		std::make_shared<const DX12CustomShaderElementMap>(gCustomShaderElements),
+		std::memory_order_release);
+	// Resource aliases are runtime state rebuilt from the new generation.
+	gResourceAliases.Clear();
 	gVlrResourceCandidates.swap(vlrResourceCandidates);
 	gCommandListRuntimeEffect.swap(commandListRuntimeEffect);
 	gCommandListPreRuntimeEffect.swap(commandListPreRuntimeEffect);

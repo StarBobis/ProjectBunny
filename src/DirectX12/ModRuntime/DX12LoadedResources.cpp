@@ -17,6 +17,12 @@ void DX12UploadChannelWaitOnQueue(ID3D12CommandQueue *queue)
 {
 	if (!queue || !DX12UploadChannelHasPendingWork())
 		return;
+	// Reentry from the upload channel's own submission (it runs with
+	// s_uploadLock held): taking the lock here would self-deadlock. The
+	// upload queue also never needs to wait on its own fence - its work is
+	// already ordered by the queue itself.
+	if (DX12DdsTextureLoadUtils::t_uploadSubmitInLock)
+		return;
 	AcquireSRWLockExclusive(&DX12DdsTextureLoadUtils::s_uploadLock);
 	const UINT64 pendingValue = DX12DdsTextureLoadUtils::s_uploadPendingFenceValue;
 	const bool hasPending = DX12DdsTextureLoadUtils::s_uploadHasPending.load(

@@ -489,8 +489,56 @@ public:
 		}
 		mShaderResourceOverrideBindingsByTarget[cacheKey] =
 			std::move(resolvedBindings);
+		// UI-texture bookkeeping: pixel-stage shader-resource assignments in
+		// the current run ("ps-t100 = ResourceFoo") are recorded by name so a
+		// following custom element draw can reproduce DX11's "current SRV
+		// bindings" semantics at record time.
+		if (target.kind == Bunny::CommandListTargetKind::ShaderResource &&
+		    target.stage == Bunny::CommandListShaderStage::Pixel)
+			mPixelShaderResourceNames[target.slot] = resourceName;
 		InvalidateGraphicsSrvBindingCaches();
 		InvalidateTargetCaches();
+		return true;
+	}
+
+	// Runtime form of the "this = ResourceX" binding directive: replaces the
+	// SRV that matched the current override (thisMatch->thisSrvBinding) with
+	// the branch-selected resource. This mirrors what the static fast path
+	// (DX12DrawSrvReplacementUtils::ApplyConfig) does for top-level "this =",
+	// but runs inside the VM action stream so if/else branches choose which
+	// resource is applied. Without a matched this-target (descriptor-matched
+	// sections only) the action degrades to a no-op with a diagnostic.
+	bool ApplySetThisResourceAction(
+		const Bunny::CommandListAction &action,
+		const DX12TextureOverrideMatch *thisMatch)
+	{
+		if (!mDevice || !mCommandList || !mReplacement)
+			return false;
+		if (!thisMatch || !thisMatch->hasThisSrvTarget || action.resource.empty()) {
+#if defined(DX12_RELEASE_TIMING)
+			// TIMING-build trace: conditional this= executed without a
+			// descriptor-matched target (e.g. the override fired on an IA
+			// binding, where "this" has no meaning) - the branch intent is
+			// visible even though nothing was replaced.
+			DX12LogManager::Fields("DX12SetThisResourceDiag",
+				"event=skipped_no_target resource=%S thisTarget=%d",
+				action.resource.c_str(), thisMatch ? (thisMatch->hasThisSrvTarget ? 1 : 0) : -1);
+#endif
+			return false;
+		}
+		std::vector<DX12DrawSrvPatchRequest> requests;
+		const UINT added = DX12DrawSrvReplacementUtils::AddThisRequestFromMatch(
+			mDevice, mCommandList, thisMatch, action.resource, &requests);
+		if (!added)
+			return false;
+		if (!DX12DrawSrvReplacementUtils::QueueRequests(requests, mReplacement))
+			return false;
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::Fields("DX12SetThisResourceDiag",
+			"event=applied resource=%S",
+			action.resource.c_str());
+#endif
+		MarkChanged();
 		return true;
 	}
 
@@ -1049,6 +1097,26 @@ public:
 		return !snapshot || CommandListRuntimeEffectLocked(snapshot.get(), name, includePost);
 	}
 
+	// True when `section` names a custom shader element that owns both stage
+	// files, i.e. a self-contained custom draw unit that must run through
+	// the phase-2.4 element pipeline instead of the plain command list
+	// machinery. Stage-less CustomShader-prefixed lists stay plain command
+	// lists. Reads the published generation snapshot (lock free).
+	bool IsRegisteredCustomShaderElement(const std::wstring &section) const
+	{
+		if (section.empty())
+			return false;
+		const std::shared_ptr<const DX12CustomShaderElementMap> snapshot =
+			gCustomShaderElementSnapshot.load(std::memory_order_acquire);
+		if (!snapshot)
+			return false;
+		auto found = snapshot->find(section);
+		if (found == snapshot->end())
+			return false;
+		const Bunny::DX12CustomShaderElementSpec &spec = found->second;
+		return spec.hasStage[0] && spec.hasStage[4];
+	}
+
 	const std::vector<DX12ResolvedGraphicsSrvBinding> *GetResolvedGraphicsSrvBindings()
 	{
 		if (!mResolvedGraphicsSrvBindingsResolved) {
@@ -1309,12 +1377,155 @@ public:
 		RunActions(config.actions, depth, includePost, thisMatch);
 	}
 
+	// Phase 3 capture mode: "ResourceX = ref ps-tN"/"ref vs-tN" executed at
+	// draw time snapshots the texture currently bound at that slot into the
+	// placeholder resource X (live reference, see DX12DrawTextureCaptureUtils).
+	bool TryCaptureResourceFromAction(const Bunny::CommandListAction &action)
+	{
+		if (!mDevice)
+			return false;
+		Bunny::CommandListTarget target;
+		const std::wstring targetText =
+			Bunny::DX12ResourceAliasStore::AliasTarget(action.value);
+		if (!Bunny::MigotoCommandListParser::ParseTarget(targetText, &target) ||
+		    target.kind != Bunny::CommandListTargetKind::ShaderResource)
+			return false;
+		const std::vector<DX12ResolvedGraphicsSrvBinding> *bindings =
+			GetResolvedGraphicsSrvBindingsForTarget(target);
+		if (!bindings)
+			return false;
+		const std::wstring name = Bunny::IniDocumentText::Trim(action.resource);
+		for (const DX12ResolvedGraphicsSrvBinding &resolved : *bindings) {
+			if (!resolved.binding.hasDescriptor)
+				continue;
+			if (DX12DrawTextureCaptureUtils::CaptureTextureToLoadedResource(
+					mDevice, name, resolved.binding.descriptor))
+				return true;
+		}
+		return false;
+	}
+
+	// Phase 3 resource alias registration: "ResourceX = ref ResourceY"
+	// directives executed at draw time map X onto Y for every later name
+	// resolution. Capture-style "ref ps-tN" values take the capture path
+	// above; anything else (plain copies) is logged once as unsupported.
+	void RegisterResourceAliasFromAction(const Bunny::CommandListAction &action)
+	{
+		if (action.kind != Bunny::CommandListActionKind::ResourceAssignment)
+			return;
+		const std::wstring value = Bunny::IniDocumentText::Trim(action.value);
+		if (value.empty())
+			return;
+		if (!Bunny::DX12ResourceAliasStore::IsResourceAliasValue(value)) {
+			if (TryCaptureResourceFromAction(action))
+				return;
+#if defined(DX12_RELEASE_TIMING)
+			DX12LogManager::Fields("DX12ResourceAliasDiag",
+				"event=unsupported_copy target=%S (capture failed or not a texture SRV)",
+				value.c_str());
+#endif
+			return;
+		}
+		// action.resource carries the assignment key with its original
+		// casing and namespace resolution applied (parse-time
+		// PreserveResourceAssignmentName); the alias store normalizes case
+		// internally, while the capture/load side needs the original
+		// spelling for the case-sensitive loaded-resource map.
+		const std::wstring name = Bunny::IniDocumentText::Trim(action.resource);
+		const std::wstring target = Bunny::DX12ResourceAliasStore::AliasTarget(value);
+		gResourceAliases.Add(name, target);
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::Fields("DX12ResourceAliasDiag",
+			"event=alias_added name=%S target=%S",
+			name.c_str(), target.c_str());
+#endif
+	}
+
 	void RunCommandList(
 		const Bunny::CommandListConfig &commandList, int depth, bool includePost,
 		const DX12TextureOverrideMatch *thisMatch)
 	{
 		if (depth > 16)
 			return;
+		// Custom shader elements ([CustomShaderX] with stage files) execute
+		// as a unit with their own pipeline (phase 2.4). Running the body as
+		// a plain command list would append its Draw= calls to the
+		// replacement stream and replay them against whatever PSO is bound
+		// at the Present point - at best wrong, at worst a draw with no PSO
+		// at all. Instead the element is recorded as a unit (spec + texture
+		// slots + ini params snapshot) for the Present replay, and its body
+		// is never interpreted here.
+		if (IsRegisteredCustomShaderElement(commandList.section)) {
+			DX12MarkStage("element_record");
+			const auto snapshot = gCustomShaderElementSnapshot.load(
+				std::memory_order_acquire);
+			const Bunny::DX12CustomShaderElementSpec *spec = nullptr;
+			if (snapshot) {
+				auto found = snapshot->find(commandList.section);
+				if (found != snapshot->end())
+					spec = &found->second;
+			}
+			bool recorded = false;
+			if (mReplacement && spec) {
+				DX12ModIaReplacement::CustomElementRecord record;
+				record.spec = *spec; // full copy: survives reloads
+				// Texture slots at the moment of the element run: the body's
+				// own ps-tN assignments plus whatever the caller bound right
+				// before the element ("ps-t100 = X; run = CustomShaderFoo" is
+				// how this mod's UI feeds each element). Deduplicated by
+				// slot; "ref" entries are resolved at replay.
+				auto addSlot = [&record](UINT slot, const std::wstring &resource) {
+					if (resource.empty())
+						return;
+					for (const auto &existing : record.textureSlots) {
+						if (existing.first == slot) {
+							return;
+						}
+					}
+					record.textureSlots.emplace_back(slot, resource);
+				};
+				for (const auto &entry : mPixelShaderResourceNames)
+					addSlot(entry.first, entry.second);
+				for (const Bunny::CommandListAction &action : commandList.actions) {
+					if (action.kind != Bunny::CommandListActionKind::SetShaderResource ||
+					    action.target.stage != Bunny::CommandListShaderStage::Pixel)
+						continue;
+					addSlot(action.target.slot, action.resource);
+				}
+				// The first plain Draw action supplies the recorded draw
+				// arguments; bodies with conditional or multiple draws
+				// currently fall back to the default 4-vertex strip (the
+				// replay logs each draw, so divergence is visible).
+				for (const Bunny::CommandListAction &action : commandList.actions) {
+					if (action.kind == Bunny::CommandListActionKind::Draw &&
+					    action.argCount >= 2) {
+						record.drawCount = action.args[0];
+						record.drawStart = action.args[1];
+						break;
+					}
+				}
+				// Ini params snapshot at the moment of the element run. The
+				// globals are copied under one lock; the pack then resolves
+				// each register name against the snapshot instead of taking
+				// the VM globals mutex 2048 times per element.
+				std::unordered_map<std::wstring, double> vmGlobals;
+				MigotoCommandVmUtils::CopyGlobals(&vmGlobals);
+				record.iniParams = Bunny::DX12CustomShaderRegisters::PackFloat4(
+					Bunny::DX12CustomShaderRegisters::kIniParamsFloat4Count,
+					[&vmGlobals](const std::wstring &name) -> double {
+						auto found = vmGlobals.find(name);
+						return found == vmGlobals.end() ? 0.0 : found->second;
+					});
+				mReplacement->AddCustomElementRecord(record);
+				recorded = true;
+			}
+#if defined(DX12_RELEASE_TIMING)
+			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+				"event=element_deferred section=%S depth=%d recorded=%d spec=%d",
+				commandList.section.c_str(), depth, recorded ? 1 : 0, spec ? 1 : 0);
+#endif
+			return;
+		}
 		if (RunCompiledCommandListPlan(commandList.section, depth, includePost))
 			return;
 		if (!EnterCommandList(commandList.section))
@@ -1332,8 +1543,16 @@ public:
 			case Bunny::CommandListActionKind::Run: {
 				const std::shared_ptr<const Bunny::CommandListConfig> config =
 					SnapshotCommandListConfig(action.commandList);
-				if (config)
+				if (config) {
 					RunCommandList(*config, depth + 1, includePost, thisMatch);
+				}
+#if defined(DX12_RELEASE_TIMING)
+				else {
+					DX12LogManager::Fields("DX12PresentDiag",
+						"event=run_target_missing target=%S depth=%d",
+						action.commandList.c_str(), depth);
+				}
+#endif
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {
@@ -1365,6 +1584,13 @@ public:
 			case Bunny::CommandListActionKind::SetUnorderedAccessView:
 				ApplySetDescriptorResourceAction(action.target, action.resource);
 				break;
+			case Bunny::CommandListActionKind::SetThisResource:
+				if (mReplacement)
+					ApplySetThisResourceAction(action, thisMatch);
+				break;
+			case Bunny::CommandListActionKind::ResourceAssignment:
+				RegisterResourceAliasFromAction(action);
+				break;
 			case Bunny::CommandListActionKind::Draw:
 			case Bunny::CommandListActionKind::DrawIndexed:
 			case Bunny::CommandListActionKind::DrawIndexedAuto:
@@ -1381,7 +1607,6 @@ public:
 			case Bunny::CommandListActionKind::VariableAssignment:
 			case Bunny::CommandListActionKind::PostVariableAssignment:
 			case Bunny::CommandListActionKind::LocalVariableAssignment:
-			case Bunny::CommandListActionKind::ResourceAssignment:
 			case Bunny::CommandListActionKind::SetShader:
 			case Bunny::CommandListActionKind::SetShaderConstant:
 			case Bunny::CommandListActionKind::SetRenderState:
@@ -1441,6 +1666,13 @@ public:
 			case Bunny::CommandListActionKind::SetShaderResource:
 				ApplySetDescriptorResourceAction(action.target, action.resource);
 				break;
+			case Bunny::CommandListActionKind::SetThisResource:
+				if (mReplacement)
+					ApplySetThisResourceAction(action, thisMatch);
+				break;
+			case Bunny::CommandListActionKind::ResourceAssignment:
+				RegisterResourceAliasFromAction(action);
+				break;
 			case Bunny::CommandListActionKind::SetConstantBuffer:
 				ApplySetDescriptorResourceAction(action.target, action.resource);
 				break;
@@ -1463,7 +1695,6 @@ public:
 			case Bunny::CommandListActionKind::VariableAssignment:
 			case Bunny::CommandListActionKind::PostVariableAssignment:
 			case Bunny::CommandListActionKind::LocalVariableAssignment:
-			case Bunny::CommandListActionKind::ResourceAssignment:
 			case Bunny::CommandListActionKind::SetShader:
 			case Bunny::CommandListActionKind::SetShaderConstant:
 			case Bunny::CommandListActionKind::SetRenderState:
@@ -1616,5 +1847,8 @@ public:
 		DX12TextureOverrideTargetCacheKeyHash> &mTargetTextureOverrideCache;
 	std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
 		mTextureOverrideRuntimeSnapshot;
+	// Current pixel shader-resource assignments by slot ("ps-t100 = X" seen
+	// so far in this run), captured for custom element draws.
+	std::unordered_map<UINT, std::wstring> mPixelShaderResourceNames;
 	MigotoCommandVmUtils::State mVm;
 };

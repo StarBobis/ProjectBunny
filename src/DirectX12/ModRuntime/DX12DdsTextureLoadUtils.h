@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // DX12DdsTextureLoadUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
 // Not meant to be included directly.
@@ -96,12 +96,30 @@ public:
 		return lower.size() >= 4 && lower.compare(lower.size() - 4, 4, L".dds") == 0;
 	}
 
+	// Image formats the loader can actually turn into an SRV: DDS goes
+	// through ParseDds, everything else through the WIC decode path.
+	static bool PathLooksLikeLoadableImage(const std::wstring &path)
+	{
+		if (PathLooksLikeDds(path))
+			return true;
+		std::wstring lower = Bunny::IniDocumentText::ToLower(path);
+		static const wchar_t *const kWicExtensions[] = {
+			L".png", L".jpg", L".jpeg", L".bmp", L".gif", L".tif", L".tiff"
+		};
+		for (const wchar_t *ext : kWicExtensions) {
+			const size_t len = wcslen(ext);
+			if (lower.size() >= len && lower.compare(lower.size() - len, len, ext) == 0)
+				return true;
+		}
+		return false;
+	}
+
 	static bool ResourceConfigLooksLikeTexture(const Bunny::ResourceConfig &config)
 	{
 		std::wstring type = Bunny::IniDocumentText::ToLower(Bunny::IniDocumentText::Trim(config.type));
 		if (type == L"texture" || type == L"texture2d")
 			return true;
-		return DX12DdsTextureLoadUtils::PathLooksLikeDds(config.filename);
+		return DX12DdsTextureLoadUtils::PathLooksLikeLoadableImage(config.filename);
 	}
 
 	static bool IsBlockCompressed(DXGI_FORMAT format)
@@ -475,6 +493,17 @@ public:
 	};
 	inline static std::vector<UploadQueueWait> s_uploadQueueWaits;
 
+	// Set while a thread submits upload work with s_uploadLock held. The
+	// upload queue goes through the same ExecuteCommandLists wrapper as game
+	// queues, and the wrapper's upload-wait bookkeeping takes s_uploadLock
+	// (non-recursive SRWLOCK) - without this flag the loader thread
+	// self-deadlocks on exactly the second texture upload. A pointer compare
+	// against s_uploadQueue cannot express this: the channel queue may be a
+	// wrapper object while the wrapper passes the raw queue pointer down, so
+	// the two forms never compare equal. Thread-local reentry detection is
+	// exact and has no cross-layer dependency.
+	inline static thread_local bool t_uploadSubmitInLock = false;
+
 	static void ClearUploadQueueWaitsLocked()
 	{
 		for (UploadQueueWait &wait : s_uploadQueueWaits) {
@@ -587,11 +616,31 @@ public:
 				subresourceCount);
 			return false;
 		}
+		DX12MarkStage("upload_wait_lock");
 		AcquireSRWLockExclusive(&s_uploadLock);
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12TextureUpload", "stage=lock_acquired,tid=%lu",
+			GetCurrentThreadId());
+#endif
 		if (!EnsureUploadChannel(device)) {
 			ReleaseSRWLockExclusive(&s_uploadLock);
 			return false;
 		}
+#if defined(DX12_RELEASE_TIMING)
+		// One-shot wrap-status probe: the freeze breadcrumbs only line up if
+		// the upload queue bypasses the wrapper flow, which would mean the
+		// queue is raw despite being created on the wrapped device. Say which.
+		static bool sWrapStatusLogged = false;
+		if (!sWrapStatusLogged) {
+			sWrapStatusLogged = true;
+			DX12LogManager::FieldsFlush("DX12TextureUpload",
+				"stage=wrap_status,queue=%p,queueRaw=%p,device=%p,deviceRaw=%p",
+				s_uploadQueue,
+				s_uploadQueue ? DX12Wrapper::Unwrap(s_uploadQueue) : nullptr,
+				device,
+				device ? DX12Wrapper::Unwrap(device) : nullptr);
+		}
+#endif
 
 		// Select under the lock, but never wait for GPU progress while holding
 		// it. The old DX11-style critical section made every concurrent upload
@@ -620,6 +669,7 @@ public:
 			// modified while unlocked, so reselecting after the wait is enough to
 			// preserve allocator/list ownership correctness.
 			ReleaseSRWLockExclusive(&s_uploadLock);
+			DX12MarkStage("upload_slot_wait");
 			const bool completed = WaitUploadFence(oldestValue, 5000);
 			AcquireSRWLockExclusive(&s_uploadLock);
 			if (!completed) {
@@ -633,6 +683,23 @@ public:
 		}
 
 		UploadChannelSlot &slot = s_uploadSlots[slotIndex];
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::Fields("DX12TextureUpload",
+			"stage=slot_selected,slot=%u,everUsed=%d,completed=%llu,tid=%lu",
+			slotIndex, slot.everUsed ? 1 : 0,
+			static_cast<unsigned long long>(s_uploadFence->GetCompletedValue()),
+			GetCurrentThreadId());
+#endif
+		// Fence allocation, ExecuteCommandLists and Signal stay in ONE
+		// critical section: the fence is a queue timeline, so the signal
+		// order must match the allocation order. A previous revision
+		// allocated the value under the lock but submitted outside it, which
+		// let two concurrent loaders signal out of order (5 after 6) - the
+		// game queue's GPU-side Wait on value 6 then never completed and the
+		// render thread went silent forever. The lock is safe to hold here
+		// because DX12UploadChannelWaitOnQueue exempts the upload queue
+		// itself before touching s_uploadLock.
+		const UINT64 fenceValue = ++s_uploadFenceValue;
 		if (slot.everUsed) {
 			// Reuse: the previous list is closed and the fence check above
 			// guarantees the GPU finished with it, so Reset is legal here.
@@ -680,14 +747,34 @@ public:
 			ReleaseSRWLockExclusive(&s_uploadLock);
 			return false;
 		}
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12TextureUpload",
+			"stage=list_closed,slot=%u,fence=%llu,tid=%lu",
+			slotIndex, static_cast<unsigned long long>(fenceValue),
+			GetCurrentThreadId());
+#endif
 
 		// Async submit: no CPU wait. The game's queue waits on this fence
 		// before its next ExecuteCommandLists, so the texture is in SRV
-		// state before any game work that references it runs.
+		// state before any game work that references it runs. The wrapper
+		// sees this submission: the thread-local flag keeps its upload-wait
+		// bookkeeping off s_uploadLock (held here), and the internal-replay
+		// scope keeps it off the capture/hunt notify paths, which are not
+		// safe to enter with the lock held either.
+		t_uploadSubmitInLock = true;
+		DX12InternalReplayState::Enter();
+		DX12MarkStage("upload_submit");
 		ID3D12CommandList *lists[] = { slot.list };
 		s_uploadQueue->ExecuteCommandLists(1, lists);
-		const UINT64 fenceValue = ++s_uploadFenceValue;
 		s_uploadQueue->Signal(s_uploadFence, fenceValue);
+		DX12InternalReplayState::Leave();
+		t_uploadSubmitInLock = false;
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12TextureUpload",
+			"stage=submitted,slot=%u,fence=%llu,tid=%lu",
+			slotIndex, static_cast<unsigned long long>(fenceValue),
+			GetCurrentThreadId());
+#endif
 		slot.busyUntilFence = fenceValue;
 		// A newer upload requires every game queue to establish a dependency on
 		// the new fence value, even if it already waited for an older one.
@@ -717,6 +804,24 @@ public:
 			ReleaseSRWLockExclusive(&gModLock);
 			return nullptr;
 		}
+		// Empty placeholder sections ("[ResourceX]" with no filename) are
+		// capture containers in DX11: they never load bytes, they are filled
+		// by "X = ref ps-tN" at draw time (DX12DrawTextureCaptureUtils).
+		// Until a capture lands, mark them failed quietly so nothing attempts
+		// a meaningless load and the failure reason is explicit.
+		if (configIt->second.filename.empty() && configIt->second.data.empty()) {
+			DX12LoadedResource placeholder;
+			placeholder.name = name;
+			placeholder.failed = true;
+			gLoadedResources.emplace(name, placeholder);
+			ReleaseSRWLockExclusive(&gModLock);
+#if defined(DX12_RELEASE_TIMING)
+			DX12LogManager::Fields("DX12ResourceAliasDiag",
+				"event=capture_placeholder_unloaded name=%S (no draw-time capture yet)",
+				name.c_str());
+#endif
+			return nullptr;
+		}
 		DX12LoadedResource placeholder;
 		placeholder.name = name;
 		placeholder.path = ResolveResourcePathLocked(configIt->second, false);
@@ -741,8 +846,18 @@ public:
 		if (resource->drawSrvTextureResource && resource->drawSrvCpu.ptr)
 			return true;
 
+#if defined(DX12_RELEASE_TIMING)
+		// FieldsFlush on purpose: this is the session's first draw-time SRV
+		// creation for this resource (file read + WIC/DDS parse + GPU upload
+		// on the calling thread). If any step deadlocks, TLS-buffered Fields
+		// lines would never publish and the trail would end without naming
+		// the resource.
+		DX12LogManager::FieldsFlush("DX12DrawSrvReplacement",
+			"stage=ensure_srv_enter,resource=%S", resource->name.c_str());
+#endif
 		std::vector<unsigned char> bytes;
 		std::wstring path;
+		DX12MarkStage("tex_read");
 		if (!DX12DdsTextureLoadUtils::LoadTextureBytesForResource(resource->name, resource, &bytes, &path)) {
 			DX12LogManager::Fields("DX12DrawSrvReplacement",
 				"stage=texture_load_fail,reason=read_failed,resource=%S,path=%S",
@@ -751,11 +866,39 @@ public:
 		}
 		DX12DdsTextureInfo info;
 		std::string parseReason;
+		// Non-DDS formats (PNG/JPG/BMP/...) decode through WIC into straight
+		// RGBA32, mirroring the DX11 loader (DirectXTK WIC). `pixels` then
+		// points at whichever buffer holds the uploadable rows.
+		std::vector<unsigned char> decodedPixels;
+		const unsigned char *pixels = bytes.data();
+		DX12MarkStage("tex_parse_or_wic");
 		if (!DX12DdsTextureLoadUtils::ParseDds(bytes, &info, &parseReason)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
-				"stage=texture_load_fail,reason=%s,resource=%S,path=%S,bytes=%zu",
-				parseReason.c_str(), resource->name.c_str(), path.c_str(), bytes.size());
-			return false;
+			unsigned decodedWidth = 0;
+			unsigned decodedHeight = 0;
+			if (!DX12WicTextureDecodeUtils::DecodeToRgba32(
+				    bytes, &decodedPixels, &decodedWidth, &decodedHeight,
+				    &parseReason)) {
+				DX12LogManager::Fields("DX12DrawSrvReplacement",
+					"stage=texture_load_fail,reason=%s,resource=%S,path=%S,bytes=%zu",
+					parseReason.c_str(), resource->name.c_str(), path.c_str(), bytes.size());
+				return false;
+			}
+			DX12DdsSubresourceInfo subresource = {};
+			subresource.width = decodedWidth;
+			subresource.height = decodedHeight;
+			subresource.rowBytes = static_cast<UINT64>(decodedWidth) * 4;
+			subresource.numRows = decodedHeight;
+			subresource.dataOffset = 0;
+			subresource.dataBytes = subresource.rowBytes * decodedHeight;
+			info.subresources.push_back(subresource);
+			info.width = decodedWidth;
+			info.height = decodedHeight;
+			info.mipLevels = 1;
+			info.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			pixels = decodedPixels.data();
+			DX12LogManager::FieldsFlush("DX12DrawSrvReplacement",
+				"stage=wic_decoded,resource=%S,path=%S,width=%u,height=%u",
+				resource->name.c_str(), path.c_str(), decodedWidth, decodedHeight);
 		}
 
 		D3D12_RESOURCE_DESC textureDesc = {};
@@ -777,6 +920,7 @@ public:
 		defaultHeap.VisibleNodeMask = 1;
 
 		ID3D12Resource *texture = nullptr;
+		DX12MarkStage("tex_create_resource");
 		HRESULT hr = device->CreateCommittedResource(
 			&defaultHeap, D3D12_HEAP_FLAG_NONE, &textureDesc,
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture));
@@ -845,7 +989,7 @@ public:
 		unsigned char *uploadBase = static_cast<unsigned char*>(mapped);
 		for (UINT index = 0; index < subresourceCount; ++index) {
 			const DX12DdsSubresourceInfo &subresource = info.subresources[index];
-			const unsigned char *src = bytes.data() + subresource.dataOffset;
+			const unsigned char *src = pixels + subresource.dataOffset;
 			unsigned char *dst = uploadBase + layouts[index].Offset;
 			const UINT64 dstRowPitch = layouts[index].Footprint.RowPitch;
 			for (UINT64 row = 0; row < subresource.numRows; ++row) {
@@ -869,10 +1013,16 @@ public:
 
 		D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
 
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::Fields("DX12TextureUpload",
+			"stage=upload_call,resource=%S,tid=%lu",
+			resource->name.c_str(), GetCurrentThreadId());
+#endif
 		// Upload on the private channel (DX11 immediate-context equivalent)
 		// instead of recording CopyTextureRegion + barrier into the game's
 		// command list. The CPU waits for the upload to complete, so the
 		// texture is in SRV state before the game ever submits.
+		DX12MarkStage("tex_upload");
 		if (!ExecuteTextureUpload(
 				device, texture, upload, subresourceCount, layouts)) {
 			upload->Release();
@@ -883,6 +1033,14 @@ public:
 				resource->name.c_str());
 			return false;
 		}
+#if defined(DX12_RELEASE_TIMING)
+		// SRV-tail breadcrumbs (FieldsFlush): the panel-open freeze lands
+		// somewhere between the upload submit and the next element record;
+		// these step markers shrink that window to one call.
+		DX12MarkStage("tex_uploaded");
+		DX12LogManager::FieldsFlush("DX12TextureUpload",
+			"stage=tail_uploaded,resource=%S", resource->name.c_str());
+#endif
 
 		resource->drawSrvTextureResource = texture;
 		resource->drawSrvUploadResource = upload;
@@ -893,27 +1051,51 @@ public:
 		resource->drawSrvHeight = info.height;
 		resource->drawSrvMipLevels = info.mipLevels;
 		resource->path = path;
+#if defined(DX12_RELEASE_TIMING)
+		DX12MarkStage("tex_srv_create");
+#endif
 		DX12DrawTextureSrvViewUtils::CreateTexture2DSrv(
 			device, resource, info.format, srvCpu);
+#if defined(DX12_RELEASE_TIMING)
+		DX12MarkStage("tex_srv_created");
+		DX12LogManager::FieldsFlush("DX12TextureUpload",
+			"stage=tail_srv_created,resource=%S", resource->name.c_str());
+#endif
 		if (!info.subresources.empty()) {
 			const DX12DdsSubresourceInfo &topMip = info.subresources.front();
 			uint32_t textureHash = 0;
+			// Hash the uploadable rows via `pixels`, NEVER bytes.data(): for
+			// WIC-decoded formats `bytes` holds the compressed source file
+			// (a few KB) while the rows live in `decodedPixels`, so hashing
+			// rowCount*rowBytes (hundreds of KB) from bytes.data() reads far
+			// past the vector and access-violates - the frozen "deadlock"
+			// reported on first panel open was exactly this AV. The upload
+			// copy loop below already uses `pixels` for the same reason; the
+			// DDS path is unaffected because there pixels == bytes.data().
 			if (DX12TextureHashUtils::Texture2DTopMipHashFromRows(
 					textureDesc,
-					bytes.data() + topMip.dataOffset,
+					pixels + topMip.dataOffset,
 					topMip.rowBytes,
 					topMip.rowBytes,
 					topMip.numRows,
 					&textureHash) &&
 			    textureHash) {
+#if defined(DX12_RELEASE_TIMING)
+				DX12MarkStage("tex_hash_cache");
+#endif
 				DX12CacheTextureHash(
 					texture,
 					textureHash,
 					&textureDesc,
 					"mod_resource_load");
+#if defined(DX12_RELEASE_TIMING)
+				DX12MarkStage("tex_hash_cached");
+				DX12LogManager::FieldsFlush("DX12TextureUpload",
+					"stage=tail_hash_cached,resource=%S", resource->name.c_str());
+#endif
 			}
 		}
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
+		DX12LogManager::FieldsFlush("DX12DrawSrvReplacement",
 			"stage=dds_loaded,resource=%S,path=%S,width=%u,height=%u,mips=%u,format=%u,uploadBytes=%llu",
 			resource->name.c_str(), path.c_str(), info.width, info.height,
 			info.mipLevels, static_cast<UINT>(info.format),
@@ -928,9 +1110,22 @@ public:
 	{
 		if (!device || !commandList || name.empty())
 			return nullptr;
-		DX12LoadedResource *resource = EnsureLoadedResourceForPreSkin(device, name);
+		// "ref X" binding values keep the DX11 prefix into the runtime name;
+		// strip it so alias resolution and the loaded-resource lookup see X.
+		// Resource alias resolution (phase 3): names assigned through
+		// "ResourceX = ref ResourceY" map to their final target before
+		// loading. The gate keeps this at one relaxed load when the loaded
+		// mods register no aliases.
+		std::wstring resolvedName =
+			Bunny::DX12ResourceAliasStore::BindingNameWithoutRefPrefix(name);
+		if (gResourceAliases.HasAny())
+			resolvedName = gResourceAliases.Resolve(resolvedName);
+		if (resolvedName.empty())
+			return nullptr;
+		DX12LoadedResource *resource =
+			EnsureLoadedResourceForPreSkin(device, resolvedName);
 		if (!resource)
-			resource = DX12DdsTextureLoadUtils::EnsureTextureResourceRecord(name);
+			resource = DX12DdsTextureLoadUtils::EnsureTextureResourceRecord(resolvedName);
 		if (!resource)
 			return nullptr;
 		if (!DX12DdsTextureLoadUtils::EnsureTextureSrv(device, commandList, resource))
@@ -947,8 +1142,16 @@ public:
 	{
 		if (!device || name.empty())
 			return nullptr;
+		// Same alias throat as EnsureLoadedDrawTextureSrv: a name that was
+		// registered as an alias must resolve identically on every path.
+		std::wstring resolvedName =
+			Bunny::DX12ResourceAliasStore::BindingNameWithoutRefPrefix(name);
+		if (gResourceAliases.HasAny())
+			resolvedName = gResourceAliases.Resolve(resolvedName);
+		if (resolvedName.empty())
+			return nullptr;
 		DX12LoadedResource *resource =
-			DX12DdsTextureLoadUtils::EnsureTextureResourceRecord(name);
+			DX12DdsTextureLoadUtils::EnsureTextureResourceRecord(resolvedName);
 		if (!resource)
 			return nullptr;
 		if (!DX12DdsTextureLoadUtils::EnsureTextureSrv(device, nullptr, resource))

@@ -170,6 +170,8 @@ target_link_libraries(DirectX12 PRIVATE
     crc32c
     dxgi.lib
     d3dcompiler.lib
+    windowscodecs.lib
+    ole32.lib
     User32.lib
     Gdi32.lib
     comctl32.lib

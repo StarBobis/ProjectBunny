@@ -18,6 +18,11 @@
 #include <mutex>
 #include <thread>
 
+// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
+// declaration (same pattern as DX12VmFrameVariablesUtils.h) so this header
+// does not need the mod-runtime umbrella.
+void DX12MarkStage(const char *stage);
+
 class DX12IaReplacementDrawScope
 {
 public:
@@ -1126,6 +1131,10 @@ public:
 		const DX12SimulateContext &runtimeState,
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
+		DX12MarkStage("execute_present_enter");
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12PresentDiag", "event=execute_present_enter");
+#endif
 		DX12ModIaReplacement replacement;
 		if (!DX12ModPreparePresentReplacement(commandList, &replacement))
 			return false;
@@ -1137,6 +1146,12 @@ public:
 		DX12ModApplyDrawSrvReplacement(commandList, &replacement, false);
 		DX12IaDrawInvocation noDraw = {};
 		drawExecutor.ExecuteReplacementDraws(replacement, noDraw);
+		// Custom shader element draws recorded from the [Present] command
+		// list: parked for the Present-time overlay submission (the DX11
+		// [Present] semantic is "after the game's rendering, before
+		// Present", which a game command list recorded at frame start can
+		// never satisfy). See DX12ModSubmitPresentOverlay.
+		DX12ModQueuePresentCustomElements(commandList, &replacement);
 		bindingExecutor.Restore(replacement, originalIa);
 		DX12ModRestoreDrawSrvReplacement(commandList, &replacement);
 		return true;
@@ -1148,11 +1163,18 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks,
 		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
+		DX12MarkStage("pending_present_check");
 		if (!commandList || !runtimeState ||
 			!(flagsWord & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) ||
 			!DX12ModPresentReplacementPendingForCurrentPresent())
 			return;
 
+#if defined(DX12_RELEASE_TIMING)
+		// FieldsFlush on purpose: if the present replacement deadlocks the
+		// recording thread, its TLS-buffered Fields lines never publish and
+		// the trail would end exactly here without a trace.
+		DX12LogManager::FieldsFlush("DX12PresentDiag", "event=pending_execute");
+#endif
 		// Present replacement is frame-scoped and must be recorded before a
 		// resident draw can be fast-forwarded. Do only this small one-time
 		// operation here; the draw itself can still use the resident fast path.

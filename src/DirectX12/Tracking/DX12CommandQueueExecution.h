@@ -4,6 +4,12 @@
 
 #include "DX12CommandListHookState.h"
 
+// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
+// declaration (same pattern as DX12VmFrameVariablesUtils.h): this header is
+// pulled in before the mod-runtime umbrella declares the marker, so repeat
+// the prototype here.
+void DX12MarkStage(const char *stage);
+
 class DX12CommandQueueExecutionState
 {
 public:
@@ -35,6 +41,7 @@ public:
 		RegisterSubmittedCommandListFn registerSubmittedCommandList)
 	{
 		DX12_PROFILE_FUNCTION(ExecuteCommandLists);
+		DX12MarkStage("queue_execute_enter");
 		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
 	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		// Submission-gap probe: wall clock and this thread's CPU time since the
@@ -162,6 +169,7 @@ public:
 				queue,
 				numCommandLists,
 				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
@@ -184,6 +192,7 @@ public:
 				queue,
 				numCommandLists,
 				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
@@ -193,6 +202,7 @@ public:
 				queue,
 				numCommandLists,
 				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
@@ -251,6 +261,7 @@ public:
 			queue,
 			numCommandLists,
 			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+		DX12MarkStage("queue_execute_leave");
 	}
 };
 

@@ -6,6 +6,12 @@
 
 #include "../../common/MigotoCommandVmUtils.hpp"
 
+// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Declared
+// here rather than pulled in through DX12ModRuntimeInternal.h: this header is
+// included very early by the runtime headers, and the marker is a single
+// relaxed store of a static literal, so a thin interface beats a heavy include.
+void DX12MarkStage(const char *stage);
+
 class DX12VmFrameVariablesUtils
 {
 public:
@@ -40,8 +46,10 @@ public:
 		if (!MigotoCommandVmUtils::VariableStore::frameVariableReferenced.load(
 				std::memory_order_relaxed))
 			return;
+		DX12MarkStage("frame_var_collect");
 		FrameSnapshot frame;
 		const bool collected = CollectFrameSnapshot(swapChain, &frame);
+		DX12MarkStage("frame_var_apply");
 		ApplyGlobals(frame);
 		LogFrameVariables(frame, collected);
 	}

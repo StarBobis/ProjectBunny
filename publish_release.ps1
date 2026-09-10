@@ -6,6 +6,15 @@
 #
 #     https://github.com/StarBobis/PBRelease
 #
+# The zip ships d3d12.dll, Run.exe, d3dx.ini, LICENSE.txt and the runtime
+# HLSL compiler pair (dxcompiler.dll + dxil.dll from third_party\dxc). The
+# compiler pair is a runtime requirement, not a build-time extra:
+# [CustomShaderX] elements (the SSMT UI panel among them) are compiled to SM6
+# at load time by d3d12.dll, which probes its OWN directory for
+# dxcompiler.dll and needs the matching dxil.dll beside it. A release without
+# the pair silently skips every custom element (logged as
+# "pipeline_unavailable") instead of drawing it.
+#
 # Only the packaged zip ever leaves this machine - the source code stays
 # private. The old "push a tag and let GitHub Actions build from source"
 # flow is gone, because that required the source repo to be reachable by
@@ -207,23 +216,48 @@ $outDir = "$root\x64\Release"
 $stage = "$root\build\release-stage"
 $zipName = "ProjectBunny-$tag-d3d12-x64.zip"
 $zipPath = "$root\build\$zipName"
+$dxcDir = "$root\third_party\dxc"
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Get-ChildItem $stage -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
+# dxcompiler.dll + dxil.dll are listed as shipped files on purpose: the
+# loader in DX12CustomShaderCompile.h probes the d3d12.dll directory first,
+# so the pair must sit beside it in the unpacked release exactly as the dev
+# build deploys it. Missing them is a hard error, not a degraded release.
 $shipFiles = @(
     @{ Src = "$outDir\d3d12.dll"; Dst = 'd3d12.dll' },
     @{ Src = "$outDir\Run.exe"; Dst = 'Run.exe' },
+    @{ Src = "$dxcDir\dxcompiler.dll"; Dst = 'dxcompiler.dll';
+       Hint = "Runtime HLSL compiler for [CustomShaderX] elements. Restore the official drop: third_party\dxc\dxcompiler.dll + dxil.dll." },
+    @{ Src = "$dxcDir\dxil.dll"; Dst = 'dxil.dll';
+       Hint = "DXIL backend required by dxcompiler.dll (and by d3dcompiler_47's SM6 path). Restore third_party\dxc\dxil.dll." },
     @{ Src = "$root\LICENSE.txt"; Dst = 'LICENSE.txt' },
     @{ Src = "$root\config\d3dx.ini"; Dst = 'd3dx.ini' }
 )
 foreach ($f in $shipFiles) {
     if (-not (Test-Path $f.Src)) {
         Write-Host "ERROR: expected file not found: $($f.Src)" -ForegroundColor Red
-        Write-Host "       Build first (drop -SkipBuild) or restore the missing file." -ForegroundColor Yellow
+        if ($f.Hint) {
+            Write-Host "       $($f.Hint)" -ForegroundColor Yellow
+        } else {
+            Write-Host "       Build first (drop -SkipBuild) or restore the missing file." -ForegroundColor Yellow
+        }
         exit 1
     }
     Copy-Item $f.Src (Join-Path $stage $f.Dst) -Force
+}
+
+# Upstream notice for the Microsoft DirectXShaderCompiler binaries. Shipped
+# whenever the source drop carries it, so a checkout without the text can
+# still publish - but the notice must travel with the binaries.
+$dxcLicense = "$dxcDir\LICENSE.TXT"
+if (Test-Path $dxcLicense) {
+    Copy-Item $dxcLicense (Join-Path $stage 'dxc-LICENSE.TXT') -Force
+    Write-Host "Packaged DXC license notice: dxc-LICENSE.TXT" -ForegroundColor Gray
+} else {
+    Write-Host "WARNING: $dxcLicense not found - the shipped dxcompiler/dxil pair needs its upstream" -ForegroundColor Yellow
+    Write-Host "         (NCSA/LLVM) license notice. Copy LICENSE.TXT from the official DXC release into that folder." -ForegroundColor Yellow
 }
 
 Compress-Archive -Path "$stage\*" -DestinationPath $zipPath -CompressionLevel Optimal -Force

@@ -332,6 +332,21 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	// Shadow of the game's OM/rasterizer state, recorded by the wrapper's
+	// OMSetRenderTargets/RSSetViewports/RSSetScissorRects overrides (RTV
+	// handles are expanded when the game binds a contiguous range). The
+	// custom shader element replay rebinds the back buffer + full viewport
+	// mid-list and restores the game state from these fields afterwards;
+	// without them the replay would leak its OM/viewport state into every
+	// subsequent game draw on the same list.
+	UINT omRenderTargetCount = 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE omRenderTargets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+	bool omHasDepthStencil = false;
+	D3D12_CPU_DESCRIPTOR_HANDLE omDepthStencil = {};
+	UINT viewportCount = 0;
+	D3D12_VIEWPORT viewports[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+	UINT scissorCount = 0;
+	D3D12_RECT scissorRects[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
 	// Cached CBV/SRV/UAV heap content version.  Re-read on every SetDescriptorHeaps
 	// instead of on every draw: DX12GetDescriptorHeapVersion takes the global
 	// descriptor lock plus a hash-map lookup, and draws outnumber heap changes by

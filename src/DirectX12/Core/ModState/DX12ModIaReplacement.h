@@ -4,6 +4,11 @@
 // Split out of Core/DX12ModState.h; include that umbrella header from existing code.
 #include "../DX12CommandFlow.h"
 
+// Custom shader element spec model. Records carry a full copy so a reload
+// that swaps the element snapshot can never invalidate an element while its
+// replacement is still pending.
+#include "../../ModRuntime/DX12CustomShaderElement.h"
+
 class DX12ModPreSkinProducerSummary
 {
 public:
@@ -39,7 +44,8 @@ public:
 		  dispatches(other.dispatches),
 		  drawSrvPatches(other.drawSrvPatches),
 		  drawSrvApplyState(other.drawSrvApplyState),
-		  retainedDescriptorHeaps(other.retainedDescriptorHeaps)
+		  retainedDescriptorHeaps(other.retainedDescriptorHeaps),
+		  customElementRecords(other.customElementRecords)
 	{
 		for (ID3D12Resource *resource : other.retainedResources)
 			RetainResource(resource);
@@ -61,7 +67,8 @@ public:
 		  drawSrvPatches(std::move(other.drawSrvPatches)),
 		  drawSrvApplyState(std::move(other.drawSrvApplyState)),
 		  retainedResources(std::move(other.retainedResources)),
-		  retainedDescriptorHeaps(std::move(other.retainedDescriptorHeaps))
+		  retainedDescriptorHeaps(std::move(other.retainedDescriptorHeaps)),
+		  customElementRecords(std::move(other.customElementRecords))
 	{
 		other.retainedResources.clear();
 	}
@@ -86,6 +93,7 @@ public:
 		drawSrvPatches = other.drawSrvPatches;
 		drawSrvApplyState = other.drawSrvApplyState;
 		retainedDescriptorHeaps = other.retainedDescriptorHeaps;
+		customElementRecords = other.customElementRecords;
 		for (ID3D12Resource *resource : other.retainedResources)
 			RetainResource(resource);
 		for (ID3D12DescriptorHeap *heap : retainedDescriptorHeaps) {
@@ -112,6 +120,7 @@ public:
 		drawSrvApplyState = std::move(other.drawSrvApplyState);
 		retainedResources = std::move(other.retainedResources);
 		retainedDescriptorHeaps = std::move(other.retainedDescriptorHeaps);
+		customElementRecords = std::move(other.customElementRecords);
 		other.retainedResources.clear();
 		return *this;
 	}
@@ -265,4 +274,27 @@ public:
 	DrawSrvApplyState drawSrvApplyState;
 	std::vector<ID3D12Resource*> retainedResources;
 	std::vector<ID3D12DescriptorHeap*> retainedDescriptorHeaps;
+
+	// One deferred custom shader element invocation recorded by the mod
+	// executor (phase 2.4): a full copy of the element spec, the ini params
+	// float4 payload, the texture slots the body binds and the recorded draw
+	// arguments. Parked by DX12ModQueuePresentCustomElements and replayed at
+	// Present time by DX12ModSubmitPresentOverlay.
+	class CustomElementRecord
+	{
+	public:
+		Bunny::DX12CustomShaderElementSpec spec;
+		std::vector<float> iniParams; // kIniParamsFloat4Count * 4 floats
+		std::vector<std::pair<UINT, std::wstring>> textureSlots;
+		UINT drawCount = 0;
+		UINT drawStart = 0;
+	};
+	std::vector<CustomElementRecord> customElementRecords;
+
+	void AddCustomElementRecord(const CustomElementRecord &record)
+	{
+		if (record.spec.section.empty())
+			return;
+		customElementRecords.push_back(record);
+	}
 };

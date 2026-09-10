@@ -2140,9 +2140,25 @@ bool BuildResolvedDescriptorBindingsForResourceOverride(
 		return false;
 
 	if (target.kind == Bunny::CommandListTargetKind::ShaderResource) {
+		DX12MarkStage("drawsrv_resolve");
+#if defined(DX12_RELEASE_TIMING)
+		// FieldsFlush on purpose: the first draw-time SRV load of a session
+		// does file I/O + GPU upload on the recording thread; if it deadlocks,
+		// TLS-buffered Fields lines would never publish and the trail would
+		// end without naming the resource.
+		DX12LogManager::FieldsFlush("DX12DrawSrvReplacement",
+			"stage=resolve_enter,resource=%S", resourceName.c_str());
+#endif
 		DX12LoadedResource *textureResource =
 			DX12DdsTextureLoadUtils::EnsureLoadedDrawTextureSrv(
 				device, commandList, resourceName);
+		DX12MarkStage("drawsrv_resolved");
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12DrawSrvReplacement",
+			"stage=resolve_done,resource=%S,ok=%d",
+			resourceName.c_str(),
+			(textureResource && textureResource->drawSrvCpu.ptr) ? 1 : 0);
+#endif
 		if (textureResource) {
 			ID3D12Resource *texture = textureResource->drawSrvTextureResource ?
 				textureResource->drawSrvTextureResource :

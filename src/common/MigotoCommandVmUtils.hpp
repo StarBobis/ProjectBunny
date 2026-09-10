@@ -68,16 +68,24 @@ public:
 		double ParseOr()
 		{
 			double lhs = ParseAnd();
-			while (Match(L"||"))
-				lhs = Truthy(lhs) || Truthy(ParseAnd()) ? 1.0 : 0.0;
+			while (Match(L"||")) {
+				// Parse the right operand unconditionally: a C++ short-circuit
+				// ("Truthy(lhs) || Truthy(ParseAnd())") would leave the tokens
+				// unconsumed, and Parse()'s end-of-text check would then fail
+				// the whole expression to 0 - turning "1 || 0" into false.
+				const double rhs = ParseAnd();
+				lhs = (Truthy(lhs) || Truthy(rhs)) ? 1.0 : 0.0;
+			}
 			return lhs;
 		}
 
 		double ParseAnd()
 		{
 			double lhs = ParseEquality();
-			while (Match(L"&&"))
-				lhs = Truthy(lhs) && Truthy(ParseEquality()) ? 1.0 : 0.0;
+			while (Match(L"&&")) {
+				const double rhs = ParseEquality();
+				lhs = (Truthy(lhs) && Truthy(rhs)) ? 1.0 : 0.0;
+			}
 			return lhs;
 		}
 
@@ -205,7 +213,11 @@ public:
 
 		static bool IsIdentifierChar(wchar_t ch)
 		{
-			return IsIdentifierStart(ch) || (ch >= L'0' && ch <= L'9');
+			// '\\' is legal inside namespaced variable references of the form
+			// $\namespace\var (DX11 CommandList.cpp tokenizes them the same
+			// way); no expression operator uses it.
+			return IsIdentifierStart(ch) || ch == L'\\' ||
+				(ch >= L'0' && ch <= L'9');
 		}
 
 		double ParseNumber()
@@ -243,12 +255,25 @@ public:
 		bool branchTaken = false;
 	};
 
+	// A single deferred "post" assignment queued while a command list runs
+	// and evaluated when its scope flushes. `constantTarget` marks writes to
+	// the custom shader constants (x87/...): those are stored in the same
+	// global table as $variables, but the target name has no '$' prefix, so
+	// the flush path must not apply ExtractVariableName-style filtering.
+	class PostAssignment
+	{
+	public:
+		std::wstring name;
+		std::wstring expression;
+		bool constantTarget = false;
+	};
+
 	class State
 	{
 	public:
 		std::vector<std::unordered_map<std::wstring, double>> localScopes;
 		std::vector<BranchFrame> branches;
-		std::vector<std::pair<std::wstring, std::wstring>> postAssignments;
+		std::vector<PostAssignment> postAssignments;
 
 		void PushLocalScope()
 		{
@@ -324,16 +349,43 @@ public:
 		void QueuePostAssign(const std::wstring &key, const std::wstring &value)
 		{
 			std::wstring name = ExtractVariableName(key);
-			if (!name.empty())
-				postAssignments.push_back({ name, value });
+			if (!name.empty()) {
+				postAssignments.push_back(PostAssignment{ name, value, false });
+				return;
+			}
+
+			// Shader-constant targets arrive as "post x87" - a prefix the
+			// '$'-only ExtractVariableName rejects. Strip the prefix and keep
+			// the assignment only when the remainder is a supported constant
+			// name, so unrecognised deferred targets stay visible as silent
+			// drops instead of corrupting the global table.
+			std::wstring text = MigotoIniCommandListUtils::ToLower(
+				MigotoIniCommandListUtils::Trim(key));
+			if (text.rfind(L"post ", 0) != 0)
+				return;
+			text = MigotoIniCommandListUtils::Trim(text.substr(5));
+			if (text.empty() || !MigotoIniCommandListUtils::IsShaderConstantKey(text))
+				return;
+			postAssignments.push_back(PostAssignment{ text, value, true });
 		}
 
 		void FlushPostAssignments()
 		{
-			std::vector<std::pair<std::wstring, std::wstring>> pending;
+			std::vector<PostAssignment> pending;
 			pending.swap(postAssignments);
-			for (const auto &assignment : pending)
-				SetGlobal(assignment.first, Evaluate(assignment.second));
+			for (const PostAssignment &assignment : pending) {
+				const double evaluated = Evaluate(assignment.expression);
+				if (assignment.constantTarget) {
+					// Mirror a live "x87 = expr" write (AssignSymbol ->
+					// AssignResolvedName) so deferred and immediate constant
+					// assignments share one write path. Constant names never
+					// collide with '$' locals, so this resolves to the same
+					// global slot SetGlobal would use.
+					AssignResolvedName(assignment.name, evaluated);
+				} else {
+					SetGlobal(assignment.name, evaluated);
+				}
+			}
 		}
 
 		void ApplyControlFlow(const std::wstring &rawLine)
@@ -387,7 +439,18 @@ public:
 
 	static std::wstring NormalizeVariableName(const std::wstring &value)
 	{
-		return MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
+		std::wstring normalized = MigotoIniCommandListUtils::ToLower(MigotoIniCommandListUtils::Trim(value));
+		// Collapse DX11-style namespaced global references ("$\namespace\var")
+		// onto the flat global name ("$var"). The DX12 VM stores every global
+		// without namespacing, so the namespace qualifier names the same
+		// variable; without this, reads of "$\Default\swapkey0" would miss the
+		// "$swapkey0" written by the Default namespace's [Constants] and keys.
+		if (normalized.size() > 2 && normalized[0] == L'$' && normalized[1] == L'\\') {
+			const size_t lastSeparator = normalized.rfind(L'\\');
+			if (lastSeparator > 1 && lastSeparator + 1 < normalized.size())
+				normalized = L"$" + normalized.substr(lastSeparator + 1);
+		}
+		return normalized;
 	}
 
 	// Cold path: runs once per referenced variable per command-list execution,
@@ -463,6 +526,17 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		VariableStore::globals[NormalizeVariableName(name)] = value;
+	}
+
+	// Copies the whole global table under a single lock acquisition. Bulk
+	// readers (the custom element ini-params pack consults up to 2048
+	// register names per element) must not pay one lock round-trip per name.
+	static void CopyGlobals(std::unordered_map<std::wstring, double> *out)
+	{
+		if (!out)
+			return;
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		*out = VariableStore::globals;
 	}
 
 	// Captures the current values of the given persist-declared variables

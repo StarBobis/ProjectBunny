@@ -126,9 +126,21 @@ public:
 			StartsWithTokenI(value, L"persist $");
 	}
 
+	// A deferred "post" assignment defers any supported assignment target to
+	// the post stage of the enclosing command-list invocation (DX11 routes
+	// every "post <line>" into the section's post command list). The DX12 VM
+	// supports two deferred targets: $variables and the custom shader
+	// constants (x87/y87/...) written through AssignSymbol-style keys, e.g.
+	// "post x87 = $bak_x87".
 	static bool IsPostVariableAssignmentKey(const std::wstring &value)
 	{
-		return StartsWithTokenI(value, L"post $");
+		std::wstring lower = ToLower(Trim(value));
+		if (lower.rfind(L"post ", 0) != 0)
+			return false;
+		std::wstring target = Trim(lower.substr(5));
+		if (target.empty())
+			return false;
+		return target[0] == L'$' || IsShaderConstantKey(target);
 	}
 
 	static bool IsLocalVariableAssignmentKey(const std::wstring &value)

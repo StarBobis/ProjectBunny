@@ -1,6 +1,77 @@
 // DX12CommandListExecutor.cpp: command list execution entry points, frame begin and present replacement.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
+// Wrapper identity registry lock (DX12WrapperDetail::gWrapperLock), probed by
+// the freeze watchdog: a hang inside wrapper lookup (UnwrapResource and
+// friends) holds it and is otherwise invisible to the mod-side lock probes.
+#include "../Presentation/DX12WrapperCore.h"
+
+
+// Frame-boundary breadcrumb. Everything that can block a user-visible freeze
+// lives inside DX12ModBeginFrame (the tail of the Present wrapper on the game's
+// present thread), so when the game stops dead the last stage marker left
+// behind names the blocking call exactly. Written with a relaxed store and
+// never formatted unless a marker is requested: no allocation, no lock, no log
+// traffic, so it cannot perturb the timing it measures.
+namespace
+{
+	std::atomic<const char *> gFrameBoundaryStage{ nullptr };
+}
+
+void DX12MarkStage(const char *stage)
+{
+	gFrameBoundaryStage.store(stage, std::memory_order_relaxed);
+}
+
+
+// Reads the breadcrumb back for a one-line diagnostic. A frozen process stops
+// emitting, so the marker is reported at the START of every frame boundary:
+// the line printed by frame N+1 names the stage frame N died in.
+void DX12LogFrameBoundaryStage()
+{
+	const char *stage = gFrameBoundaryStage.load(std::memory_order_relaxed);
+	DX12LogManager::Fields("DX12KeyDiag",
+		"event=frame_stage present=%ld stage=%s",
+		DX12RuntimeState::GetPresentCount(), stage ? stage : "unknown");
+}
+
+
+namespace
+{
+	void MarkFrameBoundaryStage(const char *stage)
+	{
+		DX12MarkStage(stage);
+	}
+}
+
+
+#if defined(DX12_RELEASE_TIMING)
+// Freeze watchdog (TIMING builds only). When the present counter stops
+// advancing, the game is either deadlocked on one of the mod locks or
+// stalled inside a driver/GPU wait - and the frozen thread never publishes
+// its TLS log buffer, so the log alone cannot name the blocking call. This
+// thread detects the stall externally and dumps the frame-boundary stage
+// marker plus non-blocking probes of every lock the mod runtime can wait on
+// (TryAcquire only: the probes themselves can never deadlock). The first
+// report lands ~1.5s into the stall and repeats while it persists.
+// Declared here so DX12ModBeginFrame can arm it; defined below once the
+// pending-overlay statics exist.
+class DX12FreezeWatchdog
+{
+public:
+	static void Start();
+
+private:
+	static constexpr ULONGLONG kReportAfterStallMs = 1500;
+
+	inline static volatile LONG sStarted = 0;
+
+	static DWORD WINAPI ThreadProc(void *parameter);
+	static const char *ProbeSrwLock(SRWLOCK *lock);
+	static const char *ProbeMutex(std::mutex *mutex);
+	static void Report(LONG present, ULONGLONG stalledMs);
+};
+#endif
 
 
 bool TextureOverrideMatchCsSatisfied(
@@ -56,12 +127,25 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
+#if defined(DX12_RELEASE_TIMING)
+	// Arm the freeze watchdog with the first frame boundary; cheap no-op
+	// afterwards (single interlocked check per frame).
+	DX12FreezeWatchdog::Start();
+#endif
+	// Report the stage the PREVIOUS frame boundary died in, before overwriting
+	// the marker below. A frozen process stops emitting here, so the last line
+	// this prints is the frame that never finished - without it the breadcrumb
+	// is invisible, because nothing runs after the block to read it back.
+	DX12LogFrameBoundaryStage();
+	MarkFrameBoundaryStage("begin_frame");
 	// Frame-variable collection (window/cursor snapshot + ~20 global writes
 	// per frame) only matters when command lists can actually read the
 	// variables; skip the whole snapshot when the mod has none.
 	if (gHasCommandLists.load(std::memory_order_relaxed))
 		DX12VmFrameVariablesUtils::UpdateForSwapChain(swapChain);
+	MarkFrameBoundaryStage("key_bindings");
 	ProcessDx12KeyBindingsForFrame();
+	MarkFrameBoundaryStage("pre_skin_clear");
 
 	std::vector<DX12RetiredLoadedResource> expired;
 	std::vector<ID3D12Resource*> releasePreSkinResources;
@@ -70,6 +154,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// entirely instead of serializing recording threads on it for nothing.
 	if (gHasPreSkinTextureOverrideCandidates != 0) {
 		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
+		MarkFrameBoundaryStage("pre_skin_clear_locked");
 		// Track idle frames: if no active pre-skin overrides existed last frame, count idle.
 		// If pre-skin was actively matching, reset idle counter immediately.
 		if (gActivePreSkinTextureOverrides.empty()) {
@@ -85,12 +170,14 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// Best-effort: deferring expired-resource retirement by one frame is
 	// harmless, and the frame boundary must never block on the global mod
 	// lock while recording threads contend for shared acquisitions.
+	MarkFrameBoundaryStage("expired_retire");
 	if (TryAcquireSRWLockExclusive(&gModLock)) {
 		MoveExpiredRetiredLoadedResourcesLocked(&expired);
 		ReleaseSRWLockExclusive(&gModLock);
 	}
 	for (DX12RetiredLoadedResource &resource : expired)
 		ReleaseLoadedResourceObjects(&resource.resource);
+	MarkFrameBoundaryStage("pre_skin_release");
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
 
 	// Preload pre-skin replacement resources once per mod generation so the
@@ -112,6 +199,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 				SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
 				preloadDevice)
 			{
+				MarkFrameBoundaryStage("preload_resources");
 				if (PreloadPreSkinReplacementResources(preloadDevice))
 					sPreSkinResourcesPreloadedGeneration = preloadGeneration;
 				preloadDevice->Release();
@@ -138,6 +226,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 					SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&preloadDevice))) &&
 					preloadDevice)
 				{
+					MarkFrameBoundaryStage("preload_output_resize");
 					const bool progress =
 						PreloadPreSkinOutputResizeCache(preloadDevice);
 					sOutputResizePreloadIdleFrames =
@@ -148,6 +237,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 		}
 	}
 
+	MarkFrameBoundaryStage("done");
 }
 
 
@@ -159,6 +249,7 @@ bool DX12ModPreparePresentReplacement(
 	if (!DX12ModNeedsPresentReplacement())
 		return false;
 
+	DX12MarkStage("prepare_present_enter");
 	const LONG present = DX12RuntimeState::GetPresentCount();
 	for (;;) {
 		const LONG observed = InterlockedCompareExchange(
@@ -172,18 +263,433 @@ bool DX12ModPreparePresentReplacement(
 
 	ID3D12Device *device = AcquireModDevice(commandList);
 	if (!device) {
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12PresentDiag",
+			"event=prepare_skip reason=no_device present=%ld", present);
+#endif
 		InterlockedCompareExchange(&gPresentCommandListExecutedPresent, present - 1, present);
 		return false;
 	}
 
+	DX12MarkStage("prepare_run_named");
 	std::vector<DX12PendingResourceViewRequest> pendingResourceViews;
 	bool changed = RunNamedCommandList(
 		device, commandList, L"Present", replacement, &pendingResourceViews);
+	DX12MarkStage("prepare_run_named_done");
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	changed |= ApplyPendingResourceViewsForCommandList(
 		device, commandList, emptyIa, pendingResourceViews, replacement);
 	device->Release();
-	return changed;
+	// Custom element records are work too: a [Present] list that only
+	// records elements (this UI panel mod does exactly that) never marks the
+	// replacement changed, and without them the element replay below would
+	// be gated off entirely.
+	const bool hasWork = changed || !replacement->customElementRecords.empty();
+#if defined(DX12_RELEASE_TIMING)
+	DX12LogManager::FieldsFlush("DX12PresentDiag",
+		"event=prepare_ran present=%ld changed=%d elementRecords=%zu",
+		present, changed ? 1 : 0, replacement->customElementRecords.size());
+#endif
+	DX12MarkStage("prepare_present_leave");
+	return hasWork;
+}
+
+
+// Custom shader element invocations recorded while the [Present] command
+// list ran (phase 2.4). Recording happens at the first intercepted draw of
+// the frame (the VM must run where a game list is being recorded), but the
+// replay must land at Present time - the DX11 runtime executes [Present]
+// after the game's rendering, and drawing earlier would both race the back
+// buffer's PRESENT state and be overdrawn by the game's own frame. Records
+// are therefore parked here and replayed by DX12ModSubmitPresentOverlay,
+// called from the Present wrapper right before the original Present.
+class DX12PendingPresentOverlay
+{
+public:
+	std::vector<DX12ModIaReplacement::CustomElementRecord> records;
+	ID3D12Device *device = nullptr; // AddRef'd while parked
+
+	void Reset()
+	{
+		records.clear();
+		if (device) {
+			device->Release();
+			device = nullptr;
+		}
+	}
+};
+
+static std::mutex sPendingPresentOverlayLock;
+static DX12PendingPresentOverlay sPendingPresentOverlay;
+
+// The game direct queue the overlay submits on, tracked from the
+// ExecuteCommandLists wrapper (AddRef'd on change).
+static std::atomic<ID3D12CommandQueue *> sGameDirectQueue{ nullptr };
+
+void DX12ModTrackGameDirectQueue(ID3D12CommandQueue *queue)
+{
+	if (!queue)
+		return;
+	// The mod's private upload queue also flows through the ExecuteCommandLists
+	// wrapper and is DIRECT type, so without this exclusion the first texture
+	// upload would replace the game's queue as the overlay submit target -
+	// losing all ordering against the game's rendering. The upload submission
+	// always runs on the loader thread with t_uploadSubmitInLock set (the same
+	// thread-local the upload-wait bookkeeping uses), which identifies it
+	// exactly regardless of which wrapper/raw pointer form arrives here.
+	if (DX12DdsTextureLoadUtils::t_uploadSubmitInLock)
+		return;
+	ID3D12CommandQueue *current =
+		sGameDirectQueue.load(std::memory_order_acquire);
+	if (current == queue)
+		return;
+	if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+		return;
+	queue->AddRef();
+	current = sGameDirectQueue.exchange(queue, std::memory_order_acq_rel);
+	if (current && current != queue)
+		current->Release();
+}
+
+static ID3D12CommandQueue *AcquireGameDirectQueue()
+{
+	ID3D12CommandQueue *queue =
+		sGameDirectQueue.load(std::memory_order_acquire);
+	if (queue)
+		queue->AddRef();
+	return queue;
+}
+
+
+#if defined(DX12_RELEASE_TIMING)
+void DX12FreezeWatchdog::Start()
+{
+	if (InterlockedCompareExchange(&sStarted, 1, 0) != 0)
+		return;
+	HANDLE thread = CreateThread(
+		nullptr, 0, &DX12FreezeWatchdog::ThreadProc, nullptr, 0, nullptr);
+	if (thread)
+		CloseHandle(thread);
+}
+
+DWORD WINAPI DX12FreezeWatchdog::ThreadProc(void *)
+{
+	LONG lastPresent = -1;
+	ULONGLONG lastAdvanceTick = GetTickCount64();
+	for (;;) {
+		Sleep(250);
+		const LONG present = DX12RuntimeState::GetPresentCount();
+		const ULONGLONG now = GetTickCount64();
+		if (present != lastPresent) {
+			lastPresent = present;
+			lastAdvanceTick = now;
+			continue;
+		}
+		const ULONGLONG stalledMs = now - lastAdvanceTick;
+		if (stalledMs < kReportAfterStallMs)
+			continue;
+		Report(present, stalledMs);
+		// Keep re-reporting while the stall persists: a lock that is
+		// released between reports shows up as a state transition.
+		Sleep(static_cast<DWORD>(kReportAfterStallMs));
+	}
+	return 0;
+}
+
+const char *DX12FreezeWatchdog::ProbeSrwLock(SRWLOCK *lock)
+{
+	if (TryAcquireSRWLockExclusive(lock)) {
+		ReleaseSRWLockExclusive(lock);
+		return "free";
+	}
+	return "HELD";
+}
+
+const char *DX12FreezeWatchdog::ProbeMutex(std::mutex *mutex)
+{
+	if (mutex->try_lock()) {
+		mutex->unlock();
+		return "free";
+	}
+	return "HELD";
+}
+
+void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
+{
+	const char *stage = gFrameBoundaryStage.load(std::memory_order_relaxed);
+	const LONG executedPresent =
+		InterlockedCompareExchange(&gPresentCommandListExecutedPresent, 0, 0);
+	const UINT64 uploadCompleted =
+		DX12DdsTextureLoadUtils::s_uploadFence ?
+			DX12DdsTextureLoadUtils::s_uploadFence->GetCompletedValue() : 0;
+	const char *overlayLock = "HELD";
+	size_t overlayRecords = 0;
+	if (sPendingPresentOverlayLock.try_lock()) {
+		overlayRecords = sPendingPresentOverlay.records.size();
+		sPendingPresentOverlayLock.unlock();
+		overlayLock = "free";
+	}
+	DX12LogManager::FieldsFlush("DX12FreezeWatchdog",
+		"event=stall present=%ld executedPresent=%ld stalledMs=%llu stage=%s "
+		"skipAll=%ld hookFlags=0x%llx uploadPending=%d uploadPendingFence=%llu uploadCompleted=%llu "
+		"gameQueue=%d overlayRecords=%zu",
+		present,
+		executedPresent,
+		static_cast<unsigned long long>(stalledMs),
+		stage ? stage : "unknown",
+		static_cast<long>(DX12HotPathState::skipAll.load()),
+		static_cast<unsigned long long>(
+			DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed)),
+		DX12DdsTextureLoadUtils::s_uploadHasPending.load(
+			std::memory_order_acquire) ? 1 : 0,
+		static_cast<unsigned long long>(
+			DX12DdsTextureLoadUtils::s_uploadPendingFenceValue),
+		static_cast<unsigned long long>(uploadCompleted),
+		sGameDirectQueue.load(std::memory_order_acquire) ? 1 : 0,
+		overlayRecords);
+	DX12LogManager::FieldsFlush("DX12FreezeWatchdog",
+		"event=locks mod=%s preskin=%s upload=%s vmGlobals=%s overlay=%s "
+		"descriptor=%s wrapper=%s",
+		ProbeSrwLock(&gModLock),
+		ProbeSrwLock(&gPreSkinLock),
+		ProbeSrwLock(&DX12DdsTextureLoadUtils::s_uploadLock),
+		ProbeMutex(&MigotoCommandVmUtils::VariableStore::globalsMutex),
+		overlayLock,
+		ProbeSrwLock(&gDescriptorLock),
+		ProbeSrwLock(&DX12WrapperDetail::gWrapperLock));
+}
+#endif
+
+bool DX12ModQueuePresentCustomElements(
+	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement)
+{
+	if (!commandList || !replacement)
+		return false;
+	if (replacement->customElementRecords.empty())
+		return false;
+
+	DX12MarkStage("overlay_queue_enter");
+	ID3D12Device *device = AcquireModDeviceFast(commandList, nullptr);
+	if (!device)
+		return false;
+
+	std::lock_guard<std::mutex> lock(sPendingPresentOverlayLock);
+	sPendingPresentOverlay.Reset();
+	sPendingPresentOverlay.records.swap(replacement->customElementRecords);
+	sPendingPresentOverlay.device = device; // adopts the reference
+#if defined(DX12_RELEASE_TIMING)
+	DX12LogManager::FieldsFlush("DX12PresentDiag",
+		"event=overlay_queued records=%zu",
+		sPendingPresentOverlay.records.size());
+#endif
+	DX12MarkStage("overlay_queue_leave");
+	return true;
+}
+
+bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
+{
+	if (!swapChain)
+		return false;
+	DX12MarkStage("overlay_begin");
+
+	std::vector<DX12ModIaReplacement::CustomElementRecord> records;
+	ID3D12Device *device = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(sPendingPresentOverlayLock);
+		if (sPendingPresentOverlay.records.empty())
+			return false;
+		records.swap(sPendingPresentOverlay.records);
+		device = sPendingPresentOverlay.device;
+		sPendingPresentOverlay.device = nullptr;
+	}
+
+	// Lazily retire every custom-shader cache once per mod generation. Doing
+	// it here (the only consumer) avoids cross-thread deletion against the
+	// reload path; a stale PSO/bytecode would otherwise survive an F10-style
+	// reload forever because the pipeline cache keys never expire.
+	static std::atomic<UINT64> sCustomShaderCacheGeneration = 0;
+	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+	if (sCustomShaderCacheGeneration.load(std::memory_order_acquire) != reloadGeneration) {
+		Bunny::DX12CustomShaderPipelineCache::ClearAll();
+		Bunny::DX12IniParamsTexture::ClearAll();
+		Bunny::DX12CustomShaderTableHeap::ClearAll();
+		Bunny::DX12CustomShaderSurfaceCache::ClearAll();
+		Bunny::DX12CustomShaderCompile::ClearCache();
+		Bunny::DX12PresentOverlayChannel::ClearAll();
+		sCustomShaderCacheGeneration.store(reloadGeneration, std::memory_order_release);
+	}
+
+	const UINT64 presentCount =
+		static_cast<UINT64>(DX12RuntimeState::GetPresentCount());
+	Bunny::DX12IniParamsTexture *iniParamsTexture =
+		Bunny::DX12IniParamsTexture::ForDevice(device);
+	Bunny::DX12CustomShaderTableHeap *tableHeap =
+		Bunny::DX12CustomShaderTableHeap::ForDevice(device);
+	Bunny::DX12CustomShaderSurfaceCache *surfaceCache =
+		Bunny::DX12CustomShaderSurfaceCache::ForDevice(device);
+	ID3D12RootSignature *rootSignature =
+		Bunny::DX12CustomShaderPipelineCache::EnsureRootSignature(device);
+	Bunny::DX12PresentOverlayChannel *channel =
+		Bunny::DX12PresentOverlayChannel::ForDevice(device);
+	ID3D12CommandQueue *queue = AcquireGameDirectQueue();
+
+	bool anyDrawn = false;
+	bool submitted = false;
+	ID3D12GraphicsCommandList *commandList = nullptr;
+	if (!iniParamsTexture || !tableHeap || !surfaceCache || !rootSignature ||
+	    !channel || !queue) {
+		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			"event=replay_skip reason=overlay_channel_unavailable queue=%d",
+			queue ? 1 : 0);
+	} else if (!(commandList = channel->BeginRecord())) {
+		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			"event=replay_skip reason=overlay_begin_record_failed");
+	} else if (!tableHeap->BeginPresent(presentCount)) {
+		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			"event=replay_skip reason=table_heap_unavailable");
+		commandList->Close();
+		commandList = nullptr;
+	}
+	if (commandList) {
+
+	// The back buffer sits in PRESENT state at this point; bracket the
+	// overlay draws with explicit transitions.
+	ID3D12Resource *backBuffer = nullptr;
+	UINT backBufferIndex = 0;
+	IDXGISwapChain3 *swapChain3 = nullptr;
+	if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) &&
+	    swapChain3) {
+		backBufferIndex = swapChain3->GetCurrentBackBufferIndex();
+		swapChain3->Release();
+	}
+	if (FAILED(swapChain->GetBuffer(backBufferIndex, IID_PPV_ARGS(&backBuffer))))
+		backBuffer = nullptr;
+	if (backBuffer) {
+		D3D12_RESOURCE_BARRIER toRenderTarget = {};
+		toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toRenderTarget.Transition.pResource = backBuffer;
+		toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+		toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		commandList->ResourceBarrier(1, &toRenderTarget);
+	}
+
+	for (const DX12ModIaReplacement::CustomElementRecord &record : records) {
+		const Bunny::DX12CustomShaderElementSpec &spec = record.spec;
+		if (!spec.hasStage[0] || !spec.hasStage[4]) {
+			DX12LogManager::Fields("DX12CustomShaderDiag",
+				"event=replay_skip reason=invalid_spec");
+			continue;
+		}
+		// Per-element table region + ini-params upload region (shared
+		// ordinal): CPU descriptor writes and upload memcpys land before
+		// submission, so two elements must never share a region within a
+		// frame. Over capacity the remaining elements are skipped with a
+		// diagnostic instead of corrupting earlier draws.
+		UINT elementIndex = 0;
+		if (!tableHeap->AcquireElementRegion(&elementIndex)) {
+			DX12LogManager::Fields("DX12CustomShaderDiag",
+				"event=replay_skip reason=element_capacity_exceeded section=%S",
+				spec.section.c_str());
+			break;
+		}
+		if (!iniParamsTexture->UpdateAndUpload(
+			    commandList, presentCount, elementIndex, record.iniParams.data())) {
+			DX12LogManager::Fields("DX12CustomShaderDiag",
+				"event=replay_skip reason=ini_params_upload_failed section=%S",
+				spec.section.c_str());
+			continue;
+		}
+		tableHeap->FillDefault(iniParamsTexture->SrvCpuHandle());
+		for (const auto &slot : record.textureSlots) {
+			DX12LoadedResource *resource =
+				DX12DdsTextureLoadUtils::EnsureLoadedDrawTextureSrv(
+					device, commandList, slot.second);
+			if (!resource || !resource->drawSrvCpu.ptr)
+				continue;
+			tableHeap->CopySrv(slot.first, resource->drawSrvCpu);
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv = {};
+		DXGI_FORMAT backBufferFormat = DXGI_FORMAT_UNKNOWN;
+		UINT backBufferWidth = 0;
+		UINT backBufferHeight = 0;
+		if (!surfaceCache->EnsureBackBufferView(
+			    swapChain, &backBufferRtv, &backBufferFormat,
+			    &backBufferWidth, &backBufferHeight)) {
+			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+				"event=replay_skip reason=no_back_buffer section=%S",
+				spec.section.c_str());
+			continue;
+		}
+		ID3D12PipelineState *pipeline =
+			Bunny::DX12CustomShaderPipelineCache::EnsurePipeline(
+				device, spec, backBufferFormat);
+		if (!pipeline) {
+			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+				"event=replay_skip reason=pipeline_unavailable section=%S format=%d",
+				spec.section.c_str(), static_cast<int>(backBufferFormat));
+			continue;
+		}
+
+		// Mod-owned native list: the wrapper hooks never see these calls.
+		ID3D12DescriptorHeap *heaps[1] = { tableHeap->Heap() };
+		commandList->SetDescriptorHeaps(1, heaps);
+		commandList->SetGraphicsRootSignature(rootSignature);
+		commandList->SetGraphicsRootDescriptorTable(0, tableHeap->GpuStart());
+		commandList->SetPipelineState(pipeline);
+		const D3D12_PRIMITIVE_TOPOLOGY topology =
+			Bunny::DX12CustomShaderPipelineAssembler::TopologyForBind(
+				spec.topology, spec.patchControlPoints);
+		commandList->IASetPrimitiveTopology(topology);
+		commandList->OMSetRenderTargets(1, &backBufferRtv, FALSE, nullptr);
+		D3D12_VIEWPORT viewport = {};
+		viewport.Width = static_cast<float>(backBufferWidth);
+		viewport.Height = static_cast<float>(backBufferHeight);
+		viewport.MaxDepth = 1.0f;
+		commandList->RSSetViewports(1, &viewport);
+		D3D12_RECT scissor = {};
+		scissor.right = static_cast<LONG>(backBufferWidth);
+		scissor.bottom = static_cast<LONG>(backBufferHeight);
+		commandList->RSSetScissorRects(1, &scissor);
+		commandList->DrawInstanced(
+			record.drawCount ? record.drawCount : 4, 1,
+			record.drawStart, 0);
+		anyDrawn = true;
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			"event=element_drawn section=%S w=%u h=%u format=%d textures=%zu",
+			spec.section.c_str(), backBufferWidth, backBufferHeight,
+			static_cast<int>(backBufferFormat), record.textureSlots.size());
+#endif
+	}
+
+	if (backBuffer) {
+		D3D12_RESOURCE_BARRIER toPresent = {};
+		toPresent.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		toPresent.Transition.pResource = backBuffer;
+		toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+		commandList->ResourceBarrier(1, &toPresent);
+		backBuffer->Release();
+	}
+	if (anyDrawn) {
+		DX12MarkStage("overlay_channel_submit");
+		submitted = channel->Submit(queue);
+	} else {
+		commandList->Close();
+	}
+	} // if (commandList)
+#if defined(DX12_RELEASE_TIMING)
+	DX12LogManager::FieldsFlush("DX12PresentDiag",
+		"event=overlay_submit records=%zu drawn=%d submitted=%d",
+		records.size(), anyDrawn ? 1 : 0, submitted ? 1 : 0);
+#endif
+	DX12MarkStage("overlay_submit_done");
+	if (queue)
+		queue->Release();
+	if (device)
+		device->Release();
+	return submitted;
 }
 
 
@@ -595,14 +1101,33 @@ bool RunNamedCommandList(
 {
 	if (!device || !commandList || !replacement)
 		return false;
-	if (!CommandListRuntimeEffect(name, true))
+	if (!CommandListRuntimeEffect(name, true)) {
+#if defined(DX12_RELEASE_TIMING)
+		DX12LogManager::FieldsFlush("DX12PresentDiag",
+			"event=run_named_skip name=%S reason=no_runtime_effect", name.c_str());
+#endif
 		return false;
+	}
 
+#if defined(DX12_RELEASE_TIMING)
+	DX12LogManager::FieldsFlush("DX12PresentDiag",
+		"event=run_named_enter name=%S", name.c_str());
+#endif
+	DX12MarkStage("run_named_list");
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
 		device, commandList, emptyIa, 0, 0, 0, 0, 0, 0,
 		replacement, pendingResourceViews);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
+#if defined(DX12_RELEASE_TIMING)
+	const MigotoCommandVmUtils::ExpressionContext vmProbeContext;
+	DX12LogManager::FieldsFlush("DX12PresentDiag",
+		"event=run_named name=%S changed=%d vm_menu=%.3f vm_draw=%.3f vm_ts=%.3f",
+		name.c_str(), executor.Changed() ? 1 : 0,
+		MigotoCommandVmUtils::LookupVariable(vmProbeContext, L"$ssmtui_menu"),
+		MigotoCommandVmUtils::LookupVariable(vmProbeContext, L"$ssmtui_draw"),
+		MigotoCommandVmUtils::LookupVariable(vmProbeContext, L"$ssmtui_ts"));
+#endif
 	return executor.Changed();
 }
 
@@ -632,6 +1157,7 @@ static void DX12KeyPressDiagSink(
 	const wchar_t *direction, const wchar_t *conditionText,
 	int conditionActive, const wchar_t *variablesState)
 {
+	DX12MarkStage("key_press_sink");
 	DX12LogManager::Fields("DX12KeyDiag",
 		"event=press section=%S key=%S type=%d direction=%S conditionText=%S condition=%d vars=%S",
 		section ? section : L"", keyText ? keyText : L"", type,
@@ -684,16 +1210,19 @@ void ProcessDx12KeyBindingsForFrame()
 	// delays a hotkey by one frame.
 	if (!TryAcquireSRWLockExclusive(&gModLock))
 		return;
+	MarkFrameBoundaryStage("key_bindings_locked");
 	if (gLoaded)
 		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
 	ReleaseSRWLockExclusive(&gModLock);
-
+	MarkFrameBoundaryStage("key_bindings_done");
 
 	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
 		RunNamedCommandListVmOnly(action.commandList, action.includePost);
+	MarkFrameBoundaryStage("key_actions_done");
 #if defined(DX12_RELEASE_TIMING)
 	DX12TraceFrameKeyVariables();
 #endif
+	MarkFrameBoundaryStage("key_vars_traced");
 }
 
 

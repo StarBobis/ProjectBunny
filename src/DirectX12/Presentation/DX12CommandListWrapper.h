@@ -561,6 +561,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_HOTPATH_TIME_BEGIN(ClearStateTotal);
 			mCommandList->ClearState(DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
+			// ClearState reverts OM/rasterizer state to defaults; keep the
+			// replay-restore shadow in step.
+			mRuntimeState.omRenderTargetCount = 0;
+			mRuntimeState.omHasDepthStencil = false;
+			mRuntimeState.viewportCount = 0;
+			mRuntimeState.scissorCount = 0;
 		DX12_HOTPATH_TIME_END(ClearStateTotal);
 		}
 
@@ -816,6 +822,15 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_HOTPATH_TIME_BEGIN(RSSetViewportsTotal);
 			mCommandList->RSSetViewports(NumViewports, pViewports);
+			// Shadow for the custom element replay's post-draw restore (see
+			// DX12SimulateContext::viewports).
+			mRuntimeState.viewportCount = (std::min)(
+				NumViewports,
+				static_cast<UINT>(D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE));
+			if (pViewports) {
+				for (UINT i = 0; i < mRuntimeState.viewportCount; ++i)
+					mRuntimeState.viewports[i] = pViewports[i];
+			}
 		DX12_HOTPATH_TIME_END(RSSetViewportsTotal);
 		}
 
@@ -823,6 +838,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_HOTPATH_TIME_BEGIN(RSSetScissorRectsTotal);
 			mCommandList->RSSetScissorRects(NumRects, pRects);
+			mRuntimeState.scissorCount = (std::min)(
+				NumRects,
+				static_cast<UINT>(D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE));
+			if (pRects) {
+				for (UINT i = 0; i < mRuntimeState.scissorCount; ++i)
+					mRuntimeState.scissorRects[i] = pRects[i];
+			}
 		DX12_HOTPATH_TIME_END(RSSetScissorRectsTotal);
 		}
 
@@ -1231,6 +1253,30 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			mCommandList->OMSetRenderTargets(
 				NumRenderTargetDescriptors, pRenderTargetDescriptors,
 				RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
+			// Shadow for the custom element replay's post-draw restore. A
+			// single-handle range is expanded with the RTV increment so the
+			// restore can rebind the exact per-slot handles.
+			mRuntimeState.omRenderTargetCount = (std::min)(
+				NumRenderTargetDescriptors,
+				static_cast<UINT>(D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT));
+			if (pRenderTargetDescriptors) {
+				UINT rtvIncrement = 0;
+				if (RTsSingleHandleToDescriptorRange && mRuntimeState.device) {
+					rtvIncrement = mRuntimeState.device->GetDescriptorHandleIncrementSize(
+						D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+				}
+				for (UINT i = 0; i < mRuntimeState.omRenderTargetCount; ++i) {
+					mRuntimeState.omRenderTargets[i] = RTsSingleHandleToDescriptorRange ?
+						D3D12_CPU_DESCRIPTOR_HANDLE{
+							pRenderTargetDescriptors[0].ptr +
+								static_cast<UINT64>(i) * rtvIncrement } :
+						pRenderTargetDescriptors[i];
+				}
+			}
+			mRuntimeState.omHasDepthStencil =
+				pDepthStencilDescriptor && pDepthStencilDescriptor->ptr;
+			if (mRuntimeState.omHasDepthStencil)
+				mRuntimeState.omDepthStencil = *pDepthStencilDescriptor;
 		}
 
 		void STDMETHODCALLTYPE ClearDepthStencilView(

@@ -154,15 +154,22 @@ inline static const SectionPrefixEntry kMigotoRegularSections[] = {
 static const wchar_t *SectionPrefixFromList(
 	const std::wstring &section, const SectionPrefixEntry *entries, size_t count)
 {
+	// DX11 parity (IniHandler.cpp SectionPrefixFromList): only prefix-style
+	// sections (Key*, CommandList*, Resource*, ...) are namespaced. Exact-match
+	// sections ([Present], [Constants], [System], [Hunting], ...) are global:
+	// every ini file, namespaced or not, appends to the single shared section,
+	// which is what lets mod files contribute [Present] frame logic and
+	// [Constants] variable declarations. Namespacing them here would rename
+	// them to "Present\<ns>\" etc., which the command-list parser (exact match
+	// on "Present"/"Constants") and the global [System]/[Logging] lookups
+	// would never find again.
 	for (size_t i = 0; i < count; ++i) {
 		const SectionPrefixEntry &entry = entries[i];
+		if (!entry.isPrefix)
+			continue;
 		std::wstring prefix = entry.prefix;
-		if (entry.isPrefix) {
-			if (IniDocumentText::ToLower(section).rfind(IniDocumentText::ToLower(prefix), 0) == 0)
-				return entry.prefix;
-		} else if (IniDocumentText::ToLower(section) == IniDocumentText::ToLower(prefix)) {
+		if (IniDocumentText::ToLower(section).rfind(IniDocumentText::ToLower(prefix), 0) == 0)
 			return entry.prefix;
-		}
 	}
 	return nullptr;
 }
@@ -466,7 +473,12 @@ enum class CommandListActionKind
 	SetUnorderedAccessView,
 	SetShader,
 	SetShaderConstant,
-	SetRenderState
+	SetRenderState,
+	// Deferred "this = X" replacement: the resource is chosen by a runtime
+	// branch, so unlike the static drawReplaceThisResource fast path it must
+	// live in the action stream and resolve against the matched SRV at draw
+	// time (see MigotoTextureOverrideParser::ParseSections).
+	SetThisResource
 };
 
 class CommandListAction
@@ -518,6 +530,12 @@ public:
 		CommandListLinks *links, const std::wstring &iniNamespace);
 	static void ResolveActionReferences(
 		CommandListAction *action, const std::wstring &iniNamespace);
+	// ParseActionFromEntry receives the lower-cased key, but for
+	// ResourceAssignment the key doubles as the loaded-resource name and
+	// gLoadedResources lookups are case-sensitive; restore the entry's
+	// original spelling before the action is stored.
+	static void PreserveResourceAssignmentName(
+		const IniEntry &entry, CommandListAction *action);
 	static void ParseSections(const IniDocument &ini, CommandListMap *commandLists);
 };
 
@@ -699,6 +717,15 @@ inline std::wstring MigotoCommandListParserText::ResolveCommandListReference(
 inline std::wstring MigotoCommandListParserText::ResolveResourceReference(
 	const std::wstring &value, const std::wstring &iniNamespace)
 {
+	// "ref X" is the DX11 reference spelling: namespace resolution must see
+	// the bare name, and the prefix is re-applied for the runtime throat
+	// (which strips it again before the loaded-resource lookup).
+	const std::wstring trimmed = IniDocumentText::Trim(value);
+	if (trimmed.size() > 4 &&
+	    IniDocumentText::ToLower(trimmed.substr(0, 4)) == L"ref ") {
+		return L"ref " + IniDocumentText::ResolveNamespacedSectionReference(
+			IniDocumentText::Trim(trimmed.substr(4)), L"Resource", iniNamespace);
+	}
 	return IniDocumentText::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
 }
 
@@ -839,7 +866,7 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 		return MigotoCommandListParserText::ParseDrawArgs(value, 3, action);
 	}
 
-	if (key == L"vs" || key == L"ps" || key == L"cs") {
+	if (key == L"vs" || key == L"hs" || key == L"ds" || key == L"gs" || key == L"ps" || key == L"cs") {
 		action->kind = CommandListActionKind::SetShader;
 		action->resource = value;
 		return !action->resource.empty();
@@ -875,6 +902,15 @@ inline bool MigotoCommandListParser::ParseActionFromEntry(
 	if (MigotoCommandListParserText::IsRenderStateKey(key)) {
 		action->kind = CommandListActionKind::SetRenderState;
 		return true;
+	}
+
+	if (key == L"this") {
+		// Deferred "replace the matched this-texture" assignment. Kept out
+		// of ParseTarget because "this" names no fixed register: it resolves
+		// against whichever SRV matched the section at draw time.
+		action->kind = CommandListActionKind::SetThisResource;
+		action->resource = value;
+		return !action->resource.empty();
 	}
 
 	CommandListTarget target;
@@ -957,8 +993,21 @@ inline void MigotoCommandListParser::ResolveActionReferences(
 	         action->kind == CommandListActionKind::SetVertexBuffer ||
 	         action->kind == CommandListActionKind::SetConstantBuffer ||
 	         action->kind == CommandListActionKind::SetShaderResource ||
-	         action->kind == CommandListActionKind::SetUnorderedAccessView)
+	         action->kind == CommandListActionKind::SetUnorderedAccessView ||
+	         action->kind == CommandListActionKind::SetThisResource)
 		action->resource = MigotoCommandListParserText::ResolveResourceReference(action->resource, iniNamespace);
+	else if (action->kind == CommandListActionKind::ResourceAssignment)
+		// The assignment key is itself a resource name (or an absolute
+		// namespaced one); resolve it so the registration and the lookup
+		// side agree on the exact string.
+		action->resource = MigotoCommandListParserText::ResolveResourceReference(action->resource, iniNamespace);
+}
+
+inline void MigotoCommandListParser::PreserveResourceAssignmentName(
+	const IniEntry &entry, CommandListAction *action)
+{
+	if (action && action->kind == CommandListActionKind::ResourceAssignment)
+		action->resource = IniDocumentText::Trim(entry.key);
 }
 
 inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, CommandListMap *commandLists)
@@ -993,6 +1042,7 @@ inline void MigotoCommandListParser::ParseSections(const IniDocument &ini, Comma
 			std::wstring value = IniDocumentText::Trim(entry.value);
 			CommandListAction action;
 			if (MigotoCommandListParser::ParseActionFromEntry(key, value, &action)) {
+				MigotoCommandListParser::PreserveResourceAssignmentName(entry, &action);
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 				config.actions.push_back(action);
 				continue;
@@ -1131,6 +1181,7 @@ inline void MigotoShaderOverrideParser::ParseSections(
 
 			CommandListAction action;
 			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
+				MigotoCommandListParser::PreserveResourceAssignmentName(entry, &action);
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 				config.actions.push_back(action);
 				continue;
@@ -1192,7 +1243,17 @@ public:
 	// Draw-call texture slot replacement (ps-tN/vs-tN/this=).
 	std::map<uint32_t, std::wstring> drawPsSrvResources;
 	std::map<uint32_t, std::wstring> drawVsSrvResources;
+	// Unconditional replacement resource for "this = X" written at the top
+	// level of the section (fast path). "this =" lines nested inside if/else
+	// never land here: they are branch-dependent, so the parser records them
+	// as SetThisResource actions and only arms this flag so the match stage
+	// still treats the section as a texture-content replacement target.
 	std::wstring drawReplaceThisResource;
+	bool hasConditionalThisReplacement = false;
+	// Section explicitly unbinds an IA binding ("ib = null" / "vbN = null").
+	// Kept for classification/diagnostics; the runtime relies on
+	// handling=skip for the swallow semantics.
+	bool explicitNullBindings = false;
 	NumericMatch matchVertexCount;
 	NumericMatch matchIndexCount;
 	NumericMatch matchInstanceCount;
@@ -1426,6 +1487,13 @@ inline bool MigotoTextureOverrideParserText::ParseVertexBufferKey(const std::wst
 inline std::wstring MigotoTextureOverrideParserText::ResolveResourceReference(
 	const std::wstring &value, const std::wstring &iniNamespace)
 {
+	// Same "ref " handling as the command-list variant.
+	const std::wstring trimmed = IniDocumentText::Trim(value);
+	if (trimmed.size() > 4 &&
+	    IniDocumentText::ToLower(trimmed.substr(0, 4)) == L"ref ") {
+		return L"ref " + IniDocumentText::ResolveNamespacedSectionReference(
+			IniDocumentText::Trim(trimmed.substr(4)), L"Resource", iniNamespace);
+	}
 	return IniDocumentText::ResolveNamespacedSectionReference(value, L"Resource", iniNamespace);
 }
 
@@ -1447,11 +1515,39 @@ inline void MigotoTextureOverrideParser::ParseSections(
 		config.sourceDir = section.sourceDir;
 		config.iniNamespace = section.iniNamespace;
 		bool hasHash = false;
+		// Control-flow nesting depth of the entry being processed. Binding
+		// directives (ib/vbN/ps-tN/vs-tN/this) written under if/else are
+		// branch-dependent: DX11 defers them to draw time and evaluates the
+		// branch, so they must stay in the runtime action stream instead of
+		// the load-time static capture, which cannot express conditions.
+		int branchDepth = 0;
+		// Parses a binding entry into an action and appends it to the
+		// section's runtime stream (ResolveActionReferences mirrors the
+		// static branches so both paths resolve namespaced resources the
+		// same way).
+		auto appendBindingAction = [&config](const IniEntry &entry, const std::wstring &key) {
+			CommandListAction action;
+			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
+				MigotoCommandListParser::PreserveResourceAssignmentName(entry, &action);
+				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
+				config.actions.push_back(action);
+			}
+		};
 
 			for (const IniEntry &entry : section.entries) {
 				CommandListAction rawAction;
 				if (MigotoCommandListParser::ParseActionFromRawLine(entry.rawLine, &rawAction) &&
 					(!entry.hasEquals || rawAction.kind == CommandListActionKind::ControlFlow)) {
+					if (rawAction.kind == CommandListActionKind::ControlFlow) {
+						// rawAction.key is already lower-cased by
+						// ParseActionFromRawLine, matching the VM's
+						// ApplyControlFlow view of the same line.
+						const std::wstring line = IniDocumentText::Trim(rawAction.key);
+						if (line.rfind(L"if ", 0) == 0)
+							++branchDepth;
+						else if (line == L"endif" && branchDepth > 0)
+							--branchDepth;
+					}
 					MigotoCommandListParser::ResolveActionReferences(&rawAction, entry.iniNamespace);
 					config.actions.push_back(rawAction);
 					continue;
@@ -1484,25 +1580,32 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			}
 
 			if (key == L"ib") {
-				config.indexBufferResource =
-					MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
-				CommandListAction action;
-				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
-					MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
-					config.actions.push_back(action);
+				if (MigotoIniCommandListUtils::EqualsI(IniDocumentText::Trim(entry.value), L"null")) {
+					// Explicit unbind: no static resource and no runtime
+					// action (which would otherwise reference a bogus
+					// "Resourcenull"); the flag records the intent.
+					config.explicitNullBindings = true;
+					continue;
 				}
+				if (branchDepth == 0) {
+					config.indexBufferResource =
+						MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
+				}
+				appendBindingAction(entry, key);
 				continue;
 			}
 
 			uint32_t vbSlot = 0;
 			if (MigotoTextureOverrideParserText::ParseVertexBufferKey(key, &vbSlot)) {
-				config.vertexBufferResources[vbSlot] =
-					MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
-				CommandListAction action;
-				if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
-					MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
-					config.actions.push_back(action);
+				if (MigotoIniCommandListUtils::EqualsI(IniDocumentText::Trim(entry.value), L"null")) {
+					config.explicitNullBindings = true;
+					continue;
 				}
+				if (branchDepth == 0) {
+					config.vertexBufferResources[vbSlot] =
+						MigotoTextureOverrideParserText::ResolveResourceReference(entry.value, entry.iniNamespace);
+				}
+				appendBindingAction(entry, key);
 				continue;
 			}
 
@@ -1598,20 +1701,43 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			// Draw-call texture slot replacement: ps-tN / vs-tN / this=
 			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"ps-t", L"", &srvIndex)) {
-				config.drawPsSrvResources[srvIndex] =
-					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				if (branchDepth == 0) {
+					// Top-level binding: unconditional, keep the static fast
+					// path (applied without VM involvement).
+					config.drawPsSrvResources[srvIndex] =
+						MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				} else {
+					// Nested inside if/else: branch-dependent, so it belongs
+					// to the runtime action stream where the VM gate decides
+					// whether the binding happens (SetShaderResource is
+					// already VM-gated in the executor).
+					appendBindingAction(entry, key);
+				}
 				continue;
 			}
 
 			if (MigotoTextureOverrideParserText::ParseSrvIndexedKey(key, L"vs-t", L"", &srvIndex)) {
-				config.drawVsSrvResources[srvIndex] =
-					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				if (branchDepth == 0) {
+					config.drawVsSrvResources[srvIndex] =
+						MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				} else {
+					appendBindingAction(entry, key);
+				}
 				continue;
 			}
 
 			if (key == L"this") {
-				config.drawReplaceThisResource =
-					MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				if (branchDepth == 0) {
+					config.drawReplaceThisResource =
+						MigotoTextureOverrideParserText::ResolveResourceReference(IniDocumentText::Trim(entry.value), entry.iniNamespace);
+				} else {
+					// Conditional "this = X": the chosen resource depends on
+					// the branch, so it can only live in the action stream
+					// (SetThisResource). The flag keeps the section armed as
+					// a texture-content replacement target for matching.
+					config.hasConditionalThisReplacement = true;
+					appendBindingAction(entry, key);
+				}
 				continue;
 			}
 
@@ -1644,6 +1770,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 
 			CommandListAction action;
 			if (MigotoCommandListParser::ParseActionFromEntry(key, IniDocumentText::Trim(entry.value), &action)) {
+				MigotoCommandListParser::PreserveResourceAssignmentName(entry, &action);
 				MigotoCommandListParser::ResolveActionReferences(&action, entry.iniNamespace);
 				config.actions.push_back(action);
 				continue;
