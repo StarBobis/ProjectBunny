@@ -533,12 +533,27 @@ public:
 		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
+			// Nothing needs draw/state/copy hooks this frame, which is also the
+			// state before any mod is loaded. The hunting text overlay must not
+			// run here: hunting always clears skipAll, so the text still draws
+			// on the normal path below, while initialising GPU objects and
+			// submitting on the game queue from this fast path is exactly what
+			// stalled startup.
 			DX12_DIAG_QPC_RESET(sliceBegin);
-			DX12NativeOverlayRender(swapChain);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
 			DX12_PROF_RESUME(_profile_timer);
 			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			if (FAILED(skipHr)) {
+				ID3D12Device *failedDevice = nullptr;
+				if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&failedDevice))) && failedDevice) {
+					DX12_LOG_FLUSH("DX12PresentDiag",
+						"event=present_failed api=Present skipAll=1 hr=0x%lx removedReason=0x%lx",
+						static_cast<unsigned long>(skipHr),
+						static_cast<unsigned long>(failedDevice->GetDeviceRemovedReason()));
+					failedDevice->Release();
+				}
+			}
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
@@ -575,6 +590,14 @@ public:
 		DX12MarkStage("present_original_done");
 		DX12_PROF_ADD_US("Present.original_present", DX12_DIAG_ELAPSED_US(presentBegin));
 						if (FAILED(hr)) {
+			ID3D12Device *failedDevice = nullptr;
+			if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&failedDevice))) && failedDevice) {
+				DX12_LOG_FLUSH("DX12PresentDiag",
+					"event=present_failed api=Present skipAll=0 hr=0x%lx removedReason=0x%lx",
+					static_cast<unsigned long>(hr),
+					static_cast<unsigned long>(failedDevice->GetDeviceRemovedReason()));
+				failedDevice->Release();
+			}
 			DX12_PROF_FINISH(_profile_timer);
 			DX12_PROF_STAGE_END(Present);
 			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, hr);
@@ -643,12 +666,22 @@ public:
 		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
+			// See the Present wrapper above: the overlay stays out of skipAll.
 			DX12_DIAG_QPC_RESET(sliceBegin);
-			DX12NativeOverlayRender(swapChain);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
 			DX12_PROF_RESUME(_profile_timer);
 			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			if (FAILED(skipHr)) {
+				ID3D12Device *failedDevice = nullptr;
+				if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&failedDevice))) && failedDevice) {
+					DX12_LOG_FLUSH("DX12PresentDiag",
+						"event=present_failed api=Present1 skipAll=1 hr=0x%lx removedReason=0x%lx",
+						static_cast<unsigned long>(skipHr),
+						static_cast<unsigned long>(failedDevice->GetDeviceRemovedReason()));
+					failedDevice->Release();
+				}
+			}
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
 			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
@@ -684,6 +717,14 @@ public:
 		DX12MarkStage("present_original_done");
 		DX12_PROF_ADD_US("Present.original_present", DX12_DIAG_ELAPSED_US(presentBegin));
 						if (FAILED(hr)) {
+			ID3D12Device *failedDevice = nullptr;
+			if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&failedDevice))) && failedDevice) {
+				DX12_LOG_FLUSH("DX12PresentDiag",
+					"event=present_failed api=Present1 skipAll=0 hr=0x%lx removedReason=0x%lx",
+					static_cast<unsigned long>(hr),
+					static_cast<unsigned long>(failedDevice->GetDeviceRemovedReason()));
+				failedDevice->Release();
+			}
 			DX12_PROF_FINISH(_profile_timer);
 			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, hr);
 			DX12MarkStage("present_leave");

@@ -333,6 +333,13 @@ void DX12ModTrackGameDirectQueue(ID3D12CommandQueue *queue)
 {
 	if (!queue)
 		return;
+#if DX12_TIMING_BUILD
+	// Arm the freeze watchdog from the first submission. Startup runs entirely
+	// on the skipAll fast path, which never reaches DX12ModBeginFrame, so a
+	// stall before the first mod frame would otherwise go unreported - which is
+	// exactly how the earlier device-removal freeze left no watchdog line.
+	DX12FreezeWatchdog::Start();
+#endif
 	// The mod's private upload queue also flows through the ExecuteCommandLists
 	// wrapper and is DIRECT type, so without this exclusion the first texture
 	// upload would replace the game's queue as the overlay submit target -
@@ -538,6 +545,10 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 	Bunny::DX12PresentOverlayChannel *channel =
 		Bunny::DX12PresentOverlayChannel::ForDevice(device);
 	ID3D12CommandQueue *queue = AcquireGameDirectQueue();
+	// Hold the channel's recording lock across BeginRecord..Submit: the hunting
+	// text overlay records on this same channel in the same frame, and a second
+	// recording thread must not be able to close this recording's slot.
+	Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
 
 	bool anyDrawn = false;
 	bool submitted = false;
@@ -549,7 +560,8 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			queue ? 1 : 0);
 	} else if (!(commandList = channel->BeginRecord())) {
 		DX12_LOG_FLUSH("DX12CustomShaderDiag",
-			"event=replay_skip reason=overlay_begin_record_failed");
+			"event=replay_skip reason=overlay_begin_record_failed detail=%s",
+			channel->LastFailure());
 	} else if (!tableHeap->BeginPresent(presentCount)) {
 		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=replay_skip reason=table_heap_unavailable");

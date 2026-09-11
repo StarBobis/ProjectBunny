@@ -809,6 +809,7 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(Mutex());
 		for (auto &entry : Instances()) {
+			std::lock_guard<std::mutex> chainLock(entry.second->mLock);
 			if (entry.second->mChain == swapChain)
 				entry.second->mChain = nullptr;
 		}
@@ -827,6 +828,11 @@ public:
 			return false;
 		if (!swapChain || !mRtvCpuStart.ptr)
 			return false;
+		// The mod [Present] overlay and the hunting text overlay both resolve
+		// the view in the same frame and a resize may invalidate it from a
+		// different thread; the cache key and the descriptor slot it guards
+		// must never be updated concurrently.
+		std::lock_guard<std::mutex> cacheLock(mLock);
 		UINT bufferIndex = 0;
 		IDXGISwapChain3 *swapChain3 = nullptr;
 		if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) &&
@@ -930,6 +936,8 @@ private:
 	DXGI_FORMAT mFormat = DXGI_FORMAT_UNKNOWN;
 	UINT mWidth = 0;
 	UINT mHeight = 0;
+	// Guards the cache key, the metrics and the descriptor slot it describes.
+	std::mutex mLock;
 };
 
 // Internal direct-queue submission channel for the [Present] custom element
@@ -968,27 +976,76 @@ public:
 			mSlots[1].allocator && mSlots[1].list;
 	}
 
-	// Hands out the next recording list. Blocks (rarely, one frame interval)
-	// until the slot's previous submission has completed on the GPU, then
-	// resets allocator + list into recording state.
+	// BeginRecord() hands out a list but Submit() closes whichever slot the
+	// cursor points at, so the pair is only correct while no other thread can
+	// record in between. Hold one of these across the whole recording; the
+	// mod [Present] overlay and the hunting text overlay share this channel.
+	// A null channel is accepted so callers can declare the scope before they
+	// know whether the channel resolved.
+	class RecordScope
+	{
+	public:
+		explicit RecordScope(DX12PresentOverlayChannel *channel)
+			: mChannel(channel)
+		{
+			if (mChannel)
+				mChannel->mRecordLock.lock();
+		}
+
+		~RecordScope()
+		{
+			if (mChannel)
+				mChannel->mRecordLock.unlock();
+		}
+
+		RecordScope(const RecordScope &) = delete;
+		RecordScope &operator=(const RecordScope &) = delete;
+
+	private:
+		DX12PresentOverlayChannel *mChannel;
+	};
+
+	// Why the last BeginRecord() returned nullptr; for the callers' existing
+	// diagnostic lines.
+	const char *LastFailure() const
+	{
+		return mLastFailure;
+	}
+
+	// Hands out the next recording list, waiting (one frame interval at most)
+	// for the slot's previous submission to retire before resetting it.
+	// Returns nullptr when the slot is still in flight: resetting an allocator
+	// whose list is still executing is invalid D3D12 usage and can remove the
+	// device, so the frame is dropped instead.
 	ID3D12GraphicsCommandList *BeginRecord()
 	{
 		mCursor = (mCursor + 1) % kSlots;
 		Slot &slot = mSlots[mCursor];
 		if (slot.submittedFenceValue &&
 			mFence->GetCompletedValue() < slot.submittedFenceValue) {
+			bool retired = false;
 			HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 			if (event) {
 				if (SUCCEEDED(mFence->SetEventOnCompletion(
 					    slot.submittedFenceValue, event)))
-					WaitForSingleObject(event, 2000);
+					retired = WaitForSingleObject(event, kSlotWaitMs) ==
+						WAIT_OBJECT_0;
 				CloseHandle(event);
 			}
+			if (!retired) {
+				mLastFailure = event ? "slot_in_flight" : "event_create_failed";
+				return nullptr;
+			}
 		}
-		if (FAILED(slot.allocator->Reset()))
+		if (FAILED(slot.allocator->Reset())) {
+			mLastFailure = "allocator_reset_failed";
 			return nullptr;
-		if (FAILED(slot.list->Reset(slot.allocator, nullptr)))
+		}
+		if (FAILED(slot.list->Reset(slot.allocator, nullptr))) {
+			mLastFailure = "list_reset_failed";
 			return nullptr;
+		}
+		mLastFailure = "none";
 		return slot.list;
 	}
 
@@ -996,22 +1053,30 @@ public:
 	// fence so the slot can be reused once this execution completes.
 	bool Submit(ID3D12CommandQueue *queue)
 	{
-		if (!queue)
+		if (!queue) {
+			mLastFailure = "null_queue";
 			return false;
+		}
 		Slot &slot = mSlots[mCursor];
-		if (FAILED(slot.list->Close()))
+		if (FAILED(slot.list->Close())) {
+			mLastFailure = "list_close_failed";
 			return false;
+		}
 		ID3D12CommandList *lists[] = { slot.list };
 		queue->ExecuteCommandLists(1, lists);
 		const UINT64 fenceValue = mNextFenceValue++;
-		if (FAILED(queue->Signal(mFence, fenceValue)))
+		if (FAILED(queue->Signal(mFence, fenceValue))) {
+			mLastFailure = "queue_signal_failed";
 			return false;
+		}
 		slot.submittedFenceValue = fenceValue;
+		mLastFailure = "none";
 		return true;
 	}
 
 private:
 	static constexpr UINT kSlots = 2;
+	static constexpr DWORD kSlotWaitMs = 2000;
 
 	struct Slot
 	{
@@ -1068,6 +1133,10 @@ private:
 	ID3D12Fence *mFence = nullptr;
 	UINT64 mNextFenceValue = 1;
 	UINT mCursor = 0;
+	// Held across BeginRecord..Submit so a second recording thread cannot
+	// close another thread's slot.
+	std::mutex mRecordLock;
+	const char *mLastFailure = "none";
 };
 
 } // namespace Bunny

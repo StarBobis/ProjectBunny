@@ -13,6 +13,10 @@
 
 
 static constexpr uint64_t kResourceQueueStatsInterval = 4096;
+// Depth that counts as a backed-up queue, and how much coarser the stats
+// cadence gets while it stays that deep.
+static constexpr size_t kResourceQueueDeepDepth = 1024;
+static constexpr uint64_t kDeepQueueIntervalScale = 64;
 static constexpr int64_t kResourceQueueSlowTaskUs = 2000;
 static constexpr int64_t kResourceQueueSlowDrainUs = 1000;
 
@@ -659,7 +663,16 @@ void DX12ResourceCollectQueue::UpdateMaxDepth(size_t depth)
 void DX12ResourceCollectQueue::LogStats(const char *event, uint64_t sequence, size_t depth)
 {
 	const uint64_t serial = resourceTaskStatsSerial.fetch_add(1, std::memory_order_relaxed) + 1;
-	if (sequence != 0 && depth < 1024 && serial % kResourceQueueStatsInterval != 0)
+	// A persistent backlog must never disable the cadence. The deep-queue case
+	// used to log every single task, so one queue that stayed backed up (a
+	// hunting session drained ~18M tasks in minutes) produced gigabytes of log
+	// per minute - and that log I/O itself stalled the game. Deep queues are
+	// still reported, just at a coarser interval, and every line carries
+	// pending/maxDepth so the backlog shape stays visible.
+	const uint64_t interval = depth >= kResourceQueueDeepDepth ?
+		kResourceQueueStatsInterval * kDeepQueueIntervalScale :
+		kResourceQueueStatsInterval;
+	if (sequence != 0 && serial % interval != 0)
 		return;
 	DX12_LOG("DX12ResourceCollectQueue",
 		"event=%s,seq=%llu,pending=%zu,enqueued=%llu,dequeued=%llu,completed=%llu,maxDepth=%llu",

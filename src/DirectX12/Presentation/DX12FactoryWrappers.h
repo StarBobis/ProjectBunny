@@ -961,6 +961,12 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			HRESULT hr = QuerySwapChain3(&swapChain3);
 			if (FAILED(hr))
 				return hr;
+			// Same contract as the plain ResizeBuffers path: the swap chain
+			// pointer and the buffer indices survive the resize, so the cached
+			// back-buffer view must be dropped or the next overlay draw binds a
+			// descriptor of a destroyed buffer.
+			if (!DX12InternalReplayState::IsActive())
+				DX12NativeOverlayInvalidate(mSwapChain);
 			std::vector<IUnknown*> unwrappedQueues;
 			IUnknown *const *activeQueues = ppPresentQueue;
 			if (ppPresentQueue && BufferCount) {

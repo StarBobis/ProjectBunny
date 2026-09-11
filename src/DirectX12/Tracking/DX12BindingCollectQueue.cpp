@@ -27,6 +27,11 @@
 
 
 static constexpr uint64_t kBindingQueueStatsInterval = 4096;
+// Depth that counts as a backed-up queue, and how much coarser the stats
+// cadence gets while it stays that deep (see the resource queue: logging every
+// task of a persistently deep queue turned the log into gigabytes).
+static constexpr size_t kBindingQueueDeepDepth = 256;
+static constexpr uint64_t kDeepQueueIntervalScale = 64;
 static constexpr int64_t kBindingQueueSlowTaskUs = 1000;
 static constexpr int64_t kBindingQueueSlowDrainUs = 1000;
 
@@ -1145,7 +1150,10 @@ void DX12BindingCollectQueue::LogStats(const char *event, uint64_t sequence, siz
 {
 	const uint64_t serial = dequeued.load(std::memory_order_relaxed) +
 		enqueued.load(std::memory_order_relaxed);
-	if (depth < 256 && sequence != 0 && (serial % kBindingQueueStatsInterval) != 0)
+	const uint64_t interval = depth >= kBindingQueueDeepDepth ?
+		kBindingQueueStatsInterval * kDeepQueueIntervalScale :
+		kBindingQueueStatsInterval;
+	if (sequence != 0 && (serial % interval) != 0)
 		return;
 
 	DX12_LOG("DX12BindingCollectQueueStats",

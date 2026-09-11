@@ -68,6 +68,7 @@ public:
 	{
 		if (!swapChain || !queue || !mDevice)
 			return false;
+		std::lock_guard<std::mutex> renderLock(mRenderLock);
 
 		Bunny::DX12CustomShaderSurfaceCache *surfaceCache =
 			Bunny::DX12CustomShaderSurfaceCache::ForDevice(mDevice);
@@ -75,6 +76,7 @@ public:
 			Bunny::DX12PresentOverlayChannel::ForDevice(mDevice);
 		if (!surfaceCache || !channel)
 			return false;
+		const LONG present = DX12RuntimeState::GetPresentCount();
 
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv = {};
 		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -114,13 +116,35 @@ public:
 
 		const UINT indexCount = static_cast<UINT>(mVertices.size() / 4 * 6);
 		void *vertexData = AcquireVertexSlot();
-		if (!vertexData)
+		if (!vertexData) {
+			// Its previous submission has not retired yet: drop this frame's
+			// text rather than rewriting memory the GPU is reading.
+			const LONG skippedFor = present - mSlotBusyLogPresent;
+			if (skippedFor >= kSkipLogFrames) {
+				mSlotBusyLogPresent = present;
+				DX12_LOG_FLUSH("DX12InGameTextOverlay",
+					"event=skip_frame reason=vertex_slot_busy frames=%ld",
+					static_cast<long>(skippedFor));
+			}
 			return false;
+		}
 		memcpy(vertexData, mVertices.data(), mVertices.size() * sizeof(TextVertex));
 
+		// BeginRecord..Submit is one critical section: the channel hands out a
+		// list and closes whichever slot its cursor points at, so another
+		// recording thread in between would close the wrong slot.
+		Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
 		ID3D12GraphicsCommandList *commandList = channel->BeginRecord();
-		if (!commandList)
+		if (!commandList) {
+			const LONG failedFor = present - mBeginRecordFailLogPresent;
+			if (failedFor >= kSkipLogFrames) {
+				mBeginRecordFailLogPresent = present;
+				DX12_LOG_FLUSH("DX12InGameTextOverlay",
+					"event=skip_frame reason=begin_record_failed detail=%s frames=%ld",
+					channel->LastFailure(), static_cast<long>(failedFor));
+			}
 			return false;
+		}
 
 		ID3D12Resource *backBuffer = CurrentBackBuffer(swapChain);
 		if (backBuffer) {
@@ -167,12 +191,21 @@ public:
 			backBuffer->Release();
 		}
 
-		if (!channel->Submit(queue))
+		if (!channel->Submit(queue)) {
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
+				"event=submit_failed detail=%s", channel->LastFailure());
 			return false;
+		}
 		// Tag the vertex slot with the fence value of this submission; the
 		// ring is only rewritten after the GPU passed it.
 		mSlotFenceValues[mVertexCursor] = ++mFenceCounter;
 		queue->Signal(mFence, mFenceCounter);
+		if (!mFirstFrameLogged) {
+			mFirstFrameLogged = true;
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
+				"event=first_frame_drawn backBuffer=%ux%u quads=%zu indexCount=%u slot=%u",
+				width, height, mVertices.size() / 4, indexCount, mVertexCursor);
+		}
 		return true;
 	}
 
@@ -185,8 +218,21 @@ private:
 	};
 
 	static constexpr size_t kMaxChars = 1024;
-	static constexpr UINT kVertexSlotCount = 3;
+	// Slot count is GPU-latency headroom only: every slot is rewritten strictly
+	// after its previous submission retired (AcquireVertexSlot drops the frame
+	// otherwise), so extra slots trade 128 KB of upload heap each for fewer
+	// dropped text frames while the GPU is behind.
+	static constexpr UINT kVertexSlotCount = 6;
 	static constexpr UINT kVertexSlotBytes = kMaxChars * 4 * sizeof(TextVertex);
+	static constexpr DWORD kFenceWaitMs = 2000;
+	// A failed one-time font build is retried only after this cool-down, so a
+	// persistent failure cannot rebuild the GDI atlas every single frame.
+	static constexpr LONG kFontRetryFrames = 600;
+	// Cool-down value that never elapses: used once the upload may already be
+	// referenced by submitted GPU work.
+	static constexpr LONG kFontNoRetry = 0x7fffffff;
+	// Recurring skip diagnostics repeat at most once per this many frames.
+	static constexpr LONG kSkipLogFrames = 600;
 	static constexpr float kTextMarginX = 8.0f;
 	static constexpr float kTextMarginY = 8.0f;
 	static constexpr float kLineGap = 2.0f;
@@ -213,6 +259,8 @@ private:
 			mIndexBuffer->Unmap(0, nullptr);
 			mIndexBuffer->Release();
 		}
+		if (mFontUploadBuffer)
+			mFontUploadBuffer->Release();
 		if (mFontTexture)
 			mFontTexture->Release();
 		if (mSrvHeap)
@@ -357,7 +405,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 		hr = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, nullptr,
 			nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vs, &error);
 		if (error) {
-			DX12_LOG("DX12InGameTextOverlay", "event=shader_compile_error stage=vs error=%s",
+			DX12_LOG_FLUSH("DX12InGameTextOverlay", "event=shader_compile_error stage=vs error=%s",
 				static_cast<const char *>(error->GetBufferPointer()));
 			error->Release();
 		}
@@ -366,7 +414,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 		hr = D3DCompile(kShaderSource, sizeof(kShaderSource) - 1, nullptr,
 			nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &ps, &error);
 		if (error) {
-			DX12_LOG("DX12InGameTextOverlay", "event=shader_compile_error stage=ps error=%s",
+			DX12_LOG_FLUSH("DX12InGameTextOverlay", "event=shader_compile_error stage=ps error=%s",
 				static_cast<const char *>(error->GetBufferPointer()));
 			error->Release();
 		}
@@ -438,7 +486,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 
 	bool FailInit(const char *stage)
 	{
-		DX12_LOG("DX12InGameTextOverlay", "event=init_failed stage=%s", stage);
+		DX12_LOG_FLUSH("DX12InGameTextOverlay", "event=init_failed stage=%s", stage);
 		mInitFailed = true;
 		return false;
 	}
@@ -491,12 +539,18 @@ float4 PSMain(PSIn input) : SV_TARGET
 		desc.SampleDesc.Count = 1;
 		HRESULT hr = mDevice->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&mPipeline));
 		if (FAILED(hr)) {
-			DX12_LOG("DX12InGameTextOverlay",
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
 				"event=pipeline_create_failed format=%d hr=0x%lx",
 				static_cast<int>(format), hr);
 			return false;
 		}
 		mPipelineFormat = format;
+		if (!mPipelineLogged) {
+			mPipelineLogged = true;
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
+				"event=pipeline_ready format=%d pso=%p", static_cast<int>(format),
+				static_cast<void *>(mPipeline));
+		}
 		return true;
 	}
 
@@ -577,16 +631,24 @@ float4 PSMain(PSIn input) : SV_TARGET
 		return true;
 	}
 
-	// Uploads the atlas through the overlay channel and waits for the copy
-	// to retire before creating the SRV. Runs once per device on the render
-	// thread, with the game queue available.
+	// One-time font atlas upload on the render thread with the game queue
+	// available. The SRV is published only once the copy retired, a failed
+	// attempt is cooled down instead of being rebuilt every frame, and the
+	// upload buffer is owned by the object because the GPU reads it.
 	bool EnsureFontTexture(IDXGISwapChain *swapChain, ID3D12CommandQueue *queue)
 	{
-		if (mFontTexture)
+		(void)swapChain;
+		if (mFontTextureReady)
 			return true;
+		if (!queue)
+			return false;
+		const LONG present = DX12RuntimeState::GetPresentCount();
+		if (mFontInitFailed && present < mFontRetryPresent)
+			return false;
+
 		std::vector<uint8_t> alpha;
 		if (!BuildFontAtlas(&alpha))
-			return false;
+			return FailFontTexture("build_atlas", true);
 
 		D3D12_HEAP_PROPERTIES defaultHeap = {};
 		defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -601,8 +663,10 @@ float4 PSMain(PSIn input) : SV_TARGET
 		HRESULT hr = mDevice->CreateCommittedResource(
 			&defaultHeap, D3D12_HEAP_FLAG_NONE, &textureDesc,
 			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&mFontTexture));
-		if (FAILED(hr))
-			return false;
+		if (FAILED(hr)) {
+			mFontTexture = nullptr;
+			return FailFontTexture("texture_create", true);
+		}
 
 		const UINT rowPitch = (mAtlasW + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
 			~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
@@ -622,24 +686,30 @@ float4 PSMain(PSIn input) : SV_TARGET
 			&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
 			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload));
 		if (FAILED(hr))
-			return false;
+			return FailFontTexture("upload_create", true);
 		uint8_t *mapped = nullptr;
 		if (FAILED(upload->Map(0, nullptr, reinterpret_cast<void **>(&mapped)))) {
 			upload->Release();
-			return false;
+			return FailFontTexture("upload_map", true);
 		}
 		for (UINT row = 0; row < mAtlasH; ++row)
 			memcpy(mapped + static_cast<size_t>(row) * rowPitch,
 				alpha.data() + static_cast<size_t>(row) * mAtlasW, mAtlasW);
 		upload->Unmap(0, nullptr);
+		// The recorded copy reads this buffer on the GPU: hand it to the object
+		// instead of releasing it right after the submission.
+		if (mFontUploadBuffer)
+			mFontUploadBuffer->Release();
+		mFontUploadBuffer = upload;
 
 		Bunny::DX12PresentOverlayChannel *channel =
 			Bunny::DX12PresentOverlayChannel::ForDevice(mDevice);
-		ID3D12GraphicsCommandList *commandList = channel ? channel->BeginRecord() : nullptr;
-		if (!commandList) {
-			upload->Release();
-			return false;
-		}
+		if (!channel)
+			return FailFontTexture("channel_unavailable", true);
+		Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
+		ID3D12GraphicsCommandList *commandList = channel->BeginRecord();
+		if (!commandList)
+			return FailFontTexture(channel->LastFailure(), true);
 		D3D12_TEXTURE_COPY_LOCATION dst = {};
 		dst.pResource = mFontTexture;
 		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -656,16 +726,18 @@ float4 PSMain(PSIn input) : SV_TARGET
 		commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 		ResourceTransition(commandList, mFontTexture,
 			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-		const bool submitted = channel->Submit(queue);
-		upload->Release();
-		if (!submitted)
-			return false;
+		// Past this point the texture may already be referenced by submitted
+		// GPU work, so it is never released early: a failure keeps it and
+		// stops retrying rather than risking work against freed memory.
+		if (!channel->Submit(queue))
+			return FailFontTexture(channel->LastFailure(), false);
 
-		// The SRV must not sample before the copy completed; wait out the
+		// The SRV must not be published before the copy retired; wait out the
 		// one-time upload inline (init path, not a frame hot path).
-		mSlotFenceValues[mVertexCursor] = ++mFenceCounter;
-		queue->Signal(mFence, mFenceCounter);
-		WaitForFenceValue(mFenceCounter);
+		const UINT64 uploadFenceValue = ++mFenceCounter;
+		queue->Signal(mFence, uploadFenceValue);
+		if (!WaitForFenceValue(uploadFenceValue))
+			return FailFontTexture("upload_fence_timeout", false);
 
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Format = DXGI_FORMAT_R8_UNORM;
@@ -674,30 +746,72 @@ float4 PSMain(PSIn input) : SV_TARGET
 		srvDesc.Texture2D.MipLevels = 1;
 		mDevice->CreateShaderResourceView(
 			mFontTexture, &srvDesc, mSrvHeap->GetCPUDescriptorHandleForHeapStart());
+		mFontTextureReady = true;
+		mFontInitFailed = false;
+		DX12_LOG_FLUSH("DX12InGameTextOverlay",
+			"event=font_atlas_ready atlas=%ux%u cell=%ux%u",
+			mAtlasW, mAtlasH,
+			static_cast<UINT>(mCellW), static_cast<UINT>(mCellH));
 		return true;
 	}
 
-	void WaitForFenceValue(UINT64 value)
+	// `dropTexture` is false only once the copy may have reached the GPU: the
+	// half-built texture is then kept (a retry could otherwise race in-flight
+	// work) and no further attempt is made, because reaching this state means
+	// the queue or the device is already unusable.
+	bool FailFontTexture(const char *stage, bool dropTexture)
 	{
-		if (mFence->GetCompletedValue() >= value)
-			return;
-		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		if (!event)
-			return;
-		if (SUCCEEDED(mFence->SetEventOnCompletion(value, event)))
-			WaitForSingleObject(event, 2000);
-		CloseHandle(event);
+		if (dropTexture && mFontTexture) {
+			mFontTexture->Release();
+			mFontTexture = nullptr;
+		}
+		mFontTextureReady = false;
+		mFontInitFailed = true;
+		mFontRetryPresent = dropTexture ?
+			DX12RuntimeState::GetPresentCount() + kFontRetryFrames : kFontNoRetry;
+		DX12_LOG_FLUSH("DX12InGameTextOverlay",
+			"event=font_atlas_failed stage=%s retry=%s",
+			stage, dropTexture ? "cooldown" : "never");
+		return false;
 	}
 
-	// Returns the next writable vertex slot, waiting for its previous
-	// submission to complete on the GPU first (same pattern as the channel's
-	// allocator slots).
+	// Returns true when the fence value has been reached. A false result means
+	// the GPU still owns whatever was tagged with that value, so every caller
+	// must bail out instead of rewriting or releasing it.
+	bool WaitForFenceValue(UINT64 value)
+	{
+		if (mFence->GetCompletedValue() >= value)
+			return true;
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		if (!event) {
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
+				"event=fence_wait_event_failed value=%llu",
+				static_cast<unsigned long long>(value));
+			return false;
+		}
+		bool retired = false;
+		if (SUCCEEDED(mFence->SetEventOnCompletion(value, event)))
+			retired = WaitForSingleObject(event, kFenceWaitMs) == WAIT_OBJECT_0;
+		CloseHandle(event);
+		if (!retired) {
+			DX12_LOG_FLUSH("DX12InGameTextOverlay",
+				"event=fence_wait_timeout value=%llu completed=%llu",
+				static_cast<unsigned long long>(value),
+				static_cast<unsigned long long>(mFence->GetCompletedValue()));
+		}
+		return retired;
+	}
+
+	// Returns the next writable vertex slot after its previous submission
+	// retired, or nullptr when that slot is still in flight: overwriting
+	// memory the GPU is reading is worse than dropping one text frame.
 	void *AcquireVertexSlot()
 	{
-		mVertexCursor = (mVertexCursor + 1) % kVertexSlotCount;
-		const UINT64 pending = mSlotFenceValues[mVertexCursor];
-		if (pending)
-			WaitForFenceValue(pending);
+		const UINT next = (mVertexCursor + 1) % kVertexSlotCount;
+		const UINT64 pending = mSlotFenceValues[next];
+		if (pending && !WaitForFenceValue(pending))
+			return nullptr;
+		mVertexCursor = next;
 		return static_cast<uint8_t *>(mVertexData) +
 			static_cast<size_t>(mVertexCursor) * kVertexSlotBytes;
 	}
@@ -780,6 +894,9 @@ float4 PSMain(PSIn input) : SV_TARGET
 	ID3D12PipelineState *mPipeline = nullptr;
 	ID3D12Resource *mVertexBuffer = nullptr;
 	ID3D12Resource *mIndexBuffer = nullptr;
+	// Kept alive for the object's lifetime on purpose: the atlas copy reads it
+	// on the GPU, so it must outlive the submission that retired the fence.
+	ID3D12Resource *mFontUploadBuffer = nullptr;
 	ID3D12Resource *mFontTexture = nullptr;
 	ID3D12DescriptorHeap *mSrvHeap = nullptr;
 	ID3D12Fence *mFence = nullptr;
@@ -792,12 +909,23 @@ float4 PSMain(PSIn input) : SV_TARGET
 	UINT64 mFenceCounter = 0;
 	UINT64 mSlotFenceValues[kVertexSlotCount] = {};
 	bool mInitFailed = false;
+	// True only once the SRV exists; mFontTexture alone means "upload started".
+	bool mFontTextureReady = false;
+	bool mFontInitFailed = false;
+	LONG mFontRetryPresent = 0;
+	bool mPipelineLogged = false;
+	bool mFirstFrameLogged = false;
+	LONG mSlotBusyLogPresent = 0;
+	LONG mBeginRecordFailLogPresent = 0;
 	float mCellW = 0.0f;
 	float mCellH = 0.0f;
 	UINT mAtlasW = 0;
 	UINT mAtlasH = 0;
 	float mBackW = 0.0f;
 	float mBackH = 0.0f;
+	// A title may present from more than one thread; the frame is serialised
+	// on this so the ring, the layout vector and the cursor stay consistent.
+	std::mutex mRenderLock;
 };
 
 bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
@@ -814,6 +942,10 @@ bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
 		DX12OverlayStatusState::GetTransientStatus(notice, ARRAYSIZE(notice), &noticeColor);
 	if (!hunting && !hasNotice)
 		return false;
+
+	// Frame-boundary breadcrumb: the freeze watchdog reports the last stage
+	// this process entered, so an overlay-side stall names itself in the log.
+	DX12MarkStage("hunt_overlay_begin");
 
 	ID3D12Device *device = nullptr;
 	if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
@@ -834,6 +966,7 @@ bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
 	const bool drawn = overlay->Render(
 		swapChain, queue, text, hunting, hasNotice ? notice : nullptr, noticeColor);
 	queue->Release();
+	DX12MarkStage("hunt_overlay_done");
 	return drawn;
 }
 
