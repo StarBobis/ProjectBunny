@@ -323,9 +323,23 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
+		// One expanded block per iteration. This is the divisor the "hoist the
+		// per-call setup out of RecordCopiedDescriptorsSimple" question needs:
+		// Desc.CopySlots measures descriptors, so it cannot say how often that
+		// setup (two heap resolves, two activity reads, two materialization
+		// reads, chunk cursors, commit set) repeats per API call. Blocks coming
+		// from the CopyDescriptorsSimple hook arrive through the same function
+		// and add one each, so the multi-range average is
+		// (Desc.CopyBlocks - Create.CopyDescriptorsSimpleWrapper.Record calls) /
+		// Create.CopyDescriptorsWrapper.Record calls.
+		DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
 		if (dest.ptr != src.ptr)
 			RecordCopiedDescriptorsSimple(
 				count, dest, src, descriptorHeapsType, increment);
+		else
+			// Self-overlapping ranges carry no work at all; counted separately
+			// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
+			DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
 		destOffset += count;
 		srcOffset += count;
 		if (destOffset == destRangeSize) {
@@ -392,6 +406,11 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	bool curSrcChunkOk = false;
 	bool curDstChunkOk = false;
 	bool curDstMaterialized = false;
+	// Block-level split of the locked fallback: Rm.DescCopyLockedPath counts
+	// slots, while the per-call setup above only repeats once per block, so the
+	// number that decides whether hoisting it pays off is how many blocks
+	// needed the locked path at all.
+	bool blockTookLockedPath = false;
 	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet commitSet;
 	for (UINT n = 0; n < numDescriptors; ++n) {
 		const UINT i = reverse ? numDescriptors - n - 1 : n;
@@ -450,6 +469,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 		}
 		DescriptorRecord record;
 		DX12_PROF_COUNT("Rm.DescCopyLockedPath");
+		blockTookLockedPath = true;
 		if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(srcHandle, &record)) {
 			DX12DescriptorHeapShadowUtils::EraseDescriptor(destHandle);
 			continue;
@@ -464,6 +484,8 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(record));
 		}
 	}
+	if (blockTookLockedPath)
+		DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", 1);
 	commitSet.CommitAll();
 }
 

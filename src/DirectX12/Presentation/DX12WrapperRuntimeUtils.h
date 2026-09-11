@@ -1428,21 +1428,43 @@ public:
 	}
 
 	// True while a pre-skin output resize can still retarget the views about to
-	// be bound: a resize binding or cache entry exists, or one may still appear
-	// (the expansion probe). D3D12 requires every bound slot to be non-null, so
-	// the validity mask is the bound range. Same triple as
-	// DX12IaReplacementExecutor::ApplyAndExecute.
+	// be bound: a published resize mapping, a fence-owned resize cache entry, or
+	// an active pre-skin output extent covers one of the bound VAs.
+	// D3D12 requires every bound slot to be non-null, so the validity mask is
+	// the bound range.
+	//
+	// The level-0 latch is one lock-free load. It cannot be the whole gate: a
+	// matching pre-skin dispatch re-registers its resize mapping every frame and
+	// Present only clears it at the frame boundary, so "a resize binding exists"
+	// is true for most of a frame in any mod that resizes its output - which is
+	// why the old `bindings || cache entries` test returned true for every IA
+	// bind and made the cheap VA-range test unreachable. The range tests below
+	// are what actually reject a bind: they are pure VA arithmetic over the
+	// handful of published target extents, and each is a superset of what
+	// RedirectVertexBufferViews could redirect, so a false answer here means the
+	// walk cannot change a single view.
 	static bool PreSkinRedirectPossible(
 		const D3D12_VERTEX_BUFFER_VIEW *views, UINT count)
 	{
-		if (DX12ModHasPreSkinOutputResizeBindings() ||
-			DX12ModHasPreSkinOutputResizeCacheEntries())
-			return true;
+		if (!DX12ModHasPreSkinIaRedirectTargets())
+			return false;
 		bool boundSlotValid[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 		for (UINT slot = 0;
 			slot < count && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot)
 			boundSlotValid[slot] = true;
-		return DX12ModMayNeedPreSkinIaViewExpansion(views, boundSlotValid, count);
+		// Mechanism 1: in-place view expansion / active-producer retarget, keyed
+		// by the active pre-skin output resource extent.
+		if (DX12ModMayNeedPreSkinIaViewExpansion(views, boundSlotValid, count))
+			return true;
+		// Mechanism 2: retarget onto the published resize mapping (frame-local
+		// publish map or the durable fence-owned cache).
+		if (DX12ModMayNeedPreSkinOutputResizeRedirect(views, boundSlotValid, count))
+			return true;
+		// Neither range set covers a bound view. Stay conservative for the paths
+		// that cannot be enumerated by VA range: the durable per-resource VLR
+		// expansion tag (honored only while a raise is configured) and an active
+		// output whose extent could not be published.
+		return DX12ModHasUnenumerablePreSkinRedirectTargets();
 	}
 
 	static void IASetVertexBuffers(

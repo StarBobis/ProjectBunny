@@ -684,14 +684,23 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	return decision;
 }
 
-DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
+// Fills a draw decision from the PSO decision cache, or compiles and stores it
+// on a miss.
+//
+// Built in place rather than returned by value because the caller passes the
+// command list's own decision: filling it directly lets the two IA target plans
+// it already owns reuse their retained descriptorTargets capacity in both the
+// cache-load copy and SetFromTargetPlan. Building into a temporary and
+// move-assigning freed those buffers and reallocated them on every PSO switch
+// (Rm.RuntimePsoChanged).
+static void BuildDrawDecisionInPlace(
 	ID3D12PipelineState *pipelineState,
-	bool hasShaderOverrides)
+	bool hasShaderOverrides,
+	DX12CompiledDrawDecision &decision)
 {
 	// Measured as a whole (cache load copy + build + store) so the cost of the
 	// per-PSO decision rebuild is visible in the TIMING log instead of guessed.
 	DX12_PROF_STAGE_SCOPE(DrawDecisionBuild);
-	DX12CompiledDrawDecision decision;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12PsoDecisionCacheUtils::ClearIfReloadChanged(reloadGeneration);
 	if (DX12PsoDecisionCacheUtils::TryLoadDraw(
@@ -700,7 +709,7 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 			hasShaderOverrides,
 			&decision)) {
 		DX12_PROF_COUNT("Rm.DrawDecisionPsoCacheHits");
-		return decision;
+		return;
 	}
 
 	DX12_PROF_COUNT("Rm.DrawDecisionPsoCacheMisses");
@@ -752,6 +761,14 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 		reloadGeneration,
 		hasShaderOverrides,
 		decision);
+}
+
+DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
+	ID3D12PipelineState *pipelineState,
+	bool hasShaderOverrides)
+{
+	DX12CompiledDrawDecision decision;
+	BuildDrawDecisionInPlace(pipelineState, hasShaderOverrides, decision);
 	return decision;
 }
 
@@ -821,8 +838,8 @@ void DX12CommandListRuntime::CompileDrawDecision(
 	if (!state)
 		return;
 	DX12_PROF_COUNT("Rm.DrawDecisionRebuilds");
-	state->drawDecision = DX12CommandListRuntime::BuildDrawDecision(
-		state->pipelineState, hasShaderOverrides);
+	BuildDrawDecisionInPlace(
+		state->pipelineState, hasShaderOverrides, state->drawDecision);
 }
 
 void DX12CommandListRuntime::InvalidateResolvedDrawPlan(
@@ -1218,19 +1235,36 @@ static bool EnsureResolvedIaResourcesForTargets(
 	return resolvedIndex || resolvedVertex;
 }
 
-static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
+// Draw-count filter: a plan can require texture-override candidates that this
+// draw's vertex/index counts cannot possibly match, and the expensive half of
+// IA matching (hashing the bound views) must not run for those.
+//
+// The result is written into a caller-owned plan rather than returned by value.
+// Only the scalar requirement set matters to every consumer of a filtered plan
+// (Fingerprint, RequiresIndexBuffer/RequiresIndexBufferHash,
+// RequiresVertexBuffer), so the filtered plan never carries a descriptor target
+// list and the function never copies one: returning the plan by value - and
+// copying the source plan's descriptorTargets with it - was a heap allocation
+// on every draw that reaches IA hashing, and a second one per IA hash key
+// build. When the plan needs no per-target filtering at all, the requirements
+// (and the memoised fingerprint that belongs to them) are taken verbatim.
+static void FilterIaHashTargetPlanForDrawCounts(
 	const DX12IaHashTargetPlan &targetPlan,
 	bool indexed,
 	UINT vertexCount,
-	UINT indexCount)
+	UINT indexCount,
+	DX12IaHashTargetPlan *filteredPlan)
 {
-	if (!targetPlan.hasTextureOverrideChecks || targetPlan.requireAllIaBuffers)
-		return targetPlan;
+	if (!filteredPlan)
+		return;
+	if (!targetPlan.hasTextureOverrideChecks || targetPlan.requireAllIaBuffers) {
+		filteredPlan->AssignRequirementsOnly(targetPlan);
+		return;
+	}
 
-	DX12IaHashTargetPlan filteredPlan;
-	filteredPlan.ResetKnown();
-	filteredPlan.hasTextureOverrideChecks = targetPlan.hasTextureOverrideChecks;
-	filteredPlan.hasDescriptorTargets = targetPlan.hasDescriptorTargets;
+	filteredPlan->ResetKnown();
+	filteredPlan->hasTextureOverrideChecks = targetPlan.hasTextureOverrideChecks;
+	filteredPlan->hasDescriptorTargets = targetPlan.hasDescriptorTargets;
 
 	if (targetPlan.requireIndexBufferView || targetPlan.requireIndexBuffer) {
 		if (DX12ModHasPotentialIaTextureOverrideTargetByCount(
@@ -1238,8 +1272,8 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 				0,
 				vertexCount,
 				indexCount)) {
-			filteredPlan.requireIndexBuffer = targetPlan.requireIndexBuffer;
-			filteredPlan.requireIndexBufferView = targetPlan.requireIndexBufferView;
+			filteredPlan->requireIndexBuffer = targetPlan.requireIndexBuffer;
+			filteredPlan->requireIndexBufferView = targetPlan.requireIndexBufferView;
 		}
 	}
 
@@ -1253,10 +1287,8 @@ static DX12IaHashTargetPlan FilterIaHashTargetPlanForDrawCounts(
 				indexCount)) {
 			continue;
 		}
-		filteredPlan.RequireVertexBuffer(slot);
+		filteredPlan->RequireVertexBuffer(slot);
 	}
-
-	return filteredPlan;
 }
 
 
@@ -1377,12 +1409,13 @@ bool DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
 	(void)firstVertex;
 	(void)firstIndex;
 	(void)baseVertex;
-	const DX12IaHashTargetPlan filteredTargetPlan =
-		FilterIaHashTargetPlanForDrawCounts(
-			targetPlan,
-			indexed,
-			vertexCount,
-			indexCount);
+	DX12IaHashTargetPlan filteredTargetPlan;
+	FilterIaHashTargetPlanForDrawCounts(
+		targetPlan,
+		indexed,
+		vertexCount,
+		indexCount,
+		&filteredTargetPlan);
 
 	if (filteredTargetPlan.RequiresIndexBuffer(indexed) && ia->hasIndexBuffer) {
 		const bool requireIndexHash =
@@ -1538,12 +1571,13 @@ DX12IaHashStateCacheKey DX12CommandListRuntime::BuildIaHashStateCacheKeyForTarge
 {
 	if (!state)
 		return DX12IaHashStateCacheKey();
-	const DX12IaHashTargetPlan filteredTargetPlan =
-		FilterIaHashTargetPlanForDrawCounts(
-			targetPlan,
-			indexed,
-			vertexCount,
-			indexCount);
+	DX12IaHashTargetPlan filteredTargetPlan;
+	FilterIaHashTargetPlanForDrawCounts(
+		targetPlan,
+		indexed,
+		vertexCount,
+		indexCount,
+		&filteredTargetPlan);
 	const UINT64 targetPlanFingerprint = filteredTargetPlan.Fingerprint();
 	const bool resolvedAny =
 		EnsureResolvedIaResourcesForTargets(state, filteredTargetPlan, indexed);

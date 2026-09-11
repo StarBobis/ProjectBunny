@@ -16,6 +16,17 @@ public:
 	// shadow state. Deferred descriptor replacements must restore first: the
 	// game's handles target its own heaps, which a deferred patched mirror
 	// has currently unbound on this list.
+	//
+	// The restore is real work on every call: a global pending counter test, a
+	// shard TLS negative-cache compare against the shard's mutation generation,
+	// and on a miss the exclusive shard lock plus a map lookup. Each public
+	// Capture* entry point runs it and then delegates to its runtimeState
+	// overload below, and no binding is mutated in between, so those overloads
+	// take `deferredRestoreDone` and skip the duplicate probe: the restore still
+	// runs exactly once per API call, the entry-point early-return paths that
+	// never reach the overload already ran it, and direct callers (the
+	// command-list wrapper, the WrapperRuntimeUtils fast paths) leave the flag
+	// false and keep the restore exactly where it was.
 	static void RestoreDeferredReplacementsBeforeBindingMutation(
 		ID3D12GraphicsCommandList *commandList)
 	{
@@ -68,18 +79,20 @@ public:
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
-			commandList, runtimeState, count, heaps);
+			commandList, runtimeState, count, heaps, true);
 	}
 
 	static void CaptureDescriptorHeaps(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		UINT count,
-		ID3D12DescriptorHeap *const *heaps)
+		ID3D12DescriptorHeap *const *heaps,
+		bool deferredRestoreDone = false)
 	{
 		if (DX12InternalReplayState::IsActive())
 			return;
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		// One snapshot of the hot-path gates for this invocation: the value is
 		// read again below, and a cross-thread publish between two reads would
 		// let the resident heap update above be skipped by a later test that
@@ -168,16 +181,18 @@ public:
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		return DX12CommandListComputeBindingFlow::CaptureRootSignature(
-			commandList, runtimeState, rootSignature, graphics);
+			commandList, runtimeState, rootSignature, graphics, true);
 	}
 
 	static bool CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
 		ID3D12RootSignature *rootSignature,
-		bool graphics)
+		bool graphics,
+		bool deferredRestoreDone = false)
 	{
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		if (DX12InternalReplayState::IsActive())
 			return true;
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
@@ -242,7 +257,7 @@ public:
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		return DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
-			commandList, runtimeState, rootParameterIndex, baseDescriptor, graphics);
+			commandList, runtimeState, rootParameterIndex, baseDescriptor, graphics, true);
 	}
 
 	static bool CaptureRootDescriptorTable(
@@ -250,11 +265,13 @@ public:
 		DX12SimulateContext *runtimeState,
 		UINT rootParameterIndex,
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
-		bool graphics)
+		bool graphics,
+		bool deferredRestoreDone = false)
 	{
 		if (DX12InternalReplayState::IsActive())
 			return true;
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentTable = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentDescriptorState(flags) :
@@ -310,7 +327,8 @@ public:
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
-			commandList, runtimeState, rootParameterIndex, srcData, destOffset, graphics);
+			commandList, runtimeState, rootParameterIndex, srcData, destOffset,
+			graphics, true);
 	}
 
 	static void CaptureRoot32BitConstant(
@@ -319,9 +337,11 @@ public:
 		UINT rootParameterIndex,
 		UINT srcData,
 		UINT destOffset,
-		bool graphics)
+		bool graphics,
+		bool deferredRestoreDone = false)
 	{
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -384,7 +404,7 @@ public:
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
 			commandList, runtimeState, rootParameterIndex,
-			num32BitValuesToSet, srcData, destOffset, graphics);
+			num32BitValuesToSet, srcData, destOffset, graphics, true);
 	}
 
 	static void CaptureRoot32BitConstants(
@@ -394,9 +414,11 @@ public:
 		UINT num32BitValuesToSet,
 		const void *srcData,
 		UINT destOffset,
-		bool graphics)
+		bool graphics,
+		bool deferredRestoreDone = false)
 	{
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootValueState(flags) :
@@ -462,7 +484,8 @@ public:
 		DX12SimulateContext *runtimeState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
-			commandList, runtimeState, rootParameterIndex, type, address, graphics, api);
+			commandList, runtimeState, rootParameterIndex, type, address,
+			graphics, api, true);
 	}
 
 	static void CaptureRootDescriptor(
@@ -472,9 +495,11 @@ public:
 		D3D12_ROOT_PARAMETER_TYPE type,
 		D3D12_GPU_VIRTUAL_ADDRESS address,
 		bool graphics,
-		const char *api)
+		const char *api,
+		bool deferredRestoreDone = false)
 	{
-		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		if (!deferredRestoreDone)
+			RestoreDeferredReplacementsBeforeBindingMutation(commandList);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		const bool needsResidentBinding = graphics ?
 			DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) :

@@ -278,6 +278,40 @@ public:
 		cachedFingerprint = 0;
 	}
 
+	// In-place reset to exactly the default-constructed field values (note
+	// requireAllIaBuffers = true, which ResetKnown deliberately does not give).
+	// Unlike the rvalue assignment this replaces, descriptorTargets keeps its
+	// capacity: a decision object reused across PSO switches refills the same
+	// buffer instead of freeing it here and reallocating it in the assignment
+	// that follows the reset.
+	void ResetPreservingCapacity()
+	{
+		requireAllIaBuffers = true;
+		requireIndexBuffer = false;
+		requireIndexBufferView = false;
+		requireVertexBufferMask = 0;
+		hasDescriptorTargets = false;
+		hasTextureOverrideChecks = false;
+		descriptorTargets.clear();
+		cachedFingerprint = 0;
+	}
+
+	// Overwrites this plan with another plan's scalar requirement set plus its
+	// memoised fingerprint, and leaves descriptorTargets clear. Every consumer
+	// of a draw-count-filtered plan reads only those fields, so the filter can
+	// answer with a target-list-free plan instead of copying the vector.
+	void AssignRequirementsOnly(const DX12IaHashTargetPlan &other)
+	{
+		requireAllIaBuffers = other.requireAllIaBuffers;
+		requireIndexBuffer = other.requireIndexBuffer;
+		requireIndexBufferView = other.requireIndexBufferView;
+		requireVertexBufferMask = other.requireVertexBufferMask;
+		hasDescriptorTargets = other.hasDescriptorTargets;
+		hasTextureOverrideChecks = other.hasTextureOverrideChecks;
+		cachedFingerprint = other.cachedFingerprint;
+		descriptorTargets.clear();
+	}
+
 	void RequireAll()
 	{
 		requireAllIaBuffers = true;
@@ -442,8 +476,8 @@ public:
 		negativeCacheSafe = false;
 		shaderOverrideNegativeCacheAllowed = false;
 		descriptorTargetsStatic = false;
-		targetPlan = DX12IaHashTargetPlan();
-		directTargetPlan = DX12IaHashTargetPlan();
+		targetPlan.ResetPreservingCapacity();
+		directTargetPlan.ResetPreservingCapacity();
 		targetDrawMatchUsage = DX12DrawMatchUsage();
 		directTargetDrawMatchUsage = DX12DrawMatchUsage();
 		staticReplacementSnapshot.reset();

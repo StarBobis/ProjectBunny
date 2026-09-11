@@ -560,6 +560,14 @@ public:
 				DX12_DIAG_ELAPSED_US(t0));
 			return;
 		}
+		// Evaluated once for both branch B and the resident-snapshot lookup
+		// below. TryGetRuntimePreSkinBindings re-runs exactly these two
+		// predicates (RuntimeDescriptorRootsMatch / RuntimeConstantsMatch) on
+		// the same command-list state before it can hand out the cached
+		// binding snapshot, so a negative verdict here is also that call's
+		// verdict and lets the collector below be reached directly.
+		const bool preSkinBindingStateValid = runtimeState &&
+			DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState);
 		if (runtimeState &&
 			runtimeState->resolvedCompute.probeResultValid &&
 			!runtimeState->resolvedCompute.probeApplied &&
@@ -575,7 +583,7 @@ public:
 					runtimeState->computeRootSignature &&
 				runtimeState->resolvedCompute.bindingsDescriptorVersion ==
 					runtimeState->computeDescriptorBindingVersion &&
-				DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
+				preSkinBindingStateValid) {
 			probe->applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
@@ -651,7 +659,16 @@ public:
 			// Consume the validated recording-context template directly. The
 			// collector remains the cold path that materializes a missing template.
 			bool computeTemplateLoaded = residentSnapshotLoaded;
-			if (!computeTemplateLoaded) {
+			// The tracker would read this same command-list state (its resident
+			// snapshot lookup resolves the context through GetStatePtrFast) and
+			// re-validates the predicates that just failed, so when the state is
+			// already known invalid the call cannot return a snapshot: skip it
+			// and let the collector re-collect, exactly as it would have after
+			// the negative answer.
+			const bool residentSnapshotProvablyStale =
+				!preSkinBindingStateValid && runtimeState &&
+				DX12CommandListRuntime::GetStatePtrFast(commandList) == runtimeState;
+			if (!computeTemplateLoaded && !residentSnapshotProvablyStale) {
 				probe->cachedUavs = nullptr;
 				probe->cachedSrvs = nullptr;
 				probe->cachedCbvs = nullptr;

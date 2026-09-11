@@ -246,6 +246,27 @@ bool DX12ModHasPreSkinOutputResizeBindings();
 // uses this to keep resolving through the cache for consumers recorded on the
 // other side of that boundary.
 bool DX12ModHasPreSkinOutputResizeCacheEntries();
+// True while *any* pre-skin IA redirect target exists: a published resize
+// binding, a fence-owned resize cache entry, an active pre-skin output extent,
+// or a target the VA-range gates cannot enumerate. Conservative by
+// construction - it may report true with nothing left to redirect, but never
+// false while a redirect is still possible - so the IA bind gate can use one
+// lock-free load to skip the whole redirect walk when pre-skin output resizing
+// is not in play.
+bool DX12ModHasPreSkinIaRedirectTargets();
+// True while a redirect target exists that the VA-range tests cannot rule out:
+// the durable per-resource expansion tag written by DX12ModAdjustUavDesc is
+// only honored while a vertex limit raise is configured and cannot be
+// enumerated by VA range, and an active output whose backing extent could not
+// be published is likewise unknown. Same conservative contract as above; the
+// IA bind gate must fall back to it when neither range set covers a bind.
+bool DX12ModHasUnenumerablePreSkinRedirectTargets();
+// VA-range test over the published output-resize mappings (frame-local publish
+// map plus the fence-owned cache extents): true when at least one of the bound
+// views points inside a range DX12ModResolvePreSkinOutputResizeByGpuVa could
+// retarget. A superset of what that resolver can match, never a subset.
+bool DX12ModMayNeedPreSkinOutputResizeRedirect(
+	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count);
 UINT64 DX12ModGetPreSkinOutputResizeGeneration();
 void DX12ModForgetPreSkinOutputResizesForCommandList(
 	ID3D12GraphicsCommandList *commandList);

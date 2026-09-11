@@ -805,21 +805,33 @@ inline std::map<std::wstring, DX12ActivePreSkinTextureOverride> gActivePreSkinTe
 // in place on every store and section names are the stable identity.
 inline std::unordered_map<ID3D12Resource*, std::vector<std::wstring>> gPreSkinProducerSectionsByOutputResource;
 
-// Snapshot of just the expanded pre-skin output VA ranges (published
-// outputByteWidth exceeds the backing resource width), keyed by section.
-// DX12ModMayNeedPreSkinIaViewExpansion runs per matching draw on the render
-// thread; probing this handful of ranges under a shared read replaces the
-// old locked full-table scan. Maintained under gPreSkinLock by the
-// store/move/clear paths in DX12PreSkinRuntime.cpp; the fast flag is only a
-// conservative hint (1 means "worth taking the lock and scanning").
-class DX12PreSkinExpandedOutputRange
+// Snapshot of the backing VA extent of every active pre-skin output resource,
+// keyed by section. DX12ModMayNeedPreSkinIaViewExpansion runs per matching draw
+// on the render thread; probing this handful of ranges under a shared read
+// replaces the old locked full-table scan.
+//
+// The extent is the whole resource, not just the outputs whose published
+// byteWidth exceeds it: DX12ModFindActivePreSkinProducerForOutput is keyed by
+// the output resource, so a bound IA view can only reach the in-place view
+// expansion path while its VA points inside this extent. Publishing the full
+// extent is therefore the conservative superset the IA bind gate needs, and
+// the flag is only a hint (1 means "worth taking the lock and scanning").
+// Maintained under gPreSkinLock by the store/move/clear paths in
+// DX12PreSkinRuntime.cpp.
+class DX12PreSkinRedirectTargetRange
 {
 public:
 	UINT64 gpuVirtualAddress = 0;
 	UINT64 width = 0;
 };
-inline std::unordered_map<std::wstring, DX12PreSkinExpandedOutputRange> gPreSkinExpandedOutputRangesBySection;
-inline LONG gHasPreSkinExpandedOutputRangesFast = 0;
+inline std::unordered_map<std::wstring, DX12PreSkinRedirectTargetRange> gPreSkinRedirectTargetRangesBySection;
+inline LONG gHasPreSkinRedirectTargetRangesFast = 0;
+
+// Conservative escape for an active pre-skin output whose extent could not be
+// enumerated (not a buffer, or no published VA). The IA bind gate must never
+// answer "no redirect possible" from a range set that is missing a live
+// target, so such a publication latches this flag and the gate stays open.
+inline LONG gHasUnenumerablePreSkinRedirectTargets = 0;
 
 // A successful producer match proves that this configured section participates
 // in PreSkin for the current mod configuration. Keep that proof independently
@@ -1269,6 +1281,40 @@ inline constexpr size_t PreSkinOutputResizeCacheCapacity = 32;
 inline volatile LONG gHasPendingPreSkinOutputResizeSubmissionWorkFast = 0;
 
 inline volatile LONG gHasPreSkinOutputResizeCacheEntriesFast = 0;
+
+// Published VA extent of every entry in the fence-owned resize cache above.
+// The IA bind gate (DX12WrapperRuntimeUtils::PreSkinRedirectPossible) has to
+// answer "could any of these bound views be retargeted?" without taking
+// gPreSkinOutputResizeCacheLock, which is exclusive-only and whose locked
+// linear scan is the cost the gate exists to avoid. The extent is therefore
+// mirrored here as [originalGpuVa, +max(originalByteWidth, requiredByteWidth)],
+// a superset of the readable window the cache match itself tests
+// (sourceOffset < readableBytes && sourceOffset < requiredByteWidth).
+//
+// Maintained under gPreSkinOutputResizeCacheLock, which is only ever released
+// after the range lock, at the only two points that change the cache set: the
+// single insert and ClearPreSkinOutputResizeCache. Evictions leave their range
+// behind on purpose - a stale range only makes the gate more permissive, never
+// less, which is the direction that cannot lose a redirect.
+class DX12PreSkinOutputResizeCacheRange
+{
+public:
+	UINT64 gpuVirtualAddress = 0;
+	UINT64 width = 0;
+};
+
+inline SRWLOCK gPreSkinOutputResizeCacheRangeLock = SRWLOCK_INIT;
+
+inline std::vector<DX12PreSkinOutputResizeCacheRange> gPreSkinOutputResizeCacheRanges;
+
+inline volatile LONG gHasPreSkinOutputResizeCacheRangesFast = 0;
+
+
+void PublishPreSkinOutputResizeCacheRangeLocked(
+	UINT64 originalGpuVa, UINT64 width);
+
+
+void ClearPreSkinOutputResizeCacheRangesLocked();
 
 
 IUnknown *PreSkinCommandListIdentity(IUnknown *commandList);
@@ -4749,6 +4795,19 @@ bool DX12ModHasPreSkinOutputResizeBindings();
 // fence-owned-cache hint is what keeps the gate trying when producer and
 // consumer record on opposite sides of that boundary.
 bool DX12ModHasPreSkinOutputResizeCacheEntries();
+
+
+// Lock-free "is there anything a pre-skin IA redirect could still retarget"
+// latch and the two VA-range probes behind the IA bind gate; see
+// Core/DX12ModState.h for the full contract.
+bool DX12ModHasPreSkinIaRedirectTargets();
+
+
+bool DX12ModHasUnenumerablePreSkinRedirectTargets();
+
+
+bool DX12ModMayNeedPreSkinOutputResizeRedirect(
+	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count);
 
 
 void DX12ModForgetPreSkinOutputResizesForCommandList(

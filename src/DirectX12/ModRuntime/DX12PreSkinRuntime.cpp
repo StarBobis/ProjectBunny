@@ -92,40 +92,38 @@ static void CachePreSkinOutputResourceFacts(DX12ActivePreSkinTextureOverride *ac
 	active->outputResourceFactsValid = true;
 }
 
-static bool IsExpandedPreSkinOutput(const DX12ActivePreSkinTextureOverride &active)
-{
-	return active.outputResource && active.outputByteWidth &&
-		active.outputResourceFactsValid &&
-		active.outputByteWidth > active.outputResourceWidth;
-}
-
-static void PublishPreSkinExpandedOutputRangeLocked(
+static void PublishPreSkinRedirectTargetRangeLocked(
 	const std::wstring &section, const DX12ActivePreSkinTextureOverride &active)
 {
-	if (!IsExpandedPreSkinOutput(active)) {
-		auto found = gPreSkinExpandedOutputRangesBySection.find(section);
-		if (found != gPreSkinExpandedOutputRangesBySection.end()) {
-			gPreSkinExpandedOutputRangesBySection.erase(found);
-			if (gPreSkinExpandedOutputRangesBySection.empty())
-				InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 0);
-		}
+	if (active.outputResource && active.outputResourceFactsValid &&
+		active.outputResourceWidth) {
+		// Publish the whole backing extent. The in-place view expansion path
+		// (ExpandInPlaceVertexBufferView) resolves the bound VA to a resource
+		// first and then requires it to be this output resource, so a view can
+		// only ever be expanded while it points inside this range.
+		DX12PreSkinRedirectTargetRange &range =
+			gPreSkinRedirectTargetRangesBySection[section];
+		range.gpuVirtualAddress = active.outputGpuVirtualAddress;
+		range.width = active.outputResourceWidth;
+		InterlockedExchange(&gHasPreSkinRedirectTargetRangesFast, 1);
 		return;
 	}
-	DX12PreSkinExpandedOutputRange &range =
-		gPreSkinExpandedOutputRangesBySection[section];
-	range.gpuVirtualAddress = active.outputGpuVirtualAddress;
-	range.width = active.outputResourceWidth;
-	InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 1);
+	if (active.outputResource) {
+		// The extent cannot be enumerated, so the IA bind gate can never prove
+		// "this bind cannot be redirected" from the range set. Latch the
+		// conservative escape instead of silently dropping a live target.
+		InterlockedExchange(&gHasUnenumerablePreSkinRedirectTargets, 1);
+	}
 }
 
-static void RemovePreSkinExpandedOutputRangeLocked(const std::wstring &section)
+static void RemovePreSkinRedirectTargetRangeLocked(const std::wstring &section)
 {
-	auto found = gPreSkinExpandedOutputRangesBySection.find(section);
-	if (found == gPreSkinExpandedOutputRangesBySection.end())
+	auto found = gPreSkinRedirectTargetRangesBySection.find(section);
+	if (found == gPreSkinRedirectTargetRangesBySection.end())
 		return;
-	gPreSkinExpandedOutputRangesBySection.erase(found);
-	if (gPreSkinExpandedOutputRangesBySection.empty())
-		InterlockedExchange(&gHasPreSkinExpandedOutputRangesFast, 0);
+	gPreSkinRedirectTargetRangesBySection.erase(found);
+	if (gPreSkinRedirectTargetRangesBySection.empty())
+		InterlockedExchange(&gHasPreSkinRedirectTargetRangesFast, 0);
 }
 
 
@@ -135,7 +133,7 @@ void MoveActivePreSkinTextureOverrideResourceLocked(
 {
 	if (!active)
 		return;
-	RemovePreSkinExpandedOutputRangeLocked(section);
+	RemovePreSkinRedirectTargetRangeLocked(section);
 	// Plan fix C: keep the output-resource reverse index in sync.
 	if (active->outputResource) {
 		auto indexIt = gPreSkinProducerSectionsByOutputResource.find(active->outputResource);
@@ -242,7 +240,7 @@ void StoreActivePreSkinTextureOverrideLocked(
 	if (stored.outputResource) {
 		gPreSkinProducerSectionsByOutputResource[stored.outputResource].push_back(section);
 	}
-	PublishPreSkinExpandedOutputRangeLocked(section, stored);
+	PublishPreSkinRedirectTargetRangeLocked(section, stored);
 	BumpPreSkinActiveGeneration();
 }
 
@@ -252,16 +250,17 @@ bool DX12ModMayNeedPreSkinIaViewExpansion(
 {
 	if (!views || !hasViews || !count)
 		return false;
-	// Only outputs whose published byte width exceeds the backing resource can
-	// ever require view expansion; the snapshot keeps exactly those ranges
-	// (usually zero to a handful), so the common case is a single lock-free
-	// flag read instead of a locked full-table scan with per-entry COM calls.
-	if (InterlockedCompareExchange(&gHasPreSkinExpandedOutputRangesFast, 0, 0) == 0)
+	// A bound view can only reach the in-place view expansion path while it
+	// points inside an active pre-skin output extent. The snapshot holds exactly
+	// those extents (usually zero to a handful), so the common case is a single
+	// lock-free flag read instead of a locked full-table scan with per-entry COM
+	// calls - and, for the IA bind gate, instead of the whole redirect walk.
+	if (InterlockedCompareExchange(&gHasPreSkinRedirectTargetRangesFast, 0, 0) == 0)
 		return false;
 
 	DX12_LOCK_ACQUIRE_SHARED(&gPreSkinLock, "Lock.preSkinShared");
-	for (const auto &item : gPreSkinExpandedOutputRangesBySection) {
-		const DX12PreSkinExpandedOutputRange &range = item.second;
+	for (const auto &item : gPreSkinRedirectTargetRangesBySection) {
+		const DX12PreSkinRedirectTargetRange &range = item.second;
 		for (UINT slot = 0; slot < count; ++slot) {
 			if (!hasViews[slot] ||
 				views[slot].BufferLocation < range.gpuVirtualAddress)
@@ -574,10 +573,29 @@ void ClearPreSkinOutputResizeCache()
 	InterlockedExchange(
 		&gHasPendingPreSkinOutputResizeSubmissionWorkFast, 0);
 	InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 0);
+	ClearPreSkinOutputResizeCacheRangesLocked();
 	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheLock);
 	BumpPreSkinOutputResizeCacheGeneration();
 	for (DX12PreSkinOutputResizeCacheEntry &entry : releaseEntries)
 		ReleasePreSkinOutputResizeCacheEntry(&entry);
+}
+
+
+// Widest extent the resize-cache match can ever accept for one entry:
+// sourceOffset must stay below both the readable window (originalViewBytes when
+// known, the resource width otherwise) and the required width. Publishing the
+// maximum of the three is therefore a superset of that window, which is what
+// the lock-free IA bind gate needs. originalViewBytes is only learned from the
+// producer, so it can grow after the entry was created; the publish helper only
+// ever widens, so re-publishing is always safe.
+static UINT64 PreSkinOutputResizeCacheRangeWidth(
+	const DX12PreSkinOutputResizeCacheEntry &entry, UINT64 requiredByteWidth)
+{
+	UINT64 width = entry.originalByteWidth > requiredByteWidth ?
+		entry.originalByteWidth : requiredByteWidth;
+	if (entry.originalViewBytes > width)
+		width = entry.originalViewBytes;
+	return width;
 }
 
 
@@ -642,8 +660,15 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 		// Keep the readable fallback extent current: the same original
 		// allocation can be preloaded without view info, then acquired by the
 		// actual producer which knows the exact UAV view bytes.
-		if (originalViewBytes)
+		if (originalViewBytes) {
 			cached->second.originalViewBytes = originalViewBytes;
+			// A larger readable window widens what the cache match can accept,
+			// so the published extent has to follow it.
+			PublishPreSkinOutputResizeCacheRangeLocked(
+				cached->second.originalGpuVa,
+				PreSkinOutputResizeCacheRangeWidth(
+					cached->second, requiredByteWidth));
+		}
 		TrackPreSkinOutputResizeCacheEntryUse(
 			&cached->second, commandListIdentity);
 		const bool retained = retainEntry(cached->second);
@@ -763,6 +788,12 @@ bool AcquirePreSkinOutputResizeCacheEntry(
 		entry.useSerial = ++gPreSkinOutputResizeCacheUseSerial;
 		cached = gPreSkinOutputResizeCache.emplace(key, entry).first;
 		InterlockedExchange(&gHasPreSkinOutputResizeCacheEntriesFast, 1);
+		// Mirror the new entry's readable window for the lock-free IA bind gate.
+		// The extent is fixed for the entry's lifetime except for the
+		// originalViewBytes refresh above, which re-publishes on its own.
+		PublishPreSkinOutputResizeCacheRangeLocked(
+			entry.originalGpuVa,
+			PreSkinOutputResizeCacheRangeWidth(entry, requiredByteWidth));
 		BumpPreSkinOutputResizeCacheGeneration();
 		createdResource = nullptr;
 		createdVertexResource = nullptr;
@@ -6182,6 +6213,135 @@ bool DX12ModHasPreSkinOutputResizeCacheEntries()
 {
 	return InterlockedCompareExchange(
 		&gHasPreSkinOutputResizeCacheEntriesFast, 0, 0) != 0;
+}
+
+
+// Caller holds gPreSkinOutputResizeCacheLock. The range lock is a leaf: it is
+// only ever taken while that cache lock is already held, and the IA bind gate
+// takes it alone, so no lock-order cycle can form.
+void PublishPreSkinOutputResizeCacheRangeLocked(
+	UINT64 originalGpuVa, UINT64 width)
+{
+	if (!originalGpuVa || !width)
+		return;
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(
+		&gPreSkinOutputResizeCacheRangeLock, "Lock.outputResizeCacheRange");
+	for (DX12PreSkinOutputResizeCacheRange &range : gPreSkinOutputResizeCacheRanges) {
+		if (range.gpuVirtualAddress != originalGpuVa)
+			continue;
+		// Widen only: the gate must stay a superset of every variant of this
+		// original allocation (per-stride / per-required-width cache keys).
+		if (width > range.width)
+			range.width = width;
+		ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheRangeLock);
+		return;
+	}
+	DX12PreSkinOutputResizeCacheRange range;
+	range.gpuVirtualAddress = originalGpuVa;
+	range.width = width;
+	gPreSkinOutputResizeCacheRanges.push_back(range);
+	InterlockedExchange(&gHasPreSkinOutputResizeCacheRangesFast, 1);
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheRangeLock);
+}
+
+
+void ClearPreSkinOutputResizeCacheRangesLocked()
+{
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(
+		&gPreSkinOutputResizeCacheRangeLock, "Lock.outputResizeCacheRange");
+	gPreSkinOutputResizeCacheRanges.clear();
+	InterlockedExchange(&gHasPreSkinOutputResizeCacheRangesFast, 0);
+	ReleaseSRWLockExclusive(&gPreSkinOutputResizeCacheRangeLock);
+}
+
+
+// True while any pre-skin IA redirect target can still exist. Every term is a
+// published hint that can only be stale in the "still says there might be work"
+// direction, so a false answer is proof that PreSkinRedirectPossible can return
+// false without losing a redirect.
+bool DX12ModHasPreSkinIaRedirectTargets()
+{
+	if (DX12ModHasUnenumerablePreSkinRedirectTargets())
+		return true;
+	if (gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire) ||
+		DX12ModHasPreSkinOutputResizeCacheEntries())
+		return true;
+	return InterlockedCompareExchange(
+		&gHasPreSkinRedirectTargetRangesFast, 0, 0) != 0;
+}
+
+
+// The escape for targets the VA-range tests cannot rule out. The durable
+// per-resource expansion tag written by DX12ModAdjustUavDesc lives on an
+// ID3D12Resource that is not enumerated anywhere by VA, but
+// DX12ModResolveExpandedPreSkinBufferWidth only honors it while a matching
+// vertex limit raise is configured, so "a raise is configured" is a sound
+// (merely conservative) stand-in for "such a resource may be bound".
+bool DX12ModHasUnenumerablePreSkinRedirectTargets()
+{
+	if (gHasVertexLimitRaiseConfigs != 0)
+		return true;
+	return InterlockedCompareExchange(
+		&gHasUnenumerablePreSkinRedirectTargets, 0, 0) != 0;
+}
+
+
+// Superset of what DX12ModResolvePreSkinOutputResizeByGpuVa can match, for the
+// bound views about to be bound. The frame-local publish map is the authority
+// for the producer handoff; the per-command-list map only ever holds copies of
+// its entries, and the fence-owned cache is mirrored as VA ranges above.
+bool DX12ModMayNeedPreSkinOutputResizeRedirect(
+	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count)
+{
+	if (!views || !hasViews || !count)
+		return false;
+	if (InterlockedCompareExchange(
+			&gHasPreSkinOutputResizeCacheRangesFast, 0, 0) != 0) {
+		bool found = false;
+		DX12_LOCK_ACQUIRE_SHARED(
+			&gPreSkinOutputResizeCacheRangeLock, "Lock.outputResizeCacheRange");
+		for (const DX12PreSkinOutputResizeCacheRange &range :
+				gPreSkinOutputResizeCacheRanges) {
+			for (UINT slot = 0; slot < count; ++slot) {
+				if (!hasViews[slot] ||
+					views[slot].BufferLocation < range.gpuVirtualAddress)
+					continue;
+				if (views[slot].BufferLocation - range.gpuVirtualAddress <
+					range.width) {
+					found = true;
+					break;
+				}
+			}
+			if (found)
+				break;
+		}
+		ReleaseSRWLockShared(&gPreSkinOutputResizeCacheRangeLock);
+		if (found)
+			return true;
+	}
+	if (!gHasPreSkinOutputResizeBindings.load(std::memory_order_acquire))
+		return false;
+	bool found = false;
+	DX12_LOCK_ACQUIRE_SHARED(&gPreSkinOutputResizeLock, "Lock.outputResizeShared");
+	for (const auto &item : gPreSkinOutputResizeMap) {
+		const DX12PreSkinOutputResizeEntry &entry = item.second;
+		// An entry with no byte width can still be matched by the resolver's
+		// exact-VA lookup, so test a one-byte extent instead of skipping it.
+		const UINT64 width = entry.originalByteWidth ? entry.originalByteWidth : 1;
+		for (UINT slot = 0; slot < count; ++slot) {
+			if (!hasViews[slot] ||
+				views[slot].BufferLocation < entry.originalGpuVa)
+				continue;
+			if (views[slot].BufferLocation - entry.originalGpuVa < width) {
+				found = true;
+				break;
+			}
+		}
+		if (found)
+			break;
+	}
+	ReleaseSRWLockShared(&gPreSkinOutputResizeLock);
+	return found;
 }
 
 
