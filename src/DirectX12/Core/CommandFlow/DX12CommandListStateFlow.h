@@ -135,7 +135,9 @@ public:
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
 			DX12_PROF_COUNT("IaHuntIaUpdate");
-		if (DX12HotPathState::NeedsResidentIaState(flags)) {
+		// FLAG_IA_RESIDENT_STATE is part of what NeedsResidentIaState tests, so
+		// the flag itself is the condition to check here.
+		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_IA_RESIDENT_STATE)) {
 			if (runtimeState)
 				return DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
 			return DX12CommandListRuntime::RememberIndexBuffer(commandList, view);
@@ -174,7 +176,8 @@ public:
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
 			DX12_PROF_COUNT("IaHuntIaUpdate");
-		if (DX12HotPathState::NeedsResidentIaState(flags)) {
+		// See CaptureIndexBuffer: the IA-resident flag is the exact condition.
+		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_IA_RESIDENT_STATE)) {
 			if (runtimeState)
 				return DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);
 			return DX12CommandListRuntime::RememberVertexBuffers(commandList, startSlot, count, views);

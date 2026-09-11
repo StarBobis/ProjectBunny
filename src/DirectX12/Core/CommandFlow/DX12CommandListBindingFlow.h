@@ -80,7 +80,13 @@ public:
 		if (DX12InternalReplayState::IsActive())
 			return;
 		RestoreDeferredReplacementsBeforeBindingMutation(commandList);
+		// One snapshot of the hot-path gates for this invocation: the value is
+		// read again below, and a cross-thread publish between two reads would
+		// let the resident heap update above be skipped by a later test that
+		// disagrees with the earlier one.
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
+		const bool skipBindings =
+			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		const bool skipComputeBinding =
 			DX12HotPathState::skipAll.load(std::memory_order_relaxed) &&
 			!(flags &
@@ -100,7 +106,7 @@ public:
 		// entirely. Games re-bind the same heap set thousands of times per
 		// frame; this is the highest-frequency binding entry point.
 		if (runtimeState && heaps && count <= 2 &&
-		    DX12HotPathState::skipBindings.load(std::memory_order_relaxed) &&
+		    skipBindings &&
 		    runtimeState->lastSetHeapsCount == count &&
 		    (count == 0 ||
 		     (runtimeState->lastSetHeapsInput[0] == heaps[0] &&
@@ -132,7 +138,7 @@ public:
 				}
 			}
 		}
-		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
+		if (skipBindings) {
 			DX12_PROF_COUNT("FastForward");
 			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;

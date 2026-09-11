@@ -155,6 +155,16 @@ public:
 		return (GetFastFlags() & FLAG_CAPTURING) != 0;
 	}
 
+	// A draw must not be forwarded past the interpreter while a capture is
+	// either running or already requested but not yet started. Both bits come
+	// from the same published word, so testing them together is one load
+	// instead of one load per query on the per-draw path.
+	static bool CapturesDraws()
+	{
+		return (GetFastFlags() &
+			(FLAG_CAPTURING | FLAG_CAPTURE_REQUESTED)) != 0;
+	}
+
 	static bool GetPath(wchar_t *outPath, size_t pathCount)
 	{
 		if (!outPath || pathCount == 0)

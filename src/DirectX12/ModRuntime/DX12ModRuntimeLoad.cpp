@@ -1514,9 +1514,7 @@ bool DX12ModRuntimeLoad(
 	gPresentCommandListExecutedPresent = -1;
 	AcquireSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	gPreSkinSrvNegativeCache.clear();
-	gPreSkinSrvStableNegativeCache.clear();
 	gPreSkinSrvPositiveCache.clear();
-	gPreSkinSrvStablePositiveCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinSrvProbeCacheLock);
 	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
@@ -1525,10 +1523,6 @@ bool DX12ModRuntimeLoad(
 	AcquireSRWLockExclusive(&gPreSkinUavMatchCacheLock);
 	gPreSkinUavMatchCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinUavMatchCacheLock);
-	AcquireSRWLockExclusive(&gPreSkinMatchCsProbeLogLock);
-	gPreSkinMatchCsProbeKeys.clear();
-	InterlockedExchange(&gPreSkinMatchCsProbeLogCount, 0);
-	ReleaseSRWLockExclusive(&gPreSkinMatchCsProbeLogLock);
 	ClearPreSkinStickyMatchCache();
 	BumpPreSkinActiveGeneration();
 	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);

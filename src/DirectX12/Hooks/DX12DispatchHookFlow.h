@@ -267,7 +267,7 @@ public:
 		UINT threadGroupCountZ,
 		DX12SimulateContext *runtimeState,
 		DX12DispatchHookFlowDispatch::Fn originalDispatch,
-		const DX12CompiledDispatchDecision *dispatchDecision = nullptr)
+		const DX12CompiledDispatchDecision *dispatchDecision)
 	{
 		if (!originalDispatch)
 			return;
@@ -280,14 +280,30 @@ public:
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		bool shouldSkipDispatch = false;
-		// ExecuteHook resolves a decision before entering this function.  Keep the
-		// hot path on the command-list-local immutable decision instead of falling
-		// back to DX12ModShouldSkipPipelineState(), which takes gModLock again.
-		if (hasShaderOverrides && dispatchDecision)
-			shouldSkipDispatch = dispatchDecision->hasShaderOverrideSkip;
-		if (shouldSkipDispatch)
+		// ExecuteHook resolves the decision before entering this function: the
+		// hot path stays on the command-list-local immutable decision instead of
+		// falling back to DX12ModShouldSkipPipelineState(), which takes gModLock
+		// again. The decision is non-null by construction at the only call site.
+		if (hasShaderOverrides && dispatchDecision->hasShaderOverrideSkip)
 			return;
+
+		// Everything below this point is the PreSkin candidate path. Test the
+		// decision before touching the guard or the fallback state: the two
+		// guarded objects below are only observable on this path, and the
+		// fallback state is a whole DX12SimulateContext (tens of KB of plain
+		// arrays, dominated by the two 64-entry root-constant tables) that a
+		// non-candidate dispatch has no use for.
+		const bool decisionNeedsPreSkinProbe =
+			needsPreSkinProbe && dispatchDecision->NeedsPreSkinProbe();
+		if (!decisionNeedsPreSkinProbe) {
+			if (needsPreSkinProbe && dispatchDecision->IsPreSkinRejected())
+				DX12_PROF_COUNT("Rm.DispatchDecisionFastRejects");
+			DX12ModRestorePreSkinningUavReplacement(commandList);
+			DX12ModFlushDrawSrvReplacement(commandList);
+			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+			return;
+		}
+		DX12_PROF_COUNT("Rm.DispatchDecisionPreSkinCandidateDispatches");
 
 		DX12DispatchHookFlowGuard guard(InDispatchHookFlow);
 
@@ -298,25 +314,6 @@ public:
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
 			effectiveState = &fallbackState;
 		}
-
-		DX12CompiledDispatchDecision localDecision;
-		const DX12CompiledDispatchDecision *effectiveDecision = dispatchDecision;
-		if (!effectiveDecision && effectiveState) {
-			localDecision = DX12CommandListRuntime::BuildDispatchDecision(
-				effectiveState->pipelineState, hasShaderOverrides, needsPreSkinProbe);
-			effectiveDecision = &localDecision;
-		}
-		const bool decisionNeedsPreSkinProbe =
-			needsPreSkinProbe && effectiveDecision && effectiveDecision->NeedsPreSkinProbe();
-		if (!needsPreSkinProbe || !effectiveState || !decisionNeedsPreSkinProbe) {
-			if (needsPreSkinProbe && effectiveDecision && effectiveDecision->IsPreSkinRejected())
-				DX12_PROF_COUNT("Rm.DispatchDecisionFastRejects");
-			DX12ModRestorePreSkinningUavReplacement(commandList);
-			DX12ModFlushDrawSrvReplacement(commandList);
-			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			return;
-		}
-		DX12_PROF_COUNT("Rm.DispatchDecisionPreSkinCandidateDispatches");
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
 		// A deferred draw-SRV restore must flush before any dispatch is
@@ -336,12 +333,12 @@ public:
 		// serial covers every binding mutation; across a command-list Reset the
 		// counters restart, but Reset already invalidates probeResultValid, so
 		// the verdict can never alias a previous recording.
-		if (effectiveState && effectiveDecision &&
+		if (effectiveState && dispatchDecision &&
 			effectiveState->resolvedCompute.probeResultValid &&
 			!effectiveState->resolvedCompute.probeApplied &&
-			effectiveDecision->computeShaderHash != 0 &&
+			dispatchDecision->computeShaderHash != 0 &&
 			effectiveState->resolvedCompute.probeCsHash ==
-				effectiveDecision->computeShaderHash &&
+				dispatchDecision->computeShaderHash &&
 			effectiveState->resolvedCompute.probeReloadGeneration ==
 				outerReloadGeneration &&
 			effectiveState->resolvedCompute.probeBindingSerial ==
@@ -358,7 +355,7 @@ public:
 				effectiveState->computeRootSignature &&
 			effectiveState->resolvedCompute.bindingsDescriptorVersion ==
 				effectiveState->computeDescriptorBindingVersion) {
-			probe.computeShaderHash = effectiveDecision->computeShaderHash;
+			probe.computeShaderHash = dispatchDecision->computeShaderHash;
 			probe.computeBindingSerial = effectiveState->computeBindingSerial;
 			probe.applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");

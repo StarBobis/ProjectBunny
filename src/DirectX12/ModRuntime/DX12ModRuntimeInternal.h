@@ -657,12 +657,6 @@ inline std::atomic<UINT64> gPreSkinSrvCacheGeneration{1};
 
 inline volatile LONG gPreSkinDescriptorAbortCacheHitLogCount = 0;
 
-inline volatile LONG gPreSkinMatchCsProbeLogCount = 0;
-
-inline SRWLOCK gPreSkinMatchCsProbeLogLock = SRWLOCK_INIT;
-
-inline std::unordered_set<uint64_t> gPreSkinMatchCsProbeKeys;
-
 void ClearPreSkinStickyMatchCache();
 
 class DX12ShaderOverridePsoMatchCache
@@ -1019,15 +1013,11 @@ inline UINT64 gPreSkinCbvPatchCacheGeneration = 0;
 
 inline std::set<UINT64> gPreSkinSrvNegativeCache;
 
-inline std::set<UINT64> gPreSkinSrvStableNegativeCache;
-
 inline std::set<UINT64> gPreSkinDescriptorPatchAbortCache;
 
 inline SRWLOCK gPreSkinDescriptorPatchAbortLock = SRWLOCK_INIT;
 
 inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvPositiveCache;
-
-inline std::map<UINT64, DX12PreSkinSrvPositiveCacheValue> gPreSkinSrvStablePositiveCache;
 
 inline SRWLOCK gPreSkinSrvProbeCacheLock = SRWLOCK_INIT;
 
@@ -1067,18 +1057,9 @@ UINT64 MakePreSkinSrvStableProbeCacheKey(
 	UINT64 srvByteWidth);
 
 
-UINT64 MakePreSkinSrvProbeCacheKey(
-	const DX12CurrentComputeUavBinding &srv,
-	const Bunny::TextureOverrideConfig &config,
-	UINT64 srvByteWidth);
-
-
-void StorePreSkinSrvProbeNegative(UINT64 negativeKey);
-
-void StorePreSkinSrvStableProbeNegative(UINT64 stableNegativeKey, UINT64 negativeKey);
+void StorePreSkinSrvProbeNegative(UINT64 stableNegativeKey);
 
 void StorePreSkinSrvProbePositive(
-	UINT64 negativeKey,
 	UINT64 stableNegativeKey,
 	const DX12PreSkinSrvPositiveCacheValue &value);
 
@@ -2891,9 +2872,6 @@ bool CanPatchPreSkinVertexCountCbvLocked(
 	const DX12CurrentComputeUavBinding &cbv,
 	UINT expectedOriginalVertexCount);
 
-void AppendComputeCbvList(
-	const std::vector<DX12CurrentComputeUavBinding> &cbvs, char *text, size_t textSize);
-
 void AppendComputeRootConstantsList(
 	const std::vector<DX12CurrentRootConstants> &rootConstants, char *text, size_t textSize);
 
@@ -2913,30 +2891,6 @@ uint64_t MakePreSkinMatchCsInputCacheKey(
 	const std::vector<DX12CurrentComputeUavBinding> &uavs,
 	const std::vector<DX12CurrentComputeUavBinding> &srvs,
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
-	const std::vector<DX12CurrentRootConstants> &rootConstants);
-
-
-void LogPreSkinMatchCsProbeLimited(
-	uint64_t csHash, const DX12PreSkinTextureOverrideCandidate &candidate,
-	UINT64 uavViewBytes, bool inputMatched,
-	const std::vector<DX12CurrentComputeUavBinding> &uavs,
-	const std::vector<DX12CurrentComputeUavBinding> &srvs,
-	const std::vector<DX12CurrentComputeUavBinding> &cbvs,
-	const std::vector<DX12CurrentRootConstants> &rootConstants);
-
-void AppendComputeCbvList(
-	const std::vector<DX12CurrentComputeUavBinding> &cbvs, char *text, size_t textSize);
-
-
-void AppendComputeRootConstantsList(
-	const std::vector<DX12CurrentRootConstants> &rootConstants, char *text, size_t textSize);
-
-
-uint64_t HashComputeCbvListForProbe(
-	const std::vector<DX12CurrentComputeUavBinding> &cbvs);
-
-
-uint64_t HashComputeRootConstantsForProbe(
 	const std::vector<DX12CurrentRootConstants> &rootConstants);
 
 

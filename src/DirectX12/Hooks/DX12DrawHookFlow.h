@@ -112,15 +112,8 @@ public:
 		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const bool frameCapturePendingOrActive =
-			DX12FrameAnalysisState::IsCaptureRequested() ||
-			DX12FrameAnalysisState::IsCapturing();
+			DX12FrameAnalysisState::CapturesDraws();
 		const DX12CompiledDrawDecision *residentDrawDecision = nullptr;
-
-		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
-			DX12_PROF_COUNT("FastForward");
-			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			return;
-		}
 
 		// DX11-style resident PSO rejection: when shader overrides are the only
 		// draw-driven feature for this PSO, a state proven unable to match must
