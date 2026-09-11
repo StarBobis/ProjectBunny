@@ -4,7 +4,6 @@
 #include "DX12Runtime.h"
 #include "DX12Resources.h"
 #include "DX12Presentation.h"
-#include "Tracking/DX12DescriptorDirectReadProbe.h"
 #include <Shlwapi.h>
 #include <crtdbg.h>
 #include <stdlib.h>
@@ -147,15 +146,6 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 		adapter, minimumFeatureLevel, hr, device ? *device : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapD3D12DeviceResult(riid, device);
-	// Runs on the raw device before wrapping, so the probe is invisible to the
-	// descriptor shadow. It only decides whether the shadow's per-slot payload
-	// can be replaced by an identity plus a direct read of the descriptor bytes.
-	if (SUCCEEDED(hr) && device && *device &&
-		riid == __uuidof(ID3D12Device))
-	{
-		DX12ProbeDescriptorDirectRead(
-			static_cast<ID3D12Device *>(*device));
-	}
 	return hr;
 }
 

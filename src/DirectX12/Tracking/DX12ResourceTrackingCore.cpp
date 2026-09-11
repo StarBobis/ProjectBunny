@@ -1497,6 +1497,51 @@ static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied
 	StoreCpuDescriptorRecordLocked(std::move(record));
 }
 
+void RecordDescriptor(DescriptorRecord &&record)
+{
+	const auto lockBegin = std::chrono::steady_clock::now();
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	RecordDescriptorInCacheLocked(std::move(record), false);
+	BumpDescriptorQuerySerial();
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gDescriptorExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
+			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+	}
+}
+
+void RecordDescriptorBatch(std::vector<DescriptorRecord> *records)
+{
+	if (!records || records->empty())
+		return;
+
+	const size_t recordCount = records->size();
+	const auto lockBegin = std::chrono::steady_clock::now();
+	AcquireSRWLockExclusive(&gDescriptorLock);
+	for (DescriptorRecord &queued : *records) {
+		DescriptorRecord apply = queued;
+		apply.ownsResource = false;
+		apply.ownsCounterResource = false;
+		RecordDescriptorInCacheLocked(std::move(apply), false);
+		ReleaseDescriptorRecordResources(&queued);
+	}
+	BumpDescriptorQuerySerial();
+	LogResourceTrackerStatsLocked();
+	ReleaseSRWLockExclusive(&gDescriptorLock);
+	records->clear();
+	const auto lockEnd = std::chrono::steady_clock::now();
+	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
+	if (elapsedUs >= 1000) {
+		gDescriptorExclusiveLockSlowCount++;
+		if (static_cast<UINT64>(elapsedUs) > gDescriptorExclusiveLockSlowMaxUs)
+			gDescriptorExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
+	}
+}
+
 void DX12RecordRootSignatureImmediate(
 	ID3D12RootSignature *rootSignature,
 	UINT nodeMask,

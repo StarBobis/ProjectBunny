@@ -583,6 +583,9 @@ bool DX12FindDescriptorSummaryByCpuHandleLight(
 	if (!cpuHandle || !summary)
 		return false;
 
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
+		&cpuHandle,
+		1);
 	// Try heap slot via ShadowUtils first (per-heap lock, no global contention)
 	DescriptorRecord shadowRecord;
 	if (DX12DescriptorHeapShadowUtils::ReadDescriptorFromSlot(cpuHandle,
@@ -755,6 +758,9 @@ void DX12FindDescriptorSummariesByCpuHandle(
 		return;
 
 	memset(found, 0, count * sizeof(uint8_t));
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
+		cpuHandles,
+		count);
 	AcquireSRWLockShared(&gDescriptorLock);
 	for (size_t i = 0; i < count; ++i) {
 		summaries[i] = DX12DescriptorSummary();
@@ -871,6 +877,9 @@ bool FindDescriptorSummaryByCpuHandleAtEpoch(
 	if (!cpuHandle || !epoch || !summary)
 		return false;
 
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
+		&cpuHandle,
+		1);
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
@@ -918,6 +927,9 @@ bool FindDescriptorSummaryByCpuHandleAtEpochAndKind(
 	if (!cpuHandle || !epoch || !kind || !kind[0] || !summary)
 		return false;
 
+	DX12DescriptorHeapShadowUtils::EnsureVisible(
+		&cpuHandle,
+		1);
 	AcquireSRWLockShared(&gDescriptorLock);
 	DescriptorSlotLocation location = {};
 	if (!ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, &location, nullptr) ||
