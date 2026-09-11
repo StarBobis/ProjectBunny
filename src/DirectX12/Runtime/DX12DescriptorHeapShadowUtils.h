@@ -541,7 +541,12 @@ public:
 					&heap, resolved.slot, record, cpuHandle) ==
 					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 			if (changed)
-				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
+				// Publish the identity that was just stored rather than asking
+				// BumpVersion to look the slot up again: this path has the record
+				// in hand, which is the same reason the chunked branch below
+				// publishes directly (see DX12DescriptorHeapStateUtils).
+				DX12DescriptorHeapStateUtils::PublishValue(
+					&heap, resolved.slot, record.valueId);
 			ReleaseDescriptorRecordResources(&record);
 			return changed;
 		}
@@ -690,7 +695,10 @@ public:
 					&heap, resolved.slot, record, cpuHandle) ==
 					DX12DescriptorSlotArrayUtils::StoreCurrentSlotResult::Stored;
 			if (changed)
-				DX12DescriptorHeapStateUtils::BumpVersion(&heap, resolved.slot);
+				// Same as above: the value that was just stored is in hand, so
+				// there is no reason to make BumpVersion read it back.
+				DX12DescriptorHeapStateUtils::PublishValue(
+					&heap, resolved.slot, record.valueId);
 			ReleaseDescriptorRecordResources(&record);
 			return true;
 		}
