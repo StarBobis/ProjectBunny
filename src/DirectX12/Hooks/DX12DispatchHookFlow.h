@@ -16,6 +16,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 class DX12DispatchHookFlowDispatch
@@ -307,12 +308,17 @@ public:
 
 		DX12DispatchHookFlowGuard guard(InDispatchHookFlow);
 
-		DX12SimulateContext fallbackState = {};
+		// Only constructed when the command list really has no resident runtime
+		// state. Declaring it as a value here cost a full DX12SimulateContext
+		// (~111KB of plain arrays) of zero-initialisation on every pre-skin
+		// candidate dispatch, for a fallback the wrapper path never takes.
+		std::optional<DX12SimulateContext> fallbackState;
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
 			DX12_LOG_TEXT("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
-			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
-			effectiveState = &fallbackState;
+			fallbackState.emplace();
+			fallbackState->pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
+			effectiveState = &*fallbackState;
 		}
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();

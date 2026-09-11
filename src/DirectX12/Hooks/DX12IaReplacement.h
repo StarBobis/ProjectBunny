@@ -1515,7 +1515,10 @@ public:
 		}
 		runtimeState->staticTemplateIaApplied = false;
 		runtimeState->staticTemplateReplacement.reset();
-		runtimeState->staticTemplateSavedIa = DX12ActiveIaState();
+		// staticTemplateSavedIa is deliberately left stale: its only reader
+		// (this function) is guarded by staticTemplateIaApplied, and the next
+		// apply overwrites it before setting the marker again. Clearing it here
+		// built a whole DX12ActiveIaState temporary just to be discarded.
 	}
 
 	// Bind-time static IA replacement (plan step 3.2): staleness watchdog.
@@ -1993,6 +1996,7 @@ public:
 			    iaNeg.bufferContentGeneration == DX12GetIaHashContentGeneration() &&
 			    iaNeg.reloadGeneration == drawDecision->reloadGeneration &&
 			    iaNeg.targetPlanFingerprint == iaPlanFingerprint &&
+			    iaNeg.preSkinGeneration == preSkinGeneration &&
 			    iaNeg.pipelineState == runtimeState.pipelineState) {
 				DX12_PROF_COUNT("Rm.IaNegCacheHit");
 				if (iaNeg.noCandidate) {
@@ -2020,6 +2024,7 @@ public:
 				iaNeg.bufferContentGeneration = DX12GetIaHashContentGeneration();
 				iaNeg.reloadGeneration = drawDecision->reloadGeneration;
 				iaNeg.targetPlanFingerprint = iaPlanFingerprint;
+				iaNeg.preSkinGeneration = preSkinGeneration;
 				iaNeg.pipelineState = runtimeState.pipelineState;
 				if (noCandidate) {
 					StoreBoundDrawNegative();
@@ -2506,8 +2511,6 @@ public:
 					&hasIaHashState);
 			}
 			if (iaHashCacheHit) {
-				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-					&mutableRuntimeState->resolvedDraw, true);
 				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"ia_hash_cache_hit",
@@ -2525,8 +2528,6 @@ public:
 						*activeIaState);
 				}
 			} else {
-				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-					&mutableRuntimeState->resolvedDraw, false);
 				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"ia_hash_cache_miss",

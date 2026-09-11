@@ -1227,14 +1227,14 @@ bool FindDescriptorTextureOverrides(
 	}
 
 	std::vector<DX12TextureOverrideMatch> candidates;
-	std::vector<uint32_t> resourceHashes(bindingsView->size(), 0);
 	for (size_t index = 0; index < bindingsView->size(); ++index) {
 		const DX12CurrentShaderResourceBinding &binding = (*bindingsView)[index];
 		if (!DescriptorBindingMatchesTarget(binding, target))
 			continue;
-		const uint32_t resourceHash =
-			resourceHashes[index] ? resourceHashes[index] :
-			(resourceHashes[index] = HashDescriptorBindingResource(binding));
+		// HashDescriptorBindingResource is called once per surviving binding, so
+		// the per-index memo array that used to hold this value was written and
+		// read inside the same iteration and never consulted again.
+		const uint32_t resourceHash = HashDescriptorBindingResource(binding);
 		const uint32_t descriptorHash =
 			HashDescriptorBinding(commandList, cachedDevice, binding);
 		AppendTextureOverrideCandidateMatchesByHash(
@@ -1300,6 +1300,25 @@ void AppendTextureOverrideMatches(
 }
 
 
+// Section-name ordering used by SortTextureOverrideMatches. Comparing the
+// lowered characters pairwise is exactly `ToLower(lhs) < ToLower(rhs)`
+// (IniDocumentText::ToLower only maps each character through towlower), but it
+// does not allocate a lowered copy of both section names per comparison - the
+// comparator previously paid two heap allocations for every one of the
+// O(n log n) comparisons, and section names always exceed the SSO buffer.
+static bool LowerSectionLess(const std::wstring &lhs, const std::wstring &rhs)
+{
+	const size_t shared = lhs.size() < rhs.size() ? lhs.size() : rhs.size();
+	for (size_t index = 0; index < shared; ++index) {
+		const wchar_t left = static_cast<wchar_t>(std::towlower(lhs[index]));
+		const wchar_t right = static_cast<wchar_t>(std::towlower(rhs[index]));
+		if (left != right)
+			return left < right;
+	}
+	return lhs.size() < rhs.size();
+}
+
+
 void SortTextureOverrideMatches(
 	std::vector<DX12TextureOverrideMatch> *matches)
 {
@@ -1313,12 +1332,10 @@ void SortTextureOverrideMatches(
 				return lhs.config != nullptr;
 			if (lhs.config->matchPriority != rhs.config->matchPriority)
 				return lhs.config->matchPriority > rhs.config->matchPriority;
-			const std::wstring leftSection =
-				Bunny::IniDocumentText::ToLower(lhs.config->section);
-			const std::wstring rightSection =
-				Bunny::IniDocumentText::ToLower(rhs.config->section);
-			if (leftSection != rightSection)
-				return leftSection < rightSection;
+			if (LowerSectionLess(lhs.config->section, rhs.config->section))
+				return true;
+			if (LowerSectionLess(rhs.config->section, lhs.config->section))
+				return false;
 			return lhs.matchedHash > rhs.matchedHash;
 		});
 }
@@ -1583,13 +1600,61 @@ bool IaHashDefinitelyHasNoCandidate(
 // so it deliberately mirrors IaHashDefinitelyHasNoCandidate's own lookup
 // arguments (the same counts and the same scratch shape), otherwise the gate
 // could disagree with the probe it is meant to short-circuit.
+//
+// Emptiness-only form of FindIaTextureOverridePrefilterCandidatesLocked with
+// vertexCount/indexCount pinned to 0. That function's scratch form copies the
+// per-count bucket and appends the generic list only so the caller can test the
+// result for emptiness; every call therefore built and tore down a temporary
+// vector (and reallocated it whenever a per-count bucket existed) to answer a
+// question that is just "is either of those two lists non-empty". Lookup order
+// and the "exact-count bucket plus generic list" semantics are preserved.
 static bool IaHasAnyPrefilterCandidate(bool indexBuffer, uint32_t vertexSlot)
 {
-	std::vector<size_t> prefilterScratch;
-	const std::vector<size_t> *candidateIndexes =
-		FindIaTextureOverridePrefilterCandidatesLocked(
-			indexBuffer, vertexSlot, 0, 0, &prefilterScratch);
-	return candidateIndexes && !candidateIndexes->empty();
+	if (indexBuffer) {
+		const std::unordered_map<uint32_t, std::vector<size_t>>::const_iterator
+			indexedByCount =
+				gIaIndexTextureOverridePrefilterByIndexCount.find(0);
+		if (indexedByCount != gIaIndexTextureOverridePrefilterByIndexCount.end() &&
+		    !indexedByCount->second.empty())
+			return true;
+		return !gIaIndexTextureOverridePrefilterIndex.empty();
+	}
+
+	const std::unordered_map<UINT64, std::vector<size_t>>::const_iterator
+		mergedByCount =
+			gIaMergedVertexTextureOverridePrefilterByVertexCount.find(
+				MakeIaVertexIndexKey(0, vertexSlot));
+	if (mergedByCount != gIaMergedVertexTextureOverridePrefilterByVertexCount.end()) {
+		if (!mergedByCount->second.empty())
+			return true;
+		const std::unordered_map<uint32_t, std::vector<size_t>>::const_iterator
+			mergedGeneric =
+				gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
+		return mergedGeneric != gIaMergedVertexTextureOverridePrefilterIndex.end() &&
+			!mergedGeneric->second.empty();
+	}
+
+	const std::unordered_map<uint32_t, std::vector<size_t>>::const_iterator
+		anySlotByCount =
+			gIaAnyVertexTextureOverridePrefilterByVertexCount.find(0);
+	if (anySlotByCount != gIaAnyVertexTextureOverridePrefilterByVertexCount.end()) {
+		if (!anySlotByCount->second.empty())
+			return true;
+		return !gIaAnyVertexTextureOverridePrefilterIndex.empty();
+	}
+
+	const std::unordered_map<uint32_t, std::vector<size_t>>::const_iterator merged =
+		gIaMergedVertexTextureOverridePrefilterIndex.find(vertexSlot);
+	if (merged != gIaMergedVertexTextureOverridePrefilterIndex.end())
+		return !merged->second.empty();
+
+	if (!gIaAnyVertexTextureOverridePrefilterIndex.empty())
+		return true;
+
+	const std::unordered_map<uint32_t, std::vector<size_t>>::const_iterator specific =
+		gIaVertexTextureOverridePrefilterIndex.find(vertexSlot);
+	return specific != gIaVertexTextureOverridePrefilterIndex.end() &&
+		!specific->second.empty();
 }
 
 

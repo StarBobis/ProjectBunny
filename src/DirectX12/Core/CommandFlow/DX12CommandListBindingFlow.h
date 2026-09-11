@@ -148,28 +148,6 @@ public:
 			commandList, runtimeState, cbvSrvUav, sampler);
 	}
 
-	static void UpdateComputeBindingHash(
-		DX12SimulateContext *runtimeState,
-		uint64_t hashComponent)
-	{
-		if (!runtimeState || !hashComponent)
-			return;
-		runtimeState->computeBindingHash ^= hashComponent;
-		runtimeState->computeBindingHash ^= runtimeState->computeBindingHash >> 33;
-		runtimeState->computeBindingHash *= 0xff51afd7ed558ccdull;
-	}
-
-	static void UpdateComputeBindingHash(
-		ID3D12GraphicsCommandList *commandList,
-		uint64_t hashComponent)
-	{
-		if (!hashComponent)
-			return;
-		DX12SimulateContext *runtimeState =
-			DX12CommandListRuntime::GetStatePtrFast(commandList);
-		DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(runtimeState, hashComponent);
-	}
-
 	static bool CaptureRootSignature(
 		ID3D12GraphicsCommandList *commandList,
 		ID3D12RootSignature *rootSignature,
@@ -223,10 +201,6 @@ public:
 					changed = DX12CommandListRuntime::RememberComputeRootSignature(
 						commandList, rootSignature);
 			}
-		}
-		if (!graphics && changed) {
-			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
-				runtimeState, reinterpret_cast<uint64_t>(rootSignature));
 		}
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
@@ -294,11 +268,6 @@ public:
 				changed = DX12CommandListRuntime::RememberRootDescriptorTable(
 					commandList, graphics, rootParameterIndex, baseDescriptor);
 			}
-		}
-		if (!graphics && changed) {
-			DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
-				runtimeState,
-				static_cast<uint64_t>(rootParameterIndex) ^ 0x9e3779b97f4a7c15ull);
 		}
 		const bool skipTrackedCapture = graphics ?
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :

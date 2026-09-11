@@ -1672,9 +1672,6 @@ public:
 				if (DX12HotPathState::NeedsComputeResidentBindingState(hookFlags))
 					changed = DX12CommandListRuntime::RememberComputeRootSignature(
 						runtimeState, unwrapped);
-				if (changed)
-					DX12CommandListComputeBindingFlow::UpdateComputeBindingHash(
-						runtimeState, reinterpret_cast<uint64_t>(unwrapped));
 				if (!changed)
 					return;
 			}

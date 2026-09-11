@@ -108,6 +108,13 @@ public:
 		UINT64 bufferContentGeneration = 0;
 		UINT64 reloadGeneration = 0;
 		UINT64 targetPlanFingerprint = 0;
+		// Active pre-skin section generation. The verdict reads
+		// GetActivePreSkinSectionsSnapshot() whenever a candidate's config is
+		// gated on match_cs, and that generation is bumped independently of
+		// iaEpoch / iaContentEpoch - without this term a verdict proven before a
+		// pre-skin section became active keeps answering "no candidate" and the
+		// override is skipped.
+		UINT64 preSkinGeneration = 0;
 		ID3D12PipelineState *pipelineState = nullptr;
 	};
 
@@ -147,9 +154,6 @@ class DX12ResolvedDrawRuntimeStateUtils
 public:
 	static void Clear(DX12SimulateContextDrawTemplate *state);
 	static void InvalidatePlan(DX12SimulateContextDrawTemplate *state);
-	static void NoteLookup(
-		DX12SimulateContextDrawTemplate *state,
-		bool hit);
 };
 
 class DX12SimulateContextComputeTemplate
@@ -332,21 +336,16 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
-	// Shadow of the game's OM/rasterizer state, recorded by the wrapper's
-	// OMSetRenderTargets/RSSetViewports/RSSetScissorRects overrides (RTV
-	// handles are expanded when the game binds a contiguous range). The
-	// custom shader element replay rebinds the back buffer + full viewport
-	// mid-list and restores the game state from these fields afterwards;
-	// without them the replay would leak its OM/viewport state into every
-	// subsequent game draw on the same list.
+	// Shadow of the game's render-target state, recorded by the wrapper's
+	// OMSetRenderTargets override (RTV handles are expanded when the game binds
+	// a contiguous range). The custom shader element replay rebinds the back
+	// buffer + full viewport mid-list and restores the game state from these
+	// fields afterwards; without them the replay would leak its OM state into
+	// every subsequent game draw on the same list.
 	UINT omRenderTargetCount = 0;
 	D3D12_CPU_DESCRIPTOR_HANDLE omRenderTargets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
 	bool omHasDepthStencil = false;
 	D3D12_CPU_DESCRIPTOR_HANDLE omDepthStencil = {};
-	UINT viewportCount = 0;
-	D3D12_VIEWPORT viewports[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
-	UINT scissorCount = 0;
-	D3D12_RECT scissorRects[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
 	// Cached CBV/SRV/UAV heap content version.  Re-read on every SetDescriptorHeaps
 	// instead of on every draw: DX12GetDescriptorHeapVersion takes the global
 	// descriptor lock plus a hash-map lookup, and draws outnumber heap changes by
@@ -392,10 +391,6 @@ public:
 	RootConstantsState graphicsRootConstants[MaxRootParameters] = {};
 	RootConstantsState computeRootConstants[MaxRootParameters] = {};
 
-	// Per-PSO override cache aligned with HotPathState generation.
-	volatile LONG psoHasOverridesGeneration = -1;
-	bool psoHasShaderOverrides = true;
-
 	// Replacement PSO cache. First use may query global records; repeated use is direct.
 	ID3D12PipelineState *cachedReplacementPsoKey = nullptr;
 	ID3D12PipelineState *cachedReplacementPso = nullptr;
@@ -403,10 +398,6 @@ public:
 	// Compute shader hash cache, equivalent to DX11 current compute shader state.
 	uint64_t cachedCsHash = 0;
 	bool cachedCsHashValid = false;
-	bool cachedCsHashResolved = false;
-
-	// Stable compute binding fingerprint used as a dispatch probe cache key.
-	uint64_t computeBindingHash = 0;
 
 	// Compiled per-PSO dispatch policy. Dispatch consumes this instead of
 	// rediscovering non-candidate PreSkin state on every command.
@@ -415,17 +406,6 @@ public:
 	// Compiled per-PSO draw policy. Draw consumes this instead of rediscovering
 	// PSO shader override metadata on every command.
 	DX12SimulateContextDrawExecutionTemplate drawDecision;
-
-	// Static replacement template cache, deliberately independent of
-	// drawDecision: drawDecision.Reset() runs on every PSO transition, which
-	// would discard an otherwise reusable replacement template (the game
-	// changes PSO thousands of times per frame, so the template would be
-	// regenerated on every encounter of the same PSO). Keyed by PSO pointer +
-	// reload generation; a stale PSO pointer is only ever compared, never
-	// dereferenced, matching the existing drawDecision.pipelineState pattern.
-	ID3D12PipelineState *staticReplacementPso = nullptr;
-	UINT64 staticReplacementReloadGeneration = 0;
-	std::shared_ptr<const DX12ModIaReplacement> staticReplacementSnapshot;
 
 	// Plan fix A: lazy static-template IA application. The template's IA
 	// replacement is applied once when the template first becomes active on

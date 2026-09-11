@@ -1668,8 +1668,13 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		std::unordered_map<ID3D12RootSignature*, DX12RootSignatureSummary>::const_iterator sigIt =
 			s_rootSigCache.find(computeRootSig);
 		if (sigIt != s_rootSigCache.end()) {
-			rootSignatureSummary = sigIt->second;
-			cachedSummary = &rootSignatureSummary;
+			// Point straight at the cached entry instead of deep-copying it.
+			// DX12RootSignatureSummary owns a vector of parameter summaries that
+			// each own a vector of ranges, so the copy cost a dozen allocations
+			// per dispatch for a structure that is only read through the
+			// pointer below. Nothing inserts into s_rootSigCache after this
+			// point on the hit path, so the reference cannot be invalidated.
+			cachedSummary = &sigIt->second;
 		} else {
 			DX12RootSignatureSummary parsed;
 			if (DX12GetRootSignatureSummary(computeRootSig, &parsed)) {

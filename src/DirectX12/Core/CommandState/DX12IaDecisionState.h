@@ -11,7 +11,6 @@ public:
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
 	bool indexBufferHashValid = false;
 	uint32_t indexBufferHash = 0;
-	UINT64 indexBufferHashContentGeneration = 0;
 	UINT64 indexBufferHashResolveGeneration = 0;
 	bool indexBufferResolved = false;
 	DX12BufferResourceSummary indexBufferResource = {};
@@ -19,7 +18,6 @@ public:
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
 	bool vertexBufferHashValid[32] = {};
 	uint32_t vertexBufferHashes[32] = {};
-	UINT64 vertexBufferHashContentGeneration[32] = {};
 	UINT64 vertexBufferHashResolveGeneration[32] = {};
 	bool vertexBufferResolved[32] = {};
 	DX12BufferResourceSummary vertexBufferResources[32] = {};

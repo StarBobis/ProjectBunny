@@ -392,14 +392,6 @@ void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 }
 
 
-void DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
-	DX12SimulateContextDrawTemplate *state,
-	bool hit)
-{
-	(void)state;
-	(void)hit;
-}
-
 void DX12CommandListRuntime::Register(ID3D12GraphicsCommandList *commandList)
 {
 	if (!commandList)
@@ -469,12 +461,11 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 
 	state->cbvSrvUavHeap = nullptr;
 	state->samplerHeap = nullptr;
-	// OM/rasterizer shadow: a fresh command list has no render targets,
-	// viewports or scissor rects bound.
+	// OM shadow: a fresh command list has no render targets bound. The
+	// viewport/scissor shadow was removed - no wrapper ever recorded it and
+	// nothing read it.
 	state->omRenderTargetCount = 0;
 	state->omHasDepthStencil = false;
-	state->viewportCount = 0;
-	state->scissorCount = 0;
 	state->cbvSrvUavHeapVersion = 0;
 	state->lastSetHeapsCount = 0xFFFFFFFF;
 	state->lastSetHeapsInput[0] = nullptr;
@@ -523,22 +514,18 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 		state->computeRootConstants[root].rootParameterIndex = 0;
 		state->computeRootConstants[root].maxSet = 0;
 	}
-	state->psoHasOverridesGeneration = -1;
-	state->psoHasShaderOverrides = true;
 	state->cachedReplacementPsoKey = nullptr;
 	state->cachedReplacementPso = nullptr;
 	state->cachedCsHash = 0;
 	state->cachedCsHashValid = false;
-	state->cachedCsHashResolved = false;
-	state->computeBindingHash = 0;
 	state->dispatchDecision.Reset();
 	state->drawDecision.Reset();
-	state->staticReplacementPso = nullptr;
-	state->staticReplacementReloadGeneration = 0;
-	state->staticReplacementSnapshot.reset();
 	state->staticTemplateReplacement.reset();
 	state->staticTemplateIaApplied = false;
-	state->staticTemplateSavedIa = DX12ActiveIaState();
+	// staticTemplateSavedIa is deliberately not cleared: its only reader is
+	// guarded by staticTemplateIaApplied, and the next apply overwrites it
+	// before re-arming that marker. Clearing it here built a whole
+	// DX12ActiveIaState temporary per command-list Reset just to drop it.
 	for (DX12ResolvedDescriptorQueryRuntimeState &query :
 			state->resolvedDescriptorQueries)
 		query.valid = false;
@@ -597,9 +584,10 @@ void DX12CommandListRuntime::Reset(
 	state->resolvedDescriptorQueries = std::move(persistentResolvedQueries);
 	state->barrierScratch = std::move(persistentBarrierScratch);
 	state->barrierScratch.clear();
-	for (DX12ResolvedDescriptorQueryRuntimeState &query :
-			state->resolvedDescriptorQueries)
-		query.valid = false;
+	// The resolved descriptor queries were already marked invalid by
+	// DX12RuntimeResetStateForRecording above; the move out and back preserves
+	// the element's vectors and cannot re-validate them, so re-clearing the six
+	// flags here was a second pass over the same array.
 	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
@@ -813,7 +801,6 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 		DX12_PROF_COUNT("Rm.DispatchDecisionCacheHits");
 		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
 		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
-		state->cachedCsHashResolved = true;
 		return &state->dispatchDecision;
 	}
 
@@ -822,7 +809,6 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 		state, hasShaderOverrides, needsPreSkinProbe);
 	state->cachedCsHash = state->dispatchDecision.computeShaderHash;
 	state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
-	state->cachedCsHashResolved = true;
 	return &state->dispatchDecision;
 }
 
@@ -895,7 +881,6 @@ void DX12CommandListRuntime::RememberPipelineState(
 	state->cachedReplacementPsoKey = nullptr;
 	state->cachedReplacementPso = nullptr;
 	state->cachedCsHashValid = false;
-	state->cachedCsHashResolved = false;
 	state->cachedCsHash = 0;
 	state->dispatchDecision.Reset();
 	state->drawDecision.Reset();
@@ -904,7 +889,6 @@ void DX12CommandListRuntime::RememberPipelineState(
 	if (!pipelineState) {
 		state->cachedCsHash = 0;
 		state->cachedCsHashValid = false;
-		state->cachedCsHashResolved = true;
 	}
 
 	// Resolve immutable PSO policy at the state transition, matching DX11's
@@ -921,7 +905,6 @@ void DX12CommandListRuntime::RememberPipelineState(
 			state, shaderOverrides, preSkinProbe);
 		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
 		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
-		state->cachedCsHashResolved = true;
 	}
 }
 
@@ -982,7 +965,8 @@ void DX12CommandListRuntime::ResetIa(DX12SimulateContext *state)
 	// replacement must be forgotten (the driver-side IA state is gone too).
 	state->staticTemplateIaApplied = false;
 	state->staticTemplateReplacement.reset();
-	state->staticTemplateSavedIa = DX12ActiveIaState();
+	// staticTemplateSavedIa is not cleared here either: see
+	// DX12RuntimeResetStateForRecording.
 	DX12CommandListRuntime::BumpIaEpoch(state);
 }
 
@@ -1028,7 +1012,6 @@ bool DX12CommandListRuntime::RememberIndexBuffer(
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
 	state->ia.indexBufferHashValid = false;
 	state->ia.indexBufferHash = 0;
-	state->ia.indexBufferHashContentGeneration = 0;
 	state->ia.indexBufferHashResolveGeneration = 0;
 	// Keep Mod-mode resident IA state lightweight: the current view must stay
 	// resident across unrelated PSOs, but GPUVA->resource resolution is only
@@ -1095,7 +1078,6 @@ bool DX12CommandListRuntime::RememberVertexBuffers(
 		ia.vertexBuffers[slot] = newView;
 		ia.vertexBufferHashValid[slot] = false;
 		ia.vertexBufferHashes[slot] = 0;
-		ia.vertexBufferHashContentGeneration[slot] = 0;
 		ia.vertexBufferHashResolveGeneration[slot] = 0;
 		// See RememberIndexBuffer: resident Mod state keeps the live view here and
 		// resolves the backing resource lazily only for IA-targeted override work.
@@ -1320,7 +1302,6 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState
 	// the test: DX12HashIaBufferContentView is metadata-only, so a CPU content
 	// write cannot change this value, and gBufferContentGeneration moves for
 	// unrelated buffers on nearly every frame.
-	const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
 	if (ia->indexBufferHashValid &&
 	    ia->indexBufferHashResolveGeneration == resolveGeneration) {
@@ -1342,7 +1323,6 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState
 		static_cast<UINT>(ia->indexBuffer.Format),
 		0);
 	ia->indexBufferHashValid = true;
-	ia->indexBufferHashContentGeneration = contentGeneration;
 	ia->indexBufferHashResolveGeneration = resolveGeneration;
 	return ia->indexBufferHash;
 }
@@ -1362,7 +1342,6 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 	// the test: DX12HashIaBufferContentView is metadata-only, so a CPU content
 	// write cannot change this value, and gBufferContentGeneration moves for
 	// unrelated buffers on nearly every frame.
-	const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
 	if (ia->vertexBufferHashValid[slot] &&
 	    ia->vertexBufferHashResolveGeneration[slot] == resolveGeneration) {
@@ -1391,7 +1370,6 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 		DX12_PROF_COUNT("Rm.IaViewHashWrapperHit");
 		ia->vertexBufferHashes[slot] = wrapperHash;
 		ia->vertexBufferHashValid[slot] = true;
-		ia->vertexBufferHashContentGeneration[slot] = contentGeneration;
 		ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
 		return wrapperHash;
 	}
@@ -1409,7 +1387,6 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 		resolveGeneration,
 		ia->vertexBufferHashes[slot]);
 	ia->vertexBufferHashValid[slot] = true;
-	ia->vertexBufferHashContentGeneration[slot] = contentGeneration;
 	ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
 	return ia->vertexBufferHashes[slot];
 }
@@ -2129,7 +2106,10 @@ bool DX12CommandListRuntime::RememberRootDescriptorTable(
 		else
 			++state->computeRootTableValidCount;
 	}
-	table = RootTableState();
+	// No zero-fill of the whole RootTableState here: the three plain fields are
+	// all assigned on the next two lines, and DX12RuntimeResolveRootTable below
+	// unconditionally invalidates the eleven runtime* fields. The struct
+	// assignment that used to sit here wrote each of them twice.
 	table.valid = true;
 	table.rootParameterIndex = rootParameterIndex;
 	table.baseDescriptor = baseDescriptor;
@@ -2148,10 +2128,10 @@ bool DX12CommandListRuntime::RememberRootDescriptorTable(
 		const bool affectsDescriptorQueries =
 			DX12RuntimeComputeDescriptorQueryUsesRoot(
 				state, rootParameterIndex);
-		if (affectsDescriptorQueries)
+		if (affectsDescriptorQueries) {
 			DX12RuntimeBumpComputeDescriptorQuerySerial(state);
-		if (affectsDescriptorQueries)
 			DX12RuntimeBumpComputeDescriptorBindingVersion(state);
+		}
 		DX12RuntimeBumpRootBindingRevision(
 			&state->computeRootBindingRevisions, rootParameterIndex);
 	} else {
