@@ -1710,7 +1710,6 @@ public:
 		identity = HashCombine64(identity, config.hash);
 		identity = HashCombine64(identity, GetPreSkinCsHash(config));
 		identity = HashCombine64(identity, config.hasCsHash ? 1 : 0);
-		identity = HashCombine64(identity, config.hasMatchCs ? 1 : 0);
 		identity = HashCombine64(identity, config.hasMatchPriority ? 1 : 0);
 		identity = HashCombine64(identity, static_cast<UINT64>(config.matchPriority));
 		identity = HashWideString(identity, config.section);
@@ -1830,7 +1829,7 @@ BuildDx12StaticIaReplacementTable(
 				!config.hasMatchVertexCount && !config.hasMatchIndexCount &&
 				!config.hasMatchInstanceCount && !config.hasMatchFirstVertex &&
 				!config.hasMatchFirstIndex && !config.hasMatchFirstInstance &&
-				!config.hasMatchCs && !config.hasMatchUavBytes &&
+				!config.hasMatchUavBytes &&
 				!config.hasCsHash &&
 				config.preSkinMatchCsSrvHashes.empty() &&
 				config.preSkinCsSrvResources.empty() &&

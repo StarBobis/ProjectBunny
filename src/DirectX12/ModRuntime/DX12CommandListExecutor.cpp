@@ -85,7 +85,7 @@ bool TextureOverrideMatchCsSatisfied(
 	const Bunny::TextureOverrideConfig &config,
 	const std::unordered_set<std::wstring> &activePreSkinSections)
 {
-	if (!config.hasMatchCs && !config.hasCsHash)
+	if (!config.hasCsHash)
 		return true;
 	return activePreSkinSections.find(config.section) != activePreSkinSections.end();
 }
@@ -94,7 +94,7 @@ bool TextureOverrideMatchCsSatisfied(
 bool TextureOverrideDependsOnActivePreSkin(
 	const Bunny::TextureOverrideConfig &config)
 {
-	return config.hasMatchCs || config.hasCsHash;
+	return config.hasCsHash;
 }
 
 

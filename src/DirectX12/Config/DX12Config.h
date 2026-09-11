@@ -1235,7 +1235,6 @@ public:
 	bool hasMatchFirstVertex = false;
 	bool hasMatchFirstIndex = false;
 	bool hasMatchFirstInstance = false;
-	bool hasMatchCs = false;
 	bool hasMatchUavBytes = false;
 	bool hasCsHash = false;
 	std::map<uint32_t, uint32_t> preSkinMatchCsSrvHashes;
@@ -1260,7 +1259,6 @@ public:
 	NumericMatch matchFirstVertex;
 	NumericMatch matchFirstIndex;
 	NumericMatch matchFirstInstance;
-	uint64_t matchCs = 0;
 	uint64_t matchUavBytes = 0;
 	uint64_t csHash = 0;
 	bool hasMatchPriority = false;
@@ -1789,7 +1787,7 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			config.hasMatchVertexCount || config.hasMatchIndexCount ||
 			config.hasMatchInstanceCount || config.hasMatchFirstVertex ||
 			config.hasMatchFirstIndex || config.hasMatchFirstInstance;
-		if (hasHash || config.hasVertexLimitRaise || config.hasMatchCs || config.hasCsHash || hasDrawContextMatch)
+		if (hasHash || config.hasVertexLimitRaise || config.hasCsHash || hasDrawContextMatch)
 			(*textureOverrides)[config.hash].push_back(config);
 	}
 

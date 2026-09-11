@@ -39,8 +39,8 @@ std::vector<DX12VertexLimitRaiseConfig> CollectVertexLimitRaiseConfigs(
 				continue;
 			DX12VertexLimitRaiseConfig out;
 			out.section = config.originalSection.empty() ? config.section : config.originalSection;
-			out.hasMatchCs = config.hasMatchCs || config.hasCsHash;
-			out.matchCs = config.hasCsHash ? config.csHash : config.matchCs;
+			out.hasMatchCs = config.hasCsHash;
+			out.matchCs = config.csHash;
 			out.overrideByteStride = config.overrideByteStride;
 			out.overrideVertexCount = config.overrideVertexCount;
 			out.overrideByteWidth = config.overrideByteWidth;
@@ -55,14 +55,14 @@ std::vector<DX12VertexLimitRaiseConfig> CollectVertexLimitRaiseConfigs(
 
 uint64_t GetPreSkinCsHash(const Bunny::TextureOverrideConfig &config)
 {
-	return config.hasCsHash ? config.csHash : config.matchCs;
+	// cs_hash is the only spelling the parser accepts.
+	return config.csHash;
 }
 
 
 bool IsComputePreSkinTextureOverride(const Bunny::TextureOverrideConfig &config)
 {
-	const bool hasCsHash = config.hasMatchCs || config.hasCsHash;
-	return hasCsHash && !config.preSkinMatchCsSrvHashes.empty() &&
+	return config.hasCsHash && !config.preSkinMatchCsSrvHashes.empty() &&
 		!config.preSkinCsSrvResources.empty();
 }
 
@@ -80,7 +80,7 @@ bool TextureOverrideIsStaticReplacement(
 	if (config.hasMatchVertexCount || config.hasMatchIndexCount ||
 	    config.hasMatchInstanceCount || config.hasMatchFirstVertex ||
 	    config.hasMatchFirstIndex || config.hasMatchFirstInstance ||
-	    config.hasMatchCs || config.hasMatchUavBytes || config.hasCsHash ||
+	    config.hasMatchUavBytes || config.hasCsHash ||
 	    !config.preSkinMatchCsSrvHashes.empty() ||
 	    !config.preSkinCsSrvResources.empty())
 		return false;
@@ -154,7 +154,7 @@ void BuildDx12ExplicitMatchCsResourceIndex(
 	resourceSections->clear();
 	for (const auto &bucket : textureOverrides) {
 		for (const Bunny::TextureOverrideConfig &config : bucket.second) {
-			if (!config.hasMatchCs && !config.hasCsHash)
+			if (!config.hasCsHash)
 				continue;
 			for (const auto &item : config.preSkinCsSrvResources) {
 				if (item.second.empty())
