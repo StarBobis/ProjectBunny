@@ -722,6 +722,9 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 	ID3D12PipelineState *pipelineState,
 	bool hasShaderOverrides)
 {
+	// Measured as a whole (cache load copy + build + store) so the cost of the
+	// per-PSO decision rebuild is visible in the TIMING log instead of guessed.
+	DX12_PROF_STAGE_SCOPE(DrawDecisionBuild);
 	DX12CompiledDrawDecision decision;
 	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 	DX12PsoDecisionCacheUtils::ClearIfReloadChanged(reloadGeneration);
@@ -853,6 +856,7 @@ void DX12CommandListRuntime::CompileDrawDecision(
 {
 	if (!state)
 		return;
+	DX12_PROF_COUNT("Rm.DrawDecisionRebuilds");
 	state->drawDecision = DX12CommandListRuntime::BuildDrawDecision(
 		state->pipelineState, hasShaderOverrides);
 }

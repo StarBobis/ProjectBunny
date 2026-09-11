@@ -180,7 +180,16 @@ public:
 	};
 
 	static constexpr UINT kThreadTableCount = 64;
-	static constexpr UINT kBucketsPerThread = 256; // power of two
+	// Sized from the instrumented source, not guessed: this build registers 357
+	// distinct bucket names (725 call sites). At 256 slots the per-thread tables
+	// were over-subscribed, so FindBucket ran out of probe slots and dropped
+	// counters silently - a newly added counter simply never appeared in the
+	// log, and the surviving names paid long probe chains (which is how a
+	// one-atomic-load stage got reported as ~2us/call). 1024 keeps the load
+	// factor near 0.35, i.e. ~1 probe per lookup. TIMING builds only.
+	static constexpr UINT kBucketsPerThread = 1024; // power of two
+	// Merged table is a stack array (Bucket merged[kMergedBuckets]), so it stays
+	// at 512: 357 names fit with room to spare and the stack cost stays small.
 	static constexpr UINT kMergedBuckets = 512;    // power of two
 	static constexpr UINT kScopeStackDepth = 32;
 	static constexpr LONG kSummaryIntervalFrames = 60;
@@ -516,7 +525,13 @@ private:
 				return &bucket;
 			}
 		}
-		return nullptr; // table full: drop this sample (diagnostics only)
+		// Table full: the sample is dropped. Report it once so a silently
+		// missing counter can never be mistaken for "the code never ran".
+		if (InterlockedCompareExchange(&sTableFull, 1, 0) == 0)
+			DX12DiagLog::FieldsFlush("DX12Profiling",
+				"event=table_full threadId=%lu dropped=%s",
+				GetCurrentThreadId(), name);
+		return nullptr;
 	}
 
 	static void AccumulateUs(Bucket *bucket, LONGLONG startQpc, LONGLONG endQpc)
@@ -607,6 +622,9 @@ private:
 
 	inline static ThreadTable sThreadTables[kThreadTableCount] = {};
 	inline static volatile LONG sThreadTableCount = 0;
+	// Set once when a thread table runs out of probe slots, so the drop is
+	// visible in the log instead of looking like code that never ran.
+	inline static volatile LONG sTableFull = 0;
 	inline static thread_local ScopeStackEntry sScopeStack[kScopeStackDepth] = {};
 	inline static thread_local UINT sScopeDepth = 0;
 
