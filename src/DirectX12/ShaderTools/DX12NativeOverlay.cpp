@@ -58,7 +58,6 @@ enum UiControlId
 	ID_FRAME_ANALYSIS,
 	ID_SHADER_DUMP,
 	ID_MOD_RELOAD,
-	ID_PROFILING,
 	ID_STATUS_BAR,
 };
 
@@ -68,7 +67,6 @@ static HWND gGameWindow = nullptr;
 static HWND gOverlayWindow = nullptr;
 static HWND gStatusLabel = nullptr;
 static HWND gHuntToggleButton = nullptr;
-static HWND gProfilingButton = nullptr;
 static HWND gHashList = nullptr;
 static bool gNumpad0Down = false;
 static HWND gCategoryButtons[5] = {};
@@ -241,8 +239,6 @@ static void UpdateButtonText()
 {
 	if (gHuntToggleButton)
 		SetWindowTextW(gHuntToggleButton, DX12HuntIsEnabled() ? L"Disable Hunting" : L"Enable Hunting");
-	if (gProfilingButton)
-		SetWindowTextW(gProfilingButton, DX12_TIMING_BUILD ? L"Disable Profiling" : L"Enable Profiling");
 }
 
 static void UpdateStatusText()
@@ -307,7 +303,6 @@ static void RunCommand(int id)
 	case ID_FRAME_ANALYSIS: DX12UiActions::RequestFrameAnalysis(); break;
 	case ID_SHADER_DUMP: DX12UiActions::RequestShaderDump(); break;
 	case ID_MOD_RELOAD: DX12UiActions::RequestModReload(); break;
-	case ID_PROFILING: DX12UiActions::RequestProfilingToggle(); break;
 	default: break;
 	}
 }
@@ -371,7 +366,6 @@ static void BuildControls(HWND hwnd)
 
 	gMainLabels[0] = AddSectionLabel(hwnd, L"Mode", 16, 16, 160);
 	gHuntToggleButton = AddButton(hwnd, L"Enable Hunting", ID_HUNT_TOGGLE, 16, 48, 160);
-	gProfilingButton = AddButton(hwnd, L"Enable Profiling", ID_PROFILING, 188, 48, 160);
 
 	gMainLabels[1] = AddSectionLabel(hwnd, L"Categories", 16, 100, 160);
 	gCategoryButtons[0] = AddButton(hwnd, L"> VS", ID_CATEGORY_VS, 16, 132, 92);

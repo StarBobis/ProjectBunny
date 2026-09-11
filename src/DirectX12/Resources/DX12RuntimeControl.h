@@ -145,7 +145,6 @@ enum class DX12UiActionBits : LONG
 	FrameAnalysis = 1 << 13,
 	ShaderDump = 1 << 14,
 	ModReload = 1 << 15,
-	Profiling = 1 << 16,
 };
 
 class DX12UiActions
@@ -167,7 +166,6 @@ public:
 	// command/descriptor state, so defer it to the render thread's Present
 	// boundary just like every other UI action.
 	static void RequestModReload() { Request(DX12UiActionBits::ModReload); }
-	static void RequestProfilingToggle() { Request(DX12UiActionBits::Profiling); }
 
 	static bool Consume()
 	{
@@ -217,7 +215,6 @@ public:
 			DX12RequestShaderDump();
 		if (HasAction(actions, DX12UiActionBits::ModReload))
 			DX12Input::RequestModReload();
-		// Profiling stays enabled and is no longer toggled by a hotkey.
 		return true;
 	}
 
