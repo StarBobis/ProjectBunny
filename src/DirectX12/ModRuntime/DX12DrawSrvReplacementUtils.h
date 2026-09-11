@@ -1856,7 +1856,7 @@ dedicatedHeap->Release();
 		}
 		if (!commandList || !state.applied || !state.patchHeap) {
 			replacement->drawSrvPatches.clear();
-			state = DX12ModIaReplacement::DrawSrvApplyState();
+			state.ResetForDraw();
 			return;
 		}
 		if (state.borrowedPendingMirror) {
@@ -1865,7 +1865,7 @@ dedicatedHeap->Release();
 			// borrow; the pending entry stays live for the next draw.
 			ReleaseBorrowedPendingMirror(commandList);
 			replacement->drawSrvPatches.clear();
-			state = DX12ModIaReplacement::DrawSrvApplyState();
+			state.ResetForDraw();
 			return;
 		}
 		// Logical restore only: the shadow trackers return to the game's
@@ -1899,6 +1899,8 @@ dedicatedHeap->Release();
 		}
 		DeferPendingRestore(commandList, &state);
 		replacement->drawSrvPatches.clear();
-		state = DX12ModIaReplacement::DrawSrvApplyState();
+		// The payload was moved into the pending entry above, so only the
+		// markers need clearing (see DrawSrvApplyState::ResetForDraw).
+		state.ResetForDraw();
 	}
 };

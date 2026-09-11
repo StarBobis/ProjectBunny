@@ -837,8 +837,14 @@ public:
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		if ((drawFlags &
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+		// Probe the pending [Present] replacement only when the draw flow below
+		// cannot: with MASK_DRAW_WORK set, DX12DrawHookFlow::ExecuteHook probes
+		// it before entering the interpreter, so probing here as well ran the
+		// same check (and rebuilt the hot-path flags word) twice per draw. With
+		// no draw work that flow forwards early - which is exactly the case
+		// this covers, e.g. a mod with only a [Present] element.
+		if ((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
 			DX12ModPresentReplacementPendingForCurrentPresent()) {
 			const DX12IaReplacementExecutorCallbacks callbacks =
 				MakeDirectIaReplacementCallbacks();
@@ -909,8 +915,11 @@ public:
 			(DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT))
 			runtimeState = DX12CommandListRuntime::GetStatePtrFast(commandList);
-		if ((drawFlags &
-				DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+		// Same narrowing as the DrawInstanced overload above: the draw flow
+		// probes the pending [Present] replacement itself whenever it enters the
+		// interpreter, so only the no-draw-work path needs it here.
+		if ((drawFlags & DX12HotPathState::FLAG_PRESENT_REPLACEMENT) &&
+			!(drawFlags & DX12HotPathState::MASK_DRAW_WORK) &&
 			DX12ModPresentReplacementPendingForCurrentPresent()) {
 			const DX12IaReplacementExecutorCallbacks callbacks =
 				MakeDirectIaReplacementCallbacks();

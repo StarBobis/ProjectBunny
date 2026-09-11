@@ -1966,7 +1966,13 @@ bool DX12CommandListRuntime::RememberComputeRootSignature(
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		state->computeRootTables[root] = RootTableState();
 		state->computeRootDescriptors[root] = RootDescriptorState();
-		state->computeRootConstants[root] = RootConstantsState();
+		// Same marker-only clear as the command-list Reset below: the constant
+		// payload arrays (332B per root) are only read while valid==true, and
+		// re-zeroing them cost ~21KB on every root-signature change (measured
+		// 118 changes/frame).
+		state->computeRootConstants[root].valid = false;
+		state->computeRootConstants[root].rootParameterIndex = 0;
+		state->computeRootConstants[root].maxSet = 0;
 	}
 	state->computeRootTableValidCount = 0;
 	DX12RuntimeBumpAllRootBindingRevisions(
@@ -1991,7 +1997,13 @@ bool DX12CommandListRuntime::RememberGraphicsRootSignature(
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
 		state->graphicsRootTables[root] = RootTableState();
 		state->graphicsRootDescriptors[root] = RootDescriptorState();
-		state->graphicsRootConstants[root] = RootConstantsState();
+		// Same marker-only clear as the command-list Reset above: the constant
+		// payload arrays (332B per root) are only read while valid==true, and
+		// re-zeroing them cost ~21KB on every root-signature change (measured
+		// 118 changes/frame).
+		state->graphicsRootConstants[root].valid = false;
+		state->graphicsRootConstants[root].rootParameterIndex = 0;
+		state->graphicsRootConstants[root].maxSet = 0;
 	}
 	state->graphicsRootTableValidCount = 0;
 	DX12RuntimeBumpGraphicsDescriptorQuerySerial(state);

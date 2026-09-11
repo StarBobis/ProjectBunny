@@ -1610,6 +1610,22 @@ public:
 			DX12CommandListRuntime::BumpIaEpoch(runtimeState);
 	}
 
+	// This thread's reusable replacement object for the draw path, already
+	// returned to its default state. One instance replaces the per-draw
+	// construction whose ~60KB embedded binding state would otherwise be
+	// zero-filled on every draw (measured: 98% of draws reach the evaluation).
+	//
+	// Reuse is safe by construction: HandleDrawOverrides is only reachable from
+	// DX12DrawHookFlow::HandleDraw, which returns before the evaluation while
+	// DX12IaReplacementDrawScope::IsExecuting(), i.e. while a replacement draw
+	// is being issued - so no second evaluation can overlap this one.
+	static DX12ModIaReplacement &DrawReplacementScratch()
+	{
+		static thread_local DX12ModIaReplacement scratch;
+		scratch.ResetForDraw();
+		return scratch;
+	}
+
 	static bool HandleDrawOverrides(
 		ID3D12GraphicsCommandList *commandList,
 		const DX12IaDrawInvocation &draw,
@@ -2484,13 +2500,15 @@ public:
 
 			DX12_PROF_STAGE_BEGIN(DrawModPrepareOverride);
 			DX12_DIAG_QPC(prepareBegin);
-			// Constructed only on the path that reaches shader override
-			// evaluation: the ~60KB embedded binding state (see the note at
-			// IaDrawOverrideCheck) would otherwise be zero-initialized on every
-			// draw. Measured with a broad shader-override mod: 35124
-			// IaDrawOverrideCheck per 35567 DrawHook calls, so this evaluation
-			// (and therefore this construction) is reached by ~98% of draws.
-			DX12ModIaReplacement iaReplacement;
+			// Reused scratch instead of a per-draw instance: this evaluation is
+			// reached by ~98% of draws (see the note at IaDrawOverrideCheck), and
+			// the object embeds ~60KB of binding state that a fresh construction
+			// would zero every time. DrawReplacementScratch hands it back in its
+			// default state. The counter tells how many draws reach this point
+			// (entering the function above is not the same thing).
+			DX12_PROF_COUNT("Rm.DrawOverridePrepare");
+			DX12ModIaReplacement &iaReplacement =
+				DX12IaReplacementExecutor::DrawReplacementScratch();
 			std::shared_ptr<const DX12ModIaReplacement> generatedStaticReplacement;
 			const bool preparedReplacement = DX12ModPrepareShaderOverrideReplacement(
 				commandList, runtimeState.pipelineState, activeShaderOverrides,

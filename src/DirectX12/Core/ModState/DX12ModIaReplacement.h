@@ -195,6 +195,31 @@ public:
 		retainedDescriptorHeaps.clear();
 	}
 
+	// Returns the object to its default-constructed state for reuse while
+	// keeping the ~60KB originalBindings payload untouched. That payload is
+	// only ever read after a fresh assignment or move into it: the readers are
+	// Restore's logical-sync and DeferPendingRestore
+	// (DX12DrawSrvReplacementUtils.h), which both require
+	// applied && patchHeap && !borrowedPendingMirror, and `applied` is only set
+	// right after originalBindings is assigned. This is the same marker-only
+	// invariant the resets in DX12CommandListRuntime/DX12BindingTracker use.
+	void ResetForDraw()
+	{
+		ClearRetainedResources();
+		skip = false;
+		hasIndexBuffer = false;
+		indexBuffer = D3D12_INDEX_BUFFER_VIEW();
+		vertexBufferStartSlot = 0;
+		vertexBuffers.clear();
+		queuedPostTextureOverrides.clear();
+		postCommandLists.clear();
+		draws.clear();
+		dispatches.clear();
+		drawSrvPatches.clear();
+		drawSrvApplyState.ResetForDraw();
+		customElementRecords.clear();
+	}
+
 	bool skip = false;
 	bool hasIndexBuffer = false;
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
@@ -270,6 +295,19 @@ public:
 		UINT64 reloadGeneration = 0;
 		CommandListBindingState originalBindings;
 		std::vector<DrawSrvBundleRestore> bundleRestores;
+
+		// Clears every field except the ~60KB originalBindings payload; see
+		// DX12ModIaReplacement::ResetForDraw for why that payload may stay.
+		void ResetForDraw()
+		{
+			applied = false;
+			borrowedPendingMirror = false;
+			bundleMode = false;
+			patchHeap = nullptr;
+			planFingerprint = 0;
+			reloadGeneration = 0;
+			bundleRestores.clear();
+		}
 	};
 	DrawSrvApplyState drawSrvApplyState;
 	std::vector<ID3D12Resource*> retainedResources;
