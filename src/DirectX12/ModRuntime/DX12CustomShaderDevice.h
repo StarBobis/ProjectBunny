@@ -649,13 +649,27 @@ public:
 		if (!EnsureHeap() || !mDefaultSrv.ptr || !iniParamsSrv.ptr)
 			return;
 		const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = RegionCpuStart();
-		for (UINT slot = 0;
-		     slot < DX12CustomShaderPipelineAssembler::kTableRegisterCount; ++slot) {
-			D3D12_CPU_DESCRIPTOR_HANDLE destination = cpuStart;
-			destination.ptr += static_cast<UINT64>(slot) * mIncrement;
-			mDevice->CopyDescriptorsSimple(1, destination, mDefaultSrv,
-				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		// One batched copy, not one device call per slot. This 128-slot region
+		// fill used to issue 128 CopyDescriptorsSimple calls per element per
+		// frame, and each of those also entered the device wrapper's descriptor
+		// record. ID3D12Device::CopyDescriptors takes ranges, so both sides are
+		// expressed as kTableRegisterCount single-descriptor ranges over the same
+		// black 1x1 texture - the API requires equal source and destination
+		// descriptor counts, so both sides carry kSlots ranges of size 1.
+		constexpr UINT kSlots = DX12CustomShaderPipelineAssembler::kTableRegisterCount;
+		D3D12_CPU_DESCRIPTOR_HANDLE destStarts[kSlots];
+		D3D12_CPU_DESCRIPTOR_HANDLE srcStarts[kSlots];
+		UINT rangeSizes[kSlots];
+		for (UINT slot = 0; slot < kSlots; ++slot) {
+			destStarts[slot] = cpuStart;
+			destStarts[slot].ptr += static_cast<UINT64>(slot) * mIncrement;
+			srcStarts[slot] = mDefaultSrv;
+			rangeSizes[slot] = 1;
 		}
+		mDevice->CopyDescriptors(
+			kSlots, destStarts, rangeSizes,
+			kSlots, srcStarts, rangeSizes,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		D3D12_CPU_DESCRIPTOR_HANDLE paramsSlot = cpuStart;
 		paramsSlot.ptr += static_cast<UINT64>(
 			Bunny::DX12CustomShaderRegisters::kIniParamsShaderRegister) *
