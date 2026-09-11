@@ -1,4 +1,4 @@
-﻿// DX12ResourceMapCapture: CPU-mappable registry and Map/Unmap write capture.
+// DX12ResourceMapCapture: CPU-mappable registry and Map/Unmap write capture.
 // Split from DX12ResourceTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -27,7 +27,7 @@ void RegisterCpuMappableResource(ID3D12Resource *resource)
 	{
 		static volatile LONG registerLogCounter = 0;
 		if ((InterlockedIncrement(&registerLogCounter) & 0xFFF) == 1) {
-			DX12LogManager::Fields("DX12BufferCaptureRegister",
+			DX12_LOG("DX12BufferCaptureRegister",
 				"stage=registered,resource=%p",
 				resource);
 		}
@@ -141,7 +141,7 @@ static bool CaptureAllowedForCaller(const void *caller)
 			// log (one line per skipped module).
 			static volatile LONG skipLogCounter = 0;
 			if ((InterlockedIncrement(&skipLogCounter) & 0x3FF) == 1) {
-				DX12LogManager::Fields("DX12BufferCaptureSkip",
+				DX12_LOG("DX12BufferCaptureSkip",
 					"\"module\":\"%S\",\"allowed\":%s",
 					name, allowed ? "true" : "false");
 			}
@@ -244,7 +244,7 @@ static void CaptureResourceMapWrites(
 	if (!IsCpuMappableUploadResource(resource)) {
 		static volatile LONG captureSkipLogCounter = 0;
 		if ((InterlockedIncrement(&captureSkipLogCounter) & 0xFF) == 1) {
-			DX12LogManager::Fields("DX12BufferCaptureSkip",
+			DX12_LOG("DX12BufferCaptureSkip",
 				"stage=not_upload_or_untracked,resource=%p,offset=%llu,bytes=%llu",
 				resource,
 				static_cast<unsigned long long>(offset),
@@ -266,11 +266,11 @@ HRESULT DX12ResourceTrackerHookRuntime::WrappedResourceMap(
 
 	HRESULT hr = E_FAIL;
 	{
-		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Original);
+		DX12_PROF_CREATE_SCOPE(ResourceMapHook, Original);
 		hr = resource->Map(subresource, readRange, data);
 	}
 	{
-		DX12_CREATE_TIMING_SCOPE(ResourceMapHook, Record);
+		DX12_PROF_CREATE_SCOPE(ResourceMapHook, Record);
 		if (SUCCEEDED(hr) && data && *data && IsCpuMappableTrackedResource(resource)) {
 			TrackResourceMap(resource, subresource, *data);
 		}
@@ -287,12 +287,12 @@ void DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
 		return;
 
 	{
-		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Record);
+		DX12_PROF_CREATE_SCOPE(ResourceUnmapHook, Record);
 		CaptureResourceMapWrites(resource, subresource, writtenRange, caller);
 	}
 
 	{
-		DX12_CREATE_TIMING_SCOPE(ResourceUnmapHook, Original);
+		DX12_PROF_CREATE_SCOPE(ResourceUnmapHook, Original);
 		resource->Unmap(subresource, writtenRange);
 	}
 }

@@ -1,4 +1,4 @@
-﻿// Pipeline state, root signature, query heap, command signature, lifetime/protected session, meta command, state object, pipeline library and shader cache session wrappers.
+// Pipeline state, root signature, query heap, command signature, lifetime/protected session, meta command, state object, pipeline library and shader cache session wrappers.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -18,7 +18,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12PipelineState*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=pipeline_state,stage=create,wrapper=%p,object=%p",
 				this, pipelineState);
 		}
@@ -113,7 +113,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12RootSignature*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=root_signature,stage=create,wrapper=%p,object=%p",
 				this, rootSignature);
 		}
@@ -202,7 +202,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12QueryHeap*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=query_heap,stage=create,wrapper=%p,object=%p",
 				this, queryHeap);
 		}
@@ -292,7 +292,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12CommandSignature*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=command_signature,stage=create,wrapper=%p,object=%p",
 				this, commandSignature);
 		}
@@ -382,7 +382,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12LifetimeTracker*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=lifetime_tracker,stage=create,wrapper=%p,object=%p",
 				this, tracker);
 		}
@@ -478,7 +478,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12ProtectedSession*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12ProtectedResourceSession1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=protected_resource_session,stage=create,wrapper=%p,object=%p",
 				this, session);
 		}
@@ -605,7 +605,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12MetaCommand*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=meta_command,stage=create,wrapper=%p,object=%p",
 				this, metaCommand);
 		}
@@ -707,7 +707,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12StateObject*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12StateObjectProperties1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=state_object,stage=create,wrapper=%p,object=%p",
 				this, stateObject);
 		}
@@ -861,7 +861,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12PipelineLibrary1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=pipeline_library,stage=create,wrapper=%p,object=%p",
 				this, library);
 		}
@@ -1013,7 +1013,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12Object*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12ShaderCacheSession*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=shader_cache_session,stage=create,wrapper=%p,object=%p",
 				this, session);
 		}

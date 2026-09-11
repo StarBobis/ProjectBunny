@@ -99,7 +99,7 @@ void BuildLoadedBufferResource(
 	if (!LoadResourceBytes(config, baseDir, &bytes, &path)) {
 		result->resource.failed = true;
 		result->resource.path = path;
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		wchar_t status[512];
@@ -115,7 +115,7 @@ void BuildLoadedBufferResource(
 	if (byteWidth == 0) {
 		result->resource.failed = true;
 		result->resource.path = path;
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"empty_resource\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		return;
@@ -145,7 +145,7 @@ void BuildLoadedBufferResource(
 	if (FAILED(hr) || !resource) {
 		result->resource.failed = true;
 		result->resource.path = path;
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
 			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
 		wchar_t status[512];
@@ -167,7 +167,7 @@ void BuildLoadedBufferResource(
 		resource->Release();
 		result->resource.failed = true;
 		result->resource.path = path;
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
 			config.section.c_str(), hr);
 		wchar_t status[512];
@@ -183,7 +183,7 @@ void BuildLoadedBufferResource(
 	result->resource.format = ParseDx12ResourceFormat(config.format);
 	result->resource.path = path;
 	result->available = true;
-	DX12LogManager::Fields("DX12ResourceLoad",
+	DX12_LOG("DX12ResourceLoad",
 		"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
 		config.section.c_str(), name.c_str(), path.c_str(),
 		static_cast<unsigned long long>(byteWidth), result->resource.stride,
@@ -225,7 +225,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	// per resource per draw on every recording thread. A shared lock keeps
 	// those threads off the global exclusive gModLock (DX11 checks loaded
 	// resources without taking a global write lock).
-	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
+	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		const bool available = loaded->second.resource && !loaded->second.failed;
@@ -234,7 +234,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	// Another thread may have loaded the resource between the two
 	// acquisitions; re-check before doing the (expensive) load.
 	loaded = gLoadedResources.find(name);
@@ -257,7 +257,7 @@ bool EnsureLoadedResourceForCommandList(ID3D12Device *device, const std::wstring
 	result.generation = generation;
 	BuildLoadedBufferResource(device, name, config, baseDir, &result);
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	ID3D12Resource *discardResource = nullptr;
 	const bool available = StoreLoadedResourceResultLocked(
 		name, generation, &result.resource, &discardResource);
@@ -280,7 +280,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	// apply, every frame. A shared lock lets concurrent recording threads and
 	// the UI thread read it without serializing on the exclusive gModLock
 	// (DX11 reads resource metadata without taking a global write lock).
-	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
+	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end()) {
 		DX12LoadedResource *resource =
@@ -290,7 +290,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	}
 	ReleaseSRWLockShared(&gModLock);
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	// Another thread may have loaded the resource while we held the shared
 	// lock; re-check before doing the (expensive) load.
 	loaded = gLoadedResources.find(name);
@@ -316,13 +316,13 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 		auto inserted = gLoadedResources.emplace(name, failedResource);
 		DX12LoadedResource *result =
 			inserted.first->second.resource && !inserted.first->second.failed ?
 			&inserted.first->second : nullptr;
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"read_failed\",\"path\":\"%S\"",
 			config.section.c_str(), path.c_str());
 		wchar_t status[512];
@@ -364,10 +364,10 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"create_failed\",\"hr\":\"0x%lx\",\"bytes\":%llu",
 			config.section.c_str(), hr, static_cast<unsigned long long>(byteWidth));
 		wchar_t status[512];
@@ -391,10 +391,10 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 		failedResource.failed = true;
 		failedResource.name = name;
 		failedResource.path = path;
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 		gLoadedResources.emplace(name, failedResource);
 		ReleaseSRWLockExclusive(&gModLock);
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"failed\",\"section\":\"%S\",\"reason\":\"map_failed\",\"hr\":\"0x%lx\"",
 			config.section.c_str(), hr);
 		wchar_t status[512];
@@ -412,7 +412,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	loadedResource.name = name;
 	loadedResource.path = path;
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	auto inserted = gLoadedResources.emplace(name, loadedResource);
 	if (!inserted.second)
 		resource->Release();
@@ -422,7 +422,7 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 	ReleaseSRWLockExclusive(&gModLock);
 
 	if (inserted.second) {
-		DX12LogManager::Fields("DX12ResourceLoad",
+		DX12_LOG("DX12ResourceLoad",
 			"\"status\":\"loaded\",\"section\":\"%S\",\"name\":\"%S\",\"path\":\"%S\",\"bytes\":%llu,\"stride\":%u,\"format\":%u",
 			config.section.c_str(), name.c_str(), path.c_str(),
 			static_cast<unsigned long long>(byteWidth), loadedResource.stride,

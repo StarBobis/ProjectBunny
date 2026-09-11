@@ -343,7 +343,7 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 
 void Shutdown()
 {
-	DX12LogManager::Fields("DX12Wrapper", "stage=shutdown");
+	DX12_LOG("DX12Wrapper", "stage=shutdown");
 }
 
 ResourceRecord *FindWrapperResourceRecord(ID3D12Resource *resource)

@@ -77,7 +77,7 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		static_cast<unsigned long long>(frameReadbackBudget),
 		1,
 		1);
-	DX12LogManager::Fields("DX12ResourceDump",
+	DX12_LOG("DX12ResourceDump",
 		"\"bindings\":%zu,\"ia\":%zu,\"outputs\":%zu,\"frameReadbackBudget\":%llu",
 		bindings.size(), iaBuffers.size(), outputBindings.size(),
 		static_cast<unsigned long long>(frameReadbackBudget));

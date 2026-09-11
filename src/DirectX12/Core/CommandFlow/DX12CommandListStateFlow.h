@@ -30,7 +30,7 @@ public:
 		}
 		if (rs && (rs->pipelineState == pipelineState ||
 				rs->cachedReplacementPsoKey == pipelineState)) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return rs->cachedReplacementPso
 				? rs->cachedReplacementPso : pipelineState;
 		}
@@ -38,7 +38,7 @@ public:
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed) &&
 		    DX12HotPathState::NeedsHuntOnlyPipelineObservation(flags)) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			if (runtimeState)
 				DX12CommandListRuntime::RememberPipelineState(runtimeState, pipelineState);
 			else
@@ -58,22 +58,24 @@ public:
 		const D3D12_RESOURCE_BARRIER *barriers)
 	{
 		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return false;
 		}
-		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureCall(numBarriers);
+		DX12_PROF_COUNT("Rm.BarrierCaptureCalls");
+		DX12_PROF_ADD_ITEMS("Rm.BarrierCaptureItems", static_cast<LONG64>(numBarriers));
 		if (DX12InternalReplayState::IsActive()) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedInternalReplay();
+			DX12_PROF_COUNT("Rm.BarrierCaptureSkippedInternalReplay");
 			return false;
 		}
 		if (!DX12CommandListStateCapture::ShouldTrackResourceStates()) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12ResidentMaintenanceTelemetryUtils::RecordBarrierCaptureSkippedStatePolicy();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.BarrierCaptureSkippedStatePolicy");
 			return false;
 		}
 
 				DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
-		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierRecorded(numBarriers);
+		DX12_PROF_COUNT("Rm.BarrierRecordedCalls");
+		DX12_PROF_ADD_ITEMS("Rm.BarrierRecordedItems", static_cast<LONG64>(numBarriers));
 		return true;
 	}
 
@@ -128,10 +130,10 @@ public:
 			return true;
 		}
 
-		DX12_PROFILE_FAST_FORWARD();
+		DX12_PROF_COUNT("FastForward");
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
-			DX12Profiling::RecordIaHuntIaUpdate();
+			DX12_PROF_COUNT("IaHuntIaUpdate");
 		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
 				return DX12CommandListRuntime::RememberIndexBuffer(runtimeState, view);
@@ -167,10 +169,10 @@ public:
 			return true;
 		}
 
-		DX12_PROFILE_FAST_FORWARD();
+		DX12_PROF_COUNT("FastForward");
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (DX12HotPathState::HasAnyFlag(flags, DX12HotPathState::FLAG_HUNT_ENABLED))
-			DX12Profiling::RecordIaHuntIaUpdate();
+			DX12_PROF_COUNT("IaHuntIaUpdate");
 		if (DX12HotPathState::NeedsResidentIaState(flags)) {
 			if (runtimeState)
 				return DX12CommandListRuntime::RememberVertexBuffers(runtimeState, startSlot, count, views);

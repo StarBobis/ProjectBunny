@@ -514,7 +514,7 @@ void DX12BindingCollectQueue::Start()
 	if (worker.joinable())
 		worker.join();
 	worker = std::thread(&DX12BindingCollectQueue::WorkerLoop);
-	DX12LogManager::Fields("DX12BindingCollectQueue",
+	DX12_LOG("DX12BindingCollectQueue",
 		"event=Start,mode=async");
 }
 
@@ -563,8 +563,8 @@ bool DX12BindingCollectQueue::EnqueueStateEvent(
 	task.eventKind = kind;
 	task.descriptorEpoch = descriptorEpoch;
 	task.captureSessionId = captureSessionId;
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
+	DX12_PROF_COUNT("Rm.DescriptorEpochWrites");
 	return EnqueueTask(std::move(task), delta, fullState);
 }
 
@@ -598,8 +598,8 @@ bool DX12BindingCollectQueue::EnqueueDrawEvent(
 	task.startIndexLocation = startIndexLocation;
 	task.baseVertexLocation = baseVertexLocation;
 	task.startInstanceLocation = startInstanceLocation;
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
+	DX12_PROF_COUNT("Rm.DescriptorEpochWrites");
 	return EnqueueTask(std::move(task), delta, fullState);
 }
 
@@ -624,8 +624,8 @@ bool DX12BindingCollectQueue::EnqueueDispatchEvent(
 	task.threadGroupCountX = threadGroupCountX;
 	task.threadGroupCountY = threadGroupCountY;
 	task.threadGroupCountZ = threadGroupCountZ;
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
+	DX12_PROF_COUNT("Rm.DescriptorEpochWrites");
 	return EnqueueTask(std::move(task), delta, fullState);
 }
 
@@ -749,7 +749,7 @@ CommandListBindingState &DX12BindingCollectQueue::MaterializedStateFor(
 
 void DX12BindingCollectQueue::WorkerLoop()
 {
-	DX12LogManager::Fields("DX12BindingCollectQueue",
+	DX12_LOG("DX12BindingCollectQueue",
 		"event=WorkerEnter,threadId=%lu",
 		GetCurrentThreadId());
 
@@ -758,18 +758,14 @@ void DX12BindingCollectQueue::WorkerLoop()
 		size_t depthAfterPop = 0;
 		{
 			std::unique_lock<std::mutex> lock(mutex);
-			LARGE_INTEGER waitBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(waitBegin);
 			wake.wait(lock, []() {
 				return stopRequested.load(std::memory_order_acquire) || !tasks.empty();
 			});
-			DX12OuterTimingProbeUtils::LogWorkerWait(
-				"BindingCollectQueue",
-				"WorkerWake",
-				"worker_idle",
-				0,
-				completedSequence.load(std::memory_order_acquire),
-				tasks.size() + static_cast<size_t>(activeTasks),
-				DX12OuterTimingProbeUtils::ElapsedUs(waitBegin));
+			DX12_PROF_ADD_US_ITEMS(
+				"Worker.wait.idle",
+				DX12_DIAG_ELAPSED_US(waitBegin),
+				static_cast<LONG64>(tasks.size() + static_cast<size_t>(activeTasks)));
 			if (tasks.empty()) {
 				if (stopRequested.load(std::memory_order_acquire))
 					break;
@@ -795,7 +791,7 @@ void DX12BindingCollectQueue::WorkerLoop()
 	}
 
 	idle.notify_all();
-	DX12LogManager::Fields("DX12BindingCollectQueue",
+	DX12_LOG("DX12BindingCollectQueue",
 		"event=WorkerExit,threadId=%lu,pending=%zu",
 		GetCurrentThreadId(), PendingCount());
 }
@@ -816,19 +812,15 @@ void DX12BindingCollectQueue::WaitForIdle(const char *reason)
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	DX12OuterTimingProbeUtils::LogWorkerWait(
-		"BindingCollectQueue",
-		reason ? reason : "",
-		"idle",
-		0,
-		completedSequence.load(std::memory_order_acquire),
-		pendingSnapshot,
-		static_cast<LONG64>(elapsedUs));
+	DX12_PROF_ADD_US_ITEMS(
+		"Worker.wait.drain",
+		static_cast<LONG64>(elapsedUs),
+		static_cast<LONG64>(pendingSnapshot));
 	drainCalls.fetch_add(1, std::memory_order_relaxed);
 	RecordDrainWaitStats(elapsedUs);
-	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
+	DX12_PROF_ADD_US("BindingQueueDrain", static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kBindingQueueSlowDrainUs) {
-		DX12LogManager::Fields("DX12BindingCollectQueueDrain",
+		DX12_LOG("DX12BindingCollectQueueDrain",
 			"reason=%s,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			pendingSnapshot,
@@ -856,19 +848,15 @@ void DX12BindingCollectQueue::WaitForSubmittedSequence(UINT64 targetSequence, co
 	}
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	DX12OuterTimingProbeUtils::LogWorkerWait(
-		"BindingCollectQueue",
-		reason ? reason : "",
-		"sequence",
-		targetSequence,
-		completedSequence.load(std::memory_order_acquire),
-		pendingSnapshot,
-		static_cast<LONG64>(elapsedUs));
+	DX12_PROF_ADD_US_ITEMS(
+		"Worker.wait.drain",
+		static_cast<LONG64>(elapsedUs),
+		static_cast<LONG64>(pendingSnapshot));
 	drainCalls.fetch_add(1, std::memory_order_relaxed);
 	RecordDrainWaitStats(elapsedUs);
-	DX12Profiling::RecordBindingQueueDrainUs(static_cast<LONG64>(elapsedUs), static_cast<LONG>(pendingSnapshot));
+	DX12_PROF_ADD_US("BindingQueueDrain", static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kBindingQueueSlowDrainUs) {
-		DX12LogManager::Fields("DX12BindingCollectQueueDrain",
+		DX12_LOG("DX12BindingCollectQueueDrain",
 			"reason=%s,mode=sequence,targetSequence=%llu,completedSequence=%llu,pending=%zu,elapsedUs=%lld",
 			reason ? reason : "",
 			static_cast<unsigned long long>(targetSequence),
@@ -883,9 +871,6 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 	if (!task)
 		return;
 
-	const UINT taskKind = static_cast<UINT>(task->kind);
-	const UINT64 sequence = task->sequence;
-	const DWORD enqueueThreadId = task->enqueueThreadId;
 	const auto begin = std::chrono::steady_clock::now();
 	switch (task->kind) {
 	case DX12BindingCollectTaskKind::StateEvent:
@@ -912,19 +897,14 @@ void DX12BindingCollectQueue::ProcessTask(DX12BindingCollectTask *task, const ch
 	ReleaseDeltaIaRefs(&task->delta, &task->fullState);
 	const auto end = std::chrono::steady_clock::now();
 	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
-	DX12OuterTimingProbeUtils::LogWorkerTask(
-		"BindingCollectQueue",
-		"process_task",
-		taskKind,
-		sequence,
-		1,
-		PendingCount(),
-		enqueueThreadId,
-		static_cast<LONG64>(elapsedUs));
+	DX12_PROF_ADD_US_ITEMS(
+		"Worker.task",
+		static_cast<LONG64>(elapsedUs),
+		1);
 	RecordTaskStats(elapsedUs);
-	DX12Profiling::RecordBindingQueueTaskUs(static_cast<LONG64>(elapsedUs));
+	DX12_PROF_ADD_US("BindingQueueTask", static_cast<LONG64>(elapsedUs));
 	if (elapsedUs >= kBindingQueueSlowTaskUs) {
-		DX12LogManager::Fields("DX12BindingCollectQueueSlowTask",
+		DX12_LOG("DX12BindingCollectQueueSlowTask",
 			"source=%s,seq=%llu,captureSessionId=%llu,kind=%u,elapsedUs=%lld,pending=%zu",
 			source ? source : "",
 			static_cast<unsigned long long>(task->sequence),
@@ -951,7 +931,7 @@ void DX12BindingCollectQueue::ProcessDeltaEventTask(
 		DX12BindingTracker::ResolvePipelineShaderInfoOnDemand(&state);
 
 	BindingEvent event;
-	LARGE_INTEGER buildBegin = DX12OuterTimingProbeUtils::Now();
+	DX12_DIAG_QPC(buildBegin);
 	if (!DX12BindingTracker::BuildEvent(
 			&event,
 			task->eventKind ? task->eventKind : "state",
@@ -960,12 +940,12 @@ void DX12BindingCollectQueue::ProcessDeltaEventTask(
 			task->descriptorEpoch,
 			task->captureSessionId))
 		return;
-	DX12OuterTimingProbeUtils::LogCpuStage(
+	DX12_PROF_CPU_STAGE(
 		"BindingCollectQueue",
 		"build_delta_event",
 		static_cast<UINT>(task->kind),
 		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(buildBegin));
+		DX12_DIAG_ELAPSED_US(buildBegin));
 
 	// The materialized state carries no per-draw serials; the task does.
 	event.drawId = task->drawId;
@@ -984,28 +964,28 @@ void DX12BindingCollectQueue::ProcessDeltaEventTask(
 		event.threadGroupCountZ = task->threadGroupCountZ;
 	}
 
-	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
+	DX12_DIAG_QPC(storeBegin);
 	DX12BindingTracker::StoreEventLocked(event);
-	DX12OuterTimingProbeUtils::LogCpuStage(
+	DX12_PROF_CPU_STAGE(
 		"BindingCollectQueue",
 		"store_delta_event",
 		static_cast<UINT>(task->kind),
 		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
+		DX12_DIAG_ELAPSED_US(storeBegin));
 
 	if (task->kind == DX12BindingCollectTaskKind::DrawEvent) {
-		LARGE_INTEGER outputBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(outputBegin);
 		DX12BindingTracker::StoreCurrentOutputTargetsLocked(
 			task->commandList,
 			state,
 			task->captureSessionId,
 			task->drawId);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"BindingCollectQueue",
 			"store_draw_outputs",
 			static_cast<UINT>(task->kind),
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(outputBegin));
+			DX12_DIAG_ELAPSED_US(outputBegin));
 	}
 }
 
@@ -1106,7 +1086,7 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 	// No current enqueuer produces OutputEvent tasks; materialize from the
 	// worker's per-CL state to keep the path consistent if one is added.
 	CommandListBindingState &state = MaterializedStateFor(task->commandList);
-	LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
+	DX12_DIAG_QPC(storeBegin);
 	DX12BindingTracker::StoreOutputEventLocked(
 		task->eventKind ? task->eventKind : "",
 		task->commandList,
@@ -1115,12 +1095,12 @@ void DX12BindingCollectQueue::ProcessOutputEventTask(DX12BindingCollectTask *tas
 		task->cpuHandle,
 		task->drawId,
 		task->captureSessionId);
-	DX12OuterTimingProbeUtils::LogCpuStage(
+	DX12_PROF_CPU_STAGE(
 		"BindingCollectQueue",
 		"store_output_event",
 		static_cast<UINT>(task->kind),
 		1,
-		DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
+		DX12_DIAG_ELAPSED_US(storeBegin));
 }
 
 void DX12BindingCollectQueue::UpdateMaxDepth(size_t depth)
@@ -1168,7 +1148,7 @@ void DX12BindingCollectQueue::LogStats(const char *event, uint64_t sequence, siz
 	if (depth < 256 && sequence != 0 && (serial % kBindingQueueStatsInterval) != 0)
 		return;
 
-	DX12LogManager::Fields("DX12BindingCollectQueueStats",
+	DX12_LOG("DX12BindingCollectQueueStats",
 		"event=%s,seq=%llu,pending=%zu,enqueued=%llu,dequeued=%llu,completed=%llu,completedSequence=%llu,maxDepth=%llu,maxPendingAtDrain=%llu,drainCalls=%llu,drainWaitUs=%llu,drainMaxUs=%llu,taskElapsedUs=%llu,taskMaxUs=%llu",
 		event ? event : "",
 		static_cast<unsigned long long>(sequence),

@@ -1,4 +1,4 @@
-﻿// Command queue, command allocator, fence and descriptor heap wrappers.
+// Command queue, command allocator, fence and descriptor heap wrappers.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -17,7 +17,7 @@ namespace DX12WrapperDetail
 			mDesc = queue ? queue->GetDesc() : D3D12_COMMAND_QUEUE_DESC();
 			RegisterWrapperPointer(static_cast<ID3D12CommandQueue*>(this));
 			DX12CommandQueueState::Set(queue);
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=command_queue,stage=create,wrapper=%p,object=%p,type=%d",
 				this, queue, static_cast<int>(mDesc.Type));
 		}
@@ -119,7 +119,7 @@ namespace DX12WrapperDetail
 
 			static volatile LONG nonDirectExecuteLogs = 0;
 			if (InterlockedIncrement(&nonDirectExecuteLogs) <= 8)
-				DX12LogManager::Fields("DX12ExecuteCommandLists",
+				DX12_LOG("DX12ExecuteCommandLists",
 					"stage=non_direct_passthrough,queue=%p,type=%d,count=%u",
 					mQueue, static_cast<int>(mDesc.Type), NumCommandLists);
 			DX12WrapperRuntimeUtils::ExecuteCommandListsDirectNative(mQueue, NumCommandLists, ppCommandLists);
@@ -355,64 +355,36 @@ namespace DX12WrapperDetail
 
 		UINT64 STDMETHODCALLTYPE GetCompletedValue() override
 		{
-			LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(begin);
 			UINT64 completed = mFence->GetCompletedValue();
-			DX12OuterTimingProbeUtils::LogFenceSlice(
-				"GetCompletedValue",
-				"wrapper",
-				mFence,
-				0,
-				0,
-				completed,
-				S_OK,
-				DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_PROF_ADD_US("Fence.op", DX12_DIAG_ELAPSED_US(begin));
 			return completed;
 		}
 
 		HRESULT STDMETHODCALLTYPE SetEventOnCompletion(UINT64 Value, HANDLE hEvent) override
 		{
-			const UINT64 completedBefore =
-				DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
-			LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_FENCE_VALUE_VAR(completedBefore, mFence);
+			DX12_DIAG_QPC(begin);
 			HRESULT hr = mFence->SetEventOnCompletion(Value, hEvent);
-			const UINT64 completedAfter =
-				DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
-			DX12OuterTimingProbeUtils::RegisterFenceEventOnCompletion(
+			DX12_DIAG_FENCE_VALUE_VAR(completedAfter, mFence);
+			DX12_DIAG_REGISTER_FENCE_EVENT(
 				mFence,
 				hEvent,
 				Value,
 				completedBefore,
 				completedAfter,
 				hr);
-			DX12OuterTimingProbeUtils::LogFenceSlice(
-				"SetEventOnCompletion",
-				"wrapper",
-				mFence,
-				Value,
-				completedBefore,
-				completedAfter,
-				hr,
-				DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_PROF_ADD_US("Fence.op", DX12_DIAG_ELAPSED_US(begin));
 			return hr;
 		}
 
 		HRESULT STDMETHODCALLTYPE Signal(UINT64 Value) override
 		{
-			const UINT64 completedBefore =
-				DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
-			LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_FENCE_VALUE_VAR(completedBefore, mFence);
+			DX12_DIAG_QPC(begin);
 			HRESULT hr = mFence->Signal(Value);
-			const UINT64 completedAfter =
-				DX12OuterTimingProbeUtils::TimingFenceCompletedValue(mFence);
-			DX12OuterTimingProbeUtils::LogFenceSlice(
-				"Signal",
-				"wrapper",
-				mFence,
-				Value,
-				completedBefore,
-				completedAfter,
-				hr,
-				DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_DIAG_FENCE_VALUE_VAR(completedAfter, mFence);
+			DX12_PROF_ADD_US("Fence.op", DX12_DIAG_ELAPSED_US(begin));
 			return hr;
 		}
 

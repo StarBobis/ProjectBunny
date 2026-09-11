@@ -483,7 +483,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 	DX12ModIaReplacement *replacement,
 	bool executeOriginalDraw)
 {
-	const LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+	DX12_DIAG_QPC(applyBegin);
 	if (!device || !commandList || !replacement ||
 			replacement->drawSrvPatches.empty())
 		return false;
@@ -495,7 +495,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 	// requests against the plan.
 	static thread_local CommandListBindingState snapshot;
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
+		DX12_LOG("DX12DrawSrvReplacement",
 			"stage=bundle_patch_fail,reason=binding_snapshot");
 		return false;
 	}
@@ -521,7 +521,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 				!DX12DrawSrvReplacementUtils::AppendPatchTables(
 					snapshot, graphicsRootSignature, false,
 					&tables, &totalDescriptors)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=graphics_root_signature");
 			return false;
 		}
@@ -534,14 +534,14 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 				!DX12DrawSrvReplacementUtils::AppendPatchTables(
 					snapshot, computeRootSignature, true,
 					&tables, &totalDescriptors)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=compute_root_signature");
 			return false;
 		}
 		hasComputeRootSignature = true;
 	}
 	if (tables.empty() || !totalDescriptors) {
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
+		DX12_LOG("DX12DrawSrvReplacement",
 			"stage=bundle_patch_fail,reason=table_plan");
 		return false;
 	}
@@ -554,7 +554,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 		if (!requestRootSignature ||
 				!DX12DrawSrvReplacementUtils::RequestMatchesSrvLayout(
 					request, *requestRootSignature)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=request_layout");
 			return false;
 		}
@@ -571,7 +571,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 			break;
 		}
 		if (!found || !request.replacementCpu.ptr) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=request_table");
 			return false;
 		}
@@ -599,7 +599,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 	}
 	if (!session || session->overflowed) {
 		ReleaseSRWLockExclusive(&shard.lock);
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
+		DX12_LOG("DX12DrawSrvReplacement",
 			"stage=bundle_patch_fail,reason=session_unavailable");
 		return false;
 	}
@@ -625,7 +625,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 				table.gpuStart, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, &heap)) {
 			session->overflowed = true;
 			ReleaseSRWLockExclusive(&shard.lock);
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=table_heap_resolve");
 			return false;
 		}
@@ -633,7 +633,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 		if (!DX12BundleMirrorUtils::EnsureTableMirroredLocked(
 				*session, table.gpuStart.ptr, heap, table.count, &mirrorOffset)) {
 			ReleaseSRWLockExclusive(&shard.lock);
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=session_capacity");
 			return false;
 		}
@@ -679,7 +679,7 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 				table.count > session->capacity - session->offset) {
 			session->overflowed = true;
 			ReleaseSRWLockExclusive(&shard.lock);
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=bundle_patch_fail,reason=patch_capacity");
 			return false;
 		}
@@ -762,12 +762,12 @@ inline bool DX12ModApplyDrawSrvReplacementBundle(
 	replacement->drawSrvApplyState.bundleMode = true;
 	replacement->drawSrvApplyState.bundleRestores = std::move(bundleRestores);
 	ReleaseSRWLockExclusive(&shard.lock);
-	DX12OuterTimingProbeUtils::LogCpuStage(
+	DX12_PROF_CPU_STAGE(
 		"DrawSrv",
 		"apply_bundle",
 		0,
-		totalDescriptors,
-		DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+		static_cast<LONG64>(totalDescriptors),
+		DX12_DIAG_ELAPSED_US(applyBegin));
 	return true;
 }
 

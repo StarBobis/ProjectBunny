@@ -97,70 +97,50 @@ public:
 		ID3D12PipelineState *pipelineState =
 			DX12CommandListRuntime::GetPipelineState(commandList);
 		if (!pipelineState) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: no PSO from runtime state\n");
-#endif
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: no PSO from runtime state\n");
 			return;
 		}
 
 		DX12PsoShaderInfo shaderInfo = {};
 		if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo)) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: GetShaderInfo failed\n");
-#endif
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: GetShaderInfo failed\n");
 			return;
 		}
 		if (!shaderInfo.hasCS) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: PSO is not compute\n");
-#endif
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: PSO is not compute\n");
 			return;
 		}
 
 		probe->computeShaderHash = shaderInfo.cs;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text("DX12ExecuteIndirectRuntime: compute PSO cs=%016llx\n",
+		DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: compute PSO cs=%016llx\n",
 			static_cast<unsigned long long>(probe->computeShaderHash));
-#endif
 		if (!DX12ModShouldTrackPreSkinBindingsForCs(probe->computeShaderHash)) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: CS not in pre-skin list\n");
-#endif
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: CS not in pre-skin list\n");
 			return;
 		}
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin CS match\n");
-#endif
+		DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: pre-skin CS match\n");
 		probe->bindingsFound = DX12BindingTracker::GetCurrentComputeAll(
 			commandList, &probe->uavs, &probe->srvs, &probe->cbvs, &probe->rootConstants);
 		if (!probe->bindingsFound) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: no compute bindings found\n");
-#endif
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: no compute bindings found\n");
 			return;
 		}
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text(
+		DX12_LOG_TEXT(
 			"DX12ExecuteIndirectRuntime: bindings found uavs=%zu srvs=%zu cbvs=%zu\n",
 			probe->uavs.size(), probe->srvs.size(), probe->cbvs.size());
-#endif
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
 			probe->uavs, probe->srvs, probe->cbvs, probe->rootConstants,
 			&probe->originalVertexCount, &probe->overrideVertexCount,
 			&probe->dispatchOverride);
 		if (probe->applied) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin applied origVtx=%u newVtx=%u\n",
+			DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: pre-skin applied origVtx=%u newVtx=%u\n",
 				probe->originalVertexCount, probe->overrideVertexCount);
-#endif
 			return;
 		}
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Text("DX12ExecuteIndirectRuntime: pre-skin matching failed\n");
-#endif
+		DX12_LOG_TEXT("DX12ExecuteIndirectRuntime: pre-skin matching failed\n");
 	}
 
 	static void FinishPreSkinProbe(

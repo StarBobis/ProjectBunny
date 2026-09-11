@@ -1,4 +1,4 @@
-﻿// Debug-layer wrappers: ID3D12Debug*, DRED, Tools, SDKConfiguration, InfoQueue, debug device/queue/list.
+// Debug-layer wrappers: ID3D12Debug*, DRED, Tools, SDKConfiguration, InfoQueue, debug device/queue/list.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -25,7 +25,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12Debug4*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Debug5*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Debug6*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=debug_interface,stage=create,wrapper=%p,object=%p",
 				this, debug);
 		}
@@ -181,7 +181,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedDataSettings*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedDataSettings1*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedDataSettings2*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=dred_settings,stage=create,wrapper=%p,object=%p",
 				this, settings);
 		}
@@ -276,7 +276,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedData*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedData1*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DeviceRemovedExtendedData2*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=dred_data,stage=create,wrapper=%p,object=%p",
 				this, data);
 		}
@@ -390,7 +390,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12Tools*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Tools1*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Tools2*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=tools,stage=create,wrapper=%p,object=%p",
 				this, tools);
 		}
@@ -492,7 +492,7 @@ namespace DX12WrapperDetail
 			mConfiguration = configuration;
 			RegisterWrapperPointer(static_cast<ID3D12SDKConfiguration*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12SDKConfiguration1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=sdk_configuration,stage=create,wrapper=%p,object=%p",
 				this, configuration);
 		}
@@ -578,7 +578,7 @@ namespace DX12WrapperDetail
 		{
 			mContract = contract;
 			RegisterWrapperPointer(static_cast<ID3D12SharingContract*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=sharing_contract,stage=create,wrapper=%p,object=%p",
 				this, contract);
 		}
@@ -653,7 +653,7 @@ namespace DX12WrapperDetail
 		{
 			mTrackingResource = resource;
 			RegisterWrapperPointer(static_cast<ID3D12ManualWriteTrackingResource*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=manual_write_tracking_resource,stage=create,wrapper=%p,object=%p",
 				this, resource);
 		}
@@ -714,7 +714,7 @@ namespace DX12WrapperDetail
 			mInfoQueue = queue;
 			RegisterWrapperPointer(static_cast<ID3D12InfoQueue*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12InfoQueue1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=info_queue,stage=create,wrapper=%p,object=%p",
 				this, queue);
 		}
@@ -982,7 +982,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DebugDevice*>(static_cast<ID3D12DebugDevice2*>(this)));
 			RegisterWrapperPointer(static_cast<ID3D12DebugDevice1*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DebugDevice2*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=debug_device,stage=create,wrapper=%p,object=%p",
 				this, device);
 		}
@@ -1096,7 +1096,7 @@ namespace DX12WrapperDetail
 			mDebugQueue = queue;
 			RegisterWrapperPointer(static_cast<ID3D12DebugCommandQueue*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DebugCommandQueue1*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=debug_command_queue,stage=create,wrapper=%p,object=%p",
 				this, queue);
 		}
@@ -1189,7 +1189,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DebugCommandList1*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DebugCommandList2*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12DebugCommandList3*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=debug_command_list,stage=create,wrapper=%p,object=%p",
 				this, commandList);
 		}

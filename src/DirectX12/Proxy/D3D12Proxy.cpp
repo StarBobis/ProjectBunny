@@ -24,7 +24,7 @@ FARPROC D3D12ProxyRuntime::GetRealProc(const char *name)
 
 	FARPROC proc = GetProcAddress(module, name);
 	if (!proc)
-		DX12LogManager::Text("Failed to resolve real d3d12 export %s, error=%lu\n", name, GetLastError());
+		DX12_LOG_TEXT("Failed to resolve real d3d12 export %s, error=%lu\n", name, GetLastError());
 	return proc;
 }
 
@@ -36,7 +36,7 @@ FARPROC D3D12ProxyRuntime::GetRealProc(WORD ordinal)
 
 	FARPROC proc = GetProcAddress(module, MAKEINTRESOURCEA(ordinal));
 	if (!proc)
-		DX12LogManager::Text("Failed to resolve real d3d12 ordinal %u, error=%lu\n", ordinal, GetLastError());
+		DX12_LOG_TEXT("Failed to resolve real d3d12 ordinal %u, error=%lu\n", ordinal, GetLastError());
 	return proc;
 }
 
@@ -80,7 +80,7 @@ HMODULE D3D12ProxyRuntime::LoadRealD3D12()
 
 	HMODULE module = LoadLibraryW(path);
 	if (!module) {
-		DX12LogManager::Text("Failed to load real d3d12.dll from %S, error=%lu\n", path, GetLastError());
+		DX12_LOG_TEXT("Failed to load real d3d12.dll from %S, error=%lu\n", path, GetLastError());
 		ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
 		return nullptr;
 	}
@@ -107,7 +107,7 @@ HMODULE D3D12ProxyRuntime::LoadRealD3D12()
 		GetProcAddress(module, "D3D12GetInterface"));
 	D3D12ProxyState::RealD3D12 = module;
 
-	DX12LogManager::Text("Loaded real d3d12.dll: %p\n", D3D12ProxyState::RealD3D12);
+	DX12_LOG_TEXT("Loaded real d3d12.dll: %p\n", D3D12ProxyState::RealD3D12);
 	ReleaseSRWLockExclusive(&gD3D12ProxyLoadLock);
 	return module;
 }
@@ -136,12 +136,12 @@ void D3D12ProxyRuntime::UnloadRealD3D12()
 extern "C" HRESULT WINAPI D3D12CreateDevice(
 	IUnknown *adapter, D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void **device)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyDeviceCreate, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyDeviceCreate, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigCreateDevice)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateDevice(adapter, minimumFeatureLevel, riid, device);
-	DX12LogManager::Fields("D3D12CreateDevice",
+	DX12_LOG("D3D12CreateDevice",
 		"adapter=%p,minFeature=0x%x,hr=0x%lx,device=%p",
 		adapter, minimumFeatureLevel, hr, device ? *device : nullptr);
 	if (SUCCEEDED(hr))
@@ -151,12 +151,12 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 
 extern "C" HRESULT WINAPI D3D12GetDebugInterface(REFIID riid, void **debug)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigGetDebugInterface)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigGetDebugInterface(riid, debug);
-	DX12LogManager::Fields("D3D12GetDebugInterface",
+	DX12_LOG("D3D12GetDebugInterface",
 		"hr=0x%lx,debug=%p", hr, debug ? *debug : nullptr);
 	if (SUCCEEDED(hr))
 		DX12Wrapper::WrapD3D12DebugInterfaceResult(riid, debug);
@@ -167,12 +167,12 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 	const D3D12_ROOT_SIGNATURE_DESC *desc, D3D_ROOT_SIGNATURE_VERSION version,
 	ID3DBlob **blob, ID3DBlob **errorBlob)
 {
-	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
+	DX12_PROF_CREATE_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigSerializeRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeRootSignature(desc, version, blob, errorBlob);
-	DX12LogManager::Fields("D3D12SerializeRootSignature",
+	DX12_LOG("D3D12SerializeRootSignature",
 		"version=%u,hr=0x%lx", static_cast<UINT>(version), hr);
 	return hr;
 }
@@ -180,13 +180,13 @@ extern "C" HRESULT WINAPI D3D12SerializeRootSignature(
 extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigCreateRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateRootSignatureDeserializer(
 		srcData, srcDataSize, riid, rootSignatureDeserializer);
-	DX12LogManager::Fields("D3D12CreateRootSignatureDeserializer",
+	DX12_LOG("D3D12CreateRootSignatureDeserializer",
 		"size=%llu,hr=0x%lx,object=%p",
 		static_cast<unsigned long long>(srcDataSize), hr,
 		rootSignatureDeserializer ? *rootSignatureDeserializer : nullptr);
@@ -196,25 +196,25 @@ extern "C" HRESULT WINAPI D3D12CreateRootSignatureDeserializer(
 extern "C" HRESULT WINAPI D3D12SerializeVersionedRootSignature(
 	const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc, ID3DBlob **blob, ID3DBlob **errorBlob)
 {
-	DX12_CREATE_TIMING_SCOPE(RootSignatureSerializeProxy, Original);
+	DX12_PROF_CREATE_SCOPE(RootSignatureSerializeProxy, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigSerializeVersionedRootSignature)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigSerializeVersionedRootSignature(desc, blob, errorBlob);
-	DX12LogManager::Fields("D3D12SerializeVersionedRootSignature", "hr=0x%lx", hr);
+	DX12_LOG("D3D12SerializeVersionedRootSignature", "hr=0x%lx", hr);
 	return hr;
 }
 
 extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 	LPCVOID srcData, SIZE_T srcDataSize, REFIID riid, void **rootSignatureDeserializer)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigCreateVersionedRootSignatureDeserializer(
 		srcData, srcDataSize, riid, rootSignatureDeserializer);
-	DX12LogManager::Fields("D3D12CreateVersionedRootSignatureDeserializer",
+	DX12_LOG("D3D12CreateVersionedRootSignatureDeserializer",
 		"size=%llu,hr=0x%lx,object=%p",
 		static_cast<unsigned long long>(srcDataSize), hr,
 		rootSignatureDeserializer ? *rootSignatureDeserializer : nullptr);
@@ -224,25 +224,25 @@ extern "C" HRESULT WINAPI D3D12CreateVersionedRootSignatureDeserializer(
 extern "C" HRESULT WINAPI D3D12EnableExperimentalFeatures(
 	UINT numFeatures, const IID *featureIIDs, void *configurationStructs, UINT *configurationStructSizes)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigEnableExperimentalFeatures)
 		return E_FAIL;
 	HRESULT hr = D3D12ProxyState::OrigEnableExperimentalFeatures(
 		numFeatures, featureIIDs, configurationStructs, configurationStructSizes);
-	DX12LogManager::Fields("D3D12EnableExperimentalFeatures",
+	DX12_LOG("D3D12EnableExperimentalFeatures",
 		"features=%u,hr=0x%lx", numFeatures, hr);
 	return hr;
 }
 
 extern "C" HRESULT WINAPI D3D12GetInterface(REFCLSID clsid, REFIID riid, void **object)
 {
-	DX12_CREATE_TIMING_SCOPE(ProxyMisc, Original);
+	DX12_PROF_CREATE_SCOPE(ProxyMisc, Original);
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigGetInterface)
 		return E_NOINTERFACE;
 	HRESULT hr = D3D12ProxyState::OrigGetInterface(clsid, riid, object);
-	DX12LogManager::Fields("D3D12GetInterface",
+	DX12_LOG("D3D12GetInterface",
 		"clsid=%p,riid=%p,hr=0x%lx,object=%p",
 		&clsid, &riid, hr, object ? *object : nullptr);
 	if (SUCCEEDED(hr) && !DX12Wrapper::WrapD3D12DeviceFactoryResult(riid, object))

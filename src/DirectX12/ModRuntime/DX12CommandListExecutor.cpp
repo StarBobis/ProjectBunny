@@ -7,6 +7,7 @@
 #include "../Presentation/DX12WrapperCore.h"
 
 
+#if DX12_TIMING_BUILD
 // Frame-boundary breadcrumb. Everything that can block a user-visible freeze
 // lives inside DX12ModBeginFrame (the tail of the Present wrapper on the game's
 // present thread), so when the game stops dead the last stage marker left
@@ -30,7 +31,7 @@ void DX12MarkStage(const char *stage)
 void DX12LogFrameBoundaryStage()
 {
 	const char *stage = gFrameBoundaryStage.load(std::memory_order_relaxed);
-	DX12LogManager::Fields("DX12KeyDiag",
+	DX12_LOG("DX12KeyDiag",
 		"event=frame_stage present=%ld stage=%s",
 		DX12RuntimeState::GetPresentCount(), stage ? stage : "unknown");
 }
@@ -43,9 +44,15 @@ namespace
 		DX12MarkStage(stage);
 	}
 }
+#else
+namespace
+{
+	void MarkFrameBoundaryStage(const char *) {}
+}
+#endif
 
 
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 // Freeze watchdog (TIMING builds only). When the present counter stops
 // advancing, the game is either deadlocked on one of the mod locks or
 // stalled inside a driver/GPU wait - and the frozen thread never publishes
@@ -127,7 +134,7 @@ bool IaTriggeredCandidatesDependOnActivePreSkin(
 
 void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 {
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	// Arm the freeze watchdog with the first frame boundary; cheap no-op
 	// afterwards (single interlocked check per frame).
 	DX12FreezeWatchdog::Start();
@@ -153,7 +160,7 @@ void DX12ModBeginFrame(IDXGISwapChain *swapChain)
 	// and no idle tracking to maintain: skip the per-frame exclusive lock
 	// entirely instead of serializing recording threads on it for nothing.
 	if (gHasPreSkinTextureOverrideCandidates != 0) {
-		DX12ModLockTelemetryUtils::AcquirePreSkinExclusive(&gPreSkinLock);
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gPreSkinLock, "Lock.preSkinExclusive");
 		MarkFrameBoundaryStage("pre_skin_clear_locked");
 		// Track idle frames: if no active pre-skin overrides existed last frame, count idle.
 		// If pre-skin was actively matching, reset idle counter immediately.
@@ -263,10 +270,8 @@ bool DX12ModPreparePresentReplacement(
 
 	ID3D12Device *device = AcquireModDevice(commandList);
 	if (!device) {
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::FieldsFlush("DX12PresentDiag",
+		DX12_LOG_FLUSH("DX12PresentDiag",
 			"event=prepare_skip reason=no_device present=%ld", present);
-#endif
 		InterlockedCompareExchange(&gPresentCommandListExecutedPresent, present - 1, present);
 		return false;
 	}
@@ -285,11 +290,9 @@ bool DX12ModPreparePresentReplacement(
 	// replacement changed, and without them the element replay below would
 	// be gated off entirely.
 	const bool hasWork = changed || !replacement->customElementRecords.empty();
-#if defined(DX12_RELEASE_TIMING)
-	DX12LogManager::FieldsFlush("DX12PresentDiag",
+	DX12_LOG_FLUSH("DX12PresentDiag",
 		"event=prepare_ran present=%ld changed=%d elementRecords=%zu",
 		present, changed ? 1 : 0, replacement->customElementRecords.size());
-#endif
 	DX12MarkStage("prepare_present_leave");
 	return hasWork;
 }
@@ -361,7 +364,7 @@ static ID3D12CommandQueue *AcquireGameDirectQueue()
 }
 
 
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 void DX12FreezeWatchdog::Start()
 {
 	if (InterlockedCompareExchange(&sStarted, 1, 0) != 0)
@@ -429,7 +432,7 @@ void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
 		sPendingPresentOverlayLock.unlock();
 		overlayLock = "free";
 	}
-	DX12LogManager::FieldsFlush("DX12FreezeWatchdog",
+	DX12_LOG_FLUSH("DX12FreezeWatchdog",
 		"event=stall present=%ld executedPresent=%ld stalledMs=%llu stage=%s "
 		"skipAll=%ld hookFlags=0x%llx uploadPending=%d uploadPendingFence=%llu uploadCompleted=%llu "
 		"gameQueue=%d overlayRecords=%zu",
@@ -447,7 +450,7 @@ void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
 		static_cast<unsigned long long>(uploadCompleted),
 		sGameDirectQueue.load(std::memory_order_acquire) ? 1 : 0,
 		overlayRecords);
-	DX12LogManager::FieldsFlush("DX12FreezeWatchdog",
+	DX12_LOG_FLUSH("DX12FreezeWatchdog",
 		"event=locks mod=%s preskin=%s upload=%s vmGlobals=%s overlay=%s "
 		"descriptor=%s wrapper=%s",
 		ProbeSrwLock(&gModLock),
@@ -477,11 +480,9 @@ bool DX12ModQueuePresentCustomElements(
 	sPendingPresentOverlay.Reset();
 	sPendingPresentOverlay.records.swap(replacement->customElementRecords);
 	sPendingPresentOverlay.device = device; // adopts the reference
-#if defined(DX12_RELEASE_TIMING)
-	DX12LogManager::FieldsFlush("DX12PresentDiag",
+	DX12_LOG_FLUSH("DX12PresentDiag",
 		"event=overlay_queued records=%zu",
 		sPendingPresentOverlay.records.size());
-#endif
 	DX12MarkStage("overlay_queue_leave");
 	return true;
 }
@@ -538,14 +539,14 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 	ID3D12GraphicsCommandList *commandList = nullptr;
 	if (!iniParamsTexture || !tableHeap || !surfaceCache || !rootSignature ||
 	    !channel || !queue) {
-		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=replay_skip reason=overlay_channel_unavailable queue=%d",
 			queue ? 1 : 0);
 	} else if (!(commandList = channel->BeginRecord())) {
-		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=replay_skip reason=overlay_begin_record_failed");
 	} else if (!tableHeap->BeginPresent(presentCount)) {
-		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=replay_skip reason=table_heap_unavailable");
 		commandList->Close();
 		commandList = nullptr;
@@ -576,7 +577,7 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 	for (const DX12ModIaReplacement::CustomElementRecord &record : records) {
 		const Bunny::DX12CustomShaderElementSpec &spec = record.spec;
 		if (!spec.hasStage[0] || !spec.hasStage[4]) {
-			DX12LogManager::Fields("DX12CustomShaderDiag",
+			DX12_LOG("DX12CustomShaderDiag",
 				"event=replay_skip reason=invalid_spec");
 			continue;
 		}
@@ -587,14 +588,14 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 		// diagnostic instead of corrupting earlier draws.
 		UINT elementIndex = 0;
 		if (!tableHeap->AcquireElementRegion(&elementIndex)) {
-			DX12LogManager::Fields("DX12CustomShaderDiag",
+			DX12_LOG("DX12CustomShaderDiag",
 				"event=replay_skip reason=element_capacity_exceeded section=%S",
 				spec.section.c_str());
 			break;
 		}
 		if (!iniParamsTexture->UpdateAndUpload(
 			    commandList, presentCount, elementIndex, record.iniParams.data())) {
-			DX12LogManager::Fields("DX12CustomShaderDiag",
+			DX12_LOG("DX12CustomShaderDiag",
 				"event=replay_skip reason=ini_params_upload_failed section=%S",
 				spec.section.c_str());
 			continue;
@@ -616,7 +617,7 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 		if (!surfaceCache->EnsureBackBufferView(
 			    swapChain, &backBufferRtv, &backBufferFormat,
 			    &backBufferWidth, &backBufferHeight)) {
-			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			DX12_LOG_FLUSH("DX12CustomShaderDiag",
 				"event=replay_skip reason=no_back_buffer section=%S",
 				spec.section.c_str());
 			continue;
@@ -625,7 +626,7 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			Bunny::DX12CustomShaderPipelineCache::EnsurePipeline(
 				device, spec, backBufferFormat);
 		if (!pipeline) {
-			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			DX12_LOG_FLUSH("DX12CustomShaderDiag",
 				"event=replay_skip reason=pipeline_unavailable section=%S format=%d",
 				spec.section.c_str(), static_cast<int>(backBufferFormat));
 			continue;
@@ -655,12 +656,10 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			record.drawCount ? record.drawCount : 4, 1,
 			record.drawStart, 0);
 		anyDrawn = true;
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+		DX12_LOG_FLUSH("DX12CustomShaderDiag",
 			"event=element_drawn section=%S w=%u h=%u format=%d textures=%zu",
 			spec.section.c_str(), backBufferWidth, backBufferHeight,
 			static_cast<int>(backBufferFormat), record.textureSlots.size());
-#endif
 	}
 
 	if (backBuffer) {
@@ -679,11 +678,9 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 		commandList->Close();
 	}
 	} // if (commandList)
-#if defined(DX12_RELEASE_TIMING)
-	DX12LogManager::FieldsFlush("DX12PresentDiag",
+	DX12_LOG_FLUSH("DX12PresentDiag",
 		"event=overlay_submit records=%zu drawn=%d submitted=%d",
 		records.size(), anyDrawn ? 1 : 0, submitted ? 1 : 0);
-#endif
 	DX12MarkStage("overlay_submit_done");
 	if (queue)
 		queue->Release();
@@ -815,7 +812,7 @@ void SnapshotIaResourceViewForCommandList(
 	// threads resolve them in parallel instead of serializing every modded
 	// draw on the global exclusive gModLock (a DX11-style single-thread
 	// pattern; DX12 resolves resource metadata without a global write lock).
-	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
+	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	auto loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end() &&
 	    !IaResourceViewSnapshotRequiresWrite(loaded->second)) {
@@ -829,7 +826,7 @@ void SnapshotIaResourceViewForCommandList(
 	// to VERTEX_AND_CONSTANT_BUFFER and clear the pending-barrier flag), which
 	// needs the exclusive lock. Re-find and re-check: another thread may have
 	// changed the entry between the two acquisitions.
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	loaded = gLoadedResources.find(name);
 	if (loaded != gLoadedResources.end())
 		SnapshotIaResourceViewLocked(&loaded->second, snapshot);
@@ -1102,26 +1099,22 @@ bool RunNamedCommandList(
 	if (!device || !commandList || !replacement)
 		return false;
 	if (!CommandListRuntimeEffect(name, true)) {
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::FieldsFlush("DX12PresentDiag",
+		DX12_LOG_FLUSH("DX12PresentDiag",
 			"event=run_named_skip name=%S reason=no_runtime_effect", name.c_str());
-#endif
 		return false;
 	}
 
-#if defined(DX12_RELEASE_TIMING)
-	DX12LogManager::FieldsFlush("DX12PresentDiag",
+	DX12_LOG_FLUSH("DX12PresentDiag",
 		"event=run_named_enter name=%S", name.c_str());
-#endif
 	DX12MarkStage("run_named_list");
 	DX12IaHashState emptyIa = EmptyIaHashState();
 	DX12CommandListExecutor executor(
 		device, commandList, emptyIa, 0, 0, 0, 0, 0, 0,
 		replacement, pendingResourceViews);
 	executor.RunCommandListLinks(Bunny::CommandListLinks{ {}, { name }, {} }, true);
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	const MigotoCommandVmUtils::ExpressionContext vmProbeContext;
-	DX12LogManager::FieldsFlush("DX12PresentDiag",
+	DX12_LOG_FLUSH("DX12PresentDiag",
 		"event=run_named name=%S changed=%d vm_menu=%.3f vm_draw=%.3f vm_ts=%.3f",
 		name.c_str(), executor.Changed() ? 1 : 0,
 		MigotoCommandVmUtils::LookupVariable(vmProbeContext, L"$ssmtui_menu"),
@@ -1147,7 +1140,7 @@ bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 }
 
 
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 // TIMING-build key diagnostics: one line per hotkey press edge (with the
 // condition verdict) plus a frame-boundary snapshot of $active0/$swapkey0
 // whenever either changes, so hotkey gating questions are answerable from
@@ -1158,7 +1151,7 @@ static void DX12KeyPressDiagSink(
 	int conditionActive, const wchar_t *variablesState)
 {
 	DX12MarkStage("key_press_sink");
-	DX12LogManager::Fields("DX12KeyDiag",
+	DX12_LOG("DX12KeyDiag",
 		"event=press section=%S key=%S type=%d direction=%S conditionText=%S condition=%d vars=%S",
 		section ? section : L"", keyText ? keyText : L"", type,
 		direction ? direction : L"", conditionText ? conditionText : L"",
@@ -1184,7 +1177,7 @@ static void DX12TraceFrameKeyVariables()
 	framesSinceLastTrace = 0;
 	lastActive0 = active0;
 	lastSwapkey0 = swapkey0;
-	DX12LogManager::Fields("DX12KeyDiag",
+	DX12_LOG("DX12KeyDiag",
 		"event=frame_vars active0=%g swapkey0=%g", active0, swapkey0);
 }
 #endif
@@ -1192,7 +1185,7 @@ static void DX12TraceFrameKeyVariables()
 
 void ProcessDx12KeyBindingsForFrame()
 {
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	// Register the key diagnostics sink lazily on the first frame so it is
 	// armed after the log file is already open.
 	{
@@ -1219,7 +1212,7 @@ void ProcessDx12KeyBindingsForFrame()
 	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
 		RunNamedCommandListVmOnly(action.commandList, action.includePost);
 	MarkFrameBoundaryStage("key_actions_done");
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	DX12TraceFrameKeyVariables();
 #endif
 	MarkFrameBoundaryStage("key_vars_traced");

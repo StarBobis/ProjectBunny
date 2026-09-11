@@ -1,4 +1,4 @@
-﻿// Resource tracker hook entry points.
+// Resource tracker hook entry points.
 // Split from DX12Runtime.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -38,7 +38,7 @@ inline void DX12DeviceHooks::HookDevice(IUnknown *device)
 	if (FAILED(device->QueryInterface(IID_PPV_ARGS(&baseDevice))))
 		return;
 
-	DX12LogManager::Fields("DeviceHooksReady", "\"device\":\"%p\",\"mode\":\"wrapper_only\"", baseDevice);
+	DX12_LOG("DeviceHooksReady", "\"device\":\"%p\",\"mode\":\"wrapper_only\"", baseDevice);
 	baseDevice->Release();
 }
 

@@ -140,7 +140,7 @@ namespace DX12WrapperDetail
 
 		HRESULT STDMETHODCALLTYPE Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceMapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceMapWrapper, Original);
 			// Route through the tracker so buffer content capture keeps
 			// working in wrapper mode (no inline Map/Unmap code patch).
 			return DX12ResourceTrackerHookRuntime::WrappedResourceMap(
@@ -149,20 +149,20 @@ namespace DX12WrapperDetail
 
 		void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceUnmapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceUnmapWrapper, Original);
 			DX12ResourceTrackerHookRuntime::WrappedResourceUnmap(
 				mResource, Subresource, pWrittenRange, _ReturnAddress());
 		}
 
 		D3D12_RESOURCE_DESC STDMETHODCALLTYPE GetDesc() override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceQueryWrapper, Original);
 			return mRecord.desc;
 		}
 
 		D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE GetGPUVirtualAddress() override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceQueryWrapper, Original);
 			return mRecord.gpuVirtualAddress;
 		}
 
@@ -170,7 +170,7 @@ namespace DX12WrapperDetail
 			UINT DstSubresource, const D3D12_BOX *pDstBox, const void *pSrcData,
 			UINT SrcRowPitch, UINT SrcDepthPitch) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceReadWriteWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceReadWriteWrapper, Original);
 			HRESULT hr = mResource->WriteToSubresource(
 				DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
 			if (SUCCEEDED(hr) && pSrcData) {
@@ -202,20 +202,20 @@ namespace DX12WrapperDetail
 			void *pDstData, UINT DstRowPitch, UINT DstDepthPitch, UINT SrcSubresource,
 			const D3D12_BOX *pSrcBox) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceReadWriteWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceReadWriteWrapper, Original);
 			return mResource->ReadFromSubresource(
 				pDstData, DstRowPitch, DstDepthPitch, SrcSubresource, pSrcBox);
 		}
 
 		HRESULT STDMETHODCALLTYPE GetHeapProperties(D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS *pHeapFlags) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceQueryWrapper, Original);
 			return mResource->GetHeapProperties(pHeapProperties, pHeapFlags);
 		}
 
 		HRESULT STDMETHODCALLTYPE GetProtectedResourceSession(REFIID riid, void **ppProtectedSession) override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceQueryWrapper, Original);
 			ID3D12Resource1 *resource1 = nullptr;
 			HRESULT hr = QueryResource1(&resource1);
 			if (FAILED(hr))
@@ -229,7 +229,7 @@ namespace DX12WrapperDetail
 
 		D3D12_RESOURCE_DESC1 STDMETHODCALLTYPE GetDesc1() override
 		{
-			DX12_CREATE_TIMING_SCOPE(ResourceQueryWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(ResourceQueryWrapper, Original);
 			ID3D12Resource2 *resource2 = nullptr;
 			if (FAILED(QueryResource2(&resource2)))
 				return D3D12_RESOURCE_DESC1();
@@ -275,7 +275,7 @@ namespace DX12WrapperDetail
 			RegisterWrapperPointer(static_cast<ID3D12DeviceChild*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Pageable*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Heap*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=heap,stage=create,wrapper=%p,object=%p",
 				this, heap);
 		}

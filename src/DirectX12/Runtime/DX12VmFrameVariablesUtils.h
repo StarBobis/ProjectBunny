@@ -4,13 +4,12 @@
 
 #include "DX12FrameAnalysisManifest.h"
 
+#include "../Core/Diag/DX12Diag.h"
+
 #include "../../common/MigotoCommandVmUtils.hpp"
 
-// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Declared
-// here rather than pulled in through DX12ModRuntimeInternal.h: this header is
-// included very early by the runtime headers, and the marker is a single
-// relaxed store of a static literal, so a thin interface beats a heavy include.
-void DX12MarkStage(const char *stage);
+// Frame-boundary breadcrumb DX12MarkStage is declared in Core/Diag/DX12Diag.h
+// (TIMING: real store; RELEASE: inline no-op).
 
 class DX12VmFrameVariablesUtils
 {
@@ -48,10 +47,9 @@ public:
 			return;
 		DX12MarkStage("frame_var_collect");
 		FrameSnapshot frame;
-		const bool collected = CollectFrameSnapshot(swapChain, &frame);
+		CollectFrameSnapshot(swapChain, &frame);
 		DX12MarkStage("frame_var_apply");
 		ApplyGlobals(frame);
-		LogFrameVariables(frame, collected);
 	}
 
 	static bool CollectFrameSnapshot(IDXGISwapChain *swapChain, FrameSnapshot *frame)
@@ -313,37 +311,6 @@ public:
 	static double Abs(double value)
 	{
 		return value < 0.0 ? -value : value;
-	}
-
-	static void LogFrameVariables(const FrameSnapshot &frame, bool collected)
-	{
-		// This is diagnostic output, not runtime behavior. Logging one formatted
-		// record per Present can serialize the render thread on the log mutex and
-		// turn a normal frame into a multi-millisecond CPU stall.
-		if (!kVerboseEnabled)
-			return;
-		DX12LogManager::Fields("DX12VmFrameVariables",
-			"\"status\":\"%s\",\"hwnd\":\"%p\",\"windowWidth\":%.0f,\"windowHeight\":%.0f,"
-			"\"resWidth\":%.0f,\"resHeight\":%.0f,\"rtWidth\":%.0f,\"rtHeight\":%.0f,"
-			"\"cursorScreenX\":%.0f,\"cursorScreenY\":%.0f,\"cursorWindowX\":%.0f,"
-			"\"cursorWindowY\":%.0f,\"cursorX\":%.6f,\"cursorY\":%.6f,"
-			"\"cursorShowing\":%.0f,\"effectiveDpi\":%.0f",
-			collected ? "updated" : "fallback",
-			frame.hwnd,
-			frame.windowWidth,
-			frame.windowHeight,
-			frame.resWidth,
-			frame.resHeight,
-			frame.rtWidth,
-			frame.rtHeight,
-			frame.cursorScreenX,
-			frame.cursorScreenY,
-			frame.cursorWindowX,
-			frame.cursorWindowY,
-			frame.cursorX,
-			frame.cursorY,
-			frame.cursorShowing,
-			frame.effectiveDpi);
 	}
 };
 

@@ -334,8 +334,9 @@ bool EnsureDescriptorHeapStorageLocked(DescriptorHeapRecord *record)
 	std::vector<uint8_t> newOccupied;
 	newSlots.resize(slotCount);
 	newOccupied.assign(slotCount, 0);
-	DX12DescriptorShadowTelemetryUtils::RecordSlotAllocation(
-		1, slotCount * (sizeof(DescriptorRecord) + 1));
+	DX12_PROF_ADD_ITEMS("Desc.slotAllocations", 1);
+	DX12_PROF_ADD_ITEMS("Desc.slotAllocationBytes",
+		static_cast<LONG64>(slotCount * (sizeof(DescriptorRecord) + 1)));
 
 	if (stateLocks)
 		stateLocks->LockAllExclusive();
@@ -1608,7 +1609,7 @@ void DX12PrimeDescriptorHistoryForHunting()
 		if (stateLocks)
 			stateLocks->UnlockAllExclusive();
 	}
-	DX12LogManager::Fields("DX12DescriptorHistoryPrime",
+	DX12_LOG("DX12DescriptorHistoryPrime",
 		"heaps=%zu,occupied=%zu,primed=%zu,epoch=%llu,historyEntries=%zu",
 		gDescriptorHeaps.size(),
 		occupied,

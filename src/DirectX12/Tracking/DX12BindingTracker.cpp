@@ -1597,7 +1597,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		runtimeState->computeBindingSerial :
 		DX12BindingTracker::GetComputeBindingSerial(commandList);
 	bool cachedFoundAny = false;
-	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheCall();
+	DX12_PROF_COUNT("Rm.PreSkinBindingCacheCalls");
 	if (runtimeState && computeBindingSerial &&
 			TryLoadRuntimePreSkinBindings(
 				runtimeState,
@@ -1608,12 +1608,12 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				constants,
 				dependencyFingerprint,
 				&cachedFoundAny)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+		DX12_PROF_COUNT("Rm.PreSkinBindingCacheHits");
 		return cachedFoundAny;
 	}
 
 	DX12PreSkinComputeSnapshot snapshot;
-	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
+	DX12_PROF_STAGE_BEGIN(BindSnapshot);
 	bool snapshotReady = false;
 	if (preferRuntimeSnapshot) {
 		snapshotReady = BuildRuntimeComputeBindingSnapshot(
@@ -1632,10 +1632,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		}
 	}
 	if (!snapshotReady) {
-		DX12_HOTPATH_TIME_END(BindSnapshot);
+		DX12_PROF_STAGE_END(BindSnapshot);
 		return false;
 	}
-	DX12_HOTPATH_TIME_END(BindSnapshot);
+	DX12_PROF_STAGE_END(BindSnapshot);
 
 	// Cache root signature summary per ID3D12RootSignature* pointer.
 	// Parse the blob once, reuse across all dispatches with the same signature.
@@ -1714,10 +1714,10 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			&contentCachedFoundAny)) {
 		if (dependencyFingerprint)
 			*dependencyFingerprint = bindingCacheKey.fingerprint;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheHit();
+		DX12_PROF_COUNT("Rm.PreSkinBindingCacheHits");
 		return contentCachedFoundAny;
 	}
-	DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheMiss();
+	DX12_PROF_COUNT("Rm.PreSkinBindingCacheMisses");
 
 	bool allRuntimeDescriptorsStable = true;
 	bool canStoreRuntimeBindings = runtimeState && computeBindingSerial != 0;
@@ -1772,7 +1772,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	observedSlotValueIds.clear();
 	observedSlotsRelative.clear();
 
-	DX12_HOTPATH_TIME_BEGIN(BindCollect);
+	DX12_PROF_STAGE_BEGIN(BindCollect);
 
 	// Root-signature-driven iteration: use declared parameter count as upper bound.
 	// If metadata is temporarily unavailable, keep the cheap root descriptor /
@@ -1808,7 +1808,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootConstantsState &rc = snapshot.computeRootConstants[root];
 		if (!rc.valid)
 			continue;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingConstant();
+		DX12_PROF_COUNT("Rm.PreSkinBindingConstants");
 		DX12CurrentRootConstants current;
 		current.rootParameterIndex = root;
 		current.maxSet = rc.maxSet;
@@ -1869,16 +1869,18 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootTableState &table = snapshot.computeTables[root];
 		if (!table.valid)
 			continue;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootTable();
+		DX12_PROF_COUNT("Rm.PreSkinBindingRootTables");
 
 		DX12DescriptorHeapSummary heap = {};
 		if (!DX12BindingTrackerQueryCacheUtils::ResolveRuntimeTableHeap(snapshot, table, &heap)) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRuntimeTable(false);
+			DX12_PROF_COUNT("Rm.PreSkinBindingRuntimeUnresolved");
 			allRuntimeDescriptorsStable = false;
 			continue;
 		}
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRuntimeTable(
-			table.runtimeHeapResolved);
+		if (table.runtimeHeapResolved)
+			DX12_PROF_COUNT("Rm.PreSkinBindingRuntimeResolved");
+		else
+			DX12_PROF_COUNT("Rm.PreSkinBindingRuntimeUnresolved");
 
 		const UINT64 tableBaseIndex = (table.baseDescriptor.ptr - heap.gpuStart) / heap.increment;
 		if (tableBaseIndex >= heap.numDescriptors)
@@ -1901,7 +1903,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const UINT64 tableGpuStart = heap.gpuStart + tableBaseIndex * heap.increment;
 
 		for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRange();
+			DX12_PROF_COUNT("Rm.PreSkinBindingRanges");
 
 			std::vector<DX12CurrentComputeUavBinding> *out = nullptr;
 			const char *kind = nullptr;
@@ -1921,7 +1923,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				if (di >= heap.numDescriptors)
 					break;
 				const SIZE_T cpuHandle = heap.cpuStart + static_cast<SIZE_T>(di) * heap.increment;
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingFullDescriptorLookup();
+				DX12_PROF_COUNT("Rm.PreSkinBindingFullDescriptorLookups");
 				if (!heap.heap || di > static_cast<UINT64>(UINT_MAX)) {
 					canUseSlotLookup = false;
 				} else if (!slotLookupHeap) {
@@ -2006,8 +2008,11 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				allRuntimeDescriptorsStable = false;
 			}
 		}
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingDescriptorLookupResult(
-			descriptorHits, descriptorMisses, descriptorPending);
+		DX12_PROF_ADD_ITEMS("Rm.PreSkinBindingDescriptorHits", descriptorHits);
+		DX12_PROF_ADD_ITEMS("Rm.PreSkinBindingDescriptorMisses", descriptorMisses);
+		DX12_PROF_ADD_ITEMS("Rm.PreSkinBindingDescriptorPending", descriptorPending);
+		DX12_PROF_ADD_ITEMS("Rm.PreSkinBindingWaitAvoided",
+			descriptorHits + descriptorMisses + descriptorPending);
 
 		// Phase 3: Distribute results to per-range output vectors.
 		for (size_t i = 0; i < totalHandleCount; ++i) {
@@ -2041,7 +2046,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		const RootDescriptorState &rd = snapshot.computeRootDescriptors[root];
 		if (!rd.valid)
 			continue;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingRootDescriptor();
+		DX12_PROF_COUNT("Rm.PreSkinBindingRootDescriptors");
 
 		const DX12RootParameterSummary *parameter =
 			hasParsedRootSignatureSummary ?
@@ -2067,7 +2072,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			localCbvs.push_back(std::move(binding));
 	}
 
-	DX12_HOTPATH_TIME_END(BindCollect);
+	DX12_PROF_STAGE_END(BindCollect);
 
 	const bool foundAny = !localUavs.empty() || !localSrvs.empty() ||
 		!localCbvs.empty() || !localConstants.empty();
@@ -2151,7 +2156,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				localConstants);
 			if (dependencyFingerprint)
 				*dependencyFingerprint = runtimeDependencyFingerprint;
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinBindingCacheStore();
+			DX12_PROF_COUNT("Rm.PreSkinBindingCacheStores");
 		}
 	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
 	}
@@ -2546,8 +2551,8 @@ bool DX12BindingTracker::BuildEvent(
 	event->drawId = isDrawKind ? state.drawSerial : 0;
 	event->dispatchId = isDispatchKind ? state.dispatchSerial : 0;
 	event->descriptorEpoch = descriptorEpoch;
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorEpochWrite();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
+	DX12_PROF_COUNT("Rm.DescriptorEpochWrites");
 	event->commandList = commandList;
 	event->pipelineState = state.pipelineState;
 	event->graphicsRootSignature = state.graphicsRootSignature;
@@ -2713,7 +2718,7 @@ void DX12BindingTracker::RecordTemplateEvent(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
 	events.push_back(std::move(recorded));
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
 	const size_t templateCount = events.size();
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -2740,7 +2745,7 @@ void DX12BindingTracker::RecordTemplateOutputEvent(
 	AcquireSRWLockExclusive(&shard.lock);
 	std::vector<CommandListRecordedEvent> &events = shard.recordedEvents[commandList];
 	events.push_back(std::move(recorded));
-	DX12ResidentMaintenanceTelemetryUtils::RecordBindingEventRecorded();
+	DX12_PROF_COUNT("Rm.BindingEventsRecorded");
 	const size_t templateCount = events.size();
 	ReleaseSRWLockExclusive(&shard.lock);
 
@@ -2885,7 +2890,7 @@ bool DX12BindingTracker::UnregisterCommandList(ID3D12GraphicsCommandList *comman
 	DX12BindingCollectQueue::EraseRecorderState(commandList);
 
 	if (removedState || removedEvents) {
-		DX12LogManager::Fields("DX12BindingTracker",
+		DX12_LOG("DX12BindingTracker",
 			"stage=unregister_command_list,commandList=%p,state=%u,recordedEvents=%zu",
 			commandList,
 			removedState ? 1u : 0u,
@@ -2940,7 +2945,7 @@ bool DX12BindingTracker::SetPipelineState(
 	if (!commandList)
 		return false;
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordPsoCall();
+	DX12_PROF_COUNT("Rm.PsoCalls");
 	// Lock-free fast path: the TLS-cached binding state already carries this
 	// PSO. The shard lock + map re-validation below would otherwise run on
 	// every redundant SetPipelineState (games set the same PSO thousands of
@@ -2950,7 +2955,7 @@ bool DX12BindingTracker::SetPipelineState(
 		BindingShard &cachedShard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 		if (tlsStateCache.shardGeneration == cachedShard.generation &&
 			tlsStateCache.state->pipelineState == pipelineState) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordPsoNoChange();
+			DX12_PROF_COUNT("Rm.PsoNoChange");
 			return false;
 		}
 	}
@@ -2964,14 +2969,14 @@ bool DX12BindingTracker::SetPipelineState(
 	}
 	CommandListBindingState &state = *statePtr;
 	if (state.pipelineState == pipelineState) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordPsoNoChange();
+		DX12_PROF_COUNT("Rm.PsoNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
 	state.pipelineState = pipelineState;
 	DX12BindingTracker::InvalidatePipelineShaderInfo(&state);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	DX12ResidentMaintenanceTelemetryUtils::RecordPsoChanged();
+	DX12_PROF_COUNT("Rm.PsoChanged");
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	// Shadow stream: record the mutation for the async worker's replay.
@@ -2997,7 +3002,8 @@ bool DX12BindingTracker::SetGraphicsRootSignature(
 		BindingShard &cachedShard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 		if (tlsStateCache.shardGeneration == cachedShard.generation &&
 			tlsStateCache.state->graphicsRootSignature == rootSignature) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(false);
+			DX12_PROF_COUNT("Rm.GraphicsRootSignatureCalls");
+			DX12_PROF_COUNT("Rm.GraphicsRootSignatureNoChange");
 			return false;
 		}
 	}
@@ -3011,7 +3017,8 @@ bool DX12BindingTracker::SetGraphicsRootSignature(
 	}
 	CommandListBindingState &state = *statePtr;
 	if (state.graphicsRootSignature == rootSignature) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(false);
+		DX12_PROF_COUNT("Rm.GraphicsRootSignatureCalls");
+		DX12_PROF_COUNT("Rm.GraphicsRootSignatureNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
@@ -3023,7 +3030,8 @@ bool DX12BindingTracker::SetGraphicsRootSignature(
 	// materialized state can never diverge.
 	DX12BindingCollectQueue::ResetGraphicsRootArguments(&state);
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootSignature(true);
+	DX12_PROF_COUNT("Rm.GraphicsRootSignatureCalls");
+	DX12_PROF_COUNT("Rm.GraphicsRootSignatureChanged");
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsGraphicsTableCache.cl = nullptr;
 	tlsGraphicsDescCache.cl = nullptr;
@@ -3046,7 +3054,8 @@ bool DX12BindingTracker::SetComputeRootSignature(
 		BindingShard &cachedShard = DX12BindingTrackerState::Shards[tlsStateCache.shardIndex];
 		if (tlsStateCache.shardGeneration == cachedShard.generation &&
 			tlsStateCache.state->computeRootSignature == rootSignature) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(false);
+			DX12_PROF_COUNT("Rm.ComputeRootSignatureCalls");
+			DX12_PROF_COUNT("Rm.ComputeRootSignatureNoChange");
 			return false;
 		}
 	}
@@ -3060,7 +3069,8 @@ bool DX12BindingTracker::SetComputeRootSignature(
 	}
 	CommandListBindingState &state = *statePtr;
 	if (state.computeRootSignature == rootSignature) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(false);
+		DX12_PROF_COUNT("Rm.ComputeRootSignatureCalls");
+		DX12_PROF_COUNT("Rm.ComputeRootSignatureNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
@@ -3070,7 +3080,8 @@ bool DX12BindingTracker::SetComputeRootSignature(
 	state.computeTableValidCount = 0;
 	++state.computeBindingSerial;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootSignature(true);
+	DX12_PROF_COUNT("Rm.ComputeRootSignatureCalls");
+	DX12_PROF_COUNT("Rm.ComputeRootSignatureChanged");
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsComputeTableCache.cl = nullptr;
 	tlsComputeDescCache.cl = nullptr;
@@ -3137,7 +3148,8 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	if (!commandList)
 		return false;
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapResolve(count);
+	DX12_PROF_COUNT("Rm.DescriptorHeapResolveCalls");
+	DX12_PROF_ADD_ITEMS("Rm.DescriptorHeapResolveSlots", static_cast<LONG64>(count));
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
 	for (UINT i = 0; i < count && heaps; ++i) {
@@ -3167,7 +3179,8 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	CommandListBindingState &state = shard.states[commandList];
 	if (state.cbvSrvUavHeap == cbvSrvUavHeap &&
 	    state.samplerHeap == samplerHeap) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsNoChange();
+		DX12_PROF_COUNT("Rm.DescriptorHeapCalls");
+		DX12_PROF_COUNT("Rm.DescriptorHeapNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return false;
 	}
@@ -3182,8 +3195,12 @@ bool DX12BindingTracker::SetDescriptorHeaps(
 	ReleaseSRWLockExclusive(&shard.lock);
 	tlsGraphicsTableCache.cl = nullptr;
 	tlsComputeTableCache.cl = nullptr;
-	DX12ResidentMaintenanceTelemetryUtils::RecordDescriptorHeapsChanged(
-		invalidatedGraphicsTables, invalidatedComputeTables);
+	DX12_PROF_COUNT("Rm.DescriptorHeapCalls");
+	DX12_PROF_COUNT("Rm.DescriptorHeapChanged");
+	DX12_PROF_ADD_ITEMS("Rm.DescriptorHeapInvalidatedGraphicsTables",
+		static_cast<LONG64>(invalidatedGraphicsTables));
+	DX12_PROF_ADD_ITEMS("Rm.DescriptorHeapInvalidatedComputeTables",
+		static_cast<LONG64>(invalidatedComputeTables));
 
 	DX12BindingDeltaEntry entry;
 	entry.kind = DX12BindingDeltaKind::DescriptorHeaps;
@@ -3199,12 +3216,12 @@ bool DX12BindingTracker::SetGraphicsRootDescriptorTable(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return false;
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableCall();
+	DX12_PROF_COUNT("Rm.GraphicsRootTableCalls");
 	if (tlsGraphicsTableCache.cl == commandList &&
 		tlsGraphicsTableCache.valid[rootParameterIndex] &&
 		tlsGraphicsTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
 	{
-		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableTlsHit();
+		DX12_PROF_COUNT("Rm.GraphicsRootTableTlsHits");
 		return false;
 	}
 
@@ -3221,7 +3238,7 @@ bool DX12BindingTracker::SetGraphicsRootDescriptorTable(
 		}
 		tlsGraphicsTableCache.valid[rootParameterIndex] = true;
 		tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
-		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableNoChange();
+		DX12_PROF_COUNT("Rm.GraphicsRootTableNoChange");
 		return false;
 	}
 	if (!stateTable.valid)
@@ -3240,7 +3257,7 @@ bool DX12BindingTracker::SetGraphicsRootDescriptorTable(
 	}
 	tlsGraphicsTableCache.valid[rootParameterIndex] = true;
 	tlsGraphicsTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootTableChanged();
+	DX12_PROF_COUNT("Rm.GraphicsRootTableChanged");
 
 	DX12BindingDeltaEntry entry;
 	entry.kind = DX12BindingDeltaKind::GraphicsTable;
@@ -3256,12 +3273,12 @@ bool DX12BindingTracker::SetComputeRootDescriptorTable(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return false;
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableCall();
+	DX12_PROF_COUNT("Rm.ComputeRootTableCalls");
 	if (tlsComputeTableCache.cl == commandList &&
 		tlsComputeTableCache.valid[rootParameterIndex] &&
 		tlsComputeTableCache.gpuHandle[rootParameterIndex] == baseDescriptor.ptr)
 	{
-		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableTlsHit();
+		DX12_PROF_COUNT("Rm.ComputeRootTableTlsHits");
 		return false;
 	}
 
@@ -3278,7 +3295,7 @@ bool DX12BindingTracker::SetComputeRootDescriptorTable(
 		}
 		tlsComputeTableCache.valid[rootParameterIndex] = true;
 		tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
-		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableNoChange();
+		DX12_PROF_COUNT("Rm.ComputeRootTableNoChange");
 		return false;
 	}
 	if (!table.valid)
@@ -3298,7 +3315,7 @@ bool DX12BindingTracker::SetComputeRootDescriptorTable(
 	}
 	tlsComputeTableCache.valid[rootParameterIndex] = true;
 	tlsComputeTableCache.gpuHandle[rootParameterIndex] = baseDescriptor.ptr;
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootTableChanged();
+	DX12_PROF_COUNT("Rm.ComputeRootTableChanged");
 
 	DX12BindingDeltaEntry entry;
 	entry.kind = DX12BindingDeltaKind::ComputeTable;
@@ -3324,13 +3341,15 @@ void DX12BindingTracker::SetPrimitiveTopology(
 	}
 	CommandListBindingState &state = *statePtr;
 	if (state.primitiveTopology == topology) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordPrimitiveTopology(false);
+		DX12_PROF_COUNT("Rm.PrimitiveTopologyCalls");
+		DX12_PROF_COUNT("Rm.PrimitiveTopologyNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return;
 	}
 	state.primitiveTopology = topology;
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	DX12ResidentMaintenanceTelemetryUtils::RecordPrimitiveTopology(true);
+	DX12_PROF_COUNT("Rm.PrimitiveTopologyCalls");
+	DX12_PROF_COUNT("Rm.PrimitiveTopologyChanged");
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	DX12BindingDeltaEntry entry;
@@ -3364,7 +3383,8 @@ void DX12BindingTracker::SetIndexBuffer(
 				state.indexBuffer.SizeInBytes == view->SizeInBytes &&
 				state.indexBuffer.Format == view->Format));
 	if (same) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(false);
+		DX12_PROF_COUNT("Rm.IndexBufferCalls");
+		DX12_PROF_COUNT("Rm.IndexBufferNoChange");
 		ReleaseSRWLockExclusive(&shard.lock);
 		return;
 	}
@@ -3373,7 +3393,7 @@ void DX12BindingTracker::SetIndexBuffer(
 	DX12BindingTracker::ReleaseResolvedIaResource(
 		&state.indexBufferResource, &state.indexBufferResolved);
 	if (hadResolved)
-		DX12ResidentMaintenanceTelemetryUtils::RecordIndexBufferResolvedReleased();
+		DX12_PROF_COUNT("Rm.IndexBufferResolvedReleased");
 	if (view) {
 		state.indexBuffer = *view;
 		state.indexBufferValid = true;
@@ -3383,7 +3403,8 @@ void DX12BindingTracker::SetIndexBuffer(
 	}
 	// Resource resolution DEFERRED to draw time; see SetVertexBuffers comment.
 	DX12BindingTracker::BumpBindingQuerySerial(&state);
-	DX12ResidentMaintenanceTelemetryUtils::RecordIndexBuffer(true);
+	DX12_PROF_COUNT("Rm.IndexBufferCalls");
+	DX12_PROF_COUNT("Rm.IndexBufferChanged");
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	DX12BindingCollectQueue::RecordIndexBufferChange(
@@ -3398,7 +3419,8 @@ void DX12BindingTracker::SetVertexBuffers(
 		return;
 
 	const UINT trackedCount = min(count, MaxVertexBufferSlots - startSlot);
-	DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferCall(trackedCount);
+	DX12_PROF_COUNT("Rm.VertexBufferCalls");
+	DX12_PROF_ADD_ITEMS("Rm.VertexBufferSlots", static_cast<LONG64>(trackedCount));
 
 	// Use TLS-cached state pointer to avoid ShardFor() hash + HashMap lookup.
 	// Still acquire lock for mutation safety (negligible cost when uncontended,
@@ -3430,7 +3452,7 @@ void DX12BindingTracker::SetVertexBuffers(
 			state.vertexBuffers[slot].SizeInBytes == newView.SizeInBytes &&
 			state.vertexBuffers[slot].StrideInBytes == newView.StrideInBytes;
 		if (same) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferSlot(false);
+			DX12_PROF_COUNT("Rm.VertexBufferNoChangeSlots");
 			continue;
 		}
 
@@ -3439,10 +3461,10 @@ void DX12BindingTracker::SetVertexBuffers(
 			&state.vertexBufferResources[slot],
 			&state.vertexBufferResolved[slot]);
 		if (hadResolved)
-			DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferResolvedReleased();
+			DX12_PROF_COUNT("Rm.VertexBufferResolvedReleased");
 		state.vertexBuffers[slot] = newView;
 		state.vertexBufferValid[slot] = newValid;
-		DX12ResidentMaintenanceTelemetryUtils::RecordVertexBufferSlot(true);
+		DX12_PROF_COUNT("Rm.VertexBufferChangedSlots");
 		anyChanged = true;
 		// Resource resolution DEFERRED to draw time (RecordDrawInstanced /
 		// RecordDrawIndexedInstanced). This is a ~90% cost reduction per call:
@@ -3602,12 +3624,12 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	// thread_local: see the note in SnapshotBindingState's pre-skin caller.
 	static thread_local CommandListBindingState snapshot;
 	UINT64 bindingQuerySerial = 0;
-	DX12_HOTPATH_TIME_BEGIN(BindSnapshot);
+	DX12_PROF_STAGE_BEGIN(BindSnapshot);
 	if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot, &bindingQuerySerial)) {
-		DX12_HOTPATH_TIME_END(BindSnapshot);
+		DX12_PROF_STAGE_END(BindSnapshot);
 		return false;
 	}
-	DX12_HOTPATH_TIME_END(BindSnapshot);
+	DX12_PROF_STAGE_END(BindSnapshot);
 	const ID3D12DescriptorHeap *cbvSrvUavHeap = snapshot.cbvSrvUavHeap;
 	const UINT64 cbvSrvUavHeapVersion = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
@@ -3646,10 +3668,10 @@ bool DX12BindingTracker::GetCurrentComputeAll(
 	std::vector<DX12CurrentComputeUavBinding> cachedSrvs;
 	std::vector<DX12CurrentComputeUavBinding> cachedCbvs;
 	std::vector<DX12CurrentRootConstants> cachedConstants;
-	DX12_HOTPATH_TIME_BEGIN(BindCollect);
+	DX12_PROF_STAGE_BEGIN(BindCollect);
 	const bool foundAny = DX12BindingTrackerQueryCacheUtils::CollectComputeAll(
 		snapshot, &cachedUavs, &cachedSrvs, &cachedCbvs, &cachedConstants);
-	DX12_HOTPATH_TIME_END(BindCollect);
+	DX12_PROF_STAGE_END(BindCollect);
 	const UINT64 cbvSrvUavHeapVersionAfter = DX12GetDescriptorHeapVersion(
 		snapshot.cbvSrvUavHeap);
 	if (cbvSrvUavHeapVersionAfter == cbvSrvUavHeapVersion) {
@@ -4012,13 +4034,13 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorCall();
+	DX12_PROF_COUNT("Rm.GraphicsRootDescriptorCalls");
 	if (tlsGraphicsDescCache.cl == commandList &&
 		tlsGraphicsDescCache.valid[rootParameterIndex] &&
 		tlsGraphicsDescCache.address[rootParameterIndex] == address &&
 		tlsGraphicsDescCache.type[rootParameterIndex] == type)
 	{
-		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorTlsHit();
+		DX12_PROF_COUNT("Rm.GraphicsRootDescriptorTlsHits");
 		return;
 	}
 
@@ -4041,7 +4063,7 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 		tlsGraphicsDescCache.valid[rootParameterIndex] = true;
 		tlsGraphicsDescCache.address[rootParameterIndex] = address;
 		tlsGraphicsDescCache.type[rootParameterIndex] = type;
-		DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorNoChange();
+		DX12_PROF_COUNT("Rm.GraphicsRootDescriptorNoChange");
 		return;
 	}
 	descriptor.valid = newValid;
@@ -4060,7 +4082,7 @@ void DX12BindingTracker::SetGraphicsRootDescriptor(
 	tlsGraphicsDescCache.valid[rootParameterIndex] = true;
 	tlsGraphicsDescCache.address[rootParameterIndex] = address;
 	tlsGraphicsDescCache.type[rootParameterIndex] = type;
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootDescriptorChanged();
+	DX12_PROF_COUNT("Rm.GraphicsRootDescriptorChanged");
 
 	DX12BindingDeltaEntry entry;
 	entry.kind = DX12BindingDeltaKind::GraphicsRootDescriptor;
@@ -4075,13 +4097,13 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 {
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorCall();
+	DX12_PROF_COUNT("Rm.ComputeRootDescriptorCalls");
 	if (tlsComputeDescCache.cl == commandList &&
 		tlsComputeDescCache.valid[rootParameterIndex] &&
 		tlsComputeDescCache.address[rootParameterIndex] == address &&
 		tlsComputeDescCache.type[rootParameterIndex] == type)
 	{
-		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorTlsHit();
+		DX12_PROF_COUNT("Rm.ComputeRootDescriptorTlsHits");
 		return;
 	}
 
@@ -4104,7 +4126,7 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 		tlsComputeDescCache.valid[rootParameterIndex] = true;
 		tlsComputeDescCache.address[rootParameterIndex] = address;
 		tlsComputeDescCache.type[rootParameterIndex] = type;
-		DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorNoChange();
+		DX12_PROF_COUNT("Rm.ComputeRootDescriptorNoChange");
 		return;
 	}
 	descriptor.valid = newValid;
@@ -4124,7 +4146,7 @@ void DX12BindingTracker::SetComputeRootDescriptor(
 	tlsComputeDescCache.valid[rootParameterIndex] = true;
 	tlsComputeDescCache.address[rootParameterIndex] = address;
 	tlsComputeDescCache.type[rootParameterIndex] = type;
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootDescriptorChanged();
+	DX12_PROF_COUNT("Rm.ComputeRootDescriptorChanged");
 
 	DX12BindingDeltaEntry entry;
 	entry.kind = DX12BindingDeltaKind::ComputeRootDescriptor;
@@ -4180,7 +4202,8 @@ void DX12BindingTracker::SetGraphicsRoot32BitConstants(
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordGraphicsRootConstants(count);
+	DX12_PROF_COUNT("Rm.GraphicsRootConstantsCalls");
+	DX12_PROF_ADD_ITEMS("Rm.GraphicsRootConstantsValues", static_cast<LONG64>(count));
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];
@@ -4212,7 +4235,8 @@ void DX12BindingTracker::SetComputeRoot32BitConstants(
 	if (!commandList || rootParameterIndex >= MaxRootParameters)
 		return;
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordComputeRootConstants(count);
+	DX12_PROF_COUNT("Rm.ComputeRootConstantsCalls");
+	DX12_PROF_ADD_ITEMS("Rm.ComputeRootConstantsValues", static_cast<LONG64>(count));
 	BindingShard &shard = DX12BindingTrackerState::ShardFor(commandList);
 	AcquireSRWLockExclusive(&shard.lock);
 	CommandListBindingState &state = shard.states[commandList];

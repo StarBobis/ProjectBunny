@@ -58,7 +58,7 @@ public:
 
 		if (!CreateDirectoryW(modulePath, nullptr)) {
 			DWORD error = GetLastError();
-			DX12LogManager::Text(
+			DX12_LOG_TEXT(
 				"Error creating frame analysis directory: %lu path=%S\n", error, modulePath);
 			return false;
 		}
@@ -75,7 +75,7 @@ public:
 		PublishFastStateLocked();
 		ReleaseSRWLockExclusive(&lock);
 
-		DX12LogManager::Text("Frame analysis directory: %S\n", modulePath);
+		DX12_LOG_TEXT("Frame analysis directory: %S\n", modulePath);
 		return true;
 	}
 
@@ -180,7 +180,7 @@ public:
 		swprintf_s(filename, L"%s\\log.jsonl", path);
 		log = _wfsopen(filename, L"w", _SH_DENYNO);
 		if (!log) {
-			DX12LogManager::Text("Error opening frame analysis log: %S\n", filename);
+			DX12_LOG_TEXT("Error opening frame analysis log: %S\n", filename);
 			return false;
 		}
 

@@ -549,7 +549,7 @@ namespace DX12WrapperDetail
 
 		virtual ~WrapperBase()
 		{
-			DX12_CREATE_TIMING_SCOPE(WrapperLifetime, Record);
+			DX12_PROF_CREATE_SCOPE(WrapperLifetime, Record);
 			if (!mRegistryEntriesRemoved) {
 				AcquireSRWLockExclusive(&gWrapperLock);
 				RemoveRegistryEntriesLocked();

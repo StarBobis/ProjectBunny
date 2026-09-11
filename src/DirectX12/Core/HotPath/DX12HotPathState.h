@@ -368,7 +368,7 @@ public:
 			DX12CommandListRuntime::BumpTrackingGeneration();
 		}
 		if (previousMask != mask || previousFlags != flags) {
-			DX12LogManager::Fields("DX12HotPathState",
+			DX12_LOG("DX12HotPathState",
 				"\"mode\":\"%s\",\"flags\":\"0x%llx\",\"skipAll\":%ld,"
 				"\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,"
 				"\"trackResourceMetadata\":%ld,\"hunt\":%s,\"frameAnalysis\":%s,"

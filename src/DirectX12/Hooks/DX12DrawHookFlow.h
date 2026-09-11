@@ -78,10 +78,9 @@ public:
 			return false;
 		// Keep frame-draw accounting identical to the interpreter path
 		// (needsModWork is necessarily set when this fast path is reached).
-		// The shards only feed the verbose per-frame counter log, so the
-		// increment compiles out when that log is disabled.
-		if constexpr (kVerboseEnabled)
-			DX12RuntimeState::IncrementFrameDraws();
+		// The verbose per-frame counter log that consumed the frame shards was
+		// retired with the unified diagnostics refactor, so the increment is
+		// gone as well.
 		executeOriginal();
 		return true;
 	}
@@ -92,9 +91,8 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks,
 		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
-		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK) &&
-			!DX12Profiling::ShouldCollectCounters()) {
-			DX12_PROFILE_FAST_FORWARD();
+		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
+			DX12_PROF_COUNT("FastForward");
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
 			return;
 		}
@@ -110,7 +108,7 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks,
 		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
-		DX12_HOTPATH_TIME_BEGIN(DrawHookTotal);
+		DX12_PROF_STAGE_SCOPE(DrawHook);
 		const bool needsModWork = (flagsWord & DX12HotPathState::FLAG_NEEDS_MOD_WORK) != 0;
 		const bool huntEnabled = (flagsWord & DX12HotPathState::FLAG_HUNT_ENABLED) != 0;
 		const bool frameCapturePendingOrActive =
@@ -119,9 +117,8 @@ public:
 		const DX12CompiledDrawDecision *residentDrawDecision = nullptr;
 
 		if (!(flagsWord & DX12HotPathState::MASK_DRAW_WORK)) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
@@ -133,15 +130,11 @@ public:
 		// to coexist with the fast reject.
 		DX12IaReplacementExecutor::ExecutePendingPresentBeforeFastReject(
 			commandList, runtimeState, callbacks, flagsWord);
-		if constexpr (kVerboseEnabled) {
-			if (DX12Profiling::ShouldCollectCounters() || needsModWork)
-				DX12RuntimeState::IncrementFrameDraws();
-		}
+		DX12_PROF_FRAME_DRAW();
 
 		if (DX12IaReplacementDrawScope::IsExecuting()) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
@@ -154,15 +147,15 @@ public:
 		// restore before this non-matching draw is recorded. Hunt/capture paths
 		// retain their per-draw bookkeeping below.
 		if (needsModWork) {
-			DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathAttempt();
+			DX12_PROF_COUNT("Rm.DrawNoopFastPathAttempts");
 			if (huntEnabled) {
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathHuntBlocked();
+				DX12_PROF_COUNT("Rm.DrawNoopFastPathHuntBlocked");
 			} else if (frameCapturePendingOrActive) {
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathCaptureBlocked();
+				DX12_PROF_COUNT("Rm.DrawNoopFastPathCaptureBlocked");
 			} else if (flagsWord & DX12HotPathState::FLAG_SHADER_DUMP_ACTIVE) {
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathShaderDumpBlocked();
+				DX12_PROF_COUNT("Rm.DrawNoopFastPathShaderDumpBlocked");
 			} else if (!runtimeState) {
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoRuntime();
+				DX12_PROF_COUNT("Rm.DrawNoopFastPathNoRuntime");
 			} else {
 				const bool activeShaderOverrides =
 					(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
@@ -171,7 +164,7 @@ public:
 						runtimeState, activeShaderOverrides);
 				residentDrawDecision = decision;
 				if (!decision) {
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNoDecision();
+					DX12_PROF_COUNT("Rm.DrawNoopFastPathNoDecision");
 				} else if (decision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
 					// The generic draw path performs this watchdog before matching.
 					// For a PSO-proven Noop draw it is only needed immediately before
@@ -182,26 +175,23 @@ public:
 						DX12IaReplacementExecutor::RestoreStaticTemplateIa(
 							commandList, runtimeState, callbacks);
 					}
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathForwarded();
-					DX12_PROFILE_FAST_FORWARD();
+					DX12_PROF_COUNT("Rm.DrawNoopFastPathForwarded");
+					DX12_PROF_COUNT("FastForward");
 					DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-					DX12_HOTPATH_TIME_END(DrawHookTotal);
 					return;
 				} else {
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawNoopFastPathNonNoopDecision();
+					DX12_PROF_COUNT("Rm.DrawNoopFastPathNonNoopDecision");
 				}
 			}
 		}
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsModWork) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			if (ShouldSkipHuntDraw(commandList, draw)) {
-				DX12_HOTPATH_TIME_END(DrawHookTotal);
 				return;
 			}
 			RecordHuntDraw(commandList, draw);
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
@@ -218,15 +208,13 @@ public:
 			RecordHuntDraw(commandList, draw);
 		}
 		if (!needsModWork) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			DX12IaReplacementDrawExecutor(commandList, callbacks).ExecuteOriginalDraw(draw);
-			DX12_HOTPATH_TIME_END(DrawHookTotal);
 			return;
 		}
 
 		DX12DrawHookFlow::Execute(
 			commandList, draw, runtimeState, callbacks, residentDrawDecision, flagsWord);
-		DX12_HOTPATH_TIME_END(DrawHookTotal);
 	}
 
 	static void Execute(

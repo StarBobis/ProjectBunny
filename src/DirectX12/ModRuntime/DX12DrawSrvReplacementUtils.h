@@ -411,7 +411,7 @@ public:
 			tlsNoPendingRestore.generation == mutationGeneration)
 			return;
 
-		const LARGE_INTEGER flushBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(flushBegin);
 		DX12DrawSrvPendingRestore entry;
 		bool found = false;
 		bool borrowed = false;
@@ -470,13 +470,13 @@ public:
 					snapshot.computeTables[root].baseDescriptor);
 			}
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"flush_deferred_restore",
 			0,
-			static_cast<size_t>(snapshot.graphicsTableValidCount) +
-				snapshot.computeTableValidCount,
-			DX12OuterTimingProbeUtils::ElapsedUs(flushBegin));
+			static_cast<LONG64>(static_cast<size_t>(snapshot.graphicsTableValidCount) +
+				snapshot.computeTableValidCount),
+			DX12_DIAG_ELAPSED_US(flushBegin));
 		ReleasePendingRestoreEntry(&entry);
 	}
 
@@ -1014,7 +1014,7 @@ return sightings;
 		if (!device || !commandList || !requests || resourceName.empty())
 			return 0;
 		if (!match || !match->hasThisSrvTarget) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=slot_patch_fail,source=this,reason=no_this_target,resource=%S",
 				resourceName.c_str());
 			return 0;
@@ -1329,12 +1329,12 @@ return sightings;
 		DX12ModIaReplacement *replacement,
 		bool executeOriginalDraw)
 	{
-		const LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(applyBegin);
 		if (!device || !commandList || !replacement ||
 				replacement->drawSrvPatches.empty())
 			return false;
 		if (replacement->drawSrvApplyState.applied) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=already_applied");
 			return false;
 		}
@@ -1357,11 +1357,11 @@ return sightings;
 			}
 			return false;
 		};
-		const LARGE_INTEGER planBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(planBegin);
 		// thread_local: see the note above for why this is safe and cheaper.
 		static thread_local CommandListBindingState snapshot;
 		if (!DX12BindingTracker::SnapshotBindingState(commandList, &snapshot)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=binding_snapshot");
 			return failWithPendingRestore();
 		}
@@ -1386,7 +1386,7 @@ return sightings;
 						snapshot.graphicsRootSignature, &graphicsRootSignature) ||
 					!AppendPatchTables(snapshot, graphicsRootSignature, false,
 						&tables, &totalDescriptors)) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=graphics_root_signature");
 				return failWithPendingRestore();
 			}
@@ -1398,14 +1398,14 @@ return sightings;
 						snapshot.computeRootSignature, &computeRootSignature) ||
 					!AppendPatchTables(snapshot, computeRootSignature, true,
 						&tables, &totalDescriptors)) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=compute_root_signature");
 				return failWithPendingRestore();
 			}
 			hasComputeRootSignature = true;
 		}
 		if (tables.empty() || !totalDescriptors) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=table_plan");
 			return failWithPendingRestore();
 		}
@@ -1417,7 +1417,7 @@ return sightings;
 					(hasGraphicsRootSignature ? &graphicsRootSignature : nullptr);
 			if (!requestRootSignature ||
 					!RequestMatchesSrvLayout(request, *requestRootSignature)) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=request_layout,bindSpace=%s,"
 					"root=%u,range=%u,slot=%u,space=%u,offset=%u",
 					request.compute ? "compute" : "graphics",
@@ -1441,19 +1441,19 @@ return sightings;
 				break;
 			}
 			if (!found || !request.replacementCpu.ptr) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=table_patch_fail,reason=request_table,root=%u,offset=%u",
 					request.binding.rootParameterIndex,
 					request.binding.descriptorOffset);
 				return failWithPendingRestore();
 			}
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"build_mirror_plan",
 			0,
-			totalDescriptors,
-			DX12OuterTimingProbeUtils::ElapsedUs(planBegin));
+			static_cast<LONG64>(totalDescriptors),
+			DX12_DIAG_ELAPSED_US(planBegin));
 
 		// Deferred-restore reuse: a pending entry whose plan fingerprint
 		// matches this draw means the previous patched draw's mirror heap and
@@ -1478,12 +1478,12 @@ return sightings;
 			reuseState.patchHeap = patchHeap;
 			reuseState.planFingerprint = planFingerprint;
 			reuseState.reloadGeneration = reloadGeneration;
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"DrawSrv",
 				"reuse_deferred_mirror",
 				0,
-				totalDescriptors,
-				DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+				static_cast<LONG64>(totalDescriptors),
+				DX12_DIAG_ELAPSED_US(applyBegin));
 			return true;
 		}
 
@@ -1522,12 +1522,12 @@ commandList, table.compute, table.rootParameterIndex, tableGpu);
 RetainPreSkinDescriptorHeapForCommandList(commandList, cachedHeap);
 cachedHeap->Release();
 replacement->drawSrvApplyState.applied = true;
-DX12OuterTimingProbeUtils::LogCpuStage(
+DX12_PROF_CPU_STAGE(
 "DrawSrv",
 "reuse_persistent_mirror",
 0,
-totalDescriptors,
-DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+static_cast<LONG64>(totalDescriptors),
+DX12_DIAG_ELAPSED_US(applyBegin));
 // Same supersede contract as the ring path: the heap set and the
 // root-table rebinds above overwrote every piece of physical state
 // the old pending entry covered. Drop it without emitting anything.
@@ -1538,21 +1538,21 @@ return true;
 		D3D12_GPU_DESCRIPTOR_HANDLE tempGpuBase = {};
 		UINT tempIncrement = 0;
 		ID3D12DescriptorHeap *tempHeap = nullptr;
-		const LARGE_INTEGER allocateBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(allocateBegin);
 		if (!EnsurePreSkinDescriptorRingLocked(
 				device, commandList, totalDescriptors,
 				&tempCpuBase, &tempGpuBase, &tempIncrement, &tempHeap)) {
-			DX12LogManager::Fields("DX12DrawSrvReplacement",
+			DX12_LOG("DX12DrawSrvReplacement",
 				"stage=table_patch_fail,reason=descriptor_ring,count=%u",
 				totalDescriptors);
 			return failWithPendingRestore();
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"allocate_mirror_range",
 			0,
-			totalDescriptors,
-			DX12OuterTimingProbeUtils::ElapsedUs(allocateBegin));
+			static_cast<LONG64>(totalDescriptors),
+			DX12_DIAG_ELAPSED_US(allocateBegin));
 		// Persist the only authoritative restore snapshot before issuing any
 		// command-list state mutation. Restore never asks Binding State for a
 		// second, potentially stale snapshot.
@@ -1562,7 +1562,7 @@ return true;
 		replacement->drawSrvApplyState.reloadGeneration = reloadGeneration;
 
 		DX12InternalReplayScope internalReplay;
-		const LARGE_INTEGER copyBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(copyBegin);
 		// Batch every table-mirror copy into one CopyDescriptors call. The
 		// destinations are disjoint slots in the freshly allocated temp ring
 		// range and the sources live in other heaps, so merging the ranges is
@@ -1632,14 +1632,14 @@ return true;
 				copySrcSizes.data(),
 				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"copy_mirror_descriptors",
 			0,
-			totalDescriptors,
-			DX12OuterTimingProbeUtils::ElapsedUs(copyBegin));
+			static_cast<LONG64>(totalDescriptors),
+			DX12_DIAG_ELAPSED_US(copyBegin));
 		replacement->drawSrvApplyState.applied = true;
-		const LARGE_INTEGER bindBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(bindBegin);
 		ID3D12DescriptorHeap *heaps[2] = { tempHeap, snapshot.samplerHeap };
 		commandList->SetDescriptorHeaps(snapshot.samplerHeap ? 2 : 1, heaps);
 		SyncDescriptorHeaps(commandList, tempHeap, snapshot.samplerHeap);
@@ -1658,18 +1658,18 @@ return true;
 			SyncRootDescriptorTable(
 				commandList, table.compute, table.rootParameterIndex, tableGpu);
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"bind_mirror_tables",
 			0,
-			tables.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(bindBegin));
-		DX12OuterTimingProbeUtils::LogCpuStage(
+			static_cast<LONG64>(tables.size()),
+			DX12_DIAG_ELAPSED_US(bindBegin));
+		DX12_PROF_CPU_STAGE(
 			"DrawSrv",
 			"apply_total",
 			0,
-			totalDescriptors,
-			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+			static_cast<LONG64>(totalDescriptors),
+			DX12_DIAG_ELAPSED_US(applyBegin));
 // A plan sighted before with identical source contents earns a dedicated
 // mirror heap: later applies rebind it without any descriptor copies.
 // Single-sighting plans stay on the transient ring so per-frame arena
@@ -1742,7 +1742,7 @@ dedicatedHeap->Release();
 					device, commandList, false, it->first, it->second,
 					true, "ps-t", &requests, &bindingCount);
 			if (!added) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=ps-t,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
 					it->first, it->second.c_str(),
 					bindingsView ? bindingsView->size() : bindingCount);
@@ -1760,7 +1760,7 @@ dedicatedHeap->Release();
 					device, commandList, false, it->first, it->second,
 					false, "vs-t", &requests, &bindingCount);
 			if (!added) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=vs-t,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
 					it->first, it->second.c_str(),
 					bindingsView ? bindingsView->size() : bindingCount);
@@ -1772,7 +1772,7 @@ dedicatedHeap->Release();
 				device, commandList, match,
 				config.drawReplaceThisResource, &requests);
 			if (!added) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=this,reason=no_matched_target,hash=%08x,resource=%S,graphicsCount=%zu",
 					static_cast<uint32_t>(config.hash),
 					config.drawReplaceThisResource.c_str(),
@@ -1815,7 +1815,7 @@ dedicatedHeap->Release();
 					binding.slot, binding.resource,
 					binding.pixelStage, source, &requests, &bindingCount);
 			if (!added) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=%s,reason=graphics_binding_missing,slot=%u,resource=%S,graphicsCount=%zu",
 					source,
 					binding.slot,
@@ -1829,7 +1829,7 @@ dedicatedHeap->Release();
 				device, commandList, match,
 				plan.drawReplaceThisResource, &requests);
 			if (!added) {
-				DX12LogManager::Fields("DX12DrawSrvReplacement",
+				DX12_LOG("DX12DrawSrvReplacement",
 					"stage=slot_patch_fail,source=this,reason=no_matched_target,resource=%S,graphicsCount=%zu",
 					plan.drawReplaceThisResource.c_str(),
 					bindingsView ? bindingsView->size() : 0);
@@ -1843,7 +1843,7 @@ dedicatedHeap->Release();
 		ID3D12GraphicsCommandList *commandList,
 		DX12ModIaReplacement *replacement)
 	{
-		const LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(restoreBegin);
 		if (!replacement)
 			return;
 		DX12ModIaReplacement::DrawSrvApplyState &state =
@@ -1889,13 +1889,13 @@ dedicatedHeap->Release();
 						snapshot.computeTables[root].baseDescriptor);
 				}
 			}
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"DrawSrv",
 				"restore_logical",
 				0,
-				static_cast<size_t>(snapshot.graphicsTableValidCount) +
-					snapshot.computeTableValidCount,
-				DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
+				static_cast<LONG64>(static_cast<size_t>(snapshot.graphicsTableValidCount) +
+					snapshot.computeTableValidCount),
+				DX12_DIAG_ELAPSED_US(restoreBegin));
 		}
 		DeferPendingRestore(commandList, &state);
 		replacement->drawSrvPatches.clear();

@@ -533,7 +533,7 @@ static void DX12ReadbackBisectCloseFailure(
 			liveDesc = event.resource->GetDesc();
 			event.resource->GetHeapProperties(&heapProps, &heapFlags);
 		}
-		DX12LogManager::Fields("DX12ReadbackSubmit",
+		DX12_LOG("DX12ReadbackSubmit",
 			"stage=close_failure_isolated,kind=%u,resource=%p,"
 			"offset=%llu,bytes=%llu,descDim=%u,descWidth=%llu,"
 			"descHeight=%u,descMips=%u,heapType=%u",
@@ -599,7 +599,7 @@ void DX12ReadbackPublishBatch(DX12ReadbackBatch *batch)
 	{
 		static volatile LONG publishLogCounter = 0;
 		if ((InterlockedIncrement(&publishLogCounter) & 0x1F) == 1) {
-			DX12LogManager::Fields("DX12ReadbackPublish",
+			DX12_LOG("DX12ReadbackPublish",
 				"stage=published,buffers=%u,textures=%u,events=%zu",
 				publishedBuffers, publishedTextures, batch->events.size());
 		}
@@ -741,7 +741,7 @@ bool DX12AsyncReadbackQueueBufferCapture(
 	{
 		static volatile LONG enqueueLogCounter = 0;
 		if ((InterlockedIncrement(&enqueueLogCounter) & 0xFFF) == 1) {
-			DX12LogManager::Fields("DX12ReadbackEnqueue",
+			DX12_LOG("DX12ReadbackEnqueue",
 				"stage=enqueued,kind=buffer,resource=%p,offset=%llu,bytes=%llu",
 				resource,
 				static_cast<unsigned long long>(offset),
@@ -796,7 +796,7 @@ bool DX12AsyncReadbackQueueTextureCapture(
 	{
 		static volatile LONG textureEnqueueLogCounter = 0;
 		if ((InterlockedIncrement(&textureEnqueueLogCounter) & 0xFFF) == 1) {
-			DX12LogManager::Fields("DX12ReadbackEnqueue",
+			DX12_LOG("DX12ReadbackEnqueue",
 				"stage=enqueued,kind=texture,resource=%p,width=%llu,height=%u,"
 				"format=%u,bytes=%llu,flags=0x%llx",
 				texture,
@@ -824,7 +824,7 @@ static void DX12ReadbackLogSubmitFailure(const char *stage, UINT64 a, UINT64 b)
 	static volatile LONG failureLogCounter = 0;
 	if ((InterlockedIncrement(&failureLogCounter) & 0xFF) != 1)
 		return;
-	DX12LogManager::Fields("DX12ReadbackSubmit",
+	DX12_LOG("DX12ReadbackSubmit",
 		"stage=%s,a=%llu,b=%llu",
 		stage ? stage : "",
 		static_cast<unsigned long long>(a),
@@ -833,7 +833,7 @@ static void DX12ReadbackLogSubmitFailure(const char *stage, UINT64 a, UINT64 b)
 
 void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 {
-	const LARGE_INTEGER submitBegin = DX12OuterTimingProbeUtils::Now();
+	DX12_DIAG_QPC(submitBegin);
 	if (!gameQueue || gReadbackPendingCount.load(std::memory_order_acquire) == 0)
 		return;
 	// Small captures wait for the per-frame Present flush; only large bursts
@@ -987,7 +987,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 	if (skippedRecord != 0) {
 		static volatile LONG skippedLogCounter = 0;
 		if ((InterlockedIncrement(&skippedLogCounter) & 0xFF) == 1) {
-			DX12LogManager::Fields("DX12ReadbackSubmit",
+			DX12_LOG("DX12ReadbackSubmit",
 				"stage=skipped_state_unknown,count=%u,kept=%zu",
 				skippedRecord, kept.size());
 		}
@@ -1005,7 +1005,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 				UINT textureEvents = 0;
 				for (const DX12ReadbackEvent &event : kept)
 					textureEvents += event.kind == DX12ReadbackEventKind::Texture ? 1u : 0u;
-				DX12LogManager::Fields("DX12ReadbackSubmit",
+				DX12_LOG("DX12ReadbackSubmit",
 					"stage=close_failure_diag,events=%zu,textures=%u,"
 					"firstKind=%u,firstResource=%p,firstOffset=%llu,firstBytes=%llu",
 					kept.size(), textureEvents,
@@ -1019,7 +1019,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 					D3D12_RESOURCE_DESC liveDesc = {};
 					if (event.resource)
 						liveDesc = event.resource->GetDesc();
-					DX12LogManager::Fields("DX12ReadbackSubmit",
+					DX12_LOG("DX12ReadbackSubmit",
 						"stage=close_failure_event,index=%u,kind=%u,"
 						"resource=%p,offset=%llu,bytes=%llu,"
 						"descDim=%u,descWidth=%llu,descHeight=%u,descMips=%u",
@@ -1114,14 +1114,18 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 	{
 		static volatile LONG submitLogCounter = 0;
 		if ((InterlockedIncrement(&submitLogCounter) & 0xFF) == 1) {
-			DX12LogManager::Fields("DX12ReadbackSubmit",
+			DX12_LOG("DX12ReadbackSubmit",
 				"stage=submitted,events=%u,ringBytes=%llu,us=%lld,queue=%p",
 				batch->events.size(),
 				static_cast<unsigned long long>(ringUsed),
 				static_cast<long long>(
-					DX12OuterTimingProbeUtils::ElapsedUs(submitBegin)),
+					DX12_DIAG_ELAPSED_US(submitBegin)),
 				gameQueue);
 		}
+		DX12_PROF_ADD_US_ITEMS(
+			"Readback.submit",
+			DX12_DIAG_ELAPSED_US(submitBegin),
+			static_cast<LONG64>(batch->events.size()));
 	}
 
 	DX12ReadbackEnsureWorker();

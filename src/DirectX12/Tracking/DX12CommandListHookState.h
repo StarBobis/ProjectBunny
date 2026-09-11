@@ -1,4 +1,4 @@
-﻿// Command-list hook signatures, vtable caches and registries.
+// Command-list hook signatures, vtable caches and registries.
 // Split from DX12Tracking.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -176,12 +176,14 @@ class DX12CommandListHookDiagnostics
 public:
 	static void RecordIaReplacementDrawExecute(bool indexed)
 	{
-		DX12Profiling::RecordIaReplacementDraw(indexed);
+		DX12_PROF_COUNT("IaReplacementDraw");
+		if (indexed)
+			DX12_PROF_COUNT("IaReplacementIndexedDraw");
 	}
 
 	static void RecordIaReplacementDispatchExecute()
 	{
-		DX12Profiling::RecordIaReplacementDispatch();
+		DX12_PROF_COUNT("IaReplacementDispatch");
 	}
 };
 
@@ -270,7 +272,7 @@ static void *GetVTableSlotTarget(void *object, UINT slot)
 						return fallback;
 		}
 
-		DX12LogManager::Fields(name ? name : "DX12::UnknownOriginal",
+		DX12_LOG(name ? name : "DX12::UnknownOriginal",
 			"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
 			object, slot);
 		return nullptr;
@@ -373,7 +375,7 @@ static void *GetVTableSlotTarget(void *object, UINT slot)
 						return fallback;
 		}
 
-		DX12LogManager::Fields(name ? name : "DX12::UnknownOriginal",
+		DX12_LOG(name ? name : "DX12::UnknownOriginal",
 			"\"event\":\"MissingOriginal\",\"this\":\"%p\",\"slot\":%u",
 			object, slot);
 		return nullptr;

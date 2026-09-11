@@ -41,7 +41,7 @@ public:
 		if (viewFormat == DXGI_FORMAT_UNKNOWN)
 			return false;
 
-		DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 		DX12LoadedResource &entry = gLoadedResources[name];
 		// Drop any previous contents (failed placeholder, earlier capture, or
 		// a DDS load that lost the race); deferred release keeps descriptors
@@ -81,12 +81,10 @@ public:
 		entry.failed = false;
 		ReleaseSRWLockExclusive(&gModLock);
 
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12ResourceAliasDiag",
+		DX12_LOG("DX12ResourceAliasDiag",
 			"event=capture_saved name=%S resource=%p format=%u width=%u height=%u mips=%u",
 			name.c_str(), texture, static_cast<UINT>(viewFormat),
 			entry.drawSrvWidth, entry.drawSrvHeight, entry.drawSrvMipLevels);
-#endif
 		return true;
 	}
 };

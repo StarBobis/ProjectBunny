@@ -262,7 +262,7 @@ class DeviceWrapper
 			RegisterWrapperPointer(static_cast<ID3D12Device12*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Device13*>(this));
 			RegisterWrapperPointer(static_cast<ID3D12Device14*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=device,stage=create,wrapper=%p,object=%p",
 				this, device);
 		}
@@ -408,31 +408,31 @@ class DeviceWrapper
 
 		HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryPrivateDataWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryPrivateDataWrapper, Original);
 			return mDevice->GetPrivateData(guid, pDataSize, pData);
 		}
 
 		HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 			return mDevice->SetPrivateData(guid, DataSize, pData);
 		}
 
 		HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 			return mDevice->SetPrivateDataInterface(guid, pData);
 		}
 
 		HRESULT STDMETHODCALLTYPE SetName(LPCWSTR Name) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscPrivateDataWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscPrivateDataWrapper, Original);
 			return mDevice->SetName(Name);
 		}
 
 		UINT STDMETHODCALLTYPE GetNodeCount() override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryMiscWrapper, Original);
 			return mDevice->GetNodeCount();
 		}
 
@@ -441,13 +441,13 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandQueueWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandQueueWrapper, Original);
 				hr = mDevice->CreateCommandQueue(pDesc, riid, ppCommandQueue);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandQueue",
 				"\"hr\":\"0x%lx\",\"queue\":\"%p\"", hr, ppCommandQueue ? *ppCommandQueue : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandQueueWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandQueueWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue)
 					DeviceWrapper::TryWrapCommandQueue(riid, ppCommandQueue);
 			}
@@ -459,14 +459,14 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandAllocatorWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandAllocatorWrapper, Original);
 				hr = mDevice->CreateCommandAllocator(type, riid, ppCommandAllocator);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandAllocator",
 				"\"hr\":\"0x%lx\",\"allocator\":\"%p\"", hr,
 				ppCommandAllocator ? *ppCommandAllocator : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandAllocatorWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandAllocatorWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppCommandAllocator && *ppCommandAllocator)
 					DeviceWrapper::TryWrapCommandAllocator(riid, ppCommandAllocator);
 			}
@@ -482,7 +482,7 @@ class DeviceWrapper
 			DX12GraphicsPsoReplacement replacement;
 			const D3D12_GRAPHICS_PIPELINE_STATE_DESC *activeDesc = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(GraphicsPsoWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(GraphicsPsoWrapper, Prepare);
 				if (pDesc) {
 					replacement.desc = *pDesc;
 					replacement.desc.pRootSignature =
@@ -501,13 +501,13 @@ class DeviceWrapper
 
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(GraphicsPsoWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(GraphicsPsoWrapper, Original);
 				hr = mDevice->CreateGraphicsPipelineState(activeDesc, riid, ppPipelineState);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateGraphicsPipelineState",
 				"\"hr\":\"0x%lx\",\"pso\":\"%p\"", hr, ppPipelineState ? *ppPipelineState : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(GraphicsPsoWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(GraphicsPsoWrapper, Record);
 				if (SUCCEEDED(hr) && activeDesc) {
 					ID3D12PipelineState *created =
 						ppPipelineState ? static_cast<ID3D12PipelineState*>(*ppPipelineState) : nullptr;
@@ -517,7 +517,7 @@ class DeviceWrapper
 				}
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(GraphicsPsoWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(GraphicsPsoWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
 					DeviceWrapper::TryWrapPipelineState(riid, ppPipelineState);
 			}
@@ -533,7 +533,7 @@ class DeviceWrapper
 			DX12ComputePsoReplacement replacement;
 			const D3D12_COMPUTE_PIPELINE_STATE_DESC *activeDesc = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(ComputePsoWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ComputePsoWrapper, Prepare);
 				if (pDesc) {
 					replacement.desc = *pDesc;
 					replacement.desc.pRootSignature =
@@ -548,13 +548,13 @@ class DeviceWrapper
 
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(ComputePsoWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ComputePsoWrapper, Original);
 				hr = mDevice->CreateComputePipelineState(activeDesc, riid, ppPipelineState);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateComputePipelineState",
 				"\"hr\":\"0x%lx\",\"pso\":\"%p\"", hr, ppPipelineState ? *ppPipelineState : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(ComputePsoWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ComputePsoWrapper, Record);
 				if (SUCCEEDED(hr) && activeDesc) {
 					ID3D12PipelineState *created =
 						ppPipelineState ? static_cast<ID3D12PipelineState*>(*ppPipelineState) : nullptr;
@@ -564,7 +564,7 @@ class DeviceWrapper
 				}
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ComputePsoWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ComputePsoWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
 					DeviceWrapper::TryWrapPipelineState(riid, ppPipelineState);
 			}
@@ -578,20 +578,20 @@ class DeviceWrapper
 			ID3D12CommandAllocator *allocator = nullptr;
 			ID3D12PipelineState *initialState = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Prepare);
 				allocator = DX12WrapperRuntimeUtils::UnwrapCommandAllocator(pCommandAllocator);
 				initialState = DX12WrapperRuntimeUtils::UnwrapPipelineState(pInitialState);
 			}
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Original);
 				hr = mDevice->CreateCommandList(
 					nodeMask, type, allocator, initialState, riid, ppCommandList);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device::CreateCommandList",
 				"\"hr\":\"0x%lx\",\"commandList\":\"%p\"", hr, ppCommandList ? *ppCommandList : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Record);
 				if (SUCCEEDED(hr) && ppCommandList && *ppCommandList) {
 					ID3D12GraphicsCommandList *baseList = nullptr;
 					if (SUCCEEDED(static_cast<IUnknown*>(*ppCommandList)->QueryInterface(IID_PPV_ARGS(&baseList)))) {
@@ -601,7 +601,7 @@ class DeviceWrapper
 				}
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppCommandList && *ppCommandList)
 					DeviceWrapper::TryWrapGraphicsCommandList(riid, ppCommandList);
 			}
@@ -611,7 +611,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE CheckFeatureSupport(
 			D3D12_FEATURE Feature, void *pFeatureSupportData, UINT FeatureSupportDataSize) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryCapabilityWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryCapabilityWrapper, Original);
 			return mDevice->CheckFeatureSupport(Feature, pFeatureSupportData, FeatureSupportDataSize);
 		}
 
@@ -620,16 +620,16 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorHeapWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorHeapWrapper, Original);
 				hr = mDevice->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorHeapWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorHeapWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 					hr, mDevice, pDescriptorHeapDesc, ppvHeap);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorHeapWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(DescriptorHeapWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvHeap && *ppvHeap)
 					DeviceWrapper::TryWrapDescriptorHeap(riid, ppvHeap);
 			}
@@ -639,7 +639,7 @@ class DeviceWrapper
 		UINT STDMETHODCALLTYPE GetDescriptorHandleIncrementSize(
 			D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryDescriptorWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryDescriptorWrapper, Original);
 			return mDevice->GetDescriptorHandleIncrementSize(DescriptorHeapType);
 		}
 
@@ -649,17 +649,17 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Original);
 				hr = mDevice->CreateRootSignature(
 					nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 					hr, nodeMask, pBlobWithRootSignature, blobLengthInBytes, ppvRootSignature);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvRootSignature && *ppvRootSignature)
 					DeviceWrapper::TryWrapRootSignature(riid, ppvRootSignature);
 			}
@@ -670,11 +670,11 @@ class DeviceWrapper
 			const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override
 		{
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorCbvWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorCbvWrapper, Original);
 				mDevice->CreateConstantBufferView(pDesc, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorCbvWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorCbvWrapper, Record);
 				DX12DescriptorHeapShadowUtils::RecordCreatedConstantBufferViewIfChanged(
 					pDesc, DestDescriptor);
 			}
@@ -686,15 +686,15 @@ class DeviceWrapper
 		{
 			ID3D12Resource *resource = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorSrvWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(DescriptorSrvWrapper, Prepare);
 				resource = DX12WrapperRuntimeUtils::UnwrapResource(pResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorSrvWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorSrvWrapper, Original);
 				mDevice->CreateShaderResourceView(resource, pDesc, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorSrvWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorSrvWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedShaderResourceView(
 					mDevice, resource, pDesc, DestDescriptor);
 			}
@@ -710,18 +710,18 @@ class DeviceWrapper
 			D3D12_UNORDERED_ACCESS_VIEW_DESC adjustedDesc = {};
 			const D3D12_UNORDERED_ACCESS_VIEW_DESC *descToUse = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorUavWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(DescriptorUavWrapper, Prepare);
 				resource = DX12WrapperRuntimeUtils::UnwrapResource(pResource);
 				counterResource = DX12WrapperRuntimeUtils::UnwrapResource(pCounterResource);
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareUavDesc(
 					resource, pDesc, &adjustedDesc, "CreateUnorderedAccessView");
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorUavWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorUavWrapper, Original);
 				mDevice->CreateUnorderedAccessView(resource, counterResource, descToUse, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorUavWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorUavWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedUnorderedAccessView(
 					mDevice, resource, counterResource, descToUse, DestDescriptor);
 			}
@@ -733,15 +733,15 @@ class DeviceWrapper
 		{
 			ID3D12Resource *resource = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorRtvWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(DescriptorRtvWrapper, Prepare);
 				resource = DX12WrapperRuntimeUtils::UnwrapResource(pResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorRtvWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorRtvWrapper, Original);
 				mDevice->CreateRenderTargetView(resource, pDesc, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorRtvWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorRtvWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedRenderTargetView(resource, pDesc, DestDescriptor);
 			}
 		}
@@ -752,15 +752,15 @@ class DeviceWrapper
 		{
 			ID3D12Resource *resource = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorDsvWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(DescriptorDsvWrapper, Prepare);
 				resource = DX12WrapperRuntimeUtils::UnwrapResource(pResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorDsvWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DescriptorDsvWrapper, Original);
 				mDevice->CreateDepthStencilView(resource, pDesc, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(DescriptorDsvWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorDsvWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedDepthStencilView(resource, pDesc, DestDescriptor);
 			}
 		}
@@ -769,11 +769,11 @@ class DeviceWrapper
 			const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override
 		{
 			{
-				DX12_CREATE_TIMING_SCOPE(SamplerWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(SamplerWrapper, Original);
 				mDevice->CreateSampler(pDesc, DestDescriptor);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(SamplerWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(SamplerWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedSampler(pDesc, DestDescriptor);
 			}
 		}
@@ -785,14 +785,14 @@ class DeviceWrapper
 			const UINT *pSrcDescriptorRangeSizes, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType) override
 		{
 			{
-				DX12_CREATE_TIMING_SCOPE(CopyDescriptorsWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CopyDescriptorsWrapper, Original);
 				mDevice->CopyDescriptors(
 					NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes,
 					NumSrcDescriptorRanges, pSrcDescriptorRangeStarts, pSrcDescriptorRangeSizes,
 					DescriptorHeapsType);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(CopyDescriptorsWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(CopyDescriptorsWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 					mDevice, NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes,
 					NumSrcDescriptorRanges, pSrcDescriptorRangeStarts, pSrcDescriptorRangeSizes,
@@ -806,7 +806,7 @@ class DeviceWrapper
 			D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType) override
 		{
 			{
-				DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CopyDescriptorsSimpleWrapper, Original);
 				mDevice->CopyDescriptorsSimple(
 					NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart, DescriptorHeapsType);
 			}
@@ -814,7 +814,7 @@ class DeviceWrapper
 					DestDescriptorRangeStart.ptr != SrcDescriptorRangeStart.ptr &&
 					(DescriptorHeapsType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
 						DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())) {
-				DX12_CREATE_TIMING_SCOPE(CopyDescriptorsSimpleWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(CopyDescriptorsSimpleWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 					mDevice,
 					NumDescriptors, DestDescriptorRangeStart, SrcDescriptorRangeStart,
@@ -825,7 +825,7 @@ class DeviceWrapper
 		D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE GetResourceAllocationInfo(
 			UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryAllocationWrapper, Original);
 			std::vector<D3D12_RESOURCE_DESC> adjustedDescs;
 			const D3D12_RESOURCE_DESC *descsToUse = DeviceWrapper::PrepareResourceDescArray(
 				pResourceDescs, numResourceDescs, &adjustedDescs,
@@ -837,7 +837,7 @@ class DeviceWrapper
 		D3D12_HEAP_PROPERTIES STDMETHODCALLTYPE GetCustomHeapProperties(
 			UINT nodeMask, D3D12_HEAP_TYPE heapType) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryCapabilityWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryCapabilityWrapper, Original);
 			return mDevice->GetCustomHeapProperties(nodeMask, heapType);
 		}
 
@@ -854,24 +854,24 @@ class DeviceWrapper
 			D3D12_RESOURCE_DESC adjustedDesc = {};
 			const D3D12_RESOURCE_DESC *descToUse = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Prepare);
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
 					pDesc, &adjustedDesc, "CreateCommittedResource");
 			}
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Original);
 				hr = mDevice->CreateCommittedResource(
 					pHeapProperties, HeapFlags, descToUse, InitialResourceState,
 					pOptimizedClearValue, riidResource, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 					hr, ppvResource, descToUse, pHeapProperties, nullptr, InitialResourceState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riidResource, ppvResource);
 			}
@@ -883,11 +883,11 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(HeapWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(HeapWrapper, Original);
 				hr = mDevice->CreateHeap(pDesc, riid, ppvHeap);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(HeapWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(HeapWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvHeap && *ppvHeap)
 					DeviceWrapper::TryWrapHeap(riid, ppvHeap);
 			}
@@ -903,7 +903,7 @@ class DeviceWrapper
 			D3D12_RESOURCE_DESC adjustedDesc = {};
 			const D3D12_RESOURCE_DESC *descToUse = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Prepare);
 				heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
 				// Must remain paired with GetResourceAllocationInfo above.
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
@@ -911,20 +911,20 @@ class DeviceWrapper
 			}
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Original);
 				hr = mDevice->CreatePlacedResource(
 					heap, HeapOffset, descToUse, InitialState,
 					pOptimizedClearValue, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Record);
 				PlacedResourceInfo placedInfo =
 					DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 					hr, ppvResource, descToUse, nullptr, &placedInfo, InitialState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -938,17 +938,17 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Original);
 				hr = mDevice->CreateReservedResource(
 					pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 					hr, ppvResource, pDesc, nullptr, nullptr, InitialState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -959,7 +959,7 @@ class DeviceWrapper
 			ID3D12DeviceChild *pObject, const SECURITY_ATTRIBUTES *pAttributes,
 			DWORD Access, LPCWSTR Name, HANDLE *pHandle) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 			return mDevice->CreateSharedHandle(
 				reinterpret_cast<ID3D12DeviceChild*>(DX12Wrapper::Unwrap(pObject)),
 				pAttributes, Access, Name, pHandle);
@@ -968,7 +968,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE OpenSharedHandle(
 			HANDLE NTHandle, REFIID riid, void **ppvObj) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 			HRESULT hr = mDevice->OpenSharedHandle(NTHandle, riid, ppvObj);
 			if (SUCCEEDED(hr) && ppvObj && *ppvObj)
 				DX12Wrapper::WrapD3D12DeviceResult(riid, ppvObj);
@@ -977,13 +977,13 @@ class DeviceWrapper
 
 		HRESULT STDMETHODCALLTYPE OpenSharedHandleByName(LPCWSTR Name, DWORD Access, HANDLE *pNTHandle) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscSharedHandleWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscSharedHandleWrapper, Original);
 			return mDevice->OpenSharedHandleByName(Name, Access, pNTHandle);
 		}
 
 		HRESULT STDMETHODCALLTYPE MakeResident(UINT NumObjects, ID3D12Pageable *const *ppObjects) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceResidencyWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceResidencyWrapper, Original);
 			std::vector<ID3D12Pageable*> unwrapped;
 			ID3D12Pageable *const *activeObjects = ppObjects;
 			if (ppObjects && NumObjects) {
@@ -997,7 +997,7 @@ class DeviceWrapper
 
 		HRESULT STDMETHODCALLTYPE Evict(UINT NumObjects, ID3D12Pageable *const *ppObjects) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceResidencyWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceResidencyWrapper, Original);
 			std::vector<ID3D12Pageable*> unwrapped;
 			ID3D12Pageable *const *activeObjects = ppObjects;
 			if (ppObjects && NumObjects) {
@@ -1014,11 +1014,11 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(FenceWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(FenceWrapper, Original);
 				hr = mDevice->CreateFence(InitialValue, Flags, riid, ppFence);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(FenceWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(FenceWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppFence && *ppFence)
 					DeviceWrapper::TryWrapFence(riid, ppFence);
 			}
@@ -1027,7 +1027,7 @@ class DeviceWrapper
 
 		HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryMiscWrapper, Original);
 			return mDevice->GetDeviceRemovedReason();
 		}
 
@@ -1037,7 +1037,7 @@ class DeviceWrapper
 			D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows,
 			UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryLayoutWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryLayoutWrapper, Original);
 			mDevice->GetCopyableFootprints(
 				pResourceDesc, FirstSubresource, NumSubresources, BaseOffset,
 				pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
@@ -1048,11 +1048,11 @@ class DeviceWrapper
 		{
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(QueryHeapWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(QueryHeapWrapper, Original);
 				hr = mDevice->CreateQueryHeap(pDesc, riid, ppvHeap);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(QueryHeapWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(QueryHeapWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvHeap && *ppvHeap)
 					DeviceWrapper::TryWrapQueryHeap(riid, ppvHeap);
 			}
@@ -1061,7 +1061,7 @@ class DeviceWrapper
 
 		HRESULT STDMETHODCALLTYPE SetStablePowerState(BOOL Enable) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscPowerWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscPowerWrapper, Original);
 			return mDevice->SetStablePowerState(Enable);
 		}
 
@@ -1071,17 +1071,17 @@ class DeviceWrapper
 		{
 			ID3D12RootSignature *rootSignature = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandSignatureWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(CommandSignatureWrapper, Prepare);
 				rootSignature = DX12WrapperRuntimeUtils::UnwrapRootSignature(pRootSignature);
 			}
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandSignatureWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandSignatureWrapper, Original);
 				hr = mDevice->CreateCommandSignature(
 					pDesc, rootSignature, riid, ppvCommandSignature);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandSignatureWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandSignatureWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvCommandSignature && *ppvCommandSignature)
 					DeviceWrapper::TryWrapCommandSignature(riid, ppvCommandSignature);
 			}
@@ -1095,7 +1095,7 @@ class DeviceWrapper
 			UINT *pNumSubresourceTilings, UINT FirstSubresourceTilingToGet,
 			D3D12_SUBRESOURCE_TILING *pSubresourceTilingsForNonPackedMips) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryTilingWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryTilingWrapper, Original);
 			mDevice->GetResourceTiling(
 				DX12WrapperRuntimeUtils::UnwrapResource(pTiledResource),
 				pNumTilesForEntireResource, pPackedMipDesc, pStandardTileShapeForNonPackedMips,
@@ -1105,7 +1105,7 @@ class DeviceWrapper
 
 		LUID STDMETHODCALLTYPE GetAdapterLuid() override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryMiscWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryMiscWrapper, Original);
 			return mDevice->GetAdapterLuid();
 		}
 
@@ -1117,11 +1117,11 @@ class DeviceWrapper
 			if (FAILED(hr))
 				return hr;
 			{
-				DX12_CREATE_TIMING_SCOPE(PipelineLibraryWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(PipelineLibraryWrapper, Original);
 				hr = device1->CreatePipelineLibrary(pLibraryBlob, BlobLength, riid, ppPipelineLibrary);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(PipelineLibraryWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(PipelineLibraryWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppPipelineLibrary && *ppPipelineLibrary)
 					DeviceWrapper::TryWrapPipelineLibrary(riid, ppPipelineLibrary);
 			}
@@ -1133,7 +1133,7 @@ class DeviceWrapper
 			ID3D12Fence *const *ppFences, const UINT64 *pFenceValues, UINT NumFences,
 			D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags, HANDLE hEvent) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscPowerWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscPowerWrapper, Original);
 			ID3D12Device1 *device1 = nullptr;
 			HRESULT hr = QueryDevice1(&device1);
 			if (FAILED(hr))
@@ -1156,7 +1156,7 @@ class DeviceWrapper
 			UINT NumObjects, ID3D12Pageable *const *ppObjects,
 			const D3D12_RESIDENCY_PRIORITY *pPriorities) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceResidencyWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceResidencyWrapper, Original);
 			ID3D12Device1 *device1 = nullptr;
 			HRESULT hr = QueryDevice1(&device1);
 			if (FAILED(hr))
@@ -1181,24 +1181,24 @@ class DeviceWrapper
 			ID3D12Device2 *device2 = nullptr;
 			HRESULT hr = E_FAIL;
 			{
-				DX12_CREATE_TIMING_SCOPE(PsoStreamWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(PsoStreamWrapper, Prepare);
 				hr = QueryDevice2(&device2);
 			}
 			if (FAILED(hr))
 				return hr;
 			{
-				DX12_CREATE_TIMING_SCOPE(PsoStreamWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(PsoStreamWrapper, Original);
 				hr = device2->CreatePipelineState(pDesc, riid, ppPipelineState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(PsoStreamWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(PsoStreamWrapper, Record);
 				if (SUCCEEDED(hr) && pDesc)
 					DX12RecordPipelineStateStream(
 						ppPipelineState ? static_cast<ID3D12PipelineState*>(*ppPipelineState) : nullptr,
 						pDesc);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(PsoStreamWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(PsoStreamWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppPipelineState && *ppPipelineState)
 					DeviceWrapper::TryWrapPipelineState(riid, ppPipelineState);
 			}
@@ -1209,7 +1209,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE OpenExistingHeapFromAddress(
 			const void *pAddress, REFIID riid, void **ppvHeap) override
 		{
-			DX12_CREATE_TIMING_SCOPE(HeapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(HeapWrapper, Original);
 			ID3D12Device3 *device3 = nullptr;
 			HRESULT hr = QueryDevice3(&device3);
 			if (FAILED(hr))
@@ -1224,7 +1224,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE OpenExistingHeapFromFileMapping(
 			HANDLE hFileMapping, REFIID riid, void **ppvHeap) override
 		{
-			DX12_CREATE_TIMING_SCOPE(HeapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(HeapWrapper, Original);
 			ID3D12Device3 *device3 = nullptr;
 			HRESULT hr = QueryDevice3(&device3);
 			if (FAILED(hr))
@@ -1240,7 +1240,7 @@ class DeviceWrapper
 			D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable *const *ppObjects,
 			ID3D12Fence *pFenceToSignal, UINT64 FenceValueToSignal) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceResidencyWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceResidencyWrapper, Original);
 			ID3D12Device3 *device3 = nullptr;
 			HRESULT hr = QueryDevice3(&device3);
 			if (FAILED(hr))
@@ -1269,14 +1269,14 @@ class DeviceWrapper
 			if (FAILED(hr))
 				return hr;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Original);
 				hr = device4->CreateCommandList1(nodeMask, type, flags, riid, ppCommandList);
 			}
 			DX12FrameAnalysis::LogJsonFunc("ID3D12Device4::CreateCommandList1",
 				"\"hr\":\"0x%lx\",\"commandList\":\"%p\"", hr,
 				ppCommandList ? *ppCommandList : nullptr);
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Record);
 				if (SUCCEEDED(hr) && ppCommandList && *ppCommandList) {
 					ID3D12GraphicsCommandList *baseList = nullptr;
 					if (SUCCEEDED(static_cast<IUnknown*>(*ppCommandList)->QueryInterface(IID_PPV_ARGS(&baseList)))) {
@@ -1286,7 +1286,7 @@ class DeviceWrapper
 				}
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandListWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandListWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppCommandList && *ppCommandList)
 					DeviceWrapper::TryWrapGraphicsCommandList(riid, ppCommandList);
 			}
@@ -1298,7 +1298,7 @@ class DeviceWrapper
 			const D3D12_PROTECTED_RESOURCE_SESSION_DESC *pDesc, REFIID riid,
 			void **ppSession) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
 			ID3D12Device4 *device4 = nullptr;
 			HRESULT hr = QueryDevice4(&device4);
 			if (FAILED(hr))
@@ -1325,25 +1325,25 @@ class DeviceWrapper
 			const D3D12_RESOURCE_DESC *descToUse = pDesc;
 			ID3D12ProtectedResourceSession *protectedSession = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Prepare);
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc(
 					pDesc, &adjustedDesc, "CreateCommittedResource1");
 				protectedSession =
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedSession);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Original);
 				hr = device4->CreateCommittedResource1(
 					pHeapProperties, HeapFlags, descToUse, InitialResourceState,
 					pOptimizedClearValue, protectedSession, riidResource, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 					hr, ppvResource, descToUse, pHeapProperties, nullptr, InitialResourceState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riidResource, ppvResource);
 			}
@@ -1355,7 +1355,7 @@ class DeviceWrapper
 			const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pProtectedSession,
 			REFIID riid, void **ppvHeap) override
 		{
-			DX12_CREATE_TIMING_SCOPE(HeapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(HeapWrapper, Original);
 			ID3D12Device4 *device4 = nullptr;
 			HRESULT hr = QueryDevice4(&device4);
 			if (FAILED(hr))
@@ -1381,23 +1381,23 @@ class DeviceWrapper
 				return hr;
 			ID3D12ProtectedResourceSession *protectedSession = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Prepare);
 				protectedSession =
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedSession);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Original);
 				hr = device4->CreateReservedResource1(
 					pDesc, InitialState, pOptimizedClearValue,
 					protectedSession, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource(
 					hr, ppvResource, pDesc, nullptr, nullptr, InitialState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -1409,7 +1409,7 @@ class DeviceWrapper
 			UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs,
 			D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryAllocationWrapper, Original);
 			ID3D12Device4 *device4 = nullptr;
 			HRESULT hr = QueryDevice4(&device4);
 			if (FAILED(hr))
@@ -1427,7 +1427,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE CreateLifetimeTracker(
 			ID3D12LifetimeOwner *pOwner, REFIID riid, void **ppvTracker) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscLifetimeWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscLifetimeWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1441,7 +1441,7 @@ class DeviceWrapper
 
 		void STDMETHODCALLTYPE RemoveDevice() override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscLifetimeWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscLifetimeWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			if (SUCCEEDED(QueryDevice5(&device5))) {
 				device5->RemoveDevice();
@@ -1452,7 +1452,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE EnumerateMetaCommands(
 			UINT *pNumMetaCommands, D3D12_META_COMMAND_DESC *pDescs) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryMetaCommandWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryMetaCommandWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1467,7 +1467,7 @@ class DeviceWrapper
 			UINT *pTotalStructureSizeInBytes, UINT *pParameterCount,
 			D3D12_META_COMMAND_PARAMETER_DESC *pParameterDescs) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryMetaCommandWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryMetaCommandWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1483,7 +1483,7 @@ class DeviceWrapper
 			SIZE_T CreationParametersDataSizeInBytes, REFIID riid,
 			void **ppMetaCommand) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscMetaCommandWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscMetaCommandWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1500,7 +1500,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE CreateStateObject(
 			const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscStateObjectWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscStateObjectWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1532,7 +1532,7 @@ class DeviceWrapper
 			const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *pDesc,
 			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *pInfo) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryRaytracingWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryRaytracingWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			if (SUCCEEDED(QueryDevice5(&device5))) {
 				device5->GetRaytracingAccelerationStructurePrebuildInfo(pDesc, pInfo);
@@ -1544,7 +1544,7 @@ class DeviceWrapper
 			D3D12_SERIALIZED_DATA_TYPE SerializedDataType,
 			const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *pIdentifierToCheck) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryRaytracingWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryRaytracingWrapper, Original);
 			ID3D12Device5 *device5 = nullptr;
 			HRESULT hr = QueryDevice5(&device5);
 			if (FAILED(hr))
@@ -1559,7 +1559,7 @@ class DeviceWrapper
 			D3D12_BACKGROUND_PROCESSING_MODE Mode, D3D12_MEASUREMENTS_ACTION MeasurementsAction,
 			HANDLE hEventToSignalUponCompletion, BOOL *pbFurtherMeasurementsDesired) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscBackgroundProcessingWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscBackgroundProcessingWrapper, Original);
 			ID3D12Device6 *device6 = nullptr;
 			HRESULT hr = QueryDevice6(&device6);
 			if (FAILED(hr))
@@ -1575,7 +1575,7 @@ class DeviceWrapper
 			const D3D12_STATE_OBJECT_DESC *pAddition, ID3D12StateObject *pStateObjectToGrowFrom,
 			REFIID riid, void **ppNewStateObject) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscStateObjectWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscStateObjectWrapper, Original);
 			ID3D12Device7 *device7 = nullptr;
 			HRESULT hr = QueryDevice7(&device7);
 			if (FAILED(hr))
@@ -1611,7 +1611,7 @@ class DeviceWrapper
 			const D3D12_PROTECTED_RESOURCE_SESSION_DESC1 *pDesc, REFIID riid,
 			void **ppSession) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscProtectedSessionWrapper, Original);
 			ID3D12Device7 *device7 = nullptr;
 			HRESULT hr = QueryDevice7(&device7);
 			if (FAILED(hr))
@@ -1627,7 +1627,7 @@ class DeviceWrapper
 			UINT visibleMask, UINT numResourceDescs, const D3D12_RESOURCE_DESC1 *pResourceDescs,
 			D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryAllocationWrapper, Original);
 			ID3D12Device8 *device8 = nullptr;
 			HRESULT hr = QueryDevice8(&device8);
 			if (FAILED(hr))
@@ -1657,25 +1657,25 @@ class DeviceWrapper
 			const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 			ID3D12ProtectedResourceSession *protectedSession = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Prepare);
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 					pDesc, &adjustedDesc, "CreateCommittedResource2");
 				protectedSession =
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedSession);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Original);
 				hr = device8->CreateCommittedResource2(
 					pHeapProperties, HeapFlags, descToUse, InitialResourceState,
 					pOptimizedClearValue, protectedSession, riidResource, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
 					hr, ppvResource, descToUse, pHeapProperties, nullptr, InitialResourceState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riidResource, ppvResource);
 			}
@@ -1696,27 +1696,27 @@ class DeviceWrapper
 			D3D12_RESOURCE_DESC1 adjustedDesc = {};
 			const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Prepare);
 				heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
 				// Must remain paired with GetResourceAllocationInfo2.
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 					pDesc, &adjustedDesc, "CreatePlacedResource1");
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Original);
 				hr = device8->CreatePlacedResource1(
 					heap, HeapOffset, descToUse, InitialState,
 					pOptimizedClearValue, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Record);
 				PlacedResourceInfo placedInfo =
 					DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource1(
 					hr, ppvResource, descToUse, nullptr, &placedInfo, InitialState);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -1728,7 +1728,7 @@ class DeviceWrapper
 			ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource,
 			D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DescriptorUavWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DescriptorUavWrapper, Original);
 			ID3D12Device8 *device8 = nullptr;
 			if (SUCCEEDED(QueryDevice8(&device8))) {
 				device8->CreateSamplerFeedbackUnorderedAccessView(
@@ -1747,7 +1747,7 @@ class DeviceWrapper
 		{
 			ID3D12Device8 *device8 = nullptr;
 			if (SUCCEEDED(QueryDevice8(&device8))) {
-				DX12_CREATE_TIMING_SCOPE(DeviceQueryLayoutWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(DeviceQueryLayoutWrapper, Original);
 				device8->GetCopyableFootprints1(
 					pResourceDesc, FirstSubresource, NumSubresources, BaseOffset,
 					pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
@@ -1759,7 +1759,7 @@ class DeviceWrapper
 			const D3D12_SHADER_CACHE_SESSION_DESC *pDesc, REFIID riid,
 			void **ppvSession) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscShaderCacheWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscShaderCacheWrapper, Original);
 			ID3D12Device9 *device9 = nullptr;
 			HRESULT hr = QueryDevice9(&device9);
 			if (FAILED(hr))
@@ -1774,7 +1774,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE ShaderCacheControl(
 			D3D12_SHADER_CACHE_KIND_FLAGS Kinds, D3D12_SHADER_CACHE_CONTROL_FLAGS Control) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceMiscShaderCacheWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceMiscShaderCacheWrapper, Original);
 			ID3D12Device9 *device9 = nullptr;
 			HRESULT hr = QueryDevice9(&device9);
 			if (FAILED(hr))
@@ -1793,11 +1793,11 @@ class DeviceWrapper
 			if (FAILED(hr))
 				return hr;
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandQueueWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(CommandQueueWrapper, Original);
 				hr = device9->CreateCommandQueue1(pDesc, CreatorID, riid, ppCommandQueue);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(CommandQueueWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(CommandQueueWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppCommandQueue && *ppCommandQueue)
 					DeviceWrapper::TryWrapCommandQueue(riid, ppCommandQueue);
 			}
@@ -1821,26 +1821,26 @@ class DeviceWrapper
 			const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 			ID3D12ProtectedResourceSession *protectedSession = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Prepare);
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 					pDesc, &adjustedDesc, "CreateCommittedResource3");
 				protectedSession =
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedSession);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Original);
 				hr = device10->CreateCommittedResource3(
 					pHeapProperties, HeapFlags, descToUse, InitialLayout, pOptimizedClearValue,
 					protectedSession, NumCastableFormats, pCastableFormats,
 					riidResource, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
 					hr, ppvResource, descToUse, pHeapProperties, nullptr, InitialLayout);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceCommittedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceCommittedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riidResource, ppvResource);
 			}
@@ -1862,27 +1862,27 @@ class DeviceWrapper
 			D3D12_RESOURCE_DESC1 adjustedDesc = {};
 			const D3D12_RESOURCE_DESC1 *descToUse = pDesc;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Prepare);
 				heap = DX12WrapperRuntimeUtils::UnwrapHeap(pHeap);
 				// Must remain paired with GetResourceAllocationInfo3.
 				descToUse = DX12ResourceTrackerHookRuntime::PrepareResourceDesc1(
 					pDesc, &adjustedDesc, "CreatePlacedResource2");
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Original);
 				hr = device10->CreatePlacedResource2(
 					heap, HeapOffset, descToUse, InitialLayout, pOptimizedClearValue,
 					NumCastableFormats, pCastableFormats, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Record);
 				PlacedResourceInfo placedInfo =
 					DX12ResourceTrackerHookRuntime::MakePlacedResourceInfo(heap, HeapOffset);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResource1WithLayout(
 					hr, ppvResource, descToUse, nullptr, &placedInfo, InitialLayout);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourcePlacedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourcePlacedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -1903,23 +1903,23 @@ class DeviceWrapper
 				return hr;
 			ID3D12ProtectedResourceSession *protectedSession = nullptr;
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Prepare);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Prepare);
 				protectedSession =
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedSession);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Original);
 				hr = device10->CreateReservedResource2(
 					pDesc, InitialLayout, pOptimizedClearValue, protectedSession,
 					NumCastableFormats, pCastableFormats, riid, ppvResource);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedResourceWithLayout(
 					hr, ppvResource, pDesc, nullptr, nullptr, InitialLayout);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(ResourceReservedWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(ResourceReservedWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvResource && *ppvResource)
 					DeviceWrapper::TryWrapResource(riid, ppvResource);
 			}
@@ -1930,7 +1930,7 @@ class DeviceWrapper
 		void STDMETHODCALLTYPE CreateSampler2(
 			const D3D12_SAMPLER_DESC2 *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) override
 		{
-			DX12_CREATE_TIMING_SCOPE(SamplerWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(SamplerWrapper, Original);
 			ID3D12Device11 *device11 = nullptr;
 			if (SUCCEEDED(QueryDevice11(&device11))) {
 				device11->CreateSampler2(pDesc, DestDescriptor);
@@ -1943,7 +1943,7 @@ class DeviceWrapper
 			const UINT32 *pNumCastableFormats, const DXGI_FORMAT *const *ppCastableFormats,
 			D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1) override
 		{
-			DX12_CREATE_TIMING_SCOPE(DeviceQueryAllocationWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(DeviceQueryAllocationWrapper, Original);
 			ID3D12Device12 *device12 = nullptr;
 			HRESULT hr = QueryDevice12(&device12);
 			if (FAILED(hr))
@@ -1962,7 +1962,7 @@ class DeviceWrapper
 		HRESULT STDMETHODCALLTYPE OpenExistingHeapFromAddress1(
 			const void *pAddress, SIZE_T size, REFIID riid, void **ppvHeap) override
 		{
-			DX12_CREATE_TIMING_SCOPE(HeapWrapper, Original);
+			DX12_PROF_CREATE_SCOPE(HeapWrapper, Original);
 			ID3D12Device13 *device13 = nullptr;
 			HRESULT hr = QueryDevice13(&device13);
 			if (FAILED(hr))
@@ -1983,17 +1983,17 @@ class DeviceWrapper
 			if (FAILED(hr))
 				return hr;
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Original);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Original);
 				hr = device14->CreateRootSignatureFromSubobjectInLibrary(
 					nodeMask, pLibraryBlob, blobLengthInBytes, subobjectName, riid, ppvRootSignature);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Record);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Record);
 				DX12ResourceTrackerHookRuntime::RecordCreatedRootSignature(
 					hr, nodeMask, pLibraryBlob, blobLengthInBytes, ppvRootSignature);
 			}
 			{
-				DX12_CREATE_TIMING_SCOPE(RootSignatureWrapper, Wrap);
+				DX12_PROF_CREATE_SCOPE(RootSignatureWrapper, Wrap);
 				if (SUCCEEDED(hr) && ppvRootSignature && *ppvRootSignature)
 					DeviceWrapper::TryWrapRootSignature(riid, ppvRootSignature);
 			}

@@ -1,4 +1,4 @@
-﻿// Device factory, DXGI factory and swap chain wrappers.
+// Device factory, DXGI factory and swap chain wrappers.
 // Split from DX12Wrapper.cpp; COM wrapper class definitions (inline).
 #pragma once
 
@@ -15,7 +15,7 @@ namespace DX12WrapperDetail
 		{
 			mFactory = factory;
 			RegisterWrapperPointer(static_cast<ID3D12DeviceFactory*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=device_factory,stage=create,wrapper=%p,object=%p",
 				this, factory);
 		}
@@ -111,7 +111,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			RegisterWrapperPointer(static_cast<IDXGIFactory5*>(this));
 			RegisterWrapperPointer(static_cast<IDXGIFactory6*>(this));
 			RegisterWrapperPointer(static_cast<IDXGIFactory7*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=factory,stage=create,wrapper=%p,object=%p",
 				this, factory);
 		}
@@ -514,7 +514,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			RegisterWrapperPointer(static_cast<IDXGISwapChain2*>(this));
 			RegisterWrapperPointer(static_cast<IDXGISwapChain3*>(this));
 			RegisterWrapperPointer(static_cast<IDXGISwapChain4*>(this));
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=swapchain,stage=create,wrapper=%p,object=%p",
 				this, swapChain);
 		}
@@ -893,8 +893,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			if (FAILED(QuerySwapChain2(&swapChain2)))
 				return nullptr;
 			HANDLE handle = swapChain2->GetFrameLatencyWaitableObject();
-			DX12OuterTimingProbeUtils::RegisterFrameLatencyWaitableObject(
-				mSwapChain, handle);
+			DX12_DIAG_REGISTER_FRAME_LATENCY_WAITABLE(mSwapChain, handle);
 			swapChain2->Release();
 			return handle;
 		}

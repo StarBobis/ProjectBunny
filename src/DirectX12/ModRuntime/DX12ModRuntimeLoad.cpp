@@ -244,7 +244,7 @@ void BuildDx12VlrResourceCandidates(
 
 void DX12ModScheduleInitialLoad(const wchar_t *configPath)
 {
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	SetBasePaths(configPath);
 	gPendingInitialConfigPath = configPath ? configPath : L"";
 	gDeferredInitialModLoadStartTick = GetTickCount();
@@ -262,7 +262,7 @@ void DX12ModMaybeRunDeferredInitialLoad()
 	std::wstring configPath;
 	DWORD delayMs = 0;
 	DWORD startTick = 0;
-	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
+	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	configPath = gPendingInitialConfigPath;
 	delayMs = gDeferredInitialModLoadDelayMs;
 	startTick = gDeferredInitialModLoadStartTick;
@@ -280,7 +280,7 @@ void DX12ModMaybeRunDeferredInitialLoad()
 		return;
 	}
 
-	DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+	DX12_LOG("DX12ModRuntimeDeferredLoad",
 		"\"status\":\"begin\",\"path\":\"%S\",\"present\":%ld,\"elapsedMs\":%lu,\"delayMs\":%lu",
 		configPath.c_str(), present, elapsedMs, delayMs);
 
@@ -289,14 +289,14 @@ void DX12ModMaybeRunDeferredInitialLoad()
 	if (ok)
 		DX12ModRefreshRuntimeStateAfterReload();
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	if (ok)
 		gPendingInitialConfigPath.clear();
 	else
 		gPendingInitialConfigPath = configPath;
 	ReleaseSRWLockExclusive(&gModLock);
 
-	DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+	DX12_LOG("DX12ModRuntimeDeferredLoad",
 		"\"status\":\"done\",\"result\":\"%s\",\"present\":%ld,\"elapsedMs\":%lu",
 		ok ? "ok" : "failed",
 		DX12RuntimeState::GetPresentCount(),
@@ -1251,7 +1251,7 @@ bool DX12ModRuntimeLoad(
 	
 	SetBasePaths(configPath);
 	if (!Bunny::MigotoIniLoader::LoadWithIncludes(configPath, &iniLoad)) {
-		DX12LogManager::Fields("DX12ModRuntime",
+		DX12_LOG("DX12ModRuntime",
 			"\"status\":\"config_load_failed\",\"path\":\"%S\",\"error\":\"%S\"",
 			configPath ? configPath : L"", iniLoad.document.Error().c_str());
 		if (statusMessage)
@@ -1277,12 +1277,12 @@ bool DX12ModRuntimeLoad(
 		customShaderElements;
 	Bunny::DX12CustomShaderElementParser::BuildRegistry(
 		commandLists, &customShaderElements);
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	// TIMING-build trace: dump every registered hotkey binding so the log
 	// proves whether a binding was parsed and armed (key, modifiers, type,
 	// condition). Compiled out of regular Release builds.
 	for (const Bunny::MigotoKeyBindingUtils::Binding &binding : keyBindings) {
-		DX12LogManager::Fields("DX12KeyDiag",
+		DX12_LOG("DX12KeyDiag",
 			"event=registered section=%S original=%S key=%S vk=%d type=%d conditionText=%S hasBack=%d vars=%zu",
 			binding.section.c_str(), binding.originalSection.c_str(),
 			binding.keyText.c_str(), binding.key.primaryVk,
@@ -1290,13 +1290,13 @@ bool DX12ModRuntimeLoad(
 			binding.hasBack ? 1 : 0, binding.variables.size());
 	}
 #endif
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 	// TIMING-build trace: dump every registered custom shader element with
 	// its stage files and state overrides, so the log proves the element was
 	// discovered and how its pipeline will be assembled.
 	for (const auto &item : customShaderElements) {
 		const Bunny::DX12CustomShaderElementSpec &spec = item.second;
-		DX12LogManager::Fields("DX12CustomShaderDiag",
+		DX12_LOG("DX12CustomShaderDiag",
 			"event=element_registered section=%S vs=%S ps=%S blend=%d cull=%d topology=%d bb=%d draw=%d ctrl=%d states=%zu",
 			spec.section.c_str(),
 			spec.hasStage[0] ? spec.stageFiles[0].c_str() : L"",
@@ -1431,7 +1431,7 @@ bool DX12ModRuntimeLoad(
 	BuildDx12VlrResourceCandidates(
 		resources, explicitMatchCsResourceSections, &vlrResourceCandidates);
 
-	DX12ModLockTelemetryUtils::AcquireModExclusive(&gModLock);
+	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
 	gShaderOverrides.swap(shaderOverrides);
 	gShaderRegexes.swap(shaderRegexes);
 	gTextureOverrides.swap(textureOverrides);
@@ -1587,7 +1587,7 @@ bool DX12ModRuntimeLoad(
 	ReleaseSRWLockExclusive(&gModLock);
 	ClearPreSkinRuntimeState();
 
-	DX12LogManager::Fields("DX12ModRuntime",
+	DX12_LOG("DX12ModRuntime",
 		"\"status\":\"loaded\",\"path\":\"%S\",\"iniFiles\":%zu,\"errors\":%zu,\"warnings\":%zu,\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"safeMode\":%s,\"activeShaderOverrides\":%s,\"activeTextureOverrides\":%s,\"shaderTriggeredTextureOverrides\":%s,\"descriptorTextureOverrideTriggers\":%s,\"preSkinCandidates\":%s,\"preSkinProbeEnabled\":%s,\"presentRuntimeEffect\":%s,\"shaderFixes\":\"%S\",\"generation\":%llu",
 		configPath ? configPath : L"", iniLoad.loadedFiles.size(), iniLoad.errors.size(), iniLoad.warnings.size(),
 		loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount, loadedResourceCount, loadedCommandListCount,
@@ -1604,26 +1604,26 @@ bool DX12ModRuntimeLoad(
 	if (safeModeActive &&
 	    (loadedShaderOverrideCount || loadedShaderRegexCount ||
 	     loadedTextureOverrideCount || loadedPresentRuntimeEffect)) {
-		DX12LogManager::Fields("DX12ModRuntimeDisabled",
+		DX12_LOG("DX12ModRuntimeDisabled",
 			"\"reason\":\"safe_mode\",\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"preSkinCandidates\":%s,\"presentRuntimeEffect\":%s",
 			loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount,
 			loadedPreSkinTextureOverrideCandidates ? "true" : "false",
 			loadedPresentRuntimeEffect ? "true" : "false");
 	}
 	for (const std::wstring &loadedFile : iniLoad.loadedFiles) {
-		DX12LogManager::Fields("DX12ModRuntimeIni",
+		DX12_LOG("DX12ModRuntimeIni",
 			"\"status\":\"loaded\",\"path\":\"%S\"", loadedFile.c_str());
 	}
 	for (const std::wstring &error : iniLoad.errors) {
-		DX12LogManager::Fields("DX12ModRuntimeIni",
+		DX12_LOG("DX12ModRuntimeIni",
 			"\"status\":\"error\",\"message\":\"%S\"", error.c_str());
 	}
 	for (const std::wstring &warning : iniLoad.warnings) {
-		DX12LogManager::Fields("DX12ModRuntimeIni",
+		DX12_LOG("DX12ModRuntimeIni",
 			"\"status\":\"warning\",\"message\":\"%S\"", warning.c_str());
 	}
 	for (const DX12VertexLimitRaiseConfig &vlr : loadedVertexLimitRaiseConfigs) {
-		DX12LogManager::Fields("DX12VertexLimitRaiseConfig",
+		DX12_LOG("DX12VertexLimitRaiseConfig",
 			"\"section\":\"%S\",\"overrideByteStride\":%u,\"overrideVertexCount\":%u,\"overrideByteWidth\":%llu,\"uavByteStride\":%u,\"overrideNumElements\":%llu",
 			vlr.section.c_str(), vlr.overrideByteStride, vlr.overrideVertexCount,
 			static_cast<unsigned long long>(vlr.overrideByteWidth),
@@ -1654,14 +1654,14 @@ bool DX12ModRuntimeLoad(
 bool DX12ModRuntimeReload()
 {
 	std::wstring configPath;
-	DX12ModLockTelemetryUtils::AcquireModShared(&gModLock);
+	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	configPath = gConfigPath;
 	ReleaseSRWLockShared(&gModLock);
 	if (configPath.empty()) {
-		DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"empty_config_path\"");
+		DX12_LOG("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"empty_config_path\"");
 		return false;
 	}
-	DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"begin\",\"path\":\"%S\"", configPath.c_str());
+	DX12_LOG("DX12ModRuntimeReload", "\"status\":\"begin\",\"path\":\"%S\"", configPath.c_str());
 	std::wstring status;
 	bool hasWarnings = false;
 	bool hasErrors = false;
@@ -1744,7 +1744,7 @@ bool LoadResourceBytes(
 				if (path)
 					*path = fallbackPath;
 				const bool fallbackOk = ReadFileBytes(fallbackPath.c_str(), bytes);
-				DX12LogManager::Fields("DX12FallbackPath",
+				DX12_LOG("DX12FallbackPath",
 					"\"kind\":\"resource_path_root\",\"api\":\"DX12ModRuntime::LoadResourceBytes\","
 					"\"section\":\"%S\",\"primary\":\"%S\",\"fallback\":\"%S\",\"success\":%s",
 					config.section.c_str(), resolvedPath.c_str(), fallbackPath.c_str(),

@@ -4,12 +4,6 @@
 
 #include "DX12CommandListHookState.h"
 
-// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
-// declaration (same pattern as DX12VmFrameVariablesUtils.h): this header is
-// pulled in before the mod-runtime umbrella declares the marker, so repeat
-// the prototype here.
-void DX12MarkStage(const char *stage);
-
 class DX12CommandQueueExecutionState
 {
 public:
@@ -40,55 +34,22 @@ public:
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original,
 		RegisterSubmittedCommandListFn registerSubmittedCommandList)
 	{
-		DX12_PROFILE_FUNCTION(ExecuteCommandLists);
+		DX12_PROF_SCOPE("ExecuteCommandLists");
 		DX12MarkStage("queue_execute_enter");
-		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+		DX12_DIAG_QPC(totalBegin);
 		// Submission-gap probe: wall clock and this thread's CPU time since the
 		// previous ExecuteCommandLists. A large wall gap with a small CPU delta
 		// means the recording thread was blocked (fence wait / lock / game-side
 		// stall) between submits; a large CPU delta means it was busy recording
 		// or in unhooked game code. This locates frame time that the per-API
-		// hot-path timers cannot see.
-		{
-			const ULONGLONG wallNow = GetTickCount64();
-			FILETIME createTime = {};
-			FILETIME exitTime = {};
-			FILETIME kernelTime = {};
-			FILETIME userTime = {};
-			GetThreadTimes(
-				GetCurrentThread(), &createTime, &exitTime, &kernelTime, &userTime);
-			const ULONGLONG cpuNow =
-				((static_cast<ULONGLONG>(kernelTime.dwHighDateTime) << 32) |
-					kernelTime.dwLowDateTime) / 10 +
-				((static_cast<ULONGLONG>(userTime.dwHighDateTime) << 32) |
-					userTime.dwLowDateTime) / 10;
-			thread_local ULONGLONG lastWall = 0;
-			thread_local ULONGLONG lastCpu = 0;
-			thread_local LONG lastPresent = -1;
-			const LONG present = DX12RuntimeState::GetPresentCount();
-			if (lastWall != 0 && lastPresent >= 0) {
-				const ULONGLONG wallDelta = wallNow - lastWall;
-				const ULONGLONG cpuDelta = cpuNow - lastCpu;
-				DX12LogManager::Fields("DX12ExecuteGapDiag",
-					"\"present\":%ld,\"wallUs\":%llu,\"threadCpuUs\":%llu,"
-					"\"framesSince\":%ld",
-					present,
-					wallDelta * 1000,
-					cpuDelta,
-					static_cast<LONG>(present - lastPresent));
-			}
-			lastWall = wallNow;
-			lastCpu = cpuNow;
-			lastPresent = present;
-		}
+		// hot-path timers cannot see. TIMING builds only.
+		DX12_LOG_EXECUTE_GAP();
 		volatile LONG &firstExecuteLog = DX12CommandQueueExecutionState::FirstExecuteLog;
 		if (InterlockedCompareExchange(&firstExecuteLog, 1, 0) == 0)
-			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
+			DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"enter\",\"queue\":\"%p\",\"count\":%u,\"skipAll\":%ld,\"internalReplay\":%s",
 				queue, numCommandLists, DX12HotPathState::skipAll.load(),
 				DX12InternalReplayState::IsActive() ? "true" : "false");
-	#endif
 
 		// Present publishes feature and capture changes, matching DX11's
 		// frame-action timing. Submission only consumes that published state.
@@ -100,17 +61,16 @@ public:
 		// waits - or the driver/D3D12Core can hang (white-screen startup
 		// hang observed in ZenlessZoneZero with a post-submit
 		// ResourceBarrier replay).
-		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(sliceBegin);
 		const bool shouldNotifySubmitted =
 			DX12ModNeedsCommandListSubmissionNotifications();
 		const bool shouldRegisterSubmitted =
 			DX12HuntIsEnabled() ||
 			DX12CaptureLedger::CurrentCaptureSessionId() != 0;
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"read_work_flags",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		DX12_PROF_ADD_US_ITEMS(
+			"Queue.read_work_flags",
+			DX12_DIAG_ELAPSED_US(sliceBegin),
+			numCommandLists);
 
 		// Order any pending mod uploads (mod textures loaded since the
 		// previous submit) before this submit's lists: the game queue waits
@@ -121,25 +81,20 @@ public:
 
 		if (DX12HotPathState::skipAll) {
 			if (original) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 				if (InterlockedCompareExchange(&firstExecuteLog, 2, 1) == 1)
-					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
+					DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"before_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
-	#endif
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 				original(queue, numCommandLists, commandLists);
-				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-					"original_skip",
-					queue,
-					numCommandLists,
-					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+				DX12_PROF_ADD_US_ITEMS(
+					"Queue.original_skip",
+					DX12_DIAG_ELAPSED_US(sliceBegin),
+					numCommandLists);
 				if (InterlockedCompareExchange(&firstExecuteLog, 3, 2) == 2)
-					DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
+					DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 						"\"stage\":\"after_original_skip\",\"queue\":\"%p\",\"count\":%u",
 						queue, numCommandLists);
-	#endif
 			}
 			// Async content capture: submit readback events queued during
 			// recording, ordered after the game's lists via Signal/Wait on
@@ -147,120 +102,100 @@ public:
 			if (DX12AsyncReadbackHasPendingWork())
 				DX12AsyncReadbackSubmitPending(queue);
 			if (shouldNotifySubmitted) {
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 				DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
-				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-					"mod_notify_submitted_skip",
-					queue,
-					numCommandLists,
-					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+				DX12_PROF_ADD_US_ITEMS(
+					"Queue.mod_notify_submitted_skip",
+					DX12_DIAG_ELAPSED_US(sliceBegin),
+					numCommandLists);
 			}
 			if (shouldRegisterSubmitted) {
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 				RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
-				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-					"register_submitted_skip",
-					queue,
-					numCommandLists,
-					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+				DX12_PROF_ADD_US_ITEMS(
+					"Queue.register_submitted_skip",
+					DX12_DIAG_ELAPSED_US(sliceBegin),
+					numCommandLists);
 			}
-			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-				"total_skip",
-				queue,
-				numCommandLists,
-				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12_PROF_ADD_US_ITEMS(
+				"Queue.total_skip",
+				DX12_DIAG_ELAPSED_US(totalBegin),
+				numCommandLists);
 			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
 		if (DX12InternalReplayState::IsActive()) {
 			if (original) {
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 				original(queue, numCommandLists, commandLists);
-				DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-					"original_internal_replay",
-					queue,
-					numCommandLists,
-					DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+				DX12_PROF_ADD_US_ITEMS(
+					"Queue.original_internal_replay",
+					DX12_DIAG_ELAPSED_US(sliceBegin),
+					numCommandLists);
 			}
 			// Keep the async readback pipeline moving during capture replay:
 			// replay submits never carry the game's normal ExecuteCommandLists.
 			if (DX12AsyncReadbackHasPendingWork())
 				DX12AsyncReadbackSubmitPending(queue);
-			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-				"total_internal_replay",
-				queue,
-				numCommandLists,
-				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12_PROF_ADD_US_ITEMS(
+				"Queue.total_internal_replay",
+				DX12_DIAG_ELAPSED_US(totalBegin),
+				numCommandLists);
 			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
 				if (!original) {
-			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-				"total_no_original",
-				queue,
-				numCommandLists,
-				DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+			DX12_PROF_ADD_US_ITEMS(
+				"Queue.total_no_original",
+				DX12_DIAG_ELAPSED_US(totalBegin),
+				numCommandLists);
 			DX12MarkStage("queue_execute_leave");
 			return;
 		}
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
 		if (InterlockedCompareExchange(&firstExecuteLog, 4, 1) == 1)
-			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
+			DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"before_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
-	#endif
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-				ULONGLONG startTick = GetTickCount64();
-#endif
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC_RESET(sliceBegin);
 		original(queue, numCommandLists, commandLists);
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"original",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+		DX12_PROF_ADD_US_ITEMS(
+			"Queue.original",
+			DX12_DIAG_ELAPSED_US(sliceBegin),
+			numCommandLists);
 		if (InterlockedCompareExchange(&firstExecuteLog, 5, 4) == 4)
-			DX12LogManager::FieldsFlush("DX12ExecuteCommandListsFirst",
+			DX12_LOG_FLUSH("DX12ExecuteCommandListsFirst",
 				"\"stage\":\"after_original_full\",\"queue\":\"%p\",\"count\":%u",
 				queue, numCommandLists);
-	#endif
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		ULONGLONG originalEndTick = GetTickCount64();
-#endif
 		// Async content capture: submit readback events queued during
 		// recording, ordered after the game's lists via Signal/Wait on the
 		// mod-owned copy queue (pure queue operations, no recording).
 		if (DX12AsyncReadbackHasPendingWork())
 			DX12AsyncReadbackSubmitPending(queue);
 		if (shouldNotifySubmitted) {
-			DX12_HOTPATH_TIME_BEGIN(ExecuteCLNotify);
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_STAGE_BEGIN(ExecuteCLNotify);
+			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12ModNotifyCommandListsSubmitted(queue, numCommandLists, commandLists);
-			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-				"mod_notify_submitted",
-				queue,
-				numCommandLists,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			DX12_HOTPATH_TIME_END(ExecuteCLNotify);
+			DX12_PROF_ADD_US_ITEMS(
+				"Queue.mod_notify_submitted",
+				DX12_DIAG_ELAPSED_US(sliceBegin),
+				numCommandLists);
+			DX12_PROF_STAGE_END(ExecuteCLNotify);
 		}
 		if (shouldRegisterSubmitted) {
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC_RESET(sliceBegin);
 			RegisterSubmittedCommandLists(numCommandLists, commandLists, registerSubmittedCommandList);
-			DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-				"register_submitted",
-				queue,
-				numCommandLists,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+			DX12_PROF_ADD_US_ITEMS(
+				"Queue.register_submitted",
+				DX12_DIAG_ELAPSED_US(sliceBegin),
+				numCommandLists);
 		}
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"total",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+		DX12_PROF_ADD_US_ITEMS(
+			"Queue.total",
+			DX12_DIAG_ELAPSED_US(totalBegin),
+			numCommandLists);
 		DX12MarkStage("queue_execute_leave");
 	}
 };
@@ -291,12 +226,12 @@ public:
 			D3D12_COMMAND_QUEUE_DESC desc = queue->GetDesc();
 			if (desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
 				if (InterlockedIncrement(&state.nonDirectLogs) <= 8)
-					DX12LogManager::Fields("DX12CommandQueueState",
+					DX12_LOG("DX12CommandQueueState",
 						"\"event\":\"ignore_non_direct\",\"queue\":\"%p\",\"type\":%d",
 						queue, static_cast<int>(desc.Type));
 				return;
 			}
-			DX12LogManager::Fields("DX12CommandQueueState",
+			DX12_LOG("DX12CommandQueueState",
 				"\"event\":\"accept_direct\",\"queue\":\"%p\",\"type\":%d",
 				queue, static_cast<int>(desc.Type));
 		}

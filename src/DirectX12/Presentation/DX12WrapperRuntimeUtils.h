@@ -4,10 +4,8 @@
 
 #include "DXGIHookRuntime.h"
 
-// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
-// declaration (same pattern as DX12VmFrameVariablesUtils.h) so this header
-// does not need the mod-runtime umbrella.
-void DX12MarkStage(const char *stage);
+// Frame-boundary breadcrumb DX12MarkStage is declared in Core/Diag/DX12Diag.h
+// (TIMING: real store; RELEASE: inline no-op).
 
 class DX12WrapperRuntimeUtils
 {
@@ -64,10 +62,10 @@ public:
 
 	static ID3D12PipelineState *UnwrapPipelineState(ID3D12PipelineState *pipelineState)
 	{
-		DX12_HOTPATH_TIME_BEGIN(UnwrapObjTotal);
+		DX12_PROF_STAGE_BEGIN(UnwrapObj);
 		ID3D12PipelineState *result =
 			reinterpret_cast<ID3D12PipelineState*>(UnwrapD3D12Child(pipelineState));
-		DX12_HOTPATH_TIME_END(UnwrapObjTotal);
+		DX12_PROF_STAGE_END(UnwrapObj);
 		return result;
 	}
 
@@ -264,7 +262,8 @@ public:
 		*result = source;
 		if (!source || !storage || !count)
 			return;
-		DX12ResidentMaintenanceTelemetryUtils::RecordBarrierUnwrap(count);
+		DX12_PROF_COUNT("Rm.BarrierUnwrap");
+		DX12_PROF_ADD_ITEMS("Rm.BarrierUnwrap", static_cast<LONG64>(count));
 		// DX12 callers overwhelmingly submit native resources. Keep that common
 		// case on the original array. If a wrapped resource is encountered,
 		// switch to copy mode in the same pass instead of probing every element
@@ -499,31 +498,31 @@ public:
 		UINT syncInterval,
 		UINT flags)
 	{
-		DX12_PROFILE_FUNCTION(Present);
+		DX12_PROF_SCOPE_NAMED(_profile_timer, "Present");
 		if (!swapChain)
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive()) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present(syncInterval, flags);
 		}
 		if (flags & DXGI_PRESENT_TEST) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present(syncInterval, flags);
 		}
 		if (!DXGIHookRuntime::IsPrimarySwapChain("PresentWrapper", swapChain)) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present(syncInterval, flags);
 		}
 		DX12MarkStage("present_enter");
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
-		DX12OuterTimingProbeUtils::LogPresentEnter("PresentWrapper", swapChain, syncInterval, flags);
-		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::ConsumeUiActionsForFrame("PresentWrapper", swapChain);
+		DX12_PROF_FRAME_ENTER("PresentWrapper", swapChain);
+		DX12_DIAG_QPC(sliceBegin);
+		DXGIHookRuntime::ConsumeUiActionsForFrame(swapChain);
 
 		static volatile LONG firstPresentLog = 0;
 		if (InterlockedCompareExchange(&firstPresentLog, 1, 0) == 0)
-			DX12LogManager::FieldsFlush("DX12PresentFirst",
+			DX12_LOG_FLUSH("DX12PresentFirst",
 				"\"api\":\"Present\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
@@ -534,104 +533,67 @@ public:
 		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
-			_profile_timer.Pause();
+			DX12_DIAG_QPC_RESET(sliceBegin);
+			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
-			_profile_timer.Resume();
-			DX12OuterTimingProbeUtils::LogPresentSlice(
-				"PresentWrapper", "original_present_skip", swapChain, skipHr,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_RESUME(_profile_timer);
+			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
 			DXGIHookRuntime::RunPostPresentRuntime(
-				"PresentWrapper",
 				swapChain,
-				skipHr,
 				DX12RuntimeState::GetPresentCount() > 2);
 			DX12HotPathState::Update();
-			DX12_HOTPATH_LOG_AND_RESET();
-			DX12OuterTimingProbeUtils::LogPresentSlice(
-				"PresentWrapper", "post_original_skip", swapChain, skipHr,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, skipHr);
+			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, skipHr);
 			return skipHr;
 		}
 
-		DX12_HOTPATH_TIME_BEGIN(PresentTotal);
+		DX12_PROF_STAGE_BEGIN(Present);
 
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::LogAndResetPerFrameCounters();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "per_frame_counters", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12Profiling::BeginFrame();
+		DX12_DIAG_QPC_RESET(sliceBegin);
 		const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 		if (DX12FrameAnalysis::IsCapturing())
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "capture_bookkeeping", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_ADD_US("Present.capture_bookkeeping", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_DIAG_QPC_RESET(sliceBegin);
 		// [Present] custom shader elements replay here - after the game's
 		// rendering is submitted, before the original Present (DX11 parity).
 		DX12ModSubmitPresentOverlay(swapChain);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "mod_present_overlay", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
-		_profile_timer.Pause();
+		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_DIAG_QPC(presentBegin);
+		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");
 		HRESULT hr = swapChain->Present(syncInterval, flags);
-		_profile_timer.Resume();
+		DX12_PROF_RESUME(_profile_timer);
 		DX12MarkStage("present_original_done");
-		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12Perf",
-			"\"scope\":\"PresentWait\",\"us\":%lld",
-			static_cast<long long>(presentUs));
-	#endif
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "original_present", swapChain, hr,
-			presentUs);
+		DX12_PROF_ADD_US("Present.original_present", DX12_DIAG_ELAPSED_US(presentBegin));
 						if (FAILED(hr)) {
-			_profile_timer.Finish();
-			DX12_HOTPATH_TIME_END(PresentTotal);
-			DX12Profiler::FlushFrame();
-			DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+			DX12_PROF_FINISH(_profile_timer);
+			DX12_PROF_STAGE_END(Present);
+			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, hr);
 			DX12MarkStage("present_leave");
 			return hr;
 		}
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12RuntimeState::IncrementPresentCount();
-		DXGIHookRuntime::RunPostPresentRuntime(
-			"PresentWrapper", swapChain, hr, true);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "post_original_runtime", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		DXGIHookRuntime::RunPostPresentRuntime(swapChain, true);
+		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12ModBeginFrame(swapChain);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "mod_begin_frame", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present", swapChain, hr, dumpFrame, dumpShaders);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "capture_complete_or_begin", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		_profile_timer.Finish();
-		DX12_HOTPATH_TIME_END(PresentTotal);
-		DX12Profiler::FlushFrame();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"PresentWrapper", "profiling_and_hotpath_flush", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				DX12OuterTimingProbeUtils::LogPresentLeave("PresentWrapper", swapChain, hr);
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DXGIHookRuntime::CompleteCaptureOrBeginNext(swapChain, dumpFrame, dumpShaders);
+		DX12_PROF_ADD_US("Present.capture_complete_or_begin", DX12_DIAG_ELAPSED_US(sliceBegin));
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DX12_PROF_FINISH(_profile_timer);
+		DX12_PROF_STAGE_END(Present);
+		DX12_PROF_ADD_US("Present.profiling_and_hotpath_flush", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, hr);
 		DX12MarkStage("present_leave");
 		return hr;
 	}
@@ -642,31 +604,31 @@ public:
 		UINT flags,
 		const DXGI_PRESENT_PARAMETERS *presentParameters)
 	{
-		DX12_PROFILE_FUNCTION(Present);
+		DX12_PROF_SCOPE_NAMED(_profile_timer, "Present");
 		if (!swapChain)
 			return DXGI_ERROR_INVALID_CALL;
 		if (DX12InternalReplayState::IsActive()) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		if (flags & DXGI_PRESENT_TEST) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		if (!DXGIHookRuntime::IsPrimarySwapChain("Present1Wrapper", swapChain)) {
-			_profile_timer.Pause();
+			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
 		DX12MarkStage("present_enter");
 		DX12ResourceDumpGpuCopy::DrainRetiredCopies();
 
-		DX12OuterTimingProbeUtils::LogPresentEnter("Present1Wrapper", swapChain, syncInterval, flags);
-		LARGE_INTEGER sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::ConsumeUiActionsForFrame("Present1Wrapper", swapChain);
+		DX12_PROF_FRAME_ENTER("Present1Wrapper", swapChain);
+		DX12_DIAG_QPC(sliceBegin);
+		DXGIHookRuntime::ConsumeUiActionsForFrame(swapChain);
 
 		static volatile LONG firstPresent1Log = 0;
 		if (InterlockedCompareExchange(&firstPresent1Log, 1, 0) == 0)
-			DX12LogManager::FieldsFlush("DX12PresentFirst",
+			DX12_LOG_FLUSH("DX12PresentFirst",
 				"\"api\":\"Present1\",\"stage\":\"wrapper_enter\",\"swapchain\":\"%p\",\"sync\":%u,\"flags\":\"0x%x\",\"skipAll\":%ld",
 				swapChain, syncInterval, flags, DX12HotPathState::skipAll.load());
 
@@ -677,101 +639,64 @@ public:
 		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
-			_profile_timer.Pause();
+			DX12_DIAG_QPC_RESET(sliceBegin);
+			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
-			_profile_timer.Resume();
-			DX12OuterTimingProbeUtils::LogPresentSlice(
-				"Present1Wrapper", "original_present_skip", swapChain, skipHr,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			sliceBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_RESUME(_profile_timer);
+			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
 			DXGIHookRuntime::RunPostPresentRuntime(
-				"Present1Wrapper",
 				swapChain,
-				skipHr,
 				DX12RuntimeState::GetPresentCount() > 2);
 			DX12HotPathState::Update();
-			DX12_HOTPATH_LOG_AND_RESET();
-			DX12OuterTimingProbeUtils::LogPresentSlice(
-				"Present1Wrapper", "post_original_skip", swapChain, skipHr,
-				DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, skipHr);
+			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
+			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, skipHr);
 			return skipHr;
 		}
 
 
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::LogAndResetPerFrameCounters();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "per_frame_counters", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DX12Profiling::BeginFrame();
+		DX12_DIAG_QPC_RESET(sliceBegin);
 		const bool dumpFrame = DX12FrameAnalysis::EndCapture();
 		if (DX12FrameAnalysis::IsCapturing())
 			DX12FrameAnalysis::LogJsonFunc("FrameCaptureContinue",
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "capture_bookkeeping", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_ADD_US("Present.capture_bookkeeping", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_DIAG_QPC_RESET(sliceBegin);
 		// [Present] custom shader elements replay here - after the game's
 		// rendering is submitted, before the original Present (DX11 parity).
 		DX12ModSubmitPresentOverlay(swapChain);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "mod_present_overlay", swapChain, S_OK,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				LARGE_INTEGER presentBegin = DX12OuterTimingProbeUtils::Now();
-		_profile_timer.Pause();
+		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_DIAG_QPC(presentBegin);
+		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");
 		HRESULT hr = swapChain->Present1(syncInterval, flags, presentParameters);
-		_profile_timer.Resume();
+		DX12_PROF_RESUME(_profile_timer);
 		DX12MarkStage("present_original_done");
-		const LONG64 presentUs = DX12OuterTimingProbeUtils::ElapsedUs(presentBegin);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12Perf",
-			"\"scope\":\"PresentWait\",\"us\":%lld",
-			static_cast<long long>(presentUs));
-	#endif
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "original_present", swapChain, hr,
-			presentUs);
+		DX12_PROF_ADD_US("Present.original_present", DX12_DIAG_ELAPSED_US(presentBegin));
 						if (FAILED(hr)) {
-			_profile_timer.Finish();
-			DX12Profiler::FlushFrame();
-			DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+			DX12_PROF_FINISH(_profile_timer);
+			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, hr);
 			DX12MarkStage("present_leave");
 			return hr;
 		}
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12RuntimeState::IncrementPresentCount();
-		DXGIHookRuntime::RunPostPresentRuntime(
-			"Present1Wrapper", swapChain, hr, true);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "post_original_runtime", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		DXGIHookRuntime::RunPostPresentRuntime(swapChain, true);
+		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
-				sliceBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12ModBeginFrame(swapChain);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "mod_begin_frame", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
+		DX12_PROF_ADD_US("Present.mod_begin_frame", DX12_DIAG_ELAPSED_US(sliceBegin));
 
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		DXGIHookRuntime::CompleteCaptureOrBeginNext("Present1", swapChain, hr, dumpFrame, dumpShaders);
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "capture_complete_or_begin", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-		sliceBegin = DX12OuterTimingProbeUtils::Now();
-		_profile_timer.Finish();
-		DX12Profiler::FlushFrame();
-		DX12OuterTimingProbeUtils::LogPresentSlice(
-			"Present1Wrapper", "profiling_and_hotpath_flush", swapChain, hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(sliceBegin));
-				DX12OuterTimingProbeUtils::LogPresentLeave("Present1Wrapper", swapChain, hr);
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DXGIHookRuntime::CompleteCaptureOrBeginNext(swapChain, dumpFrame, dumpShaders);
+		DX12_PROF_ADD_US("Present.capture_complete_or_begin", DX12_DIAG_ELAPSED_US(sliceBegin));
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DX12_PROF_FINISH(_profile_timer);
+		DX12_PROF_ADD_US("Present.profiling_and_hotpath_flush", DX12_DIAG_ELAPSED_US(sliceBegin));
+				DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, hr);
 		DX12MarkStage("present_leave");
 		return hr;
 	}
@@ -806,7 +731,7 @@ public:
 		if (!DX12InternalReplayState::IsActive())
 			DX12NativeOverlayInvalidate(swapChain);
 		HRESULT hr = swapChain->ResizeBuffers(bufferCount, width, height, newFormat, swapChainFlags);
-		DX12LogManager::Fields("IDXGISwapChain::ResizeBuffers",
+		DX12_LOG("IDXGISwapChain::ResizeBuffers",
 			"\"swapchain\":\"%p\",\"buffers\":%u,\"width\":%u,\"height\":%u,\"format\":%u,\"flags\":\"0x%x\",\"hr\":\"0x%lx\"",
 			swapChain, bufferCount, width, height, static_cast<UINT>(newFormat), swapChainFlags, hr);
 		return hr;
@@ -818,19 +743,9 @@ public:
 		ID3D12CommandList *const *commandLists,
 		DX12CommandListHookSignatures::QueueExecuteCommandLists original)
 	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		// One QPC pair feeds both the API wall bucket and the ExecuteCL hot-path
-		// stage (previously two independent timers measured the same span).
-		DX12Profiler::Scope apiWallScope(
-			DX12Profiler::ApiStage,
-			DX12OuterTimingProbeUtils::ApiExecuteCommandLists,
-			static_cast<int>(DX12HotPathStage::ExecuteCLTotal));
-#else
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiExecuteCommandLists);
-#endif
-		LARGE_INTEGER totalBegin = DX12OuterTimingProbeUtils::Now();
-		LARGE_INTEGER unwrapBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_API_SCOPE(ExecuteCommandLists);
+		DX12_DIAG_QPC(totalBegin);
+		DX12_DIAG_QPC(unwrapBegin);
 		// Use the stack for up to eight command lists, then fall back to the heap.
 		ID3D12CommandList *stackUnwrapped[8];
 		ID3D12CommandList *const *activeCommandLists = commandLists;
@@ -845,11 +760,7 @@ public:
 				dest[i] = UnwrapCommandList(commandLists[i]);
 			activeCommandLists = dest;
 		}
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"unwrap_command_lists",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(unwrapBegin));
+		DX12_PROF_ADD_US("Queue.unwrap_command_lists", DX12_DIAG_ELAPSED_US(unwrapBegin));
 		DX12CommandQueueExecutionFlow::Execute(
 			queue,
 			numCommandLists,
@@ -860,11 +771,7 @@ public:
 		// to; tracking the queue here (rare pointer changes only) keeps that
 		// submit a cheap atomic load.
 		DX12ModTrackGameDirectQueue(queue);
-		DX12OuterTimingProbeUtils::LogQueueExecuteSlice(
-			"wrapper_total",
-			queue,
-			numCommandLists,
-			DX12OuterTimingProbeUtils::ElapsedUs(totalBegin));
+		DX12_PROF_ADD_US("Queue.wrapper_total", DX12_DIAG_ELAPSED_US(totalBegin));
 	}
 
 	static void DrawInstanced(
@@ -910,12 +817,11 @@ public:
 		DX12CommandListHookSignatures::DrawInstanced original,
 		UINT64 drawFlags)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiDrawInstanced);
+		DX12_PROF_API_SCOPE(DrawInstanced);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			if (original)
 				original(commandList, vertexCountPerInstance, instanceCount,
 					startVertexLocation, startInstanceLocation);
@@ -985,12 +891,11 @@ public:
 		DX12CommandListHookSignatures::DrawIndexedInstanced original,
 		UINT64 drawFlags)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
+		DX12_PROF_API_SCOPE(DrawIndexedInstanced);
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_PRESENT_REPLACEMENT |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			if (original)
 				original(commandList, indexCountPerInstance, instanceCount,
 					startIndexLocation, baseVertexLocation, startInstanceLocation);
@@ -1042,15 +947,14 @@ public:
 		DX12DispatchHookFlowDispatch::Fn original,
 		UINT64 dispatchFlags)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiDispatch);
+		DX12_PROF_API_SCOPE(Dispatch);
 		// The wrapper already evaluated this same mask on its fast path; only
 		// a null original (forward through DirectDispatch) can still take the
 		// no-work branch here, so re-check with the flags it passed down
 		// instead of loading the shared word a second time.
 		if (!(dispatchFlags & (DX12HotPathState::MASK_DISPATCH_WORK |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			if (original)
 				original(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			else
@@ -1077,8 +981,7 @@ public:
 		UINT64 countBufferOffset,
 		DX12CommandListHookSignatures::ExecuteIndirect original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiExecuteIndirect);
+		DX12_PROF_API_SCOPE(ExecuteIndirect);
 		ID3D12Resource *unwrappedArgumentBuffer = UnwrapResource(argumentBuffer);
 		ID3D12Resource *unwrappedCountBuffer = UnwrapResource(countBuffer);
 		ID3D12CommandSignature *unwrappedCommandSignature = UnwrapCommandSignature(commandSignature);
@@ -1099,26 +1002,12 @@ public:
 		UINT64 value,
 		DX12CommandListHookSignatures::QueueSignal original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiQueueSignal);
+		DX12_PROF_API_SCOPE(QueueSignal);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
-		const UINT64 completedBefore =
-			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(begin);
 		HRESULT hr = original ? original(queue, unwrappedFence, value) :
 			queue->Signal(unwrappedFence, value);
-		const UINT64 completedAfter =
-			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
-		DX12OuterTimingProbeUtils::LogQueueFenceSlice(
-			"Signal",
-			"original",
-			queue,
-			unwrappedFence,
-			value,
-			completedBefore,
-			completedAfter,
-			hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+		DX12_PROF_ADD_US("Fence.op", DX12_DIAG_ELAPSED_US(begin));
 		return hr;
 	}
 
@@ -1128,26 +1017,12 @@ public:
 		UINT64 value,
 		DX12CommandListHookSignatures::QueueWait original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiQueueWait);
+		DX12_PROF_API_SCOPE(QueueWait);
 		ID3D12Fence *unwrappedFence = UnwrapFence(fence);
-		const UINT64 completedBefore =
-			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(begin);
 		HRESULT hr = original ? original(queue, unwrappedFence, value) :
 			queue->Wait(unwrappedFence, value);
-		const UINT64 completedAfter =
-			DX12OuterTimingProbeUtils::TimingFenceCompletedValue(unwrappedFence);
-		DX12OuterTimingProbeUtils::LogQueueFenceSlice(
-			"Wait",
-			"original",
-			queue,
-			unwrappedFence,
-			value,
-			completedBefore,
-			completedAfter,
-			hr,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+		DX12_PROF_ADD_US("Fence.op", DX12_DIAG_ELAPSED_US(begin));
 		return hr;
 	}
 
@@ -1170,8 +1045,7 @@ public:
 		ID3D12PipelineState *initialState,
 		DX12CommandListHookSignatures::ResetCommandList original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiResetCommandList);
+		DX12_PROF_API_SCOPE(ResetCommandList);
 		ID3D12CommandAllocator *unwrappedAllocator = UnwrapCommandAllocator(allocator);
 		ID3D12PipelineState *unwrappedInitialState = UnwrapPipelineState(initialState);
 		HRESULT hr = original ?
@@ -1191,8 +1065,7 @@ public:
 		ID3D12GraphicsCommandList *commandList,
 		DX12CommandListHookSignatures::CloseCommandList original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiCloseCommandList);
+		DX12_PROF_API_SCOPE(CloseCommandList);
 		return original ? original(commandList) : commandList->Close();
 	}
 
@@ -1213,9 +1086,8 @@ public:
 		ID3D12PipelineState *pipelineState,
 		DX12CommandListHookSignatures::SetPipelineState original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetPipelineState);
-		DX12_HOTPATH_TIME_BEGIN(SetPipelineStateTotal);
+		DX12_PROF_API_SCOPE(SetPipelineState);
+		DX12_PROF_STAGE_BEGIN(SetPipelineState);
 		ID3D12PipelineState *unwrappedPipelineState = nullptr;
 		if (runtimeState && runtimeState->lastWrappedPipelineState == pipelineState) {
 			unwrappedPipelineState = runtimeState->lastUnwrappedPipelineState;
@@ -1233,7 +1105,7 @@ public:
 			original(commandList, activePipelineState);
 		else
 			commandList->SetPipelineState(activePipelineState);
-		DX12_HOTPATH_TIME_END(SetPipelineStateTotal);
+		DX12_PROF_STAGE_END(SetPipelineState);
 	}
 
 	static void ResourceBarrier(
@@ -1243,26 +1115,25 @@ public:
 		const D3D12_RESOURCE_BARRIER *barriers,
 		DX12CommandListHookSignatures::ResourceBarrier original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiResourceBarrier);
-		DX12_HOTPATH_TIME_BEGIN(ResourceBarrierTotal);
+		DX12_PROF_API_SCOPE(ResourceBarrier);
+		DX12_PROF_STAGE_BEGIN(ResourceBarrier);
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
 		{
 			std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
 			std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
 				runtimeState ? runtimeState->barrierScratch : localBarriers;
-			DX12_HOTPATH_TIME_BEGIN(BarrierUnwrap);
+			DX12_PROF_STAGE_BEGIN(BarrierUnwrap);
 			UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
-			DX12_HOTPATH_TIME_END(BarrierUnwrap);
+			DX12_PROF_STAGE_END(BarrierUnwrap);
 		}
-		DX12_HOTPATH_TIME_BEGIN(BarrierCapture);
+		DX12_PROF_STAGE_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);
-		DX12_HOTPATH_TIME_END(BarrierCapture);
+		DX12_PROF_STAGE_END(BarrierCapture);
 		if (original)
 			original(commandList, numBarriers, activeBarriers);
 		else
 			commandList->ResourceBarrier(numBarriers, activeBarriers);
-		DX12_HOTPATH_TIME_END(ResourceBarrierTotal);
+		DX12_PROF_STAGE_END(ResourceBarrier);
 	}
 
 	// Bind-time static IA replacement (plan step 3.2). Hashes the original
@@ -1473,8 +1344,7 @@ public:
 		const D3D12_INDEX_BUFFER_VIEW *view,
 		DX12CommandListHookSignatures::IaSetIndexBuffer original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
+		DX12_PROF_API_SCOPE(IASetIndexBuffer);
 		// Plan fix A: a game rebind supersedes a live static-template IA
 		// replacement. Restore the snapshotted original views first so slots
 		// this call does not cover do not keep the mod view.
@@ -1522,8 +1392,7 @@ public:
 		const D3D12_VERTEX_BUFFER_VIEW *views,
 		DX12CommandListHookSignatures::IaSetVertexBuffers original)
 	{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
+		DX12_PROF_API_SCOPE(IASetVertexBuffers);
 		// Plan fix A: a game rebind supersedes a live static-template IA
 		// replacement. Restore the snapshotted original views first so slots
 		// this call does not cover do not keep the mod view.
@@ -1642,16 +1511,15 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		DX12_PROFILE_FUNCTION(SetDescriptorHeaps);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
-		DX12_HOTPATH_TIME_BEGIN(DescriptorHeapsTotal);
+		DX12_PROF_FUNCTION(SetDescriptorHeaps);
+		DX12_PROF_API_SCOPE(SetDescriptorHeaps);
+		DX12_PROF_STAGE_BEGIN(DescriptorHeaps);
 		if (!ShouldSkipComputeBinding()) {
 			DX12CommandListComputeBindingFlow::CaptureDescriptorHeaps(
 				commandList, runtimeState, count, heaps);
 		}
 		commandList->SetDescriptorHeaps(count, heaps);
-		DX12_HOTPATH_TIME_END(DescriptorHeapsTotal);
+		DX12_PROF_STAGE_END(DescriptorHeaps);
 	}
 
 	static void SetComputeRootSignature(
@@ -1670,9 +1538,8 @@ public:
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
-		DX12_PROFILE_FUNCTION(SetComputeRootSignature);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetComputeRootSignature);
+		DX12_PROF_FUNCTION(SetComputeRootSignature);
+		DX12_PROF_API_SCOPE(SetComputeRootSignature);
 		ID3D12RootSignature *unwrapped = nullptr;
 		if (runtimeState && runtimeState->lastWrappedComputeRootSignature == rootSignature)
 			unwrapped = runtimeState->lastUnwrappedComputeRootSignature;
@@ -1735,9 +1602,8 @@ public:
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
-		DX12_PROFILE_FUNCTION(SetGraphicsRootSignature);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetGraphicsRootSignature);
+		DX12_PROF_FUNCTION(SetGraphicsRootSignature);
+		DX12_PROF_API_SCOPE(SetGraphicsRootSignature);
 		ID3D12RootSignature *unwrapped = nullptr;
 		if (runtimeState && runtimeState->lastWrappedGraphicsRootSignature == rootSignature)
 			unwrapped = runtimeState->lastUnwrappedGraphicsRootSignature;
@@ -1799,9 +1665,8 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
-		DX12_PROFILE_FUNCTION(SetComputeRootDescriptorTable);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptorTable);
+		DX12_PROF_FUNCTION(SetComputeRootDescriptorTable);
+		DX12_PROF_API_SCOPE(SetComputeRootDescriptorTable);
 		if (!ShouldSkipComputeBinding()) {
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
 				commandList, runtimeState, rootParameterIndex, baseDescriptor, false);
@@ -1836,9 +1701,8 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
-		DX12_PROFILE_FUNCTION(SetGraphicsRootDescriptorTable);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptorTable);
+		DX12_PROF_FUNCTION(SetGraphicsRootDescriptorTable);
+		DX12_PROF_API_SCOPE(SetGraphicsRootDescriptorTable);
 		if (ShouldSkipGraphicsBinding()) {
 			// Binding capture is skipped, so the deferred-restore guard in the
 			// capture flow does not run. The game's handle targets its own
@@ -1880,9 +1744,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetComputeRootConstantBufferView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		DX12_PROF_FUNCTION(SetComputeRootConstantBufferView);
+		DX12_PROF_API_SCOPE(SetComputeRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
 			if (runtimeState)
@@ -1918,9 +1781,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetGraphicsRootConstantBufferView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		DX12_PROF_FUNCTION(SetGraphicsRootConstantBufferView);
+		DX12_PROF_API_SCOPE(SetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) ||
 			DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags)) {
@@ -1953,9 +1815,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetComputeRootShaderResourceView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		DX12_PROF_FUNCTION(SetComputeRootShaderResourceView);
+		DX12_PROF_API_SCOPE(SetComputeRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
 			if (runtimeState)
@@ -1991,9 +1852,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetGraphicsRootShaderResourceView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		DX12_PROF_FUNCTION(SetGraphicsRootShaderResourceView);
+		DX12_PROF_API_SCOPE(SetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) ||
 			DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags)) {
@@ -2026,9 +1886,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetComputeRootUnorderedAccessView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetComputeRootDescriptor);
+		DX12_PROF_FUNCTION(SetComputeRootUnorderedAccessView);
+		DX12_PROF_API_SCOPE(SetComputeRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsComputeResidentBindingState(flags)) {
 			if (runtimeState)
@@ -2064,9 +1923,8 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
-		DX12_PROFILE_FUNCTION(SetGraphicsRootUnorderedAccessView);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiSetGraphicsRootDescriptor);
+		DX12_PROF_FUNCTION(SetGraphicsRootUnorderedAccessView);
+		DX12_PROF_API_SCOPE(SetGraphicsRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsGraphicsResidentRootDescriptorState(flags) ||
 			DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags)) {
@@ -2096,9 +1954,8 @@ public:
 		DX12SimulateContext *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
-		DX12_PROFILE_FUNCTION(IASetPrimitiveTopology);
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiIASetPrimitiveTopology);
+		DX12_PROF_FUNCTION(IASetPrimitiveTopology);
+		DX12_PROF_API_SCOPE(IASetPrimitiveTopology);
 		if (DX12HotPathState::skipAll)
 			commandList->IASetPrimitiveTopology(topology);
 		else {

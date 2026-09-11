@@ -510,5 +510,5 @@ bool DX12ShaderDumpIsCapturingFrame();
 bool DX12ShaderDumpIsBusy();
 void DX12DumpCapturedFrameShaders();
 
+// The outer timing probe was unified into Core/Diag/DX12Diag.h.
 
-#include "ModState/DX12OuterTimingProbe.h"

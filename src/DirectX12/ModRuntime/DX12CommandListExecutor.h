@@ -515,15 +515,13 @@ public:
 		if (!mDevice || !mCommandList || !mReplacement)
 			return false;
 		if (!thisMatch || !thisMatch->hasThisSrvTarget || action.resource.empty()) {
-#if defined(DX12_RELEASE_TIMING)
 			// TIMING-build trace: conditional this= executed without a
 			// descriptor-matched target (e.g. the override fired on an IA
 			// binding, where "this" has no meaning) - the branch intent is
 			// visible even though nothing was replaced.
-			DX12LogManager::Fields("DX12SetThisResourceDiag",
+			DX12_LOG("DX12SetThisResourceDiag",
 				"event=skipped_no_target resource=%S thisTarget=%d",
 				action.resource.c_str(), thisMatch ? (thisMatch->hasThisSrvTarget ? 1 : 0) : -1);
-#endif
 			return false;
 		}
 		std::vector<DX12DrawSrvPatchRequest> requests;
@@ -533,11 +531,9 @@ public:
 			return false;
 		if (!DX12DrawSrvReplacementUtils::QueueRequests(requests, mReplacement))
 			return false;
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12SetThisResourceDiag",
+		DX12_LOG("DX12SetThisResourceDiag",
 			"event=applied resource=%S",
 			action.resource.c_str());
-#endif
 		MarkChanged();
 		return true;
 	}
@@ -666,7 +662,7 @@ public:
 				}
 
 			}
-#if defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 			// TIMING-build trace: log every replacement draw this dynamic
 			// (VM-executed) texture override appended, with the live
 			// $swapkey0 value, so "which mesh variant was actually replayed"
@@ -679,7 +675,7 @@ public:
 				     i < mReplacement->draws.size(); ++i) {
 					const DX12ModIaReplacement::DrawCall &draw =
 						mReplacement->draws[i];
-					DX12LogManager::Fields("DX12IaReplayDiag",
+					DX12_LOG("DX12IaReplayDiag",
 						"event=append_draw section=%S indexed=%d count=%u start=%u base=%d swapkey0=%g",
 						config->section.c_str(), draw.indexed ? 1 : 0,
 						draw.count, draw.start, draw.baseVertex, swapkey0);
@@ -1419,11 +1415,9 @@ public:
 		if (!Bunny::DX12ResourceAliasStore::IsResourceAliasValue(value)) {
 			if (TryCaptureResourceFromAction(action))
 				return;
-#if defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Fields("DX12ResourceAliasDiag",
+			DX12_LOG("DX12ResourceAliasDiag",
 				"event=unsupported_copy target=%S (capture failed or not a texture SRV)",
 				value.c_str());
-#endif
 			return;
 		}
 		// action.resource carries the assignment key with its original
@@ -1434,11 +1428,9 @@ public:
 		const std::wstring name = Bunny::IniDocumentText::Trim(action.resource);
 		const std::wstring target = Bunny::DX12ResourceAliasStore::AliasTarget(value);
 		gResourceAliases.Add(name, target);
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12ResourceAliasDiag",
+		DX12_LOG("DX12ResourceAliasDiag",
 			"event=alias_added name=%S target=%S",
 			name.c_str(), target.c_str());
-#endif
 	}
 
 	void RunCommandList(
@@ -1519,11 +1511,9 @@ public:
 				mReplacement->AddCustomElementRecord(record);
 				recorded = true;
 			}
-#if defined(DX12_RELEASE_TIMING)
-			DX12LogManager::FieldsFlush("DX12CustomShaderDiag",
+			DX12_LOG_FLUSH("DX12CustomShaderDiag",
 				"event=element_deferred section=%S depth=%d recorded=%d spec=%d",
 				commandList.section.c_str(), depth, recorded ? 1 : 0, spec ? 1 : 0);
-#endif
 			return;
 		}
 		if (RunCompiledCommandListPlan(commandList.section, depth, includePost))
@@ -1546,13 +1536,11 @@ public:
 				if (config) {
 					RunCommandList(*config, depth + 1, includePost, thisMatch);
 				}
-#if defined(DX12_RELEASE_TIMING)
 				else {
-					DX12LogManager::Fields("DX12PresentDiag",
+					DX12_LOG("DX12PresentDiag",
 						"event=run_target_missing target=%S depth=%d",
 						action.commandList.c_str(), depth);
 				}
-#endif
 				break;
 			}
 			case Bunny::CommandListActionKind::CheckTextureOverride: {

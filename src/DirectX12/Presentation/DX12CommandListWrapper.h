@@ -109,7 +109,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		mOrigIASetVertexBuffers = ResolveOriginalIASetVertexBuffers();
 		mOrigExecuteIndirect = ResolveOriginalExecuteIndirect();
 
-		DX12LogManager::Fields("DX12Wrapper",
+		DX12_LOG("DX12Wrapper",
 			"kind=graphics_command_list,stage=create,wrapper=%p,object=%p",
 			this, commandList);
 	}
@@ -131,7 +131,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			DX12CommandListRuntime::UnregisterDirectState(mCommandList);
 		}
 		if (mRuntimeState.device) {
-			DX12LogManager::Fields("DX12Wrapper",
+			DX12_LOG("DX12Wrapper",
 				"kind=graphics_command_list,stage=release_cached_device,wrapper=%p,object=%p,device=%p",
 				this, mCommandList, mRuntimeState.device);
 			mRuntimeState.device->Release();
@@ -543,23 +543,23 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		HRESULT STDMETHODCALLTYPE Close() override
 		{
-		DX12_HOTPATH_TIME_BEGIN(CloseCmdListTotal);
+		// RAII scope: the old END line sat AFTER the return and never ran.
+		DX12_PROF_STAGE_SCOPE(CloseCmdList);
 			return DX12WrapperRuntimeUtils::CloseCommandList(mCommandList, mOrigClose);
-		DX12_HOTPATH_TIME_END(CloseCmdListTotal);
 		}
 
 		HRESULT STDMETHODCALLTYPE Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(ResetCmdListTotal);
+		// RAII scope: the old END line sat AFTER the return and never ran.
+		DX12_PROF_STAGE_SCOPE(ResetCmdList);
 			HRESULT hr = DX12WrapperRuntimeUtils::ResetCommandList(
 				mCommandList, &mRuntimeState, pAllocator, pInitialState, mOrigReset);
 			return hr;
-		DX12_HOTPATH_TIME_END(ResetCmdListTotal);
 		}
 
 		void STDMETHODCALLTYPE ClearState(ID3D12PipelineState *pPipelineState) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(ClearStateTotal);
+		DX12_PROF_STAGE_BEGIN(ClearState);
 			mCommandList->ClearState(DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
 			// ClearState reverts OM/rasterizer state to defaults; keep the
 			// replay-restore shadow in step.
@@ -567,7 +567,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			mRuntimeState.omHasDepthStencil = false;
 			mRuntimeState.viewportCount = 0;
 			mRuntimeState.scissorCount = 0;
-		DX12_HOTPATH_TIME_END(ClearStateTotal);
+		DX12_PROF_STAGE_END(ClearState);
 		}
 
 		void STDMETHODCALLTYPE DrawInstanced(
@@ -583,8 +583,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 					DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
 				mOrigDrawInstanced) {
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiDrawInstanced);
+			DX12_PROF_API_SCOPE(DrawInstanced);
 			mOrigDrawInstanced(mCommandList, VertexCountPerInstance, InstanceCount,
 				StartVertexLocation, StartInstanceLocation);
 			return;
@@ -621,8 +620,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		if (!(drawFlags & (DX12HotPathState::MASK_DRAW_WORK |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE)) &&
 			mOrigDrawIndexedInstanced) {
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiDrawIndexedInstanced);
+			DX12_PROF_API_SCOPE(DrawIndexedInstanced);
 			mOrigDrawIndexedInstanced(mCommandList, IndexCountPerInstance, InstanceCount,
 				StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 			return;
@@ -656,8 +654,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		const UINT64 dispatchFlags = DX12HotPathState::HookWorkFlags;
 		if ((!(dispatchFlags & (DX12HotPathState::MASK_DISPATCH_WORK |
 				DX12HotPathState::FLAG_DRAWSRV_PENDING_RESTORE))) && mOrigDispatch) {
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiDispatch);
+			DX12_PROF_API_SCOPE(Dispatch);
 			mOrigDispatch(mCommandList, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 			return;
 		}
@@ -675,8 +672,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer,
 			UINT64 SrcOffset, UINT64 NumBytes) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiCopyBufferRegion);
+			DX12_PROF_API_SCOPE(CopyBufferRegion);
 			const UINT64 flags = DX12HotPathState::HookWorkFlags;
 			if (DX12HotPathState::NeedsPreSkinProbe(flags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
@@ -711,8 +707,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			const D3D12_TEXTURE_COPY_LOCATION *pDst, UINT DstX, UINT DstY, UINT DstZ,
 			const D3D12_TEXTURE_COPY_LOCATION *pSrc, const D3D12_BOX *pSrcBox) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiCopyTextureRegion);
+			DX12_PROF_API_SCOPE(CopyTextureRegion);
 			if (DX12HotPathState::NeedsPreSkinProbe(
 					DX12HotPathState::HookWorkFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
@@ -736,12 +731,11 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
 		{
-		DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-			DX12OuterTimingProbeUtils::ApiCopyResource);
+		DX12_PROF_API_SCOPE(CopyResource);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
 		if (DX12HotPathState::NeedsPreSkinProbe(flags))
 			DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
-		DX12_HOTPATH_TIME_BEGIN(CopyResourceOpTotal);
+		DX12_PROF_STAGE_BEGIN(CopyResourceOp);
 			ID3D12Resource *dstResource =
 				DX12WrapperRuntimeUtils::UnwrapResource(pDstResource);
 			ID3D12Resource *srcResource =
@@ -763,7 +757,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						dstResource, 0, dstDesc.Width);
 				}
 			}
-		DX12_HOTPATH_TIME_END(CopyResourceOpTotal);
+		DX12_PROF_STAGE_END(CopyResourceOp);
 		}
 
 		void STDMETHODCALLTYPE CopyTiles(
@@ -772,8 +766,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			const D3D12_TILE_REGION_SIZE *pTileRegionSize, ID3D12Resource *pBuffer,
 			UINT64 BufferStartOffsetInBytes, D3D12_TILE_COPY_FLAGS Flags) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiCopyTiles);
+			DX12_PROF_API_SCOPE(CopyTiles);
 			if (DX12HotPathState::NeedsPreSkinProbe(
 					DX12HotPathState::HookWorkFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
@@ -787,8 +780,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			ID3D12Resource *pDstResource, UINT DstSubresource,
 			ID3D12Resource *pSrcResource, UINT SrcSubresource, DXGI_FORMAT Format) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiResolveSubresource);
+			DX12_PROF_API_SCOPE(ResolveSubresource);
 			if (DX12HotPathState::NeedsPreSkinProbe(
 					DX12HotPathState::HookWorkFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
@@ -799,9 +791,8 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) override
 		{
-			DX12_HOTPATH_TIME_BEGIN(IaSetTopologyTotal);
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiIASetPrimitiveTopology);
+			DX12_PROF_STAGE_BEGIN(IaSetTopology);
+			DX12_PROF_API_SCOPE(IASetPrimitiveTopology);
 			if (DX12HotPathState::skipAll) {
 				if (mOrigIASetPrimitiveTopology)
 					mOrigIASetPrimitiveTopology(mCommandList, PrimitiveTopology);
@@ -815,12 +806,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				else if (changed)
 					mCommandList->IASetPrimitiveTopology(PrimitiveTopology);
 			}
-			DX12_HOTPATH_TIME_END(IaSetTopologyTotal);
+			DX12_PROF_STAGE_END(IaSetTopology);
 		}
 
 		void STDMETHODCALLTYPE RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(RSSetViewportsTotal);
+		DX12_PROF_STAGE_BEGIN(RSSetViewports);
 			mCommandList->RSSetViewports(NumViewports, pViewports);
 			// Shadow for the custom element replay's post-draw restore (see
 			// DX12SimulateContext::viewports).
@@ -831,12 +822,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				for (UINT i = 0; i < mRuntimeState.viewportCount; ++i)
 					mRuntimeState.viewports[i] = pViewports[i];
 			}
-		DX12_HOTPATH_TIME_END(RSSetViewportsTotal);
+		DX12_PROF_STAGE_END(RSSetViewports);
 		}
 
 		void STDMETHODCALLTYPE RSSetScissorRects(UINT NumRects, const D3D12_RECT *pRects) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(RSSetScissorRectsTotal);
+		DX12_PROF_STAGE_BEGIN(RSSetScissorRects);
 			mCommandList->RSSetScissorRects(NumRects, pRects);
 			mRuntimeState.scissorCount = (std::min)(
 				NumRects,
@@ -845,28 +836,27 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				for (UINT i = 0; i < mRuntimeState.scissorCount; ++i)
 					mRuntimeState.scissorRects[i] = pRects[i];
 			}
-		DX12_HOTPATH_TIME_END(RSSetScissorRectsTotal);
+		DX12_PROF_STAGE_END(RSSetScissorRects);
 		}
 
 		void STDMETHODCALLTYPE OMSetBlendFactor(const FLOAT BlendFactor[4]) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(OMSetBlendFactorTotal);
+		DX12_PROF_STAGE_BEGIN(OMSetBlendFactor);
 			mCommandList->OMSetBlendFactor(BlendFactor);
-		DX12_HOTPATH_TIME_END(OMSetBlendFactorTotal);
+		DX12_PROF_STAGE_END(OMSetBlendFactor);
 		}
 
 		void STDMETHODCALLTYPE OMSetStencilRef(UINT StencilRef) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(OMSetStencilRefTotal);
+		DX12_PROF_STAGE_BEGIN(OMSetStencilRef);
 			mCommandList->OMSetStencilRef(StencilRef);
-		DX12_HOTPATH_TIME_END(OMSetStencilRefTotal);
+		DX12_PROF_STAGE_END(OMSetStencilRef);
 		}
 
 		void STDMETHODCALLTYPE SetPipelineState(ID3D12PipelineState *pPipelineState) override
 		{
 			if (DX12HotPathState::skipAll && mOrigSetPipelineState) {
-				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-					DX12OuterTimingProbeUtils::ApiSetPipelineState);
+				DX12_PROF_API_SCOPE(SetPipelineState);
 				// Wrapper mode hands the game wrapped child objects; the
 				// skip-all fast path must still unwrap them before the
 				// original call, or D3D12Core receives our proxy pointer.
@@ -882,8 +872,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		void STDMETHODCALLTYPE ResourceBarrier(UINT NumBarriers, const D3D12_RESOURCE_BARRIER *pBarriers) override
 		{
 			if (DX12HotPathState::skipAll && mOrigResourceBarrier) {
-				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-					DX12OuterTimingProbeUtils::ApiResourceBarrier);
+				DX12_PROF_API_SCOPE(ResourceBarrier);
 				// Wrapper mode wraps every resource handed to the game,
 				// including swap chain back buffers (GetBuffer). Barriers
 				// therefore reference wrapped resources, which D3D12Core
@@ -903,7 +892,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *pCommandList) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(ExecuteBundleTotal);
+		DX12_PROF_STAGE_BEGIN(ExecuteBundle);
 			ID3D12GraphicsCommandList *bundle =
 				DX12WrapperRuntimeUtils::UnwrapGraphicsCommandList(pCommandList);
 			// The bundle's tables were recorded against the game's heap:
@@ -916,13 +905,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			mCommandList->ExecuteBundle(bundle);
 			DX12ModRestoreBundleMirrorAfterExecuteBundle(mCommandList, bundle);
 			DX12CommandListLifecycle::InvalidateAfterExecuteBundle(mCommandList);
-		DX12_HOTPATH_TIME_END(ExecuteBundleTotal);
+		DX12_PROF_STAGE_END(ExecuteBundle);
 		}
 
 		void STDMETHODCALLTYPE SetDescriptorHeaps(UINT NumDescriptorHeaps, ID3D12DescriptorHeap *const *ppDescriptorHeaps) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiSetDescriptorHeaps);
+			DX12_PROF_API_SCOPE(SetDescriptorHeaps);
 			// The game re-establishes heap state itself here: drop any
 			// deferred draw-SRV restore silently (restoring first would be
 			// overwritten by this very call, and the spec invalidates all
@@ -965,43 +953,42 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetComputeRootSignature(ID3D12RootSignature *pRootSignature) override
 		{
-			DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
+			DX12_PROF_STAGE_BEGIN(RootSignature);
 			DX12WrapperRuntimeUtils::SetComputeRootSignature(mCommandList,
 				&mRuntimeState, pRootSignature, mOrigSetComputeRootSignature);
-			DX12_HOTPATH_TIME_END(RootSignatureTotal);
+			DX12_PROF_STAGE_END(RootSignature);
 		}
 
 		void STDMETHODCALLTYPE SetGraphicsRootSignature(ID3D12RootSignature *pRootSignature) override
 		{
-			DX12_HOTPATH_TIME_BEGIN(RootSignatureTotal);
+			DX12_PROF_STAGE_BEGIN(RootSignature);
 			DX12WrapperRuntimeUtils::SetGraphicsRootSignature(mCommandList,
 				&mRuntimeState, pRootSignature, mOrigSetGraphicsRootSignature);
-			DX12_HOTPATH_TIME_END(RootSignatureTotal);
+			DX12_PROF_STAGE_END(RootSignature);
 		}
 
 		void STDMETHODCALLTYPE SetComputeRootDescriptorTable(
 			UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 		{
-			DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
+			DX12_PROF_STAGE_BEGIN(RootDescTable);
 			DX12WrapperRuntimeUtils::SetComputeRootDescriptorTable(
 				mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor, mOrigSetComputeRootDescriptorTable);
-			DX12_HOTPATH_TIME_END(RootDescTableTotal);
+			DX12_PROF_STAGE_END(RootDescTable);
 		}
 
 		void STDMETHODCALLTYPE SetGraphicsRootDescriptorTable(
 			UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) override
 		{
-			DX12_HOTPATH_TIME_BEGIN(RootDescTableTotal);
+			DX12_PROF_STAGE_BEGIN(RootDescTable);
 			DX12WrapperRuntimeUtils::SetGraphicsRootDescriptorTable(
 				mCommandList, &mRuntimeState, RootParameterIndex, BaseDescriptor, mOrigSetGraphicsRootDescriptorTable);
-			DX12_HOTPATH_TIME_END(RootDescTableTotal);
+			DX12_PROF_STAGE_END(RootDescTable);
 		}
 
 		void STDMETHODCALLTYPE SetComputeRoot32BitConstant(
 			UINT RootParameterIndex, UINT SrcData, UINT DestOffsetIn32BitValues) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
+			DX12_PROF_API_SCOPE(SetComputeRootConstants);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
 					mCommandList, &mRuntimeState,
@@ -1024,8 +1011,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		void STDMETHODCALLTYPE SetGraphicsRoot32BitConstant(
 			UINT RootParameterIndex, UINT SrcData, UINT DestOffsetIn32BitValues) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
+			DX12_PROF_API_SCOPE(SetGraphicsRootConstants);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstant(
 					mCommandList, &mRuntimeState,
@@ -1048,8 +1034,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		void STDMETHODCALLTYPE SetComputeRoot32BitConstants(
 			UINT RootParameterIndex, UINT Num32BitValuesToSet, const void *pSrcData, UINT DestOffsetIn32BitValues) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiSetComputeRootConstants);
+			DX12_PROF_API_SCOPE(SetComputeRootConstants);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
 					mCommandList, &mRuntimeState,
@@ -1074,8 +1059,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		void STDMETHODCALLTYPE SetGraphicsRoot32BitConstants(
 			UINT RootParameterIndex, UINT Num32BitValuesToSet, const void *pSrcData, UINT DestOffsetIn32BitValues) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiSetGraphicsRootConstants);
+			DX12_PROF_API_SCOPE(SetGraphicsRootConstants);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRoot32BitConstants(
 					mCommandList, &mRuntimeState,
@@ -1099,7 +1083,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetComputeCBVTotal);
+		DX12_PROF_STAGE_BEGIN(SetComputeCBV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1113,12 +1097,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetComputeRootConstantBufferView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetComputeCBVTotal);
+		DX12_PROF_STAGE_END(SetComputeCBV);
 		}
 
 		void STDMETHODCALLTYPE SetGraphicsRootConstantBufferView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetGraphicsCBVTotal);
+		DX12_PROF_STAGE_BEGIN(SetGraphicsCBV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1132,12 +1116,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetGraphicsRootConstantBufferView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetGraphicsCBVTotal);
+		DX12_PROF_STAGE_END(SetGraphicsCBV);
 		}
 
 		void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetComputeSRVTotal);
+		DX12_PROF_STAGE_BEGIN(SetComputeSRV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1151,12 +1135,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetComputeRootShaderResourceView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetComputeSRVTotal);
+		DX12_PROF_STAGE_END(SetComputeSRV);
 		}
 
 		void STDMETHODCALLTYPE SetGraphicsRootShaderResourceView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetGraphicsSRVTotal);
+		DX12_PROF_STAGE_BEGIN(SetGraphicsSRV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1170,12 +1154,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetGraphicsRootShaderResourceView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetGraphicsSRVTotal);
+		DX12_PROF_STAGE_END(SetGraphicsSRV);
 		}
 
 		void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetComputeUAVTotal);
+		DX12_PROF_STAGE_BEGIN(SetComputeUAV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipComputeBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1189,12 +1173,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetComputeRootUnorderedAccessView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetComputeUAVTotal);
+		DX12_PROF_STAGE_END(SetComputeUAV);
 		}
 
 		void STDMETHODCALLTYPE SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetGraphicsUAVTotal);
+		DX12_PROF_STAGE_BEGIN(SetGraphicsUAV);
 			if (!DX12WrapperRuntimeUtils::ShouldSkipGraphicsBinding()) {
 				DX12CommandListComputeBindingFlow::CaptureRootDescriptor(
 					mCommandList, &mRuntimeState,
@@ -1208,42 +1192,40 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			else
 				mCommandList->SetGraphicsRootUnorderedAccessView(
 					RootParameterIndex, BufferLocation);
-		DX12_HOTPATH_TIME_END(SetGraphicsUAVTotal);
+		DX12_PROF_STAGE_END(SetGraphicsUAV);
 		}
 
 		void STDMETHODCALLTYPE IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) override
 		{
 			if (DX12HotPathState::skipAll && mOrigIASetIndexBuffer) {
-				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-					DX12OuterTimingProbeUtils::ApiIASetIndexBuffer);
+				DX12_PROF_API_SCOPE(IASetIndexBuffer);
 				mOrigIASetIndexBuffer(mCommandList, pView);
 				return;
 			}
-		DX12_HOTPATH_TIME_BEGIN(IASetIndexBufTotal);
+		DX12_PROF_STAGE_BEGIN(IASetIndexBuf);
 			DX12WrapperRuntimeUtils::IASetIndexBuffer(
 				mCommandList, &mRuntimeState, pView, mOrigIASetIndexBuffer);
-		DX12_HOTPATH_TIME_END(IASetIndexBufTotal);
+		DX12_PROF_STAGE_END(IASetIndexBuf);
 		}
 
 		void STDMETHODCALLTYPE IASetVertexBuffers(UINT StartSlot, UINT NumViews, const D3D12_VERTEX_BUFFER_VIEW *pViews) override
 		{
 			if (DX12HotPathState::skipAll && mOrigIASetVertexBuffers) {
-				DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-					DX12OuterTimingProbeUtils::ApiIASetVertexBuffers);
+				DX12_PROF_API_SCOPE(IASetVertexBuffers);
 				mOrigIASetVertexBuffers(mCommandList, StartSlot, NumViews, pViews);
 				return;
 			}
-		DX12_HOTPATH_TIME_BEGIN(IASetVertexBufTotal);
+		DX12_PROF_STAGE_BEGIN(IASetVertexBuf);
 			DX12WrapperRuntimeUtils::IASetVertexBuffers(
 				mCommandList, &mRuntimeState, StartSlot, NumViews, pViews, mOrigIASetVertexBuffers);
-		DX12_HOTPATH_TIME_END(IASetVertexBufTotal);
+		DX12_PROF_STAGE_END(IASetVertexBuf);
 		}
 
 		void STDMETHODCALLTYPE SOSetTargets(UINT StartSlot, UINT NumViews, const D3D12_STREAM_OUTPUT_BUFFER_VIEW *pViews) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SOSetTargetsTotal);
+		DX12_PROF_STAGE_BEGIN(SOSetTargets);
 			mCommandList->SOSetTargets(StartSlot, NumViews, pViews);
-		DX12_HOTPATH_TIME_END(SOSetTargetsTotal);
+		DX12_PROF_STAGE_END(SOSetTargets);
 		}
 
 		void STDMETHODCALLTYPE OMSetRenderTargets(
@@ -1299,8 +1281,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			D3D12_CPU_DESCRIPTOR_HANDLE ViewCPUHandle, ID3D12Resource *pResource,
 			const UINT Values[4], UINT NumRects, const D3D12_RECT *pRects) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+			DX12_PROF_API_SCOPE(ClearUnorderedAccessView);
 			// The GPU handle resolves against the currently bound heap:
 			// flush a deferred draw-SRV restore first.
 			DX12ModFlushDrawSrvReplacement(mCommandList);
@@ -1317,8 +1298,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			D3D12_CPU_DESCRIPTOR_HANDLE ViewCPUHandle, ID3D12Resource *pResource,
 			const FLOAT Values[4], UINT NumRects, const D3D12_RECT *pRects) override
 		{
-			DX12OuterTimingProbeUtils::ApiWallScope apiWallScope(
-				DX12OuterTimingProbeUtils::ApiClearUnorderedAccessView);
+			DX12_PROF_API_SCOPE(ClearUnorderedAccessView);
 			// The GPU handle resolves against the currently bound heap:
 			// flush a deferred draw-SRV restore first.
 			DX12ModFlushDrawSrvReplacement(mCommandList);
@@ -1332,23 +1312,23 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(DiscardResourceTotal);
+		DX12_PROF_STAGE_BEGIN(DiscardResource);
 			mCommandList->DiscardResource(DX12WrapperRuntimeUtils::UnwrapResource(pResource), pRegion);
-		DX12_HOTPATH_TIME_END(DiscardResourceTotal);
+		DX12_PROF_STAGE_END(DiscardResource);
 		}
 
 		void STDMETHODCALLTYPE BeginQuery(ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT Index) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(BeginQueryTotal);
+		DX12_PROF_STAGE_BEGIN(BeginQuery);
 			mCommandList->BeginQuery(DX12WrapperRuntimeUtils::UnwrapQueryHeap(pQueryHeap), Type, Index);
-		DX12_HOTPATH_TIME_END(BeginQueryTotal);
+		DX12_PROF_STAGE_END(BeginQuery);
 		}
 
 		void STDMETHODCALLTYPE EndQuery(ID3D12QueryHeap *pQueryHeap, D3D12_QUERY_TYPE Type, UINT Index) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(EndQueryTotal);
+		DX12_PROF_STAGE_BEGIN(EndQuery);
 			mCommandList->EndQuery(DX12WrapperRuntimeUtils::UnwrapQueryHeap(pQueryHeap), Type, Index);
-		DX12_HOTPATH_TIME_END(EndQueryTotal);
+		DX12_PROF_STAGE_END(EndQuery);
 		}
 
 		void STDMETHODCALLTYPE ResolveQueryData(
@@ -1369,23 +1349,23 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *pData, UINT Size) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetMarkerTotal);
+		DX12_PROF_STAGE_BEGIN(SetMarker);
 			mCommandList->SetMarker(Metadata, pData, Size);
-		DX12_HOTPATH_TIME_END(SetMarkerTotal);
+		DX12_PROF_STAGE_END(SetMarker);
 		}
 
 		void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *pData, UINT Size) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(BeginEventTotal);
+		DX12_PROF_STAGE_BEGIN(BeginEvent);
 			mCommandList->BeginEvent(Metadata, pData, Size);
-		DX12_HOTPATH_TIME_END(BeginEventTotal);
+		DX12_PROF_STAGE_END(BeginEvent);
 		}
 
 		void STDMETHODCALLTYPE EndEvent() override
 		{
-		DX12_HOTPATH_TIME_BEGIN(EndEventTotal);
+		DX12_PROF_STAGE_BEGIN(EndEvent);
 			mCommandList->EndEvent();
-		DX12_HOTPATH_TIME_END(EndEventTotal);
+		DX12_PROF_STAGE_END(EndEvent);
 		}
 
 		void STDMETHODCALLTYPE ExecuteIndirect(
@@ -1442,12 +1422,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE OMSetDepthBounds(FLOAT Min, FLOAT Max) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(OMSetDepthBoundsTotal);
+		DX12_PROF_STAGE_BEGIN(OMSetDepthBounds);
 			ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
 			if (commandList1) {
 				commandList1->OMSetDepthBounds(Min, Max);
 			}
-		DX12_HOTPATH_TIME_END(OMSetDepthBoundsTotal);
+		DX12_PROF_STAGE_END(OMSetDepthBounds);
 		}
 
 		void STDMETHODCALLTYPE SetSamplePositions(
@@ -1475,12 +1455,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetViewInstanceMask(UINT Mask) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetViewInstanceMaskTotal);
+		DX12_PROF_STAGE_BEGIN(SetViewInstanceMask);
 			ID3D12GraphicsCommandList1 *commandList1 = CommandList1Raw();
 			if (commandList1) {
 				commandList1->SetViewInstanceMask(Mask);
 			}
-		DX12_HOTPATH_TIME_END(SetViewInstanceMaskTotal);
+		DX12_PROF_STAGE_END(SetViewInstanceMask);
 		}
 
 		void STDMETHODCALLTYPE WriteBufferImmediate(
@@ -1495,13 +1475,13 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetProtectedResourceSession(ID3D12ProtectedResourceSession *pProtectedResourceSession) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetProtectedSessionTotal);
+		DX12_PROF_STAGE_BEGIN(SetProtectedSession);
 			ID3D12GraphicsCommandList3 *commandList3 = CommandList3Raw();
 			if (commandList3) {
 				commandList3->SetProtectedResourceSession(
 					DX12WrapperRuntimeUtils::UnwrapProtectedResourceSession(pProtectedResourceSession));
 			}
-		DX12_HOTPATH_TIME_END(SetProtectedSessionTotal);
+		DX12_PROF_STAGE_END(SetProtectedSession);
 		}
 
 		void STDMETHODCALLTYPE BeginRenderPass(
@@ -1516,12 +1496,12 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE EndRenderPass() override
 		{
-		DX12_HOTPATH_TIME_BEGIN(EndRenderPassTotal);
+		DX12_PROF_STAGE_BEGIN(EndRenderPass);
 			ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
 			if (commandList4) {
 				commandList4->EndRenderPass();
 			}
-		DX12_HOTPATH_TIME_END(EndRenderPassTotal);
+		DX12_PROF_STAGE_END(EndRenderPass);
 		}
 
 		void STDMETHODCALLTYPE InitializeMetaCommand(
@@ -1583,52 +1563,52 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE SetPipelineState1(ID3D12StateObject *pStateObject) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetPSO1Total);
+		DX12_PROF_STAGE_BEGIN(SetPSO1);
 			ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
 			if (commandList4) {
 				commandList4->SetPipelineState1(DX12WrapperRuntimeUtils::UnwrapStateObject(pStateObject));
 			}
-		DX12_HOTPATH_TIME_END(SetPSO1Total);
+		DX12_PROF_STAGE_END(SetPSO1);
 		}
 
 		void STDMETHODCALLTYPE DispatchRays(const D3D12_DISPATCH_RAYS_DESC *pDesc) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(DispatchRaysTotal);
+		DX12_PROF_STAGE_BEGIN(DispatchRays);
 			ID3D12GraphicsCommandList4 *commandList4 = CommandList4Raw();
 			if (commandList4) {
 				commandList4->DispatchRays(pDesc);
 			}
-		DX12_HOTPATH_TIME_END(DispatchRaysTotal);
+		DX12_PROF_STAGE_END(DispatchRays);
 		}
 
 		void STDMETHODCALLTYPE RSSetShadingRate(D3D12_SHADING_RATE baseShadingRate, const D3D12_SHADING_RATE_COMBINER *combiners) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateTotal);
+		DX12_PROF_STAGE_BEGIN(RSSetShadingRate);
 			ID3D12GraphicsCommandList5 *commandList5 = CommandList5Raw();
 			if (commandList5) {
 				commandList5->RSSetShadingRate(baseShadingRate, combiners);
 			}
-		DX12_HOTPATH_TIME_END(RSSetShadingRateTotal);
+		DX12_PROF_STAGE_END(RSSetShadingRate);
 		}
 
 		void STDMETHODCALLTYPE RSSetShadingRateImage(ID3D12Resource *pShadingRateImage) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(RSSetShadingRateImgTotal);
+		DX12_PROF_STAGE_BEGIN(RSSetShadingRateImg);
 			ID3D12GraphicsCommandList5 *commandList5 = CommandList5Raw();
 			if (commandList5) {
 				commandList5->RSSetShadingRateImage(DX12WrapperRuntimeUtils::UnwrapResource(pShadingRateImage));
 			}
-		DX12_HOTPATH_TIME_END(RSSetShadingRateImgTotal);
+		DX12_PROF_STAGE_END(RSSetShadingRateImg);
 		}
 
 		void STDMETHODCALLTYPE DispatchMesh(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(DispatchMeshTotal);
+		DX12_PROF_STAGE_BEGIN(DispatchMesh);
 			ID3D12GraphicsCommandList6 *commandList6 = CommandList6Raw();
 			if (commandList6) {
 				commandList6->DispatchMesh(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 			}
-		DX12_HOTPATH_TIME_END(DispatchMeshTotal);
+		DX12_PROF_STAGE_END(DispatchMesh);
 		}
 
 		void STDMETHODCALLTYPE Barrier(
@@ -1653,52 +1633,52 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 
 		void STDMETHODCALLTYPE OMSetFrontAndBackStencilRef(UINT FrontStencilRef, UINT BackStencilRef) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(OMSetFrontBackStencilTotal);
+		DX12_PROF_STAGE_BEGIN(OMSetFrontBackStencil);
 			ID3D12GraphicsCommandList8 *commandList8 = CommandList8Raw();
 			if (commandList8) {
 				commandList8->OMSetFrontAndBackStencilRef(FrontStencilRef, BackStencilRef);
 			}
-		DX12_HOTPATH_TIME_END(OMSetFrontBackStencilTotal);
+		DX12_PROF_STAGE_END(OMSetFrontBackStencil);
 		}
 
 		void STDMETHODCALLTYPE RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(RSSetDepthBiasTotal);
+		DX12_PROF_STAGE_BEGIN(RSSetDepthBias);
 			ID3D12GraphicsCommandList9 *commandList9 = CommandList9Raw();
 			if (commandList9) {
 				commandList9->RSSetDepthBias(DepthBias, DepthBiasClamp, SlopeScaledDepthBias);
 			}
-		DX12_HOTPATH_TIME_END(RSSetDepthBiasTotal);
+		DX12_PROF_STAGE_END(RSSetDepthBias);
 		}
 
 		void STDMETHODCALLTYPE IASetIndexBufferStripCutValue(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(IASetIBStripCutTotal);
+		DX12_PROF_STAGE_BEGIN(IASetIBStripCut);
 			ID3D12GraphicsCommandList9 *commandList9 = CommandList9Raw();
 			if (commandList9) {
 				commandList9->IASetIndexBufferStripCutValue(IBStripCutValue);
 			}
-		DX12_HOTPATH_TIME_END(IASetIBStripCutTotal);
+		DX12_PROF_STAGE_END(IASetIBStripCut);
 		}
 
 		void STDMETHODCALLTYPE SetProgram(const D3D12_SET_PROGRAM_DESC *pDesc) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(SetProgramTotal);
+		DX12_PROF_STAGE_BEGIN(SetProgram);
 			ID3D12GraphicsCommandList10 *commandList10 = CommandList10Raw();
 			if (commandList10) {
 				commandList10->SetProgram(pDesc);
 			}
-		DX12_HOTPATH_TIME_END(SetProgramTotal);
+		DX12_PROF_STAGE_END(SetProgram);
 		}
 
 		void STDMETHODCALLTYPE DispatchGraph(const D3D12_DISPATCH_GRAPH_DESC *pDesc) override
 		{
-		DX12_HOTPATH_TIME_BEGIN(DispatchGraphTotal);
+		DX12_PROF_STAGE_BEGIN(DispatchGraph);
 			ID3D12GraphicsCommandList10 *commandList10 = CommandList10Raw();
 			if (commandList10) {
 				commandList10->DispatchGraph(pDesc);
 			}
-		DX12_HOTPATH_TIME_END(DispatchGraphTotal);
+		DX12_PROF_STAGE_END(DispatchGraph);
 		}
 
 	public:

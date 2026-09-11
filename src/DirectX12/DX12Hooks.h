@@ -22,11 +22,8 @@
 
 // Umbrella header: split into per-responsibility headers under Hooks/ and
 // Proxy/. Include order matches the original declaration order.
+// Profiler/telemetry headers were unified into Core/Diag/DX12Diag.h.
 //
-//   Hooks/DX12CreateTimingTelemetry.h     - create-API timing telemetry
-//   Hooks/DX12DescriptorShadowTelemetry.h - descriptor-shadow telemetry
-//   Hooks/DX12HotPathTiming.h             - hot-path stage timing macros
-//   Hooks/DX12Profiler.h                  - profiler scopes/counters + macros
 //   Hooks/DX12DispatchHookFlow.h          - dispatch hook flow
 //   Hooks/DX12IaReplacement.h             - IA replacement executors
 //   Hooks/DX12DrawHookFlow.h              - draw hook flow
@@ -34,10 +31,6 @@
 //   Proxy/D3D12ProcessGate.h              - process gate
 //   Proxy/D3D12ProxyRuntime.h             - proxy runtime state
 
-#include "Hooks/DX12CreateTimingTelemetry.h"
-#include "Hooks/DX12DescriptorShadowTelemetry.h"
-#include "Hooks/DX12HotPathTiming.h"
-#include "Hooks/DX12Profiler.h"
 #include "Hooks/DX12DispatchHookFlow.h"
 #include "Hooks/DX12IaReplacement.h"
 #include "Hooks/DX12DrawHookFlow.h"

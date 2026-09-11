@@ -1,4 +1,4 @@
-﻿// DX12ShaderHunt: hunt state, stage/IA navigation and skip logic.
+// DX12ShaderHunt: hunt state, stage/IA navigation and skip logic.
 // Split from DX12ShaderTools.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -163,7 +163,7 @@ static void AddVisitedLocked(StageSelection &stage, UINT64 hash)
 	if (!hash)
 		return;
 	stage.visited.insert(hash);
-	DX12ResidentMaintenanceTelemetryUtils::RecordHuntVisitedWrite();
+	DX12_PROF_COUNT("Rm.HuntVisitedWrite");
 	if (!stage.visited.empty())
 		stage.selected %= stage.visited.size();
 }
@@ -219,7 +219,7 @@ static void AddVisitedLocked(IaSelection &selection, uint32_t hash)
 	if (!hash)
 		return;
 	selection.visited.insert(hash);
-	DX12ResidentMaintenanceTelemetryUtils::RecordHuntVisitedWrite();
+	DX12_PROF_COUNT("Rm.HuntVisitedWrite");
 	selection.lastSeenFrame[hash] = gPresentFrames;
 	SyncIaSelectionPositionLocked(selection);
 }
@@ -299,7 +299,7 @@ static void AdvanceStage(StageSelection &stage, HuntCopyTarget target, int delta
 	count = stage.visited.size();
 	hash = SelectedHashLocked(stage);
 	ReleaseSRWLockExclusive(&gHuntLock);
-	DX12LogManager::Fields("DX12HuntSelect",
+	DX12_LOG("DX12HuntSelect",
 		"target=%s,selected=%zu,count=%zu,hash=%016llx",
 		target == HuntCopyTarget::VS ? "VS" :
 		target == HuntCopyTarget::PS ? "PS" :
@@ -355,7 +355,7 @@ static void AdvanceIa(IaSelection &selection, HuntCopyTarget target, int delta)
 	count = selection.visited.size();
 	hash = SelectedIaHashLocked(selection);
 	ReleaseSRWLockExclusive(&gHuntLock);
-	DX12LogManager::Fields("DX12HuntSelect",
+	DX12_LOG("DX12HuntSelect",
 		"target=%s,selected=%zu,count=%zu,hash=%08x",
 		target == HuntCopyTarget::IB ? "IB" :
 		target == HuntCopyTarget::VB ? "VB" : "",
@@ -436,7 +436,7 @@ void DX12HuntUnregisterCommandList(ID3D12GraphicsCommandList *commandList)
 	ReleaseSRWLockExclusive(&shard.lock);
 
 	if (removed) {
-		DX12LogManager::Fields("DX12ShaderHunt",
+		DX12_LOG("DX12ShaderHunt",
 			"stage=unregister_command_list,commandList=%p",
 			commandList);
 	}
@@ -738,27 +738,27 @@ void DX12HuntToggle()
 		DX12RuntimeState::SetRuntimeMode(DX12RuntimeMode::Mod);
 	}
 
-	DX12LogManager::Fields("DX12HuntToggle",
+	DX12_LOG("DX12HuntToggle",
 		"stage=state,enabled=%s,oldIa=%zu,oldIb=%zu,oldVb=%zu",
 		enabled ? "true" : "false", oldIa, oldIB, oldVB);
 	DX12HotPathState::Update();
-	DX12LogManager::Fields("DX12HuntToggle",
+	DX12_LOG("DX12HuntToggle",
 		"stage=hotpath_update,enabled=%s",
 		enabled ? "true" : "false");
 	if (enabled) {
 		DX12PrimeDescriptorHistoryForHunting();
-		DX12LogManager::Fields("DX12HuntToggle", "stage=prime_descriptor_history,enabled=true");
+		DX12_LOG("DX12HuntToggle", "stage=prime_descriptor_history,enabled=true");
 		DX12HuntRefreshOverlay();
-		DX12LogManager::Fields("DX12HuntToggle", "stage=refresh_overlay,enabled=true");
+		DX12_LOG("DX12HuntToggle", "stage=refresh_overlay,enabled=true");
 		DX12CommandListRuntime::BumpTrackingGeneration();
-		DX12LogManager::Fields("DX12HuntToggle", "stage=bump_generation,enabled=true");
+		DX12_LOG("DX12HuntToggle", "stage=bump_generation,enabled=true");
 		DX12Overlay::Show();
-		DX12LogManager::Fields("DX12HuntToggle", "stage=show_overlay,enabled=true");
+		DX12_LOG("DX12HuntToggle", "stage=show_overlay,enabled=true");
 	} else {
 		DX12Overlay::Hide();
-		DX12LogManager::Fields("DX12HuntToggle", "stage=hide_overlay,enabled=false");
+		DX12_LOG("DX12HuntToggle", "stage=hide_overlay,enabled=false");
 	}
-	DX12LogManager::Text("DX12 hunting toggled %s\n", enabled ? "on" : "off");
+	DX12_LOG_TEXT("DX12 hunting toggled %s\n", enabled ? "on" : "off");
 }
 
 void DX12HuntOnPresent()
@@ -783,7 +783,7 @@ void DX12HuntOnPresent()
 	ReleaseSRWLockExclusive(&gHuntLock);
 
 	if (shouldLog)
-		DX12LogManager::Fields("DX12HuntIaStats",
+		DX12_LOG("DX12HuntIaStats",
 			"frame=%llu,ib=%zu,vb=%zu",
 			static_cast<unsigned long long>(gPresentFrames), ibCount, vbCount);
 }

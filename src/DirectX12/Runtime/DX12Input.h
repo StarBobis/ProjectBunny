@@ -1,4 +1,4 @@
-﻿// Input handling for the overlay and hunting hotkeys.
+// Input handling for the overlay and hunting hotkeys.
 // Split from DX12Runtime.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -12,7 +12,7 @@ public:
 	static void CompleteReload()
 	{
 		const DWORD start = GetTickCount();
-		DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"begin_sync\"");
+		DX12_LOG("DX12ModRuntimeReload", "\"status\":\"begin_sync\"");
 		const bool ok = DX12ModRuntimeReload();
 		const DWORD elapsed = GetTickCount() - start;
 		if (ok) {
@@ -21,7 +21,7 @@ public:
 				static_cast<double>(elapsed) / 1000.0);
 			DX12OverlayStatusState::SetTemporary(status, 3000);
 		}
-		DX12LogManager::Fields("DX12ModRuntimeReload",
+		DX12_LOG("DX12ModRuntimeReload",
 			"\"status\":\"done_sync\",\"result\":\"%s\",\"elapsedMs\":%lu",
 			ok ? "ok" : "failed", elapsed);
 		DX12ModRefreshRuntimeStateAfterReload();
@@ -31,7 +31,7 @@ public:
 	static void RequestModReload()
 	{
 		if (InterlockedCompareExchange(&ReloadInProgress, 1, 0) != 0) {
-			DX12LogManager::Fields("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"already_running\"");
+			DX12_LOG("DX12ModRuntimeReload", "\"status\":\"skipped\",\"reason\":\"already_running\"");
 			DX12OverlayStatusState::SetWarning(L"Reload already running");
 			return;
 		}

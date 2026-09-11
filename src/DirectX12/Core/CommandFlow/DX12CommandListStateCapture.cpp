@@ -1,4 +1,4 @@
-﻿// DX12CommandListStateCapture: command-list state capture and command recorder.
+// DX12CommandListStateCapture: command-list state capture and command recorder.
 // Split from DX12CommandLists.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -157,13 +157,11 @@ ID3D12PipelineState *DX12CommandListStateCapture::PipelineState(
 {
 	ID3D12PipelineState *activePipelineState = pipelineState;
 	if (DX12ModHasActiveShaderOverrides()) {
-		DX12_HOTPATH_TIME_BEGIN(PsoCacheLookupTotal);
+		DX12_PROF_STAGE_SCOPE(PsoCacheLookup);
 		if (runtimeState && runtimeState->cachedReplacementPsoKey == pipelineState) {
 			if (runtimeState->cachedReplacementPso)
 				activePipelineState = runtimeState->cachedReplacementPso;
-			DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
 		} else {
-			DX12_HOTPATH_TIME_END(PsoCacheLookupTotal);
 			ID3D12PipelineState *replacement =
 				DX12ModGetReplacementPipelineState(pipelineState);
 			if (runtimeState) {

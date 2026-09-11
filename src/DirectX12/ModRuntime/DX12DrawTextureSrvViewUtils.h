@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // DX12DrawTextureSrvViewUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
 // Not meant to be included directly.
@@ -280,7 +280,7 @@ public:
 		CreateSrvFromDesc(device, resource, srvDesc, cpu);
 		resource->drawSrvCompatibleHeaps[key] = heap;
 		resource->drawSrvCompatibleCpus[key] = cpu;
-		DX12LogManager::Fields("DX12DrawSrvReplacement",
+		DX12_LOG("DX12DrawSrvReplacement",
 			"stage=view_contract_srv_created,resource=%S,resourceFormat=%u,originalViewFormat=%u,srvFormat=%u,viewDimension=%u,mipStart=%u,mips=%u,componentMapping=%u,fallback=%s,cpu=0x%zx",
 			resource->name.c_str(),
 			static_cast<UINT>(resource->drawSrvFormat),

@@ -1,4 +1,4 @@
-﻿// DX12BindingFrameExport / DX12BindingResourceExport: binding dump and export.
+// DX12BindingFrameExport / DX12BindingResourceExport: binding dump and export.
 // Split from DX12BindingTracking.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -1520,7 +1520,7 @@ void DX12BindingResourceExport::GetCurrentFrameOutputBindings(std::vector<DX12Fr
 		"bindings=%zu,rtv=%zu,dsv=%zu,untracked=%zu,dropped=%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));
-	DX12LogManager::Fields("DX12OutputResourcesCollected",
+	DX12_LOG("DX12OutputResourcesCollected",
 		"bindings=%zu,rtv=%zu,dsv=%zu,untracked=%zu,dropped=%llu",
 		bindings->size(), rtv, dsv, untracked,
 		static_cast<unsigned long long>(dropped));

@@ -36,13 +36,13 @@ public:
 
 	static DWORD WINAPI WorkerThread(void*)
 	{
-		DX12LogManager::Text("DX12 worker thread started\n");
+		DX12_LOG_TEXT("DX12 worker thread started\n");
 		if (LoadRealD3D12)
 			LoadRealD3D12();
 
 		for (int i = 0; i < 200; ++i) {
 			DXGIHooks::Install();
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 			// Wait-object instrumentation hooks kernel32 exports process-wide;
 			// it exists to attribute stall stacks in TIMING builds and must not
 			// ship in normal Release (DX11 has no equivalent global wait hook).
@@ -66,8 +66,10 @@ public:
 		LoadRealD3D12 = loadRealD3D12;
 
 		DX12RuntimeState::SetModule(module);
-		DX12LogManager::Open();
-		DX12LogManager::Text(
+#if DX12_TIMING_BUILD
+		DX12DiagLog::Open();
+#endif
+		DX12_LOG_TEXT(
 			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
@@ -76,7 +78,7 @@ public:
 			DX12ModSetSafeMode(Config.Runtime().dx12SafeMode);
 			gDeferredInitialModLoadDelayMs =
 				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
-			DX12LogManager::Fields("DX12Config",
+			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"safeMode\":%s,\"overlay\":%s,\"configInitializationDelayMs\":%lu,\"overlayStarted\":true",
 				Config.Path().c_str(),
 				Config.Runtime().dx12SafeMode ? "true" : "false",
@@ -85,12 +87,12 @@ public:
 			DX12ModScheduleInitialLoad(Config.Path().c_str());
 			DX12OverlayStatusState::SetStatus(
 				L"DX12 mod load deferred until startup reload");
-			DX12LogManager::Fields("DX12ModRuntimeDeferredLoad",
+			DX12_LOG("DX12ModRuntimeDeferredLoad",
 				"\"status\":\"scheduled\",\"path\":\"%S\",\"delayMs\":%lu",
 				Config.Path().c_str(),
 				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
 		} else {
-			DX12LogManager::Fields("DX12Config",
+			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"status\":\"missing_or_invalid\",\"error\":\"%S\"",
 				configPath.c_str(), Config.Error().c_str());
 		}
@@ -105,22 +107,21 @@ public:
 		if (thread)
 			CloseHandle(thread);
 		DX12HookRegistry::FinalizeHooks();
-
-		DX12LogManager::EndReleaseStartupLogging();
 	}
 
 	static void Shutdown()
 	{
-		DX12LogManager::Text("*** 3DMigoto DX12 runtime shutting down ***\n");
+		DX12_LOG_TEXT("*** 3DMigoto DX12 runtime shutting down ***\n");
 		DX12AsyncReadbackShutdown();
 		DX12NativeOverlayShutdown();
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
+#if DX12_TIMING_BUILD
 		DX12WaitHooks::Shutdown();
 #endif
 		DXGIHooks::Shutdown();
 		DX12HookRegistry::UnhookAll();
-		DX12LogManager::Close();
-		DX12LogUtils::Close();
+#if DX12_TIMING_BUILD
+		DX12DiagLog::Close();
+#endif
 		LoadRealD3D12 = nullptr;
 		Initialized = false;
 	}
@@ -227,9 +228,9 @@ public:
 
 	static void RunFrameAnalysisRequest()
 	{
-		DX12LogManager::Fields("DX12UiAction", "\"action\":\"FrameAnalysisRequest\"");
+		DX12_LOG("DX12UiAction", "\"action\":\"FrameAnalysisRequest\"");
 		if (!DX12RuntimeState::IsHuntingMode()) {
-			DX12LogManager::Fields("FrameAnalysisBeginFailed", "\"reason\":\"requires_hunting_mode\"");
+			DX12_LOG("FrameAnalysisBeginFailed", "\"reason\":\"requires_hunting_mode\"");
 			DX12OverlayStatusState::SetWarning(L"Enable Hunting before Frame Dump");
 			return;
 		}
@@ -238,7 +239,7 @@ public:
 			DX12FrameAnalysis::RequestCapture();
 			DX12OverlayStatusState::SetStatus(L"Frame analysis armed");
 		} else {
-			DX12LogManager::Fields("FrameAnalysisBeginFailed", "\"reason\":\"create_directory_failed\"");
+			DX12_LOG("FrameAnalysisBeginFailed", "\"reason\":\"create_directory_failed\"");
 			DX12OverlayStatusState::SetError(L"Frame analysis failed: cannot create directory");
 		}
 	}

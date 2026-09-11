@@ -257,7 +257,7 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 		return;
 	DX12SimulateContext *state = DX12CommandListRuntime::TlsLookup(commandList);
 	if (state) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
+		DX12_PROF_COUNT("Rm.RuntimeLookupTlsHits");
 		out = Tls.tracking;
 		return;
 	}
@@ -269,14 +269,14 @@ void DX12CommandListRuntime::GetTrackingCacheFast(
 
 	if (Tls.commandList == commandList) {
 		if (Tls.stateIsDirect)
-			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupDirectHit();
+			DX12_PROF_COUNT("Rm.RuntimeLookupDirectHits");
 		else
-			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupShardHit();
+			DX12_PROF_COUNT("Rm.RuntimeLookupShardHits");
 		out = Tls.tracking;
 		return;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupMiss();
+	DX12_PROF_COUNT("Rm.RuntimeLookupMisses");
 }
 
 DX12CommandListTrackingState DX12CommandListRuntime::GetTrackingState(
@@ -301,7 +301,7 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 		return nullptr;
 	DX12SimulateContext *state = DX12CommandListRuntime::TlsLookup(commandList);
 	if (state) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupTlsHit();
+		DX12_PROF_COUNT("Rm.RuntimeLookupTlsHits");
 		return state;
 	}
 
@@ -312,13 +312,13 @@ DX12SimulateContext *DX12CommandListRuntime::GetStatePtrFast(
 
 	if (Tls.commandList == commandList) {
 		if (Tls.stateIsDirect)
-			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupDirectHit();
+			DX12_PROF_COUNT("Rm.RuntimeLookupDirectHits");
 		else
-			DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupShardHit();
+			DX12_PROF_COUNT("Rm.RuntimeLookupShardHits");
 		return Tls.statePtr;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeLookupMiss();
+	DX12_PROF_COUNT("Rm.RuntimeLookupMisses");
 	return nullptr;
 }
 
@@ -632,17 +632,17 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 			hasShaderOverrides,
 			needsPreSkinProbe,
 			&decision)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPsoCacheHit();
+		DX12_PROF_COUNT("Rm.DispatchDecisionPsoCacheHits");
 		return decision;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPsoCacheMiss();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionBuild();
+	DX12_PROF_COUNT("Rm.DispatchDecisionPsoCacheMisses");
+	DX12_PROF_COUNT("Rm.DispatchDecisionBuilds");
 
 	if (!pipelineState) {
 		decision.SetNoComputeShader(
 			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		DX12_PROF_COUNT("Rm.DispatchDecisionNoCompute");
 		DX12PsoDecisionCacheUtils::StoreDispatch(
 			pipelineState,
 			reloadGeneration,
@@ -656,7 +656,7 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	if (!DX12GetPipelineStateShaderInfo(pipelineState, &shaderInfo) || !shaderInfo.hasCS) {
 		decision.SetNoComputeShader(
 			pipelineState, reloadGeneration, hasShaderOverrides, needsPreSkinProbe);
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoCompute();
+		DX12_PROF_COUNT("Rm.DispatchDecisionNoCompute");
 		DX12PsoDecisionCacheUtils::StoreDispatch(
 			pipelineState,
 			reloadGeneration,
@@ -680,7 +680,7 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 		decision.SetNeedsPreSkinProbe(
 			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
 			hasShaderOverrides, needsPreSkinProbe);
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidate();
+		DX12_PROF_COUNT("Rm.DispatchDecisionPreSkinCandidate");
 		DX12PsoDecisionCacheUtils::StoreDispatch(
 			pipelineState,
 			reloadGeneration,
@@ -694,7 +694,7 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 		decision.SetNeedsShaderOverrideWork(
 			pipelineState, reloadGeneration, csHash, shaderOverrideSkip,
 			hasShaderOverrides, needsPreSkinProbe);
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionShaderOverrideWork();
+		DX12_PROF_COUNT("Rm.DispatchDecisionShaderOverrideWork");
 		DX12PsoDecisionCacheUtils::StoreDispatch(
 			pipelineState,
 			reloadGeneration,
@@ -707,7 +707,7 @@ DX12CompiledDispatchDecision DX12CommandListRuntime::BuildDispatchDecision(
 	decision.SetNoPreSkinCandidate(
 		pipelineState, reloadGeneration, csHash,
 		hasShaderOverrides, needsPreSkinProbe);
-	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionNoPreSkinCandidate();
+	DX12_PROF_COUNT("Rm.DispatchDecisionNoPreSkinCandidate");
 	DX12PsoDecisionCacheUtils::StoreDispatch(
 		pipelineState,
 		reloadGeneration,
@@ -729,12 +729,12 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 			reloadGeneration,
 			hasShaderOverrides,
 			&decision)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionPsoCacheHit();
+		DX12_PROF_COUNT("Rm.DrawDecisionPsoCacheHits");
 		return decision;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionPsoCacheMiss();
-	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionBuild();
+	DX12_PROF_COUNT("Rm.DrawDecisionPsoCacheMisses");
+	DX12_PROF_COUNT("Rm.DrawDecisionBuilds");
 	if (!DX12ModCompileDrawDecision(pipelineState, &decision)) {
 		DX12IaHashTargetPlan targetPlan;
 		targetPlan.ResetKnown();
@@ -753,25 +753,25 @@ DX12CompiledDrawDecision DX12CommandListRuntime::BuildDrawDecision(
 		decision.staticReplacementSnapshot != nullptr;
 
 	if (!pipelineState) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoPso();
+		DX12_PROF_COUNT("Rm.DrawDecisionNoPso");
 	} else if (!decision.hasActiveShaderOverrides) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoShaderOverride();
+		DX12_PROF_COUNT("Rm.DrawDecisionNoShaderOverride");
 	} else if (!decision.hasShaderOverrides && !decision.hasShaderOverrideSkip) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNoDrawOverride();
+		DX12_PROF_COUNT("Rm.DrawDecisionNoDrawOverride");
 	}
 
 	switch (decision.kind) {
 	case DX12CompiledDrawDecisionKind::NeedsIaHash:
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsIaHash();
+		DX12_PROF_COUNT("Rm.DrawDecisionNeedsIaHash");
 		break;
 	case DX12CompiledDrawDecisionKind::NeedsDescriptorMatch:
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsDescriptorMatch();
+		DX12_PROF_COUNT("Rm.DrawDecisionNeedsDescriptorMatch");
 		break;
 	case DX12CompiledDrawDecisionKind::NeedsReplacement:
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionNeedsReplacement();
+		DX12_PROF_COUNT("Rm.DrawDecisionNeedsReplacement");
 		break;
 	case DX12CompiledDrawDecisionKind::SkipOriginal:
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionSkipOriginal();
+		DX12_PROF_COUNT("Rm.DrawDecisionSkipOriginal");
 		break;
 	default:
 		break;
@@ -798,14 +798,14 @@ const DX12CompiledDispatchDecision *DX12CommandListRuntime::EnsureDispatchDecisi
 	    state->dispatchDecision.pipelineState == state->pipelineState &&
 	    state->dispatchDecision.reloadGeneration == reloadGeneration &&
 	    state->dispatchDecision.MatchesGlobals(hasShaderOverrides, needsPreSkinProbe)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheHit();
+		DX12_PROF_COUNT("Rm.DispatchDecisionCacheHits");
 		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
 		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
 		state->cachedCsHashResolved = true;
 		return &state->dispatchDecision;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionCacheMiss();
+	DX12_PROF_COUNT("Rm.DispatchDecisionCacheMisses");
 	DX12CommandListRuntime::CompileDispatchDecision(
 		state, hasShaderOverrides, needsPreSkinProbe);
 	state->cachedCsHash = state->dispatchDecision.computeShaderHash;
@@ -826,11 +826,11 @@ const DX12CompiledDrawDecision *DX12CommandListRuntime::EnsureDrawDecision(
 	    state->drawDecision.pipelineState == state->pipelineState &&
 	    state->drawDecision.reloadGeneration == reloadGeneration &&
 	    state->drawDecision.MatchesGlobals(hasShaderOverrides)) {
-		DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionCacheHit();
+		DX12_PROF_COUNT("Rm.DrawDecisionCacheHits");
 		return &state->drawDecision;
 	}
 
-	DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionCacheMiss();
+	DX12_PROF_COUNT("Rm.DrawDecisionCacheMisses");
 	DX12CommandListRuntime::CompileDrawDecision(state, hasShaderOverrides);
 	return &state->drawDecision;
 }
@@ -871,7 +871,11 @@ void DX12CommandListRuntime::RememberPipelineState(
 		return;
 
 	const bool changed = state->pipelineState != pipelineState;
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePso(changed);
+	DX12_PROF_COUNT("Rm.RuntimePsoCalls");
+	if (changed)
+		DX12_PROF_COUNT("Rm.RuntimePsoChanged");
+	else
+		DX12_PROF_COUNT("Rm.RuntimePsoNoChange");
 	if (!changed)
 		return;
 
@@ -1000,7 +1004,11 @@ bool DX12CommandListRuntime::RememberIndexBuffer(
 			(state->ia.indexBuffer.BufferLocation == view->BufferLocation &&
 				state->ia.indexBuffer.SizeInBytes == view->SizeInBytes &&
 				state->ia.indexBuffer.Format == view->Format));
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeIndexBuffer(!same);
+	DX12_PROF_COUNT("Rm.RuntimeIndexBufferCalls");
+	if (!same)
+		DX12_PROF_COUNT("Rm.RuntimeIndexBufferChanged");
+	else
+		DX12_PROF_COUNT("Rm.RuntimeIndexBufferNoChange");
 	if (same)
 		return false;
 	state->ia.hasIndexBuffer = newValid;
@@ -1051,7 +1059,8 @@ bool DX12CommandListRuntime::RememberVertexBuffers(
 		min(count, static_cast<UINT>(ARRAYSIZE(ia.vertexBuffers)) - startSlot) : 0;
 	if (trackedCount != count)
 		return true;
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferCall(trackedCount);
+	DX12_PROF_COUNT("Rm.RuntimeVertexBufferCalls");
+	DX12_PROF_ADD_ITEMS("Rm.RuntimeVertexBufferSlots", static_cast<LONG64>(trackedCount));
 	bool changedAny = false;
 	for (UINT i = 0; i < trackedCount; ++i) {
 		const UINT slot = startSlot + i;
@@ -1063,7 +1072,10 @@ bool DX12CommandListRuntime::RememberVertexBuffers(
 			ia.vertexBuffers[slot].BufferLocation == newView.BufferLocation &&
 			ia.vertexBuffers[slot].SizeInBytes == newView.SizeInBytes &&
 			ia.vertexBuffers[slot].StrideInBytes == newView.StrideInBytes;
-		DX12ResidentMaintenanceTelemetryUtils::RecordRuntimeVertexBufferSlot(!same);
+		if (!same)
+			DX12_PROF_COUNT("Rm.RuntimeVertexBufferChangedSlots");
+		else
+			DX12_PROF_COUNT("Rm.RuntimeVertexBufferNoChangeSlots");
 		if (same)
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
@@ -1110,7 +1122,11 @@ bool DX12CommandListRuntime::RememberPrimitiveTopology(
 	if (!state)
 		return true;
 	const bool changed = state->ia.primitiveTopology != topology;
-	DX12ResidentMaintenanceTelemetryUtils::RecordRuntimePrimitiveTopology(changed);
+	DX12_PROF_COUNT("Rm.RuntimePrimitiveTopologyCalls");
+	if (changed)
+		DX12_PROF_COUNT("Rm.RuntimePrimitiveTopologyChanged");
+	else
+		DX12_PROF_COUNT("Rm.RuntimePrimitiveTopologyNoChange");
 	if (!changed)
 		return false;
 	state->ia.primitiveTopology = topology;
@@ -2428,14 +2444,14 @@ void DX12CommandListLifecycle::Reset(
 		DX12CommandListStateCapture::GetTrackingState(commandList);
 	if (tracking.trackBindings ||
 	    DX12ModNeedsPreSkinningBindingTracking()) {
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(begin);
 		DX12BindingTracker::ResetCommandList(commandList, initialState);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"CommandListReset",
 			"binding_tracker_reset",
 			0,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_DIAG_ELAPSED_US(begin));
 	}
 	// DX12CommandListRuntime::Reset (invoked by the wrapper just before this
 	// lifecycle pass) already ran RememberPipelineState with the same
@@ -2444,27 +2460,27 @@ void DX12CommandListLifecycle::Reset(
 	// per command-list Reset. Only the IA epoch bump remains unique: it
 	// invalidates IA-keyed caches from the previous recording.
 	if (tracking.trackHuntIa || DX12ModHasActiveShaderOverrides()) {
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(begin);
 		DX12SimulateContext *fastState =
 			DX12CommandListRuntime::GetStatePtrFast(commandList);
 		if (fastState)
 			DX12CommandListRuntime::BumpIaEpoch(fastState);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"CommandListReset",
 			"reset_ia",
 			0,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_DIAG_ELAPSED_US(begin));
 	}
 	if (tracking.trackPsoState || tracking.trackHuntIa) {
-		LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(begin);
 		DX12HuntResetCommandList(commandList, initialState);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"CommandListReset",
 			"hunt_reset",
 			0,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(begin));
+			DX12_DIAG_ELAPSED_US(begin));
 	}
 }
 

@@ -10,7 +10,6 @@
 #include "DX12Runtime.h"
 #include "DX12Resources.h"
 #include "DX12Presentation.h"
-#include "DX12ModLockTelemetry.h"
 #include <Shlwapi.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1878,7 +1877,7 @@ BuildDx12StaticIaReplacementTable(
 	}
 	table->enabled =
 		!table->indexByHash.empty() || !table->vertexByHashAndSlot.empty();
-	DX12LogManager::Fields("DX12StaticIaReplacement",
+	DX12_LOG("DX12StaticIaReplacement",
 		"enabled=%d,indexEntries=%zu,vertexEntries=%zu,blockedByShaderIaTriggers=%d",
 		table->enabled ? 1 : 0,
 		table->indexByHash.size(),
@@ -2648,12 +2647,16 @@ DX12LoadedResource *EnsureLoadedResourceForPreSkin(
 // of a static string literal: no allocation, no lock, no log traffic, so it can
 // be dropped into any blockable path without perturbing what it measures. The
 // last marker left behind by a frozen process names the blocking call.
-void DX12MarkStage(const char *stage);
+// DX12MarkStage itself is declared by Core/Diag/DX12Diag.h (TIMING only).
 
 // Prints the stage the previous frame boundary died in. Called at the top of
 // DX12ModBeginFrame: a frozen process stops emitting, so the last line this
 // prints names the frame that never finished.
+#if DX12_TIMING_BUILD
 void DX12LogFrameBoundaryStage();
+#else
+static inline void DX12LogFrameBoundaryStage() {}
+#endif
 
 #include "DX12DdsTextureLoadUtils.h"
 

@@ -34,7 +34,7 @@ public:
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
 			if (mInstalled) {
-				DX12_CREATE_TIMING_SCOPE(DescriptorHeapInvalidate, Record);
+				DX12_PROF_CREATE_SCOPE(DescriptorHeapInvalidate, Record);
 				AcquireSRWLockExclusive(&gDescriptorLock);
 				InvalidateDescriptorHeapLocked(mHeap);
 				ReleaseSRWLockExclusive(&gDescriptorLock);
@@ -77,7 +77,7 @@ public:
 		const LONG ref = InterlockedDecrement(&mRef);
 		if (ref == 0) {
 			if (mInstalled) {
-				DX12_CREATE_TIMING_SCOPE(ResourceInvalidate, Record);
+				DX12_PROF_CREATE_SCOPE(ResourceInvalidate, Record);
 				AcquireSRWLockExclusive(&gResourceLock);
 				InvalidateResourceLocked(mResource);
 				ReleaseSRWLockExclusive(&gResourceLock);

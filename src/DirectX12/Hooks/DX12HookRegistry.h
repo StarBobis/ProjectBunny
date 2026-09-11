@@ -82,7 +82,7 @@ public:
 		DWORD result = Get().hookManager.Hook(&hookId, original, target, hook);
 		if (result == ERROR_SUCCESS && original)
 			RememberOriginal(target, *original);
-		DX12LogManager::Fields(name ? name : "HookInstall",
+		DX12_LOG(name ? name : "HookInstall",
 			"\"event\":\"HookInstall\",\"status\":\"%s\",\"target\":\"%p\",\"original\":\"%p\",\"result\":\"0x%lx\"",
 			result == ERROR_SUCCESS ? "installed" : "failed",
 			target, original ? *original : nullptr, result);

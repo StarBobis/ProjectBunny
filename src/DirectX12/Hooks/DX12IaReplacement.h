@@ -18,10 +18,8 @@
 #include <mutex>
 #include <thread>
 
-// Frame-boundary breadcrumb, defined in DX12CommandListExecutor.cpp. Thin
-// declaration (same pattern as DX12VmFrameVariablesUtils.h) so this header
-// does not need the mod-runtime umbrella.
-void DX12MarkStage(const char *stage);
+// Frame-boundary breadcrumb DX12MarkStage is declared in Core/Diag/DX12Diag.h
+// (TIMING: real store; RELEASE: inline no-op).
 
 class DX12IaReplacementDrawScope
 {
@@ -1132,9 +1130,7 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		DX12MarkStage("execute_present_enter");
-#if defined(DX12_RELEASE_TIMING)
-		DX12LogManager::FieldsFlush("DX12PresentDiag", "event=execute_present_enter");
-#endif
+		DX12_LOG_FLUSH("DX12PresentDiag", "event=execute_present_enter");
 		DX12ModIaReplacement replacement;
 		if (!DX12ModPreparePresentReplacement(commandList, &replacement))
 			return false;
@@ -1169,12 +1165,10 @@ public:
 			!DX12ModPresentReplacementPendingForCurrentPresent())
 			return;
 
-#if defined(DX12_RELEASE_TIMING)
 		// FieldsFlush on purpose: if the present replacement deadlocks the
 		// recording thread, its TLS-buffered Fields lines never publish and
 		// the trail would end exactly here without a trace.
-		DX12LogManager::FieldsFlush("DX12PresentDiag", "event=pending_execute");
-#endif
+		DX12_LOG_FLUSH("DX12PresentDiag", "event=pending_execute");
 		// Present replacement is frame-scoped and must be recorded before a
 		// resident draw can be fast-forwarded. Do only this small one-time
 		// operation here; the draw itself can still use the resident fast path.
@@ -1195,14 +1189,13 @@ public:
 		    replacement->dispatches.empty() && replacement->drawSrvPatches.empty()) {
 			return true;
 		}
-#if defined(DX12_RELEASE_TIMING)
 		// TIMING-build trace: dump the exact replacement state that is about
 		// to be executed (skip flag, replacement IB view and every queued
 		// draw), so "the ini appended the right branch but the picture did
 		// not change" cases can be distinguished between "original draw was
 		// not skipped", "replacement IB was not bound" and "GPU args were
 		// wrong". Compiled out of regular Release builds.
-		DX12LogManager::Fields("DX12IaReplayDiag",
+		DX12_LOG("DX12IaReplayDiag",
 			"event=execute_match skip=%d hasIb=%d ibSize=%u ibFmt=%d draws=%zu dispatches=%zu origIdx=%u origFirst=%u origBase=%d origInst=%u",
 			replacement->skip ? 1 : 0,
 			replacement->hasIndexBuffer ? 1 : 0,
@@ -1211,15 +1204,14 @@ public:
 			replacement->draws.size(), replacement->dispatches.size(),
 			draw.indexCount, draw.firstIndex, draw.baseVertex, draw.instanceCount);
 		for (const DX12ModIaReplacement::DrawCall &queuedDraw : replacement->draws) {
-			DX12LogManager::Fields("DX12IaReplayDiag",
+			DX12_LOG("DX12IaReplayDiag",
 				"event=execute_draw indexed=%d count=%u start=%u base=%d fromCaller=%d autoCount=%d",
 				queuedDraw.indexed ? 1 : 0, queuedDraw.count, queuedDraw.start,
 				queuedDraw.baseVertex, queuedDraw.fromCaller ? 1 : 0,
 				queuedDraw.autoCount ? 1 : 0);
 		}
 		if (!replacement->skip)
-			DX12LogManager::Fields("DX12IaReplayDiag", "event=execute_original_draw");
-#endif
+			DX12_LOG("DX12IaReplayDiag", "event=execute_original_draw");
 
 		const bool modifiesIaBindings = replacement->hasIndexBuffer ||
 			!replacement->vertexBuffers.empty();
@@ -1230,7 +1222,7 @@ public:
 		// cannot decide whether an already-bound IA view needs recovery. Retry for
 		// configured PreSkin draws; durable resource metadata and the fence-owned
 		// resize cache make the lookup cheap and independent of recording order.
-		LARGE_INTEGER applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(applySegmentBegin);
 		// Diagnostic sub-probes: apply_replay_ia measures ~1ms per matching draw
 		// while the replay body itself never runs; split the block to find the
 		// real cost (flags vs IA copy vs gated call).
@@ -1241,69 +1233,69 @@ public:
 			runtimeState.ia.vertexBuffers,
 			runtimeState.ia.hasVertexBuffer,
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "replay_cond_flags", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
 		if (hasResizeBindings || hasResizeCacheEntries || mayNeedExpansion) {
-			LARGE_INTEGER replayCopyBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(replayCopyBegin);
 			redirectedIa = runtimeState.ia;
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement", "replay_ia_copy", draw.indexed ? 1u : 0u, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(replayCopyBegin));
-			LARGE_INTEGER replayGatedBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_ELAPSED_US(replayCopyBegin));
+			DX12_DIAG_QPC(replayGatedBegin);
 			DX12PreSkinIaRedirectUtils::ReplayActiveVertexBuffersGated(
 				commandList, callbacks, &redirectedIa, &runtimeState);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement", "replay_gated_call", draw.indexed ? 1u : 0u, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(replayGatedBegin));
+				DX12_DIAG_ELAPSED_US(replayGatedBegin));
 			restoreIa = &redirectedIa;
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_replay_ia", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
 		DX12IaReplacementDrawExecutor drawExecutor(commandList, callbacks);
-		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		if (modifiesIaBindings) {
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Apply(*replacement);
 		}
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_ia_bindings", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
-		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
+		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		if (hasDrawSrvPatches)
 			DX12ModApplyDrawSrvReplacement(commandList, replacement, !replacement->skip);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_draw_srv", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
 
-		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		if (!replacement->skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 
 		drawExecutor.ExecuteReplacementDraws(*replacement, draw);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_execute_draws", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
-		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
+		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		if (modifiesIaBindings) {
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Restore(*replacement, *restoreIa);
 		}
 		if (hasDrawSrvPatches)
 			DX12ModRestoreDrawSrvReplacement(commandList, replacement);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_restore", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
-		DX12Profiling::RecordIaApplied();
-		applySegmentBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
+		DX12_PROF_COUNT("IaApplied");
+		DX12_DIAG_QPC_RESET(applySegmentBegin);
 		DX12ModRunPostShaderOverrideReplacement(
 			commandList, runtimeState.pipelineState, iaState,
 			draw.vertexCount, draw.indexCount, draw.instanceCount,
 			draw.firstVertex, draw.firstIndex, draw.firstInstance, replacement);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement", "apply_post_override", draw.indexed ? 1u : 0u, 1,
-			DX12OuterTimingProbeUtils::ElapsedUs(applySegmentBegin));
+			DX12_DIAG_ELAPSED_US(applySegmentBegin));
 		return true;
 	}
 
@@ -1354,7 +1346,7 @@ public:
 			DX12IaReplacementBindingExecutor bindingExecutor(commandList, callbacks);
 			bindingExecutor.Restore(replacement, *restoreIa);
 		}
-		DX12Profiling::RecordIaApplied();
+		DX12_PROF_COUNT("IaApplied");
 		return true;
 	}
 
@@ -1397,7 +1389,7 @@ public:
 		if (!replacement.skip)
 			drawExecutor.ExecuteOriginalDraw(draw);
 		drawExecutor.ExecuteReplacementDraws(replacement, draw);
-		DX12Profiling::RecordIaApplied();
+		DX12_PROF_COUNT("IaApplied");
 		return true;
 	}
 
@@ -1616,12 +1608,12 @@ public:
 		const DX12CompiledDrawDecision *precompiledDrawDecision = nullptr,
 		UINT64 flagsWord = DX12HotPathState::HookWorkFlags)
 	{
-		DX12_HOTPATH_TIME_BEGIN(DrawOverrideTotal);
+		DX12_PROF_STAGE_BEGIN(DrawOverride);
 
 		// Draw consumes the compiled PSO decision instead of rediscovering
 		// shader override metadata on every command.
-		DX12_HOTPATH_TIME_BEGIN(DrawPsoEarlyExit);
-		LARGE_INTEGER psoDecisionBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_STAGE_BEGIN(DrawPsoEarlyExit);
+		DX12_DIAG_QPC(psoDecisionBegin);
 			// Gate bits come from the flags word the outer draw hook already
 			// loaded: one snapshot per draw keeps every layer's gating
 			// consistent even if an input-thread toggle lands mid-draw.
@@ -1654,15 +1646,15 @@ public:
 			precompiledDecisionStillCurrent ? precompiledDrawDecision :
 			DX12CommandListRuntime::EnsureDrawDecision(
 				mutableRuntimeState, activeShaderOverrides);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement",
 			"ensure_draw_decision",
 			draw.indexed ? 1u : 0u,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(psoDecisionBegin));
+			DX12_DIAG_ELAPSED_US(psoDecisionBegin));
 		if (!drawDecision) {
-			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			DX12_PROF_STAGE_END(DrawPsoEarlyExit);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
 			// Plan fix A: a live static-template IA replacement must be
@@ -1680,16 +1672,16 @@ public:
 			}
 			if (drawDecision->staticReplacementReady &&
 			    drawDecision->staticReplacementSnapshot) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"static_pso_replacement_hit",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(psoDecisionBegin));
-			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-			DX12Profiling::RecordIaDrawOverrideCheck();
-			DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
-			LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_ELAPSED_US(psoDecisionBegin));
+			DX12_PROF_STAGE_END(DrawPsoEarlyExit);
+			DX12_PROF_COUNT("IaDrawOverrideCheck");
+			DX12_PROF_STAGE_BEGIN(DrawApplyAndExecute);
+			DX12_DIAG_QPC(applyBegin);
 			bool applied = false;
 			if (DX12ModNeedsPreSkinningUavProbe()) {
 				// Pre-skin keeps per-draw apply+restore semantics: its VB
@@ -1712,36 +1704,36 @@ public:
 						callbacks);
 			}
 			if (applied) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"apply_static_pso_replacement",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
-				DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_DIAG_ELAPSED_US(applyBegin));
+				DX12_PROF_STAGE_END(DrawApplyAndExecute);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return true;
 			}
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				"apply_static_pso_replacement_failed",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
-			DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+				DX12_DIAG_ELAPSED_US(applyBegin));
+			DX12_PROF_STAGE_END(DrawApplyAndExecute);
 		}
 		if (drawDecision->kind == DX12CompiledDrawDecisionKind::NoopNeverMatches) {
 			// Plan step 3.3: the decision was compiled with no IA targets, no
 			// descriptor targets and no skip, so no draw on this PSO can ever
 			// match. Return before building any negative-cache key (bound-draw,
 			// IA-state or fast-reject) or touching the pre-skin generation.
-			DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
-			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			DX12_PROF_STAGE_END(DrawPsoEarlyExit);
+			DX12_PROF_STAGE_END(DrawOverride);
 			return false;
 		}
 		if (drawDecision->NeedsDescriptorMatch())
-			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDescriptorDraw();
-		DX12_HOTPATH_TIME_END(DrawPsoEarlyExit);
+			DX12_PROF_COUNT("Rm.DrawDecisionDescriptorDraws");
+		DX12_PROF_STAGE_END(DrawPsoEarlyExit);
 
 		// Bound-state draw-result cache: when PSO, IA state, root descriptors,
 		// and descriptor heap haven't changed since the last negative result on
@@ -1784,7 +1776,7 @@ public:
 			!drawDecision->shaderOverrideNegativeCacheAllowed;
 		DX12BoundDrawResultCache &boundDrawCache =
 			mutableRuntimeState->resolvedDraw.boundDrawResult;
-		LARGE_INTEGER boundCacheBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(boundCacheBegin);
 		const bool boundCacheHit = boundDrawCache.Matches(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
@@ -1799,26 +1791,26 @@ public:
 				draw,
 				boundCacheCompareDescriptorState,
 				boundCacheCompareDrawArgs);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"IaReplacement",
 			boundCacheHit ? "bound_cache_compare_hit" : "bound_cache_compare_miss",
 			draw.indexed ? 1u : 0u,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(boundCacheBegin));
+			DX12_DIAG_ELAPSED_US(boundCacheBegin));
 		if (boundCacheHit) {
 			if (!boundDrawCache.hasOverride) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"bound_draw_cache_hit_negative",
 					draw.indexed ? 1u : 0u,
 					1,
 					0);
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
 		}
 		auto StoreBoundDrawNegative = [&]() {
-			LARGE_INTEGER storeBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(storeBegin);
 			boundDrawCache.Capture(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
@@ -1832,15 +1824,15 @@ public:
 				runtimeState.graphicsRootSignature,
 				draw,
 				false);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				"store_bound_negative",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(storeBegin));
+				DX12_DIAG_ELAPSED_US(storeBegin));
 		};
 
-		DX12Profiling::RecordIaDrawOverrideCheck();
+		DX12_PROF_COUNT("IaDrawOverrideCheck");
 		// DX12ModIaReplacement embeds CommandListBindingState (~14KB of
 		// zero-initialized root/descriptor arrays), so it is deliberately
 		// NOT constructed here: 99%+ of draws exit through the negative
@@ -1886,7 +1878,7 @@ public:
 			    iaNeg.pipelineState == runtimeState.pipelineState) {
 				if (iaNeg.noCandidate) {
 					StoreBoundDrawNegative();
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
 			} else {
@@ -1903,7 +1895,7 @@ public:
 				iaNeg.pipelineState = runtimeState.pipelineState;
 				if (noCandidate) {
 					StoreBoundDrawNegative();
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
 			}
@@ -1932,15 +1924,15 @@ public:
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    !DX12IaReplacementExecutor::HasCachedIaTextureOverrideCheckTarget(
 			    mutableRuntimeState, directTargetPlan, draw.indexed, true)) {
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				"skip_missing_direct_check_target",
 				draw.indexed ? 1u : 0u,
 				1,
 				0);
-			DX12Profiling::RecordIaHashStateResult(false);
+			DX12_PROF_COUNT("IaHashStateMiss");
 			StoreBoundDrawNegative();
-			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			DX12_PROF_STAGE_END(DrawOverride);
 			return false;
 		}
 		if (drawDecision->directTextureChecksOnly &&
@@ -1967,14 +1959,13 @@ public:
 						directGraphicsDescriptorHeap,
 						directGraphicsDescriptorHeapVersion,
 						draw)) {
-					DX12Profiling::RecordIaHashStateResult(false);
+					DX12_PROF_COUNT("IaHashStateMiss");
 					StoreBoundDrawNegative();
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
 			}
-			LARGE_INTEGER directDescriptorBegin =
-				DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(directDescriptorBegin);
 			if (drawDecision->descriptorTargetsStatic) {
 				// Plan step 3.1: every descriptor texture target is an
 				// unconditional static replacement already applied at
@@ -1982,12 +1973,12 @@ public:
 				// resolution and hash candidate prefilter entirely.
 				hasDirectDescriptorCandidate = true;
 				directDescriptorCandidateKnown = true;
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"direct_descriptor_prefilter_static_skip",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+					DX12_DIAG_ELAPSED_US(directDescriptorBegin));
 			} else {
 				hasDirectDescriptorCandidate =
 					DX12ModHasAnyDirectDescriptorTextureOverrideCandidate(
@@ -2000,14 +1991,14 @@ public:
 						draw.firstIndex,
 						draw.firstInstance);
 				directDescriptorCandidateKnown = true;
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					hasDirectDescriptorCandidate ?
 						"direct_descriptor_prefilter_positive" :
 						"direct_descriptor_prefilter_negative",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(directDescriptorBegin));
+					DX12_DIAG_ELAPSED_US(directDescriptorBegin));
 			}
 			if (!directTargetPlan.HasIaTargets() &&
 			    !hasDirectDescriptorCandidate) {
@@ -2021,9 +2012,9 @@ public:
 					directGraphicsDescriptorHeap,
 					directGraphicsDescriptorHeapVersion,
 					draw);
-				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_PROF_COUNT("IaHashStateMiss");
 				StoreBoundDrawNegative();
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
 		}
@@ -2038,14 +2029,13 @@ public:
 						*drawDecision, preSkinGeneration,
 						contentGeneration, resolveGeneration,
 						0, nullptr, 0, draw)) {
-					DX12Profiling::RecordIaHashStateResult(false);
+					DX12_PROF_COUNT("IaHashStateMiss");
 					StoreBoundDrawNegative();
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
 
-			LARGE_INTEGER directPrefilterBegin =
-				DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(directPrefilterBegin);
 			const bool hasPotentialDirectCandidate =
 				DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 					runtimeState.ia,
@@ -2057,14 +2047,14 @@ public:
 					draw.firstVertex,
 					draw.firstIndex,
 					draw.firstInstance);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				hasPotentialDirectCandidate ?
 					"direct_ia_prefilter_positive" :
 					"direct_ia_prefilter_negative",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(directPrefilterBegin));
+				DX12_DIAG_ELAPSED_US(directPrefilterBegin));
 			if (!hasPotentialDirectCandidate) {
 				StoreResidentNegative(
 					mutableRuntimeState,
@@ -2076,16 +2066,16 @@ public:
 					nullptr,
 					0,
 					draw);
-				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_PROF_COUNT("IaHashStateMiss");
 				StoreBoundDrawNegative();
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
 
 				// The direct probe and the full override path consume the same stable IA
 				// hash state. Cache it before building the probe key so a negative probe
 				// hit does not require re-hashing the same draw region first.
-				LARGE_INTEGER directProbeBuildBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC(directProbeBuildBegin);
 				DX12IaHashStateCacheKey directHashCacheKey =
 					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
 						mutableRuntimeState,
@@ -2140,7 +2130,7 @@ public:
 							*directIaStateView);
 					}
 					if (directHashCacheEvicted)
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
+						DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheEvictions");
 				} else if (!residentDirectHashCacheHit && directIaStateView) {
 					StoreResolvedIaHashBuild(
 						&mutableRuntimeState->resolvedDraw.lastDirectIaHashBuild,
@@ -2149,17 +2139,17 @@ public:
 						*directIaStateView);
 				}
 				if (directHashFound) {
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_CPU_STAGE(
 						"IaReplacement",
 						directHashCacheHit ?
 							"direct_ia_probe_state_cache_hit" :
 							"build_direct_ia_probe_state",
 						draw.indexed ? 1u : 0u,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
+						DX12_DIAG_ELAPSED_US(directProbeBuildBegin));
 
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheLookup();
-					LARGE_INTEGER directProbeMatchBegin = DX12OuterTimingProbeUtils::Now();
+					DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheLookups");
+					DX12_DIAG_QPC(directProbeMatchBegin);
 					bool hasDirectCandidate = false;
 					const bool directCandidateCacheHit =
 						TryLoadDirectIaCandidate(
@@ -2186,14 +2176,18 @@ public:
 							draw,
 							drawDecision->directTargetDrawMatchUsage,
 							hasDirectCandidate);
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheMiss();
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheStore(
-							directCandidateCacheEvicted);
+						DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheMisses");
+						DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheStores");
+						if (directCandidateCacheEvicted)
+							DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheEvictions");
 					} else {
-						DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionDirectProbeCacheHit(
-							hasDirectCandidate);
+						DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheHits");
+						if (hasDirectCandidate)
+							DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCachePositiveHits");
+						else
+							DX12_PROF_COUNT("Rm.DrawDecisionDirectProbeCacheNegativeHits");
 					}
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_CPU_STAGE(
 						"IaReplacement",
 						directCandidateCacheHit ?
 							(hasDirectCandidate ?
@@ -2204,28 +2198,28 @@ public:
 								"direct_ia_probe_negative_result"),
 						draw.indexed ? 1u : 0u,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(directProbeMatchBegin));
+						DX12_DIAG_ELAPSED_US(directProbeMatchBegin));
 					if (!hasDirectCandidate) {
 						StoreResidentNegative(mutableRuntimeState, *drawDecision,
 							preSkinGeneration,
 							contentGeneration, resolveGeneration,
 							0, nullptr, 0, draw);
-						DX12OuterTimingProbeUtils::LogCpuStage(
+						DX12_PROF_CPU_STAGE(
 							"IaReplacement",
 							"skip_direct_ia_probe_miss",
 							draw.indexed ? 1u : 0u,
 							1,
 							0);
-						DX12Profiling::RecordIaHashStateResult(false);
+						DX12_PROF_COUNT("IaHashStateMiss");
 						StoreBoundDrawNegative();
-						DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+						DX12_PROF_STAGE_END(DrawOverride);
 						return false;
 					}
 					if (targetPlan.HasSameIaHashTargets(directTargetPlan)) {
 						activeIaState = directIaStateView;
 						hasIaHashState = true;
 						reusedDirectIaState = true;
-						DX12OuterTimingProbeUtils::LogCpuStage(
+						DX12_PROF_CPU_STAGE(
 							"IaReplacement",
 							"reuse_direct_ia_state",
 							draw.indexed ? 1u : 0u,
@@ -2233,12 +2227,12 @@ public:
 							0);
 					}
 				} else {
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_CPU_STAGE(
 						"IaReplacement",
 						"build_direct_ia_probe_state_failed",
 						draw.indexed ? 1u : 0u,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(directProbeBuildBegin));
+						DX12_DIAG_ELAPSED_US(directProbeBuildBegin));
 				}
 		}
 		if (drawDecision->directTextureChecksOnly &&
@@ -2249,8 +2243,7 @@ public:
 		    !directTargetPlan.requireAllIaBuffers &&
 		    directDescriptorCandidateKnown &&
 		    !hasDirectDescriptorCandidate) {
-			LARGE_INTEGER mixedPrefilterBegin =
-				DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(mixedPrefilterBegin);
 			const bool hasPotentialDirectIaCandidate =
 				DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 					runtimeState.ia,
@@ -2262,14 +2255,14 @@ public:
 					draw.firstVertex,
 					draw.firstIndex,
 					draw.firstInstance);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				hasPotentialDirectIaCandidate ?
 					"mixed_direct_prefilter_ia_positive" :
 					"mixed_direct_prefilter_ia_negative",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(mixedPrefilterBegin));
+				DX12_DIAG_ELAPSED_US(mixedPrefilterBegin));
 			if (!hasPotentialDirectIaCandidate) {
 				StoreResidentNegative(
 					mutableRuntimeState,
@@ -2281,9 +2274,9 @@ public:
 					directGraphicsDescriptorHeap,
 					directGraphicsDescriptorHeapVersion,
 					draw);
-				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_PROF_COUNT("IaHashStateMiss");
 				StoreBoundDrawNegative();
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
 		}
@@ -2295,7 +2288,7 @@ public:
 				draw.indexed,
 				false);
 		if (targetPlanHasIaTargets && !reusedDirectIaState && hasCurrentIaTarget) {
-				LARGE_INTEGER iaKeyBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC(iaKeyBegin);
 			DX12IaHashStateCacheKey iaCacheKey =
 				DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
 					mutableRuntimeState,
@@ -2307,12 +2300,12 @@ public:
 					draw.firstVertex,
 					draw.firstIndex,
 					draw.baseVertex);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"IaReplacement",
 				"build_ia_cache_key",
 				draw.indexed ? 1u : 0u,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(iaKeyBegin));
+				DX12_DIAG_ELAPSED_US(iaKeyBegin));
 			psoPreFilterKey = DX12IaReplacementExecutor::MakeDrawFastRejectKey(
 				runtimeState.pipelineState,
 				drawDecision->reloadGeneration,
@@ -2324,19 +2317,19 @@ public:
 				draw);
 			if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoPreFilterKey)
 				&& !drawDecision->targetPlanHasDescriptorTargets) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"pso_view_negative_hit",
 					draw.indexed ? 1u : 0u,
 					1,
 					0);
-				DX12Profiling::RecordIaHashStateResult(false);
+				DX12_PROF_COUNT("IaHashStateMiss");
 				StoreBoundDrawNegative();
-				DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
-			DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheLookup();
-			LARGE_INTEGER iaCacheBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheLookups");
+			DX12_DIAG_QPC(iaCacheBegin);
 			bool iaHashCacheHit = TryLoadResolvedIaHashBuild(
 				&mutableRuntimeState->resolvedDraw.lastFullIaHashBuild,
 				iaCacheKey,
@@ -2352,14 +2345,15 @@ public:
 			if (iaHashCacheHit) {
 				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
 					&mutableRuntimeState->resolvedDraw, true);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"ia_hash_cache_hit",
 					draw.indexed ? 1u : 0u,
 					hasIaHashState ? 1 : 0,
-					DX12OuterTimingProbeUtils::ElapsedUs(iaCacheBegin));
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheHit(
-					hasIaHashState);
+					DX12_DIAG_ELAPSED_US(iaCacheBegin));
+				DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheHits");
+				if (!hasIaHashState)
+					DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheNegativeHits");
 				if (activeIaState) {
 					StoreResolvedIaHashBuild(
 						&mutableRuntimeState->resolvedDraw.lastFullIaHashBuild,
@@ -2370,28 +2364,28 @@ public:
 			} else {
 				DX12ResolvedDrawRuntimeStateUtils::NoteLookup(
 					&mutableRuntimeState->resolvedDraw, false);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"ia_hash_cache_miss",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(iaCacheBegin));
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheMiss();
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashDraw();
-				DX12_HOTPATH_TIME_BEGIN(DrawBuildIaHash);
-				LARGE_INTEGER buildHashBegin = DX12OuterTimingProbeUtils::Now();
+					DX12_DIAG_ELAPSED_US(iaCacheBegin));
+				DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheMisses");
+				DX12_PROF_COUNT("Rm.DrawDecisionIaHashDraws");
+				DX12_PROF_STAGE_BEGIN(DrawBuildIaHash);
+				DX12_DIAG_QPC(buildHashBegin);
 				hasIaHashState = DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
 					&mutableRuntimeState->ia, targetPlan, draw.indexed, draw.vertexCount, draw.indexCount,
 					draw.firstVertex, draw.firstIndex, draw.baseVertex, &iaState);
 				activeIaState = &iaState;
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"build_ia_hash_state",
 					draw.indexed ? 1u : 0u,
 					hasIaHashState ? 1 : 0,
-					DX12OuterTimingProbeUtils::ElapsedUs(buildHashBegin));
-				DX12_HOTPATH_TIME_END(DrawBuildIaHash);
-				LARGE_INTEGER storeHashBegin = DX12OuterTimingProbeUtils::Now();
+					DX12_DIAG_ELAPSED_US(buildHashBegin));
+				DX12_PROF_STAGE_END(DrawBuildIaHash);
+				DX12_DIAG_QPC(storeHashBegin);
 				bool cacheEvicted = false;
 				const DX12IaHashState *storedIaState = DX12IaHashStateCacheUtils::Store(
 					iaHashStateCache,
@@ -2409,19 +2403,24 @@ public:
 						*activeIaState);
 				}
 				if (cacheEvicted)
-					DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheEviction();
-				DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheEvictions");
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"store_ia_hash_cache",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(storeHashBegin));
-				DX12ResidentMaintenanceTelemetryUtils::RecordDrawDecisionIaHashCacheStore();
+					DX12_DIAG_ELAPSED_US(storeHashBegin));
+				DX12_PROF_COUNT("Rm.DrawDecisionIaHashCacheStores");
 			}
-			DX12Profiling::RecordIaHashStateResult(hasIaHashState);
+			if (hasIaHashState)
+				DX12_PROF_COUNT("IaHashStateHit");
+			else
+				DX12_PROF_COUNT("IaHashStateMiss");
 		} else {
-			DX12Profiling::RecordIaHashStateResult(
-				targetPlanHasIaTargets && reusedDirectIaState && hasCurrentIaTarget);
+			if (targetPlanHasIaTargets && reusedDirectIaState && hasCurrentIaTarget)
+				DX12_PROF_COUNT("IaHashStateHit");
+			else
+				DX12_PROF_COUNT("IaHashStateMiss");
 		}
 		if (hasIaHashState || !targetPlanHasIaTargets ||
 		    drawDecision->targetPlanHasDescriptorTargets) {
@@ -2435,8 +2434,8 @@ public:
 
 			// PSO and IA negative cache.
 			if (canUsePsoIaNegativeCache) {
-				DX12_HOTPATH_TIME_BEGIN(DrawPsoIaNegCache);
-				LARGE_INTEGER negKeyBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_PROF_STAGE_BEGIN(DrawPsoIaNegCache);
+				DX12_DIAG_QPC(negKeyBegin);
 				psoIaNegKey = DX12IaReplacementExecutor::MakePsoIaNegativeKey(
 					runtimeState.pipelineState,
 					drawDecision->reloadGeneration,
@@ -2445,36 +2444,36 @@ public:
 					drawDecision->targetDrawMatchUsage,
 					*activeIaState,
 					draw);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"build_pso_ia_negative_key",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(negKeyBegin));
-				LARGE_INTEGER negLookupBegin = DX12OuterTimingProbeUtils::Now();
+					DX12_DIAG_ELAPSED_US(negKeyBegin));
+				DX12_DIAG_QPC(negLookupBegin);
 				if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoIaNegKey)) {
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_CPU_STAGE(
 						"IaReplacement",
 						"pso_ia_negative_hit",
 						draw.indexed ? 1u : 0u,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
-					DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
+						DX12_DIAG_ELAPSED_US(negLookupBegin));
+					DX12_PROF_STAGE_END(DrawPsoIaNegCache);
 					StoreBoundDrawNegative();
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"pso_ia_negative_miss",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(negLookupBegin));
-				DX12_HOTPATH_TIME_END(DrawPsoIaNegCache);
+					DX12_DIAG_ELAPSED_US(negLookupBegin));
+				DX12_PROF_STAGE_END(DrawPsoIaNegCache);
 			}
 
-			DX12_HOTPATH_TIME_BEGIN(DrawModPrepareOverride);
-			LARGE_INTEGER prepareBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_STAGE_BEGIN(DrawModPrepareOverride);
+			DX12_DIAG_QPC(prepareBegin);
 			// Constructed only on the (rare) path that reaches shader
 			// override evaluation: the ~14KB embedded binding state would
 			// otherwise be zero-initialized on every draw.
@@ -2497,57 +2496,57 @@ public:
 				mutableRuntimeState->drawDecision.staticReplacementReady = true;
 			}
 			if (preparedReplacement) {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"prepare_shader_override_match",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(prepareBegin));
-				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
-				DX12_HOTPATH_TIME_BEGIN(DrawApplyAndExecute);
-				LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+					DX12_DIAG_ELAPSED_US(prepareBegin));
+				DX12_PROF_STAGE_END(DrawModPrepareOverride);
+				DX12_PROF_STAGE_BEGIN(DrawApplyAndExecute);
+				DX12_DIAG_QPC(applyBegin);
 				if (DX12IaReplacementExecutor::ApplyAndExecute(
 					commandList, draw, *activeIaState, &iaReplacement, runtimeState, callbacks)) {
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_CPU_STAGE(
 						"IaReplacement",
 						"apply_and_execute_match",
 						draw.indexed ? 1u : 0u,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
-					DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
-					DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+						DX12_DIAG_ELAPSED_US(applyBegin));
+					DX12_PROF_STAGE_END(DrawApplyAndExecute);
+					DX12_PROF_STAGE_END(DrawOverride);
 					return true;
 				}
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"apply_and_execute_failed",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
-				DX12_HOTPATH_TIME_END(DrawApplyAndExecute);
+					DX12_DIAG_ELAPSED_US(applyBegin));
+				DX12_PROF_STAGE_END(DrawApplyAndExecute);
 			} else {
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"prepare_shader_override_miss",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(prepareBegin));
-				DX12_HOTPATH_TIME_END(DrawModPrepareOverride);
+					DX12_DIAG_ELAPSED_US(prepareBegin));
+				DX12_PROF_STAGE_END(DrawModPrepareOverride);
 			}
 
 			if (canUsePsoIaNegativeCache) {
 				// No match: store both the full negative key and cheap-to-full map.
-				LARGE_INTEGER negStoreBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC(negStoreBegin);
 				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoIaNegKey);
 				if (targetPlanHasIaTargets)
 					DX12IaReplacementExecutor::StorePsoDrawFastReject(psoPreFilterKey);
 
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"IaReplacement",
 					"store_pso_ia_negative",
 					draw.indexed ? 1u : 0u,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(negStoreBegin));
+					DX12_DIAG_ELAPSED_US(negStoreBegin));
 			}
 			if (skipDirectDescriptorTargets) {
 				StoreResidentNegative(
@@ -2562,15 +2561,15 @@ public:
 					draw);
 			}
 			StoreBoundDrawNegative();
-			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			DX12_PROF_STAGE_END(DrawOverride);
 			return false;
 		}
 		if (drawDecision->hasShaderOverrideSkip) {
-			DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+			DX12_PROF_STAGE_END(DrawOverride);
 			return true;
 		}
 		StoreBoundDrawNegative();
-		DX12_HOTPATH_TIME_END(DrawOverrideTotal);
+		DX12_PROF_STAGE_END(DrawOverride);
 		return false;
 	}
 };

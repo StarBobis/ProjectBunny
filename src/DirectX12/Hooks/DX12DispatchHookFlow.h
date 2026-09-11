@@ -40,7 +40,6 @@ public:
 	bool cbvsFound = false;
 	bool rootConstantsFound = false;
 	bool applied = false;
-	bool shouldLog = false;
 	uint64_t computeShaderHash = 0;
 	UINT64 computeBindingSerial = 0;
 	UINT64 bindingDependencyFingerprint = 0;
@@ -118,9 +117,8 @@ public:
 	{
 		if (!originalDispatch)
 			return;
-		if (!(flagsWord & DX12HotPathState::MASK_DISPATCH_WORK) &&
-			!DX12Profiling::ShouldCollectCounters()) {
-			DX12_PROFILE_FAST_FORWARD();
+		if (!(flagsWord & DX12HotPathState::MASK_DISPATCH_WORK)) {
+			DX12_PROF_COUNT("FastForward");
 			originalDispatch(
 				commandList,
 				threadGroupCountX,
@@ -152,7 +150,7 @@ public:
 		if (!originalDispatch)
 			return;
 
-		DX12_HOTPATH_TIME_BEGIN(DispatchHookTotal);
+		DX12_PROF_STAGE_SCOPE(DispatchHook);
 
 		const bool hasShaderOverrides =
 			(flagsWord & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
@@ -164,14 +162,10 @@ public:
 			hasShaderOverrides || needsPreSkinProbe;
 		// No-candidate compute PSOs are resident state, just like DX11's current
 		// shader. Bypass tracking-state lookup and all decision/cache machinery.
-		if constexpr (kVerboseEnabled) {
-			if (DX12Profiling::ShouldCollectCounters() || needsDispatchDecision)
-				DX12RuntimeState::IncrementFrameDispatches();
-		}
+		DX12_PROF_FRAME_DISPATCH();
 
 		if (DX12InternalReplayState::IsActive()) {
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -181,14 +175,12 @@ public:
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12ModFlushDrawSrvReplacement(commandList);
 			if (DX12HotPathState::skipBindings && huntEnabled) {
-				DX12_PROFILE_FAST_FORWARD();
+				DX12_PROF_COUNT("FastForward");
 				DX12HuntRecordDispatch(commandList);
 				if (DX12HuntShouldSkipDispatch(commandList)) {
-					DX12_HOTPATH_TIME_END(DispatchHookTotal);
 					return;
 				}
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
 			}
 
@@ -202,13 +194,11 @@ public:
 			if (huntEnabled) {
 				DX12HuntRecordDispatch(commandList);
 				if (DX12HuntShouldSkipDispatch(commandList)) {
-					DX12_HOTPATH_TIME_END(DispatchHookTotal);
 					return;
 				}
 			}
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -231,16 +221,14 @@ public:
 			decisionNeedsShaderOverrideWork || decisionNeedsPreSkinProbe;
 
 		if (DX12HotPathState::skipBindings && huntEnabled && !needsDispatchWork) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12ModFlushDrawSrvReplacement(commandList);
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList)) {
-				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
 			}
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
@@ -254,25 +242,22 @@ public:
 		if (huntEnabled) {
 			DX12HuntRecordDispatch(commandList);
 			if (DX12HuntShouldSkipDispatch(commandList)) {
-				DX12_HOTPATH_TIME_END(DispatchHookTotal);
 				return;
 			}
 		}
 		if (!needsDispatchWork) {
 			if (needsPreSkinProbe && dispatchDecision && dispatchDecision->IsPreSkinRejected())
-				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
-			DX12_PROFILE_FAST_FORWARD();
+				DX12_PROF_COUNT("Rm.DispatchDecisionFastRejects");
+			DX12_PROF_COUNT("FastForward");
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12ModFlushDrawSrvReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
-			DX12_HOTPATH_TIME_END(DispatchHookTotal);
 			return;
 		}
 
 		Execute(
 			commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 			runtimeState, originalDispatch, dispatchDecision);
-		DX12_HOTPATH_TIME_END(DispatchHookTotal);
 	}
 
 	static void Execute(
@@ -309,9 +294,7 @@ public:
 		DX12SimulateContext fallbackState = {};
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {
-		#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
-#endif
+			DX12_LOG_TEXT("DX12DispatchHookFlowExecute: no runtimeState, using fallback\n");
 			fallbackState.pipelineState = DX12CommandListRuntime::GetPipelineState(commandList);
 			effectiveState = &fallbackState;
 		}
@@ -327,13 +310,13 @@ public:
 			needsPreSkinProbe && effectiveDecision && effectiveDecision->NeedsPreSkinProbe();
 		if (!needsPreSkinProbe || !effectiveState || !decisionNeedsPreSkinProbe) {
 			if (needsPreSkinProbe && effectiveDecision && effectiveDecision->IsPreSkinRejected())
-				DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionFastReject();
+				DX12_PROF_COUNT("Rm.DispatchDecisionFastRejects");
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			DX12ModFlushDrawSrvReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		DX12ResidentMaintenanceTelemetryUtils::RecordDispatchDecisionPreSkinCandidateDispatch();
+		DX12_PROF_COUNT("Rm.DispatchDecisionPreSkinCandidateDispatches");
 
 		DX12DispatchPreSkinProbe &probe = ScratchProbe();
 		// A deferred draw-SRV restore must flush before any dispatch is
@@ -378,9 +361,9 @@ public:
 			probe.computeShaderHash = effectiveDecision->computeShaderHash;
 			probe.computeBindingSerial = effectiveState->computeBindingSerial;
 			probe.applied = false;
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"probe_cache_dispatch_descriptor_version_negative_hit",
 				0,
@@ -390,7 +373,7 @@ public:
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		LARGE_INTEGER prepareProbeBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(prepareProbeBegin);
 		PreparePreSkinProbe(commandList, effectiveState, &probe);
 		const std::vector<DX12CurrentComputeUavBinding> &probeUavs =
 			probe.cachedUavs ? *probe.cachedUavs : probe.uavs;
@@ -398,27 +381,15 @@ public:
 			probe.cachedSrvs ? *probe.cachedSrvs : probe.srvs;
 		const std::vector<DX12CurrentComputeUavBinding> &probeCbvs =
 			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"dispatch_prepare_probe",
 			0,
-			probeUavs.size() + probeSrvs.size() + probeCbvs.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(prepareProbeBegin));
+			static_cast<LONG64>(probeUavs.size() + probeSrvs.size() + probeCbvs.size()),
+			DX12_DIAG_ELAPSED_US(prepareProbeBegin));
 		UINT dispatchGroupX = threadGroupCountX;
 		UINT dispatchGroupY = threadGroupCountY;
 		UINT dispatchGroupZ = threadGroupCountZ;
-		if constexpr (kVerboseEnabled) {
-			DX12LogManager::Fields("DX12DispatchExecDetail",
-				"applied=%d,skip=%d,hasD=%d,gx=%u,gy=%u,gz=%u,origX=%u,origY=%u,origZ=%u,cs=%llx",
-				probe.applied ? 1 : 0,
-				probe.dispatchOverride.handlingSkip ? 1 : 0,
-				probe.dispatchOverride.hasDispatch ? 1 : 0,
-				probe.dispatchOverride.groupsX,
-				probe.dispatchOverride.groupsY,
-				probe.dispatchOverride.groupsZ,
-				threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-				static_cast<unsigned long long>(probe.computeShaderHash));
-		}
 		if (probe.applied && probe.dispatchOverride.handlingSkip) {
 			if (probe.dispatchOverride.hasDispatch) {
 				dispatchGroupX = probe.dispatchOverride.groupsX;
@@ -427,14 +398,14 @@ public:
 				// Publish the resize alias before the dispatch so draws
 				// recorded on other lists still resolve the resized output.
 				DX12ModPublishPreSkinOutputResizeEarly(commandList);
-				LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
+				DX12_DIAG_QPC(dispatchBegin);
 				originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_CPU_STAGE(
 					"PreSkin",
 					"dispatch_override_original",
 					0,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(dispatchBegin));
+					DX12_DIAG_ELAPSED_US(dispatchBegin));
 			} else {
 				// Fail-safe: the config says "skip the original dispatch and
 				// run the override", but no override groups are available.
@@ -447,40 +418,40 @@ public:
 				DX12ModFlushDrawSrvReplacement(commandList);
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			}
-			LARGE_INTEGER finishBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(finishBegin);
 			FinishPreSkinProbe(
 				commandList,
 				threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 				dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"dispatch_finish_probe",
 				0,
-				probeUavs.size(),
-				DX12OuterTimingProbeUtils::ElapsedUs(finishBegin));
+				static_cast<LONG64>(probeUavs.size()),
+				DX12_DIAG_ELAPSED_US(finishBegin));
 			return;
 		}
-		LARGE_INTEGER dispatchBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(dispatchOriginalBegin);
 		if (probe.applied)
 			DX12ModPublishPreSkinOutputResizeEarly(commandList);
 		originalDispatch(commandList, dispatchGroupX, dispatchGroupY, dispatchGroupZ);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"dispatch_original",
 			0,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(dispatchBegin));
-		LARGE_INTEGER finishBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_ELAPSED_US(dispatchOriginalBegin));
+		DX12_DIAG_QPC(finishOriginalBegin);
 		FinishPreSkinProbe(
 			commandList,
 			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
 			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"dispatch_finish_probe",
 			0,
-			probeUavs.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(finishBegin));
+			static_cast<LONG64>(probeUavs.size()),
+			DX12_DIAG_ELAPSED_US(finishOriginalBegin));
 	}
 
 	// Match the DX11 current-compute-shader model: the CS hash lives in the
@@ -528,7 +499,6 @@ public:
 		probe.cbvsFound = false;
 		probe.rootConstantsFound = false;
 		probe.applied = false;
-		probe.shouldLog = false;
 		probe.computeShaderHash = 0;
 		probe.computeBindingSerial = 0;
 		probe.bindingDependencyFingerprint = 0;
@@ -538,26 +508,6 @@ public:
 		return probe;
 	}
 
-	static void LogPreSkinDispatchProbeReason(
-		const char *reason,
-		uint64_t computeShaderHash,
-		UINT64 computeBindingSerial,
-		size_t uavCount)
-	{
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		if (reason && (!strcmp(reason, "uav_filter_miss") ||
-		    !strcmp(reason, "cached_no_uav_match") ||
-		    !strcmp(reason, "cs_not_configured"))) {
-			return;
-		}
-#else
-		(void)reason;
-		(void)computeShaderHash;
-		(void)computeBindingSerial;
-		(void)uavCount;
-#endif
-	}
-
 	static void PreparePreSkinProbe(
 		ID3D12GraphicsCommandList *commandList,
 		DX12SimulateContext *runtimeState,
@@ -565,30 +515,25 @@ public:
 	{
 		if (!probe || !(DX12HotPathState::HookWorkFlags &
 			DX12HotPathState::FLAG_PRE_SKIN_PROBE)) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("PreparePreSkinProbe: exit needsProbe failed\n");
-	#endif
+			DX12_LOG_TEXT("PreparePreSkinProbe: exit needsProbe failed\n");
 			return;
 		}
 
-		LARGE_INTEGER t0 = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(t0);
 
 		// Match DX11 by reading the precomputed CS hash from RuntimeState.
-		LARGE_INTEGER csHashBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(csHashBegin);
 		probe->computeShaderHash = (runtimeState && runtimeState->cachedCsHashValid) ?
 			runtimeState->cachedCsHash :
 			GetCachedCsHash(runtimeState ? runtimeState->pipelineState : nullptr);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"prepare_get_cs_hash",
 			0,
 			probe->computeShaderHash ? 1 : 0,
-			DX12OuterTimingProbeUtils::ElapsedUs(csHashBegin));
+			DX12_DIAG_ELAPSED_US(csHashBegin));
 		if (!probe->computeShaderHash) {
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("PreparePreSkinProbe: exit no cs hash\n");
-#endif
-			LogPreSkinDispatchProbeReason("no_pipeline_cs_hash", 0, 0, 0);
+			DX12_LOG_TEXT("PreparePreSkinProbe: exit no cs hash\n");
 			return;
 		}
 		probe->computeBindingSerial = runtimeState ? runtimeState->computeBindingSerial : 0;
@@ -616,11 +561,11 @@ public:
 			runtimeState->resolvedCompute.probeBufferContentGeneration ==
 				DX12GetIaHashContentGeneration()) {
 			probe->applied = false;
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_CPU_STAGE(
 				"PreSkin", "probe_cache_early_negative_hit", 0, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(t0));
+				DX12_DIAG_ELAPSED_US(t0));
 			return;
 		}
 		if (runtimeState &&
@@ -640,21 +585,21 @@ public:
 					runtimeState->computeDescriptorBindingVersion &&
 				DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
 			probe->applied = false;
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"probe_cache_descriptor_version_negative_hit",
 				0,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(t0));
+				DX12_DIAG_ELAPSED_US(t0));
 			return;
 		}
 
 		UINT64 templateStableBindingFingerprint = 0;
 		if (!probe->uavsFound) {
-			DX12_HOTPATH_TIME_BEGIN(PreSkinBindQuery);
-			LARGE_INTEGER collectBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_PROF_STAGE_SCOPE(PreSkinBindQuery);
+			DX12_DIAG_QPC(collectBegin);
 			// DX12 command lists keep resident binding state. When the descriptor
 			// version, heap/root signature, and every previously observed table
 			// base are unchanged, the cached snapshot is already authoritative.
@@ -698,12 +643,12 @@ public:
 				probe->bindingDependencyFingerprint =
 					cached.bindingsDependencyFingerprint;
 				probe->uavsFound = cached.bindingsFoundAny;
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+				DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+				DX12_PROF_CPU_STAGE(
 					"PreSkin", "resident_binding_snapshot_hit", 0,
-					cached.uavs.size() + cached.srvs.size() + cached.cbvs.size(),
-					DX12OuterTimingProbeUtils::ElapsedUs(collectBegin));
+					static_cast<LONG64>(cached.uavs.size() + cached.srvs.size() + cached.cbvs.size()),
+					DX12_DIAG_ELAPSED_US(collectBegin));
 			}
 
 			// Consume the validated recording-context template directly. The
@@ -736,15 +681,14 @@ public:
 				runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
 					probe->bindingDependencyFingerprint) {
 				probe->applied = false;
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-				DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-				DX12OuterTimingProbeUtils::LogCpuStage(
+				DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+				DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+				DX12_PROF_CPU_STAGE(
 					"PreSkin",
 					"probe_cache_template_negative_hit",
 					0,
 					1,
-					DX12OuterTimingProbeUtils::ElapsedUs(t0));
-				DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+					DX12_DIAG_ELAPSED_US(t0));
 				return;
 			}
 			if (computeTemplateLoaded &&
@@ -767,7 +711,7 @@ public:
 				if (!DX12PreSkinStableFingerprintCacheUtils::TryLoad(
 						probe->bindingDependencyFingerprint,
 						&templateStableBindingFingerprint)) {
-					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
+					DX12_PROF_COUNT("Rm.PreSkinPlanFingerprintBuilds");
 					templateStableBindingFingerprint =
 						DX12PreSkinPlanUtils::BuildCrossFrameStableBindingFingerprint(
 							templateUavs,
@@ -786,15 +730,14 @@ public:
 						runtimeState->iaContentEpoch);
 				if (runtimeState->resolvedCompute.probeFingerprint == templateProbeFingerprint) {
 					probe->applied = false;
-					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-					DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-					DX12OuterTimingProbeUtils::LogCpuStage(
+					DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+					DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+					DX12_PROF_CPU_STAGE(
 						"PreSkin",
 						"probe_cache_template_fingerprint_negative_hit",
 						0,
 						1,
-						DX12OuterTimingProbeUtils::ElapsedUs(t0));
-					DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+						DX12_DIAG_ELAPSED_US(t0));
 					return;
 				}
 			}
@@ -809,13 +752,12 @@ public:
 				probe->cachedSrvs ? *probe->cachedSrvs : probe->srvs;
 			const std::vector<DX12CurrentComputeUavBinding> &cbvs =
 				probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"collect_bindings",
 				0,
-				uavs.size() + srvs.size() + cbvs.size(),
-				DX12OuterTimingProbeUtils::ElapsedUs(collectBegin));
-			DX12_HOTPATH_TIME_END(PreSkinBindQuery);
+				static_cast<LONG64>(uavs.size() + srvs.size() + cbvs.size()),
+				DX12_DIAG_ELAPSED_US(collectBegin));
 		}
 		const std::vector<DX12CurrentComputeUavBinding> &uavs =
 			probe->cachedUavs ? *probe->cachedUavs : probe->uavs;
@@ -845,21 +787,19 @@ public:
 			!MayMatchPreSkinStickyMatch(probe->computeShaderHash, uavs) &&
 			DX12ModTestPreSkinNegativeMatch(negativeMatchKey)) {
 			probe->applied = false;
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(false);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_CPU_STAGE(
 				"PreSkin", "probe_cache_geometry_negative_hit", 0, 1,
-				DX12OuterTimingProbeUtils::ElapsedUs(t0));
-#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Fields("DX12Perf",
+				DX12_DIAG_ELAPSED_US(t0));
+			DX12_LOG("DX12Perf",
 				"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit_geometry\",\"us\":%lld",
 				static_cast<unsigned long long>(probe->computeShaderHash),
-				static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
-#endif
+				static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 			return;
 		}
 
-		LARGE_INTEGER fingerprintBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(fingerprintBegin);
 		UINT64 computeIaFingerprint = 0;
 		if (templateStableBindingFingerprint) {
 			computeIaFingerprint = templateStableBindingFingerprint;
@@ -872,7 +812,7 @@ public:
 				probe->bindingDependencyFingerprint,
 				&computeIaFingerprint)) {
 		} else {
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanFingerprintBuild();
+			DX12_PROF_COUNT("Rm.PreSkinPlanFingerprintBuilds");
 			// Use the cross-frame stable fingerprint: it strips per-frame-volatile
 			// fields (GPU VA, resource pointer, descriptor offset) that the game's
 			// descriptor arena rewrites every frame, so the plan cache can finally
@@ -895,20 +835,20 @@ public:
 		computeIaFingerprint = DX12PreSkinCacheIdentityUtils::MakeProbeFingerprint(
 			computeIaFingerprint,
 			runtimeState ? runtimeState->iaContentEpoch : 0);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"build_binding_fingerprint",
 			0,
-			uavs.size() + srvs.size() + cbvs.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(fingerprintBegin));
+			static_cast<LONG64>(uavs.size() + srvs.size() + cbvs.size()),
+			DX12_DIAG_ELAPSED_US(fingerprintBegin));
 
 		// Negative hits can skip matching. Positive hits still reapply through
 		// the existing path so required D3D12 commands are emitted.
 		bool positiveCacheHit = false;
 		DX12PreSkinDispatchOverride cachedDispatchOverride;
 		DX12PreSkinProbeCacheEntry cacheEntry;
-		DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheLookup();
-		LARGE_INTEGER cacheLookupBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
+		DX12_DIAG_QPC(cacheLookupBegin);
 		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
 		const UINT64 probeBindingSerial = probe->computeBindingSerial;
 		const UINT64 probeIaContentEpoch = runtimeState ? runtimeState->iaContentEpoch : 0;
@@ -1030,19 +970,19 @@ public:
 		    DX12ModGetCachedPreSkinProbeResult(
 			    commandList, probe->computeShaderHash, computeIaFingerprint,
 			    probe ? probe->bindingDependencyFingerprint : 0, &cacheEntry)) {
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				cacheEntry.applied ? "probe_cache_positive_hit" : "probe_cache_negative_hit",
 				0,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheHit(
-				cacheEntry.applied);
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
+				DX12_DIAG_ELAPSED_US(cacheLookupBegin));
+			if (cacheEntry.applied)
+				DX12_PROF_COUNT("Rm.PreSkinPlanCachePositiveHits");
+			else
+				DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_LOG_TEXT("PreparePreSkinProbe: cache_hit applied=%d fingerprint=%llu\n",
 				cacheEntry.applied ? 1 : 0,
 				static_cast<unsigned long long>(computeIaFingerprint));
-#endif
 			if (!runtimeProbeCacheHit) {
 				storeRuntimeProbeCache(
 					probe->computeShaderHash,
@@ -1051,45 +991,38 @@ public:
 			}
 			if (!cacheEntry.applied) {
 				probe->applied = false;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-				DX12LogManager::Fields("DX12Perf",
+				DX12_LOG("DX12Perf",
 					"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":false,\"cache\":\"negative_hit\",\"us\":%lld",
 					static_cast<unsigned long long>(probe->computeShaderHash),
-					static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
-	#endif
+					static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 				return;
 			}
 			positiveCacheHit = true;
 			cachedDispatchOverride = cacheEntry.dispatchOverride;
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-			DX12LogManager::Text("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
+			DX12_LOG_TEXT("PreparePreSkinProbe: positive cache requires command list reapply fingerprint=%llu\n",
 				static_cast<unsigned long long>(computeIaFingerprint));
-#endif
 		} else {
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"probe_cache_miss",
 				0,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(cacheLookupBegin));
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheMiss();
+				DX12_DIAG_ELAPSED_US(cacheLookupBegin));
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheMisses");
 
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"async_warmup_bypassed",
 				0,
 				1,
 				0);
 		}
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		probe->shouldLog = true;
-	#endif
 
 		static const std::vector<DX12CurrentComputeUavBinding> kEmptyComputeBindings;
 		static const std::vector<DX12CurrentRootConstants> kEmptyRootConstants;
-		DX12_HOTPATH_TIME_BEGIN(PreSkinMatch);
-		DX12_HOTPATH_TIME_BEGIN(PreSkinApply);
-		LARGE_INTEGER applyBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_PROF_STAGE_SCOPE(PreSkinMatch);
+		DX12_PROF_STAGE_SCOPE(PreSkinApply);
+		DX12_DIAG_QPC(applyBegin);
 		probe->applied = DX12ModApplyPreSkinningUavReplacement(
 			commandList, probe->computeShaderHash,
 			probe->uavsFound ? uavs : kEmptyComputeBindings,
@@ -1102,12 +1035,12 @@ public:
 			computeIaFingerprint,
 			probe ? probe->bindingDependencyFingerprint : 0,
 			&matchPhaseMiss);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			probe->applied ? "apply_replacement_match" : "apply_replacement_miss",
 			0,
-			uavs.size() + srvs.size() + cbvs.size(),
-			DX12OuterTimingProbeUtils::ElapsedUs(applyBegin));
+			static_cast<LONG64>(uavs.size() + srvs.size() + cbvs.size()),
+			DX12_DIAG_ELAPSED_US(applyBegin));
 		// Only match-phase misses go to the geometry cache: they depend solely
 		// on the inputs folded into negativeMatchKey. A positive that failed
 		// its descriptor patch is content-dependent and must keep re-probing.
@@ -1117,37 +1050,33 @@ public:
 		    cachedDispatchOverride.hasDispatch) {
 			probe->dispatchOverride = cachedDispatchOverride;
 		}
-		DX12_HOTPATH_TIME_END(PreSkinApply);
-		DX12_HOTPATH_TIME_END(PreSkinMatch);
 		const bool updateSharedProbeCache =
 			(!runtimeProbeCacheHit && !positiveCacheHit) || !probe->applied;
 		if (updateSharedProbeCache) {
-			LARGE_INTEGER storeCacheBegin = DX12OuterTimingProbeUtils::Now();
+			DX12_DIAG_QPC(storeCacheBegin);
 			DX12ModStoreCachedPreSkinningUavMatch(
 				commandList, probe->computeShaderHash, computeIaFingerprint,
 				probe ? probe->bindingDependencyFingerprint : 0,
 				probe->applied, &probe->dispatchOverride);
-			DX12OuterTimingProbeUtils::LogCpuStage(
+			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"store_probe_cache",
 				0,
 				1,
-				DX12OuterTimingProbeUtils::ElapsedUs(storeCacheBegin));
-			DX12ResidentMaintenanceTelemetryUtils::RecordPreSkinPlanCacheStore();
+				DX12_DIAG_ELAPSED_US(storeCacheBegin));
+			DX12_PROF_COUNT("Rm.PreSkinPlanCacheStores");
 		}
 		storeRuntimeProbeCache(
 			probe->computeShaderHash,
 			probe->applied,
 			probe->dispatchOverride);
 
-	#if defined(DX12_ENABLE_DETAILED_TIMING) && defined(DX12_RELEASE_TIMING)
-		DX12LogManager::Fields("DX12Perf",
+		DX12_LOG("DX12Perf",
 			"\"scope\":\"PreSkinProbe\",\"cs\":\"%016llx\",\"applied\":%s,\"cache\":\"%s\",\"us\":%lld",
 			static_cast<unsigned long long>(probe->computeShaderHash),
 			probe->applied ? "true" : "false",
 			positiveCacheHit ? "positive_reapply" : "miss",
-			static_cast<long long>(DX12OuterTimingProbeUtils::ElapsedUs(t0)));
-	#endif
+			static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 	}
 
 	static void FinishPreSkinProbe(
@@ -1173,14 +1102,14 @@ public:
 		// command-list state drifts from the actual restored bindings it can
 		// poison later matching and leave patched tables active for unrelated
 		// Unity work.
-		LARGE_INTEGER restoreBegin = DX12OuterTimingProbeUtils::Now();
+		DX12_DIAG_QPC(restoreBegin);
 		DX12ModRestorePreSkinningUavReplacement(commandList);
-		DX12OuterTimingProbeUtils::LogCpuStage(
+		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"restore_replacement",
 			0,
 			1,
-			DX12OuterTimingProbeUtils::ElapsedUs(restoreBegin));
+			DX12_DIAG_ELAPSED_US(restoreBegin));
 		if (!probe.applied)
 			return;
 

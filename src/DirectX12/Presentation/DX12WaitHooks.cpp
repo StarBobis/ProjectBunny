@@ -32,6 +32,9 @@ public:
 	inline static bool HookAttempted = false;
 };
 
+// Wait hooks exist only for TIMING-build fence/frame-latency probes. In a
+// RELEASE build no hook is installed and no wait in the process pays anything.
+#if DX12_TIMING_BUILD
 class DX12WaitHookCallbacks
 {
 public:
@@ -47,7 +50,7 @@ public:
 
 	static bool ShouldProbeHandle(HANDLE handle, bool *matchesFenceEvent, bool *matchesFrameLatency)
 	{
-		return DX12OuterTimingProbeUtils::IsTrackedWaitHandle(
+		return DX12DiagProf::IsTrackedWaitHandle(
 			handle, matchesFenceEvent, matchesFrameLatency);
 	}
 
@@ -92,9 +95,9 @@ public:
 		ID3D12Fence *fence = nullptr;
 		UINT64 fenceValue = 0;
 		HANDLE fenceEvent = nullptr;
-		DX12OuterTimingProbeUtils::SnapshotLastFenceEvent(
+		DX12DiagProf::SnapshotLastFenceEvent(
 			&fence, &fenceValue, &fenceEvent);
-		DX12OuterTimingProbeUtils::LogCurrentCallStack(
+		DX12DiagProf::LogCurrentCallStack(
 			"matched_waitable_object",
 			api,
 			handle ? handle : fenceEvent,
@@ -122,7 +125,7 @@ public:
 		// Internal handles (e.g. the async log writer's own 100ms poll event)
 		// are the wrapper's own sleep, not the game's: pass through without
 		// measurement or logging so the hook never feeds its own log.
-		if (DX12LogManager::IsInternalEventHandle(hHandle)) {
+		if (DX12DiagLog::IsInternalEventHandle(hHandle)) {
 			const DWORD result =
 				DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
 			InterlockedDecrement(&reentryDepth);
@@ -138,22 +141,13 @@ public:
 		if (CanSkipMeasurement(dwMilliseconds, probeHandle)) {
 			result = DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
 		} else {
-			const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			const LARGE_INTEGER begin = DX12DiagProf::Now();
 			result = DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
-			us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+			us = DX12DiagProf::ElapsedUs(begin);
 		}
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-			DX12OuterTimingProbeUtils::RegisterSystemWait(
-				1,
-				hHandle,
-				nullptr,
-				result,
-				lastError,
-				us,
-				matchesFenceEvent,
-				matchesFrameLatency);
-			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+			DX12DiagProf::RecordSystemWait(
 				"WaitForSingleObject",
 				hHandle,
 				nullptr,
@@ -199,24 +193,17 @@ public:
 			result = DX12WaitHookState::OrigWaitForMultipleObjects(
 				nCount, lpHandles, bWaitAll, dwMilliseconds);
 		} else {
-			const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			const LARGE_INTEGER begin = DX12DiagProf::Now();
 			result = DX12WaitHookState::OrigWaitForMultipleObjects(
 				nCount, lpHandles, bWaitAll, dwMilliseconds);
-			us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+			us = DX12DiagProf::ElapsedUs(begin);
 		}
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-			DX12OuterTimingProbeUtils::RegisterSystemWait(
-				2,
-				matchedHandle,
-				nullptr,
-				result,
-				lastError,
-				us,
-				matchesFenceEvent,
-				matchesFrameLatency);
-			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
-				bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)",
+			const char *api =
+				bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)";
+			DX12DiagProf::RecordSystemWait(
+				api,
 				matchedHandle,
 				nullptr,
 				dwMilliseconds,
@@ -226,11 +213,7 @@ public:
 				matchesFenceEvent,
 				matchesFrameLatency);
 			if (matchesFenceEvent || matchesFrameLatency)
-				LogMatchedWaitStack(
-					bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)",
-					matchedHandle,
-					result,
-					us);
+				LogMatchedWaitStack(api, matchedHandle, result, us);
 		}
 		InterlockedDecrement(&reentryDepth);
 		return result;
@@ -250,7 +233,7 @@ public:
 			return result;
 		}
 
-		if (DX12LogManager::IsInternalEventHandle(hHandle)) {
+		if (DX12DiagLog::IsInternalEventHandle(hHandle)) {
 			const DWORD result = DX12WaitHookState::OrigWaitForSingleObjectEx(
 				hHandle, dwMilliseconds, bAlertable);
 			InterlockedDecrement(&reentryDepth);
@@ -267,17 +250,14 @@ public:
 			result = DX12WaitHookState::OrigWaitForSingleObjectEx(
 				hHandle, dwMilliseconds, bAlertable);
 		} else {
-			const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			const LARGE_INTEGER begin = DX12DiagProf::Now();
 			result = DX12WaitHookState::OrigWaitForSingleObjectEx(
 				hHandle, dwMilliseconds, bAlertable);
-			us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+			us = DX12DiagProf::ElapsedUs(begin);
 		}
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-			DX12OuterTimingProbeUtils::RegisterSystemWait(
-				4, hHandle, nullptr, result, lastError, us,
-				matchesFenceEvent, matchesFrameLatency);
-			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+			DX12DiagProf::RecordSystemWait(
 				"WaitForSingleObjectEx", hHandle, nullptr, dwMilliseconds,
 				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
 			// Stack capture is expensive (walk + per-frame module lookup +
@@ -319,19 +299,16 @@ public:
 			result = DX12WaitHookState::OrigWaitForMultipleObjectsEx(
 				nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable);
 		} else {
-			const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			const LARGE_INTEGER begin = DX12DiagProf::Now();
 			result = DX12WaitHookState::OrigWaitForMultipleObjectsEx(
 				nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable);
-			us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+			us = DX12DiagProf::ElapsedUs(begin);
 		}
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-			DX12OuterTimingProbeUtils::RegisterSystemWait(
-				5, matchedHandle, nullptr, result, lastError, us,
-				matchesFenceEvent, matchesFrameLatency);
 			const char *api = bWaitAll ?
 				"WaitForMultipleObjectsEx(all)" : "WaitForMultipleObjectsEx(any)";
-			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+			DX12DiagProf::RecordSystemWait(
 				api, matchedHandle, nullptr, dwMilliseconds,
 				result, lastError, us, matchesFenceEvent, matchesFrameLatency);
 			if (matchesFenceEvent || matchesFrameLatency)
@@ -355,7 +332,7 @@ public:
 			return result;
 		}
 
-		if (DX12LogManager::IsInternalEventHandle(hObjectToWaitOn)) {
+		if (DX12DiagLog::IsInternalEventHandle(hObjectToWaitOn)) {
 			const DWORD result = DX12WaitHookState::OrigSignalObjectAndWait(
 				hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
 			InterlockedDecrement(&reentryDepth);
@@ -372,23 +349,14 @@ public:
 			result = DX12WaitHookState::OrigSignalObjectAndWait(
 				hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
 		} else {
-			const LARGE_INTEGER begin = DX12OuterTimingProbeUtils::Now();
+			const LARGE_INTEGER begin = DX12DiagProf::Now();
 			result = DX12WaitHookState::OrigSignalObjectAndWait(
 				hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
-			us = DX12OuterTimingProbeUtils::ElapsedUs(begin);
+			us = DX12DiagProf::ElapsedUs(begin);
 		}
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-			DX12OuterTimingProbeUtils::RegisterSystemWait(
-				3,
-				hObjectToWaitOn,
-				hObjectToSignal,
-				result,
-				lastError,
-				us,
-				matchesFenceEvent,
-				matchesFrameLatency);
-			DX12OuterTimingProbeUtils::LogSystemWaitSlice(
+			DX12DiagProf::RecordSystemWait(
 				"SignalObjectAndWait",
 				hObjectToWaitOn,
 				hObjectToSignal,
@@ -405,9 +373,11 @@ public:
 		return result;
 	}
 };
+#endif // DX12_TIMING_BUILD
 
 void DX12WaitHooks::Install()
 {
+#if DX12_TIMING_BUILD
 	AcquireSRWLockExclusive(&DX12WaitHookState::HookLock);
 	if (DX12WaitHookState::HookAttempted) {
 		ReleaseSRWLockExclusive(&DX12WaitHookState::HookLock);
@@ -451,6 +421,7 @@ void DX12WaitHooks::Install()
 		"SignalObjectAndWait",
 		reinterpret_cast<void**>(&DX12WaitHookState::OrigSignalObjectAndWait),
 		reinterpret_cast<void*>(DX12WaitHookCallbacks::HookedSignalObjectAndWait));
+#endif // DX12_TIMING_BUILD
 }
 
 void DX12WaitHooks::Shutdown()

@@ -559,6 +559,6 @@ void DX12ResourceTrackerHooks::Install(ID3D12Device *device)
 		gCleanupRegistered = true;
 		DX12BindingCollectQueue::Start();
 		DX12ResourceCollectQueue::Start();
-		DX12LogManager::Text("DX12 persistent resource and descriptor tracking enabled (wrapper mode)\n");
+		DX12_LOG_TEXT("DX12 persistent resource and descriptor tracking enabled (wrapper mode)\n");
 	}
 }

@@ -5,10 +5,6 @@ add_library(DirectX12 SHARED
     # Layered module headers (later layers include earlier ones)
     DX12Core.h
     DX12Hooks.h
-    Hooks/DX12CreateTimingTelemetry.h
-    Hooks/DX12DescriptorShadowTelemetry.h
-    Hooks/DX12HotPathTiming.h
-    Hooks/DX12Profiler.h
     Hooks/DX12DispatchHookFlow.h
     Hooks/DX12IaReplacement.h
     Hooks/DX12DrawHookFlow.h
@@ -62,11 +58,9 @@ add_library(DirectX12 SHARED
     Core/Models/DX12BindingModels.h
     Core/Models/DX12BindingTrackerModels.h
     Core/DX12Diagnostics.h
-    Core/DX12LogUtils.h
-    Core/DX12LogUtils.cpp
+    Core/Diag/DX12Diag.h
     Core/DX12RuntimeState.h
     Core/DX12RuntimeState.cpp
-    Core/DX12LogManager.h
     Core/DX12JsonUtils.h
     Core/DX12CommandState.h
     Core/CommandState/DX12IaDecisionState.h
@@ -76,12 +70,9 @@ add_library(DirectX12 SHARED
     Core/CommandState/DX12FrameAnalysisState.h
     Core/DX12HotPath.h
     Core/HotPath/DX12HotPathState.h
-    Core/HotPath/DX12Profiling.h
     Core/DX12CommandFlow.h
-    Core/CommandFlow/DX12ProfilingImpl.h
     Core/CommandFlow/DX12CommandListBindingFlow.h
     Core/CommandFlow/DX12HuntListModels.h
-    Core/CommandFlow/DX12ResidentMaintenanceTelemetry.h
     Core/CommandFlow/DX12CommandListStateFlow.h
     Core/DX12ModState.h
     Core/ModState/DX12ModIaReplacement.h
@@ -89,7 +80,6 @@ add_library(DirectX12 SHARED
     Core/ModState/DX12PreSkinOutputResizeBinding.h
     Core/ModState/DX12PreSkinPlanUtils.h
     Core/ModState/DX12BufferResolveValidation.h
-    Core/ModState/DX12OuterTimingProbe.h
     Config/DX12Config.h
     Config/DX12ConfigLoader.h
     Resources/DX12ResourceDump.h
@@ -190,22 +180,20 @@ set_target_properties(DirectX12 PROPERTIES
     OUTPUT_NAME "d3d12"
 )
 
-# Optional: build a Release binary with the detailed hot-path timing
-# instrumentation compiled in (per-stage DX12HotPathTiming logs, ApiWall
-# buckets, queue slices). Usage: cmake -DDX12_RELEASE_TIMING=ON ...
-option(DX12_RELEASE_TIMING "Enable DX12 detailed timing instrumentation in non-Debug builds" OFF)
+# Optional: build a Release binary with the unified diagnostics compiled in
+# (Core/Diag/DX12Diag.h: async logger + per-thread bucket profiler, frame
+# summaries on a writer thread). Usage: cmake -DDX12_RELEASE_TIMING=ON ...
+option(DX12_RELEASE_TIMING "Enable DX12 timing diagnostics in non-Debug builds" OFF)
 
 target_compile_definitions(DirectX12 PRIVATE
     UNICODE
     _UNICODE
     _USRDLL
     MIGOTO_DX=12
-    $<$<CONFIG:Debug>:DX12_ENABLE_DETAILED_TIMING>
 )
 
 if(DX12_RELEASE_TIMING)
     target_compile_definitions(DirectX12 PRIVATE
-        DX12_ENABLE_DETAILED_TIMING
         DX12_RELEASE_TIMING
     )
 endif()

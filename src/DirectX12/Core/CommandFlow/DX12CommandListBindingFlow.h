@@ -9,10 +9,6 @@ void DX12ModRestorePreSkinningUavReplacement(
 void DX12ModFlushDrawSrvReplacement(
 	ID3D12GraphicsCommandList *commandList);
 
-// Forward-declared so the hot binding flow above can count descriptor-record
-// fast skips before DX12ResidentMaintenanceTelemetryUtils is defined.
-static inline void DX12RecordDescriptorRecordFastSkip();
-
 class DX12CommandListComputeBindingFlow
 {
 public:
@@ -65,8 +61,8 @@ public:
 		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
 		if (!DX12HotPathState::NeedsAnyResidentDescriptorState(flags) &&
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 		DX12SimulateContext *runtimeState =
@@ -93,8 +89,8 @@ public:
 		// Probe-only PreSkin keeps skipAll set, but it still needs the resident
 		// descriptor heaps for compute-side matching.
 		if (skipComputeBinding) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 
@@ -109,8 +105,8 @@ public:
 		    (count == 0 ||
 		     (runtimeState->lastSetHeapsInput[0] == heaps[0] &&
 		      (count < 2 || runtimeState->lastSetHeapsInput[1] == heaps[1])))) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 
@@ -137,8 +133,8 @@ public:
 			}
 		}
 		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed)) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 
@@ -182,7 +178,7 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipTrackedCapture) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return true;
 		}
 		DX12SimulateContext *runtimeState =
@@ -230,8 +226,8 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipTrackedCapture) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return changed;
 		}
 
@@ -260,7 +256,7 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentTable && skipTrackedCapture) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return true;
 		}
 		DX12SimulateContext *runtimeState =
@@ -302,8 +298,8 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipTrackedCapture) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return changed;
 		}
 
@@ -333,7 +329,7 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return;
 		}
 		DX12SimulateContext *runtimeState =
@@ -376,8 +372,8 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 
@@ -406,7 +402,7 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return;
 		}
 		DX12SimulateContext *runtimeState =
@@ -455,8 +451,8 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 
@@ -485,7 +481,7 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (!needsResidentBinding && skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
+			DX12_PROF_COUNT("FastForward");
 			return;
 		}
 		DX12SimulateContext *runtimeState =
@@ -529,8 +525,8 @@ public:
 			!DX12HotPathState::NeedsGraphicsTrackedBindingCapture(flags) :
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed);
 		if (skipBindingCapture) {
-			DX12_PROFILE_FAST_FORWARD();
-			DX12RecordDescriptorRecordFastSkip();
+			DX12_PROF_COUNT("FastForward");
+			DX12_PROF_COUNT("Rm.DescriptorRecordFastSkips");
 			return;
 		}
 

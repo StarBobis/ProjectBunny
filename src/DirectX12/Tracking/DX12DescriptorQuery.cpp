@@ -416,7 +416,7 @@ static void BuildResourceMetadataSnapshot(
 		descriptors ? 1 : 0,
 		psoRoots ? 1 : 0,
 		descriptorHeaps ? 1 : 0);
-	DX12LogManager::Fields("DX12MetadataSnapshot",
+	DX12_LOG("DX12MetadataSnapshot",
 		"descriptors=%zu,cbv=%zu,srv=%zu,uav=%zu,rtv=%zu,dsv=%zu,texture=%zu,resources=%zu,resourceSlots=%zu,heaps=%zu",
 		liveDescriptors.size(), cbvDescriptors, srvDescriptors, uavDescriptors,
 		rtvDescriptors, dsvDescriptors, textureDescriptors,
@@ -850,7 +850,7 @@ void DX12FindDescriptorSummariesByHeapSlot(
 					SRWLOCK *slotLock =
 						DX12DescriptorHeapShadowUtils::HeapLock(heapIndex, slot);
 					if (slotLock)
-						DX12DescriptorShadowTelemetryUtils::AcquireHeapShared(slotLock);
+						DX12_LOCK_ACQUIRE_SHARED(slotLock, "Desc.heapShared");
 					copied = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
 						record, slot, &recordCopy);
 					if (slotLock)

@@ -1,4 +1,4 @@
-﻿// DX12NativeOverlay: Win32 tool window, controls and UI thread.
+// DX12NativeOverlay: Win32 tool window, controls and UI thread.
 // Split from DX12ShaderTools.cpp; implementation unit for its module.
 #include "DX12Core.h"
 #include "DX12Hooks.h"
@@ -242,7 +242,7 @@ static void UpdateButtonText()
 	if (gHuntToggleButton)
 		SetWindowTextW(gHuntToggleButton, DX12HuntIsEnabled() ? L"Disable Hunting" : L"Enable Hunting");
 	if (gProfilingButton)
-		SetWindowTextW(gProfilingButton, DX12Profiling::IsActive() ? L"Disable Profiling" : L"Enable Profiling");
+		SetWindowTextW(gProfilingButton, DX12_TIMING_BUILD ? L"Disable Profiling" : L"Enable Profiling");
 }
 
 static void UpdateStatusText()
@@ -283,11 +283,11 @@ static void HandleOverlayHotkey(HWND hwnd)
 	if (down && !gNumpad0Down) {
 		if (IsWindowVisible(hwnd)) {
 			ShowWindow(hwnd, SW_HIDE);
-			DX12LogManager::Fields("DX12NativeOverlay", "event=hidden,hotkey=NUMPAD0");
+			DX12_LOG("DX12NativeOverlay", "event=hidden,hotkey=NUMPAD0");
 		} else {
 			ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 			FollowGameWindow();
-			DX12LogManager::Fields("DX12NativeOverlay", "event=shown,hotkey=NUMPAD0");
+			DX12_LOG("DX12NativeOverlay", "event=shown,hotkey=NUMPAD0");
 		}
 	}
 	gNumpad0Down = down;
@@ -489,7 +489,7 @@ static DWORD WINAPI UiThreadProc(void*)
 	}
 
 	SetSharedOverlayWindow(hwnd);
-	DX12LogManager::Fields("DX12NativeOverlay",
+	DX12_LOG("DX12NativeOverlay",
 		"event=thread_started,hwnd=%p", hwnd);
 	ShowWindow(hwnd, SW_HIDE);
 
@@ -502,7 +502,7 @@ static DWORD WINAPI UiThreadProc(void*)
 
 	if (IsWindow(hwnd))
 		DestroyWindow(hwnd);
-	DX12LogManager::Fields("DX12NativeOverlay", "event=thread_stopped");
+	DX12_LOG("DX12NativeOverlay", "event=thread_stopped");
 	InterlockedExchange(&gThreadStarted, 0);
 	return 0;
 }
@@ -525,7 +525,7 @@ static void EnsureUiThread()
 	if (!gUiThread) {
 		gUiThreadId = 0;
 		InterlockedExchange(&gThreadStarted, 0);
-		DX12LogManager::Fields("DX12NativeOverlay", "event=thread_create_failed");
+		DX12_LOG("DX12NativeOverlay", "event=thread_create_failed");
 	}
 	ReleaseSRWLockExclusive(&gThreadLock);
 }
