@@ -380,7 +380,15 @@ void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 	++state->plan.invalidationSerial;
 	if (!state->plan.invalidationSerial)
 		state->plan.invalidationSerial = 1;
-	state->boundDrawResult.Reset();
+	// The bound-draw result cache is deliberately not reset here. Everything
+	// this invalidation stands for is compared by the cache itself - pipeline
+	// state, IA epochs, root signature, descriptor-query serial, heap and heap
+	// version - and only negative verdicts are cached, so a positive hit still
+	// runs the full chain. Clearing it here meant every PSO change (28/frame)
+	// and root-signature change (~116/frame) threw the cached verdict away:
+	// measured, 87% of all bound-draw misses were "entry invalid" rather than a
+	// failed comparison, i.e. precisely the multi-layer chain this cache exists
+	// to skip. Reset() still clears it when a recording starts over.
 }
 
 

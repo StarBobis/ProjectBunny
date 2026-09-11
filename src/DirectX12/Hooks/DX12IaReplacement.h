@@ -1803,6 +1803,8 @@ public:
 		DX12BoundDrawResultCache &boundDrawCache =
 			mutableRuntimeState->resolvedDraw.boundDrawResult;
 		DX12_DIAG_QPC(boundCacheBegin);
+		DX12BoundDrawResultCache::MissReason boundCacheMissReason =
+			DX12BoundDrawResultCache::MissReason::None;
 		const bool boundCacheHit = boundDrawCache.Matches(
 				runtimeState.iaEpoch,
 				runtimeState.iaContentEpoch,
@@ -1816,7 +1818,14 @@ public:
 				runtimeState.graphicsRootSignature,
 				draw,
 				boundCacheCompareDescriptorState,
-				boundCacheCompareDrawArgs);
+				boundCacheCompareDrawArgs,
+				&boundCacheMissReason);
+		if (!boundCacheHit) {
+			// Per-term miss attribution: which comparison rejected the cached
+			// result decides whether this cache can be made to hit at all.
+			DX12_PROF_COUNT(
+				DX12BoundDrawResultCache::MissCounterName(boundCacheMissReason));
+		}
 		DX12_PROF_CPU_STAGE(
 			"IaReplacement",
 			boundCacheHit ? "bound_cache_compare_hit" : "bound_cache_compare_miss",

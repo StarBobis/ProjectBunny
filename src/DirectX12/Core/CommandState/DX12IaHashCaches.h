@@ -664,6 +664,50 @@ public:
 		hasOverride = false;
 	}
 
+	// First comparison that rejected the cached result. Reported to the TIMING
+	// counters because the per-draw miss rate is dominated by one or two terms
+	// and guessing which one costs whole test rounds.
+	enum class MissReason : UINT
+	{
+		None = 0,
+		Invalid,
+		IaEpoch,
+		IaContentEpoch,
+		BufferContentGeneration,
+		PipelineState,
+		ReloadGeneration,
+		DescriptorQuerySerial,
+		PreSkinGeneration,
+		Heap,
+		HeapVersion,
+		RootSignature,
+		DrawArgs,
+		Count,
+	};
+
+	// Stable pointer per reason: FindBucket compares the counter name pointer,
+	// so every sample must pass the very same literal.
+	static const char *MissCounterName(MissReason reason)
+	{
+		static const char *const names[static_cast<UINT>(MissReason::Count)] = {
+			"Rm.BoundCacheMissNone",
+			"Rm.BoundCacheMissInvalid",
+			"Rm.BoundCacheMissIaEpoch",
+			"Rm.BoundCacheMissIaContentEpoch",
+			"Rm.BoundCacheMissBufferContentGeneration",
+			"Rm.BoundCacheMissPipelineState",
+			"Rm.BoundCacheMissReloadGeneration",
+			"Rm.BoundCacheMissDescriptorQuerySerial",
+			"Rm.BoundCacheMissPreSkinGeneration",
+			"Rm.BoundCacheMissHeap",
+			"Rm.BoundCacheMissHeapVersion",
+			"Rm.BoundCacheMissRootSignature",
+			"Rm.BoundCacheMissDrawArgs",
+		};
+		const UINT index = static_cast<UINT>(reason);
+		return index < static_cast<UINT>(MissReason::Count) ? names[index] : names[0];
+	}
+
 	bool Matches(
 		UINT64 currentIaEpoch,
 		UINT64 currentIaContentEpoch,
@@ -677,29 +721,49 @@ public:
 		ID3D12RootSignature *currentRootSig,
 		const DX12IaDrawInvocation &draw,
 		bool compareDescriptorState,
-		bool compareDrawArgs) const
+		bool compareDrawArgs,
+		MissReason *missReason = nullptr) const
 	{
-		return valid &&
-			iaEpoch == currentIaEpoch &&
-			iaContentEpoch == currentIaContentEpoch &&
-			bufferContentGeneration == currentBufferContentGeneration &&
-			pipelineState == currentPso &&
-			reloadGeneration == currentReloadGeneration &&
-			(!compareDescriptorState ||
-				(graphicsDescriptorQuerySerial == currentGraphicsDescriptorQuerySerial &&
-				 preSkinGeneration == currentPreSkinGeneration &&
-				 cbvSrvUavHeap == currentHeap &&
-				 cbvSrvUavHeapVersion == currentHeapVersion &&
-				 graphicsRootSignature == currentRootSig)) &&
-			(!compareDrawArgs ||
-				(indexed == draw.indexed &&
-				 vertexCount == draw.vertexCount &&
-				 indexCount == draw.indexCount &&
-				 instanceCount == draw.instanceCount &&
-				 firstVertex == draw.firstVertex &&
-				 firstIndex == draw.firstIndex &&
-				 baseVertex == draw.baseVertex &&
-				 firstInstance == draw.firstInstance));
+		auto reject = [missReason](MissReason reason) {
+			if (missReason)
+				*missReason = reason;
+			return false;
+		};
+		if (!valid)
+			return reject(MissReason::Invalid);
+		if (iaEpoch != currentIaEpoch)
+			return reject(MissReason::IaEpoch);
+		if (iaContentEpoch != currentIaContentEpoch)
+			return reject(MissReason::IaContentEpoch);
+		if (bufferContentGeneration != currentBufferContentGeneration)
+			return reject(MissReason::BufferContentGeneration);
+		if (pipelineState != currentPso)
+			return reject(MissReason::PipelineState);
+		if (reloadGeneration != currentReloadGeneration)
+			return reject(MissReason::ReloadGeneration);
+		if (compareDescriptorState) {
+			if (graphicsDescriptorQuerySerial != currentGraphicsDescriptorQuerySerial)
+				return reject(MissReason::DescriptorQuerySerial);
+			if (preSkinGeneration != currentPreSkinGeneration)
+				return reject(MissReason::PreSkinGeneration);
+			if (cbvSrvUavHeap != currentHeap)
+				return reject(MissReason::Heap);
+			if (cbvSrvUavHeapVersion != currentHeapVersion)
+				return reject(MissReason::HeapVersion);
+			if (graphicsRootSignature != currentRootSig)
+				return reject(MissReason::RootSignature);
+		}
+		if (compareDrawArgs &&
+			(indexed != draw.indexed ||
+			 vertexCount != draw.vertexCount ||
+			 indexCount != draw.indexCount ||
+			 instanceCount != draw.instanceCount ||
+			 firstVertex != draw.firstVertex ||
+			 firstIndex != draw.firstIndex ||
+			 baseVertex != draw.baseVertex ||
+			 firstInstance != draw.firstInstance))
+			return reject(MissReason::DrawArgs);
+		return true;
 	}
 
 	void Capture(
