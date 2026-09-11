@@ -1429,6 +1429,24 @@ public:
 			commandList->IASetIndexBuffer(activeView);
 	}
 
+	// True while a pre-skin output resize can still retarget the views about to
+	// be bound: a resize binding or cache entry exists, or one may still appear
+	// (the expansion probe). D3D12 requires every bound slot to be non-null, so
+	// the validity mask is the bound range. Same triple as
+	// DX12IaReplacementExecutor::ApplyAndExecute.
+	static bool PreSkinRedirectPossible(
+		const D3D12_VERTEX_BUFFER_VIEW *views, UINT count)
+	{
+		if (DX12ModHasPreSkinOutputResizeBindings() ||
+			DX12ModHasPreSkinOutputResizeCacheEntries())
+			return true;
+		bool boundSlotValid[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		for (UINT slot = 0;
+			slot < count && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot)
+			boundSlotValid[slot] = true;
+		return DX12ModMayNeedPreSkinIaViewExpansion(views, boundSlotValid, count);
+	}
+
 	static void IASetVertexBuffers(
 		ID3D12GraphicsCommandList *commandList,
 		UINT startSlot,
@@ -1507,22 +1525,31 @@ public:
 		// the pre-skinned slots have no static entry (their content hash is
 		// rewritten every frame) and are retargeted to the resized buffer,
 		// while static-replaced slots (mod buffers) miss the pre-skin VA map
-		// and keep the replacement.
+		// and keep the replacement. It is skipped entirely while no pre-skin
+		// resize can retarget anything (see PreSkinRedirectPossible); without
+		// that gate every IA bind cleared a third 32-slot array and walked the
+		// redirect pipeline for nothing.
 		if (activeViews == views || activeViews == staticRedirectedViews) {
-			D3D12_VERTEX_BUFFER_VIEW preSkinRedirectedViews[
-				D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
-			const D3D12_VERTEX_BUFFER_VIEW *preSkinInput = activeViews;
-			D3D12_VERTEX_BUFFER_VIEW *preSkinOutput = preSkinInput == views ?
-				redirectedViews : preSkinRedirectedViews;
-			if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
-				    commandList,
-				    startSlot,
-				    count,
-				    preSkinInput,
-				    preSkinOutput,
-				    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
-				    runtimeState ? &runtimeState->ia : nullptr)) {
-				activeViews = preSkinOutput;
+			if (DX12WrapperRuntimeUtils::PreSkinRedirectPossible(activeViews, count)) {
+				D3D12_VERTEX_BUFFER_VIEW preSkinRedirectedViews[
+					D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+				const D3D12_VERTEX_BUFFER_VIEW *preSkinInput = activeViews;
+				D3D12_VERTEX_BUFFER_VIEW *preSkinOutput = preSkinInput == views ?
+					redirectedViews : preSkinRedirectedViews;
+				if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
+					    commandList,
+					    startSlot,
+					    count,
+					    preSkinInput,
+					    preSkinOutput,
+					    D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+					    runtimeState ? &runtimeState->ia : nullptr)) {
+					activeViews = preSkinOutput;
+				}
+			} else {
+				// Counted so the gate's effect is visible in the TIMING log
+				// instead of assumed (one walk skipped per count).
+				DX12_PROF_COUNT("Rm.IaPreSkinRedirectGated");
 			}
 		}
 		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
