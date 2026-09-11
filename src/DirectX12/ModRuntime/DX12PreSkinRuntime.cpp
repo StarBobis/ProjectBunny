@@ -2417,6 +2417,54 @@ bool ReadPreSkinCbvBytesLocked(
 }
 
 
+// Dropping a patched buffer's last reference is a driver-side free, and on this
+// machine that costs ~150-200us per resource. The cache flush used to hand ~65
+// entries to Release() in one loop inside the patch path, which measured as a
+// 10-13ms stall (CreateInsert maxUs 9239-12894 against a ResourceCommitted
+// maxUs of 807-1170 in the same windows) - a visible hitch roughly once per
+// 1.3 windows. Entries are parked here instead and dropped a few per patch call:
+// the same total work, no longer arriving as a single burst. The list is bounded
+// by the flush itself (arrival ~1 resource per frame, drain 2 per patch call).
+static constexpr UINT kPreSkinCbvPatchReleasePerCall = 2;
+static constexpr size_t kPreSkinCbvPatchPendingReleaseMax = 512;
+static SRWLOCK gPreSkinCbvPatchReleaseLock = SRWLOCK_INIT;
+static std::vector<ID3D12Resource *> gPreSkinCbvPatchPendingRelease;
+
+// Hands one reference to the deferred-release list. Never release while holding
+// the list lock: the final Release re-enters the wrapper registry.
+static void ParkPreSkinCbvPatchRelease(ID3D12Resource *resource)
+{
+	if (!resource)
+		return;
+	AcquireSRWLockExclusive(&gPreSkinCbvPatchReleaseLock);
+	const bool overflow =
+		gPreSkinCbvPatchPendingRelease.size() >= kPreSkinCbvPatchPendingReleaseMax;
+	if (!overflow)
+		gPreSkinCbvPatchPendingRelease.push_back(resource);
+	ReleaseSRWLockExclusive(&gPreSkinCbvPatchReleaseLock);
+	if (overflow)
+		resource->Release();
+}
+
+static void DrainPreSkinCbvPatchRelease()
+{
+	for (UINT released = 0; released < kPreSkinCbvPatchReleasePerCall; ++released)
+	{
+		ID3D12Resource *resource = nullptr;
+		AcquireSRWLockExclusive(&gPreSkinCbvPatchReleaseLock);
+		if (!gPreSkinCbvPatchPendingRelease.empty())
+		{
+			resource = gPreSkinCbvPatchPendingRelease.back();
+			gPreSkinCbvPatchPendingRelease.pop_back();
+		}
+		ReleaseSRWLockExclusive(&gPreSkinCbvPatchReleaseLock);
+		if (!resource)
+			return;
+		resource->Release();
+	}
+}
+
+
 UINT64 HashPreSkinCbvBytes(const std::vector<unsigned char> &bytes)
 {
 	UINT64 hash = 1469598103934665603ull;
@@ -2435,7 +2483,7 @@ void ReleasePreSkinCbvPatchCacheEntry(
 	if (!entry)
 		return;
 	if (entry->patchedResource)
-		entry->patchedResource->Release();
+		ParkPreSkinCbvPatchRelease(entry->patchedResource);
 	*entry = DX12PreSkinCbvPatchCacheEntry();
 }
 
@@ -2540,6 +2588,10 @@ bool PatchPreSkinVertexCountCbvLocked(
 	UINT *originalVertexCountOut,
 	UINT *overrideVertexCountOut)
 {
+	// Drop a couple of the buffers the last cache flush parked, so their
+	// driver-side free is spread over the calls that follow it instead of
+	// landing as one multi-millisecond burst inside the create scope below.
+	DrainPreSkinCbvPatchRelease();
 	if (!device || !overrideVertexCount || !dst.ptr || !temporaryResources)
 		return false;
 	if (!cbv.hasDescriptor || cbv.rootDescriptor || cbv.descriptor.kind != "CBV")

@@ -50,77 +50,6 @@ public:
 		std::array<HeapResolveCacheEntry, EntryCount> entries;
 	};
 
-	struct CopyTelemetryBatch
-	{
-		LONG64 rangeCalls = 0;
-		LONG64 slots = 0;
-		LONG64 singleRanges = 0;
-		LONG64 multiRanges = 0;
-		LONG64 resolvedRanges = 0;
-		LONG64 sameHeapRanges = 0;
-		LONG64 overlapRanges = 0;
-		LONG64 sourceFound = 0;
-		LONG64 sourceMissing = 0;
-		LONG64 changed = 0;
-		LONG64 unchanged = 0;
-		LONG64 erased = 0;
-		LONG64 alreadyEmpty = 0;
-		LONG64 memoHits = 0;
-		LONG64 memoMisses = 0;
-		LONG64 repeatHits = 0;
-
-		void RecordRange(UINT count, bool resolved, bool sameHeap, bool overlaps)
-		{
-			++rangeCalls;
-			slots += count;
-			if (count == 1) ++singleRanges; else ++multiRanges;
-			if (resolved) ++resolvedRanges;
-			if (sameHeap) ++sameHeapRanges;
-			if (overlaps) ++overlapRanges;
-		}
-
-		void RecordMemo(bool hit)
-		{
-			if (hit) ++memoHits; else ++memoMisses;
-		}
-
-		void RecordRepeatHit()
-		{
-			++repeatHits;
-		}
-
-		void RecordResults(
-			UINT found, UINT missing, UINT changedCount, UINT unchangedCount,
-			UINT erasedCount, UINT alreadyEmptyCount)
-		{
-			sourceFound += found;
-			sourceMissing += missing;
-			changed += changedCount;
-			unchanged += unchangedCount;
-			erased += erasedCount;
-			alreadyEmpty += alreadyEmptyCount;
-		}
-
-		void Flush() const
-		{
-			DX12_PROF_ADD_ITEMS("Desc.CopyRangeCalls", rangeCalls);
-			DX12_PROF_ADD_ITEMS("Desc.CopySlots", slots);
-			DX12_PROF_ADD_ITEMS("Desc.CopySingleRangeCalls", singleRanges);
-			DX12_PROF_ADD_ITEMS("Desc.CopyMultiRangeCalls", multiRanges);
-			DX12_PROF_ADD_ITEMS("Desc.CopyResolvedRangeCalls", resolvedRanges);
-			DX12_PROF_ADD_ITEMS("Desc.CopySameHeapRangeCalls", sameHeapRanges);
-			DX12_PROF_ADD_ITEMS("Desc.CopyOverlapRangeCalls", overlapRanges);
-			DX12_PROF_ADD_ITEMS("Desc.CopySourceFoundSlots", sourceFound);
-			DX12_PROF_ADD_ITEMS("Desc.CopySourceMissingSlots", sourceMissing);
-			DX12_PROF_ADD_ITEMS("Desc.CopyChangedSlots", changed);
-			DX12_PROF_ADD_ITEMS("Desc.CopyUnchangedSlots", unchanged);
-			DX12_PROF_ADD_ITEMS("Desc.CopyErasedSlots", erased);
-			DX12_PROF_ADD_ITEMS("Desc.CopyAlreadyEmptySlots", alreadyEmpty);
-			DX12_PROF_ADD_ITEMS("Desc.CopyMemoHits", memoHits);
-			DX12_PROF_ADD_ITEMS("Desc.CopyMemoMisses", memoMisses);
-			DX12_PROF_ADD_ITEMS("Desc.CopyRepeatHits", repeatHits);
-		}
-	};
 
 	// CopyDescriptors API calls routinely carry dozens of single-slot ranges
 	// into the same destination heap. Publishing each changed slot with
@@ -276,137 +205,6 @@ public:
 	{
 		return heap && heap->stateLocks ?
 			heap->stateLocks->LockForSlot(slot) : nullptr;
-	}
-
-	class RangeCopyMemo
-	{
-	public:
-		class Entry
-		{
-		public:
-			const void *sourceHeap = nullptr;
-			const void *destinationHeap = nullptr;
-			UINT sourceSlot = 0;
-			UINT destinationSlot = 0;
-			UINT count = 0;
-			UINT sourceFound = 0;
-			UINT sourceMissing = 0;
-			UINT unchanged = 0;
-			UINT alreadyEmpty = 0;
-			std::vector<UINT64> sourceVersions;
-			std::vector<UINT64> destinationVersions;
-			bool occupied = false;
-		};
-
-		bool TryLoad(
-			const DescriptorHeapRecord &sourceHeap,
-			UINT sourceSlot,
-			const DescriptorHeapRecord &destinationHeap,
-			UINT destinationSlot,
-			UINT count,
-			UINT *sourceFound,
-			UINT *sourceMissing,
-			UINT *unchanged,
-			UINT *alreadyEmpty) const
-		{
-			const Entry &entry = entries[EntryIndex(
-				&sourceHeap,
-				sourceSlot,
-				&destinationHeap,
-				destinationSlot,
-				count)];
-			if (!entry.occupied ||
-				entry.sourceHeap != &sourceHeap ||
-				entry.destinationHeap != &destinationHeap ||
-				entry.sourceSlot != sourceSlot ||
-				entry.destinationSlot != destinationSlot ||
-				entry.count != count ||
-				entry.sourceVersions.size() != count ||
-				entry.destinationVersions.size() != count)
-				return false;
-			for (UINT index = 0; index < count; ++index) {
-				if (sourceHeap.stateLocks->ReadSlotVersion(sourceSlot + index) !=
-						entry.sourceVersions[index] ||
-					destinationHeap.stateLocks->ReadSlotVersion(destinationSlot + index) !=
-						entry.destinationVersions[index])
-					return false;
-			}
-			if (sourceFound)
-				*sourceFound = entry.sourceFound;
-			if (sourceMissing)
-				*sourceMissing = entry.sourceMissing;
-			if (unchanged)
-				*unchanged = entry.unchanged;
-			if (alreadyEmpty)
-				*alreadyEmpty = entry.alreadyEmpty;
-			return true;
-		}
-
-		void Store(
-			const DescriptorHeapRecord &sourceHeap,
-			UINT sourceSlot,
-			const DescriptorHeapRecord &destinationHeap,
-			UINT destinationSlot,
-			UINT count,
-			UINT sourceFound,
-			UINT sourceMissing,
-			UINT unchanged,
-			UINT alreadyEmpty)
-		{
-			Entry &entry = entries[EntryIndex(
-				&sourceHeap,
-				sourceSlot,
-				&destinationHeap,
-				destinationSlot,
-				count)];
-			entry.sourceHeap = &sourceHeap;
-			entry.destinationHeap = &destinationHeap;
-			entry.sourceSlot = sourceSlot;
-			entry.destinationSlot = destinationSlot;
-			entry.count = count;
-			entry.sourceFound = sourceFound;
-			entry.sourceMissing = sourceMissing;
-			entry.unchanged = unchanged;
-			entry.alreadyEmpty = alreadyEmpty;
-			entry.sourceVersions.resize(count);
-			entry.destinationVersions.resize(count);
-			for (UINT index = 0; index < count; ++index) {
-				entry.sourceVersions[index] =
-					sourceHeap.stateLocks->ReadSlotVersion(sourceSlot + index);
-				entry.destinationVersions[index] =
-					destinationHeap.stateLocks->ReadSlotVersion(destinationSlot + index);
-			}
-			entry.occupied = true;
-		}
-
-	private:
-		static constexpr size_t EntryCount = 1024;
-
-		static size_t EntryIndex(
-			const void *sourceHeap,
-			UINT sourceSlot,
-			const void *destinationHeap,
-			UINT destinationSlot,
-			UINT count)
-		{
-			UINT64 hash = static_cast<UINT64>(reinterpret_cast<uintptr_t>(sourceHeap)) >> 4;
-			hash ^= static_cast<UINT64>(reinterpret_cast<uintptr_t>(destinationHeap)) *
-				0x9e3779b97f4a7c15ull;
-			hash ^= (static_cast<UINT64>(sourceSlot) << 32) | destinationSlot;
-			hash ^= static_cast<UINT64>(count) * 0xc2b2ae3d27d4eb4full;
-			hash ^= hash >> 33;
-			hash *= 0xff51afd7ed558ccdull;
-			hash ^= hash >> 33;
-			return static_cast<size_t>(hash) & (EntryCount - 1);
-		}
-
-		std::array<Entry, EntryCount> entries = {};
-	};
-
-	static RangeCopyMemo &RangeMemo()
-	{
-		static thread_local RangeCopyMemo memo;
-		return memo;
 	}
 
 	// gDescriptorLock must be held while resolving this pointer. The lock object
@@ -858,14 +656,6 @@ public:
 		return RecordCreatedDescriptorIfChanged(std::move(record));
 	}
 
-	// Unified entry point for Create*View hooks.
-	// Tries heap-slot fast path first; falls back to CPU ledger if the handle
-	// is not in any known descriptor heap.
-	static void RecordDescriptor(DescriptorRecord &&record)
-	{
-		RecordCreatedDescriptorIfChanged(std::move(record));
-	}
-
 	static bool WriteDescriptorToSlot(
 		SIZE_T cpuHandle,
 		DescriptorRecord &&record)
@@ -1080,90 +870,6 @@ public:
 	}
 
 	// ---- Copy range (heap-slot fast path + CPU ledger fallback) ----
-	enum class CopyIdentityResult : uint8_t
-	{
-		Unknown,
-		Unchanged,
-		SourceMissingDestinationEmpty
-	};
-
-	static CopyIdentityResult ComparePublishedSlotIdentities(
-		const DescriptorHeapRecord &sourceHeap,
-		UINT sourceSlot,
-		const DescriptorHeapRecord &destinationHeap,
-		UINT destinationSlot,
-		UINT64 *sourceVersionOut = nullptr,
-		UINT64 *destinationVersionOut = nullptr)
-	{
-		// Both endpoints came from ResolveHeapSlotFast, which has already checked
-		// activity. The identities below are seqlock snapshots; repeating the two
-		// activity atomics for every copied descriptor provided no stronger value
-		// consistency guarantee.
-		if (!sourceHeap.stateLocks || !destinationHeap.stateLocks)
-			return CopyIdentityResult::Unknown;
-		DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
-		DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
-		if (!sourceHeap.stateLocks->ObserveSlotIdentity(
-				sourceSlot, &sourceIdentity) ||
-				!destinationHeap.stateLocks->ObserveSlotIdentity(
-					destinationSlot, &destinationIdentity) ||
-				sourceIdentity.valueId != destinationIdentity.valueId)
-			return CopyIdentityResult::Unknown;
-		if (sourceVersionOut)
-			*sourceVersionOut = sourceIdentity.version;
-		if (destinationVersionOut)
-			*destinationVersionOut = destinationIdentity.version;
-		return sourceIdentity.valueId ?
-			CopyIdentityResult::Unchanged :
-			CopyIdentityResult::SourceMissingDestinationEmpty;
-	}
-
-	static bool ComparePublishedRangeIdentities(
-		const DescriptorHeapRecord &sourceHeap,
-		UINT sourceSlot,
-		const DescriptorHeapRecord &destinationHeap,
-		UINT destinationSlot,
-		UINT count,
-		UINT *sourceFound,
-		UINT *sourceMissing,
-		UINT *unchanged,
-		UINT *alreadyEmpty)
-	{
-		if (!count || !sourceHeap.stateLocks || !destinationHeap.stateLocks)
-			return false;
-		UINT localSourceFound = 0;
-		UINT localSourceMissing = 0;
-		UINT localUnchanged = 0;
-		UINT localAlreadyEmpty = 0;
-		for (UINT index = 0; index < count; ++index) {
-			DescriptorHeapRecord::StateLocks::SlotIdentity sourceIdentity;
-			DescriptorHeapRecord::StateLocks::SlotIdentity destinationIdentity;
-			if (!sourceHeap.stateLocks->ObserveSlotIdentity(
-					sourceSlot + index, &sourceIdentity) ||
-				!destinationHeap.stateLocks->ObserveSlotIdentity(
-					destinationSlot + index, &destinationIdentity) ||
-				sourceIdentity.valueId != destinationIdentity.valueId) {
-				return false;
-			}
-			if (sourceIdentity.valueId) {
-				++localSourceFound;
-				++localUnchanged;
-			} else {
-				++localSourceMissing;
-				++localAlreadyEmpty;
-			}
-		}
-		if (sourceFound)
-			*sourceFound = localSourceFound;
-		if (sourceMissing)
-			*sourceMissing = localSourceMissing;
-		if (unchanged)
-			*unchanged = localUnchanged;
-		if (alreadyEmpty)
-			*alreadyEmpty = localAlreadyEmpty;
-		return true;
-	}
-
 	// ---- Find latest descriptor (2-tier lookup) ----
 
 	static bool FindLatestDescriptor(
@@ -1270,9 +976,6 @@ public:
 			}
 		}
 	}
-
-	// ---- No-op visible check ----
-	static void EnsureVisible(const SIZE_T *, size_t) {}
 
 	// ---- CPU ledger fallback ----
 	static void WriteToCpuLedger(DescriptorRecord &&record)

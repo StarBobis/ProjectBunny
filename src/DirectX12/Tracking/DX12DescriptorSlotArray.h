@@ -53,8 +53,27 @@ static void CopyRecordValueForSlot(DescriptorRecord *dest, const DescriptorRecor
 	// assignment unconditionally assigns std::string even though a slot almost
 	// always keeps the same descriptor kind (especially CBV). Copy the POD-like
 	// payload explicitly and only touch the string when its value really changes.
-	static_cast<DX12DescriptorViewPayload &>(*dest) = src;
-	if (dest->kind != src.kind)
+	//
+	// Only the union member the record's kind actually names is written. The
+	// record is 264 bytes per slot while the descriptor it mirrors is 32, and a
+	// CBV needs 16 of the 72 union bytes, so the rest of the union is dead weight
+	// on this path. Every reader selects the member by kindId - HashRecord does
+	// the same to derive the value id - so bytes left untouched are never read.
+	switch (src.kindId)
+	{
+	case DescriptorKind::CBV_ID: dest->cbv = src.cbv; break;
+	case DescriptorKind::SRV_ID: dest->srv = src.srv; break;
+	case DescriptorKind::UAV_ID: dest->uav = src.uav; break;
+	case DescriptorKind::RTV_ID: dest->rtv = src.rtv; break;
+	case DescriptorKind::DSV_ID: dest->dsv = src.dsv; break;
+	case DescriptorKind::Sampler_ID: dest->sampler = src.sampler; break;
+	default: static_cast<DX12DescriptorViewPayload &>(*dest) = src; break;
+	}
+	// kindId and kind are only ever written together (SetDescriptorKind), so an
+	// equal kind id proves an equal string: deciding on the integer avoids a
+	// std::string comparison - and the two string buffers it reads - on every
+	// copied descriptor.
+	if (dest->kindId != src.kindId)
 		dest->kind = src.kind;
 	dest->kindId = src.kindId;
 	dest->valueId = src.valueId;

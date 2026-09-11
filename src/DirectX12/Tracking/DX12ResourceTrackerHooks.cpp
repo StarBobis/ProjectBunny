@@ -350,6 +350,11 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 {
 	if (!increment)
 		return;
+	// Descriptors per call is the divisor every per-descriptor cost needs: the
+	// shadow moves a 264-byte DescriptorRecord per slot while the API it mirrors
+	// moves 32 bytes, so whether the measured cost is per-call fixed work or
+	// per-descriptor payload traffic decides where to shrink next.
+	DX12_PROF_ADD_ITEMS("Desc.CopySlots", numDescriptors);
 
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot source;
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot destination;
@@ -362,14 +367,19 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 		source.heap->stateLocks && destination.heap->stateLocks &&
 		source.heap->stateLocks->IsActive() &&
 		destination.heap->stateLocks->IsActive();
+	const bool sourceMaterialized = source.heap->IsMaterialized();
+	const bool destinationMaterialized = destination.heap->IsMaterialized();
 	const bool bothMaterialized = heapsActive &&
-		source.heap->IsMaterialized() && destination.heap->IsMaterialized();
+		sourceMaterialized && destinationMaterialized;
 	// Chunk-mode direct copies are lock-free per slot and only enabled
 	// outside Dump/Hunt tracking, where whole-heap materialization never runs
 	// concurrently with the chunked store (see
 	// DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged).
+	// Both materialization atomics are read once: this path runs once per
+	// descriptor-copy API call (thousands per frame) and the same two flags used
+	// to be loaded twice, always false outside dump/hunt.
 	const bool chunkFast = heapsActive && !bothMaterialized &&
-		!source.heap->IsMaterialized() && !destination.heap->IsMaterialized() &&
+		!sourceMaterialized && !destinationMaterialized &&
 		!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
 	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
 	// Chunk presence is cached per 4096-slot chunk boundary, so a contiguous
@@ -413,6 +423,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 			(chunkFast && curSrcChunkOk && curDstChunkOk &&
 				!curDstMaterialized);
 		if (directCopy) {
+			DX12_PROF_COUNT("Rm.DescCopyDirectPath");
 			UINT64 publishedValueId = 0;
 			const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
@@ -424,22 +435,36 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 			if (result != DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::LockRequired) {
 				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
 					result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
+					DX12_PROF_COUNT("Rm.DescCopyChanged");
 					DX12DescriptorHeapStateUtils::PublishRangeValue(
 						destination.heap, dstSlot, publishedValueId);
 					commitSet.Add(destination.heap);
+				} else {
+					// The slot already held this value: the 264-byte record copy
+					// and the republication were both skipped inside the slot
+					// array. Counted because the shadow's cost is dominated by
+					// that copy, so the changed/unchanged split decides whether
+					// shrinking the per-slot payload is worth it.
+					DX12_PROF_COUNT("Rm.DescCopyUnchanged");
 				}
 				continue;
 			}
 		}
 		DescriptorRecord record;
+		DX12_PROF_COUNT("Rm.DescCopyLockedPath");
 		if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(srcHandle, &record)) {
 			DX12DescriptorHeapShadowUtils::EraseDescriptor(destHandle);
 			continue;
 		}
 		record.cpuHandle = destHandle;
 		if (!DX12DescriptorHeapShadowUtils::WriteDescriptorToSlot(
-				destHandle, std::move(record)))
+				destHandle, std::move(record))) {
+			// Global exclusive lock + map insert + a global CAS loop: counted
+			// separately because a single fallback here costs more than the rest
+			// of the call together.
+			DX12_PROF_COUNT("Rm.DescCopyLedgerFallback");
 			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(record));
+		}
 	}
 	commitSet.CommitAll();
 }

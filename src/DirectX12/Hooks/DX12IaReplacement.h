@@ -318,6 +318,49 @@ public:
 		}
 	}
 
+	static UINT PreSkinRedirectNegCacheIndex(UINT64 gpuVa)
+	{
+		// Views sit on at least 16-byte, usually 256-byte, boundaries; folding
+		// the low pointer bits in would just collide them.
+		return static_cast<UINT>((gpuVa >> 8) &
+			(DX12ActiveIaState::kPreSkinRedirectNegCacheSlots - 1));
+	}
+
+	static bool PreSkinRedirectNegCacheHit(
+		const DX12ActiveIaState &ia,
+		const D3D12_VERTEX_BUFFER_VIEW &view,
+		UINT64 generation)
+	{
+		const DX12ActiveIaState::PreSkinRedirectNegativeEntry &entry =
+			ia.preSkinRedirectNegCache[PreSkinRedirectNegCacheIndex(view.BufferLocation)];
+		return entry.valid && entry.generation == generation &&
+			entry.gpuVa == view.BufferLocation &&
+			entry.size == view.SizeInBytes &&
+			entry.stride == view.StrideInBytes;
+	}
+
+	static void PreSkinRedirectNegCacheStore(
+		DX12ActiveIaState &ia,
+		const D3D12_VERTEX_BUFFER_VIEW &view,
+		UINT64 generation)
+	{
+		DX12ActiveIaState::PreSkinRedirectNegativeEntry &entry =
+			ia.preSkinRedirectNegCache[PreSkinRedirectNegCacheIndex(view.BufferLocation)];
+		entry.gpuVa = view.BufferLocation;
+		entry.size = view.SizeInBytes;
+		entry.stride = view.StrideInBytes;
+		entry.generation = generation;
+		entry.valid = true;
+	}
+
+	static void PreSkinRedirectNegCacheInvalidate(
+		DX12ActiveIaState &ia,
+		const D3D12_VERTEX_BUFFER_VIEW &view)
+	{
+		ia.preSkinRedirectNegCache[PreSkinRedirectNegCacheIndex(view.BufferLocation)]
+			.valid = false;
+	}
+
 	static bool ExpandInPlaceVertexBufferView(
 		const D3D12_VERTEX_BUFFER_VIEW &sourceView,
 		D3D12_VERTEX_BUFFER_VIEW *expandedView)
@@ -401,6 +444,14 @@ public:
 			if (!sourceView.BufferLocation || !sourceView.SizeInBytes)
 				continue;
 			const UINT slot = startSlot + i;
+			// View-keyed negative lookup first: that is the key the verdict
+			// actually depends on, so it catches the repeats the per-slot
+			// entries below cannot when the game moves a buffer between streams.
+			if (activeIa &&
+					PreSkinRedirectNegCacheHit(*activeIa, sourceView, resizeGeneration)) {
+				DX12_PROF_COUNT("Rm.PreSkinRedirectViewNegHit");
+				continue;
+			}
 			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT &&
 					activeIa->preSkinRedirectNegativeValid[slot] &&
 					activeIa->preSkinRedirectNegativeGeneration[slot] ==
@@ -410,23 +461,36 @@ public:
 				if (cached.BufferLocation == sourceView.BufferLocation &&
 						cached.SizeInBytes == sourceView.SizeInBytes &&
 						cached.StrideInBytes == sourceView.StrideInBytes) {
+					// Counted so the negative lookup's real hit rate is visible
+					// instead of assumed: the entry is keyed per slot and gated on
+					// a generation that moves when the active producer set changes,
+					// and a miss costs a resource resolve plus two table walks.
+					DX12_PROF_COUNT("Rm.PreSkinRedirectNegHit");
 					continue;
 				}
 			}
+			DX12_PROF_COUNT("Rm.PreSkinRedirectNegMiss");
 			if (ExpandInPlaceVertexBufferView(sourceView, &redirectedViews[i])) {
-				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
-					activeIa->preSkinRedirectNegativeValid[slot] = false;
+				if (activeIa) {
+					if (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+						activeIa->preSkinRedirectNegativeValid[slot] = false;
+					PreSkinRedirectNegCacheInvalidate(*activeIa, sourceView);
+				}
 				anyRedirected = true;
 				continue;
 			}
 			DX12PreSkinOutputResizeBinding binding;
 			if (!DX12ModResolvePreSkinOutputResizeByGpuVa(
 				    commandList, sourceView.BufferLocation, &binding)) {
-				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
-					activeIa->preSkinRedirectNegativeValid[slot] = true;
-					activeIa->preSkinRedirectNegativeGeneration[slot] =
-						resizeGeneration;
-					activeIa->preSkinRedirectNegativeSource[slot] = sourceView;
+				if (activeIa) {
+					if (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
+						activeIa->preSkinRedirectNegativeValid[slot] = true;
+						activeIa->preSkinRedirectNegativeGeneration[slot] =
+							resizeGeneration;
+						activeIa->preSkinRedirectNegativeSource[slot] = sourceView;
+					}
+					PreSkinRedirectNegCacheStore(
+						*activeIa, sourceView, resizeGeneration);
 				}
 				continue;
 			}
@@ -437,11 +501,15 @@ public:
 			// anything else must keep reading the original buffer.
 			if (binding.stride && sourceView.StrideInBytes &&
 			    binding.stride != sourceView.StrideInBytes) {
-				if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
-					activeIa->preSkinRedirectNegativeValid[slot] = true;
-					activeIa->preSkinRedirectNegativeGeneration[slot] =
-						resizeGeneration;
-					activeIa->preSkinRedirectNegativeSource[slot] = sourceView;
+				if (activeIa) {
+					if (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) {
+						activeIa->preSkinRedirectNegativeValid[slot] = true;
+						activeIa->preSkinRedirectNegativeGeneration[slot] =
+							resizeGeneration;
+						activeIa->preSkinRedirectNegativeSource[slot] = sourceView;
+					}
+					PreSkinRedirectNegCacheStore(
+						*activeIa, sourceView, resizeGeneration);
 				}
 				continue;
 			}
@@ -452,8 +520,11 @@ public:
 			if (!availableBytes) {
 				continue;
 			}
-			if (activeIa && slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
-				activeIa->preSkinRedirectNegativeValid[slot] = false;
+			if (activeIa) {
+				if (slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT)
+					activeIa->preSkinRedirectNegativeValid[slot] = false;
+				PreSkinRedirectNegCacheInvalidate(*activeIa, sourceView);
+			}
 			const UINT64 redirectedGpuVa =
 				binding.resizedGpuVa + binding.sourceOffset;
 			ApplyReadBarriers(commandList, binding);
@@ -575,6 +646,13 @@ public:
 				redirectedIa->preSkinRedirectNegativeGeneration[slot];
 			liveIa.preSkinRedirectNegativeSource[slot] =
 				redirectedIa->preSkinRedirectNegativeSource[slot];
+		}
+		// Same reason as above for the view-keyed table: the replay's verdicts
+		// are recorded on the working copy, which ApplyAndExecute discards.
+		for (UINT index = 0;
+		     index < DX12ActiveIaState::kPreSkinRedirectNegCacheSlots; ++index) {
+			liveIa.preSkinRedirectNegCache[index] =
+				redirectedIa->preSkinRedirectNegCache[index];
 		}
 		liveIa.preSkinReplayApplied = true;
 		liveIa.preSkinReplayGeneration = replayGeneration;

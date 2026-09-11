@@ -26,6 +26,28 @@ public:
 	bool preSkinRedirectNegativeValid[32] = {};
 	UINT64 preSkinRedirectNegativeGeneration[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW preSkinRedirectNegativeSource[32] = {};
+	// Additional pre-skin redirect negative lookup keyed on the bound view
+	// instead of the slot it occupies. The resolution the negative answer stands
+	// for depends on the command list and the view's GPU VA, never on the slot,
+	// so the per-slot entries above miss again every time the game moves the
+	// same buffer to another stream. This table is additive: it is only written
+	// after the same predicate answered "not redirectable" and is validated
+	// against the identical generation, so a hit can only skip work whose result
+	// is already established.
+	static constexpr UINT kPreSkinRedirectNegCacheSlots = 64;
+
+	class PreSkinRedirectNegativeEntry
+	{
+	public:
+		UINT64 gpuVa = 0;
+		UINT64 size = 0;
+		UINT stride = 0;
+		UINT64 generation = 0;
+		bool valid = false;
+	};
+
+	PreSkinRedirectNegativeEntry
+		preSkinRedirectNegCache[kPreSkinRedirectNegCacheSlots] = {};
 	// Bind-time static IA replacement bookkeeping (plan step 3.2). When a
 	// bound IB/VB content hash matched an unconditional static geometry
 	// override at IASet time, the stored view above points at the mod buffer
