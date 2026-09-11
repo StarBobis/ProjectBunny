@@ -280,138 +280,111 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 	DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged(std::move(record));
 }
 
-void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
-	ID3D12Device *device,
-	UINT numDestDescriptorRanges,
-	const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
-	const UINT *destDescriptorRangeSizes,
-	UINT numSrcDescriptorRanges,
-	const D3D12_CPU_DESCRIPTOR_HANDLE *srcDescriptorRangeStarts,
-	const UINT *srcDescriptorRangeSizes,
-	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
+// One CopyDescriptors call expands into several blocks (the measured average is
+// ~8 single-slot blocks per call), and every block used to re-run the whole
+// per-call setup: the tracking-mode gate (two out-of-line policy calls), the
+// copied-descriptor tally, and a fresh heap-version commit set. Only work that
+// is genuinely call-scoped lives here.
+//
+// Heap-slot resolution deliberately does NOT move here: each block carries
+// different CPU handles and the answer (heap record, slot) is only valid for
+// the handle it was asked about, so every block still resolves its own source
+// and destination.
+struct DescriptorCopyCallScope
 {
-	if (!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
-		return;
-	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
-			!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking())
-		return;
+	D3D12_DESCRIPTOR_HEAP_TYPE heapType = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
+	UINT increment = 0;
+	// NeedsDumpOrHuntingTracking() is two out-of-line policy calls; it is
+	// sampled once per API call, exactly like the entry gate that decides
+	// whether the call is recorded at all.
+	bool dumpOrHunt = false;
+	// Descriptors copied by this call, accumulated over its blocks.
+	LONG64 copiedDescriptors = 0;
+	// Changed slots publish their own seqlock identities immediately (readers
+	// rely on them), while the heap-wide invalidation token - which consumers
+	// only require to change once per completed API call - is bumped once per
+	// touched destination heap after the last block (see
+	// HeapVersionCommitSet and PublishSlotIdentity).
+	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet commitSet;
+};
 
-	// Keep only the required flattened range mapping. Each mapped block uses the
-	// minimal shadow copy path; no memoization or per-call telemetry is needed.
-	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
-	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
-		descriptorHeapsType);
-	if (!increment && device)
-		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
-	if (!increment)
-		return;
-	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
-		descriptorHeapsType, increment);
-	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
-		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
-		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
-		if (!destRangeSize) {
-			++destRange;
-			continue;
-		}
-		if (!srcRangeSize) {
-			++srcRange;
-			continue;
-		}
-		const UINT count = min(destRangeSize - destOffset, srcRangeSize - srcOffset);
-		D3D12_CPU_DESCRIPTOR_HANDLE dest = destDescriptorRangeStarts[destRange];
-		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
-		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
-		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-		// One expanded block per iteration. This is the divisor the "hoist the
-		// per-call setup out of RecordCopiedDescriptorsSimple" question needs:
-		// Desc.CopySlots measures descriptors, so it cannot say how often that
-		// setup (two heap resolves, two activity reads, two materialization
-		// reads, chunk cursors, commit set) repeats per API call. Blocks coming
-		// from the CopyDescriptorsSimple hook arrive through the same function
-		// and add one each, so the multi-range average is
-		// (Desc.CopyBlocks - Create.CopyDescriptorsSimpleWrapper.Record calls) /
-		// Create.CopyDescriptorsWrapper.Record calls.
-		DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
-		if (dest.ptr != src.ptr)
-			RecordCopiedDescriptorsSimple(
-				count, dest, src, descriptorHeapsType, increment);
-		else
-			// Self-overlapping ranges carry no work at all; counted separately
-			// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
-			DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
-		destOffset += count;
-		srcOffset += count;
-		if (destOffset == destRangeSize) {
-			++destRange;
-			destOffset = 0;
-		}
-		if (srcOffset == srcRangeSize) {
-			++srcRange;
-			srcOffset = 0;
-		}
-	}
+// Descriptors per API call is the divisor every per-descriptor cost needs: the
+// shadow moves a 264-byte DescriptorRecord per slot while the API it mirrors
+// moves 32 bytes, so whether the measured cost is per-call fixed work or
+// per-descriptor payload traffic decides where to shrink next. The tally covers
+// every expanded block of the call and is published once, together with the
+// call's single heap-version commit.
+static void FinishCopiedDescriptorCall(DescriptorCopyCallScope &scope)
+{
+	DX12_PROF_ADD_ITEMS("Desc.CopySlots", scope.copiedDescriptors);
+	scope.commitSet.CommitAll();
 }
 
-void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
+// Records one already-expanded block of a descriptor copy: `numDescriptors`
+// descriptors from `srcDescriptorRangeStart` to `destDescriptorRangeStart`.
+// Everything per-block lives here by construction - the two heap resolutions,
+// the activity/materialization verdicts derived from them (a heap can retire or
+// materialize while the call is in flight), the chunk cursors, the reverse
+// direction (a pointer comparison of this block's own handles) and the per-slot
+// work.
+static void RecordCopiedDescriptorBlock(
+	DescriptorCopyCallScope &scope,
 	UINT numDescriptors,
 	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
-	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
-	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType,
-	UINT increment)
+	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart)
 {
+	const UINT increment = scope.increment;
 	if (!increment)
 		return;
-	// Descriptors per call is the divisor every per-descriptor cost needs: the
-	// shadow moves a 264-byte DescriptorRecord per slot while the API it mirrors
-	// moves 32 bytes, so whether the measured cost is per-call fixed work or
-	// per-descriptor payload traffic decides where to shrink next.
-	DX12_PROF_ADD_ITEMS("Desc.CopySlots", numDescriptors);
+	scope.copiedDescriptors += numDescriptors;
 
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot source;
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot destination;
 	const bool resolvedBoth =
 		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-			srcDescriptorRangeStart.ptr, descriptorHeapsType, &source) &&
+			srcDescriptorRangeStart.ptr, scope.heapType, &source) &&
 		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-			destDescriptorRangeStart.ptr, descriptorHeapsType, &destination);
+			destDescriptorRangeStart.ptr, scope.heapType, &destination);
+	// A failed resolve leaves that side at the default nullptr heap, so every
+	// heap access below is guarded: the stateLocks test precedes its own
+	// dereference, and the materialization flags are only read through a present
+	// heap.
 	const bool heapsActive = resolvedBoth &&
 		source.heap->stateLocks && destination.heap->stateLocks &&
 		source.heap->stateLocks->IsActive() &&
 		destination.heap->stateLocks->IsActive();
-	const bool sourceMaterialized = source.heap->IsMaterialized();
-	const bool destinationMaterialized = destination.heap->IsMaterialized();
+	const bool sourceMaterialized =
+		source.heap && source.heap->IsMaterialized();
+	const bool destinationMaterialized =
+		destination.heap && destination.heap->IsMaterialized();
 	const bool bothMaterialized = heapsActive &&
 		sourceMaterialized && destinationMaterialized;
 	// Chunk-mode direct copies are lock-free per slot and only enabled
 	// outside Dump/Hunt tracking, where whole-heap materialization never runs
 	// concurrently with the chunked store (see
 	// DX12DescriptorHeapShadowUtils::RecordCreatedDescriptorIfChanged).
-	// Both materialization atomics are read once: this path runs once per
-	// descriptor-copy API call (thousands per frame) and the same two flags used
-	// to be loaded twice, always false outside dump/hunt.
+	// Both materialization atomics are read once per block, and the mode gate
+	// once per call.
 	const bool chunkFast = heapsActive &&
-		!sourceMaterialized && !destinationMaterialized &&
-		!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
+		!sourceMaterialized && !destinationMaterialized && !scope.dumpOrHunt;
 	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
 	// Chunk presence is cached per 4096-slot chunk boundary, so a contiguous
 	// range pays two chunk-pointer loads per chunk instead of per slot.
-	// Heap-version publication is batched: changed slots publish their seqlock
-	// identities immediately (readers rely on them), while the heap-wide
-	// invalidation token - which consumers only require to change once per
-	// completed API call - is bumped once per destination heap at the end.
 	constexpr UINT kChunkSlots = DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots;
 	UINT curSrcChunk = UINT_MAX;
 	UINT curDstChunk = UINT_MAX;
 	bool curSrcChunkOk = false;
 	bool curDstChunkOk = false;
-	bool curDstMaterialized = false;
+	// Seeded with this block's own sample above: re-reading it at the first
+	// chunk boundary would only repeat a load taken a few instructions earlier,
+	// and only the chunk fast path - which already proved both heaps resolved -
+	// consults the flag at all.
+	bool curDstMaterialized = destinationMaterialized;
 	// Block-level split of the locked fallback: Rm.DescCopyLockedPath counts
-	// slots, while the per-call setup above only repeats once per block, so the
+	// slots, while the per-block setup above only repeats once per block, so the
 	// number that decides whether hoisting it pays off is how many blocks
 	// needed the locked path at all.
 	bool blockTookLockedPath = false;
-	DX12DescriptorHeapShadowUtils::HeapVersionCommitSet commitSet;
 	for (UINT n = 0; n < numDescriptors; ++n) {
 		const UINT i = reverse ? numDescriptors - n - 1 : n;
 		const SIZE_T srcHandle = srcDescriptorRangeStart.ptr +
@@ -428,13 +401,18 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 				source.heap->chunkedSlots.ChunkExists(srcSlot);
 		}
 		if (dstChunk != curDstChunk) {
+			// Past the first boundary this must be a fresh read: a hunt/dump
+			// materialization can land on the destination while this call is in
+			// flight, and the dense adapter is then authoritative, so the
+			// remaining slots must take the locked path. The chunkFast gate also
+			// keeps the failed-resolve case (nullptr heap) out of the
+			// dereference.
+			if (curDstChunk != UINT_MAX)
+				curDstMaterialized = chunkFast &&
+					destination.heap->IsMaterialized();
 			curDstChunk = dstChunk;
 			curDstChunkOk = chunkFast &&
 				destination.heap->chunkedSlots.ChunkExists(dstSlot);
-			// A hunt/dump materialization can land on the destination while
-			// this call is in flight; the dense adapter is then authoritative,
-			// so the remaining slots must take the locked path.
-			curDstMaterialized = destination.heap->IsMaterialized();
 		}
 		const bool directCopy = bothMaterialized ||
 			(chunkFast && curSrcChunkOk && curDstChunkOk &&
@@ -455,7 +433,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 					DX12_PROF_COUNT("Rm.DescCopyChanged");
 					DX12DescriptorHeapStateUtils::PublishRangeValue(
 						destination.heap, dstSlot, publishedValueId);
-					commitSet.Add(destination.heap);
+					scope.commitSet.Add(destination.heap);
 				} else {
 					// The slot already held this value: the 264-byte record copy
 					// and the republication were both skipped inside the slot
@@ -486,7 +464,121 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	}
 	if (blockTookLockedPath)
 		DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", 1);
-	commitSet.CommitAll();
+	// The commit set spans the whole API call, not this block: the caller
+	// commits after its last block.
+}
+
+void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
+	ID3D12Device *device,
+	UINT numDestDescriptorRanges,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *destDescriptorRangeStarts,
+	const UINT *destDescriptorRangeSizes,
+	UINT numSrcDescriptorRanges,
+	const D3D12_CPU_DESCRIPTOR_HANDLE *srcDescriptorRangeStarts,
+	const UINT *srcDescriptorRangeSizes,
+	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType)
+{
+	if (!destDescriptorRangeStarts || !srcDescriptorRangeStarts)
+		return;
+
+	// Everything the expanded blocks share is prepared once here. Sampling the
+	// mode gate per call matches this function's own entry gate below and the
+	// contract every other gate in the shadow relies on: the mode can only turn
+	// the lock-free chunk path off, and the per-block materialization reads
+	// still gate that path, so a mid-call flip cannot be missed by more than the
+	// blocks already in flight when it happens.
+	DescriptorCopyCallScope scope;
+	scope.heapType = descriptorHeapsType;
+	scope.dumpOrHunt =
+		DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
+	if (descriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
+			!scope.dumpOrHunt)
+		return;
+
+	// Keep only the required flattened range mapping. Each mapped block uses the
+	// minimal shadow copy path; no memoization or per-call telemetry is needed.
+	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
+	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
+		descriptorHeapsType);
+	if (!increment && device)
+		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
+	if (!increment)
+		return;
+	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
+		descriptorHeapsType, increment);
+	scope.increment = increment;
+	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
+		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
+		const UINT srcRangeSize = srcDescriptorRangeSizes ? srcDescriptorRangeSizes[srcRange] : 1;
+		if (!destRangeSize) {
+			++destRange;
+			continue;
+		}
+		if (!srcRangeSize) {
+			++srcRange;
+			continue;
+		}
+		const UINT count = min(destRangeSize - destOffset, srcRangeSize - srcOffset);
+		D3D12_CPU_DESCRIPTOR_HANDLE dest = destDescriptorRangeStarts[destRange];
+		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
+		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
+		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
+		// One expanded block per iteration, recorded by the per-block helper.
+		// This is the divisor the "hoist the per-call setup out of the block
+		// path" question needed: Desc.CopySlots measures descriptors, so it
+		// cannot say how often that setup (two heap resolves, two activity
+		// reads, two materialization reads, chunk cursors, commit set) repeats
+		// per API call. Blocks coming from the CopyDescriptorsSimple hook arrive
+		// through the same function and add one each, so the multi-range average
+		// is (Desc.CopyBlocks - Create.CopyDescriptorsSimpleWrapper.Record
+		// calls) / Create.CopyDescriptorsWrapper.Record calls. Measured: 59.1M /
+		// 18.5M = 3.2 overlay-wide, 7.2~8.0 in the descriptor-heavy scenes,
+		// which is what made this loop call the helper instead of re-running the
+		// per-call setup per block.
+		DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
+		if (dest.ptr != src.ptr)
+			RecordCopiedDescriptorBlock(scope, count, dest, src);
+		else
+			// Self-overlapping ranges carry no work at all; counted separately
+			// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
+			DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
+		destOffset += count;
+		srcOffset += count;
+		if (destOffset == destRangeSize) {
+			++destRange;
+			destOffset = 0;
+		}
+		if (srcOffset == srcRangeSize) {
+			++srcRange;
+			srcOffset = 0;
+		}
+	}
+	// One tally and one heap-version commit for the whole API call, after its
+	// last block.
+	FinishCopiedDescriptorCall(scope);
+}
+
+void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
+	UINT numDescriptors,
+	D3D12_CPU_DESCRIPTOR_HANDLE destDescriptorRangeStart,
+	D3D12_CPU_DESCRIPTOR_HANDLE srcDescriptorRangeStart,
+	D3D12_DESCRIPTOR_HEAP_TYPE descriptorHeapsType,
+	UINT increment)
+{
+	if (!increment)
+		return;
+	// Single-block API call: the same per-call preparation, block recording and
+	// single heap-version commit the multi-range path uses, with the range walk
+	// reduced to this one block.
+	DescriptorCopyCallScope scope;
+	scope.heapType = descriptorHeapsType;
+	scope.increment = increment;
+	scope.dumpOrHunt =
+		DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
+	RecordCopiedDescriptorBlock(
+		scope, numDescriptors, destDescriptorRangeStart,
+		srcDescriptorRangeStart);
+	FinishCopiedDescriptorCall(scope);
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(

@@ -43,6 +43,13 @@ public:
 	uint64_t computeShaderHash = 0;
 	UINT64 computeBindingSerial = 0;
 	UINT64 bindingDependencyFingerprint = 0;
+	// Binding-identity probe memo for the current dispatch. Every negative
+	// verdict cache and the resident-snapshot load need the same answer ("are
+	// the cached bindings still the live ones?"), and within one dispatch that
+	// answer cannot change, so it is computed at most once. ScratchProbe()
+	// clears both fields at the start of every PreSkin probe.
+	bool bindingIdentityChecked = false;
+	bool bindingIdentityValid = false;
 	UINT originalVertexCount = 0;
 	UINT overrideVertexCount = 0;
 	DX12PreSkinDispatchOverride dispatchOverride;
@@ -334,10 +341,19 @@ public:
 		// stored. The descriptor version alone cannot prove that: root-constant
 		// and root-descriptor writes bump computeBindingSerial but not
 		// computeDescriptorBindingVersion, so version equality still allows the
-		// bindings (and therefore the verdict) to differ. Requiring the binding
-		// serial covers every binding mutation; across a command-list Reset the
-		// counters restart, but Reset already invalidates probeResultValid, so
-		// the verdict can never alias a previous recording.
+		// bindings (and therefore the verdict) to differ. The binding-identity
+		// probe below proves the bindings themselves - it re-reads every
+		// observed descriptor slot's value id at its current ring position and
+		// re-compares the root descriptors and root constants - which covers
+		// every binding mutation the serials covered, plus the re-binds and ring
+		// rotations they rejected. The stored binding-dependency fingerprint
+		// additionally pins the verdict to *this* snapshot: a collector run that
+		// returns through the geometry negative cache replaces the snapshot
+		// without refreshing the verdict, and reusing a verdict computed on
+		// other bindings would skip a replacement those bindings need. Across a
+		// command-list Reset the counters restart, but Reset already invalidates
+		// probeResultValid and bindingsValid, so the verdict can never alias a
+		// previous recording.
 		if (effectiveState->resolvedCompute.probeResultValid &&
 			!effectiveState->resolvedCompute.probeApplied &&
 			dispatchDecision->computeShaderHash != 0 &&
@@ -345,8 +361,6 @@ public:
 				dispatchDecision->computeShaderHash &&
 			effectiveState->resolvedCompute.probeReloadGeneration ==
 				outerReloadGeneration &&
-			effectiveState->resolvedCompute.probeBindingSerial ==
-				effectiveState->computeBindingSerial &&
 			effectiveState->resolvedCompute.probeIaContentEpoch ==
 				effectiveState->iaContentEpoch &&
 			effectiveState->resolvedCompute.probeBufferContentGeneration ==
@@ -357,16 +371,18 @@ public:
 				effectiveState->cbvSrvUavHeap &&
 			effectiveState->resolvedCompute.bindingsRootSignature ==
 				effectiveState->computeRootSignature &&
-			effectiveState->resolvedCompute.bindingsDescriptorVersion ==
-				effectiveState->computeDescriptorBindingVersion) {
+			ProbePreSkinBindingIdentity(commandList, effectiveState, &probe) &&
+			effectiveState->resolvedCompute.probeBindingDependencyFingerprint ==
+				probe.bindingDependencyFingerprint) {
 			probe.computeShaderHash = dispatchDecision->computeShaderHash;
 			probe.computeBindingSerial = effectiveState->computeBindingSerial;
 			probe.applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_COUNT("Rm.PreSkinVerdictDispatchHits");
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",
-				"probe_cache_dispatch_descriptor_version_negative_hit",
+				"probe_cache_dispatch_binding_identity_negative_hit",
 				0,
 				1,
 				0);
@@ -496,10 +512,75 @@ public:
 		probe.computeShaderHash = 0;
 		probe.computeBindingSerial = 0;
 		probe.bindingDependencyFingerprint = 0;
+		probe.bindingIdentityChecked = false;
+		probe.bindingIdentityValid = false;
 		probe.originalVertexCount = 0;
 		probe.overrideVertexCount = 0;
 		probe.dispatchOverride = DX12PreSkinDispatchOverride();
 		return probe;
+	}
+
+	// Binding-identity revalidation for the PreSkin negative-verdict caches and
+	// the resident binding snapshot.
+	//
+	// Those caches used to be validated with the store-time binding counters
+	// (probeBindingSerial / bindingsDescriptorVersion). The game re-binds
+	// compute root tables and rewrites the descriptor ring while binding the
+	// identical descriptors, which bumps both counters, so the keys never
+	// matched once in a 17MB run and every candidate dispatch fell through to
+	// the full binding collector. DX12BindingTracker::TryGetRuntimePreSkinBindings
+	// already validates this snapshot by binding *identity* (same root
+	// signature, same root-descriptor identity, same root-constant content,
+	// same per-slot descriptor value ids read at the current ring positions),
+	// so the hook reuses that entry point through its public wrapper instead of
+	// duplicating the validation.
+	//
+	// Identity is strictly stronger than the serials it replaces: a different
+	// root signature, heap, root descriptor, root constant, observed slot value
+	// or a gained/lost used root all fail it. Only a state whose bindings are
+	// provably the cached ones can pass, so no state the serials rejected for a
+	// real binding change is accepted now.
+	//
+	// The wrapper resolves the command list's resident state itself, so the
+	// probe is only meaningful when that state is the one being probed: a
+	// command list without resident state has no snapshot to validate. The
+	// cheap root / root-constant predicates gate the call - when they already
+	// fail, the full validation cannot succeed either - so a missing snapshot
+	// costs two comparisons instead of a descriptor pass.
+	static bool ProbePreSkinBindingIdentity(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *runtimeState,
+		DX12DispatchPreSkinProbe *probe)
+	{
+		if (probe->bindingIdentityChecked)
+			return probe->bindingIdentityValid;
+		probe->bindingIdentityChecked = true;
+		if (!runtimeState ||
+			DX12CommandListRuntime::GetStatePtrFast(commandList) != runtimeState ||
+			!DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
+			DX12_PROF_COUNT("Rm.PreSkinVerdictBindingStateInvalid");
+			return false;
+		}
+		DX12_DIAG_QPC(identityProbeBegin);
+		DX12_PROF_COUNT("Rm.PreSkinVerdictIdentityProbeRuns");
+		probe->bindingIdentityValid =
+			DX12BindingTracker::GetSimulateContextPreSkinBindings(
+				commandList,
+				&probe->cachedUavs,
+				&probe->cachedSrvs,
+				&probe->cachedCbvs,
+				&probe->cachedRootConstants,
+				&probe->bindingDependencyFingerprint,
+				&probe->uavsFound);
+		if (probe->bindingIdentityValid)
+			DX12_PROF_COUNT("Rm.PreSkinVerdictIdentityProbeHits");
+		DX12_PROF_CPU_STAGE(
+			"PreSkin",
+			"binding_identity_probe",
+			0,
+			1,
+			DX12_DIAG_ELAPSED_US(identityProbeBegin));
+		return probe->bindingIdentityValid;
 	}
 
 	static void PreparePreSkinProbe(
@@ -542,54 +623,69 @@ public:
 		// before descriptor summaries are materialized. Positive results still go
 		// through the exact-location path so replacement commands target the
 		// currently bound descriptor table.
+		//
+		// The key below is every match input except the bindings themselves. The
+		// bindings are covered by the binding-identity probe, never by the
+		// store-time binding serial: the game re-binds its compute root tables on
+		// every dispatch, so serial equality never held (measured: 0 hits) while
+		// the identity of the bindings was in fact unchanged.
 		const UINT64 earlyReloadGeneration = DX12ModGetReloadGenerationFast();
-		if (runtimeState &&
+		const bool preSkinProbeKeyMatches = runtimeState &&
 			runtimeState->resolvedCompute.probeResultValid &&
 			!runtimeState->resolvedCompute.probeApplied &&
 			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
-			runtimeState->resolvedCompute.probeBindingSerial == probe->computeBindingSerial &&
 			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
 			runtimeState->resolvedCompute.probeBufferContentGeneration ==
-				DX12GetIaHashContentGeneration()) {
+				DX12GetIaHashContentGeneration();
+		if (preSkinProbeKeyMatches)
+			DX12_PROF_COUNT("Rm.PreSkinVerdictKeyMatches");
+
+		// The Execute-level verdict cache may already have paid for this on the
+		// current dispatch; otherwise it is evaluated here, once, for both
+		// negative-verdict caches and for the resident-snapshot load below. A
+		// hit publishes the cached binding vectors into the probe, so it *is*
+		// the resident snapshot load for this dispatch.
+		const bool preSkinIdentityValid =
+			ProbePreSkinBindingIdentity(commandList, runtimeState, probe);
+		// The verdict must belong to the snapshot the probe just validated:
+		// only a collector run that returns before the verdict is refreshed (the
+		// geometry negative cache) can replace the snapshot, and its
+		// binding-dependency fingerprint is that generation marker. Reusing a
+		// verdict computed on other bindings would skip a replacement those
+		// bindings need.
+		const bool preSkinVerdictMatchesSnapshot = runtimeState &&
+			runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
+				probe->bindingDependencyFingerprint;
+		if (preSkinProbeKeyMatches && preSkinIdentityValid &&
+			preSkinVerdictMatchesSnapshot) {
 			probe->applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_COUNT("Rm.PreSkinVerdictEarlyHits");
 			DX12_PROF_CPU_STAGE(
 				"PreSkin", "probe_cache_early_negative_hit", 0, 1,
 				DX12_DIAG_ELAPSED_US(t0));
 			return;
 		}
-		// Evaluated once for both branch B and the resident-snapshot lookup
-		// below. TryGetRuntimePreSkinBindings re-runs exactly these two
-		// predicates (RuntimeDescriptorRootsMatch / RuntimeConstantsMatch) on
-		// the same command-list state before it can hand out the cached
-		// binding snapshot, so a negative verdict here is also that call's
-		// verdict and lets the collector below be reached directly.
-		const bool preSkinBindingStateValid = runtimeState &&
-			DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState);
-		if (runtimeState &&
-			runtimeState->resolvedCompute.probeResultValid &&
-			!runtimeState->resolvedCompute.probeApplied &&
-			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
-			runtimeState->resolvedCompute.probeReloadGeneration == earlyReloadGeneration &&
-			runtimeState->resolvedCompute.probeIaContentEpoch == runtimeState->iaContentEpoch &&
-			runtimeState->resolvedCompute.probeBufferContentGeneration ==
-				DX12GetIaHashContentGeneration() &&
+		// Same verdict key, now also requiring the hook's own provenance gates
+		// on the cached snapshot. The identity probe subsumes them; they are
+		// kept so this branch can never accept a state the probe rejected.
+		if (preSkinProbeKeyMatches &&
 			runtimeState->resolvedCompute.bindingsValid &&
 			!runtimeState->resolvedCompute.bindingsUseRootValues &&
-				runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
-				runtimeState->resolvedCompute.bindingsRootSignature ==
-					runtimeState->computeRootSignature &&
-				runtimeState->resolvedCompute.bindingsDescriptorVersion ==
-					runtimeState->computeDescriptorBindingVersion &&
-				preSkinBindingStateValid) {
+			runtimeState->resolvedCompute.bindingsHeap == runtimeState->cbvSrvUavHeap &&
+			runtimeState->resolvedCompute.bindingsRootSignature ==
+				runtimeState->computeRootSignature &&
+			preSkinIdentityValid &&
+			preSkinVerdictMatchesSnapshot) {
 			probe->applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_COUNT("Rm.PreSkinVerdictDescriptorHits");
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",
-				"probe_cache_descriptor_version_negative_hit",
+				"probe_cache_binding_identity_negative_hit",
 				0,
 				1,
 				DX12_DIAG_ELAPSED_US(t0));
@@ -605,70 +701,42 @@ public:
 		{
 			DX12_PROF_STAGE_SCOPE(PreSkinBindQuery);
 			DX12_DIAG_QPC(collectBegin);
-			// DX12 command lists keep resident binding state. When the descriptor
-			// version, heap/root signature, and every previously observed table
-			// base are unchanged, the cached snapshot is already authoritative.
-			// This avoids re-entering the generic DX11-style binding collector on
-			// every Dispatch while preserving invalidation on descriptor writes or
-			// descriptor-ring rotation.
-			bool residentSnapshotLoaded = false;
-			if (runtimeState &&
-				runtimeState->resolvedCompute.bindingsValid &&
-				!runtimeState->resolvedCompute.bindingsUseRootValues &&
-				runtimeState->resolvedCompute.bindingsHeap ==
-					runtimeState->cbvSrvUavHeap &&
-				runtimeState->resolvedCompute.bindingsRootSignature ==
-					runtimeState->computeRootSignature &&
-				runtimeState->resolvedCompute.bindingsDescriptorVersion ==
-					runtimeState->computeDescriptorBindingVersion) {
-				residentSnapshotLoaded = true;
-				for (const DX12SimulateContextComputeTemplate::RuntimeObservedSlot &observed :
-					runtimeState->resolvedCompute.bindingsObservedSlots) {
-					if (observed.root >= MaxRootParameters) {
-						residentSnapshotLoaded = false;
-						break;
-					}
-					const RootTableState &table =
-						runtimeState->computeRootTables[observed.root];
-					if (!table.valid ||
-						table.baseDescriptor.ptr !=
-							runtimeState->resolvedCompute.bindingsRootTableBases[observed.root]) {
-						residentSnapshotLoaded = false;
-						break;
-					}
-				}
-			}
+			// The identity probe above already validated this snapshot and
+			// published its vectors, fingerprint and found-any flag into the
+			// probe, so accepting the resident snapshot no longer needs the
+			// descriptor version / table base equality: those are exactly the
+			// ring-rotation signals the game changes while binding identical
+			// descriptors, and the probe re-reads every observed slot's value id
+			// at its current ring position instead. The snapshot is still not
+			// re-collected on every Dispatch, and invalidation on real descriptor
+			// writes or ring rotation is preserved by those value ids.
+			const bool residentSnapshotLoaded = preSkinIdentityValid;
 			if (residentSnapshotLoaded) {
-				DX12SimulateContextComputeTemplate &cached =
-					runtimeState->resolvedCompute;
-				probe->cachedUavs = &cached.uavs;
-				probe->cachedSrvs = &cached.srvs;
-				probe->cachedCbvs = &cached.cbvs;
-				probe->cachedRootConstants = &cached.rootConstants;
-				probe->bindingDependencyFingerprint =
-					cached.bindingsDependencyFingerprint;
-				probe->uavsFound = cached.bindingsFoundAny;
 				DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 				DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+				DX12_PROF_COUNT("Rm.PreSkinVerdictResidentHits");
 				DX12_PROF_CPU_STAGE(
 					"PreSkin", "resident_binding_snapshot_hit", 0,
-					static_cast<LONG64>(cached.uavs.size() + cached.srvs.size() + cached.cbvs.size()),
+					static_cast<LONG64>(
+						probe->cachedUavs->size() +
+						probe->cachedSrvs->size() +
+						probe->cachedCbvs->size()),
 					DX12_DIAG_ELAPSED_US(collectBegin));
 			}
 
 			// Consume the validated recording-context template directly. The
 			// collector remains the cold path that materializes a missing template.
 			bool computeTemplateLoaded = residentSnapshotLoaded;
-			// The tracker would read this same command-list state (its resident
-			// snapshot lookup resolves the context through GetStatePtrFast) and
-			// re-validates the predicates that just failed, so when the state is
-			// already known invalid the call cannot return a snapshot: skip it
-			// and let the collector re-collect, exactly as it would have after
-			// the negative answer.
-			const bool residentSnapshotProvablyStale =
-				!preSkinBindingStateValid && runtimeState &&
-				DX12CommandListRuntime::GetStatePtrFast(commandList) == runtimeState;
-			if (!computeTemplateLoaded && !residentSnapshotProvablyStale) {
+			// ProbePreSkinBindingIdentity already ran the tracker's resident
+			// snapshot lookup on this exact command-list state whenever it could
+			// apply. That lookup only mutates the cache after a full successful
+			// validation, so a failed probe cannot be turned into a hit by
+			// calling it again on unchanged state; and when the probe could not
+			// run at all, the command list's resident state is not the state
+			// being probed, so a lookup would hand out another state's snapshot.
+			// Both cases go straight to the collector, exactly as the negative
+			// answer would have.
+			if (!computeTemplateLoaded && !probe->bindingIdentityChecked) {
 				probe->cachedUavs = nullptr;
 				probe->cachedSrvs = nullptr;
 				probe->cachedCbvs = nullptr;
@@ -697,6 +765,7 @@ public:
 				probe->applied = false;
 				DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 				DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+				DX12_PROF_COUNT("Rm.PreSkinVerdictTemplateHits");
 				DX12_PROF_CPU_STAGE(
 					"PreSkin",
 					"probe_cache_template_negative_hit",
@@ -746,6 +815,7 @@ public:
 					probe->applied = false;
 					DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 					DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+					DX12_PROF_COUNT("Rm.PreSkinVerdictTemplateFingerprintHits");
 					DX12_PROF_CPU_STAGE(
 						"PreSkin",
 						"probe_cache_template_fingerprint_negative_hit",
@@ -802,6 +872,7 @@ public:
 			probe->applied = false;
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
+			DX12_PROF_COUNT("Rm.PreSkinVerdictGeometryHits");
 			DX12_PROF_CPU_STAGE(
 				"PreSkin", "probe_cache_geometry_negative_hit", 0, 1,
 				DX12_DIAG_ELAPSED_US(t0));
