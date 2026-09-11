@@ -249,12 +249,20 @@ namespace DX12WrapperDetail
 		// are invalidated whenever a different view is bound to the slot.
 		// Games that rotate a small set of vertex buffers across slots and
 		// command lists hit this cache instead of recomputing.
+		//
+		// Keyed on the view parameters plus the buffer resolve epoch, never on
+		// the buffer content generation: the IA hash is metadata-only (see
+		// DX12HashIaBufferContentView), so a CPU content write provably cannot
+		// change it, while gBufferContentGeneration moves for unrelated buffers
+		// on nearly every frame and used to invalidate entries whose value could
+		// not have changed - which pushed the draw path into a full resolve per
+		// slot per draw. The resolve epoch stays: it is the GPUVA-to-resource
+		// remap token, and a remapped range must not reuse the old value.
 		struct IaHashCacheEntry {
 			UINT64 gpuVa = 0;      // view.BufferLocation
 			UINT64 size = 0;       // view.SizeInBytes
 			UINT stride = 0;       // view.StrideInBytes
 			UINT slot = UINT_MAX;  // bound slot (part of hash input)
-			UINT64 contentGeneration = 0;
 			UINT64 resolveGeneration = 0;
 			uint32_t hash = 0;
 			bool valid = false;

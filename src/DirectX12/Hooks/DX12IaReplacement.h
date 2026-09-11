@@ -1895,6 +1895,11 @@ public:
 		// construction; only draw-context filters (match_first_index etc.)
 		// are draw-arg dependent, and those only matter once a candidate
 		// exists, which is exactly the case this cache does not short-circuit.
+		// Timed on its own: with count-independent prefilter tables this cache
+		// retires the large majority of non-matching draws, so its share of the
+		// DrawOverride budget must be readable without the hash/probe work below.
+		{
+			DX12_PROF_STAGE_SCOPE(DrawOvIaStateNegCache);
 		if (drawDecision->directTextureChecksOnly &&
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
@@ -1911,15 +1916,25 @@ public:
 			    iaNeg.reloadGeneration == drawDecision->reloadGeneration &&
 			    iaNeg.targetPlanFingerprint == iaPlanFingerprint &&
 			    iaNeg.pipelineState == runtimeState.pipelineState) {
+				DX12_PROF_COUNT("Rm.IaNegCacheHit");
 				if (iaNeg.noCandidate) {
 					StoreBoundDrawNegative();
 					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
 				}
 			} else {
-				const bool noCandidate =
-					DX12ModIaStateDefinitelyHasNoCandidate(
-						runtimeState.ia, directTargetPlan, draw.indexed);
+				DX12_PROF_COUNT("Rm.IaNegVerdictRuns");
+				bool noCandidate = false;
+				{
+					DX12_PROF_STAGE_SCOPE(DrawOvIaNegVerdict);
+					noCandidate =
+						DX12ModIaStateDefinitelyHasNoCandidate(
+							runtimeState.ia, directTargetPlan, draw.indexed);
+				}
+				if (noCandidate)
+					DX12_PROF_COUNT("Rm.IaNegVerdictNegative");
+				else
+					DX12_PROF_COUNT("Rm.IaNegVerdictCandidate");
 				iaNeg.valid = true;
 				iaNeg.noCandidate = noCandidate;
 				iaNeg.iaEpoch = runtimeState.iaEpoch;
@@ -1934,6 +1949,11 @@ public:
 					return false;
 				}
 			}
+		} else {
+			// Counted so the phase's per-draw average can be split into draws
+			// the check never even applies to and draws that pay the verdict.
+			DX12_PROF_COUNT("Rm.IaNegBodySkipped");
+		}
 		}
 		const bool targetPlanHasIaTargets = drawDecision->targetPlanHasIaTargets;
 		const bool psoIaNegativeCacheSafe = drawDecision->negativeCacheSafe;
@@ -1955,6 +1975,10 @@ public:
 		UINT64 directGraphicsDescriptorHeapVersion = 0;
 		UINT64 directDescriptorContentGeneration = 0;
 		UINT64 directDescriptorResolveGeneration = 0;
+		// Timed separately: resolving the direct check targets is its own
+		// resident-cache probe, and its miss path ends the draw before hashing.
+		{
+			DX12_PROF_STAGE_SCOPE(DrawOvDirectCheckTarget);
 		if (drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
 		    !DX12IaReplacementExecutor::HasCachedIaTextureOverrideCheckTarget(
@@ -1970,6 +1994,12 @@ public:
 			DX12_PROF_STAGE_END(DrawOverride);
 			return false;
 		}
+		}
+		// Timed separately: this branch probes the resident negative table and the
+		// descriptor heap before any IA hashing, and it is the only exit a
+		// descriptor-only plan has besides the full match path.
+		{
+			DX12_PROF_STAGE_SCOPE(DrawOvDirectDescriptorPrefilter);
 		if (drawDecision->directTextureChecksOnly &&
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasDescriptorTargets &&
@@ -2053,6 +2083,7 @@ public:
 				return false;
 			}
 		}
+		}
 		if (drawDecision->directTextureChecksOnly &&
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
@@ -2060,6 +2091,12 @@ public:
 		    !directTargetPlan.hasDescriptorTargets) {
 				const UINT64 contentGeneration = DX12GetIaHashContentGeneration();
 				const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
+				// Timed separately from the probe below: this resident-negative
+				// lookup is key construction plus a table probe, and it is the
+				// first point where a draw without a candidate can leave the
+				// direct IA path.
+				{
+					DX12_PROF_STAGE_SCOPE(DrawOvDirectIaPrefilter);
 				if (TryFindResidentNegative(mutableRuntimeState,
 						*drawDecision, preSkinGeneration,
 						contentGeneration, resolveGeneration,
@@ -2106,10 +2143,16 @@ public:
 				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
+				}
 
 				// The direct probe and the full override path consume the same stable IA
 				// hash state. Cache it before building the probe key so a negative probe
 				// hit does not require re-hashing the same draw region first.
+				// Timed on its own: the hash-state build/reuse and the direct
+				// candidate probe are the only real hashing work this plan can do
+				// on the NOT-matched path, so they need a phase of their own.
+				{
+					DX12_PROF_STAGE_SCOPE(DrawOvDirectIaProbe);
 				DX12_DIAG_QPC(directProbeBuildBegin);
 				DX12IaHashStateCacheKey directHashCacheKey =
 					DX12CommandListRuntime::BuildIaHashStateCacheKeyForTargetsCached(
@@ -2269,7 +2312,13 @@ public:
 						1,
 						DX12_DIAG_ELAPSED_US(directProbeBuildBegin));
 				}
+				}
 		}
+		// Timed separately: a plan that carries both descriptor and IA targets
+		// reaches this prefilter only after the descriptor probe already passed,
+		// so the IA prefilter is the last cheap reject before full hashing.
+		{
+			DX12_PROF_STAGE_SCOPE(DrawOvMixedPrefilter);
 		if (drawDecision->directTextureChecksOnly &&
 		    drawDecision->directTargetPlanResolved &&
 		    directTargetPlan.hasTextureOverrideChecks &&
@@ -2314,6 +2363,7 @@ public:
 				DX12_PROF_STAGE_END(DrawOverride);
 				return false;
 			}
+		}
 		}
 		const bool hasCurrentIaTarget =
 			!targetPlanHasIaTargets ||

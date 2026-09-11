@@ -1407,6 +1407,7 @@ public:
 		// replacement. Restore the snapshotted original views first so slots
 		// this call does not cover do not keep the mod view.
 		if (runtimeState && runtimeState->staticTemplateIaApplied) {
+			DX12_PROF_STAGE_SCOPE(IaBindRestoreStaticTemplate);
 			DX12IaReplacementExecutorCallbacks callbacks;
 			callbacks.setIndexBuffer = DirectSetIndexBuffer;
 			callbacks.setVertexBuffers = DirectSetVertexBuffers;
@@ -1473,6 +1474,7 @@ public:
 		// replacement. Restore the snapshotted original views first so slots
 		// this call does not cover do not keep the mod view.
 		if (runtimeState && runtimeState->staticTemplateIaApplied) {
+			DX12_PROF_STAGE_SCOPE(IaBindRestoreStaticTemplate);
 			DX12IaReplacementExecutorCallbacks callbacks;
 			callbacks.setIndexBuffer = DirectSetIndexBuffer;
 			callbacks.setVertexBuffers = DirectSetVertexBuffers;
@@ -1483,10 +1485,21 @@ public:
 		// resizing is active, the redirect probes cannot produce a different
 		// view. Keep the DX12 resident IA capture, but avoid constructing two
 		// full temporary view arrays and walking both redirect pipelines.
-		if (!DX12HasStaticIaReplacements() &&
-			!DX12ModHasPreSkinOutputResizeBindings()) {
-			const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
-				commandList, runtimeState, startSlot, count, views);
+		bool hasStaticReplacements = false;
+		bool hasPreSkinResizeBindings = false;
+		{
+			DX12_PROF_STAGE_SCOPE(IaBindRedirectPredicates);
+			hasStaticReplacements = DX12HasStaticIaReplacements();
+			hasPreSkinResizeBindings = DX12ModHasPreSkinOutputResizeBindings();
+		}
+		if (!hasStaticReplacements && !hasPreSkinResizeBindings) {
+			DX12_PROF_COUNT("Rm.IaBindFastPath");
+			bool changed = false;
+			{
+				DX12_PROF_STAGE_SCOPE(IaBindCapture);
+				changed = DX12CommandListStateFlow::CaptureVertexBuffers(
+					commandList, runtimeState, startSlot, count, views);
+			}
 			if (!changed)
 				return;
 			if (original)
@@ -1495,10 +1508,13 @@ public:
 				commandList->IASetVertexBuffers(startSlot, count, views);
 			return;
 		}
+		DX12_PROF_COUNT("Rm.IaBindSlowPath");
+		DX12_PROF_STAGE_BEGIN(IaBindViewArraysClear);
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 		D3D12_VERTEX_BUFFER_VIEW staticRedirectedViews[
 			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+		DX12_PROF_STAGE_END(IaBindViewArraysClear);
 		const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
 		// Plan step 3.2: bind-time static IA replacement runs FIRST and per
 		// slot. The PreSkin redirect below must not gate it: a character draw
@@ -1509,7 +1525,8 @@ public:
 		// slot, so the draw read the game's small original texcoord buffer
 		// with the mod's oversized index buffer - broken UVs beyond the
 		// original vertex count.
-		if (DX12HasStaticIaReplacements()) {
+		if (hasStaticReplacements) {
+			DX12_PROF_STAGE_SCOPE(IaBindStaticRedirect);
 			if (TryRedirectStaticIaVertexBuffers(
 				    commandList,
 				    runtimeState,
@@ -1530,6 +1547,7 @@ public:
 		// that gate every IA bind cleared a third 32-slot array and walked the
 		// redirect pipeline for nothing.
 		if (activeViews == views || activeViews == staticRedirectedViews) {
+			DX12_PROF_STAGE_SCOPE(IaBindPreSkinRedirect);
 			if (DX12WrapperRuntimeUtils::PreSkinRedirectPossible(activeViews, count)) {
 				D3D12_VERTEX_BUFFER_VIEW preSkinRedirectedViews[
 					D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
@@ -1552,8 +1570,12 @@ public:
 				DX12_PROF_COUNT("Rm.IaPreSkinRedirectGated");
 			}
 		}
-		const bool changed = DX12CommandListStateFlow::CaptureVertexBuffers(
-			commandList, runtimeState, startSlot, count, activeViews);
+		bool changed = false;
+		{
+			DX12_PROF_STAGE_SCOPE(IaBindCapture);
+			changed = DX12CommandListStateFlow::CaptureVertexBuffers(
+				commandList, runtimeState, startSlot, count, activeViews);
+		}
 		if (!changed)
 			return;
 		if (original)

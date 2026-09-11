@@ -107,13 +107,15 @@ const char *DX12DiagnoseBufferResolveByGpuVaLocked(
 	UINT64 gpuVirtualAddress, UINT64 size,
 	UINT64 *nearestBegin, UINT64 *nearestEnd, UINT64 *nearestResource);
 // IA-hash reuse cache stored on ResourceWrapper.  Returns true and fills
-// *hash on a full match (view params + generations), false otherwise.
+// *hash on a full match of the view parameters and the buffer resolve epoch.
+// The buffer content generation is deliberately not part of the key: the IA
+// hash is metadata-only, so content writes cannot change the cached value.
 bool DX12TryGetWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash);
+	UINT64 resolveGeneration, uint32_t *hash);
 void DX12StoreWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash);
+	UINT64 resolveGeneration, uint32_t hash);
 extern std::atomic<UINT64> gBufferResolveGeneration;
 extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;

@@ -396,36 +396,61 @@ static ResourceWrapper *FindWrapperCoveringGpuVaInShard(
 
 bool TryGetWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash)
+	UINT64 resolveGeneration, uint32_t *hash)
 {
 	if (!hash)
 		return false;
+	// The resolve epoch stored with an entry is validated against the per-range
+	// invalidation history rather than against the global epoch. The global
+	// epoch moves for any range change anywhere in the frame - the game
+	// registers resources continuously - which used to discard entries whose own
+	// range had not been touched and sent the draw path into a full resolve. The
+	// replay is bounded so an entry that has been stale for a long time is
+	// recomputed instead of scanning back over the whole history.
+	static constexpr UINT64 kMaxResolveEpochLookback = 64;
 	GpuVaWrapperShard &shard = GpuVaWrapperShardFor(gpuVa);
+	ResourceWrapper::IaHashCacheEntry match;
+	bool found = false;
 	AcquireSRWLockShared(&shard.lock);
 	ResourceWrapper *wrapper = FindWrapperCoveringGpuVaInShard(shard, gpuVa);
-	if (!wrapper) {
-		ReleaseSRWLockShared(&shard.lock);
-		return false;
-	}
-	for (const ResourceWrapper::IaHashCacheEntry &entry : wrapper->mIaHashCache) {
-		if (!entry.valid)
-			continue;
-		if (entry.gpuVa == gpuVa && entry.size == size &&
-			entry.stride == stride && entry.slot == slot &&
-			entry.contentGeneration == contentGeneration &&
-			entry.resolveGeneration == resolveGeneration) {
-			*hash = entry.hash;
-			ReleaseSRWLockShared(&shard.lock);
-			return true;
+	if (wrapper) {
+		for (const ResourceWrapper::IaHashCacheEntry &entry : wrapper->mIaHashCache) {
+			if (!entry.valid)
+				continue;
+			if (entry.gpuVa == gpuVa && entry.size == size &&
+				entry.stride == stride && entry.slot == slot) {
+				match = entry;
+				found = true;
+				break;
+			}
 		}
 	}
 	ReleaseSRWLockShared(&shard.lock);
-	return false;
+	if (!found)
+		return false;
+	if (match.resolveGeneration != resolveGeneration) {
+		if (resolveGeneration < match.resolveGeneration ||
+		    resolveGeneration - match.resolveGeneration > kMaxResolveEpochLookback)
+			return false;
+		// Taken only after the shard lock is released: the buffer resolve cache
+		// takes a shard lock from inside gResourceLock, so nesting them the
+		// other way round would invert that order.
+		AcquireSRWLockShared(&gResourceLock);
+		const bool invalidated =
+			DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+				gpuVa, gpuVa + size, match.resolveGeneration);
+		ReleaseSRWLockShared(&gResourceLock);
+		if (invalidated)
+			return false;
+		DX12_PROF_COUNT("Rm.IaViewHashRangeValidated");
+	}
+	*hash = match.hash;
+	return true;
 }
 
 void StoreWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash)
+	UINT64 resolveGeneration, uint32_t hash)
 {
 	// Writes mIaHashCache entries, so the exclusive side of the lock is
 	// required even though the covering-wrapper lookup itself is read-only.
@@ -450,7 +475,6 @@ void StoreWrapperIaHash(
 	freeEntry->size = size;
 	freeEntry->stride = stride;
 	freeEntry->slot = slot;
-	freeEntry->contentGeneration = contentGeneration;
 	freeEntry->resolveGeneration = resolveGeneration;
 	freeEntry->hash = hash;
 	freeEntry->valid = true;
@@ -466,19 +490,17 @@ ResourceRecord *DX12FindWrapperResourceRecord(ID3D12Resource *resource)
 
 bool DX12TryGetWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t *hash)
+	UINT64 resolveGeneration, uint32_t *hash)
 {
 	return DX12Wrapper::TryGetWrapperIaHash(
-		gpuVa, size, stride, slot,
-		contentGeneration, resolveGeneration, hash);
+		gpuVa, size, stride, slot, resolveGeneration, hash);
 }
 
 void DX12StoreWrapperIaHash(
 	UINT64 gpuVa, UINT64 size, UINT stride, UINT slot,
-	UINT64 contentGeneration, UINT64 resolveGeneration, uint32_t hash)
+	UINT64 resolveGeneration, uint32_t hash)
 {
 	DX12Wrapper::StoreWrapperIaHash(
-		gpuVa, size, stride, slot,
-		contentGeneration, resolveGeneration, hash);
+		gpuVa, size, stride, slot, resolveGeneration, hash);
 }
 

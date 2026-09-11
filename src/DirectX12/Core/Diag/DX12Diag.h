@@ -314,7 +314,16 @@ public:
 	{
 		if (end <= begin)
 			return 0;
-		return static_cast<LONG64>((end - begin) * 1000000 / Frequency());
+		// Round to the nearest microsecond instead of truncating. Per-call work
+		// on this hot path is routinely below the 0.1us QPC quantum, and a plain
+		// integer division reported every one of those calls as exactly zero
+		// while a 1.9us call reported 1us, so every sub-microsecond stage (per
+		// draw, per IA bind) read as free and the remaining averages were
+		// understated by up to a full microsecond per call. Rounding keeps the
+		// same units and the same per-call upper bound while making the sum over
+		// millions of calls an unbiased estimate of the real cost.
+		const LONG64 frequency = Frequency();
+		return ((end - begin) * 1000000 + frequency / 2) / frequency;
 	}
 
 	static LONG64 ElapsedUs(const LARGE_INTEGER &begin)
