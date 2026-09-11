@@ -444,10 +444,26 @@ void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
 		sPendingPresentOverlayLock.unlock();
 		overlayLock = "free";
 	}
+	// Device removal state: a stalled present count is explained far better by
+	// "the device is gone" (0x887a0005 removed / 0x887a0006 hung / 0x887a0007
+	// reset) than by any proxy-side counter, and it separates a driver/GPU TDR
+	// from a submission the proxy swallowed. Queried through the tracked game
+	// queue, the only device handle the proxy has before the first Present.
+	char removedReasonText[24] = "n/a";
+	ID3D12CommandQueue *watchdogQueue = sGameDirectQueue.load(std::memory_order_acquire);
+	if (watchdogQueue) {
+		ID3D12Device *watchdogDevice = nullptr;
+		if (SUCCEEDED(watchdogQueue->GetDevice(IID_PPV_ARGS(&watchdogDevice))) &&
+		    watchdogDevice) {
+			snprintf(removedReasonText, sizeof(removedReasonText), "0x%lx",
+				static_cast<unsigned long>(watchdogDevice->GetDeviceRemovedReason()));
+			watchdogDevice->Release();
+		}
+	}
 	DX12_LOG_FLUSH("DX12FreezeWatchdog",
 		"event=stall present=%ld executedPresent=%ld stalledMs=%llu stage=%s "
 		"skipAll=%ld hookFlags=0x%llx uploadPending=%d uploadPendingFence=%llu uploadCompleted=%llu "
-		"gameQueue=%d overlayRecords=%zu",
+		"gameQueue=%d deviceRemovedReason=%s overlayRecords=%zu",
 		present,
 		executedPresent,
 		static_cast<unsigned long long>(stalledMs),
@@ -461,6 +477,7 @@ void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
 			DX12DdsTextureLoadUtils::s_uploadPendingFenceValue),
 		static_cast<unsigned long long>(uploadCompleted),
 		sGameDirectQueue.load(std::memory_order_acquire) ? 1 : 0,
+		removedReasonText,
 		overlayRecords);
 	DX12_LOG_FLUSH("DX12FreezeWatchdog",
 		"event=locks mod=%s preskin=%s upload=%s vmGlobals=%s overlay=%s "
