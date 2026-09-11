@@ -561,12 +561,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_PROF_STAGE_BEGIN(ClearState);
 			mCommandList->ClearState(DX12WrapperRuntimeUtils::UnwrapPipelineState(pPipelineState));
-			// ClearState reverts OM/rasterizer state to defaults; keep the
-			// replay-restore shadow in step.
-			mRuntimeState.omRenderTargetCount = 0;
-			mRuntimeState.omHasDepthStencil = false;
-			mRuntimeState.viewportCount = 0;
-			mRuntimeState.scissorCount = 0;
 		DX12_PROF_STAGE_END(ClearState);
 		}
 
@@ -708,8 +702,10 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			const D3D12_TEXTURE_COPY_LOCATION *pSrc, const D3D12_BOX *pSrcBox) override
 		{
 			DX12_PROF_API_SCOPE(CopyTextureRegion);
-			if (DX12HotPathState::NeedsPreSkinProbe(
-					DX12HotPathState::HookWorkFlags))
+			// One flags read for both gates, matching CopyBufferRegion and
+			// CopyResource: the word is a seq_cst load of a shared cache line.
+			const UINT64 copyFlags = DX12HotPathState::HookWorkFlags;
+			if (DX12HotPathState::NeedsPreSkinProbe(copyFlags))
 				DX12CommandListRuntime::BumpIaContentEpoch(&mRuntimeState);
 			D3D12_TEXTURE_COPY_LOCATION dstStorage = {};
 			D3D12_TEXTURE_COPY_LOCATION srcStorage = {};
@@ -721,8 +717,7 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				// copies when a consumer (override matching / hunt / capture)
 				// can actually read it. The ungated path hashed the full top
 				// mip and took a global lock on every streaming copy.
-				if (DX12HotPathState::NeedsTextureHashTracking(
-						DX12HotPathState::HookWorkFlags)) {
+				if (DX12HotPathState::NeedsTextureHashTracking(copyFlags)) {
 					DX12TrackTextureHashFromCopyTextureRegion(
 						activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
 				}
@@ -813,15 +808,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_PROF_STAGE_BEGIN(RSSetViewports);
 			mCommandList->RSSetViewports(NumViewports, pViewports);
-			// Shadow for the custom element replay's post-draw restore (see
-			// DX12SimulateContext::viewports).
-			mRuntimeState.viewportCount = (std::min)(
-				NumViewports,
-				static_cast<UINT>(D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE));
-			if (pViewports) {
-				for (UINT i = 0; i < mRuntimeState.viewportCount; ++i)
-					mRuntimeState.viewports[i] = pViewports[i];
-			}
 		DX12_PROF_STAGE_END(RSSetViewports);
 		}
 
@@ -829,13 +815,6 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 		{
 		DX12_PROF_STAGE_BEGIN(RSSetScissorRects);
 			mCommandList->RSSetScissorRects(NumRects, pRects);
-			mRuntimeState.scissorCount = (std::min)(
-				NumRects,
-				static_cast<UINT>(D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE));
-			if (pRects) {
-				for (UINT i = 0; i < mRuntimeState.scissorCount; ++i)
-					mRuntimeState.scissorRects[i] = pRects[i];
-			}
 		DX12_PROF_STAGE_END(RSSetScissorRects);
 		}
 
