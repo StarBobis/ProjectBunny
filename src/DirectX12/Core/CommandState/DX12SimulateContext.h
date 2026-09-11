@@ -152,7 +152,6 @@ public:
 class DX12ResolvedDrawRuntimeStateUtils
 {
 public:
-	static void Clear(DX12SimulateContextDrawTemplate *state);
 	static void InvalidatePlan(DX12SimulateContextDrawTemplate *state);
 };
 
@@ -317,14 +316,6 @@ class DX12SimulateContext
 public:
 	ID3D12PipelineState *pipelineState = nullptr;
 	IUnknown *commandListIdentity = nullptr;
-	// Wrapper-side object translation cache. These pointers are only compared;
-	// ownership remains with the application/wrapper objects.
-	ID3D12PipelineState *lastWrappedPipelineState = nullptr;
-	ID3D12PipelineState *lastUnwrappedPipelineState = nullptr;
-	ID3D12RootSignature *lastWrappedComputeRootSignature = nullptr;
-	ID3D12RootSignature *lastUnwrappedComputeRootSignature = nullptr;
-	ID3D12RootSignature *lastWrappedGraphicsRootSignature = nullptr;
-	ID3D12RootSignature *lastUnwrappedGraphicsRootSignature = nullptr;
 	// Reused barrier scratch storage avoids one allocation/free cycle per API call.
 	std::vector<D3D12_RESOURCE_BARRIER> barrierScratch;
 	volatile UINT64 computeBindingSerial = 0;

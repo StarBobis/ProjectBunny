@@ -2048,6 +2048,13 @@ public:
 		// (preSkinGeneration captured above for the bound-draw cache).
 		bool hasIaHashState = false;
 		DX12PsoDrawFastRejectKey psoPreFilterKey;
+		// Set only where psoPreFilterKey is actually built. The store below is
+		// guarded by targetPlanHasIaTargets, which is weaker than the build
+		// guard (targetPlanHasIaTargets && !reusedDirectIaState &&
+		// hasCurrentIaTarget): without this flag the reused-direct-state path
+		// stored a default-constructed all-zero key and evicted a real entry
+		// from the 256-slot direct-mapped cache.
+		bool psoPreFilterKeyValid = false;
 		DX12IaHashState directIaState;
 		const DX12IaHashState *directIaStateView = &directIaState;
 		bool reusedDirectIaState = false;
@@ -2483,6 +2490,7 @@ public:
 				iaCacheKey.iaViewFingerprint,
 				0,
 				draw);
+			psoPreFilterKeyValid = true;
 			if (DX12IaReplacementExecutor::TryFindPsoDrawFastReject(psoPreFilterKey)
 				&& !drawDecision->targetPlanHasDescriptorTargets) {
 				DX12_PROF_CPU_STAGE(
@@ -2707,7 +2715,7 @@ public:
 				// No match: store both the full negative key and cheap-to-full map.
 				DX12_DIAG_QPC(negStoreBegin);
 				DX12IaReplacementExecutor::StorePsoDrawFastReject(psoIaNegKey);
-				if (targetPlanHasIaTargets)
+				if (targetPlanHasIaTargets && psoPreFilterKeyValid)
 					DX12IaReplacementExecutor::StorePsoDrawFastReject(psoPreFilterKey);
 
 				DX12_PROF_CPU_STAGE(

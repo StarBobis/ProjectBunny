@@ -352,25 +352,6 @@ void DX12ModRefreshRuntimeStateAfterReload()
 	DX12CommandListRuntime::BumpTrackingGeneration();
 }
 
-void DX12ResolvedDrawRuntimeStateUtils::Clear(
-	DX12SimulateContextDrawTemplate *state)
-{
-	if (!state)
-		return;
-	state->plan = DX12SimulateContextDrawTemplate::ResolvedPlanState();
-	DX12IaHashStateCacheUtils::Clear(&state->iaHashStateCache);
-	state->iaHashKeyPrefixes = {};
-	state->lastDirectIaHashBuild = {};
-	state->lastFullIaHashBuild = {};
-	state->directIaCandidateCache =
-		DX12SimulateContextDrawTemplate::DirectIaCandidateCache();
-	state->directIaTargetPresence = {};
-	state->fullIaTargetPresence = {};
-	state->residentDrawNegativeCache = {};
-	state->boundDrawResult.Reset();
-	state->iaStateNegative = {};
-}
-
 void DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(
 	DX12SimulateContextDrawTemplate *state)
 {
@@ -440,12 +421,6 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 	if (!state)
 		return;
 	state->pipelineState = nullptr;
-	state->lastWrappedPipelineState = nullptr;
-	state->lastUnwrappedPipelineState = nullptr;
-	state->lastWrappedComputeRootSignature = nullptr;
-	state->lastUnwrappedComputeRootSignature = nullptr;
-	state->lastWrappedGraphicsRootSignature = nullptr;
-	state->lastUnwrappedGraphicsRootSignature = nullptr;
 	state->computeBindingSerial = 0;
 	// The pre-skin per-slot redirect negative cache ("this view needs no
 	// redirect") is keyed by (generation, source view) and therefore survives
@@ -1644,19 +1619,6 @@ ID3D12PipelineState *DX12CommandListRuntime::GetPipelineState(
 	ID3D12PipelineState *result =
 		it == shard.states.end() ? nullptr : it->second.pipelineState;
 	ReleaseSRWLockShared(&shard.lock);
-	return result;
-}
-
-DX12SimulateContext DX12CommandListRuntime::GetState(
-	ID3D12GraphicsCommandList *commandList)
-{
-	DX12SimulateContext result;
-	if (!commandList)
-		return result;
-
-	const DX12SimulateContext *state = DX12CommandListRuntime::GetStatePtr(commandList);
-	if (state)
-		result = *state;
 	return result;
 }
 

@@ -35,18 +35,11 @@ public:
 				? rs->cachedReplacementPso : pipelineState;
 		}
 
-		const UINT64 flags = DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed);
-		if (DX12HotPathState::skipBindings.load(std::memory_order_relaxed) &&
-		    DX12HotPathState::NeedsHuntOnlyPipelineObservation(flags)) {
-			DX12_PROF_COUNT("FastForward");
-			if (runtimeState)
-				DX12CommandListRuntime::RememberPipelineState(runtimeState, pipelineState);
-			else
-				DX12CommandListRuntime::RememberPipelineState(commandList, pipelineState);
-			DX12HuntObservePipelineState(pipelineState);
-			return pipelineState;
-		}
-
+		// No hunt-only observation branch here: it required FLAG_HUNT_ENABLED,
+		// and huntEnabled forces skipBindings = 0 (both are published by the same
+		// Update()), so the combination `skipBindings && hunt-flag` cannot exist.
+		// Hunt-mode PSO observation is handled by
+		// DX12CommandListStateCapture::PipelineState below.
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateCapture::PipelineState(commandList, runtimeState, pipelineState);
 				return activePipelineState;

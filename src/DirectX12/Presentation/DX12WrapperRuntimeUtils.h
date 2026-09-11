@@ -1146,16 +1146,15 @@ public:
 	{
 		DX12_PROF_API_SCOPE(SetPipelineState);
 		DX12_PROF_STAGE_BEGIN(SetPipelineState);
-		ID3D12PipelineState *unwrappedPipelineState = nullptr;
-		if (runtimeState && runtimeState->lastWrappedPipelineState == pipelineState) {
-			unwrappedPipelineState = runtimeState->lastUnwrappedPipelineState;
-		} else {
-			unwrappedPipelineState = UnwrapPipelineState(pipelineState);
-			if (runtimeState) {
-				runtimeState->lastWrappedPipelineState = pipelineState;
-				runtimeState->lastUnwrappedPipelineState = unwrappedPipelineState;
-			}
-		}
+		// UnwrapPipelineState / UnwrapRootSignature already resolve through the
+		// wrapper registry's 64-slot TLS cache, which validates its entries
+		// against the registry generation (the ABA guard). The extra
+		// single-entry mirror these three calls used to keep in the command-list
+		// context compared raw pointers with no generation at all, so a wrapper
+		// freed and reallocated at the same address could hand back a stale
+		// native pointer.
+		ID3D12PipelineState *unwrappedPipelineState =
+			UnwrapPipelineState(pipelineState);
 		ID3D12PipelineState *activePipelineState =
 			DX12CommandListStateFlow::CapturePipelineState(
 					commandList, runtimeState, unwrappedPipelineState);
@@ -1618,7 +1617,6 @@ public:
 		UINT count,
 		ID3D12DescriptorHeap *const *heaps)
 	{
-		DX12_PROF_FUNCTION(SetDescriptorHeaps);
 		DX12_PROF_API_SCOPE(SetDescriptorHeaps);
 		DX12_PROF_STAGE_BEGIN(DescriptorHeaps);
 		if (!ShouldSkipComputeBinding()) {
@@ -1645,18 +1643,8 @@ public:
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
-		DX12_PROF_FUNCTION(SetComputeRootSignature);
 		DX12_PROF_API_SCOPE(SetComputeRootSignature);
-		ID3D12RootSignature *unwrapped = nullptr;
-		if (runtimeState && runtimeState->lastWrappedComputeRootSignature == rootSignature)
-			unwrapped = runtimeState->lastUnwrappedComputeRootSignature;
-		else {
-			unwrapped = UnwrapRootSignature(rootSignature);
-			if (runtimeState) {
-				runtimeState->lastWrappedComputeRootSignature = rootSignature;
-				runtimeState->lastUnwrappedComputeRootSignature = unwrapped;
-			}
-		}
+		ID3D12RootSignature *unwrapped = UnwrapRootSignature(rootSignature);
 		if (!ShouldSkipComputeBinding()) {
 			const UINT64 hookFlags = DX12HotPathState::HookWorkFlags;
 			if (runtimeState &&
@@ -1706,18 +1694,8 @@ public:
 		ID3D12RootSignature *rootSignature,
 		DX12CommandListHookSignatures::SetRootSignature original)
 	{
-		DX12_PROF_FUNCTION(SetGraphicsRootSignature);
 		DX12_PROF_API_SCOPE(SetGraphicsRootSignature);
-		ID3D12RootSignature *unwrapped = nullptr;
-		if (runtimeState && runtimeState->lastWrappedGraphicsRootSignature == rootSignature)
-			unwrapped = runtimeState->lastUnwrappedGraphicsRootSignature;
-		else {
-			unwrapped = UnwrapRootSignature(rootSignature);
-			if (runtimeState) {
-				runtimeState->lastWrappedGraphicsRootSignature = rootSignature;
-				runtimeState->lastUnwrappedGraphicsRootSignature = unwrapped;
-			}
-		}
+		ID3D12RootSignature *unwrapped = UnwrapRootSignature(rootSignature);
 		if (ShouldSkipGraphicsBinding()) {
 			// Binding capture is skipped, so the deferred-restore guard in the
 			// capture flow does not run (reload race safety net).
@@ -1769,7 +1747,6 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
-		DX12_PROF_FUNCTION(SetComputeRootDescriptorTable);
 		DX12_PROF_API_SCOPE(SetComputeRootDescriptorTable);
 		if (!ShouldSkipComputeBinding()) {
 			const bool changed = DX12CommandListComputeBindingFlow::CaptureRootDescriptorTable(
@@ -1805,7 +1782,6 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor,
 		DX12CommandListHookSignatures::SetRootDescriptorTable original)
 	{
-		DX12_PROF_FUNCTION(SetGraphicsRootDescriptorTable);
 		DX12_PROF_API_SCOPE(SetGraphicsRootDescriptorTable);
 		if (ShouldSkipGraphicsBinding()) {
 			// Binding capture is skipped, so the deferred-restore guard in the
@@ -1848,6 +1824,11 @@ public:
 		UINT rootParameterIndex,
 		D3D12_GPU_VIRTUAL_ADDRESS bufferLocation)
 	{
+		// Kept deliberately: the four *RootDescriptor helpers share one
+		// Api.SetCompute/GraphicsRootDescriptor bucket, so this per-helper scope
+		// is the only thing that splits CBV/SRV/UAV cost apart. The five
+		// DX12_PROF_FUNCTION scopes that merely duplicated an adjacent API scope
+		// of the same name were removed.
 		DX12_PROF_FUNCTION(SetComputeRootConstantBufferView);
 		DX12_PROF_API_SCOPE(SetComputeRootDescriptor);
 		const UINT64 flags = DX12HotPathState::HookWorkFlags;
@@ -2058,7 +2039,6 @@ public:
 		DX12SimulateContext *runtimeState,
 		D3D12_PRIMITIVE_TOPOLOGY topology)
 	{
-		DX12_PROF_FUNCTION(IASetPrimitiveTopology);
 		DX12_PROF_API_SCOPE(IASetPrimitiveTopology);
 		if (DX12HotPathState::skipAll)
 			commandList->IASetPrimitiveTopology(topology);

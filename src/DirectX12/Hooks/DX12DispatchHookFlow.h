@@ -422,10 +422,7 @@ public:
 				originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			}
 			DX12_DIAG_QPC(finishBegin);
-			FinishPreSkinProbe(
-				commandList,
-				threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-				dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
+			FinishPreSkinProbe(commandList);
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				"dispatch_finish_probe",
@@ -445,10 +442,7 @@ public:
 			1,
 			DX12_DIAG_ELAPSED_US(dispatchOriginalBegin));
 		DX12_DIAG_QPC(finishOriginalBegin);
-		FinishPreSkinProbe(
-			commandList,
-			threadGroupCountX, threadGroupCountY, threadGroupCountZ,
-			dispatchGroupX, dispatchGroupY, dispatchGroupZ, probe);
+		FinishPreSkinProbe(commandList);
 		DX12_PROF_CPU_STAGE(
 			"PreSkin",
 			"dispatch_finish_probe",
@@ -600,7 +594,12 @@ public:
 		}
 
 		UINT64 templateStableBindingFingerprint = 0;
-		if (!probe->uavsFound) {
+		// No `if (!probe->uavsFound)` guard here: ScratchProbe() clears
+		// uavsFound at the top of every dispatch and nothing between it and this
+		// point writes it, so the test was always true. The block is kept as a
+		// plain scope (and uavsFound stays as the collector's own result field,
+		// read below when choosing between the cached and scratch binding lists).
+		{
 			DX12_PROF_STAGE_SCOPE(PreSkinBindQuery);
 			DX12_DIAG_QPC(collectBegin);
 			// DX12 command lists keep resident binding state. When the descriptor
@@ -1082,24 +1081,8 @@ public:
 			static_cast<long long>(DX12_DIAG_ELAPSED_US(t0)));
 	}
 
-	static void FinishPreSkinProbe(
-		ID3D12GraphicsCommandList *commandList,
-		UINT originalThreadGroupCountX,
-		UINT originalThreadGroupCountY,
-		UINT originalThreadGroupCountZ,
-		UINT threadGroupCountX,
-		UINT threadGroupCountY,
-		UINT threadGroupCountZ,
-		const DX12DispatchPreSkinProbe &probe)
+	static void FinishPreSkinProbe(ID3D12GraphicsCommandList *commandList)
 	{
-		const std::vector<DX12CurrentComputeUavBinding> &uavs =
-			probe.cachedUavs ? *probe.cachedUavs : probe.uavs;
-		const std::vector<DX12CurrentComputeUavBinding> &srvs =
-			probe.cachedSrvs ? *probe.cachedSrvs : probe.srvs;
-		const std::vector<DX12CurrentComputeUavBinding> &cbvs =
-			probe.cachedCbvs ? *probe.cachedCbvs : probe.cbvs;
-		const std::vector<DX12CurrentRootConstants> &rootConstants =
-			probe.cachedRootConstants ? *probe.cachedRootConstants : probe.rootConstants;
 		// Keep PreSkin descriptor/table mutations scoped to the current
 		// dispatch. Deferred reuse is a CPU optimization, but if our tracked
 		// command-list state drifts from the actual restored bindings it can
@@ -1113,9 +1096,6 @@ public:
 			0,
 			1,
 			DX12_DIAG_ELAPSED_US(restoreBegin));
-		if (!probe.applied)
-			return;
-
 	}
 };
 

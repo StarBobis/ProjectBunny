@@ -172,7 +172,6 @@ public:
 	static uint32_t GetOrBuildCachedVertexViewHash(DX12ActiveIaState *ia, UINT slot);
 	static DX12IaHashStateCacheKey BuildIaHashStateCacheKeyForTargetsCached(DX12SimulateContext *state, UINT cacheSlot, const DX12IaHashTargetPlan &targetPlan, bool indexed, UINT vertexCount, UINT indexCount, UINT firstVertex, UINT firstIndex, INT baseVertex);
 	static ID3D12PipelineState *GetPipelineState(ID3D12GraphicsCommandList *commandList);
-	static DX12SimulateContext GetState(ID3D12GraphicsCommandList *commandList);
 	static const DX12SimulateContext *GetStatePtr(ID3D12GraphicsCommandList *commandList);
 	static void SetDescriptorHeaps(DX12SimulateContext *state, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);
 	static void SetDescriptorHeaps(ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *cbvSrvUavHeap, ID3D12DescriptorHeap *samplerHeap);

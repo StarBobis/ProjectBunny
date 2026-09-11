@@ -28,7 +28,6 @@ public:
 	inline static std::atomic<LONG> skipAll{ 1 };
 	inline static std::atomic<LONG> skipBindings{ 1 };
 	inline static std::atomic<LONG> skipGraphicsBindings{ 1 };
-	inline static std::atomic<LONG> trackResourceMetadata{ 0 };
 	inline static std::atomic<LONG> stateMask{ -1 };
 	inline static std::atomic<UINT64> loggedHookWorkFlags{ UINT64_MAX };
 
@@ -271,12 +270,6 @@ public:
 			NeedsComputeResidentDescriptorState(flags);
 	}
 
-	static bool NeedsHuntOnlyPipelineObservation(UINT64 flags)
-	{
-		return HasAnyFlag(flags, FLAG_HUNT_ENABLED) &&
-			!HasAnyFlag(flags, FLAG_SHADER_OVERRIDES);
-	}
-
 
 	static bool NeedsPreSkinProbe(UINT64 flags)
 	{
@@ -324,8 +317,10 @@ public:
 		const LONG skipBindings = source.NeedsBindingState() ? 0 : 1;
 		const LONG skipGraphicsBindings =
 			source.NeedsGraphicsBindingState() ? 0 : 1;
-		const LONG trackResourceMetadata =
-			source.NeedsHeavyTracking() ? 1 : 0;
+		// No trackResourceMetadata gate: NeedsBindingState() is defined as
+		// NeedsHeavyTracking(), so that bit was always the exact complement of
+		// skipBindings - it carried no information, yet it cost a load, a store
+		// and a comparison on every Present.
 		const UINT64 flags = source.BuildHookWorkFlags();
 
 		// Source-state fingerprint short-circuit. The published gates are a
@@ -339,7 +334,6 @@ public:
 		if (DX12HotPathState::skipAll.load(std::memory_order_relaxed) == skipAll &&
 			DX12HotPathState::skipBindings.load(std::memory_order_relaxed) == skipBindings &&
 			DX12HotPathState::skipGraphicsBindings.load(std::memory_order_relaxed) == skipGraphicsBindings &&
-			DX12HotPathState::trackResourceMetadata.load(std::memory_order_relaxed) == trackResourceMetadata &&
 			HookWorkFlags.load(std::memory_order_relaxed) == flags) {
 			ReleaseSRWLockExclusive(&updateLock);
 			return;
@@ -351,14 +345,12 @@ public:
 		DX12HotPathState::skipAll.store(skipAll, std::memory_order_relaxed);
 		DX12HotPathState::skipBindings.store(skipBindings, std::memory_order_relaxed);
 		DX12HotPathState::skipGraphicsBindings.store(skipGraphicsBindings, std::memory_order_relaxed);
-		DX12HotPathState::trackResourceMetadata.store(trackResourceMetadata, std::memory_order_relaxed);
 		HookWorkFlags.store(flags, std::memory_order_relaxed);
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |
 			(skipBindings ? 2 : 0) |
-			(skipGraphicsBindings ? 4 : 0) |
-			(trackResourceMetadata ? 8 : 0);
+			(skipGraphicsBindings ? 4 : 0);
 		const LONG previousMask = stateMask.exchange(mask, std::memory_order_relaxed);
 		const UINT64 previousFlags = loggedHookWorkFlags.exchange(flags, std::memory_order_relaxed);
 		if (previousMask != mask) {
@@ -371,13 +363,13 @@ public:
 			DX12_LOG("DX12HotPathState",
 				"\"mode\":\"%s\",\"flags\":\"0x%llx\",\"skipAll\":%ld,"
 				"\"skipBindings\":%ld,\"skipGraphicsBindings\":%ld,"
-				"\"trackResourceMetadata\":%ld,\"hunt\":%s,\"frameAnalysis\":%s,"
+				"\"hunt\":%s,\"frameAnalysis\":%s,"
 				"\"shaderDump\":%s,\"shaderOverrides\":%s,\"preSkinProbe\":%s,"
 				"\"preSkinBindingTrack\":%s,\"iaResidentState\":%s,"
 				"\"shaderDescriptorTrack\":%s,\"drawSrvSlotReplacement\":%s",
 				source.ModeName(),
 				static_cast<unsigned long long>(flags),
-				skipAll, skipBindings, skipGraphicsBindings, trackResourceMetadata,
+				skipAll, skipBindings, skipGraphicsBindings,
 				source.huntEnabled ? "true" : "false",
 				source.frameAnalysisActive ? "true" : "false",
 				source.shaderDumpActive ? "true" : "false",
