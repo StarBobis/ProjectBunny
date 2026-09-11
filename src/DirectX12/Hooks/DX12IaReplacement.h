@@ -1130,7 +1130,14 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		DX12MarkStage("execute_present_enter");
-		DX12_LOG_FLUSH("DX12PresentDiag", "event=execute_present_enter");
+		// Flushed breadcrumb on purpose (see the caller), but only for the call
+		// that can actually run the [Present] list. This entry point is reached
+		// for every draw while a [Present] replacement is armed, and flushing a
+		// line per draw produced ~1.2M lines per few minutes against 7.5k real
+		// executions - the CAS inside PreparePresentReplacement makes all the
+		// others no-ops.
+		if (DX12ModPresentReplacementPendingForCurrentPresent())
+			DX12_LOG_FLUSH("DX12PresentDiag", "event=execute_present_enter");
 		DX12ModIaReplacement replacement;
 		if (!DX12ModPreparePresentReplacement(commandList, &replacement))
 			return false;
