@@ -802,6 +802,18 @@ public:
 		Instances().clear();
 	}
 
+	// ResizeBuffers keeps the swap chain pointer and buffer indices stable,
+	// so the chain+index cache key cannot detect the swap: drop the key to
+	// force the RTV to be recreated from the new back buffer on next use.
+	static void InvalidateChain(IDXGISwapChain *swapChain)
+	{
+		std::lock_guard<std::mutex> lock(Mutex());
+		for (auto &entry : Instances()) {
+			if (entry.second->mChain == swapChain)
+				entry.second->mChain = nullptr;
+		}
+	}
+
 	// Returns true with the RTV handle/format/size of the current back
 	// buffer when it could be resolved (or refreshed).
 	bool EnsureBackBufferView(

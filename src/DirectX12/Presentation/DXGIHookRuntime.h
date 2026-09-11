@@ -80,14 +80,10 @@ public:
 				swapChain, identity);
 	}
 
-	static void RunPostPresentUi(IDXGISwapChain *swapChain)
-	{
-		DX12NativeOverlayRender(swapChain);
-	}
-
 	static void ConsumeUiActionsForFrame(IDXGISwapChain *swapChain)
 	{
 		DX12_DIAG_QPC(sliceBegin);
+		DX12UiActions::PollKeyboard();
 		const bool hadActions = DX12UiActions::Consume();
 		DX12_PROF_ADD_US("Present.consume_ui_actions_poll", DX12_DIAG_ELAPSED_US(sliceBegin));
 		if (!hadActions)
@@ -98,7 +94,7 @@ public:
 		DX12_PROF_ADD_US("Present.consume_ui_actions_apply", DX12_DIAG_ELAPSED_US(sliceBegin));
 	}
 
-	static void RunPostPresentRuntime(IDXGISwapChain *swapChain, bool allowUi)
+	static void RunPostPresentRuntime(IDXGISwapChain *swapChain)
 	{
 		DX12_DIAG_QPC(totalBegin);
 		DX12_DIAG_QPC(sliceBegin);
@@ -112,12 +108,6 @@ public:
 		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12HuntOnPresent();
 		DX12_PROF_ADD_US("Present.hunt_on_present", DX12_DIAG_ELAPSED_US(sliceBegin));
-
-		if (allowUi) {
-			DX12_DIAG_QPC_RESET(sliceBegin);
-			RunPostPresentUi(swapChain);
-			DX12_PROF_ADD_US("Present.post_present_ui", DX12_DIAG_ELAPSED_US(sliceBegin));
-		}
 
 		DX12_PROF_ADD_US("Present.post_original_runtime_total", DX12_DIAG_ELAPSED_US(totalBegin));
 	}

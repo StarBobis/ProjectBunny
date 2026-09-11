@@ -363,6 +363,11 @@ static ID3D12CommandQueue *AcquireGameDirectQueue()
 	return queue;
 }
 
+ID3D12CommandQueue *DX12ModAcquireGameDirectQueue()
+{
+	return AcquireGameDirectQueue();
+}
+
 
 #if DX12_TIMING_BUILD
 void DX12FreezeWatchdog::Start()

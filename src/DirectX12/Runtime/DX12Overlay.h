@@ -1,49 +1,19 @@
-﻿// In-game overlay rendering and status state.
-// Split from DX12Runtime.h; keep declarations in the layer that owns them.
+// In-game overlay status state: one transient notice line rendered as green
+// text inside the game window by DX12NativeOverlay. Split from DX12Runtime.h;
+// keep declarations in the layer that owns them.
 #pragma once
 
 #include "DX12VmFrameVariablesUtils.h"
 
-class DX12Overlay
-{
-public:
-	static constexpr UINT ShowMessage = WM_APP + 0x512;
-	static constexpr UINT HideMessage = WM_APP + 0x513;
-	static constexpr UINT DestroyMessage = WM_APP + 0x514;
-	static constexpr UINT PositionMessage = WM_APP + 0x515;
-	static constexpr UINT RepaintMessage = WM_APP + 0x516;
-
-	static DWORD WINAPI Thread(void*)
-	{
-		return 0;
-	}
-
-
-	static void Show()
-	{
-	}
-
-	static void Hide()
-	{
-	}
-
-	static void RequestRepaint()
-	{
-	}
-
-
-	static void Close()
-	{
-	}
-};
-
-
+// Every notice is transient: the in-game text overlay has no status bar, so
+// nothing is sticky. Progress feedback (shader dump, reload, ...) re-posts
+// itself while it runs, which keeps the notice alive exactly as long as the
+// operation it describes.
 class DX12OverlayStatusState
 {
 public:
 	SRWLOCK lock;
-	HWND overlayWindow = nullptr;
-	wchar_t status[512] = L"3DMigoto DX12 hook alive";
+	wchar_t status[512] = L"";
 	COLORREF statusColor = RGB(0, 255, 0);
 	DWORD statusExpireTick = 0;
 
@@ -58,81 +28,68 @@ public:
 		return state;
 	}
 
-	static void SetWindow(HWND hwnd)
-	{
-		Get().overlayWindow = hwnd;
-	}
-
-
-	static void SetStatusColorLocked(const wchar_t *status, COLORREF color)
+	static void NotifyLocked(const wchar_t *status, COLORREF color, DWORD durationMs)
 	{
 		DX12OverlayStatusState &state = Get();
 		if (status && status[0])
 			wcsncpy_s(state.status, status, _TRUNCATE);
-		else
-			wcsncpy_s(state.status, L"3DMigoto DX12 hook alive", _TRUNCATE);
 		state.statusColor = color;
-		state.statusExpireTick = 0;
-	}
-
-	static void InvalidateStatus()
-	{
-		DX12Overlay::RequestRepaint();
+		state.statusExpireTick = GetTickCount() + (durationMs ? durationMs : 3000);
 	}
 
 	static void SetStatus(const wchar_t *status)
 	{
 		DX12OverlayStatusState &state = Get();
 		AcquireSRWLockExclusive(&state.lock);
-		SetStatusColorLocked(status, RGB(0, 255, 0));
+		NotifyLocked(status, RGB(0, 255, 0), 4000);
 		ReleaseSRWLockExclusive(&state.lock);
-		InvalidateStatus();
 	}
 
 	static void SetWarning(const wchar_t *status)
 	{
 		DX12OverlayStatusState &state = Get();
 		AcquireSRWLockExclusive(&state.lock);
-		SetStatusColorLocked(status, RGB(255, 220, 0));
+		NotifyLocked(status, RGB(255, 220, 0), 6000);
 		ReleaseSRWLockExclusive(&state.lock);
-		InvalidateStatus();
 	}
 
 	static void SetError(const wchar_t *status)
 	{
 		DX12OverlayStatusState &state = Get();
 		AcquireSRWLockExclusive(&state.lock);
-		SetStatusColorLocked(status, RGB(255, 64, 64));
+		NotifyLocked(status, RGB(255, 64, 64), 8000);
 		ReleaseSRWLockExclusive(&state.lock);
-		InvalidateStatus();
 	}
 
 	static void SetTemporary(const wchar_t *status, DWORD durationMs)
 	{
 		DX12OverlayStatusState &state = Get();
 		AcquireSRWLockExclusive(&state.lock);
-		if (status && status[0])
-			wcsncpy_s(state.status, status, _TRUNCATE);
-		else
-			wcsncpy_s(state.status, L"3DMigoto DX12 hook alive", _TRUNCATE);
-		state.statusColor = RGB(0, 255, 0);
-		state.statusExpireTick = durationMs ? GetTickCount() + durationMs : 0;
+		NotifyLocked(status, RGB(0, 255, 0), durationMs);
 		ReleaseSRWLockExclusive(&state.lock);
-		InvalidateStatus();
 	}
 
-
-	static void GetStatus(wchar_t *status, size_t statusCount)
+	// Returns the notice while it is still alive. Once expired the slot is
+	// cleared so a stale notice can never resurface after a later expiry.
+	static bool GetTransientStatus(wchar_t *status, size_t statusCount, COLORREF *color)
 	{
 		if (!status || statusCount == 0)
-			return;
+			return false;
 
 		DX12OverlayStatusState &state = Get();
-		AcquireSRWLockShared(&state.lock);
-		wcsncpy_s(status, statusCount, state.status, _TRUNCATE);
-		ReleaseSRWLockShared(&state.lock);
+		AcquireSRWLockExclusive(&state.lock);
+		const bool alive = state.status[0] && state.statusExpireTick &&
+			GetTickCount() < state.statusExpireTick;
+		if (alive) {
+			wcsncpy_s(status, statusCount, state.status, _TRUNCATE);
+			if (color)
+				*color = state.statusColor;
+		} else if (state.status[0] && state.statusExpireTick &&
+			GetTickCount() >= state.statusExpireTick) {
+			state.status[0] = 0;
+			state.statusExpireTick = 0;
+		}
+		ReleaseSRWLockExclusive(&state.lock);
+		return alive;
 	}
-
 };
-
-

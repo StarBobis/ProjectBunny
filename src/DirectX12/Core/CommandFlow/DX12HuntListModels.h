@@ -1,23 +1,18 @@
 #pragma once
 
-// Hunt list category/item models and hunt selection declarations.
-// Split out of Core/DX12CommandFlow.h; include that umbrella header from existing code.
+// Hunt selection declarations. Split out of Core/DX12CommandFlow.h; include
+// that umbrella header from existing code.
 #include "../DX12HotPath.h"
 
-enum DX12HuntListCategory
+// The hunt categories the keyboard matrix can navigate and copy hashes from.
+enum class HuntCopyTarget
 {
-	DX12_HUNT_LIST_VS,
-	DX12_HUNT_LIST_PS,
-	DX12_HUNT_LIST_CS,
-	DX12_HUNT_LIST_IB,
-	DX12_HUNT_LIST_VB,
-};
-
-struct DX12HuntListItem
-{
-	wchar_t label[64];
-	UINT64 hash;
-	bool selected;
+	None,
+	VS,
+	PS,
+	CS,
+	IB,
+	VB
 };
 
 void DX12HuntResetCommandList(ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState);
@@ -37,7 +32,6 @@ bool DX12HuntShouldSkipDraw(
 bool DX12HuntShouldSkipDispatch(ID3D12GraphicsCommandList *commandList);
 bool DX12HuntIsEnabled();
 bool DX12HuntNeedsHotPath();
-bool DX12HuntShouldDrawOverlay();
 void DX12HuntToggle();
 void DX12HuntOnPresent();
 void DX12HuntPreviousVS();
@@ -50,10 +44,8 @@ void DX12HuntPreviousIB();
 void DX12HuntNextIB();
 void DX12HuntPreviousVB();
 void DX12HuntNextVB();
-void DX12HuntCopySelectedHash();
+void DX12HuntCopySelectedHash(HuntCopyTarget target);
 void DX12HuntResetSelection();
-void DX12HuntRefreshOverlay();
-size_t DX12HuntGetListItems(
-	DX12HuntListCategory category, DX12HuntListItem *items, size_t itemCount);
-void DX12HuntSelectListItem(DX12HuntListCategory category, size_t index);
-void DX12HuntSelectListHash(DX12HuntListCategory category, UINT64 hash);
+// Composes the DX11-style green hunting text (counts, selected hashes,
+// per-frame counters) drawn inside the game window while hunting is on.
+void DX12HuntComposeOverlayText(wchar_t *buffer, size_t bufferCount);

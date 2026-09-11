@@ -534,15 +534,14 @@ public:
 
 		if (DX12HotPathState::skipAll) {
 			DX12_DIAG_QPC_RESET(sliceBegin);
+			DX12NativeOverlayRender(swapChain);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
 			DX12_PROF_RESUME(_profile_timer);
 			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
-			DXGIHookRuntime::RunPostPresentRuntime(
-				swapChain,
-				DX12RuntimeState::GetPresentCount() > 2);
+			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("PresentWrapper", swapChain, skipHr);
@@ -563,6 +562,11 @@ public:
 		// rendering is submitted, before the original Present (DX11 parity).
 		DX12ModSubmitPresentOverlay(swapChain);
 		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
+		// In-game hunting green text: recorded after the mod [Present] overlay
+		// so it stays on top, submitted right before the original Present.
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DX12NativeOverlayRender(swapChain);
+		DX12_PROF_ADD_US("Present.hunt_overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
 				DX12_DIAG_QPC(presentBegin);
 		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");
@@ -579,7 +583,7 @@ public:
 		}
 		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12RuntimeState::IncrementPresentCount();
-		DXGIHookRuntime::RunPostPresentRuntime(swapChain, true);
+		DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);
@@ -640,15 +644,14 @@ public:
 
 		if (DX12HotPathState::skipAll) {
 			DX12_DIAG_QPC_RESET(sliceBegin);
+			DX12NativeOverlayRender(swapChain);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
 			DX12_PROF_RESUME(_profile_timer);
 			DX12_PROF_ADD_US("Present.original_present_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12RuntimeState::IncrementPresentCount();
-			DXGIHookRuntime::RunPostPresentRuntime(
-				swapChain,
-				DX12RuntimeState::GetPresentCount() > 2);
+			DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 			DX12HotPathState::Update();
 			DX12_PROF_ADD_US("Present.post_original_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_PROF_FRAME_LEAVE("Present1Wrapper", swapChain, skipHr);
@@ -668,6 +671,11 @@ public:
 		// rendering is submitted, before the original Present (DX11 parity).
 		DX12ModSubmitPresentOverlay(swapChain);
 		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
+		// In-game hunting green text: recorded after the mod [Present] overlay
+		// so it stays on top, submitted right before the original Present.
+		DX12_DIAG_QPC_RESET(sliceBegin);
+		DX12NativeOverlayRender(swapChain);
+		DX12_PROF_ADD_US("Present.hunt_overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
 				DX12_DIAG_QPC(presentBegin);
 		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");
@@ -683,7 +691,7 @@ public:
 		}
 		DX12_DIAG_QPC_RESET(sliceBegin);
 		DX12RuntimeState::IncrementPresentCount();
-		DXGIHookRuntime::RunPostPresentRuntime(swapChain, true);
+		DXGIHookRuntime::RunPostPresentRuntime(swapChain);
 		DX12_PROF_ADD_US("Present.post_original_runtime", DX12_DIAG_ELAPSED_US(sliceBegin));
 
 				DX12_DIAG_QPC_RESET(sliceBegin);

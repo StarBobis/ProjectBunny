@@ -221,6 +221,9 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain);
 // Tracks the game's direct command queue from the ExecuteCommandLists
 // wrapper so the overlay submit lands on the same queue the game renders to.
 void DX12ModTrackGameDirectQueue(ID3D12CommandQueue *queue);
+// Borrows the tracked game direct queue with a reference held; caller
+// releases. Used by the in-game overlay text submission.
+ID3D12CommandQueue *DX12ModAcquireGameDirectQueue();
 bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *source);
 bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *source);
 bool DX12ModAdjustUavDesc(

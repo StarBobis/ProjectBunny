@@ -510,7 +510,7 @@ public:
 	static std::string NextBufferId(const char *prefix, UINT *nextId);
 	static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event);
 	static bool IaRegionForEvent(const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region);
-	static uint32_t IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot);
+	static uint32_t IaViewHashForEvent(const BindingEvent &event, const char *role, UINT slot);
 	static bool ProjectResolvedIaResourceToView(
 		UINT64 viewGpuVa, UINT64 viewSize, UINT64 drawGpuVa, UINT64 drawSize,
 		const DX12BufferResourceSummary &resolvedDrawResource,

@@ -130,15 +130,25 @@ bool DX12BindingFrameExport::IaRegionForEvent(
 	return region->SetFromVertexBufferView(slot, event.vertexBuffers[slot], draw);
 }
 
-uint32_t DX12BindingFrameExport::IaRegionHashForEvent(const BindingEvent &event, const char *role, UINT slot)
+uint32_t DX12BindingFrameExport::IaViewHashForEvent(const BindingEvent &event, const char *role, UINT slot)
 {
-	DX12IaRegionDraw draw = DX12BindingFrameExport::IaRegionDrawFromEvent(event);
-	if (role && !strcmp(role, "IB"))
-		return draw.indexed && event.indexBufferValid ?
-			DX12IaRegion::HashIndexBufferView(event.indexBuffer, draw) : 0;
+	// Canonical IA identity shared by Hunting, Mod matching and IA
+	// replacement: the bound-view hash (draw-argument independent). Draw
+	// ranges must NOT be folded in here - a hash copied from the hunting
+	// overlay has to appear verbatim in the dump and match ib=/vb= keys.
+	if (role && !strcmp(role, "IB")) {
+		if (event.kind != "draw_indexed" || !event.indexBufferValid)
+			return 0;
+		return DX12HashIaBufferContentView(
+			event.indexBuffer.BufferLocation, event.indexBuffer.SizeInBytes,
+			0, static_cast<UINT>(event.indexBuffer.Format), 0);
+	}
 	if (slot >= MaxVertexBufferSlots || !event.vertexBufferValid[slot])
 		return 0;
-	return DX12IaRegion::HashVertexBufferView(slot, event.vertexBuffers[slot], draw);
+	return DX12HashIaBufferContentView(
+		event.vertexBuffers[slot].BufferLocation,
+		event.vertexBuffers[slot].SizeInBytes,
+		event.vertexBuffers[slot].StrideInBytes, 0, slot);
 }
 
 bool DX12BindingFrameExport::ProjectResolvedIaResourceToView(
@@ -283,7 +293,7 @@ void DX12BindingFrameExport::AddFrameIaBufferRow(
 	DX12IaRegion region = {};
 	if (!DX12BindingFrameExport::IaRegionForEvent(event, role, slot, &region))
 		return;
-	const uint32_t huntHash = DX12BindingFrameExport::IaRegionHashForEvent(event, role, slot);
+	const uint32_t huntHash = DX12BindingFrameExport::IaViewHashForEvent(event, role, slot);
 	if (!huntHash)
 		return;
 	const bool ib = role && !strcmp(role, "IB");

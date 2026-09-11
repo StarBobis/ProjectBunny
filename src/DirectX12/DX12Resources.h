@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // DX12Resources.h - DX12 layered module header.
 // Split from the merged DX12.h; keep declarations in the
 // layer that owns them. Later layers include earlier ones.
@@ -14,4 +14,3 @@
 bool DX12NativeOverlayRender(IDXGISwapChain *swapChain);
 void DX12NativeOverlayInvalidate(IDXGISwapChain *swapChain);
 void DX12NativeOverlayShutdown();
-bool DX12NativeOverlayIsOverlayWindow(HWND hwnd);
