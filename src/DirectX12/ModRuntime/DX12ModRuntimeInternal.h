@@ -999,9 +999,14 @@ public:
 class DX12PreSkinCbvPatchCacheEntry
 {
 public:
-	ID3D12Resource *patchedResource = nullptr;       // UPLOAD heap buffer, reused
-	ID3D12DescriptorHeap *descriptorHeap = nullptr;  // owns cbvCpu
-	D3D12_CPU_DESCRIPTOR_HANDLE cbvCpu = {};         // CBV descriptor pointing to patchedResource
+	// UPLOAD heap buffer holding the patched bytes. Kept immutable for the
+	// entry's lifetime: an in-flight PreSkin dispatch reads it at execution
+	// time, so its contents must never be rewritten under a live command list.
+	ID3D12Resource *patchedResource = nullptr;
+	// Slot in the shared pre-skin patch descriptor pool (non-shader-visible).
+	// A hit copies this descriptor into the caller's heap; the GPU never reads
+	// the pool itself, which is why slots can be recycled once entries are gone.
+	D3D12_CPU_DESCRIPTOR_HANDLE cbvCpu = {};
 	UINT64 generation = 0;                            // mod reload generation when created
 	std::vector<unsigned char> patchedBytes;
 };

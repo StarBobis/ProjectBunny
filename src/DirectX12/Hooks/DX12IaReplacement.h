@@ -1130,14 +1130,17 @@ public:
 		const DX12IaReplacementExecutorCallbacks &callbacks)
 	{
 		DX12MarkStage("execute_present_enter");
-		// Flushed breadcrumb on purpose (see the caller), but only for the call
-		// that can actually run the [Present] list. This entry point is reached
-		// for every draw while a [Present] replacement is armed, and flushing a
-		// line per draw produced ~1.2M lines per few minutes against 7.5k real
-		// executions - the CAS inside PreparePresentReplacement makes all the
-		// others no-ops.
-		if (DX12ModPresentReplacementPendingForCurrentPresent())
-			DX12_LOG_FLUSH("DX12PresentDiag", "event=execute_present_enter");
+		// Both call sites run this for every draw while a [Present] mod is
+		// armed, but only the first draw of a frame can actually execute the
+		// [Present] list (DX12ModPreparePresentReplacement claims the frame with
+		// a compare-exchange). Bail out before constructing `replacement`: it
+		// embeds ~60KB of zero-initialized binding state, so the no-op draws
+		// would otherwise memset that on every single draw of the frame.
+		if (!DX12ModPresentReplacementPendingForCurrentPresent())
+			return false;
+		// Flushed breadcrumb on purpose (see the caller): this is the one call
+		// per frame that goes on to run the [Present] list.
+		DX12_LOG_FLUSH("DX12PresentDiag", "event=execute_present_enter");
 		DX12ModIaReplacement replacement;
 		if (!DX12ModPreparePresentReplacement(commandList, &replacement))
 			return false;
@@ -1840,10 +1843,10 @@ public:
 		};
 
 		DX12_PROF_COUNT("IaDrawOverrideCheck");
-		// DX12ModIaReplacement embeds CommandListBindingState (~14KB of
-		// zero-initialized root/descriptor arrays), so it is deliberately
-		// NOT constructed here: 99%+ of draws exit through the negative
-		// caches below and never need it. It is declared right before the
+		// DX12ModIaReplacement embeds CommandListBindingState (~60KB: the two
+		// 64-entry root-constant arrays alone are ~42KB of it), so it is
+		// deliberately NOT constructed here: draws that exit through the
+		// negative caches below never need it. It is declared right before the
 		// prepare/apply block that actually uses it.
 		DX12IaHashState iaState;
 		const DX12IaHashState *activeIaState = &iaState;
@@ -2481,9 +2484,12 @@ public:
 
 			DX12_PROF_STAGE_BEGIN(DrawModPrepareOverride);
 			DX12_DIAG_QPC(prepareBegin);
-			// Constructed only on the (rare) path that reaches shader
-			// override evaluation: the ~14KB embedded binding state would
-			// otherwise be zero-initialized on every draw.
+			// Constructed only on the path that reaches shader override
+			// evaluation: the ~60KB embedded binding state (see the note at
+			// IaDrawOverrideCheck) would otherwise be zero-initialized on every
+			// draw. Measured with a broad shader-override mod: 35124
+			// IaDrawOverrideCheck per 35567 DrawHook calls, so this evaluation
+			// (and therefore this construction) is reached by ~98% of draws.
 			DX12ModIaReplacement iaReplacement;
 			std::shared_ptr<const DX12ModIaReplacement> generatedStaticReplacement;
 			const bool preparedReplacement = DX12ModPrepareShaderOverrideReplacement(

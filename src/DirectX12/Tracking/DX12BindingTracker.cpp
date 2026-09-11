@@ -2914,7 +2914,8 @@ void DX12BindingTracker::ResetCommandList(
 	DX12BindingTracker::ReleaseRetainedIaResources(&state);
 	// Targeted reset instead of placement-new: reconstructing the ~58KB state
 	// zeroed the 41KB root-constant payload arrays on every command-list Reset
-	// (17 lists/frame), all under the exclusive shard lock. The payloads are
+	// (several lists per frame - 3.8/frame measured in the current scene), all
+	// under the exclusive shard lock. The payloads are
 	// only read while their valid flags are set, so clearing validity and
 	// identity fields is equivalent.
 	state.ResetForRecording();

@@ -649,7 +649,10 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			continue;
 		}
 
-		// Mod-owned native list: the wrapper hooks never see these calls.
+		// The channel's list is created through the wrapped device, so these
+		// calls do pass through the wrapper hooks - they are simply the mod's
+		// own recording rather than the game's, and nothing in the gameplay
+		// tracking depends on them.
 		ID3D12DescriptorHeap *heaps[1] = { tableHeap->Heap() };
 		commandList->SetDescriptorHeaps(1, heaps);
 		commandList->SetGraphicsRootSignature(rootSignature);

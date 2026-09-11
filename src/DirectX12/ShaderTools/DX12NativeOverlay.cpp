@@ -8,6 +8,10 @@
 // and no notice is alive this module does zero GPU work, so a hidden overlay
 // can never keep burning tracking or rendering resources.
 //
+// It is also never called from the Present skipAll fast path: hunting always
+// clears skipAll, so the text still draws on the normal path, while the fast
+// path stays free of GPU object creation and queue submissions.
+//
 // Rendering reuses the mod runtime's present-overlay channel (mod-owned
 // command list submitted on the game's direct queue before the original
 // Present) and its back-buffer RTV cache, so submission ordering matches the

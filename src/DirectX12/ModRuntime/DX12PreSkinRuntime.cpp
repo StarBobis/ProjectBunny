@@ -2436,9 +2436,61 @@ void ReleasePreSkinCbvPatchCacheEntry(
 		return;
 	if (entry->patchedResource)
 		entry->patchedResource->Release();
-	if (entry->descriptorHeap)
-		entry->descriptorHeap->Release();
 	*entry = DX12PreSkinCbvPatchCacheEntry();
+}
+
+
+// Pre-skin CBV patch descriptors live in one shared, non-shader-visible
+// CBV/SRV/UAV heap instead of a one-descriptor heap per cache entry. The heap
+// is CPU-only - a hit copies its descriptor into the caller's heap with
+// CopyDescriptorsSimple and the GPU never samples this heap - so a slot can be
+// recycled as soon as the entry that owned it is gone. A CreateDescriptorHeap
+// per patch cost hundreds of microseconds on the driver side.
+static constexpr UINT kPreSkinCbvPatchPoolSlots = 256;
+
+static ID3D12DescriptorHeap *gPreSkinCbvPatchPoolHeap = nullptr;
+static ID3D12Device *gPreSkinCbvPatchPoolDevice = nullptr;
+static UINT gPreSkinCbvPatchPoolIncrement = 0;
+static UINT gPreSkinCbvPatchPoolUsed = 0;
+
+// Caller holds the mod lock (every caller of the patch cache does).
+static D3D12_CPU_DESCRIPTOR_HANDLE AcquirePreSkinCbvPatchDescriptor(
+	ID3D12Device *device)
+{
+	D3D12_CPU_DESCRIPTOR_HANDLE handle = {};
+	if (!device)
+		return handle;
+	if (gPreSkinCbvPatchPoolHeap && gPreSkinCbvPatchPoolDevice != device)
+	{
+		gPreSkinCbvPatchPoolHeap->Release();
+		gPreSkinCbvPatchPoolHeap = nullptr;
+		gPreSkinCbvPatchPoolDevice = nullptr;
+		gPreSkinCbvPatchPoolUsed = 0;
+	}
+	if (!gPreSkinCbvPatchPoolHeap)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC poolDesc = {};
+		poolDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		poolDesc.NumDescriptors = kPreSkinCbvPatchPoolSlots;
+		poolDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		if (FAILED(device->CreateDescriptorHeap(
+				&poolDesc, IID_PPV_ARGS(&gPreSkinCbvPatchPoolHeap))) ||
+			!gPreSkinCbvPatchPoolHeap)
+		{
+			gPreSkinCbvPatchPoolHeap = nullptr;
+			return handle;
+		}
+		gPreSkinCbvPatchPoolDevice = device;
+		gPreSkinCbvPatchPoolIncrement = device->GetDescriptorHandleIncrementSize(
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	}
+	if (gPreSkinCbvPatchPoolUsed >= kPreSkinCbvPatchPoolSlots)
+		return handle;
+	handle = gPreSkinCbvPatchPoolHeap->GetCPUDescriptorHandleForHeapStart();
+	handle.ptr += static_cast<SIZE_T>(gPreSkinCbvPatchPoolUsed) *
+		gPreSkinCbvPatchPoolIncrement;
+	++gPreSkinCbvPatchPoolUsed;
+	return handle;
 }
 
 
@@ -2447,6 +2499,8 @@ void ClearPreSkinCbvPatchCache()
 	for (auto &item : gPreSkinCbvPatchCache)
 		ReleasePreSkinCbvPatchCacheEntry(&item.second);
 	gPreSkinCbvPatchCache.clear();
+	// No entry is left, so every pooled patch descriptor slot is free again.
+	gPreSkinCbvPatchPoolUsed = 0;
 }
 
 
@@ -2506,48 +2560,49 @@ bool PatchPreSkinVertexCountCbvLocked(
 	viewBytes = AlignCbvSize(viewBytes);
 
 	std::vector<unsigned char> bytes;
-	HRESULT hr = E_FAIL;
-	if (!ReadPreSkinCbvBytesLocked(cbvResource, sourceOffset, viewBytes, &bytes, &hr))
-	{
-		return false;
-	}
-
 	std::vector<UINT> patchOffsets;
-	patchOffsets.reserve(bytes.size() / sizeof(UINT32));
 	UINT32 originalVertexCount = 0;
-	if (expectedOriginalVertexCount)
+	UINT64 patchedContentHash = 0;
+	HRESULT hr = E_FAIL;
 	{
-		for (UINT offset = 0; offset + sizeof(UINT32) <= bytes.size(); offset += sizeof(UINT32))
+		// Split of the patch cost for the TIMING logs: this read + scan + hash
+		// runs on every call (the cache key embeds the patched content), while
+		// the object creation further down only runs on a cache miss.
+		DX12_PROF_STAGE_SCOPE(PreSkinCbvReadPatchHash);
+		if (!ReadPreSkinCbvBytesLocked(cbvResource, sourceOffset, viewBytes, &bytes, &hr))
+			return false;
+
+		patchOffsets.reserve(bytes.size() / sizeof(UINT32));
+		if (expectedOriginalVertexCount)
 		{
-			UINT32 candidate = 0;
-			memcpy(&candidate, bytes.data() + offset, sizeof(candidate));
-			if (candidate == expectedOriginalVertexCount)
-				patchOffsets.push_back(offset);
+			for (UINT offset = 0; offset + sizeof(UINT32) <= bytes.size(); offset += sizeof(UINT32))
+			{
+				UINT32 candidate = 0;
+				memcpy(&candidate, bytes.data() + offset, sizeof(candidate));
+				if (candidate == expectedOriginalVertexCount)
+					patchOffsets.push_back(offset);
+			}
+			if (!patchOffsets.empty())
+				originalVertexCount = expectedOriginalVertexCount;
 		}
-		if (!patchOffsets.empty())
-			originalVertexCount = expectedOriginalVertexCount;
+		else if (bytes.size() >= sizeof(UINT32))
+		{
+			memcpy(&originalVertexCount, bytes.data(), sizeof(originalVertexCount));
+			if (originalVertexCount && originalVertexCount != overrideVertexCount)
+				patchOffsets.push_back(0);
+		}
+		if (patchOffsets.empty())
+			return false;
+		for (UINT offset : patchOffsets)
+			memcpy(bytes.data() + offset, &overrideVertexCount, sizeof(overrideVertexCount));
+		patchedContentHash = HashPreSkinCbvBytes(bytes);
 	}
-	else if (bytes.size() >= sizeof(UINT32))
-	{
-		memcpy(&originalVertexCount, bytes.data(), sizeof(originalVertexCount));
-		if (originalVertexCount && originalVertexCount != overrideVertexCount)
-			patchOffsets.push_back(0);
-	}
-	if (patchOffsets.empty())
-	{
-		UINT32 firstDword = 0;
-		if (bytes.size() >= sizeof(firstDword))
-			memcpy(&firstDword, bytes.data(), sizeof(firstDword));
-		return false;
-	}
-	for (UINT offset : patchOffsets)
-		memcpy(bytes.data() + offset, &overrideVertexCount, sizeof(overrideVertexCount));
-	const UINT64 patchedContentHash = HashPreSkinCbvBytes(bytes);
 
 	// Patched CBV Buffer
 	// UPLOAD buffer + CBV descriptor mod
 	// Map/Write/Unmap CPU-only CreateCommittedResource
 	{
+		DX12_PROF_STAGE_SCOPE(PreSkinCbvCacheLookup);
 		DX12PreSkinCbvPatchCacheKey patchKey;
 		patchKey.resource = cbvResource;
 		patchKey.sourceOffset = sourceOffset;
@@ -2586,71 +2641,77 @@ bool PatchPreSkinVertexCountCbvLocked(
 		}
 	}
 
-	D3D12_HEAP_PROPERTIES heapProps = {};
-	heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-	heapProps.CreationNodeMask = 1;
-	heapProps.VisibleNodeMask = 1;
-
-	D3D12_RESOURCE_DESC desc = {};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = viewBytes;
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_UNKNOWN;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
 	ID3D12Resource *patchedResource = nullptr;
-	hr = device->CreateCommittedResource(
-		&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr, IID_PPV_ARGS(&patchedResource));
-	if (FAILED(hr) || !patchedResource)
-		return false;
-
-	void *patchedMapped = nullptr;
-	D3D12_RANGE patchedReadRange = {};
-	hr = patchedResource->Map(0, &patchedReadRange, &patchedMapped);
-	if (FAILED(hr) || !patchedMapped)
 	{
-		patchedResource->Release();
-		return false;
-	}
-	memcpy(patchedMapped, bytes.data(), viewBytes);
-	patchedResource->Unmap(0, nullptr);
+		// Costs only a cache miss. TIMING logs pair this with
+		// PreSkinCbvReadPatchHash / PreSkinCbvCacheLookup to show where the
+		// ~500us per patch actually goes.
+		DX12_PROF_STAGE_SCOPE(PreSkinCbvCreateInsert);
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+		heapProps.CreationNodeMask = 1;
+		heapProps.VisibleNodeMask = 1;
 
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-	cbvDesc.BufferLocation = patchedResource->GetGPUVirtualAddress();
-	cbvDesc.SizeInBytes = viewBytes;
-	device->CreateConstantBufferView(&cbvDesc, dst);
+		D3D12_RESOURCE_DESC desc = {};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = viewBytes;
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = DXGI_FORMAT_UNKNOWN;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-	{
-		D3D12_DESCRIPTOR_HEAP_DESC patchHeapDesc = {};
-		patchHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		patchHeapDesc.NumDescriptors = 1;
-		patchHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		ID3D12DescriptorHeap *patchHeap = nullptr;
-		HRESULT heapHr = device->CreateDescriptorHeap(&patchHeapDesc, IID_PPV_ARGS(&patchHeap));
-		if (SUCCEEDED(heapHr) && patchHeap)
+		hr = device->CreateCommittedResource(
+			&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr, IID_PPV_ARGS(&patchedResource));
+		if (FAILED(hr) || !patchedResource)
+			return false;
+
+		void *patchedMapped = nullptr;
+		D3D12_RANGE patchedReadRange = {};
+		hr = patchedResource->Map(0, &patchedReadRange, &patchedMapped);
+		if (FAILED(hr) || !patchedMapped)
 		{
-			D3D12_CPU_DESCRIPTOR_HANDLE cachedCpu = patchHeap->GetCPUDescriptorHandleForHeapStart();
+			patchedResource->Release();
+			patchedResource = nullptr;
+			return false;
+		}
+		memcpy(patchedMapped, bytes.data(), viewBytes);
+		patchedResource->Unmap(0, nullptr);
+
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+		cbvDesc.BufferLocation = patchedResource->GetGPUVirtualAddress();
+		cbvDesc.SizeInBytes = viewBytes;
+		device->CreateConstantBufferView(&cbvDesc, dst);
+
+		// Clear before taking a pooled slot: the clear releases every slot, so
+		// the descriptor acquired below cannot alias a surviving entry's.
+		if (gPreSkinCbvPatchCache.size() > 64)
+			ClearPreSkinCbvPatchCache();
+		D3D12_CPU_DESCRIPTOR_HANDLE cachedCpu =
+			AcquirePreSkinCbvPatchDescriptor(device);
+		if (cachedCpu.ptr)
+		{
 			device->CreateConstantBufferView(&cbvDesc, cachedCpu);
 			DX12PreSkinCbvPatchCacheEntry entry;
 			entry.patchedResource = patchedResource;
-			entry.descriptorHeap = patchHeap;
 			entry.cbvCpu = cachedCpu;
 			entry.generation = DX12ModGetReloadGeneration();
 			entry.patchedBytes = bytes;
 			patchedResource->AddRef();
 
 			DX12PreSkinCbvPatchCacheKey patchKey;
-			patchKey.resource = cbv.descriptor.resource;
+			// Must match the lookup key exactly: that one is built from the
+			// resolved resource, so storing the unresolved descriptor resource
+			// here made every entry unreachable whenever resolution found a
+			// different backing resource - which turned the patch cache into a
+			// permanent miss and created a buffer + descriptor on every call.
+			patchKey.resource = cbvResource;
 			patchKey.sourceOffset = sourceOffset;
 			patchKey.viewBytes = viewBytes;
 			patchKey.overrideVertexCount = overrideVertexCount;
 			patchKey.contentHash = patchedContentHash;
-			if (gPreSkinCbvPatchCache.size() > 64)
-				ClearPreSkinCbvPatchCache();
 			auto old = gPreSkinCbvPatchCache.find(patchKey);
 			if (old != gPreSkinCbvPatchCache.end())
 			{
@@ -2659,6 +2720,8 @@ bool PatchPreSkinVertexCountCbvLocked(
 			}
 			gPreSkinCbvPatchCache[patchKey] = entry;
 		}
+		// A failed pool acquire just skips caching: `dst` already holds the
+		// patched CBV written above, so this call still returns a valid patch.
 	}
 
 	temporaryResources->push_back(patchedResource);

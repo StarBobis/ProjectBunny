@@ -1012,11 +1012,11 @@ public:
 		return mLastFailure;
 	}
 
-	// Hands out the next recording list, waiting (one frame interval at most)
-	// for the slot's previous submission to retire before resetting it.
-	// Returns nullptr when the slot is still in flight: resetting an allocator
-	// whose list is still executing is invalid D3D12 usage and can remove the
-	// device, so the frame is dropped instead.
+	// Hands out the next recording list after waiting up to kSlotWaitMs for the
+	// slot's previous submission to retire before resetting it. Returns nullptr
+	// when that submission is still in flight: resetting an allocator whose list
+	// is still executing is invalid D3D12 usage and can remove the device, so
+	// the caller drops the frame instead.
 	ID3D12GraphicsCommandList *BeginRecord()
 	{
 		mCursor = (mCursor + 1) % kSlots;

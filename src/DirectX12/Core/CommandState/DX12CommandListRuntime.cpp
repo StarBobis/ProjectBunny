@@ -545,7 +545,8 @@ void DX12CommandListRuntime::Reset(
 
 	// Targeted per-recording reset instead of `*state = DX12SimulateContext()`:
 	// the full assignment zeroes ~60KB of plain arrays on every Reset (the
-	// target game resets 17 lists/frame), dominated by the 64-entry
+	// profiled title resets several lists per frame - 3.8/frame measured in the
+	// current scene), dominated by the 64-entry
 	// root-constants value arrays. Root constant VALUES are only meaningful
 	// while valid==true, so the reset only clears the validity/layout markers
 	// and leaves the payload stale. Container capacities that are useful
