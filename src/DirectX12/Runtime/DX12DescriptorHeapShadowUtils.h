@@ -62,7 +62,11 @@ public:
 	struct HeapVersionCommitSet
 	{
 		static constexpr size_t Capacity = 16;
-		std::array<DescriptorHeapRecord *, Capacity> heaps = {};
+		// Deliberately NOT zero-initialized: only the first `count` entries are
+		// ever read (Add appends, CommitAll walks [0,count)), so the value
+		// initializer cost 128 bytes of stores on every descriptor-copy call -
+		// ~363 KB per frame at the measured call rate.
+		std::array<DescriptorHeapRecord *, Capacity> heaps;
 		size_t count = 0;
 
 		void Add(DescriptorHeapRecord *heap)

@@ -67,11 +67,12 @@ public:
 			DX12_PROF_COUNT("Rm.BarrierCaptureSkippedInternalReplay");
 			return false;
 		}
-		if (!DX12CommandListStateCapture::ShouldTrackResourceStates()) {
-			DX12_PROF_COUNT("FastForward");
-			DX12_PROF_COUNT("Rm.BarrierCaptureSkippedStatePolicy");
-			return false;
-		}
+		// No ShouldTrackResourceStates() gate here: RecordResourceBarrier's own
+		// first statement is exactly that test (DX12CommandListStateCapture.cpp),
+		// and it must keep it - DX12ResourceCollectQueue replays queued barriers
+		// through the same free function. Evaluating it twice per barrier call
+		// only doubled a four-term predicate on a path that runs thousands of
+		// times per frame.
 
 				DX12CommandListCommandRecorder::RecordResourceBarrier(numBarriers, barriers);
 		DX12_PROF_COUNT("Rm.BarrierRecordedCalls");

@@ -378,7 +378,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(
 	// Both materialization atomics are read once: this path runs once per
 	// descriptor-copy API call (thousands per frame) and the same two flags used
 	// to be loaded twice, always false outside dump/hunt.
-	const bool chunkFast = heapsActive && !bothMaterialized &&
+	const bool chunkFast = heapsActive &&
 		!sourceMaterialized && !destinationMaterialized &&
 		!DX12ResourceTrackingPolicyUtils::NeedsDumpOrHuntingTracking();
 	const bool reverse = destDescriptorRangeStart.ptr > srcDescriptorRangeStart.ptr;
