@@ -13,4 +13,7 @@
 
 # TIMING版运行日志
 
-一般在 D:\SSMTCacheFolder\3Dmigoto\ZZMIDX12 下面的d3d12_log.txt里
+一般在 D:\MMTCacheFolder\3Dmigoto\ZZMIDX12 下面的d3d12_log.txt里
+
+- 构建脚本每次会把上一份日志轮转成同目录的 d3d12_log.before_<时间戳>.txt，新日志由下一次运行生成
+- 日志可能很大（TIMING 版诊断很密），排查时不要整文件读，用采样或只读尾部
