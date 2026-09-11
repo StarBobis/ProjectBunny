@@ -196,13 +196,16 @@ public:
 	}
 
 	// Returns the object to its default-constructed state for reuse while
-	// keeping the ~60KB originalBindings payload untouched. That payload is
+	// keeping the originalBindings payload untouched. That payload is
 	// only ever read after a fresh assignment or move into it: the readers are
 	// Restore's logical-sync and DeferPendingRestore
 	// (DX12DrawSrvReplacementUtils.h), which both require
 	// applied && patchHeap && !borrowedPendingMirror, and `applied` is only set
 	// right after originalBindings is assigned. This is the same marker-only
 	// invariant the resets in DX12CommandListRuntime/DX12BindingTracker use.
+	// (The payload is a DX12DrawSrvBindingSnapshot, not a full
+	// CommandListBindingState, so skipping it is now a small win rather than a
+	// ~60KB one - the marker-only form is kept because it is still correct.)
 	void ResetForDraw()
 	{
 		ClearRetainedResources();
@@ -293,10 +296,12 @@ public:
 		// and reload generation match.
 		UINT64 planFingerprint = 0;
 		UINT64 reloadGeneration = 0;
-		CommandListBindingState originalBindings;
+		// Slim view of the game's bindings: only what the logical/physical
+		// restore halves read. See DX12DrawSrvBindingSnapshot.
+		DX12DrawSrvBindingSnapshot originalBindings;
 		std::vector<DrawSrvBundleRestore> bundleRestores;
 
-		// Clears every field except the ~60KB originalBindings payload; see
+		// Clears every field except the originalBindings payload; see
 		// DX12ModIaReplacement::ResetForDraw for why that payload may stay.
 		void ResetForDraw()
 		{

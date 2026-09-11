@@ -321,6 +321,54 @@ public:
 	}
 };
 
+// Slim view of CommandListBindingState for the draw-SRV deferred restore.
+//
+// The logical and physical halves of that restore read only the two heaps, the
+// per-root table validity + GPU base, and the two valid-counts. Carrying a whole
+// CommandListBindingState instead meant ~58KB of never-read payload (the two
+// 41KB root-constant arrays, root descriptors, IA views and render targets)
+// being memcpy'd four to five times per mod-matched draw, because that class has
+// no vector members: every "move" was a full struct copy.
+class DX12DrawSrvBindingSnapshot
+{
+public:
+	class TableRef
+	{
+	public:
+		bool valid = false;
+		D3D12_GPU_DESCRIPTOR_HANDLE baseDescriptor = {};
+	};
+
+	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
+	ID3D12DescriptorHeap *samplerHeap = nullptr;
+	UINT graphicsTableValidCount = 0;
+	UINT computeTableValidCount = 0;
+	TableRef graphicsTables[MaxRootParameters] = {};
+	TableRef computeTables[MaxRootParameters] = {};
+
+	void CaptureFrom(const CommandListBindingState &source)
+	{
+		cbvSrvUavHeap = source.cbvSrvUavHeap;
+		samplerHeap = source.samplerHeap;
+		graphicsTableValidCount = source.graphicsTableValidCount;
+		computeTableValidCount = source.computeTableValidCount;
+		for (UINT root = 0; root < MaxRootParameters; ++root) {
+			graphicsTables[root].valid = source.graphicsTables[root].valid;
+			graphicsTables[root].baseDescriptor =
+				source.graphicsTables[root].baseDescriptor;
+			computeTables[root].valid = source.computeTables[root].valid;
+			computeTables[root].baseDescriptor =
+				source.computeTables[root].baseDescriptor;
+		}
+	}
+};
+
+// Guard the property that made this type worth introducing: it is copied
+// several times per matched draw, so it must stay tiny next to the ~60KB
+// CommandListBindingState it replaces.
+static_assert(sizeof(DX12DrawSrvBindingSnapshot) <= 4096,
+	"DX12DrawSrvBindingSnapshot must stay small; it is copied per matched draw");
+
 class BindingEvent
 {
 public:

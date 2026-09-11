@@ -47,7 +47,8 @@ public:
 	ID3D12DescriptorHeap *patchHeap = nullptr;
 	UINT64 planFingerprint = 0;
 	UINT64 reloadGeneration = 0;
-	CommandListBindingState originalBindings;
+	// Slim view of the game's bindings; see DX12DrawSrvBindingSnapshot.
+	DX12DrawSrvBindingSnapshot originalBindings;
 };
 
 // Sharded pending table (per command list), same contract as
@@ -444,7 +445,7 @@ public:
 			return;
 
 		DX12InternalReplayScope internalReplay;
-		const CommandListBindingState &snapshot = entry.originalBindings;
+		const DX12DrawSrvBindingSnapshot &snapshot = entry.originalBindings;
 		ID3D12DescriptorHeap *heaps[2] = {};
 		UINT heapCount = 0;
 		if (snapshot.cbvSrvUavHeap)
@@ -1498,7 +1499,7 @@ ID3D12DescriptorHeap *cachedHeap = nullptr;
 if (TryGetDrawSrvMirrorCache(
 reloadGeneration, planFingerprint, tables.size(),
 &cachedHeap, &tlsCachedTables)) {
-replacement->drawSrvApplyState.originalBindings = snapshot;
+replacement->drawSrvApplyState.originalBindings.CaptureFrom(snapshot);
 replacement->drawSrvApplyState.patchHeap = cachedHeap;
 replacement->drawSrvApplyState.planFingerprint = planFingerprint;
 replacement->drawSrvApplyState.reloadGeneration = reloadGeneration;
@@ -1556,7 +1557,7 @@ return true;
 		// Persist the only authoritative restore snapshot before issuing any
 		// command-list state mutation. Restore never asks Binding State for a
 		// second, potentially stale snapshot.
-		replacement->drawSrvApplyState.originalBindings = snapshot;
+		replacement->drawSrvApplyState.originalBindings.CaptureFrom(snapshot);
 		replacement->drawSrvApplyState.patchHeap = tempHeap;
 		replacement->drawSrvApplyState.planFingerprint = planFingerprint;
 		replacement->drawSrvApplyState.reloadGeneration = reloadGeneration;
@@ -1874,7 +1875,7 @@ dedicatedHeap->Release();
 		// file). Any later command that observes descriptor-heap state
 		// flushes the pending entry before it is recorded.
 		{
-			const CommandListBindingState &snapshot = state.originalBindings;
+			const DX12DrawSrvBindingSnapshot &snapshot = state.originalBindings;
 			SyncDescriptorHeaps(
 				commandList, snapshot.cbvSrvUavHeap, snapshot.samplerHeap);
 			for (UINT root = 0; root < MaxRootParameters; ++root) {

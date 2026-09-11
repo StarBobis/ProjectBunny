@@ -1212,7 +1212,7 @@ public:
 		// armed, but only the first draw of a frame can actually execute the
 		// [Present] list (DX12ModPreparePresentReplacement claims the frame with
 		// a compare-exchange). Bail out before constructing `replacement`: it
-		// embeds ~60KB of zero-initialized binding state, so the no-op draws
+		// embeds a zero-initialized draw-SRV binding snapshot, so the no-op draws
 		// would otherwise memset that on every single draw of the frame.
 		if (!DX12ModPresentReplacementPendingForCurrentPresent())
 			return false;
@@ -1693,7 +1693,7 @@ public:
 
 	// This thread's reusable replacement object for the draw path, already
 	// returned to its default state. One instance replaces the per-draw
-	// construction whose ~60KB embedded binding state would otherwise be
+	// construction whose embedded binding snapshot would otherwise be
 	// zero-filled on every draw (measured: 98% of draws reach the evaluation).
 	//
 	// Reuse is safe by construction: HandleDrawOverrides is only reachable from
@@ -1949,11 +1949,10 @@ public:
 		};
 
 		DX12_PROF_COUNT("IaDrawOverrideCheck");
-		// DX12ModIaReplacement embeds CommandListBindingState (~60KB: the two
-		// 64-entry root-constant arrays alone are ~42KB of it), so it is
-		// deliberately NOT constructed here: draws that exit through the
-		// negative caches below never need it. It is declared right before the
-		// prepare/apply block that actually uses it.
+		// DX12ModIaReplacement embeds a draw-SRV binding snapshot and several
+		// vectors, so it is deliberately NOT constructed here: draws that exit
+		// through the negative caches below never need it. It is declared right
+		// before the prepare/apply block that actually uses it.
 		DX12IaHashState iaState;
 		const DX12IaHashState *activeIaState = &iaState;
 		const uint32_t vertexCount = draw.indexed ? 0 : draw.vertexCount;
@@ -2647,11 +2646,10 @@ public:
 			DX12_PROF_STAGE_BEGIN(DrawModPrepareOverride);
 			DX12_DIAG_QPC(prepareBegin);
 			// Reused scratch instead of a per-draw instance: this evaluation is
-			// reached by ~98% of draws (see the note at IaDrawOverrideCheck), and
-			// the object embeds ~60KB of binding state that a fresh construction
-			// would zero every time. DrawReplacementScratch hands it back in its
-			// default state. The counter tells how many draws reach this point
-			// (entering the function above is not the same thing).
+			// reached by ~98% of draws (see the note at IaDrawOverrideCheck).
+			// DrawReplacementScratch hands it back in its default state; the
+			// counter tells how many draws reach this point (entering the
+			// function above is not the same thing).
 			DX12_PROF_COUNT("Rm.DrawOverridePrepare");
 			DX12ModIaReplacement &iaReplacement =
 				DX12IaReplacementExecutor::DrawReplacementScratch();
