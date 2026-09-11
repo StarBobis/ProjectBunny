@@ -57,7 +57,6 @@ public:
 	UINT64 rowBytes = 0;
 	UINT64 numRows = 0;
 	UINT64 dataOffset = 0;
-	UINT64 dataBytes = 0;
 };
 
 
@@ -413,7 +412,6 @@ public:
 			subresource.rowBytes = rowBytes;
 			subresource.numRows = numRows;
 			subresource.dataOffset = cursor;
-			subresource.dataBytes = numBytes;
 			info->subresources.push_back(subresource);
 			cursor += numBytes;
 			width = width > 1 ? width >> 1 : 1;
@@ -646,7 +644,6 @@ public:
 		// reacquiring so another producer can submit work in the meantime.
 		UINT slotIndex = UINT_MAX;
 		for (;;) {
-			UINT oldestIndex = UINT_MAX;
 			UINT64 oldestValue = UINT64_MAX;
 			const UINT64 completedValue = s_uploadFence->GetCompletedValue();
 			for (UINT i = 0; i < kUploadChannelSlots; ++i) {
@@ -657,7 +654,6 @@ public:
 				}
 				if (slot.busyUntilFence < oldestValue) {
 					oldestValue = slot.busyUntilFence;
-					oldestIndex = i;
 				}
 			}
 			if (slotIndex != UINT_MAX)
@@ -879,7 +875,6 @@ public:
 			subresource.rowBytes = static_cast<UINT64>(decodedWidth) * 4;
 			subresource.numRows = decodedHeight;
 			subresource.dataOffset = 0;
-			subresource.dataBytes = subresource.rowBytes * decodedHeight;
 			info.subresources.push_back(subresource);
 			info.width = decodedWidth;
 			info.height = decodedHeight;

@@ -139,13 +139,10 @@ public:
 	std::vector<std::pair<std::wstring, std::wstring>> stateLines;
 
 	// oN render-target assignments in the body ("o0 = set_viewport bb").
-	bool hasRenderTargetAssign = false;
 	bool hasBackbufferTarget = false; // an oN value refers to the swap chain
 
 	bool hasDrawCommand = false;   // body records Draw/DrawIndexed/...
-	bool hasDispatchCommand = false;
 	bool hasControlFlow = false;   // body branches on VM state
-	unsigned actionCount = 0;
 };
 
 class DX12CustomShaderElementParser
@@ -172,7 +169,6 @@ public:
 
 		bool anyState = false;
 		for (const CommandListAction &action : config.actions) {
-			++out->actionCount;
 			switch (action.kind) {
 			case CommandListActionKind::SetShader:
 				if (AssignStageFile(action.key, action.value, out))
@@ -193,7 +189,6 @@ public:
 				out->hasDrawCommand = true;
 				break;
 			case CommandListActionKind::Dispatch:
-				out->hasDispatchCommand = true;
 				break;
 			default:
 				break;
@@ -458,7 +453,6 @@ private:
 			// as a SetRenderState action at runtime; the spec only records
 			// that the element targets the back buffer so the draw path can
 			// prepare a bb RTV.
-			out->hasRenderTargetAssign = true;
 			std::wstring v = MigotoIniCommandListUtils::ToLower(
 				MigotoIniCommandListUtils::Trim(value));
 			if (v.find(L"bb") != std::wstring::npos)

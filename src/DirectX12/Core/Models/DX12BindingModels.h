@@ -131,28 +131,6 @@ public:
 	bool hasDescriptor = false;
 };
 
-class DX12CurrentIaBuffer
-{
-public:
-	std::string role;
-	UINT64 gpuVa = 0;
-	UINT64 size = 0;
-	UINT stride = 0;
-	UINT slot = 0;
-	UINT format = 0;
-	uint32_t huntHash = 0;
-	bool resolved = false;
-	DX12BufferResourceSummary resource;
-};
-
-class DX12CurrentIaState
-{
-public:
-	std::vector<DX12CurrentIaBuffer> vertexBuffers;
-	DX12CurrentIaBuffer indexBuffer;
-	bool hasIndexBuffer = false;
-};
-
 class DX12CurrentComputeUavBinding
 {
 public:

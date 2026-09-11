@@ -86,7 +86,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 	descriptorHeap->Release();
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gDescriptorHeapRecordsSeen;
 	auto found = gDescriptorHeapByPtr.find(record.heap);
 	if (found != gDescriptorHeapByPtr.end()) {
 		DescriptorHeapRecord &old = gDescriptorHeaps[found->second];
@@ -182,10 +181,10 @@ static void ApplyStaticReplacementToRecordedSrv(
 		!replacementGeneration)
 		return;
 
-	auto originalSimple = DX12ResourceTrackerHookRegistry::GetDeviceOriginal(
+	auto originalSimple = DX12ResourceTrackerHookRegistry::GetDeviceOriginal<
+		DX12ResourceTrackerHookSignatures::CopyDescriptorsSimple>(
 		device, DX12ResourceTrackerHookSlotTypes::ID3D12Device::CopyDescriptorsSimple,
-		DX12ResourceTrackerHookState::OrigCopyDescriptorsSimple,
-		"ID3D12Device::CopyDescriptorsSimple");
+		nullptr, "ID3D12Device::CopyDescriptorsSimple");
 	if (!originalSimple)
 		return;
 	originalSimple(device, 1, destDescriptor, replacementSrv,

@@ -16,8 +16,6 @@ struct ResourceRecord
 	UINT64 size = 0;
 	UINT64 gpuVirtualAddressRealEnd = 0;
 	UINT64 gpuVirtualAddressOobEnd = 0;
-	UINT64 placedHeapOffset = 0;
-	UINT64 placedHeapSize = 0;
 	bool hasPlacedHeapRange = false;
 	D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 	bool hasCurrentState = false;

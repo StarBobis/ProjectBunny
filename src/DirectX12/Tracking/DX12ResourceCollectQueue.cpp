@@ -478,7 +478,6 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 
 	DX12_DIAG_QPC(storeBegin);
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gRootSignatureRecordsSeen;
 	std::unordered_map<ID3D12RootSignature*, size_t>::iterator found =
 		gRootSignatureByPtr.find(record.rootSignature);
 	if (found != gRootSignatureByPtr.end()) {

@@ -42,24 +42,9 @@ std::atomic<UINT64> gResourceIdentityGeneration{1};
 std::atomic<UINT64> gDescriptorQuerySerial{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
-UINT64 gDescriptorRecordsSeen = 0;
-UINT64 gDescriptorCopyRecordsSeen = 0;
-UINT64 gDescriptorHeapRecordsSeen = 0;
-UINT64 gRootSignatureRecordsSeen = 0;
-UINT64 gPsoRootRecordsSeen = 0;
 UINT64 gDescriptorEpoch = 0;
 LONG gLastResourceStatsPresent = -1;
-static UINT64 gDescriptorCopySpanFastPathCalls = 0;
-static UINT64 gDescriptorCopySpanFastPathSlots = 0;
-static UINT64 gDescriptorCopySpanFallbackCalls = 0;
 static constexpr LONG kResourceStatsLogInterval = 300;
-UINT64 gBufferResolveCacheInvalidations = 0;
-UINT64 gBufferResolveCacheInvalidationEntries = 0;
-UINT64 gBufferResolveTlsHits = 0;
-UINT64 gBufferResolveGlobalHits = 0;
-UINT64 gBufferResolveBackwardScanHits = 0;
-UINT64 gBufferResolveMisses = 0;
-UINT64 gBufferResolveFallbackScanHits = 0;
 
 // A buffer is registered in every 64KiB shard it spans (capped): views inside
 // a buffer (common for 100KB+ streaming vertex buffers) query their own
@@ -194,19 +179,9 @@ bool DX12TryResolveFromGpuVaWrapper(
 	ReleaseSRWLockShared(&shard.lock);
 	return true;
 }
-UINT64 gBufferResolveGenerationResets = 0;
-UINT64 gBufferResolveRangeInvalidations = 0;
-UINT64 gBufferResolveRangeInvalidationEntries = 0;
-UINT64 gBufferResolveIndexNoopUpdates = 0;
-UINT64 gBufferResolveStateOnlyUpdates = 0;
 UINT64 gBufferResolveInvalidationEpoch = 0;
 std::atomic<UINT64> gBufferResolveInvalidationEpochAtomic{0};
-UINT64 gBufferResolveInvalidationHistoryLost = 0;
 DX12BufferResolveInvalidatedRange gBufferResolveInvalidatedRanges[kDX12BufferResolveInvalidationHistoryCapacity] = {};
-UINT64 gResourceExclusiveLockSlowCount = 0;
-UINT64 gResourceExclusiveLockSlowMaxUs = 0;
-UINT64 gDescriptorExclusiveLockSlowCount = 0;
-UINT64 gDescriptorExclusiveLockSlowMaxUs = 0;
 
 // Canonical identity cache: avoids per-call COM QueryInterface overhead.
 static std::unordered_map<ID3D12Resource*, ID3D12Resource*> gCanonicalCache;
@@ -232,12 +207,6 @@ static bool DescriptorHeapSlotOccupied(const DescriptorHeapRecord &heap, UINT sl
 static bool DescriptorHeapIsShaderVisible(const DescriptorHeapRecord &heap)
 {
 	return (heap.desc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) != 0;
-}
-
-static bool ShouldStoreCreatedDescriptorInHeapSlot(const DescriptorHeapRecord &heap)
-{
-	return DescriptorHeapIsShaderVisible(heap) ||
-		DX12ResourceTrackingPolicyUtils::NeedsFullDescriptorHistory();
 }
 
 static DescriptorRecord *DescriptorHeapSlot(DescriptorHeapRecord *heap, UINT slot)
@@ -404,54 +373,6 @@ static void AppendDescriptorHistoryLocked(DescriptorHeapRecord *heap, UINT slot,
 	heap->slotHistoryEpochs[slot].push_back(gDescriptorEpoch);
 }
 
-static void StoreDescriptorAtHeapSlotLocked(
-	DescriptorHeapRecord *heap, UINT slot, DescriptorRecord &&record)
-{
-	if (!heap || !EnsureDescriptorHeapStorageLocked(heap) || slot >= heap->slots.size()) {
-		ReleaseDescriptorRecordResources(&record);
-		return;
-	}
-	const bool wasOccupied = DescriptorHeapSlotOccupied(*heap, slot);
-	AppendDescriptorHistoryLocked(heap, slot, record);
-	DescriptorRecord slotRecord;
-	DX12DescriptorSlotArrayUtils::CopyRecordValueForSlot(
-		&slotRecord, record, record.cpuHandle);
-	heap->slots[slot] = std::move(slotRecord);
-	ReleaseDescriptorRecordResources(&record);
-	heap->occupied[slot] = 1;
-	if (!wasOccupied)
-		DX12DescriptorSlotArrayUtils::IncrementLiveSlots(heap);
-	DX12DescriptorHeapStateUtils::BumpVersion(heap, slot);
-}
-
-static size_t LiveDescriptorHeapSlotsLocked()
-{
-	size_t live = 0;
-	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
-		live += static_cast<size_t>(
-			DX12DescriptorSlotArrayUtils::ReadLiveSlots(&heap));
-	return live;
-}
-
-static size_t LiveShaderVisibleDescriptorHeapSlotsLocked()
-{
-	size_t live = 0;
-	for (const DescriptorHeapRecord &heap : gDescriptorHeaps) {
-		if (DescriptorHeapIsShaderVisible(heap))
-			live += static_cast<size_t>(
-				DX12DescriptorSlotArrayUtils::ReadLiveSlots(&heap));
-	}
-	return live;
-}
-
-static size_t DescriptorHeapSlotCapacityLocked()
-{
-	size_t capacity = 0;
-	for (const DescriptorHeapRecord &heap : gDescriptorHeaps)
-		capacity += heap.slots.size();
-	return capacity;
-}
-
 static size_t DescriptorHeapHistoryEntriesLocked()
 {
 	size_t entries = 0;
@@ -530,7 +451,6 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	if (record.resource != resource && record.resource != canonical) {
 		return;
 	}
-	const UINT64 invalidatedGpuVa = record.gpuVirtualAddress;
 	ResourceRecord oldRecord = record;
 	if (record.publishedState)
 		record.publishedState->Invalidate();
@@ -753,8 +673,6 @@ void RecordResource(
 		}
 		if (placedInfo && placedInfo->hasPlacedHeap) {
 			record.hasPlacedHeapRange = true;
-			record.placedHeapOffset = placedInfo->heapOffset;
-			record.placedHeapSize = placedInfo->heapSize;
 			if (placedInfo->heapSize > placedInfo->heapOffset)
 				record.gpuVirtualAddressOobEnd =
 					record.gpuVirtualAddress + (placedInfo->heapSize - placedInfo->heapOffset);
@@ -777,7 +695,6 @@ void RecordResource(
 	}
 
 	ID3D12Resource *canonical = CanonicalResource(resource);
-	const auto lockBegin = std::chrono::steady_clock::now();
 	AcquireSRWLockExclusive(&gResourceLock);
 	auto found = gResourceByPtr.find(canonical);
 	ResourceRecord oldRecord = {};
@@ -851,13 +768,6 @@ void RecordResource(
 	gResourcesRecordedFromCreate++;
 	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
-	const auto lockEnd = std::chrono::steady_clock::now();
-	const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(lockEnd - lockBegin).count();
-	if (elapsedUs >= 1000) {
-		gResourceExclusiveLockSlowCount++;
-		if (static_cast<UINT64>(elapsedUs) > gResourceExclusiveLockSlowMaxUs)
-			gResourceExclusiveLockSlowMaxUs = static_cast<UINT64>(elapsedUs);
-	}
 }
 
 void CleanupTrackedResources()
@@ -1433,11 +1343,6 @@ bool ResolveDescriptorSlotForCpuHandleLocked(
 	return false;
 }
 
-static bool DescriptorSlotForHandleLocked(SIZE_T cpuHandle, DescriptorSlotLocation *location)
-{
-	return ResolveDescriptorSlotForCpuHandleLocked(cpuHandle, nullptr, location, nullptr);
-}
-
 
 bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
 {
@@ -1458,45 +1363,6 @@ bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId)
 }
 
 
-static void RecordDescriptorInCacheLocked(DescriptorRecord &&record, bool copied)
-{
-	if (record.valueId == 0)
-		record.valueId = DX12DescriptorValueHashUtils::HashRecord(record);
-
-	DescriptorSlotLocation location = {};
-	if (DescriptorSlotForHandleLocked(record.cpuHandle, &location)) {
-		DescriptorHeapRecord &heap = gDescriptorHeaps[location.heapIndex];
-		const bool storeInHeapSlot = copied || ShouldStoreCreatedDescriptorInHeapSlot(heap);
-		if (!storeInHeapSlot) {
-			// Non shader-visible/staging heap descriptors can become CopyDescriptors
-			// sources later, so keep them in the CPU ledger as the fallback source.
-			StoreCpuDescriptorRecordLocked(std::move(record));
-			++gDescriptorRecordsSeen;
-			return;
-		}
-		DescriptorRecord *existing = DescriptorHeapSlot(&heap, location.slot);
-		if (existing) {
-			if (existing->valueId == record.valueId &&
-				existing->cpuHandle == record.cpuHandle) {
-				ReleaseDescriptorRecordResources(&record);
-				return;
-			}
-			ClearDescriptorHeapSlotLocked(&heap, location.slot);
-		}
-		if (copied)
-			++gDescriptorCopyRecordsSeen;
-		else
-			++gDescriptorRecordsSeen;
-		if (location.slot >= heap.slots.size())
-			return;
-		StoreDescriptorAtHeapSlotLocked(&heap, location.slot, std::move(record));
-		return;
-	}
-
-	// Heap-external CPU descriptors are only discoverable through the ledger.
-	StoreCpuDescriptorRecordLocked(std::move(record));
-}
-
 void DX12RecordRootSignatureImmediate(
 	ID3D12RootSignature *rootSignature,
 	UINT nodeMask,
@@ -1514,7 +1380,6 @@ void DX12RecordRootSignatureImmediate(
 	ParseRootSignatureBlob(&record, blob, blobLength);
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gRootSignatureRecordsSeen;
 	auto found = gRootSignatureByPtr.find(record.rootSignature);
 	if (found != gRootSignatureByPtr.end()) {
 		gRootSignatures[found->second] = std::move(record);
@@ -1726,7 +1591,6 @@ void DX12RecordPsoRootSignatureImmediate(
 	record.rootSignature = rootSignature;
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
-	++gPsoRootRecordsSeen;
 	auto found = gPsoRootByIndex.find(psoIndex);
 	if (found != gPsoRootByIndex.end()) {
 		gPsoRoots[found->second] = std::move(record);
@@ -1750,7 +1614,6 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 		return;
 
 	AcquireSRWLockExclusive(&gResourceLock);
-	bool resourceStateChanged = false;
 	for (UINT i = 0; i < numBarriers; ++i) {
 		const D3D12_RESOURCE_BARRIER &barrier = barriers[i];
 		if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ||
@@ -1774,7 +1637,6 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			}
 			if (fastRecord->publishedState)
 				fastRecord->publishedState->PublishState(*fastRecord);
-			resourceStateChanged = true;
 			continue;
 		}
 
@@ -1788,20 +1650,15 @@ void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *b
 			record.currentState = barrier.Transition.StateAfter;
 			record.hasCurrentState = true;
 			record.stateTrackedByBarrier = true;
-			resourceStateChanged = true;
 		} else {
 			// DX12 state is resource/subresource state, not descriptor state.
 			// Keep the hot path O(barriers); dump/query code joins descriptors
 			// with ResourceRecord when it needs a current state snapshot.
 			record.hasCurrentState = false;
 			record.stateTrackedByBarrier = true;
-			resourceStateChanged = true;
 		}
 		if (record.publishedState)
 			record.publishedState->PublishState(record);
-	}
-	if (resourceStateChanged) {
-		DX12BufferResolveCacheUtils::RecordStateOnlyUpdateLocked();
 	}
 	ReleaseSRWLockExclusive(&gResourceLock);
 }

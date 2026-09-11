@@ -98,17 +98,11 @@ inline Bunny::DX12ResourceAliasStore gResourceAliases;
 
 inline std::vector<std::wstring> gVlrResourceCandidates;
 
-inline std::unordered_map<std::wstring, bool> gCommandListRuntimeEffect;
-
 inline std::unordered_map<std::wstring, bool> gCommandListPreRuntimeEffect;
-
-inline std::unordered_map<std::wstring, bool> gCommandListPostRuntimeEffect;
 
 inline std::unordered_map<std::wstring, bool> gTextureOverridePreRuntimeEffect;
 
 inline std::unordered_map<std::wstring, bool> gTextureOverridePostRuntimeEffect;
-
-inline std::unordered_map<std::wstring, uint32_t> gTextureOverrideSectionIds;
 
 class DX12IaTextureOverrideCandidate
 {
@@ -122,14 +116,6 @@ public:
 
 inline std::vector<DX12IaTextureOverrideCandidate> gIaTextureOverrides;
 
-inline std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverrideIndex;
-
-inline std::unordered_map<UINT64, std::vector<size_t>> gIaVertexTextureOverrideIndex;
-
-inline std::unordered_map<uint32_t, std::vector<size_t>> gIaAnyVertexTextureOverrideIndex;
-
-inline std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverrideIndex;
-
 inline std::vector<size_t> gIaIndexTextureOverridePrefilterIndex;
 
 inline std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverridePrefilterByIndexCount;
@@ -142,8 +128,6 @@ inline std::unordered_map<uint32_t, std::vector<size_t>> gIaAnyVertexTextureOver
 
 inline std::unordered_map<uint32_t, std::vector<size_t>> gIaMergedVertexTextureOverridePrefilterIndex;
 
-inline std::unordered_map<UINT64, std::vector<size_t>> gIaVertexTextureOverridePrefilterByVertexCount;
-
 inline std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverridePrefilterByVertexCount;
 
 
@@ -153,11 +137,6 @@ inline std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOve
 // (DX11-style) instead of per draw.
 inline volatile LONG gIaPrefilterCountSensitive = 0;
 
-
-// The hash-level negative cache records tuples with no global candidates.
-// It is draw-context independent and therefore has a higher hit rate.
-// key = bits[31:0]=hash | bit[32]=indexBuffer | bits[47:33]=vertexSlot
-inline std::unordered_set<UINT64> gIaTextureOverrideHashNoCandidates;
 
 class DX12TriggeredTextureOverride
 {
@@ -339,7 +318,6 @@ public:
 	// write-time static replacement short-circuit to look the section up in
 	// DX12StaticTextureReplacementTable without re-reading the config.
 	uint32_t hash = 0;
-	bool hasActions = false;
 	bool hasUnsupportedCommandActions = false;
 	bool hasPreCommandListPlan = false;
 	bool hasPostCommandListPlan = false;
@@ -364,8 +342,6 @@ public:
 			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
 	}
 };
-
-inline std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> gCompiledTextureOverridePlans;
 
 
 class DX12CompiledShaderOverridePlan
@@ -411,10 +387,6 @@ public:
 		textureOverridesByIndexCount;
 	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
 		textureOverridesByVertexCount;
-	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
-		iaIndexTriggeredTextureOverrides;
-	std::unordered_map<UINT64, std::vector<DX12TriggeredTextureOverride>>
-		iaMergedVertexTriggeredTextureOverrides;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledCommandListPlan>>
 		compiledCommandListPlans;
 	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledTextureOverridePlan>>
@@ -655,8 +627,6 @@ inline volatile UINT64 gPreSkinActiveGeneration = 1;
 
 inline std::atomic<UINT64> gPreSkinSrvCacheGeneration{1};
 
-inline volatile LONG gPreSkinDescriptorAbortCacheHitLogCount = 0;
-
 void ClearPreSkinStickyMatchCache();
 
 class DX12ShaderOverridePsoMatchCache
@@ -730,17 +700,6 @@ public:
 	}
 };
 
-class DX12TextureOverrideLookupCacheEntry
-{
-public:
-	bool matched = false;
-};
-
-inline std::unordered_map<
-	DX12TextureOverrideLookupCacheKey,
-	DX12TextureOverrideLookupCacheEntry,
-	DX12TextureOverrideLookupCacheKeyHash> gTextureOverrideLookupCache;
-
 inline constexpr size_t MaxTextureOverrideLookupCacheEntries = 32768;
 
 
@@ -794,21 +753,6 @@ public:
 };
 
 
-class DX12ShaderOverrideNegativeCacheEntry
-
-{
-
-public:
-	bool valid = false;
-	UINT64 hash = 0;
-	DX12ShaderOverrideNegativeCacheKey key;
-};
-
-
-inline std::unordered_map<UINT64, DX12ShaderOverrideNegativeCacheKey> gShaderOverrideNegativeCache;
-
-inline SRWLOCK gShaderOverrideNegativeCacheLock = SRWLOCK_INIT;
-
 inline constexpr size_t MaxShaderOverrideNegativeCacheEntries = 16384;
 
 
@@ -830,10 +774,6 @@ public:
 
 
 inline SRWLOCK gPreSkinLock = SRWLOCK_INIT;
-
-inline std::set<SIZE_T> gPatchedPreSkinDescriptors;
-
-inline std::map<SIZE_T, std::wstring> gKnownPreSkinDescriptorPatches;
 
 class DX12ActivePreSkinTextureOverride
 {
@@ -1095,8 +1035,6 @@ public:
 
 inline std::vector<DX12PreSkinTextureOverrideCandidate> gPreSkinTextureOverrides;
 
-inline std::unordered_map<uint32_t, std::vector<size_t>> gPreSkinUavHashTextureOverrideIndex;
-
 inline std::unordered_map<uint64_t, std::vector<size_t>> gPreSkinMatchCsTextureOverrideIndex;
 
 inline std::unordered_map<std::wstring, std::vector<std::wstring>> gExplicitMatchCsResourceSections;
@@ -1122,11 +1060,8 @@ public:
 	UINT stride = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	D3D12_CPU_DESCRIPTOR_HANDLE uavCpu = {};
-	D3D12_GPU_DESCRIPTOR_HANDLE uavGpu = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = {};
 	D3D12_CPU_DESCRIPTOR_HANDLE drawSrvCpu = {};
-	bool uavInitialized = false;
-	bool uavWritten = false;
 	bool uavValid = false;
 	// UAV validity is frame-local. Store its frame epoch instead of walking the
 	// complete resident-resource map at every Present just to clear two booleans.
@@ -1191,7 +1126,6 @@ public:
 	ID3D12Resource *outputVertexResource = nullptr;
 	ID3D12Resource *originalOutputResource = nullptr;
 	UINT64 originalOutputByteWidth = 0;
-	UINT outputResizeSlot = 0;
 	UINT64 byteWidth = 0;
 	UINT stride = 0;
 	bool outputUavResized = false;
@@ -2051,23 +1985,6 @@ void BuildDx12VlrResourceCandidates(
 	const std::unordered_map<std::wstring, std::vector<std::wstring>> &explicitMatchCsResourceSections,
 	std::vector<std::wstring> *resourceCandidates);
 
-inline std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
-BuildDx12CommandExecutionRuntimeSnapshot(
-	const Bunny::CommandListMap &commandLists,
-	const std::unordered_map<std::wstring, bool> &commandListRuntimeEffect,
-	const std::unordered_map<std::wstring, bool> &commandListPreRuntimeEffect,
-	const std::unordered_map<std::wstring, bool> &commandListPostRuntimeEffect,
-	const Bunny::TextureOverrideMap &textureOverrides,
-	const std::unordered_map<std::wstring, bool> &textureOverridePreRuntimeEffect,
-	const std::unordered_map<std::wstring, bool> &textureOverridePostRuntimeEffect,
-	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
-	const std::vector<DX12IaTextureOverrideCandidate> &iaTextureOverrides,
-	const std::unordered_map<uint32_t, std::vector<size_t>> &iaIndexTextureOverrideIndex,
-	const std::unordered_map<UINT64, std::vector<size_t>> &iaMergedVertexTextureOverrideIndex,
-	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
-	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans);
-
-
 bool CommandListHasRuntimeEffect(
 	const std::wstring &name,
 	const Bunny::CommandListMap &commandLists,
@@ -2331,9 +2248,6 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 	const std::unordered_map<std::wstring, bool> &textureOverridePreRuntimeEffect,
 	const std::unordered_map<std::wstring, bool> &textureOverridePostRuntimeEffect,
 	const std::unordered_map<std::wstring, uint32_t> &textureOverrideSectionIds,
-	const std::vector<DX12IaTextureOverrideCandidate> &iaTextureOverrides,
-	const std::unordered_map<uint32_t, std::vector<size_t>> &iaIndexTextureOverrideIndex,
-	const std::unordered_map<UINT64, std::vector<size_t>> &iaMergedVertexTextureOverrideIndex,
 	const std::unordered_map<std::wstring, DX12CompiledCommandListPlan> &compiledCommandListPlans,
 	const std::unordered_map<uint32_t, DX12CompiledTextureOverridePlan> &compiledTextureOverridePlans,
 	const std::unordered_map<std::wstring, DX12CompiledShaderOverridePlan> &compiledShaderOverridePlans)
@@ -2416,49 +2330,6 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 					snapshot->textureOverridesGenericDrawContext.push_back(triggered);
 			}
 		}
-	}
-	auto appendTriggeredByIndexes =
-		[snapshot, &makeTriggered](
-			const std::vector<DX12IaTextureOverrideCandidate> &candidates,
-			const std::vector<size_t> &indexes,
-			bool indexBuffer,
-			uint32_t vertexSlot,
-			std::vector<DX12TriggeredTextureOverride> *out) {
-			if (!out)
-				return;
-			for (size_t index : indexes) {
-				if (index >= candidates.size())
-					continue;
-				const DX12IaTextureOverrideCandidate &candidate = candidates[index];
-				if (!candidate.sectionId)
-					continue;
-				auto config = snapshot->textureOverridesBySectionId.find(candidate.sectionId);
-				if (config == snapshot->textureOverridesBySectionId.end())
-					continue;
-				out->push_back(makeTriggered(
-					config->second,
-					candidate.sectionId,
-					candidate.preRuntimeEffect,
-					candidate.postRuntimeEffect,
-					indexBuffer,
-					vertexSlot));
-			}
-		};
-	for (const auto &item : iaIndexTextureOverrideIndex) {
-		appendTriggeredByIndexes(
-			iaTextureOverrides,
-			item.second,
-			true,
-			0,
-			&snapshot->iaIndexTriggeredTextureOverrides[item.first]);
-	}
-	for (const auto &item : iaMergedVertexTextureOverrideIndex) {
-		appendTriggeredByIndexes(
-			iaTextureOverrides,
-			item.second,
-			false,
-			static_cast<uint32_t>(item.first & 0xffffffffull),
-			&snapshot->iaMergedVertexTriggeredTextureOverrides[item.first]);
 	}
 	for (const auto &item : compiledCommandListPlans) {
 		if (item.second.unsupported)
@@ -2858,12 +2729,6 @@ uint32_t HashComputeBufferBinding(const DX12CurrentComputeUavBinding &binding);
 uint32_t HashComputeUavBinding(const DX12CurrentComputeUavBinding &uav);
 
 
-
-void AppendComputeBindingHashList(
-	const std::vector<DX12CurrentComputeUavBinding> &bindings,
-	bool srvs, char *text, size_t textSize);
-
-
 uint64_t HashComputeBindingListForProbe(
 	const std::vector<DX12CurrentComputeUavBinding> &bindings, bool srvs);
 
@@ -2871,9 +2736,6 @@ uint64_t HashComputeBindingListForProbe(
 bool CanPatchPreSkinVertexCountCbvLocked(
 	const DX12CurrentComputeUavBinding &cbv,
 	UINT expectedOriginalVertexCount);
-
-void AppendComputeRootConstantsList(
-	const std::vector<DX12CurrentRootConstants> &rootConstants, char *text, size_t textSize);
 
 uint64_t HashComputeCbvListForProbe(
 	const std::vector<DX12CurrentComputeUavBinding> &cbvs);
@@ -2993,11 +2855,6 @@ bool FindPreSkinProducerByMatchCsLocked(
 	DX12ComputeUavProducer *producer,
 	DX12CurrentComputeUavBinding *binding,
 	DX12UavHashTextureOverrideMatch *match);
-
-
-UINT FindPreSkinUavElementStrideLocked(
-	const DX12LoadedResource &resource,
-	const std::unordered_set<std::wstring> &activePreSkinSections);
 
 
 bool FindPreSkinProducerLocked(
@@ -4379,19 +4236,6 @@ void AppendShaderOverrideForHashLocked(
 
 bool ShaderModelMatchesRegex(
 	const Bunny::ShaderRegexConfig &regex, const std::string &shaderModel);
-
-
-inline constexpr LONG ShaderOverrideHotPathLogLimit = 512;
-
-inline volatile LONG gShaderOverridePsoCacheHitLogCount = 0;
-
-inline volatile LONG gShaderOverrideNegativeCacheHitLogCount = 0;
-
-inline volatile LONG gShaderOverrideNegativeCacheStoreLogCount = 0;
-
-inline volatile LONG gShaderOverrideNegativeCacheDescriptorBlockedLogCount = 0;
-
-inline volatile LONG gShaderOverrideNegativeCacheDynamicBlockedLogCount = 0;
 
 
 bool AllowShaderOverrideHotPathLog(volatile LONG *counter);

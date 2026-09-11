@@ -598,9 +598,6 @@ private:
 		sWindowFrameWallUs += frameWallUs;
 		if (frameWallUs > sWindowMaxFrameWallUs)
 			sWindowMaxFrameWallUs = frameWallUs;
-		if (!sWindowFirstFrameStartQpc)
-			sWindowFirstFrameStartQpc = record.frameStartQpc;
-		sWindowLastFrameEndQpc = record.frameEndQpc;
 		sWindowLast = record;
 	}
 
@@ -655,18 +652,13 @@ private:
 	inline static LONG64 sWindowPresentWallUs = 0;
 	inline static LONG64 sWindowFrameWallUs = 0;
 	inline static LONG64 sWindowMaxFrameWallUs = 0;
-	inline static LONG64 sWindowFirstFrameStartQpc = 0;
-	inline static LONG64 sWindowLastFrameEndQpc = 0;
 	inline static DX12DiagFrameRecord sWindowLast;
 
 	// Wait-probe registrations (written rarely, read on every hooked wait).
 	inline static volatile LONG64 sLastFrameLatencyHandle = 0;
-	inline static volatile LONG64 sLastFrameLatencySwapChain = 0;
 	inline static volatile LONG64 sLastFenceEventHandle = 0;
 	inline static volatile LONG64 sLastFenceEventFence = 0;
 	inline static volatile LONG64 sLastFenceEventValue = 0;
-	inline static volatile LONG64 sLastFenceEventCompletedBefore = 0;
-	inline static volatile LONG64 sLastFenceEventCompletedAfter = 0;
 
 	static LONG64 ReadLong64(volatile LONG64 *value) { return *value; }
 	static LONG ReadLong(volatile LONG *value) { return *value; }
@@ -1028,8 +1020,6 @@ inline void DX12DiagProf::RegisterFrameLatencyWaitableObject(
 {
 	InterlockedExchange64(&sLastFrameLatencyHandle,
 		static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(handle)));
-	InterlockedExchange64(&sLastFrameLatencySwapChain,
-		static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(swapChain)));
 	DX12DiagLog::Fields("DX12WaitableObject",
 		"\"kind\":\"frame_latency\",\"swapchain\":\"%p\",\"handle\":\"%p\","
 		"\"threadId\":%ld,\"present\":%ld",
@@ -1047,8 +1037,6 @@ inline void DX12DiagProf::RegisterFenceEventOnCompletion(
 	InterlockedExchange64(&sLastFenceEventFence,
 		static_cast<LONG64>(reinterpret_cast<ULONG_PTR>(fence)));
 	InterlockedExchange64(&sLastFenceEventValue, static_cast<LONG64>(value));
-	InterlockedExchange64(&sLastFenceEventCompletedBefore, static_cast<LONG64>(completedBefore));
-	InterlockedExchange64(&sLastFenceEventCompletedAfter, static_cast<LONG64>(completedAfter));
 	DX12DiagLog::Fields("DX12WaitableObject",
 		"\"kind\":\"fence_event\",\"fence\":\"%p\",\"handle\":\"%p\","
 		"\"value\":%llu,\"completedBefore\":%llu,\"completedAfter\":%llu,"
@@ -1256,8 +1244,6 @@ inline void DX12DiagProf::ResetWindow()
 	sWindowPresentWallUs = 0;
 	sWindowFrameWallUs = 0;
 	sWindowMaxFrameWallUs = 0;
-	sWindowFirstFrameStartQpc = 0;
-	sWindowLastFrameEndQpc = 0;
 	sWindowLast = DX12DiagFrameRecord();
 }
 

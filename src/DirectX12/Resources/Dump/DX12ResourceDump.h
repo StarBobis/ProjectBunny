@@ -459,7 +459,6 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 	bool readbackCopyOk = true;
 	bool copyBatchAborted = false;
 	std::unordered_map<std::string, std::wstring> dedupePathByKey;
-	std::unordered_map<std::string, const char*> dedupeFailureReasonByKey;
 	std::unordered_set<std::wstring> loggedFileDumps;
 	copiedTasks = static_cast<UINT>(DX12ResourceDumpGpuCopy::ExecuteReadbackCopyTasks(
 		device,
@@ -497,9 +496,6 @@ static DX12FrameAnalysisDumpResult DumpCurrentFrameResources(const wchar_t *dir)
 		}
 
 		if (!ok) {
-			if (!task.dedupeKey.empty())
-				dedupeFailureReasonByKey[task.dedupeKey] =
-					task.skipNote ? task.skipNote : "resource_dump_failed";
 			continue;
 		}
 

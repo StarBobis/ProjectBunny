@@ -899,72 +899,6 @@ public:
 			heap, slots, count, versions, valueIds);
 	}
 
-	static void FillRuntimeTableFromHeapSummary(
-		RootTableState *table,
-		const DX12DescriptorHeapSummary &heap)
-	{
-		if (!table || !table->valid ||
-				heap.increment == 0 || heap.gpuStart == 0 ||
-				table->baseDescriptor.ptr < heap.gpuStart)
-			return;
-
-		const UINT64 tableBaseIndex =
-			(table->baseDescriptor.ptr - heap.gpuStart) / heap.increment;
-		if (tableBaseIndex >= heap.numDescriptors)
-			return;
-
-		table->runtimeHeapResolved = true;
-		table->runtimeHeap = heap.heap;
-		table->runtimeHeapType = heap.type;
-		table->runtimeHeapCpuStart = heap.cpuStart;
-		table->runtimeHeapGpuStart = heap.gpuStart;
-		table->runtimeHeapIncrement = heap.increment;
-		table->runtimeHeapNumDescriptors = heap.numDescriptors;
-		table->runtimeHeapVersion = heap.version;
-		table->runtimeTableBaseIndex = tableBaseIndex;
-		table->runtimeTableCpuStart =
-			heap.cpuStart + static_cast<SIZE_T>(tableBaseIndex) * heap.increment;
-		table->runtimeTableGpuStart =
-			heap.gpuStart + tableBaseIndex * heap.increment;
-	}
-
-	static void InvalidateRuntimeTable(
-		RootTableState *table)
-	{
-		if (!table)
-			return;
-
-		table->runtimeHeapResolved = false;
-		table->runtimeHeap = nullptr;
-		table->runtimeHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		table->runtimeHeapCpuStart = 0;
-		table->runtimeHeapGpuStart = 0;
-		table->runtimeHeapIncrement = 0;
-		table->runtimeHeapNumDescriptors = 0;
-		table->runtimeHeapVersion = 0;
-		table->runtimeTableBaseIndex = 0;
-		table->runtimeTableCpuStart = 0;
-		table->runtimeTableGpuStart = 0;
-	}
-
-	template <class Snapshot>
-	static void RefreshRuntimeTable(
-		const Snapshot &snapshot,
-		RootTableState *table)
-	{
-		if (!table || !table->valid)
-			return;
-
-		DX12BindingTrackerQueryCacheUtils::InvalidateRuntimeTable(table);
-
-		DX12DescriptorHeapSummary heap = {};
-		if (!DX12BindingTrackerQueryCacheUtils::ResolveTableHeap(
-				snapshot, *table, &heap))
-			return;
-		DX12BindingTrackerQueryCacheUtils::FillRuntimeTableFromHeapSummary(
-			table, heap);
-	}
-
 	static bool MakeHeapSummaryFromRuntimeTable(
 		const RootTableState &table,
 		DX12DescriptorHeapSummary *heap)
@@ -1002,39 +936,6 @@ public:
 			return false;
 		return heap->type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV &&
 			heap->increment != 0;
-	}
-
-	static void StoreRuntimeHeapSummaries(
-		CommandListBindingState *state,
-		const DX12DescriptorHeapSummary *cbvSrvUavHeap,
-		bool cbvSrvUavResolved,
-		const DX12DescriptorHeapSummary *samplerHeap,
-		bool samplerResolved)
-	{
-		if (!state)
-			return;
-		state->runtimeCbvSrvUavHeapResolved = cbvSrvUavResolved;
-		state->runtimeCbvSrvUavHeap =
-			(cbvSrvUavResolved && cbvSrvUavHeap) ?
-			*cbvSrvUavHeap : DX12DescriptorHeapSummary();
-		state->runtimeSamplerHeapResolved = samplerResolved;
-		state->runtimeSamplerHeap =
-			(samplerResolved && samplerHeap) ?
-			*samplerHeap : DX12DescriptorHeapSummary();
-	}
-
-	static void RefreshAllRuntimeTables(CommandListBindingState *state)
-	{
-		if (!state)
-			return;
-		for (UINT root = 0; root < MaxRootParameters; ++root) {
-			if (state->graphicsTables[root].valid)
-				DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(
-					*state, &state->graphicsTables[root]);
-			if (state->computeTables[root].valid)
-				DX12BindingTrackerQueryCacheUtils::RefreshRuntimeTable(
-					*state, &state->computeTables[root]);
-		}
 	}
 
 	template <class Snapshot>
@@ -2160,7 +2061,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				*dependencyFingerprint = runtimeDependencyFingerprint;
 			DX12_PROF_COUNT("Rm.PreSkinBindingCacheStores");
 		}
-	} else if (!allRuntimeDescriptorsStable || !descriptorStateStable) {
 	}
 
 	if (uavs) *uavs = std::move(localUavs);

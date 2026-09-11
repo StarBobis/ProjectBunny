@@ -525,41 +525,6 @@ public:
 		}
 	}
 
-	template <typename Visitor>
-	void ForEachOccupied(Visitor visitor) const
-	{
-		for (uint32_t chunkIndex = 0; chunkIndex < chunkCount_; ++chunkIndex) {
-			const Chunk *chunk = chunks_[chunkIndex].load(
-				std::memory_order_acquire);
-			if (!chunk)
-				continue;
-			const uint32_t firstSlot = chunkIndex * ChunkSlots;
-			const uint32_t slotsInChunk = firstSlot + ChunkSlots <= maxSlots_ ?
-				ChunkSlots : maxSlots_ - firstSlot;
-			for (uint32_t offset = 0; offset < slotsInChunk; ++offset) {
-				if (chunk->occupied[offset])
-					visitor(firstSlot + offset, chunk->values[offset]);
-			}
-		}
-	}
-
-	size_t OccupiedCount() const
-	{
-		size_t count = 0;
-		ForEachOccupied([&count](uint32_t, const Value&) { ++count; });
-		return count;
-	}
-
-	uint32_t AllocatedChunkCount() const
-	{
-		uint32_t count = 0;
-		for (uint32_t index = 0; index < chunkCount_; ++index) {
-			if (chunks_[index].load(std::memory_order_acquire))
-				++count;
-		}
-		return count;
-	}
-
 	// Releases every chunk and the pointer table. Only called when the owning
 	// heap record is retired or tracking is cleaned up; chunk bodies are never
 	// released at materialization so in-flight lock-free accesses cannot dangle.

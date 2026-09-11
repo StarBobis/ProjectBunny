@@ -1415,9 +1415,6 @@ bool DX12ModRuntimeLoad(
 		textureOverridePreRuntimeEffect,
 		textureOverridePostRuntimeEffect,
 		textureOverrideSectionIds,
-		iaTextureOverrides,
-		iaIndexTextureOverrideIndex,
-		iaMergedVertexTextureOverrideIndex,
 		compiledCommandListPlans,
 		compiledTextureOverridePlans,
 		compiledShaderOverridePlans);
@@ -1446,17 +1443,10 @@ bool DX12ModRuntimeLoad(
 	// Resource aliases are runtime state rebuilt from the new generation.
 	gResourceAliases.Clear();
 	gVlrResourceCandidates.swap(vlrResourceCandidates);
-	gCommandListRuntimeEffect.swap(commandListRuntimeEffect);
 	gCommandListPreRuntimeEffect.swap(commandListPreRuntimeEffect);
-	gCommandListPostRuntimeEffect.swap(commandListPostRuntimeEffect);
 	gTextureOverridePreRuntimeEffect.swap(textureOverridePreRuntimeEffect);
 	gTextureOverridePostRuntimeEffect.swap(textureOverridePostRuntimeEffect);
-	gTextureOverrideSectionIds.swap(textureOverrideSectionIds);
 	gIaTextureOverrides.swap(iaTextureOverrides);
-	gIaIndexTextureOverrideIndex.swap(iaIndexTextureOverrideIndex);
-	gIaVertexTextureOverrideIndex.swap(iaVertexTextureOverrideIndex);
-	gIaAnyVertexTextureOverrideIndex.swap(iaAnyVertexTextureOverrideIndex);
-	gIaMergedVertexTextureOverrideIndex.swap(iaMergedVertexTextureOverrideIndex);
 	gIaIndexTextureOverridePrefilterIndex.swap(iaIndexTextureOverridePrefilterIndex);
 	gIaIndexTextureOverridePrefilterByIndexCount.swap(
 		iaIndexTextureOverridePrefilterByIndexCount);
@@ -1465,17 +1455,12 @@ bool DX12ModRuntimeLoad(
 	gIaAnyVertexTextureOverridePrefilterByVertexCount.swap(
 		iaAnyVertexTextureOverridePrefilterByVertexCount);
 	gIaMergedVertexTextureOverridePrefilterIndex.swap(iaMergedVertexTextureOverridePrefilterIndex);
-	gIaVertexTextureOverridePrefilterByVertexCount.swap(
-		iaVertexTextureOverridePrefilterByVertexCount);
 	gIaMergedVertexTextureOverridePrefilterByVertexCount.swap(
 		iaMergedVertexTextureOverridePrefilterByVertexCount);
-	gTextureOverrideLookupCache.clear();
-	gIaTextureOverrideHashNoCandidates.clear();
 	InterlockedExchange(&gIaPrefilterCountSensitive,
 		iaPrefilterCountSensitive ? 1 : 0);
 	DX12ModClearIaReplacementRuntimeCaches();
 	gCompiledCommandListPlans.swap(compiledCommandListPlans);
-	gCompiledTextureOverridePlans.swap(compiledTextureOverridePlans);
 	gCommandExecutionRuntimeSnapshot.store(
 		commandExecutionRuntimeSnapshot,
 		std::memory_order_release);
@@ -1500,7 +1485,6 @@ bool DX12ModRuntimeLoad(
 	InterlockedExchange(&gHasStaticIaReplacements,
 		staticIaReplacements->enabled ? 1 : 0);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);
-	gPreSkinUavHashTextureOverrideIndex.swap(preSkinUavHashTextureOverrideIndex);
 	gPreSkinMatchCsTextureOverrideIndex.swap(preSkinMatchCsTextureOverrideIndex);
 	gExplicitMatchCsResourceSections.swap(explicitMatchCsResourceSections);
 	gVertexLimitRaiseConfigs.swap(vertexLimitRaiseConfigs);
@@ -1519,7 +1503,6 @@ bool DX12ModRuntimeLoad(
 	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
-	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
 	AcquireSRWLockExclusive(&gPreSkinUavMatchCacheLock);
 	gPreSkinUavMatchCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinUavMatchCacheLock);
@@ -2147,7 +2130,6 @@ void BuildDx12CompiledTextureOverridePlans(
 
 			DX12CompiledTextureOverridePlan plan;
 			plan.hash = config.hash;
-			plan.hasActions = !config.actions.empty();
 			plan.drawSrvResources.reserve(
 				config.drawPsSrvResources.size() +
 				config.drawVsSrvResources.size());

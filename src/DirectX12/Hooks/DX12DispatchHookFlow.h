@@ -37,7 +37,6 @@ public:
 	const std::vector<DX12CurrentComputeUavBinding> *cachedCbvs = nullptr;
 	const std::vector<DX12CurrentRootConstants> *cachedRootConstants = nullptr;
 	bool uavsFound = false;
-	bool srvsFound = false;
 	bool cbvsFound = false;
 	bool rootConstantsFound = false;
 	bool applied = false;
@@ -215,9 +214,9 @@ public:
 			dispatchDecision = &fallbackDecision;
 		}
 		const bool decisionNeedsPreSkinProbe =
-			needsPreSkinProbe && dispatchDecision && dispatchDecision->NeedsPreSkinProbe();
+			needsPreSkinProbe && dispatchDecision->NeedsPreSkinProbe();
 		const bool decisionNeedsShaderOverrideWork =
-			hasShaderOverrides && dispatchDecision && dispatchDecision->NeedsShaderOverrideWork();
+			hasShaderOverrides && dispatchDecision->NeedsShaderOverrideWork();
 		const bool needsDispatchWork =
 			decisionNeedsShaderOverrideWork || decisionNeedsPreSkinProbe;
 
@@ -247,7 +246,7 @@ public:
 			}
 		}
 		if (!needsDispatchWork) {
-			if (needsPreSkinProbe && dispatchDecision && dispatchDecision->IsPreSkinRejected())
+			if (needsPreSkinProbe && dispatchDecision->IsPreSkinRejected())
 				DX12_PROF_COUNT("Rm.DispatchDecisionFastRejects");
 			DX12_PROF_COUNT("FastForward");
 			DX12ModRestorePreSkinningUavReplacement(commandList);
@@ -339,8 +338,7 @@ public:
 		// serial covers every binding mutation; across a command-list Reset the
 		// counters restart, but Reset already invalidates probeResultValid, so
 		// the verdict can never alias a previous recording.
-		if (effectiveState && dispatchDecision &&
-			effectiveState->resolvedCompute.probeResultValid &&
+		if (effectiveState->resolvedCompute.probeResultValid &&
 			!effectiveState->resolvedCompute.probeApplied &&
 			dispatchDecision->computeShaderHash != 0 &&
 			effectiveState->resolvedCompute.probeCsHash ==
@@ -492,7 +490,6 @@ public:
 		probe.cachedCbvs = nullptr;
 		probe.cachedRootConstants = nullptr;
 		probe.uavsFound = false;
-		probe.srvsFound = false;
 		probe.cbvsFound = false;
 		probe.rootConstantsFound = false;
 		probe.applied = false;
@@ -533,8 +530,6 @@ public:
 			DX12_LOG_TEXT("PreparePreSkinProbe: exit no cs hash\n");
 			return;
 		}
-		probe->computeBindingSerial = runtimeState ? runtimeState->computeBindingSerial : 0;
-
 		// Execute only reaches this method after the reload-generation-aware
 		// dispatch decision has already confirmed this CS as a PreSkin candidate.
 
@@ -769,7 +764,6 @@ public:
 			probe->cachedCbvs ? *probe->cachedCbvs : probe->cbvs;
 		const std::vector<DX12CurrentRootConstants> &rootConstants =
 			probe->cachedRootConstants ? *probe->cachedRootConstants : probe->rootConstants;
-		probe->srvsFound = !srvs.empty();
 		probe->cbvsFound = !cbvs.empty();
 		probe->rootConstantsFound = !rootConstants.empty();
 
@@ -864,7 +858,7 @@ public:
 				if (!runtimeState)
 					return;
 				runtimeState->resolvedCompute.probeBindingDependencyFingerprint =
-					probe ? probe->bindingDependencyFingerprint : 0;
+					probe->bindingDependencyFingerprint;
 				runtimeState->resolvedCompute.probeFingerprint =
 					computeIaFingerprint;
 				runtimeState->resolvedCompute.probeCsHash = computeShaderHash;
@@ -892,7 +886,7 @@ public:
 				localEntry.csHash = computeShaderHash;
 				localEntry.fingerprint = computeIaFingerprint;
 				localEntry.bindingDependencyFingerprint =
-					probe ? probe->bindingDependencyFingerprint : 0;
+					probe->bindingDependencyFingerprint;
 				localEntry.bufferContentGeneration =
 					DX12GetIaHashContentGeneration();
 				localEntry.iaContentEpoch = probeIaContentEpoch;
@@ -912,7 +906,7 @@ public:
 			runtimeState->resolvedCompute.probeCsHash == probe->computeShaderHash &&
 			runtimeState->resolvedCompute.probeReloadGeneration == reloadGeneration &&
 			runtimeState->resolvedCompute.probeBindingDependencyFingerprint ==
-				(probe ? probe->bindingDependencyFingerprint : 0) &&
+				probe->bindingDependencyFingerprint &&
 			runtimeState->resolvedCompute.probeBufferContentGeneration ==
 				DX12GetIaHashContentGeneration() &&
 			runtimeState->resolvedCompute.probeIaContentEpoch == probeIaContentEpoch &&
@@ -951,7 +945,7 @@ public:
 			    localEntry.csHash == probe->computeShaderHash &&
 			    localEntry.fingerprint == computeIaFingerprint &&
 			    localEntry.bindingDependencyFingerprint ==
-				    (probe ? probe->bindingDependencyFingerprint : 0) &&
+				    probe->bindingDependencyFingerprint &&
 			    localEntry.bufferContentGeneration ==
 				    DX12GetIaHashContentGeneration() &&
 			    localEntry.iaContentEpoch == probeIaContentEpoch &&
@@ -971,7 +965,7 @@ public:
 		if (runtimeProbeCacheHit || localProbeCacheHit ||
 		    DX12ModGetCachedPreSkinProbeResult(
 			    commandList, probe->computeShaderHash, computeIaFingerprint,
-			    probe ? probe->bindingDependencyFingerprint : 0, &cacheEntry)) {
+			    probe->bindingDependencyFingerprint, &cacheEntry)) {
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",
 				cacheEntry.applied ? "probe_cache_positive_hit" : "probe_cache_negative_hit",
@@ -1035,7 +1029,7 @@ public:
 			&probe->dispatchOverride,
 			runtimeState ? runtimeState->device : nullptr,
 			computeIaFingerprint,
-			probe ? probe->bindingDependencyFingerprint : 0,
+			probe->bindingDependencyFingerprint,
 			&matchPhaseMiss);
 		DX12_PROF_CPU_STAGE(
 			"PreSkin",
@@ -1058,7 +1052,7 @@ public:
 			DX12_DIAG_QPC(storeCacheBegin);
 			DX12ModStoreCachedPreSkinningUavMatch(
 				commandList, probe->computeShaderHash, computeIaFingerprint,
-				probe ? probe->bindingDependencyFingerprint : 0,
+				probe->bindingDependencyFingerprint,
 				probe->applied, &probe->dispatchOverride);
 			DX12_PROF_CPU_STAGE(
 				"PreSkin",

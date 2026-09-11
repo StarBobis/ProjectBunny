@@ -124,19 +124,9 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 			});
 	}
 
-	bool WrapD3D12CommandAllocatorResult(REFIID riid, void **allocator)
-	{
-		return DeviceWrapper::TryWrapCommandAllocator(riid, allocator);
-	}
-
 	bool WrapD3D12FenceResult(REFIID riid, void **fence)
 	{
 		return DeviceWrapper::TryWrapFence(riid, fence);
-	}
-
-	bool WrapD3D12DescriptorHeapResult(REFIID riid, void **heap)
-	{
-		return DeviceWrapper::TryWrapDescriptorHeap(riid, heap);
 	}
 
 	bool WrapD3D12ResourceResult(REFIID riid, void **resource)
@@ -144,59 +134,9 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 		return DeviceWrapper::TryWrapResource(riid, resource);
 	}
 
-	bool WrapD3D12HeapResult(REFIID riid, void **heap)
-	{
-		return DeviceWrapper::TryWrapHeap(riid, heap);
-	}
-
 	bool WrapD3D12PipelineStateResult(REFIID riid, void **pipelineState)
 	{
 		return DeviceWrapper::TryWrapPipelineState(riid, pipelineState);
-	}
-
-	bool WrapD3D12RootSignatureResult(REFIID riid, void **rootSignature)
-	{
-		return DeviceWrapper::TryWrapRootSignature(riid, rootSignature);
-	}
-
-	bool WrapD3D12QueryHeapResult(REFIID riid, void **queryHeap)
-	{
-		return DeviceWrapper::TryWrapQueryHeap(riid, queryHeap);
-	}
-
-	bool WrapD3D12CommandSignatureResult(REFIID riid, void **commandSignature)
-	{
-		return DeviceWrapper::TryWrapCommandSignature(riid, commandSignature);
-	}
-
-	bool WrapD3D12LifetimeTrackerResult(REFIID riid, void **tracker)
-	{
-		return DeviceWrapper::TryWrapLifetimeTracker(riid, tracker);
-	}
-
-	bool WrapD3D12ProtectedResourceSessionResult(REFIID riid, void **session)
-	{
-		return DeviceWrapper::TryWrapProtectedResourceSession(riid, session);
-	}
-
-	bool WrapD3D12MetaCommandResult(REFIID riid, void **metaCommand)
-	{
-		return DeviceWrapper::TryWrapMetaCommand(riid, metaCommand);
-	}
-
-	bool WrapD3D12StateObjectResult(REFIID riid, void **stateObject)
-	{
-		return DeviceWrapper::TryWrapStateObject(riid, stateObject);
-	}
-
-	bool WrapD3D12PipelineLibraryResult(REFIID riid, void **library)
-	{
-		return DeviceWrapper::TryWrapPipelineLibrary(riid, library);
-	}
-
-	bool WrapD3D12ShaderCacheSessionResult(REFIID riid, void **session)
-	{
-		return DeviceWrapper::TryWrapShaderCacheSession(riid, session);
 	}
 
 	bool WrapD3D12DebugInterfaceResult(REFIID riid, void **object)

@@ -463,9 +463,6 @@ bool EnsureResourceUavLocked(
 		resource->uavHeap = nullptr;
 	}
 	resource->uavCpu = {};
-	resource->uavGpu = {};
-	resource->uavInitialized = false;
-	resource->uavWritten = false;
 	resource->uavValid = false;
 	resource->uavValidPresent = -1;
 	resource->uavByteWidth = 0;
@@ -519,13 +516,11 @@ bool EnsureResourceUavLocked(
 	uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 
 	resource->uavCpu = heap->GetCPUDescriptorHandleForHeapStart();
-	resource->uavGpu = heap->GetGPUDescriptorHandleForHeapStart();
 	device->CreateUnorderedAccessView(uavResource, nullptr, &uavDesc, resource->uavCpu);
 	resource->uavHeap = heap;
 	resource->uavResource = uavResource;
 	resource->uavByteWidth = uavByteWidth;
 	resource->uavStride = elementStride;
-	resource->uavInitialized = true;
 	resource->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	return true;
 }

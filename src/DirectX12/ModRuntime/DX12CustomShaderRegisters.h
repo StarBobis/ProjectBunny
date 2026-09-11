@@ -41,36 +41,6 @@ public:
 	// never corruption).
 	static constexpr unsigned kMaxCustomElementsPerFrame = 64;
 
-	// Parses "x87" / "y88" style register names (case-insensitive, trimmed).
-	// Out: slot in [0, kIniParamsFloat4Count), component in [0, 4).
-	static bool ParseRegisterName(const std::wstring &name, unsigned *slot, unsigned *component)
-	{
-		if (!slot || !component)
-			return false;
-		std::wstring text = MigotoIniCommandListUtils::ToLower(
-			MigotoIniCommandListUtils::Trim(name));
-		if (text.size() < 2)
-			return false;
-		unsigned componentIndex = 0;
-		if (text[0] == L'x') componentIndex = 0;
-		else if (text[0] == L'y') componentIndex = 1;
-		else if (text[0] == L'z') componentIndex = 2;
-		else if (text[0] == L'w') componentIndex = 3;
-		else
-			return false;
-		unsigned parsed = 0;
-		for (size_t i = 1; i < text.size(); ++i) {
-			if (text[i] < L'0' || text[i] > L'9')
-				return false;
-			parsed = parsed * 10 + static_cast<unsigned>(text[i] - L'0');
-			if (parsed >= kIniParamsFloat4Count)
-				return false;
-		}
-		*slot = parsed;
-		*component = componentIndex;
-		return true;
-	}
-
 	// Builds the register name for a slot/component pair ("x87", "w88", ...).
 	static std::wstring RegisterName(unsigned slot, unsigned component)
 	{

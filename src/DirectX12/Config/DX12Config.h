@@ -1259,7 +1259,6 @@ public:
 	NumericMatch matchFirstVertex;
 	NumericMatch matchFirstIndex;
 	NumericMatch matchFirstInstance;
-	uint64_t matchUavBytes = 0;
 	uint64_t csHash = 0;
 	bool hasMatchPriority = false;
 	int matchPriority = 0;
@@ -1664,7 +1663,6 @@ inline void MigotoTextureOverrideParser::ParseSections(
 			if (key == L"match_uav_bytes") {
 				uint64_t value = 0;
 				if (MigotoTextureOverrideParserText::ParseUInt64(entry.value, &value)) {
-					config.matchUavBytes = value;
 					config.hasMatchUavBytes = true;
 				}
 				continue;
@@ -2099,11 +2097,9 @@ inline void MigotoShaderRegexParser::ParseSections(
 		MigotoCommandListParser::ResolveLinks(&config.commandLists, section.iniNamespace);
 	}
 
-	size_t erasedCount = 0;
 	for (auto it = shaderRegexes->begin(); it != shaderRegexes->end();) {
 		if (it->second.shaderModels.empty()) {
 			it = shaderRegexes->erase(it);
-			++erasedCount;
 		} else {
 			++it;
 		}

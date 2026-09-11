@@ -9,7 +9,6 @@ struct BufferResolveCacheEntry
 	UINT64 begin = 0;
 	UINT64 end = 0;
 	DX12BufferResourceSummary summary = {};
-	UINT64 rangeEpoch = 0;
 };
 
 struct DX12BufferResolveCacheInvalidationStats
@@ -121,33 +120,11 @@ extern std::atomic<UINT64> gResourceIdentityGeneration;
 extern std::atomic<UINT64> gDescriptorQuerySerial;
 extern bool gCleanupRegistered;
 extern UINT64 gResourcesRecordedFromCreate;
-extern UINT64 gDescriptorRecordsSeen;
-extern UINT64 gDescriptorCopyRecordsSeen;
-extern UINT64 gDescriptorHeapRecordsSeen;
-extern UINT64 gRootSignatureRecordsSeen;
-extern UINT64 gPsoRootRecordsSeen;
 extern UINT64 gDescriptorEpoch;
 extern LONG gLastResourceStatsPresent;
-extern UINT64 gBufferResolveCacheInvalidations;
-extern UINT64 gBufferResolveCacheInvalidationEntries;
-extern UINT64 gBufferResolveTlsHits;
-extern UINT64 gBufferResolveGlobalHits;
-extern UINT64 gBufferResolveBackwardScanHits;
-extern UINT64 gBufferResolveFallbackScanHits;
-extern UINT64 gBufferResolveMisses;
-extern UINT64 gBufferResolveGenerationResets;
-extern UINT64 gBufferResolveRangeInvalidations;
-extern UINT64 gBufferResolveRangeInvalidationEntries;
-extern UINT64 gBufferResolveIndexNoopUpdates;
-extern UINT64 gBufferResolveStateOnlyUpdates;
 extern UINT64 gBufferResolveInvalidationEpoch;
 extern std::atomic<UINT64> gBufferResolveInvalidationEpochAtomic;
-extern UINT64 gBufferResolveInvalidationHistoryLost;
 extern DX12BufferResolveInvalidatedRange gBufferResolveInvalidatedRanges[kDX12BufferResolveInvalidationHistoryCapacity];
-extern UINT64 gResourceExclusiveLockSlowCount;
-extern UINT64 gResourceExclusiveLockSlowMaxUs;
-extern UINT64 gDescriptorExclusiveLockSlowCount;
-extern UINT64 gDescriptorExclusiveLockSlowMaxUs;
 
 class DX12BufferResolveCacheUtils
 {
@@ -155,11 +132,6 @@ public:
 static bool RangesOverlap(UINT64 beginA, UINT64 endA, UINT64 beginB, UINT64 endB)
 {
 	return beginA < endB && beginB < endA;
-}
-
-static UINT64 CurrentInvalidationEpochLocked()
-{
-	return gBufferResolveInvalidationEpoch;
 }
 
 static UINT64 NormalizeRangeEnd(UINT64 begin, UINT64 end)
@@ -242,7 +214,6 @@ static bool RangeInvalidatedSinceLocked(UINT64 begin, UINT64 end, UINT64 sinceEp
 		return true;
 	if (currentEpoch - sinceEpoch >=
 		static_cast<UINT64>(kDX12BufferResolveInvalidationHistoryCapacity)) {
-		gBufferResolveInvalidationHistoryLost++;
 		return true;
 	}
 
@@ -251,7 +222,6 @@ static bool RangeInvalidatedSinceLocked(UINT64 begin, UINT64 end, UINT64 sinceEp
 			epoch % static_cast<UINT64>(kDX12BufferResolveInvalidationHistoryCapacity));
 		const DX12BufferResolveInvalidatedRange &range = gBufferResolveInvalidatedRanges[slot];
 		if (range.epoch != epoch) {
-			gBufferResolveInvalidationHistoryLost++;
 			return true;
 		}
 		if (DX12BufferResolveCacheUtils::RangesOverlap(begin, end, range.begin, range.end))
@@ -282,13 +252,11 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 	const bool newHasRange = newRecord && DX12BufferResolveCacheUtils::HasBufferRange(*newRecord);
 	if (oldHasRange && newHasRange &&
 		DX12BufferResolveCacheUtils::SameBufferRange(*oldRecord, *newRecord)) {
-		gBufferResolveIndexNoopUpdates++;
 		return stats;
 	}
 
 	stats.rangeChanged = oldHasRange || newHasRange;
 	if (!stats.rangeChanged) {
-		gBufferResolveIndexNoopUpdates++;
 		return stats;
 	}
 
@@ -301,7 +269,6 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 			newRecord->gpuVirtualAddress,
 			DX12BufferResolveCacheUtils::RangeEnd(*newRecord));
 	if (!oldHasRange && stats.removedEntries == 0) {
-		gBufferResolveIndexNoopUpdates++;
 		return stats;
 	}
 
@@ -317,26 +284,13 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 			invalidationEpoch,
 			newRecord->gpuVirtualAddress,
 			DX12BufferResolveCacheUtils::RangeEnd(*newRecord));
-	gBufferResolveCacheInvalidations++;
-	gBufferResolveCacheInvalidationEntries += stats.removedEntries;
-	gBufferResolveRangeInvalidations++;
-	gBufferResolveRangeInvalidationEntries += stats.removedEntries;
 	return stats;
 }
 
 static void InvalidateAllLocked(const char *reason)
 {
-	const size_t cacheEntriesBeforeClear = gBufferResolveCache.size();
 	gBufferResolveCache.clear();
 	const UINT64 invalidationEpoch = DX12BufferResolveCacheUtils::BumpInvalidationEpochLocked();
 	DX12BufferResolveCacheUtils::AppendInvalidatedRangeLocked(invalidationEpoch, 1, UINT64_MAX);
-	gBufferResolveCacheInvalidations++;
-	gBufferResolveCacheInvalidationEntries += cacheEntriesBeforeClear;
-	gBufferResolveGenerationResets++;
-}
-
-static void RecordStateOnlyUpdateLocked()
-{
-	gBufferResolveStateOnlyUpdates++;
 }
 };

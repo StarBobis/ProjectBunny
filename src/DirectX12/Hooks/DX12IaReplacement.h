@@ -666,12 +666,6 @@ public:
 };
 
 
-// Legacy stub - referenced by compiled code but definition was never provided.
-inline bool TryQuickRejectPsoNoMatch(ID3D12PipelineState *)
-{
-	return false;
-}
-
 class DX12PsoDrawFastRejectKey
 {
 public:

@@ -206,11 +206,6 @@ public:
 		return mChanged;
 	}
 
-	void ClearChanged()
-	{
-		mChanged = false;
-	}
-
 	void MarkExternalChange()
 	{
 		MarkChanged();
@@ -302,20 +297,6 @@ public:
 		Bunny::CommandListLinks postLinks;
 		postLinks.main = queued.config->commandLists.post;
 		RunCommandListLinks(postLinks, 0, true, &match);
-	}
-
-	void RunPostShaderOverrideLists(
-		const Bunny::ShaderOverrideConfig &config)
-	{
-		const std::shared_ptr<const DX12CompiledShaderOverridePlan> compiledPlan =
-			GetCompiledShaderOverridePlan(config.section);
-		if (compiledPlan && !compiledPlan->unsupported) {
-			RunCompiledShaderOverridePostPlan(*compiledPlan);
-			return;
-		}
-		Bunny::CommandListLinks postLinks;
-		postLinks.main = config.commandLists.post;
-		RunCommandListLinks(postLinks, 0, true, nullptr);
 	}
 
 public:
@@ -758,13 +739,6 @@ public:
 					mDescriptorTargetScratch.push_back(target);
 			}
 		}
-	}
-
-	void RunCompiledShaderOverridePostPlan(const DX12CompiledShaderOverridePlan &plan)
-	{
-		if (plan.unsupported || !plan.hasPostCommandListPlan)
-			return;
-		ExecuteCompiledCommandListPlan(plan.postCommandListPlan, 0, true);
 	}
 
 	void BuildDescriptorTextureOverrideCacheForTargets(
@@ -1323,29 +1297,6 @@ public:
 			mGraphicsSrvTextureOverrideCache[overrideEntry.first] =
 				std::move(resolvedMatches);
 		}
-	}
-
-	bool FindGraphicsSrvTextureOverrides(
-		const Bunny::CommandListTarget &target,
-		std::vector<DX12TextureOverrideMatch> *matches)
-	{
-		if (matches)
-			matches->clear();
-		const DX12TextureOverrideTargetCacheKey cacheKey = {
-			static_cast<uint32_t>(target.kind),
-			static_cast<uint32_t>(target.stage),
-			target.slot
-		};
-		if (!mGraphicsSrvTextureOverrideCacheResolved) {
-			BuildDescriptorTextureOverrideCache();
-		}
-		auto cached = mGraphicsSrvTextureOverrideCache.find(cacheKey);
-		if (cached != mGraphicsSrvTextureOverrideCache.end()) {
-			if (matches)
-				*matches = cached->second;
-			return !cached->second.empty();
-		}
-		return false;
 	}
 
 	void InvalidateTargetCaches()

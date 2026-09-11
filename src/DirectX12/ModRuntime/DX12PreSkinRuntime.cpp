@@ -2039,8 +2039,6 @@ void ClearPreSkinRuntimeState()
 {
 	std::vector<ID3D12Resource*> releasePreSkinResources;
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gPreSkinLock, "Lock.preSkinExclusive");
-	gPatchedPreSkinDescriptors.clear();
-	gKnownPreSkinDescriptorPatches.clear();
 	ClearActivePreSkinTextureOverridesLocked(&releasePreSkinResources);
 	// Confirmed match_cs sections outlive Present boundaries because DX12 command
 	// list recording is not frame ordered. A configuration reload is the point at
@@ -2057,7 +2055,6 @@ void ClearPreSkinRuntimeState()
 	AcquireSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
 	gPreSkinDescriptorPatchAbortCache.clear();
 	ReleaseSRWLockExclusive(&gPreSkinDescriptorPatchAbortLock);
-	InterlockedExchange(&gPreSkinDescriptorAbortCacheHitLogCount, 0);
 	gPreSkinSrvCacheGeneration.fetch_add(1, std::memory_order_relaxed);
 	ReleaseSRWLockExclusive(&gPreSkinLock);
 	ReleaseMovedPreSkinResources(&releasePreSkinResources);
@@ -2774,38 +2771,6 @@ uint32_t HashComputeUavBinding(const DX12CurrentComputeUavBinding &uav)
 }
 
 
-
-void AppendComputeBindingHashList(
-	const std::vector<DX12CurrentComputeUavBinding> &bindings,
-	bool srvs, char *text, size_t textSize)
-{
-	if (!text || textSize == 0)
-		return;
-	text[0] = '\0';
-	size_t used = 0;
-	const size_t maxItems = srvs ? 8 : 6;
-	for (size_t i = 0; i < bindings.size() && i < maxItems; ++i)
-	{
-		const DX12CurrentComputeUavBinding &binding = bindings[i];
-		const uint32_t hash = srvs ? HashComputeBufferBinding(binding) : HashComputeUavBinding(binding);
-		const UINT64 bytes = DescriptorViewSize(binding.descriptor);
-		int written = sprintf_s(
-			text + used, textSize - used,
-			"%s%u/%u/%u/%u:%08x:%llu:%p",
-			used ? ";" : "", binding.rootParameterIndex,
-			binding.rangeIndex, binding.shaderRegister,
-			binding.descriptorOffset, hash,
-			static_cast<unsigned long long>(bytes),
-			binding.descriptor.resource);
-		if (written <= 0)
-			break;
-		used += static_cast<size_t>(written);
-		if (used >= textSize - 1)
-			break;
-	}
-}
-
-
 uint64_t HashComputeBindingListForProbe(
 	const std::vector<DX12CurrentComputeUavBinding> &bindings, bool srvs)
 {
@@ -3353,26 +3318,6 @@ bool FindPreSkinProducerByMatchCsLocked(
 		FindPreSkinTextureOverrideCandidateIndex(candidateMatch.config),
 		candidateMatch.hash);
 	return true;
-}
-
-
-UINT FindPreSkinUavElementStrideLocked(
-	const DX12LoadedResource &resource,
-	const std::unordered_set<std::wstring> &activePreSkinSections)
-{
-	for (const DX12VertexLimitRaiseConfig &vlr : gVertexLimitRaiseConfigs)
-	{
-		if (vlr.hasMatchCs &&
-			ResourceBlockedByInactiveExplicitMatchCsLocked(resource.name, activePreSkinSections))
-			continue;
-		if (!ResourceMatchesVlrTarget(resource, vlr))
-			continue;
-		if (vlr.uavByteStride)
-			return vlr.uavByteStride;
-		if (vlr.overrideByteStride)
-			return vlr.overrideByteStride;
-	}
-	return resource.stride ? resource.stride : 4;
 }
 
 
@@ -4151,8 +4096,6 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Resource *resizedVertexResource = nullptr;
 	ID3D12DescriptorHeap *resizedUavHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE resizedUavCpu = {};
-	bool resizedUavCacheHit = false;
-	UINT resizedOutputSlot = 0;
 	bool outputUavResized = false;
 	// The binding may embed a resource freed and recreated at the same VA
 	// after a scene switch; resolve the current allocation once so every
@@ -4181,8 +4124,8 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 					requiredByteWidth, uavStride, overrideVertexCount,
 					currentByteWidth,
 					&resizedUavResource, &resizedVertexResource,
-					&resizedUavHeap, &resizedUavCpu, &resizedUavCacheHit,
-					&resizedOutputSlot))
+					&resizedUavHeap, &resizedUavCpu,
+					nullptr, nullptr))
 			{
 				D3D12_CPU_DESCRIPTOR_HANDLE uavDst = tempCpuBase;
 				uavDst.ptr += static_cast<SIZE_T>(
@@ -4242,7 +4185,6 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 	state.outputVertexResource = outputUavResized ? resizedVertexResource : nullptr;
 	state.originalOutputResource = outputUavResized ? uavResource : nullptr;
 	state.originalOutputByteWidth = outputUavResized ? DescriptorViewSize(uavBinding.descriptor) : 0;
-	state.outputResizeSlot = outputUavResized ? resizedOutputSlot : 0;
 	state.byteWidth = outputUavResized ? (static_cast<UINT64>(uavBinding.descriptor.structureByteStride) * overrideVertexCount) : DescriptorViewSize(uavBinding.descriptor);
 	state.stride = uavBinding.descriptor.structureByteStride;
 	state.outputUavResized = outputUavResized;
@@ -4499,7 +4441,6 @@ bool ApplyPreSkinBindingPatchLocked(
 		commandList->ResourceBarrier(1, &barrier);
 		replacement->uavState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	}
-	replacement->uavWritten = false;
 	replacement->uavValid = false;
 	
 	DX12SimulateContext *runtimeState =
@@ -6024,14 +5965,13 @@ bool PreloadPreSkinOutputResizeCache(ID3D12Device *device)
 			ID3D12DescriptorHeap *resizedHeap = nullptr;
 			D3D12_CPU_DESCRIPTOR_HANDLE resizedCpu = {};
 			bool cacheHit = false;
-			UINT ringSlot = 0;
 			if (!AcquirePreSkinOutputResizeCacheEntry(
 					device, nullptr, resourceSummary.resource,
 					candidate.byteWidth, candidate.stride,
 					static_cast<UINT>(elementCount64),
 					0, // no producer view info at preload time
 					&resizedUav, &resizedVertex, &resizedHeap, &resizedCpu,
-					&cacheHit, &ringSlot))
+					&cacheHit, nullptr))
 				continue;
 
 			DX12ModRegisterPreSkinOutputResize(

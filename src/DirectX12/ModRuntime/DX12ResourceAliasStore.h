@@ -81,26 +81,6 @@ public:
 		return mHasAny.load(std::memory_order_acquire);
 	}
 
-	// Pure chain resolution over an explicit table (used by the probe and by
-	// code that holds its own table). `name` that aliases nothing returns
-	// unchanged; loops break at maxDepth and return the input.
-	static std::wstring ResolveChain(
-		const std::wstring &name,
-		const std::unordered_map<std::wstring, std::wstring> &aliases,
-		unsigned maxDepth = 16)
-	{
-		if (name.empty() || aliases.empty() || maxDepth == 0)
-			return name;
-		std::wstring current = name;
-		for (unsigned depth = 0; depth < maxDepth; ++depth) {
-			auto found = aliases.find(current);
-			if (found == aliases.end())
-				return current;
-			current = found->second;
-		}
-		return name; // cycle or overlong chain: report the original name
-	}
-
 	// Returns true when the value is an alias-style reference
 	// ("ref <name>" where <name> names a Resource section, i.e. starts with
 	// the Resource prefix); capture-style references ("ref ps-tN") return

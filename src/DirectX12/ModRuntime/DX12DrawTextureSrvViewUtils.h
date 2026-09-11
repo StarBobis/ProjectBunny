@@ -72,31 +72,6 @@ public:
 		return DXGI_FORMAT_UNKNOWN;
 	}
 
-	static D3D12_SRV_DIMENSION InferViewDimensionFromDescriptor(
-		const DX12DescriptorSummary &descriptor)
-	{
-		if (descriptor.viewDimension != 0)
-			return static_cast<D3D12_SRV_DIMENSION>(descriptor.viewDimension);
-		if (descriptor.hasSrvDesc &&
-		    descriptor.srvDesc.ViewDimension != D3D12_SRV_DIMENSION_UNKNOWN)
-			return descriptor.srvDesc.ViewDimension;
-		if (descriptor.hasResourceDesc) {
-			switch (descriptor.resourceDesc.Dimension) {
-			case D3D12_RESOURCE_DIMENSION_TEXTURE2D:
-				return D3D12_SRV_DIMENSION_TEXTURE2D;
-			case D3D12_RESOURCE_DIMENSION_TEXTURE1D:
-				return D3D12_SRV_DIMENSION_TEXTURE1D;
-			case D3D12_RESOURCE_DIMENSION_TEXTURE3D:
-				return D3D12_SRV_DIMENSION_TEXTURE3D;
-			case D3D12_RESOURCE_DIMENSION_BUFFER:
-				return D3D12_SRV_DIMENSION_BUFFER;
-			default:
-				break;
-			}
-		}
-		return D3D12_SRV_DIMENSION_UNKNOWN;
-	}
-
 	static D3D12_SHADER_RESOURCE_VIEW_DESC BuildSrvDescFromResourceDesc(
 		DX12LoadedResource *resource,
 		const DX12DescriptorSummary &originalDescriptor,

@@ -178,7 +178,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 					std::swap(
 						localCache.entries[0],
 						localCache.entries[cacheIndex]);
-				gBufferResolveTlsHits++;
 				return true;
 			}
 		}
@@ -199,7 +198,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 				DX12BufferResolveRangeUtils::FillSummaryFromCacheEntry(
 					gpuVirtualAddress, size, cached->second, summary);
 			if (cacheResolved) {
-				gBufferResolveGlobalHits++;
 				localCache.entries[
 					localCache.next++ % localCache.entries.size()] =
 					cached->second;
@@ -247,7 +245,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 					gpuVirtualAddress, size, resource, summary,
 					&resolvedBegin, &resolvedEnd)) {
 				resolved = true;
-				gBufferResolveFallbackScanHits++;
 				DX12FrameAnalysis::LogJsonFunc("BufferResolveFallbackScanHit",
 						"\"gpuVa\":\"0x%llX\",\"size\":%llu,\"begin\":\"0x%llX\",\"end\":\"0x%llX\",\"resource\":\"%p\",\"resourceSize\":%llu,\"heapType\":%u,\"hasHeapType\":%u",
 					static_cast<unsigned long long>(gpuVirtualAddress),
@@ -264,7 +261,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 		ReleaseSRWLockShared(&gResourceLock);
 	}
 	if (resolved) {
-		gBufferResolveBackwardScanHits++;
 		BufferResolveCacheEntry entry;
 		entry.begin = resolvedBegin;
 		entry.end = resolvedEnd;
@@ -272,7 +268,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 		entry.summary.resourceOffset = 0;
 		entry.summary.viewSize = entry.end - entry.begin;
 		AcquireSRWLockExclusive(&gResourceLock);
-		entry.rangeEpoch = DX12BufferResolveCacheUtils::CurrentInvalidationEpochLocked();
 		gBufferResolveCache[entry.begin] = entry;
 		ReleaseSRWLockExclusive(&gResourceLock);
 		localCache.entries[
@@ -287,9 +282,6 @@ bool DX12ResolveBufferResourceByGpuVa(
 				backwardProbes,
 				summary->resource);
 		}
-	}
-	else {
-		gBufferResolveMisses++;
 	}
 	return resolved;
 }
@@ -473,7 +465,6 @@ struct CachedBufferContent
 	struct Page
 	{
 		std::array<uint8_t, 4096> data = {};
-		uint32_t version = 0;
 		bool valid = false;
 	};
 	std::unordered_map<size_t, Page> pages;
@@ -482,53 +473,7 @@ struct CachedBufferContent
 	UINT64 generation = 1;
 };
 
-struct BufferRegionHashKey
-{
-	UINT64 offset = 0;
-	UINT64 size = 0;
-	UINT stride = 0;
-	UINT format = 0;
-	UINT slot = 0;
-
-	bool operator==(const BufferRegionHashKey &other) const
-	{
-		return offset == other.offset &&
-			size == other.size &&
-			stride == other.stride &&
-			format == other.format &&
-			slot == other.slot;
-	}
-};
-
-struct BufferRegionHashKeyHasher
-{
-	size_t operator()(const BufferRegionHashKey &key) const
-	{
-		size_t hash = 0x84222325a9582d75ull;
-		auto mix = [&hash](UINT64 value) {
-			hash ^= static_cast<size_t>(value) + 0x9e3779b97f4a7c15ull +
-				(hash << 6) + (hash >> 2);
-		};
-		mix(key.offset);
-		mix(key.size);
-		mix(key.stride);
-		mix(key.format);
-		mix(key.slot);
-		return hash;
-	}
-};
-
-struct CachedBufferRegionHash
-{
-	uint32_t hash = 0;
-	UINT64 pageStamp = 0;
-};
-
 static std::unordered_map<ID3D12Resource*, CachedBufferContent> gBufferContentByResource;
-static std::unordered_map<
-	ID3D12Resource*,
-	std::unordered_map<BufferRegionHashKey, CachedBufferRegionHash, BufferRegionHashKeyHasher>>
-	gBufferRegionHashesByResource;
 static SRWLOCK gBufferContentLock = SRWLOCK_INIT;
 static std::atomic<UINT64> gBufferContentGeneration{1};
 
@@ -551,7 +496,6 @@ class DX12BufferContentCacheUtils
 {
 public:
 	static constexpr UINT64 PageSize = 4096;
-	static constexpr size_t MaxRegionHashesPerResource = 8192;
 
 	static UINT64 RequiredSize(
 		ID3D12Resource *resource, UINT64 offset, UINT64 bytes)
@@ -563,11 +507,6 @@ public:
 		if (desc.Width > required)
 			required = desc.Width;
 		return required;
-	}
-
-	static size_t PageCount(UINT64 size)
-	{
-		return static_cast<size_t>((size + PageSize - 1) / PageSize);
 	}
 
 	static void EnsureEntryStorage(
@@ -634,10 +573,6 @@ public:
 			auto found = entry->pages.find(page);
 			if (found == entry->pages.end())
 				continue;
-			if (found->second.version == UINT32_MAX)
-				found->second.version = 1;
-			else
-				++found->second.version;
 			found->second.valid = valid;
 		}
 	}
@@ -658,93 +593,6 @@ public:
 				return false;
 		}
 		return true;
-	}
-
-	static UINT64 ComputePageStamp(
-		const CachedBufferContent &entry,
-		UINT64 offset,
-		UINT64 size)
-	{
-		size_t firstPage = 0;
-		size_t lastPage = 0;
-		PageRange(offset, size, &firstPage, &lastPage);
-		UINT64 stamp = 0x84222325a9582d75ull;
-		for (size_t page = firstPage; page <= lastPage; ++page) {
-			auto found = entry.pages.find(page);
-			const uint32_t version = found == entry.pages.end() ? 0 : found->second.version;
-			stamp ^= static_cast<UINT64>(version) +
-				0x9e3779b97f4a7c15ull + (stamp << 6) + (stamp >> 2);
-		}
-		return stamp;
-	}
-
-	static bool TryLoadRegionHash(
-		const CachedBufferContent &entry,
-		const std::unordered_map<
-			BufferRegionHashKey,
-			CachedBufferRegionHash,
-			BufferRegionHashKeyHasher> &regionHashes,
-		UINT64 offset,
-		UINT64 size,
-		UINT stride,
-		UINT format,
-		UINT slot,
-		uint32_t *hash)
-	{
-		if (!hash || !ArePagesValid(entry, offset, size))
-			return false;
-		const BufferRegionHashKey key = {offset, size, stride, format, slot};
-		auto found = regionHashes.find(key);
-		if (found == regionHashes.end())
-			return false;
-		const UINT64 currentStamp = ComputePageStamp(entry, offset, size);
-		if (found->second.pageStamp != currentStamp)
-			return false;
-		*hash = found->second.hash;
-		return *hash != 0;
-	}
-
-	static void StoreRegionHash(
-		const CachedBufferContent &entry,
-		std::unordered_map<
-			BufferRegionHashKey,
-			CachedBufferRegionHash,
-			BufferRegionHashKeyHasher> *regionHashes,
-		UINT64 offset,
-		UINT64 size,
-		UINT stride,
-		UINT format,
-		UINT slot,
-		uint32_t hash)
-	{
-		if (!regionHashes || !hash || !ArePagesValid(entry, offset, size))
-			return;
-		if (regionHashes->size() >= MaxRegionHashesPerResource)
-			regionHashes->clear();
-		const BufferRegionHashKey key = {offset, size, stride, format, slot};
-		CachedBufferRegionHash value;
-		value.hash = hash;
-		value.pageStamp = ComputePageStamp(entry, offset, size);
-		(*regionHashes)[key] = value;
-	}
-
-	static uint32_t ComputeIaContentHash(
-		const uint8_t *data,
-		size_t dataSize,
-		UINT stride,
-		UINT format,
-		UINT slot)
-	{
-		if (!data || !dataSize)
-			return 0;
-		uint32_t hash = 0;
-		const uint32_t tag = MakeTrackerFourCC('D', 'X', 'I', 'C');
-		hash = HashBytes(hash, &tag, sizeof(tag));
-		hash = crc32c_append(hash, data, dataSize);
-		hash = HashBytes(hash, &stride, sizeof(stride));
-		hash = HashBytes(hash, &format, sizeof(format));
-		hash = HashBytes(hash, &slot, sizeof(slot));
-		return hash;
 	}
 };
 
@@ -854,16 +702,11 @@ bool DX12CacheBufferContentRange(
 		if (entry.gpuVaBase != gpuVaBase) {
 			entry = CachedBufferContent();
 			entry.gpuVaBase = gpuVaBase;
-			gBufferRegionHashesByResource[resource].clear();
 		}
 		DX12BufferContentCacheUtils::EnsureEntryStorage(&entry, requiredSize);
 		for (const DX12ChangedBufferPage &update : changed) {
 			CachedBufferContent::Page &page = entry.pages[update.index];
 			page.data = update.data;
-			if (page.version == UINT32_MAX)
-				page.version = 1;
-			else
-				++page.version;
 			const UINT64 pageBegin = static_cast<UINT64>(update.index) *
 				DX12BufferContentCacheUtils::PageSize;
 			const UINT64 pageEnd = (std::min)(pageBegin +
@@ -1004,7 +847,6 @@ void DX12InvalidateBufferContent(ID3D12Resource *resource)
 		return;
 	AcquireSRWLockExclusive(&gBufferContentLock);
 	gBufferContentByResource.erase(resource);
-	gBufferRegionHashesByResource.erase(resource);
 	ReleaseSRWLockExclusive(&gBufferContentLock);
 	// Thread-local IA caches use this epoch as the cheap indication that a
 	// per-resource generation must be re-read. Without it, a released or

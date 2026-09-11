@@ -20,7 +20,6 @@ UINT32 DX12ModGetHotPathFlags();
 // SourceState::Capture so the published HookWorkFlags word keeps the
 // pending-restore bit across Update() republishes.
 bool DX12ModHasPendingDrawSrvRestore();
-void DX12ActivateCommandListHotPathHooks();
 
 class DX12HotPathState
 {
@@ -139,20 +138,6 @@ public:
 			if (drawSrvPendingRestore)
 				flags |= FLAG_DRAWSRV_PENDING_RESTORE;
 			return flags;
-		}
-
-		bool HasAnyWork() const
-		{
-			return huntEnabled ||
-				frameAnalysisActive ||
-				shaderDumpActive ||
-				shaderOverrides ||
-				presentReplacement ||
-				preSkinProbe ||
-				preSkinBindingTrack ||
-				shaderDescriptorTrack ||
-				iaResidentState ||
-				drawSrvSlotReplacement;
 		}
 
 		bool NeedsHeavyTracking() const

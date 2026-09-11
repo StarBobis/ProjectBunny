@@ -41,7 +41,6 @@ namespace
 {
 constexpr UINT64 kReadbackAlign = 256;
 constexpr UINT64 kReadbackEventMaxBytes = 64ull * 1024 * 1024;   // 64MB per event
-constexpr UINT64 kReadbackSlotInitialBytes = 8ull * 1024 * 1024; // 8MB
 constexpr UINT64 kReadbackSlotMaxBytes = 64ull * 1024 * 1024;    // 64MB per slot
 constexpr UINT kReadbackSlotCount = 4;
 constexpr UINT kReadbackListPoolSize = 4;

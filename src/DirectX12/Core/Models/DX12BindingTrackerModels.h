@@ -278,14 +278,6 @@ public:
 };
 
 
-class DX12BindingTableRef
-{
-public:
-	const char *space = "";
-	const RootTableState *table = nullptr;
-	UINT heapType = 0;
-};
-
 class FlatBufferRow
 {
 public:
