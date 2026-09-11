@@ -2608,8 +2608,6 @@ bool PatchPreSkinVertexCountCbvLocked(
 	{
 		DX12_PROF_STAGE_SCOPE(PreSkinCbvCacheLookup);
 		DX12PreSkinCbvPatchCacheKey patchKey;
-		patchKey.resource = cbvResource;
-		patchKey.sourceOffset = sourceOffset;
 		patchKey.viewBytes = viewBytes;
 		patchKey.overrideVertexCount = overrideVertexCount;
 		patchKey.contentHash = patchedContentHash;
@@ -2691,7 +2689,15 @@ bool PatchPreSkinVertexCountCbvLocked(
 
 		// Clear before taking a pooled slot: the clear releases every slot, so
 		// the descriptor acquired below cannot alias a surviving entry's.
-		if (gPreSkinCbvPatchCache.size() > 64)
+		//
+		// The threshold is the pool's own capacity. It used to be a hard-coded
+		// 64 - four times smaller than the 256-slot pool it protects - so the
+		// cache threw away every still-reusable entry (and re-parked their
+		// buffers for release) long before it ran out of descriptor slots. That
+		// is the opposite of what this cache exists for, given the game rewrites
+		// the source CBVs every frame. A wipe of up to 256 entries still fits the
+		// deferred-release list's own bound of 512.
+		if (gPreSkinCbvPatchCache.size() >= kPreSkinCbvPatchPoolSlots)
 			ClearPreSkinCbvPatchCache();
 		D3D12_CPU_DESCRIPTOR_HANDLE cachedCpu =
 			AcquirePreSkinCbvPatchDescriptor(device);
@@ -2706,13 +2712,10 @@ bool PatchPreSkinVertexCountCbvLocked(
 			patchedResource->AddRef();
 
 			DX12PreSkinCbvPatchCacheKey patchKey;
-			// Must match the lookup key exactly: that one is built from the
-			// resolved resource, so storing the unresolved descriptor resource
-			// here made every entry unreachable whenever resolution found a
-			// different backing resource - which turned the patch cache into a
-			// permanent miss and created a buffer + descriptor on every call.
-			patchKey.resource = cbvResource;
-			patchKey.sourceOffset = sourceOffset;
+			// Must match the lookup key exactly. Both keys now describe only the
+			// patched result (content + descriptor shape); see the note on
+			// DX12PreSkinCbvPatchCacheKey for why the source resource and offset
+			// are deliberately excluded.
 			patchKey.viewBytes = viewBytes;
 			patchKey.overrideVertexCount = overrideVertexCount;
 			patchKey.contentHash = patchedContentHash;
@@ -4072,7 +4075,7 @@ bool ApplyPreSkinDescriptorTablePatchLocked(
 				continue;
 			}
 			const DX12PreSkinSrvPositiveCacheValue cacheValue =
-				{resource, elementStride, srvByteWidth, srv.shaderRegister};
+				{resource, elementStride, srvByteWidth};
 			StorePreSkinSrvProbePositive(stableNegativeKey, cacheValue);
 		}
 		if (!resource || !resource->srvCpu.ptr)

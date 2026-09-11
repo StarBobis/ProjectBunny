@@ -161,7 +161,6 @@ public:
 	bool bindingsValid = false;
 	bool bindingsFoundAny = false;
 	bool bindingsUseRootValues = false;
-	UINT64 bindingsSerial = 0;
 	UINT64 bindingsDescriptorVersion = 0;
 	UINT64 bindingsDescriptorQuerySerial = 0;
 	UINT64 bindingsDependencyFingerprint = 0;
@@ -176,7 +175,6 @@ public:
 	// collected bindings are identical, so the cache hits across re-binds.
 	std::array<UINT64, MaxRootParameters> bindingsRootIdentities;
 	std::array<bool, MaxRootParameters> bindingsRootValid;
-	std::vector<UINT> bindingsRootParameters;
 	std::vector<UINT64> bindingsRootRevisions;
 	std::vector<UINT> observedSlots;
 	std::vector<UINT64> observedSlotVersions;
@@ -327,16 +325,6 @@ public:
 
 	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
 	ID3D12DescriptorHeap *samplerHeap = nullptr;
-	// Shadow of the game's render-target state, recorded by the wrapper's
-	// OMSetRenderTargets override (RTV handles are expanded when the game binds
-	// a contiguous range). The custom shader element replay rebinds the back
-	// buffer + full viewport mid-list and restores the game state from these
-	// fields afterwards; without them the replay would leak its OM state into
-	// every subsequent game draw on the same list.
-	UINT omRenderTargetCount = 0;
-	D3D12_CPU_DESCRIPTOR_HANDLE omRenderTargets[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-	bool omHasDepthStencil = false;
-	D3D12_CPU_DESCRIPTOR_HANDLE omDepthStencil = {};
 	// Cached CBV/SRV/UAV heap content version.  Re-read on every SetDescriptorHeaps
 	// instead of on every draw: DX12GetDescriptorHeapVersion takes the global
 	// descriptor lock plus a hash-map lookup, and draws outnumber heap changes by

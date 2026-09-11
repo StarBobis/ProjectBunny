@@ -59,7 +59,6 @@ public:
 	bool indexBufferStaticOriginalResolved = false;
 	UINT64 indexBufferStaticContentGeneration = 0;
 	UINT64 indexBufferStaticResolveEpoch = 0;
-	uint32_t indexBufferStaticMatchedHash = 0;
 	bool vertexBufferStaticReplaced[32] = {};
 	// Aggregate of vertexBufferStaticReplaced for a single-load draw-path gate.
 	UINT32 vertexBufferStaticReplacedMask = 0;
@@ -69,7 +68,6 @@ public:
 	bool vertexBufferStaticOriginalResolved[32] = {};
 	UINT64 vertexBufferStaticContentGeneration[32] = {};
 	UINT64 vertexBufferStaticResolveEpoch[32] = {};
-	uint32_t vertexBufferStaticMatchedHash[32] = {};
 	// Plan fix B: lazily re-check static-replacement staleness only when the
 	// global content/resolve generations moved since the last deep check on
 	// this command list. Without this gate every draw pays a per-slot locked

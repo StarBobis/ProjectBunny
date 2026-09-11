@@ -1,4 +1,4 @@
-﻿// Pre-skin binding cache keys, TLS cache and cache utilities.
+// Pre-skin binding cache keys, TLS cache and cache utilities.
 // Split from DX12Resources.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -107,10 +107,6 @@ public:
 class DX12PreSkinBindingCacheUtils
 {
 public:
-	// Start at the measured working set, then grow when a title exceeds it
-	// instead of thrashing through LRU eviction every frame.
-	static constexpr size_t CacheCapacity = 256;
-
 	static void MixValue(DX12PreSkinBindingCacheKey *key, UINT64 value)
 	{
 		if (!key)

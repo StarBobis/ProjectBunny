@@ -734,7 +734,6 @@ class DX12TextureOverrideLookupCacheEntry
 {
 public:
 	bool matched = false;
-	std::vector<size_t> iaCandidateIndexes;
 };
 
 inline std::unordered_map<
@@ -962,26 +961,31 @@ public:
 	DX12LoadedResource *resource = nullptr;
 	UINT elementStride = 0;
 	UINT64 srvByteWidth = 0;
-	uint32_t srvRegister = UINT_MAX;
 };
 
 
 // Cross-frame cache for patched CBV buffers.
 // This avoids the first CreateCommittedResource call on every frame.
 // Identical CBV inputs reuse the upload buffer and CBV descriptor.
+//
+// The key deliberately holds only what the *result* depends on: the patched
+// content (contentHash, verified byte-for-byte on hit) plus the descriptor shape
+// the cached CBV was created with (viewBytes). Neither the source resource nor
+// its offset is part of it. Games rewrite an UPLOAD CBV in place every frame (and
+// rotate the arena it lives in), so keying on the source pointer/offset made an
+// entry unreachable as soon as the game bound the same constants from a
+// different allocation - the patch cache then degenerated into "create a
+// committed resource per call", which is exactly what it exists to avoid. A
+// comment at the store site already records one instance of this bug.
 class DX12PreSkinCbvPatchCacheKey
 {
 public:
-	ID3D12Resource *resource = nullptr;
-	UINT64 sourceOffset = 0;
 	UINT viewBytes = 0;
 	UINT overrideVertexCount = 0;
 	UINT64 contentHash = 0;
 
 	bool operator<(const DX12PreSkinCbvPatchCacheKey &rhs) const
 	{
-		if (resource != rhs.resource) return resource < rhs.resource;
-		if (sourceOffset != rhs.sourceOffset) return sourceOffset < rhs.sourceOffset;
 		if (viewBytes != rhs.viewBytes) return viewBytes < rhs.viewBytes;
 		if (overrideVertexCount != rhs.overrideVertexCount)
 			return overrideVertexCount < rhs.overrideVertexCount;
@@ -1181,7 +1185,6 @@ public:
 	bool active = false;
 	UINT rootParameterIndex = 0;
 	D3D12_GPU_DESCRIPTOR_HANDLE originalTable = {};
-	D3D12_GPU_DESCRIPTOR_HANDLE replacementTable = {};
 	ID3D12DescriptorHeap *descriptorHeap = nullptr;
 	ID3D12DescriptorHeap *originalHeap = nullptr;
 	ID3D12Resource *resource = nullptr;
@@ -1646,13 +1649,10 @@ public:
 	bool skipDraw = false;
 	bool skipDispatch = false;
 	UINT64 skipGeneration = 0;
-
-	// PSO-Create-Time compiled Mod Plan: eliminates per-draw config rediscovery.
-	// Computed when the PSO is first recorded (RecordGraphicsPipelineState).
-	// After mod reload, generation mismatch triggers lazy rebuild on first access.
-	DX12IaHashTargetPlan cachedDrawTargetPlan;
-	UINT64 drawTargetPlanGeneration = 0;
-	bool drawTargetPlanResolved = false;
+	// The "PSO-create-time compiled Mod Plan" trio (cachedDrawTargetPlan /
+	// drawTargetPlanGeneration / drawTargetPlanResolved) was removed here: it was
+	// declared with a comment promising it eliminates per-draw config
+	// rediscovery, but nothing ever wrote or read it.
 };
 
 

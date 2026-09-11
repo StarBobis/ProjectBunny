@@ -1272,7 +1272,6 @@ public:
 							ia.indexBufferStaticOriginalResource.resource) : 0;
 				ia.indexBufferStaticResolveEpoch =
 					DX12GetIaHashResolveGeneration();
-				ia.indexBufferStaticMatchedHash = hash;
 			} else if (hash && ia.indexBufferStaticReplaced) {
 				// The bind was evaluated (hash succeeded) and the table has no
 				// replacement for it: drop stale bookkeeping from an earlier
@@ -1372,7 +1371,6 @@ public:
 								ia.vertexBufferStaticOriginalResources[slot].resource) : 0;
 					ia.vertexBufferStaticResolveEpoch[slot] =
 						DX12GetIaHashResolveGeneration();
-					ia.vertexBufferStaticMatchedHash[slot] = hash;
 				} else if (hash && ia.vertexBufferStaticReplaced[slot]) {
 					ia.vertexBufferStaticReplaced[slot] = false;
 					ia.vertexBufferStaticReplacedMask &= ~(1u << slot);

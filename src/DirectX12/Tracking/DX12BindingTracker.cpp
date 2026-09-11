@@ -439,7 +439,6 @@ static void StoreRuntimePreSkinBindings(
 	runtimeState->resolvedCompute.bindingsValid = true;
 	runtimeState->resolvedCompute.bindingsFoundAny = foundAny;
 	runtimeState->resolvedCompute.bindingsUseRootValues = usesRootValues;
-	runtimeState->resolvedCompute.bindingsSerial = computeBindingSerial;
 	runtimeState->resolvedCompute.bindingsDescriptorVersion =
 		runtimeState->computeDescriptorBindingVersion;
 	runtimeState->resolvedCompute.bindingsDescriptorQuerySerial =
@@ -462,8 +461,6 @@ static void StoreRuntimePreSkinBindings(
 			runtimeState->computeRootTables[root].valid ?
 				runtimeState->computeRootTables[root].baseDescriptor.ptr : 0;
 	}
-	runtimeState->resolvedCompute.bindingsRootParameters =
-		observedRootParameters;
 	runtimeState->resolvedCompute.bindingsRootRevisions.resize(
 		observedRootParameters.size());
 	for (size_t index = 0; index < observedRootParameters.size(); ++index) {

@@ -436,11 +436,6 @@ static void DX12RuntimeResetStateForRecording(DX12SimulateContext *state)
 
 	state->cbvSrvUavHeap = nullptr;
 	state->samplerHeap = nullptr;
-	// OM shadow: a fresh command list has no render targets bound. The
-	// viewport/scissor shadow was removed - no wrapper ever recorded it and
-	// nothing read it.
-	state->omRenderTargetCount = 0;
-	state->omHasDepthStencil = false;
 	state->cbvSrvUavHeapVersion = 0;
 	state->lastSetHeapsCount = 0xFFFFFFFF;
 	state->lastSetHeapsInput[0] = nullptr;

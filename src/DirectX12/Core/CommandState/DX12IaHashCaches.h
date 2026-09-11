@@ -79,8 +79,6 @@ public:
 	uint32_t indexHash = 0;
 	D3D12_INDEX_BUFFER_VIEW indexView = {};
 	std::vector<DX12IaBufferHash> vertexBuffers;
-	// Compute dispatch bindings: UAV/SRV/CBV buffer hashes for PreSkin matching.
-	std::vector<DX12IaBufferHash> computeBuffers;
 };
 
 

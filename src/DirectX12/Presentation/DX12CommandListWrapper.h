@@ -1211,33 +1211,16 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 			UINT NumRenderTargetDescriptors, const D3D12_CPU_DESCRIPTOR_HANDLE *pRenderTargetDescriptors,
 			BOOL RTsSingleHandleToDescriptorRange, const D3D12_CPU_DESCRIPTOR_HANDLE *pDepthStencilDescriptor) override
 		{
+			// Plain forward. This override used to shadow the bound render
+			// targets, viewports and scissor rects into DX12SimulateContext;
+			// nothing ever read that shadow (the custom element replay rebinds
+			// the back buffer directly in DX12CommandListExecutor), so it only
+			// cost a std::min, an ID3D12Device::GetDescriptorHandleIncrementSize
+			// COM call on the single-handle-range path, and up to eight stores
+			// on every call.
 			mCommandList->OMSetRenderTargets(
 				NumRenderTargetDescriptors, pRenderTargetDescriptors,
 				RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
-			// Shadow for the custom element replay's post-draw restore. A
-			// single-handle range is expanded with the RTV increment so the
-			// restore can rebind the exact per-slot handles.
-			mRuntimeState.omRenderTargetCount = (std::min)(
-				NumRenderTargetDescriptors,
-				static_cast<UINT>(D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT));
-			if (pRenderTargetDescriptors) {
-				UINT rtvIncrement = 0;
-				if (RTsSingleHandleToDescriptorRange && mRuntimeState.device) {
-					rtvIncrement = mRuntimeState.device->GetDescriptorHandleIncrementSize(
-						D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-				}
-				for (UINT i = 0; i < mRuntimeState.omRenderTargetCount; ++i) {
-					mRuntimeState.omRenderTargets[i] = RTsSingleHandleToDescriptorRange ?
-						D3D12_CPU_DESCRIPTOR_HANDLE{
-							pRenderTargetDescriptors[0].ptr +
-								static_cast<UINT64>(i) * rtvIncrement } :
-						pRenderTargetDescriptors[i];
-				}
-			}
-			mRuntimeState.omHasDepthStencil =
-				pDepthStencilDescriptor && pDepthStencilDescriptor->ptr;
-			if (mRuntimeState.omHasDepthStencil)
-				mRuntimeState.omDepthStencil = *pDepthStencilDescriptor;
 		}
 
 		void STDMETHODCALLTYPE ClearDepthStencilView(
