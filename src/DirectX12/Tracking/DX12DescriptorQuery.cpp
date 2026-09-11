@@ -433,7 +433,6 @@ static void BuildResourceMetadataSnapshot(
 			summary.nodeMask = record.nodeMask;
 			summary.version = record.version;
 			summary.flags = record.flags;
-			summary.staticSamplerCount = record.staticSamplerCount;
 			summary.parsed = record.parsed;
 			summary.parameters = record.parameters;
 			rootSignatures->push_back(summary);

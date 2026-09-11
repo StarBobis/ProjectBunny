@@ -175,7 +175,6 @@ public:
 	// collected bindings are identical, so the cache hits across re-binds.
 	std::array<UINT64, MaxRootParameters> bindingsRootIdentities;
 	std::array<bool, MaxRootParameters> bindingsRootValid;
-	std::vector<UINT64> bindingsRootRevisions;
 	std::vector<UINT> observedSlots;
 	std::vector<UINT64> observedSlotVersions;
 	std::vector<UINT64> observedSlotValueIds;

@@ -79,8 +79,7 @@ public:
 				    !*textureOverrideTargetsCollected) {
 					*textureOverrideTargetsCollected = true;
 					CollectAllTextureOverrideTargetsLocked(
-						commandListStack, targetPlan,
-						textureOverrideTargetsCollected);
+						commandListStack, targetPlan);
 				}
 				break;
 			default:
@@ -147,13 +146,10 @@ public:
 
 	static void CollectAllTextureOverrideTargetsLocked(
 		std::unordered_set<std::wstring> *commandListStack,
-		DX12IaHashTargetPlan *targetPlan,
-		bool *textureOverrideTargetsCollected)
+		DX12IaHashTargetPlan *targetPlan)
 	{
 		if (!targetPlan)
 			return;
-		if (textureOverrideTargetsCollected)
-			*textureOverrideTargetsCollected = true;
 
 		Bunny::TextureOverrideMap::const_iterator bucket = gTextureOverrides.begin();
 		for (; bucket != gTextureOverrides.end(); ++bucket) {
@@ -162,10 +158,10 @@ public:
 				const Bunny::TextureOverrideConfig &config = configs[index];
 				CollectCommandListLinksLocked(
 					config.commandLists, true, 0, commandListStack,
-					targetPlan, textureOverrideTargetsCollected, false, nullptr);
+					targetPlan, nullptr, false, nullptr);
 				CollectActionsLocked(
 					config.actions, 0, commandListStack, targetPlan,
-					textureOverrideTargetsCollected, false, nullptr);
+					nullptr, false, nullptr);
 			}
 		}
 	}

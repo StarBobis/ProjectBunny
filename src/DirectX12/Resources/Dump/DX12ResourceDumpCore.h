@@ -148,8 +148,6 @@ static const char *DescriptorRangeKindName(UINT rangeType)
 
 static const char *BindingKindName(const DX12FrameResourceBinding &binding)
 {
-	if (!binding.usageClass.empty())
-		return binding.usageClass.c_str();
 	if (!binding.descriptor.kind.empty())
 		return binding.descriptor.kind.c_str();
 	if (binding.rootDescriptor)

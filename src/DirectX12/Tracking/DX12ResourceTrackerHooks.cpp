@@ -97,7 +97,6 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 		gDescriptorHeapByCpuStart[record.cpuStart] = heapIndex;
 	gDescriptorHeaps.push_back(std::move(record));
 	BumpDescriptorQuerySerial();
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 

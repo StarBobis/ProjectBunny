@@ -12,7 +12,6 @@ struct RootSignatureRecord
 	UINT nodeMask = 0;
 	UINT version = 0;
 	UINT flags = 0;
-	UINT staticSamplerCount = 0;
 	bool parsed = false;
 	std::vector<DX12RootParameterSummary> parameters;
 };

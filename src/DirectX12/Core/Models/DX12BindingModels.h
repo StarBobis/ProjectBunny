@@ -67,9 +67,6 @@ public:
 	SIZE_T cpuHandle = 0;
 	UINT64 heapGpuStart = 0;
 	UINT64 gpuVirtualAddress = 0;
-	std::string usageClass;
-	UINT64 usageBegin = 0;
-	UINT64 usageBytes = 0;
 	DX12DescriptorSummary descriptor;
 	bool hasDescriptor = false;
 };
@@ -77,7 +74,6 @@ public:
 class DX12FrameIaBufferBinding
 {
 public:
-	std::string bufferId;
 	std::string role;
 	std::string skinningClass;
 	UINT64 eventSerial = 0;

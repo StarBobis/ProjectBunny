@@ -823,14 +823,6 @@ bool DX12HasStaticTextureReplacements()
 }
 
 
-UINT64 DX12StaticTextureReplacementGeneration()
-{
-	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
-		LoadStaticTextureReplacementSnapshot();
-	return table && table->enabled ? table->reloadGeneration : 0;
-}
-
-
 bool DX12HasStaticIaReplacements()
 {
 	// Plain volatile load: the flag is published with interlocked stores and
@@ -978,17 +970,6 @@ bool DX12ResolveStaticIaReplacement(
 	resolvedView.stride = resource->stride;
 	resolvedView.format = resource->format;
 	return cacheAndReturn(applyCached(resolvedView));
-}
-
-
-bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash)
-{
-	if (!originalHash)
-		return false;
-	const std::shared_ptr<const DX12StaticTextureReplacementTable> table =
-		LoadStaticTextureReplacementSnapshot();
-	return table && table->enabled &&
-		table->byHash.find(originalHash) != table->byHash.end();
 }
 
 

@@ -24,12 +24,7 @@ uint64_t DX12ModHashShaderBytecode(const void *data, size_t size);
 bool DX12ModReplaceShaderBytecode(
 	const char *stage, const D3D12_SHADER_BYTECODE &source,
 	D3D12_SHADER_BYTECODE *replacement, std::vector<unsigned char> *storage);
-bool DX12ModHasShaderOverride(uint64_t hash);
 bool DX12ModHasActiveShaderOverrides();
-bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState);
-bool DX12ModCollectShaderOverrideIaHashTargets(
-	ID3D12PipelineState *pipelineState,
-	DX12IaHashTargetPlan *targetPlan);
 bool DX12ModCompileDrawDecision(
 	ID3D12PipelineState *pipelineState,
 	DX12CompiledDrawDecision *decision);
@@ -44,20 +39,15 @@ UINT64 DX12ModGetReloadGenerationFast();
 UINT64 DX12ModGetPreSkinActiveGenerationFast();
 bool DX12ModHasActiveTextureOverrides();
 bool DX12ModHasConfiguredTextureOverrides();
-bool DX12ModHasAnyActiveOverrides();
 bool DX12ModNeedsPresentReplacement();
 bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsPreSkinningBindingTracking();
 bool DX12ModNeedsCommandListSubmissionNotifications();
 void DX12ModRunPresentMaintenance();
-bool DX12ModHasActivePreSkinTextureOverrides();
 bool DX12ModMayNeedPreSkinIaViewExpansion(
 	const D3D12_VERTEX_BUFFER_VIEW *views, const bool *hasViews, UINT count);
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash);
 bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash);
-bool DX12ModPreSkinningUavProducerMayMatch(
-	uint64_t computeShaderHash,
-	const std::vector<DX12CurrentComputeUavBinding> &uavs);
 class DX12PreSkinDispatchOverride;
 void DX12ModStoreCachedPreSkinningUavMatch(
 	ID3D12GraphicsCommandList *commandList,
@@ -80,10 +70,6 @@ bool DX12ModPrepareShaderOverrideReplacement(
 	ID3D12Device *cachedDevice = nullptr,
 	bool skipDirectDescriptorTargets = false,
 	std::shared_ptr<const DX12ModIaReplacement> *generatedStaticReplacement = nullptr);
-bool DX12ModTryLoadStaticReplacementForPso(
-	ID3D12PipelineState *pipelineState,
-	UINT64 reloadGeneration,
-	DX12ModIaReplacement *replacement);
 std::shared_ptr<const DX12ModIaReplacement> DX12ModFindStaticReplacementSnapshotForPso(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration);
@@ -168,7 +154,6 @@ void DX12ModRecordComputePipelineState(
 	ID3D12Device *device, ID3D12PipelineState *pipelineState,
 	const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc);
 ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pipelineState);
-bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch);
 #include "ModState/DX12PreSkinDispatchOverride.h"
 bool DX12ModGetCachedPreSkinProbeResult(
 	ID3D12GraphicsCommandList *commandList,
@@ -199,9 +184,6 @@ bool DX12ModApplyPreSkinningUavReplacement(
 	UINT64 bindingFingerprint = 0,
 	UINT64 bindingDependencyFingerprint = 0,
 	bool *matchPhaseMiss = nullptr);
-bool DX12ModCanDeferPreSkinningUavReplacement(
-	ID3D12GraphicsCommandList *commandList);
-bool DX12ModHasActivePreSkinningUavReplacement();
 void DX12ModRestorePreSkinningUavReplacement(ID3D12GraphicsCommandList *commandList);
 void DX12ModNotifyCommandListsSubmitted(
 	ID3D12CommandQueue *queue, UINT numCommandLists, ID3D12CommandList *const *commandLists);
@@ -393,12 +375,9 @@ bool DX12ResolveStaticTextureReplacementSrv(
 // True when every descriptor-relevant hashed texture override is an
 // unconditional static replacement; gates the draw-path descriptor skip.
 bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
-// True when this original texture hash has a static write-time replacement.
-bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash);
 // Cheap volatile gate so descriptor-copy hot paths can skip all patch work
 // when no static replacement table is active.
 bool DX12HasStaticTextureReplacements();
-UINT64 DX12StaticTextureReplacementGeneration();
 // Bind-time static IA replacement (plan step 3.2). Same gating idea for the
 // IASet bind hot path.
 bool DX12HasStaticIaReplacements();

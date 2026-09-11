@@ -121,7 +121,6 @@ extern std::atomic<UINT64> gDescriptorQuerySerial;
 extern bool gCleanupRegistered;
 extern UINT64 gResourcesRecordedFromCreate;
 extern UINT64 gDescriptorEpoch;
-extern LONG gLastResourceStatsPresent;
 extern UINT64 gBufferResolveInvalidationEpoch;
 extern std::atomic<UINT64> gBufferResolveInvalidationEpochAtomic;
 extern DX12BufferResolveInvalidatedRange gBufferResolveInvalidatedRanges[kDX12BufferResolveInvalidationHistoryCapacity];

@@ -94,14 +94,6 @@ const char *DX12BindingFrameExport::TopologyName(D3D12_PRIMITIVE_TOPOLOGY topolo
 	}
 }
 
-std::string DX12BindingFrameExport::NextBufferId(const char *prefix, UINT *nextId)
-{
-	char id[32];
-	const UINT value = nextId ? ++(*nextId) : 0;
-	sprintf_s(id, "%s_%u", prefix ? prefix : "buf", value);
-	return id;
-}
-
 DX12IaRegionDraw DX12BindingFrameExport::IaRegionDrawFromEvent(const BindingEvent &event)
 {
 	return DX12IaRegionDraw::FromDrawArguments(
@@ -284,7 +276,7 @@ bool DX12BindingFrameExport::ResolveIaBufferResourceSummary(
 }
 
 void DX12BindingFrameExport::AddFrameIaBufferRow(
-	std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId,
+	std::vector<FlatBufferRow> *rows,
 	const BindingEvent &event, const char *role, UINT slot)
 {
 	if (!rows)
@@ -303,8 +295,6 @@ void DX12BindingFrameExport::AddFrameIaBufferRow(
 	const UINT64 drawGpuVa = ib ? region.gpuVa : viewGpuVa;
 	const UINT64 drawSize = ib ? region.size : viewSize;
 	FlatBufferRow row;
-	row.id = DX12BindingFrameExport::NextBufferId(role && !strcmp(role, "IB") ? "ib" : "vb",
-		role && !strcmp(role, "IB") ? nextIbId : nextVbId);
 	row.role = role ? role : "";
 	row.eventSerial = event.serial;
 	row.drawId = event.drawId;
@@ -355,18 +345,16 @@ void DX12BindingFrameExport::CollectFrameIaBuffersForEvents(
 		return;
 
 	buffers->clear();
-	UINT nextVbId = 0;
-	UINT nextIbId = 0;
 	for (const BindingEvent &event : events) {
 		if (!DX12BindingTrackerQuery::IsDrawEvent(event))
 			continue;
 		for (UINT slot = 0; slot < MaxVertexBufferSlots; ++slot) {
 			if (!event.vertexBufferValid[slot])
 				continue;
-			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "VB", slot);
+			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, event, "VB", slot);
 		}
 		if (event.indexBufferValid) {
-			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, &nextVbId, &nextIbId, event, "IB", 0);
+			DX12BindingFrameExport::AddFrameIaBufferRow(buffers, event, "IB", 0);
 		}
 	}
 }
@@ -384,12 +372,6 @@ bool DX12BindingFrameExport::RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 b
 
 bool DX12BindingFrameExport::BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding)
 {
-	if (!binding.usageClass.empty())
-		return binding.usageClass == "UAV" &&
-			binding.hasDescriptor &&
-			binding.descriptor.resource &&
-			binding.descriptor.hasResourceDesc &&
-			binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
 	if (binding.rootDescriptor)
 		return binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_UAV &&
 			binding.gpuVirtualAddress != 0;
@@ -414,18 +396,6 @@ BufferProducer DX12BindingFrameExport::ProducerFromBinding(const DX12FrameResour
 	producer.bindSpace = binding.bindSpace;
 	producer.rootParameterIndex = binding.rootParameterIndex;
 	producer.shaderRegister = binding.shaderRegister;
-	if (!binding.usageClass.empty()) {
-		producer.resource = binding.descriptor.resource;
-		producer.begin = binding.usageBegin ? binding.usageBegin :
-			binding.descriptor.gpuVirtualAddress + binding.descriptor.resourceOffset;
-		const UINT64 bytes = binding.usageBytes ? binding.usageBytes :
-			binding.descriptor.viewSize ? binding.descriptor.viewSize :
-			binding.descriptor.resourceDesc.Width;
-		producer.end = producer.begin + bytes;
-		if (producer.end < producer.begin)
-			producer.end = producer.begin;
-		return producer;
-	}
 	if (binding.rootDescriptor) {
 		DX12BufferResourceSummary resource;
 		if (DX12ResolveBufferResourceByGpuVa(binding.gpuVirtualAddress, 1, &resource)) {
@@ -622,7 +592,6 @@ void DX12BindingFrameExport::ClassifyIaBufferSkinning(
 DX12FrameIaBufferBinding DX12BindingFrameExport::FrameIaBufferFromFlatRow(const FlatBufferRow &row)
 {
 	DX12FrameIaBufferBinding buffer;
-	buffer.bufferId = row.id;
 	buffer.role = row.role;
 	buffer.skinningClass = row.skinningClass;
 	buffer.eventSerial = row.eventSerial;
@@ -849,8 +818,6 @@ const char *DX12BindingResourceExport::DescriptorKindForRangeType(UINT rangeType
 
 const char *DX12BindingResourceExport::ExpectedBindingKind(const DX12FrameResourceBinding &binding)
 {
-	if (!binding.usageClass.empty())
-		return binding.usageClass.c_str();
 	if (binding.rootDescriptor) {
 		if (binding.rangeType == D3D12_ROOT_PARAMETER_TYPE_CBV)
 			return "CBV";

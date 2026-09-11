@@ -50,14 +50,12 @@ void FillResourcePointerInfo(DescriptorRecord *record, ID3D12Resource *resource)
 void CaptureDescriptorResourcePointer(DescriptorRecord *record, ID3D12Resource *resource);
 void ReleaseDescriptorRecordResources(DescriptorRecord *record);
 DescriptorRecord CloneDescriptorRecord(const DescriptorRecord &record);
-void StoreCpuDescriptorRecordLocked(DescriptorRecord &&record);
 bool ResolveBufferByGpuVa(UINT64 gpuVa, UINT64 size, DescriptorRecord *record);
 void SetDescriptorKind(DescriptorRecord *record, UINT kindId);
 void FillSrvBufferView(DescriptorRecord *record);
 void FillUavBufferView(DescriptorRecord *record);
 void PrepareDescriptorValueId(DescriptorRecord *record);
 bool DescriptorValueUnchanged(SIZE_T cpuHandle, UINT64 valueId);
-void LogResourceTrackerStatsLocked();
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap);
 void InvalidateResourceLocked(ID3D12Resource *resource);
 void InitializeDescriptorHeapRecord(DescriptorHeapRecord *record);

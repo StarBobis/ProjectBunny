@@ -1075,9 +1075,6 @@ public:
 	UINT drawSrvWidth = 0;
 	UINT drawSrvHeight = 0;
 	UINT drawSrvMipLevels = 0;
-	// Full desc of the captured texture (phase 3 "X = ref ps-tN"); zero for
-	// file-loaded resources.
-	D3D12_RESOURCE_DESC drawSrvResourceDesc = {};
 	D3D12_RESOURCE_STATES uavState = D3D12_RESOURCE_STATE_COPY_DEST;
 	std::wstring name;
 	std::wstring path;
@@ -2636,9 +2633,6 @@ bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
 bool DX12HasStaticTextureReplacements();
 
 
-UINT64 DX12StaticTextureReplacementGeneration();
-
-
 bool DX12HasStaticIaReplacements();
 
 
@@ -2659,9 +2653,6 @@ bool DX12ResolveStaticIaReplacement(
 	D3D12_INDEX_BUFFER_VIEW *outIndexView,
 	const D3D12_VERTEX_BUFFER_VIEW *originalVertexView,
 	D3D12_VERTEX_BUFFER_VIEW *outVertexView);
-
-
-bool DX12StaticTextureReplacementContainsHash(uint32_t originalHash);
 
 // Bundle draw-SRV replacement (DX12BundleSrvMirror.h, included below):
 // ApplyPending/Restore branch to these on bundle lists.
@@ -2989,13 +2980,6 @@ bool TryReuseDeferredPreSkinDescriptorTable(
 	bool *hasPendingState);
 
 
-bool DX12ModCanDeferPreSkinningUavReplacement(
-	ID3D12GraphicsCommandList *commandList);
-
-
-bool DX12ModHasActivePreSkinningUavReplacement();
-
-
 bool ApplyPreSkinDescriptorTablePatchLocked(
 	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
 	const DX12CurrentComputeUavBinding &uavBinding, const DX12ComputeUavProducer &producer,
@@ -3075,9 +3059,6 @@ bool DX12ModReplaceShaderBytecode(
 	D3D12_SHADER_BYTECODE *replacement, std::vector<unsigned char> *storage);
 
 
-bool DX12ModHasShaderOverride(uint64_t hash);
-
-
 bool DX12ModHasActiveShaderOverrides();
 
 
@@ -3088,9 +3069,6 @@ bool DX12ModHasActiveTextureOverrides();
 
 
 bool DX12ModHasConfiguredTextureOverrides();
-
-
-bool DX12ModHasAnyActiveOverrides();
 
 
 bool DX12ModNeedsPresentReplacement();
@@ -3106,9 +3084,6 @@ bool DX12ModNeedsPreSkinningUavProbe();
 bool DX12ModNeedsPreSkinningBindingTracking();
 
 
-bool DX12ModHasActivePreSkinTextureOverrides();
-
-
 UINT32 DX12ModGetHotPathFlags();
 
 
@@ -3116,11 +3091,6 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash);
 
 
 bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash);
-
-
-bool DX12ModPreSkinningUavProducerMayMatch(
-	uint64_t computeShaderHash,
-	const std::vector<DX12CurrentComputeUavBinding> &uavs);
 
 
 void UpdatePreSkinningUavMatchCacheLocked(
@@ -4238,9 +4208,6 @@ bool ShaderModelMatchesRegex(
 	const Bunny::ShaderRegexConfig &regex, const std::string &shaderModel);
 
 
-bool AllowShaderOverrideHotPathLog(volatile LONG *counter);
-
-
 Bunny::ShaderOverrideConfig MakeShaderOverrideFromRegex(
 	const Bunny::ShaderRegexConfig &regex, uint64_t hash);
 
@@ -4430,12 +4397,6 @@ bool TryLoadCompiledPsoDrawDecisionMetadata(
 	bool *drawDirectTextureChecksOnly);
 
 
-bool DX12ModTryLoadStaticReplacementForPso(
-	ID3D12PipelineState *pipelineState,
-	UINT64 reloadGeneration,
-	DX12ModIaReplacement *replacement);
-
-
 std::shared_ptr<const DX12ModIaReplacement> DX12ModFindStaticReplacementSnapshotForPso(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration);
@@ -4586,17 +4547,9 @@ bool TryFindCachedShaderOverrideDrawMatchUsageForPsoLocked(
 	DX12DrawMatchUsage *drawMatchUsage);
 
 
-bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState);
-
-
 void FindShaderOverridesForPsoLocked(
 	ID3D12PipelineState *pipelineState, bool dispatch,
 	std::vector<const Bunny::ShaderOverrideConfig*> *configs);
-
-
-bool DX12ModCollectShaderOverrideIaHashTargets(
-	ID3D12PipelineState *pipelineState,
-	DX12IaHashTargetPlan *targetPlan);
 
 
 bool DX12ModCompileDrawDecision(
@@ -4670,9 +4623,6 @@ bool DX12ModGetPipelineStateSkipFlags(
 	const DX12PsoShaderInfo *shaderInfo,
 	bool *skipDraw,
 	bool *skipDispatch);
-
-
-bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch);
 
 
 UINT64 DX12ModGetReloadGeneration();

@@ -281,7 +281,6 @@ public:
 class FlatBufferRow
 {
 public:
-	std::string id;
 	std::string role;
 	std::string skinningClass;
 	UINT64 eventSerial = 0;
@@ -499,7 +498,6 @@ public:
 	static void AppendShaderHashNamePart(wchar_t *text, size_t textCount, const char *stage, bool hasHash, UINT64 hash);
 	static void BuildShaderHashNamePart(const DX12PsoShaderInfo &info, wchar_t *text, size_t textCount);
 	static const char *TopologyName(D3D12_PRIMITIVE_TOPOLOGY topology);
-	static std::string NextBufferId(const char *prefix, UINT *nextId);
 	static DX12IaRegionDraw IaRegionDrawFromEvent(const BindingEvent &event);
 	static bool IaRegionForEvent(const BindingEvent &event, const char *role, UINT slot, DX12IaRegion *region);
 	static uint32_t IaViewHashForEvent(const BindingEvent &event, const char *role, UINT slot);
@@ -519,7 +517,7 @@ public:
 		DX12BufferResourceSummary *resource);
 	static bool ResolveIaBufferResourceSummary(
 		const DX12FrameIaBufferBinding &buffer, DX12BufferResourceSummary *resource);
-	static void AddFrameIaBufferRow(std::vector<FlatBufferRow> *rows, UINT *nextVbId, UINT *nextIbId, const BindingEvent &event, const char *role, UINT slot);
+	static void AddFrameIaBufferRow(std::vector<FlatBufferRow> *rows, const BindingEvent &event, const char *role, UINT slot);
 	static void CollectFrameIaBuffersForEvents(const std::vector<BindingEvent> &events, std::vector<FlatBufferRow> *buffers);
 	static bool RangesOverlap(UINT64 aBegin, UINT64 aSize, UINT64 bBegin, UINT64 bSize);
 	static bool BindingIsUavBufferProducer(const DX12FrameResourceBinding &binding);

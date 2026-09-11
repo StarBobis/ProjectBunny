@@ -3495,38 +3495,6 @@ bool TryReuseDeferredPreSkinDescriptorTable(
 }
 
 
-bool DX12ModCanDeferPreSkinningUavReplacement(
-	ID3D12GraphicsCommandList *commandList)
-{
-	if (!commandList)
-		return false;
-	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
-	// ordering argument.
-	if (gHasActivePreSkinReplacement == 0)
-		return false;
-	DX12PreSkinReplacementShard &deferShard =
-		PreSkinReplacementShardFor(commandList);
-	DX12_LOCK_ACQUIRE_SHARED(&deferShard.lock, "Lock.preSkinShared");
-	auto it = deferShard.entries.find(commandList);
-	const bool canDefer = it != deferShard.entries.end() &&
-						  it->second.active && it->second.patchHeap &&
-						  it->second.descriptorRestores.empty() &&
-						  it->second.temporaryResources.empty() &&
-						  it->second.bindingFingerprint != 0;
-	ReleaseSRWLockShared(&deferShard.lock);
-	return canDefer;
-}
-
-
-bool DX12ModHasActivePreSkinningUavReplacement()
-{
-	// Plain volatile probe, see DX12ModIsPreSkinReplacementReusable for the
-	// ordering argument. This is called on every graphics binding hook and
-	// draw; a LOCK CMPXCHG here costs measurable cycles per call.
-	return gHasActivePreSkinReplacement != 0;
-}
-
-
 // Descriptor-table copy plan for ApplyPreSkinDescriptorTablePatchLocked:
 // one entry per root table mirrored into the descriptor ring.
 class DX12PreSkinTableCopy
@@ -5543,14 +5511,6 @@ bool DX12ModNeedsPreSkinningBindingTracking()
 }
 
 
-bool DX12ModHasActivePreSkinTextureOverrides()
-{
-	if (gDx12SafeMode != 0)
-		return false;
-	return gHasActivePreSkinTextureOverridesFast != 0;
-}
-
-
 // TLS verdict cache entry for the CS-hash probe below: the configured CS
 // hash set only changes on mod reload, so the dispatch hot path does not
 // take the global mod lock on every dispatch (this predicate is consulted
@@ -5615,15 +5575,6 @@ bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 
 bool DX12ModShouldTrackPreSkinBindingsForCs(uint64_t computeShaderHash)
 {
-	return DX12ModShouldProbePreSkinningForCs(computeShaderHash);
-}
-
-
-bool DX12ModPreSkinningUavProducerMayMatch(
-	uint64_t computeShaderHash,
-	const std::vector<DX12CurrentComputeUavBinding> &uavs)
-{
-	(void)uavs;
 	return DX12ModShouldProbePreSkinningForCs(computeShaderHash);
 }
 

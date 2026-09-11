@@ -43,8 +43,6 @@ std::atomic<UINT64> gDescriptorQuerySerial{1};
 bool gCleanupRegistered = false;
 UINT64 gResourcesRecordedFromCreate = 0;
 UINT64 gDescriptorEpoch = 0;
-LONG gLastResourceStatsPresent = -1;
-static constexpr LONG kResourceStatsLogInterval = 300;
 
 // A buffer is registered in every 64KiB shard it spans (capped): views inside
 // a buffer (common for 100KB+ streaming vertex buffers) query their own
@@ -196,8 +194,6 @@ static DX12ResourcePublishedState *EnsureResourcePublishedStateLocked(size_t ind
 			std::make_unique<DX12ResourcePublishedState>();
 	return gResourcePublishedStates[index].get();
 }
-
-void LogResourceTrackerStatsLocked();
 
 static bool DescriptorHeapSlotOccupied(const DescriptorHeapRecord &heap, UINT slot)
 {
@@ -391,17 +387,6 @@ static void ClearCpuDescriptorLedgerLocked()
 	// gRuntimeDescriptorByCpuHandle removed - heap slots are the single source of truth
 }
 
-
-void StoreCpuDescriptorRecordLocked(DescriptorRecord &&record)
-{
-	if (!record.cpuHandle)
-		return;
-	std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
-		gDescriptorByCpuHandle.find(record.cpuHandle);
-	if (found != gDescriptorByCpuHandle.end())
-		ReleaseDescriptorRecordResources(&found->second);
-	gDescriptorByCpuHandle[record.cpuHandle] = std::move(record);
-}
 
 void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 {
@@ -766,7 +751,6 @@ void RecordResource(
 	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
 		hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
 	gResourcesRecordedFromCreate++;
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gResourceLock);
 }
 
@@ -872,7 +856,6 @@ static void RecordDescriptorRange(
 	summary.numDescriptors = range.NumDescriptors;
 	summary.baseShaderRegister = range.BaseShaderRegister;
 	summary.registerSpace = range.RegisterSpace;
-	summary.offsetInDescriptorsFromTableStart = range.OffsetInDescriptorsFromTableStart;
 	summary.shaderVisibility = parameter->shaderVisibility;
 	if (range.OffsetInDescriptorsFromTableStart == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND)
 		summary.effectiveOffset = *appendOffset;
@@ -901,7 +884,6 @@ static void RecordDescriptorRange1(
 	summary.numDescriptors = range.NumDescriptors;
 	summary.baseShaderRegister = range.BaseShaderRegister;
 	summary.registerSpace = range.RegisterSpace;
-	summary.offsetInDescriptorsFromTableStart = range.OffsetInDescriptorsFromTableStart;
 	summary.flags = static_cast<UINT>(range.Flags);
 	summary.shaderVisibility = parameter->shaderVisibility;
 	if (range.OffsetInDescriptorsFromTableStart == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND)
@@ -937,7 +919,6 @@ static void ParseRootParameter(
 	case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
 		parameter.shaderRegister = source.Constants.ShaderRegister;
 		parameter.registerSpace = source.Constants.RegisterSpace;
-		parameter.num32BitValues = source.Constants.Num32BitValues;
 		break;
 	case D3D12_ROOT_PARAMETER_TYPE_CBV:
 	case D3D12_ROOT_PARAMETER_TYPE_SRV:
@@ -971,14 +952,12 @@ static void ParseRootParameter1(
 	case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
 		parameter.shaderRegister = source.Constants.ShaderRegister;
 		parameter.registerSpace = source.Constants.RegisterSpace;
-		parameter.num32BitValues = source.Constants.Num32BitValues;
 		break;
 	case D3D12_ROOT_PARAMETER_TYPE_CBV:
 	case D3D12_ROOT_PARAMETER_TYPE_SRV:
 	case D3D12_ROOT_PARAMETER_TYPE_UAV:
 		parameter.shaderRegister = source.Descriptor.ShaderRegister;
 		parameter.registerSpace = source.Descriptor.RegisterSpace;
-		parameter.rootDescriptorFlags = static_cast<UINT>(source.Descriptor.Flags);
 		break;
 	default:
 		break;
@@ -1006,13 +985,11 @@ void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_
 			record->version = RootSignatureVersionNumber(desc->Version);
 			if (desc->Version == D3D_ROOT_SIGNATURE_VERSION_1_1) {
 				record->flags = static_cast<UINT>(desc->Desc_1_1.Flags);
-				record->staticSamplerCount = desc->Desc_1_1.NumStaticSamplers;
 				record->parameters.reserve(desc->Desc_1_1.NumParameters);
 				for (UINT i = 0; i < desc->Desc_1_1.NumParameters; ++i)
 					ParseRootParameter1(record, i, desc->Desc_1_1.pParameters[i]);
 			} else {
 				record->flags = static_cast<UINT>(desc->Desc_1_0.Flags);
-				record->staticSamplerCount = desc->Desc_1_0.NumStaticSamplers;
 				record->parameters.reserve(desc->Desc_1_0.NumParameters);
 				for (UINT i = 0; i < desc->Desc_1_0.NumParameters; ++i)
 					ParseRootParameter(record, i, desc->Desc_1_0.pParameters[i]);
@@ -1034,7 +1011,6 @@ void ParseRootSignatureBlob(RootSignatureRecord *record, const void *blob, SIZE_
 	if (desc) {
 		record->version = RootSignatureVersionNumber(D3D_ROOT_SIGNATURE_VERSION_1_0);
 		record->flags = static_cast<UINT>(desc->Flags);
-		record->staticSamplerCount = desc->NumStaticSamplers;
 		record->parameters.reserve(desc->NumParameters);
 		for (UINT i = 0; i < desc->NumParameters; ++i)
 			ParseRootParameter(record, i, desc->pParameters[i]);
@@ -1285,16 +1261,6 @@ void FillUavBufferView(DescriptorRecord *record)
 			record->resourceDesc.Width - record->resourceOffset : 0;
 }
 
-void LogResourceTrackerStatsLocked()
-{
-	const LONG present = DX12RuntimeState::GetPresentCount();
-	const LONG last = InterlockedCompareExchange(&gLastResourceStatsPresent, 0, 0);
-	if (present < last + kResourceStatsLogInterval)
-		return;
-	if (InterlockedCompareExchange(&gLastResourceStatsPresent, present, last) != last)
-		return;
-}
-
 static bool DescriptorSlotFromHeapLocked(
 	size_t heapIndex, SIZE_T cpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE *requiredType,
 	DescriptorSlotLocation *location, UINT *slotsAvailable)
@@ -1388,7 +1354,6 @@ void DX12RecordRootSignatureImmediate(
 		gRootSignatureByPtr[record.rootSignature] = gRootSignatures.size();
 		gRootSignatures.push_back(std::move(record));
 	}
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 
@@ -1436,7 +1401,6 @@ void DX12PrimeDescriptorHistoryForHunting()
 		primed,
 		static_cast<unsigned long long>(gDescriptorEpoch),
 		DescriptorHeapHistoryEntriesLocked());
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 
@@ -1598,7 +1562,6 @@ void DX12RecordPsoRootSignatureImmediate(
 		gPsoRootByIndex[psoIndex] = gPsoRoots.size();
 		gPsoRoots.push_back(std::move(record));
 	}
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 }
 void DX12RecordResourceBarrier(UINT numBarriers, const D3D12_RESOURCE_BARRIER *barriers)
@@ -1742,7 +1705,6 @@ bool DX12GetRootSignatureSummary(
 	summary->nodeMask = record.nodeMask;
 	summary->version = record.version;
 	summary->flags = record.flags;
-	summary->staticSamplerCount = record.staticSamplerCount;
 	summary->parsed = record.parsed;
 	summary->parameters = record.parameters;
 	ReleaseSRWLockShared(&gDescriptorLock);

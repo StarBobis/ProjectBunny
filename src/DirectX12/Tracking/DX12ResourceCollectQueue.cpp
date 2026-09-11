@@ -486,7 +486,6 @@ void DX12ResourceCollectQueue::ProcessRootSignatureTask(DX12ResourceCollectTask 
 		gRootSignatureByPtr[record.rootSignature] = gRootSignatures.size();
 		gRootSignatures.push_back(std::move(record));
 	}
-	LogResourceTrackerStatsLocked();
 	ReleaseSRWLockExclusive(&gDescriptorLock);
 	DX12_PROF_CPU_STAGE(
 		"ResourceCollectQueue",

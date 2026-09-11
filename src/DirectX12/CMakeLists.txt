@@ -79,7 +79,6 @@ add_library(DirectX12 SHARED
     Core/ModState/DX12PreSkinDispatchOverride.h
     Core/ModState/DX12PreSkinOutputResizeBinding.h
     Core/ModState/DX12PreSkinPlanUtils.h
-    Core/ModState/DX12BufferResolveValidation.h
     Config/DX12Config.h
     Config/DX12ConfigLoader.h
     Resources/DX12ResourceDump.h

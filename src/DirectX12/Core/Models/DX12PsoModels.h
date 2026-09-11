@@ -65,7 +65,6 @@ public:
 	UINT numDescriptors = 0;
 	UINT baseShaderRegister = 0;
 	UINT registerSpace = 0;
-	UINT offsetInDescriptorsFromTableStart = 0;
 	UINT flags = 0;
 	UINT effectiveOffset = 0;
 	UINT shaderVisibility = 0;
@@ -79,8 +78,6 @@ public:
 	UINT shaderVisibility = 0;
 	UINT shaderRegister = 0;
 	UINT registerSpace = 0;
-	UINT rootDescriptorFlags = 0;
-	UINT num32BitValues = 0;
 	std::vector<DX12RootDescriptorRangeSummary> ranges;
 };
 
@@ -93,7 +90,6 @@ public:
 	UINT nodeMask = 0;
 	UINT version = 0;
 	UINT flags = 0;
-	UINT staticSamplerCount = 0;
 	bool parsed = false;
 	std::vector<DX12RootParameterSummary> parameters;
 };

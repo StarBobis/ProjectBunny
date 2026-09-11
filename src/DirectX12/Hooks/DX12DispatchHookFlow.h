@@ -282,7 +282,7 @@ public:
 		}
 		// ExecuteHook resolves the decision before entering this function: the
 		// hot path stays on the command-list-local immutable decision instead of
-		// falling back to DX12ModShouldSkipPipelineState(), which takes gModLock
+		// falling back to DX12ModGetPipelineStateSkipFlags(), which takes gModLock
 		// again. The decision is non-null by construction at the only call site.
 		if (hasShaderOverrides && dispatchDecision->hasShaderOverrideSkip)
 			return;

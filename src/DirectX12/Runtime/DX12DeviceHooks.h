@@ -11,10 +11,6 @@ public:
 		ID3D12Device*, const D3D12_GRAPHICS_PIPELINE_STATE_DESC*, REFIID, void**);
 	using CreateComputePipelineState = HRESULT(STDMETHODCALLTYPE *)(
 		ID3D12Device*, const D3D12_COMPUTE_PIPELINE_STATE_DESC*, REFIID, void**);
-	using CreatePipelineState = HRESULT(STDMETHODCALLTYPE *)(
-		ID3D12Device2*, const D3D12_PIPELINE_STATE_STREAM_DESC*, REFIID, void**);
-	using DeviceFactoryCreateDevice = HRESULT(STDMETHODCALLTYPE *)(
-		ID3D12DeviceFactory*, IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 };
 
 class DX12DeviceHookState
@@ -71,18 +67,6 @@ public:
 	public:
 		static constexpr UINT CreateGraphicsPipelineState = 10;
 		static constexpr UINT CreateComputePipelineState = 11;
-	};
-
-	class ID3D12Device2
-	{
-	public:
-		static constexpr UINT CreatePipelineState = 47;
-	};
-
-	class ID3D12DeviceFactory
-	{
-	public:
-		static constexpr UINT CreateDevice = 9;
 	};
 };
 

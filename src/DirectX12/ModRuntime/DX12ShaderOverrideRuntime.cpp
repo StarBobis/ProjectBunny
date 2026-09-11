@@ -83,15 +83,6 @@ uint64_t DX12ModHashShaderBytecode(const void *data, size_t size)
 }
 
 
-bool DX12ModHasShaderOverride(uint64_t hash)
-{
-	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
-	bool found = gShaderOverrides.find(hash) != gShaderOverrides.end();
-	ReleaseSRWLockShared(&gModLock);
-	return found;
-}
-
-
 bool DX12ModHasActiveShaderOverrides()
 {
 	return (DX12ModGetHotPathFlags() & DX12_MOD_HOT_SHADER_OVERRIDES) != 0;
@@ -117,15 +108,6 @@ bool DX12ModHasConfiguredTextureOverrides()
 {
 	return gHasTextureOverrides != 0 &&
 		   gDx12SafeMode == 0;
-}
-
-
-bool DX12ModHasAnyActiveOverrides()
-{
-	return gDx12SafeMode == 0 &&
-		   (gHasShaderOverrides != 0 ||
-			gHasShaderRegexes != 0 ||
-			(gHasTextureOverrides != 0 && gHasShaderTriggeredTextureOverrides != 0));
 }
 
 
@@ -197,13 +179,6 @@ bool ShaderModelMatchesRegex(
 		if (model == shaderModel)
 			return true;
 	}
-	return false;
-}
-
-
-bool AllowShaderOverrideHotPathLog(volatile LONG *counter)
-{
-	(void)counter;
 	return false;
 }
 
@@ -609,28 +584,6 @@ bool TryLoadCompiledPsoDrawDecisionMetadata(
 }
 
 
-bool DX12ModTryLoadStaticReplacementForPso(
-	ID3D12PipelineState *pipelineState,
-	UINT64 reloadGeneration,
-	DX12ModIaReplacement *replacement)
-{
-	if (!replacement || !pipelineState)
-		return false;
-	AcquireSRWLockShared(&gPsoOverridePlansLock);
-	auto it = gPsoOverridePlans.find(pipelineState);
-	if (it == gPsoOverridePlans.end() ||
-	    it->second.generation != reloadGeneration ||
-	    !it->second.staticReplacementReady ||
-	    !it->second.staticReplacementSnapshot) {
-		ReleaseSRWLockShared(&gPsoOverridePlansLock);
-		return false;
-	}
-	*replacement = *it->second.staticReplacementSnapshot;
-	ReleaseSRWLockShared(&gPsoOverridePlansLock);
-	return true;
-}
-
-
 std::shared_ptr<const DX12ModIaReplacement> DX12ModFindStaticReplacementSnapshotForPso(
 	ID3D12PipelineState *pipelineState,
 	UINT64 reloadGeneration)
@@ -1029,19 +982,6 @@ bool TryFindCachedShaderOverrideDrawMatchUsageForPsoLocked(
 }
 
 
-bool DX12ModHasShaderOverridesForPso(ID3D12PipelineState *pipelineState)
-{
-	if (!pipelineState)
-		return false;
-	std::vector<const Bunny::ShaderOverrideConfig*> configs;
-	bool cached = false;
-	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
-	cached = TryFindCachedShaderOverridesForPsoLocked(pipelineState, false, &configs);
-	ReleaseSRWLockShared(&gModLock);
-	return !cached || !configs.empty();
-}
-
-
 void FindShaderOverridesForPsoLocked(
 	ID3D12PipelineState *pipelineState, bool dispatch,
 	std::vector<const Bunny::ShaderOverrideConfig*> *configs)
@@ -1103,35 +1043,6 @@ void FindShaderOverridesForPsoLocked(
 	gShaderOverridePsoMatchCache[pipelineState] = std::move(matchCache);
 	BuildShaderOverrideConfigPointers(
 		&gShaderOverridePsoMatchCache[pipelineState], dispatch, configs);
-}
-
-
-bool DX12ModCollectShaderOverrideIaHashTargets(
-	ID3D12PipelineState *pipelineState,
-	DX12IaHashTargetPlan *targetPlan)
-{
-	if (!targetPlan)
-		return false;
-	targetPlan->RequireAll();
-	if (!pipelineState || !DX12ModHasActiveShaderOverrides())
-		return false;
-
-	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
-	const bool cachedPlan =
-		TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
-			pipelineState, targetPlan);
-	ReleaseSRWLockShared(&gModLock);
-	if (cachedPlan)
-		return true;
-
-	std::vector<const Bunny::ShaderOverrideConfig*> configs;
-	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gModLock, "Lock.modExclusive");
-	FindShaderOverridesForPsoLocked(pipelineState, false, &configs);
-	const bool builtPlan =
-		TryFindCachedShaderOverrideIaTargetPlanForPsoLocked(
-			pipelineState, targetPlan);
-	ReleaseSRWLockExclusive(&gModLock);
-	return builtPlan;
 }
 
 
@@ -1922,17 +1833,6 @@ bool DX12ModGetPipelineStateSkipFlags(
 			(shaderInfo->hasPS && ShaderOverrideHasSkipLocked(shaderInfo->ps));
 	ReleaseSRWLockShared(&gModLock);
 	return true;
-}
-
-
-bool DX12ModShouldSkipPipelineState(ID3D12PipelineState *pipelineState, bool dispatch)
-{
-	bool skipDraw = false;
-	bool skipDispatch = false;
-	if (!DX12ModGetPipelineStateSkipFlags(
-			pipelineState, nullptr, &skipDraw, &skipDispatch))
-		return false;
-	return dispatch ? skipDispatch : skipDraw;
 }
 
 

@@ -37,6 +37,4 @@ DX12CommandListHookSignatures::ExecuteIndirect DX12CommandListHookState::OrigExe
 
 
 thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandListOriginals[64];
-thread_local DX12ThreadLocalCommandListOriginal DX12CommandListHookState::CommandQueueOriginals[32];
 thread_local DX12VtableBaseCache DX12CommandListHookState::VtableBaseCache;
-thread_local DX12ThreadLocalIaCallbacksCache DX12CommandListHookState::IaCallbacksCache;

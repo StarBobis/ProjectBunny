@@ -65,7 +65,6 @@ public:
 		entry.drawSrvTextureResource = texture;
 		entry.drawSrvHeap = srvHeap;
 		entry.drawSrvCpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
-		entry.drawSrvResourceDesc = source.resourceDesc;
 
 		// Reproduce the game's exact SRV view when the tracker observed the
 		// descriptor write; otherwise fall back to a full-texture view.

@@ -76,14 +76,6 @@ public:
 };
 
 
-class DX12ThreadLocalIaCallbacksCache
-{
-public:
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	DX12IaReplacementExecutorCallbacks callbacks;
-};
-
-
 class DX12VtableBaseCache
 {
 public:
@@ -122,9 +114,7 @@ public:
 	static DX12CommandListHookSignatures::ExecuteIndirect OrigExecuteIndirect;
 
 	static thread_local DX12ThreadLocalCommandListOriginal CommandListOriginals[64];
-	static thread_local DX12ThreadLocalCommandListOriginal CommandQueueOriginals[32];
 	static thread_local DX12VtableBaseCache VtableBaseCache;
-	static thread_local DX12ThreadLocalIaCallbacksCache IaCallbacksCache;
 };
 
 

@@ -423,7 +423,6 @@ static void StoreRuntimePreSkinBindings(
 	UINT64 dependencyFingerprint,
 	bool usesRootValues,
 	bool foundAny,
-	const std::vector<UINT> &observedRootParameters,
 	const std::vector<UINT> &observedSlots,
 	const std::vector<UINT64> &observedSlotVersions,
 	const std::vector<UINT64> &observedSlotValueIds,
@@ -460,14 +459,6 @@ static void StoreRuntimePreSkinBindings(
 		runtimeState->resolvedCompute.bindingsRootTableBases[root] =
 			runtimeState->computeRootTables[root].valid ?
 				runtimeState->computeRootTables[root].baseDescriptor.ptr : 0;
-	}
-	runtimeState->resolvedCompute.bindingsRootRevisions.resize(
-		observedRootParameters.size());
-	for (size_t index = 0; index < observedRootParameters.size(); ++index) {
-		const UINT root = observedRootParameters[index];
-		runtimeState->resolvedCompute.bindingsRootRevisions[index] =
-			root < runtimeState->computeRootBindingRevisions.size() ?
-				runtimeState->computeRootBindingRevisions[root] : 0;
 	}
 	runtimeState->resolvedCompute.observedSlots = observedSlots;
 	runtimeState->resolvedCompute.observedSlotVersions = observedSlotVersions;
@@ -1634,7 +1625,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	static thread_local std::vector<DX12CurrentComputeUavBinding> tlsLocalSrvs;
 	static thread_local std::vector<DX12CurrentComputeUavBinding> tlsLocalCbvs;
 	static thread_local std::vector<DX12CurrentRootConstants> tlsLocalConstants;
-	static thread_local std::vector<UINT> tlsObservedRootParameters;
 	static thread_local std::vector<UINT> tlsObservedSlots;
 	static thread_local std::vector<UINT> tlsObservedRoots;
 	static thread_local std::vector<UINT> tlsObservedOffsets;
@@ -1655,7 +1645,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	std::vector<DX12CurrentComputeUavBinding> &localSrvs = tlsLocalSrvs;
 	std::vector<DX12CurrentComputeUavBinding> &localCbvs = tlsLocalCbvs;
 	std::vector<DX12CurrentRootConstants> &localConstants = tlsLocalConstants;
-	std::vector<UINT> &observedRootParameters = tlsObservedRootParameters;
 	std::vector<UINT> &observedSlots = tlsObservedSlots;
 	std::vector<UINT> &observedRoots = tlsObservedRoots;
 	std::vector<UINT> &observedOffsets = tlsObservedOffsets;
@@ -1667,7 +1656,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	localSrvs.clear();
 	localCbvs.clear();
 	localConstants.clear();
-	observedRootParameters.clear();
 	observedSlots.clear();
 	observedRoots.clear();
 	observedOffsets.clear();
@@ -1683,28 +1671,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	const UINT maxRoot = hasParsedRootSignatureSummary
 		? static_cast<UINT>(cachedSummary->parameters.size())
 		: MaxRootParameters;
-	for (UINT root = 0; root < maxRoot; ++root) {
-		bool affectsPreSkinBindings = !hasParsedRootSignatureSummary;
-		if (hasParsedRootSignatureSummary) {
-			const DX12RootParameterSummary *parameter =
-				DX12BindingTrackerQuery::FindRootParameter(*cachedSummary, root);
-			if (parameter) {
-				affectsPreSkinBindings =
-					parameter->parameterType !=
-						D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-				for (const DX12RootDescriptorRangeSummary &range : parameter->ranges) {
-					if (range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV ||
-							range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
-							range.rangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV) {
-						affectsPreSkinBindings = true;
-						break;
-					}
-				}
-			}
-		}
-		if (affectsPreSkinBindings)
-			observedRootParameters.push_back(root);
-	}
 
 	// Collect root constants directly from snapshot
 	for (UINT root = 0; root < maxRoot; ++root) {
@@ -2048,7 +2014,6 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 				runtimeDependencyFingerprint,
 				usesRootValues,
 				foundAny,
-				observedRootParameters,
 				observedSlots,
 				observedSlotVersions,
 				observedSlotValueIds,

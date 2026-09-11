@@ -17,14 +17,6 @@ public:
 
 	static bool ShouldDumpBinding(const DX12FrameResourceBinding &binding)
 	{
-		if (!binding.usageClass.empty()) {
-			if (!binding.hasDescriptor)
-				return true;
-			return binding.descriptor.resource &&
-				binding.descriptor.hasResourceDesc &&
-				binding.descriptor.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER;
-		}
-
 		if (binding.bindSpace == "hunting_metadata" ||
 			binding.bindSpace == "hunting_resource") {
 			if (binding.bindSpace == "hunting_resource") {
