@@ -494,7 +494,16 @@ public:
 	// ---- Unified Descriptor State recording ----
 	// Known heaps own their current values. The global CPU ledger is only a
 	// compatibility Adapter for handles that cannot be assigned to a heap.
-	static bool RecordCreatedDescriptorIfChanged(DescriptorRecord &&record)
+	// preResolved lets a caller that already resolved this handle - and already
+	// ran the unchanged probe with this record's value id - hand both down.
+	// RecordCreatedConstantBufferViewIfChanged does exactly that, and without
+	// this the hottest creation path (the game re-creates CBVs into ring slots
+	// thousands of times per frame) resolved the same handle and probed the same
+	// published value twice per call.
+	static bool RecordCreatedDescriptorIfChanged(
+		DescriptorRecord &&record,
+		const ResolvedHeapSlot *preResolved = nullptr,
+		bool preResolvedKnownHeap = false)
 	{
 		if (!record.cpuHandle || record.valueId == 0) {
 			ReleaseDescriptorRecordResources(&record);
@@ -503,16 +512,22 @@ public:
 
 		const SIZE_T cpuHandle = record.cpuHandle;
 		ResolvedHeapSlot resolved;
-		const bool resolvedKnownHeap = ResolveHeapSlotFast(
-			cpuHandle,
-			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-			&resolved);
-		if (resolvedKnownHeap && resolved.heap && resolved.heap->stateLocks &&
-			resolved.heap->stateLocks->PublishedSlotValueEquals(
-				resolved.slot,
-				record.valueId)) {
-			ReleaseDescriptorRecordResources(&record);
-			return false;
+		bool resolvedKnownHeap = false;
+		if (preResolved) {
+			resolved = *preResolved;
+			resolvedKnownHeap = preResolvedKnownHeap;
+		} else {
+			resolvedKnownHeap = ResolveHeapSlotFast(
+				cpuHandle,
+				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+				&resolved);
+			if (resolvedKnownHeap && resolved.heap && resolved.heap->stateLocks &&
+				resolved.heap->stateLocks->PublishedSlotValueEquals(
+					resolved.slot,
+					record.valueId)) {
+				ReleaseDescriptorRecordResources(&record);
+				return false;
+			}
 		}
 		// Lock-free dense write: materialized heaps have stable arrays and the
 		// seqlock publication makes the write visible to lock-free readers.
@@ -633,13 +648,15 @@ public:
 			DX12DescriptorValueHashUtils::HashConstantBufferView(*desc);
 		// Unchanged early-out without materializing the 264-byte record: the
 		// game re-creates identical CBVs into ring slots thousands of times
-		// per frame, and the published-value probe only needs the hash.
+		// per frame, and the published-value probe only needs the hash. The
+		// resolution is kept and handed to the store below, which used to repeat
+		// both this resolve and this probe.
 		ResolvedHeapSlot resolved;
-		if (ResolveHeapSlotFast(
-				destDescriptor.ptr,
-				D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
-				&resolved) &&
-			resolved.heap && resolved.heap->stateLocks &&
+		const bool resolvedKnownHeap = ResolveHeapSlotFast(
+			destDescriptor.ptr,
+			D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES,
+			&resolved);
+		if (resolvedKnownHeap && resolved.heap && resolved.heap->stateLocks &&
 			resolved.heap->stateLocks->PublishedSlotValueEquals(
 				resolved.slot, valueId)) {
 			return false;
@@ -653,7 +670,8 @@ public:
 		record.hasDesc = true;
 		record.gpuVirtualAddress = desc->BufferLocation;
 		record.viewSize = desc->SizeInBytes;
-		return RecordCreatedDescriptorIfChanged(std::move(record));
+		return RecordCreatedDescriptorIfChanged(
+			std::move(record), &resolved, resolvedKnownHeap);
 	}
 
 	static bool WriteDescriptorToSlot(
