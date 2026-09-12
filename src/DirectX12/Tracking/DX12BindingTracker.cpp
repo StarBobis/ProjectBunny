@@ -257,11 +257,26 @@ static bool TryGetRuntimePreSkinBindings(
 	bool *foundAny)
 {
 	(void)computeBindingSerial;
-	if (!runtimeState || !runtimeState->resolvedCompute.bindingsValid ||
-			runtimeState->resolvedCompute.bindingsHeap != runtimeState->cbvSrvUavHeap ||
-			runtimeState->resolvedCompute.bindingsRootSignature !=
-				runtimeState->computeRootSignature)
+	// Diagnostics: the guard below is the original conjunction, same term
+	// order and same short-circuit, but each term carries its own counter so a
+	// single window of counters names the term that blocks the resident
+	// snapshot from ever being published.
+	if (!runtimeState)
+		return false; // Uncounted: both call sites null-check the state.
+	if (!runtimeState->resolvedCompute.bindingsValid) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateNoBindings");
 		return false;
+	}
+	if (runtimeState->resolvedCompute.bindingsHeap !=
+			runtimeState->cbvSrvUavHeap) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateHeap");
+		return false;
+	}
+	if (runtimeState->resolvedCompute.bindingsRootSignature !=
+			runtimeState->computeRootSignature) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateRootSignature");
+		return false;
+	}
 
 	// DX12-style semantic validation: root descriptors must match exactly
 	// (a bare GPU VA has no value identity), root constants must match by
@@ -270,21 +285,30 @@ static bool TryGetRuntimePreSkinBindings(
 	// / binding-serial checks invalidated on every re-bind even when the game
 	// bound identical descriptors at a rotated ring position, forcing a full
 	// re-collect per dispatch (DX11-style deferred state inspection).
-	if (!RuntimeDescriptorRootsMatch(runtimeState) ||
-			!RuntimeConstantsMatch(runtimeState))
+	if (!RuntimeDescriptorRootsMatch(runtimeState)) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateRootDescriptor");
 		return false;
+	}
+	if (!RuntimeConstantsMatch(runtimeState)) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateConstants");
+		return false;
+	}
 
 	DX12SimulateContextComputeTemplate &cache =
 		runtimeState->resolvedCompute;
 	const size_t observedCount = cache.bindingsObservedSlots.size();
 	if (observedCount != cache.observedSlots.size() ||
 			observedCount != cache.observedSlotVersions.size() ||
-			observedCount != cache.observedSlotValueIds.size())
+			observedCount != cache.observedSlotValueIds.size()) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateSlotCountMismatch");
 		return false;
+	}
 
 	if (observedCount) {
-		if (!cache.bindingsHeap)
+		if (!cache.bindingsHeap) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateNoObservedHeap");
 			return false;
+		}
 		// A rotated table invalidates the "no descriptor writes since last
 		// check" shortcut: the new slots were never validated, so their
 		// content must be read even when the global serial is unchanged.
@@ -317,26 +341,34 @@ static bool TryGetRuntimePreSkinBindings(
 				const RootTableState &table =
 					runtimeState->computeRootTables[observed.root];
 				if (!table.valid || !table.runtimeHeapResolved ||
-						table.runtimeHeapIncrement == 0)
+						table.runtimeHeapIncrement == 0) {
+					DX12_PROF_COUNT("Rm.PreSkinValidateTableUnresolved");
 					return false;
+				}
 				const UINT64 currentSlot64 =
 					table.runtimeTableBaseIndex + observed.offset;
-				if (currentSlot64 >= table.runtimeHeapNumDescriptors)
+				if (currentSlot64 >= table.runtimeHeapNumDescriptors) {
+					DX12_PROF_COUNT("Rm.PreSkinValidateSlotOutOfRange");
 					return false;
+				}
 				const UINT currentSlot = static_cast<UINT>(currentSlot64);
 				DescriptorHeapRecord::StateLocks *stateLocks =
 					stateLocksByRoot[observed.root];
 				if (!stateLocks &&
 						!RuntimeResolveHeapRecord(
-							table, currentSlot, &stateLocks))
+							table, currentSlot, &stateLocks)) {
+					DX12_PROF_COUNT("Rm.PreSkinValidateHeapRecordUnresolved");
 					return false;
+				}
 				stateLocksByRoot[observed.root] = stateLocks;
 				UINT64 currentVersion = 0;
 				UINT64 currentValueId = 0;
 				DescriptorHeapRecord::StateLocks::SlotIdentity identity = {};
 				if (!stateLocks->ObserveSlotIdentity(
-						currentSlot, &identity))
+						currentSlot, &identity)) {
+					DX12_PROF_COUNT("Rm.PreSkinValidateSlotIdentityUnreadable");
 					return false;
+				}
 				currentVersion = identity.version;
 				currentValueId = identity.valueId;
 				if (!RuntimeSlotIdentityMatches(
@@ -344,13 +376,23 @@ static bool TryGetRuntimePreSkinBindings(
 						currentValueId,
 						observed.version,
 						observed.valueId)) {
+					// Failure-path-only split of the same predicate: a
+					// differing value id means the descriptor content changed,
+					// an equal value id means only the ring-slot generation
+					// moved while the cached slot had no authoritative value.
+					if (currentValueId != observed.valueId)
+						DX12_PROF_COUNT("Rm.PreSkinValidateSlotValueId");
+					else
+						DX12_PROF_COUNT("Rm.PreSkinValidateSlotVersion");
 					return false;
 				}
 			}
 			const UINT64 descriptorQuerySerialAfter =
 				CurrentDescriptorQuerySerial();
-			if (descriptorQuerySerialAfter != descriptorQuerySerialBefore)
+			if (descriptorQuerySerialAfter != descriptorQuerySerialBefore) {
+				DX12_PROF_COUNT("Rm.PreSkinValidateSerialChurn");
 				return false;
+			}
 			cache.bindingsDescriptorQuerySerial =
 				descriptorQuerySerialAfter;
 			for (size_t index = 0; index < observedCount; ++index) {
@@ -378,6 +420,7 @@ static bool TryGetRuntimePreSkinBindings(
 		*dependencyFingerprint = cache.bindingsDependencyFingerprint;
 	if (foundAny)
 		*foundAny = cache.bindingsFoundAny;
+	DX12_PROF_COUNT("Rm.PreSkinValidatePass");
 	return true;
 }
 
@@ -509,12 +552,22 @@ bool DX12BindingTracker::GetSimulateContextPreSkinBindings(
 	if (foundAny)
 		*foundAny = false;
 	if (!commandList)
-		return false;
+		return false; // Uncounted: both call sites pass a live command list.
 
 	DX12SimulateContext *context =
 		DX12CommandListRuntime::GetStatePtrFast(commandList);
-	if (!context || !context->computeBindingSerial)
+	if (!context) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateNoContext");
 		return false;
+	}
+	// The resident snapshot is addressed through the binding serial; a zero
+	// serial means there is no recording state to publish, which is the one
+	// failure that never reaches TryGetRuntimePreSkinBindings. Count it here
+	// or it stays invisible to every counter below.
+	if (!context->computeBindingSerial) {
+		DX12_PROF_COUNT("Rm.PreSkinValidateNoSerial");
+		return false;
+	}
 
 	bool cachedFoundAny = false;
 	const bool loaded = TryGetRuntimePreSkinBindings(
@@ -1522,6 +1575,7 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	}
 	if (!snapshotReady) {
 		DX12_PROF_STAGE_END(BindSnapshot);
+		DX12_PROF_COUNT("Rm.PreSkinStoreNoSnapshot");
 		return false;
 	}
 	DX12_PROF_STAGE_END(BindSnapshot);
@@ -1969,7 +2023,24 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			localConstants,
 			foundAny);
 	}
-	if (canStoreRuntimeBindings && allRuntimeDescriptorsStable && descriptorStateStable) {
+	// Diagnostics only: the original guard was the single conjunction
+	// `canStoreRuntimeBindings && allRuntimeDescriptorsStable &&
+	// descriptorStateStable`, which runs this body exactly as often as the
+	// nested form below does - same term order, same short-circuit, no extra
+	// evaluation. Each false term now increments its own counter instead of
+	// failing silently. canStoreRuntimeBindings is only ever cleared after its
+	// initialisation, so a false value means either the store target was never
+	// addressable (no resident state / zero binding serial) or the collect
+	// loop disabled it because the observed slots did not all live in one heap.
+	if (!canStoreRuntimeBindings) {
+		DX12_PROF_COUNT((runtimeState && computeBindingSerial != 0) ?
+			"Rm.PreSkinStoreObservedHeapMismatch" :
+			"Rm.PreSkinStoreNoRuntimeState");
+	} else if (!allRuntimeDescriptorsStable) {
+		DX12_PROF_COUNT("Rm.PreSkinStoreRuntimeDescriptorsUnstable");
+	} else if (!descriptorStateStable) {
+		DX12_PROF_COUNT("Rm.PreSkinStoreNotStable");
+	} else {
 		observedSlotVersions.resize(observedSlots.size());
 		observedSlotValueIds.resize(observedSlots.size());
 		bool observedSlotsValid = true;
@@ -2025,8 +2096,18 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 			if (dependencyFingerprint)
 				*dependencyFingerprint = runtimeDependencyFingerprint;
 			DX12_PROF_COUNT("Rm.PreSkinBindingCacheStores");
+			DX12_PROF_COUNT("Rm.PreSkinStoreCommitted");
+		} else {
+			DX12_PROF_COUNT("Rm.PreSkinStoreObservedSlotsInvalid");
 		}
 	}
+
+	// Diagnostics: a full collect pass reached its end but the resident
+	// snapshot is still not publishable. Together with
+	// Rm.PreSkinStoreCommitted this separates "the snapshot was never stored"
+	// from "it was stored and the loader rejects it".
+	if (runtimeState && !runtimeState->resolvedCompute.bindingsValid)
+		DX12_PROF_COUNT("Rm.PreSkinStoreStillInvalidAfterCollect");
 
 	if (uavs) *uavs = std::move(localUavs);
 	if (srvs) *srvs = std::move(localSrvs);

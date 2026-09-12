@@ -60,157 +60,195 @@ public:
 		Instances().clear();
 	}
 
-	// Draws one frame of text. `text` may contain '\n'; each line is laid out
-	// horizontally centered at the top of the back buffer in hunting green.
-	// The bottom two lines show the mode title and the key hints while
-	// hunting. `notice`/`noticeColor` draw one transient line below the
-	// hunting text (or at the top when hunting is off).
-	bool Render(
-		IDXGISwapChain *swapChain, ID3D12CommandQueue *queue,
-		const wchar_t *text, bool hunting,
-		const wchar_t *notice, COLORREF noticeColor)
+	// Looks up an existing instance without creating one. The skipAll fast path
+	// uses this: it may not allocate, so a device that has never drawn overlay
+	// text simply reports "not ready" and the HUD appears on the next frame
+	// that takes the normal path.
+	static DX12InGameTextOverlay *FindDevice(ID3D12Device *device)
+	{
+		if (!device)
+			return nullptr;
+		std::lock_guard<std::mutex> lock(Mutex());
+		auto it = Instances().find(device);
+		return it == Instances().end() ? nullptr : it->second;
+	}
+
+	// One-time preparation, and it MUST run before the caller acquires the
+	// shared overlay channel: the font atlas upload needs a command list of its
+	// own, and taking a channel slot while the composer holds the recording
+	// lock would deadlock on it.
+	bool Prepare(
+		IDXGISwapChain *swapChain, ID3D12CommandQueue *queue, DXGI_FORMAT format)
 	{
 		if (!swapChain || !queue || !mDevice)
 			return false;
-		std::lock_guard<std::mutex> renderLock(mRenderLock);
-
-		Bunny::DX12CustomShaderSurfaceCache *surfaceCache =
-			Bunny::DX12CustomShaderSurfaceCache::ForDevice(mDevice);
-		Bunny::DX12PresentOverlayChannel *channel =
-			Bunny::DX12PresentOverlayChannel::ForDevice(mDevice);
-		if (!surfaceCache || !channel)
-			return false;
-		const LONG present = DX12RuntimeState::GetPresentCount();
-
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv = {};
-		DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-		UINT width = 0;
-		UINT height = 0;
-		if (!surfaceCache->EnsureBackBufferView(swapChain, &rtv, &format, &width, &height))
-			return false;
 		if (!EnsurePipeline(format))
 			return false;
-		if (!EnsureFontTexture(swapChain, queue))
-			return false;
+		return EnsureFontTexture(swapChain, queue);
+	}
+
+	// Records one frame of overlay geometry into an already-open command list.
+	// The caller owns the channel, the back-buffer barrier and the submission,
+	// so every overlay source in a frame lands in ONE command list and ONE
+	// ExecuteCommandLists. Returns the index count to draw, 0 when this frame
+	// has nothing visible.
+	//
+	// Cost shape: the geometry is only rebuilt and re-uploaded when the content
+	// actually changes. Every input that can move a vertex folds into one
+	// content key, and while that key matches what is already in the upload
+	// heap the whole layout stage - and the fence check that guards the ring
+	// slot - is skipped. The profiling report changes once per interval, so in
+	// practice this is a handful of frames per second.
+	UINT Record(
+		ID3D12GraphicsCommandList *commandList,
+		IDXGISwapChain *swapChain,
+		ID3D12CommandQueue *queue,
+		D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+		DXGI_FORMAT format, UINT width, UINT height,
+		const wchar_t *text, bool hunting,
+		const wchar_t *notice, COLORREF noticeColor)
+	{
+		(void)swapChain;
+		(void)queue;
+		(void)format;
+		if (!commandList || !mDevice)
+			return 0;
+		if (!rtv.ptr || width == 0 || height == 0)
+			return 0;
+		// Nothing to draw from until Prepare() has run; in particular this must
+		// not fall back to EnsureFontTexture, which would re-enter the channel.
+		if (!Ready())
+			return 0;
+		// One recording thread at a time: the vertex ring, the layout vector
+		// and the content cache are shared state.
+		std::lock_guard<std::mutex> renderLock(mRenderLock);
 		mBackW = static_cast<float>(width);
 		mBackH = static_cast<float>(height);
 
-		mVertices.clear();
-		float y = kTextMarginY;
-		if (hunting) {
-			y = EmitLinesCentered(text, y, kHuntGreen);
-			if (notice && notice[0]) {
-				float noticeColor4[4];
-				ColorFromRef(noticeColor, noticeColor4);
-				y = EmitLinesLeft(notice, y + kLineGap, noticeColor4);
-			}
-			EmitLineCentered(L"Shader Hunting Mode (DX12)",
-				mBackH - 2.0f * (mCellH + kLineGap) - kTextMarginY, kHuntGreen);
-			EmitLineCentered(
-				L"Num0 off | 1/2 4/5 7/8 / * prev/next PS VS IB VB | 3 6 9 - copy hash | "
-				L".+1/2/3 CS | Num+ done | F8 frame F9 shaders F10 reload",
-				mBackH - (mCellH + kLineGap) - kTextMarginY, kHuntDim);
-		} else if (notice && notice[0]) {
-			float noticeColor4[4];
-			ColorFromRef(noticeColor, noticeColor4);
-			EmitLinesLeft(notice, y, noticeColor4);
-		}
-		if (mVertices.empty())
-			return true; // Nothing to show this frame; not an error.
+		// The HUD snapshot is read unconditionally: its version is part of the
+		// content key, and reading it is a single interlocked load.
+		char report[DX12ProfilingHud::kTextBytes] = {};
+		size_t reportLength = 0;
+		const UINT64 reportVersion = DX12ProfilingHud::CurrentVersion();
+		if (DX12ProfilingHud::IsEnabled() && reportVersion != mHudTextVersion)
+			DX12ProfilingHud::AcquireLatest(
+				&mHudTextVersion, report, sizeof(report), &reportLength);
 
-		const UINT indexCount = static_cast<UINT>(mVertices.size() / 4 * 6);
-		void *vertexData = AcquireVertexSlot();
-		if (!vertexData) {
-			// Its previous submission has not retired yet: drop this frame's
-			// text rather than rewriting memory the GPU is reading.
-			const LONG skippedFor = present - mSlotBusyLogPresent;
-			if (skippedFor >= kSkipLogFrames) {
-				mSlotBusyLogPresent = present;
-				DX12_LOG_FLUSH("DX12InGameTextOverlay",
-					"event=skip_frame reason=vertex_slot_busy frames=%ld",
-					static_cast<long>(skippedFor));
+		const UINT64 contentKey = ContentKey(
+			text, hunting, notice, noticeColor, reportVersion, width, height);
+		if (contentKey != mRenderedContentKey) {
+			mVertices.clear();
+			const UINT indexCount = BuildVertices(
+				text, hunting, notice, noticeColor, report, reportLength);
+			if (indexCount) {
+				void *vertexData = AcquireVertexSlot();
+				if (!vertexData) {
+					// Its previous submission has not retired yet: drop this
+					// frame's text rather than rewriting memory the GPU is
+					// reading.
+					const LONG present = DX12RuntimeState::GetPresentCount();
+					const LONG skippedFor = present - mSlotBusyLogPresent;
+					if (skippedFor >= kSkipLogFrames) {
+						mSlotBusyLogPresent = present;
+						DX12_LOG_FLUSH("DX12InGameTextOverlay",
+							"event=skip_frame reason=vertex_slot_busy frames=%ld",
+							static_cast<long>(skippedFor));
+					}
+					return 0;
+				}
+				mRenderedVertexBytes = static_cast<UINT>(
+					mVertices.size() * sizeof(TextVertex));
+				memcpy(vertexData, mVertices.data(), mRenderedVertexBytes);
+				mRenderedSlot = mVertexCursor;
+				mRenderedIndexCount = indexCount;
+				mRenderedContentKey = contentKey;
+			} else {
+				mRenderedIndexCount = 0;
+				mRenderedContentKey = contentKey;
 			}
-			return false;
 		}
-		memcpy(vertexData, mVertices.data(), mVertices.size() * sizeof(TextVertex));
-
-		// BeginRecord..Submit is one critical section: the channel hands out a
-		// list and closes whichever slot its cursor points at, so another
-		// recording thread in between would close the wrong slot.
-		Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
-		ID3D12GraphicsCommandList *commandList = channel->BeginRecord();
-		if (!commandList) {
-			const LONG failedFor = present - mBeginRecordFailLogPresent;
-			if (failedFor >= kSkipLogFrames) {
-				mBeginRecordFailLogPresent = present;
-				DX12_LOG_FLUSH("DX12InGameTextOverlay",
-					"event=skip_frame reason=begin_record_failed detail=%s frames=%ld",
-					channel->LastFailure(), static_cast<long>(failedFor));
-			}
-			return false;
-		}
-
-		ID3D12Resource *backBuffer = CurrentBackBuffer(swapChain);
-		if (backBuffer) {
-			ResourceTransition(commandList, backBuffer,
-				D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-		}
+		if (!mRenderedIndexCount)
+			return 0;
 
 		ID3D12DescriptorHeap *heaps[] = { mSrvHeap };
 		commandList->SetDescriptorHeaps(1, heaps);
 		commandList->SetGraphicsRootSignature(mRootSignature);
 		commandList->SetGraphicsRootDescriptorTable(
 			0, mSrvHeap->GetGPUDescriptorHandleForHeapStart());
+		// The pixel-to-NDC scale, two root constants: cheaper than a constant
+		// buffer and it keeps the cached geometry resolution independent.
+		const float invHalf[2] = {
+			2.0f / mBackW,
+			2.0f / mBackH,
+		};
+		commandList->SetGraphicsRoot32BitConstants(1, 2, invHalf, 0);
 		commandList->SetPipelineState(mPipeline);
 		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 		D3D12_VERTEX_BUFFER_VIEW vbv = {};
 		vbv.BufferLocation = mVertexBuffer->GetGPUVirtualAddress() +
-			static_cast<UINT64>(mVertexCursor) * kVertexSlotBytes;
+			static_cast<UINT64>(mRenderedSlot) * kVertexSlotBytes;
 		vbv.StrideInBytes = sizeof(TextVertex);
-		vbv.SizeInBytes = static_cast<UINT>(mVertices.size() * sizeof(TextVertex));
+		vbv.SizeInBytes = static_cast<UINT>(mRenderedVertexBytes);
 		commandList->IASetVertexBuffers(0, 1, &vbv);
 
 		D3D12_INDEX_BUFFER_VIEW ibv = {};
 		ibv.BufferLocation = mIndexBuffer->GetGPUVirtualAddress();
 		ibv.Format = DXGI_FORMAT_R16_UINT;
-		ibv.SizeInBytes = kMaxChars * 6 * sizeof(uint16_t);
+		ibv.SizeInBytes = static_cast<UINT>(kMaxChars * 6 * sizeof(uint16_t));
 		commandList->IASetIndexBuffer(&ibv);
 
 		commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 		D3D12_VIEWPORT viewport = {};
-		viewport.Width = static_cast<float>(width);
-		viewport.Height = static_cast<float>(height);
+		viewport.Width = mBackW;
+		viewport.Height = mBackH;
 		viewport.MaxDepth = 1.0f;
 		commandList->RSSetViewports(1, &viewport);
 		D3D12_RECT scissor = {};
 		scissor.right = static_cast<LONG>(width);
 		scissor.bottom = static_cast<LONG>(height);
 		commandList->RSSetScissorRects(1, &scissor);
-		commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
+		commandList->DrawIndexedInstanced(mRenderedIndexCount, 1, 0, 0, 0);
 
-		if (backBuffer) {
-			ResourceTransition(commandList, backBuffer,
-				D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-			backBuffer->Release();
-		}
-
-		if (!channel->Submit(queue)) {
-			DX12_LOG_FLUSH("DX12InGameTextOverlay",
-				"event=submit_failed detail=%s", channel->LastFailure());
-			return false;
-		}
-		// Tag the vertex slot with the fence value of this submission; the
-		// ring is only rewritten after the GPU passed it.
-		mSlotFenceValues[mVertexCursor] = ++mFenceCounter;
-		queue->Signal(mFence, mFenceCounter);
 		if (!mFirstFrameLogged) {
 			mFirstFrameLogged = true;
 			DX12_LOG_FLUSH("DX12InGameTextOverlay",
-				"event=first_frame_drawn backBuffer=%ux%u quads=%zu indexCount=%u slot=%u",
-				width, height, mVertices.size() / 4, indexCount, mVertexCursor);
+				"event=first_frame_drawn backBuffer=%ux%u quads=%u indexCount=%u slot=%u",
+				width, height,
+				static_cast<UINT>(mRenderedIndexCount / 6), mRenderedIndexCount,
+				mRenderedSlot);
 		}
-		return true;
+		return mRenderedIndexCount;
+	}
+
+	// Called by the composer right after it submits the list this object
+	// recorded into. The slot is re-tagged on EVERY submission, not just the
+	// ones that rewrote it: the tag has to describe the newest GPU work
+	// reading that memory, or AcquireVertexSlot could hand out a slot a later
+	// submission is still drawing from.
+	void OnSubmitted(ID3D12CommandQueue *queue)
+	{
+		if (!queue || !mRenderedIndexCount || !mFence)
+			return;
+		mSlotFenceValues[mRenderedSlot] = ++mFenceCounter;
+		queue->Signal(mFence, mFenceCounter);
+	}
+
+	// True when the frame has anything to draw at all. Read by the composer
+	// before it acquires a command list, so a frame with no overlay content
+	// costs two atomic reads and no recording work.
+	static bool HasContent(bool hunting, bool hasNotice)
+	{
+		return hunting || hasNotice || DX12ProfilingHud::IsEnabled();
+	}
+
+	// True once the GPU objects exist. The skipAll fast path uses this to avoid
+	// creating a device, a PSO or a heap from inside the fast path - which is
+	// what used to stall startup.
+	bool Ready() const
+	{
+		return mDevice && mRootSignature && mPipeline && mFontTextureReady &&
+			mVertexBuffer && mIndexBuffer && mSrvHeap;
 	}
 
 private:
@@ -221,13 +259,19 @@ private:
 		float r, g, b, a;
 	};
 
-	static constexpr size_t kMaxChars = 1024;
+	static constexpr size_t kMaxChars = 3072;
 	// Slot count is GPU-latency headroom only: every slot is rewritten strictly
 	// after its previous submission retired (AcquireVertexSlot drops the frame
-	// otherwise), so extra slots trade 128 KB of upload heap each for fewer
-	// dropped text frames while the GPU is behind.
+	// otherwise), so extra slots trade upload-heap bytes for fewer dropped text
+	// frames while the GPU is behind. With content-generation caching a slot is
+	// only rewritten when the text actually changed, so the ring is rarely
+	// exercised at all.
 	static constexpr UINT kVertexSlotCount = 6;
 	static constexpr UINT kVertexSlotBytes = kMaxChars * 4 * sizeof(TextVertex);
+	// The index buffer is 16-bit, and each quad consumes four vertices: the
+	// highest index emitted is kMaxChars*4-1, so the buffer overflows the
+	// moment this cap reaches 16384.
+	static_assert(kMaxChars < 16384, "16-bit indices cannot address this many quads");
 	static constexpr DWORD kFenceWaitMs = 2000;
 	// A failed one-time font build is retried only after this cool-down, so a
 	// persistent failure cannot rebuild the GDI atlas every single frame.
@@ -246,6 +290,22 @@ private:
 	static constexpr wchar_t kFirstGlyph = 32;
 	static constexpr UINT kGlyphCount = 95; // printable ASCII 32..126
 	static constexpr UINT kAtlasCols = 16;
+	// The atlas grid is kAtlasCols wide, so 95 glyphs leave exactly one cell
+	// over in the last row. It is filled opaque white and reserved for solid
+	// quads (the HUD backdrop): sampling a texel of value 1.0 lets a rectangle
+	// reuse the text pipeline verbatim instead of needing a second PSO.
+	static constexpr UINT kAtlasRows = (kGlyphCount + kAtlasCols - 1) / kAtlasCols;
+	static constexpr UINT kSolidCell = kGlyphCount; // first free cell
+	static_assert(kSolidCell < kAtlasRows * kAtlasCols,
+		"the solid-quad cell must exist inside the atlas grid");
+	// HUD panel geometry. The panel is anchored top-left and padded to a fixed
+	// number of rows, so a report that grows or shrinks between intervals
+	// cannot make the centred hunting text jump.
+	static constexpr int kHudMaxRows = 44;
+	static constexpr float kHudBackdropAlpha = 0.75f;
+	static constexpr float kHudPadding = 4.0f;
+	static constexpr float kHudColor[4] = { 0.93f, 0.79f, 0.30f, 1.0f }; // goldenrod
+	static constexpr float kHudBackdrop[4] = { 0.0f, 0.0f, 0.0f, kHudBackdropAlpha };
 
 	explicit DX12InGameTextOverlay(ID3D12Device *device)
 		: mDevice(device)
@@ -289,20 +349,6 @@ private:
 		return instances;
 	}
 
-	static ID3D12Resource *CurrentBackBuffer(IDXGISwapChain *swapChain)
-	{
-		UINT index = 0;
-		IDXGISwapChain3 *swapChain3 = nullptr;
-		if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) && swapChain3) {
-			index = swapChain3->GetCurrentBackBufferIndex();
-			swapChain3->Release();
-		}
-		ID3D12Resource *backBuffer = nullptr;
-		if (FAILED(swapChain->GetBuffer(index, IID_PPV_ARGS(&backBuffer))))
-			return nullptr;
-		return backBuffer;
-	}
-
 	static void ResourceTransition(
 		ID3D12GraphicsCommandList *commandList, ID3D12Resource *resource,
 		D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -340,11 +386,21 @@ private:
 		range.NumDescriptors = 1;
 		range.BaseShaderRegister = 0;
 		range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-		D3D12_ROOT_PARAMETER parameter = {};
-		parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		parameter.DescriptorTable.NumDescriptorRanges = 1;
-		parameter.DescriptorTable.pDescriptorRanges = &range;
-		parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		// Two floats of root constants carry the pixel-to-NDC scale. Baking the
+		// back-buffer size into the vertices instead (as this used to) makes
+		// every cached vertex blob invalid on a resize; with the transform in
+		// the shader the geometry is resolution independent, which is what lets
+		// an unchanged report be re-submitted without re-uploading anything.
+		D3D12_ROOT_PARAMETER parameters[2] = {};
+		parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[0].DescriptorTable.NumDescriptorRanges = 1;
+		parameters[0].DescriptorTable.pDescriptorRanges = &range;
+		parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+		parameters[1].Constants.ShaderRegister = 0;
+		parameters[1].Constants.RegisterSpace = 0;
+		parameters[1].Constants.Num32BitValues = 2;
+		parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 		D3D12_STATIC_SAMPLER_DESC sampler = {};
 		sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
 		sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -353,8 +409,8 @@ private:
 		sampler.ShaderRegister = 0;
 		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 		D3D12_ROOT_SIGNATURE_DESC desc = {};
-		desc.NumParameters = 1;
-		desc.pParameters = &parameter;
+		desc.NumParameters = ARRAYSIZE(parameters);
+		desc.pParameters = parameters;
 		desc.NumStaticSamplers = 1;
 		desc.pStaticSamplers = &sampler;
 		desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -378,6 +434,11 @@ private:
 			return FailInit("root_signature_create");
 
 		static const char kShaderSource[] = R"(
+cbuffer HudParams : register(b0)
+{
+	// (2/backBufferWidth, 2/backBufferHeight)
+	float2 invHalfSize;
+};
 struct VSIn {
 	float2 pos : POSITION;
 	float2 uv : TEXCOORD0;
@@ -391,7 +452,10 @@ struct PSIn {
 PSIn VSMain(VSIn input)
 {
 	PSIn output;
-	output.pos = float4(input.pos, 0.0f, 1.0f);
+	// Vertices arrive in pixels; the flip to NDC happens here so the geometry
+	// stays valid across a back-buffer resize.
+	output.pos = float4(input.pos.x * invHalfSize.x - 1.0f,
+	                    1.0f - input.pos.y * invHalfSize.y, 0.0f, 1.0f);
 	output.uv = input.uv;
 	output.col = input.col;
 	return output;
@@ -625,6 +689,18 @@ float4 PSMain(PSIn input) : SV_TARGET
 		for (size_t i = 0; i < alpha->size(); ++i)
 			(*alpha)[i] = pixels[i * 4 + 2]; // white text: any channel works
 
+		// The one cell the glyph range does not use is filled opaque white and
+		// reserved for solid quads (the HUD backdrop). Filling it here rather
+		// than adding a second pipeline means a rectangle costs one vertex
+		// quad and no state of its own.
+		const UINT solidCol = kSolidCell % kAtlasCols;
+		const UINT solidRow = kSolidCell / kAtlasCols;
+		for (UINT row = solidRow * cellH; row < (solidRow + 1) * cellH; ++row) {
+			uint8_t *dst = alpha->data() + static_cast<size_t>(row) * atlasW +
+				solidCol * cellW;
+			memset(dst, 255, cellW);
+		}
+
 		mAtlasW = atlasW;
 		mAtlasH = atlasH;
 		SelectObject(hdc, oldBitmap);
@@ -821,39 +897,79 @@ float4 PSMain(PSIn input) : SV_TARGET
 	}
 
 	// ------------------------------------------------------------------
-	// Text layout: monospace cells, NDC computed on the CPU so the pipeline
-	// needs no constant buffers.
+	// Text layout: monospace cells emitted in *pixel* space. The vertex shader
+	// applies the pixel-to-NDC scale from a root constant, so the geometry is
+	// resolution independent and an unchanged report can be re-submitted
+	// without touching the upload heap.
 	// ------------------------------------------------------------------
-	void EmitChar(wchar_t ch, float px, float py, float backW, float backH, const float color[4])
+	void GlyphUv(UINT cell, float *u0, float *v0, float *u1, float *v1) const
+	{
+		const UINT col = cell % kAtlasCols;
+		const UINT row = cell / kAtlasCols;
+		const float atlasW = static_cast<float>(mAtlasW);
+		const float atlasH = static_cast<float>(mAtlasH);
+		*u0 = (col * mCellW) / atlasW;
+		*v0 = (row * mCellH) / atlasH;
+		*u1 = ((col + 1) * mCellW) / atlasW;
+		*v1 = ((row + 1) * mCellH) / atlasH;
+	}
+
+	void EmitQuad(float px, float py, float w, float h, UINT cell, const float color[4])
 	{
 		if (mVertices.size() + 4 > kMaxChars * 4)
 			return;
-		if (ch < kFirstGlyph || ch >= kFirstGlyph + kGlyphCount)
-			ch = L'?';
-		const UINT glyph = static_cast<UINT>(ch - kFirstGlyph);
-		const UINT col = glyph % kAtlasCols;
-		const UINT row = glyph / kAtlasCols;
-		const float atlasW = static_cast<float>(mAtlasW);
-		const float atlasH = static_cast<float>(mAtlasH);
-		const float u0 = (col * mCellW) / atlasW;
-		const float v0 = (row * mCellH) / atlasH;
-		const float u1 = ((col + 1) * mCellW) / atlasW;
-		const float v1 = ((row + 1) * mCellH) / atlasH;
-		const float x0 = px / backW * 2.0f - 1.0f;
-		const float x1 = (px + mCellW) / backW * 2.0f - 1.0f;
-		const float y0 = 1.0f - py / backH * 2.0f;
-		const float y1 = 1.0f - (py + mCellH) / backH * 2.0f;
-		mVertices.push_back({ x0, y0, u0, v0, color[0], color[1], color[2], color[3] });
-		mVertices.push_back({ x1, y0, u1, v0, color[0], color[1], color[2], color[3] });
+		float u0 = 0.0f;
+		float v0 = 0.0f;
+		float u1 = 0.0f;
+		float v1 = 0.0f;
+		GlyphUv(cell, &u0, &v0, &u1, &v1);
+		const float x1 = px + w;
+		const float y1 = py + h;
+		mVertices.push_back({ px, py, u0, v0, color[0], color[1], color[2], color[3] });
+		mVertices.push_back({ x1, py, u1, v0, color[0], color[1], color[2], color[3] });
 		mVertices.push_back({ x1, y1, u1, v1, color[0], color[1], color[2], color[3] });
-		mVertices.push_back({ x0, y1, u0, v1, color[0], color[1], color[2], color[3] });
+		mVertices.push_back({ px, y1, u0, v1, color[0], color[1], color[2], color[3] });
 	}
 
-	void EmitLine(const wchar_t *line, size_t length, float px, float py,
-		float backW, float backH, const float color[4])
+	void EmitChar(wchar_t ch, float px, float py, const float color[4])
+	{
+		if (ch < kFirstGlyph || ch >= kFirstGlyph + kGlyphCount)
+			ch = L'?';
+		EmitQuad(px, py, mCellW, mCellH,
+			static_cast<UINT>(ch - kFirstGlyph), color);
+	}
+
+	// A filled rectangle. All four corners sample the *centre* of the reserved
+	// white cell, so linear filtering cannot pull a neighbouring glyph in and
+	// the rectangle needs no second pipeline, root signature or blend state.
+	void EmitSolid(float px, float py, float w, float h, const float color[4])
+	{
+		if (mVertices.size() + 4 > kMaxChars * 4)
+			return;
+		const UINT col = kSolidCell % kAtlasCols;
+		const UINT row = kSolidCell / kAtlasCols;
+		const float u = (col + 0.5f) * mCellW / static_cast<float>(mAtlasW);
+		const float v = (row + 0.5f) * mCellH / static_cast<float>(mAtlasH);
+		const float x1 = px + w;
+		const float y1 = py + h;
+		mVertices.push_back({ px, py, u, v, color[0], color[1], color[2], color[3] });
+		mVertices.push_back({ x1, py, u, v, color[0], color[1], color[2], color[3] });
+		mVertices.push_back({ x1, y1, u, v, color[0], color[1], color[2], color[3] });
+		mVertices.push_back({ px, y1, u, v, color[0], color[1], color[2], color[3] });
+	}
+
+	void EmitLine(const wchar_t *line, size_t length, float px, float py, const float color[4])
 	{
 		for (size_t i = 0; i < length; ++i)
-			EmitChar(line[i], px + i * mCellW, py, backW, backH, color);
+			EmitChar(line[i], px + i * mCellW, py, color);
+	}
+
+	// The report is ASCII, so a byte maps straight onto a glyph.
+	void EmitAsciiLine(const char *text, size_t length, float px, float py, const float color[4])
+	{
+		for (size_t i = 0; i < length; ++i)
+			EmitChar(static_cast<wchar_t>(static_cast<unsigned char>(text[i])),
+				px + i * mCellW, py, color);
 	}
 
 	float EmitLineCentered(const wchar_t *line, float py, const float color[4])
@@ -862,7 +978,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 		float px = (mBackW - length * mCellW) * 0.5f;
 		if (px < kTextMarginX)
 			px = kTextMarginX;
-		EmitLine(line, length, px, py, mBackW, mBackH, color);
+		EmitLine(line, length, px, py, color);
 		return py + mCellH + kLineGap;
 	}
 
@@ -874,23 +990,187 @@ float4 PSMain(PSIn input) : SV_TARGET
 			float px = (mBackW - length * mCellW) * 0.5f;
 			if (px < kTextMarginX)
 				px = kTextMarginX;
-			EmitLine(line, length, px, py, mBackW, mBackH, color);
+			EmitLine(line, length, px, py, color);
 			py += mCellH + kLineGap;
 			line = end ? end + 1 : nullptr;
 		}
 		return py;
 	}
 
-	float EmitLinesLeft(const wchar_t *text, float py, const float color[4])
+	float EmitLinesLeft(const wchar_t *text, float py, const float color[4], float px = kTextMarginX)
 	{
 		for (const wchar_t *line = text; line && *line;) {
 			const wchar_t *end = wcschr(line, L'\n');
 			const size_t length = end ? static_cast<size_t>(end - line) : wcslen(line);
-			EmitLine(line, length, kTextMarginX, py, mBackW, mBackH, color);
+			EmitLine(line, length, px, py, color);
 			py += mCellH + kLineGap;
 			line = end ? end + 1 : nullptr;
 		}
 		return py;
+	}
+
+	// ------------------------------------------------------------------
+	// Profiling panel: a translucent backdrop sized to the widest line with
+	// the report drawn on top, anchored top-left. The backdrop height uses a
+	// grow-only high-water mark for the current view, so a report that gains
+	// or loses a row between intervals cannot make the centred hunting text
+	// below it drift; switching views resets the mark.
+	// ------------------------------------------------------------------
+	float EmitProfilingPanel(const char *report, size_t reportLength, float topY)
+	{
+		if (!report || !reportLength)
+			return topY;
+
+		// The high-water mark belongs to one view: a new view starts from its
+		// own height instead of inheriting the previous one's.
+		const LONG mode = static_cast<LONG>(DX12ProfilingHud::GetMode());
+		if (mode != mHudRowPadMode) {
+			mHudRowPadMode = mode;
+			mHudRowPad = 0;
+		}
+
+		const UINT rows = CountLines(report, reportLength);
+		const size_t widest = WidestLine(report, reportLength);
+		if (!rows || !widest)
+			return topY;
+		if (static_cast<int>(rows) > mHudRowPad)
+			mHudRowPad = static_cast<int>(rows);
+
+		const float lineH = mCellH + kLineGap;
+		const float panelW = widest * mCellW + 2.0f * kHudPadding;
+		const float panelH = mHudRowPad * lineH + 2.0f * kHudPadding;
+		EmitSolid(kTextMarginX, topY, panelW, panelH, kHudBackdrop);
+
+		float y = topY + kHudPadding;
+		const float textX = kTextMarginX + kHudPadding;
+		for (const char *line = report; line && *line;) {
+			const char *end = static_cast<const char *>(memchr(line, '\n',
+				reportLength - static_cast<size_t>(line - report)));
+			const size_t length = end
+				? static_cast<size_t>(end - line)
+				: reportLength - static_cast<size_t>(line - report);
+			EmitAsciiLine(line, length, textX, y, kHudColor);
+			y += lineH;
+			if (!end)
+				break;
+			line = end + 1;
+		}
+		return topY + panelH;
+	}
+
+	static UINT CountLines(const char *text, size_t length)
+	{
+		if (!text || !length)
+			return 0;
+		UINT rows = 1;
+		for (size_t i = 0; i < length; ++i) {
+			if (text[i] != '\n')
+				continue;
+			// A trailing newline terminates the last row rather than starting
+			// an empty one.
+			if (i + 1 < length)
+				++rows;
+		}
+		return rows;
+	}
+
+	static size_t WidestLine(const char *text, size_t length)
+	{
+		size_t widest = 0;
+		size_t current = 0;
+		for (size_t i = 0; i < length; ++i) {
+			if (text[i] == '\n') {
+				if (current > widest)
+					widest = current;
+				current = 0;
+			} else {
+				++current;
+			}
+		}
+		if (current > widest)
+			widest = current;
+		return widest;
+	}
+
+	// ------------------------------------------------------------------
+	// Content identity. Everything that can move a vertex folds into one key:
+	// when the key matches what is already in the upload heap nothing is
+	// rebuilt, nothing is uploaded and the ring slot stays untouched.
+	// ------------------------------------------------------------------
+	static UINT64 HashText(const wchar_t *text)
+	{
+		UINT64 hash = 1469598103934665603ull; // FNV-1a
+		for (; text && *text; ++text) {
+			hash ^= static_cast<UINT64>(static_cast<UINT16>(*text));
+			hash *= 1099511628211ull;
+		}
+		return hash;
+	}
+
+	static UINT64 Mix(UINT64 hash, UINT64 value)
+	{
+		hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+		return hash;
+	}
+
+	UINT64 ContentKey(
+		const wchar_t *text, bool hunting,
+		const wchar_t *notice, COLORREF noticeColor,
+		UINT64 reportVersion, UINT width, UINT height) const
+	{
+		UINT64 key = HashText(text);
+		key = Mix(key, hunting ? 1u : 0u);
+		key = Mix(key, HashText(notice));
+		key = Mix(key, static_cast<UINT64>(noticeColor));
+		// The HUD contributes its version, not its bytes: the version only
+		// moves when the writer published a different report.
+		key = Mix(key, DX12ProfilingHud::IsEnabled() ? reportVersion + 1 : 0);
+		// Width and height matter even though the geometry is in pixels: the
+		// centred hunting text is laid out from the back-buffer width.
+		key = Mix(key, (static_cast<UINT64>(width) << 32) | height);
+		key = Mix(key, static_cast<UINT64>(mHudRowPad));
+		return key;
+	}
+
+	// Emits the whole frame's geometry and returns the index count to draw.
+	UINT BuildVertices(
+		const wchar_t *text, bool hunting,
+		const wchar_t *notice, COLORREF noticeColor,
+		const char *report, size_t reportLength)
+	{
+		float y = kTextMarginY;
+
+		// The panel is drawn first so the text it carries lands on top, and so
+		// the hunting text below it can start after the panel's full height.
+		if (DX12ProfilingHud::IsEnabled() && reportLength)
+			y = EmitProfilingPanel(report, reportLength, kTextMarginY);
+
+		if (hunting) {
+			if (y > kTextMarginY)
+				y += kLineGap;
+			y = EmitLinesCentered(text, y, kHuntGreen);
+			if (notice && notice[0]) {
+				float noticeColor4[4];
+				ColorFromRef(noticeColor, noticeColor4);
+				y = EmitLinesLeft(notice, y + kLineGap, noticeColor4);
+			}
+			EmitLineCentered(L"Shader Hunting Mode (DX12)",
+				mBackH - 2.0f * (mCellH + kLineGap) - kTextMarginY, kHuntGreen);
+			EmitLineCentered(
+				L"Num0 off | 1/2 4/5 7/8 / * prev/next PS VS IB VB | 3 6 9 - copy hash | "
+				L".+1/2/3 CS | Num+ done | F8 frame F9 shaders F10 reload | F11 profiling",
+				mBackH - (mCellH + kLineGap) - kTextMarginY, kHuntDim);
+		} else if (notice && notice[0]) {
+			if (y > kTextMarginY)
+				y += kLineGap;
+			float noticeColor4[4];
+			ColorFromRef(noticeColor, noticeColor4);
+			EmitLinesLeft(notice, y, noticeColor4);
+		}
+
+		return mVertices.empty()
+			? 0u
+			: static_cast<UINT>(mVertices.size() / 4 * 6);
 	}
 
 	ID3D12Device *mDevice = nullptr;
@@ -920,32 +1200,91 @@ float4 PSMain(PSIn input) : SV_TARGET
 	bool mPipelineLogged = false;
 	bool mFirstFrameLogged = false;
 	LONG mSlotBusyLogPresent = 0;
-	LONG mBeginRecordFailLogPresent = 0;
 	float mCellW = 0.0f;
 	float mCellH = 0.0f;
 	UINT mAtlasW = 0;
 	UINT mAtlasH = 0;
 	float mBackW = 0.0f;
 	float mBackH = 0.0f;
+
+	// --- frame-to-frame reuse -------------------------------------------
+	// The key of the geometry currently sitting in the upload heap, the slot
+	// that holds it and how much of it to draw. While a frame's key matches,
+	// the layout pass and the upload are skipped and only the draw is
+	// re-recorded - which is what makes an idle HUD nearly free.
+	UINT64 mRenderedContentKey = 0;
+	UINT mRenderedSlot = 0;
+	UINT mRenderedIndexCount = 0;
+	UINT mRenderedVertexBytes = 0;
+	// Version of the report currently held in mReport, so a frame that changes
+	// for some other reason (hunting toggled, notice posted) does not re-copy
+	// the profiling text.
+	UINT64 mHudTextVersion = 0;
+	// Grow-only backdrop height for the current view.
+	int mHudRowPad = 0;
+	LONG mHudRowPadMode = -1;
 	// A title may present from more than one thread; the frame is serialised
 	// on this so the ring, the layout vector and the cursor stay consistent.
 	std::mutex mRenderLock;
 };
 
-bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
-{
-	if (!swapChain)
-		return false;
+// ---------------------------------------------------------------------------
+// Module entry points.
+//
+// The overlay no longer submits anything itself: every overlay source in a
+// frame is recorded into the one command list DX12PresentOverlayCompose owns,
+// so a frame costs a single ExecuteCommandLists instead of one per source.
+// ---------------------------------------------------------------------------
 
-	// Fast path: with hunting off and no live notice there is nothing to
-	// draw, so this costs two atomic reads per frame and no GPU work at all.
+bool DX12NativeOverlayHasContent()
+{
+	// Two atomic reads: the hunting flag and the notice slot. Callers use this
+	// to skip resolving a device, a queue and a command list on a frame that
+	// would draw nothing.
+	const bool hunting = DX12HuntIsEnabled();
+	wchar_t notice[512] = {};
+	const bool hasNotice =
+		DX12OverlayStatusState::GetTransientStatus(notice, ARRAYSIZE(notice), nullptr);
+	return DX12InGameTextOverlay::HasContent(hunting, hasNotice);
+}
+
+// Prepares the overlay's GPU objects and font atlas. MUST be called before the
+// composer acquires the shared channel: the atlas upload takes a channel slot
+// of its own, and doing that while the recording lock is held would deadlock.
+bool DX12NativeOverlayPrepare(
+	IDXGISwapChain *swapChain, ID3D12CommandQueue *queue, DXGI_FORMAT format)
+{
+	if (!swapChain || !queue)
+		return false;
+	ID3D12Device *device = nullptr;
+	if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
+		return false;
+	DX12InGameTextOverlay *overlay = DX12InGameTextOverlay::ForDevice(device);
+	device->Release(); // the instance borrows the device, cache-lifetime owned
+	return overlay && overlay->Prepare(swapChain, queue, format);
+}
+
+// Records the overlay text into `commandList`, which the caller has already
+// opened and will submit. Returns the index count drawn (0 = nothing visible).
+UINT DX12NativeOverlayRecord(
+	ID3D12GraphicsCommandList *commandList,
+	IDXGISwapChain *swapChain,
+	ID3D12CommandQueue *queue,
+	D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+	DXGI_FORMAT format,
+	UINT width,
+	UINT height)
+{
+	if (!commandList || !swapChain || !queue)
+		return 0;
+
 	const bool hunting = DX12HuntIsEnabled();
 	wchar_t notice[512] = {};
 	COLORREF noticeColor = RGB(0, 255, 0);
 	const bool hasNotice =
 		DX12OverlayStatusState::GetTransientStatus(notice, ARRAYSIZE(notice), &noticeColor);
-	if (!hunting && !hasNotice)
-		return false;
+	if (!DX12InGameTextOverlay::HasContent(hunting, hasNotice))
+		return 0;
 
 	// Frame-boundary breadcrumb: the freeze watchdog reports the last stage
 	// this process entered, so an overlay-side stall names itself in the log.
@@ -953,25 +1292,93 @@ bool DX12NativeOverlayRender(IDXGISwapChain *swapChain)
 
 	ID3D12Device *device = nullptr;
 	if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
-		return false;
-	DX12InGameTextOverlay *overlay = DX12InGameTextOverlay::ForDevice(device);
+		return 0;
+	DX12InGameTextOverlay *overlay = DX12InGameTextOverlay::FindDevice(device);
 	device->Release(); // the instance borrows the device, cache-lifetime owned
-	ID3D12CommandQueue *queue = DX12ModAcquireGameDirectQueue();
-	if (!overlay || !queue) {
-		if (queue)
-			queue->Release();
-		return false;
-	}
+	if (!overlay)
+		return 0;
 
 	wchar_t text[1024] = {};
 	if (hunting)
 		DX12HuntComposeOverlayText(text, ARRAYSIZE(text));
 
-	const bool drawn = overlay->Render(
-		swapChain, queue, text, hunting, hasNotice ? notice : nullptr, noticeColor);
-	queue->Release();
+	const UINT drawn = overlay->Record(
+		commandList, swapChain, queue, rtv, format, width, height,
+		text, hunting, hasNotice ? notice : nullptr, noticeColor);
 	DX12MarkStage("hunt_overlay_done");
 	return drawn;
+}
+
+void DX12NativeOverlayOnSubmitted(IDXGISwapChain *swapChain, ID3D12CommandQueue *queue)
+{
+	if (!swapChain || !queue)
+		return;
+	ID3D12Device *device = nullptr;
+	if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
+		return;
+	DX12InGameTextOverlay *overlay = DX12InGameTextOverlay::ForDevice(device);
+	device->Release();
+	if (overlay)
+		overlay->OnSubmitted(queue);
+}
+
+// One-shot permission for the skipAll fast path to create the overlay's GPU
+// objects, plus the frame count past which an ini-enabled HUD may arm itself.
+//
+// The fast path is barred from creating GPU objects (root signature, runtime
+// shader compile, PSO, heaps, and a font-atlas upload that waits on a fence)
+// because doing that during the first frames of a session is what used to stall
+// startup. Two things therefore have to be true before it may:
+//   - a hotkey press, which by definition happens well past startup, or
+//   - the session is demonstrably running (kFastPathInitMinPresents presents
+//     served, the same order as the default config-initialisation delay), which
+//     covers an ini-configured HUD in a session whose mod does no per-draw work
+//     and so never leaves the fast path.
+namespace
+{
+	constexpr LONG kFastPathInitMinPresents = 120;
+	std::atomic<LONG> gFastPathInitRequested{ 0 };
+}
+
+void DX12NativeOverlayRequestInit()
+{
+	gFastPathInitRequested.store(1, std::memory_order_relaxed);
+}
+
+// True once the overlay's GPU objects exist and its font atlas is uploaded.
+// The skipAll fast path uses this to draw the HUD without creating a device, a
+// PSO, a heap or a queue submission from inside the fast path - except in the
+// two cases above, where nothing else would ever create them.
+bool DX12NativeOverlayReady(IDXGISwapChain *swapChain)
+{
+	if (!swapChain)
+		return false;
+	if (!DX12NativeOverlayHasContent())
+		return false;
+	ID3D12Device *device = nullptr;
+	if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
+		return false;
+
+	bool mayInitialize =
+		gFastPathInitRequested.load(std::memory_order_relaxed) != 0;
+	if (!mayInitialize && DX12ProfilingHud::IsEnabled())
+		mayInitialize = DX12RuntimeState::GetPresentCount() >=
+			kFastPathInitMinPresents;
+
+	DX12InGameTextOverlay *overlay = mayInitialize
+		? DX12InGameTextOverlay::ForDevice(device)
+		: DX12InGameTextOverlay::FindDevice(device);
+	device->Release();
+	if (!overlay)
+		return false;
+	if (overlay->Ready()) {
+		// Spent: from here on the fast path only ever draws.
+		gFastPathInitRequested.store(0, std::memory_order_relaxed);
+		return true;
+	}
+	// Keep the request armed so the next frame finishes the job. If that frame
+	// takes the normal path instead, it initialises there and clears the flag.
+	return false;
 }
 
 void DX12NativeOverlayInvalidate(IDXGISwapChain *swapChain)

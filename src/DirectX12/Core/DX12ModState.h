@@ -195,17 +195,19 @@ bool DX12ModPreparePresentReplacement(
 // command list ran (phase 2.4). The replay itself happens at Present time.
 bool DX12ModQueuePresentCustomElements(
 	ID3D12GraphicsCommandList *commandList, DX12ModIaReplacement *replacement);
-// Replays the parked element records onto the back buffer via a mod-owned
-// command list submitted on the game's direct queue right before the
-// original Present call (the DX11 [Present] semantic: after the game's
-// rendering, before present).
-bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain);
+// Composes and submits EVERY overlay source for one frame in a single
+// command list on the game's direct queue, right before the original Present
+// call (the DX11 [Present] semantic: after the game's rendering, before
+// present). Sources, in record order: the parked [Present] custom elements,
+// then the in-game text (hunting, transient notices, profiling HUD).
+//
+// One list, one barrier pair, one ExecuteCommandLists - the profiling HUD
+// therefore costs a few extra vertices in a draw that was already happening
+// rather than a submission of its own.
+bool DX12PresentOverlayCompose(IDXGISwapChain *swapChain);
 // Tracks the game's direct command queue from the ExecuteCommandLists
 // wrapper so the overlay submit lands on the same queue the game renders to.
 void DX12ModTrackGameDirectQueue(ID3D12CommandQueue *queue);
-// Borrows the tracked game direct queue with a reference held; caller
-// releases. Used by the in-game overlay text submission.
-ID3D12CommandQueue *DX12ModAcquireGameDirectQueue();
 bool DX12ModAdjustBufferResourceDesc(D3D12_RESOURCE_DESC *desc, const char *source);
 bool DX12ModAdjustBufferResourceDesc1(D3D12_RESOURCE_DESC1 *desc, const char *source);
 bool DX12ModAdjustUavDesc(

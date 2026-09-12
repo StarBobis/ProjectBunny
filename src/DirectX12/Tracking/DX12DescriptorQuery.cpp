@@ -843,7 +843,7 @@ void DX12FindDescriptorSummariesByHeapSlot(
 					SRWLOCK *slotLock =
 						DX12DescriptorHeapShadowUtils::HeapLock(heapIndex, slot);
 					if (slotLock)
-						DX12_LOCK_ACQUIRE_SHARED(slotLock, "Desc.heapShared");
+						DX12_LOCK_ACQUIRE_SHARED(slotLock, "Lock.Desc.heapShared");
 					copied = DX12DescriptorSlotArrayUtils::CopyCurrentRecord(
 						record, slot, &recordCopy);
 					if (slotLock)

@@ -3,11 +3,16 @@
 #pragma once
 
 #include "DX12ResourceHookRuntime.h"
+#include "../Core/DX12Diagnostics.h"
 
 // Defined in ShaderTools/DX12NativeOverlay.cpp; the declaration also lives in
 // DX12Resources.h, but this header must stay self-contained because it is
 // included before that umbrella header in every TU.
 void DX12NativeOverlayShutdown();
+// Also ShaderTools/DX12NativeOverlay.cpp. Arms the one-shot permission that
+// lets the skipAll fast path create the overlay's GPU objects, so the HUD
+// hotkey works even when no mod is doing per-draw work.
+void DX12NativeOverlayRequestInit();
 
 class DXGIHooks
 {
@@ -78,6 +83,15 @@ public:
 			DX12ModSetSafeMode(Config.Runtime().dx12SafeMode);
 			gDeferredInitialModLoadDelayMs =
 				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
+			// Applied before the first Present so a configured HUD is up from
+			// the first frame, and so the sampling gate is already in the right
+			// state when the render path starts asking.
+			DX12ProfilingApplyConfig(
+				static_cast<DX12ProfilingHud::Mode>(
+					Config.Runtime().dx12ProfilingHud),
+				static_cast<LONG>(Config.Runtime().dx12ProfilingIntervalMs),
+				Config.Runtime().dx12ProfilingTopRows,
+				Config.Runtime().dx12ProfilingLogBuckets);
 			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"safeMode\":%s,\"configInitializationDelayMs\":%lu",
 				Config.Path().c_str(),
@@ -118,9 +132,11 @@ public:
 #endif
 		DXGIHooks::Shutdown();
 		DX12HookRegistry::UnhookAll();
-#if DX12_TIMING_BUILD
+		// Unconditional on the build mode: a non-TIMING build opens no log, but
+		// it still starts the aggregation pump the first time the profiling HUD
+		// is switched on, and that thread has to be joined here. Close() is a
+		// no-op when neither the file nor the thread exists.
 		DX12DiagLog::Close();
-#endif
 		LoadRealD3D12 = nullptr;
 		Initialized = false;
 	}
@@ -139,10 +155,15 @@ enum class DX12UiActionBits : LONG
 	HuntNextIB = 1 << 8,
 	HuntPreviousVB = 1 << 9,
 	HuntNextVB = 1 << 10,
+	// Profiling HUD. Deliberately outside the hunting gate below: the HUD is
+	// useful with hunting off, and switching it on must not enable the heavy
+	// tracking that hunting implies.
+	ProfHudCycle = 1 << 11,
 	HuntReset = 1 << 12,
 	FrameAnalysis = 1 << 13,
 	ShaderDump = 1 << 14,
 	ModReload = 1 << 15,
+	ProfHudFreeze = 1 << 16,
 	HuntMarkVS = 1 << 17,
 	HuntMarkPS = 1 << 18,
 	HuntMarkCS = 1 << 19,
@@ -202,6 +223,11 @@ public:
 			{ VK_F8,       DX12UiActionBits::FrameAnalysis,  false, false },
 			{ VK_F9,       DX12UiActionBits::ShaderDump,     false, false },
 			{ VK_F10,      DX12UiActionBits::ModReload,      false, false },
+			// Profiling HUD: F11 cycles Off -> Compact -> Summary -> Top ->
+			// Sections -> Counters, F12 holds the report the screen is showing
+			// so the numbers stop moving while they are read.
+			{ VK_F11,      DX12UiActionBits::ProfHudCycle,   false, false },
+			{ VK_F12,      DX12UiActionBits::ProfHudFreeze,  false, false },
 		};
 
 		const bool decimalDown = (GetAsyncKeyState(VK_DECIMAL) & 0x8000) != 0;
@@ -286,7 +312,45 @@ public:
 			DX12RequestShaderDump();
 		if (HasAction(actions, DX12UiActionBits::ModReload))
 			DX12Input::RequestModReload();
+		// Outside the hunting gate on purpose: the profiling HUD works with
+		// hunting off, and it never touches the hot-path gates.
+		if (HasAction(actions, DX12UiActionBits::ProfHudCycle))
+			HandleProfilingHudCycle();
+		if (HasAction(actions, DX12UiActionBits::ProfHudFreeze))
+			HandleProfilingHudFreeze();
 		return true;
+	}
+
+	static void HandleProfilingHudCycle()
+	{
+		DX12ProfilingCycleMode();
+		// Switching the HUD on has to be able to bring the overlay up even on
+		// the skipAll fast path, which is the only path a session with no
+		// per-draw mod work ever takes.
+		if (DX12ProfilingHud::IsEnabled())
+			DX12NativeOverlayRequestInit();
+		DX12OverlayStatusState::SetTemporary(
+			DX12ProfilingHudStatus(), 1500);
+	}
+
+	static void HandleProfilingHudFreeze()
+	{
+		if (!DX12ProfilingHud::IsEnabled())
+			return;
+		DX12ProfilingHud::ToggleFreeze();
+		DX12OverlayStatusState::SetTemporary(
+			DX12ProfilingHudStatus(), 1500);
+	}
+
+	// One transient notice line describing the HUD state, so the mode switch is
+	// visible even while the report itself is frozen.
+	static const wchar_t *DX12ProfilingHudStatus()
+	{
+		static wchar_t text[96];
+		swprintf_s(text, L"Profiling HUD: %S%s",
+			DX12ProfilingHud::ModeName(DX12ProfilingHud::GetMode()),
+			DX12ProfilingHud::IsFrozen() ? L" (frozen)" : L"");
+		return text;
 	}
 
 	static bool HasAction(LONG actions, DX12UiActionBits action)

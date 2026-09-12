@@ -539,6 +539,16 @@ public:
 			// on the normal path below, while initialising GPU objects and
 			// submitting on the game queue from this fast path is exactly what
 			// stalled startup.
+			//
+			// The profiling HUD is the one overlay that does belong here (there
+			// is no mod to make the normal path run), and it is admitted only
+			// once its GPU objects already exist. That keeps the original
+			// guarantee intact - nothing is ever created from this path - while
+			// still letting the HUD be read in a session with no mod loaded.
+			DX12_DIAG_QPC_RESET(sliceBegin);
+			if (DX12NativeOverlayReady(swapChain))
+				DX12PresentOverlayCompose(swapChain);
+			DX12_PROF_ADD_US("Present.prof_hud_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present(syncInterval, flags);
@@ -572,16 +582,14 @@ public:
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
 		DX12_PROF_ADD_US("Present.capture_bookkeeping", DX12_DIAG_ELAPSED_US(sliceBegin));
-				DX12_DIAG_QPC_RESET(sliceBegin);
-		// [Present] custom shader elements replay here - after the game's
-		// rendering is submitted, before the original Present (DX11 parity).
-		DX12ModSubmitPresentOverlay(swapChain);
-		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
-		// In-game hunting green text: recorded after the mod [Present] overlay
-		// so it stays on top, submitted right before the original Present.
 		DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12NativeOverlayRender(swapChain);
-		DX12_PROF_ADD_US("Present.hunt_overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
+		// Every overlay source for this frame - the mod [Present] custom
+		// elements, the hunting text, transient notices and the profiling HUD -
+		// is composed into ONE command list and submitted with ONE
+		// ExecuteCommandLists, after the game's rendering and before the
+		// original Present (DX11 parity).
+		DX12PresentOverlayCompose(swapChain);
+		DX12_PROF_ADD_US("Present.overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
 				DX12_DIAG_QPC(presentBegin);
 		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");
@@ -666,7 +674,13 @@ public:
 		DX12ModMaybeRunDeferredInitialLoad();
 
 		if (DX12HotPathState::skipAll) {
-			// See the Present wrapper above: the overlay stays out of skipAll.
+			// See the Present wrapper above: hunting text and mod overlay stay
+			// out of skipAll, while the profiling HUD is admitted once its GPU
+			// objects already exist.
+			DX12_DIAG_QPC_RESET(sliceBegin);
+			if (DX12NativeOverlayReady(swapChain))
+				DX12PresentOverlayCompose(swapChain);
+			DX12_PROF_ADD_US("Present.prof_hud_skip", DX12_DIAG_ELAPSED_US(sliceBegin));
 			DX12_DIAG_QPC_RESET(sliceBegin);
 			DX12_PROF_PAUSE(_profile_timer);
 			HRESULT skipHr = swapChain->Present1(syncInterval, flags, presentParameters);
@@ -699,16 +713,14 @@ public:
 				"\"present\":%ld", DX12RuntimeState::GetPresentCount());
 		const bool dumpShaders = DX12ShaderDumpEndCapture();
 		DX12_PROF_ADD_US("Present.capture_bookkeeping", DX12_DIAG_ELAPSED_US(sliceBegin));
-				DX12_DIAG_QPC_RESET(sliceBegin);
-		// [Present] custom shader elements replay here - after the game's
-		// rendering is submitted, before the original Present (DX11 parity).
-		DX12ModSubmitPresentOverlay(swapChain);
-		DX12_PROF_ADD_US("Present.mod_present_overlay", DX12_DIAG_ELAPSED_US(sliceBegin));
-		// In-game hunting green text: recorded after the mod [Present] overlay
-		// so it stays on top, submitted right before the original Present.
 		DX12_DIAG_QPC_RESET(sliceBegin);
-		DX12NativeOverlayRender(swapChain);
-		DX12_PROF_ADD_US("Present.hunt_overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
+		// Every overlay source for this frame - the mod [Present] custom
+		// elements, the hunting text, transient notices and the profiling HUD -
+		// is composed into ONE command list and submitted with ONE
+		// ExecuteCommandLists, after the game's rendering and before the
+		// original Present (DX11 parity).
+		DX12PresentOverlayCompose(swapChain);
+		DX12_PROF_ADD_US("Present.overlay_text", DX12_DIAG_ELAPSED_US(sliceBegin));
 				DX12_DIAG_QPC(presentBegin);
 		DX12_PROF_PAUSE(_profile_timer);
 		DX12MarkStage("present_original_call");

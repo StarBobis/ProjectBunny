@@ -1228,7 +1228,7 @@ public:
 		// list: parked for the Present-time overlay submission (the DX11
 		// [Present] semantic is "after the game's rendering, before
 		// Present", which a game command list recorded at frame start can
-		// never satisfy). See DX12ModSubmitPresentOverlay.
+		// never satisfy). See DX12PresentOverlayCompose.
 		DX12ModQueuePresentCustomElements(commandList, &replacement);
 		bindingExecutor.Restore(replacement, originalIa);
 		DX12ModRestoreDrawSrvReplacement(commandList, &replacement);

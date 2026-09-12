@@ -226,7 +226,7 @@ public:
 	{
 		SRWLOCK *lock = HeapLock(heapIndex, slot);
 		if (lock)
-			DX12_LOCK_ACQUIRE_SHARED(lock, "Desc.HeapShared");
+			DX12_LOCK_ACQUIRE_SHARED(lock, "Lock.Desc.HeapShared");
 	}
 
 	static void UnlockShared(size_t heapIndex, UINT slot)
@@ -352,7 +352,7 @@ public:
 		// the scan cache keeps learning new heaps; a full shift-insert here
 		// would cost a 32-entry memmove on every second-level hit.
 		if (HeapCacheLookup(cpuHandle, requiredType, out)) {
-			DX12_PROF_COUNT("Desc.HeapCacheHit");
+			DX12_PROF_COUNT("Lock.Desc.HeapCacheHit");
 			static thread_local UINT tlsVictim = 0;
 			HeapResolveCacheEntry &victim = cache.entries[
 				tlsVictim++ & (HeapResolveTlsCache::EntryCount - 1)];
@@ -367,7 +367,7 @@ public:
 		}
 
 		DX12_PROF_COUNT("Desc.ResolveMiss");
-		DX12_LOCK_ACQUIRE_SHARED(&gDescriptorLock, "Desc.GlobalShared");
+		DX12_LOCK_ACQUIRE_SHARED(&gDescriptorLock, "Lock.Desc.GlobalShared");
 		size_t heapIndex = 0;
 		UINT slot = 0;
 		if (!ResolveHeapSlot(cpuHandle, requiredType, &heapIndex, &slot)) {
@@ -447,9 +447,9 @@ public:
 			if (!lock)
 				return false;
 			if (exclusive)
-				DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, "Desc.HeapExclusive");
+				DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, "Lock.Desc.HeapExclusive");
 			else
-				DX12_LOCK_ACQUIRE_SHARED(lock, "Desc.HeapShared");
+				DX12_LOCK_ACQUIRE_SHARED(lock, "Lock.Desc.HeapShared");
 			if (resolved.heap->stateLocks->IsActive()) {
 				*out = resolved;
 				return true;
@@ -475,7 +475,7 @@ public:
 		SRWLOCK *lock = HeapLock(resolved.heap, resolved.slot);
 		if (!lock)
 			return false;
-		DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, "Desc.HeapExclusive");
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, "Lock.Desc.HeapExclusive");
 		if (!resolved.heap->stateLocks->IsActive()) {
 			ReleaseSRWLockExclusive(lock);
 			return false;
@@ -919,7 +919,7 @@ public:
 		}
 
 		// Tier 2: try CPU ledger (global shared lock)
-		DX12_LOCK_ACQUIRE_SHARED(&gDescriptorLock, "Desc.GlobalShared");
+		DX12_LOCK_ACQUIRE_SHARED(&gDescriptorLock, "Lock.Desc.GlobalShared");
 		std::unordered_map<SIZE_T, DescriptorRecord>::const_iterator found =
 			gDescriptorByCpuHandle.find(cpuHandle);
 		if (found != gDescriptorByCpuHandle.end()) {
@@ -979,7 +979,7 @@ public:
 			return erased;
 		}
 
-		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gDescriptorLock, "Desc.GlobalExclusive");
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gDescriptorLock, "Lock.Desc.GlobalExclusive");
 		auto found = gDescriptorByCpuHandle.find(cpuHandle);
 		if (found == gDescriptorByCpuHandle.end()) {
 			ReleaseSRWLockExclusive(&gDescriptorLock);
@@ -1015,7 +1015,7 @@ public:
 			return;
 		}
 
-		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gDescriptorLock, "Desc.GlobalExclusive");
+		DX12_LOCK_ACQUIRE_EXCLUSIVE(&gDescriptorLock, "Lock.Desc.GlobalExclusive");
 		std::unordered_map<SIZE_T, DescriptorRecord>::iterator found =
 			gDescriptorByCpuHandle.find(record.cpuHandle);
 		if (found != gDescriptorByCpuHandle.end()) {

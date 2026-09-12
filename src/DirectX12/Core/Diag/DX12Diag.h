@@ -28,6 +28,11 @@
 // ============================================================================
 
 #include "../DX12RuntimeState.h"
+#include "DX12ProfilingText.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstring>
 
 #if defined(DX12_RELEASE_TIMING)
 #define DX12_TIMING_BUILD 1
@@ -35,10 +40,26 @@
 #define DX12_TIMING_BUILD 0
 #endif
 
+// The named-bucket profiler is compiled into every build, because the on-screen
+// HUD is a Release feature too: the point of it is that a player can screenshot
+// the numbers from the build they actually play.
+//
+// The two builds differ in *when* it samples, not in whether it exists:
+//   - TIMING builds sample unconditionally. Their purpose is the diagnostic
+//     log, so DX12DiagProf::Enabled() folds to a compile-time true and the
+//     recording path compiles to exactly what it always did.
+//   - Other builds sample only while the HUD is switched on, so a Release
+//     binary that never opens the HUD pays one predicted-not-taken branch per
+//     instrumentation site and nothing else.
+//
+// That gate is a runtime one on purpose. A preprocessor switch would mean the
+// HUD-off path was never exercised in the build that ships it.
+//
+// Log *output* stays TIMING-only: the writer thread exists in both builds
+// because it is also the profiler's aggregation pump, but only a TIMING build
+// ever opens a log file.
 #define DX12_DIAG_JOIN_INNER(a, b) a##b
 #define DX12_DIAG_JOIN(a, b) DX12_DIAG_JOIN_INNER(a, b)
-
-#if DX12_TIMING_BUILD
 
 // ----------------------------------------------------------------------------
 // DX12DiagLog - queued async log writer.
@@ -54,6 +75,11 @@ class DX12DiagLog
 public:
 	static bool Open();
 	static void Close();
+	// Creates the aggregation/writer thread on first use. A TIMING build gets
+	// it from Open(); any other build only starts it when the profiler is
+	// switched on, so a Release binary that never opens the HUD runs no extra
+	// thread at all.
+	static bool EnsurePumpThread();
 	// Publishes the calling thread's buffered lines and wakes the writer.
 	static void Flush();
 
@@ -114,7 +140,7 @@ private:
 	static DWORD WINAPI ThreadProc(void *);
 	static void DrainQueueToFile();
 	static void EnqueueLine(const char *line);
-	static void PublishTlsBuffer();
+	static bool PublishTlsBuffer();
 	static std::string &TlsLineBuffer();
 	static void NormalizeFields(const char *input, char *output, size_t outputSize);
 	static void WriteFormatted(const char *func, const char *extra, bool flush);
@@ -168,6 +194,21 @@ struct DX12DiagFrameRecord
 class DX12DiagProf
 {
 public:
+	// Sampling gate. A TIMING build samples unconditionally - its purpose is
+	// the log - so this folds to a compile-time true and every guarded call
+	// site compiles to exactly what it did before. Any other build samples
+	// only while the on-screen HUD is switched on, so the gate *is* the HUD
+	// mode: one L1-resident relaxed load, and the branch around the recording
+	// work is predicted-not-taken in a HUD-less session.
+	static bool Enabled()
+	{
+#if DX12_TIMING_BUILD
+		return true;
+#else
+		return DX12ProfilingHud::IsEnabled();
+#endif
+	}
+
 	struct Bucket
 	{
 		const char *name = nullptr;
@@ -180,18 +221,24 @@ public:
 	};
 
 	static constexpr UINT kThreadTableCount = 64;
-	// Sized from the instrumented source, not guessed: this build registers 357
-	// distinct bucket names (725 call sites). At 256 slots the per-thread tables
-	// were over-subscribed, so FindBucket ran out of probe slots and dropped
-	// counters silently - a newly added counter simply never appeared in the
-	// log, and the surviving names paid long probe chains (which is how a
-	// one-atomic-load stage got reported as ~2us/call). 1024 keeps the load
-	// factor near 0.35, i.e. ~1 probe per lookup. TIMING builds only.
+	// Sized from the instrumented source, not guessed: this build registers
+	// ~460 distinct bucket names (~835 call sites). At 256 slots the per-thread
+	// tables were over-subscribed, so FindBucket ran out of probe slots and
+	// dropped counters silently - a newly added counter simply never appeared
+	// in the log, and the surviving names paid long probe chains (which is how
+	// a one-atomic-load stage got reported as ~2us/call). 1024 keeps the load
+	// factor near 0.45, i.e. 1-2 probes per lookup.
 	static constexpr UINT kBucketsPerThread = 1024; // power of two
-	// Merged table is a stack array (Bucket merged[kMergedBuckets]), so it stays
-	// at 512: 357 names fit with room to spare and the stack cost stays small.
-	static constexpr UINT kMergedBuckets = 512;    // power of two
+	// The merged table is a stack array, so its size trades stack for load
+	// factor. It must stay comfortably above the live bucket count: at 512 the
+	// ~460 registered names gave a 0.9 load factor, and FindMerged returns
+	// nullptr once the table is full, which silently drops counters from the
+	// summary (a missing row reads as "this code never ran"). 2048 restores
+	// the ~0.22 the 512-slot table had when only ~110 names existed.
+	static constexpr UINT kMergedBuckets = 2048;   // power of two
 	static constexpr UINT kScopeStackDepth = 32;
+	// Default summary interval; the HUD/log cadence is runtime-configurable
+	// through DX12ProfilingControl::SetIntervalFrames.
 	static constexpr LONG kSummaryIntervalFrames = 60;
 
 	struct alignas(64) ThreadTable
@@ -210,7 +257,7 @@ public:
 	{
 	public:
 		explicit Scope(const char *name)
-			: mBucket(FindBucket(name, nullptr, 0))
+			: mBucket(Enabled() ? FindBucket(name, nullptr, 0) : nullptr)
 		{
 			if (!mBucket)
 				return;
@@ -259,9 +306,11 @@ public:
 	{
 	public:
 		ScopePair(const char *nameA, const char *nameB)
-			: mBucketA(FindBucket(nameA, nullptr, 0)),
-			  mBucketB(FindBucket(nameB, nullptr, 0))
+			: mBucketA(Enabled() ? FindBucket(nameA, nullptr, 0) : nullptr),
+			  mBucketB(Enabled() ? FindBucket(nameB, nullptr, 0) : nullptr)
 		{
+			if (!mBucketA && !mBucketB)
+				return;
 			if (mBucketA)
 				++mBucketA->calls;
 			if (mBucketB)
@@ -271,6 +320,8 @@ public:
 
 		~ScopePair()
 		{
+			if (!mBucketA && !mBucketB)
+				return;
 			const LONGLONG endQpc = QpcNow();
 			AccumulateUs(mBucketA, mStartQpc, endQpc);
 			AccumulateUs(mBucketB, mStartQpc, endQpc);
@@ -328,6 +379,11 @@ public:
 
 	static LONG64 ElapsedUs(const LARGE_INTEGER &begin)
 	{
+		// A zero start is the "clock was never read" marker DX12_DIAG_QPC
+		// leaves behind when the profiler is off; reporting 0 keeps the
+		// disabled path from inventing a bogus delta against the epoch.
+		if (begin.QuadPart == 0)
+			return 0;
 		return DeltaUs(begin.QuadPart, QpcNow());
 	}
 
@@ -341,21 +397,16 @@ public:
 
 	static void AddUs(const char *name, LONG64 us)
 	{
-		if (us < 0)
-			us = 0;
-		Bucket *bucket = FindBucket(name, nullptr, 0);
-		if (!bucket)
-			return;
-		++bucket->calls;
-		bucket->totalUs += us;
-		if (us > bucket->maxUs)
-			bucket->maxUs = us;
+		AddUsToBucket(FindBucket(name, nullptr, 0), us);
 	}
 
 	static void AddUsItems(const char *name, LONG64 us, LONG64 items)
 	{
-		AddUs(name, us);
+		// One lookup for both counters. Resolving the bucket twice (the old
+		// shape) re-ran the hash and the probe chain on a path whose callers
+		// are per-submit hot sites.
 		Bucket *bucket = FindBucket(name, nullptr, 0);
+		AddUsToBucket(bucket, us);
 		if (bucket)
 			bucket->items += items;
 	}
@@ -430,6 +481,8 @@ public:
 	// --- frame boundary (render thread) ------------------------------------
 	static void FrameEnter(const char *api, void *swapChain)
 	{
+		if (!Enabled())
+			return;
 		(void)api;
 		(void)swapChain;
 		const LONGLONG now = QpcNow();
@@ -444,6 +497,8 @@ public:
 
 	static void FrameLeave(const char *api, void *swapChain, HRESULT hr)
 	{
+		if (!Enabled())
+			return;
 		const LONGLONG now = QpcNow();
 		const LONGLONG enter = InterlockedCompareExchange64(&sCurrentPresentEnterQpc, 0, 0);
 
@@ -460,10 +515,17 @@ public:
 
 		InterlockedExchange64(&sLastPresentLeaveQpc, now);
 		Count("Present.leave");
+		// The per-frame diagnostic plumbing is measured so the timeline's
+		// presentPerFrameCountersUs column reports something real: it used to
+		// look up a bucket nothing ever recorded, so it was always zero.
+		const LONGLONG plumbingStart = QpcNow();
 		PushFrameRecord(record);
 		// Publish this thread's log lines before the writer drains the ring,
 		// so the frame's own lines precede its summary block in the file.
+		// Non-TIMING builds never queue lines, and Flush() only wakes the
+		// writer when something was actually published.
 		DX12DiagLog::Flush();
+		AddUs("Present.frame_counters", DeltaUs(plumbingStart, QpcNow()));
 	}
 
 	// --- writer-thread frame summaries --------------------------------------
@@ -553,6 +615,20 @@ private:
 			bucket->maxUs = us;
 	}
 
+	// Shared tail of AddUs/AddUsItems so a caller that needs both counters
+	// pays for one bucket lookup instead of two.
+	static void AddUsToBucket(Bucket *bucket, LONG64 us)
+	{
+		if (!bucket)
+			return;
+		if (us < 0)
+			us = 0;
+		++bucket->calls;
+		bucket->totalUs += us;
+		if (us > bucket->maxUs)
+			bucket->maxUs = us;
+	}
+
 	// --- frame ring (SPSC: render thread produces, writer thread consumes) ---
 	static void PushFrameRecord(const DX12DiagFrameRecord &record)
 	{
@@ -581,8 +657,15 @@ private:
 		}
 		if (!pulses.empty())
 			DX12DiagLog::WriteDirect(pulses.data(), pulses.size());
-		if (!force && sWindowFrames < kSummaryIntervalFrames)
-			return;
+		if (!force && sWindowFrames > 0) {
+			// Cadence is wall-clock based rather than frame-count based, so the
+			// report rate is the same at 60 and at 144 fps. The window's summed
+			// present-to-present interval is its elapsed time.
+			const LONG64 intervalUs =
+				static_cast<LONG64>(DX12ProfilingHud::IntervalMs()) * 1000;
+			if (sWindowFrameIntervalUs < intervalUs)
+				return;
+		}
 		if (sWindowFrames <= 0)
 			return;
 		EmitSummary();
@@ -604,6 +687,11 @@ private:
 	// --- summary emission (writer thread only) --------------------------------
 	static void EmitSummary();
 	static void DrainThreadTables(Bucket *merged, UINT *mergedCount);
+	static DX12ProfilingWindow BuildWindowReport(
+		const Bucket *merged, UINT mergedCount);
+	static UINT BuildRankedRows(
+		DX12ProfilingRow *rows, UINT capacity,
+		const Bucket *merged, UINT mergedCount);
 	static Bucket *FindMerged(
 		Bucket *merged, UINT *mergedCount,
 		const char *name, const char *sub, UINT kind);
@@ -616,7 +704,7 @@ private:
 
 	static void AppendFmt(std::string &out, const char *fmt, ...);
 	static void EmitFramePulse(std::string &out);
-	static void EmitFrameTimeline(std::string &out, const Bucket *merged, UINT mergedCount);
+	static void EmitFrameTimeline(std::string &out, const DX12ProfilingWindow &window);
 	static void EmitApiWallSection(std::string &out, const Bucket *merged, UINT mergedCount);
 	static void EmitHotPathSection(std::string &out, const Bucket *merged, UINT mergedCount);
 	static void EmitCreateSection(std::string &out, const Bucket *merged, UINT mergedCount);
@@ -631,6 +719,10 @@ private:
 	// Set once when a thread table runs out of probe slots, so the drop is
 	// visible in the log instead of looking like code that never ran.
 	inline static volatile LONG sTableFull = 0;
+	// Set once when the merged table runs out of probe slots. Same reasoning as
+	// sTableFull, and the more dangerous of the two: a dropped merge makes a
+	// whole row vanish from the summary rather than one sample from a row.
+	inline static volatile LONG sMergedFull = 0;
 	inline static thread_local ScopeStackEntry sScopeStack[kScopeStackDepth] = {};
 	inline static thread_local UINT sScopeDepth = 0;
 
@@ -664,12 +756,55 @@ private:
 	static LONG ReadLong(volatile LONG *value) { return *value; }
 };
 
+// Applies the profiling HUD configuration and keeps the aggregation pump in
+// step with it. All three entry points live here because this is the only place
+// that sees the HUD state and the writer thread together: the HUD header cannot
+// include the profiler, and the profiler must not start a thread on its own.
+//
+// A non-TIMING build creates no writer thread at startup, so the first enable
+// has to start one. Doing it here - rather than lazily on the render thread's
+// next frame - keeps the "no extra thread unless profiling is wanted" property
+// of a Release binary while making the switch take effect immediately.
+inline void DX12ProfilingStartPumpIfEnabled()
+{
+#if !DX12_TIMING_BUILD
+	if (DX12ProfilingHud::IsEnabled())
+		DX12DiagLog::EnsurePumpThread();
+#endif
+}
+
+inline void DX12ProfilingApplyConfig(
+	DX12ProfilingHud::Mode mode, LONG intervalMs, int topRows, bool logBuckets)
+{
+	DX12ProfilingHud::ApplyConfig(mode, intervalMs, topRows, logBuckets);
+	DX12ProfilingStartPumpIfEnabled();
+}
+
+inline void DX12ProfilingSetMode(DX12ProfilingHud::Mode mode)
+{
+	DX12ProfilingHud::SetMode(mode);
+	DX12ProfilingStartPumpIfEnabled();
+}
+
+inline void DX12ProfilingCycleMode()
+{
+	DX12ProfilingHud::CycleMode();
+	DX12ProfilingStartPumpIfEnabled();
+}
+
 // ============================================================================
 // DX12DiagLog implementation
 // ============================================================================
 
 inline bool DX12DiagLog::Open()
 {
+#if !DX12_TIMING_BUILD
+	// Profiling without the log: the pump thread is started on demand by
+	// DX12DiagProf::SetEnabled, and sLog stays null so every write path is a
+	// no-op. A Release binary that never enables the HUD therefore opens no
+	// file and creates no thread.
+	return true;
+#else
 	wchar_t path[MAX_PATH];
 	if (!GetModuleFileNameW(DX12RuntimeState::GetModule(), path, MAX_PATH))
 		return false;
@@ -689,21 +824,36 @@ inline bool DX12DiagLog::Open()
 	if (!sLog)
 		return false;
 
+	return EnsurePumpThread();
+#endif
+}
+
+inline bool DX12DiagLog::EnsurePumpThread()
+{
+	if (sThread)
+		return true;
+
 	InterlockedExchange(&sStopRequested, 0);
-	sEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	if (!sEvent) {
-		fclose(sLog);
-		sLog = nullptr;
-		return false;
+		sEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		if (!sEvent) {
+			if (sLog) {
+				fclose(sLog);
+				sLog = nullptr;
+			}
+			return false;
+		}
+		RegisterInternalEventHandle(sEvent);
 	}
-	RegisterInternalEventHandle(sEvent);
 	sThread = CreateThread(nullptr, 0, ThreadProc, nullptr, 0, nullptr);
 	if (!sThread) {
 		CloseHandle(sEvent);
 		sEvent = nullptr;
 		RegisterInternalEventHandle(nullptr);
-		fclose(sLog);
-		sLog = nullptr;
+		if (sLog) {
+			fclose(sLog);
+			sLog = nullptr;
+		}
 		return false;
 	}
 	return true;
@@ -735,8 +885,11 @@ inline void DX12DiagLog::Close()
 
 inline void DX12DiagLog::Flush()
 {
-	PublishTlsBuffer();
-	WakeWriter();
+	// Only wake the writer when there is something to write. FrameLeave calls
+	// this on every present, and an unconditional SetEvent put a kernel
+	// transition on the present path even in sessions that log nothing.
+	if (PublishTlsBuffer())
+		WakeWriter();
 }
 
 inline void DX12DiagLog::WakeWriter()
@@ -831,11 +984,11 @@ inline std::string &DX12DiagLog::TlsLineBuffer()
 	return buffer;
 }
 
-inline void DX12DiagLog::PublishTlsBuffer()
+inline bool DX12DiagLog::PublishTlsBuffer()
 {
 	std::string &buffer = TlsLineBuffer();
 	if (buffer.empty())
-		return;
+		return false;
 	AcquireSRWLockExclusive(&sQueueLock);
 	const bool wasEmpty = sQueue.empty();
 	if (sQueue.size() < kMaxQueuedLines) {
@@ -848,8 +1001,7 @@ inline void DX12DiagLog::PublishTlsBuffer()
 	ReleaseSRWLockExclusive(&sQueueLock);
 	// The writer polls on a timeout, so signaling is only a latency hint;
 	// waking it once per publish keeps present-time log bursts cheap.
-	if (wasEmpty)
-		WakeWriter();
+	return wasEmpty;
 }
 
 inline void DX12DiagLog::EnqueueLine(const char *line)
@@ -1147,6 +1299,12 @@ inline DX12DiagProf::Bucket *DX12DiagProf::FindMerged(
 			return &candidate;
 		}
 	}
+	// Full: every remaining sample is dropped from this window. Report it once
+	// so a missing row can never be mistaken for "the code never ran".
+	if (InterlockedCompareExchange(&sMergedFull, 1, 0) == 0)
+		DX12DiagLog::FieldsFlush("DX12Profiling",
+			"event=merged_table_full capacity=%u dropped=%s",
+			kMergedBuckets, name);
 	return nullptr;
 }
 
@@ -1262,12 +1420,33 @@ inline void DX12DiagProf::EmitFramePulse(std::string &out)
 		static_cast<long long>(sWindowLast.presentWallUs));
 }
 
-inline void DX12DiagProf::EmitFrameTimeline(
-	std::string &out, const Bucket *merged, UINT mergedCount)
+// Every derived number for one aggregation window, computed once and shared by
+// both sinks. This was the body of the timeline emitter: extracting it is what
+// keeps the on-screen report and the log line from ever disagreeing, and it is
+// also what makes the counters with reset side effects (the per-frame
+// draw/dispatch shards and the dropped-summary counter) safe to read when only
+// one of the two sinks is active - they are consumed exactly once, here.
+inline DX12ProfilingWindow DX12DiagProf::BuildWindowReport(
+	const Bucket *merged, UINT mergedCount)
 {
+	DX12ProfilingWindow w;
+	w.api = sWindowLast.api;
+	w.swapChain = sWindowLast.swapChain;
+	w.hr = sWindowLast.hr;
+	w.frames = sWindowFrames;
+	w.present = sWindowLast.present;
+	w.frameDraws = DX12RuntimeState::TakeFrameDraws();
+	w.frameDispatches = DX12RuntimeState::TakeFrameDispatches();
+	w.droppedFrameSummaries = InterlockedExchange(&sFrameSummariesDropped, 0);
+
+	w.frameIntervalUs = sWindowFrameIntervalUs;
+	w.frameWallUs = sWindowFrameWallUs;
+	w.outsidePresentUs = sWindowOutsideUs;
+	w.presentWallUs = sWindowPresentWallUs;
+	w.maxFrameWallUs = sWindowMaxFrameWallUs;
+
 	// Present slices. Known = every "Present.*" bucket except the three
 	// post-original runtime details, mirroring the legacy classification.
-	LONG64 presentKnownUs = 0;
 	for (UINT i = 0; i < kMergedBuckets; ++i) {
 		const Bucket &bucket = merged[i];
 		if (!bucket.name || !NameHasPrefix(bucket.name, "Present."))
@@ -1276,62 +1455,115 @@ inline void DX12DiagProf::EmitFrameTimeline(
 			!strcmp(bucket.name, "Present.hunt_on_present") ||
 			!strcmp(bucket.name, "Present.post_present_ui"))
 			continue;
-		presentKnownUs += bucket.totalUs;
+		w.presentKnownUs += bucket.totalUs;
 	}
 
-	const LONG64 presentOriginalUs =
+	w.presentOriginalUs =
 		MergedTotalUs(merged, mergedCount, "Present.original_present") +
 		MergedTotalUs(merged, mergedCount, "Present.original_present_skip");
-	const LONG64 presentPostOriginalRuntimeUs =
+	w.presentPostOriginalRuntimeUs =
 		MergedTotalUs(merged, mergedCount, "Present.post_original_runtime") +
 		MergedTotalUs(merged, mergedCount, "Present.post_original_runtime_total") +
 		MergedTotalUs(merged, mergedCount, "Present.post_original_skip");
-	const LONG64 presentConsumeUiActionsUs =
+	w.presentConsumeUiActionsUs =
 		MergedTotalUs(merged, mergedCount, "Present.consume_ui_actions_poll") +
 		MergedTotalUs(merged, mergedCount, "Present.consume_ui_actions_apply");
-	const LONG64 presentOtherUs =
+	w.presentOtherUs =
 		MergedTotalUs(merged, mergedCount, "Present.mod_present_overlay") +
 		MergedTotalUs(merged, mergedCount, "Present.readback_frame_flush");
+	w.presentModBeginFrameUs =
+		MergedTotalUs(merged, mergedCount, "Present.mod_begin_frame");
+	w.presentProfilingFlushUs =
+		MergedTotalUs(merged, mergedCount, "Present.profiling_and_hotpath_flush");
+	w.presentFrameCountersUs =
+		MergedTotalUs(merged, mergedCount, "Present.frame_counters");
+	w.presentCaptureBookkeepingUs =
+		MergedTotalUs(merged, mergedCount, "Present.capture_bookkeeping");
+	w.presentCaptureCompleteUs =
+		MergedTotalUs(merged, mergedCount, "Present.capture_complete_or_begin");
+	w.presentHotPathUpdateUs =
+		MergedTotalUs(merged, mergedCount, "Present.hotpath_update");
+	// The overlay text record is timed on its own inside the merged compose, so
+	// the HUD's cost stays auditable now that every overlay source shares one
+	// command list. "overlay_text" and "hunt_overlay_text" are kept so a
+	// window that straddles the rename reports something instead of zero.
+	w.presentOverlayTextUs =
+		MergedTotalUs(merged, mergedCount, "Present.overlay_text_record") +
+		MergedTotalUs(merged, mergedCount, "Present.overlay_text") +
+		MergedTotalUs(merged, mergedCount, "Present.hunt_overlay_text") +
+		MergedTotalUs(merged, mergedCount, "Present.prof_hud_skip");
+	w.presentEnterCalls = MergedCalls(merged, mergedCount, "Present.enter");
+	w.presentLeaveCalls = MergedCalls(merged, mergedCount, "Present.leave");
+	w.presentWallMinusKnownUs = w.presentWallUs > w.presentKnownUs
+		? w.presentWallUs - w.presentKnownUs : 0;
 
 	// Queue slices: wall stages own both the call count and the list count.
-	const LONG64 queueFlowTotalUs =
+	w.queueFlowTotalUs =
 		MergedTotalUs(merged, mergedCount, "Queue.total") +
 		MergedTotalUs(merged, mergedCount, "Queue.total_skip") +
 		MergedTotalUs(merged, mergedCount, "Queue.total_internal_replay") +
 		MergedTotalUs(merged, mergedCount, "Queue.total_no_original");
-	const LONG64 queueWrapperTotalUs =
+	w.queueWrapperTotalUs =
 		MergedTotalUs(merged, mergedCount, "Queue.wrapper_total");
-	const LONG64 queueOriginalUs =
+	w.queueOriginalUs =
 		MergedTotalUs(merged, mergedCount, "Queue.original") +
 		MergedTotalUs(merged, mergedCount, "Queue.original_skip") +
 		MergedTotalUs(merged, mergedCount, "Queue.original_internal_replay");
-	const LONG64 queueRegisterUs =
+	w.queueRegisterUs =
 		MergedTotalUs(merged, mergedCount, "Queue.register_submitted") +
 		MergedTotalUs(merged, mergedCount, "Queue.register_submitted_skip");
-	const LONG64 queueWallCalls =
+	w.queueWallCalls =
 		MergedCalls(merged, mergedCount, "Queue.wrapper_total") +
 		MergedCalls(merged, mergedCount, "Queue.total") +
 		MergedCalls(merged, mergedCount, "Queue.total_skip") +
 		MergedCalls(merged, mergedCount, "Queue.total_internal_replay") +
 		MergedCalls(merged, mergedCount, "Queue.total_no_original");
-	const LONG64 queueWallCommandLists =
+	w.queueWallCommandLists =
 		MergedItems(merged, mergedCount, "Queue.wrapper_total") +
 		MergedItems(merged, mergedCount, "Queue.total") +
 		MergedItems(merged, mergedCount, "Queue.total_skip") +
 		MergedItems(merged, mergedCount, "Queue.total_internal_replay") +
 		MergedItems(merged, mergedCount, "Queue.total_no_original");
-	LONG64 queueStageSamples = 0;
 	for (UINT i = 0; i < kMergedBuckets; ++i) {
 		const Bucket &bucket = merged[i];
 		if (bucket.name && NameHasPrefix(bucket.name, "Queue."))
-			queueStageSamples += bucket.calls;
+			w.queueExecuteStageSamples += bucket.calls;
 	}
-	const LONG64 queueEstimatedTotalUs =
-		queueWrapperTotalUs > 0 ? queueWrapperTotalUs : queueFlowTotalUs;
+	w.queueEstimatedTotalUs =
+		w.queueWrapperTotalUs > 0 ? w.queueWrapperTotalUs : w.queueFlowTotalUs;
+	w.queueNotifyUs = MergedTotalUs(merged, mergedCount, "Queue.mod_notify_submitted");
+	w.queueUnwrapUs = MergedTotalUs(merged, mergedCount, "Queue.unwrap_command_lists");
+	w.queueRebuildWorkFlagsUs = MergedTotalUs(merged, mergedCount, "Queue.rebuild_work_flags");
+	w.queueFenceCalls = MergedCalls(merged, mergedCount, "Queue.Signal") +
+		MergedCalls(merged, mergedCount, "Queue.Wait");
+	w.queueSignalUs = MergedTotalUs(merged, mergedCount, "Queue.Signal");
+	w.queueWaitUs = MergedTotalUs(merged, mergedCount, "Queue.Wait");
 
-	const LONG64 frameWallUs = sWindowFrameWallUs;
-	const LONG64 presentWallUs = sWindowPresentWallUs;
+	w.fenceCalls = MergedCalls(merged, mergedCount, "Fence.op");
+	w.fenceTotalUs = MergedTotalUs(merged, mergedCount, "Fence.op");
+	w.eventWaitCalls = MergedCalls(merged, mergedCount, "Wait.event");
+	w.eventWaitTotalUs = MergedTotalUs(merged, mergedCount, "Wait.event");
+	w.systemWaitCalls = MergedCalls(merged, mergedCount, "Wait.system");
+	w.systemWaitTotalUs = MergedTotalUs(merged, mergedCount, "Wait.system");
 
+	w.workerTaskCalls = MergedCalls(merged, mergedCount, "Worker.task");
+	w.workerTaskUs = MergedTotalUs(merged, mergedCount, "Worker.task");
+	w.workerWaitCalls =
+		MergedCalls(merged, mergedCount, "Worker.wait.idle") +
+		MergedCalls(merged, mergedCount, "Worker.wait.drain");
+	w.workerWaitUs =
+		MergedTotalUs(merged, mergedCount, "Worker.wait.idle") +
+		MergedTotalUs(merged, mergedCount, "Worker.wait.drain");
+	w.workerIdleWaitUs = MergedTotalUs(merged, mergedCount, "Worker.wait.idle");
+	w.workerDrainWaitUs = MergedTotalUs(merged, mergedCount, "Worker.wait.drain");
+	return w;
+}
+
+// The log's one-line frame health record. It now formats a report that was
+// already computed, so both sinks see identical numbers.
+inline void DX12DiagProf::EmitFrameTimeline(
+	std::string &out, const DX12ProfilingWindow &w)
+{
 	AppendFmt(out,
 		"func=DX12FrameTimeline,\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
 		"\"frames\":%ld,"
@@ -1343,6 +1575,7 @@ inline void DX12DiagProf::EmitFrameTimeline(
 		"\"presentConsumeUiActionsUs\":%lld,\"presentPerFrameCountersUs\":%lld,"
 		"\"presentCaptureBookkeepingUs\":%lld,\"presentCaptureCompleteUs\":%lld,"
 		"\"presentHotPathUpdateUs\":%lld,\"presentOtherUs\":%lld,"
+		"\"presentOverlayTextUs\":%lld,"
 		"\"presentEnterCalls\":%lld,\"presentLeaveCalls\":%lld,"
 		"\"queueExecuteStageSamples\":%lld,\"queueExecuteWallCalls\":%lld,"
 		"\"queueExecuteWallCommandLists\":%lld,\"queueEstimatedTotalUs\":%lld,"
@@ -1359,63 +1592,60 @@ inline void DX12DiagProf::EmitFrameTimeline(
 		"\"presentWallMinusKnownSlicesUs\":%lld,"
 		"\"frameDraws\":%ld,\"frameDispatches\":%ld,"
 		"\"droppedFrameSummaries\":%ld\n",
-		sWindowLast.present,
-		sWindowLast.api ? sWindowLast.api : "",
-		sWindowLast.swapChain,
-		static_cast<unsigned long>(sWindowLast.hr),
-		static_cast<long>(sWindowFrames),
-		static_cast<long long>(sWindowFrameIntervalUs),
-		static_cast<long long>(frameWallUs),
-		static_cast<long long>(sWindowOutsideUs),
-		static_cast<long long>(presentWallUs),
-		static_cast<long long>(sWindowMaxFrameWallUs),
-		static_cast<long long>(presentKnownUs),
-		static_cast<long long>(presentOriginalUs),
-		static_cast<long long>(presentPostOriginalRuntimeUs),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.mod_begin_frame")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.profiling_flush")),
-		static_cast<long long>(presentConsumeUiActionsUs),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.per_frame_counters")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.capture_bookkeeping")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.capture_complete_or_begin")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Present.hotpath_update")),
-		static_cast<long long>(presentOtherUs),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Present.enter")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Present.leave")),
-		static_cast<long long>(queueStageSamples),
-		static_cast<long long>(queueWallCalls),
-		static_cast<long long>(queueWallCommandLists),
-		static_cast<long long>(queueEstimatedTotalUs),
-		static_cast<long long>(queueWrapperTotalUs),
-		static_cast<long long>(queueFlowTotalUs),
-		static_cast<long long>(queueOriginalUs),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Queue.mod_notify_submitted")),
-		static_cast<long long>(queueRegisterUs),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Queue.unwrap_command_lists")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Queue.rebuild_work_flags")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Queue.Signal") +
-			MergedCalls(merged, mergedCount, "Queue.Wait")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Queue.Signal")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Queue.Wait")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Fence.op")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Fence.op")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Wait.event")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Wait.event")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Wait.system")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Wait.system")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Worker.task")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Worker.task")),
-		static_cast<long long>(MergedCalls(merged, mergedCount, "Worker.wait.idle") +
-			MergedCalls(merged, mergedCount, "Worker.wait.drain")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Worker.wait.idle") +
-			MergedTotalUs(merged, mergedCount, "Worker.wait.drain")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Worker.wait.idle")),
-		static_cast<long long>(MergedTotalUs(merged, mergedCount, "Worker.wait.drain")),
-		static_cast<long long>(presentWallUs > presentKnownUs
-			? presentWallUs - presentKnownUs : 0),
-		DX12RuntimeState::TakeFrameDraws(),
-		DX12RuntimeState::TakeFrameDispatches(),
-		static_cast<long>(InterlockedExchange(&sFrameSummariesDropped, 0)));
+		w.present,
+		w.api ? w.api : "",
+		w.swapChain,
+		static_cast<unsigned long>(w.hr),
+		static_cast<long>(w.frames),
+		static_cast<long long>(w.frameIntervalUs),
+		static_cast<long long>(w.frameWallUs),
+		static_cast<long long>(w.outsidePresentUs),
+		static_cast<long long>(w.presentWallUs),
+		static_cast<long long>(w.maxFrameWallUs),
+		static_cast<long long>(w.presentKnownUs),
+		static_cast<long long>(w.presentOriginalUs),
+		static_cast<long long>(w.presentPostOriginalRuntimeUs),
+		static_cast<long long>(w.presentModBeginFrameUs),
+		static_cast<long long>(w.presentProfilingFlushUs),
+		static_cast<long long>(w.presentConsumeUiActionsUs),
+		static_cast<long long>(w.presentFrameCountersUs),
+		static_cast<long long>(w.presentCaptureBookkeepingUs),
+		static_cast<long long>(w.presentCaptureCompleteUs),
+		static_cast<long long>(w.presentHotPathUpdateUs),
+		static_cast<long long>(w.presentOtherUs),
+		static_cast<long long>(w.presentOverlayTextUs),
+		static_cast<long long>(w.presentEnterCalls),
+		static_cast<long long>(w.presentLeaveCalls),
+		static_cast<long long>(w.queueExecuteStageSamples),
+		static_cast<long long>(w.queueWallCalls),
+		static_cast<long long>(w.queueWallCommandLists),
+		static_cast<long long>(w.queueEstimatedTotalUs),
+		static_cast<long long>(w.queueWrapperTotalUs),
+		static_cast<long long>(w.queueFlowTotalUs),
+		static_cast<long long>(w.queueOriginalUs),
+		static_cast<long long>(w.queueNotifyUs),
+		static_cast<long long>(w.queueRegisterUs),
+		static_cast<long long>(w.queueUnwrapUs),
+		static_cast<long long>(w.queueRebuildWorkFlagsUs),
+		static_cast<long long>(w.queueFenceCalls),
+		static_cast<long long>(w.queueSignalUs),
+		static_cast<long long>(w.queueWaitUs),
+		static_cast<long long>(w.fenceCalls),
+		static_cast<long long>(w.fenceTotalUs),
+		static_cast<long long>(w.eventWaitCalls),
+		static_cast<long long>(w.eventWaitTotalUs),
+		static_cast<long long>(w.systemWaitCalls),
+		static_cast<long long>(w.systemWaitTotalUs),
+		static_cast<long long>(w.workerTaskCalls),
+		static_cast<long long>(w.workerTaskUs),
+		static_cast<long long>(w.workerWaitCalls),
+		static_cast<long long>(w.workerWaitUs),
+		static_cast<long long>(w.workerIdleWaitUs),
+		static_cast<long long>(w.workerDrainWaitUs),
+		static_cast<long long>(w.presentWallMinusKnownUs),
+		static_cast<long>(w.frameDraws),
+		static_cast<long>(w.frameDispatches),
+		static_cast<long>(w.droppedFrameSummaries));
 }
 
 inline void DX12DiagProf::EmitApiWallSection(
@@ -1619,15 +1849,13 @@ inline void DX12DiagProf::EmitScopeTable(
 	}
 	if (!sortedCount)
 		return;
-	for (UINT i = 1; i < sortedCount; ++i) {
-		const Bucket *key = sorted[i];
-		UINT j = i;
-		while (j > 0 && sorted[j - 1]->totalUs < key->totalUs) {
-			sorted[j] = sorted[j - 1];
-			--j;
-		}
-		sorted[j] = key;
-	}
+	// Descending by total time. This used to be an insertion sort, which was
+	// tolerable while only ~100 unprefixed buckets existed; the live count is
+	// several times that, and the on-screen HUD ranks the full set.
+	std::sort(sorted, sorted + sortedCount,
+		[](const Bucket *lhs, const Bucket *rhs) {
+			return lhs->totalUs > rhs->totalUs;
+		});
 
 	AppendFmt(out,
 		"func=DX12Profiling,frames=%ld\nname,calls,totalUs,avgUs,maxUs,items\n",
@@ -1650,31 +1878,97 @@ inline void DX12DiagProf::EmitSummary()
 	UINT mergedCount = 0;
 	DrainThreadTables(merged, &mergedCount);
 
+	// Checked before the report is built: BuildWindowReport consumes counters
+	// with reset side effects, so it must not run for an empty window.
+	if (sWindowFrames <= 0)
+		return;
+
+	// One report, two sinks. Building it first is what lets both see the same
+	// numbers and what keeps counters with reset side effects (draw/dispatch
+	// shards, dropped summaries) from being consumed twice or not at all.
+	const DX12ProfilingWindow window = BuildWindowReport(merged, mergedCount);
+
+	// On-screen sink. The ranking is only needed by the HUD, so the log path
+	// does not pay for it.
+	if (DX12ProfilingHud::IsEnabled()) {
+		DX12ProfilingRow ranked[kMergedBuckets];
+		const UINT rankedCount = BuildRankedRows(
+			ranked, kMergedBuckets, merged, mergedCount);
+		char text[DX12ProfilingHud::kTextBytes];
+		const size_t length = DX12ProfilingText::Format(
+			text, sizeof(text), DX12ProfilingHud::GetMode(),
+			window, ranked, rankedCount);
+		if (length)
+			DX12ProfilingHud::Publish(text, length);
+	}
+
+	// Log sink. TIMING builds only, and the bulk "func=DX12Profiling" bucket
+	// table is the ONLY section that moves to the HUD: the per-domain
+	// troubleshooting sections below keep being written unconditionally, so
+	// turning the HUD on never costs a diagnostic. Gating the whole block on
+	// the bucket-table flag (as an earlier revision did) would have silently
+	// dropped the frame timeline and every other section with it.
+#if DX12_TIMING_BUILD
 	std::string out;
 	out.reserve(65536);
-	EmitFrameTimeline(out, merged, mergedCount);
+	EmitFrameTimeline(out, window);
 	EmitApiWallSection(out, merged, mergedCount);
 	EmitHotPathSection(out, merged, mergedCount);
 	EmitCreateSection(out, merged, mergedCount);
 	EmitCpuStageSection(out, merged, mergedCount);
 	EmitLockSection(out, merged, mergedCount);
 	EmitCounterSections(out, merged, mergedCount);
-	EmitScopeTable(out, merged, mergedCount);
-
+	if (DX12ProfilingHud::LogBucketTable())
+		EmitScopeTable(out, merged, mergedCount);
 	DX12DiagLog::WriteDirect(out.data(), out.size());
 	DX12DiagLog::FlushDirect();
+#endif
+
 	ResetWindow();
 }
 
-#endif // DX12_TIMING_BUILD
+// Flattens the merged table into the formatter's row type, dropping the
+// sub-keyed entries (they belong to the per-domain sections) and ranking by
+// total time. Writer thread only.
+inline UINT DX12DiagProf::BuildRankedRows(
+	DX12ProfilingRow *rows, UINT capacity,
+	const Bucket *merged, UINT mergedCount)
+{
+	if (!rows || !capacity)
+		return 0;
+	UINT count = 0;
+	for (UINT i = 0; i < kMergedBuckets && count < capacity; ++i) {
+		const Bucket &bucket = merged[i];
+		if (!bucket.name || bucket.sub)
+			continue;
+		if (!bucket.calls && !bucket.totalUs && !bucket.items)
+			continue;
+		DX12ProfilingRow &row = rows[count++];
+		row.name = bucket.name;
+		row.calls = bucket.calls;
+		row.totalUs = bucket.totalUs;
+		row.maxUs = bucket.maxUs;
+		row.items = bucket.items;
+	}
+	std::sort(rows, rows + count,
+		[](const DX12ProfilingRow &lhs, const DX12ProfilingRow &rhs) {
+			return lhs.totalUs > rhs.totalUs;
+		});
+	return count;
+}
+
 
 // ============================================================================
 // Public macro surface.
 //
-// TIMING build: route into DX12DiagLog / DX12DiagProf.
-// Any other build: every macro expands to nothing. Arguments are never
-// evaluated, no objects are constructed, no preparation runs - the release
-// binary is bit-for-bit free of diagnostic work.
+// Recording macros are present in every build. Each is guarded by
+// DX12DiagProf::Enabled(), which is a compile-time `true` in a TIMING build -
+// so there the branch folds away and the generated code is exactly what it
+// always was - and the HUD mode elsewhere, so a Release binary with the HUD off
+// pays one predicted-not-taken branch per site.
+//
+// Log macros stay TIMING-only: a non-TIMING build never formats a line and
+// never opens a file.
 // ============================================================================
 
 #if DX12_TIMING_BUILD
@@ -1684,6 +1978,17 @@ inline void DX12DiagProf::EmitSummary()
 #define DX12_LOG_TEXT(...)              DX12DiagLog::Text(__VA_ARGS__)
 #define DX12_LOG_EXECUTE_GAP()          DX12DiagLog::LogExecuteGap()
 
+#else
+
+#define DX12_LOG(func, ...)             do {} while (0)
+#define DX12_LOG_FLUSH(func, ...)       do {} while (0)
+#define DX12_LOG_TEXT(...)              do {} while (0)
+#define DX12_LOG_EXECUTE_GAP()          do {} while (0)
+
+#endif // DX12_TIMING_BUILD
+
+// RAII scopes self-gate in their constructor, so the declaration stays a
+// declaration and the name is always in scope for a later Pause/Resume.
 #define DX12_PROF_SCOPE(name) \
 	DX12DiagProf::Scope DX12_DIAG_JOIN(_diagScope_, __LINE__)(name)
 #define DX12_PROF_SCOPE_NAMED(var, name) \
@@ -1693,22 +1998,33 @@ inline void DX12DiagProf::EmitSummary()
 #define DX12_PROF_PAUSE(var)            var.Pause()
 #define DX12_PROF_RESUME(var)           var.Resume()
 #define DX12_PROF_FINISH(var)           var.Finish()
-#define DX12_PROF_BEGIN(name)           DX12DiagProf::Begin(name)
-#define DX12_PROF_END(name)             DX12DiagProf::End(name)
-#define DX12_PROF_COUNT(name)           DX12DiagProf::Count(name)
-#define DX12_PROF_ADD_US(name, us)      DX12DiagProf::AddUs(name, us)
+
+#define DX12_PROF_BEGIN(name) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::Begin(name); } while (0)
+#define DX12_PROF_END(name) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::End(name); } while (0)
+#define DX12_PROF_COUNT(name) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::Count(name); } while (0)
+#define DX12_PROF_ADD_US(name, us) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddUs(name, us); } while (0)
 #define DX12_PROF_ADD_US_ITEMS(name, us, items) \
-	DX12DiagProf::AddUsItems(name, us, items)
-#define DX12_PROF_ADD_ITEMS(name, items) DX12DiagProf::AddItems(name, items)
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddUsItems(name, us, items); } while (0)
+#define DX12_PROF_ADD_ITEMS(name, items) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddItems(name, items); } while (0)
 #define DX12_PROF_CPU_STAGE(category, stage, kind, items, us) \
-	DX12DiagProf::AddCpuStage(category, stage, kind, items, us)
-#define DX12_PROF_FRAME_DRAW()          DX12RuntimeState::IncrementFrameDraws()
-#define DX12_PROF_FRAME_DISPATCH()      DX12RuntimeState::IncrementFrameDispatches()
+	do { if (DX12DiagProf::Enabled()) \
+		DX12DiagProf::AddCpuStage(category, stage, kind, items, us); } while (0)
+#define DX12_PROF_FRAME_DRAW() \
+	do { if (DX12DiagProf::Enabled()) DX12RuntimeState::IncrementFrameDraws(); } while (0)
+#define DX12_PROF_FRAME_DISPATCH() \
+	do { if (DX12DiagProf::Enabled()) DX12RuntimeState::IncrementFrameDispatches(); } while (0)
 
 #define DX12_PROF_STAGE_SCOPE(stage) \
 	DX12DiagProf::Scope DX12_DIAG_JOIN(_diagScope_, __LINE__)("Stage." #stage)
-#define DX12_PROF_STAGE_BEGIN(stage)  DX12DiagProf::Begin("Stage." #stage)
-#define DX12_PROF_STAGE_END(stage)    DX12DiagProf::End("Stage." #stage)
+#define DX12_PROF_STAGE_BEGIN(stage) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::Begin("Stage." #stage); } while (0)
+#define DX12_PROF_STAGE_END(stage) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::End("Stage." #stage); } while (0)
 #define DX12_PROF_API_SCOPE(api) \
 	DX12DiagProf::Scope DX12_DIAG_JOIN(_diagScope_, __LINE__)("Api." #api)
 #define DX12_PROF_API_SCOPE_NAMED(var, api) \
@@ -1719,82 +2035,51 @@ inline void DX12DiagProf::EmitSummary()
 	DX12DiagProf::Scope DX12_DIAG_JOIN(_diagScope_, __LINE__)( \
 		"Create." #api "." #stage)
 
+// Per-frame boundary: a call either way is irrelevant next to a Present, so
+// the gate lives inside the functions rather than at the call site.
 #define DX12_PROF_FRAME_ENTER(api, swapChain) \
 	DX12DiagProf::FrameEnter(api, swapChain)
 #define DX12_PROF_FRAME_LEAVE(api, swapChain, hr) \
 	DX12DiagProf::FrameLeave(api, swapChain, hr)
 
-#define DX12_DIAG_QPC(var)              LARGE_INTEGER var = DX12DiagProf::Now()
-#define DX12_DIAG_QPC_RESET(var)        var = DX12DiagProf::Now()
+// Declares the timestamp unconditionally (the name must stay in scope) but
+// only reads the clock when the profiler is on; a zero QuadPart is the
+// "never read" marker DX12DiagProf::ElapsedUs recognises.
+#define DX12_DIAG_QPC(var) \
+	LARGE_INTEGER var = {}; \
+	if (DX12DiagProf::Enabled()) QueryPerformanceCounter(&var)
+#define DX12_DIAG_QPC_RESET(var) \
+	do { var.QuadPart = 0; \
+		if (DX12DiagProf::Enabled()) QueryPerformanceCounter(&var); } while (0)
 #define DX12_DIAG_ELAPSED_US(var)       DX12DiagProf::ElapsedUs(var)
 
+// The lock must be taken regardless; only the contention measurement is
+// conditional, so the disabled path is the plain SRW call. `name` is the
+// complete bucket name - call sites already carry their domain prefix, and
+// prepending one here used to turn "Lock.modShared" into "Lock.Lock.modShared".
 #define DX12_LOCK_ACQUIRE_SHARED(lock, name) \
-	DX12DiagProf::AcquireLockShared(lock, "Lock." name)
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AcquireLockShared(lock, name); \
+		else AcquireSRWLockShared(lock); } while (0)
 #define DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, name) \
-	DX12DiagProf::AcquireLockExclusive(lock, "Lock." name)
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AcquireLockExclusive(lock, name); \
+		else AcquireSRWLockExclusive(lock); } while (0)
 
 // Fence/wait probes. DX12_DIAG_FENCE_VALUE_VAR declares a sampled fence value
-// that only other diag macros may reference (release declares nothing, so no
-// unused-variable warnings and zero work).
+// that only other diag macros may reference (when the profiler is not built
+// in it declares nothing, so no unused-variable warnings and zero work).
 #define DX12_DIAG_FENCE_VALUE_VAR(var, fence) \
 	const UINT64 var = DX12DiagProf::FenceCompletedValue(fence)
 #define DX12_DIAG_REGISTER_FENCE_EVENT(fence, eventHandle, value, completedBefore, completedAfter, hr) \
-	DX12DiagProf::RegisterFenceEventOnCompletion( \
-		fence, eventHandle, value, completedBefore, completedAfter, hr)
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::RegisterFenceEventOnCompletion( \
+		fence, eventHandle, value, completedBefore, completedAfter, hr); } while (0)
 #define DX12_DIAG_REGISTER_FRAME_LATENCY_WAITABLE(swapChain, handle) \
-	DX12DiagProf::RegisterFrameLatencyWaitableObject(swapChain, handle)
+	do { if (DX12DiagProf::Enabled()) \
+		DX12DiagProf::RegisterFrameLatencyWaitableObject(swapChain, handle); } while (0)
 
-#else
-
-#define DX12_LOG(func, ...)             do {} while (0)
-#define DX12_LOG_FLUSH(func, ...)       do {} while (0)
-#define DX12_LOG_TEXT(...)              do {} while (0)
-#define DX12_LOG_EXECUTE_GAP()          do {} while (0)
-
-#define DX12_PROF_SCOPE(name)           do {} while (0)
-#define DX12_PROF_SCOPE_NAMED(var, name) do {} while (0)
-#define DX12_PROF_FUNCTION(counter)     do {} while (0)
-#define DX12_PROF_PAUSE(var)            do {} while (0)
-#define DX12_PROF_RESUME(var)           do {} while (0)
-#define DX12_PROF_FINISH(var)           do {} while (0)
-#define DX12_PROF_BEGIN(name)           do {} while (0)
-#define DX12_PROF_END(name)             do {} while (0)
-#define DX12_PROF_COUNT(name)           do {} while (0)
-#define DX12_PROF_ADD_US(name, us)      do {} while (0)
-#define DX12_PROF_ADD_US_ITEMS(name, us, items) do {} while (0)
-#define DX12_PROF_ADD_ITEMS(name, items) do {} while (0)
-#define DX12_PROF_CPU_STAGE(category, stage, kind, items, us) do {} while (0)
-#define DX12_PROF_FRAME_DRAW()          do {} while (0)
-#define DX12_PROF_FRAME_DISPATCH()      do {} while (0)
-
-#define DX12_PROF_STAGE_SCOPE(stage)    do {} while (0)
-#define DX12_PROF_STAGE_BEGIN(stage)    do {} while (0)
-#define DX12_PROF_STAGE_END(stage)      do {} while (0)
-#define DX12_PROF_API_SCOPE(api)        do {} while (0)
-#define DX12_PROF_API_SCOPE_NAMED(var, api) do {} while (0)
-#define DX12_PROF_API_STAGE_SCOPE_NAMED(var, api, stage) do {} while (0)
-#define DX12_PROF_CREATE_SCOPE(api, stage) do {} while (0)
-
-#define DX12_PROF_FRAME_ENTER(api, swapChain) do {} while (0)
-#define DX12_PROF_FRAME_LEAVE(api, swapChain, hr) do {} while (0)
-
-#define DX12_DIAG_QPC(var)              do {} while (0)
-#define DX12_DIAG_QPC_RESET(var)        do {} while (0)
-#define DX12_DIAG_ELAPSED_US(var)       0
-
-#define DX12_LOCK_ACQUIRE_SHARED(lock, name) AcquireSRWLockShared(lock)
-#define DX12_LOCK_ACQUIRE_EXCLUSIVE(lock, name) AcquireSRWLockExclusive(lock)
-
-#define DX12_DIAG_FENCE_VALUE_VAR(var, fence) do {} while (0)
-#define DX12_DIAG_REGISTER_FENCE_EVENT(fence, eventHandle, value, completedBefore, completedAfter, hr) \
-	do {} while (0)
-#define DX12_DIAG_REGISTER_FRAME_LATENCY_WAITABLE(swapChain, handle) do {} while (0)
-
-#endif // DX12_TIMING_BUILD
 
 // Frame-boundary breadcrumb for the freeze watchdog. Kept outside the macro
-// surface because it is a plain function used across many TUs; in non-TIMING
-// builds it inlines to nothing (the watchdog itself is TIMING-only).
+// surface because it is a plain function used across many TUs. The watchdog
+// itself is TIMING-only, so outside those builds this inlines to nothing.
 #if DX12_TIMING_BUILD
 void DX12MarkStage(const char *stage);
 #else

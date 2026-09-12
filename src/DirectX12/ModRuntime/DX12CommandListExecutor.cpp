@@ -19,11 +19,12 @@ namespace
 	std::atomic<const char *> gFrameBoundaryStage{ nullptr };
 }
 
+// The header declares this as an inline no-op outside TIMING builds, and this
+// whole block is TIMING-only, so the signature stays identical either way.
 void DX12MarkStage(const char *stage)
 {
 	gFrameBoundaryStage.store(stage, std::memory_order_relaxed);
 }
-
 
 // Reads the breadcrumb back for a one-line diagnostic. A frozen process stops
 // emitting, so the marker is reported at the START of every frame boundary:
@@ -304,7 +305,7 @@ bool DX12ModPreparePresentReplacement(
 // replay must land at Present time - the DX11 runtime executes [Present]
 // after the game's rendering, and drawing earlier would both race the back
 // buffer's PRESENT state and be overdrawn by the game's own frame. Records
-// are therefore parked here and replayed by DX12ModSubmitPresentOverlay,
+// are therefore parked here and replayed by DX12PresentOverlayCompose,
 // called from the Present wrapper right before the original Present.
 class DX12PendingPresentOverlay
 {
@@ -368,11 +369,6 @@ static ID3D12CommandQueue *AcquireGameDirectQueue()
 	if (queue)
 		queue->AddRef();
 	return queue;
-}
-
-ID3D12CommandQueue *DX12ModAcquireGameDirectQueue()
-{
-	return AcquireGameDirectQueue();
 }
 
 
@@ -516,30 +512,21 @@ bool DX12ModQueuePresentCustomElements(
 	return true;
 }
 
-bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
+namespace
 {
-	if (!swapChain)
-		return false;
-	DX12MarkStage("overlay_begin");
-
-	std::vector<DX12ModIaReplacement::CustomElementRecord> records;
-	ID3D12Device *device = nullptr;
+	// Lazily retire every custom-shader cache once per mod generation. Doing it
+	// at present time (the only consumer) avoids cross-thread deletion against
+	// the reload path; a stale PSO or bytecode would otherwise survive an
+	// F10-style reload forever because the pipeline cache keys never expire.
+	//
+	// It has to run BEFORE the composer resolves its channel and surface cache,
+	// because clearing those leaves the previously fetched pointers dangling.
+	void RetireCustomShaderCachesForGeneration()
 	{
-		std::lock_guard<std::mutex> lock(sPendingPresentOverlayLock);
-		if (sPendingPresentOverlay.records.empty())
-			return false;
-		records.swap(sPendingPresentOverlay.records);
-		device = sPendingPresentOverlay.device;
-		sPendingPresentOverlay.device = nullptr;
-	}
-
-	// Lazily retire every custom-shader cache once per mod generation. Doing
-	// it here (the only consumer) avoids cross-thread deletion against the
-	// reload path; a stale PSO/bytecode would otherwise survive an F10-style
-	// reload forever because the pipeline cache keys never expire.
-	static std::atomic<UINT64> sCustomShaderCacheGeneration = 0;
-	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	if (sCustomShaderCacheGeneration.load(std::memory_order_acquire) != reloadGeneration) {
+		static std::atomic<UINT64> sCustomShaderCacheGeneration = 0;
+		const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
+		if (sCustomShaderCacheGeneration.load(std::memory_order_acquire) == reloadGeneration)
+			return;
 		Bunny::DX12CustomShaderPipelineCache::ClearAll();
 		Bunny::DX12IniParamsTexture::ClearAll();
 		Bunny::DX12CustomShaderTableHeap::ClearAll();
@@ -549,65 +536,65 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 		sCustomShaderCacheGeneration.store(reloadGeneration, std::memory_order_release);
 	}
 
-	const UINT64 presentCount =
-		static_cast<UINT64>(DX12RuntimeState::GetPresentCount());
-	Bunny::DX12IniParamsTexture *iniParamsTexture =
-		Bunny::DX12IniParamsTexture::ForDevice(device);
+	// Moves the queued [Present] elements out of the hand-off slot. Returns
+	// false when the mod has nothing waiting, which is the usual case outside a
+	// mod that uses [Present] elements.
+	bool TakePendingPresentOverlay(
+		std::vector<DX12ModIaReplacement::CustomElementRecord> *records,
+		ID3D12Device **device)
+	{
+		std::lock_guard<std::mutex> lock(sPendingPresentOverlayLock);
+		if (sPendingPresentOverlay.records.empty())
+			return false;
+		records->swap(sPendingPresentOverlay.records);
+		*device = sPendingPresentOverlay.device;
+		sPendingPresentOverlay.device = nullptr;
+		return true;
+	}
+
+	void TransitionBackBuffer(
+		ID3D12GraphicsCommandList *commandList, ID3D12Resource *backBuffer,
+		D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+	{
+		if (!commandList || !backBuffer)
+			return;
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = backBuffer;
+		barrier.Transition.StateBefore = before;
+		barrier.Transition.StateAfter = after;
+		commandList->ResourceBarrier(1, &barrier);
+	}
+}
+
+// Replays the queued [Present] custom elements into an already-open list. The
+// caller owns the back-buffer barrier, the descriptor-heap state and the
+// submission, so every overlay source in a frame shares one list.
+bool DX12ModRecordPresentOverlay(
+	ID3D12GraphicsCommandList *commandList,
+	ID3D12Device *device,
+	Bunny::DX12CustomShaderSurfaceCache *surfaceCache,
+	D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
+	DXGI_FORMAT backBufferFormat,
+	UINT backBufferWidth,
+	UINT backBufferHeight,
+	const std::vector<DX12ModIaReplacement::CustomElementRecord> &records)
+{
+	if (!commandList || !device || !surfaceCache || !backBufferRtv.ptr)
+		return false;
+
 	Bunny::DX12CustomShaderTableHeap *tableHeap =
 		Bunny::DX12CustomShaderTableHeap::ForDevice(device);
-	Bunny::DX12CustomShaderSurfaceCache *surfaceCache =
-		Bunny::DX12CustomShaderSurfaceCache::ForDevice(device);
+	Bunny::DX12IniParamsTexture *iniParamsTexture =
+		Bunny::DX12IniParamsTexture::ForDevice(device);
 	ID3D12RootSignature *rootSignature =
 		Bunny::DX12CustomShaderPipelineCache::EnsureRootSignature(device);
-	Bunny::DX12PresentOverlayChannel *channel =
-		Bunny::DX12PresentOverlayChannel::ForDevice(device);
-	ID3D12CommandQueue *queue = AcquireGameDirectQueue();
-	// Hold the channel's recording lock across BeginRecord..Submit: the hunting
-	// text overlay records on this same channel in the same frame, and a second
-	// recording thread must not be able to close this recording's slot.
-	Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
+	if (!tableHeap || !iniParamsTexture || !rootSignature)
+		return false;
+	if (!tableHeap->BeginPresent(static_cast<UINT64>(DX12RuntimeState::GetPresentCount())))
+		return false;
 
 	bool anyDrawn = false;
-	bool submitted = false;
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	if (!iniParamsTexture || !tableHeap || !surfaceCache || !rootSignature ||
-	    !channel || !queue) {
-		DX12_LOG_FLUSH("DX12CustomShaderDiag",
-			"event=replay_skip reason=overlay_channel_unavailable queue=%d",
-			queue ? 1 : 0);
-	} else if (!(commandList = channel->BeginRecord())) {
-		DX12_LOG_FLUSH("DX12CustomShaderDiag",
-			"event=replay_skip reason=overlay_begin_record_failed detail=%s",
-			channel->LastFailure());
-	} else if (!tableHeap->BeginPresent(presentCount)) {
-		DX12_LOG_FLUSH("DX12CustomShaderDiag",
-			"event=replay_skip reason=table_heap_unavailable");
-		commandList->Close();
-		commandList = nullptr;
-	}
-	if (commandList) {
-
-	// The back buffer sits in PRESENT state at this point; bracket the
-	// overlay draws with explicit transitions.
-	ID3D12Resource *backBuffer = nullptr;
-	UINT backBufferIndex = 0;
-	IDXGISwapChain3 *swapChain3 = nullptr;
-	if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) &&
-	    swapChain3) {
-		backBufferIndex = swapChain3->GetCurrentBackBufferIndex();
-		swapChain3->Release();
-	}
-	if (FAILED(swapChain->GetBuffer(backBufferIndex, IID_PPV_ARGS(&backBuffer))))
-		backBuffer = nullptr;
-	if (backBuffer) {
-		D3D12_RESOURCE_BARRIER toRenderTarget = {};
-		toRenderTarget.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		toRenderTarget.Transition.pResource = backBuffer;
-		toRenderTarget.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-		toRenderTarget.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		commandList->ResourceBarrier(1, &toRenderTarget);
-	}
-
 	for (const DX12ModIaReplacement::CustomElementRecord &record : records) {
 		const Bunny::DX12CustomShaderElementSpec &spec = record.spec;
 		if (!spec.hasStage[0] || !spec.hasStage[4]) {
@@ -628,7 +615,8 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			break;
 		}
 		if (!iniParamsTexture->UpdateAndUpload(
-			    commandList, presentCount, elementIndex, record.iniParams.data())) {
+			    commandList, static_cast<UINT64>(DX12RuntimeState::GetPresentCount()),
+			    elementIndex, record.iniParams.data())) {
 			DX12_LOG("DX12CustomShaderDiag",
 				"event=replay_skip reason=ini_params_upload_failed section=%S",
 				spec.section.c_str());
@@ -644,18 +632,6 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			tableHeap->CopySrv(slot.first, resource->drawSrvCpu);
 		}
 
-		D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv = {};
-		DXGI_FORMAT backBufferFormat = DXGI_FORMAT_UNKNOWN;
-		UINT backBufferWidth = 0;
-		UINT backBufferHeight = 0;
-		if (!surfaceCache->EnsureBackBufferView(
-			    swapChain, &backBufferRtv, &backBufferFormat,
-			    &backBufferWidth, &backBufferHeight)) {
-			DX12_LOG_FLUSH("DX12CustomShaderDiag",
-				"event=replay_skip reason=no_back_buffer section=%S",
-				spec.section.c_str());
-			continue;
-		}
 		ID3D12PipelineState *pipeline =
 			Bunny::DX12CustomShaderPipelineCache::EnsurePipeline(
 				device, spec, backBufferFormat);
@@ -666,10 +642,6 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			continue;
 		}
 
-		// The channel's list is created through the wrapped device, so these
-		// calls do pass through the wrapper hooks - they are simply the mod's
-		// own recording rather than the game's, and nothing in the gameplay
-		// tracking depends on them.
 		ID3D12DescriptorHeap *heaps[1] = { tableHeap->Heap() };
 		commandList->SetDescriptorHeaps(1, heaps);
 		commandList->SetGraphicsRootSignature(rootSignature);
@@ -698,26 +670,135 @@ bool DX12ModSubmitPresentOverlay(IDXGISwapChain *swapChain)
 			spec.section.c_str(), backBufferWidth, backBufferHeight,
 			static_cast<int>(backBufferFormat), record.textureSlots.size());
 	}
+	return anyDrawn;
+}
 
-	if (backBuffer) {
-		D3D12_RESOURCE_BARRIER toPresent = {};
-		toPresent.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		toPresent.Transition.pResource = backBuffer;
-		toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-		commandList->ResourceBarrier(1, &toPresent);
-		backBuffer->Release();
+// Composes every overlay source for one frame into a single command list and
+// submits it exactly once, bracketed by one back-buffer barrier pair.
+//
+// Before this existed each source took its own slot on the shared channel, so a
+// frame with a mod [Present] element and hunting text cost two
+// ExecuteCommandLists calls and transitioned the back buffer twice. The
+// profiling HUD now rides along for the cost of a few more vertices in a draw
+// that was already happening.
+bool DX12PresentOverlayCompose(IDXGISwapChain *swapChain)
+{
+	if (!swapChain)
+		return false;
+	DX12MarkStage("overlay_begin");
+
+	// Retire first: it can clear the channel and the surface cache, so nothing
+	// may hold a pointer to either yet.
+	RetireCustomShaderCachesForGeneration();
+
+	std::vector<DX12ModIaReplacement::CustomElementRecord> records;
+	ID3D12Device *modDevice = nullptr;
+	const bool hasModOverlay = TakePendingPresentOverlay(&records, &modDevice);
+	const bool hasOverlayText = DX12NativeOverlayHasContent();
+	if (!hasModOverlay && !hasOverlayText) {
+		if (modDevice)
+			modDevice->Release();
+		return false;
 	}
-	if (anyDrawn) {
-		DX12MarkStage("overlay_channel_submit");
-		submitted = channel->Submit(queue);
+
+	ID3D12Device *device = modDevice;
+	if (!device) {
+		if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device)
+			return false;
+	}
+	ID3D12CommandQueue *queue = AcquireGameDirectQueue();
+	Bunny::DX12CustomShaderSurfaceCache *surfaceCache =
+		Bunny::DX12CustomShaderSurfaceCache::ForDevice(device);
+	Bunny::DX12PresentOverlayChannel *channel =
+		Bunny::DX12PresentOverlayChannel::ForDevice(device);
+
+	D3D12_CPU_DESCRIPTOR_HANDLE rtv = {};
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+	UINT width = 0;
+	UINT height = 0;
+	const bool hasTarget = surfaceCache &&
+		surfaceCache->EnsureBackBufferView(swapChain, &rtv, &format, &width, &height);
+
+	bool submitted = false;
+	if (!queue || !channel || !hasTarget) {
+		DX12_LOG_FLUSH("DX12CustomShaderDiag",
+			"event=replay_skip reason=overlay_channel_unavailable queue=%d channel=%d target=%d",
+			queue ? 1 : 0, channel ? 1 : 0, hasTarget ? 1 : 0);
 	} else {
-		commandList->Close();
+		// Prepare the text overlay BEFORE taking the channel's recording lock.
+		// Its one-time font atlas upload needs a channel slot of its own, and a
+		// nested acquisition of the same non-recursive lock would deadlock.
+		const bool textReady = hasOverlayText &&
+			DX12NativeOverlayPrepare(swapChain, queue, format);
+
+		// Hold the channel's recording lock across BeginRecord..Submit: the
+		// channel hands out a list and closes whichever slot its cursor points
+		// at, so a second recording thread in between would close the wrong
+		// slot.
+		Bunny::DX12PresentOverlayChannel::RecordScope recordScope(channel);
+		ID3D12GraphicsCommandList *commandList = channel->BeginRecord();
+		if (!commandList) {
+			DX12_LOG_FLUSH("DX12CustomShaderDiag",
+				"event=replay_skip reason=overlay_begin_record_failed detail=%s",
+				channel->LastFailure());
+		} else {
+			// The back buffer sits in PRESENT state at this point; one barrier
+			// pair brackets every source recorded below.
+			UINT bufferIndex = 0;
+			IDXGISwapChain3 *swapChain3 = nullptr;
+			if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) &&
+			    swapChain3) {
+				bufferIndex = swapChain3->GetCurrentBackBufferIndex();
+				swapChain3->Release();
+			}
+			ID3D12Resource *backBuffer = nullptr;
+			if (FAILED(swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer))))
+				backBuffer = nullptr;
+
+			TransitionBackBuffer(commandList, backBuffer,
+				D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+			bool anyDrawn = false;
+			if (hasModOverlay)
+				anyDrawn |= DX12ModRecordPresentOverlay(
+					commandList, device, surfaceCache, rtv, format,
+					width, height, records);
+			// Only the text/HUD record is timed separately: it is the part that
+			// does per-frame work of its own (a content-key compare, and a
+			// re-layout when the report moved), whereas everything else here is
+			// either a one-off or the mod's own replay. Being able to subtract
+			// it is what makes the HUD's cost auditable.
+			DX12_DIAG_QPC(textBegin);
+			const UINT overlayIndices = textReady
+				? DX12NativeOverlayRecord(
+					commandList, swapChain, queue, rtv, format, width, height)
+				: 0u;
+			DX12_PROF_ADD_US("Present.overlay_text_record", DX12_DIAG_ELAPSED_US(textBegin));
+			anyDrawn |= overlayIndices != 0;
+
+			TransitionBackBuffer(commandList, backBuffer,
+				D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+			if (backBuffer)
+				backBuffer->Release();
+
+			if (anyDrawn) {
+				DX12MarkStage("overlay_channel_submit");
+				submitted = channel->Submit(queue);
+				// Only the text overlay owns a fence, and only its own draw
+				// reads the vertex slot: tag it after the submission that
+				// actually recorded that draw. The tag has to describe the
+				// newest GPU work reading that memory.
+				if (overlayIndices)
+					DX12NativeOverlayOnSubmitted(swapChain, queue);
+			} else {
+				commandList->Close();
+			}
+		}
 	}
-	} // if (commandList)
+
 	DX12_LOG_FLUSH("DX12PresentDiag",
-		"event=overlay_submit records=%zu drawn=%d submitted=%d",
-		records.size(), anyDrawn ? 1 : 0, submitted ? 1 : 0);
+		"event=overlay_submit records=%zu text=%d submitted=%d",
+		records.size(), hasOverlayText ? 1 : 0, submitted ? 1 : 0);
 	DX12MarkStage("overlay_submit_done");
 	if (queue)
 		queue->Release();

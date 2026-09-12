@@ -819,87 +819,165 @@ public:
 	// ResizeBuffers keeps the swap chain pointer and buffer indices stable,
 	// so the chain+index cache key cannot detect the swap: drop the key to
 	// force the RTV to be recreated from the new back buffer on next use.
+	// The cached resources have to go with it - holding a reference to a
+	// released back buffer would keep dead memory alive and, worse, hand out a
+	// view of it.
 	static void InvalidateChain(IDXGISwapChain *swapChain)
 	{
 		std::lock_guard<std::mutex> lock(Mutex());
 		for (auto &entry : Instances()) {
 			std::lock_guard<std::mutex> chainLock(entry.second->mLock);
-			if (entry.second->mChain == swapChain)
+			if (entry.second->mChain == swapChain ||
+			    entry.second->mChain3Owner == swapChain) {
+				entry.second->ReleaseCachedBackBuffers();
+				entry.second->mValidMask = 0;
 				entry.second->mChain = nullptr;
+			}
 		}
 	}
 
 	// Returns true with the RTV handle/format/size of the current back
 	// buffer when it could be resolved (or refreshed).
+	//
+	// A flip-model chain rotates the back-buffer index every present, so the
+	// view for a given index stays valid for the life of the chain: each of the
+	// kRtvSlots descriptors is built once and then only compared against. That
+	// matters because the old shape rebuilt the view whenever the *index*
+	// changed, i.e. on every frame - two GetBuffer calls, a
+	// CreateRenderTargetView and a QueryInterface per frame, for a view whose
+	// contents never actually changed.
 	bool EnsureBackBufferView(
 		IDXGISwapChain *swapChain,
 		D3D12_CPU_DESCRIPTOR_HANDLE *rtvOut,
 		DXGI_FORMAT *formatOut,
 		UINT *widthOut,
-		UINT *heightOut)
+		UINT *heightOut,
+		ID3D12Resource **backBufferOut = nullptr)
 	{
 		if (!rtvOut || !formatOut || !widthOut || !heightOut)
 			return false;
 		if (!swapChain || !mRtvCpuStart.ptr)
 			return false;
-		// The mod [Present] overlay and the hunting text overlay both resolve
-		// the view in the same frame and a resize may invalidate it from a
-		// different thread; the cache key and the descriptor slot it guards
-		// must never be updated concurrently.
+		// The mod [Present] overlay and the overlay text both resolve the view
+		// in the same frame, and a resize may invalidate it from a different
+		// thread; the cache key and the descriptor slot it guards must never be
+		// updated concurrently.
 		std::lock_guard<std::mutex> cacheLock(mLock);
-		UINT bufferIndex = 0;
-		IDXGISwapChain3 *swapChain3 = nullptr;
-		if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) &&
-		    swapChain3) {
-			bufferIndex = swapChain3->GetCurrentBackBufferIndex();
-			swapChain3->Release();
+
+		IDXGISwapChain3 *swapChain3 = mSwapChain3;
+		if (!swapChain3 || mChain3Owner != swapChain) {
+			if (mSwapChain3) {
+				mSwapChain3->Release();
+				mSwapChain3 = nullptr;
+			}
+			if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain3))) &&
+			    mSwapChain3) {
+				swapChain3 = mSwapChain3;
+				mChain3Owner = swapChain;
+			} else {
+				mChain3Owner = nullptr;
+				return false;
+			}
 		}
 
-		if (mChain != swapChain || mBufferIndex != bufferIndex) {
-			ID3D12Resource *backBuffer = nullptr;
-			HRESULT hr = swapChain->GetBuffer(
-				bufferIndex, IID_PPV_ARGS(&backBuffer));
-			if (FAILED(hr) || !backBuffer)
-				return false;
-			D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
-			backBuffer->Release(); // RTV creation takes the descriptor only
-			if (desc.Width == 0 || desc.Height == 0)
-				return false;
-			// Typeless back buffers need a typed view format for the RTV and
-			// the matching PSO RTV format.
-			const DXGI_FORMAT typedFormat = MakeTypedRtvFormat(desc.Format);
-			if (typedFormat == DXGI_FORMAT_UNKNOWN)
-				return false;
-
-			D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-			rtvDesc.Format = typedFormat;
-			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-			ID3D12Resource *viewTarget = nullptr;
-			hr = swapChain->GetBuffer(
-				bufferIndex, IID_PPV_ARGS(&viewTarget));
-			if (FAILED(hr) || !viewTarget)
-				return false;
-			D3D12_CPU_DESCRIPTOR_HANDLE slot = mRtvCpuStart;
-			slot.ptr += static_cast<UINT64>(bufferIndex % kRtvSlots) *
-				mRtvIncrement;
-			mDevice->CreateRenderTargetView(viewTarget, &rtvDesc, slot);
-			viewTarget->Release();
-			mRtvHandle = slot;
-			mFormat = typedFormat;
-			mWidth = static_cast<UINT>(desc.Width);
-			mHeight = static_cast<UINT>(desc.Height);
+		const UINT bufferIndex = swapChain3->GetCurrentBackBufferIndex() % kRtvSlots;
+		if (mChain != swapChain || mValidMask == 0) {
+			mValidMask = 0;
 			mChain = swapChain;
+		} else if (mValidMask & (1u << bufferIndex)) {
+			// Steady state: the slot was built for this chain and index, so
+			// only the rotation bookkeeping changes.
 			mBufferIndex = bufferIndex;
+			*rtvOut = mRtvHandles[bufferIndex];
+			*formatOut = mFormat;
+			*widthOut = mWidth;
+			*heightOut = mHeight;
+			if (backBufferOut)
+				*backBufferOut = AcquireCachedBackBuffer(swapChain, bufferIndex);
+			return true;
 		}
-		*rtvOut = mRtvHandle;
+
+		ID3D12Resource *backBuffer = nullptr;
+		HRESULT hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer));
+		if (FAILED(hr) || !backBuffer)
+			return false;
+		D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+		if (desc.Width == 0 || desc.Height == 0) {
+			backBuffer->Release();
+			return false;
+		}
+		// Typeless back buffers need a typed view format for the RTV and the
+		// matching PSO RTV format.
+		const DXGI_FORMAT typedFormat = MakeTypedRtvFormat(desc.Format);
+		if (typedFormat == DXGI_FORMAT_UNKNOWN) {
+			backBuffer->Release();
+			return false;
+		}
+
+		// A format change means every cached view is stale, not just this one.
+		if (mValidMask && mFormat != typedFormat) {
+			mValidMask = 0;
+			ReleaseCachedBackBuffers();
+		}
+
+		D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+		rtvDesc.Format = typedFormat;
+		rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+		D3D12_CPU_DESCRIPTOR_HANDLE slot = mRtvCpuStart;
+		slot.ptr += static_cast<UINT64>(bufferIndex) * mRtvIncrement;
+		mDevice->CreateRenderTargetView(backBuffer, &rtvDesc, slot);
+
+		// The resource stays referenced for as long as its view does. Without
+		// this the steady-state path would have to call GetBuffer on every
+		// frame just to hand the caller something to barrier.
+		mBackBuffers[bufferIndex] = backBuffer;
+		mRtvHandles[bufferIndex] = slot;
+		mValidMask |= 1u << bufferIndex;
+		mFormat = typedFormat;
+		mWidth = static_cast<UINT>(desc.Width);
+		mHeight = static_cast<UINT>(desc.Height);
+		mBufferIndex = bufferIndex;
+
+		*rtvOut = slot;
 		*formatOut = mFormat;
 		*widthOut = mWidth;
 		*heightOut = mHeight;
-		return mRtvHandle.ptr != 0;
+		if (backBufferOut)
+			*backBufferOut = AcquireCachedBackBuffer(swapChain, bufferIndex);
+		else
+			backBuffer->Release();
+		return mRtvHandle().ptr != 0;
 	}
 
 private:
 	static constexpr UINT kRtvSlots = 8;
+
+	// Hands the caller its own reference to a cached back buffer. Callers
+	// Release() it, which keeps their existing ownership discipline intact.
+	ID3D12Resource *AcquireCachedBackBuffer(IDXGISwapChain *swapChain, UINT bufferIndex)
+	{
+		if (!mBackBuffers[bufferIndex])
+			return nullptr;
+		mBackBuffers[bufferIndex]->AddRef();
+		return mBackBuffers[bufferIndex];
+	}
+
+	void ReleaseCachedBackBuffers()
+	{
+		for (ID3D12Resource *&resource : mBackBuffers) {
+			if (resource) {
+				resource->Release();
+				resource = nullptr;
+			}
+		}
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE mRtvHandle() const
+	{
+		return (mValidMask && mBufferIndex < kRtvSlots)
+			? mRtvHandles[mBufferIndex]
+			: D3D12_CPU_DESCRIPTOR_HANDLE{};
+	}
 
 	explicit DX12CustomShaderSurfaceCache(ID3D12Device *device)
 		: mDevice(device)
@@ -920,12 +998,20 @@ private:
 
 	void ReleaseResources()
 	{
+		ReleaseCachedBackBuffers();
+		mValidMask = 0;
+		mChain = nullptr;
+		mChain3Owner = nullptr;
+		if (mSwapChain3) {
+			mSwapChain3->Release();
+			mSwapChain3 = nullptr;
+		}
 		if (mHeap) {
 			mHeap->Release();
 			mHeap = nullptr;
 		}
-		mRtvHandle = {};
-		mChain = nullptr;
+		for (D3D12_CPU_DESCRIPTOR_HANDLE &handle : mRtvHandles)
+			handle = {};
 	}
 
 	static std::mutex &Mutex()
@@ -943,13 +1029,23 @@ private:
 	ID3D12Device *mDevice = nullptr;
 	ID3D12DescriptorHeap *mHeap = nullptr;
 	D3D12_CPU_DESCRIPTOR_HANDLE mRtvCpuStart = {};
-	D3D12_CPU_DESCRIPTOR_HANDLE mRtvHandle = {};
 	UINT mRtvIncrement = 0;
 	IDXGISwapChain *mChain = nullptr;
 	UINT mBufferIndex = 0;
 	DXGI_FORMAT mFormat = DXGI_FORMAT_UNKNOWN;
 	UINT mWidth = 0;
 	UINT mHeight = 0;
+	// One entry per back-buffer index, built once and then only compared
+	// against. mValidMask says which entries of the current chain are built;
+	// mBackBuffers holds the reference each built view needs to stay alive, so
+	// the steady-state path never has to call GetBuffer again.
+	D3D12_CPU_DESCRIPTOR_HANDLE mRtvHandles[kRtvSlots] = {};
+	ID3D12Resource *mBackBuffers[kRtvSlots] = {};
+	UINT mValidMask = 0;
+	// Cached so the per-frame path never pays a QueryInterface. mChain3Owner
+	// pins it to the chain it was queried from.
+	IDXGISwapChain3 *mSwapChain3 = nullptr;
+	IDXGISwapChain *mChain3Owner = nullptr;
 	// Guards the cache key, the metrics and the descriptor slot it describes.
 	std::mutex mLock;
 };

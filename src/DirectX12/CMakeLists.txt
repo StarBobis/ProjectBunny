@@ -59,6 +59,8 @@ add_library(DirectX12 SHARED
     Core/Models/DX12BindingTrackerModels.h
     Core/DX12Diagnostics.h
     Core/Diag/DX12Diag.h
+    Core/Diag/DX12ProfilingHud.h
+    Core/Diag/DX12ProfilingText.h
     Core/DX12RuntimeState.h
     Core/DX12RuntimeState.cpp
     Core/DX12JsonUtils.h
