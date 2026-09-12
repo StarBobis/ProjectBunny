@@ -991,8 +991,6 @@ bool DX12CommandListRuntime::RememberIndexBuffer(
 	DX12_PROF_COUNT("Rm.RuntimeIndexBufferCalls");
 	if (!same)
 		DX12_PROF_COUNT("Rm.RuntimeIndexBufferChanged");
-	else
-		DX12_PROF_COUNT("Rm.RuntimeIndexBufferNoChange");
 	if (same)
 		return false;
 	state->ia.hasIndexBuffer = newValid;
@@ -1055,10 +1053,9 @@ bool DX12CommandListRuntime::RememberVertexBuffers(
 			ia.vertexBuffers[slot].BufferLocation == newView.BufferLocation &&
 			ia.vertexBuffers[slot].SizeInBytes == newView.SizeInBytes &&
 			ia.vertexBuffers[slot].StrideInBytes == newView.StrideInBytes;
-		if (!same)
-			DX12_PROF_COUNT("Rm.RuntimeVertexBufferChangedSlots");
-		else
-			DX12_PROF_COUNT("Rm.RuntimeVertexBufferNoChangeSlots");
+		// Per-slot change counters removed: the call-level
+		// Rm.RuntimeVertexBufferChanged/NoChange pair already records whether the
+		// call changed anything, while these two ran once per bound slot.
 		if (same)
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
@@ -1310,13 +1307,10 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState
 		DX12_PROF_COUNT("Rm.IaViewHashSlotReuse");
 		return ia->indexBufferHash;
 	}
-	// Split by cause: an entry that is invalid was cleared by a view change
-	// (RememberIndexBuffer) and has to be hashed, while a valid entry with a
-	// moved resolve epoch may still be answered by the wrapper-level cache.
-	if (ia->indexBufferHashValid)
-		DX12_PROF_COUNT("Rm.IaViewHashRebuildEpochMoved");
-	else
-		DX12_PROF_COUNT("Rm.IaViewHashRebuildViewChanged");
+	// The cause split (view change vs moved resolve epoch) was removed: every
+	// measurement showed 100% of rebuilds caused by a view change and 0% by a
+	// moved epoch, so the two counters only restated this one - and they sat on
+	// the per-hash hot path.
 	DX12_PROF_COUNT("Rm.IaViewHashSlotRebuild");
 	ia->indexBufferHash = DX12HashIaBufferContentView(
 		ia->indexBuffer.BufferLocation,
@@ -1350,13 +1344,8 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 		DX12_PROF_COUNT("Rm.IaViewHashSlotReuse");
 		return ia->vertexBufferHashes[slot];
 	}
-	// Split by cause: an entry that is invalid was cleared by a view change
-	// (RememberVertexBuffers) and has to be hashed, while a valid entry with a
-	// moved resolve epoch may still be answered by the wrapper-level cache.
-	if (ia->vertexBufferHashValid[slot])
-		DX12_PROF_COUNT("Rm.IaViewHashRebuildEpochMoved");
-	else
-		DX12_PROF_COUNT("Rm.IaViewHashRebuildViewChanged");
+	// See GetOrBuildCachedIndexViewHash: the cause split is gone, it only ever
+	// restated Rm.IaViewHashSlotRebuild.
 	DX12_PROF_COUNT("Rm.IaViewHashSlotRebuild");
 	// Reuse cache from the backing ResourceWrapper: games that rotate a small
 	// set of vertex buffers across slots/command lists rebuild the same hash
