@@ -479,6 +479,19 @@ public:
 			bucket->items += items;
 	}
 
+	// Adds to the call counter without one bucket lookup per event. Callers that
+	// already accumulate over a batch publish the batch once; a per-event
+	// counter on a path that runs once per copied descriptor made the counter
+	// itself a measurable part of what it measures.
+	static void AddCalls(const char *name, LONG64 calls)
+	{
+		if (!calls)
+			return;
+		Bucket *bucket = FindBucket(name, nullptr, 0);
+		if (bucket)
+			bucket->calls += calls;
+	}
+
 	static void AddCpuStage(
 		const char *category, const char *stage, UINT kind, LONG64 items, LONG64 us)
 	{
@@ -2168,6 +2181,8 @@ inline UINT DX12DiagProf::BuildRankedRows(
 	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddUsItems(name, us, items); } while (0)
 #define DX12_PROF_ADD_ITEMS(name, items) \
 	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddItems(name, items); } while (0)
+#define DX12_PROF_ADD_CALLS(name, calls) \
+	do { if (DX12DiagProf::Enabled()) DX12DiagProf::AddCalls(name, calls); } while (0)
 #define DX12_PROF_CPU_STAGE(category, stage, kind, items, us) \
 	do { if (DX12DiagProf::Enabled()) \
 		DX12DiagProf::AddCpuStage(category, stage, kind, items, us); } while (0)

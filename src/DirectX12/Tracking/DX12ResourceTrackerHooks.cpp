@@ -300,6 +300,17 @@ struct DescriptorCopyCallScope
 	bool dumpOrHunt = false;
 	// Descriptors copied by this call, accumulated over its blocks.
 	LONG64 copiedDescriptors = 0;
+	// Per-descriptor outcome counters, accumulated here and published once per
+	// API call. They used to be incremented per descriptor, which cost a bucket
+	// lookup per slot - on a path that is now called once per copied descriptor
+	// (measured 27k descriptors per frame in 27k one-descriptor blocks) the
+	// counter was a measurable part of the cost it was reporting. The values are
+	// the same; only the number of lookups changed.
+	LONG64 directPathCalls = 0;
+	LONG64 changedCalls = 0;
+	LONG64 unchangedCalls = 0;
+	LONG64 lockedPathCalls = 0;
+	LONG64 ledgerFallbackCalls = 0;
 	// Changed slots publish their own seqlock identities immediately (readers
 	// rely on them), while the heap-wide invalidation token - which consumers
 	// only require to change once per completed API call - is bumped once per
@@ -317,6 +328,11 @@ struct DescriptorCopyCallScope
 static void FinishCopiedDescriptorCall(DescriptorCopyCallScope &scope)
 {
 	DX12_PROF_ADD_ITEMS("Desc.CopySlots", scope.copiedDescriptors);
+	DX12_PROF_ADD_CALLS("Rm.DescCopyDirectPath", scope.directPathCalls);
+	DX12_PROF_ADD_CALLS("Rm.DescCopyChanged", scope.changedCalls);
+	DX12_PROF_ADD_CALLS("Rm.DescCopyUnchanged", scope.unchangedCalls);
+	DX12_PROF_ADD_CALLS("Rm.DescCopyLockedPath", scope.lockedPathCalls);
+	DX12_PROF_ADD_CALLS("Rm.DescCopyLedgerFallback", scope.ledgerFallbackCalls);
 	scope.commitSet.CommitAll();
 }
 
@@ -418,7 +434,7 @@ static void RecordCopiedDescriptorBlock(
 			(chunkFast && curSrcChunkOk && curDstChunkOk &&
 				!curDstMaterialized);
 		if (directCopy) {
-			DX12_PROF_COUNT("Rm.DescCopyDirectPath");
+			++scope.directPathCalls;
 			UINT64 publishedValueId = 0;
 			const DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult result =
 				DX12DescriptorSlotArrayUtils::CopyCurrentSlotIfChanged(
@@ -430,7 +446,7 @@ static void RecordCopiedDescriptorBlock(
 			if (result != DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::LockRequired) {
 				if (result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::Changed ||
 					result == DX12DescriptorSlotArrayUtils::CopyCurrentSlotResult::SourceMissingDestinationErased) {
-					DX12_PROF_COUNT("Rm.DescCopyChanged");
+					++scope.changedCalls;
 					DX12DescriptorHeapStateUtils::PublishRangeValue(
 						destination.heap, dstSlot, publishedValueId);
 					scope.commitSet.Add(destination.heap);
@@ -440,13 +456,13 @@ static void RecordCopiedDescriptorBlock(
 					// array. Counted because the shadow's cost is dominated by
 					// that copy, so the changed/unchanged split decides whether
 					// shrinking the per-slot payload is worth it.
-					DX12_PROF_COUNT("Rm.DescCopyUnchanged");
+					++scope.unchangedCalls;
 				}
 				continue;
 			}
 		}
 		DescriptorRecord record;
-		DX12_PROF_COUNT("Rm.DescCopyLockedPath");
+		++scope.lockedPathCalls;
 		blockTookLockedPath = true;
 		if (!DX12DescriptorHeapShadowUtils::FindLatestDescriptor(srcHandle, &record)) {
 			DX12DescriptorHeapShadowUtils::EraseDescriptor(destHandle);
@@ -458,7 +474,7 @@ static void RecordCopiedDescriptorBlock(
 			// Global exclusive lock + map insert + a global CAS loop: counted
 			// separately because a single fallback here costs more than the rest
 			// of the call together.
-			DX12_PROF_COUNT("Rm.DescCopyLedgerFallback");
+			++scope.ledgerFallbackCalls;
 			DX12DescriptorHeapShadowUtils::WriteToCpuLedger(std::move(record));
 		}
 	}
@@ -466,6 +482,32 @@ static void RecordCopiedDescriptorBlock(
 		DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", 1);
 	// The commit set spans the whole API call, not this block: the caller
 	// commits after its last block.
+}
+
+// One expanded run of descriptor copies: consecutive API range pairs whose
+// destination and source both continue the previous pair, so the whole run is
+// recorded as a single block. The game hands CopyDescriptors about eight
+// single-descriptor ranges per call (measured: 3547 calls and 27961 blocks per
+// frame, one descriptor each), which turned the per-block setup - two heap
+// resolutions, four atomic reads, the commit set - into a per-descriptor cost.
+struct DescriptorCopyRun
+{
+	UINT count = 0;
+	D3D12_CPU_DESCRIPTOR_HANDLE dest = {};
+	D3D12_CPU_DESCRIPTOR_HANDLE src = {};
+};
+
+// Records the pending run as one block and clears it. Desc.CopyBlocks counts
+// these merged blocks, so the coalescing is self-measuring: the counter is the
+// divisor of the per-block cost above.
+static void FlushDescriptorCopyRun(
+	DescriptorCopyCallScope &scope, DescriptorCopyRun &run)
+{
+	if (!run.count)
+		return;
+	DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
+	RecordCopiedDescriptorBlock(scope, run.count, run.dest, run.src);
+	run.count = 0;
 }
 
 void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
@@ -498,6 +540,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	// Keep only the required flattened range mapping. Each mapped block uses the
 	// minimal shadow copy path; no memoization or per-call telemetry is needed.
 	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
+	DescriptorCopyRun run;
 	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
 		descriptorHeapsType);
 	if (!increment && device)
@@ -523,25 +566,27 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 		D3D12_CPU_DESCRIPTOR_HANDLE src = srcDescriptorRangeStarts[srcRange];
 		dest.ptr += static_cast<SIZE_T>(destOffset) * increment;
 		src.ptr += static_cast<SIZE_T>(srcOffset) * increment;
-		// One expanded block per iteration, recorded by the per-block helper.
-		// This is the divisor the "hoist the per-call setup out of the block
-		// path" question needed: Desc.CopySlots measures descriptors, so it
-		// cannot say how often that setup (two heap resolves, two activity
-		// reads, two materialization reads, chunk cursors, commit set) repeats
-		// per API call. Blocks coming from the CopyDescriptorsSimple hook arrive
-		// through the same function and add one each, so the multi-range average
-		// is (Desc.CopyBlocks - Create.CopyDescriptorsSimpleWrapper.Record
-		// calls) / Create.CopyDescriptorsWrapper.Record calls. Measured: 59.1M /
-		// 18.5M = 3.2 overlay-wide, 7.2~8.0 in the descriptor-heavy scenes,
-		// which is what made this loop call the helper instead of re-running the
-		// per-call setup per block.
-		DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
-		if (dest.ptr != src.ptr)
-			RecordCopiedDescriptorBlock(scope, count, dest, src);
-		else
-			// Self-overlapping ranges carry no work at all; counted separately
-			// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
-			DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
+		// Ranges that continue each other in both directions become one block, so
+		// the per-block setup is paid per run rather than per range. The run has
+		// to be flushed before any range that does not continue it, and a
+		// self-overlapping pair (destination == source) never joins one.
+		const bool continuesRun = run.count &&
+			dest.ptr == run.dest.ptr + static_cast<SIZE_T>(run.count) * increment &&
+			src.ptr == run.src.ptr + static_cast<SIZE_T>(run.count) * increment;
+		if (continuesRun) {
+			run.count += count;
+		} else {
+			FlushDescriptorCopyRun(scope, run);
+			if (dest.ptr != src.ptr) {
+				run.count = count;
+				run.dest = dest;
+				run.src = src;
+			} else {
+				// Self-overlapping ranges carry no work at all; counted separately
+				// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
+				DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
+			}
+		}
 		destOffset += count;
 		srcOffset += count;
 		if (destOffset == destRangeSize) {
@@ -553,6 +598,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			srcOffset = 0;
 		}
 	}
+	FlushDescriptorCopyRun(scope, run);
 	// One tally and one heap-version commit for the whole API call, after its
 	// last block.
 	FinishCopiedDescriptorCall(scope);
