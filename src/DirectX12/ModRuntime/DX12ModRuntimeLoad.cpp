@@ -1475,15 +1475,17 @@ bool DX12ModRuntimeLoad(
 		std::shared_ptr<const DX12StaticTextureReplacementTable>(
 			staticTextureReplacements),
 		std::memory_order_release);
-	InterlockedExchange(&gHasStaticTextureReplacements,
-		staticTextureReplacements->enabled ? 1 : 0);
+	// Release: a reader that observes the new flag must also observe the table
+	// and reload generation published just above it.
+	gHasStaticTextureReplacements.store(
+		staticTextureReplacements->enabled ? 1 : 0, std::memory_order_release);
 	DX12NoteStaticTextureReplacementTablePublished();
 	gStaticIaReplacementSnapshot.store(
 		std::shared_ptr<const DX12StaticIaReplacementTable>(
 			staticIaReplacements),
 		std::memory_order_release);
-	InterlockedExchange(&gHasStaticIaReplacements,
-		staticIaReplacements->enabled ? 1 : 0);
+	gHasStaticIaReplacements.store(
+		staticIaReplacements->enabled ? 1 : 0, std::memory_order_release);
 	gPreSkinTextureOverrides.swap(preSkinTextureOverrides);
 	gPreSkinMatchCsTextureOverrideIndex.swap(preSkinMatchCsTextureOverrideIndex);
 	gExplicitMatchCsResourceSections.swap(explicitMatchCsResourceSections);

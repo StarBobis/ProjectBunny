@@ -482,10 +482,6 @@ public:
 inline std::atomic<std::shared_ptr<const DX12StaticTextureReplacementTable>>
 	gStaticTextureReplacementSnapshot;
 
-// Low-cost gate mirroring the snapshot for hot paths that must not pay the
-// shared_ptr atomic load when no static replacement exists at all.
-inline volatile LONG gHasStaticTextureReplacements = 0;
-
 
 // Static IA replacement table (plan step 3.2): hash of the bound IB/VB
 // content -> the mod buffer that unconditionally replaces the binding. Only
@@ -509,9 +505,6 @@ public:
 
 inline std::atomic<std::shared_ptr<const DX12StaticIaReplacementTable>>
 	gStaticIaReplacementSnapshot;
-
-// Low-cost gate for the IASet bind hot path.
-inline volatile LONG gHasStaticIaReplacements = 0;
 
 
 inline std::shared_ptr<const DX12StaticIaReplacementTable>
@@ -2674,12 +2667,6 @@ bool DX12ResolveStaticTextureReplacementSrv(
 
 
 bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
-
-
-bool DX12HasStaticTextureReplacements();
-
-
-bool DX12HasStaticIaReplacements();
 
 
 // Bind-time static IA replacement (plan step 3.2). Resolves the mod buffer

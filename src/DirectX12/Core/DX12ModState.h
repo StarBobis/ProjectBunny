@@ -398,12 +398,37 @@ bool DX12ResolveStaticTextureReplacementSrv(
 // True when every descriptor-relevant hashed texture override is an
 // unconditional static replacement; gates the draw-path descriptor skip.
 bool DX12StaticTextureReplacementAllDescriptorOverridesStatic();
-// Cheap volatile gate so descriptor-copy hot paths can skip all patch work
-// when no static replacement table is active.
-bool DX12HasStaticTextureReplacements();
+
+// Write-time static replacement gates. The flags live here rather than in the
+// mod-runtime internals because the readers are the hook, wrapper and
+// presentation units (DX12ResourceTrackerHooks, DX12IaReplacement,
+// DX12WrapperRuntimeUtils), which reach this header through DX12Core.h but
+// must not pull the 4.8k-line DX12ModRuntimeInternal.h in to compare a flag
+// against zero. Declaration and definition share one file here, so the read is
+// a plain inline load at every call site: no caller pays a call for it, and a
+// build without LTCG cannot turn it back into one.
+//
+// Atomic rather than volatile because the config thread publishes them while
+// hook threads read them; relaxed loads and release stores are sufficient. The
+// flag is only a cheap gate over the snapshot table, and correctness is
+// carried by the reload generation bumped alongside every publish, so a stale
+// read costs a recomputation and never a wrong result.
+inline std::atomic<int> gHasStaticTextureReplacements{0};
+inline std::atomic<int> gHasStaticIaReplacements{0};
+
+// Cheap gate so descriptor-copy hot paths can skip all patch work when no
+// static replacement table is active.
+inline bool DX12HasStaticTextureReplacements()
+{
+	return gHasStaticTextureReplacements.load(std::memory_order_relaxed) != 0;
+}
+
 // Bind-time static IA replacement (plan step 3.2). Same gating idea for the
 // IASet bind hot path.
-bool DX12HasStaticIaReplacements();
+inline bool DX12HasStaticIaReplacements()
+{
+	return gHasStaticIaReplacements.load(std::memory_order_relaxed) != 0;
+}
 // Resolves the static geometry replacement for a bound IB/VB content hash.
 // Fills the replacement view the same way the draw-time path does; returns
 // false when there is no static replacement so the caller binds the

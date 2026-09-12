@@ -814,23 +814,10 @@ bool DX12StaticTextureReplacementAllDescriptorOverridesStatic()
 }
 
 
-bool DX12HasStaticTextureReplacements()
-{
-	// Plain volatile load, same rationale as DX12HasStaticIaReplacements
-	// below: the flag is published with interlocked stores and read on hot
-	// descriptor paths.
-	return gHasStaticTextureReplacements != 0;
-}
-
-
-bool DX12HasStaticIaReplacements()
-{
-	// Plain volatile load: the flag is published with interlocked stores and
-	// only ever read here, and this runs on every IA bind (the game binds
-	// vertex/index buffers hundreds of times per frame), so the LOCK CMPXCHG
-	// read-modify-write fence buys nothing.
-	return gHasStaticIaReplacements != 0;
-}
+// DX12HasStaticTextureReplacements / DX12HasStaticIaReplacements are inline in
+// Core/DX12ModState.h, next to the atomic gates they read. They live there so
+// the hook, wrapper and presentation units can use them without pulling the
+// mod-runtime internal header in, while the read is still guaranteed to inline.
 
 
 // TLS resolution cache entry. Within one reload generation the resolution of
