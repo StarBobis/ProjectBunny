@@ -128,7 +128,7 @@ inline constexpr DX12BuildStamp kDX12BuildStamp = {};
 // ============================================================================
 struct DX12ProfilingLayout
 {
-	static constexpr float kHudFontScale = 0.80f;
+	static constexpr float kHudFontScale = 0.72f;
 	static constexpr float kHudRowGapPx = 1.4f;
 	// The atlas cell in BuildFontAtlas, plus a pixel of external leading: the
 	// budget below assumes the taller of the two GDI metrics so it can only

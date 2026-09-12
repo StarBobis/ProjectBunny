@@ -473,8 +473,8 @@ struct DX12ProfilingFields
 class DX12ProfilingText
 {
 public:
-	// Name column of a ranked row. The fields after it are sized so the whole
-	// line fits the narrowest column budget the HUD publishes.
+	// Widest name field a ranked row uses; RowNameWidth() lowers it on a screen
+	// too narrow to spend this much on a name.
 	static constexpr int kRowNameWidth = 30;
 
 	// Returns the number of bytes written (excluding the terminator). The
@@ -532,6 +532,9 @@ private:
 	// the report goes through one of these, so the rule cannot drift between
 	// columns.
 	static void FormatUs(char *out, size_t capacity, LONG64 us);
+	// The same rule, compact ("252us" / "8.64ms"), for rows that also carry a
+	// bucket name.
+	static void FormatUsCompact(char *out, size_t capacity, LONG64 us);
 	static void FormatUsPerFrame(
 		char *out, size_t capacity, LONG64 totalUs, LONG frames);
 	static void FormatMs2(char *out, size_t capacity, LONG64 us);
@@ -604,8 +607,16 @@ private:
 	// "name <perFrame>/f x<calls>/f max <max> <flags>": the ranked-row format the
 	// Buckets and Counters pages share, so one bucket cannot be printed two ways
 	// on one screen.
-	static void CountRow(
-		char *out, size_t capacity, const DX12ProfilingRow &row, LONG frames);
+	static void CountRow(char *out, size_t capacity, const DX12ProfilingRow &row,
+		LONG frames, int width);
+	// "name <calls>/f <max> <flags>": the same idea for the Rm.* verification
+	// counters, whose per-frame number is a rate rather than a cost.
+	static void CounterRow(char *out, size_t capacity, const DX12ProfilingRow &row,
+		LONG frames, int width);
+	// Characters a ranked row can spend on its name, given the column budget the
+	// render thread measured. The name is what shrinks when the screen is narrow;
+	// the numbers never do.
+	static int RowNameWidth(int width);
 
 	// Page furniture. Every page starts with the same title block, so a
 	// screenshot says which page, which build and which window it is.
@@ -687,13 +698,26 @@ inline void DX12ProfilingText::Column::Line(const char *fmt, ...)
 		return;
 	va_list args;
 	va_start(args, fmt);
+	// A staged line is exactly one screen row: the renderer splits the report by
+	// newline and interleaves the columns row by row, so a newline inside a
+	// staged line would push every row of that column down by one and break the
+	// alignment of the whole page. Stripped rather than documented because that
+	// failure looks like a layout bug three functions away.
 	const int written = _vsnprintf_s(
 		text[count], static_cast<size_t>(maxChars) + 1, _TRUNCATE, fmt, args);
 	va_end(args);
-	// A cut line says so where it was cut: a number that lost its tail must not
-	// read as a number that was never there.
-	if (written < 0 && maxChars > 0)
+	if (written < 0 && maxChars > 0) {
+		// A cut line says so where it was cut: a number that lost its tail must
+		// not read as a number that was never there.
 		text[count][maxChars - 1] = '>';
+		text[count][maxChars] = '\0';
+	} else {
+		size_t length = strlen(text[count]);
+		while (length > 0 && (text[count][length - 1] == '\n' ||
+			text[count][length - 1] == '\r')) {
+			text[count][--length] = '\0';
+		}
+	}
 	++count;
 }
 
@@ -712,6 +736,21 @@ inline void DX12ProfilingText::FormatUs(char *out, size_t capacity, LONG64 us)
 		return;
 	}
 	_snprintf_s(out, capacity, _TRUNCATE, "%.2f ms", static_cast<double>(us) / 1000.0);
+}
+
+// The same rule without the space, for the ranked rows: there the unit has to
+// share the line with a name that is longer than any number on it.
+inline void DX12ProfilingText::FormatUsCompact(char *out, size_t capacity, LONG64 us)
+{
+	if (us <= 0) {
+		_snprintf_s(out, capacity, _TRUNCATE, "0us");
+		return;
+	}
+	if (us < 1000) {
+		_snprintf_s(out, capacity, _TRUNCATE, "%lldus", static_cast<long long>(us));
+		return;
+	}
+	_snprintf_s(out, capacity, _TRUNCATE, "%.2fms", static_cast<double>(us) / 1000.0);
 }
 
 inline void DX12ProfilingText::FormatUsPerFrame(
@@ -1299,12 +1338,19 @@ inline void DX12ProfilingText::BuildFrameColumn(
 // describes. Every page starts with it, which is why no page has to be
 // recognised by remembering which columns it had.
 // ----------------------------------------------------------------------------
+// Page furniture.
+//
+// The title is the part of a screenshot that has to survive being read hours
+// later: which page it is, which build produced it, and which window it
+// describes. Every page starts with it, and it is kept inside one screen line -
+// a title that gets cut is a title that hides the field the reader needs.
+// ----------------------------------------------------------------------------
 inline void DX12ProfilingText::PageTitle(
 	Emitter &e, const DX12ProfilingWindow &window)
 {
 	const DX12ProfilingHud::Mode mode = DX12ProfilingHud::GetMode();
 	e.Line("== page %d/%d %s == build %s | fps=%.1f frameWall=%.2fms (max %.2fms) | "
-		"present=%ld window=%ld frames (~%.0fms) | flags=0x%llx | F11 = next page\n",
+		"present=%ld window=%ldf/%.0fms | flags=0x%llx | F11 next\n",
 		DX12ProfilingHud::PageNumber(mode), DX12ProfilingHud::kPageCount,
 		DX12ProfilingHud::ModeName(mode), kDX12BuildStamp.text,
 		window.Fps(), window.FrameMs(), static_cast<double>(window.maxFrameWallUs) / 1000.0,
@@ -1348,8 +1394,8 @@ inline void DX12ProfilingText::OverviewTitle(
 			static_cast<double>(window.frameWallUs)
 		: 0.0;
 
-	e.Line("OUR TOTAL=%s (%.1f%% of frameWall, %ld of %ld rows) | ALL BUCKETS=%s "
-		"(%.1f%%, double-counted upper bound) | draws %ld/f | dispatch %ld/f%s\n",
+	e.Line("OUR TOTAL=%s (%.1f%% of frameWall, %ld/%ld rows) | ALL BUCKETS=%s "
+		"(%.1f%%, double counted) | draws %ld/f dispatch %ld/f%s\n",
 		ours, rootPct,
 		static_cast<long>(window.ourRootRows), static_cast<long>(window.ourAllRows),
 		all, allPct,
@@ -1357,34 +1403,49 @@ inline void DX12ProfilingText::OverviewTitle(
 		static_cast<long>(window.frameDispatches),
 		window.droppedFrameSummaries ? " | DROPPED FRAMES" : "");
 	e.Line("frameWall=%s | outsidePresent=%s | Present hook=%s (unknown %s) | "
-		"outsidePresent-OUR TOTAL=%s | time rows %u of %ld shown%s\n",
+		"outsidePresent-OUR TOTAL=%s | rows %u/%ld%s\n",
 		frameWall, outside, present, unknown, outsideMinus,
 		shownRows, static_cast<long>(window.ourAllRows),
 		window.ourRootUs > window.outsidePresentUs
-			? "  <-- our root total exceeds it: duplicate or parallel work" : "");
+			? "  <-- root > outside: duplicate or parallel work" : "");
 }
 
 inline void DX12ProfilingText::OverviewLegend(Emitter &e)
 {
 	UnitsLegend(e);
-	e.Line("OUR TOTAL = every top-level scope once (nested rows excluded; the game's "
-		"own Present/Wait and idle waits excluded) | ALL BUCKETS = all rows summed = "
-		"double-counted upper bound, >100%% is normal\n");
+	e.Line("OUR TOTAL = top-level scopes once (nested excluded, game's Present/Wait "
+		"excluded) | ALL BUCKETS = every row summed, double counted, >100%% normal\n");
 }
 
 inline void DX12ProfilingText::UnitsLegend(Emitter &e)
 {
-	e.Line("units: <1000us -> \"us\", >=1000us -> \"x.xx ms\" | /f = per frame (window "
-		"total / frames) | xN = calls per frame | ! = max >= 1000us | ~ = fully nested "
-		"(counts in its parent, not in OUR TOTAL) | \">\" = line cut at this column's "
-		"width\n");
+	e.Line("units: <1000us -> us, >=1000us -> x.xx ms | /f = per frame | xN = calls/frame | "
+		"! max >= 1ms | ~ fully nested | > line cut at column width\n");
 }
 
 // ----------------------------------------------------------------------------
 // Ranked rows.
+//
+// Same numbers, two shapes: a duration first (the Buckets page, which ranks by
+// cost) or a rate first (the Rm.* counters, which are about how often a gate
+// fires). Both are sized against the column budget the render thread measured,
+// and what gives way on a narrow screen is the name field - never a number.
 // ----------------------------------------------------------------------------
-inline void DX12ProfilingText::CountRow(
-	char *out, size_t capacity, const DX12ProfilingRow &row, LONG frames)
+inline int DX12ProfilingText::RowNameWidth(int width)
+{
+	// " " + per-frame + calls + peak + flags is 24 columns with the compact
+	// units; the name gets the rest, between a readable floor and the ceiling
+	// that keeps every page's rows aligned.
+	int nameWidth = width - 24;
+	if (nameWidth > kRowNameWidth)
+		nameWidth = kRowNameWidth;
+	if (nameWidth < 12)
+		nameWidth = 12;
+	return nameWidth;
+}
+
+inline void DX12ProfilingText::CountRow(char *out, size_t capacity,
+	const DX12ProfilingRow &row, LONG frames, int width)
 {
 	if (!out || capacity < 8)
 		return;
@@ -1392,12 +1453,29 @@ inline void DX12ProfilingText::CountRow(
 	char perFrame[16] = {};
 	char maxUs[16] = {};
 	char flags[4] = {};
-	FormatUs(perFrame, sizeof(perFrame), row.totalUs / divisor);
-	FormatUs(maxUs, sizeof(maxUs), row.maxUs);
+	FormatUsCompact(perFrame, sizeof(perFrame), row.totalUs / divisor);
+	FormatUsCompact(maxUs, sizeof(maxUs), row.maxUs);
 	RowFlags(flags, sizeof(flags), row);
-	_snprintf_s(out, capacity, _TRUNCATE, "%-*.*s %8s/f x%-5lld max %8s %s",
-		kRowNameWidth, kRowNameWidth, row.name ? row.name : "?",
+	const int nameWidth = RowNameWidth(width);
+	_snprintf_s(out, capacity, _TRUNCATE, "%-*.*s %6s/f x%-4lld %6s %s",
+		nameWidth, nameWidth, row.name ? row.name : "?",
 		perFrame, static_cast<long long>(row.calls) / divisor, maxUs, flags);
+}
+
+inline void DX12ProfilingText::CounterRow(char *out, size_t capacity,
+	const DX12ProfilingRow &row, LONG frames, int width)
+{
+	if (!out || capacity < 8)
+		return;
+	const LONG divisor = frames > 0 ? frames : 1;
+	char maxUs[16] = {};
+	char flags[4] = {};
+	FormatUsCompact(maxUs, sizeof(maxUs), row.maxUs);
+	RowFlags(flags, sizeof(flags), row);
+	const int nameWidth = RowNameWidth(width);
+	_snprintf_s(out, capacity, _TRUNCATE, "%-*.*s %7lld/f %6s %s",
+		nameWidth, nameWidth, row.name ? row.name : "?",
+		static_cast<long long>(row.calls) / divisor, maxUs, flags);
 }
 
 inline void DX12ProfilingText::EmitColumns(
@@ -1421,9 +1499,9 @@ inline void DX12ProfilingText::EmitColumns(
 // Page 1: where the frame went.
 //
 // Left ranks the scopes we time, middle answers "what share of the frame is
-// each domain", and right carries the work that happens once per Present. This
-// is the page a screenshot is taken from: it answers "is the mod the reason
-// this frame is slow" without opening the log.
+// each domain", right carries the work that happens once per Present. This is
+// the page a screenshot is taken from: it answers "is the mod the reason this
+// frame is slow" without opening the log.
 // ----------------------------------------------------------------------------
 inline void DX12ProfilingText::FormatOverview(
 	Emitter &e, const Page &page, const DX12ProfilingWindow &window,
@@ -1452,8 +1530,8 @@ inline void DX12ProfilingText::FormatOverview(
 // ----------------------------------------------------------------------------
 // Page 2: every bucket, ranked.
 //
-// The whole table on one screen, cut into three equal runs rather than dealt
-// out round-robin: column 0 holds the most expensive buckets, and reading down a
+// The whole table on one screen, cut into three equal runs rather than dealt out
+// round-robin: column 0 holds the most expensive buckets, and reading down a
 // column and on to the next keeps the ranking monotone. A section header is
 // emitted where the domain changes inside a column, not once per domain - the
 // ranking is global, so a domain's rows are not adjacent.
@@ -1472,25 +1550,27 @@ inline void DX12ProfilingText::FormatBuckets(
 
 	const LONG frames = window.FrameDivisor();
 	const int perColumn = page.rows > 0 ? page.rows : 1;
-	const UINT capacity = static_cast<UINT>(perColumn) * Layout::kColumnCount;
+	const UINT capacity = static_cast<UINT>(perColumn) *
+		static_cast<UINT>(Layout::kColumnCount);
 	const UINT total = rowCount < capacity ? rowCount : capacity;
 	const char *openDomain[Layout::kColumnCount] = {};
 	for (UINT i = 0; i < total; ++i) {
 		const int index = static_cast<int>(i) / perColumn;
-		Column &target = *columns[index < Layout::kColumnCount
-			? index : Layout::kColumnCount - 1];
+		if (index >= Layout::kColumnCount)
+			break;
+		Column &target = *columns[index];
 		if (target.Full())
 			continue;
 		const char *domain = DomainOf(rows[i].name);
 		if (domain && strcmp(domain, openDomain[index] ? openDomain[index] : "") != 0) {
 			if (target.Room() > 1) {
-				target.Line("%s\n", domain);
+				target.Line("%s", domain);
 				openDomain[index] = domain;
 			}
 		}
 		char line[192] = {};
-		CountRow(line, sizeof(line), rows[i], frames);
-		target.Line("%s\n", line);
+		CountRow(line, sizeof(line), rows[i], frames, target.maxChars);
+		target.Line("%s", line);
 	}
 
 	EmitColumns(e, &left, &middle, &right);
@@ -1500,7 +1580,7 @@ inline void DX12ProfilingText::FormatBuckets(
 // Page 3: counters and the per-frame one-shot costs.
 //
 // Left is what a frame costs besides the buckets, middle is the counters that
-// carry item counts (bytes, slots, descriptors) and the plain window tallies,
+// carry item counts (bytes, slots, descriptors) plus the plain window tallies,
 // right is the Rm.* verification counters - the ones that say whether a
 // replacement gate is doing its job - ranked by how often they fire rather than
 // by how much time they took.
@@ -1527,9 +1607,9 @@ inline void DX12ProfilingText::FormatCounters(
 		FormatUsPerFrame(original, sizeof(original), window.presentOriginalUs, frames);
 		FormatUsPerFrame(overlay, sizeof(overlay), window.presentOtherUs, frames);
 		FormatUsPerFrame(hud, sizeof(hud), window.presentOverlayTextUs, frames);
-		left.Line("one-shot per frame\n");
-		left.Line("present %10s | original %10s\n", total, original);
-		left.Line("        overlay %10s | hud %10s\n", overlay, hud);
+		left.Line("one-shot per frame");
+		left.Line("present %10s | original %10s", total, original);
+		left.Line("        overlay %10s | hud %10s", overlay, hud);
 	}
 	{
 		char capture[16] = {}, uiAct[16] = {}, counters[16] = {}, postRun[16] = {};
@@ -1541,8 +1621,8 @@ inline void DX12ProfilingText::FormatCounters(
 			window.presentFrameCountersUs, frames);
 		FormatUsPerFrame(postRun, sizeof(postRun),
 			window.presentPostOriginalRuntimeUs, frames);
-		left.Line("        capture %10s | uiAct %10s\n", capture, uiAct);
-		left.Line("        counters %9s | postRun %9s\n", counters, postRun);
+		left.Line("        capture %10s | uiAct %10s", capture, uiAct);
+		left.Line("        counters %9s | postRun %9s", counters, postRun);
 	}
 	{
 		char modBegin[16] = {}, unexplained[16] = {};
@@ -1550,7 +1630,7 @@ inline void DX12ProfilingText::FormatCounters(
 			window.presentModBeginFrameUs, frames);
 		FormatUsPerFrame(unexplained, sizeof(unexplained),
 			window.presentWallMinusKnownUs, frames);
-		left.Line("        modBegin %9s | unexplained %9s\n", modBegin, unexplained);
+		left.Line("        modBegin %9s | unexplained %9s", modBegin, unexplained);
 	}
 	{
 		char total[16] = {}, signal[16] = {}, wait[16] = {}, original[16] = {};
@@ -1558,9 +1638,9 @@ inline void DX12ProfilingText::FormatCounters(
 		FormatUsPerFrame(signal, sizeof(signal), window.queueSignalUs, frames);
 		FormatUsPerFrame(wait, sizeof(wait), window.queueWaitUs, frames);
 		FormatUsPerFrame(original, sizeof(original), window.queueOriginalUs, frames);
-		left.Line("queue   %10s | signal %10s\n", total, signal);
-		left.Line("        wait %10s | original %10s\n", wait, original);
-		left.Line("        calls %5lld/f | lists %5lld/f\n",
+		left.Line("queue   %10s | signal %10s", total, signal);
+		left.Line("        wait %10s | original %10s", wait, original);
+		left.Line("        calls %5lld/f | lists %5lld/f",
 			static_cast<long long>(window.queueWallCalls) / frames,
 			static_cast<long long>(window.queueWallCommandLists) / frames);
 	}
@@ -1569,13 +1649,13 @@ inline void DX12ProfilingText::FormatCounters(
 		FormatUsPerFrame(fences, sizeof(fences), window.fenceTotalUs, frames);
 		FormatUsPerFrame(events, sizeof(events), window.eventWaitTotalUs, frames);
 		FormatUsPerFrame(sys, sizeof(sys), window.systemWaitTotalUs, frames);
-		left.Line("fences  %5lld calls | %10s\n",
+		left.Line("fences  %5lld calls | %10s",
 			static_cast<long long>(window.fenceCalls) / frames, fences);
-		left.Line("eventW  %5lld calls | %10s\n",
+		left.Line("eventW  %5lld calls | %10s",
 			static_cast<long long>(window.eventWaitCalls) / frames, events);
 		// Not our locks: the game's own thread waits, shown so a frame that is
 		// slow because a worker sat on a wait is not read as our cost.
-		left.Line("sysW    %5lld calls | %10s  (thread waits)\n",
+		left.Line("sysW    %5lld calls | %10s  (thread waits)",
 			static_cast<long long>(window.systemWaitCalls) / frames, sys);
 	}
 	{
@@ -1583,38 +1663,38 @@ inline void DX12ProfilingText::FormatCounters(
 		FormatUsPerFrame(tasks, sizeof(tasks), window.workerTaskUs, frames);
 		FormatUsPerFrame(idle, sizeof(idle), window.workerIdleWaitUs, frames);
 		FormatUsPerFrame(drain, sizeof(drain), window.workerDrainWaitUs, frames);
-		left.Line("worker  %5lld tasks | %10s\n",
+		left.Line("worker  %5lld tasks | %10s",
 			static_cast<long long>(window.workerTaskCalls) / frames, tasks);
-		left.Line("        idle %10s | drain %10s\n", idle, drain);
+		left.Line("        idle %10s | drain %10s", idle, drain);
 	}
 	{
 		char flush[16] = {};
 		FormatUsPerFrame(flush, sizeof(flush),
 			window.presentProfilingFlushUs + window.presentFrameCountersUs, frames);
-		left.Line("frame   wall %6.2fms | outside %6.2fms | max %6.2fms\n",
+		left.Line("frame   wall %7.2fms | outside %7.2fms | max %7.2fms",
 			static_cast<double>(window.frameWallUs) /
 				static_cast<double>(frames) / 1000.0,
 			static_cast<double>(window.outsidePresentUs) /
 				static_cast<double>(frames) / 1000.0,
 			static_cast<double>(window.maxFrameWallUs) / 1000.0);
-		left.Line("timing  %10s/frame (this report is not free)\n", flush);
+		left.Line("timing  %10s/frame (this report is not free)", flush);
 	}
 
-	middle.Line("window tallies\n");
-	middle.Line("draws %ld/f | dispatches %ld/f | lists %lld/f\n",
+	const int nameWidth = RowNameWidth(middle.maxChars);
+	middle.Line("window tallies");
+	middle.Line("draws %ld/f | dispatches %ld/f | lists %lld/f",
 		static_cast<long>(window.frameDraws), static_cast<long>(window.frameDispatches),
 		static_cast<long long>(window.queueWallCommandLists) / frames);
-	middle.Line("present enter %lld | leave %lld\n",
+	middle.Line("present enter %lld | leave %lld",
 		static_cast<long long>(window.presentEnterCalls),
 		static_cast<long long>(window.presentLeaveCalls));
-	middle.Line("queue stage samples %lld | worker idle waits %lld\n",
+	middle.Line("queue stage samples %lld | worker idle waits %lld",
 		static_cast<long long>(window.queueExecuteStageSamples),
 		static_cast<long long>(window.workerWaitCalls));
-	middle.Line("dropped frame summaries %ld\n",
+	middle.Line("dropped frame summaries %ld",
 		static_cast<long>(window.droppedFrameSummaries));
-	middle.Line("counters with items (ranked by items per frame)\n");
-	middle.Line("%-*.*s %8s/f %7s/f\n", kRowNameWidth, kRowNameWidth,
-		"counter", "items", "calls");
+	middle.Line("counters with items (ranked by items per frame)");
+	middle.Line("%-*.*s %8s/f %7s/f", nameWidth, nameWidth, "counter", "items", "calls");
 	// `rows` arrives ranked by total time, but this column is about item counts -
 	// bytes, slots, lists, descriptors - so it selects the buckets that carry one
 	// and ranks them by it. Without that it would just restate page 2.
@@ -1629,19 +1709,17 @@ inline void DX12ProfilingText::FormatCounters(
 		[](const DX12ProfilingRow *lhs, const DX12ProfilingRow *rhs) {
 			return lhs->items > rhs->items;
 		});
-	if (!selectedCount) {
-		middle.Line("  (this window recorded no item counts)\n");
-	}
+	if (!selectedCount)
+		middle.Line("  (this window recorded no item counts)");
 	for (UINT i = 0; i < selectedCount && !middle.Full(); ++i) {
-		middle.Line("%-*.*s %8lld %7lld\n", kRowNameWidth, kRowNameWidth,
+		middle.Line("%-*.*s %8lld %7lld", nameWidth, nameWidth,
 			selected[i]->name ? selected[i]->name : "?",
 			static_cast<long long>(selected[i]->items) / frames,
 			static_cast<long long>(selected[i]->calls) / frames);
 	}
 
-	right.Line("verification counters (Rm.*, ranked by calls)\n");
-	right.Line("%-*.*s %8s/f %8s\n", kRowNameWidth, kRowNameWidth,
-		"counter", "calls", "max");
+	right.Line("verification counters (Rm.*, ranked by calls)");
+	right.Line("%-*.*s %8s/f %6s", nameWidth, nameWidth, "counter", "calls", "max");
 	selectedCount = 0;
 	for (UINT i = 0; i < rowCount && selectedCount < kMaxSelected; ++i) {
 		if (rows[i].name && StartsWith(rows[i].name, "Rm."))
@@ -1651,21 +1729,17 @@ inline void DX12ProfilingText::FormatCounters(
 		[](const DX12ProfilingRow *lhs, const DX12ProfilingRow *rhs) {
 			return lhs->calls > rhs->calls;
 		});
-	if (!selectedCount) {
-		right.Line("  (no Rm.* counter fired in this window)\n");
-	}
+	if (!selectedCount)
+		right.Line("  (no Rm.* counter fired in this window)");
 	for (UINT i = 0; i < selectedCount && !right.Full(); ++i) {
-		char maxUs[16] = {};
-		char flags[4] = {};
-		FormatUs(maxUs, sizeof(maxUs), selected[i]->maxUs);
-		RowFlags(flags, sizeof(flags), *selected[i]);
-		right.Line("%-*.*s %8lld %8s %s\n", kRowNameWidth, kRowNameWidth,
-			selected[i]->name ? selected[i]->name : "?",
-			static_cast<long long>(selected[i]->calls) / frames, maxUs, flags);
+		char line[192] = {};
+		CounterRow(line, sizeof(line), *selected[i], frames, right.maxChars);
+		right.Line("%s", line);
 	}
 
 	EmitColumns(e, &left, &middle, &right);
 }
+
 
 // Domain of a bucket name: the prefix up to the first dot, which is what the
 // section headers on page 2 group by. Names without a dot are plain scopes.
