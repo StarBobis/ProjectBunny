@@ -3,6 +3,7 @@
 // Simulate-context draw/compute templates and resolved runtime state.
 // Split out of Core/DX12CommandState.h; include that umbrella header from existing code.
 #include "../DX12Diagnostics.h"
+#include "DX12IaHashCaches.h"
 
 class DX12SimulateContextDrawTemplate
 {
@@ -93,32 +94,9 @@ public:
 	// has no override candidate" is a property of the bound buffer views alone
 	// (DX11: hash saved at bind time, map lookup miss ends the draw). Caching it
 	// here lets every draw that shares the same IA bindings skip the whole
-	// per-draw candidate chain.
-	class IaStateNegativeCache
-	{
-	public:
-		bool valid = false;
-		bool noCandidate = false;
-		UINT64 iaEpoch = 0;
-		UINT64 iaContentEpoch = 0;
-		// Global buffer-content generation: per-list iaContentEpoch misses
-		// content written by other lists / Map, which would otherwise leave
-		// a stale "no candidate" verdict across list Reset (missing mesh
-		// replacement on shadow passes after scene transitions).
-		UINT64 bufferContentGeneration = 0;
-		UINT64 reloadGeneration = 0;
-		UINT64 targetPlanFingerprint = 0;
-		// Active pre-skin section generation. The verdict reads
-		// GetActivePreSkinSectionsSnapshot() whenever a candidate's config is
-		// gated on match_cs, and that generation is bumped independently of
-		// iaEpoch / iaContentEpoch - without this term a verdict proven before a
-		// pre-skin section became active keeps answering "no candidate" and the
-		// override is skipped.
-		UINT64 preSkinGeneration = 0;
-		ID3D12PipelineState *pipelineState = nullptr;
-	};
-
-	IaStateNegativeCache iaStateNegative;
+	// per-draw candidate chain. Keyed on those views rather than on the IA
+	// mutation epoch - see DX12IaStateNegativeSignature.
+	DX12IaStateNegativeCache iaStateNegative;
 
 	DX12IaHashStateCache iaHashStateCache;
 	// Direct-target and full-target key prefixes. Resolved IA resources carry

@@ -318,6 +318,14 @@ public:
 		// state. Declaring it as a value here cost a full DX12SimulateContext
 		// (~111KB of plain arrays) of zero-initialisation on every pre-skin
 		// candidate dispatch, for a fallback the wrapper path never takes.
+		//
+		// The budget below is a stack limit rather than a taste call: this
+		// object is frame-resident, the thread that reaches it has a 1MB stack,
+		// and a member that pushed the frame past it is exactly how the IA-state
+		// negative cache took startup down with c00000fd. Shrink the offending
+		// member instead of raising this.
+		static_assert(sizeof(DX12SimulateContext) <= 256 * 1024,
+			"DX12SimulateContext is frame-resident in the dispatch hook");
 		std::optional<DX12SimulateContext> fallbackState;
 		DX12SimulateContext *effectiveState = runtimeState;
 		if (!effectiveState) {

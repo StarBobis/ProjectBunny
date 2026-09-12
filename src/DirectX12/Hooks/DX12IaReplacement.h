@@ -1980,19 +1980,32 @@ public:
 		    directTargetPlan.HasIaTargets() &&
 		    !directTargetPlan.hasDescriptorTargets &&
 		    !DX12ModIaPrefilterCountSensitive()) {
-			DX12SimulateContextDrawTemplate::IaStateNegativeCache &iaNeg =
+			DX12IaStateNegativeCache &iaNeg =
 				mutableRuntimeState->resolvedDraw.iaStateNegative;
-			const UINT64 iaPlanFingerprint = directTargetPlan.Fingerprint();
-			if (iaNeg.valid &&
-			    iaNeg.iaEpoch == runtimeState.iaEpoch &&
-			    iaNeg.iaContentEpoch == runtimeState.iaContentEpoch &&
-			    iaNeg.bufferContentGeneration == DX12GetIaHashContentGeneration() &&
-			    iaNeg.reloadGeneration == drawDecision->reloadGeneration &&
-			    iaNeg.targetPlanFingerprint == iaPlanFingerprint &&
-			    iaNeg.preSkinGeneration == preSkinGeneration &&
-			    iaNeg.pipelineState == runtimeState.pipelineState) {
+			// The verdict below reads the resolved hashes of the bound views
+			// and probes the compiled prefilter tables. Both are functions of
+			// (view metadata, plan, indexed, active pre-skin sections, reload
+			// generation), so the signature is that dependency set rather than
+			// the IA mutation epoch - which restarts at 1 on every command-list
+			// Reset and therefore threw away a verdict the game re-records
+			// identically every frame.
+			const DX12IaStateNegativeSignature iaNegSignature =
+				MakeIaStateNegativeSignature(
+					runtimeState.ia,
+					directTargetPlan,
+					draw.indexed,
+					drawDecision->reloadGeneration,
+					preSkinGeneration,
+					DX12GetIaHashResolveGeneration());
+			const DX12IaStateNegativeCache::Entry *iaNegHit =
+				DX12IaStateNegativeCache::Find(iaNeg, iaNegSignature);
+			if (iaNegHit) {
 				DX12_PROF_COUNT("Rm.IaNegCacheHit");
-				if (iaNeg.noCandidate) {
+				// Any entry in the table was proven by the same dependency
+				// walk performed by a cached noCandidate verdict, so only the
+				// "no candidate" answer may end the draw here; a candidate
+				// verdict still has to run the authoritative match path.
+				if (iaNegHit->noCandidate) {
 					StoreBoundDrawNegative();
 					DX12_PROF_STAGE_END(DrawOverride);
 					return false;
@@ -2010,15 +2023,10 @@ public:
 					DX12_PROF_COUNT("Rm.IaNegVerdictNegative");
 				else
 					DX12_PROF_COUNT("Rm.IaNegVerdictCandidate");
-				iaNeg.valid = true;
-				iaNeg.noCandidate = noCandidate;
-				iaNeg.iaEpoch = runtimeState.iaEpoch;
-				iaNeg.iaContentEpoch = runtimeState.iaContentEpoch;
-				iaNeg.bufferContentGeneration = DX12GetIaHashContentGeneration();
-				iaNeg.reloadGeneration = drawDecision->reloadGeneration;
-				iaNeg.targetPlanFingerprint = iaPlanFingerprint;
-				iaNeg.preSkinGeneration = preSkinGeneration;
-				iaNeg.pipelineState = runtimeState.pipelineState;
+				// Counts admitted entries, not verifications: a later hit with
+				// noCandidate == false still runs the full match path.
+				DX12_PROF_COUNT("Rm.IaNegVerdictCacheStores");
+				DX12IaStateNegativeCache::Store(&iaNeg, iaNegSignature, noCandidate);
 				if (noCandidate) {
 					StoreBoundDrawNegative();
 					DX12_PROF_STAGE_END(DrawOverride);

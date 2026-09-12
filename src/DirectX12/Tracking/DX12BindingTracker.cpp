@@ -80,6 +80,30 @@ static bool RuntimeSlotIdentityMatches(
 		currentValueId == cachedValueId;
 }
 
+// Every observed slot stores its root parameter, so "the snapshot can be
+// re-validated on another descriptor heap" is exactly "every observed root is
+// currently live and re-resolvable". The mod rebinds the root tables it
+// patched immediately after SyncDescriptorHeaps, so this holds even though
+// SetDescriptorHeaps cleared every table between the two dispatches.
+// Read-only: the actual slot resolution (and its own counters) stays in the
+// validation loop below.
+static bool RuntimeObservedRootsResolvable(
+	const DX12SimulateContext *runtimeState,
+	const DX12SimulateContextComputeTemplate &cache)
+{
+	for (const DX12SimulateContextComputeTemplate::RuntimeObservedSlot
+			&observed : cache.bindingsObservedSlots) {
+		if (observed.root >= MaxRootParameters)
+			return false;
+		const RootTableState &table =
+			runtimeState->computeRootTables[observed.root];
+		if (!table.valid || !table.runtimeHeapResolved ||
+				table.runtimeHeapIncrement == 0)
+			return false;
+	}
+	return true;
+}
+
 static bool RuntimeResolveHeapRecord(
 	const RootTableState &table,
 	UINT slot,
@@ -257,19 +281,44 @@ static bool TryGetRuntimePreSkinBindings(
 	bool *foundAny)
 {
 	(void)computeBindingSerial;
-	// Diagnostics: the guard below is the original conjunction, same term
-	// order and same short-circuit, but each term carries its own counter so a
-	// single window of counters names the term that blocks the resident
-	// snapshot from ever being published.
+	// Diagnostics: the guards below are the conditions the resident snapshot
+	// must satisfy, each carrying its own counter so a single window of
+	// counters names the term that blocks the snapshot from ever being
+	// published.
 	if (!runtimeState)
 		return false; // Uncounted: both call sites null-check the state.
 	if (!runtimeState->resolvedCompute.bindingsValid) {
 		DX12_PROF_COUNT("Rm.PreSkinValidateNoBindings");
 		return false;
 	}
-	if (runtimeState->resolvedCompute.bindingsHeap !=
-			runtimeState->cbvSrvUavHeap) {
+	// Descriptor-heap identity is binding *location*, not binding content, and
+	// only this codebase rotates it under its own feet: the mod's
+	// SyncDescriptorHeaps (ModRuntime/DX12DrawSrvReplacementUtils.h:215-239 ->
+	// DX12CommandListRuntime::SetDescriptorHeaps) swaps the bound CBV/SRV/UAV
+	// heap ~6 times per frame to run a patched dispatch, and SetDescriptorHeaps
+	// clears every root table + rewrites the table bases whenever the identity
+	// changes. The snapshot taken on the game's heap was therefore rejected by
+	// a bare pointer compare on the very next dispatch (measured 24.3/frame),
+	// even though the game had already re-bound its tables and every observed
+	// slot still held the same descriptor content.
+	//
+	// So: heap equality alone no longer decides. When the observed roots have
+	// been re-bound (every one live and heap-resolved), the observed slots are
+	// re-read at their CURRENT table locations - the loop below already does
+	// exactly that whenever the table bases moved - and only a genuine content
+	// change (valueId) still fails. When re-binding is not possible the heap
+	// change is still a hard failure under the original counter name, plus
+	// Rm.PreSkinValidateHeapRelocUnresolvable to name the reason.
+	const bool heapMigrated =
+		runtimeState->resolvedCompute.bindingsHeap !=
+			runtimeState->cbvSrvUavHeap;
+	const bool heapMigrationUnresolvable = heapMigrated &&
+		(!runtimeState->cbvSrvUavHeap ||
+			!RuntimeObservedRootsResolvable(
+				runtimeState, runtimeState->resolvedCompute));
+	if (heapMigrationUnresolvable) {
 		DX12_PROF_COUNT("Rm.PreSkinValidateHeap");
+		DX12_PROF_COUNT("Rm.PreSkinValidateHeapRelocUnresolvable");
 		return false;
 	}
 	if (runtimeState->resolvedCompute.bindingsRootSignature !=
@@ -311,7 +360,11 @@ static bool TryGetRuntimePreSkinBindings(
 		}
 		// A rotated table invalidates the "no descriptor writes since last
 		// check" shortcut: the new slots were never validated, so their
-		// content must be read even when the global serial is unchanged.
+		// content must be read even when the global serial is unchanged. The
+		// same applies to a heap migration: the cached slots are locations on
+		// the *old* heap, so they must be re-read at the current locations even
+		// if a table base happens to land on the cached address again (GPU
+		// ranges of distinct heaps may coincide).
 		bool tablesUnchanged = true;
 		for (size_t index = 0; index < observedCount; ++index) {
 			const UINT root = cache.bindingsObservedSlots[index].root;
@@ -328,8 +381,9 @@ static bool TryGetRuntimePreSkinBindings(
 		}
 		const UINT64 descriptorQuerySerialBefore =
 			CurrentDescriptorQuerySerial();
-		if (cache.bindingsDescriptorQuerySerial !=
-				descriptorQuerySerialBefore ||
+		if (heapMigrated ||
+				cache.bindingsDescriptorQuerySerial !=
+					descriptorQuerySerialBefore ||
 				!tablesUnchanged) {
 			std::array<DescriptorHeapRecord::StateLocks*,
 				MaxRootParameters> stateLocksByRoot = {};
@@ -400,6 +454,12 @@ static bool TryGetRuntimePreSkinBindings(
 				cache.bindingsRootTableBases[root] =
 					runtimeState->computeRootTables[root].baseDescriptor.ptr;
 			}
+			// The observed slots were just proven to hold the cached content at
+			// their current locations, so the snapshot now describes the heap
+			// actually bound to this command list. Re-record the identity or
+			// every later validation would migrate again for nothing.
+			if (heapMigrated)
+				cache.bindingsHeap = runtimeState->cbvSrvUavHeap;
 			}
 	}
 
