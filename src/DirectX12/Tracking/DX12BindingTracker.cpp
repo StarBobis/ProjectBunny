@@ -117,15 +117,44 @@ static bool RuntimeResolveHeapRecord(
 	const SIZE_T cpuHandle = table.runtimeHeapCpuStart +
 		static_cast<SIZE_T>(slot) * table.runtimeHeapIncrement;
 	DX12DescriptorHeapShadowUtils::ResolvedHeapSlot resolved = {};
-	if (!DX12DescriptorHeapShadowUtils::HeapCacheLookup(
+	if (DX12DescriptorHeapShadowUtils::HeapCacheLookup(
 			cpuHandle,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-			&resolved) ||
-			resolved.slot != slot ||
-			!resolved.heap || !resolved.heap->stateLocks)
-		return false;
-	*stateLocks = resolved.heap->stateLocks.get();
-	return true;
+			&resolved) &&
+			resolved.slot == slot &&
+			resolved.heap && resolved.heap->stateLocks) {
+		*stateLocks = resolved.heap->stateLocks.get();
+		return true;
+	}
+	// The set-associative cache is a cache: a slot whose handle no longer has an
+	// entry (the game re-creates or re-binds its descriptor rings, which changes
+	// every handle) must not be reported as "a dangling heap record". This call
+	// used to be the only lookup, so a cache miss failed the whole snapshot
+	// validation (measured: the largest single rejection term, 2398 of 3813
+	// probes in a window) even though the record was reachable through the
+	// authoritative resolve. Fall back to it rather than reject, and keep the
+	// pre-fallback miss visible so a genuine dangling record is still countable.
+	{
+		size_t heapIndex = 0;
+		UINT resolvedSlot = 0;
+		if (!DX12DescriptorHeapShadowUtils::ResolveHeapSlot(
+				cpuHandle,
+				D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+				&heapIndex,
+				&resolvedSlot) ||
+				resolvedSlot != slot) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateHeapRecordUnresolved");
+			return false;
+		}
+		DX12_PROF_COUNT("Rm.PreSkinValidateHeapRecordCacheMiss");
+		DescriptorHeapRecord &heap = gDescriptorHeaps[heapIndex];
+		if (!heap.stateLocks || !heap.stateLocks->IsActive()) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateHeapRecordUnresolved");
+			return false;
+		}
+		*stateLocks = heap.stateLocks.get();
+		return true;
+	}
 }
 
 static bool RuntimeReadSlotIdentitiesFast(
@@ -180,10 +209,31 @@ static bool RuntimeDescriptorRootsMatch(
 		const RootDescriptorState &descriptor =
 			runtimeState->computeRootDescriptors[root];
 		const bool valid = descriptor.valid;
-		if (valid != cache.bindingsRootValid[root])
+		// Only the roots the snapshot actually recorded may be compared. A
+		// snapshot records a root by storing valid=true for it, so a root whose
+		// recorded flag is false was either invalid at collection time or never
+		// observed at all - and the two are indistinguishable here. Treating
+		// "not recorded" as "recorded absent" is what made this predicate fail
+		// on a state that had not changed: with the used mask unavailable
+		// (checkAll) every unused root parameter was compared against a default
+		// slot, so the validation could never pass and every dispatch fell
+		// through to the full collector (measured: 3442 probes, 0 hits, 40.6 ms
+		// of collect_bindings per window). The counters below keep both cases
+		// visible, so a genuine "a root was set without re-collecting" is still
+		// reported rather than silently accepted.
+		if (!cache.bindingsRootValid[root]) {
+			if (valid)
+				DX12_PROF_COUNT("Rm.PreSkinValidateRootAddedUnobserved");
+			continue;
+		}
+		if (!valid) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateRootDescriptor");
 			return false;
-		if (valid && descriptor.address != cache.bindingsRootIdentities[root])
+		}
+		if (descriptor.address != cache.bindingsRootIdentities[root]) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateRootDescriptor");
 			return false;
+		}
 	}
 	return true;
 }
@@ -203,13 +253,21 @@ static bool RuntimeConstantsMatch(
 			return false;
 		const RootConstantsState &current =
 			runtimeState->computeRootConstants[root];
-		if (!current.valid ||
-				current.maxSet != cached.maxSet ||
-				memcmp(current.values, cached.values,
-					sizeof(current.values)) != 0 ||
-				memcmp(current.valueValid, cached.valueValid,
-					sizeof(current.valueValid)) != 0)
+		if (!current.valid) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateConstantsInvalid");
 			return false;
+		}
+		if (current.maxSet != cached.maxSet) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateConstantsMaxSet");
+			return false;
+		}
+		if (memcmp(current.values, cached.values,
+				sizeof(current.values)) != 0 ||
+			memcmp(current.valueValid, cached.valueValid,
+				sizeof(current.valueValid)) != 0) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateConstantsValues");
+			return false;
+		}
 	}
 	// A used root that gained constants absent from the cache invalidates it.
 	for (UINT root = 0; root < MaxRootParameters; ++root) {
@@ -225,8 +283,10 @@ static bool RuntimeConstantsMatch(
 				break;
 			}
 		}
-		if (!found)
+		if (!found) {
+			DX12_PROF_COUNT("Rm.PreSkinValidateConstantsAdded");
 			return false;
+		}
 	}
 	return true;
 }
@@ -288,7 +348,20 @@ static bool TryGetRuntimePreSkinBindings(
 	if (!runtimeState)
 		return false; // Uncounted: both call sites null-check the state.
 	if (!runtimeState->resolvedCompute.bindingsValid) {
+		// Two different situations share this guard, and they need different
+		// fixes: a snapshot that already collected nothing (empty) means the
+		// dispatch has no bindings to reuse and the collector is the only way
+		// forward, while a snapshot that the validator itself rejected as
+		// invalid is a genuine "the live bindings moved" and must re-collect.
+		// Only the pointer/validity flags are inspected here, never the
+		// vectors, so the split costs a few loads.
 		DX12_PROF_COUNT("Rm.PreSkinValidateNoBindings");
+		const DX12SimulateContextComputeTemplate &cache = runtimeState->resolvedCompute;
+		if (cache.bindingsObservedSlots.empty() && cache.uavs.empty() &&
+			cache.srvs.empty() && cache.cbvs.empty())
+			DX12_PROF_COUNT("Rm.PreSkinValidateNoBindingsNeverCollected");
+		else
+			DX12_PROF_COUNT("Rm.PreSkinValidateNoBindingsInvalidated");
 		return false;
 	}
 	// Descriptor-heap identity is binding *location*, not binding content, and

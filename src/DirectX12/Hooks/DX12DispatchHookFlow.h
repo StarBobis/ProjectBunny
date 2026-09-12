@@ -97,6 +97,122 @@ public:
 	}
 };
 
+// Why the Execute-level negative verdict was not reused. Every term of its
+// guard is a snapshot field written by the last completed probe or by the
+// collector, so a window of these counters names the single term that keeps
+// 96% of the skinning dispatches paying for a full probe. They exist because
+// the verdict's own counters cannot answer it: a rejected guard records
+// nothing, and the four "hit" rows only ever count the winners.
+enum class DX12ExecVerdictBlock : unsigned char
+{
+	NoShaderHash = 0,   // probe->computeShaderHash == 0: not a candidate at all
+	ProbeNotValid,     // no completed probe to reuse: probeResultValid == false
+	ProbeApplied,      // the last probe applied a replacement, so its verdict is a positive
+	EpochMismatch,     // the state's content epochs moved since the verdict
+	BindingsInvalid,   // bindingsValid / bindingsUseRootValues / heap / root sig
+	IdentityProbe,     // the binding-identity probe rejected the live bindings
+	Fingerprint,       // bindings changed since the verdict was stored
+	Count,
+};
+
+class DX12ExecVerdictDiag
+{
+public:
+	static void Report(DX12ExecVerdictBlock reason,
+		const DX12SimulateContext *state, UINT64 shaderHash)
+	{
+		DX12_PROF_COUNT(sNames[static_cast<size_t>(reason)]);
+		// One line per window: the first rejection's exact terms, so a counter
+		// that fires for two different reasons cannot be misread.
+		if (sLogged || !state || !DX12DiagProf::Enabled())
+			return;
+		sLogged = true;
+		DX12_LOG("DX12Perf",
+			"\"scope\":\"ExecVerdictBlock\",\"reason\":\"%s\",\"cs\":\"%016llx\","
+			"\"probeValid\":%d,\"probeApplied\":%d,\"probeCsHash\":\"%016llx\","
+			"\"probeReload\":%llu,\"reload\":%llu,\"probeIaEpoch\":%llu,"
+			"\"iaEpoch\":%llu,\"probeContentGen\":%llu,\"contentGen\":%llu,"
+			"\"bindingsValid\":%d,\"useRootValues\":%d,\"heapEq\":%d,\"rootSigEq\":%d,"
+			"\"probeFingerprint\":\"%016llx\"",
+			sNames[static_cast<size_t>(reason)],
+			static_cast<unsigned long long>(shaderHash),
+			state->resolvedCompute.probeResultValid ? 1 : 0,
+			state->resolvedCompute.probeApplied ? 1 : 0,
+			static_cast<unsigned long long>(state->resolvedCompute.probeCsHash),
+			static_cast<unsigned long long>(state->resolvedCompute.probeReloadGeneration),
+			static_cast<unsigned long long>(DX12ModGetReloadGenerationFast()),
+			static_cast<unsigned long long>(state->resolvedCompute.probeIaContentEpoch),
+			static_cast<unsigned long long>(state->iaContentEpoch),
+			static_cast<unsigned long long>(state->resolvedCompute.probeBufferContentGeneration),
+			static_cast<unsigned long long>(DX12GetIaHashContentGeneration()),
+			state->resolvedCompute.bindingsValid ? 1 : 0,
+			state->resolvedCompute.bindingsUseRootValues ? 1 : 0,
+			state->resolvedCompute.bindingsHeap == state->cbvSrvUavHeap ? 1 : 0,
+			state->resolvedCompute.bindingsRootSignature == state->computeRootSignature ? 1 : 0,
+			static_cast<unsigned long long>(
+				state->resolvedCompute.probeBindingDependencyFingerprint));
+	}
+
+private:
+	static constexpr const char *sNames[] = {
+		"Rm.ExecVerdictBlockedCsHashZero",
+		"Rm.ExecVerdictBlockedProbeNotValid",
+		"Rm.ExecVerdictBlockedProbeApplied",
+		"Rm.ExecVerdictBlockedEpoch",
+		"Rm.ExecVerdictBlockedBindings",
+		"Rm.ExecVerdictBlockedIdentityProbe",
+		"Rm.ExecVerdictBlockedFingerprint",
+	};
+	static_assert(
+		sizeof(sNames) / sizeof(sNames[0]) ==
+			static_cast<size_t>(DX12ExecVerdictBlock::Count),
+		"every rejection reason needs its own counter");
+	inline static thread_local bool sLogged = false;
+};
+
+// Publishes one probe's outcome into the command-list state so a later
+// dispatch can reuse the verdict instead of re-deriving it. The publisher is
+// state-agnostic on purpose: the geometry-keyed negative verdict must publish
+// its result too, or the state never carries a completed probe and every
+// dispatch below rebuilds the geometry key (measured: 3303 dispatches per
+// window, 78 stores per window, and 96% of dispatches exiting through the
+// geometry cache before any store ran).
+class DX12PreSkinProbeStatePublisher
+{
+public:
+	template <typename State>
+	static void Publish(
+		State *state,
+		UINT64 csHash,
+		UINT64 reloadGeneration,
+		UINT64 iaContentEpoch,
+		UINT64 bufferContentGeneration,
+		UINT64 bindingDependencyFingerprint,
+		bool applied,
+		bool handlingSkip,
+		bool hasDispatch,
+		UINT groupsX,
+		UINT groupsY,
+		UINT groupsZ)
+	{
+		if (!state)
+			return;
+		state->resolvedCompute.probeBindingDependencyFingerprint =
+			bindingDependencyFingerprint;
+		state->resolvedCompute.probeCsHash = csHash;
+		state->resolvedCompute.probeReloadGeneration = reloadGeneration;
+		state->resolvedCompute.probeIaContentEpoch = iaContentEpoch;
+		state->resolvedCompute.probeBufferContentGeneration = bufferContentGeneration;
+		state->resolvedCompute.probeResultValid = true;
+		state->resolvedCompute.probeApplied = applied;
+		state->resolvedCompute.probeDispatchHandlingSkip = handlingSkip;
+		state->resolvedCompute.probeDispatchHasDispatch = hasDispatch;
+		state->resolvedCompute.probeGroupsX = groupsX;
+		state->resolvedCompute.probeGroupsY = groupsY;
+		state->resolvedCompute.probeGroupsZ = groupsZ;
+	}
+};
+
 class DX12DispatchHookFlowGuard
 {
 public:
@@ -112,6 +228,10 @@ class DX12DispatchHookFlow
 {
 public:
 	inline static thread_local bool InDispatchHookFlow = false;
+	// One-shot latch for the "the zero-work verdict path finally fired" log
+	// line. Render-thread only, so a plain thread-local flag is enough.
+	inline static thread_local bool sExecuteVerdictHitLogged = false;
+	inline static thread_local bool sIdentityProbeFailLogged = false;
 
 
 	static void ExecuteHook(
@@ -394,10 +514,66 @@ public:
 				0,
 				1,
 				0);
+			// The zero-work verdict path only ever fired zero times before the
+			// geometry-keyed negative hit started publishing its result, so the
+			// first reuse is worth one line: it states which guard terms are
+			// true when the path does become reachable.
+			if (!sExecuteVerdictHitLogged && DX12DiagProf::Enabled()) {
+				sExecuteVerdictHitLogged = true;
+				DX12_LOG("DX12Perf",
+					"\"scope\":\"ExecVerdictHit\",\"cs\":\"%016llx\",\"probeCsHash\":\"%016llx\","
+					"\"reload\":%llu,\"iaEpoch\":%llu,\"contentGen\":%llu,"
+					"\"bindingsValid\":%d,\"heapEq\":%d,\"rootSigEq\":%d",
+					static_cast<unsigned long long>(dispatchDecision->computeShaderHash),
+					static_cast<unsigned long long>(effectiveState->resolvedCompute.probeCsHash),
+					static_cast<unsigned long long>(effectiveState->resolvedCompute.probeReloadGeneration),
+					static_cast<unsigned long long>(effectiveState->resolvedCompute.probeIaContentEpoch),
+					static_cast<unsigned long long>(effectiveState->resolvedCompute.probeBufferContentGeneration),
+					effectiveState->resolvedCompute.bindingsValid ? 1 : 0,
+					effectiveState->resolvedCompute.bindingsHeap == effectiveState->cbvSrvUavHeap ? 1 : 0,
+					effectiveState->resolvedCompute.bindingsRootSignature == effectiveState->computeRootSignature ? 1 : 0);
+			}
 			DX12ModRestorePreSkinningUavReplacement(commandList);
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
+		// The guard above rejected the verdict. Name the term that rejected it:
+		// the chain repeats the guard in the same order, so the first true
+		// branch below is the first term that failed. Evaluation is strictly
+		// short-circuited and ProbePreSkinBindingIdentity is memoised per
+		// dispatch, so nothing here can change the answer the guard computed.
+		DX12ExecVerdictBlock blockReason = DX12ExecVerdictBlock::ProbeNotValid;
+		if (dispatchDecision->computeShaderHash == 0)
+			blockReason = DX12ExecVerdictBlock::NoShaderHash;
+		else if (!effectiveState->resolvedCompute.probeResultValid)
+			blockReason = DX12ExecVerdictBlock::ProbeNotValid;
+		else if (effectiveState->resolvedCompute.probeApplied)
+			blockReason = DX12ExecVerdictBlock::ProbeApplied;
+		else if (effectiveState->resolvedCompute.probeCsHash !=
+				dispatchDecision->computeShaderHash ||
+			effectiveState->resolvedCompute.probeReloadGeneration !=
+				outerReloadGeneration ||
+			effectiveState->resolvedCompute.probeIaContentEpoch !=
+				effectiveState->iaContentEpoch ||
+			effectiveState->resolvedCompute.probeBufferContentGeneration !=
+				DX12GetIaHashContentGeneration())
+			blockReason = DX12ExecVerdictBlock::EpochMismatch;
+		else if (!effectiveState->resolvedCompute.bindingsValid ||
+			effectiveState->resolvedCompute.bindingsUseRootValues ||
+			effectiveState->resolvedCompute.bindingsHeap !=
+				effectiveState->cbvSrvUavHeap ||
+			effectiveState->resolvedCompute.bindingsRootSignature !=
+				effectiveState->computeRootSignature)
+			blockReason = DX12ExecVerdictBlock::BindingsInvalid;
+		else if (!ProbePreSkinBindingIdentity(commandList, effectiveState, &probe))
+			blockReason = DX12ExecVerdictBlock::IdentityProbe;
+		else if (effectiveState->resolvedCompute.probeBindingDependencyFingerprint !=
+				probe.bindingDependencyFingerprint)
+			blockReason = DX12ExecVerdictBlock::Fingerprint;
+		else
+			blockReason = DX12ExecVerdictBlock::Fingerprint; // unreachable by construction
+		DX12ExecVerdictDiag::Report(blockReason, effectiveState,
+			dispatchDecision->computeShaderHash);
 		DX12_DIAG_QPC(prepareProbeBegin);
 		PreparePreSkinProbe(commandList, effectiveState, &probe);
 		const std::vector<DX12CurrentComputeUavBinding> &probeUavs =
@@ -563,10 +739,40 @@ public:
 		if (probe->bindingIdentityChecked)
 			return probe->bindingIdentityValid;
 		probe->bindingIdentityChecked = true;
-		if (!runtimeState ||
-			DX12CommandListRuntime::GetStatePtrFast(commandList) != runtimeState ||
-			!DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
+		if (!runtimeState) {
+			DX12_PROF_COUNT("Rm.PreSkinIdentityProbeNoState");
+			return false;
+		}
+		if (DX12CommandListRuntime::GetStatePtrFast(commandList) != runtimeState) {
+			DX12_PROF_COUNT("Rm.PreSkinIdentityProbeStateMismatch");
+			return false;
+		}
+		if (!DX12BindingTracker::ValidateRuntimePreSkinBindingState(runtimeState)) {
 			DX12_PROF_COUNT("Rm.PreSkinVerdictBindingStateInvalid");
+			// One line per window with the snapshot's own state at the moment
+			// the validator rejected it: whether a snapshot exists at all, and
+			// what it holds, is the difference between "never collected" and
+			// "collected and then invalidated".
+			if (!sIdentityProbeFailLogged && DX12DiagProf::Enabled()) {
+				sIdentityProbeFailLogged = true;
+				const DX12SimulateContextComputeTemplate &cache =
+					runtimeState->resolvedCompute;
+				DX12_LOG("DX12Perf",
+					"\"scope\":\"IdentityProbeFail\",\"bindingsValid\":%d,"
+					"\"rootSig\":\"%p\",\"cachedRootSig\":\"%p\",\"usedMaskValid\":%d,"
+					"\"observedSlots\":%zu,\"uavs\":%zu,\"srvs\":%zu,\"cbvs\":%zu,"
+					"\"rootConstants\":%zu,\"dependencyFingerprint\":\"%016llx\"",
+					cache.bindingsValid ? 1 : 0,
+					reinterpret_cast<const void *>(runtimeState->computeRootSignature),
+					reinterpret_cast<const void *>(cache.bindingsRootSignature),
+					runtimeState->computeRootUsedMaskValid ? 1 : 0,
+					cache.bindingsObservedSlots.size(),
+					cache.uavs.size(),
+					cache.srvs.size(),
+					cache.cbvs.size(),
+					cache.rootConstants.size(),
+					static_cast<unsigned long long>(cache.bindingsDependencyFingerprint));
+			}
 			return false;
 		}
 		DX12_DIAG_QPC(identityProbeBegin);
@@ -878,6 +1084,27 @@ public:
 			!MayMatchPreSkinStickyMatch(probe->computeShaderHash, uavs) &&
 			DX12ModTestPreSkinNegativeMatch(negativeMatchKey)) {
 			probe->applied = false;
+			// Publish this completed negative verdict. Without it the state
+			// never carries a valid probe, so the Execute-level verdict guard
+			// falls through on every dispatch and the geometry key above is
+			// rebuilt (hash resolve included) forever: measured 3303 dispatches
+			// against 78 stores per window, with 96% of exits taken here.
+			// A negative verdict may only be reused once the binding-identity
+			// probe has re-proved the bindings, which the guard already
+			// requires, so publishing it cannot let a replacement be skipped.
+			DX12PreSkinProbeStatePublisher::Publish(
+				runtimeState,
+				probe->computeShaderHash,
+				earlyReloadGeneration,
+				runtimeState ? runtimeState->iaContentEpoch : 0,
+				DX12GetIaHashContentGeneration(),
+				probe->bindingDependencyFingerprint,
+				false,
+				false,
+				false,
+				0,
+				0,
+				0);
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheLookups");
 			DX12_PROF_COUNT("Rm.PreSkinPlanCacheNegativeHits");
 			DX12_PROF_COUNT("Rm.PreSkinVerdictGeometryHits");
@@ -953,25 +1180,22 @@ public:
 				const DX12PreSkinDispatchOverride &dispatchOverride) {
 				if (!runtimeState)
 					return;
-				runtimeState->resolvedCompute.probeBindingDependencyFingerprint =
-					probe->bindingDependencyFingerprint;
 				runtimeState->resolvedCompute.probeFingerprint =
 					computeIaFingerprint;
-				runtimeState->resolvedCompute.probeCsHash = computeShaderHash;
-				runtimeState->resolvedCompute.probeReloadGeneration = reloadGeneration;
 				runtimeState->resolvedCompute.probeBindingSerial = probeBindingSerial;
-				runtimeState->resolvedCompute.probeIaContentEpoch = probeIaContentEpoch;
-				runtimeState->resolvedCompute.probeBufferContentGeneration =
-					DX12GetIaHashContentGeneration();
-				runtimeState->resolvedCompute.probeResultValid = true;
-				runtimeState->resolvedCompute.probeApplied = applied;
-				runtimeState->resolvedCompute.probeDispatchHandlingSkip =
-					dispatchOverride.handlingSkip;
-				runtimeState->resolvedCompute.probeDispatchHasDispatch =
-					dispatchOverride.hasDispatch;
-				runtimeState->resolvedCompute.probeGroupsX = dispatchOverride.groupsX;
-				runtimeState->resolvedCompute.probeGroupsY = dispatchOverride.groupsY;
-				runtimeState->resolvedCompute.probeGroupsZ = dispatchOverride.groupsZ;
+				DX12PreSkinProbeStatePublisher::Publish(
+					runtimeState,
+					computeShaderHash,
+					reloadGeneration,
+					probeIaContentEpoch,
+					DX12GetIaHashContentGeneration(),
+					probe->bindingDependencyFingerprint,
+					applied,
+					dispatchOverride.handlingSkip,
+					dispatchOverride.hasDispatch,
+					dispatchOverride.groupsX,
+					dispatchOverride.groupsY,
+					dispatchOverride.groupsZ);
 				DX12SimulateContextComputeTemplate::LocalProbeCacheEntry
 					&localEntry =
 					runtimeState->resolvedCompute.localProbeCache[

@@ -332,6 +332,39 @@ enum class DX12ProfilingField : int
 	PreSkinValidateSerialChurn,
 	PreSkinValidateNoContext,
 	PreSkinValidateNoSerial,
+	// The "no snapshot" guard split by why there is no snapshot: never
+	// collected (nothing to reuse, the collector is the only way forward) or
+	// collected and then rejected as invalid (the live bindings moved).
+	PreSkinValidateNoBindingsNeverCollected,
+	PreSkinValidateNoBindingsInvalidated,
+	// The heap-record resolve's cache-miss fallback: a slot whose set-
+	// associative entry is gone is not a dangling record, and counting the
+	// fallback separately keeps the two distinguishable.
+	PreSkinValidateHeapRecordCacheMiss,
+	// Which term of the resident-snapshot validator rejected it, and which of
+	// the three ways the binding-identity probe can fail. The snapshot
+	// validator is the gate in front of the zero-work verdict path, so the
+	// largest counter here names the term that decides whether a dispatch pays
+	// for a full binding collection. PreSkinValidateRootDescriptor already
+	// exists above and is now recorded on the "the snapshot recorded this root
+	// and it is gone" branch specifically.
+	PreSkinValidateRootAddedUnobserved,
+	PreSkinValidateConstantsInvalid,
+	PreSkinValidateConstantsMaxSet,
+	PreSkinValidateConstantsValues,
+	PreSkinValidateConstantsAdded,
+	PreSkinIdentityProbeNoState,
+	PreSkinIdentityProbeStateMismatch,
+	// Which term of the Execute-level negative-verdict guard rejected reuse.
+	// Exactly one of these fires per rejected dispatch, so the largest one is
+	// the term that decides whether the zero-cost verdict path is reachable.
+	ExecVerdictBlockedCsHashZero,
+	ExecVerdictBlockedProbeNotValid,
+	ExecVerdictBlockedProbeApplied,
+	ExecVerdictBlockedEpoch,
+	ExecVerdictBlockedBindings,
+	ExecVerdictBlockedIdentityProbe,
+	ExecVerdictBlockedFingerprint,
 
 	Count,
 };
@@ -434,6 +467,31 @@ inline constexpr DX12ProfilingFieldDef kDX12ProfilingFields[] = {
 	{ "Rm.PreSkinValidateSerialChurn", "ValidSerialChurn", DX12ProfilingField::PreSkinValidateSerialChurn, true },
 	{ "Rm.PreSkinValidateNoContext", "ValidNoContext", DX12ProfilingField::PreSkinValidateNoContext, true },
 	{ "Rm.PreSkinValidateNoSerial", "ValidNoSerial", DX12ProfilingField::PreSkinValidateNoSerial, true },
+	{ "Rm.PreSkinValidateNoBindingsNeverCollected", "ValidNoSnapshotYet", DX12ProfilingField::PreSkinValidateNoBindingsNeverCollected, true },
+	{ "Rm.PreSkinValidateNoBindingsInvalidated", "ValidSnapshotInvalid", DX12ProfilingField::PreSkinValidateNoBindingsInvalidated, true },
+	{ "Rm.PreSkinValidateHeapRecordCacheMiss", "ValidHeapRecordCacheMiss", DX12ProfilingField::PreSkinValidateHeapRecordCacheMiss, true },
+
+	// The resident-snapshot validator's own terms, plus the identity probe's
+	// three failure modes. Failure-only, so the rows that appear are the ones
+	// currently blocking the zero-work verdict path.
+	{ "Rm.PreSkinValidateRootAddedUnobserved", "ValidRootAddedUnobserved", DX12ProfilingField::PreSkinValidateRootAddedUnobserved, true },
+	{ "Rm.PreSkinValidateConstantsInvalid", "ValidConstantsInvalid", DX12ProfilingField::PreSkinValidateConstantsInvalid, true },
+	{ "Rm.PreSkinValidateConstantsMaxSet", "ValidConstantsMaxSet", DX12ProfilingField::PreSkinValidateConstantsMaxSet, true },
+	{ "Rm.PreSkinValidateConstantsValues", "ValidConstantsValues", DX12ProfilingField::PreSkinValidateConstantsValues, true },
+	{ "Rm.PreSkinValidateConstantsAdded", "ValidConstantsAdded", DX12ProfilingField::PreSkinValidateConstantsAdded, true },
+	{ "Rm.PreSkinIdentityProbeNoState", "IdentityProbeNoState", DX12ProfilingField::PreSkinIdentityProbeNoState, true },
+	{ "Rm.PreSkinIdentityProbeStateMismatch", "IdentityProbeStateMismatch", DX12ProfilingField::PreSkinIdentityProbeStateMismatch, true },
+
+	// The Execute-level verdict guard's rejection reasons. Failure-only: a
+	// healthy window shows none of them, and the one that does appear is the
+	// answer to "why is the zero-cost verdict path never taken".
+	{ "Rm.ExecVerdictBlockedCsHashZero", "ExecVerdictNoCsHash", DX12ProfilingField::ExecVerdictBlockedCsHashZero, true },
+	{ "Rm.ExecVerdictBlockedProbeNotValid", "ExecVerdictNoProbe", DX12ProfilingField::ExecVerdictBlockedProbeNotValid, true },
+	{ "Rm.ExecVerdictBlockedProbeApplied", "ExecVerdictApplied", DX12ProfilingField::ExecVerdictBlockedProbeApplied, true },
+	{ "Rm.ExecVerdictBlockedEpoch", "ExecVerdictEpoch", DX12ProfilingField::ExecVerdictBlockedEpoch, true },
+	{ "Rm.ExecVerdictBlockedBindings", "ExecVerdictBindings", DX12ProfilingField::ExecVerdictBlockedBindings, true },
+	{ "Rm.ExecVerdictBlockedIdentityProbe", "ExecVerdictIdentity", DX12ProfilingField::ExecVerdictBlockedIdentityProbe, true },
+	{ "Rm.ExecVerdictBlockedFingerprint", "ExecVerdictFingerprint", DX12ProfilingField::ExecVerdictBlockedFingerprint, true },
 };
 
 // How many rows of the table above are failure counters. The middle column
@@ -1040,6 +1098,39 @@ inline void DX12ProfilingText::BuildRatioColumn(
 			hitShare,
 			static_cast<double>(negHits.calls) / static_cast<double>(frames));
 		row("PlanCacheLookups", lookups.calls, extra);
+	}
+	// Which term of the Execute-level verdict guard rejected the reuse, ranked
+	// by how often it fired: the top row is the reason the zero-cost verdict
+	// path is not being taken, and every row below it is a consequence.
+	{
+		struct RejectionReason
+		{
+			const char *label;
+			DX12ProfilingField id;
+		};
+		const RejectionReason reasons[] = {
+			{ "ExecVerdictNoCsHash", DX12ProfilingField::ExecVerdictBlockedCsHashZero },
+			{ "ExecVerdictNoProbe", DX12ProfilingField::ExecVerdictBlockedProbeNotValid },
+			{ "ExecVerdictApplied", DX12ProfilingField::ExecVerdictBlockedProbeApplied },
+			{ "ExecVerdictEpoch", DX12ProfilingField::ExecVerdictBlockedEpoch },
+			{ "ExecVerdictBindings", DX12ProfilingField::ExecVerdictBlockedBindings },
+			{ "ExecVerdictIdentity", DX12ProfilingField::ExecVerdictBlockedIdentityProbe },
+			{ "ExecVerdictFingerprint", DX12ProfilingField::ExecVerdictBlockedFingerprint },
+		};
+		LONG64 total = 0;
+		for (const RejectionReason &reason : reasons)
+			total += field(reason.id).calls;
+		if (total > 0) {
+			column.Line("-- Exec verdict rejected by --");
+			for (const RejectionReason &reason : reasons) {
+				const LONG64 calls = field(reason.id).calls;
+				if (!calls)
+					continue;
+				char extra[32] = {};
+				share(extra, sizeof(extra), "share", calls, total);
+				row(reason.label, calls, extra);
+			}
+		}
 	}
 
 	column.Line("-- PreSkin store --");
