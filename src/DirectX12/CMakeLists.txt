@@ -81,6 +81,11 @@ add_library(DirectX12 SHARED
     Core/ModState/DX12PreSkinDispatchOverride.h
     Core/ModState/DX12PreSkinOutputResizeBinding.h
     Core/ModState/DX12PreSkinPlanUtils.h
+    Core/ModState/DX12CommandRuntimeSnapshot.h
+    Core/ModState/DX12CompiledPlans.h
+    Core/ModState/DX12DrawSrvMirrorState.h
+    Core/ModState/DX12LoadedResourceState.h
+    Core/ModState/DX12ModRuntimeState.h
     Config/DX12Config.h
     Config/DX12ConfigLoader.h
     Resources/DX12ResourceDump.h
@@ -104,6 +109,8 @@ add_library(DirectX12 SHARED
     ModRuntime/DX12DrawSrvReplacementUtils.h
     ModRuntime/DX12BundleSrvMirror.h
     ModRuntime/DX12CommandListExecutor.h
+    ModRuntime/DX12CustomShaderElementState.h
+    ModRuntime/DX12TextureOverrideMatching.h
     ModRuntime/DX12ShaderOverrideIaTargetPlanUtils.h
 
     # Proxy and presentation integration

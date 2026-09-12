@@ -1,7 +1,15 @@
 #pragma once
 
-// DX12DrawTextureCaptureUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
+// Draw-time texture capture: "ResourceX = ref ps-tN" saves the game's currently
+// bound texture into a placeholder resource so a later "ps-tN = ref ResourceX"
+// rebind resolves onto the captured texture.
+//
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h at
+// a fixed line, which meant it could only see the declarations that happened to
+// precede that line. It now carries its own includes and can be read on its own.
+#include "../Core/Diag/DX12Diag.h"
+#include "../Core/ModState/DX12LoadedResourceState.h"
+#include "DX12DrawTextureSrvViewUtils.h"
 
 
 // Phase 3 capture mode: "ResourceX = ref ps-tN" (executed at draw time inside

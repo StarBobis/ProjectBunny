@@ -1679,11 +1679,10 @@ std::wstring ResolveResourcePath(
 }
 
 
-std::wstring ResolveResourcePathLocked(
-	const Bunny::ResourceConfig &config, bool rootFallback)
-{
-	return ResolveResourcePath(config, gBaseDir, rootFallback);
-}
+// ResolveResourcePathLocked was a one-line forwarder to
+// ResolveResourcePath(config, gBaseDir, rootFallback). Its only call site holds
+// gModLock, so it reads gBaseDir directly; the wrapper existed to name that
+// contract and nothing else.
 
 
 bool ResourceConfigLooksLikeBuffer(const Bunny::ResourceConfig &config)

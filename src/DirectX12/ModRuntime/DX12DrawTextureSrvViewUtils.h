@@ -1,7 +1,18 @@
 #pragma once
 
-// DX12DrawTextureSrvViewUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
+// SRV view construction for draw-time texture replacement: build a view that
+// reproduces the game's original SRV contract on top of one of our replacement
+// resources.
+//
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h
+// at a fixed line, which meant it could only see the declarations that happened
+// to precede that line. It now carries its own includes and can be read on its
+// own; Core/DX12ModState.h pulls it in for existing callers.
+#include "../Core/DX12CommandFlow.h"
+#include "../Core/ModState/DX12LoadedResourceState.h"
+#include "../Resources/Dump/DX12TextureHashUtils.h"
+
+#include <algorithm>
 
 
 class DX12DrawTextureSrvViewUtils

@@ -7,6 +7,18 @@
 #include "../Presentation/DX12WrapperCore.h"
 
 
+// Declared here, defined below, and file-local: the only caller is
+// PreparePresentCommandList in this file. These used to be exported through the
+// mod-runtime internal header, which is what made the executor header appear to
+// need half of that header's interface.
+static bool RunNamedCommandList(
+	ID3D12Device *device,
+	ID3D12GraphicsCommandList *commandList,
+	const std::wstring &name,
+	DX12ModIaReplacement *replacement,
+	std::vector<DX12PendingResourceViewRequest> *pendingResourceViews);
+
+
 #if DX12_TIMING_BUILD
 // Frame-boundary breadcrumb. Everything that can block a user-visible freeze
 // lives inside DX12ModBeginFrame (the tail of the Present wrapper on the game's
@@ -1207,7 +1219,10 @@ DX12IaHashState EmptyIaHashState()
 }
 
 
-bool RunNamedCommandList(
+// File-local: the only caller is ExecuteCommandListActions in this file. It used
+// to be declared in the mod-runtime internal header, which is what made the
+// executor header look like it needed half of that header's interface.
+static bool RunNamedCommandList(
 	ID3D12Device *device,
 	ID3D12GraphicsCommandList *commandList,
 	const std::wstring &name,
@@ -1243,7 +1258,8 @@ bool RunNamedCommandList(
 }
 
 
-bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
+// File-local for the same reason as RunNamedCommandList above.
+static bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost)
 {
 	if (name.empty())
 		return false;

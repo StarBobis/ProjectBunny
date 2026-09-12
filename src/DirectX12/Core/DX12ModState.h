@@ -285,6 +285,11 @@ void DX12ModClearPreSkinOutputResizeMap();
 
 
 #include "ModState/DX12PreSkinPlanUtils.h"
+#include "ModState/DX12CompiledPlans.h"
+#include "ModState/DX12CommandRuntimeSnapshot.h"
+#include "ModState/DX12ModRuntimeState.h"
+#include "ModState/DX12LoadedResourceState.h"
+#include "ModState/DX12DrawSrvMirrorState.h"
 
 
 void DX12RecordPsoRootSignature(

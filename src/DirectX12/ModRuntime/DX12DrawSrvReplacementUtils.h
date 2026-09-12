@@ -1,135 +1,39 @@
 #pragma once
 
-// DX12DrawSrvReplacementUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
-
-
-// ---------------------------------------------------------------------------
-// Deferred draw-SRV restore (lazy heap switch).
+// Draw-time SRV replacement: build a plan from the game's bound graphics tables,
+// mirror the patched tables into a private shader-visible heap, and restore
+// lazily.
 //
-// ApplyPending switches the command list to a private mirror heap and rebinds
-// every root table for a patched draw; the stock Restore immediately switched
-// back to the game's heap and rebound every table again. That is two
-// SetDescriptorHeaps round trips plus two full root-table rebinds per modded
-// draw, while Microsoft recommends setting descriptor heaps as few times as
-// possible per command list (a heap switch invalidates every root table
-// binding and can stall the GPU):
-// https://learn.microsoft.com/en-us/windows/win32/direct3d12/setting-descriptor-heaps
-//
-// Restore therefore now performs only the *logical* half immediately (the
-// shadow trackers return to the game's bindings) and defers the GPU-side
-// half: the mirror heap and patched tables stay bound on the list. The
-// deferred entry is flushed (physically restored) lazily before any command
-// that observes descriptor-heap state:
-//   - original/replacement draws and dispatches (DX12IaReplacementDrawExecutor),
-//   - game dispatches and ExecuteIndirect / ExecuteBundle,
-//   - ClearUnorderedAccessView* (GPU handle resolved against the bound heap),
-//   - every game binding mutation (root tables/signatures/constants),
-//   - command-list Reset/Unregister/ClearState (quiet drop, no GPU commands).
-// A consecutive patched draw whose plan fingerprint matches the pending entry
-// reuses the still-bound mirror and emits nothing at all.
-// ---------------------------------------------------------------------------
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h at
+// a fixed line, which meant it could only see the declarations that happened to
+// precede that line. The state it operates on now lives in
+// Core/ModState/DX12DrawSrvMirrorState.h, and the bundle entry points it calls
+// are declared below, so it no longer depends on its splice position.
 
-class DX12DrawSrvPendingRestore
-{
-public:
-	// Set while a consecutive ApplyPending has borrowed the still-bound
-	// mirror for the in-flight draw; flush probes must leave it untouched.
-	bool borrowedByApply = false;
-	// Original game heaps, AddRef'd while pending: the physical restore may
-	// rebind them after the game's own binding scope has moved on.
-	ID3D12DescriptorHeap *cbvSrvUavHeap = nullptr;
-	ID3D12DescriptorHeap *samplerHeap = nullptr;
-	// Mirror ring heap currently bound on the list. Not owned here; the
-	// ring retains it for the command list and only rewinds offsets once no
-	// unsubmitted list references the heap anymore (this entry's list
-	// holds such a reference until submission).
-	ID3D12DescriptorHeap *patchHeap = nullptr;
-	UINT64 planFingerprint = 0;
-	UINT64 reloadGeneration = 0;
-	// Slim view of the game's bindings; see DX12DrawSrvBindingSnapshot.
-	DX12DrawSrvBindingSnapshot originalBindings;
-};
+// The deferred-restore state (DX12DrawSrvPendingRestore / its shards) and the
+// persistent mirror cache (DX12DrawSrvMirrorCacheEntry and its maps) are
+// declared in Core/ModState/DX12DrawSrvMirrorState.h, reached through this
+// include. They used to be defined here, which forced every other reader of
+// that state to be spliced in after this file.
+#include "../DX12Core.h"
+#include "DX12DdsTextureLoadUtils.h"
 
-// Sharded pending table (per command list), same contract as
-// DX12PreSkinReplacementShard: every access targets exactly one list key, so
-// the table is sharded by list pointer with a per-shard lock and mutation
-// generation for the TLS negative cache in FlushPendingRestore.
-class DX12DrawSrvPendingRestoreShard
-{
-public:
-	SRWLOCK lock = SRWLOCK_INIT;
-	std::unordered_map<ID3D12GraphicsCommandList*, DX12DrawSrvPendingRestore> entries;
-	std::atomic<UINT64> mutationGeneration{0};
-};
 
-inline DX12DrawSrvPendingRestoreShard gDrawSrvPendingRestoreShards[64];
-// Count of pending entries across all shards; readers only test zero. The
-// count also drives FLAG_DRAWSRV_PENDING_RESTORE in HookWorkFlags so the
-// per-draw fast paths notice a pending restore with no extra load.
-inline volatile LONG gDrawSrvPendingRestoreCount = 0;
+// Bundle draw-SRV replacement entry points, defined in
+// ModRuntime/DX12BundleSrvMirror.cpp. Declared here because ApplyPending and
+// Restore below branch to them on bundle lists: the bundle mirror needs the
+// session state and the plan types this file defines, so the two headers
+// reference each other and neither can simply include the other. A declaration
+// is all this file needs.
+bool DX12ModApplyDrawSrvReplacementBundle(
+	ID3D12Device *device,
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement,
+	bool executeOriginalDraw);
+void DX12ModRestoreDrawSrvReplacementBundle(
+	ID3D12GraphicsCommandList *commandList,
+	DX12ModIaReplacement *replacement);
 
-inline DX12DrawSrvPendingRestoreShard &DrawSrvPendingRestoreShardFor(
-	ID3D12GraphicsCommandList *commandList)
-{
-	constexpr size_t kShardCount =
-		sizeof(gDrawSrvPendingRestoreShards) / sizeof(gDrawSrvPendingRestoreShards[0]);
-	const UINT_PTR key = reinterpret_cast<UINT_PTR>(commandList);
-	return gDrawSrvPendingRestoreShards[(key >> 4) % kShardCount];
-}
-
-// ---------------------------------------------------------------------------
-// Persistent cross-draw mirror cache (PERF: rebind instead of re-mirror).
-//
-// The ring-based mirror path below re-copies every graphics table on every
-// patched draw whose still-bound-mirror reuse missed - the DX11 equivalent
-// (ps-t0 = X) is a single PSSetShaderResources call. Most of those copies are
-// redundant: the plan fingerprint already covers each source heap's content
-// version, so an identical fingerprint means the source descriptors are
-// byte-identical to what an earlier apply mirrored. That earlier mirror can
-// simply be re-bound.
-//
-// A plan earns a dedicated shader-visible heap after being sighted twice
-// (identical fingerprint on two separate applies): single-sighting plans stay
-// on the transient ring so games that rewrite their descriptor arena every
-// frame (fingerprint changes every draw) never pay heap-creation churn, while
-// static or slowly-changing tables - exactly the bindless/large-table cases
-// that are most expensive to re-mirror - promote on their second draw and
-// cost only SetDescriptorHeaps + root-table rebinds afterwards.
-//
-// Lifetime: the cache holds one reference per heap; every command list that
-// binds a cached heap additionally retains it through
-// RetainPreSkinDescriptorHeapForCommandList, so eviction (clear-all on
-// overflow or reload-generation change) can never free a heap a not-yet-
-// submitted list still references - the retired-heap fence drain owns that
-// final release, same as ring heaps.
-// ---------------------------------------------------------------------------
-class DX12DrawSrvMirrorCacheEntry
-{
-public:
-ID3D12DescriptorHeap *heap = nullptr;
-// One GPU handle per plan table, in plan order; sampler tables keep
-// their original game handle (they are never mirrored).
-std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> tables;
-
-void Clear()
-{
-if (heap)
-heap->Release();
-heap = nullptr;
-tables.clear();
-}
-};
-
-inline SRWLOCK gDrawSrvMirrorCacheLock = SRWLOCK_INIT;
-inline std::unordered_map<UINT64, DX12DrawSrvMirrorCacheEntry> gDrawSrvMirrorCache;
-inline UINT64 gDrawSrvMirrorCacheGeneration = 0;
-// Promotion sightings per plan fingerprint; reset on reload generation and
-// capped so arena-churn fingerprints cannot grow it without bound.
-inline std::unordered_map<UINT64, UINT> gDrawSrvMirrorPlanSightings;
-inline constexpr size_t MaxDrawSrvMirrorCacheEntries = 32;
-inline constexpr size_t MaxDrawSrvMirrorPlanSightings = 256;
-inline constexpr UINT DrawSrvMirrorPromotionSightings = 2;
 
 class DX12DrawSrvPatchRequest
 {

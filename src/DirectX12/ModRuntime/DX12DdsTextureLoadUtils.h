@@ -1,7 +1,21 @@
 #pragma once
 
-// DX12DdsTextureLoadUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
+// DDS decode and the texture-load throat for [ResourceX] sections: decode a DDS
+// blob into a D3D12 texture, and build the SRV/UAV views a loaded record owns.
+//
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h at
+// a fixed line, which meant it could only see the declarations that happened to
+// precede that line. It now carries its own includes and can be read on its own.
+#include "../Config/DX12Config.h"
+#include "../DX12Core.h"
+#include "DX12DrawTextureSrvViewUtils.h"
+#include "DX12ResourceAliasStore.h"
+#include "DX12WicTextureDecodeUtils.h"
+
+#include <d3d12.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 
 class DX12DdsPixelFormat
@@ -810,7 +824,11 @@ public:
 		}
 		DX12LoadedResource placeholder;
 		placeholder.name = name;
-		placeholder.path = ResolveResourcePathLocked(configIt->second, false);
+		// Resolved against the published gBaseDir. This call site holds
+		// gModLock, which is the contract for reading it; there used to be a
+		// one-line ResolveResourcePathLocked wrapper whose only purpose was to
+		// name that fact.
+		placeholder.path = ResolveResourcePath(configIt->second, gBaseDir, false);
 		std::pair<std::unordered_map<std::wstring, DX12LoadedResource>::iterator, bool> inserted =
 			gLoadedResources.emplace(name, placeholder);
 		DX12LoadedResource *resource = inserted.first->second.failed ? nullptr : &inserted.first->second;

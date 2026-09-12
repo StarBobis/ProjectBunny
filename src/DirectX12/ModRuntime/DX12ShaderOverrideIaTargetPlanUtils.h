@@ -1,7 +1,13 @@
-﻿#pragma once
+#pragma once
 
-// DX12ShaderOverrideIaTargetPlanUtils.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
+// IA/descriptor target-plan construction for shader overrides: walk a matched
+// override's command lists and actions and merge their targets into one plan.
+//
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h at
+// a fixed line, which meant it could only see the declarations that happened to
+// precede that line. It now carries its own includes and can be read on its own.
+#include "../Config/DX12Config.h"
+#include "../DX12Core.h"
 
 
 class DX12ShaderOverrideIaTargetPlanUtils

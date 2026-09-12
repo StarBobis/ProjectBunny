@@ -31,11 +31,25 @@
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoKeyBindingUtils.hpp"
 #include "DX12CustomShaderElement.h"
+#include "DX12CustomShaderElementState.h"
 #include "DX12CustomShaderRegisters.h"
 #include "DX12CustomShaderCompile.h"
 #include "DX12CustomShaderPipeline.h"
 #include "DX12CustomShaderDevice.h"
 #include "DX12ResourceAliasStore.h"
+// The mod-runtime fragments below used to be spliced in at fixed line numbers,
+// each one placed after the declarations it happened to need. Every one of them
+// is self-contained now (see dev_tests/check_header_selfcontained.ps1), so the
+// include order no longer carries meaning: they are collected here instead.
+#include "DX12BundleSrvMirror.h"
+#include "DX12CommandListExecutor.h"
+#include "DX12DdsTextureLoadUtils.h"
+#include "DX12DrawSrvReplacementUtils.h"
+#include "DX12DrawTextureCaptureUtils.h"
+#include "DX12DrawTextureSrvViewUtils.h"
+#include "DX12ShaderOverrideIaTargetPlanUtils.h"
+#include "DX12TextureOverrideMatching.h"
+#include "DX12WicTextureDecodeUtils.h"
 #include <Windows.h>
 #include <d3d12.h>
 
@@ -43,7 +57,11 @@
 DXGI_FORMAT ParseDx12ResourceFormat(const std::wstring &format);
 
 
-inline SRWLOCK gModLock = SRWLOCK_INIT;
+// gModLock, gBaseDir, gShaderFixesDir, gTextureOverrides, gModResources,
+// gResourceAliases, gVlrResourceCandidates, the pre/post-runtime-effect maps and
+// ReadFileBytes are declared in Core/ModState/DX12ModRuntimeState.h, reached
+// through DX12Core.h at the top of this file, so the code fragments spliced in
+// below can name them from their own includes.
 
 inline bool gLoaded = false;
 
@@ -57,20 +75,11 @@ inline DWORD gDeferredInitialModLoadStartTick = 0;
 
 inline DWORD gDeferredInitialModLoadDelayMs = 2000;
 
-inline std::wstring gBaseDir;
-
-inline std::wstring gShaderFixesDir;
-
 inline Bunny::ShaderOverrideMap gShaderOverrides;
 
 inline Bunny::ShaderRegexMap gShaderRegexes;
 
-inline Bunny::TextureOverrideMap gTextureOverrides;
-
-inline Bunny::ResourceMap gModResources;
-
 inline Bunny::CommandListMap gCommandLists;
-
 // Published by reload under gModLock: true when any [CommandList] exists.
 // Frame-variable collection and key-binding VM execution are only useful
 // when command lists exist, so hot-path code gates on this instead of
@@ -79,30 +88,14 @@ inline std::atomic<bool> gHasCommandLists{ false };
 
 inline std::vector<Bunny::MigotoKeyBindingUtils::Binding> gKeyBindings;
 
-// Custom shader elements ([CustomShaderX] sections with stage files/render
-// state) rebuilt on every load; consumed by the custom draw executor.
-inline std::unordered_map<std::wstring, Bunny::DX12CustomShaderElementSpec>
-	gCustomShaderElements;
+// gCustomShaderElements, DX12CustomShaderElementMap and
+// gCustomShaderElementSnapshot are declared in
+// ModRuntime/DX12CustomShaderElementState.h, reached through the
+// DX12CustomShaderElement.h include near the top of this file.
 
-using DX12CustomShaderElementMap =
-	std::unordered_map<std::wstring, Bunny::DX12CustomShaderElementSpec>;
-
-// Immutable per-generation snapshot published with the other runtime
-// snapshots; recording threads read this instead of the mutable registry.
-inline std::atomic<std::shared_ptr<const DX12CustomShaderElementMap>>
-	gCustomShaderElementSnapshot;
-
-// Runtime resource alias table for "ResourceX = ref ResourceY" directives
-// (phase 3); cleared on reload with the other config globals.
-inline Bunny::DX12ResourceAliasStore gResourceAliases;
-
-inline std::vector<std::wstring> gVlrResourceCandidates;
-
-inline std::unordered_map<std::wstring, bool> gCommandListPreRuntimeEffect;
-
-inline std::unordered_map<std::wstring, bool> gTextureOverridePreRuntimeEffect;
-
-inline std::unordered_map<std::wstring, bool> gTextureOverridePostRuntimeEffect;
+// DX12ShaderOverridePsoMatchCache and gShaderOverridePsoMatchCache are declared
+// in Core/ModState/DX12ModRuntimeState.h, reached through DX12Core.h at the top
+// of this file.
 
 class DX12IaTextureOverrideCandidate
 {
@@ -138,117 +131,23 @@ inline std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOve
 inline volatile LONG gIaPrefilterCountSensitive = 0;
 
 
-class DX12TriggeredTextureOverride
-{
-public:
-	DX12TriggeredTextureOverride() = default;
-	DX12TriggeredTextureOverride(const DX12TriggeredTextureOverride &other)
-		: config(other.config),
-		  sectionId(other.sectionId),
-		  preRuntimeEffect(other.preRuntimeEffect),
-		  postRuntimeEffect(other.postRuntimeEffect),
-		  indexBuffer(other.indexBuffer),
-		  vertexSlot(other.vertexSlot),
-		  executeCommands(other.executeCommands),
-		  executeDrawActions(other.executeDrawActions)
-	{
-	}
-	DX12TriggeredTextureOverride(DX12TriggeredTextureOverride &&other) noexcept
-		: config(other.config),
-		  sectionId(other.sectionId),
-		  preRuntimeEffect(other.preRuntimeEffect),
-		  postRuntimeEffect(other.postRuntimeEffect),
-		  indexBuffer(other.indexBuffer),
-		  vertexSlot(other.vertexSlot),
-		  executeCommands(other.executeCommands),
-		  executeDrawActions(other.executeDrawActions)
-	{
-	}
-	DX12TriggeredTextureOverride &operator=(const DX12TriggeredTextureOverride &other)
-	{
-		if (this == &other)
-			return *this;
-		config = other.config;
-		sectionId = other.sectionId;
-		preRuntimeEffect = other.preRuntimeEffect;
-		postRuntimeEffect = other.postRuntimeEffect;
-		indexBuffer = other.indexBuffer;
-		vertexSlot = other.vertexSlot;
-		executeCommands = other.executeCommands;
-		executeDrawActions = other.executeDrawActions;
-		return *this;
-	}
-	DX12TriggeredTextureOverride &operator=(DX12TriggeredTextureOverride &&other) noexcept
-	{
-		if (this == &other)
-			return *this;
-		config = other.config;
-		sectionId = other.sectionId;
-		preRuntimeEffect = other.preRuntimeEffect;
-		postRuntimeEffect = other.postRuntimeEffect;
-		indexBuffer = other.indexBuffer;
-		vertexSlot = other.vertexSlot;
-		executeCommands = other.executeCommands;
-		executeDrawActions = other.executeDrawActions;
-		return *this;
-	}
-	const Bunny::TextureOverrideConfig *config = nullptr;
-	uint32_t sectionId = 0;
-	bool preRuntimeEffect = true;
-	bool postRuntimeEffect = true;
-	bool indexBuffer = false;
-	uint32_t vertexSlot = 0;
-	bool executeCommands = false;
-	bool executeDrawActions = true;
-};
+// DX12TriggeredTextureOverride, DX12CommandExecutionRuntimeSnapshot and the
+// snapshot globals/TLS accessor are declared in
+// Core/ModState/DX12CommandRuntimeSnapshot.h, reached through DX12Core.h at the
+// top of this file. They used to be defined here, which forced every reader of
+// the snapshot into a fixed splice position.
 
 
-uint64_t HashCombine64(uint64_t hash, uint64_t value);
-
-
-class DX12CompiledVertexResourceBinding
-
-{
-
-public:
-	uint32_t slot = 0;
-	std::wstring resource;
-};
-
-
-class DX12CompiledDrawSrvResourceBinding
-
-{
-
-public:
-	uint32_t slot = 0;
-	std::wstring resource;
-	bool pixelStage = true;
-};
-
-
-class DX12PendingResourceViewRequest
-
-{
-
-public:
-	std::wstring indexResource;
-	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
-};
-
-
-bool AppendResourceViewsForCommandList(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList, const DX12IaHashState &iaState,
-	const std::wstring &indexResource,
-	const std::vector<DX12CompiledVertexResourceBinding> &vertexResources,
-	DX12ModIaReplacement *replacement);
-
-
-bool ApplyPendingResourceViewsForCommandList(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
-	const DX12IaHashState &iaState,
-	const std::vector<DX12PendingResourceViewRequest> &requests,
-	DX12ModIaReplacement *replacement);
+// The compiled-plan types (DX12CompiledVertexResourceBinding /
+// DX12CompiledDrawSrvResourceBinding / DX12CompiledCommandListPlan /
+// DX12CompiledTextureOverridePlan / DX12CompiledShaderOverridePlan,
+// gCompiledCommandListPlans, the target-cache key types and HashCombine64) are
+// declared in Core/ModState/DX12CompiledPlans.h, reached through DX12Core.h at
+// the top of this file. They used to be defined here, which forced every reader
+// of a plan into a fixed splice position. DX12PendingResourceViewRequest is
+// declared there too.
+// AppendResourceViewsForCommandList / ApplyPendingResourceViewsForCommandList
+// are declared in ModRuntime/DX12CommandListExecutor.h, which owns them.
 
 
 class DX12PreSkinSrvReplacementBinding
@@ -260,189 +159,6 @@ public:
 	uint32_t shaderRegister = UINT_MAX;
 	std::wstring resource;
 };
-
-
-class DX12CompiledCommandListPlan
-
-{
-
-public:
-	class Op
-	{
-	public:
-		enum class Kind
-		{
-			HandlingSkip,
-			SetIndexBuffer,
-			SetVertexBuffer,
-			SetConstantBuffer,
-			SetShaderResource,
-			SetUnorderedAccessView,
-			Draw,
-			Dispatch,
-			CheckTextureOverride
-		};
-
-		Kind kind = Kind::HandlingSkip;
-		Bunny::CommandListTarget target;
-		std::wstring resource;
-		DX12ModIaReplacement::DrawCall draw;
-		DX12ModIaReplacement::DispatchCall dispatch;
-	};
-
-	bool unsupported = false;
-	bool handlingSkip = false;
-	bool hasDescriptorCheckTargets = false;
-	std::wstring indexResource;
-	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
-	std::vector<DX12ModIaReplacement::DrawCall> draws;
-	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
-	std::vector<Bunny::CommandListTarget> descriptorCheckTargets;
-	std::vector<Op> ops;
-
-	bool NeedsResidentIaState() const
-	{
-		return !indexResource.empty() || !vertexResources.empty();
-	}
-};
-
-inline std::unordered_map<std::wstring, DX12CompiledCommandListPlan> gCompiledCommandListPlans;
-
-
-class DX12CompiledTextureOverridePlan
-
-{
-
-public:
-	// Source texture hash of the owning TextureOverride section; used by the
-	// write-time static replacement short-circuit to look the section up in
-	// DX12StaticTextureReplacementTable without re-reading the config.
-	uint32_t hash = 0;
-	bool hasUnsupportedCommandActions = false;
-	bool hasPreCommandListPlan = false;
-	bool hasPostCommandListPlan = false;
-	bool hasMainActionPlan = false;
-	bool handlingSkip = false;
-	DX12CompiledCommandListPlan preCommandListPlan;
-	DX12CompiledCommandListPlan mainActionPlan;
-	DX12CompiledCommandListPlan postCommandListPlan;
-	std::wstring indexResource;
-	std::vector<DX12CompiledVertexResourceBinding> vertexResources;
-	std::vector<DX12ModIaReplacement::DrawCall> draws;
-	std::vector<DX12ModIaReplacement::DispatchCall> dispatches;
-	std::vector<DX12CompiledDrawSrvResourceBinding> drawSrvResources;
-	std::wstring drawReplaceThisResource;
-
-	bool NeedsResidentIaState() const
-	{
-		return !indexResource.empty() ||
-			!vertexResources.empty() ||
-			(hasMainActionPlan && mainActionPlan.NeedsResidentIaState()) ||
-			(hasPreCommandListPlan && preCommandListPlan.NeedsResidentIaState()) ||
-			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
-	}
-};
-
-
-class DX12CompiledShaderOverridePlan
-
-{
-
-public:
-	bool unsupported = false;
-	bool hasPostCommandListPlan = false;
-	DX12CompiledCommandListPlan mainPlan;
-	DX12CompiledCommandListPlan postCommandListPlan;
-	std::vector<std::wstring> postCommandLists;
-
-	bool NeedsResidentIaState() const
-	{
-		return mainPlan.NeedsResidentIaState() ||
-			(hasPostCommandListPlan && postCommandListPlan.NeedsResidentIaState());
-	}
-};
-
-
-class DX12CommandExecutionRuntimeSnapshot
-
-{
-
-public:
-	bool anyTextureOverridePreRuntimeEffect = false;
-	bool anyTextureOverridePostRuntimeEffect = false;
-	std::unordered_map<std::wstring, bool> commandListRuntimeEffect;
-	std::unordered_map<std::wstring, bool> commandListPreRuntimeEffect;
-	std::unordered_map<std::wstring, bool> commandListPostRuntimeEffect;
-	std::unordered_map<std::wstring, std::shared_ptr<const Bunny::CommandListConfig>>
-		commandLists;
-	std::unordered_map<uint32_t, std::shared_ptr<const Bunny::TextureOverrideConfig>>
-		textureOverridesBySectionId;
-	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
-		textureOverridesByHash;
-	std::vector<DX12TriggeredTextureOverride>
-		textureOverridesWithoutDrawContext;
-	std::vector<DX12TriggeredTextureOverride>
-		textureOverridesGenericDrawContext;
-	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
-		textureOverridesByIndexCount;
-	std::unordered_map<uint32_t, std::vector<DX12TriggeredTextureOverride>>
-		textureOverridesByVertexCount;
-	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledCommandListPlan>>
-		compiledCommandListPlans;
-	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledTextureOverridePlan>>
-		compiledTextureOverridePlans;
-	std::unordered_map<std::wstring, std::shared_ptr<const DX12CompiledShaderOverridePlan>>
-		compiledShaderOverridePlans;
-};
-
-inline std::atomic<std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>>
-	gCommandExecutionRuntimeSnapshot;
-
-// Publish generation for the snapshot above. Bumped (release) AFTER every
-// store so readers can detect a reload with a single plain atomic UINT64
-// load instead of touching the atomic<shared_ptr>.
-inline std::atomic<UINT64> gCommandExecutionRuntimeSnapshotGeneration{ 0 };
-
-
-// Thread-local snapshot cache. MSVC's std::atomic<std::shared_ptr> load is
-// NOT lock-free: it goes through an internal spinlock pool, and every copy
-// of the returned shared_ptr touches the shared control block
-// (InterlockedIncrement/Decrement on one global cache line). IA texture
-// override queries load this snapshot several times per draw per recording
-// thread, which made both a global contention point - a DX11 single-thread
-// assumption carried into the DX12 port. The snapshot only changes on mod
-// reload, so keep one owning reference per thread and only pay the atomic
-// shared_ptr load when the publish generation changes; steady-state reads
-// are one acquire UINT64 load plus a raw pointer reuse, with no spinlock
-// and no refcount traffic.
-inline const std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> &
-CommandExecutionRuntimeSnapshotTlsRef()
-{
-	thread_local UINT64 tlsGeneration = 0;
-	thread_local std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
-		tlsSnapshot;
-
-	const UINT64 published = gCommandExecutionRuntimeSnapshotGeneration.load(
-		std::memory_order_acquire);
-	if (published == tlsGeneration)
-		return tlsSnapshot;
-	// Reload path: the generation may be bumped again while the shared_ptr
-	// load is in flight, so re-read it afterwards and retry on change to
-	// keep the (generation, snapshot) pair consistent.
-	for (;;) {
-		const UINT64 before = gCommandExecutionRuntimeSnapshotGeneration.load(
-			std::memory_order_acquire);
-		std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot> snapshot =
-			gCommandExecutionRuntimeSnapshot.load(std::memory_order_acquire);
-		const UINT64 after = gCommandExecutionRuntimeSnapshotGeneration.load(
-			std::memory_order_acquire);
-		if (before == after) {
-			tlsSnapshot = std::move(snapshot);
-			tlsGeneration = after;
-			return tlsSnapshot;
-		}
-	}
-}
 
 
 // Static texture replacement table (plan step 3.1): hash of the original
@@ -622,21 +338,8 @@ inline std::atomic<UINT64> gPreSkinSrvCacheGeneration{1};
 
 void ClearPreSkinStickyMatchCache();
 
-class DX12ShaderOverridePsoMatchCache
-{
-public:
-	UINT64 generation = 0;
-	std::vector<const Bunny::ShaderOverrideConfig*> drawConfigs;
-	std::vector<const Bunny::ShaderOverrideConfig*> dispatchConfigs;
-	std::vector<Bunny::ShaderOverrideConfig> regexDrawConfigs;
-	std::vector<Bunny::ShaderOverrideConfig> regexDispatchConfigs;
-	DX12IaHashTargetPlan drawTargetPlan;
-	DX12IaHashTargetPlan drawDirectTargetPlan;
-	DX12DrawMatchUsage drawMatchUsage;
-	bool drawDirectTextureChecksOnly = false;
-};
-
-inline std::unordered_map<ID3D12PipelineState*, DX12ShaderOverridePsoMatchCache> gShaderOverridePsoMatchCache;
+// DX12ShaderOverridePsoMatchCache and gShaderOverridePsoMatchCache are declared
+// with the other config-derived state near the top of this file.
 
 class DX12TextureOverrideLookupCacheKey
 {
@@ -1045,48 +748,12 @@ inline std::unordered_map<uint64_t, std::vector<size_t>> gPreSkinMatchCsTextureO
 inline std::unordered_map<std::wstring, std::vector<std::wstring>> gExplicitMatchCsResourceSections;
 
 
-class DX12LoadedResource
+// DX12LoadedResource and gLoadedResources are declared in
+// Core/ModState/DX12LoadedResourceState.h, reached through DX12Core.h at the top
+// of this file. They used to be defined here, in the middle of a header that
+// also defined everything before them, which forced every reader of the type to
+// be textually included after this point.
 
-{
-
-public:
-	ID3D12Resource *resource = nullptr;
-	ID3D12Resource *uavResource = nullptr;
-	ID3D12Resource *srvResource = nullptr;
-	ID3D12Resource *drawSrvTextureResource = nullptr;
-	ID3D12Resource *drawSrvUploadResource = nullptr;
-	ID3D12DescriptorHeap *uavHeap = nullptr;
-	ID3D12DescriptorHeap *srvHeap = nullptr;
-	ID3D12DescriptorHeap *drawSrvHeap = nullptr;
-	std::map<UINT64, ID3D12DescriptorHeap*> drawSrvCompatibleHeaps;
-	std::map<UINT64, D3D12_CPU_DESCRIPTOR_HANDLE> drawSrvCompatibleCpus;
-	bool failed = false;
-	UINT64 byteWidth = 0;
-	UINT stride = 0;
-	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-	D3D12_CPU_DESCRIPTOR_HANDLE uavCpu = {};
-	D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = {};
-	D3D12_CPU_DESCRIPTOR_HANDLE drawSrvCpu = {};
-	bool uavValid = false;
-	// UAV validity is frame-local. Store its frame epoch instead of walking the
-	// complete resident-resource map at every Present just to clear two booleans.
-	LONG uavValidPresent = -1;
-	bool uavBarrierPending = false;
-	UINT64 uavByteWidth = 0;
-	UINT uavStride = 0;
-	UINT64 srvByteWidth = 0;
-	UINT srvStride = 0;
-	DXGI_FORMAT drawSrvFormat = DXGI_FORMAT_UNKNOWN;
-	UINT drawSrvWidth = 0;
-	UINT drawSrvHeight = 0;
-	UINT drawSrvMipLevels = 0;
-	D3D12_RESOURCE_STATES uavState = D3D12_RESOURCE_STATE_COPY_DEST;
-	std::wstring name;
-	std::wstring path;
-};
-
-
-inline std::unordered_map<std::wstring, DX12LoadedResource> gLoadedResources;
 
 class DX12RetiredLoadedResource
 
@@ -1373,9 +1040,9 @@ inline DX12PreSkinDescriptorRing gPreSkinDescriptorRing;
 
 inline std::deque<DX12RetiredPreSkinDescriptorHeap> gRetiredPreSkinDescriptorHeaps;
 
-inline constexpr UINT PreSkinDescriptorRingInitialCapacity = 4096;
-
-inline constexpr UINT PreSkinDescriptorRingMaximumCapacity = 1000000;
+// PreSkinDescriptorRingInitialCapacity / PreSkinDescriptorRingMaximumCapacity
+// are declared in Core/ModState/DX12DrawSrvMirrorState.h with the draw-SRV
+// mirror state that shares the ring limits.
 
 
 class DX12PreSkinPendingSubmission
@@ -1410,6 +1077,11 @@ public:
 
 
 inline SRWLOCK gPreSkinRetireLock = SRWLOCK_INIT;
+
+// RetirePreSkinDescriptorHeap is declared in
+// Core/ModState/DX12DrawSrvMirrorState.h, whose session state releases its heap
+// through it; that header must be includable on its own, so the declaration
+// lives there rather than here.
 
 inline std::unordered_map<IUnknown*, DX12PreSkinPendingSubmission> gPendingPreSkinSubmissions;
 
@@ -1553,8 +1225,6 @@ void RetirePreSkinResourceForCommandList(
 
 
 
-void RetirePreSkinDescriptorHeap(ID3D12DescriptorHeap *heap);
-
 // Ring-heap recycling helpers (defined in DX12PreSkinRuntime.cpp); the
 // bundle mirror sessions adopt retired heaps through the same drain checks.
 bool IsPreSkinRingHeapReusableLocked(
@@ -1563,8 +1233,9 @@ void ClearPreSkinHeapCompletionPointsLocked(
 	ID3D12DescriptorHeap *heap, std::vector<ID3D12Fence*> *fencesOut);
 
 
-void RetainPreSkinDescriptorHeapForCommandList(
-	ID3D12GraphicsCommandList *commandList, ID3D12DescriptorHeap *heap);
+// RetainPreSkinDescriptorHeapForCommandList is declared in
+// Core/ModState/DX12DrawSrvMirrorState.h, whose mirror state retains session
+// heaps through it.
 
 
 void DX12ModNotifyCommandListsSubmitted(
@@ -1580,12 +1251,8 @@ void DX12ModRunPresentMaintenance();
 void ReleasePreSkinDescriptorRingLocked(DX12PreSkinReleaseBatch *releaseBatch);
 
 
-bool EnsurePreSkinDescriptorRingLocked(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList, UINT requiredDescriptors,
-	D3D12_CPU_DESCRIPTOR_HANDLE *cpuBase,
-	D3D12_GPU_DESCRIPTOR_HANDLE *gpuBase,
-	UINT *increment,
-	ID3D12DescriptorHeap **heapOut);
+// EnsurePreSkinDescriptorRingLocked is declared in
+// Core/ModState/DX12DrawSrvMirrorState.h with the rest of the ring interface.
 
 
 enum class DX12PsoKind
@@ -1888,9 +1555,6 @@ void DX12ModScheduleInitialLoad(const wchar_t *configPath);
 
 
 void DX12ModMaybeRunDeferredInitialLoad();
-
-
-bool ReadFileBytes(const wchar_t *path, std::vector<unsigned char> *data);
 
 
 void ReleaseStoredPso(DX12StoredPso *record);
@@ -2516,24 +2180,14 @@ std::wstring ResolveResourcePath(
 	bool rootFallback);
 
 
-std::wstring ResolveResourcePathLocked(
-	const Bunny::ResourceConfig &config, bool rootFallback);
+// ResolveResourcePath is declared in Core/ModState/DX12ModRuntimeState.h with
+// gBaseDir, which it resolves against. The one-line ResolveResourcePathLocked
+// wrapper that used to sit here named the "already holding gModLock" contract
+// for a single call site; that site now reads gBaseDir directly.
 
 
 bool ResourceConfigLooksLikeBuffer(const Bunny::ResourceConfig &config);
 
-
-bool LoadResourceBytes(
-	const Bunny::ResourceConfig &config, const std::wstring &baseDir,
-	std::vector<unsigned char> *bytes, std::wstring *path);
-
-
-DX12LoadedResource *EnsureLoadedResourceForPreSkin(
-	ID3D12Device *device, const std::wstring &name);
-
-#include "DX12DrawTextureSrvViewUtils.h"
-
-#include "DX12WicTextureDecodeUtils.h"
 
 // Frame-boundary breadcrumb (see DX12CommandListExecutor.cpp). A relaxed store
 // of a static string literal: no allocation, no lock, no log traffic, so it can
@@ -2549,8 +2203,6 @@ void DX12LogFrameBoundaryStage();
 #else
 static inline void DX12LogFrameBoundaryStage() {}
 #endif
-
-#include "DX12DdsTextureLoadUtils.h"
 
 
 // Exported upload-channel state for the ExecuteCommandLists wrapper: the game
@@ -2688,19 +2340,8 @@ bool DX12ResolveStaticIaReplacement(
 	D3D12_VERTEX_BUFFER_VIEW *outVertexView);
 
 // Bundle draw-SRV replacement (DX12BundleSrvMirror.h, included below):
-// ApplyPending/Restore branch to these on bundle lists.
-inline bool DX12ModApplyDrawSrvReplacementBundle(
-	ID3D12Device *device,
-	ID3D12GraphicsCommandList *commandList,
-	DX12ModIaReplacement *replacement,
-	bool executeOriginalDraw);
-inline void DX12ModRestoreDrawSrvReplacementBundle(
-	ID3D12GraphicsCommandList *commandList,
-	DX12ModIaReplacement *replacement);
-
-#include "DX12DrawSrvReplacementUtils.h"
-
-#include "DX12BundleSrvMirror.h"
+// ApplyPending/Restore branch to these on bundle lists. Both are declared in
+// DX12DrawSrvReplacementUtils.h, which is what calls them.
 
 
 UINT64 DescriptorViewSize(const DX12DescriptorSummary &descriptor);
@@ -3326,24 +2967,12 @@ void MoveExpiredRetiredLoadedResourcesLocked(
 	std::vector<DX12RetiredLoadedResource> *expired);
 
 
-void ReleaseLoadedResourceObjects(DX12LoadedResource *resource);
-
-
 DX12IaHashState EmptyIaHashState();
 
-bool ApplyPendingResourceViewsForCommandList(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
-	const DX12IaHashState &iaState,
-	const std::vector<DX12PendingResourceViewRequest> &requests,
-	DX12ModIaReplacement *replacement);
-
-bool RunNamedCommandList(
-	ID3D12Device *device,
-	ID3D12GraphicsCommandList *commandList,
-	const std::wstring &name,
-	DX12ModIaReplacement *replacement,
-	std::vector<DX12PendingResourceViewRequest> *pendingResourceViews);
-
+// ApplyPendingResourceViewsForCommandList is declared in
+// ModRuntime/DX12CommandListExecutor.h, which owns it.
+// RunNamedCommandList / RunNamedCommandListVmOnly are file-local to
+// DX12CommandListExecutor.cpp and are not declared anywhere.
 
 bool TextureOverrideMatchCsSatisfied(
 	const Bunny::TextureOverrideConfig &config,
@@ -3510,19 +3139,15 @@ void StoreIaTargetTextureOverrideCache(
 	const std::vector<DX12TextureOverrideMatch> &matches);
 
 
-const DX12IaBufferHash *FindIaVertexSlot(const DX12IaHashState &iaState, uint32_t slot);
+// FindIaVertexSlot is declared in ModRuntime/DX12CommandListExecutor.h, which
+// is where it is used across translation units.
 
 
 bool TargetStageIsCompute(Bunny::CommandListShaderStage stage);
 
 
-D3D12_DESCRIPTOR_RANGE_TYPE DescriptorRangeTypeForTarget(
-	Bunny::CommandListTargetKind kind);
-
-
-bool DescriptorBindingMatchesTarget(
-	const DX12CurrentShaderResourceBinding &binding,
-	const Bunny::CommandListTarget &target);
+// DescriptorRangeTypeForTarget / DescriptorBindingMatchesTarget are declared in
+// ModRuntime/DX12TextureOverrideMatching.h, which owns them.
 
 
 uint32_t HashDescriptorBinding(
@@ -3716,18 +3341,8 @@ void ApplyIaResourceBarriers(
 	ID3D12GraphicsCommandList *commandList, const DX12IaResourceViewSnapshot &snapshot);
 
 
-bool AppendResourceViewsForCommandList(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList, const DX12IaHashState &iaState,
-	const std::wstring &indexResource,
-	const std::vector<DX12CompiledVertexResourceBinding> &vertexResources,
-	DX12ModIaReplacement *replacement);
-
-
-bool ApplyPendingResourceViewsForCommandList(
-	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
-	const DX12IaHashState &iaState,
-	const std::vector<DX12PendingResourceViewRequest> &requests,
-	DX12ModIaReplacement *replacement);
+// AppendResourceViewsForCommandList / ApplyPendingResourceViewsForCommandList
+// are declared in ModRuntime/DX12CommandListExecutor.h, which owns them.
 
 
 void AppendTextureOverrideMatches(
@@ -3741,13 +3356,8 @@ void SortTextureOverrideMatches(
 	std::vector<DX12TextureOverrideMatch> *matches);
 
 
-bool FindTargetTextureOverride(
-	ID3D12GraphicsCommandList *commandList,
-	const DX12IaHashState &iaState, const Bunny::CommandListTarget &target,
-	uint32_t vertexCount, uint32_t indexCount, uint32_t instanceCount,
-	uint32_t firstVertex, uint32_t firstIndex, uint32_t firstInstance,
-	std::vector<DX12TextureOverrideMatch> *matches,
-	const std::vector<DX12CurrentShaderResourceBinding> *preResolvedGraphicsSrvs = nullptr);
+// FindTargetTextureOverride is declared in
+// ModRuntime/DX12TextureOverrideMatching.h, which owns it.
 
 
 bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
@@ -3790,293 +3400,27 @@ bool DX12ModIaStateDefinitelyHasNoCandidate(
 bool DX12ModIaPrefilterCountSensitive();
 
 
-inline const DX12CommandExecutionRuntimeSnapshot *
-LoadCommandExecutionRuntimeSnapshot()
-{
-	// See LoadTextureOverrideRuntimeSnapshot: TLS-cached, generation-checked.
-	return CommandExecutionRuntimeSnapshotTlsRef().get();
-}
+// LoadCommandExecutionRuntimeSnapshot is declared in
+// Core/ModState/DX12CommandRuntimeSnapshot.h with the snapshot it borrows.
 
 
-// Ownership-taking variant for callers that must hold the snapshot beyond
-// the current query (e.g. executor member caches). One refcount copy from
-// the TLS cache; NOT for per-draw hot paths.
-inline std::shared_ptr<const DX12CommandExecutionRuntimeSnapshot>
-SnapshotCommandExecutionRuntimeShared()
-{
-	return CommandExecutionRuntimeSnapshotTlsRef();
-}
-
-
-bool CommandListRuntimeEffectLocked(
-	const DX12CommandExecutionRuntimeSnapshot *snapshot,
-	const std::wstring &name);
-
-
-bool CommandListRuntimeEffectLocked(
-	const DX12CommandExecutionRuntimeSnapshot *snapshot,
-	const std::wstring &name,
-	bool includePost);
-
-
-
-bool CommandListRuntimeEffect(
-	const std::wstring &name, bool includePost);
-
-
-
-inline std::shared_ptr<const Bunny::CommandListConfig>
-SnapshotCommandListConfig(const std::wstring &name)
-{
-	const DX12CommandExecutionRuntimeSnapshot *snapshot =
-		LoadCommandExecutionRuntimeSnapshot();
-	if (!snapshot)
-		return nullptr;
-	auto it = snapshot->commandLists.find(name);
-	return it == snapshot->commandLists.end() ? nullptr : it->second;
-}
-
-
-void AppendResolvedDescriptorPrefilterSectionIds(
-	const std::vector<DX12TriggeredTextureOverride> &source,
-	std::vector<uint32_t> *sectionIds);
-
-
-bool HasPotentialResolvedDescriptorPrefilterCandidates(
-	const DX12CommandExecutionRuntimeSnapshot &snapshot,
-	uint32_t vertexCount,
-	uint32_t indexCount);
-
-
-void CollectResolvedDescriptorPrefilterSectionIds(
-	const DX12CommandExecutionRuntimeSnapshot &snapshot,
-	uint32_t vertexCount,
-	uint32_t indexCount,
-	std::vector<uint32_t> *sectionIds);
+// SnapshotCommandExecutionRuntimeShared, SnapshotCommandListConfig,
+// CommandListRuntimeEffect(Locked), AppendResolvedDescriptorPrefilterSectionIds,
+// HasPotentialResolvedDescriptorPrefilterCandidates and
+// CollectResolvedDescriptorPrefilterSectionIds are declared in
+// ModRuntime/DX12TextureOverrideMatching.h, which owns them.
 
 
 DX12IaHashState EmptyIaHashState();
 
 
-class DX12TextureOverrideTargetCacheKey
-{
-public:
-	uint32_t kind = 0;
-	uint32_t stage = 0;
-	uint32_t slot = 0;
-
-	bool operator==(const DX12TextureOverrideTargetCacheKey &other) const
-	{
-		return kind == other.kind &&
-			stage == other.stage &&
-			slot == other.slot;
-	}
-};
+// DX12TextureOverrideTargetCacheKey and its hash are declared in
+// Core/ModState/DX12CompiledPlans.h with the plan types they key on.
 
 
-class DX12TextureOverrideTargetCacheKeyHash
-{
-public:
-	size_t operator()(const DX12TextureOverrideTargetCacheKey &key) const
-	{
-		UINT64 hash = 0x4d8b2f6d9c3145a7ull;
-		hash = HashCombine64(hash, key.kind);
-		hash = HashCombine64(hash, key.stage);
-		hash = HashCombine64(hash, key.slot);
-		return static_cast<size_t>(hash ^ (hash >> 32));
-	}
-};
-
-
-class DX12DirectDescriptorPrefilterCache
-{
-public:
-	UINT64 reloadGeneration = 0;
-	ID3D12GraphicsCommandList *commandList = nullptr;
-	UINT64 descriptorQuerySerial = 0;
-	bool usesGraphicsRootRevisions = false;
-	std::vector<UINT> graphicsRootParameters;
-	std::vector<UINT64> graphicsRootRevisions;
-	ID3D12DescriptorHeap *descriptorHeap = nullptr;
-	UINT64 descriptorHeapVersion = 0;
-	UINT64 textureHashGeneration = 0;
-	UINT64 targetPlanFingerprint = 0;
-	uint32_t vertexCount = 0;
-	uint32_t indexCount = 0;
-	uint32_t instanceCount = 0;
-	uint32_t firstVertex = 0;
-	uint32_t firstIndex = 0;
-	uint32_t firstInstance = 0;
-	bool hasCandidate = false;
-	std::unordered_map<
-		DX12TextureOverrideTargetCacheKey,
-		std::vector<DX12TextureOverrideMatch>,
-		DX12TextureOverrideTargetCacheKeyHash> matchesByTarget;
-
-	void Clear()
-	{
-		reloadGeneration = 0;
-		commandList = nullptr;
-		descriptorQuerySerial = 0;
-		usesGraphicsRootRevisions = false;
-		graphicsRootParameters.clear();
-		graphicsRootRevisions.clear();
-		descriptorHeap = nullptr;
-		descriptorHeapVersion = 0;
-		textureHashGeneration = 0;
-		targetPlanFingerprint = 0;
-		vertexCount = 0;
-		indexCount = 0;
-		instanceCount = 0;
-		firstVertex = 0;
-		firstIndex = 0;
-		firstInstance = 0;
-		hasCandidate = false;
-		matchesByTarget.clear();
-	}
-
-	void SetInvocation(
-		UINT64 generation,
-		ID3D12GraphicsCommandList *list,
-		const DX12SimulateContext *runtimeState,
-		UINT64 currentDescriptorQuerySerial,
-		ID3D12DescriptorHeap *currentDescriptorHeap,
-		UINT64 currentDescriptorHeapVersion,
-		UINT64 currentTextureHashGeneration,
-		UINT64 currentTargetPlanFingerprint,
-		uint32_t drawVertexCount,
-		uint32_t drawIndexCount,
-		uint32_t drawInstanceCount,
-		uint32_t drawFirstVertex,
-		uint32_t drawFirstIndex,
-		uint32_t drawFirstInstance)
-	{
-		if (MatchesInvocation(
-				generation,
-				list,
-				runtimeState,
-				currentDescriptorQuerySerial,
-				currentDescriptorHeap,
-				currentDescriptorHeapVersion,
-				currentTextureHashGeneration,
-				currentTargetPlanFingerprint,
-				drawVertexCount,
-				drawIndexCount,
-				drawInstanceCount,
-				drawFirstVertex,
-				drawFirstIndex,
-				drawFirstInstance)) {
-			return;
-		}
-		reloadGeneration = generation;
-		commandList = list;
-		descriptorQuerySerial = currentDescriptorQuerySerial;
-		usesGraphicsRootRevisions = false;
-		graphicsRootParameters.clear();
-		graphicsRootRevisions.clear();
-		descriptorHeap = currentDescriptorHeap;
-		descriptorHeapVersion = currentDescriptorHeapVersion;
-		textureHashGeneration = currentTextureHashGeneration;
-		targetPlanFingerprint = currentTargetPlanFingerprint;
-		vertexCount = drawVertexCount;
-		indexCount = drawIndexCount;
-		instanceCount = drawInstanceCount;
-		firstVertex = drawFirstVertex;
-		firstIndex = drawFirstIndex;
-		firstInstance = drawFirstInstance;
-		hasCandidate = false;
-		matchesByTarget.clear();
-	}
-
-	bool MatchesInvocation(
-		UINT64 generation,
-		ID3D12GraphicsCommandList *list,
-		const DX12SimulateContext *runtimeState,
-		UINT64 currentDescriptorQuerySerial,
-		ID3D12DescriptorHeap *currentDescriptorHeap,
-		UINT64 currentDescriptorHeapVersion,
-		UINT64 currentTextureHashGeneration,
-		UINT64 currentTargetPlanFingerprint,
-		uint32_t drawVertexCount,
-		uint32_t drawIndexCount,
-		uint32_t drawInstanceCount,
-		uint32_t drawFirstVertex,
-		uint32_t drawFirstIndex,
-		uint32_t drawFirstInstance) const
-	{
-		if (reloadGeneration != generation ||
-			commandList != list ||
-			descriptorHeap != currentDescriptorHeap ||
-			descriptorHeapVersion != currentDescriptorHeapVersion ||
-			textureHashGeneration != currentTextureHashGeneration ||
-			targetPlanFingerprint != currentTargetPlanFingerprint ||
-			vertexCount != drawVertexCount ||
-			indexCount != drawIndexCount ||
-			instanceCount != drawInstanceCount ||
-			firstVertex != drawFirstVertex ||
-			firstIndex != drawFirstIndex ||
-			firstInstance != drawFirstInstance) {
-			return false;
-		}
-		if (!usesGraphicsRootRevisions)
-			return descriptorQuerySerial == currentDescriptorQuerySerial;
-		if (!runtimeState ||
-			graphicsRootParameters.size() != graphicsRootRevisions.size())
-			return false;
-		for (size_t index = 0; index < graphicsRootParameters.size(); ++index) {
-			const UINT root = graphicsRootParameters[index];
-			if (root >= runtimeState->graphicsRootBindingRevisions.size() ||
-				runtimeState->graphicsRootBindingRevisions[root] !=
-					graphicsRootRevisions[index])
-				return false;
-		}
-		return true;
-	}
-
-	void StoreGraphicsRootDependencies(
-		const DX12SimulateContext *runtimeState,
-		bool dependenciesKnown,
-		const std::array<bool, MaxRootParameters> &rootSeen)
-	{
-		usesGraphicsRootRevisions = dependenciesKnown && runtimeState;
-		graphicsRootParameters.clear();
-		graphicsRootRevisions.clear();
-		if (!usesGraphicsRootRevisions)
-			return;
-		for (UINT root = 0; root < rootSeen.size(); ++root) {
-			if (!rootSeen[root])
-				continue;
-			graphicsRootParameters.push_back(root);
-			graphicsRootRevisions.push_back(
-				runtimeState->graphicsRootBindingRevisions[root]);
-		}
-		if (graphicsRootParameters.empty())
-			usesGraphicsRootRevisions = false;
-	}
-
-	bool MatchesInvocation(
-		UINT64 generation,
-		ID3D12GraphicsCommandList *list,
-		uint32_t drawVertexCount,
-		uint32_t drawIndexCount,
-		uint32_t drawInstanceCount,
-		uint32_t drawFirstVertex,
-		uint32_t drawFirstIndex,
-		uint32_t drawFirstInstance) const
-	{
-		return reloadGeneration == generation &&
-			commandList == list &&
-			vertexCount == drawVertexCount &&
-			indexCount == drawIndexCount &&
-			instanceCount == drawInstanceCount &&
-			firstVertex == drawFirstVertex &&
-			firstIndex == drawFirstIndex &&
-			firstInstance == drawFirstInstance;
-	}
-};
-
-
-inline thread_local DX12DirectDescriptorPrefilterCache tlsDirectDescriptorPrefilterCache;
+// DX12DirectDescriptorPrefilterCache and tlsDirectDescriptorPrefilterCache are
+// declared in Runtime/DX12ExecuteIndirectRuntime.h beside the
+// DX12TextureOverrideMatch values they cache.
 
 
 // Draw-prefilter SRV resolution cache. Collecting and hashing the current
@@ -4127,25 +3471,6 @@ void PrefilterSrvCacheStore(
 	const std::vector<DX12ResolvedGraphicsSrvBinding> &hashed);
 
 
-void ResolveGraphicsSrvBindings(
-	ID3D12GraphicsCommandList *commandList,
-	ID3D12Device *cachedDevice,
-	const std::vector<DX12CurrentShaderResourceBinding> &bindings,
-	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings);
-
-
-bool TryLoadResolvedGraphicsSrvBindings(
-	DX12SimulateContext *runtimeState,
-	UINT64 descriptorQuerySerial,
-	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings);
-
-
-void StoreResolvedGraphicsSrvBindings(
-	DX12SimulateContext *runtimeState,
-	UINT64 descriptorQuerySerial,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings);
-
-
 void FillSyntheticTextureBinding(
 	const Bunny::CommandListTarget &target,
 	ID3D12Resource *resource,
@@ -4154,19 +3479,6 @@ void FillSyntheticTextureBinding(
 	UINT height,
 	DX12CurrentShaderResourceBinding *binding);
 
-
-
-bool FindDescriptorTextureOverridesFromResolvedBindings(
-	const DX12CommandExecutionRuntimeSnapshot *snapshot,
-	const Bunny::CommandListTarget &target,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
-	uint32_t vertexCount,
-	uint32_t indexCount,
-	uint32_t instanceCount,
-	uint32_t firstVertex,
-	uint32_t firstIndex,
-	uint32_t firstInstance,
-	std::vector<DX12TextureOverrideMatch> *matches);
 
 
 void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
@@ -4179,17 +3491,9 @@ void AppendGraphicsSrvTextureOverrideCandidatesForTarget(
 		std::vector<DX12TextureOverrideMatch>,
 		DX12TextureOverrideTargetCacheKeyHash> *matchesByTarget);
 
-
-void AppendResolvedBindingsToDescriptorTextureOverrideCache(
-	const DX12CommandExecutionRuntimeSnapshot *snapshot,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> &resolvedBindings,
-	Bunny::CommandListTargetKind kind,
-	bool compute,
-	const std::vector<uint32_t> &allowedSectionIds,
-	std::unordered_map<
-		DX12TextureOverrideTargetCacheKey,
-		std::vector<DX12TextureOverrideMatch>,
-		DX12TextureOverrideTargetCacheKeyHash> *matchesByTarget);
+// FindDescriptorTextureOverridesFromResolvedBindings and
+// AppendResolvedBindingsToDescriptorTextureOverrideCache are declared in
+// ModRuntime/DX12TextureOverrideMatching.h, which owns them.
 
 
 
@@ -4202,31 +3506,16 @@ void FillSyntheticBufferBinding(
 	DX12CurrentShaderResourceBinding *binding);
 
 
-bool BuildResolvedDescriptorBindingsForResourceOverride(
-	ID3D12Device *device,
-	ID3D12GraphicsCommandList *commandList,
-	const Bunny::CommandListTarget &target,
-	const std::wstring &resourceName,
-	const std::vector<DX12ResolvedGraphicsSrvBinding> *baseBindings,
-	std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings);
+// BuildResolvedDescriptorBindingsForResourceOverride is declared in
+// ModRuntime/DX12TextureOverrideMatching.h, which owns it.
 
 // Capture mode needs ReleaseLoadedResourceObjects (declared above with the
-// loaded-resource API) plus the SRV view utilities, so it sits just before
-// the executor that calls it.
-#include "DX12DrawTextureCaptureUtils.h"
-
-#include "DX12CommandListExecutor.h"
+// loaded-resource API) plus the SRV view utilities, both of which are now
+// included from the top of this file.
 
 
-bool RunNamedCommandList(
-	ID3D12Device *device,
-	ID3D12GraphicsCommandList *commandList,
-	const std::wstring &name,
-	DX12ModIaReplacement *replacement,
-	std::vector<DX12PendingResourceViewRequest> *pendingResourceViews);
-
-
-bool RunNamedCommandListVmOnly(const std::wstring &name, bool includePost);
+// RunNamedCommandList / RunNamedCommandListVmOnly are file-local to
+// DX12CommandListExecutor.cpp; they are not part of any header.
 
 
 void ProcessDx12KeyBindingsForFrame();
@@ -4522,8 +3811,6 @@ BuildStaticReplacementSnapshotFromCompiledPlans(
 		return nullptr;
 	return std::make_shared<const DX12ModIaReplacement>(replacement);
 }
-
-#include "DX12ShaderOverrideIaTargetPlanUtils.h"
 
 
 bool ShaderOverrideNegativeCacheEnabled(

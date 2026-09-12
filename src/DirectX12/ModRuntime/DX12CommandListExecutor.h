@@ -1,7 +1,49 @@
 #pragma once
 
-// DX12CommandListExecutor.h - part of DX12ModRuntimeInternal.h, included from it at the split position.
-// Not meant to be included directly.
+// Mod command-list execution: run a [CommandList] section's actions against the
+// game's command list, resolving texture-override targets as it goes.
+//
+// This used to be a fragment spliced into ModRuntime/DX12ModRuntimeInternal.h
+// at a fixed line, which meant it could only see the declarations that happened
+// to precede that line. It now carries its own includes and can be read on its
+// own.
+#include "../Config/DX12Config.h"
+#include "../DX12Core.h"
+// The draw-pre filter caches values of type DX12TextureOverrideMatch, which the
+// Runtime layer owns. This header is a mod-runtime/hook consumer, so reaching
+// that layer is fine here; a Core header must not do the same.
+#include "../Runtime/DX12ExecuteIndirectRuntime.h"
+#include "DX12CustomShaderElementState.h"
+#include "DX12CustomShaderRegisters.h"
+#include "DX12DrawSrvReplacementUtils.h"
+#include "DX12DrawTextureCaptureUtils.h"
+#include "DX12TextureOverrideMatching.h"
+
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+
+// Entry points of this module, defined in DX12CommandListExecutor.cpp. They are
+// declared here rather than in the mod-runtime internal header, so this header
+// names its own interface instead of depending on its splice position.
+bool AppendResourceViewsForCommandList(
+	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
+	const DX12IaHashState &iaState,
+	const std::wstring &indexResource,	const std::vector<DX12CompiledVertexResourceBinding> &vertexResources,
+	DX12ModIaReplacement *replacement);
+
+bool ApplyPendingResourceViewsForCommandList(
+	ID3D12Device *device, ID3D12GraphicsCommandList *commandList,
+	const DX12IaHashState &iaState,
+	const std::vector<DX12PendingResourceViewRequest> &requests,
+	DX12ModIaReplacement *replacement);
+
+// Look up one vertex-buffer slot in a recorded IA state. Defined in
+// DX12TextureOverrideMatching.cpp; declared here because the executor resolves
+// per-slot strides through it.
+const DX12IaBufferHash *FindIaVertexSlot(
+	const DX12IaHashState &iaState, uint32_t slot);
 
 
 class DX12CommandListExecutorScratch
