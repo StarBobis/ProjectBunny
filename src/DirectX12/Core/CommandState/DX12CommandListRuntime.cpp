@@ -997,9 +997,10 @@ bool DX12CommandListRuntime::RememberIndexBuffer(
 		return false;
 	state->ia.hasIndexBuffer = newValid;
 	state->ia.indexBuffer = view ? *view : D3D12_INDEX_BUFFER_VIEW();
-	state->ia.indexBufferHashValid = false;
-	state->ia.indexBufferHash = 0;
-	state->ia.indexBufferHashResolveGeneration = 0;
+	// The view hash memo is deliberately NOT cleared here: it is keyed by the
+	// view itself plus the buffer resolve epoch, so an entry belonging to another
+	// view simply never matches. Clearing on every bind is what made a command
+	// list re-hash a view it had hashed one draw earlier.
 	// Keep Mod-mode resident IA state lightweight: the current view must stay
 	// resident across unrelated PSOs, but GPUVA->resource resolution is only
 	// needed when a later draw actually builds an IA-targeted override key.
@@ -1063,9 +1064,9 @@ bool DX12CommandListRuntime::RememberVertexBuffers(
 			continue;
 		ia.hasVertexBuffer[slot] = newValid;
 		ia.vertexBuffers[slot] = newView;
-		ia.vertexBufferHashValid[slot] = false;
-		ia.vertexBufferHashes[slot] = 0;
-		ia.vertexBufferHashResolveGeneration[slot] = 0;
+		// See RememberIndexBuffer: the per-slot memo is keyed by the view, so it
+		// must survive a rebind or the slot's two alternating views evict each
+		// other on every draw.
 		// See RememberIndexBuffer: resident Mod state keeps the live view here and
 		// resolves the backing resource lazily only for IA-targeted override work.
 		ia.vertexBufferResolved[slot] = false;
@@ -1296,37 +1297,35 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(DX12ActiveIaState
 {
 	if (!ia || !ia->hasIndexBuffer)
 		return 0;
-	if (!ia->indexBuffer.BufferLocation || !ia->indexBuffer.SizeInBytes)
+	const D3D12_INDEX_BUFFER_VIEW &view = ia->indexBuffer;
+	if (!view.BufferLocation || !view.SizeInBytes)
 		return 0;
-	// Validity is the buffer resolve epoch plus the slot's own view-change
-	// invalidation (RememberIndexBuffer clears this entry whenever the bound
-	// view differs). The buffer content generation is deliberately not part of
-	// the test: DX12HashIaBufferContentView is metadata-only, so a CPU content
-	// write cannot change this value, and gBufferContentGeneration moves for
-	// unrelated buffers on nearly every frame.
 	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
-	if (ia->indexBufferHashValid &&
-	    ia->indexBufferHashResolveGeneration == resolveGeneration) {
+	const UINT strideOrFormat = static_cast<UINT>(view.Format);
+	uint32_t hash = 0;
+	bool epochMoved = false;
+	if (ia->indexBufferHashMemo.Find(view.BufferLocation, view.SizeInBytes,
+			strideOrFormat, resolveGeneration, &hash, &epochMoved)) {
 		DX12_PROF_COUNT("Rm.IaViewHashSlotReuse");
-		return ia->indexBufferHash;
+		return hash;
 	}
-	// Split by cause: an entry that is invalid was cleared by a view change
-	// (RememberIndexBuffer) and has to be hashed, while a valid entry with a
-	// moved resolve epoch may still be answered by the wrapper-level cache.
-	if (ia->indexBufferHashValid)
+	// Split by cause: the same view under a moved resolve epoch may still be
+	// answered by the wrapper-level cache, while a different view has to be
+	// hashed.
+	if (epochMoved)
 		DX12_PROF_COUNT("Rm.IaViewHashRebuildEpochMoved");
 	else
 		DX12_PROF_COUNT("Rm.IaViewHashRebuildViewChanged");
 	DX12_PROF_COUNT("Rm.IaViewHashSlotRebuild");
-	ia->indexBufferHash = DX12HashIaBufferContentView(
-		ia->indexBuffer.BufferLocation,
-		ia->indexBuffer.SizeInBytes,
+	hash = DX12HashIaBufferContentView(
+		view.BufferLocation,
+		view.SizeInBytes,
 		0,
-		static_cast<UINT>(ia->indexBuffer.Format),
+		strideOrFormat,
 		0);
-	ia->indexBufferHashValid = true;
-	ia->indexBufferHashResolveGeneration = resolveGeneration;
-	return ia->indexBufferHash;
+	ia->indexBufferHashMemo.Store(view.BufferLocation, view.SizeInBytes,
+		strideOrFormat, resolveGeneration, hash);
+	return hash;
 }
 
 uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
@@ -1338,22 +1337,25 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 	const D3D12_VERTEX_BUFFER_VIEW &view = ia->vertexBuffers[slot];
 	if (!view.BufferLocation || !view.SizeInBytes)
 		return 0;
-	// Validity is the buffer resolve epoch plus the slot's own view-change
-	// invalidation (RememberVertexBuffers clears this entry whenever the bound
-	// view differs). The buffer content generation is deliberately not part of
-	// the test: DX12HashIaBufferContentView is metadata-only, so a CPU content
-	// write cannot change this value, and gBufferContentGeneration moves for
-	// unrelated buffers on nearly every frame.
+	// Validity is the view fields plus the buffer resolve epoch, held in a
+	// two-way memo so the A/B alternation the game records into one slot does
+	// not evict itself every draw (see DX12IaViewHashMemo). The buffer content
+	// generation is deliberately not part of the test: DX12HashIaBufferContentView
+	// is metadata-only, so a CPU content write cannot change this value, and
+	// gBufferContentGeneration moves for unrelated buffers on nearly every frame.
 	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
-	if (ia->vertexBufferHashValid[slot] &&
-	    ia->vertexBufferHashResolveGeneration[slot] == resolveGeneration) {
+	DX12IaViewHashMemo &memo = ia->vertexBufferHashMemos[slot];
+	uint32_t hash = 0;
+	bool epochMoved = false;
+	if (memo.Find(view.BufferLocation, view.SizeInBytes, view.StrideInBytes,
+			resolveGeneration, &hash, &epochMoved)) {
 		DX12_PROF_COUNT("Rm.IaViewHashSlotReuse");
-		return ia->vertexBufferHashes[slot];
+		return hash;
 	}
-	// Split by cause: an entry that is invalid was cleared by a view change
-	// (RememberVertexBuffers) and has to be hashed, while a valid entry with a
-	// moved resolve epoch may still be answered by the wrapper-level cache.
-	if (ia->vertexBufferHashValid[slot])
+	// Split by cause: the same view under a moved resolve epoch may still be
+	// answered by the wrapper-level cache, while a different view has to be
+	// hashed.
+	if (epochMoved)
 		DX12_PROF_COUNT("Rm.IaViewHashRebuildEpochMoved");
 	else
 		DX12_PROF_COUNT("Rm.IaViewHashRebuildViewChanged");
@@ -1370,12 +1372,11 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 			resolveGeneration,
 			&wrapperHash)) {
 		DX12_PROF_COUNT("Rm.IaViewHashWrapperHit");
-		ia->vertexBufferHashes[slot] = wrapperHash;
-		ia->vertexBufferHashValid[slot] = true;
-		ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
+		memo.Store(view.BufferLocation, view.SizeInBytes, view.StrideInBytes,
+			resolveGeneration, wrapperHash);
 		return wrapperHash;
 	}
-	ia->vertexBufferHashes[slot] = DX12HashIaBufferContentView(
+	const uint32_t built = DX12HashIaBufferContentView(
 		view.BufferLocation,
 		view.SizeInBytes,
 		view.StrideInBytes,
@@ -1387,10 +1388,10 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 		view.StrideInBytes,
 		slot,
 		resolveGeneration,
-		ia->vertexBufferHashes[slot]);
-	ia->vertexBufferHashValid[slot] = true;
-	ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
-	return ia->vertexBufferHashes[slot];
+		built);
+	memo.Store(view.BufferLocation, view.SizeInBytes, view.StrideInBytes,
+		resolveGeneration, built);
+	return built;
 }
 
 bool DX12CommandListRuntime::BuildIaHashStateForTargetsCached(
