@@ -340,7 +340,6 @@ class RuntimeConfig
 {
 public:
 	bool dx12ProxyMode = true;
-	bool dx12SafeMode = false;
 	int dx12ConfigInitializationDelayMs = 2000;
 
 	// On-screen profiling HUD. 0 = off, 1 = the full-screen Snapshot view,
@@ -455,10 +454,8 @@ inline void MigotoConfig::ReadLoaderConfig()
 inline void MigotoConfig::ReadRuntimeConfig()
 {
 	MigotoConfigReader::ReadBool(mIni, L"DX12", L"proxy_mode", &mRuntime.dx12ProxyMode);
-	MigotoConfigReader::ReadBool(mIni, L"DX12", L"safe_mode", &mRuntime.dx12SafeMode);
 	MigotoConfigReader::ReadInt(mIni, L"DX12", L"config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
 	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_proxy_mode", &mRuntime.dx12ProxyMode);
-	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_safe_mode", &mRuntime.dx12SafeMode);
 	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
 
 	// Profiling HUD. Both section spellings are accepted, matching the existing

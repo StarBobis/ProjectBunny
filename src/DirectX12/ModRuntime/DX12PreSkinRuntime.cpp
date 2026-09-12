@@ -5557,8 +5557,7 @@ public:
 
 bool DX12ModShouldProbePreSkinningForCs(uint64_t computeShaderHash)
 {
-	if (gDx12SafeMode != 0 ||
-		gHasTextureOverrides == 0 ||
+	if (gHasTextureOverrides == 0 ||
 		gHasShaderTriggeredTextureOverrides == 0 ||
 		gHasPreSkinTextureOverrideCandidates == 0)
 		return false;

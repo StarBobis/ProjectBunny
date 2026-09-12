@@ -99,15 +99,13 @@ bool DX12ModNeedsShaderDescriptorTracking()
 bool DX12ModHasActiveTextureOverrides()
 {
 	return gHasTextureOverrides != 0 &&
-		   gHasShaderTriggeredTextureOverrides != 0 &&
-		   gDx12SafeMode == 0;
+		   gHasShaderTriggeredTextureOverrides != 0;
 }
 
 
 bool DX12ModHasConfiguredTextureOverrides()
 {
-	return gHasTextureOverrides != 0 &&
-		   gDx12SafeMode == 0;
+	return gHasTextureOverrides != 0;
 }
 
 
@@ -120,9 +118,6 @@ bool DX12ModNeedsPresentReplacement()
 
 UINT32 DX12ModGetHotPathFlags()
 {
-	if (gDx12SafeMode != 0)
-		return 0;
-
 	UINT32 flags = 0;
 	const bool hasShaderOverrides =
 		gHasShaderOverrides != 0 || gHasShaderRegexes != 0;

@@ -80,7 +80,6 @@ public:
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
 		if (ConfigLoaded) {
-			DX12ModSetSafeMode(Config.Runtime().dx12SafeMode);
 			gDeferredInitialModLoadDelayMs =
 				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
 			// Applied before the first Present so a configured HUD is up from
@@ -92,9 +91,8 @@ public:
 				static_cast<LONG>(Config.Runtime().dx12ProfilingIntervalMs),
 				Config.Runtime().dx12ProfilingLogBuckets);
 			DX12_LOG("DX12Config",
-				"\"path\":\"%S\",\"safeMode\":%s,\"configInitializationDelayMs\":%lu",
+				"\"path\":\"%S\",\"configInitializationDelayMs\":%lu",
 				Config.Path().c_str(),
-				Config.Runtime().dx12SafeMode ? "true" : "false",
 				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
 			DX12ModScheduleInitialLoad(Config.Path().c_str());
 			DX12OverlayStatusState::SetStatus(

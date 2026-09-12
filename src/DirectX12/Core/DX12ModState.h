@@ -19,7 +19,6 @@ bool DX12ModRuntimeLoad(
 	bool *hasErrors = nullptr);
 bool DX12ModRuntimeReload();
 void DX12ModRefreshRuntimeStateAfterReload();
-void DX12ModSetSafeMode(bool safeMode);
 uint64_t DX12ModHashShaderBytecode(const void *data, size_t size);
 bool DX12ModReplaceShaderBytecode(
 	const char *stage, const D3D12_SHADER_BYTECODE &source,

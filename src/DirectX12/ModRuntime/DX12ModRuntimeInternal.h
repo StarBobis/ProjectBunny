@@ -612,8 +612,6 @@ UINT64 MakePreSkinUavMatchCacheKey(
 	ID3D12GraphicsCommandList *commandList, uint64_t csHash, UINT64 bindingHash,
 	UINT64 bindingDependencyFingerprint);
 
-inline volatile LONG gDx12SafeMode = 0;
-
 inline volatile LONG gPresentCommandListExecutedPresent = -1;
 
 inline volatile UINT64 gPreSkinActiveGeneration = 1;
@@ -1910,9 +1908,6 @@ void DeepCopyComputeDesc(
 
 
 uint64_t DX12ModHashShaderBytecode(const void *data, size_t size);
-
-
-void DX12ModSetSafeMode(bool safeMode);
 
 
 bool IsVlrBufferResizeCandidate(

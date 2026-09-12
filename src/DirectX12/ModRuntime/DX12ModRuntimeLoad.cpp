@@ -339,12 +339,6 @@ bool ReadFileBytes(const wchar_t *path, std::vector<unsigned char> *data)
 }
 
 
-void DX12ModSetSafeMode(bool safeMode)
-{
-	InterlockedExchange(&gDx12SafeMode, safeMode ? 1 : 0);
-}
-
-
 bool IsVlrBufferResizeCandidate(
 	const D3D12_RESOURCE_DESC &desc, const DX12VertexLimitRaiseConfig &vlr)
 {
@@ -1238,7 +1232,6 @@ bool DX12ModRuntimeLoad(
 	size_t loadedTextureOverrideCount = 0;
 	size_t loadedResourceCount = 0;
 	size_t loadedCommandListCount = 0;
-	bool safeModeActive = false;
 	bool activeShaderOverrides = false;
 	bool activeTextureOverrides = false;
 	bool preSkinProbeEnabled = false;
@@ -1543,14 +1536,12 @@ bool DX12ModRuntimeLoad(
 	loadedPreSkinTextureOverrideCandidates = hasPreSkinTextureOverrideCandidates;
 	loadedShaderTriggeredTextureOverrides = hasShaderTriggeredTextureOverrides;
 	loadedPresentRuntimeEffect = presentRuntimeEffect;
-	safeModeActive = gDx12SafeMode != 0;
-	activeShaderOverrides = !safeModeActive &&
-		(!gShaderOverrides.empty() || hasExecutableShaderRegexes);
+	activeShaderOverrides =
+		!gShaderOverrides.empty() || hasExecutableShaderRegexes;
 	activeTextureOverrides =
-		!safeModeActive && !gTextureOverrides.empty() &&
-		hasShaderTriggeredTextureOverrides;
+		!gTextureOverrides.empty() && hasShaderTriggeredTextureOverrides;
 	preSkinProbeEnabled =
-		!safeModeActive && hasShaderTriggeredTextureOverrides &&
+		hasShaderTriggeredTextureOverrides &&
 		hasPreSkinTextureOverrideCandidates;
 	loadedShaderFixesDir = gShaderFixesDir;
 	loadedVertexLimitRaiseConfigs = gVertexLimitRaiseConfigs;
@@ -1567,10 +1558,9 @@ bool DX12ModRuntimeLoad(
 	ClearPreSkinRuntimeState();
 
 	DX12_LOG("DX12ModRuntime",
-		"\"status\":\"loaded\",\"path\":\"%S\",\"iniFiles\":%zu,\"errors\":%zu,\"warnings\":%zu,\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"safeMode\":%s,\"activeShaderOverrides\":%s,\"activeTextureOverrides\":%s,\"shaderTriggeredTextureOverrides\":%s,\"descriptorTextureOverrideTriggers\":%s,\"preSkinCandidates\":%s,\"preSkinProbeEnabled\":%s,\"presentRuntimeEffect\":%s,\"shaderFixes\":\"%S\",\"generation\":%llu",
+		"\"status\":\"loaded\",\"path\":\"%S\",\"iniFiles\":%zu,\"errors\":%zu,\"warnings\":%zu,\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"resources\":%zu,\"commandLists\":%zu,\"activeShaderOverrides\":%s,\"activeTextureOverrides\":%s,\"shaderTriggeredTextureOverrides\":%s,\"descriptorTextureOverrideTriggers\":%s,\"preSkinCandidates\":%s,\"preSkinProbeEnabled\":%s,\"presentRuntimeEffect\":%s,\"shaderFixes\":\"%S\",\"generation\":%llu",
 		configPath ? configPath : L"", iniLoad.loadedFiles.size(), iniLoad.errors.size(), iniLoad.warnings.size(),
 		loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount, loadedResourceCount, loadedCommandListCount,
-		safeModeActive ? "true" : "false",
 		activeShaderOverrides ? "true" : "false",
 		activeTextureOverrides ? "true" : "false",
 		loadedShaderTriggeredTextureOverrides ? "true" : "false",
@@ -1580,15 +1570,6 @@ bool DX12ModRuntimeLoad(
 		loadedPresentRuntimeEffect ? "true" : "false",
 		loadedShaderFixesDir.c_str(),
 		static_cast<unsigned long long>(loadedGeneration));
-	if (safeModeActive &&
-	    (loadedShaderOverrideCount || loadedShaderRegexCount ||
-	     loadedTextureOverrideCount || loadedPresentRuntimeEffect)) {
-		DX12_LOG("DX12ModRuntimeDisabled",
-			"\"reason\":\"safe_mode\",\"shaderOverrides\":%zu,\"shaderRegexes\":%zu,\"textureOverrides\":%zu,\"preSkinCandidates\":%s,\"presentRuntimeEffect\":%s",
-			loadedShaderOverrideCount, loadedShaderRegexCount, loadedTextureOverrideCount,
-			loadedPreSkinTextureOverrideCandidates ? "true" : "false",
-			loadedPresentRuntimeEffect ? "true" : "false");
-	}
 	for (const std::wstring &loadedFile : iniLoad.loadedFiles) {
 		DX12_LOG("DX12ModRuntimeIni",
 			"\"status\":\"loaded\",\"path\":\"%S\"", loadedFile.c_str());
