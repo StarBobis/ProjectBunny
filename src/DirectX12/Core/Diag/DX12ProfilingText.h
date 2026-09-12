@@ -207,7 +207,22 @@ struct DX12ProfilingClassify
 			!strcmp(name, "Wait.event"))
 			return true;
 		// The game's real ExecuteCommandLists, executed from inside our hook.
-		return !strncmp(name, "Queue.original", 14);
+		if (!strncmp(name, "Queue.original", 14))
+			return true;
+		// Driver work timed from inside one of our wrappers: the paired
+		// "<api>.Original" scope of every Create.*Wrapper is the call that goes
+		// into the driver (CopyDescriptors, CreateHeap, CreateCommittedResource),
+		// and WrapperLifetime.DriverRelease is the Release cascade a wrapper's
+		// destructor triggers. Both are real time on the frame, but they are not
+		// ours to optimise - and reading them as ours is what sent this session
+		// after a global lock that turned out not to be the cost.
+		const size_t length = strlen(name);
+		static const char kOriginalSuffix[] = ".Original";
+		constexpr size_t kOriginalLength = sizeof(kOriginalSuffix) - 1;
+		if (length > kOriginalLength &&
+			!strcmp(name + length - kOriginalLength, kOriginalSuffix))
+			return true;
+		return strstr(name, "WrapperLifetime.DriverRelease") != nullptr;
 	}
 
 	// Time a thread spent blocked rather than working: our own worker threads

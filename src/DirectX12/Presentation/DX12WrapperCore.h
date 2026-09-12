@@ -556,13 +556,22 @@ namespace DX12WrapperDetail
 				ReleaseSRWLockExclusive(&gWrapperLock);
 			}
 
-			if (mIdentity) {
-				mIdentity->Release();
-				mIdentity = nullptr;
-			}
-			if (mObject) {
-				mObject->Release();
-				mObject = nullptr;
+			// Releasing the wrapped objects runs the driver's own destruction work
+			// (and can cascade into more wrappers). That is why this parent scope
+			// reported 1.5-1.7 ms per frame for a handful of calls: the time was
+			// the driver's, not the registry's. Its own scope makes the split
+			// visible, and WrapperLifetime.DriverRelease is classified as
+			// observed-only so it cannot rank as our cost.
+			{
+				DX12_PROF_CREATE_SCOPE(WrapperLifetime, DriverRelease);
+				if (mIdentity) {
+					mIdentity->Release();
+					mIdentity = nullptr;
+				}
+				if (mObject) {
+					mObject->Release();
+					mObject = nullptr;
+				}
 			}
 		}
 
