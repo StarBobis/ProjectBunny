@@ -125,14 +125,33 @@ public:
 		mBackW = static_cast<float>(width);
 		mBackH = static_cast<float>(height);
 
-		// The HUD snapshot is read unconditionally: its version is part of the
-		// content key, and reading it is a single interlocked load.
-		char report[DX12ProfilingHud::kTextBytes] = {};
-		size_t reportLength = 0;
+		// The HUD snapshot lives in a member rather than a stack buffer: it is
+		// read only when the writer published a new version (once per profiling
+		// interval), while the geometry that was built from it is reused on
+		// every frame in between - including frames whose content key moved for
+		// another reason, which must not blank the panel.
+		//
+		// kRefreshFrames > 1 re-checks the published version at most every N
+		// frames. It saves nothing measurable, because an unchanged report is
+		// already free (the content key covers the version), so it defaults to
+		// 1 = every frame and exists only for the case where the HUD's own
+		// record cost shows up in a measurement.
+		bool refresh = true;
+		if constexpr (DX12ProfilingLayout::kRefreshFrames > 1)
+			refresh = (++mHudFrameCounter %
+				DX12ProfilingLayout::kRefreshFrames) == 0;
 		const UINT64 reportVersion = DX12ProfilingHud::CurrentVersion();
-		if (DX12ProfilingHud::IsEnabled() && reportVersion != mHudTextVersion)
-			DX12ProfilingHud::AcquireLatest(
-				&mHudTextVersion, report, sizeof(report), &reportLength);
+		const bool hudEnabled = DX12ProfilingHud::IsEnabled();
+		if (hudEnabled && refresh && reportVersion != mHudTextVersion) {
+			size_t length = 0;
+			if (DX12ProfilingHud::AcquireLatest(
+				&mHudTextVersion, mHudReport, sizeof(mHudReport), &length)) {
+				mHudReportLength = length;
+				IndexReport(mHudReport, mHudReportLength);
+			}
+		}
+		const char *report = mHudReport;
+		const size_t reportLength = hudEnabled ? mHudReportLength : 0;
 
 		const UINT64 contentKey = ContentKey(
 			text, hunting, notice, noticeColor, reportVersion, width, height);
@@ -259,14 +278,20 @@ private:
 		float r, g, b, a;
 	};
 
-	static constexpr size_t kMaxChars = 3072;
+	// One quad per character of one frame's overlay text. The profiling report
+	// is by far the largest producer: three columns of up to 76 characters over
+	// up to 67 rows plus the title is a little over 10000 glyphs, so this has to
+	// stay clear of DX12ProfilingLayout::kMaxReportChars or the tail of the
+	// report would be silently dropped by EmitQuad.
+	static constexpr size_t kMaxChars = 12288;
 	// Slot count is GPU-latency headroom only: every slot is rewritten strictly
 	// after its previous submission retired (AcquireVertexSlot drops the frame
 	// otherwise), so extra slots trade upload-heap bytes for fewer dropped text
 	// frames while the GPU is behind. With content-generation caching a slot is
 	// only rewritten when the text actually changed, so the ring is rarely
-	// exercised at all.
-	static constexpr UINT kVertexSlotCount = 6;
+	// exercised at all - and it now holds four times the geometry it used to,
+	// which is why four slots is the better trade than six.
+	static constexpr UINT kVertexSlotCount = 4;
 	static constexpr UINT kVertexSlotBytes = kMaxChars * 4 * sizeof(TextVertex);
 	// The index buffer is 16-bit, and each quad consumes four vertices: the
 	// highest index emitted is kMaxChars*4-1, so the buffer overflows the
@@ -298,14 +323,45 @@ private:
 	static constexpr UINT kSolidCell = kGlyphCount; // first free cell
 	static_assert(kSolidCell < kAtlasRows * kAtlasCols,
 		"the solid-quad cell must exist inside the atlas grid");
-	// HUD panel geometry. The panel is anchored top-left and padded to a fixed
-	// number of rows, so a report that grows or shrinks between intervals
-	// cannot make the centred hunting text jump.
-	static constexpr int kHudMaxRows = 44;
+	// HUD panel geometry. All of it is derived from the layout constants in
+	// DX12ProfilingHud.h - font scale, row gap and column x fractions - so the
+	// on-screen result is described in exactly one place.
+	static constexpr float kHudFontScale = DX12ProfilingLayout::kHudFontScale;
+	static constexpr float kHudRowGap = DX12ProfilingLayout::kHudRowGapPx;
 	static constexpr float kHudBackdropAlpha = 0.75f;
 	static constexpr float kHudPadding = 4.0f;
 	static constexpr float kHudColor[4] = { 0.93f, 0.79f, 0.30f, 1.0f }; // goldenrod
 	static constexpr float kHudBackdrop[4] = { 0.0f, 0.0f, 0.0f, kHudBackdropAlpha };
+	// Rows one report may carry; the formatter's own budget, restated here so
+	// the row index below cannot be overrun by a longer block.
+	static constexpr int kHudMaxReportRows = DX12ProfilingLayout::kMaxReportLines;
+	// Column segments one row may carry - the report's column count.
+	static constexpr int kHudRowSegments = DX12ProfilingLayout::kColumnCount;
+	// Fraction of the screen height held back for the hunting text while
+	// hunting is on. The panel is drawn first and the hunting text starts below
+	// it - including two lines pinned to the bottom edge - so without a reserve
+	// a full-height report would both push that text off the screen and print
+	// the pinned lines on top of the report's last rows. Set this to 0.0f to
+	// give the profiling HUD the whole screen even while hunting, accepting
+	// that the hunting text then has nowhere to go; save profiling screenshots
+	// with hunting off and this never matters.
+	static constexpr float kHudHuntReserveFrac = 0.30f;
+
+	// One screen row's worth of a report line: the text of up to one segment
+	// per column, each with the column it belongs to. Segment text points into
+	// mHudReport, so it stays valid until the next report is published.
+	struct HudSegment
+	{
+		const char *text = nullptr;
+		size_t length = 0;
+		int column = 0;
+	};
+
+	struct HudRow
+	{
+		HudSegment segment[kHudRowSegments];
+		int segments = 0;
+	};
 
 	explicit DX12InGameTextOverlay(ID3D12Device *device)
 		: mDevice(device)
@@ -923,6 +979,15 @@ float4 PSMain(PSIn input) : SV_TARGET
 		float u1 = 0.0f;
 		float v1 = 0.0f;
 		GlyphUv(cell, &u0, &v0, &u1, &v1);
+		EmitQuadUv(px, py, w, h, u0, v0, u1, v1, color);
+	}
+
+	void EmitQuadUv(
+		float px, float py, float w, float h,
+		float u0, float v0, float u1, float v1, const float color[4])
+	{
+		if (mVertices.size() + 4 > kMaxChars * 4)
+			return;
 		const float x1 = px + w;
 		const float y1 = py + h;
 		mVertices.push_back({ px, py, u0, v0, color[0], color[1], color[2], color[3] });
@@ -937,6 +1002,34 @@ float4 PSMain(PSIn input) : SV_TARGET
 			ch = L'?';
 		EmitQuad(px, py, mCellW, mCellH,
 			static_cast<UINT>(ch - kFirstGlyph), color);
+	}
+
+	// A glyph drawn at a fraction of its atlas cell. The HUD uses this to fit
+	// three columns of rows on screen; the hunting text keeps the unscaled
+	// path above, so its appearance is unchanged.
+	//
+	// The half-texel UV inset matters: a quad smaller than its cell would
+	// otherwise let the bilinear tap at the cell edge reach the next glyph in
+	// the atlas row and print a sliver of it.
+	void EmitCharScaled(wchar_t ch, float px, float py, float scale, const float color[4])
+	{
+		if (ch < kFirstGlyph || ch >= kFirstGlyph + kGlyphCount)
+			ch = L'?';
+		float u0 = 0.0f;
+		float v0 = 0.0f;
+		float u1 = 0.0f;
+		float v1 = 0.0f;
+		GlyphUv(static_cast<UINT>(ch - kFirstGlyph), &u0, &v0, &u1, &v1);
+		if (scale < 1.0f) {
+			const float du = 0.5f / static_cast<float>(mAtlasW);
+			const float dv = 0.5f / static_cast<float>(mAtlasH);
+			u0 += du;
+			u1 -= du;
+			v0 += dv;
+			v1 -= dv;
+		}
+		EmitQuadUv(px, py, mCellW * scale, mCellH * scale,
+			u0, v0, u1, v1, color);
 	}
 
 	// A filled rectangle. All four corners sample the *centre* of the reserved
@@ -965,11 +1058,15 @@ float4 PSMain(PSIn input) : SV_TARGET
 	}
 
 	// The report is ASCII, so a byte maps straight onto a glyph.
-	void EmitAsciiLine(const char *text, size_t length, float px, float py, const float color[4])
+	void EmitAsciiLine(
+		const char *text, size_t length, float px, float py,
+		float scale, const float color[4])
 	{
+		const float cellW = mCellW * scale;
 		for (size_t i = 0; i < length; ++i)
-			EmitChar(static_cast<wchar_t>(static_cast<unsigned char>(text[i])),
-				px + i * mCellW, py, color);
+			EmitCharScaled(
+				static_cast<wchar_t>(static_cast<unsigned char>(text[i])),
+				px + i * cellW, py, scale, color);
 	}
 
 	float EmitLineCentered(const wchar_t *line, float py, const float color[4])
@@ -1010,13 +1107,23 @@ float4 PSMain(PSIn input) : SV_TARGET
 	}
 
 	// ------------------------------------------------------------------
-	// Profiling panel: a translucent backdrop sized to the widest line with
-	// the report drawn on top, anchored top-left. The backdrop height uses a
-	// grow-only high-water mark for the current view, so a report that gains
-	// or loses a row between intervals cannot make the centred hunting text
-	// below it drift; switching views resets the mark.
+	// Profiling panel: the full-screen three-column report.
+	//
+	// Every report line carries the column it belongs to as a leading marker
+	// byte (DX12ProfilingLayout::kColumnMark + index); a line without one is a
+	// full-width title. Columns start at fixed fractions of the usable width,
+	// so 1080p, 1440p and ultrawide differ only in how many characters fit and
+	// never in where a column begins.
+	//
+	// Rows that do not fit above the bottom margin are dropped here rather
+	// than left to the formatter's row budget: the formatter cannot know the
+	// back-buffer height, and a report cut off by the screen edge would hide
+	// whole columns. The backdrop height uses a grow-only high-water mark for
+	// the current view, so a report that gains or loses a row between intervals
+	// cannot make the centred hunting text below it drift.
 	// ------------------------------------------------------------------
-	float EmitProfilingPanel(const char *report, size_t reportLength, float topY)
+	float EmitProfilingPanel(
+		const char *report, size_t reportLength, float topY, bool hunting)
 	{
 		if (!report || !reportLength)
 			return topY;
@@ -1029,67 +1136,90 @@ float4 PSMain(PSIn input) : SV_TARGET
 			mHudRowPad = 0;
 		}
 
-		const UINT rows = CountLines(report, reportLength);
-		const size_t widest = WidestLine(report, reportLength);
-		if (!rows || !widest)
+		const float cellH = mCellH * kHudFontScale;
+		const float lineH = cellH + kHudRowGap;
+		const float panelBottom = hunting
+			? topY + (mBackH - 2.0f * kTextMarginY) * (1.0f - kHudHuntReserveFrac)
+			: mBackH - kTextMarginY;
+		const int maxRows = static_cast<int>(
+			(panelBottom - topY - 2.0f * kHudPadding) / lineH);
+		// Row count comes from the row index built when the report was
+		// published (a trailing newline ends the last row instead of starting
+		// an empty one).
+		const int rows = mHudReportRows;
+		if (rows <= 0 || maxRows <= 0)
 			return topY;
-		if (static_cast<int>(rows) > mHudRowPad)
-			mHudRowPad = static_cast<int>(rows);
+		if (rows > mHudRowPad)
+			mHudRowPad = rows;
+		if (mHudRowPad > maxRows)
+			mHudRowPad = maxRows;
 
-		const float lineH = mCellH + kLineGap;
-		const float panelW = widest * mCellW + 2.0f * kHudPadding;
+		const float usable = mBackW - 2.0f * kTextMarginX;
 		const float panelH = mHudRowPad * lineH + 2.0f * kHudPadding;
-		EmitSolid(kTextMarginX, topY, panelW, panelH, kHudBackdrop);
+		EmitSolid(kTextMarginX, topY, usable, panelH, kHudBackdrop);
 
-		float y = topY + kHudPadding;
+		const int visible = rows < maxRows ? rows : maxRows;
+		const float textTop = topY + kHudPadding;
 		const float textX = kTextMarginX + kHudPadding;
-		for (const char *line = report; line && *line;) {
-			const char *end = static_cast<const char *>(memchr(line, '\n',
-				reportLength - static_cast<size_t>(line - report)));
-			const size_t length = end
-				? static_cast<size_t>(end - line)
-				: reportLength - static_cast<size_t>(line - report);
-			EmitAsciiLine(line, length, textX, y, kHudColor);
-			y += lineH;
-			if (!end)
-				break;
-			line = end + 1;
+		for (int row = 0; row < visible; ++row) {
+			const HudRow &content = mHudReportRow[row];
+			const float y = textTop + row * lineH;
+			for (int segment = 0; segment < content.segments; ++segment) {
+				const HudSegment &piece = content.segment[segment];
+				EmitAsciiLine(piece.text, piece.length,
+					textX + usable * DX12ProfilingLayout::kColumnX[piece.column],
+					y, kHudFontScale, kHudColor);
+			}
 		}
 		return topY + panelH;
 	}
 
-	static UINT CountLines(const char *text, size_t length)
+	// Splits the report once per change into rows of column segments, dropping
+	// the marker bytes from the text itself: scanning the block per frame would
+	// be wasted work on a render thread, and the block only changes when the
+	// writer publishes.
+	void IndexReport(const char *report, size_t reportLength)
 	{
-		if (!text || !length)
-			return 0;
-		UINT rows = 1;
-		for (size_t i = 0; i < length; ++i) {
-			if (text[i] != '\n')
-				continue;
-			// A trailing newline terminates the last row rather than starting
-			// an empty one.
-			if (i + 1 < length)
-				++rows;
-		}
-		return rows;
-	}
-
-	static size_t WidestLine(const char *text, size_t length)
-	{
-		size_t widest = 0;
-		size_t current = 0;
-		for (size_t i = 0; i < length; ++i) {
-			if (text[i] == '\n') {
-				if (current > widest)
-					widest = current;
-				current = 0;
-			} else {
-				++current;
+		mHudReportRows = 0;
+		const char *line = report;
+		while (line && *line && mHudReportRows < kHudMaxReportRows) {
+			const size_t offset = static_cast<size_t>(line - report);
+			const char *end = static_cast<const char *>(
+				memchr(line, '\n', reportLength - offset));
+			const char *cursor = line;
+			const char *lineEnd = end ? end : report + reportLength;
+			HudRow &row = mHudReportRow[mHudReportRows++];
+			row.segments = 0;
+			while (cursor < lineEnd && row.segments < kHudRowSegments) {
+				int column = 0;
+				if (static_cast<unsigned char>(*cursor) >=
+						DX12ProfilingLayout::kColumnMark &&
+					static_cast<unsigned char>(*cursor) <
+						DX12ProfilingLayout::kColumnMark +
+							DX12ProfilingLayout::kColumnCount) {
+					column = static_cast<int>(
+						static_cast<unsigned char>(*cursor) -
+						DX12ProfilingLayout::kColumnMark);
+					++cursor;
+				}
+				const char *next = cursor;
+				while (next < lineEnd &&
+					(static_cast<unsigned char>(*next) <
+						DX12ProfilingLayout::kColumnMark ||
+						static_cast<unsigned char>(*next) >=
+							DX12ProfilingLayout::kColumnMark +
+								DX12ProfilingLayout::kColumnCount))
+					++next;
+				HudSegment &segment = row.segment[row.segments++];
+				segment.text = cursor;
+				segment.length = static_cast<size_t>(next - cursor);
+				segment.column = column;
+				cursor = next;
 			}
+			if (!end)
+				break;
+			line = end + 1;
 		}
-		if (current > widest)
-			widest = current;
-		return widest;
 	}
 
 	// ------------------------------------------------------------------
@@ -1142,8 +1272,8 @@ float4 PSMain(PSIn input) : SV_TARGET
 
 		// The panel is drawn first so the text it carries lands on top, and so
 		// the hunting text below it can start after the panel's full height.
-		if (DX12ProfilingHud::IsEnabled() && reportLength)
-			y = EmitProfilingPanel(report, reportLength, kTextMarginY);
+		if (reportLength)
+			y = EmitProfilingPanel(report, reportLength, kTextMarginY, hunting);
 
 		if (hunting) {
 			if (y > kTextMarginY)
@@ -1206,6 +1336,13 @@ float4 PSMain(PSIn input) : SV_TARGET
 	UINT mAtlasH = 0;
 	float mBackW = 0.0f;
 	float mBackH = 0.0f;
+	// Last published profiling report plus its row index. Written only when the
+	// writer publishes, read on every frame the panel is drawn.
+	char mHudReport[DX12ProfilingHud::kTextBytes] = {};
+	size_t mHudReportLength = 0;
+	HudRow mHudReportRow[kHudMaxReportRows];
+	int mHudReportRows = 0;
+	UINT mHudFrameCounter = 0;
 
 	// --- frame-to-frame reuse -------------------------------------------
 	// The key of the geometry currently sitting in the upload heap, the slot

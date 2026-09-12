@@ -331,6 +331,12 @@ public:
 		DX12HotPathState::skipBindings.store(skipBindings, std::memory_order_relaxed);
 		DX12HotPathState::skipGraphicsBindings.store(skipGraphicsBindings, std::memory_order_relaxed);
 		HookWorkFlags.store(flags, std::memory_order_relaxed);
+		// Display mirror for the profiling HUD's header line, which cannot
+		// include this header (this file reaches DX12Diag through
+		// DX12CommandState, so DX12Diag cannot reach back). It is written only
+		// where the word itself is written - that is, only when the state
+		// actually changed - and nothing in the hot path reads it.
+		DX12ProfilingHud::PublishHookWorkFlags(flags);
 
 		const LONG mask =
 			(skipAll ? 1 : 0) |

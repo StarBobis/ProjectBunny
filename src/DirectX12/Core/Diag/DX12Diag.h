@@ -217,6 +217,16 @@ public:
 		LONG64 totalUs = 0;
 		LONG64 maxUs = 0;
 		LONG64 items = 0;
+		// The same samples, restricted to those taken while this bucket was the
+		// outermost instrumented scope on its thread. totalUs counts a nested
+		// scope once per enclosing scope as well (a draw is Api.X, Stage.DrawHook,
+		// Stage.DrawOverride and Stage.DrawOvIaStateNegCache at the same time),
+		// which is why summing totalUs over every bucket is an upper bound that
+		// can exceed the frame. rootUs counts each sample exactly once, so the
+		// HUD's OUR TOTAL is a sum over rootUs instead. Nothing about how a
+		// sample is recorded changed: this is a second accumulator, and the
+		// bucket grows from 56 to exactly 64 bytes because of the padding.
+		LONG64 rootUs = 0;
 		UINT kind = 0;
 	};
 
@@ -237,9 +247,19 @@ public:
 	// the ~0.22 the 512-slot table had when only ~110 names existed.
 	static constexpr UINT kMergedBuckets = 2048;   // power of two
 	static constexpr UINT kScopeStackDepth = 32;
-	// Default summary interval; the HUD/log cadence is runtime-configurable
-	// through DX12ProfilingControl::SetIntervalFrames.
-	static constexpr LONG kSummaryIntervalFrames = 60;
+	// Depth of the RAII-scope bracket counter (see EnterScope). Only RAII
+	// scopes consume it - Begin/End pairs bracket through the positional stack
+	// itself - so 32 is far above anything a call tree reaches. It is a clamp,
+	// not an assertion: an unbalanced pair may only make the counter drift
+	// towards zero, which over-counts the root total instead of silently
+	// reporting that our code is free.
+	static constexpr UINT kMaxNestDepth = 32;
+	// Default summary interval. The number itself now lives next to the rest of
+	// the window policy in DX12ProfilingHud::kWindowFrames: the window is
+	// shared between the logger and the HUD - one window produces both sinks'
+	// numbers - so it is defined where both can see it and there is no second
+	// copy of it here.
+	static constexpr LONG kSummaryIntervalFrames = DX12ProfilingHud::kWindowFrames;
 
 	struct alignas(64) ThreadTable
 	{
@@ -251,6 +271,21 @@ public:
 	{
 		Bucket *bucket = nullptr;
 		LONGLONG startQpc = 0;
+		// Whether this Begin opened at the top of the instrumented call tree.
+		// Captured at Begin time because the positional stack cannot tell after
+		// the fact, and End() has no name to consult.
+		bool root = false;
+	};
+
+	// Where a scope instance sits in the instrumented call tree, taken once at
+	// construction. It answers the one question the report needs - "is this
+	// sample already inside another one?" - and doubles as the "was a bracket
+	// taken" state the destructor needs to release it.
+	enum class Bracket : unsigned char
+	{
+		None,   // not entered at all (profiling off, or the thread table is full)
+		Root,   // opened at the top of the tree: this sample is nobody's child
+		Nested, // opened inside another instrumented scope
 	};
 
 	class Scope
@@ -262,17 +297,28 @@ public:
 			if (!mBucket)
 				return;
 			++mBucket->calls;
+			// The bracket is taken before the clock is read and it outlives
+			// Pause/Resume/Finish: it describes the lexical region, not the
+			// accumulated interval. A paused scope is still open, so work done
+			// inside it while it is paused is still its child's work.
+			mBracket = EnterScope();
 			mStartQpc = QpcNow();
 			mRunning = true;
 		}
 
-		~Scope() { Finish(); }
+		// Destructor releases the bracket even if the clock was already
+		// finished or paused, so the counter can only ever be balanced.
+		~Scope()
+		{
+			Finish();
+			LeaveScope(mBracket);
+		}
 
 		void Pause()
 		{
 			if (!mRunning)
 				return;
-			AccumulateUs(mBucket, mStartQpc, QpcNow());
+			AccumulateUs(mBucket, mStartQpc, QpcNow(), mBracket);
 			mRunning = false;
 		}
 
@@ -288,7 +334,7 @@ public:
 		{
 			if (!mRunning)
 				return;
-			AccumulateUs(mBucket, mStartQpc, QpcNow());
+			AccumulateUs(mBucket, mStartQpc, QpcNow(), mBracket);
 			mRunning = false;
 		}
 
@@ -298,6 +344,7 @@ public:
 	private:
 		Bucket *mBucket = nullptr;
 		LONGLONG mStartQpc = 0;
+		Bracket mBracket = Bracket::None;
 		bool mRunning = false;
 	};
 
@@ -315,16 +362,22 @@ public:
 				++mBucketA->calls;
 			if (mBucketB)
 				++mBucketB->calls;
+			mBracket = EnterScope();
 			mStartQpc = QpcNow();
 		}
 
 		~ScopePair()
 		{
+			LeaveScope(mBracket);
 			if (!mBucketA && !mBucketB)
 				return;
 			const LONGLONG endQpc = QpcNow();
-			AccumulateUs(mBucketA, mStartQpc, endQpc);
-			AccumulateUs(mBucketB, mStartQpc, endQpc);
+			// One interval under two names. Only the first one is the canonical
+			// view of it, so only it contributes to the de-duplicated root
+			// total; the second would otherwise add the same microseconds to
+			// OUR TOTAL a second time.
+			AccumulateUs(mBucketA, mStartQpc, endQpc, mBracket);
+			AccumulateUs(mBucketB, mStartQpc, endQpc, Bracket::Nested);
 		}
 
 		ScopePair(const ScopePair &) = delete;
@@ -334,6 +387,7 @@ public:
 		Bucket *mBucketA = nullptr;
 		Bucket *mBucketB = nullptr;
 		LONGLONG mStartQpc = 0;
+		Bracket mBracket = Bracket::None;
 	};
 
 	// --- time helpers ---------------------------------------------------
@@ -395,9 +449,14 @@ public:
 			++bucket->calls;
 	}
 
+	// Point measurements (AddUs and friends) are bracketed too: they are timed
+	// at whatever depth the caller happens to be at, so one taken inside a
+	// scope is that scope's child and must not be added to OUR TOTAL on its
+	// own. One taken with nothing open - Present's own bookkeeping, the
+	// collector flush - is a root sample and counts.
 	static void AddUs(const char *name, LONG64 us)
 	{
-		AddUsToBucket(FindBucket(name, nullptr, 0), us);
+		AddUsToBucket(FindBucket(name, nullptr, 0), us, RootScope());
 	}
 
 	static void AddUsItems(const char *name, LONG64 us, LONG64 items)
@@ -406,7 +465,7 @@ public:
 		// shape) re-ran the hash and the probe chain on a path whose callers
 		// are per-submit hot sites.
 		Bucket *bucket = FindBucket(name, nullptr, 0);
-		AddUsToBucket(bucket, us);
+		AddUsToBucket(bucket, us, RootScope());
 		if (bucket)
 			bucket->items += items;
 	}
@@ -430,6 +489,8 @@ public:
 			return;
 		++bucket->calls;
 		bucket->totalUs += us;
+		if (RootScope())
+			bucket->rootUs += us;
 		if (us > bucket->maxUs)
 			bucket->maxUs = us;
 		bucket->items += items;
@@ -442,9 +503,14 @@ public:
 			return;
 		++bucket->calls;
 		if (sScopeDepth < kScopeStackDepth) {
+			// "Root" is simply "nothing was open when this Begin ran": the
+			// RAII counter for any Scope/ScopePair the caller is inside, and
+			// this stack's own depth (still zero before the push below).
+			const bool root = RootScope();
 			ScopeStackEntry &entry = sScopeStack[sScopeDepth++];
 			entry.bucket = bucket;
 			entry.startQpc = QpcNow();
+			entry.root = root;
 		}
 	}
 
@@ -454,7 +520,8 @@ public:
 		if (sScopeDepth == 0)
 			return;
 		const ScopeStackEntry entry = sScopeStack[--sScopeDepth];
-		AccumulateUs(entry.bucket, entry.startQpc, QpcNow());
+		AccumulateUs(entry.bucket, entry.startQpc, QpcNow(),
+			entry.root ? Bracket::Root : Bracket::Nested);
 	}
 
 	// --- instrumented SRW locks -------------------------------------------
@@ -605,19 +672,22 @@ private:
 		return nullptr;
 	}
 
-	static void AccumulateUs(Bucket *bucket, LONGLONG startQpc, LONGLONG endQpc)
+	static void AccumulateUs(
+		Bucket *bucket, LONGLONG startQpc, LONGLONG endQpc, Bracket bracket)
 	{
 		if (!bucket || endQpc <= startQpc)
 			return;
 		const LONG64 us = DeltaUs(startQpc, endQpc);
 		bucket->totalUs += us;
+		if (bracket == Bracket::Root)
+			bucket->rootUs += us;
 		if (us > bucket->maxUs)
 			bucket->maxUs = us;
 	}
 
 	// Shared tail of AddUs/AddUsItems so a caller that needs both counters
 	// pays for one bucket lookup instead of two.
-	static void AddUsToBucket(Bucket *bucket, LONG64 us)
+	static void AddUsToBucket(Bucket *bucket, LONG64 us, bool root)
 	{
 		if (!bucket)
 			return;
@@ -625,8 +695,37 @@ private:
 			us = 0;
 		++bucket->calls;
 		bucket->totalUs += us;
+		if (root)
+			bucket->rootUs += us;
 		if (us > bucket->maxUs)
 			bucket->maxUs = us;
+	}
+
+	// --- scope nesting -------------------------------------------------------
+	// Every scope kind brackets its region with EnterScope/LeaveScope, so a
+	// sample knows whether it was taken at the top of the instrumented tree or
+	// inside somebody else's region. RAII scopes use the counter below;
+	// Begin/End pairs bracket through the positional stack they already keep,
+	// which is why they cannot leak it.
+	static bool RootScope()
+	{
+		return sScopeDepth == 0 && sNestDepth == 0;
+	}
+
+	static Bracket EnterScope()
+	{
+		const Bracket bracket = RootScope() ? Bracket::Root : Bracket::Nested;
+		if (sNestDepth < kMaxNestDepth)
+			++sNestDepth;
+		return bracket;
+	}
+
+	static void LeaveScope(Bracket bracket)
+	{
+		if (bracket == Bracket::None)
+			return;
+		if (sNestDepth > 0)
+			--sNestDepth;
 	}
 
 	// --- frame ring (SPSC: render thread produces, writer thread consumes) ---
@@ -658,12 +757,24 @@ private:
 		if (!pulses.empty())
 			DX12DiagLog::WriteDirect(pulses.data(), pulses.size());
 		if (!force && sWindowFrames > 0) {
-			// Cadence is wall-clock based rather than frame-count based, so the
-			// report rate is the same at 60 and at 144 fps. The window's summed
-			// present-to-present interval is its elapsed time.
-			const LONG64 intervalUs =
-				static_cast<LONG64>(DX12ProfilingHud::IntervalMs()) * 1000;
-			if (sWindowFrameIntervalUs < intervalUs)
+			// The window is counted in frames, not milliseconds: only a fixed
+			// frame count makes two reports comparable and keeps `max` (a
+			// window maximum) stable. A wall-clock window held 15 frames at
+			// 30fps and 72 at 144fps, so the same bucket reported a different
+			// peak in every session and the HUD's whole spike column moved
+			// with the frame rate instead of with the code.
+			//
+			// The time cap is a liveness floor only - a session too slow to
+			// reach the target still refreshes - and it is floored by
+			// kWindowMinFrames so it can never shrink the window back to the
+			// 15-frame sample this replaced. Its summed present-to-present
+			// interval is the window's own elapsed time.
+			const bool framesReached =
+				sWindowFrames >= DX12ProfilingHud::kWindowFrames;
+			const bool fallbackReached =
+				sWindowFrames >= DX12ProfilingHud::kWindowMinFrames &&
+				sWindowFrameIntervalUs >= DX12ProfilingHud::WindowFallbackUs();
+			if (!framesReached && !fallbackReached)
 				return;
 		}
 		if (sWindowFrames <= 0)
@@ -677,6 +788,10 @@ private:
 		sWindowFrameIntervalUs += record.frameIntervalUs;
 		sWindowOutsideUs += record.outsideUs;
 		sWindowPresentWallUs += record.presentWallUs;
+		// The present-wall max is display-only (the HUD's frame block), which is
+		// the same kind of window aggregate as the frame-wall max below.
+		if (record.presentWallUs > sWindowMaxPresentWallUs)
+			sWindowMaxPresentWallUs = record.presentWallUs;
 		const LONG64 frameWallUs = record.outsideUs + record.presentWallUs;
 		sWindowFrameWallUs += frameWallUs;
 		if (frameWallUs > sWindowMaxFrameWallUs)
@@ -725,6 +840,10 @@ private:
 	inline static volatile LONG sMergedFull = 0;
 	inline static thread_local ScopeStackEntry sScopeStack[kScopeStackDepth] = {};
 	inline static thread_local UINT sScopeDepth = 0;
+	// Open RAII scopes on this thread. Separate from sScopeDepth because the
+	// two brackets nest through different mechanisms and both have to be zero
+	// for a sample to count as a root sample.
+	inline static thread_local UINT sNestDepth = 0;
 
 	static constexpr UINT kFrameRingCapacity = 16;
 	inline static DX12DiagFrameRecord sFrameRing[kFrameRingCapacity] = {};
@@ -742,6 +861,7 @@ private:
 	inline static LONG64 sWindowFrameIntervalUs = 0;
 	inline static LONG64 sWindowOutsideUs = 0;
 	inline static LONG64 sWindowPresentWallUs = 0;
+	inline static LONG64 sWindowMaxPresentWallUs = 0;
 	inline static LONG64 sWindowFrameWallUs = 0;
 	inline static LONG64 sWindowMaxFrameWallUs = 0;
 	inline static DX12DiagFrameRecord sWindowLast;
@@ -1322,6 +1442,7 @@ inline void DX12DiagProf::DrainThreadTables(Bucket *merged, UINT *mergedCount)
 				continue;
 			const LONG64 calls = InterlockedExchange64(&src.calls, 0);
 			const LONG64 totalUs = InterlockedExchange64(&src.totalUs, 0);
+			const LONG64 rootUs = InterlockedExchange64(&src.rootUs, 0);
 			const LONG64 maxUs = InterlockedExchange64(&src.maxUs, 0);
 			const LONG64 items = InterlockedExchange64(&src.items, 0);
 			if (!calls && !totalUs && !items)
@@ -1331,6 +1452,7 @@ inline void DX12DiagProf::DrainThreadTables(Bucket *merged, UINT *mergedCount)
 				continue;
 			dst->calls += calls;
 			dst->totalUs += totalUs;
+			dst->rootUs += rootUs;
 			if (maxUs > dst->maxUs)
 				dst->maxUs = maxUs;
 			dst->items += items;
@@ -1400,6 +1522,7 @@ inline void DX12DiagProf::ResetWindow()
 	sWindowFrameIntervalUs = 0;
 	sWindowOutsideUs = 0;
 	sWindowPresentWallUs = 0;
+	sWindowMaxPresentWallUs = 0;
 	sWindowFrameWallUs = 0;
 	sWindowMaxFrameWallUs = 0;
 	sWindowLast = DX12DiagFrameRecord();
@@ -1444,6 +1567,11 @@ inline DX12ProfilingWindow DX12DiagProf::BuildWindowReport(
 	w.outsidePresentUs = sWindowOutsideUs;
 	w.presentWallUs = sWindowPresentWallUs;
 	w.maxFrameWallUs = sWindowMaxFrameWallUs;
+	w.maxPresentWallUs = sWindowMaxPresentWallUs;
+	// Which work the hooks were asked to do, straight from the published gate
+	// word: the header line has to state it, because every number below it
+	// means something different depending on it.
+	w.hookWorkFlags = DX12ProfilingHud::HookWorkFlags();
 
 	// Present slices. Known = every "Present.*" bucket except the three
 	// post-original runtime details, mirroring the legacy classification.
@@ -1496,6 +1624,26 @@ inline DX12ProfilingWindow DX12DiagProf::BuildWindowReport(
 	w.presentLeaveCalls = MergedCalls(merged, mergedCount, "Present.leave");
 	w.presentWallMinusKnownUs = w.presentWallUs > w.presentKnownUs
 		? w.presentWallUs - w.presentKnownUs : 0;
+
+	// Our two totals, summed here rather than in the formatter so both sinks
+	// print the same numbers from the same pass. The row rules are the time
+	// table's: no sub-keyed CPU-stage rows (they are a separate section, not
+	// table rows), no zero-time rows, and the game's own Present/Wait excluded.
+	// See DX12ProfilingWindow for what root and all mean.
+	for (UINT i = 0; i < kMergedBuckets; ++i) {
+		const Bucket &bucket = merged[i];
+		if (!bucket.name || bucket.sub || bucket.totalUs <= 0)
+			continue;
+		if (DX12ProfilingClassify::ObservedOnly(bucket.name))
+			continue;
+		w.ourAllUs += bucket.totalUs;
+		++w.ourAllRows;
+		if (bucket.rootUs > 0 &&
+			!DX12ProfilingClassify::WaitOnly(bucket.name)) {
+			w.ourRootUs += bucket.rootUs;
+			++w.ourRootRows;
+		}
+	}
 
 	// Queue slices: wall stages own both the call count and the list count.
 	w.queueFlowTotalUs =
@@ -1569,6 +1717,9 @@ inline void DX12DiagProf::EmitFrameTimeline(
 		"\"frames\":%ld,"
 		"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,\"outsidePresentUs\":%lld,"
 		"\"presentWallUs\":%lld,\"maxFrameWallUs\":%lld,"
+		"\"ourRootUs\":%lld,\"ourAllUs\":%lld,"
+		"\"ourRootRows\":%ld,\"ourAllRows\":%ld,"
+		"\"windowTargetFrames\":%ld,"
 		"\"presentSliceKnownUs\":%lld,\"presentOriginalUs\":%lld,"
 		"\"presentPostOriginalRuntimeUs\":%lld,"
 		"\"presentModBeginFrameUs\":%lld,\"presentProfilingFlushUs\":%lld,"
@@ -1602,6 +1753,11 @@ inline void DX12DiagProf::EmitFrameTimeline(
 		static_cast<long long>(w.outsidePresentUs),
 		static_cast<long long>(w.presentWallUs),
 		static_cast<long long>(w.maxFrameWallUs),
+		static_cast<long long>(w.ourRootUs),
+		static_cast<long long>(w.ourAllUs),
+		static_cast<long>(w.ourRootRows),
+		static_cast<long>(w.ourAllRows),
+		static_cast<long>(DX12ProfilingHud::kWindowFrames),
 		static_cast<long long>(w.presentKnownUs),
 		static_cast<long long>(w.presentOriginalUs),
 		static_cast<long long>(w.presentPostOriginalRuntimeUs),
@@ -1949,6 +2105,7 @@ inline UINT DX12DiagProf::BuildRankedRows(
 		row.totalUs = bucket.totalUs;
 		row.maxUs = bucket.maxUs;
 		row.items = bucket.items;
+		row.rootUs = bucket.rootUs;
 	}
 	std::sort(rows, rows + count,
 		[](const DX12ProfilingRow &lhs, const DX12ProfilingRow &rhs) {

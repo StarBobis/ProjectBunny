@@ -343,10 +343,11 @@ public:
 	bool dx12SafeMode = false;
 	int dx12ConfigInitializationDelayMs = 2000;
 
-	// On-screen profiling HUD. 0 = off, 1..5 select a view (see
-	// DX12ProfilingHud::Mode). Non-zero is also what switches the profiler's
-	// sampling on in a build that has no diagnostic log, so the default of 0
-	// keeps a ordinary Release session free of instrumentation cost.
+	// On-screen profiling HUD. 0 = off, 1 = the full-screen Snapshot view,
+	// 2..6 = the older single-column views (see DX12ProfilingHud::Mode).
+	// Non-zero is also what switches the profiler's sampling on in a build that
+	// has no diagnostic log, so the default of 0 keeps a ordinary Release
+	// session free of instrumentation cost.
 	int dx12ProfilingHud = 0;
 	// Report cadence in milliseconds; also the log's aggregation window.
 	int dx12ProfilingIntervalMs = 500;
