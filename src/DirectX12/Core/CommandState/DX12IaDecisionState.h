@@ -4,116 +4,21 @@
 // Split out of Core/DX12CommandState.h; include that umbrella header from existing code.
 #include "../DX12Diagnostics.h"
 
-// Per-slot memo of the IA view hash (DX12HashIaBufferContentView).
-//
-// Two ways, not one, because the game re-records different draws into the same
-// IA slot alternately (draw A binds buffer X, draw B binds Y, and the next frame
-// does it again). A single entry was invalidated by every one of those binds, so
-// a command list re-hashed a view it had already hashed one draw earlier.
-// Measured on the profiled title: 1156 rebuilds per frame, 100% of them
-// attributed to a view change and none to a moved resolve epoch, costing 1.50 ms
-// per frame (4.2% of frame time) - and every rebuild first walks a shard-locked
-// wrapper lookup and, on a miss there, a full buffer resolve.
-//
-// Validity is the view fields plus the buffer resolve epoch, which is exactly
-// what the single entry used: the hash is metadata-only, so a CPU content write
-// cannot change it, and a recycled GPU VA shows up as a moved epoch.
-class DX12IaViewHashMemo
-{
-public:
-	static constexpr int kWayCount = 2;
-
-	class Way
-	{
-	public:
-		UINT64 bufferLocation = 0;
-		UINT64 sizeInBytes = 0;
-		// Stride for a vertex view, Format for an index view: whichever the
-		// hashed view carries.
-		UINT strideOrFormat = 0;
-		UINT64 resolveGeneration = 0;
-		uint32_t hash = 0;
-		bool valid = false;
-	};
-
-	// `epochMoved` tells "this exact view is bound again but the resolve epoch
-	// moved" apart from "a different view is bound": only the former can still be
-	// answered by the wrapper-level cache, and the counters that separated them
-	// are how the single-entry thrash above was found.
-	bool Find(UINT64 bufferLocation, UINT64 sizeInBytes, UINT strideOrFormat,
-		UINT64 resolveGeneration, uint32_t *hash, bool *epochMoved) const
-	{
-		if (hash)
-			*hash = 0;
-		if (epochMoved)
-			*epochMoved = false;
-		for (int way = 0; way < kWayCount; ++way) {
-			const Way &entry = ways[way];
-			if (!entry.valid || entry.bufferLocation != bufferLocation ||
-			    entry.sizeInBytes != sizeInBytes ||
-			    entry.strideOrFormat != strideOrFormat)
-				continue;
-			if (entry.resolveGeneration == resolveGeneration) {
-				if (hash)
-					*hash = entry.hash;
-				return true;
-			}
-			if (epochMoved)
-				*epochMoved = true;
-		}
-		return false;
-	}
-
-	void Store(UINT64 bufferLocation, UINT64 sizeInBytes, UINT strideOrFormat,
-		UINT64 resolveGeneration, uint32_t hash)
-	{
-		// A view that is already resident keeps its way and only refreshes the
-		// epoch, so re-hashing under a moved epoch does not evict its neighbour.
-		for (int way = 0; way < kWayCount; ++way) {
-			Way &entry = ways[way];
-			if (entry.valid && entry.bufferLocation == bufferLocation &&
-			    entry.sizeInBytes == sizeInBytes &&
-			    entry.strideOrFormat == strideOrFormat) {
-				entry.resolveGeneration = resolveGeneration;
-				entry.hash = hash;
-				return;
-			}
-		}
-		Way &target = ways[next];
-		target.bufferLocation = bufferLocation;
-		target.sizeInBytes = sizeInBytes;
-		target.strideOrFormat = strideOrFormat;
-		target.resolveGeneration = resolveGeneration;
-		target.hash = hash;
-		target.valid = true;
-		// Alternating rather than always replacing way 0 is what keeps the A/B
-		// alternation above resident in both ways.
-		next = (next + 1) % kWayCount;
-	}
-
-	void Clear()
-	{
-		for (int way = 0; way < kWayCount; ++way)
-			ways[way] = Way();
-		next = 0;
-	}
-
-private:
-	Way ways[kWayCount];
-	int next = 0;
-};
-
 class DX12ActiveIaState
 {
 public:
 	bool hasIndexBuffer = false;
 	D3D12_INDEX_BUFFER_VIEW indexBuffer = {};
-	DX12IaViewHashMemo indexBufferHashMemo;
+	bool indexBufferHashValid = false;
+	uint32_t indexBufferHash = 0;
+	UINT64 indexBufferHashResolveGeneration = 0;
 	bool indexBufferResolved = false;
 	DX12BufferResourceSummary indexBufferResource = {};
 	bool hasVertexBuffer[32] = {};
 	D3D12_VERTEX_BUFFER_VIEW vertexBuffers[32] = {};
-	DX12IaViewHashMemo vertexBufferHashMemos[32];
+	bool vertexBufferHashValid[32] = {};
+	uint32_t vertexBufferHashes[32] = {};
+	UINT64 vertexBufferHashResolveGeneration[32] = {};
 	bool vertexBufferResolved[32] = {};
 	DX12BufferResourceSummary vertexBufferResources[32] = {};
 	bool preSkinRedirectNegativeValid[32] = {};

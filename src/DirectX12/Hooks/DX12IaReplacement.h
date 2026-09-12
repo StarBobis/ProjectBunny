@@ -1604,10 +1604,7 @@ public:
 					}
 					ia.indexBuffer = ia.indexBufferStaticOriginal;
 					ia.hasIndexBuffer = true;
-					// The resident view changed behind the recorder's back, so
-					// drop this slot's memo rather than reason about which of its
-					// two ways still describes the restored binding.
-					ia.indexBufferHashMemo.Clear();
+					ia.indexBufferHashValid = false;
 					ia.indexBufferResolved = false;
 					ia.indexBufferResource = DX12BufferResourceSummary();
 					ia.indexBufferStaticReplaced = false;
@@ -1676,9 +1673,7 @@ public:
 			}
 			ia.vertexBuffers[slot] = ia.vertexBufferStaticOriginal[slot];
 			ia.hasVertexBuffer[slot] = true;
-			// See the index path above: the resident view was rewritten, so this
-			// slot's memo is dropped instead of partially trusted.
-			ia.vertexBufferHashMemos[slot].Clear();
+			ia.vertexBufferHashValid[slot] = false;
 			ia.vertexBufferResolved[slot] = false;
 			ia.vertexBufferResources[slot] = DX12BufferResourceSummary();
 			ia.vertexBufferStaticReplaced[slot] = false;
