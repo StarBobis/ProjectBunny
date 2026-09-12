@@ -1407,7 +1407,7 @@ void DX12RecordGraphicsPipelineState(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatusOnce(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 void DX12RecordComputePipelineState(
@@ -1439,7 +1439,7 @@ void DX12RecordComputePipelineState(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatusOnce(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 void DX12RecordPipelineStateStream(
@@ -1513,7 +1513,7 @@ void DX12RecordPipelineStateStream(
 		static_cast<unsigned long long>(shaderCount),
 		static_cast<unsigned long long>(psoCount));
 	if (!DX12ShaderDumpIsBusy())
-		DX12OverlayStatusState::SetStatus(L"3DMigoto DX12 hook alive | cached shaders ready");
+		DX12OverlayStatusState::SetStatusOnce(L"3DMigoto DX12 hook alive | cached shaders ready");
 }
 
 bool DX12GetPipelineStateShaderInfo(ID3D12PipelineState *pipelineState, DX12PsoShaderInfo *info)

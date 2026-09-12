@@ -8,7 +8,8 @@
 // Every notice is transient: the in-game text overlay has no status bar, so
 // nothing is sticky. Progress feedback (shader dump, reload, ...) re-posts
 // itself while it runs, which keeps the notice alive exactly as long as the
-// operation it describes.
+// operation it describes. The one exception is the startup banner, which the
+// PSO-creation path would otherwise re-post for the whole session.
 class DX12OverlayStatusState
 {
 public:
@@ -16,6 +17,8 @@ public:
 	wchar_t status[512] = L"";
 	COLORREF statusColor = RGB(0, 255, 0);
 	DWORD statusExpireTick = 0;
+	// Latched by SetStatusOnce: the one notice that must not come back.
+	bool announced = false;
 
 	DX12OverlayStatusState()
 	{
@@ -42,6 +45,22 @@ public:
 		DX12OverlayStatusState &state = Get();
 		AcquireSRWLockExclusive(&state.lock);
 		NotifyLocked(status, RGB(0, 255, 0), 4000);
+		ReleaseSRWLockExclusive(&state.lock);
+	}
+
+	// A notice worth showing once per process. The "hook alive | cached shaders
+	// ready" banner is posted from the PSO-creation path, which the game runs
+	// continuously while streaming a scene, so as a plain SetStatus it came back
+	// every few seconds during play; the DX11 build shows the equivalent once at
+	// startup.
+	static void SetStatusOnce(const wchar_t *status)
+	{
+		DX12OverlayStatusState &state = Get();
+		AcquireSRWLockExclusive(&state.lock);
+		if (!state.announced) {
+			state.announced = true;
+			NotifyLocked(status, RGB(0, 255, 0), 4000);
+		}
 		ReleaseSRWLockExclusive(&state.lock);
 	}
 
