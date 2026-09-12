@@ -894,9 +894,9 @@ inline void DX12ProfilingStartPumpIfEnabled()
 }
 
 inline void DX12ProfilingApplyConfig(
-	DX12ProfilingHud::Mode mode, LONG intervalMs, int topRows, bool logBuckets)
+	DX12ProfilingHud::Mode mode, LONG intervalMs, bool logBuckets)
 {
-	DX12ProfilingHud::ApplyConfig(mode, intervalMs, topRows, logBuckets);
+	DX12ProfilingHud::ApplyConfig(mode, intervalMs, logBuckets);
 	DX12ProfilingStartPumpIfEnabled();
 }
 

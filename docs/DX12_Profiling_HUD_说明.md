@@ -2,24 +2,34 @@
 
 这份文档配的是**屏幕上那张全屏的表**。目标只有一个：你截一张图发我，我不看代码也能立刻说出"慢在哪"。
 
-打开方式（没变）：`config/d3dx.ini` 里 `dx12_profiling_hud = 1`（或游戏里按 **F11** 循环切到 `Snapshot`，**F12** 冻结画面让数字别跳）。
+打开方式（没变）：`config/d3dx.ini` 里 `dx12_profiling_hud = 1`（或游戏里按 **F11** 切换页面，**F12** 冻结画面让数字别跳）。
 `0` 关闭时零开销；非 TIMING 版本只有打开 HUD 才采样。
 
-> **截图前请确认两件事**：① `dx12_profiling_hud = 1` 或已按 F11 切到 `mode=Snapshot`；② **hunting 关掉（Num0）**，否则 HUD 只会占屏幕上方 70%（见第 7 节 `kHudHuntReserveFrac`），底部的表尾和 SUM 行会被裁掉。
+> **截图前请确认两件事**：① `dx12_profiling_hud = 1` 或已按 F11 切到 **1/3 Overview**（每页第一行都写着 `page N/3`）；② **hunting 关掉（Num0）**，否则 HUD 只会占屏幕上方 70%（见第 7 节 `kHudHuntReserveFrac`），底部的行会被裁掉。
+
+### 三个页面（F11 循环，第一行永远写着 `page N/3`）
+
+| 页 | 名字 | 回答的问题 | 内容 |
+| --- | --- | --- | --- |
+| 1/3 | `Overview` | **这一帧的时间去哪了** | 左列：按 `/frame` 排序的耗时表；中列：各域占比与命中率；右列：每帧一次的固定开销（Present/Create/Queue/Wait）。**这一页是截图首选。** |
+| 2/3 | `Buckets` | 哪个 bucket 在烧时间 | 全表按总耗时排序（行数够时 138 行也全在屏上），三列切分，每行带 `/f`、每帧次数、`max` 与 `!`/`~` 标记 |
+| 3/3 | `Counters` | 计数器和验证计数说了什么 | 左列：每帧一次性开销明细；中列：带 items 的计数器（按每帧 items 降序）+ 窗口总计；右列：**`Rm.*` 验证计数器**（按调用次数降序），用来看某个替换/门控是不是真的在生效 |
+
+三页都是三列、都铺满整屏；改版前的 6 页（Snapshot/Compact/Summary/Top/Sections/Counters）已合并进这三页，`dx12_profiling_top_rows` 这个只喂 Top/Sections 的旋钮一并删除。
 
 ---
 
 ## 0. 第 1 行：`build` 与窗口
 
 ```
-DX12 HUD  build 2026-09-12 09:47:22 | mode=Snapshot | HookWorkFlags=0x1f | present=123456 | window=60 frames (~1000 ms) | fps=59.9 | frameWall=16.67 ms | maxFrameWall=33.20 ms
+== page 1/3 Overview == build 2026-09-12 09:47:22 | fps=59.9 frameWall=16.67ms (max 33.20ms) | present=123456 window=60 frames (~1000ms) | flags=0x1f | F11 = next page
 ```
 
 | 字段 | 含义 |
 | --- | --- |
+| `page N/3` + 名字 | 当前第几页、共几页。**截图先看这里**；数字对不上时按 F11 翻页确认。 |
 | `build <日期 时间>` | **这份 DLL 的编译时间戳**（`__DATE__`/`__TIME__`）。截图先看它，确认你测的是不是我刚构建的那份 DLL；不是就重装再截。 |
-| `mode=` | 当前视图。`Snapshot` 就是本说明书描述的全屏三列视图；其余是旧视图。 |
-| `HookWorkFlags=0x..` | 当前钩子工作量标志字（`DX12HotPathState::HookWorkFlags`）。**所有数字都受它影响**：`0x0` ≈ 快路径全开（最有参考价值），非 0 表示还有 hunt / 捕获 / 预蒙皮探测等工作在做。 |
+| `flags=0x..` | 当前钩子工作量标志字（`DX12HotPathState::HookWorkFlags`）。**所有数字都受它影响**：`0x0` ≈ 快路径全开（最有参考价值），非 0 表示还有 hunt / 捕获 / 预蒙皮探测等工作在做。 |
 | `present=` | **绝对** Present 计数（进程启动至今），用来对齐日志里的 `"present":N`。 |
 | `window=N frames (~X ms)` | 本报告统计了**多少帧**（所有 `/frame` 的分母），括号里是这个窗口的真实墙钟时长。**窗口按帧数计**，默认目标 60 帧，见下面的说明。 |
 | `fps` | 窗口内平均帧率。 |
@@ -260,13 +270,18 @@ frameWall           16.67 ms mean / 33.20 ms max
 | --- | --- | --- |
 | `kHudFontScale` | `0.80f` | **字体总开关**。16px 点阵按这个比例绘制（0.80 ≈ 12.8px 高、6.4px 宽）。往下调 = 更多行（每 0.05 约多 4 行 @1080p），但字会更糊；往上调更清晰、行更少。 |
 | `kHudRowGapPx` | `1.4f` | 行间距（像素，不随字体缩放）。 |
-| `kColumnX[3]` | `{0, 0.35, 0.66}` | 三列左边缘占可用宽度的比例（分辨率无关）。某列内容被截断就把它右边的列往右挪一点，或减小左列。 |
-| `kTopN` | `12` | 右列尖峰榜的行数。 |
+| `kColumnX[3]` | `{0, 0.34, 0.67}` | 三列左边缘占可用宽度的比例（分辨率无关）。**列宽不再由常量决定**，而是渲染端按下一列起点实测（见下）。 |
+| `kTopN` | `12` | Overview 右列尖峰榜的行数。 |
 | `kRefreshFrames` | `1` | 每 N 帧最多重读一次报告。默认 1（每帧），因为报告本身每个窗口才变一次、几何体有内容缓存，改成 >1 基本省不到东西。 |
-| `kTitleLines` | `5` | 表格上方的整行显示行数（身份行、总量行、交叉校验行、两行图例）。**加/减这一行不需要动别的**：左列行数由它推算。 |
-| `kTimeTableMaxRows` / `kRatioColumnMaxRows` / `kFrameColumnMaxRows` | 由屏幕高度自动算 / 56 / 28 | 各列行数预算。`kTimeTableMaxRows` 由 `kHudFontScale`、`kTitleLines` 与 1080p 高度自动推导。 |
-| `kMaxColumnChars` | `76` | 单列字符预算（防止两列贴上）。宽屏可加大，1080p 建议不超过 ~100。 |
+| `kTitleLines` | `5` | 表格上方的整行显示行数（页眉、总量行、交叉校验行、两行图例）。行数预算按它预留。 |
 | `kPreSkinFailureRows` | `6` | 中列最多列几个非零失败计数（按次数降序取前 N）。 |
+| `kMaxReportLines` | `96` | 行数**上限**（覆盖 1440p），实际行数由渲染端实测。 |
+| `kMaxColumnChars` | `150` | 单列字符**上限**（覆盖 2560 宽屏），实际列宽由渲染端实测。 |
+| `kMaxReportChars` | `14000` | 一份报告的字符上限：覆盖层一帧只有 15360 个字形（16 位索引到 16384 为止），还要留给狩猎文字。行数预算由它反推，所以到上限只会**少几行**，不会丢尾巴。 |
+
+**列宽与行数不再由常量猜**：渲染线程知道后缓冲尺寸和实际字宽，每帧量一次"这一屏能放多少行、每列放多少个字符"，变化时发布成 `DX12ProfilingBudget`（`DX12ProfilingHud::PublishBudget`），写线程照它排版（`DX12ProfilingText::Format`）。所以 1280×720 窗口和 2560 宽屏都能排得下，不会再出现"按 1920 排好、在 720p 上三列互相压字"；渲染端还会把超宽的行**裁到本列宽度**，被裁的行末尾标 `>`（列里被截断也标 `>`）。
+
+当前分辨率下的实际行数：**1280×720 → 45 行（占满整屏）**；1080p → 43 行（屏上还能放 70 行，但一份报告的字符上限只够 43 行 × 三列满宽）。想让 1080p 也铺满，需要把覆盖层的索引缓冲从 16 位换成 32 位并把 `kMaxChars`/`kMaxReportChars` 一起放大（显存约翻倍到 12MB）。
 
 ### 7.2 窗口常量（`DX12ProfilingHud`，不在 Layout 里）
 
@@ -282,9 +297,9 @@ frameWall           16.67 ms mean / 33.20 ms max
 | 常量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `kHudHuntReserveFrac` | `0.30f` | **hunting 开着时**给狩猎文字留的高度比例（HUD 只用上面 70%）。**截性能图时请把 hunting 关掉**（Num0），HUD 就能用满整屏。 |
-| `kMaxChars` | `12288` | 覆盖层一帧最多画多少字形。报告的字节预算 `kMaxReportChars` = 11500（含列标记与换行，实际字形更少），留了余量给狩猎文字。改大要同步 `kVertexSlotCount`/显存。 |
+| `kMaxChars` | `15360` | 覆盖层一帧最多画多少字形（16 位索引的硬上限是 16384）。报告的字符预算 `kMaxReportChars` = 14000（含列标记与换行，实际字形更少），留了余量给狩猎文字。改大要同步 `kVertexSlotCount`/显存，并改索引格式。 |
 
-字号上限与显存：顶点环按最坏情况（三列 × 76 字符 × 70 行）分配，约 6 MB 上传堆；这是 HUD/覆盖层初始化时一次性分配的，与帧率无关。要改字体真实清晰度（而不是缩放），则改 `DX12NativeOverlay.cpp` 里 `BuildFontAtlas` 的 `CreateFontW(-16, ...)`，并把 `kBaseCellHeightPx` 同步成新的字高。
+字号上限与显存：顶点环按上限（`kMaxChars` = 15360 字形）分配，约 8 MB 上传堆；这是 HUD/覆盖层初始化时一次性分配的，与帧率无关。要改字体真实清晰度（而不是缩放），则改 `DX12NativeOverlay.cpp` 里 `BuildFontAtlas` 的 `CreateFontW(-16, ...)`，并把 `kBaseCellHeightPx` 同步成新的字高。
 
 ---
 

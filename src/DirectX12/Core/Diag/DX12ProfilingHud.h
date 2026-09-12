@@ -120,8 +120,11 @@ inline constexpr DX12BuildStamp kDX12BuildStamp = {};
 //                    unchanged, so raising this saves nothing measurable - it
 //                    is here for the case where the HUD's own cost shows up.
 //
-// The row budget is derived from kHudFontScale so the report cannot grow past
-// a 1080p screen: raising the font lowers the row count automatically.
+// The row and column budgets are not guessed here: the render thread measures
+// the screen it draws on and publishes them (DX12ProfilingBudget), so one report
+// fits a 1280x720 window and a 1440p panel instead of overlapping one of them.
+// The constants in this struct are the ceilings those budgets are clamped to -
+// raising kHudFontScale lowers the measured row count automatically.
 // ============================================================================
 struct DX12ProfilingLayout
 {
@@ -131,14 +134,18 @@ struct DX12ProfilingLayout
 	// budget below assumes the taller of the two GDI metrics so it can only
 	// under-count the rows a screen holds, never over-count them.
 	static constexpr float kBaseCellHeightPx = 17.0f;
-	// Row pitch on screen, and the smallest screen the layout is budgeted for.
+	// Row pitch on screen. How many rows a screen holds is measured by the
+	// render thread and published as the budget below; this constant only fixes
+	// the pitch that budget is expressed in.
 	static constexpr float kHudRowHeightPx =
 		kBaseCellHeightPx * kHudFontScale + kHudRowGapPx;
-	static constexpr float kBudgetScreenHeightPx = 1080.0f;
-	static constexpr float kScreenMarginPx = 8.0f + 4.0f; // margin + panel padding
 
 	static constexpr int kColumnCount = 3;
-	static constexpr float kColumnX[kColumnCount] = { 0.0f, 0.35f, 0.66f };
+	// Where each column starts. The width it may use is not derived from these
+	// fractions: the writer gets it from the measured budget and the renderer
+	// clips at the next column's start, so a long row can no longer run into
+	// the column beside it at any resolution.
+	static constexpr float kColumnX[kColumnCount] = { 0.0f, 0.34f, 0.67f };
 
 	static constexpr int kTopN = 12;
 	static constexpr int kRefreshFrames = 1;
@@ -149,30 +156,31 @@ struct DX12ProfilingLayout
 	static constexpr int kTitleLines = 5;
 	static constexpr int kPreSkinFailureRows = 6;
 
-	// Column text budget. The narrowest column is the right one: at 1080p
-	// (1920px) it starts at 0.66 of the usable width and a cell is
-	// 8*0.80 = 6.4px, so ~100 characters fit. The budget is a quarter lower so
-	// a 1600px-wide screen, or a larger kHudFontScale, still cannot make two
-	// columns touch.
-	static constexpr int kMaxColumnChars = 76;
-	// Whole-report byte budget: every column's bytes together, since the report
-	// is one block. The overlay's vertex ring holds one quad per character, so
-	// this stays clear of its kMaxChars and leaves it room for the hunting text
-	// drawn in the same frame.
-	static constexpr size_t kMaxReportChars = 11500;
+	// Staging ceiling for one column line. The *budget* a report is formatted
+	// against is measured per screen (see DX12ProfilingBudget); this only has to
+	// cover the widest budget any screen can ask for, which is a 2560px panel
+	// (0.33 * 2544px / 6.4px = 131 characters).
+	static constexpr int kMaxColumnChars = 150;
+	// Whole-report character ceiling. The overlay's glyph ring holds one quad
+	// per character and the hunting text draws from the same ring, so a report
+	// that grew past this would lose its tail silently. The row budget is
+	// derived from it as well, which is what turns the ceiling into "fewer rows"
+	// instead of "a truncated screen": 14000 characters is 45 rows of three
+	// ~66-character columns on a 1280x720 window - the whole screen - and 43 of
+	// the 70 rows a 1080p panel could hold. The overlay's ring is 15360 glyphs
+	// (16-bit indices stop at 16384), which is what caps this.
+	static constexpr size_t kMaxReportChars = 14000;
 
-	// Rows each column may carry. The left (time) table is the only elastic
-	// one, so it gets the whole screen budget - raise kHudFontScale and this
-	// falls automatically instead of running off the bottom of the screen. The
-	// middle and right columns have a fixed content list; their caps sit just
-	// above it and exist so a future row added there cannot push the report
-	// past the byte budget.
-	static constexpr int kRowsOnBudgetScreenPx = static_cast<int>(
-		(kBudgetScreenHeightPx - 2.0f * kScreenMarginPx) / kHudRowHeightPx);
-	static constexpr int kTimeTableMaxRows = kRowsOnBudgetScreenPx - kTitleLines;
-	static constexpr int kRatioColumnMaxRows = 56;
-	static constexpr int kFrameColumnMaxRows = 28;
-	static constexpr int kMaxReportLines = kTitleLines + kTimeTableMaxRows;
+	// Fixed-array ceilings. The overlay indexes rows into a fixed array and the
+	// writer stages columns in fixed arrays, so both need an upper bound; the
+	// rows a screen actually gets come from the measured budget. 96 rows covers
+	// a 1440p panel at the default font ((1440 - 24) / 15 = 94).
+	static constexpr int kMaxReportLines = 96;
+	// Used until the render thread publishes its first measurement: a 1080p
+	// budget, so the very first window is sane rather than empty.
+	static constexpr int kDefaultReportRows = 44;
+	static constexpr int kDefaultLineChars = 190;
+	static constexpr int kDefaultColumnChars[kColumnCount] = { 68, 62, 66 };
 
 	// Column tag. A report line is one screen row; each of its up to three
 	// column segments is introduced by (kColumnMark + index). The report is
@@ -183,24 +191,50 @@ struct DX12ProfilingLayout
 	static constexpr unsigned char kColumnMark = 1;
 };
 
+// ============================================================================
+// What the screen can hold: measured by the render thread, consumed by the
+// writer thread.
+//
+// Every value is a count of rows or characters, because that is the unit both
+// sides already work in - the render thread derives them from the back-buffer
+// size and the font metrics it draws with, the writer formats its rows to fit
+// them. Publishing them is what stopped the report from being laid out for a
+// guessed screen: a 1280x720 window was formatted with 1920x1080 column widths,
+// so every column ran into the one beside it, and with 1080p's row count, so a
+// third of the report was emitted below the bottom of the screen.
+// ============================================================================
+struct DX12ProfilingBudget
+{
+	int rows = DX12ProfilingLayout::kDefaultReportRows;
+	int lineChars = DX12ProfilingLayout::kDefaultLineChars;
+	int columnChars[DX12ProfilingLayout::kColumnCount] = {
+		DX12ProfilingLayout::kDefaultColumnChars[0],
+		DX12ProfilingLayout::kDefaultColumnChars[1],
+		DX12ProfilingLayout::kDefaultColumnChars[2],
+	};
+};
+
 class DX12ProfilingHud
 {
 public:
+	// Three pages, one per question a screenshot has to answer: where the frame
+	// went (Overview, the three-column page), which buckets are actually burning
+	// the time (Buckets, every row ranked, with /frame on each), and what the
+	// counters and the per-frame one-shot costs say (Counters). Every page
+	// states its own number in its header, so a screenshot is self-describing.
 	enum class Mode : LONG
 	{
 		Off = 0,
-		Snapshot,    // the full-screen three-column view (see DX12ProfilingText)
-		Compact,     // fps/frame/present/queue/HUD self-cost plus the top stages
-		Summary,     // a fixed set of Present./Queue./Stage./Wait. fields
-		Top,         // every bucket ranked by total time
-		Sections,    // the same buckets grouped by domain prefix
-		Counters,    // item-only buckets and the per-frame draw/dispatch counts
+		Overview,
+		Buckets,
+		Counters,
 
 		ModeCount,
 	};
 
+	static constexpr int kPageCount = static_cast<int>(Mode::ModeCount) - 1;
+
 	static constexpr size_t kTextBytes = 16 * 1024;
-	static constexpr int kMaxTopRows = 160;
 	// dx12_profiling_interval_ms. This is now the *fallback* refresh interval,
 	// not the length of a window: the window is counted in frames (see
 	// kWindowFrames) and this value only decides how long a session running too
@@ -212,7 +246,6 @@ public:
 	static constexpr LONG kDefaultIntervalMs = 500;
 	static constexpr LONG kMinIntervalMs = 100;
 	static constexpr LONG kMaxIntervalMs = 10000;
-	static constexpr int kDefaultTopRows = 24;
 
 	// --- aggregation window --------------------------------------------------
 	// One report covers exactly this many presented frames. Counting frames
@@ -271,9 +304,39 @@ public:
 		return sIntervalMs.load(std::memory_order_relaxed);
 	}
 
-	static int TopRows()
+	// --- measured screen budget ----------------------------------------------
+	// Read by the writer thread once per report, published by the render thread
+	// only when its own measurement changed. Relaxed on both sides on purpose: a
+	// reader that catches a half-updated budget formats one window to a blend of
+	// the old and the new screen and the next window is right again, which is
+	// cheaper than making the writer take a lock - or the render thread compare
+	// five atomics per present - to make a display value atomic.
+	static DX12ProfilingBudget GetBudget()
 	{
-		return sTopRows.load(std::memory_order_relaxed);
+		DX12ProfilingBudget budget;
+		budget.rows = ClampInt(sBudgetRows.load(std::memory_order_relaxed),
+			8, DX12ProfilingLayout::kMaxReportLines);
+		budget.lineChars = ClampInt(sBudgetLineChars.load(std::memory_order_relaxed),
+			40, DX12ProfilingLayout::kMaxColumnChars * DX12ProfilingLayout::kColumnCount);
+		for (int i = 0; i < DX12ProfilingLayout::kColumnCount; ++i) {
+			budget.columnChars[i] = ClampInt(
+				sBudgetColumnChars[i].load(std::memory_order_relaxed),
+				24, DX12ProfilingLayout::kMaxColumnChars);
+		}
+		return budget;
+	}
+
+	static void PublishBudget(const DX12ProfilingBudget &budget)
+	{
+		sBudgetRows.store(ClampInt(budget.rows, 8,
+			DX12ProfilingLayout::kMaxReportLines), std::memory_order_relaxed);
+		sBudgetLineChars.store(ClampInt(budget.lineChars, 40,
+			DX12ProfilingLayout::kMaxColumnChars * DX12ProfilingLayout::kColumnCount),
+			std::memory_order_relaxed);
+		for (int i = 0; i < DX12ProfilingLayout::kColumnCount; ++i) {
+			sBudgetColumnChars[i].store(ClampInt(budget.columnChars[i], 24,
+				DX12ProfilingLayout::kMaxColumnChars), std::memory_order_relaxed);
+		}
 	}
 
 	// Whether the bulk "name,calls,totalUs,avgUs,maxUs,items" table is still
@@ -312,7 +375,7 @@ public:
 	// `intervalMs` keeps the dx12_profiling_interval_ms meaning it always had -
 	// "I want a report at least this often" - but it can only lengthen a
 	// window, never shorten it below kWindowFrames frames.
-	static void ApplyConfig(Mode mode, LONG intervalMs, int topRows, bool logBucketTable)
+	static void ApplyConfig(Mode mode, LONG intervalMs, bool logBucketTable)
 	{
 		SetMode(mode);
 		if (intervalMs < kMinIntervalMs)
@@ -320,25 +383,26 @@ public:
 		if (intervalMs > kMaxIntervalMs)
 			intervalMs = kMaxIntervalMs;
 		sIntervalMs.store(intervalMs, std::memory_order_relaxed);
-		if (topRows < 1)
-			topRows = 1;
-		if (topRows > kMaxTopRows)
-			topRows = kMaxTopRows;
-		sTopRows.store(topRows, std::memory_order_relaxed);
 		sLogBucketTable.store(logBucketTable ? 1 : 0, std::memory_order_relaxed);
 	}
 
 	static const char *ModeName(Mode mode)
 	{
 		switch (mode) {
-		case Mode::Snapshot: return "Snapshot";
-		case Mode::Compact:  return "Compact";
-		case Mode::Summary:  return "Summary";
-		case Mode::Top:      return "Top";
-		case Mode::Sections: return "Sections";
+		case Mode::Overview: return "Overview";
+		case Mode::Buckets:  return "Buckets";
 		case Mode::Counters: return "Counters";
 		default:             return "Off";
 		}
+	}
+
+	// 1-based page number, 0 while the HUD is off. F11 walks the pages, so
+	// "page 2/3" is the header's answer to "which one am I looking at".
+	static int PageNumber(Mode mode)
+	{
+		const LONG raw = static_cast<LONG>(mode);
+		return raw >= 1 && raw < static_cast<LONG>(Mode::ModeCount)
+			? static_cast<int>(raw) : 0;
 	}
 
 	// --- hot-path flags mirror ----------------------------------------------
@@ -422,9 +486,19 @@ private:
 	inline static std::atomic<LONG> sMode{ static_cast<LONG>(Mode::Off) };
 	inline static std::atomic<LONG> sFrozen{ 0 };
 	inline static std::atomic<LONG> sIntervalMs{ kDefaultIntervalMs };
-	inline static std::atomic<LONG> sTopRows{ kDefaultTopRows };
-	// Default on: the whole point of the change is that the bulk table moves to
-	// the screen. Troubleshooting sections are not affected either way.
 	inline static std::atomic<LONG> sLogBucketTable{ 0 };
 	inline static std::atomic<UINT64> sHookWorkFlags{ 0 };
+	// Measured screen budget, in rows and characters. See DX12ProfilingBudget.
+	inline static std::atomic<int> sBudgetRows{ DX12ProfilingLayout::kDefaultReportRows };
+	inline static std::atomic<int> sBudgetLineChars{ DX12ProfilingLayout::kDefaultLineChars };
+	inline static std::atomic<int> sBudgetColumnChars[DX12ProfilingLayout::kColumnCount] = {
+		{ DX12ProfilingLayout::kDefaultColumnChars[0] },
+		{ DX12ProfilingLayout::kDefaultColumnChars[1] },
+		{ DX12ProfilingLayout::kDefaultColumnChars[2] },
+	};
+
+	static int ClampInt(int value, int low, int high)
+	{
+		return value < low ? low : (value > high ? high : value);
+	}
 };

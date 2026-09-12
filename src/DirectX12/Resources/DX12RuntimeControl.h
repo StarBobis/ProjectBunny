@@ -90,7 +90,6 @@ public:
 				static_cast<DX12ProfilingHud::Mode>(
 					Config.Runtime().dx12ProfilingHud),
 				static_cast<LONG>(Config.Runtime().dx12ProfilingIntervalMs),
-				Config.Runtime().dx12ProfilingTopRows,
 				Config.Runtime().dx12ProfilingLogBuckets);
 			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"safeMode\":%s,\"configInitializationDelayMs\":%lu",

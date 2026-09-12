@@ -351,8 +351,6 @@ public:
 	int dx12ProfilingHud = 0;
 	// Report cadence in milliseconds; also the log's aggregation window.
 	int dx12ProfilingIntervalMs = 500;
-	// Longest bucket name shown / rows listed in the Top and Sections views.
-	int dx12ProfilingTopRows = 24;
 	// Whether the bulk "func=DX12Profiling" bucket table is still written to
 	// the log. Off by default: the HUD shows the same rows, while the
 	// per-domain troubleshooting sections are unaffected either way.
@@ -470,8 +468,6 @@ inline void MigotoConfig::ReadRuntimeConfig()
 	MigotoConfigReader::ReadInt(mIni, L"DX12", L"profiling_hud", &mRuntime.dx12ProfilingHud);
 	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_profiling_interval_ms", &mRuntime.dx12ProfilingIntervalMs);
 	MigotoConfigReader::ReadInt(mIni, L"DX12", L"profiling_interval_ms", &mRuntime.dx12ProfilingIntervalMs);
-	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_profiling_top_rows", &mRuntime.dx12ProfilingTopRows);
-	MigotoConfigReader::ReadInt(mIni, L"DX12", L"profiling_top_rows", &mRuntime.dx12ProfilingTopRows);
 	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_profiling_log_buckets", &mRuntime.dx12ProfilingLogBuckets);
 	MigotoConfigReader::ReadBool(mIni, L"DX12", L"profiling_log_buckets", &mRuntime.dx12ProfilingLogBuckets);
 
@@ -483,10 +479,6 @@ inline void MigotoConfig::ReadRuntimeConfig()
 		mRuntime.dx12ProfilingIntervalMs = 100;
 	if (mRuntime.dx12ProfilingIntervalMs > 10000)
 		mRuntime.dx12ProfilingIntervalMs = 10000;
-	if (mRuntime.dx12ProfilingTopRows < 1)
-		mRuntime.dx12ProfilingTopRows = 1;
-	if (mRuntime.dx12ProfilingTopRows > 160)
-		mRuntime.dx12ProfilingTopRows = 160;
 	// The mode value itself is range-checked by DX12ProfilingHud::SetMode,
 	// which keeps this header free of a profiling dependency.
 }

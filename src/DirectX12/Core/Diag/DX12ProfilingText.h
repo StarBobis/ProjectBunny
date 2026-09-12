@@ -473,11 +473,8 @@ struct DX12ProfilingFields
 class DX12ProfilingText
 {
 public:
-	// Glyph budget for one *legacy* report (Compact/Summary/Top/Sections/
-	// Counters). The full-screen Snapshot view has its own, much larger budget
-	// in DX12ProfilingLayout, from which the overlay's row index is sized.
-	static constexpr int kMaxReportLines = 44;
-	static constexpr size_t kMaxReportChars = 2800;
+	// Name column of a ranked row. The fields after it are sized so the whole
+	// line fits the narrowest column budget the HUD publishes.
 	static constexpr int kRowNameWidth = 30;
 
 	// Returns the number of bytes written (excluding the terminator). The
@@ -496,6 +493,8 @@ private:
 		char *out;
 		size_t capacity;
 		size_t used;
+		// Characters one full-width line may carry, from the measured budget.
+		int lineChars;
 
 		void Line(const char *fmt, ...);
 		void ColumnSegment(int column, const char *text);
@@ -505,21 +504,23 @@ private:
 	};
 
 	// --- one staged column ---------------------------------------------------
-	// The Snapshot view builds three columns independently and interleaves them
-	// afterwards, so a column that runs out of content simply stops
-	// contributing to a row instead of shifting the ones below it. Lines are
-	// staged, not streamed, and each column carries its own row cap so a long
-	// time table cannot starve the byte budget the other two share.
+	// Every page builds its columns independently and interleaves them
+	// afterwards, so a column that runs out of content stops contributing to a
+	// row instead of shifting the ones below it. Lines are staged, not streamed,
+	// and each column carries its own row cap and measured text width.
 	struct Column
 	{
 		// Sized for the whole report rather than for one column's cap: the
-		// per-column cap lives in `capacity`, and the difference costs a few
-		// kilobytes of writer-thread stack.
+		// per-column cap lives in `capacity`, the measured width in `maxChars`,
+		// and the difference costs a few kilobytes of writer-thread stack.
 		char text[Layout::kMaxReportLines][Layout::kMaxColumnChars + 1];
 		int capacity;
+		int maxChars;
 		int count = 0;
 
-		explicit Column(int maxRows) : capacity(maxRows) {}
+		Column(int maxRows, int chars) : capacity(maxRows),
+			maxChars(chars > 0 && chars <= Layout::kMaxColumnChars
+				? chars : Layout::kMaxColumnChars) {}
 
 		void Line(const char *fmt, ...);
 		int Room() const { return capacity - count; }
@@ -557,10 +558,32 @@ private:
 	}
 	static bool StartsWith(const char *name, const char *prefix);
 
-	// --- snapshot (three columns) -------------------------------------------
-	static void FormatSnapshot(
-		Emitter &e, const DX12ProfilingWindow &window,
+	// --- one screen's worth of report ---------------------------------------
+	// The measured budget plus the row count that fits both the screen and the
+	// report's character ceiling. Every page takes one of these, which is why no
+	// page can lay itself out for a screen it is not drawn on.
+	struct Page
+	{
+		DX12ProfilingBudget budget;
+		int rows = 0;
+
+		int ColumnChars(int column) const
+		{
+			return column >= 0 && column < Layout::kColumnCount
+				? budget.columnChars[column] : 0;
+		}
+	};
+
+	static void FormatOverview(
+		Emitter &e, const Page &page, const DX12ProfilingWindow &window,
 		const DX12ProfilingRow *rows, UINT rowCount);
+	static void FormatBuckets(
+		Emitter &e, const Page &page, const DX12ProfilingWindow &window,
+		const DX12ProfilingRow *rows, UINT rowCount);
+	static void FormatCounters(
+		Emitter &e, const Page &page, const DX12ProfilingWindow &window,
+		const DX12ProfilingRow *rows, UINT rowCount);
+
 	static void BuildTimeTable(
 		Column &column, const DX12ProfilingWindow &window,
 		const DX12ProfilingRow *rows, UINT rowCount, UINT *shownRows);
@@ -578,31 +601,25 @@ private:
 	// Row flags. Both are two characters wide so a row can carry either, both
 	// or neither without the columns drifting.
 	static void RowFlags(char *out, size_t capacity, const DX12ProfilingRow &row);
+	// "name <perFrame>/f x<calls>/f max <max> <flags>": the ranked-row format the
+	// Buckets and Counters pages share, so one bucket cannot be printed two ways
+	// on one screen.
+	static void CountRow(
+		char *out, size_t capacity, const DX12ProfilingRow &row, LONG frames);
 
-	static void SnapshotTitle(
+	// Page furniture. Every page starts with the same title block, so a
+	// screenshot says which page, which build and which window it is.
+	static void PageTitle(Emitter &e, const DX12ProfilingWindow &window);
+	static void OverviewTitle(
 		Emitter &e, const DX12ProfilingWindow &window, UINT shownRows);
-	static void SnapshotLegend(Emitter &e);
+	static void OverviewLegend(Emitter &e);
+	static void UnitsLegend(Emitter &e);
 
-	// --- legacy single-column views -----------------------------------------
-	static void FormatCompact(
-		Emitter &e, const DX12ProfilingWindow &window,
-		const DX12ProfilingRow *ranked, UINT rankedCount);
-	static void FormatSummary(
-		Emitter &e, const DX12ProfilingWindow &window,
-		const DX12ProfilingRow *ranked, UINT rankedCount);
-	static void FormatTop(
-		Emitter &e, const DX12ProfilingWindow &window,
-		const DX12ProfilingRow *ranked, UINT rankedCount);
-	static void FormatSections(
-		Emitter &e, const DX12ProfilingWindow &window,
-		const DX12ProfilingRow *ranked, UINT rankedCount);
-	static void FormatCounters(
-		Emitter &e, const DX12ProfilingWindow &window,
-		const DX12ProfilingRow *ranked, UINT rankedCount);
-
-	static void Header(Emitter &e, const DX12ProfilingWindow &window, const char *title);
-	static void RowLine(Emitter &e, const DX12ProfilingRow &row);
-	static void RowPair(Emitter &e, const DX12ProfilingRow &left, const DX12ProfilingRow &right);
+	// Writes three staged columns as interleaved rows: screen row `r` carries
+	// row `r` of each column, and a column that runs out simply stops
+	// contributing to that row.
+	static void EmitColumns(
+		Emitter &e, const Column *left, const Column *middle, const Column *right);
 	static const char *DomainOf(const char *name);
 };
 
@@ -631,8 +648,19 @@ inline void DX12ProfilingText::Emitter::Line(const char *fmt, ...)
 	const int written = _vsnprintf_s(
 		buffer, sizeof(buffer), _TRUNCATE, fmt, args);
 	va_end(args);
-	if (written > 0)
-		Append(buffer, static_cast<size_t>(written));
+	if (written <= 0)
+		return;
+	size_t length = static_cast<size_t>(written);
+	// Cut, not wrapped: a full-width line longer than the screen would run off
+	// its right edge with no sign that anything was lost, so it is cut at the
+	// measured width and the cut is marked.
+	if (lineChars > 0 && length > static_cast<size_t>(lineChars) + 1) {
+		buffer[lineChars] = '>';
+		buffer[lineChars + 1] = '\n';
+		buffer[lineChars + 2] = '\0';
+		length = static_cast<size_t>(lineChars) + 2;
+	}
+	Append(buffer, length);
 }
 
 // One screen row carries up to three column segments, each introduced by a
@@ -659,8 +687,13 @@ inline void DX12ProfilingText::Column::Line(const char *fmt, ...)
 		return;
 	va_list args;
 	va_start(args, fmt);
-	_vsnprintf_s(text[count], Layout::kMaxColumnChars + 1, _TRUNCATE, fmt, args);
+	const int written = _vsnprintf_s(
+		text[count], static_cast<size_t>(maxChars) + 1, _TRUNCATE, fmt, args);
 	va_end(args);
+	// A cut line says so where it was cut: a number that lost its tail must not
+	// read as a number that was never there.
+	if (written < 0 && maxChars > 0)
+		text[count][maxChars - 1] = '>';
 	++count;
 }
 
@@ -1259,39 +1292,50 @@ inline void DX12ProfilingText::BuildFrameColumn(
 }
 
 // ----------------------------------------------------------------------------
-// Snapshot: title block.
+// Page furniture.
 //
-// Five full-width lines above the columns, in reading order: what this build
-// and this window are, the two totals, the frame cross-check, and the two
-// legend lines. The cross-check line exists to be argued with: it carries the
-// wall time the two totals have to fit into (frameWall = outsidePresent +
-// Present hook) and the slices the Present hook is known to consist of, so "our
-// buckets add up to more than the frame" can be traced to either double
-// counting or parallel threads instead of being taken on faith.
+// The title is the part of a screenshot that has to survive being read hours
+// later: which page it is, which build produced it, and which window it
+// describes. Every page starts with it, which is why no page has to be
+// recognised by remembering which columns it had.
 // ----------------------------------------------------------------------------
-inline void DX12ProfilingText::SnapshotTitle(
+inline void DX12ProfilingText::PageTitle(
+	Emitter &e, const DX12ProfilingWindow &window)
+{
+	const DX12ProfilingHud::Mode mode = DX12ProfilingHud::GetMode();
+	e.Line("== page %d/%d %s == build %s | fps=%.1f frameWall=%.2fms (max %.2fms) | "
+		"present=%ld window=%ld frames (~%.0fms) | flags=0x%llx | F11 = next page\n",
+		DX12ProfilingHud::PageNumber(mode), DX12ProfilingHud::kPageCount,
+		DX12ProfilingHud::ModeName(mode), kDX12BuildStamp.text,
+		window.Fps(), window.FrameMs(), static_cast<double>(window.maxFrameWallUs) / 1000.0,
+		static_cast<long>(window.present), static_cast<long>(window.frames),
+		window.WindowMs(),
+		static_cast<unsigned long long>(window.hookWorkFlags));
+}
+
+// The two lines that make a frame auditable: what our scopes add up to, and the
+// wall time they have to fit into. The second line exists to be argued with -
+// "our buckets exceed the frame" has to be traceable to double counting or to
+// parallel threads instead of being taken on faith.
+inline void DX12ProfilingText::OverviewTitle(
 	Emitter &e, const DX12ProfilingWindow &window, UINT shownRows)
 {
 	const LONG frames = window.FrameDivisor();
 	char ours[16] = {};
 	char all[16] = {};
 	char frameWall[16] = {};
-	char maxFrameWall[16] = {};
 	char outside[16] = {};
 	char present[16] = {};
-	char known[16] = {};
 	char unknown[16] = {};
 	char outsideMinus[16] = {};
 	FormatUsPerFrame(ours, sizeof(ours), window.ourRootUs, window.frames);
 	FormatUsPerFrame(all, sizeof(all), window.ourAllUs, window.frames);
 	FormatMs2(frameWall, sizeof(frameWall), window.frameWallUs / frames);
-	FormatMs2(maxFrameWall, sizeof(maxFrameWall), window.maxFrameWallUs);
 	FormatMs2(outside, sizeof(outside), window.outsidePresentUs / frames);
 	FormatMs2(present, sizeof(present), window.presentWallUs / frames);
-	FormatMs2(known, sizeof(known), window.presentKnownUs / frames);
 	FormatMs2(unknown, sizeof(unknown), window.presentWallMinusKnownUs / frames);
 	// Negative on purpose when our root total does not fit: that is the signal
-	// the line exists for (see the flag below), so it must not be clamped away.
+	// the line exists for, so it must not be clamped away.
 	FormatMs2(outsideMinus, sizeof(outsideMinus),
 		(window.outsidePresentUs - window.ourRootUs) / frames);
 
@@ -1304,75 +1348,66 @@ inline void DX12ProfilingText::SnapshotTitle(
 			static_cast<double>(window.frameWallUs)
 		: 0.0;
 
-	e.Line("DX12 HUD  build %s | mode=%s | HookWorkFlags=0x%llx | present=%ld | "
-		"window=%ld frames (~%.0f ms) | fps=%.1f | frameWall=%s | maxFrameWall=%s\n",
-		kDX12BuildStamp.text, DX12ProfilingHud::ModeName(DX12ProfilingHud::GetMode()),
-		static_cast<unsigned long long>(window.hookWorkFlags),
-		static_cast<long>(window.present),
-		static_cast<long>(window.frames),
-		window.WindowMs(),
-		window.Fps(), frameWall, maxFrameWall);
-	e.Line("OUR TOTAL=%s (%.1f%% of frameWall) [root %ld of %ld rows] | "
-		"ALL BUCKETS=%s (%.1f%%, double-counted upper bound) | "
-		"draws %ld/f | dispatch %ld/f%s\n",
+	e.Line("OUR TOTAL=%s (%.1f%% of frameWall, %ld of %ld rows) | ALL BUCKETS=%s "
+		"(%.1f%%, double-counted upper bound) | draws %ld/f | dispatch %ld/f%s\n",
 		ours, rootPct,
 		static_cast<long>(window.ourRootRows), static_cast<long>(window.ourAllRows),
 		all, allPct,
 		static_cast<long>(window.frameDraws),
 		static_cast<long>(window.frameDispatches),
 		window.droppedFrameSummaries ? " | DROPPED FRAMES" : "");
-	e.Line("frameWall=%s | outsidePresent=%s | Present hook=%s | "
-		"Present slices known=%s (unknown %s) | outsidePresent-OUR TOTAL=%s | "
-		"time rows %u/%ld shown%s\n",
-		frameWall, outside, present, known, unknown, outsideMinus,
+	e.Line("frameWall=%s | outsidePresent=%s | Present hook=%s (unknown %s) | "
+		"outsidePresent-OUR TOTAL=%s | time rows %u of %ld shown%s\n",
+		frameWall, outside, present, unknown, outsideMinus,
 		shownRows, static_cast<long>(window.ourAllRows),
 		window.ourRootUs > window.outsidePresentUs
 			? "  <-- our root total exceeds it: duplicate or parallel work" : "");
-	SnapshotLegend(e);
 }
 
-inline void DX12ProfilingText::SnapshotLegend(Emitter &e)
+inline void DX12ProfilingText::OverviewLegend(Emitter &e)
 {
-	e.Line("units: <1000us -> \"us\", >=1000us -> \"x.xx ms\" | /frame = window "
-		"total / frames | \"!\" = row max >= 1000us | \"~\" = row fully nested "
-		"(inside another row, counts in that row, not in OUR TOTAL)\n");
-	e.Line("OUR TOTAL = every top-level scope once (nested rows excluded; game's "
-		"own Present/Wait and idle waits excluded) | ALL BUCKETS = all rows "
-		"summed = double-counted upper bound, >100%% is normal\n");
+	UnitsLegend(e);
+	e.Line("OUR TOTAL = every top-level scope once (nested rows excluded; the game's "
+		"own Present/Wait and idle waits excluded) | ALL BUCKETS = all rows summed = "
+		"double-counted upper bound, >100%% is normal\n");
+}
+
+inline void DX12ProfilingText::UnitsLegend(Emitter &e)
+{
+	e.Line("units: <1000us -> \"us\", >=1000us -> \"x.xx ms\" | /f = per frame (window "
+		"total / frames) | xN = calls per frame | ! = max >= 1000us | ~ = fully nested "
+		"(counts in its parent, not in OUR TOTAL) | \">\" = line cut at this column's "
+		"width\n");
 }
 
 // ----------------------------------------------------------------------------
-// Snapshot: three columns, interleaved row by row.
+// Ranked rows.
 // ----------------------------------------------------------------------------
-inline void DX12ProfilingText::FormatSnapshot(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *rows, UINT rowCount)
+inline void DX12ProfilingText::CountRow(
+	char *out, size_t capacity, const DX12ProfilingRow &row, LONG frames)
 {
-	DX12ProfilingFields fields;
-	fields.Fill(rows, rowCount);
+	if (!out || capacity < 8)
+		return;
+	const LONG divisor = frames > 0 ? frames : 1;
+	char perFrame[16] = {};
+	char maxUs[16] = {};
+	char flags[4] = {};
+	FormatUs(perFrame, sizeof(perFrame), row.totalUs / divisor);
+	FormatUs(maxUs, sizeof(maxUs), row.maxUs);
+	RowFlags(flags, sizeof(flags), row);
+	_snprintf_s(out, capacity, _TRUNCATE, "%-*.*s %8s/f x%-5lld max %8s %s",
+		kRowNameWidth, kRowNameWidth, row.name ? row.name : "?",
+		perFrame, static_cast<long long>(row.calls) / divisor, maxUs, flags);
+}
 
-	// The columns are staged rather than streamed because the header carries
-	// the two totals, which are computed in one pass over the merged table
-	// before any of this runs (see DX12DiagProf::BuildWindowReport); the left
-	// column only reports how many of those rows it had room for.
-	Column left(Layout::kTimeTableMaxRows);
-	Column middle(Layout::kRatioColumnMaxRows);
-	Column right(Layout::kFrameColumnMaxRows);
-	UINT shownRows = 0;
-	BuildTimeTable(left, window, rows, rowCount, &shownRows);
-	BuildRatioColumn(middle, window, fields);
-	BuildFrameColumn(right, window, rows, rowCount, fields);
-
-	SnapshotTitle(e, window, shownRows);
-
-	// One screen row per row index: the three columns are segments of the same
-	// line, so a column that runs out simply stops contributing and the row is
-	// still one row on screen.
-	const Column *columns[Layout::kColumnCount] = { &left, &middle, &right };
-	int totalRows = left.count > middle.count ? left.count : middle.count;
-	if (right.count > totalRows)
-		totalRows = right.count;
-	for (int row = 0; row < totalRows; ++row) {
+inline void DX12ProfilingText::EmitColumns(
+	Emitter &e, const Column *left, const Column *middle, const Column *right)
+{
+	const Column *columns[Layout::kColumnCount] = { left, middle, right };
+	int total = left->count > middle->count ? left->count : middle->count;
+	if (right->count > total)
+		total = right->count;
+	for (int row = 0; row < total; ++row) {
 		for (int column = 0; column < Layout::kColumnCount; ++column) {
 			if (row >= columns[column]->count)
 				continue;
@@ -1383,50 +1418,257 @@ inline void DX12ProfilingText::FormatSnapshot(
 }
 
 // ----------------------------------------------------------------------------
-// Legacy single-column views.
+// Page 1: where the frame went.
+//
+// Left ranks the scopes we time, middle answers "what share of the frame is
+// each domain", and right carries the work that happens once per Present. This
+// is the page a screenshot is taken from: it answers "is the mod the reason
+// this frame is slow" without opening the log.
 // ----------------------------------------------------------------------------
-inline void DX12ProfilingText::Header(
-	Emitter &e, const DX12ProfilingWindow &window, const char *title)
+inline void DX12ProfilingText::FormatOverview(
+	Emitter &e, const Page &page, const DX12ProfilingWindow &window,
+	const DX12ProfilingRow *rows, UINT rowCount)
 {
-	e.Line("DX12 Profiling %s  %.1ffps  frame %.2fms  draws %ld  present %.0fus\n",
-		title, window.Fps(), window.FrameMs(),
-		static_cast<long>(window.frameDraws),
-		static_cast<double>(window.presentWallUs) /
-			(window.frames > 0 ? window.frames : 1));
+	DX12ProfilingFields fields;
+	fields.Fill(rows, rowCount);
+
+	// Staged rather than streamed: the columns have different lengths, and
+	// staging is what lets a column that runs out stop contributing instead of
+	// shifting the rows below it.
+	Column left(page.rows, page.ColumnChars(0));
+	Column middle(page.rows, page.ColumnChars(1));
+	Column right(page.rows, page.ColumnChars(2));
+	UINT shownRows = 0;
+	BuildTimeTable(left, window, rows, rowCount, &shownRows);
+	BuildRatioColumn(middle, window, fields);
+	BuildFrameColumn(right, window, rows, rowCount, fields);
+
+	PageTitle(e, window);
+	OverviewTitle(e, window, shownRows);
+	OverviewLegend(e);
+	EmitColumns(e, &left, &middle, &right);
 }
 
-inline void DX12ProfilingText::RowLine(Emitter &e, const DX12ProfilingRow &row)
+// ----------------------------------------------------------------------------
+// Page 2: every bucket, ranked.
+//
+// The whole table on one screen, cut into three equal runs rather than dealt
+// out round-robin: column 0 holds the most expensive buckets, and reading down a
+// column and on to the next keeps the ranking monotone. A section header is
+// emitted where the domain changes inside a column, not once per domain - the
+// ranking is global, so a domain's rows are not adjacent.
+// ----------------------------------------------------------------------------
+inline void DX12ProfilingText::FormatBuckets(
+	Emitter &e, const Page &page, const DX12ProfilingWindow &window,
+	const DX12ProfilingRow *rows, UINT rowCount)
 {
-	e.Line("  %-*.*s %8lldus  x%-6lld max %lldus\n",
-		kRowNameWidth, kRowNameWidth,
-		row.name ? row.name : "?",
-		static_cast<long long>(row.totalUs),
-		static_cast<long long>(row.calls),
-		static_cast<long long>(row.maxUs));
-}
+	PageTitle(e, window);
+	UnitsLegend(e);
 
-// Two ranked rows on one line. Compact mode uses this so the whole report
-// stays under a dozen lines without dropping the interesting half.
-inline void DX12ProfilingText::RowPair(
-	Emitter &e, const DX12ProfilingRow &left, const DX12ProfilingRow &right)
-{
-	if (!right.name) {
-		RowLine(e, left);
-		return;
+	Column left(page.rows, page.ColumnChars(0));
+	Column middle(page.rows, page.ColumnChars(1));
+	Column right(page.rows, page.ColumnChars(2));
+	Column *columns[Layout::kColumnCount] = { &left, &middle, &right };
+
+	const LONG frames = window.FrameDivisor();
+	const int perColumn = page.rows > 0 ? page.rows : 1;
+	const UINT capacity = static_cast<UINT>(perColumn) * Layout::kColumnCount;
+	const UINT total = rowCount < capacity ? rowCount : capacity;
+	const char *openDomain[Layout::kColumnCount] = {};
+	for (UINT i = 0; i < total; ++i) {
+		const int index = static_cast<int>(i) / perColumn;
+		Column &target = *columns[index < Layout::kColumnCount
+			? index : Layout::kColumnCount - 1];
+		if (target.Full())
+			continue;
+		const char *domain = DomainOf(rows[i].name);
+		if (domain && strcmp(domain, openDomain[index] ? openDomain[index] : "") != 0) {
+			if (target.Room() > 1) {
+				target.Line("%s\n", domain);
+				openDomain[index] = domain;
+			}
+		}
+		char line[192] = {};
+		CountRow(line, sizeof(line), rows[i], frames);
+		target.Line("%s\n", line);
 	}
-	e.Line("  %-*.*s %7lldus | %-*.*s %7lldus\n",
-		kRowNameWidth - 4, kRowNameWidth - 4,
-		left.name ? left.name : "?",
-		static_cast<long long>(left.totalUs),
-		kRowNameWidth - 4, kRowNameWidth - 4,
-		right.name ? right.name : "?",
-		static_cast<long long>(right.totalUs));
+
+	EmitColumns(e, &left, &middle, &right);
 }
 
-// The bucket-name domain is everything before the first '.', which is the
-// convention every prefix in this codebase follows ("Present.", "Queue.",
-// "Stage.", "Api.", "Create.", "Lock.", "Wait.", "Fence.", "Worker.", "Desc.",
-// "Rm."). Names without a dot are plain scopes and group under "(scope)".
+// ----------------------------------------------------------------------------
+// Page 3: counters and the per-frame one-shot costs.
+//
+// Left is what a frame costs besides the buckets, middle is the counters that
+// carry item counts (bytes, slots, descriptors) and the plain window tallies,
+// right is the Rm.* verification counters - the ones that say whether a
+// replacement gate is doing its job - ranked by how often they fire rather than
+// by how much time they took.
+// ----------------------------------------------------------------------------
+inline void DX12ProfilingText::FormatCounters(
+	Emitter &e, const Page &page, const DX12ProfilingWindow &window,
+	const DX12ProfilingRow *rows, UINT rowCount)
+{
+	PageTitle(e, window);
+	UnitsLegend(e);
+
+	Column left(page.rows, page.ColumnChars(0));
+	Column middle(page.rows, page.ColumnChars(1));
+	Column right(page.rows, page.ColumnChars(2));
+	const LONG frames = window.FrameDivisor();
+
+	// Every duration below goes through FormatUsPerFrame, so this page obeys the
+	// same unit rule as the tables: micro below a millisecond, milliseconds from
+	// there up. A column of raw microseconds next to rows that print "4.12 ms" is
+	// the one thing the reader cannot do in their head at a glance.
+	{
+		char total[16] = {}, original[16] = {}, overlay[16] = {}, hud[16] = {};
+		FormatUsPerFrame(total, sizeof(total), window.presentWallUs, frames);
+		FormatUsPerFrame(original, sizeof(original), window.presentOriginalUs, frames);
+		FormatUsPerFrame(overlay, sizeof(overlay), window.presentOtherUs, frames);
+		FormatUsPerFrame(hud, sizeof(hud), window.presentOverlayTextUs, frames);
+		left.Line("one-shot per frame\n");
+		left.Line("present %10s | original %10s\n", total, original);
+		left.Line("        overlay %10s | hud %10s\n", overlay, hud);
+	}
+	{
+		char capture[16] = {}, uiAct[16] = {}, counters[16] = {}, postRun[16] = {};
+		FormatUsPerFrame(capture, sizeof(capture),
+			window.presentCaptureBookkeepingUs, frames);
+		FormatUsPerFrame(uiAct, sizeof(uiAct),
+			window.presentConsumeUiActionsUs, frames);
+		FormatUsPerFrame(counters, sizeof(counters),
+			window.presentFrameCountersUs, frames);
+		FormatUsPerFrame(postRun, sizeof(postRun),
+			window.presentPostOriginalRuntimeUs, frames);
+		left.Line("        capture %10s | uiAct %10s\n", capture, uiAct);
+		left.Line("        counters %9s | postRun %9s\n", counters, postRun);
+	}
+	{
+		char modBegin[16] = {}, unexplained[16] = {};
+		FormatUsPerFrame(modBegin, sizeof(modBegin),
+			window.presentModBeginFrameUs, frames);
+		FormatUsPerFrame(unexplained, sizeof(unexplained),
+			window.presentWallMinusKnownUs, frames);
+		left.Line("        modBegin %9s | unexplained %9s\n", modBegin, unexplained);
+	}
+	{
+		char total[16] = {}, signal[16] = {}, wait[16] = {}, original[16] = {};
+		FormatUsPerFrame(total, sizeof(total), window.queueEstimatedTotalUs, frames);
+		FormatUsPerFrame(signal, sizeof(signal), window.queueSignalUs, frames);
+		FormatUsPerFrame(wait, sizeof(wait), window.queueWaitUs, frames);
+		FormatUsPerFrame(original, sizeof(original), window.queueOriginalUs, frames);
+		left.Line("queue   %10s | signal %10s\n", total, signal);
+		left.Line("        wait %10s | original %10s\n", wait, original);
+		left.Line("        calls %5lld/f | lists %5lld/f\n",
+			static_cast<long long>(window.queueWallCalls) / frames,
+			static_cast<long long>(window.queueWallCommandLists) / frames);
+	}
+	{
+		char fences[16] = {}, events[16] = {}, sys[16] = {};
+		FormatUsPerFrame(fences, sizeof(fences), window.fenceTotalUs, frames);
+		FormatUsPerFrame(events, sizeof(events), window.eventWaitTotalUs, frames);
+		FormatUsPerFrame(sys, sizeof(sys), window.systemWaitTotalUs, frames);
+		left.Line("fences  %5lld calls | %10s\n",
+			static_cast<long long>(window.fenceCalls) / frames, fences);
+		left.Line("eventW  %5lld calls | %10s\n",
+			static_cast<long long>(window.eventWaitCalls) / frames, events);
+		// Not our locks: the game's own thread waits, shown so a frame that is
+		// slow because a worker sat on a wait is not read as our cost.
+		left.Line("sysW    %5lld calls | %10s  (thread waits)\n",
+			static_cast<long long>(window.systemWaitCalls) / frames, sys);
+	}
+	{
+		char tasks[16] = {}, idle[16] = {}, drain[16] = {};
+		FormatUsPerFrame(tasks, sizeof(tasks), window.workerTaskUs, frames);
+		FormatUsPerFrame(idle, sizeof(idle), window.workerIdleWaitUs, frames);
+		FormatUsPerFrame(drain, sizeof(drain), window.workerDrainWaitUs, frames);
+		left.Line("worker  %5lld tasks | %10s\n",
+			static_cast<long long>(window.workerTaskCalls) / frames, tasks);
+		left.Line("        idle %10s | drain %10s\n", idle, drain);
+	}
+	{
+		char flush[16] = {};
+		FormatUsPerFrame(flush, sizeof(flush),
+			window.presentProfilingFlushUs + window.presentFrameCountersUs, frames);
+		left.Line("frame   wall %6.2fms | outside %6.2fms | max %6.2fms\n",
+			static_cast<double>(window.frameWallUs) /
+				static_cast<double>(frames) / 1000.0,
+			static_cast<double>(window.outsidePresentUs) /
+				static_cast<double>(frames) / 1000.0,
+			static_cast<double>(window.maxFrameWallUs) / 1000.0);
+		left.Line("timing  %10s/frame (this report is not free)\n", flush);
+	}
+
+	middle.Line("window tallies\n");
+	middle.Line("draws %ld/f | dispatches %ld/f | lists %lld/f\n",
+		static_cast<long>(window.frameDraws), static_cast<long>(window.frameDispatches),
+		static_cast<long long>(window.queueWallCommandLists) / frames);
+	middle.Line("present enter %lld | leave %lld\n",
+		static_cast<long long>(window.presentEnterCalls),
+		static_cast<long long>(window.presentLeaveCalls));
+	middle.Line("queue stage samples %lld | worker idle waits %lld\n",
+		static_cast<long long>(window.queueExecuteStageSamples),
+		static_cast<long long>(window.workerWaitCalls));
+	middle.Line("dropped frame summaries %ld\n",
+		static_cast<long>(window.droppedFrameSummaries));
+	middle.Line("counters with items (ranked by items per frame)\n");
+	middle.Line("%-*.*s %8s/f %7s/f\n", kRowNameWidth, kRowNameWidth,
+		"counter", "items", "calls");
+	// `rows` arrives ranked by total time, but this column is about item counts -
+	// bytes, slots, lists, descriptors - so it selects the buckets that carry one
+	// and ranks them by it. Without that it would just restate page 2.
+	static constexpr UINT kMaxSelected = 64;
+	const DX12ProfilingRow *selected[kMaxSelected] = {};
+	UINT selectedCount = 0;
+	for (UINT i = 0; i < rowCount && selectedCount < kMaxSelected; ++i) {
+		if (rows[i].items)
+			selected[selectedCount++] = &rows[i];
+	}
+	std::sort(selected, selected + selectedCount,
+		[](const DX12ProfilingRow *lhs, const DX12ProfilingRow *rhs) {
+			return lhs->items > rhs->items;
+		});
+	if (!selectedCount) {
+		middle.Line("  (this window recorded no item counts)\n");
+	}
+	for (UINT i = 0; i < selectedCount && !middle.Full(); ++i) {
+		middle.Line("%-*.*s %8lld %7lld\n", kRowNameWidth, kRowNameWidth,
+			selected[i]->name ? selected[i]->name : "?",
+			static_cast<long long>(selected[i]->items) / frames,
+			static_cast<long long>(selected[i]->calls) / frames);
+	}
+
+	right.Line("verification counters (Rm.*, ranked by calls)\n");
+	right.Line("%-*.*s %8s/f %8s\n", kRowNameWidth, kRowNameWidth,
+		"counter", "calls", "max");
+	selectedCount = 0;
+	for (UINT i = 0; i < rowCount && selectedCount < kMaxSelected; ++i) {
+		if (rows[i].name && StartsWith(rows[i].name, "Rm."))
+			selected[selectedCount++] = &rows[i];
+	}
+	std::sort(selected, selected + selectedCount,
+		[](const DX12ProfilingRow *lhs, const DX12ProfilingRow *rhs) {
+			return lhs->calls > rhs->calls;
+		});
+	if (!selectedCount) {
+		right.Line("  (no Rm.* counter fired in this window)\n");
+	}
+	for (UINT i = 0; i < selectedCount && !right.Full(); ++i) {
+		char maxUs[16] = {};
+		char flags[4] = {};
+		FormatUs(maxUs, sizeof(maxUs), selected[i]->maxUs);
+		RowFlags(flags, sizeof(flags), *selected[i]);
+		right.Line("%-*.*s %8lld %8s %s\n", kRowNameWidth, kRowNameWidth,
+			selected[i]->name ? selected[i]->name : "?",
+			static_cast<long long>(selected[i]->calls) / frames, maxUs, flags);
+	}
+
+	EmitColumns(e, &left, &middle, &right);
+}
+
+// Domain of a bucket name: the prefix up to the first dot, which is what the
+// section headers on page 2 group by. Names without a dot are plain scopes.
 inline const char *DX12ProfilingText::DomainOf(const char *name)
 {
 	if (!name)
@@ -1437,205 +1679,6 @@ inline const char *DX12ProfilingText::DomainOf(const char *name)
 	return name;
 }
 
-inline void DX12ProfilingText::FormatCompact(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *ranked, UINT rankedCount)
-{
-	const LONG frames = window.FrameDivisor();
-	Header(e, window, "Compact");
-	e.Line("present %.0fus | queue %.0fus | hud %.0fus | waits %.0fus | fences %.0fus\n",
-		static_cast<double>(window.presentWallUs) / frames,
-		static_cast<double>(window.queueEstimatedTotalUs) / frames,
-		static_cast<double>(window.presentOverlayTextUs) / frames,
-		static_cast<double>(window.systemWaitTotalUs + window.eventWaitTotalUs) / frames,
-		static_cast<double>(window.fenceTotalUs) / frames);
-	e.Line("outside-present %.2fms | wall %.2fms | max %.2fms | dispatches %ld\n",
-		static_cast<double>(window.outsidePresentUs) / frames / 1000.0,
-		static_cast<double>(window.frameWallUs) / frames / 1000.0,
-		static_cast<double>(window.maxFrameWallUs) / 1000.0,
-		static_cast<long>(window.frameDispatches));
-
-	const UINT shown = rankedCount < 12 ? rankedCount : 12;
-	for (UINT i = 0; i + 1 < shown; i += 2)
-		RowPair(e, ranked[i], ranked[i + 1]);
-	if (shown & 1)
-		RowLine(e, ranked[shown - 1]);
-	if (rankedCount > shown)
-		e.Line("  ... %u more rows (Top view lists them)\n", rankedCount - shown);
-}
-
-inline void DX12ProfilingText::FormatSummary(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *ranked, UINT rankedCount)
-{
-	(void)ranked;
-	(void)rankedCount;
-	const LONG frames = window.FrameDivisor();
-	const double inv = 1.0 / static_cast<double>(frames);
-	Header(e, window, "Summary");
-	e.Line("per-frame averages over %ld frames\n", static_cast<long>(window.frames));
-	e.Line("  present    total %7.1fus | original %7.1fus | modBegin %6.1fus\n",
-		static_cast<double>(window.presentWallUs) * inv,
-		static_cast<double>(window.presentOriginalUs) * inv,
-		static_cast<double>(window.presentModBeginFrameUs) * inv);
-	e.Line("             overlay %7.1fus | hud %7.1fus | capture %6.1fus\n",
-		static_cast<double>(window.presentOtherUs) * inv,
-		static_cast<double>(window.presentOverlayTextUs) * inv,
-		static_cast<double>(window.presentCaptureBookkeepingUs) * inv);
-	e.Line("             uiAct %6.1fus | counters %6.1fus | postRun %6.1fus\n",
-		static_cast<double>(window.presentConsumeUiActionsUs) * inv,
-		static_cast<double>(window.presentFrameCountersUs) * inv,
-		static_cast<double>(window.presentPostOriginalRuntimeUs) * inv);
-	e.Line("             unexplained %6.1fus\n",
-		static_cast<double>(window.presentWallMinusKnownUs) * inv);
-	e.Line("  queue      total %7.1fus | calls %5lld | lists %5lld\n",
-		static_cast<double>(window.queueEstimatedTotalUs) * inv,
-		static_cast<long long>(window.queueWallCalls) / frames,
-		static_cast<long long>(window.queueWallCommandLists) / frames);
-	e.Line("             signal %6.1fus | wait %6.1fus | original %6.1fus\n",
-		static_cast<double>(window.queueSignalUs) * inv,
-		static_cast<double>(window.queueWaitUs) * inv,
-		static_cast<double>(window.queueOriginalUs) * inv);
-	e.Line("  fences     %5lld calls %6.1fus | eventWait %5lld %6.1fus\n",
-		static_cast<long long>(window.fenceCalls) / frames,
-		static_cast<double>(window.fenceTotalUs) * inv,
-		static_cast<long long>(window.eventWaitCalls) / frames,
-		static_cast<double>(window.eventWaitTotalUs) * inv);
-	e.Line("  sys waits  %5lld calls %6.1fus\n",
-		static_cast<long long>(window.systemWaitCalls) / frames,
-		static_cast<double>(window.systemWaitTotalUs) * inv);
-	e.Line("  worker     tasks %5lld %6.1fus | idle %6.1fus | drain %6.1fus\n",
-		static_cast<long long>(window.workerTaskCalls) / frames,
-		static_cast<double>(window.workerTaskUs) * inv,
-		static_cast<double>(window.workerIdleWaitUs) * inv,
-		static_cast<double>(window.workerDrainWaitUs) * inv);
-	e.Line("  frame      wall %7.2fms | outside %7.2fms | max %6.2fms\n",
-		static_cast<double>(window.frameWallUs) * inv / 1000.0,
-		static_cast<double>(window.outsidePresentUs) * inv / 1000.0,
-		static_cast<double>(window.maxFrameWallUs) / 1000.0);
-	if (window.presentKnownUs > window.frameWallUs)
-		e.Line("  note: present slices exceed frame wall (counter overlap)\n");
-	e.Line("  timing     %5.1fus/frame (this report is not free)\n",
-		static_cast<double>(window.presentProfilingFlushUs +
-			window.presentFrameCountersUs) * inv);
-}
-
-inline void DX12ProfilingText::FormatTop(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *ranked, UINT rankedCount)
-{
-	Header(e, window, "Top");
-	e.Line("  %-*.*s %9s %8s %9s\n", kRowNameWidth, kRowNameWidth,
-		"bucket", "totalUs", "calls", "maxUs");
-	const int top = DX12ProfilingHud::TopRows();
-	const UINT shown = rankedCount < static_cast<UINT>(top)
-		? rankedCount : static_cast<UINT>(top);
-	for (UINT i = 0; i < shown; ++i)
-		RowLine(e, ranked[i]);
-	if (rankedCount > shown)
-		e.Line("  ... %u more rows\n", rankedCount - shown);
-}
-
-inline void DX12ProfilingText::FormatSections(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *ranked, UINT rankedCount)
-{
-	Header(e, window, "Sections");
-	// Ranked is already sorted by total time, so a per-domain pass naturally
-	// lists each domain's most expensive buckets first without a second sort.
-	static const char *const kDomains[] = {
-		"Present.", "Queue.", "Stage.", "Api.", "Create.",
-		"Lock.", "Wait.", "Fence.", "Worker.", "Desc.", "Rm.",
-	};
-	const int perDomain = DX12ProfilingHud::TopRows() / 4 + 2;
-	int linesLeft = kMaxReportLines - 4;
-
-	for (const char *domain : kDomains) {
-		if (linesLeft <= 1)
-			break;
-		const size_t length = strlen(domain);
-		int shown = 0;
-		for (UINT i = 0; i < rankedCount && shown < perDomain; ++i) {
-			const char *name = ranked[i].name;
-			if (!name || strncmp(name, domain, length) != 0)
-				continue;
-			if (!shown)
-				e.Line("%s\n", domain);
-			--linesLeft;
-			++shown;
-			RowLine(e, ranked[i]);
-			if (linesLeft <= 1)
-				break;
-		}
-	}
-
-	// Everything without a known prefix, which is where the plain scopes live.
-	int shown = 0;
-	for (UINT i = 0; i < rankedCount && shown < perDomain && linesLeft > 1; ++i) {
-		if (strcmp(DomainOf(ranked[i].name), "(scope)") != 0)
-			continue;
-		if (!shown)
-			e.Line("(scope)\n");
-		--linesLeft;
-		++shown;
-		RowLine(e, ranked[i]);
-	}
-}
-
-inline void DX12ProfilingText::FormatCounters(
-	Emitter &e, const DX12ProfilingWindow &window,
-	const DX12ProfilingRow *ranked, UINT rankedCount)
-{
-	Header(e, window, "Counters");
-	const LONG frames = window.FrameDivisor();
-	e.Line("  draws %ld/frame | dispatches %ld/frame | dropped summaries %ld\n",
-		static_cast<long>(window.frameDraws), static_cast<long>(window.frameDispatches),
-		static_cast<long>(window.droppedFrameSummaries));
-	e.Line("  present enter %lld | leave %lld | queue lists %lld | queue calls %lld\n",
-		static_cast<long long>(window.presentEnterCalls),
-		static_cast<long long>(window.presentLeaveCalls),
-		static_cast<long long>(window.queueWallCommandLists),
-		static_cast<long long>(window.queueWallCalls));
-	e.Line("  queue stage samples %lld | worker tasks %lld | idle waits %lld\n",
-		static_cast<long long>(window.queueExecuteStageSamples),
-		static_cast<long long>(window.workerTaskCalls),
-		static_cast<long long>(window.workerWaitCalls));
-	e.Line("  fence calls %lld | event waits %lld | system waits %lld\n",
-		static_cast<long long>(window.fenceCalls),
-		static_cast<long long>(window.eventWaitCalls),
-		static_cast<long long>(window.systemWaitCalls));
-	e.Line("  %-*.*s %9s %8s %9s\n", kRowNameWidth, kRowNameWidth,
-		"counter (items != 0)", "items", "calls", "maxUs");
-
-	// `ranked` arrives ordered by total time, but this view is about item
-	// counts - slots, bytes, lists, descriptors - so it selects the buckets
-	// that actually carry one and ranks them by it. Without that it would just
-	// restate the Top view.
-	static constexpr UINT kMaxCounters = 64;
-	const DX12ProfilingRow *selected[kMaxCounters] = {};
-	UINT selectedCount = 0;
-	for (UINT i = 0; i < rankedCount && selectedCount < kMaxCounters; ++i) {
-		if (ranked[i].items)
-			selected[selectedCount++] = &ranked[i];
-	}
-	std::sort(selected, selected + selectedCount,
-		[](const DX12ProfilingRow *lhs, const DX12ProfilingRow *rhs) {
-			return lhs->items > rhs->items;
-		});
-
-	int linesLeft = kMaxReportLines - 7;
-	for (UINT i = 0; i < selectedCount && linesLeft > 0; ++i) {
-		e.Line("  %-*.*s %9lld %8lld %9lld\n", kRowNameWidth, kRowNameWidth,
-			selected[i]->name ? selected[i]->name : "?",
-			static_cast<long long>(selected[i]->items) / frames,
-			static_cast<long long>(selected[i]->calls) / frames,
-			static_cast<long long>(selected[i]->maxUs));
-		--linesLeft;
-	}
-	if (!selectedCount)
-		e.Line("  (this window recorded no item counts)\n");
-}
-
 inline size_t DX12ProfilingText::Format(
 	char *out, size_t capacity, DX12ProfilingHud::Mode mode,
 	const DX12ProfilingWindow &window,
@@ -1644,36 +1687,49 @@ inline size_t DX12ProfilingText::Format(
 	if (!out || capacity < 64)
 		return 0;
 	out[0] = '\0';
-	// The Snapshot view is budgeted so one quad per character still fits the
-	// overlay's vertex ring; the legacy views are smaller than this anyway.
+
+	// The render thread measures the screen it draws on; formatting against a
+	// guessed resolution is what put three columns on top of each other on a
+	// 1280x720 window and pushed a third of the rows below the bottom edge.
+	const DX12ProfilingBudget budget = DX12ProfilingHud::GetBudget();
+
+	// Rows each column may carry: the screen's budget, further bounded by the
+	// report's character ceiling, so a dense page asks for fewer rows instead of
+	// having the overlay drop the glyphs its ring cannot hold.
+	Page page;
+	page.budget = budget;
+	int perRowChars = Layout::kColumnCount; // one marker byte per segment
+	for (int column = 0; column < Layout::kColumnCount; ++column)
+		perRowChars += page.ColumnChars(column);
+	const size_t titleChars = static_cast<size_t>(Layout::kTitleLines) *
+		static_cast<size_t>(budget.lineChars);
+	const size_t columnsChars = Layout::kMaxReportChars > titleChars
+		? Layout::kMaxReportChars - titleChars : 0;
+	const int rowsByChars = static_cast<int>(
+		columnsChars / static_cast<size_t>(perRowChars > 0 ? perRowChars : 1));
+	int rowCap = budget.rows;
+	if (rowCap > rowsByChars)
+		rowCap = rowsByChars;
+	if (rowCap < 1)
+		rowCap = 1;
+	page.rows = rowCap;
+
+	// One report is one published block, and the ceiling is what keeps it inside
+	// the overlay's glyph ring. It is a hard cap on the bytes, not on the text:
+	// page.rows above already made every page fit it.
 	if (capacity > Layout::kMaxReportChars + 1)
 		capacity = Layout::kMaxReportChars + 1;
-	Emitter e{ out, capacity, 0 };
-
-	// `rows` arrives ranked by total time, which is the order every view but
-	// Counters wants; Counters re-ranks by item count because that is what it
-	// is about.
-	const DX12ProfilingRow *ranked = rows;
-	UINT rankedCount = rowCount;
+	Emitter e{ out, capacity, 0, budget.lineChars };
 
 	switch (mode) {
-	case DX12ProfilingHud::Mode::Snapshot:
-		FormatSnapshot(e, window, ranked, rankedCount);
+	case DX12ProfilingHud::Mode::Overview:
+		FormatOverview(e, page, window, rows, rowCount);
 		break;
-	case DX12ProfilingHud::Mode::Compact:
-		FormatCompact(e, window, ranked, rankedCount);
-		break;
-	case DX12ProfilingHud::Mode::Summary:
-		FormatSummary(e, window, ranked, rankedCount);
-		break;
-	case DX12ProfilingHud::Mode::Top:
-		FormatTop(e, window, ranked, rankedCount);
-		break;
-	case DX12ProfilingHud::Mode::Sections:
-		FormatSections(e, window, ranked, rankedCount);
+	case DX12ProfilingHud::Mode::Buckets:
+		FormatBuckets(e, page, window, rows, rowCount);
 		break;
 	case DX12ProfilingHud::Mode::Counters:
-		FormatCounters(e, window, ranked, rankedCount);
+		FormatCounters(e, page, window, rows, rowCount);
 		break;
 	default:
 		return 0;

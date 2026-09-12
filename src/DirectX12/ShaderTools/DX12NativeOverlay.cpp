@@ -279,11 +279,14 @@ private:
 	};
 
 	// One quad per character of one frame's overlay text. The profiling report
-	// is by far the largest producer: three columns of up to 76 characters over
-	// up to 67 rows plus the title is a little over 10000 glyphs, so this has to
+	// is by far the largest producer: three columns of up to ~100 characters over
+	// up to 70 rows plus the title is a little over 21000 glyphs, so this has to
 	// stay clear of DX12ProfilingLayout::kMaxReportChars or the tail of the
-	// report would be silently dropped by EmitQuad.
-	static constexpr size_t kMaxChars = 12288;
+	// report would be silently dropped by EmitQuad. The 16-bit index buffer below
+	// is the hard ceiling: raising this past 16384 needs 32-bit indices, which is
+	// also what a full 1080p panel would need (the report budget is sized so the
+	// row count falls instead).
+	static constexpr size_t kMaxChars = 15360;
 	// Slot count is GPU-latency headroom only: every slot is rewritten strictly
 	// after its previous submission retired (AcquireVertexSlot drops the frame
 	// otherwise), so extra slots trade upload-heap bytes for fewer dropped text
@@ -1137,6 +1140,7 @@ float4 PSMain(PSIn input) : SV_TARGET
 		}
 
 		const float cellH = mCellH * kHudFontScale;
+		const float cellW = mCellW * kHudFontScale;
 		const float lineH = cellH + kHudRowGap;
 		const float panelBottom = hunting
 			? topY + (mBackH - 2.0f * kTextMarginY) * (1.0f - kHudHuntReserveFrac)
@@ -1155,23 +1159,79 @@ float4 PSMain(PSIn input) : SV_TARGET
 			mHudRowPad = maxRows;
 
 		const float usable = mBackW - 2.0f * kTextMarginX;
+		const float textX = kTextMarginX + kHudPadding;
 		const float panelH = mHudRowPad * lineH + 2.0f * kHudPadding;
 		EmitSolid(kTextMarginX, topY, usable, panelH, kHudBackdrop);
 
+		// Tell the writer what this screen holds before drawing what it already
+		// wrote. The render thread is the only side that knows the back-buffer
+		// size and the rasterised cell metrics, and the writer is the only side
+		// that can shorten a row before it is drawn; one measurement per change
+		// replaces the resolution both sides used to assume - which is how three
+		// columns ended up overlapping a 1280x720 window formatted for 1920.
+		PublishHudBudget(maxRows, usable, textX, cellW);
+
 		const int visible = rows < maxRows ? rows : maxRows;
 		const float textTop = topY + kHudPadding;
-		const float textX = kTextMarginX + kHudPadding;
 		for (int row = 0; row < visible; ++row) {
 			const HudRow &content = mHudReportRow[row];
 			const float y = textTop + row * lineH;
 			for (int segment = 0; segment < content.segments; ++segment) {
 				const HudSegment &piece = content.segment[segment];
-				EmitAsciiLine(piece.text, piece.length,
+				// Clipped to the column's own width. The writer already formats
+				// to that width; this is what keeps a row that outgrew it - a
+				// format string that grew, a wider font, a narrower screen -
+				// inside its column instead of on top of the next one.
+				size_t length = piece.length;
+				const size_t limit =
+					static_cast<size_t>(mHudColumnChars[piece.column]);
+				if (length > limit)
+					length = limit;
+				EmitAsciiLine(piece.text, length,
 					textX + usable * DX12ProfilingLayout::kColumnX[piece.column],
 					y, kHudFontScale, kHudColor);
 			}
 		}
 		return topY + panelH;
+	}
+
+	// Measures the budget the writer formats against, and publishes it when the
+	// measurement changed. The column counts are kept locally as well because the
+	// draw loop clips with them on every frame, while the publish itself costs
+	// one comparison in the steady state.
+	void PublishHudBudget(int rows, float usable, float textX, float cellW)
+	{
+		DX12ProfilingBudget budget;
+		budget.rows = rows;
+		budget.lineChars = static_cast<int>((usable - 2.0f * kHudPadding) / cellW);
+		for (int column = 0; column < DX12ProfilingLayout::kColumnCount; ++column) {
+			const float x = textX + usable * DX12ProfilingLayout::kColumnX[column];
+			const float nextX = column + 1 < DX12ProfilingLayout::kColumnCount
+				? textX + usable * DX12ProfilingLayout::kColumnX[column + 1]
+				: textX + usable;
+			// One cell of gap: a column that ends exactly where the next one
+			// starts reads as a single run-on line.
+			const int chars = static_cast<int>((nextX - x - cellW) / cellW);
+			budget.columnChars[column] = chars;
+			mHudColumnChars[column] = chars > 0 ? chars : 0;
+		}
+		if (!BudgetChanged(budget))
+			return;
+		mHudBudget = budget;
+		mHudBudgetLive = true;
+		DX12ProfilingHud::PublishBudget(budget);
+	}
+
+	bool BudgetChanged(const DX12ProfilingBudget &budget) const
+	{
+		if (!mHudBudgetLive || budget.rows != mHudBudget.rows ||
+		    budget.lineChars != mHudBudget.lineChars)
+			return true;
+		for (int column = 0; column < DX12ProfilingLayout::kColumnCount; ++column) {
+			if (budget.columnChars[column] != mHudBudget.columnChars[column])
+				return true;
+		}
+		return false;
 	}
 
 	// Splits the report once per change into rows of column segments, dropping
@@ -1342,6 +1402,12 @@ float4 PSMain(PSIn input) : SV_TARGET
 	size_t mHudReportLength = 0;
 	HudRow mHudReportRow[kHudMaxReportRows];
 	int mHudReportRows = 0;
+	// The screen budget the writer formats against, plus the per-column
+	// character counts the draw loop clips with. Republished only when the
+	// measurement changes.
+	DX12ProfilingBudget mHudBudget;
+	bool mHudBudgetLive = false;
+	int mHudColumnChars[DX12ProfilingLayout::kColumnCount] = {};
 	UINT mHudFrameCounter = 0;
 
 	// --- frame-to-frame reuse -------------------------------------------
