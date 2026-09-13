@@ -1,4 +1,4 @@
-﻿// Pre-skin output-resize identity and PSO decision caches.
+// Pre-skin output-resize identity and PSO decision caches.
 // Split from DX12Resources.h; keep declarations in the layer that owns them.
 #pragma once
 
@@ -249,8 +249,7 @@ public:
 
 // Deferred initial mod load (startup hang workaround). Declared here so every
 // TU that compiles DX12ResourceRuntime.hpp sees them regardless of include
-// order; the (extern) definitions live in ModRuntime/DX12ModRuntimeLoad.cpp.
-extern DWORD gDeferredInitialModLoadDelayMs;
+// order; the definitions live in ModRuntime/DX12ModRuntimeLoad.cpp.
 extern void DX12ModScheduleInitialLoad(const wchar_t *configPath);
 extern void DX12ModMaybeRunDeferredInitialLoad();
 

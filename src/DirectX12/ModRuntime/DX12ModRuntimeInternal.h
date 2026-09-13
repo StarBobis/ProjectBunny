@@ -55,7 +55,10 @@ inline volatile LONG gDeferredInitialModLoadState = 0;
 
 inline DWORD gDeferredInitialModLoadStartTick = 0;
 
-inline DWORD gDeferredInitialModLoadDelayMs = 2000;
+// Fixed startup delay before the first mod config load: gives the game a few
+// presented frames and two quiet seconds to finish its own sensitive startup
+// before the reload parses every ini and touches GPU objects.
+inline constexpr DWORD kDeferredInitialModLoadDelayMs = 2000;
 
 inline std::wstring gBaseDir;
 

@@ -80,19 +80,15 @@ public:
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
 		if (ConfigLoaded) {
-			gDeferredInitialModLoadDelayMs =
-				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
 			DX12_LOG("DX12Config",
-				"\"path\":\"%S\",\"configInitializationDelayMs\":%lu",
-				Config.Path().c_str(),
-				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
+				"\"path\":\"%S\"",
+				Config.Path().c_str());
 			DX12ModScheduleInitialLoad(Config.Path().c_str());
 			DX12OverlayStatusState::SetStatus(
 				L"DX12 mod load deferred until startup reload");
 			DX12_LOG("DX12ModRuntimeDeferredLoad",
-				"\"status\":\"scheduled\",\"path\":\"%S\",\"delayMs\":%lu",
-				Config.Path().c_str(),
-				static_cast<unsigned long>(gDeferredInitialModLoadDelayMs));
+				"\"status\":\"scheduled\",\"path\":\"%S\"",
+				Config.Path().c_str());
 		} else {
 			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"status\":\"missing_or_invalid\",\"error\":\"%S\"",

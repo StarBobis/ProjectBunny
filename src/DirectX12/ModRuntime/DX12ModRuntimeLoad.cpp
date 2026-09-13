@@ -260,11 +260,9 @@ void DX12ModMaybeRunDeferredInitialLoad()
 		return;
 
 	std::wstring configPath;
-	DWORD delayMs = 0;
 	DWORD startTick = 0;
 	DX12_LOCK_ACQUIRE_SHARED(&gModLock, "Lock.modShared");
 	configPath = gPendingInitialConfigPath;
-	delayMs = gDeferredInitialModLoadDelayMs;
 	startTick = gDeferredInitialModLoadStartTick;
 	ReleaseSRWLockShared(&gModLock);
 
@@ -275,14 +273,14 @@ void DX12ModMaybeRunDeferredInitialLoad()
 
 	const LONG present = DX12RuntimeState::GetPresentCount();
 	const DWORD elapsedMs = GetTickCount() - startTick;
-	if (present <= 2 || elapsedMs < delayMs) {
+	if (present <= 2 || elapsedMs < kDeferredInitialModLoadDelayMs) {
 		InterlockedExchange(&gDeferredInitialModLoadState, 1);
 		return;
 	}
 
 	DX12_LOG("DX12ModRuntimeDeferredLoad",
-		"\"status\":\"begin\",\"path\":\"%S\",\"present\":%ld,\"elapsedMs\":%lu,\"delayMs\":%lu",
-		configPath.c_str(), present, elapsedMs, delayMs);
+		"\"status\":\"begin\",\"path\":\"%S\",\"present\":%ld,\"elapsedMs\":%lu",
+		configPath.c_str(), present, elapsedMs);
 
 	DX12OverlayStatusState::SetStatus(L"DX12 startup reload running");
 	const bool ok = DX12ModRuntimeReload();

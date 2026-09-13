@@ -339,8 +339,6 @@ public:
 class RuntimeConfig
 {
 public:
-	int dx12ConfigInitializationDelayMs = 2000;
-
 	std::wstring configPath;
 };
 
@@ -357,7 +355,6 @@ public:
 
 public:
 	void ReadLoaderConfig();
-	void ReadRuntimeConfig();
 
 	IniDocument mIni;
 	LoaderConfig mLoader;
@@ -418,7 +415,6 @@ inline bool MigotoConfig::Load(const wchar_t *path)
 	}
 
 	ReadLoaderConfig();
-	ReadRuntimeConfig();
 	return true;
 }
 
@@ -435,15 +431,6 @@ inline void MigotoConfig::ReadLoaderConfig()
 	MigotoConfigReader::ReadBool(mIni, L"Loader", L"wait_for_target", &mLoader.waitForTarget);
 	MigotoConfigReader::ReadInt(mIni, L"Loader", L"hook_proc", &mLoader.hookProc);
 	MigotoConfigReader::ReadInt(mIni, L"Loader", L"delay", &mLoader.delay);
-}
-
-inline void MigotoConfig::ReadRuntimeConfig()
-{
-	MigotoConfigReader::ReadInt(mIni, L"DX12", L"config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
-	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
-
-	if (mRuntime.dx12ConfigInitializationDelayMs < 0)
-		mRuntime.dx12ConfigInitializationDelayMs = 0;
 }
 
 inline std::wstring MigotoConfigLocator::FindDefaultConfigPath(HINSTANCE module)
