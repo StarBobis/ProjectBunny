@@ -23,8 +23,8 @@
 // This header deliberately depends on nothing but Windows and <atomic> so the
 // profiler header can include it without a cycle: the mode it stores *is* the
 // sampling gate (see DX12DiagProf::Enabled), and the pump-thread start that a
-// mode change implies is done by DX12ProfilingSetMode in Core/Diag/DX12Diag.h,
-// which has both halves in scope.
+// mode change implies is done by DX12ProfilingCycleMode in
+// Core/Diag/DX12Diag.h, which has both halves in scope.
 // ============================================================================
 
 #include <Windows.h>
@@ -235,17 +235,6 @@ public:
 	static constexpr int kPageCount = static_cast<int>(Mode::ModeCount) - 1;
 
 	static constexpr size_t kTextBytes = 16 * 1024;
-	// dx12_profiling_interval_ms. This is now the *fallback* refresh interval,
-	// not the length of a window: the window is counted in frames (see
-	// kWindowFrames) and this value only decides how long a session running too
-	// slowly to reach that frame count may go before it is reported anyway. Its
-	// default and its clamp range are unchanged, so an existing d3dx.ini keeps
-	// working - it asks for a report every 500ms and gets one per window
-	// instead. The value can only make a window *longer* (see
-	// WindowFallbackUs), never shorter than kWindowFrames frames.
-	static constexpr LONG kDefaultIntervalMs = 500;
-	static constexpr LONG kMinIntervalMs = 100;
-	static constexpr LONG kMaxIntervalMs = 10000;
 
 	// --- aggregation window --------------------------------------------------
 	// One report covers exactly this many presented frames. Counting frames
@@ -268,16 +257,11 @@ public:
 	static constexpr LONG kWindowFallbackFps = 20;
 
 	// Longest a window may last before it is reported regardless of its frame
-	// count: the target frame count at kWindowFallbackFps (3s for 60 frames),
-	// or the configured dx12_profiling_interval_ms when that asks for less
-	// frequent reports. It is never shorter than the target, so the configured
-	// interval can no longer shrink a window below kWindowFrames frames.
+	// count: the target frame count at kWindowFallbackFps (3s for 60 frames).
 	static LONG64 WindowFallbackUs()
 	{
-		const LONG64 atFallbackFps = static_cast<LONG64>(kWindowFrames) * 1000000 /
+		return static_cast<LONG64>(kWindowFrames) * 1000000 /
 			kWindowFallbackFps;
-		const LONG64 configured = static_cast<LONG64>(IntervalMs()) * 1000;
-		return configured > atFallbackFps ? configured : atFallbackFps;
 	}
 
 	// --- state ---------------------------------------------------------------
@@ -295,13 +279,6 @@ public:
 	static bool IsFrozen()
 	{
 		return sFrozen.load(std::memory_order_relaxed) != 0;
-	}
-
-	// Fallback window duration in milliseconds (the old "report every N ms"
-	// knob). See WindowFallbackUs for how it is combined with kWindowFrames.
-	static LONG IntervalMs()
-	{
-		return sIntervalMs.load(std::memory_order_relaxed);
 	}
 
 	// --- measured screen budget ----------------------------------------------
@@ -339,23 +316,6 @@ public:
 		}
 	}
 
-	// Whether the bulk "name,calls,totalUs,avgUs,maxUs,items" table is still
-	// written to the log. The on-screen HUD shows the same numbers, so once it
-	// is on the table is redundant log bulk - but the per-domain troubleshooting
-	// sections (frame timeline, api wall, hot path, create, cpu stage, lock,
-	// counters) are unaffected and keep flowing.
-	static bool LogBucketTable()
-	{
-		return sLogBucketTable.load(std::memory_order_relaxed) != 0;
-	}
-
-	static void SetMode(Mode mode)
-	{
-		const LONG raw = static_cast<LONG>(mode);
-		sMode.store(raw >= 0 && raw < static_cast<LONG>(Mode::ModeCount) ? raw : 0,
-			std::memory_order_relaxed);
-	}
-
 	static void CycleMode()
 	{
 		const LONG next = (sMode.load(std::memory_order_relaxed) + 1) %
@@ -370,20 +330,6 @@ public:
 	{
 		sFrozen.store(sFrozen.load(std::memory_order_relaxed) ? 0 : 1,
 			std::memory_order_relaxed);
-	}
-
-	// `intervalMs` keeps the dx12_profiling_interval_ms meaning it always had -
-	// "I want a report at least this often" - but it can only lengthen a
-	// window, never shorten it below kWindowFrames frames.
-	static void ApplyConfig(Mode mode, LONG intervalMs, bool logBucketTable)
-	{
-		SetMode(mode);
-		if (intervalMs < kMinIntervalMs)
-			intervalMs = kMinIntervalMs;
-		if (intervalMs > kMaxIntervalMs)
-			intervalMs = kMaxIntervalMs;
-		sIntervalMs.store(intervalMs, std::memory_order_relaxed);
-		sLogBucketTable.store(logBucketTable ? 1 : 0, std::memory_order_relaxed);
 	}
 
 	static const char *ModeName(Mode mode)
@@ -485,8 +431,6 @@ private:
 	inline static volatile LONG64 sVersion = 0;
 	inline static std::atomic<LONG> sMode{ static_cast<LONG>(Mode::Off) };
 	inline static std::atomic<LONG> sFrozen{ 0 };
-	inline static std::atomic<LONG> sIntervalMs{ kDefaultIntervalMs };
-	inline static std::atomic<LONG> sLogBucketTable{ 0 };
 	inline static std::atomic<UINT64> sHookWorkFlags{ 0 };
 	// Measured screen budget, in rows and characters. See DX12ProfilingBudget.
 	inline static std::atomic<int> sBudgetRows{ DX12ProfilingLayout::kDefaultReportRows };

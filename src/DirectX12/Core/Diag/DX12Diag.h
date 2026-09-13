@@ -839,7 +839,6 @@ private:
 	static void EmitCpuStageSection(std::string &out, const Bucket *merged, UINT mergedCount);
 	static void EmitLockSection(std::string &out, const Bucket *merged, UINT mergedCount);
 	static void EmitCounterSections(std::string &out, const Bucket *merged, UINT mergedCount);
-	static void EmitScopeTable(std::string &out, const Bucket *merged, UINT mergedCount);
 	static void ResetWindow();
 
 	inline static ThreadTable sThreadTables[kThreadTableCount] = {};
@@ -889,10 +888,10 @@ private:
 	static LONG ReadLong(volatile LONG *value) { return *value; }
 };
 
-// Applies the profiling HUD configuration and keeps the aggregation pump in
-// step with it. All three entry points live here because this is the only place
-// that sees the HUD state and the writer thread together: the HUD header cannot
-// include the profiler, and the profiler must not start a thread on its own.
+// Mode switching (F11) and the aggregation pump start it implies. These entry
+// points live here because this is the only place that sees the HUD state and
+// the writer thread together: the HUD header cannot include the profiler, and
+// the profiler must not start a thread on its own.
 //
 // A non-TIMING build creates no writer thread at startup, so the first enable
 // has to start one. Doing it here - rather than lazily on the render thread's
@@ -904,19 +903,6 @@ inline void DX12ProfilingStartPumpIfEnabled()
 	if (DX12ProfilingHud::IsEnabled())
 		DX12DiagLog::EnsurePumpThread();
 #endif
-}
-
-inline void DX12ProfilingApplyConfig(
-	DX12ProfilingHud::Mode mode, LONG intervalMs, bool logBuckets)
-{
-	DX12ProfilingHud::ApplyConfig(mode, intervalMs, logBuckets);
-	DX12ProfilingStartPumpIfEnabled();
-}
-
-inline void DX12ProfilingSetMode(DX12ProfilingHud::Mode mode)
-{
-	DX12ProfilingHud::SetMode(mode);
-	DX12ProfilingStartPumpIfEnabled();
 }
 
 inline void DX12ProfilingCycleMode()
@@ -1991,56 +1977,6 @@ inline void DX12DiagProf::EmitCounterSections(
 }
 
 // Everything left over (plain scopes/counters) as the classic top-N table.
-inline void DX12DiagProf::EmitScopeTable(
-	std::string &out, const Bucket *merged, UINT mergedCount)
-{
-	const Bucket *sorted[kMergedBuckets] = {};
-	UINT sortedCount = 0;
-	for (UINT i = 0; i < kMergedBuckets; ++i) {
-		const Bucket &bucket = merged[i];
-		if (!bucket.name || bucket.sub)
-			continue;
-		if (NameHasPrefix(bucket.name, "Api.") ||
-			NameHasPrefix(bucket.name, "Stage.") ||
-			NameHasPrefix(bucket.name, "Create.") ||
-			NameHasPrefix(bucket.name, "Lock.") ||
-			NameHasPrefix(bucket.name, "Rm.") ||
-			NameHasPrefix(bucket.name, "Desc.") ||
-			NameHasPrefix(bucket.name, "Present.") ||
-			NameHasPrefix(bucket.name, "Queue.") ||
-			NameHasPrefix(bucket.name, "Fence.") ||
-			NameHasPrefix(bucket.name, "Wait.") ||
-			NameHasPrefix(bucket.name, "Worker."))
-			continue;
-		if (!bucket.calls && !bucket.totalUs && !bucket.items)
-			continue;
-		sorted[sortedCount++] = &bucket;
-	}
-	if (!sortedCount)
-		return;
-	// Descending by total time. This used to be an insertion sort, which was
-	// tolerable while only ~100 unprefixed buckets existed; the live count is
-	// several times that, and the on-screen HUD ranks the full set.
-	std::sort(sorted, sorted + sortedCount,
-		[](const Bucket *lhs, const Bucket *rhs) {
-			return lhs->totalUs > rhs->totalUs;
-		});
-
-	AppendFmt(out,
-		"func=DX12Profiling,frames=%ld\nname,calls,totalUs,avgUs,maxUs,items\n",
-		static_cast<long>(sWindowFrames));
-	for (UINT i = 0; i < sortedCount; ++i) {
-		const Bucket &bucket = *sorted[i];
-		AppendFmt(out, "%s,%lld,%lld,%lld,%lld,%lld\n",
-			bucket.name,
-			static_cast<long long>(bucket.calls),
-			static_cast<long long>(bucket.totalUs),
-			static_cast<long long>(bucket.calls ? bucket.totalUs / bucket.calls : 0),
-			static_cast<long long>(bucket.maxUs),
-			static_cast<long long>(bucket.items));
-	}
-}
-
 inline void DX12DiagProf::EmitSummary()
 {
 	Bucket merged[kMergedBuckets] = {};
@@ -2071,12 +2007,10 @@ inline void DX12DiagProf::EmitSummary()
 			DX12ProfilingHud::Publish(text, length);
 	}
 
-	// Log sink. TIMING builds only, and the bulk "func=DX12Profiling" bucket
-	// table is the ONLY section that moves to the HUD: the per-domain
-	// troubleshooting sections below keep being written unconditionally, so
-	// turning the HUD on never costs a diagnostic. Gating the whole block on
-	// the bucket-table flag (as an earlier revision did) would have silently
-	// dropped the frame timeline and every other section with it.
+	// Log sink. TIMING builds only: the per-domain troubleshooting sections
+	// are written unconditionally. The ranked per-bucket table the HUD shows
+	// on its Buckets page used to be emitted here as well; it was dropped
+	// together with the dx12_profiling_* config options.
 #if DX12_TIMING_BUILD
 	std::string out;
 	out.reserve(65536);
@@ -2087,8 +2021,6 @@ inline void DX12DiagProf::EmitSummary()
 	EmitCpuStageSection(out, merged, mergedCount);
 	EmitLockSection(out, merged, mergedCount);
 	EmitCounterSections(out, merged, mergedCount);
-	if (DX12ProfilingHud::LogBucketTable())
-		EmitScopeTable(out, merged, mergedCount);
 	DX12DiagLog::WriteDirect(out.data(), out.size());
 	DX12DiagLog::FlushDirect();
 #endif

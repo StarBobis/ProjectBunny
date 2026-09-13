@@ -82,14 +82,6 @@ public:
 		if (ConfigLoaded) {
 			gDeferredInitialModLoadDelayMs =
 				static_cast<DWORD>(Config.Runtime().dx12ConfigInitializationDelayMs);
-			// Applied before the first Present so a configured HUD is up from
-			// the first frame, and so the sampling gate is already in the right
-			// state when the render path starts asking.
-			DX12ProfilingApplyConfig(
-				static_cast<DX12ProfilingHud::Mode>(
-					Config.Runtime().dx12ProfilingHud),
-				static_cast<LONG>(Config.Runtime().dx12ProfilingIntervalMs),
-				Config.Runtime().dx12ProfilingLogBuckets);
 			DX12_LOG("DX12Config",
 				"\"path\":\"%S\",\"configInitializationDelayMs\":%lu",
 				Config.Path().c_str(),

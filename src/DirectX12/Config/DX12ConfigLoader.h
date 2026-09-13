@@ -341,19 +341,6 @@ class RuntimeConfig
 public:
 	int dx12ConfigInitializationDelayMs = 2000;
 
-	// On-screen profiling HUD. 0 = off, 1 = the full-screen Snapshot view,
-	// 2..6 = the older single-column views (see DX12ProfilingHud::Mode).
-	// Non-zero is also what switches the profiler's sampling on in a build that
-	// has no diagnostic log, so the default of 0 keeps a ordinary Release
-	// session free of instrumentation cost.
-	int dx12ProfilingHud = 0;
-	// Report cadence in milliseconds; also the log's aggregation window.
-	int dx12ProfilingIntervalMs = 500;
-	// Whether the bulk "func=DX12Profiling" bucket table is still written to
-	// the log. Off by default: the HUD shows the same rows, while the
-	// per-domain troubleshooting sections are unaffected either way.
-	bool dx12ProfilingLogBuckets = false;
-
 	std::wstring configPath;
 };
 
@@ -455,26 +442,8 @@ inline void MigotoConfig::ReadRuntimeConfig()
 	MigotoConfigReader::ReadInt(mIni, L"DX12", L"config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
 	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_config_initialization_delay_ms", &mRuntime.dx12ConfigInitializationDelayMs);
 
-	// Profiling HUD. Both section spellings are accepted, matching the existing
-	// dx12_* options: [System] dx12_profiling_hud and [DX12] profiling_hud mean
-	// the same thing.
-	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_profiling_hud", &mRuntime.dx12ProfilingHud);
-	MigotoConfigReader::ReadInt(mIni, L"DX12", L"profiling_hud", &mRuntime.dx12ProfilingHud);
-	MigotoConfigReader::ReadInt(mIni, L"System", L"dx12_profiling_interval_ms", &mRuntime.dx12ProfilingIntervalMs);
-	MigotoConfigReader::ReadInt(mIni, L"DX12", L"profiling_interval_ms", &mRuntime.dx12ProfilingIntervalMs);
-	MigotoConfigReader::ReadBool(mIni, L"System", L"dx12_profiling_log_buckets", &mRuntime.dx12ProfilingLogBuckets);
-	MigotoConfigReader::ReadBool(mIni, L"DX12", L"profiling_log_buckets", &mRuntime.dx12ProfilingLogBuckets);
-
 	if (mRuntime.dx12ConfigInitializationDelayMs < 0)
 		mRuntime.dx12ConfigInitializationDelayMs = 0;
-	// Range-clamped here rather than at the consumer, so a bad ini value is
-	// repaired once, where it was read.
-	if (mRuntime.dx12ProfilingIntervalMs < 100)
-		mRuntime.dx12ProfilingIntervalMs = 100;
-	if (mRuntime.dx12ProfilingIntervalMs > 10000)
-		mRuntime.dx12ProfilingIntervalMs = 10000;
-	// The mode value itself is range-checked by DX12ProfilingHud::SetMode,
-	// which keeps this header free of a profiling dependency.
 }
 
 inline std::wstring MigotoConfigLocator::FindDefaultConfigPath(HINSTANCE module)
