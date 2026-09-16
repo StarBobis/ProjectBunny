@@ -1254,6 +1254,12 @@ bool DX12ModRuntimeLoad(
 		return false;
 	}
 
+	// The loader resolved [Include] user_config and appended that file last
+	// (d3dx_user.ini by default), so the persist target now names the same file
+	// the values in it came from and the next save writes it back to the right
+	// place even if the config moved it.
+	DX12UserConfigSave::RefreshTarget();
+
 	const bool hasIniErrors = !iniLoad.errors.empty();
 	Bunny::MigotoShaderOverrideParser::ParseSections(iniLoad.document, &shaderOverrides);
 	Bunny::MigotoShaderRegexParser::ParseSections(iniLoad.document, &shaderRegexes);
@@ -1301,7 +1307,7 @@ bool DX12ModRuntimeLoad(
 			spec.stateLines.size());
 	}
 #endif
-	DX12ConstantsVmInitializerUtils::Initialize(commandLists);
+	Bunny::DX12ConstantsVmUtils::Initialize(commandLists);
 
 
 	std::vector<DX12VertexLimitRaiseConfig> vertexLimitRaiseConfigs =
@@ -1620,6 +1626,12 @@ bool DX12ModRuntimeReload()
 		return false;
 	}
 	DX12_LOG("DX12ModRuntimeReload", "\"status\":\"begin\",\"path\":\"%S\"", configPath.c_str());
+	// DX11 parity: ReloadConfig() calls SavePersistentSettings() *before*
+	// reloading, so hotkey changes made since the last autosave are on disk
+	// before the user config is parsed back in. This is also what makes F10 a
+	// "save and reload": the file the reload reads next contains the newest
+	// values.
+	DX12UserConfigSave::Save("reload");
 	std::wstring status;
 	bool hasWarnings = false;
 	bool hasErrors = false;
@@ -1627,6 +1639,9 @@ bool DX12ModRuntimeReload()
 		DX12OverlayStatusState::SetError(status.c_str());
 		return false;
 	}
+	// Restart the autosave window on the fresh generation (DX11 does the same
+	// by updating gSettingsSaveTime on every SavePersistentSettings call).
+	DX12UserConfigSave::ResetAutosaveTimer();
 	if (hasErrors)
 		DX12OverlayStatusState::SetError(status.c_str());
 	else if (hasWarnings)
@@ -1634,6 +1649,16 @@ bool DX12ModRuntimeReload()
 	else
 		DX12OverlayStatusState::SetStatus(status.c_str());
 	return true;
+}
+
+
+void DX12ModSavePersistStateOnExit()
+{
+	// Gated on the same condition as the other save paths: the store decides
+	// whether anything is pending, so a session where no persist variable was
+	// ever touched (or where the last autosave already captured everything)
+	// leaves the file untouched.
+	DX12UserConfigSave::Save("exit");
 }
 
 

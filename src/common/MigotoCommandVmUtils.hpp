@@ -1,6 +1,8 @@
 #pragma once
 
 #include <math.h>
+#include <share.h>
+#include <stdio.h>
 
 #include <atomic>
 #include <chrono>
@@ -9,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "MigotoIniCommandListUtils.hpp"
@@ -16,17 +19,39 @@
 class MigotoCommandVmUtils
 {
 public:
+	// A variable declared with the "persist" prefix in [Constants]. DX11 holds
+	// the same data in CommandListVariable::name plus VariableFlags::PERSIST;
+	// `name` here is already collapsed onto the flat global the DX12 VM uses
+	// ("$swapkey0", not "$\LiuYin\swapkey0"), because that is the name that has
+	// to be written to d3dx_user.ini for the file to resolve back to the same
+	// slot on the next load. `key` is the lookup form used to match writes.
+	class PersistedVariable
+	{
+	public:
+		std::wstring name;
+		std::wstring key;
+	};
+
 	class VariableStore
 	{
 	public:
 		inline static std::mutex globalsMutex;
 		inline static std::unordered_map<std::wstring, double> globals;
-		// Values of variables declared with the "persist" prefix, captured
-		// just before a reload wipes globals and replayed after the
-		// [Constants] section re-runs. Mirrors the DX11 reload semantics
-		// (full d3dx_user.ini persistence is DX11-only); guarded by
-		// globalsMutex.
-		inline static std::unordered_map<std::wstring, double> persistSnapshot;
+		// Persist registry (DX11 parity for d3dx_user.ini):
+		//   - `persistedVariables` holds every variable declared with the
+		//     "persist" prefix, in declaration order, exactly as DX11's
+		//     persistent_variables vector does;
+		//   - `persistedKeys` indexes them by a namespace-collapsed key so a
+		//     write through the DX12 VM's flattened name ("$swapkey0") matches
+		//     an entry declared as "$\LiuYin\swapkey0";
+		//   - `persistDirty` is the equivalent of DX11's user_config_dirty: it
+		//     is set only when a persist variable's value actually changes, so
+		//     an idle session never rewrites the file.
+		// All three are guarded by globalsMutex; persistDirty is duplicated in
+		// an atomic so the per-write check is a single relaxed load.
+		inline static std::vector<PersistedVariable> persistedVariables;
+		inline static std::unordered_set<std::wstring> persistedKeys;
+		inline static std::atomic<int> persistDirty = 0;
 		// Set once a command-list expression references any per-frame variable
 		// (window size, cursor, DPI, hunting/analysis flags). DX11 evaluates
 		// these lazily at match time; DX12 pre-collects them at Present, so
@@ -525,7 +550,7 @@ public:
 	static void SetGlobal(const std::wstring &name, double value)
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		VariableStore::globals[NormalizeVariableName(name)] = value;
+		WriteGlobalLocked(NormalizeVariableName(name), value);
 	}
 
 	// Copies the whole global table under a single lock acquisition. Bulk
@@ -539,37 +564,148 @@ public:
 		*out = VariableStore::globals;
 	}
 
-	// Captures the current values of the given persist-declared variables
-	// (normalized names, e.g. "$top") so they survive a reload. Names that
-	// do not currently exist in the global table are dropped, which keeps
-	// first-load defaults from the [Constants] replay intact.
-	static void SavePersistSnapshot(const std::vector<std::wstring> &names)
+	// DX11 parity for the persist prefix: records which variables a "persist"
+	// declaration covers. Called once per config load, after every ini file
+	// (d3dx_user.ini included) has been parsed and the [Constants] section has
+	// been replayed, so the registry always describes the generation that is
+	// live now - exactly like ParseConstantsSection() rebuilding
+	// persistent_variables. `names` are declaration-order names as written in
+	// the ini ("$\Mods\LiuYin.ini\swapkey0", "$swapkey0", ...); duplicates that
+	// collapse onto the same variable keep their first declaration, matching
+	// DX11's "redeclaration keeps the original flags" behaviour.
+	static void RegisterPersistedVariables(const std::vector<std::wstring> &names)
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		VariableStore::persistSnapshot.clear();
+		VariableStore::persistedVariables.clear();
+		VariableStore::persistedKeys.clear();
 		for (const std::wstring &name : names) {
-			const std::wstring normalized = NormalizeVariableName(name);
-			auto found = VariableStore::globals.find(normalized);
-			if (found != VariableStore::globals.end())
-				VariableStore::persistSnapshot[normalized] = found->second;
+			const std::wstring key = PersistedVariableKey(name);
+			if (key.empty())
+				continue;
+			if (!VariableStore::persistedKeys.insert(key).second)
+				continue;
+			PersistedVariable variable;
+			variable.name = name;
+			variable.key = key;
+			VariableStore::persistedVariables.push_back(std::move(variable));
 		}
 	}
 
-	// Writes the captured persist values back into the global table. Must be
-	// called after the [Constants] defaults have been replayed so that
-	// runtime-modified persist values win over the ini defaults.
-	static void RestorePersistSnapshot()
+	// True once a config has registered at least one persist declaration; the
+	// offline persistence test uses it to prove the registry was rebuilt.
+	static bool HasPersistedVariables()
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
-		for (const auto &entry : VariableStore::persistSnapshot)
-			VariableStore::globals[entry.first] = entry.second;
+		return !VariableStore::persistedVariables.empty();
+	}
+
+	// Fast, lock-free "is there anything to write" probe for the per-frame
+	// autosave check.
+	static bool PersistDirty()
+	{
+		return VariableStore::persistDirty.load(std::memory_order_acquire) != 0;
+	}
+
+	static void ClearPersistDirty()
+	{
+		VariableStore::persistDirty.store(0, std::memory_order_release);
+	}
+
+	// Split form of the resolved persist path, for the writer.
+	class PersistTarget
+	{
+	public:
+		std::wstring directory;
+		std::wstring fileName;
+	};
+
+	// Full path of the persist file the last config load resolved
+	// ([Include] user_config, else d3dx_user.ini next to the root ini). It
+	// lives here rather than in the loader because the runtime's save path must
+	// not depend on the loader header being the first file to include it, and
+	// because the VM utils are the one header every mod-runtime unit already
+	// shares.
+	inline static std::wstring userConfigPath;
+
+	// Splits a resolved user-config path into the directory and file name the
+	// save side needs.
+	static PersistTarget MakePersistTarget(const std::wstring &path)
+	{
+		PersistTarget target;
+		const size_t separator = path.find_last_of(L"\\/");
+		if (separator == std::wstring::npos) {
+			target.fileName = path;
+			return target;
+		}
+		target.directory = path.substr(0, separator);
+		target.fileName = path.substr(separator + 1);
+		return target;
+	}
+
+	// Writes the live values of every persist variable to `target` in the
+	// exact DX11 SavePersistentSettings() format, so a d3dx_user.ini produced
+	// here is byte-compatible with the DX11 runtime and vice versa:
+	//
+	//   ; AUTOMATICALLY GENERATED FILE - DO NOT EDIT
+	//   ...
+	//   [Constants]
+	//   $some_persistent_variable = 1
+	//
+	// What goes in the file is the registry built by
+	// RegisterPersistedVariables, and the values come from the live global
+	// table, so the file always reflects the newest hotkey state. Returns false
+	// without touching the file when nothing is declared as persistent or the
+	// file cannot be opened.
+	static bool SavePersistedVariables(const PersistTarget &target)
+	{
+		if (target.directory.empty() || target.fileName.empty())
+			return false;
+
+		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
+		if (VariableStore::persistedVariables.empty()) {
+			// Nothing is declared as persist any more (for instance the mod was
+			// removed): drop the pending flag instead of retrying every frame.
+			ClearPersistDirty();
+			return false;
+		}
+
+		std::wstring path = target.directory;
+		if (path.back() != L'\\' && path.back() != L'/')
+			path += L'\\';
+		path += target.fileName;
+
+		FILE *file = _wfsopen(path.c_str(), L"w", _SH_DENYNO);
+		if (!file)
+			return false;
+
+		fputs("; AUTOMATICALLY GENERATED FILE - DO NOT EDIT\n"
+		      ";\n"
+		      "; 3DMigoto will overwrite this file whenever any persistent settings are\n"
+		      "; altered by hot key or command list. Tag global variables with the \"persist\"\n"
+		      "; keyword to save them in this file. Use the post keyword in the [Constants]\n"
+		      "; command list if you need to do any intialisation after this file is loaded.\n"
+		      ";\n"
+		      "[Constants]\n", file);
+
+		for (const PersistedVariable &declaration : VariableStore::persistedVariables) {
+			auto found = VariableStore::globals.find(
+				NormalizeVariableName(declaration.name));
+			if (found == VariableStore::globals.end())
+				continue;
+			fwprintf_s(file, L"%ls = %.9g\n",
+				declaration.name.c_str(), found->second);
+		}
+
+		fclose(file);
+		ClearPersistDirty();
+		return true;
 	}
 
 	static void SetGlobals(std::initializer_list<std::pair<const wchar_t *, double>> values)
 	{
 		std::lock_guard<std::mutex> lock(VariableStore::globalsMutex);
 		for (const auto &value : values)
-			VariableStore::globals[NormalizeVariableName(value.first)] = value.second;
+			WriteGlobalLocked(NormalizeVariableName(value.first), value.second);
 	}
 
 	// Writes a normalized variable name only when its value changed. The
@@ -582,7 +718,22 @@ public:
 		auto found = VariableStore::globals.find(normalizedName);
 		if (found != VariableStore::globals.end() && found->second == value)
 			return;
-		VariableStore::globals[normalizedName] = value;
+		WriteGlobalLocked(normalizedName, value);
+	}
+
+	// DX12 flattens namespaced globals ("$\LiuYin\swapkey0" and "$swapkey0"
+	// name the same slot, see NormalizeVariableName), so the persist registry
+	// has to answer "does this flattened name belong to a persist variable"
+	// without knowing which namespace it came from. Every caller normalizes
+	// first, so this only rejects names the VM itself would not collapse onto a
+	// flat global ("$\foo", with no second separator, keeps its qualifier).
+	static std::wstring PersistedVariableKey(const std::wstring &name)
+	{
+		const std::wstring normalized = NormalizeVariableName(name);
+		if (normalized.size() < 2 || normalized[0] != L'$' ||
+		    normalized[1] == L'\\')
+			return L"";
+		return normalized;
 	}
 
 	static void ClearGlobals()
@@ -593,5 +744,29 @@ public:
 		// variables; re-arm the lazy-collection gate. The next expression
 		// evaluation re-registers if the new config still uses them.
 		VariableStore::frameVariableReferenced.store(0, std::memory_order_release);
+	}
+
+	static void WriteGlobalLocked(const std::wstring &normalizedName, double value)
+	{
+		auto found = VariableStore::globals.find(normalizedName);
+		const bool changed = found == VariableStore::globals.end() ||
+			found->second != value;
+		VariableStore::globals[normalizedName] = value;
+		if (changed)
+			MarkPersistedWriteLocked(normalizedName);
+	}
+
+	// The DX11 counterpart is "G->user_config_dirty |= (var->fval != orig)"
+	// inside VariableAssignment::run(). The relaxed load in front keeps the
+	// common case - a write while the file is already pending - down to a
+	// single atomic read, and the set lookup only runs on the first write
+	// after each save.
+	static void MarkPersistedWriteLocked(const std::wstring &normalizedName)
+	{
+		if (VariableStore::persistDirty.load(std::memory_order_relaxed))
+			return;
+		if (!VariableStore::persistedKeys.count(normalizedName))
+			return;
+		VariableStore::persistDirty.store(1, std::memory_order_release);
 	}
 };

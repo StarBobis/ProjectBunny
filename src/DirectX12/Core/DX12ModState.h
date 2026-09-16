@@ -18,6 +18,12 @@ bool DX12ModRuntimeLoad(
 	bool *hasWarnings = nullptr,
 	bool *hasErrors = nullptr);
 bool DX12ModRuntimeReload();
+// Flushes hotkey/command-list changes to the persist file (d3dx_user.ini) on
+// the way out, mirroring DX11's DestroyDLL() -> SavePersistentSettings(). Safe
+// to call when no mod config was ever loaded or nothing changed; it only reads
+// already-initialized runtime state, so DLL_PROCESS_DETACH can call it before
+// tearing the wrappers down.
+void DX12ModSavePersistStateOnExit();
 void DX12ModRefreshRuntimeStateAfterReload();
 uint64_t DX12ModHashShaderBytecode(const void *data, size_t size);
 bool DX12ModReplaceShaderBytecode(

@@ -1318,18 +1318,25 @@ void ProcessDx12KeyBindingsForFrame()
 	// Key processing is best-effort input handling; it must never block the
 	// frame boundary on the global mod lock while recording threads take
 	// shared acquisitions on every draw/dispatch. A skipped round simply
-	// delays a hotkey by one frame.
-	if (!TryAcquireSRWLockExclusive(&gModLock))
-		return;
-	MarkFrameBoundaryStage("key_bindings_locked");
-	if (gLoaded)
-		Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
-	ReleaseSRWLockExclusive(&gModLock);
-	MarkFrameBoundaryStage("key_bindings_done");
+	// delays a hotkey by one frame. The autosave below still runs in that case
+	// (it takes the lock itself only when a persist variable changed), so a
+	// busy frame boundary can delay a hotkey but never the save.
+	if (TryAcquireSRWLockExclusive(&gModLock)) {
+		MarkFrameBoundaryStage("key_bindings_locked");
+		if (gLoaded)
+			Bunny::MigotoKeyBindingUtils::ProcessBindings(&gKeyBindings, &actions);
+		ReleaseSRWLockExclusive(&gModLock);
+		MarkFrameBoundaryStage("key_bindings_done");
 
-	for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
-		RunNamedCommandListVmOnly(action.commandList, action.includePost);
-	MarkFrameBoundaryStage("key_actions_done");
+		for (const Bunny::MigotoKeyBindingUtils::RuntimeAction &action : actions)
+			RunNamedCommandListVmOnly(action.commandList, action.includePost);
+		MarkFrameBoundaryStage("key_actions_done");
+	}
+	// Writes triggered by command lists (UI panels, shader overrides) also land
+	// in the global table during this frame, so the flush belongs at the frame
+	// boundary - the same place DX11's Present hook autosaves from.
+	DX12UserConfigSave::TickAutosave();
+	MarkFrameBoundaryStage("user_config_autosave_done");
 #if DX12_TIMING_BUILD
 	DX12TraceFrameKeyVariables();
 #endif

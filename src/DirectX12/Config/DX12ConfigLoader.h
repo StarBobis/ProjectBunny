@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12Config.h"
+#include "MigotoCommandVmUtils.hpp"
 
 #include <set>
 
@@ -189,6 +190,7 @@ public:
 	std::vector<std::wstring> warnings;
 };
 
+
 static void CollectIncludeEntries(
 	const IniDocument &ini, std::vector<std::wstring> *includes,
 	std::vector<std::wstring> *recursiveIncludes,
@@ -298,6 +300,69 @@ static void LoadFileRecursive(
 		MigotoIniLoaderPath::LoadDirectoryRecursive(MigotoIniLoaderPath::JoinPath(includeBase, recursive), excludeRecursive, state);
 }
 
+// Loads the persist file (d3dx_user.ini) as the final ini document. A missing
+// file is the normal first-run case and stays silent; a file that exists but
+// cannot be read or parsed is reported, because silently ignoring it would
+// make the runtime fall back to the ini defaults while the next save
+// overwrites the user's settings.
+static void LoadUserConfigFile(const std::wstring &path, LoaderState *state)
+{
+	if (!state || path.empty())
+		return;
+	if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+		return;
+	if (state->seenFiles.count(MigotoIniLoaderPath::CanonicalPath(path))) {
+		state->warnings.push_back(L"user_config already loaded by an include: " + path);
+		return;
+	}
+	MigotoIniLoaderPath::LoadFileRecursive(path, path, state);
+}
+
+};
+
+// Path of the persist file (d3dx_user.ini): the [Include] user_config entry
+// resolved against the root ini's directory, or the DX11 default name beside
+// it. The resolved path is published through
+// MigotoCommandVmUtils::userConfigPath rather than a type of its own, because
+// the runtime's save path only ever needs the string and must not depend on
+// this header (Resources/ pulls it in early, and a second include in the same
+// translation unit is then skipped by #pragma once - see the include order
+// note in DX12ModRuntimeInternal.h).
+namespace MigotoUserConfigPath
+{
+	inline static const wchar_t *kDefaultFileName = L"d3dx_user.ini";
+
+	// Returns the user_config value of the first [Include] section that
+	// declares one, or an empty string. Within a section the last duplicate
+	// key wins, matching IniDocument::GetString.
+	static std::wstring FindConfiguredName(const IniDocument &ini)
+	{
+		for (const IniSection &section : ini.Sections()) {
+			if (!MigotoIniLoaderPath::StartsWithI(section.name, L"Include"))
+				continue;
+			std::wstring configured;
+			for (const IniEntry &entry : section.entries) {
+				if (!entry.hasEquals)
+					continue;
+				if (IniDocumentText::ToLower(IniDocumentText::Trim(entry.key)) == L"user_config")
+					configured = IniDocumentText::Trim(entry.value);
+			}
+			if (!configured.empty())
+				return configured;
+		}
+		return L"";
+	}
+
+	// Root-relative unless the configured value is already absolute
+	// (MigotoIniLoaderPath::IsAbsolutePath covers "C:\...", "\\server\...",
+	// "\..." and "/...").
+	static std::wstring Resolve(const std::wstring &rootDir, const std::wstring &configured)
+	{
+		const std::wstring name = IniDocumentText::Trim(configured);
+		if (name.empty())
+			return MigotoIniLoaderPath::JoinPath(rootDir, kDefaultFileName);
+		return MigotoIniLoaderPath::JoinPath(rootDir, name);
+	}
 };
 
 inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIniLoadResult *result)
@@ -309,6 +374,16 @@ inline bool MigotoIniLoader::LoadWithIncludes(const wchar_t *rootPath, MigotoIni
 	MigotoIniLoaderPath::LoaderState state;
 	state.rootDir = MigotoIniLoaderPath::DirectoryOf(rootPath);
 	MigotoIniLoaderPath::LoadFileRecursive(rootPath, L"", &state);
+
+	// The user config is loaded very last so the persisted values override the
+	// defaults declared by every other ini file (DX11: ParseIncludedIniFiles()
+	// loads G->user_config after the include loop). It is resolved from the
+	// root file even when the file itself is missing - the save path needs the
+	// path to create it, and a missing file must not be an error.
+	MigotoCommandVmUtils::userConfigPath = MigotoUserConfigPath::Resolve(
+		state.rootDir, MigotoUserConfigPath::FindConfiguredName(state.document));
+	MigotoIniLoaderPath::LoadUserConfigFile(
+		MigotoCommandVmUtils::userConfigPath, &state);
 
 	result->loadedFiles = std::move(state.loadedFiles);
 	result->errors = std::move(state.errors);

@@ -83,6 +83,7 @@ add_library(DirectX12 SHARED
     Core/ModState/DX12PreSkinPlanUtils.h
     Config/DX12Config.h
     Config/DX12ConfigLoader.h
+    Config/DX12ConstantsVmUtils.h
     Resources/DX12ResourceDump.h
     Resources/Dump/DX12PsoInputLayoutUtils.h
     Resources/Dump/DX12ResourceCollectQueue.h
@@ -150,6 +151,12 @@ add_library(DirectX12 SHARED
 
 target_include_directories(DirectX12 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    # Config and ModRuntime headers include each other by bare name
+    # (DX12ModRuntimeInternal.h -> DX12ConstantsVmUtils.h -> DX12Config.h), so
+    # both directories are on the search path rather than spelled out per
+    # include.
+    ${CMAKE_CURRENT_SOURCE_DIR}/Config
+    ${CMAKE_CURRENT_SOURCE_DIR}/ModRuntime
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/3rdparty

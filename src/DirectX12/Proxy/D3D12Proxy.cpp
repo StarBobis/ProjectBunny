@@ -355,6 +355,10 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 	}
 	case DLL_PROCESS_DETACH:
 		if (gD3D12ProxyRuntimeInitialized) {
+			// DX11 parity: DestroyDLL() saves the persistent settings before the
+			// runtime tears down. A clean game exit is the last chance to
+			// capture hotkey state the autosave interval has not written yet.
+			DX12ModSavePersistStateOnExit();
 			DX12Wrapper::Shutdown();
 			D3D12ProxyRuntime::Shutdown();
 			gD3D12ProxyRuntimeInitialized = false;

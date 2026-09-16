@@ -30,6 +30,8 @@
 #include "util.h"
 #include "MigotoCommandVmUtils.hpp"
 #include "MigotoKeyBindingUtils.hpp"
+#include "DX12ConstantsVmUtils.h"
+#include "DX12ConfigLoader.h"
 #include "DX12CustomShaderElement.h"
 #include "DX12CustomShaderRegisters.h"
 #include "DX12CustomShaderCompile.h"
@@ -2391,110 +2393,100 @@ BuildDx12CommandExecutionRuntimeSnapshot(
 }
 
 
-class DX12ConstantsVmInitializerUtils
+// Writes the persist variables (d3dx_user.ini) exactly like DX11's
+// SavePersistentSettings(): on the autosave interval, before a config reload
+// and on DLL unload. Keeping it in its own module means the runtime never has
+// to know how the file is laid out, and the loader never has to know when the
+// runtime wants to save.
+class DX12UserConfigSave
 {
 public:
-	static void Initialize(const Bunny::CommandListMap &commandLists)
+	// DX11 default ([System] settings_auto_save_interval = 60); negative
+	// disables the periodic write.
+	inline static int AutoSaveIntervalSeconds = 60;
+
+	// Arms the save path from the path the loader resolved. Called after every
+	// config load, so a config that moves its user_config takes effect on the
+	// next reload without restarting the game; the path is empty until a load
+	// has succeeded, which also keeps the exit save from writing anything.
+	static void RefreshTarget()
 	{
-		// Persist semantics: variables declared with a "persist" prefix in
-		// [Constants] keep their runtime-modified values across a reload.
-		// Values are snapshotted from the live global table before
-		// ClearGlobals() (the table still holds the previous generation's
-		// runtime state at this point), then replayed after the [Constants]
-		// defaults so the persisted value wins over the ini default - the
-		// same outcome DX11 gets from its d3dx_user.ini persistence.
-		std::vector<std::wstring> persistNames;
-		const Bunny::CommandListConfig *constants = FindConstants(commandLists);
-		if (constants)
-			CollectTopLevelPersistNames(constants, &persistNames);
-		MigotoCommandVmUtils::SavePersistSnapshot(persistNames);
-
-		MigotoCommandVmUtils::ClearGlobals();
-		if (!constants)
-			return;
-
-		MigotoCommandVmUtils::State state;
-		state.PushLocalScope();
-		for (const Bunny::CommandListAction &action : constants->actions)
-			ApplyAction(&state, action);
-		state.PopLocalScope();
-
-		MigotoCommandVmUtils::RestorePersistSnapshot();
+		mTargetValid = UserConfigPathActive(&mTarget);
 	}
 
-	static const Bunny::CommandListConfig *FindConstants(
-		const Bunny::CommandListMap &commandLists)
+	// DX12ConstantsVmUtils::Initialize() has already registered the persist
+	// declarations of the live generation by the time anything can be saved, so
+	// the store itself is the single source of truth for what goes in the file.
+	static bool Save(const char *reason)
 	{
-		for (const auto &item : commandLists) {
-			if (Bunny::IniDocumentText::ToLower(item.first) == L"constants")
-				return &item.second;
-		}
-		return nullptr;
+		if (!mTargetValid)
+			return false;
+		if (!MigotoCommandVmUtils::SavePersistedVariables(mTarget))
+			return false;
+		DX12_LOG("DX12UserConfig",
+			"\"status\":\"saved\",\"reason\":\"%s\",\"path\":\"%ls%ls%ls\"",
+			reason ? reason : "",
+			mTarget.directory.c_str(),
+			mTarget.directory.empty() ? L"" : L"\\",
+			mTarget.fileName.c_str());
+		return true;
 	}
 
-	// Collects the variable names of persist declarations that appear at the
-	// top level of the [Constants] section (not inside if/else blocks: those
-	// declarations may not be replayed on the next load, so persisting them
-	// would resurrect values the config no longer assigns).
-	static void CollectTopLevelPersistNames(
-		const Bunny::CommandListConfig *constants, std::vector<std::wstring> *out)
+	// Present-boundary autosave, matching DX11's HackerDXGI Present hook: the
+	// first change after a load is written almost immediately (the timer starts
+	// at zero, as DX11's does), later changes at most one interval behind.
+	static void TickAutosave()
 	{
-		if (!constants || !out)
+		if (!AutosaveDue(GetTickCount64()))
 			return;
-		int branchDepth = 0;
-		for (const Bunny::CommandListAction &action : constants->actions) {
-			if (action.kind == Bunny::CommandListActionKind::ControlFlow) {
-				const std::wstring line = Bunny::IniDocumentText::ToLower(
-					Bunny::IniDocumentText::Trim(
-						action.rawLine.empty() ? action.key : action.rawLine));
-				if (line.rfind(L"if ", 0) == 0)
-					++branchDepth;
-				else if (line == L"endif" && branchDepth > 0)
-					--branchDepth;
-				continue;
-			}
-			if (branchDepth != 0 ||
-			    action.kind != Bunny::CommandListActionKind::VariableAssignment)
-				continue;
-			const std::wstring key = Bunny::IniDocumentText::ToLower(
-				Bunny::IniDocumentText::Trim(action.key));
-			if (key.rfind(L"global persist $", 0) != 0 &&
-			    key.rfind(L"persist $", 0) != 0)
-				continue;
-			const std::wstring name = MigotoCommandVmUtils::ExtractVariableName(key);
-			if (!name.empty())
-				out->push_back(name);
-		}
+		if (!TryAcquireSRWLockExclusive(&gModLock))
+			return;
+		const bool saved = Save("autosave");
+		ReleaseSRWLockExclusive(&gModLock);
+		if (saved)
+			mLastSaveTick = GetTickCount64();
 	}
 
-	static void ApplyAction(
-		MigotoCommandVmUtils::State *state,
-		const Bunny::CommandListAction &action)
+	static void ResetAutosaveTimer()
 	{
-		if (!state)
-			return;
-		if (action.kind == Bunny::CommandListActionKind::ControlFlow) {
-			state->ApplyControlFlow(action.rawLine.empty() ? action.key : action.rawLine);
-			return;
-		}
-		if (!state->Active())
-			return;
-
-		switch (action.kind) {
-		case Bunny::CommandListActionKind::VariableAssignment:
-		case Bunny::CommandListActionKind::PostVariableAssignment:
-			state->Assign(action.key, action.value);
-			break;
-		case Bunny::CommandListActionKind::LocalVariableAssignment:
-			state->DeclareLocal(action.key, action.value);
-			break;
-		case Bunny::CommandListActionKind::SetShaderConstant:
-			state->AssignSymbol(action.key, action.value);
-			break;
-		default:
-			break;
-		}
+		mLastSaveTick = 0;
 	}
+
+private:
+	// The whole save cadence, as a pure predicate: DX11 compares
+	// "now - gSettingsSaveTime > gSettingsAutoSaveInterval" in its Present hook
+	// with gSettingsSaveTime starting at 0, and writes nothing at all while no
+	// persist variable changed (user_config_dirty == 0). A zero timestamp
+	// therefore makes the first change after a load save immediately, and every
+	// later change wait out the interval; a negative interval disables the
+	// periodic write entirely.
+	static bool AutosaveDue(ULONGLONG nowTick)
+	{
+		if (AutoSaveIntervalSeconds < 0)
+			return false;
+		if (!MigotoCommandVmUtils::PersistDirty())
+			return false;
+		if (mLastSaveTick == 0)
+			return true;
+		return nowTick - mLastSaveTick >=
+			static_cast<ULONGLONG>(AutoSaveIntervalSeconds) * 1000ull;
+	}
+
+	// Path of the persist file, split for the writer. Empty until a config load
+	// has published it through MigotoCommandVmUtils::userConfigPath, which is
+	// also what keeps the exit save silent when no mod config was ever loaded.
+	static bool UserConfigPathActive(MigotoCommandVmUtils::PersistTarget *target)
+	{
+		if (!target)
+			return false;
+		*target = MigotoCommandVmUtils::MakePersistTarget(
+			MigotoCommandVmUtils::userConfigPath);
+		return !target->fileName.empty();
+	}
+
+	inline static MigotoCommandVmUtils::PersistTarget mTarget;
+	inline static bool mTargetValid = false;
+	inline static ULONGLONG mLastSaveTick = 0;
 };
 
 
