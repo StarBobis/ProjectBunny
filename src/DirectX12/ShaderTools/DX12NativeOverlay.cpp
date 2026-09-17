@@ -1586,9 +1586,9 @@ bool DX12NativeOverlayReady(IDXGISwapChain *swapChain)
 
 void DX12NativeOverlayInvalidate(IDXGISwapChain *swapChain)
 {
-	// ResizeBuffers swapped the back buffers under a stable chain pointer:
-	// drop the cached RTV so the next frame recreates it (also covers the
-	// mod [Present] overlay, which shares the same cache).
+	// Resize and destruction both retire the chain's cached references before
+	// DXGI sees the operation. Also covers the mod [Present] overlay, which
+	// shares this cache with the text overlay.
 	Bunny::DX12CustomShaderSurfaceCache::InvalidateChain(swapChain);
 }
 

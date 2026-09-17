@@ -1,6 +1,7 @@
 // DX12CommandListExecutor.cpp: command list execution entry points, frame begin and present replacement.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
+#include <tlhelp32.h>
 // Wrapper identity registry lock (DX12WrapperDetail::gWrapperLock), probed by
 // the freeze watchdog: a hang inside wrapper lookup (UnwrapResource and
 // friends) holds it and is otherwise invisible to the mod-side lock probes.
@@ -71,13 +72,21 @@ public:
 
 private:
 	static constexpr ULONGLONG kReportAfterStallMs = 1500;
+	// Stall age at which the first report also snapshots every thread's
+	// native stack. The lock probes name a held lock but cannot see a
+	// thread parked inside a driver/NGX call; the stack can.
+	static constexpr ULONGLONG kStackCaptureAfterStallMs = 1500;
 
 	inline static volatile LONG sStarted = 0;
+	// One snapshot per stall: armed by the first report, re-armed when the
+	// present counter advances so a later, distinct freeze captures again.
+	inline static volatile LONG sStacksCaptured = 0;
 
 	static DWORD WINAPI ThreadProc(void *parameter);
 	static const char *ProbeSrwLock(SRWLOCK *lock);
 	static const char *ProbeMutex(std::mutex *mutex);
 	static void Report(LONG present, ULONGLONG stalledMs);
+	static void CaptureThreadStacks();
 };
 #endif
 
@@ -394,11 +403,18 @@ DWORD WINAPI DX12FreezeWatchdog::ThreadProc(void *)
 		if (present != lastPresent) {
 			lastPresent = present;
 			lastAdvanceTick = now;
+			InterlockedExchange(&sStacksCaptured, 0);
 			continue;
 		}
 		const ULONGLONG stalledMs = now - lastAdvanceTick;
 		if (stalledMs < kReportAfterStallMs)
 			continue;
+		// Symbol resolution is the one stall this watchdog can still disarm:
+		// a dbghelp/symsrv copy that loaded after the install-time sweep and is
+		// now fetching a PDB over the network is invisible to every lock probe.
+		// Re-sweeping costs one module snapshot and installs the retrieval
+		// stubs that turn that fetch into an immediate store miss.
+		DX12DbgHelpHooks::Rescan();
 		Report(present, stalledMs);
 		// Keep re-reporting while the stall persists: a lock that is
 		// released between reports shows up as a state transition.
@@ -485,6 +501,217 @@ void DX12FreezeWatchdog::Report(LONG present, ULONGLONG stalledMs)
 		overlayLock,
 		ProbeSrwLock(&gDescriptorLock),
 		ProbeSrwLock(&DX12WrapperDetail::gWrapperLock));
+	if (stalledMs >= kStackCaptureAfterStallMs &&
+	    InterlockedCompareExchange(&sStacksCaptured, 1, 0) == 0)
+		CaptureThreadStacks();
+}
+
+namespace
+{
+	constexpr unsigned int kSnapshotMaxFrames = 32;
+	// ZZZ fans out well past a hundred job-worker threads; the cap must
+	// clear all of them or the one thread that matters (the render thread,
+	// created early but enumerated in creation order behind hordes of
+	// workers) never gets captured.
+	constexpr unsigned int kSnapshotMaxThreads = 256;
+	constexpr unsigned int kSnapshotMaxModules = 512;
+
+	// Module table built from a toolhelp module snapshot. Address resolution
+	// runs while target threads are suspended, so it must not touch the
+	// loader lock - a suspended thread may be holding it. A kernel snapshot
+	// plus a plain sorted array keeps the whole probe lock-free.
+	struct SnapshotModule
+	{
+		unsigned long long base = 0;
+		unsigned long long end = 0;
+		char path[MAX_PATH] = {};
+	};
+
+	struct SnapshotFrame
+	{
+		void *address = nullptr;
+		unsigned long long moduleBase = 0;
+		unsigned long long moduleOffset = 0;
+		char module[256] = {};
+	};
+
+	struct SnapshotThreadStack
+	{
+		unsigned long threadId = 0;
+		unsigned int frameCount = 0;
+		SnapshotFrame frames[kSnapshotMaxFrames];
+	};
+
+	// Static storage: the watchdog is a single thread and captures at most
+	// once per stall, so no synchronization is needed around these buffers.
+	SnapshotModule sSnapshotModules[kSnapshotMaxModules];
+	SnapshotThreadStack sSnapshotStacks[kSnapshotMaxThreads];
+
+	unsigned int BuildModuleTable()
+	{
+		const unsigned long processId = GetCurrentProcessId();
+		HANDLE snapshot = CreateToolhelp32Snapshot(
+			TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+		unsigned int count = 0;
+		if (snapshot == INVALID_HANDLE_VALUE)
+			return 0;
+		MODULEENTRY32W entry = {};
+		entry.dwSize = sizeof(entry);
+		if (Module32FirstW(snapshot, &entry)) {
+			do {
+				if (count >= kSnapshotMaxModules)
+					break;
+				SnapshotModule &module = sSnapshotModules[count++];
+				module.base = reinterpret_cast<unsigned long long>(entry.modBaseAddr);
+				module.end = module.base + entry.modBaseSize;
+				WideCharToMultiByte(CP_ACP, 0, entry.szExePath, -1,
+					module.path, MAX_PATH, nullptr, nullptr);
+			} while (Module32NextW(snapshot, &entry));
+		}
+		CloseHandle(snapshot);
+		// Enumeration order is load order, not base address order; the
+		// binary search below requires ascending bases. Nearly sorted input
+		// makes insertion sort linear and dependency-free.
+		for (unsigned int i = 1; i < count; ++i) {
+			SnapshotModule value = sSnapshotModules[i];
+			unsigned int j = i;
+			while (j > 0 && sSnapshotModules[j - 1].base > value.base) {
+				sSnapshotModules[j] = sSnapshotModules[j - 1];
+				--j;
+			}
+			sSnapshotModules[j] = value;
+		}
+		return count;
+	}
+
+	// Resolves an address against the snapshot table; leaves the frame's
+	// module fields empty for addresses outside every module (jit, stubs).
+	void ResolveFrameModule(SnapshotFrame &frame,
+		const SnapshotModule *modules, unsigned int moduleCount)
+	{
+		const unsigned long long address =
+			reinterpret_cast<unsigned long long>(frame.address);
+		int low = 0;
+		int high = static_cast<int>(moduleCount) - 1;
+		while (low <= high) {
+			const int mid = low + (high - low) / 2;
+			const SnapshotModule &module = modules[mid];
+			if (address < module.base) {
+				high = mid - 1;
+			} else if (address >= module.end) {
+				low = mid + 1;
+			} else {
+				frame.moduleBase = module.base;
+				frame.moduleOffset = address - module.base;
+				strncpy_s(frame.module, module.path, _TRUNCATE);
+				return;
+			}
+		}
+	}
+
+#if defined(_M_X64)
+	// Walks one suspended thread's stack with the kernel's own unwind
+	// metadata - no dbghelp dependency, no symbol server, no locks. Frames
+	// beyond a leaf without unwind metadata are unknowable and stop the walk.
+	unsigned int UnwindSuspendedThread(CONTEXT &context, SnapshotFrame *frames,
+		unsigned int maxFrames, const SnapshotModule *modules,
+		unsigned int moduleCount)
+	{
+		unsigned int count = 0;
+		while (count < maxFrames) {
+			SnapshotFrame &frame = frames[count];
+			frame.address = reinterpret_cast<void *>(context.Rip);
+			ResolveFrameModule(frame, modules, moduleCount);
+			++count;
+			DWORD64 imageBase = 0;
+			PRUNTIME_FUNCTION function =
+				RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+			if (!function)
+				break;
+			void *handlerData = nullptr;
+			DWORD64 establisherFrame = 0;
+			RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip,
+				function, &context, &handlerData, &establisherFrame, nullptr);
+			if (!context.Rip)
+				break;
+		}
+		return count;
+	}
+#endif
+}
+
+void DX12FreezeWatchdog::CaptureThreadStacks()
+{
+#if defined(_M_X64)
+	const unsigned long processId = GetCurrentProcessId();
+	const unsigned int moduleCount = BuildModuleTable();
+
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, processId);
+	if (snapshot == INVALID_HANDLE_VALUE)
+		return;
+	const unsigned long selfThreadId = GetCurrentThreadId();
+	const unsigned long writerThreadId = DX12DiagLog::WriterThreadId();
+	unsigned int stackCount = 0;
+	unsigned int seenCount = 0;
+	unsigned int skippedCount = 0;
+	THREADENTRY32 entry = {};
+	entry.dwSize = sizeof(entry);
+	if (Thread32First(snapshot, &entry)) {
+		do {
+			if (entry.th32OwnerProcessID != processId ||
+			    entry.th32ThreadID == selfThreadId ||
+			    entry.th32ThreadID == writerThreadId)
+				continue;
+			++seenCount;
+			if (stackCount >= kSnapshotMaxThreads) {
+				++skippedCount;
+				continue;
+			}
+			HANDLE thread = OpenThread(
+				THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME |
+					THREAD_GET_CONTEXT,
+				FALSE, entry.th32ThreadID);
+			if (!thread)
+				continue;
+			// Suspend exactly once and resume exactly once: the count we
+			// added is ours to remove, whatever the thread was doing.
+			if (SuspendThread(thread) != static_cast<DWORD>(-1)) {
+				CONTEXT context = {};
+				context.ContextFlags = CONTEXT_FULL;
+				if (GetThreadContext(thread, &context)) {
+					SnapshotThreadStack &stack = sSnapshotStacks[stackCount];
+					stack.threadId = entry.th32ThreadID;
+					stack.frameCount = UnwindSuspendedThread(context,
+						stack.frames, kSnapshotMaxFrames,
+						sSnapshotModules, moduleCount);
+					++stackCount;
+				}
+				ResumeThread(thread);
+			}
+			CloseHandle(thread);
+		} while (Thread32Next(snapshot, &entry));
+	}
+	CloseHandle(snapshot);
+
+	// Everything is suspended-and-resumed before the first log line: the
+	// logger may need threads (the writer, lock holders) that a suspended
+	// snapshot would otherwise starve.
+	DX12_LOG_FLUSH("DX12ThreadStackSummary",
+		"\"captured\":%u,\"seen\":%u,\"skipped\":%u,\"modules\":%u",
+		stackCount, seenCount, skippedCount, moduleCount);
+	for (unsigned int i = 0; i < stackCount; ++i) {
+		const SnapshotThreadStack &stack = sSnapshotStacks[i];
+		for (unsigned int f = 0; f < stack.frameCount; ++f) {
+			const SnapshotFrame &frame = stack.frames[f];
+			DX12_LOG_FLUSH("DX12ThreadStack",
+				"\"threadId\":%lu,\"frame\":%u,\"address\":\"%p\","
+				"\"module\":\"%s\",\"moduleBase\":\"0x%llx\","
+				"\"moduleOffset\":\"0x%llx\"",
+				stack.threadId, f, frame.address, frame.module,
+				frame.moduleBase, frame.moduleOffset);
+		}
+	}
+#endif
 }
 #endif
 

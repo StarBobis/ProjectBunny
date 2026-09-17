@@ -269,11 +269,19 @@ bool WrapD3D12DeviceResult(REFIID riid, void **device)
 		if (!swapChain || !*swapChain || (!IsDxgiSwapChainIid(riid) && !IsEqualIID(riid, __uuidof(IUnknown))))
 			return false;
 
-		return TryWrapDeviceChild<SwapChainWrapper, IDXGISwapChain>(
+		// Breadcrumb inside the wrapping sequence. The frame-generation swap
+		// chain re-creation stalls *after* CreateSwapChainForHwnd returns, and
+		// the stall dump shows no thread inside this DLL while it does - so the
+		// exact step matters more than the call. WrapDXGISwapChainResult is on
+		// that path for every creation route.
+		DX12MarkStage("swapchain_wrap_enter");
+		const bool wrapped = TryWrapDeviceChild<SwapChainWrapper, IDXGISwapChain>(
 			riid, swapChain,
 			[](SwapChainWrapper *wrapper, REFIID interfaceIid) {
 				return wrapper->GetSwapChainWrapperInterface(interfaceIid);
 			});
+		DX12MarkStage("swapchain_wrap_leave");
+		return wrapped;
 	}
 
 	IUnknown *Unwrap(IUnknown *object)

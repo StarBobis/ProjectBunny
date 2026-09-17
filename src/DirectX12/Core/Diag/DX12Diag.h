@@ -136,6 +136,13 @@ public:
 	static void WriteDirect(const char *text, size_t length);
 	static void FlushDirect();
 
+	// Freeze watchdog thread-stack snapshots skip the writer: a suspended
+	// writer cannot drain the queue the snapshot itself is logged into.
+	static DWORD WriterThreadId()
+	{
+		return sThread ? GetThreadId(sThread) : 0;
+	}
+
 private:
 	static DWORD WINAPI ThreadProc(void *);
 	static void DrainQueueToFile();

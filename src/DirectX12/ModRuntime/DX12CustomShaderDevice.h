@@ -816,12 +816,10 @@ public:
 		Instances().clear();
 	}
 
-	// ResizeBuffers keeps the swap chain pointer and buffer indices stable,
-	// so the chain+index cache key cannot detect the swap: drop the key to
-	// force the RTV to be recreated from the new back buffer on next use.
-	// The cached resources have to go with it - holding a reference to a
-	// released back buffer would keep dead memory alive and, worse, hand out a
-	// view of it.
+	// Called before ResizeBuffers and before the wrapper releases its native
+	// swap chain. Drop every owned reference, including the cached QI result:
+	// retaining IDXGISwapChain3 keeps the old flip chain attached to its HWND
+	// and prevents frame generation from creating the replacement chain.
 	static void InvalidateChain(IDXGISwapChain *swapChain)
 	{
 		std::lock_guard<std::mutex> lock(Mutex());
@@ -829,9 +827,7 @@ public:
 			std::lock_guard<std::mutex> chainLock(entry.second->mLock);
 			if (entry.second->mChain == swapChain ||
 			    entry.second->mChain3Owner == swapChain) {
-				entry.second->ReleaseCachedBackBuffers();
-				entry.second->mValidMask = 0;
-				entry.second->mChain = nullptr;
+				entry.second->ReleaseChainResources();
 			}
 		}
 	}
@@ -864,23 +860,19 @@ public:
 		// updated concurrently.
 		std::lock_guard<std::mutex> cacheLock(mLock);
 
-		IDXGISwapChain3 *swapChain3 = mSwapChain3;
-		if (!swapChain3 || mChain3Owner != swapChain) {
-			if (mSwapChain3) {
-				mSwapChain3->Release();
-				mSwapChain3 = nullptr;
-			}
-			if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain3))) &&
-			    mSwapChain3) {
-				swapChain3 = mSwapChain3;
-				mChain3Owner = swapChain;
-			} else {
-				mChain3Owner = nullptr;
+		if (!mSwapChain3 || mChain3Owner != swapChain) {
+			// A device can present more than one chain. Retire the old buffers
+			// before replacing either the chain key or its cached interface.
+			ReleaseChainResources();
+			if (FAILED(swapChain->QueryInterface(IID_PPV_ARGS(&mSwapChain3))) ||
+			    !mSwapChain3)
 				return false;
-			}
+			mChain3Owner = swapChain;
 		}
 
-		const UINT bufferIndex = swapChain3->GetCurrentBackBufferIndex() % kRtvSlots;
+		const UINT bufferIndex = mSwapChain3->GetCurrentBackBufferIndex();
+		if (bufferIndex >= kRtvSlots)
+			return false;
 		if (mChain != swapChain || mValidMask == 0) {
 			mValidMask = 0;
 			mChain = swapChain;
@@ -893,7 +885,7 @@ public:
 			*widthOut = mWidth;
 			*heightOut = mHeight;
 			if (backBufferOut)
-				*backBufferOut = AcquireCachedBackBuffer(swapChain, bufferIndex);
+				*backBufferOut = AcquireCachedBackBuffer(bufferIndex);
 			return true;
 		}
 
@@ -943,9 +935,7 @@ public:
 		*widthOut = mWidth;
 		*heightOut = mHeight;
 		if (backBufferOut)
-			*backBufferOut = AcquireCachedBackBuffer(swapChain, bufferIndex);
-		else
-			backBuffer->Release();
+			*backBufferOut = AcquireCachedBackBuffer(bufferIndex);
 		return mRtvHandle().ptr != 0;
 	}
 
@@ -954,7 +944,7 @@ private:
 
 	// Hands the caller its own reference to a cached back buffer. Callers
 	// Release() it, which keeps their existing ownership discipline intact.
-	ID3D12Resource *AcquireCachedBackBuffer(IDXGISwapChain *swapChain, UINT bufferIndex)
+	ID3D12Resource *AcquireCachedBackBuffer(UINT bufferIndex)
 	{
 		if (!mBackBuffers[bufferIndex])
 			return nullptr;
@@ -996,7 +986,8 @@ private:
 		ReleaseResources();
 	}
 
-	void ReleaseResources()
+	// Caller holds mLock (or has exclusive ownership during destruction).
+	void ReleaseChainResources()
 	{
 		ReleaseCachedBackBuffers();
 		mValidMask = 0;
@@ -1006,12 +997,20 @@ private:
 			mSwapChain3->Release();
 			mSwapChain3 = nullptr;
 		}
+		mBufferIndex = 0;
+		mFormat = DXGI_FORMAT_UNKNOWN;
+		mWidth = mHeight = 0;
+		for (D3D12_CPU_DESCRIPTOR_HANDLE &handle : mRtvHandles)
+			handle = {};
+	}
+
+	void ReleaseResources()
+	{
+		ReleaseChainResources();
 		if (mHeap) {
 			mHeap->Release();
 			mHeap = nullptr;
 		}
-		for (D3D12_CPU_DESCRIPTOR_HANDLE &handle : mRtvHandles)
-			handle = {};
 	}
 
 	static std::mutex &Mutex()

@@ -509,6 +509,13 @@ public:
 			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present(syncInterval, flags);
 		}
+		// Breadcrumb covers the primary-swapchain check too. That check QIs the
+		// native swap chain and takes the primary-selection lock, and it is the
+		// only thing between the last ExecuteCommandLists and Present - without
+		// a marker here a stall there was indistinguishable from a stall in the
+		// game's own frame code, which is exactly the ambiguity that made the
+		// swapchain-recreation hang unattributable.
+		DX12MarkStage("present_primary_check");
 		if (!DXGIHookRuntime::IsPrimarySwapChain("PresentWrapper", swapChain)) {
 			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present(syncInterval, flags);
@@ -650,6 +657,9 @@ public:
 			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present1(syncInterval, flags, presentParameters);
 		}
+		// See the Present wrapper: the primary-swapchain check gets its own
+		// breadcrumb so a stall inside it is attributable.
+		DX12MarkStage("present_primary_check");
 		if (!DXGIHookRuntime::IsPrimarySwapChain("Present1Wrapper", swapChain)) {
 			DX12_PROF_PAUSE(_profile_timer);
 			return swapChain->Present1(syncInterval, flags, presentParameters);

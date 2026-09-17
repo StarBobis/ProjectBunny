@@ -35,6 +35,99 @@ public:
 // Wait hooks exist only for TIMING-build fence/frame-latency probes. In a
 // RELEASE build no hook is installed and no wait in the process pays anything.
 #if DX12_TIMING_BUILD
+namespace
+{
+	// Long-wait witness. The freeze watchdog proves a stall happened but not
+	// what the thread blocked on: once the stack snapshot is taken the thread's
+	// registers are gone (the crash is raised from another thread), so a
+	// module-only dump cannot name the waited-on object. This thread closes
+	// that hole - it publishes the handles of any wait that has been running
+	// longer than a second, which is exactly the moment a hang becomes visible,
+	// while the waiting thread is still parked in the kernel with its arguments
+	// intact on the stack.
+	constexpr DWORD kLongWaitThresholdMs = 1200;
+	constexpr unsigned int kMaxWaitSlots = 32;
+
+	struct LongWaitSlot
+	{
+		volatile LONG active = 0;
+		volatile LONG reported = 0;
+		volatile LONG threadId = 0;
+		volatile LONG kind = 0;		// 0 = single object, 1 = multiple objects
+		volatile LONG count = 0;
+		volatile LONG startTick = 0;
+		volatile LONG waitMs = 0;
+		HANDLE handles[4] = {};
+		char api[40] = {};
+	};
+
+	LongWaitSlot gLongWaits[kMaxWaitSlots];
+	volatile LONG gLongWaitThreadStarted = 0;
+
+	DWORD WINAPI LongWaitWatchdog(void *)
+	{
+		for (;;) {
+			Sleep(250);
+			const LONG now = static_cast<LONG>(GetTickCount());
+			for (unsigned int i = 0; i < kMaxWaitSlots; ++i) {
+				LongWaitSlot &slot = gLongWaits[i];
+				if (!slot.active || slot.reported)
+					continue;
+				const LONG elapsed = now - slot.startTick;
+				if (elapsed < static_cast<LONG>(kLongWaitThresholdMs))
+					continue;
+				InterlockedExchange(&slot.reported, 1);
+				DX12_LOG_FLUSH("DX12LongWait",
+					"\"event\":\"blocked\",\"api\":\"%s\",\"threadId\":%ld,"
+					"\"elapsedMs\":%ld,\"waitMs\":%ld,\"count\":%ld",
+					slot.api, slot.threadId, elapsed, slot.waitMs, slot.count);
+				for (LONG h = 0; h < slot.count && h < 4; ++h) {
+					DX12_LOG_FLUSH("DX12LongWait",
+						"\"event\":\"handle\",\"api\":\"%s\",\"slot\":%ld,"
+						"\"handle\":\"%p\"",
+						slot.api, h, slot.handles[h]);
+				}
+			}
+		}
+		return 0;
+	}
+
+	// Returns the slot index, or -1 when all slots are busy (a wait nesting
+	// deeper than the table is not worth logging).
+	int AcquireLongWaitSlot(const char *api, DWORD waitMs, DWORD count,
+		const HANDLE *handles, HANDLE single)
+	{
+		if (InterlockedCompareExchange(&gLongWaitThreadStarted, 1, 0) == 0) {
+			HANDLE thread = CreateThread(
+				nullptr, 0, &LongWaitWatchdog, nullptr, 0, nullptr);
+			if (thread)
+				CloseHandle(thread);
+		}
+		for (unsigned int i = 0; i < kMaxWaitSlots; ++i) {
+			LongWaitSlot &slot = gLongWaits[i];
+			if (InterlockedCompareExchange(&slot.active, 1, 0) != 0)
+				continue;
+			slot.reported = 0;
+			slot.threadId = static_cast<LONG>(GetCurrentThreadId());
+			slot.kind = handles ? 1 : 0;
+			slot.count = handles ? static_cast<LONG>(count) : 1;
+			slot.startTick = static_cast<LONG>(GetTickCount());
+			slot.waitMs = static_cast<LONG>(waitMs);
+			for (LONG h = 0; h < slot.count && h < 4; ++h)
+				slot.handles[h] = handles ? handles[h] : single;
+			strncpy_s(slot.api, api ? api : "", _TRUNCATE);
+			return static_cast<int>(i);
+		}
+		return -1;
+	}
+
+	void ReleaseLongWaitSlot(int index)
+	{
+		if (index >= 0)
+			InterlockedExchange(&gLongWaits[index].active, 0);
+	}
+}
+
 class DX12WaitHookCallbacks
 {
 public:
@@ -138,6 +231,13 @@ public:
 			hHandle, &matchesFenceEvent, &matchesFrameLatency);
 		LONG64 us = 0;
 		DWORD result = WAIT_FAILED;
+		// See HookedWaitForMultipleObjects: the witness is what names the object
+		// a hang is parked on, which the stack dump cannot recover.
+		const bool witness = dwMilliseconds == INFINITE ||
+			dwMilliseconds >= kLongWaitThresholdMs;
+		const int slot = witness ?
+			AcquireLongWaitSlot("WaitForSingleObject", dwMilliseconds, 1,
+				nullptr, hHandle) : -1;
 		if (CanSkipMeasurement(dwMilliseconds, probeHandle)) {
 			result = DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
 		} else {
@@ -145,6 +245,7 @@ public:
 			result = DX12WaitHookState::OrigWaitForSingleObject(hHandle, dwMilliseconds);
 			us = DX12DiagProf::ElapsedUs(begin);
 		}
+		ReleaseLongWaitSlot(slot);
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
 			DX12DiagProf::RecordSystemWait(
@@ -189,6 +290,15 @@ public:
 			&matchesFrameLatency);
 		LONG64 us = 0;
 		DWORD result = WAIT_FAILED;
+		// Only waits that can actually be long get a witness slot: an INFINITE
+		// wait or one with a timeout past the reporting threshold. Everything
+		// else returns before the watchdog could ever look at it.
+		const bool witness = dwMilliseconds == INFINITE ||
+			dwMilliseconds >= kLongWaitThresholdMs;
+		const int slot = witness ?
+			AcquireLongWaitSlot(
+				bWaitAll ? "WaitForMultipleObjects(all)" : "WaitForMultipleObjects(any)",
+				dwMilliseconds, nCount, lpHandles, nullptr) : -1;
 		if (CanSkipMeasurement(dwMilliseconds, probeHandle)) {
 			result = DX12WaitHookState::OrigWaitForMultipleObjects(
 				nCount, lpHandles, bWaitAll, dwMilliseconds);
@@ -198,6 +308,7 @@ public:
 				nCount, lpHandles, bWaitAll, dwMilliseconds);
 			us = DX12DiagProf::ElapsedUs(begin);
 		}
+		ReleaseLongWaitSlot(slot);
 		if (probeHandle || us >= 50000) {
 			const DWORD lastError = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
 			const char *api =

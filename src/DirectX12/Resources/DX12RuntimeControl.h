@@ -28,6 +28,39 @@ public:
 	static void Shutdown();
 };
 
+// Keeps dbghelp symbol resolution offline. Some engines symbolize a native
+// stack trace at moments like a DLSS frame-generation toggle; when the
+// search path carries a srv*/symsrv* symbol-server token, symsrv+wininet
+// blocks the calling thread on a network fetch (observed: render thread
+// frozen inside wininet, game dead). These hooks strip network tokens from
+// every search path handed to dbghelp; local symbol resolution is untouched.
+class DX12DbgHelpHooks
+{
+public:
+	static void Install();
+	static void Shutdown();
+
+	// Path-level guard: every search path handed to dbghelp is sanitized, and
+	// a session created before this proxy loaded is rewritten.
+	static void InstallDbgHelpHooks(HMODULE dbghelp);
+
+	// Hard backstop: symsrv's retrieval exports are stubbed to fail fast, so
+	// no symbol-server path - however and whenever it was configured - can
+	// reach the network. Covers sessions created before this proxy loaded or
+	// on handles we cannot see.
+	static void InstallSymSrvHooks(HMODULE symsrv);
+
+	// Walks the loaded-module list and applies both layers to every dbghelp
+	// and symsrv copy found. LoadLibrary interception alone was not enough:
+	// the engine's own dbghelp lives in the Windows Kits debuggers directory
+	// and pulled its sibling symsrv in without passing through the hooked
+	// kernel32 exports, so the stubs were never applied and the render thread
+	// parked in wininet anyway. Also called from the freeze watchdog while
+	// the game makes no progress - the only window in which a late load can
+	// still be caught.
+	static void Rescan();
+};
+
 
 class DX12Runtime
 {
@@ -57,6 +90,10 @@ public:
 			// GPU pegged, flicker).
 			DX12WaitHooks::Install();
 #endif
+			// dbghelp's offline guard ships in every build: a single LoadLibrary
+			// hook installed here fires whenever the game (or a plugin) loads
+			// dbghelp, no matter how late.
+			DX12DbgHelpHooks::Install();
 			Sleep(50);
 		}
 
@@ -115,6 +152,7 @@ public:
 #if DX12_TIMING_BUILD
 		DX12WaitHooks::Shutdown();
 #endif
+		DX12DbgHelpHooks::Shutdown();
 		DXGIHooks::Shutdown();
 		DX12HookRegistry::UnhookAll();
 		// Unconditional on the build mode: a non-TIMING build opens no log, but

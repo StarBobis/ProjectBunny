@@ -112,6 +112,7 @@ add_library(DirectX12 SHARED
     Presentation/DX12WrapperApi.cpp
     Presentation/DXGIHooks.cpp
     Presentation/DX12WaitHooks.cpp
+    Presentation/DX12DbgHelpHooks.cpp
 
     # Tracking and command execution modules
     Tracking/DX12CaptureLedger.cpp

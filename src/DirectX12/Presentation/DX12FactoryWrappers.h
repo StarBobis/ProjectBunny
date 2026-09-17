@@ -295,11 +295,34 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			HRESULT hr = QueryFactory2(&factory2);
 			if (FAILED(hr))
 				return hr;
+			// Dialect flags matter here: frame generation recreates the swap
+			// chain with the frame-latency waitable object, and a stall inside
+			// this call has no other trace in the log - the wrapper's own
+			// "kind=swapchain,stage=create" line only prints after the driver
+			// returns. One line per creation names the flags and the size.
+			DX12MarkStage("swapchain_create_enter");
+			DX12_LOG("DX12SwapChainCreate",
+				"\"api\":\"CreateSwapChainForHwnd\",\"hwnd\":\"%p\",\"width\":%u,\"height\":%u,"
+				"\"format\":%u,\"buffers\":%u,\"sampleCount\":%u,\"flags\":\"0x%x\",\"swapEffect\":%u",
+				hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0,
+				pDesc ? static_cast<unsigned>(pDesc->Format) : 0,
+				pDesc ? pDesc->BufferCount : 0,
+				pDesc ? pDesc->SampleDesc.Count : 0,
+				pDesc ? pDesc->Flags : 0,
+				pDesc ? static_cast<unsigned>(pDesc->SwapEffect) : 0);
 			hr = factory2->CreateSwapChainForHwnd(
 				DX12Wrapper::Unwrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
-			if (SUCCEEDED(hr))
+			DX12MarkStage("swapchain_create_leave");
+			DX12_LOG_FLUSH("DX12SwapChainCreate",
+				"\"event\":\"result\",\"api\":\"CreateSwapChainForHwnd\",\"hwnd\":\"%p\",\"hr\":\"0x%lx\",\"swapchain\":\"%p\"",
+				hWnd, hr, SUCCEEDED(hr) && ppSwapChain ? *ppSwapChain : nullptr);
+			if (SUCCEEDED(hr)) {
+				DX12MarkStage("swapchain_wrap_call");
 				DX12Wrapper::WrapDXGISwapChainResult(__uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
+			}
+			DX12MarkStage("swapchain_factory_release");
 			factory2->Release();
+			DX12MarkStage("swapchain_create_return");
 			return hr;
 		}
 
@@ -521,6 +544,10 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 
 		~SwapChainWrapper()
 		{
+			// The overlay caches a native QI reference and back buffers. Release
+			// them before our own references: otherwise the old flip chain stays
+			// attached to the HWND and DLSS FG recreation fails with E_ACCESSDENIED.
+			DX12NativeOverlayInvalidate(mSwapChain);
 			// Release the frame-lifecycle owner before WrapperBase releases the
 			// native object so a genuine game swapchain recreation can be selected.
 			DXGIHookRuntime::ForgetSwapChain(mSwapChain);
@@ -893,6 +920,16 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			if (FAILED(QuerySwapChain2(&swapChain2)))
 				return nullptr;
 			HANDLE handle = swapChain2->GetFrameLatencyWaitableObject();
+			// The engine blocks its render thread on this handle. Frame
+			// generation re-creates the swap chain, so the handle changes with
+			// it - and a stall on a handle that no longer belongs to the live
+			// swap chain is invisible in a stack dump (the wait is a plain
+			// WaitForMultipleObjects). One line per call pairs the handle with
+			// the swap chain identity so the next freeze can be matched against
+			// the Present that follows.
+			DX12_LOG_FLUSH("DX12FrameLatency",
+				"\"event\":\"get_waitable\",\"swapchain\":\"%p\",\"handle\":\"%p\"",
+				mSwapChain, handle);
 			DX12_DIAG_REGISTER_FRAME_LATENCY_WAITABLE(mSwapChain, handle);
 			swapChain2->Release();
 			return handle;
