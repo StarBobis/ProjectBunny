@@ -8,6 +8,7 @@
 #include "DX12Presentation.h"
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <unordered_set>
 #include <intrin.h>
 
@@ -286,14 +287,60 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedSampler(
 // copied-descriptor tally, and a fresh heap-version commit set. Only work that
 // is genuinely call-scoped lives here.
 //
-// Heap-slot resolution deliberately does NOT move here: each block carries
-// different CPU handles and the answer (heap record, slot) is only valid for
-// the handle it was asked about, so every block still resolves its own source
-// and destination.
+// Cache only heap boundaries within this API call, not a descriptor or a slot
+// verdict. Source and destination alternate between different heaps, so the
+// resolver's single sequential memo cannot exploit a run of destination handles.
+// Memoize only the destination stream: sources often scatter across heaps, where
+// maintaining an additional memo can cost more than the lookups it saves.
+struct DescriptorCopyHeapMemo
+{
+	DX12DescriptorHeapShadowUtils::HeapResolveCacheEntry entry;
+
+	bool Resolve(
+		SIZE_T handle,
+		D3D12_DESCRIPTOR_HEAP_TYPE requiredType,
+		DX12DescriptorHeapShadowUtils::ResolvedHeapSlot *out)
+	{
+		if (!out)
+			return false;
+		*out = {};
+		if (entry.heap && entry.cpuStart && entry.increment &&
+				handle >= entry.cpuStart &&
+				(requiredType == D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES ||
+					entry.type == requiredType)) {
+			const SIZE_T offset = handle - entry.cpuStart;
+			if (offset < static_cast<UINT64>(entry.increment) * entry.numDescriptors &&
+					entry.heap->stateLocks && entry.heap->stateLocks->IsActive()) {
+				out->heap = entry.heap;
+				out->heapIndex = entry.heapIndex;
+				// Recompute even for random, repeated or descending handles;
+				// a cached heap never implies that its previous slot is reusable.
+				out->slot = static_cast<UINT>(offset / entry.increment);
+				return true;
+			}
+		}
+		if (!DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
+				handle, requiredType, out)) {
+			entry = {};
+			return false;
+		}
+		entry.heap = out->heap;
+		entry.heapIndex = out->heapIndex;
+		entry.cpuStart = out->heap->cpuStart;
+		entry.increment = out->heap->increment;
+		entry.numDescriptors = out->heap->desc.NumDescriptors;
+		entry.type = out->heap->desc.Type;
+		return true;
+	}
+};
+
 struct DescriptorCopyCallScope
 {
 	D3D12_DESCRIPTOR_HEAP_TYPE heapType = D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES;
 	UINT increment = 0;
+	// Owned by the multi-range caller, never retained after that call. Simple
+	// copies neither initialize this storage nor populate a one-use memo.
+	DescriptorCopyHeapMemo *destinationMemo = nullptr;
 	// NeedsDumpOrHuntingTracking() is two out-of-line policy calls; it is
 	// sampled once per API call, exactly like the entry gate that decides
 	// whether the call is recorded at all.
@@ -368,8 +415,10 @@ static void RecordCopiedDescriptorBlock(
 	const bool resolvedBoth =
 		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
 			srcDescriptorRangeStart.ptr, scope.heapType, &source) &&
-		DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
-			destDescriptorRangeStart.ptr, scope.heapType, &destination);
+		(scope.destinationMemo ?
+			scope.destinationMemo->Resolve(destDescriptorRangeStart.ptr, scope.heapType, &destination) :
+			DX12DescriptorHeapShadowUtils::ResolveHeapSlotFast(
+				destDescriptorRangeStart.ptr, scope.heapType, &destination));
 	// A failed resolve leaves that side at the default nullptr heap, so every
 	// heap access below is guarded: the stateLocks test precedes its own
 	// dereference, and the materialization flags are only read through a present
@@ -546,8 +595,13 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			!scope.dumpOrHunt)
 		return;
 
-	// Keep only the required flattened range mapping. Each mapped block uses the
-	// minimal shadow copy path; no memoization or per-call telemetry is needed.
+	// Boundaries are reused only inside a multi-range API call. Every block
+	// still reads current activity, materialization and descriptor contents;
+	// the slot/heap publication and locked fallbacks below remain unchanged.
+	// Inline, lazily initialized storage; single-range calls create no memo.
+	std::optional<DescriptorCopyHeapMemo> destinationMemo;
+	if (numDestDescriptorRanges > 1 || numSrcDescriptorRanges > 1)
+		scope.destinationMemo = &destinationMemo.emplace();
 	UINT destRange = 0, srcRange = 0, destOffset = 0, srcOffset = 0;
 	DescriptorCopyRun run;
 	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
