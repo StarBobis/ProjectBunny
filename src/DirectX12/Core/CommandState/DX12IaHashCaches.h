@@ -405,12 +405,10 @@ public:
 // signature stays a literal transcription of the predicate's inputs rather than
 // a claim about that producer.
 //
-// The inputs are folded into two 64-bit accumulators instead of being
-// materialised as a comparable key: a byte-exact key is 32 slots x 32B, and this
-// table lives inside DX12SimulateContext - an object the dispatch hook also
-// keeps on the stack - where that key plus its entries came to 1.1MB and
-// overflowed the thread stack. Two chains make the discarded bytes unreachable
-// instead: a different IA state has to agree on all 128 bits.
+// The two accumulators are lookup accelerators, never proof of equality.
+// Exact dependency snapshots below verify every signature hit. They are lazy,
+// heap-owned and compacted to the required bound slots, avoiding a large inline
+// 32-slot key array in DX12SimulateContext (also used on the dispatch stack).
 class DX12IaStateNegativeSignature
 {
 public:
@@ -422,16 +420,17 @@ public:
 		return terms == other.terms && slots == other.slots;
 	}
 
-	// splitmix64 finaliser. Each term is diffused before it is folded in, so no
-	// term can cancel another: the bound views of one IA state share the
-	// allocation base in their high bits, and a plain xor-style mix would cancel
-	// those bits out and alias two different slot lists.
+	// Diffuse each field with splitmix64 and combine it with an ordered prefix.
+	// Hash collisions only cause extra exact comparisons, never false hits.
 	static __forceinline UINT64 Mix(UINT64 hash, UINT64 value)
 	{
 		UINT64 mixed = value + 0x9e3779b97f4a7c15ull;
 		mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ull;
 		mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebull;
-		return hash ^ (mixed ^ (mixed >> 31));
+		// Rotate the accumulated prefix before folding the next field. Plain
+		// XOR was commutative: swapping two slot views (or scalar fields)
+		// produced exactly the same signature, not just a rare hash collision.
+		return ((hash << 17) | (hash >> 47)) ^ (mixed ^ (mixed >> 31));
 	}
 
 	// The scalar dependency set and the per-slot views accumulate in separate
@@ -467,12 +466,109 @@ public:
 	};
 };
 
+// Non-owning lookup inputs: no per-draw allocation or copy of the 32-slot IA
+// state. The required mask + indexChecked are the exact effective target plan
+// read by the verdict; descriptor targets are excluded by its caller.
+class DX12IaStateNegativeInputs
+{
+public:
+	const DX12ActiveIaState &ia;
+	UINT requiredVertexMask;
+	bool indexChecked;
+	bool indexed;
+	UINT64 reloadGeneration;
+	UINT64 preSkinGeneration;
+	UINT64 resolveGeneration;
+
+	DX12IaStateNegativeInputs(
+		const DX12ActiveIaState &state, const DX12IaHashTargetPlan &plan,
+		bool isIndexed, UINT64 reload, UINT64 preSkin, UINT64 resolve)
+		: ia(state),
+		  requiredVertexMask(plan.requireAllIaBuffers ? UINT_MAX : plan.requireVertexBufferMask),
+		  indexChecked(plan.RequiresIndexBuffer(isIndexed)), indexed(isIndexed),
+		  reloadGeneration(reload), preSkinGeneration(preSkin),
+		  resolveGeneration(resolve)
+	{
+	}
+};
+
+class DX12IaStateNegativeExactKey
+{
+public:
+	UINT requiredVertexMask = 0;
+	UINT boundVertexMask = 0;
+	bool indexChecked = false;
+	bool indexed = false;
+	bool hasIndexBuffer = false;
+	D3D12_INDEX_BUFFER_VIEW indexView = {};
+	UINT64 reloadGeneration = 0;
+	UINT64 preSkinGeneration = 0;
+	UINT64 resolveGeneration = 0;
+	std::vector<D3D12_VERTEX_BUFFER_VIEW> vertexViews;
+
+	bool Matches(const DX12IaStateNegativeInputs &inputs) const
+	{
+		if (requiredVertexMask != inputs.requiredVertexMask ||
+			indexChecked != inputs.indexChecked || indexed != inputs.indexed ||
+			reloadGeneration != inputs.reloadGeneration ||
+			preSkinGeneration != inputs.preSkinGeneration ||
+			resolveGeneration != inputs.resolveGeneration)
+			return false;
+		const DX12ActiveIaState &ia = inputs.ia;
+		if (indexChecked) {
+			if (hasIndexBuffer != ia.hasIndexBuffer)
+				return false;
+			if (hasIndexBuffer && (indexView.BufferLocation != ia.indexBuffer.BufferLocation ||
+				indexView.SizeInBytes != ia.indexBuffer.SizeInBytes ||
+				indexView.Format != ia.indexBuffer.Format))
+				return false;
+		}
+		size_t viewIndex = 0;
+		for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
+			if (!(requiredVertexMask & (1u << slot)))
+				continue;
+			if (((boundVertexMask & (1u << slot)) != 0) != ia.hasVertexBuffer[slot])
+				return false;
+			if (!ia.hasVertexBuffer[slot])
+				continue;
+			const D3D12_VERTEX_BUFFER_VIEW &view = vertexViews[viewIndex++];
+			const D3D12_VERTEX_BUFFER_VIEW &current = ia.vertexBuffers[slot];
+			if (view.BufferLocation != current.BufferLocation ||
+				view.SizeInBytes != current.SizeInBytes ||
+				view.StrideInBytes != current.StrideInBytes)
+				return false;
+		}
+		return true;
+	}
+
+	void Capture(const DX12IaStateNegativeInputs &inputs)
+	{
+		requiredVertexMask = inputs.requiredVertexMask;
+		indexChecked = inputs.indexChecked;
+		indexed = inputs.indexed;
+		reloadGeneration = inputs.reloadGeneration;
+		preSkinGeneration = inputs.preSkinGeneration;
+		resolveGeneration = inputs.resolveGeneration;
+		hasIndexBuffer = indexChecked && inputs.ia.hasIndexBuffer;
+		if (hasIndexBuffer)
+			indexView = inputs.ia.indexBuffer;
+		boundVertexMask = 0;
+		vertexViews.clear(); // retain capacity across replacement of this way
+		for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
+			if (!(requiredVertexMask & (1u << slot)) || !inputs.ia.hasVertexBuffer[slot])
+				continue;
+			boundVertexMask |= 1u << slot;
+			vertexViews.push_back(inputs.ia.vertexBuffers[slot]);
+		}
+	}
+};
+
 // Set-associative cache of the verdict above. The working set is "distinct IA
 // states that reach the verdict", which on the profiled title is ~1100 per
 // frame, so a single entry was never the right shape; this table keeps the
 // repeated views of the frame-to-frame re-recorded draws resident without an
-// LRU list or a per-hit clock update. At 24B per entry the whole table is 24KB,
-// which the simulate context can carry where a byte-exact key could not.
+// LRU list or a per-hit clock update. The table and exact dependency snapshots
+// are allocated lazily on the heap; no full key array lives on the hook stack.
 class DX12IaStateNegativeCache
 {
 public:
@@ -487,11 +583,28 @@ public:
 	{
 	public:
 		DX12IaStateNegativeSignature signature;
+		std::unique_ptr<DX12IaStateNegativeExactKey> exactKey;
 		bool valid = false;
 		bool noCandidate = false;
 	};
 
-	std::array<Entry, kEntryCount> entries;
+	using Entries = std::array<Entry, kEntryCount>;
+	std::unique_ptr<Entries> entries;
+
+	DX12IaStateNegativeCache() = default;
+	// Derived cache data is not part of a command-state value snapshot. Do not
+	// duplicate heap-owned exact keys when simulate contexts are copied.
+	DX12IaStateNegativeCache(const DX12IaStateNegativeCache &) {}
+	DX12IaStateNegativeCache &operator=(const DX12IaStateNegativeCache &other)
+	{
+		if (this != &other && entries) {
+			for (Entry &entry : *entries)
+				entry.valid = false;
+		}
+		return *this;
+	}
+	DX12IaStateNegativeCache(DX12IaStateNegativeCache &&) noexcept = default;
+	DX12IaStateNegativeCache &operator=(DX12IaStateNegativeCache &&) noexcept = default;
 
 	// Both halves already end in a full avalanche, so their low bits carry every
 	// folded term; folding them together keeps set selection independent of
@@ -509,28 +622,35 @@ public:
 
 	static const Entry *Find(
 		const DX12IaStateNegativeCache &cache,
-		const DX12IaStateNegativeSignature &signature)
+		const DX12IaStateNegativeSignature &signature,
+		const DX12IaStateNegativeInputs &inputs)
 	{
-		const Entry *set = cache.entries.data() + SetFor(signature) * kWayCount;
+		if (!cache.entries)
+			return nullptr;
+		const Entry *set = cache.entries->data() + SetFor(signature) * kWayCount;
 		for (size_t way = 0; way < kWayCount; ++way) {
-			if (Matches(set[way], signature))
+			if (Matches(set[way], signature) && set[way].exactKey &&
+				set[way].exactKey->Matches(inputs))
 				return &set[way];
 		}
 		return nullptr;
 	}
 
-	// The first matching or empty way is used, otherwise way 0 is replaced. The
-	// verdict is a pure function of the signature, so recency within a set is
-	// irrelevant to correctness; a per-hit age update would only add writes to
-	// the hot path.
+	// The first signature-matching or empty way is used, otherwise way 0 is
+	// replaced. A digest collision may replace a different exact key but cannot
+	// return its verdict: Find verifies the inputs. Recency affects hit rate
+	// only; a per-hit age update would add writes to the hot path.
 	static void Store(
 		DX12IaStateNegativeCache *cache,
 		const DX12IaStateNegativeSignature &signature,
+		const DX12IaStateNegativeInputs &inputs,
 		bool noCandidate)
 	{
 		if (!cache)
 			return;
-		Entry *set = cache->entries.data() + SetFor(signature) * kWayCount;
+		if (!cache->entries)
+			cache->entries = std::make_unique<Entries>();
+		Entry *set = cache->entries->data() + SetFor(signature) * kWayCount;
 		Entry *target = &set[0];
 		for (size_t way = 0; way < kWayCount; ++way) {
 			if (Matches(set[way], signature) || !set[way].valid) {
@@ -538,6 +658,10 @@ public:
 				break;
 			}
 		}
+		target->valid = false;
+		if (!target->exactKey)
+			target->exactKey = std::make_unique<DX12IaStateNegativeExactKey>();
+		target->exactKey->Capture(inputs);
 		target->signature = signature;
 		target->valid = true;
 		target->noCandidate = noCandidate;
@@ -555,21 +679,20 @@ public:
 // resource, whose descriptor width is an input to DX12HashIaBufferContentView
 // that no view field carries.
 inline DX12IaStateNegativeSignature MakeIaStateNegativeSignature(
-	const DX12ActiveIaState &ia,
-	const DX12IaHashTargetPlan &targetPlan,
-	bool indexed,
-	UINT64 reloadGeneration,
-	UINT64 preSkinGeneration,
-	UINT64 resolveGeneration)
+	const DX12IaStateNegativeInputs &inputs)
 {
+	const DX12ActiveIaState &ia = inputs.ia;
 	DX12IaStateNegativeSignature::Builder signature;
-	signature.AddTerm(reloadGeneration);
-	signature.AddTerm(preSkinGeneration);
-	signature.AddTerm(resolveGeneration);
-	signature.AddTerm(targetPlan.Fingerprint());
-	signature.AddTerm(indexed ? 1u : 0u);
+	signature.AddTerm(inputs.reloadGeneration);
+	signature.AddTerm(inputs.preSkinGeneration);
+	signature.AddTerm(inputs.resolveGeneration);
+	// DX12HashIaBufferContentView produces metadata-only hashes (including
+	// its unresolved fallback). CPU content writes cannot change this verdict;
+	// keep the full content-dependent draw caches' invalidation separate.
+	signature.AddTerm(inputs.requiredVertexMask);
+	signature.AddTerm(inputs.indexed ? 1u : 0u);
 	// Mirrors DX12ModIaStateDefinitelyHasNoCandidate's probeIndexBuffer.
-	const bool indexChecked = targetPlan.RequiresIndexBuffer(indexed);
+	const bool indexChecked = inputs.indexChecked;
 	signature.AddTerm(indexChecked ? 1u : 0u);
 	if (indexChecked) {
 		signature.AddTerm(ia.hasIndexBuffer ? 1u : 0u);
@@ -581,7 +704,7 @@ inline DX12IaStateNegativeSignature MakeIaStateNegativeSignature(
 	}
 
 	for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
-		if (!targetPlan.RequiresVertexBuffer(slot))
+		if (!(inputs.requiredVertexMask & (1u << slot)))
 			continue;
 		signature.AddSlot(slot);
 		signature.AddSlot(ia.hasVertexBuffer[slot] ? 1u : 0u);

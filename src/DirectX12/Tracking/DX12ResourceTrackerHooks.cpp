@@ -300,6 +300,12 @@ struct DescriptorCopyCallScope
 	bool dumpOrHunt = false;
 	// Descriptors copied by this call, accumulated over its blocks.
 	LONG64 copiedDescriptors = 0;
+	// Block counters are additive just like the slot counters below. Avoid a
+	// profiler bucket hash/probe for each of ~28k mostly single-slot blocks per
+	// frame; publish their totals once at the existing API-call boundary.
+	LONG64 copiedBlocks = 0;
+	LONG64 skippedBlocks = 0;
+	LONG64 lockedBlocks = 0;
 	// Per-descriptor outcome counters, accumulated here and published once per
 	// API call. They used to be incremented per descriptor, which cost a bucket
 	// lookup per slot - on a path that is now called once per copied descriptor
@@ -328,6 +334,9 @@ struct DescriptorCopyCallScope
 static void FinishCopiedDescriptorCall(DescriptorCopyCallScope &scope)
 {
 	DX12_PROF_ADD_ITEMS("Desc.CopySlots", scope.copiedDescriptors);
+	DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", scope.copiedBlocks);
+	DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", scope.skippedBlocks);
+	DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", scope.lockedBlocks);
 	DX12_PROF_ADD_CALLS("Rm.DescCopyDirectPath", scope.directPathCalls);
 	DX12_PROF_ADD_CALLS("Rm.DescCopyChanged", scope.changedCalls);
 	DX12_PROF_ADD_CALLS("Rm.DescCopyUnchanged", scope.unchangedCalls);
@@ -479,7 +488,7 @@ static void RecordCopiedDescriptorBlock(
 		}
 	}
 	if (blockTookLockedPath)
-		DX12_PROF_ADD_ITEMS("Desc.CopyBlocksLocked", 1);
+		++scope.lockedBlocks;
 	// The commit set spans the whole API call, not this block: the caller
 	// commits after its last block.
 }
@@ -505,7 +514,7 @@ static void FlushDescriptorCopyRun(
 {
 	if (!run.count)
 		return;
-	DX12_PROF_ADD_ITEMS("Desc.CopyBlocks", 1);
+	++scope.copiedBlocks;
 	RecordCopiedDescriptorBlock(scope, run.count, run.dest, run.src);
 	run.count = 0;
 }
@@ -543,12 +552,15 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 	DescriptorCopyRun run;
 	UINT increment = DX12DescriptorHeapShadowUtils::CachedIncrementForType(
 		descriptorHeapsType);
-	if (!increment && device)
+	if (!increment && device) {
 		increment = device->GetDescriptorHandleIncrementSize(descriptorHeapsType);
+		DX12DescriptorHeapShadowUtils::CacheIncrementForType(
+			descriptorHeapsType, increment);
+	}
 	if (!increment)
 		return;
-	DX12DescriptorHeapShadowUtils::CacheIncrementForType(
-		descriptorHeapsType, increment);
+	// A cache hit already proved the increment was published; do not re-run
+	// CacheIncrementForType's acquire probe for every descriptor-copy call.
 	scope.increment = increment;
 	while (destRange < numDestDescriptorRanges && srcRange < numSrcDescriptorRanges) {
 		const UINT destRangeSize = destDescriptorRangeSizes ? destDescriptorRangeSizes[destRange] : 1;
@@ -584,7 +596,7 @@ void DX12ResourceTrackerHookRuntime::RecordCopiedDescriptors(
 			} else {
 				// Self-overlapping ranges carry no work at all; counted separately
 				// so Desc.CopySlots / Desc.CopyBlocks stays an average block size.
-				DX12_PROF_ADD_ITEMS("Desc.CopyBlocksSkipped", 1);
+				++scope.skippedBlocks;
 			}
 		}
 		destOffset += count;

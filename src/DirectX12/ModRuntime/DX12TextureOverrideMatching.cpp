@@ -1549,12 +1549,11 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 }
 
 
-// Returns true when the prefilter tables prove no candidate can exist for this
+// Returns true when the hash index proves no candidate can exist for this
 // (ib/vb, slot, hash) tuple, ignoring draw-context filters (match_first_index
-// etc.). The prefilter tables are queried with zero counts: callers must only
-// use this when gIaPrefilterCountSensitive == 0 so the count-indexed tables are
-// empty and the generic tables are authoritative. Candidates that depend on
-// active pre-skin sections still resolve through the live snapshot, and any
+// etc.). Only enabled when gIaPrefilterCountSensitive == 0: the index then
+// contains exactly the generic prefilter candidates for this hash. Candidates
+// that depend on active pre-skin sections still use the live snapshot, and any
 // candidate that survives hash + match_cs + IA-binding checks counts as
 // "possibly present" so the per-draw path stays authoritative.
 bool IaHashDefinitelyHasNoCandidate(
@@ -1562,10 +1561,29 @@ bool IaHashDefinitelyHasNoCandidate(
 	uint32_t vertexSlot,
 	uint32_t hash)
 {
-	std::vector<size_t> prefilterScratch;
-	const std::vector<size_t> *candidateIndexes =
-		FindIaTextureOverridePrefilterCandidatesLocked(
-			indexBuffer, vertexSlot, 0, 0, &prefilterScratch);
+	// With count-sensitive tables disabled, the hash index is exactly the
+	// count-independent prefilter restricted to config.hash == hash. Use the
+	// index built at reload instead of scanning every override for each view.
+	// A merged vertex bucket already contains specific-slot + any-slot entries;
+	// only fall back to the any-slot bucket when no merged bucket exists.
+	if (gIaPrefilterCountSensitive != 0)
+		return false;
+	const std::vector<size_t> *candidateIndexes = nullptr;
+	if (indexBuffer) {
+		auto found = gIaIndexTextureOverrideIndex.find(hash);
+		if (found != gIaIndexTextureOverrideIndex.end())
+			candidateIndexes = &found->second;
+	} else {
+		auto merged = gIaMergedVertexTextureOverrideIndex.find(
+			MakeIaVertexIndexKey(hash, vertexSlot));
+		if (merged != gIaMergedVertexTextureOverrideIndex.end()) {
+			candidateIndexes = &merged->second;
+		} else {
+			auto anySlot = gIaAnyVertexTextureOverrideIndex.find(hash);
+			if (anySlot != gIaAnyVertexTextureOverrideIndex.end())
+				candidateIndexes = &anySlot->second;
+		}
+	}
 	if (!candidateIndexes || candidateIndexes->empty())
 		return true;
 

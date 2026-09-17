@@ -1444,6 +1444,12 @@ bool DX12ModRuntimeLoad(
 	gTextureOverridePreRuntimeEffect.swap(textureOverridePreRuntimeEffect);
 	gTextureOverridePostRuntimeEffect.swap(textureOverridePostRuntimeEffect);
 	gIaTextureOverrides.swap(iaTextureOverrides);
+	// Publish the hash partitions in the same critical section/generation as
+	// their candidate vector. Swapping empty maps also removes stale indexes
+	// when a reload deletes all IA overrides.
+	gIaIndexTextureOverrideIndex.swap(iaIndexTextureOverrideIndex);
+	gIaAnyVertexTextureOverrideIndex.swap(iaAnyVertexTextureOverrideIndex);
+	gIaMergedVertexTextureOverrideIndex.swap(iaMergedVertexTextureOverrideIndex);
 	gIaIndexTextureOverridePrefilterIndex.swap(iaIndexTextureOverridePrefilterIndex);
 	gIaIndexTextureOverridePrefilterByIndexCount.swap(
 		iaIndexTextureOverridePrefilterByIndexCount);

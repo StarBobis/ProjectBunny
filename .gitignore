@@ -215,6 +215,10 @@ $RECYCLE.BIN/
 .vscode/ipch/
 
 dev_tests/*
-# Keep the reproducible swap-chain lifetime regression; ignore other local probes.
+# Keep reproducible runtime regressions; ignore other local probes.
 !dev_tests/surface_cache_lifetime_test.cpp
 !dev_tests/test_surface_cache_lifetime.ps1
+!dev_tests/immutable_upload_test.cpp
+!dev_tests/test_immutable_upload.ps1
+!dev_tests/descriptor_copy_perf_test*
+!dev_tests/ia_match_perf_test*

@@ -165,6 +165,9 @@ static void SetCurrentSlotOccupied(DescriptorHeapRecord &heap, UINT slot, bool o
 struct CurrentSlotAccess
 {
 	DescriptorRecord *value = nullptr; // non-null when the storage exists
+	// Reuse the occupancy address from this lookup when this same operation
+	// changes it. It is not cached across calls or storage transitions.
+	uint8_t *occupancy = nullptr;
 	bool occupied = false;
 };
 
@@ -174,17 +177,19 @@ static CurrentSlotAccess LoadCurrentSlotAccess(DescriptorHeapRecord &heap, UINT 
 	if (!heap.slots.empty()) {
 		if (slot < heap.slots.size() && slot < heap.occupied.size()) {
 			access.value = &heap.slots[slot];
-			access.occupied = heap.occupied[slot] != 0;
+			access.occupancy = &heap.occupied[slot];
+			access.occupied = *access.occupancy != 0;
 		}
 		return access;
 	}
-	const DX12ChunkedDescriptorStore<DescriptorRecord>::Chunk *chunk =
+	DX12ChunkedDescriptorStore<DescriptorRecord>::Chunk *chunk =
 		heap.chunkedSlots.ChunkForSlot(slot);
 	if (chunk) {
 		const uint32_t offset =
 			slot & (DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots - 1);
-		access.value = const_cast<DescriptorRecord*>(&chunk->values[offset]);
-		access.occupied = chunk->occupied[offset] != 0;
+		access.value = &chunk->values[offset];
+		access.occupancy = &chunk->occupied[offset];
+		access.occupied = *access.occupancy != 0;
 	}
 	return access;
 }
@@ -195,7 +200,8 @@ static CurrentSlotAccess LoadCurrentSlotAccess(const DescriptorHeapRecord &heap,
 	if (!heap.slots.empty()) {
 		if (slot < heap.slots.size() && slot < heap.occupied.size()) {
 			access.value = const_cast<DescriptorRecord*>(&heap.slots[slot]);
-			access.occupied = heap.occupied[slot] != 0;
+			access.occupancy = const_cast<uint8_t*>(&heap.occupied[slot]);
+			access.occupied = *access.occupancy != 0;
 		}
 		return access;
 	}
@@ -205,7 +211,8 @@ static CurrentSlotAccess LoadCurrentSlotAccess(const DescriptorHeapRecord &heap,
 		const uint32_t offset =
 			slot & (DX12ChunkedDescriptorStore<DescriptorRecord>::ChunkSlots - 1);
 		access.value = const_cast<DescriptorRecord*>(&chunk->values[offset]);
-		access.occupied = chunk->occupied[offset] != 0;
+		access.occupancy = const_cast<uint8_t*>(&chunk->occupied[offset]);
+		access.occupied = *access.occupancy != 0;
 	}
 	return access;
 }
@@ -215,11 +222,10 @@ static bool CopyCurrentRecord(
 {
 	if (!record)
 		return false;
-	const DescriptorRecord *value = CurrentSlotOccupied(heap, slot) ?
-		CurrentSlotPtr(heap, slot) : nullptr;
-	if (!value)
+	const CurrentSlotAccess access = LoadCurrentSlotAccess(heap, slot);
+	if (!access.occupied)
 		return false;
-	CopyRecordValueForSlot(record, *value, value->cpuHandle);
+	CopyRecordValueForSlot(record, *access.value, access.value->cpuHandle);
 	return true;
 }
 
@@ -253,7 +259,7 @@ static StoreCurrentSlotResult StoreCurrentRecordIfChanged(
 		return StoreCurrentSlotResult::Unchanged;
 	CopyRecordValueForSlot(access.value, source, destCpuHandle);
 	if (!access.occupied) {
-		SetCurrentSlotOccupied(*heap, slot, true);
+		*access.occupancy = 1;
 		IncrementLiveSlots(heap);
 	}
 	return StoreCurrentSlotResult::Stored;
@@ -317,9 +323,10 @@ static CopyCurrentSlotResult CopyCurrentSlotIfChanged(
 			SameRecordValueAtSlot(*dest.value, *src.value, destCpuHandle))
 		return CopyCurrentSlotResult::Unchanged;
 	CopyRecordValueForSlot(dest.value, *src.value, destCpuHandle);
-	SetCurrentSlotOccupied(*destHeap, destSlot, true);
-	if (!dest.occupied)
+	if (!dest.occupied) {
+		*dest.occupancy = 1;
 		IncrementLiveSlots(destHeap);
+	}
 	return CopyCurrentSlotResult::Changed;
 }
 
@@ -327,12 +334,11 @@ static bool EraseCurrentRecord(DescriptorHeapRecord *heap, UINT slot)
 {
 	if (!heap)
 		return false;
-	if (!CurrentSlotStoragePresent(*heap, slot))
+	const CurrentSlotAccess access = LoadCurrentSlotAccess(*heap, slot);
+	if (!access.occupied)
 		return false;
-	if (!CurrentSlotOccupied(*heap, slot))
-		return false;
-	*CurrentSlotPtr(*heap, slot) = DescriptorRecord();
-	SetCurrentSlotOccupied(*heap, slot, false);
+	*access.value = DescriptorRecord();
+	*access.occupancy = 0;
 	DecrementLiveSlots(heap);
 	return true;
 }

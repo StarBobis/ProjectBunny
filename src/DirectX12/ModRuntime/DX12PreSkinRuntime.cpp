@@ -1,6 +1,7 @@
 // DX12PreSkinRuntime.cpp: pre-skinning state, descriptor patches, caches, retirement and output resize tracking.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
+#include "DX12ImmutableUploadAllocator.h"
 
 
 
@@ -2480,6 +2481,9 @@ static ID3D12DescriptorHeap *gPreSkinCbvPatchPoolHeap = nullptr;
 static ID3D12Device *gPreSkinCbvPatchPoolDevice = nullptr;
 static UINT gPreSkinCbvPatchPoolIncrement = 0;
 static UINT gPreSkinCbvPatchPoolUsed = 0;
+// The mod lock serializes allocation. Pages are append-only, not a frame ring:
+// FG may keep an earlier command list alive while later constants are patched.
+static DX12ImmutableUploadAllocator gPreSkinCbvPatchUploads;
 
 // Caller holds the mod lock (every caller of the patch cache does).
 static D3D12_CPU_DESCRIPTOR_HANDLE AcquirePreSkinCbvPatchDescriptor(
@@ -2527,6 +2531,7 @@ void ClearPreSkinCbvPatchCache()
 	for (auto &item : gPreSkinCbvPatchCache)
 		ReleasePreSkinCbvPatchCacheEntry(&item.second);
 	gPreSkinCbvPatchCache.clear();
+	gPreSkinCbvPatchUploads.Reset();
 	// No entry is left, so every pooled patch descriptor slot is free again.
 	gPreSkinCbvPatchPoolUsed = 0;
 }
@@ -2630,9 +2635,8 @@ bool PatchPreSkinVertexCountCbvLocked(
 		patchedContentHash = HashPreSkinCbvBytes(bytes);
 	}
 
-	// Patched CBV Buffer
-	// UPLOAD buffer + CBV descriptor mod
-	// Map/Write/Unmap CPU-only CreateCommittedResource
+	// Patched CBVs reuse exact immutable snapshots on cache hits. Misses append
+	// to upload pages; they never rewrite constants referenced by older lists.
 	{
 		DX12_PROF_STAGE_SCOPE(PreSkinCbvCacheLookup);
 		DX12PreSkinCbvPatchCacheKey patchKey;
@@ -2641,7 +2645,8 @@ bool PatchPreSkinVertexCountCbvLocked(
 		patchKey.contentHash = patchedContentHash;
 
 		UINT64 reloadGen = DX12ModGetReloadGeneration();
-		if (gPreSkinCbvPatchCacheGeneration != reloadGen)
+		if (gPreSkinCbvPatchCacheGeneration != reloadGen ||
+			(gPreSkinCbvPatchPoolDevice && gPreSkinCbvPatchPoolDevice != device))
 		{
 			ClearPreSkinCbvPatchCache();
 			gPreSkinCbvPatchCacheGeneration = reloadGen;
@@ -2677,56 +2682,22 @@ bool PatchPreSkinVertexCountCbvLocked(
 		// PreSkinCbvReadPatchHash / PreSkinCbvCacheLookup to show where the
 		// ~500us per patch actually goes.
 		DX12_PROF_STAGE_SCOPE(PreSkinCbvCreateInsert);
-		D3D12_HEAP_PROPERTIES heapProps = {};
-		heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-		heapProps.CreationNodeMask = 1;
-		heapProps.VisibleNodeMask = 1;
-
-		D3D12_RESOURCE_DESC desc = {};
-		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Width = viewBytes;
-		desc.Height = 1;
-		desc.DepthOrArraySize = 1;
-		desc.MipLevels = 1;
-		desc.Format = DXGI_FORMAT_UNKNOWN;
-		desc.SampleDesc.Count = 1;
-		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-		hr = device->CreateCommittedResource(
-			&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-			nullptr, IID_PPV_ARGS(&patchedResource));
-		if (FAILED(hr) || !patchedResource)
+		// Retire the old cache before allocating so its reset cannot discard a
+		// fresh upload page. Command-list references still retain all old pages.
+		if (gPreSkinCbvPatchCache.size() >= kPreSkinCbvPatchPoolSlots)
+			ClearPreSkinCbvPatchCache();
+		D3D12_GPU_VIRTUAL_ADDRESS patchedAddress = 0;
+		if (!gPreSkinCbvPatchUploads.Allocate(device, bytes.data(), viewBytes,
+				&patchedResource, &patchedAddress))
 			return false;
-
-		void *patchedMapped = nullptr;
-		D3D12_RANGE patchedReadRange = {};
-		hr = patchedResource->Map(0, &patchedReadRange, &patchedMapped);
-		if (FAILED(hr) || !patchedMapped)
-		{
-			patchedResource->Release();
-			patchedResource = nullptr;
-			return false;
-		}
-		memcpy(patchedMapped, bytes.data(), viewBytes);
-		patchedResource->Unmap(0, nullptr);
 
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-		cbvDesc.BufferLocation = patchedResource->GetGPUVirtualAddress();
+		cbvDesc.BufferLocation = patchedAddress;
 		cbvDesc.SizeInBytes = viewBytes;
 		device->CreateConstantBufferView(&cbvDesc, dst);
 
-		// Clear before taking a pooled slot: the clear releases every slot, so
-		// the descriptor acquired below cannot alias a surviving entry's.
-		//
-		// The threshold is the pool's own capacity. It used to be a hard-coded
-		// 64 - four times smaller than the 256-slot pool it protects - so the
-		// cache threw away every still-reusable entry (and re-parked their
-		// buffers for release) long before it ran out of descriptor slots. That
-		// is the opposite of what this cache exists for, given the game rewrites
-		// the source CBVs every frame. A wipe of up to 256 entries still fits the
-		// deferred-release list's own bound of 512.
-		if (gPreSkinCbvPatchCache.size() >= kPreSkinCbvPatchPoolSlots)
-			ClearPreSkinCbvPatchCache();
+		// The cache-capacity clear above also retired the CPU descriptor slots.
+		// A failed acquire only disables caching, not this dispatch's patch.
 		D3D12_CPU_DESCRIPTOR_HANDLE cachedCpu =
 			AcquirePreSkinCbvPatchDescriptor(device);
 		if (cachedCpu.ptr)

@@ -121,6 +121,13 @@ public:
 
 inline std::vector<DX12IaTextureOverrideCandidate> gIaTextureOverrides;
 
+// Hash-partitioned IA candidate indexes. Published with gIaTextureOverrides
+// under gModLock on every successful reload, including an empty configuration;
+// entries are offsets into that exact candidate vector, never owning configs.
+inline std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverrideIndex;
+inline std::unordered_map<uint32_t, std::vector<size_t>> gIaAnyVertexTextureOverrideIndex;
+inline std::unordered_map<UINT64, std::vector<size_t>> gIaMergedVertexTextureOverrideIndex;
+
 inline std::vector<size_t> gIaIndexTextureOverridePrefilterIndex;
 
 inline std::unordered_map<uint32_t, std::vector<size_t>> gIaIndexTextureOverridePrefilterByIndexCount;

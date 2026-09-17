@@ -1989,16 +1989,14 @@ public:
 			// the IA mutation epoch - which restarts at 1 on every command-list
 			// Reset and therefore threw away a verdict the game re-records
 			// identically every frame.
+			const DX12IaStateNegativeInputs iaNegInputs(
+				runtimeState.ia, directTargetPlan, draw.indexed,
+				drawDecision->reloadGeneration, preSkinGeneration,
+				DX12GetIaHashResolveGeneration());
 			const DX12IaStateNegativeSignature iaNegSignature =
-				MakeIaStateNegativeSignature(
-					runtimeState.ia,
-					directTargetPlan,
-					draw.indexed,
-					drawDecision->reloadGeneration,
-					preSkinGeneration,
-					DX12GetIaHashResolveGeneration());
+				MakeIaStateNegativeSignature(iaNegInputs);
 			const DX12IaStateNegativeCache::Entry *iaNegHit =
-				DX12IaStateNegativeCache::Find(iaNeg, iaNegSignature);
+				DX12IaStateNegativeCache::Find(iaNeg, iaNegSignature, iaNegInputs);
 			if (iaNegHit) {
 				DX12_PROF_COUNT("Rm.IaNegCacheHit");
 				// Any entry in the table was proven by the same dependency
@@ -2026,7 +2024,8 @@ public:
 				// Counts admitted entries, not verifications: a later hit with
 				// noCandidate == false still runs the full match path.
 				DX12_PROF_COUNT("Rm.IaNegVerdictCacheStores");
-				DX12IaStateNegativeCache::Store(&iaNeg, iaNegSignature, noCandidate);
+				DX12IaStateNegativeCache::Store(
+					&iaNeg, iaNegSignature, iaNegInputs, noCandidate);
 				if (noCandidate) {
 					StoreBoundDrawNegative();
 					DX12_PROF_STAGE_END(DrawOverride);

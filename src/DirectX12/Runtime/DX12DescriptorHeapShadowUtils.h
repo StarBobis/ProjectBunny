@@ -128,9 +128,10 @@ public:
 	// consecutive sets, so a heap never thrashes its own ways). Each way is
 	// fully range-validated, so an aliased way degrades to a miss and can
 	// never misattribute a handle to the wrong heap (heap CPU ranges are
-	// disjoint). Plain 64-bit aligned fields are atomic on x64; concurrent
-	// inserters of the same handle race benignly (any winner is a valid
-	// entry), and retired heaps are rejected through stateLocks->IsActive().
+	// disjoint). Each set protects the complete entry snapshot: aligned scalar
+	// loads on x64 do not make a multi-field replacement atomic. A contended
+	// try-lock is just a cache miss/skipped insertion, never a blocking wait;
+	// retired heaps are still rejected through stateLocks->IsActive().
 	static constexpr UINT HeapCacheSetCount = 4096;
 	static constexpr UINT HeapCacheWayCount = 4;
 	struct HeapCacheEntry
@@ -144,6 +145,7 @@ public:
 	};
 	struct HeapCacheSet
 	{
+		SRWLOCK lock = SRWLOCK_INIT;
 		HeapCacheEntry ways[HeapCacheWayCount];
 		UINT insertCounter = 0;
 	};
@@ -166,6 +168,8 @@ public:
 		if (!out)
 			return false;
 		HeapCacheSet &set = heapCache[HeapCacheSetIndex(cpuHandle)];
+		if (!TryAcquireSRWLockShared(&set.lock))
+			return false;
 		for (UINT way = 0; way < HeapCacheWayCount; ++way) {
 			const HeapCacheEntry &entry = set.ways[way];
 			if (!entry.heap || entry.cpuStart == 0 || entry.increment == 0 ||
@@ -183,8 +187,10 @@ public:
 			out->heapIndex = entry.heapIndex;
 			out->slot = static_cast<UINT>(
 				(cpuHandle - entry.cpuStart) / entry.increment);
+			ReleaseSRWLockShared(&set.lock);
 			return true;
 		}
+		ReleaseSRWLockShared(&set.lock);
 		return false;
 	}
 
@@ -195,6 +201,8 @@ public:
 		if (!resolved.heap)
 			return;
 		HeapCacheSet &set = heapCache[HeapCacheSetIndex(cpuHandle)];
+		if (!TryAcquireSRWLockExclusive(&set.lock))
+			return;
 		HeapCacheEntry &entry =
 			set.ways[set.insertCounter++ & (HeapCacheWayCount - 1)];
 		entry.cpuStart = resolved.heap->cpuStart;
@@ -203,6 +211,7 @@ public:
 		entry.type = resolved.heap->desc.Type;
 		entry.heapIndex = resolved.heapIndex;
 		entry.heap = resolved.heap;
+		ReleaseSRWLockExclusive(&set.lock);
 	}
 
 	static SRWLOCK *HeapLock(DescriptorHeapRecord *heap, UINT slot)

@@ -1347,36 +1347,19 @@ uint32_t DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
 	// See GetOrBuildCachedIndexViewHash: the cause split is gone, it only ever
 	// restated Rm.IaViewHashSlotRebuild.
 	DX12_PROF_COUNT("Rm.IaViewHashSlotRebuild");
-	// Reuse cache from the backing ResourceWrapper: games that rotate a small
-	// set of vertex buffers across slots/command lists rebuild the same hash
-	// repeatedly because each command list invalidates its own slot entry.
-	uint32_t wrapperHash = 0;
-	if (DX12TryGetWrapperIaHash(
-			view.BufferLocation,
-			view.SizeInBytes,
-			view.StrideInBytes,
-			slot,
-			resolveGeneration,
-			&wrapperHash)) {
-		DX12_PROF_COUNT("Rm.IaViewHashWrapperHit");
-		ia->vertexBufferHashes[slot] = wrapperHash;
-		ia->vertexBufferHashValid[slot] = true;
-		ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
-		return wrapperHash;
-	}
+	// The authoritative hash function already has a thread-local, exact-key
+	// GPUVA L1 and resource L2. Go there directly, just like the IB path:
+	// probing the wrapper cache first took a shared shard lock and scanned
+	// covering resources on every slot change, even for a warm TLS L1 hit.
+	// Neither wrapper lookup nor store publishes resource identity or content;
+	// both only cache the same hash. Keep the hash function's resource-token,
+	// range-invalidation and unresolved-range validation authoritative.
 	ia->vertexBufferHashes[slot] = DX12HashIaBufferContentView(
 		view.BufferLocation,
 		view.SizeInBytes,
 		view.StrideInBytes,
 		0,
 		slot);
-	DX12StoreWrapperIaHash(
-		view.BufferLocation,
-		view.SizeInBytes,
-		view.StrideInBytes,
-		slot,
-		resolveGeneration,
-		ia->vertexBufferHashes[slot]);
 	ia->vertexBufferHashValid[slot] = true;
 	ia->vertexBufferHashResolveGeneration[slot] = resolveGeneration;
 	return ia->vertexBufferHashes[slot];
