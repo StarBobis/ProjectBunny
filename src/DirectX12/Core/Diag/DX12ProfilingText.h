@@ -255,6 +255,7 @@ enum class DX12ProfilingField : int
 	IaNegVerdictRuns,
 	IaNegVerdictNegative,
 	IaNegVerdictGated,
+	IaDictionaryReject,
 	// Pre-skin verdict layers.
 	PreSkinVerdictDispatchHits,
 	PreSkinVerdictEarlyHits,
@@ -393,6 +394,7 @@ inline constexpr DX12ProfilingFieldDef kDX12ProfilingFields[] = {
 	{ "Rm.IaNegVerdictRuns", "IaNegVerdictRuns", DX12ProfilingField::IaNegVerdictRuns, false },
 	{ "Rm.IaNegVerdictNegative", "IaNegVerdictNegative", DX12ProfilingField::IaNegVerdictNegative, false },
 	{ "Rm.IaNegVerdictGated", "IaNegVerdictGated", DX12ProfilingField::IaNegVerdictGated, false },
+	{ "Rm.IaDictionaryReject", "IaDictionaryReject", DX12ProfilingField::IaDictionaryReject, false },
 
 	{ "Rm.PreSkinVerdictDispatchHits", "VerdictDispatchHits", DX12ProfilingField::PreSkinVerdictDispatchHits, false },
 	{ "Rm.PreSkinVerdictEarlyHits", "VerdictEarlyHits", DX12ProfilingField::PreSkinVerdictEarlyHits, false },
@@ -1020,13 +1022,17 @@ inline void DX12ProfilingText::BuildRatioColumn(
 	column.Line("RATIOS / COUNTS   (every count is per frame of %ld)",
 		static_cast<long>(window.frames));
 
-	column.Line("-- IA negative cache --");
+	column.Line("-- IA dictionary / fallback cache --");
 	{
 		const DX12ProfilingFieldValue &hit = field(DX12ProfilingField::IaNegCacheHit);
 		const DX12ProfilingFieldValue &runs = field(DX12ProfilingField::IaNegVerdictRuns);
 		const DX12ProfilingFieldValue &negative = field(DX12ProfilingField::IaNegVerdictNegative);
 		const DX12ProfilingFieldValue &gated = field(DX12ProfilingField::IaNegVerdictGated);
 		char extra[48] = {};
+		const auto &dictionary = field(DX12ProfilingField::IaDictionaryReject);
+		shareOf(extra, sizeof(extra), "reject", dictionary.calls,
+			dictionary.calls + hit.calls + runs.calls, "of probes");
+		row("IaDictionaryReject", dictionary.calls, extra);
 		shareOf(extra, sizeof(extra), "hit", hit.calls, hit.calls + runs.calls,
 			"of (hit+runs)");
 		row("IaNegCacheHit", hit.calls, extra);

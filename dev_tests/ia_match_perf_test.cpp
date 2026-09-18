@@ -132,6 +132,7 @@ static uint32_t HashBytes(uint32_t hash, const void *bytes, size_t size) {
 }
 static UINT64 DX12GetIaHashResolveGeneration() { return gBufferResolveInvalidationEpochAtomic.load(); }
 #define DX12_PROF_COUNT(name) ((void)0)
+#define DX12_PROF_STAGE_SCOPE(name) ((void)0)
 #include "ia_hash_memo_under_test.h"
 #include "ia_hash_under_test.h"
 class DX12CommandListRuntime {
@@ -491,10 +492,20 @@ static void TestMatching() {
         for (UINT slot = 0; slot < 32; ++slot) for (uint32_t hash = 0; hash < 140; ++hash) {
             Check(IaHashDefinitelyHasNoCandidate(false, slot, hash) == ReferenceNoCandidate(false, slot, hash), "VB hash-index equivalence");
             Check(IaHashDefinitelyHasNoCandidate(true, slot, hash) == ReferenceNoCandidate(true, slot, hash), "IB hash-index equivalence");
+            DX12IaStateNegativeHashSnapshot snapshot;
+            snapshot.indexHashValid = true; snapshot.indexHash = hash;
+            snapshot.vertexHashMask = 1u << slot; snapshot.vertexHashes[slot] = hash;
+            if (DX12ModIaSnapshotDefinitelyAbsent(snapshot)) {
+                Check(ReferenceNoCandidate(true, 0, hash) && ReferenceNoCandidate(false, slot, hash),
+                    "dictionary rejection implies full negative verdict for both bindings");
+            }
             comparisons += 2;
         }
     }
+    DX12IaStateNegativeHashSnapshot emptySnapshot;
+    Check(DX12ModIaSnapshotDefinitelyAbsent(emptySnapshot), "empty validated snapshot has no candidate");
     gIaPrefilterCountSensitive = 1;
+    Check(!DX12ModIaSnapshotDefinitelyAbsent(emptySnapshot), "dictionary gate fails open with count-sensitive tables");
     Check(!IaHashDefinitelyHasNoCandidate(true, 0, 0xffffffff), "count-sensitive use fails open");
     gIaPrefilterCountSensitive = 0;
     constexpr int iterations = 200000;
@@ -635,6 +646,22 @@ static void TestDrawPathBench() {
                     cache, MakeIaStateNegativeSignature(other), other) != nullptr;
             });
     }
+    TimeNsPerCall("QPC clock read (not hook work)", kCacheIterations,
+        [&](int) { LARGE_INTEGER clock; QueryPerformanceCounter(&clock); benchmarkSink += clock.QuadPart & 1; });
+    auto positiveHashes = hashes;
+    positiveHashes.indexHash = 0x7cf75550u;
+    Check(!DX12ModIaSnapshotDefinitelyAbsent(positiveHashes), "existing hash must fall through even before match_cs filtering");
+    Build(Bunny::TextureOverrideMap{});
+    Check(DX12ModIaSnapshotDefinitelyAbsent(positiveHashes), "reload removal changes dictionary result without stale verdict state");
+    Build(configs);
+    Check(!DX12ModIaSnapshotDefinitelyAbsent(positiveHashes), "reload addition immediately restores fallback path");
+    TimeNsPerCall("dictionary positive fallback overhead", kCacheIterations,
+        [&](int) { benchmarkSink += DX12ModIaSnapshotDefinitelyAbsent(positiveHashes); });
+    Check(DX12ModIaSnapshotDefinitelyAbsent(hashes), "benchmark hashes are absent from current dictionary");
+    TimeNsPerCall("dictionary rejection on same snapshot", kCacheIterations,
+        [&](int) { benchmarkSink += DX12ModIaSnapshotDefinitelyAbsent(hashes); });
+    TimeNsPerCall("direct hash verdict on same snapshot", kCacheIterations,
+        [&](int) { benchmarkSink += DX12ModIaStateDefinitelyHasNoCandidate(cacheIa, plan, true, &hashes); });
     plan.requireAllIaBuffers = true;
     auto allInputs = DX12IaStateNegativeInputs(cacheIa, plan, true, 1, 1, &hashes);
     DX12IaStateNegativeCache::Store(&cache, MakeIaStateNegativeSignature(allInputs), allInputs, true);
@@ -643,6 +670,34 @@ static void TestDrawPathBench() {
             benchmarkSink += DX12IaStateNegativeCache::Find(
                 cache, MakeIaStateNegativeSignature(allInputs), allInputs) != nullptr;
         });
+    // Compare complete snapshot + rejection paths on rotating views, rather
+    // than treating a one-key L1 cache microbenchmark as the whole draw path.
+    const auto rotatingProbe = [&](int iteration, bool dictionaryFirst) {
+        cacheIa.vertexBuffers[1] = {r.va + static_cast<UINT64>(iteration % kViews) * 512, 512, 32};
+        cacheIa.vertexBufferHashValid[1] = false;
+        cacheIa.indexBuffer.BufferLocation = 0x600000 + static_cast<UINT64>(iteration % kViews) * 128;
+        cacheIa.indexBufferHashValid = false;
+        DX12IaStateNegativeHashSnapshot snapshot;
+        DX12ModBuildIaStateNegativeHashSnapshot(cacheIa, plan, true, &snapshot);
+        if (dictionaryFirst && DX12ModIaSnapshotDefinitelyAbsent(snapshot)) {
+            benchmarkSink += 1;
+            return;
+        }
+        const DX12IaStateNegativeInputs query(cacheIa, plan, true, 1, 1, &snapshot);
+        const auto key = MakeIaStateNegativeSignature(query);
+        if (const auto *found = DX12IaStateNegativeCache::Find(cache, key, query))
+            benchmarkSink += found->noCandidate;
+        else {
+            const bool negative = DX12ModIaStateDefinitelyHasNoCandidate(cacheIa, plan, true, &snapshot);
+            DX12IaStateNegativeCache::Store(&cache, key, query, negative);
+            benchmarkSink += negative;
+        }
+    };
+    for (int i = 0; i < kViews * 2; ++i) rotatingProbe(i, false);
+    TimeNsPerCall("rotating full snapshot+verdict cache", kCacheIterations,
+        [&](int i) { rotatingProbe(i, false); });
+    TimeNsPerCall("rotating full snapshot+dictionary first", kCacheIterations,
+        [&](int i) { rotatingProbe(i, true); });
 }
 
 int main() {

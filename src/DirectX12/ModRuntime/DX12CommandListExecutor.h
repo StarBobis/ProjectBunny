@@ -669,14 +669,36 @@ public:
 #endif
 		}
 
+		ApplyTextureOverrideDrawSrvResources(*config, compiledPlanView, match);
+	}
+
+	void ApplyTextureOverrideDrawSrvResources(
+		const Bunny::TextureOverrideConfig &config,
+		const DX12CompiledTextureOverridePlan *compiledPlan,
+		const DX12TextureOverrideMatch &match)
+	{
+		// Match the apply helpers' no-work gates before resolving all graphics
+		// descriptors. VM/IA actions above still execute on every invocation;
+		// this is not a cache of a positive override or of dynamic resources.
+		if (!mDevice || !mCommandList || !mReplacement)
+			return;
+		if (compiledPlan) {
+			if (compiledPlan->drawSrvResources.empty() &&
+				compiledPlan->drawReplaceThisResource.empty())
+				return;
+		} else if (config.drawPsSrvResources.empty() &&
+			config.drawVsSrvResources.empty() &&
+			config.drawReplaceThisResource.empty()) {
+			return;
+		}
 		const std::vector<DX12CurrentShaderResourceBinding> *graphicsSrvBindings =
 			GetGraphicsSrvBindings();
-		const bool drawSrvChanged = compiledPlanView ?
+		const bool drawSrvChanged = compiledPlan ?
 			DX12DrawSrvReplacementUtils::ApplyCompiledPlan(
-				mDevice, mCommandList, *compiledPlanView, &match, mReplacement,
+				mDevice, mCommandList, *compiledPlan, &match, mReplacement,
 				graphicsSrvBindings) :
 			DX12DrawSrvReplacementUtils::ApplyConfig(
-				mDevice, mCommandList, *config, &match, mReplacement,
+				mDevice, mCommandList, config, &match, mReplacement,
 				graphicsSrvBindings);
 		if (drawSrvChanged)
 			MarkChanged();

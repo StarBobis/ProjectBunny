@@ -49,9 +49,19 @@ foreach ($signature in @('bool TextureOverrideMatchCsSatisfied(', 'bool TextureO
     $parts += FunctionBody $executor $signature
 }
 $parts += FunctionBody $matching 'bool IaHasAnyPrefilterCandidate('
+$parts += FunctionBody $matching 'static const std::vector<size_t> *FindIaHashCandidateIndexes('
+$parts += FunctionBody $matching 'bool DX12ModIaSnapshotDefinitelyAbsent('
 $parts += FunctionBody $matching 'bool IaHashDefinitelyHasNoCandidate('
 $parts += FunctionBody $matching 'void DX12ModBuildIaStateNegativeHashSnapshot('
+$parts += FunctionBody $matching 'bool DX12ModIaStateDefinitelyHasNoCandidate('
 Header 'ia_matching_under_test.h' ($parts -join "`n`n")
+$draw = FunctionBody (Source 'src/DirectX12/Hooks/DX12IaReplacement.h') 'static bool HandleDrawOverrides('
+$validateAt = $draw.IndexOf('DX12ModBuildIaStateNegativeHashSnapshot(')
+$dictionaryAt = $draw.IndexOf('DX12ModIaSnapshotDefinitelyAbsent(iaNegHashes)')
+$exactKeyAt = $draw.IndexOf('const DX12IaStateNegativeInputs iaNegInputs(')
+if ($validateAt -lt 0 -or $dictionaryAt -le $validateAt -or $exactKeyAt -le $dictionaryAt) {
+    throw 'Dictionary rejection must follow authoritative hash refresh and precede fallback exact-key construction'
+}
 # The IA negative verdict is now keyed on the active pre-skin SECTION SET rather
 # than the pre-skin runtime generation, which is only sound while every mutation
 # of that set moves the set generation. These checks keep that invariant from

@@ -209,13 +209,16 @@ public:
 			return 0.0;
 		}
 
-		bool Match(const wchar_t *op)
+		template <size_t N>
+		bool Match(const wchar_t (&op)[N])
 		{
 			SkipSpaces();
-			std::wstring token(op);
-			if (text->compare(pos, token.size(), token) != 0)
+			// All grammar operators are literals. Compare them directly instead
+			// of constructing a temporary string at every precedence level.
+			constexpr size_t length = N - 1;
+			if (text->compare(pos, length, op, length) != 0)
 				return false;
-			pos += token.size();
+			pos += length;
 			return true;
 		}
 

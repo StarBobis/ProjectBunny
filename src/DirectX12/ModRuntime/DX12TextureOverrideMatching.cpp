@@ -1,6 +1,7 @@
 // DX12TextureOverrideMatching.cpp: texture override matching: IA/descriptor candidate lookup and resolved bindings.
 // Split from DX12ModRuntime.cpp; implementation unit for its module.
 #include "DX12ModRuntimeInternal.h"
+#include <bit>
 
 
 bool NumericMatchSatisfied(const Bunny::NumericMatch &match, uint32_t actual)
@@ -1549,25 +1550,14 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 }
 
 
-// Returns true when the hash index proves no candidate can exist for this
-// (ib/vb, slot, hash) tuple, ignoring draw-context filters (match_first_index
-// etc.). Only enabled when gIaPrefilterCountSensitive == 0: the index then
-// contains exactly the generic prefilter candidates for this hash. Candidates
-// that depend on active pre-skin sections still use the live snapshot, and any
-// candidate that survives hash + match_cs + IA-binding checks counts as
-// "possibly present" so the per-draw path stays authoritative.
-bool IaHashDefinitelyHasNoCandidate(
-	bool indexBuffer,
-	uint32_t vertexSlot,
-	uint32_t hash)
+// Lookup in the reload-built hash index. With count-sensitive tables disabled,
+// these buckets contain the complete count-independent candidate set. Both
+// callers fail open when count-sensitive tables are enabled.
+static const std::vector<size_t> *FindIaHashCandidateIndexes(
+	bool indexBuffer, uint32_t vertexSlot, uint32_t hash)
 {
-	// With count-sensitive tables disabled, the hash index is exactly the
-	// count-independent prefilter restricted to config.hash == hash. Use the
-	// index built at reload instead of scanning every override for each view.
-	// A merged vertex bucket already contains specific-slot + any-slot entries;
-	// only fall back to the any-slot bucket when no merged bucket exists.
-	if (gIaPrefilterCountSensitive != 0)
-		return false;
+	// Shared by the dictionary-only rejection and the full match_cs verdict.
+	// A merged bucket supersedes (rather than supplements) the any-slot bucket.
 	const std::vector<size_t> *candidateIndexes = nullptr;
 	if (indexBuffer) {
 		auto found = gIaIndexTextureOverrideIndex.find(hash);
@@ -1584,6 +1574,33 @@ bool IaHashDefinitelyHasNoCandidate(
 				candidateIndexes = &anySlot->second;
 		}
 	}
+	return candidateIndexes;
+}
+
+bool DX12ModIaSnapshotDefinitelyAbsent(const DX12IaStateNegativeHashSnapshot &hashes)
+{
+	if (gIaPrefilterCountSensitive != 0)
+		return false;
+	if (hashes.indexHashValid) {
+		const auto *candidates = FindIaHashCandidateIndexes(true, 0, hashes.indexHash);
+		if (candidates && !candidates->empty())
+			return false;
+	}
+	for (UINT mask = hashes.vertexHashMask; mask; mask &= mask - 1) {
+		const UINT slot = std::countr_zero(mask);
+		const auto *candidates = FindIaHashCandidateIndexes(false, slot, hashes.vertexHashes[slot]);
+		if (candidates && !candidates->empty())
+			return false;
+	}
+	return true;
+}
+
+bool IaHashDefinitelyHasNoCandidate(
+	bool indexBuffer, uint32_t vertexSlot, uint32_t hash)
+{
+	if (gIaPrefilterCountSensitive != 0)
+		return false;
+	const auto *candidateIndexes = FindIaHashCandidateIndexes(indexBuffer, vertexSlot, hash);
 	if (!candidateIndexes || candidateIndexes->empty())
 		return true;
 

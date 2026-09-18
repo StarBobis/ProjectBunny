@@ -1091,6 +1091,17 @@ void AddRefIaResourceViewSnapshot(DX12IaResourceViewSnapshot *snapshot)
 }
 
 
+static void SnapshotIaResourceViewMetadata(
+	const DX12LoadedResource &resource, DX12IaResourceViewSnapshot *snapshot)
+{
+	// Resolve the selected resource's width under the same lock as its pointer.
+	// Keep the existing UAV/SRV alias precedence and UINT saturation rules.
+	snapshot->byteWidth = IaViewByteWidthForResource(resource, snapshot->resource);
+	snapshot->stride = resource.stride;
+	snapshot->format = resource.format;
+}
+
+
 void SnapshotIaResourceViewLocked(
 	DX12LoadedResource *resource, DX12IaResourceViewSnapshot *snapshot)
 {
@@ -1102,7 +1113,7 @@ void SnapshotIaResourceViewLocked(
 	if (resource->uavResource && resource->uavValid &&
 		resource->uavValidPresent == DX12RuntimeState::GetPresentCount()) {
 		snapshot->resource = resource->uavResource;
-		snapshot->metadata = *resource;
+		SnapshotIaResourceViewMetadata(*resource, snapshot);
 		snapshot->uavBarrierPending = resource->uavBarrierPending;
 		if (resource->uavState != D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER) {
 			snapshot->transitionToVertex = true;
@@ -1114,12 +1125,12 @@ void SnapshotIaResourceViewLocked(
 	}
 	if (resource->srvResource && resource->srvByteWidth > resource->byteWidth) {
 		snapshot->resource = resource->srvResource;
-		snapshot->metadata = *resource;
+		SnapshotIaResourceViewMetadata(*resource, snapshot);
 		return;
 	}
 	if (resource->resource) {
 		snapshot->resource = resource->resource;
-		snapshot->metadata = *resource;
+		SnapshotIaResourceViewMetadata(*resource, snapshot);
 	}
 }
 
@@ -1137,12 +1148,12 @@ static void SnapshotIaResourceViewReadOnlyLocked(
 	ReleaseIaResourceViewSnapshot(snapshot);
 	if (resource.srvResource && resource.srvByteWidth > resource.byteWidth) {
 		snapshot->resource = resource.srvResource;
-		snapshot->metadata = resource;
+		SnapshotIaResourceViewMetadata(resource, snapshot);
 		return;
 	}
 	if (resource.resource) {
 		snapshot->resource = resource.resource;
-		snapshot->metadata = resource;
+		SnapshotIaResourceViewMetadata(resource, snapshot);
 	}
 }
 
@@ -1238,11 +1249,11 @@ bool AppendResourceViewsForCommandList(
 			ApplyIaResourceBarriers(commandList, snapshot);
 			replacement->indexBuffer.BufferLocation = snapshot.resource->GetGPUVirtualAddress();
 			replacement->indexBuffer.SizeInBytes =
-				IaViewByteWidthForResource(snapshot.metadata, snapshot.resource);
+				snapshot.byteWidth;
 			replacement->indexBuffer.Format =
-				snapshot.metadata.format == DXGI_FORMAT_R16_UINT ||
-				snapshot.metadata.format == DXGI_FORMAT_R32_UINT ?
-				snapshot.metadata.format :
+				snapshot.format == DXGI_FORMAT_R16_UINT ||
+				snapshot.format == DXGI_FORMAT_R32_UINT ?
+				snapshot.format :
 				(iaState.hasIndexBuffer && iaState.indexView.Format != DXGI_FORMAT_UNKNOWN ?
 					iaState.indexView.Format : DXGI_FORMAT_R32_UINT);
 			replacement->RetainResource(snapshot.resource);
@@ -1293,9 +1304,9 @@ bool AppendResourceViewsForCommandList(
 				D3D12_VERTEX_BUFFER_VIEW &view =
 					replacement->vertexBuffers[item.slot - replacement->vertexBufferStartSlot];
 				view.BufferLocation = snapshot.resource->GetGPUVirtualAddress();
-				view.SizeInBytes = IaViewByteWidthForResource(snapshot.metadata, snapshot.resource);
+				view.SizeInBytes = snapshot.byteWidth;
 				const DX12IaBufferHash *sourceSlot = FindIaVertexSlot(iaState, item.slot);
-				view.StrideInBytes = snapshot.metadata.stride ? snapshot.metadata.stride :
+				view.StrideInBytes = snapshot.stride ? snapshot.stride :
 					(sourceSlot ? sourceSlot->vertexView.StrideInBytes : 0);
 				replacement->RetainResource(snapshot.resource);
 								changed = true;

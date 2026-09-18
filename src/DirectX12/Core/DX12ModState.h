@@ -123,6 +123,9 @@ void DX12ModBuildIaStateNegativeHashSnapshot(
 	const DX12IaHashTargetPlan &targetPlan,
 	bool indexed,
 	DX12IaStateNegativeHashSnapshot *snapshot);
+// Dictionary-only proof for a freshly validated snapshot; no verdict cache or
+// active-section query is needed when none of its hashes has indexed candidates.
+bool DX12ModIaSnapshotDefinitelyAbsent(const DX12IaStateNegativeHashSnapshot &hashes);
 bool DX12ModIaStateDefinitelyHasNoCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,

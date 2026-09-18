@@ -224,6 +224,49 @@ static void HookCases(bool dense, bool hunting) {
     Check(ledger[0xa00000].valueId == 1, "unknown destination ledger");
     heaps.clear(); ledger.clear();
 }
+static void CopyStorageAndOverlapCases(bool dense) {
+    DescriptorHeapRecord source, dest;
+    Init(source, 0x400000, dense); Init(dest, 0x500000, dense);
+    heaps = {&source, &dest}; hunt = false;
+    auto ledgerValue = Value(1, 321); ledgerValue.cpuHandle = source.cpuStart;
+    ledger[source.cpuStart] = ledgerValue;
+    Store(dest, 0, Value(1, 999));
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(1, {dest.cpuStart}, {source.cpuStart}, Type, 32);
+    if (dense) Check(!Slots::CurrentSlotOccupied(dest, 0), "allocated empty source erases without ledger lookup");
+    else Check(Slots::CurrentSlotPtr(dest, 0)->valueId == 321, "absent source chunk retains ledger fallback");
+    // Once source storage exists, an empty slot is authoritative even if the
+    // compatibility ledger still carries an older descriptor at that handle.
+    source.chunkedSlots.EnsureChunkForSlot(0);
+    Store(dest, 0, Value(1, 999));
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(1, {dest.cpuStart}, {source.cpuStart}, Type, 32);
+    Check(!Slots::CurrentSlotOccupied(dest, 0), "allocated empty source remains authoritative");
+    Check(dest.stateLocks->PublishedSlotValueEquals(0, 999) == false, "erase invalidates old destination identity");
+    if (!dense) {
+        ledgerValue.cpuHandle = source.cpuStart + 32;
+        ledger[ledgerValue.cpuHandle] = ledgerValue;
+        DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(1, {dest.cpuStart + 8192 * 32}, {ledgerValue.cpuHandle}, Type, 32);
+        Check(Slots::CurrentSlotPtr(dest, 8192)->valueId == 321, "empty source plus absent destination storage keeps ledger fallback");
+    }
+    // Serial shadow overlap semantics: this tests the existing memmove-like
+    // direction, not whether overlapping native D3D12 copies are legal.
+    for (UINT i = 0; i < 8; ++i) Store(source, i, Value(1, 100 + i));
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(7, {source.cpuStart + 32}, {source.cpuStart}, Type, 32);
+    for (UINT i = 1; i < 8; ++i) Check(Slots::CurrentSlotPtr(source, i)->valueId == 99 + i, "reverse overlap preserves source snapshot");
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(7, {source.cpuStart}, {source.cpuStart + 32}, Type, 32);
+    for (UINT i = 0; i < 7; ++i) Check(Slots::CurrentSlotPtr(source, i)->valueId == 100 + i, "forward overlap preserves source snapshot");
+    const auto version = source.stateLocks->ReadVersion();
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(7, {source.cpuStart}, {source.cpuStart}, Type, 32);
+    Check(source.stateLocks->ReadVersion() == version, "self copy preserves version");
+    // First-touch destination allocation followed by copies across a chunk
+    // boundary: fallback and direct writes must publish every final identity.
+    for (UINT i = 4094; i < 4099; ++i) Store(source, i, Value(1, 200 + i));
+    DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(5, {dest.cpuStart + 4094 * 32}, {source.cpuStart + 4094 * 32}, Type, 32);
+    for (UINT i = 4094; i < 4099; ++i) {
+        Check(Slots::CurrentSlotPtr(dest, i)->valueId == 200 + i, "first-touch range final value");
+        Check(dest.stateLocks->PublishedSlotValueEquals(i, 200 + i), "first-touch range published identity");
+    }
+    heaps.clear(); ledger.clear();
+}
 static void ResetCache() {
     // Only called before/after workers, while no cache operation is in flight.
     for (auto &set : CacheUnderTest::heapCache) {
@@ -595,9 +638,33 @@ static void RealResolverBenchmark(UINT sourceCount, bool simple, bool mixed, boo
     });
     worker.join();
 }
+static void ContiguousRangeBenchmark(bool dense, bool changed) {
+    useRealResolver = true; hunt = false;
+    auto &a = RegisterHeap(dense); auto &b = RegisterHeap(dense); auto &d = RegisterHeap(dense);
+    constexpr UINT count = 64, iterations = 10000;
+    for (UINT i = 0; i < count; ++i) {
+        Store(a, 4070 + i, Value(1, 100 + i));
+        Store(b, 4070 + i, Value(1, 200 + i));
+        Store(d, 4070 + i, Value(1, 100 + i));
+    }
+    collectCounters = false;
+    auto start = std::chrono::steady_clock::now();
+    for (UINT n = 0; n < iterations; ++n) {
+        auto &source = changed && !(n & 1) ? b : a;
+        DX12ResourceTrackerHookRuntime::RecordCopiedDescriptorsSimple(count, {Handle(d, 4070)}, {Handle(source, 4070)}, Type, 32);
+    }
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    collectCounters = true;
+    for (UINT i = 0; i < count; ++i) Check(d.stateLocks->PublishedSlotValueEquals(4070 + i, 100 + i), "contiguous range final identities");
+    std::printf("real-resolver contiguous64-cross-chunk %s %s: %lld us / %u calls (no source setup in timed loop)\n",
+        dense ? "dense" : "chunked", changed ? "100%-changed" : "unchanged", us, iterations);
+    useRealResolver = false;
+}
 int main() {
     for (bool src : {false, true}) for (bool dst : {false, true}) SlotCases(src, dst);
     for (bool dense : {false, true}) for (bool hunting : {false, true}) HookCases(dense, hunting);
+    for (bool dense : {false, true}) CopyStorageAndOverlapCases(dense);
+    std::puts("PASS: forward/reverse/self shadow overlap, storage-vs-ledger fallback, first-touch cross-chunk identities");
     for (bool dense : {false, true}) IndependentSlotWriters(dense);
     if (HAS_THREAD_SAFE_HEAP_CACHE) CacheCases();
     for (bool dense : {false, true}) RealApiCases(dense);
@@ -615,6 +682,7 @@ int main() {
     }
     for (UINT sources : {8u, 40u}) for (bool mixed : {false, true})
         RealResolverBenchmark(sources, false, mixed, true);
+    for (bool dense : {false, true}) for (bool changed : {false, true}) ContiguousRangeBenchmark(dense, changed);
     Benchmark();
     CacheBenchmark();
     for (bool dense : {false, true}) ChangedSlotBenchmark(dense);

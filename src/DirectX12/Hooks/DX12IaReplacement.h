@@ -2004,6 +2004,16 @@ public:
 			// actual rebuilds, while the enclosing stage measures the complete cost.
 			DX12ModBuildIaStateNegativeHashSnapshot(
 				runtimeState.ia, directTargetPlan, draw.indexed, &iaNegHashes);
+			// Most hashes have no entry in the immutable reload-built index.
+			// Prove that directly before constructing a raw-view signature and
+			// chasing heap-owned verdict keys. Hash validation above still runs;
+			// hashes with candidates retain the section-sensitive exact cache.
+			if (DX12ModIaSnapshotDefinitelyAbsent(iaNegHashes)) {
+				DX12_PROF_COUNT("Rm.IaDictionaryReject");
+				StoreBoundDrawNegative();
+				DX12_PROF_STAGE_END(DrawOverride);
+				return false;
+			}
 			const DX12IaStateNegativeInputs iaNegInputs(
 				runtimeState.ia, directTargetPlan, draw.indexed,
 				drawDecision->reloadGeneration,

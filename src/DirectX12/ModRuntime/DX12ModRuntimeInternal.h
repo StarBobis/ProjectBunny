@@ -3700,7 +3700,11 @@ class DX12IaResourceViewSnapshot
 
 public:
 	ID3D12Resource *resource = nullptr;
-	DX12LoadedResource metadata;
+	// Copy only the IA view metadata while holding gModLock. Loaded resources
+	// also own strings and descriptor-heap maps, none of which an IA view uses.
+	UINT byteWidth = 0;
+	UINT stride = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool uavBarrierPending = false;
 	bool transitionToVertex = false;
 	D3D12_RESOURCE_STATES stateBefore = D3D12_RESOURCE_STATE_COMMON;
@@ -3817,6 +3821,7 @@ void DX12ModBuildIaStateNegativeHashSnapshot(
 	DX12IaStateNegativeHashSnapshot *snapshot);
 
 
+bool DX12ModIaSnapshotDefinitelyAbsent(const DX12IaStateNegativeHashSnapshot &hashes);
 bool DX12ModIaStateDefinitelyHasNoCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,
