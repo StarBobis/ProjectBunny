@@ -1035,6 +1035,195 @@ UINT64 DX12GetIaHashResolveGeneration()
 }
 
 
+// Flat, view-keyed memo in front of DX12HashIaBufferContentView's L1 map.
+//
+// The L1/L2/L3 layer below resolves a view hash correctly but is made of node
+// containers, so one lookup costs a hash, a bucket walk and at least one node
+// dereference - measured at 209 ns/call for a warm 512-view working set, and
+// more once the map holds a frame's worth of views and the nodes are cold.
+// The draw hook asks for the same view hashes over and over: a game rebinds its
+// IA views every draw (measured ~1181 rebuilt view hashes per frame on the
+// profiled title) and then replays the identical bind sequence next frame, while
+// the caller-side slot memo cannot survive the rebind it exists to serve.
+//
+// This table answers that repeated question from a flat array. It is a pure
+// accelerator: it duplicates the L1's own validity test instead of weakening
+// it, and a miss (including "I cannot prove this is still current") falls
+// through to the existing path rather than returning anything unproven.
+//
+// Validity, exactly as the L1 map decides it for an IA (metadata-only) hash:
+//   - A resolved view carries the published identity it was hashed from. The
+//     published record is immutable, so an unchanged identity generation proves
+//     every hash input unchanged - including a resource recreated on the same
+//     GPU virtual address with a different descriptor, which is the case a
+//     metadata hash cannot see on its own.
+//   - A view whose GPUVA is not resolved has no identity to compare, so it is
+//     only reusable while the range-scoped invalidation state the L1 validates
+//     against has not moved; a moved epoch falls through to the L1 instead of
+//     being trusted here.
+class IaViewHashMemo
+{
+public:
+	// Sized from the profile, not guessed: the profiled title rebuilds ~1181
+	// distinct view hashes per frame in its heaviest observed scene, and a
+	// deterministic game replays the same bind sequence, so the reuse distance
+	// of a resident view is one frame. 8192 entries cover several frames of the
+	// heaviest observed scene and still leave room for a larger one; the table
+	// is heap-owned per resolving thread and only allocated once it is used.
+	static constexpr size_t kSetCount = 4096;
+	static constexpr size_t kWayCount = 2;
+
+	struct Entry
+	{
+		// First line: the key comparison and the answer.
+		UINT64 gpuVa = 0;
+		UINT64 size = 0;
+		UINT64 resolveGeneration = 0;
+		UINT32 stride = 0;
+		UINT32 format = 0;
+		UINT32 slot = 0;
+		UINT32 hash = 0;
+		// Second line: the identity that revalidates it. A zero hash marks an
+		// unused way, which is safe because the hash function tags every value
+		// it returns with MakeTrackerFourCC('D','X','I','A') and never returns
+		// zero for a view it accepted.
+		UINT64 resourceGeneration = 0;
+		ID3D12Resource *resource = nullptr;
+		DX12ResourcePublishedState *publishedState = nullptr;
+	};
+
+	static bool TryRead(
+		UINT64 gpuVa, UINT64 size, UINT stride, UINT format, UINT slot,
+		UINT64 resolveGeneration, UINT32 *hashOut)
+	{
+		Entry *set = SetFor(gpuVa, size, stride, format, slot);
+		for (size_t way = 0; way < kWayCount; ++way) {
+			Entry &entry = set[way];
+			if (!entry.hash ||
+			    entry.gpuVa != gpuVa || entry.size != size ||
+			    entry.stride != stride || entry.format != format ||
+			    entry.slot != slot)
+				continue;
+			const bool hasTrackedIdentity =
+				entry.resource && entry.resourceGeneration && entry.publishedState;
+			if (hasTrackedIdentity) {
+				if (!entry.publishedState->TryRead(
+						entry.resourceGeneration, nullptr, nullptr, nullptr))
+					return false;
+			} else if (entry.resolveGeneration != resolveGeneration) {
+				// An unresolved GPUVA range: its hash is a pure function of the
+				// view fields, so it can only change once a resource is published
+				// over the range. That is precisely what the range-scoped
+				// invalidation test answers, and it is the same test the L1 map
+				// runs before it revalidates its own entry - so this is not a
+				// weaker answer, it is the same answer reached without the map
+				// lookup and its node chase. A moved epoch on its own proves
+				// nothing: unrelated buffer churn moves it several times per
+				// frame (measured 5..17 on the profiled title), and treating that
+				// as evidence of change sent every IA view hash back through the
+				// container path.
+				if (RangeInvalidatedSince(gpuVa, size, entry.resolveGeneration))
+					return false;
+				entry.resolveGeneration = resolveGeneration;
+			}
+			if (hashOut)
+				*hashOut = entry.hash;
+			// TIMING-only: how much of the per-draw view-hash traffic this
+			// accelerator actually answers, so "the container path is still
+			// paying" can be told apart from "the keys genuinely differ each
+			// frame" without guessing.
+			DX12_PROF_COUNT("Rm.IaViewHashMemoHit");
+			return true;
+		}
+		return false;
+	}
+
+	// Published after a hash was produced or revalidated, so the entry always
+	// describes a value the authority below has just confirmed.
+	static void Publish(
+		UINT64 gpuVa, UINT64 size, UINT stride, UINT format, UINT slot,
+		UINT32 hash, UINT64 resolveGeneration, UINT64 resourceGeneration,
+		ID3D12Resource *resource, DX12ResourcePublishedState *publishedState)
+	{
+		if (!hash)
+			return;
+		Entry *set = SetFor(gpuVa, size, stride, format, slot);
+		// A way already holding this key is refreshed in place; otherwise the
+		// first way holding a different key is replaced. Two ways keep the
+		// frame-to-frame working set of one recording thread resident without a
+		// recency update on the hot path.
+		Entry *target = &set[0];
+		for (size_t way = 0; way < kWayCount; ++way) {
+			const Entry &entry = set[way];
+			if (!entry.hash || (entry.gpuVa == gpuVa && entry.size == size &&
+					entry.stride == stride && entry.format == format &&
+					entry.slot == slot)) {
+				target = &set[way];
+				break;
+			}
+		}
+		target->gpuVa = gpuVa;
+		target->size = size;
+		target->stride = stride;
+		target->format = format;
+		target->slot = slot;
+		target->resolveGeneration = resolveGeneration;
+		target->resourceGeneration = resourceGeneration;
+		target->resource = resource;
+		target->publishedState = publishedState;
+		target->hash = hash;
+	}
+
+private:
+	static_assert((kSetCount & (kSetCount - 1)) == 0,
+		"view hash memo set count must be a power of two");
+
+	// Range-scoped revalidation of an unresolved view, under the same shared
+	// lock and with the same predicate the L1 map uses for the same case. Kept
+	// here rather than in the L1 so the accelerator can answer without first
+	// walking the container that sent it the question.
+	static bool RangeInvalidatedSince(UINT64 gpuVa, UINT64 size, UINT64 sinceEpoch)
+	{
+		AcquireSRWLockShared(&gResourceLock);
+		const bool invalidated =
+			DX12BufferResolveCacheUtils::RangeInvalidatedSinceLocked(
+				gpuVa, gpuVa + size, sinceEpoch);
+		ReleaseSRWLockShared(&gResourceLock);
+		return invalidated;
+	}
+
+	// Buffer views are typically 256-byte aligned and large, so a whole view
+	// key can differ only above bit 5. The set index is taken from the low bits
+	// after a full avalanche (the same splitmix64 finalizer the IA signature
+	// uses), because a partial mix left neighbouring views of one buffer sharing
+	// a set - 512 views landed in 64 sets and thrashed two ways.
+	static Entry *SetFor(UINT64 gpuVa, UINT64 size, UINT stride, UINT format, UINT slot)
+	{
+		UINT64 key = gpuVa ^ (size * 0x9e3779b97f4a7c15ull);
+		key ^= static_cast<UINT64>(stride) << 32;
+		key ^= static_cast<UINT64>(format) * 0x2545f4914f6cdd1dull;
+		key ^= static_cast<UINT64>(slot) << 17;
+		key ^= key >> 30;
+		key *= 0xbf58476d1ce4e5b9ull;
+		key ^= key >> 27;
+		key *= 0x94d049bb133111ebull;
+		key ^= key >> 31;
+		const size_t set = static_cast<size_t>(key) & (kSetCount - 1);
+		return &Table()[set * kWayCount];
+	}
+
+	// Heap-owned rather than a TLS array: this is a cache, and a thread that
+	// never resolves a view hash should not carry its footprint.
+	static Entry *Table()
+	{
+		static thread_local std::unique_ptr<Entry[]> table;
+		if (!table)
+			table = std::make_unique<Entry[]>(kSetCount * kWayCount);
+		return table.get();
+	}
+};
+
+
 uint32_t DX12HashIaBufferContentView(
 	UINT64 gpuVirtualAddress, UINT64 size, UINT stride, UINT format, UINT slot)
 {
@@ -1162,6 +1351,13 @@ uint32_t DX12HashIaBufferContentView(
 	const UINT64 globalContentGeneration =
 		gBufferContentGeneration.load(std::memory_order_relaxed);
 
+	// -- flat view-keyed memo, ahead of every container lookup below --
+	uint32_t memoHash = 0;
+	if (IaViewHashMemo::TryRead(
+			gpuVirtualAddress, size, stride, format, slot, resolveGeneration,
+			&memoHash))
+		return memoHash;
+
 	// -- L1 lookup (gpuVa-based, fastest) --
 	IaHashKeyL1 keyL1 = { gpuVirtualAddress, size, stride, format, slot };
 	std::unordered_map<IaHashKeyL1, IaHashCacheValue, IaHashKeyL1Hasher>::iterator itL1 = s_cacheL1.find(keyL1);
@@ -1200,6 +1396,10 @@ uint32_t DX12HashIaBufferContentView(
 			}
 		}
 		if (!invalidated) {
+			IaViewHashMemo::Publish(
+				gpuVirtualAddress, size, stride, format, slot, cacheValue.hash,
+				cacheValue.resolveGeneration, cacheValue.resourceGeneration,
+				cacheValue.resource, cacheValue.publishedState);
 			return cacheValue.hash;
 		}
 		s_cacheL1.erase(itL1);
@@ -1259,6 +1459,10 @@ uint32_t DX12HashIaBufferContentView(
 			}
 			if (!invalidated) {
 				s_cacheL1[keyL1] = cacheValue;
+				IaViewHashMemo::Publish(
+					gpuVirtualAddress, size, stride, format, slot, cacheValue.hash,
+					cacheValue.resolveGeneration, cacheValue.resourceGeneration,
+					cacheValue.resource, cacheValue.publishedState);
 				return cacheValue.hash;
 			}
 			s_cacheL2.erase(itL2);
@@ -1347,6 +1551,10 @@ uint32_t DX12HashIaBufferContentView(
 	cacheValue.publishedState = resolved ? summary.publishedState : nullptr;
 	cacheValue.tracksContent = false;
 	s_cacheL1[keyL1] = cacheValue;
+	IaViewHashMemo::Publish(
+		gpuVirtualAddress, size, stride, format, slot, cacheValue.hash,
+		cacheValue.resolveGeneration, cacheValue.resourceGeneration,
+		cacheValue.resource, cacheValue.publishedState);
 	if (resolved && summary.resource) {
 		IaHashKeyL2 keyL2 = { summary.resource,
 			summary.resourceOffset, fullViewSize,

@@ -1648,7 +1648,8 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 	std::vector<DX12CurrentComputeUavBinding> *srvs,
 	std::vector<DX12CurrentComputeUavBinding> *cbvs,
 	std::vector<DX12CurrentRootConstants> *constants,
-	UINT64 *dependencyFingerprint)
+	UINT64 *dependencyFingerprint,
+	bool tryResidentBindings)
 {
 	if (dependencyFingerprint)
 		*dependencyFingerprint = 0;
@@ -1673,7 +1674,12 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		DX12BindingTracker::GetComputeBindingSerial(commandList);
 	bool cachedFoundAny = false;
 	DX12_PROF_COUNT("Rm.PreSkinBindingCacheCalls");
-	if (runtimeState && computeBindingSerial &&
+	// Dispatch has already tried the resident snapshot during its identity
+	// probe. Do not repeat root scans / slot observations on that miss. This
+	// only removes a cache opportunity: the fresh snapshot and content-cache
+	// key below still validate the current inputs even if descriptors changed
+	// concurrently after the first rejection.
+	if (tryResidentBindings && runtimeState && computeBindingSerial &&
 			TryLoadRuntimePreSkinBindings(
 				runtimeState,
 				computeBindingSerial,
@@ -1687,7 +1693,11 @@ bool DX12BindingTracker::CollectPreSkinBindings(
 		return cachedFoundAny;
 	}
 
-	DX12PreSkinComputeSnapshot snapshot;
+	// Both snapshot builders overwrite every field on success; failure exits
+	// before anything consumes it. Like this collector's other scratch vectors,
+	// keep storage per thread instead of zeroing the large root-constant arrays
+	// immediately before copying over them on every candidate dispatch.
+	static thread_local DX12PreSkinComputeSnapshot snapshot;
 	DX12_PROF_STAGE_BEGIN(BindSnapshot);
 	bool snapshotReady = false;
 	if (preferRuntimeSnapshot) {

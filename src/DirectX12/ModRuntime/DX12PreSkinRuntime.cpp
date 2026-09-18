@@ -70,6 +70,26 @@ void BumpPreSkinActiveGeneration()
 }
 
 
+UINT64 CurrentPreSkinSectionSetGeneration()
+{
+	// Same reasoning as CurrentPreSkinActiveGeneration: a plain volatile load,
+	// the counter is only ever advanced with interlocked increments.
+	return static_cast<UINT64>(gPreSkinSectionSetGeneration);
+}
+
+
+UINT64 DX12ModGetPreSkinSectionSetGenerationFast()
+{
+	return CurrentPreSkinSectionSetGeneration();
+}
+
+
+void BumpPreSkinSectionSetGeneration()
+{
+	InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&gPreSkinSectionSetGeneration));
+}
+
+
 // Resource facts are immutable for a committed resource, so they are cached
 // once when the output identity changes instead of being queried per draw.
 static void CachePreSkinOutputResourceFacts(DX12ActivePreSkinTextureOverride *active)
@@ -173,8 +193,17 @@ void ClearActivePreSkinTextureOverridesLocked(
 {
 	const bool changed =
 		!gActivePreSkinTextureOverrides.empty();
-	for (auto &item : gActivePreSkinTextureOverrides)
+	// Occupancy and sampled-section-set membership are not the same thing: a
+	// section that match_cs also confirmed stays in the sampled set after this
+	// clear, so a verdict keyed on that set must survive the per-frame clear.
+	// The active map holds a handful of entries, so the membership test rides
+	// along with the existing move loop instead of scanning it twice.
+	bool sectionSetChanged = false;
+	for (auto &item : gActivePreSkinTextureOverrides) {
+		if (gConfirmedPreSkinSections.find(item.first) == gConfirmedPreSkinSections.end())
+			sectionSetChanged = true;
 		MoveActivePreSkinTextureOverrideResourceLocked(item.first, &item.second, releaseResources);
+	}
 	gActivePreSkinTextureOverrides.clear();
 	gPreSkinProducerSectionsByOutputResource.clear();
 	InterlockedExchange(&gHasActivePreSkinTextureOverridesFast, 0);
@@ -186,6 +215,8 @@ void ClearActivePreSkinTextureOverridesLocked(
 	DX12ModClearPreSkinOutputResizeMap();
 	if (changed)
 		BumpPreSkinActiveGeneration();
+	if (sectionSetChanged)
+		BumpPreSkinSectionSetGeneration();
 }
 
 
@@ -196,8 +227,14 @@ void StoreActivePreSkinTextureOverrideLocked(
 	// Do not use frame-local recording order as match_cs proof. Once the actual
 	// PreSkin producer has matched, retain the section until configuration reload
 	// so draws recorded across a Present or on another command list remain valid.
-	if (gConfirmedPreSkinSections.insert(section).second)
+	const bool newlyConfirmed = gConfirmedPreSkinSections.insert(section).second;
+	if (newlyConfirmed) {
 		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 1);
+		// The sampled section set gains this name here and only here: every
+		// path that fills the active map confirms first, so adding the map
+		// entry itself cannot introduce a name the set did not already hold.
+		BumpPreSkinSectionSetGeneration();
+	}
 	auto existing = gActivePreSkinTextureOverrides.find(section);
 	const DX12ActivePreSkinTextureOverride *existingPtr =
 		existing != gActivePreSkinTextureOverrides.end() ? &existing->second : nullptr;
@@ -2079,6 +2116,7 @@ void ClearPreSkinRuntimeState()
 		gConfirmedPreSkinSections.clear();
 		InterlockedExchange(&gHasConfirmedPreSkinSectionsFast, 0);
 		BumpPreSkinActiveGeneration();
+		BumpPreSkinSectionSetGeneration();
 	}
 	DX12_LOCK_ACQUIRE_EXCLUSIVE(&gPreSkinSrvProbeCacheLock, "Lock.srvProbeCacheExclusive");
 	gPreSkinSrvNegativeCache.clear();
@@ -2986,11 +3024,10 @@ bool MatchComputeInputSrvsTextureOverrideLocked(
 }
 
 
-// Populate the SRV replacement set straight from the config's cs-tN table,
-// without probing live SRV content hashes. The sticky-match path uses this:
-// the hash probe is exactly what flickers across frames (async GPU readback
-// hashing), and re-checking it there would reintroduce the dropped-patch
-// frames the sticky entry exists to eliminate.
+// Populate the SRV replacement set straight from the config's cs-tN table.
+// Fresh matching has already compared the live descriptor-view geometry hashes,
+// so repeating that comparison here is redundant. Sticky matching deliberately
+// uses its own retained match proof rather than re-running the fresh matcher.
 bool BuildPreSkinSrvReplacementsFromConfigLocked(
 	const Bunny::TextureOverrideConfig &config,
 	std::vector<DX12PreSkinSrvReplacementBinding> *replacements)
@@ -3047,20 +3084,14 @@ bool FindMatchCsTextureOverrideLocked(
 	const std::vector<DX12CurrentRootConstants> &rootConstants,
 	DX12UavHashTextureOverrideMatch *match)
 {
+	(void)uavs;
+	(void)cbvs;
+	(void)rootConstants;
 	if (!csHash)
 		return false;
 	auto indexed = gPreSkinMatchCsTextureOverrideIndex.find(csHash);
 	if (indexed == gPreSkinMatchCsTextureOverrideIndex.end())
 		return false;
-	static thread_local UINT64 tlsInputCacheReloadGeneration = 0;
-	static thread_local std::unordered_map<uint64_t, bool> tlsInputCache;
-	const UINT64 reloadGeneration = DX12ModGetReloadGenerationFast();
-	if (tlsInputCacheReloadGeneration != reloadGeneration)
-	{
-		tlsInputCache.clear();
-		tlsInputCacheReloadGeneration = reloadGeneration;
-	}
-
 	for (size_t index : indexed->second)
 	{
 		if (index >= gPreSkinTextureOverrides.size())
@@ -3071,29 +3102,18 @@ bool FindMatchCsTextureOverrideLocked(
 		if (!config || !IsComputePreSkinTextureOverride(*config) ||
 			GetPreSkinCsHash(*config) != csHash)
 			continue;
-		const uint64_t inputKey = MakePreSkinMatchCsInputCacheKey(
-			csHash, candidate, 0, uavs, srvs, cbvs, rootConstants);
-		bool inputMatched = false;
-		auto cachedInput = tlsInputCache.find(inputKey);
-		if (cachedInput != tlsInputCache.end())
-		{
-			inputMatched = cachedInput->second;
-		}
-		else
-		{
-			inputMatched = MatchComputeInputSrvsTextureOverrideLocked(srvs, *config);
-			if (tlsInputCache.size() > 4096)
-				tlsInputCache.clear();
-			tlsInputCache[inputKey] = inputMatched;
-		}
-		if (!inputMatched)
+		// Building the old bool-cache key already found and hashed EVERY
+		// configured SRV. Compare those same live inputs directly instead:
+		// misses can stop at the first mismatch, and hits need neither a hash
+		// table lookup/allocation nor a second SRV walk to build replacements.
+		if (!MatchComputeInputSrvsTextureOverrideLocked(srvs, *config))
 			continue;
 		if (match)
 		{
 			match->config = config;
 			match->hash = candidate.hash;
-			BuildPreSkinSrvReplacementBindingsTextureOverrideLocked(
-				srvs, *config, &match->srvReplacements);
+			BuildPreSkinSrvReplacementsFromConfigLocked(
+				*config, &match->srvReplacements);
 		}
 		return true;
 	}

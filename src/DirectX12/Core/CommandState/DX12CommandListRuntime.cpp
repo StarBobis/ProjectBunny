@@ -515,49 +515,16 @@ void DX12CommandListRuntime::Reset(
 	// root-constants value arrays. Root constant VALUES are only meaningful
 	// while valid==true, so the reset only clears the validity/layout markers
 	// and leaves the payload stale. Container capacities that are useful
-	// across recordings (descriptor query results) are preserved by move.
+	// across recordings (descriptor query results) are preserved in place.
 	DX12RuntimeResetStateForRecording(state);
 
-	ID3D12Device *cachedDevice = state->device;
-	IUnknown *cachedCommandListIdentity = state->commandListIdentity;
-	DX12CommandListTrackingCache oldCache = state->trackingCache;
-	// IA caches describe immutable content and candidate results rather than a
-	// single recording. Their keys already carry the required generations, so
-	// preserve the working set across command-list Reset like DX11's resident
-	// HackerContext state.
-	DX12SimulateContextDrawTemplate persistentResolvedDraw =
-		std::move(state->resolvedDraw);
-	// The compute binding template and probe verdicts are kept for their
-	// content-keyed caches (descriptor value IDs + fingerprints), which
-	// re-validate semantically and hit when the game re-records identical
-	// dispatches every frame. The counter-keyed single-entry verdict and
-	// snapshot validity were already dropped in
-	// DX12RuntimeResetStateForRecording: the serial/version counters restart
-	// per recording, so keeping them would let a stale verdict alias an
-	// unrelated dispatch that replays the same counter values.
-	DX12SimulateContextComputeTemplate persistentResolvedCompute =
-		std::move(state->resolvedCompute);
-	std::array<DX12ResolvedDescriptorQueryRuntimeState, 6>
-		persistentResolvedQueries = std::move(state->resolvedDescriptorQueries);
-	// barrierScratch is documented as reused storage to avoid an allocation
-	// cycle per ResourceBarrier call, but the full struct reset destroyed and
-	// reallocated it on every command-list Reset. Move it out and back so its
-	// capacity survives; contents are cleared below as before.
-	std::vector<D3D12_RESOURCE_BARRIER> persistentBarrierScratch =
-		std::move(state->barrierScratch);
-	state->device = cachedDevice;
-	state->commandListIdentity = cachedCommandListIdentity;
-	state->pipelineState = nullptr;
-	state->trackingCache = oldCache;
-	state->resolvedDraw = std::move(persistentResolvedDraw);
-	state->resolvedCompute = std::move(persistentResolvedCompute);
-	state->resolvedDescriptorQueries = std::move(persistentResolvedQueries);
-	state->barrierScratch = std::move(persistentBarrierScratch);
+	// The targeted reset above does not reconstruct state. Device/identity,
+	// content-keyed draw/compute caches and query vector capacities already
+	// remain in place; moving them out and straight back copied large inline
+	// arrays and moved containers without preserving anything additional.
+	// Recording-counter-keyed validity was cleared by that helper, so keeping
+	// storage here cannot resurrect a previous recording's binding snapshot.
 	state->barrierScratch.clear();
-	// The resolved descriptor queries were already marked invalid by
-	// DX12RuntimeResetStateForRecording above; the move out and back preserves
-	// the element's vectors and cannot re-validate them, so re-clearing the six
-	// flags here was a second pass over the same array.
 	DX12ResolvedDrawRuntimeStateUtils::InvalidatePlan(&state->resolvedDraw);
 	DX12CommandListRuntime::RefreshTrackingCache(state->trackingCache);
 	DX12CommandListRuntime::RememberPipelineState(state, initialState);
@@ -869,8 +836,6 @@ void DX12CommandListRuntime::RememberPipelineState(
 	state->cachedReplacementPso = nullptr;
 	state->cachedCsHashValid = false;
 	state->cachedCsHash = 0;
-	state->dispatchDecision.Reset();
-	state->drawDecision.Reset();
 	state->pipelineState = pipelineState;
 	DX12CommandListRuntime::InvalidateResolvedDrawPlan(state);
 	if (!pipelineState) {
@@ -885,13 +850,20 @@ void DX12CommandListRuntime::RememberPipelineState(
 		(flags & DX12HotPathState::FLAG_SHADER_OVERRIDES) != 0;
 	const bool preSkinProbe =
 		(flags & DX12HotPathState::FLAG_PRE_SKIN_PROBE) != 0;
+	// A build replaces the complete decision (cache assignment or a setter
+	// that calls Reset itself). Pre-clearing it doubled the plan-array clears
+	// on every PSO switch. Disabled consumers still need an explicit reset.
 	if (shaderOverrides)
 		DX12CommandListRuntime::CompileDrawDecision(state, true);
+	else
+		state->drawDecision.Reset();
 	if (shaderOverrides || preSkinProbe) {
 		DX12CommandListRuntime::CompileDispatchDecision(
 			state, shaderOverrides, preSkinProbe);
 		state->cachedCsHash = state->dispatchDecision.computeShaderHash;
 		state->cachedCsHashValid = state->dispatchDecision.hasComputeShader;
+	} else {
+		state->dispatchDecision.Reset();
 	}
 }
 

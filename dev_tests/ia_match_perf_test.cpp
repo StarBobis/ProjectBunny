@@ -9,6 +9,7 @@
 #include <array>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -71,10 +72,32 @@ static std::atomic<UINT64> gBufferResolveInvalidationEpochAtomic{1};
 static std::atomic<UINT64> gBufferContentGeneration{1};
 static SRWLOCK gResourceLock = SRWLOCK_INIT;
 static size_t resolveCalls = 0, wrapperCalls = 0, wrapperStores = 0;
+// Range history, modelled on the production one: an invalidation records the
+// range that changed for that epoch, and a query asks whether anything recorded
+// since then overlaps it. A bare epoch move (unrelated buffer churn) must NOT
+// count as evidence that a specific range changed - that distinction is the
+// whole point of the range-scoped revalidation the caches now use.
+struct InvalidatedRange { UINT64 begin; UINT64 end; };
+static std::map<UINT64, InvalidatedRange> invalidatedRanges;
+static void InvalidateRange(UINT64 begin, UINT64 end)
+{
+    static std::atomic<UINT64> nextEpoch{1};
+    const UINT64 epoch = ++nextEpoch;
+    invalidatedRanges[epoch] = { begin, end };
+    gBufferResolveInvalidationEpochAtomic.store(epoch);
+}
 class DX12BufferResolveCacheUtils {
 public:
-    static bool RangeInvalidatedSinceLocked(UINT64, UINT64, UINT64 since) {
-        return since != gBufferResolveInvalidationEpochAtomic.load();
+    static bool RangeInvalidatedSinceLocked(UINT64 begin, UINT64 end, UINT64 since) {
+        const UINT64 current = gBufferResolveInvalidationEpochAtomic.load();
+        if (since == current) return false;
+        if (since > current) return true;
+        for (UINT64 epoch = since + 1; epoch <= current; ++epoch) {
+            auto found = invalidatedRanges.find(epoch);
+            if (found == invalidatedRanges.end()) return true; // gap: be conservative
+            if (begin < found->second.end && found->second.begin < end) return true;
+        }
+        return false;
     }
 };
 static bool DX12ResolveBufferResourceByGpuVa(UINT64 va, UINT64 size, DX12BufferResourceSummary *out) {
@@ -109,6 +132,7 @@ static uint32_t HashBytes(uint32_t hash, const void *bytes, size_t size) {
 }
 static UINT64 DX12GetIaHashResolveGeneration() { return gBufferResolveInvalidationEpochAtomic.load(); }
 #define DX12_PROF_COUNT(name) ((void)0)
+#include "ia_hash_memo_under_test.h"
 #include "ia_hash_under_test.h"
 class DX12CommandListRuntime {
 public:
@@ -148,6 +172,7 @@ static bool LookupRuntimeEffect(const std::unordered_map<std::wstring, bool> &ef
 }
 static std::unordered_set<std::wstring> activeSections;
 static const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot() { return activeSections; }
+static bool DX12ModIaPrefilterCountSensitive() { return false; }
 #include "ia_matching_under_test.h"
 
 // Reference is the previous generic prefilter + hash comparison, using the
@@ -192,6 +217,43 @@ static void TestPublication() {
         "empty reload clears candidate vector and all hash indexes");
     std::printf("PASS real declarations/build/publication: owning swap, reload, empty cleanup, lock/generation guard\n");
 }
+static void TestNegativeHashSnapshot() {
+    Bunny::TextureOverrideMap candidates;
+    Bunny::TextureOverrideConfig candidate;
+    candidate.hash = 33;
+    candidate.indexBufferResource = L"ib";
+    candidate.vertexBufferResources[3] = L"vb";
+    candidates[33].push_back(candidate);
+    Build(candidates);
+
+    DX12ActiveIaState ia;
+    ia.hasIndexBuffer = true;
+    ia.indexBuffer = {0x400000, 4096, DXGI_FORMAT_R16_UINT};
+    ia.hasVertexBuffer[3] = true;
+    ia.vertexBuffers[3] = {0x500000, 8192, 32};
+    DX12IaHashTargetPlan plan;
+    plan.ResetKnown();
+    plan.RequireIndexBuffer();
+    plan.RequireVertexBuffer(3);
+
+    DX12IaStateNegativeHashSnapshot first;
+    DX12ModBuildIaStateNegativeHashSnapshot(ia, plan, true, &first);
+    Check(first.indexHashValid && first.vertexHashMask == (1u << 3),
+        "negative hash snapshot follows the prefilter target mask");
+
+    InvalidateRange(0x7F000000, 0x7F001000);
+    DX12IaStateNegativeHashSnapshot unrelatedChurn;
+    DX12ModBuildIaStateNegativeHashSnapshot(ia, plan, true, &unrelatedChurn);
+    Check(first.Matches(unrelatedChurn),
+        "unrelated resolve churn preserves stable negative hash snapshot");
+
+    InvalidateRange(0x400000, 0x401000);
+    DX12IaStateNegativeHashSnapshot coveredRange;
+    DX12ModBuildIaStateNegativeHashSnapshot(ia, plan, true, &coveredRange);
+    Check(coveredRange.indexHashValid && coveredRange.vertexHashMask == (1u << 3),
+        "covered range refreshes the snapshot without dropping required views");
+    std::printf("PASS production negative hash snapshot: target gating, unrelated churn, covered-range refresh\n");
+}
 static void TestExactCache() {
     DX12ActiveIaState ia;
     DX12IaHashTargetPlan plan;
@@ -199,8 +261,14 @@ static void TestExactCache() {
     ia.hasVertexBuffer[0] = ia.hasVertexBuffer[1] = ia.hasIndexBuffer = true;
     ia.vertexBuffers[0] = {0x1000, 512, 16}; ia.vertexBuffers[1] = {0x2000, 256, 32};
     ia.indexBuffer = {0x3000, 128, DXGI_FORMAT_R16_UINT};
+    DX12IaStateNegativeHashSnapshot hashes;
+    hashes.indexHashValid = true;
+    hashes.indexHash = 0x1111u;
+    hashes.vertexHashMask = (1u << 0) | (1u << 1);
+    hashes.vertexHashes[0] = 0x2222u;
+    hashes.vertexHashes[1] = 0x3333u;
     DX12IaStateNegativeCache cache;
-    auto inputs = DX12IaStateNegativeInputs(ia, plan, true, 10, 20, 30);
+    auto inputs = DX12IaStateNegativeInputs(ia, plan, true, 10, 20, &hashes);
     auto signature = MakeIaStateNegativeSignature(inputs);
     DX12IaStateNegativeCache::Store(&cache, signature, inputs, true);
     Check(DX12IaStateNegativeCache::Find(cache, signature, inputs) != nullptr, "exact cache hit");
@@ -214,14 +282,14 @@ static void TestExactCache() {
     Check(!DX12IaStateNegativeCache::Find(cache, signature, inputs), "size/stride swap collision rejected");
     std::swap(ia.vertexBuffers[0].SizeInBytes, ia.vertexBuffers[0].StrideInBytes);
     for (int dependency = 0; dependency < 7; ++dependency) {
-        auto changed = DX12IaStateNegativeInputs(ia, plan, true, 10, 20, 30);
+        auto changed = DX12IaStateNegativeInputs(ia, plan, true, 10, 20, &hashes);
         if (dependency == 0) ++changed.reloadGeneration;
-        if (dependency == 1) ++changed.preSkinGeneration;
-        if (dependency == 2) ++changed.resolveGeneration;
+        if (dependency == 1) ++changed.preSkinSectionGeneration;
+        if (dependency == 2) ++changed.hashes.indexHash;
         if (dependency == 3) changed.requiredVertexMask ^= 4;
         if (dependency == 4) changed.indexChecked = false;
         if (dependency == 5) changed.indexed = false;
-        if (dependency == 6) { changed.reloadGeneration = 20; changed.preSkinGeneration = 10; }
+        if (dependency == 6) { changed.reloadGeneration = 20; changed.preSkinSectionGeneration = 10; }
         Check(!DX12IaStateNegativeCache::Find(cache, signature, changed), "each exact dependency invalidates forced collision");
     }
     ia.hasVertexBuffer[1] = false;
@@ -245,13 +313,134 @@ static void TestExactCache() {
         ResetDrawCacheOnly(&resetState);
         Check(resetState.resolvedDraw.iaStateNegative.entries.get() == table &&
             DX12IaStateNegativeCache::Find(resetState.resolvedDraw.iaStateNegative, signature, inputs),
-            "real draw-template type and Reset moves preserve exact cache across frames");
+            "real draw-template type and in-place invalidation preserve exact cache across frames");
     }
-    std::printf("PASS real draw-template Reset moves: 1000 round trips retain table and verdict\n");
+    std::printf("PASS real draw-template in-place invalidation: 1000 resets retain table and verdict\n");
     static_assert(sizeof(DX12IaStateNegativeCache) == sizeof(void *), "negative cache must stay off the hook stack");
     std::printf("PASS exact negative key: swaps, forced collisions, generations, plan, binding, copy, allocation reuse\n");
     std::printf("MEMORY cache object=%zu B, lazy table=%zu B, each exact key=%zu B + bound-view capacity\n",
         sizeof(cache), sizeof(DX12IaStateNegativeCache::Entries), sizeof(DX12IaStateNegativeExactKey));
+}
+static void TestSparseNegativeKey() {
+    std::mt19937 random(0x9c31);
+    for (UINT trial = 0; trial < 256; ++trial) {
+        DX12ActiveIaState ia;
+        DX12IaHashTargetPlan plan;
+        plan.ResetKnown();
+        plan.requireAllIaBuffers = (trial & 1) != 0;
+        plan.requireVertexBufferMask = static_cast<UINT>(random());
+        DX12IaStateNegativeHashSnapshot hashes;
+        for (UINT slot = 0; slot < 32; ++slot) {
+            ia.hasVertexBuffer[slot] = (random() & 3) == 0;
+            ia.vertexBuffers[slot] = {0x1000ull * (slot + 1), 512u + slot, 16u + slot};
+            if (ia.hasVertexBuffer[slot]) {
+                hashes.vertexHashMask |= 1u << slot;
+                hashes.vertexHashes[slot] = random();
+            }
+        }
+        const auto inputs = DX12IaStateNegativeInputs(ia, plan, true, 1, 2, &hashes);
+        const auto signature = MakeIaStateNegativeSignature(inputs);
+        DX12IaStateNegativeExactKey key;
+        key.Capture(inputs);
+        Check(key.Matches(inputs), "sparse exact key roundtrip");
+        for (UINT slot = 0; slot < 32; ++slot) {
+            const bool required = (inputs.requiredVertexMask & (1u << slot)) != 0;
+            ia.hasVertexBuffer[slot] = !ia.hasVertexBuffer[slot];
+            Check(key.Matches(inputs) == !required, "all slots including bit31: bound mask exact validation");
+            if (required)
+                Check(!(MakeIaStateNegativeSignature(inputs) == signature), "binding mask changes signature");
+            ia.hasVertexBuffer[slot] = !ia.hasVertexBuffer[slot];
+            ++ia.vertexBuffers[slot].BufferLocation;
+            Check(key.Matches(inputs) == !(required && ia.hasVertexBuffer[slot]),
+                "sparse exact validation keeps bound view identity");
+            --ia.vertexBuffers[slot].BufferLocation;
+            auto changed = inputs;
+            changed.hashes.vertexHashes[slot] ^= 1;
+            Check(key.Matches(changed) == ((hashes.vertexHashMask & (1u << slot)) == 0),
+                "hash snapshot compares every valid bit even under a forced digest collision");
+        }
+    }
+    std::puts("PASS sparse negative key: 256 plans x 32 slots, binding/view/hash changes and bit31");
+}
+static void TestViewHashMemo() {
+    DX12ResourcePublishedState token;
+    token.generation = 7;
+    uint32_t hash = 0;
+    IaViewHashMemo::Publish(0x1000, 64, 16, 0, 1, 0xabcdu, 5, 7,
+        reinterpret_cast<ID3D12Resource*>(0x1000), &token);
+    Check(IaViewHashMemo::TryRead(0x1000, 64, 16, 0, 1, 5, &hash) && hash == 0xabcdu,
+        "memo returns the published hash while its identity still validates");
+    Check(!IaViewHashMemo::TryRead(0x1001, 64, 16, 0, 1, 5, &hash), "gpuVa separates memo keys");
+    Check(!IaViewHashMemo::TryRead(0x1000, 65, 16, 0, 1, 5, &hash), "size separates memo keys");
+    Check(!IaViewHashMemo::TryRead(0x1000, 64, 17, 0, 1, 5, &hash), "stride separates memo keys");
+    Check(!IaViewHashMemo::TryRead(0x1000, 64, 16, 1, 1, 5, &hash), "format separates memo keys");
+    Check(!IaViewHashMemo::TryRead(0x1000, 64, 16, 0, 2, 5, &hash), "slot separates memo keys");
+    // The published record is immutable, so a moved identity generation is the
+    // only way a resolved view's hash inputs can change - and it must miss even
+    // though the key and the global resolve epoch are untouched. Without this,
+    // a resource recreated on the same GPU virtual address with a different
+    // descriptor would keep returning the hash of its predecessor.
+    token.generation = 8;
+    Check(!IaViewHashMemo::TryRead(0x1000, 64, 16, 0, 1, 5, &hash),
+        "recreated resource on the same VA invalidates the memo");
+    Check(!IaViewHashMemo::TryRead(0x1000, 64, 16, 0, 1, 6, &hash),
+        "an invalid identity is not rescued by a moved epoch");
+    // An unresolved view has no identity to compare, so only an unchanged epoch
+    // may reuse it; the range-scoped revalidation stays in the L1 behind it.
+    IaViewHashMemo::Publish(0x2000, 64, 16, 0, 2, 0x1234u, 9, 0, nullptr, nullptr);
+    Check(IaViewHashMemo::TryRead(0x2000, 64, 16, 0, 2, 9, &hash) && hash == 0x1234u,
+        "unresolved view is reusable while its epoch holds");
+    Check(!IaViewHashMemo::TryRead(0x2000, 64, 16, 0, 2, 10, &hash),
+        "moved epoch rejects an unresolved view instead of trusting it");
+    // Republishing a key must replace its answer, never leave the older one.
+    IaViewHashMemo::Publish(0x3000, 128, 32, 0, 3, 0x5555u, 9, 0, nullptr, nullptr);
+    IaViewHashMemo::Publish(0x3000, 128, 32, 0, 3, 0x6666u, 9, 0, nullptr, nullptr);
+    Check(IaViewHashMemo::TryRead(0x3000, 128, 32, 0, 3, 9, &hash) && hash == 0x6666u,
+        "republishing a key replaces its answer");
+    // Distinct keys must both stay readable: the way search only reuses a way
+    // holding the same key or an empty one, so writing a second key may not
+    // unanswer the first.
+    IaViewHashMemo::Publish(0x4000, 64, 16, 0, 4, 0x7777u, 9, 0, nullptr, nullptr);
+    IaViewHashMemo::Publish(0x4000, 64, 16, 0, 5, 0x8888u, 9, 0, nullptr, nullptr);
+    Check(IaViewHashMemo::TryRead(0x4000, 64, 16, 0, 4, 9, &hash) && hash == 0x7777u,
+        "publishing a second key leaves the first readable");
+    Check(IaViewHashMemo::TryRead(0x4000, 64, 16, 0, 5, 9, &hash) && hash == 0x8888u,
+        "the second key is readable too");
+    std::printf("PASS flat view-hash memo: key fields, identity token, unresolved epoch, republish, ways\n");
+    std::printf("MEMORY view hash memo: %zu sets x %zu ways, %zu B/entry, %zu KiB per resolving thread\n",
+        IaViewHashMemo::kSetCount, IaViewHashMemo::kWayCount,
+        sizeof(IaViewHashMemo::Entry),
+        (IaViewHashMemo::kSetCount * IaViewHashMemo::kWayCount * sizeof(IaViewHashMemo::Entry)) / 1024);
+}
+
+// The case the memo exists for on this title: an unresolved view whose hash is
+// asked for again after the global resolve epoch moved for an unrelated reason.
+// The range-scoped test must keep it reusable, and an invalidation that really
+// covers it must still reject it.
+static void TestViewHashMemoRangeRevalidation() {
+    const UINT64 va = 0xA00000;
+    const UINT64 epoch = gBufferResolveInvalidationEpochAtomic.load();
+    IaViewHashMemo::Publish(va, 512, 32, 0, 1, 0xbeefu, epoch, 0, nullptr, nullptr);
+    uint32_t hash = 0;
+    Check(IaViewHashMemo::TryRead(va, 512, 32, 0, 1, epoch, &hash) && hash == 0xbeefu,
+        "unresolved view is reusable while its own epoch holds");
+    InvalidateRange(0xB00000, 0xB10000); // unrelated buffer churn moves the epoch
+    Check(IaViewHashMemo::TryRead(va, 512, 32, 0, 1,
+            gBufferResolveInvalidationEpochAtomic.load(), &hash) && hash == 0xbeefu,
+        "unrelated invalidation must not send an unresolved view back to the container path");
+    InvalidateRange(va + 256, va + 4096); // a range that overlaps this view's
+    Check(!IaViewHashMemo::TryRead(va, 512, 32, 0, 1,
+            gBufferResolveInvalidationEpochAtomic.load(), &hash),
+        "an invalidation overlapping the view's range rejects it");
+    // The same key, republished against the current epoch: an exact-range
+    // invalidation afterwards must reject it just the same.
+    IaViewHashMemo::Publish(va, 512, 32, 0, 1, 0xbeefu,
+        gBufferResolveInvalidationEpochAtomic.load(), 0, nullptr, nullptr);
+    InvalidateRange(va, va + 512);
+    Check(!IaViewHashMemo::TryRead(va, 512, 32, 0, 1,
+            gBufferResolveInvalidationEpochAtomic.load(), &hash),
+        "an invalidation of exactly the view's range rejects it");
+    std::printf("PASS unresolved view revalidation: unrelated churn reuses, covering invalidation rejects\n");
 }
 static void TestHashCaches() {
     ResourceFixture &r = resources[0x100000]; r.va = 0x100000; r.width = 4096;
@@ -320,7 +509,145 @@ static void TestMatching() {
     std::printf("PASS hash-index differential: %zu cases (wildcard/specific/skip/hash-zero/match_cs)\n", comparisons);
     std::printf("BENCH absent-hash probe %d runs: generic scan %.1f us, hash index %.1f us, %.1fx (synthetic CPU only)\n", iterations, oldUs, newUs, oldUs / newUs);
 }
+// Median-of-three timing of one lambda, in nanoseconds per call. The first
+// round warms the caches; the median is reported so a single noisy round
+// cannot be presented as the result.
+template <typename Fn>
+static double TimeNsPerCall(const char *label, int iterations, Fn &&body) {
+    double samples[3] = {};
+    for (int round = 0; round < 3; ++round) {
+        const auto begin = std::chrono::steady_clock::now();
+        for (int i = 0; i < iterations; ++i) body(i);
+        const auto end = std::chrono::steady_clock::now();
+        samples[round] = std::chrono::duration<double, std::nano>(end - begin).count() / iterations;
+    }
+    std::sort(samples, samples + 3);
+    std::printf("BENCH %-46s %7.1f ns/call (3 rounds: %.1f/%.1f/%.1f)\n",
+        label, samples[1], samples[0], samples[1], samples[2]);
+    return samples[1];
+}
+
+// Costs of the three per-draw operations the profile attributes the draw hook
+// to: the count-independent prefilter gate, the IA view-hash resolve on a view
+// change (the case a game performs on most draws), and the IA-state negative
+// cache lookup itself.
+static void TestDrawPathBench() {
+    Bunny::TextureOverrideMap configs;
+    for (uint32_t hash : {0x7cf75550u, 0x47c09778u, 0x52ea588eu}) {
+        Bunny::TextureOverrideConfig c;
+        c.hash = hash; c.section = L"section" + std::to_wstring(hash);
+        if (hash == 0x7cf75550u) c.indexBufferResource = L"ib";
+        configs[hash].push_back(c);
+    }
+    Build(configs);
+
+    constexpr int kGateIterations = 2000000;
+    TimeNsPerCall("gate IaHasAnyPrefilterCandidate(ib)", kGateIterations,
+        [](int i) { benchmarkSink += IaHasAnyPrefilterCandidate((i & 1) != 0, 0); });
+    TimeNsPerCall("gate IaHasAnyPrefilterCandidate(vb1)", kGateIterations,
+        [](int i) { benchmarkSink += IaHasAnyPrefilterCandidate(false, 1 + (i & 3)); });
+
+    // One resolved buffer holding 512 distinct views, the shape a game presents
+    // when it binds a different vertex buffer for most draws.
+    ResourceFixture &r = resources[0x400000];
+    r.va = 0x400000; r.width = 1 << 20;
+    constexpr int kViews = 512;
+    DX12ActiveIaState ia;
+    ia.hasVertexBuffer[1] = true;
+    constexpr int kHashIterations = 400000;
+    TimeNsPerCall("view hash resolve, slot memo invalidated", kHashIterations,
+        [&](int i) {
+            ia.vertexBuffers[1] = {r.va + static_cast<UINT64>(i % kViews) * 512, 512, 32};
+            ia.vertexBufferHashValid[1] = false; // the game rebound this slot
+            benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+        });
+    TimeNsPerCall("view hash resolve, slot memo hit", kHashIterations,
+        [&](int) {
+            benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+        });
+    // Same call with a working set four times the memo's capacity, so part of
+    // the rotation cannot be answered from it: this is the container path the
+    // memo sits in front of, at a size the containers still hold comfortably.
+    ResourceFixture &big = resources[0x8000000];
+    big.va = 0x8000000; big.width = 1 << 24;
+    constexpr int kBigViews = 8192;
+    TimeNsPerCall("view hash resolve, 8K-view working set", kHashIterations,
+        [&](int i) {
+            ia.vertexBuffers[1] = {big.va + static_cast<UINT64>(i % kBigViews) * 512, 512, 32};
+            ia.vertexBufferHashValid[1] = false;
+            benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+        });
+
+    // The unresolved case with the global epoch moving underneath it, which is
+    // what the profiled title does (5..17 unrelated buffer-range invalidations
+    // per frame) and the shape that kept the container path on the draw hook.
+    ia.vertexBuffers[1] = {0x600000, 512, 32};
+    ia.vertexBufferHashValid[1] = false;
+    benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+    TimeNsPerCall("view hash resolve, unresolved view, epoch churn", kHashIterations,
+        [&](int i) {
+            if ((i % 64) == 0)
+                InvalidateRange(0x7F000000, (0x7F000000 + 4096) + static_cast<UINT64>(i % 8) * 4096);
+            ia.vertexBufferHashValid[1] = false;
+            benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+        });
+    // Worst case for the revalidation: the epoch moves on every single request,
+    // so each one pays the shared-lock range query. The title moves it 5..17
+    // times per ~1665 requests, so this is a bound, not the expected cost.
+    TimeNsPerCall("view hash resolve, epoch moves every request", kHashIterations,
+        [&](int i) {
+            InvalidateRange(0x7F000000, (0x7F000000 + 4096) + static_cast<UINT64>(i % 8) * 4096);
+            ia.vertexBufferHashValid[1] = false;
+            benchmarkSink += DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(&ia, 1);
+        });
+
+    DX12IaHashTargetPlan plan;
+    plan.ResetKnown();
+    plan.RequireVertexBuffer(1);
+    plan.RequireIndexBuffer();
+    DX12ActiveIaState cacheIa;
+    cacheIa.hasIndexBuffer = true;
+    cacheIa.hasVertexBuffer[1] = true;
+    cacheIa.indexBuffer = {0x500000, 4096, DXGI_FORMAT_R16_UINT};
+    cacheIa.vertexBuffers[1] = {0x400000, 8192, 32};
+    DX12IaStateNegativeCache cache;
+    DX12IaStateNegativeHashSnapshot hashes;
+    hashes.indexHashValid = true;
+    hashes.indexHash = 0x1010u;
+    hashes.vertexHashMask = 1u << 1;
+    hashes.vertexHashes[1] = 0x2020u;
+    auto inputs = DX12IaStateNegativeInputs(cacheIa, plan, true, 1, 1, &hashes);
+    const auto signature = MakeIaStateNegativeSignature(inputs);
+    DX12IaStateNegativeCache::Store(&cache, signature, inputs, true);
+    constexpr int kCacheIterations = 400000;
+    TimeNsPerCall("neg cache signature+Find (hit)", kCacheIterations,
+        [&](int) {
+            benchmarkSink += DX12IaStateNegativeCache::Find(
+                cache, MakeIaStateNegativeSignature(inputs), inputs) != nullptr;
+        });
+    {
+        // A miss must run the verdict and store; time the lookup half only, by
+        // querying a signature the table never held.
+        auto other = DX12IaStateNegativeInputs(cacheIa, plan, true, 2, 2, &hashes);
+        TimeNsPerCall("neg cache signature+Find (miss)", kCacheIterations,
+            [&](int) {
+                benchmarkSink += DX12IaStateNegativeCache::Find(
+                    cache, MakeIaStateNegativeSignature(other), other) != nullptr;
+            });
+    }
+    plan.requireAllIaBuffers = true;
+    auto allInputs = DX12IaStateNegativeInputs(cacheIa, plan, true, 1, 1, &hashes);
+    DX12IaStateNegativeCache::Store(&cache, MakeIaStateNegativeSignature(allInputs), allInputs, true);
+    TimeNsPerCall("neg cache all-IA sparse signature+Find", kCacheIterations,
+        [&](int) {
+            benchmarkSink += DX12IaStateNegativeCache::Find(
+                cache, MakeIaStateNegativeSignature(allInputs), allInputs) != nullptr;
+        });
+}
+
 int main() {
-    TestPublication(); TestExactCache(); TestHashCaches(); TestMatching();
+    TestPublication(); TestNegativeHashSnapshot(); TestExactCache(); TestViewHashMemo(); TestViewHashMemoRangeRevalidation();
+    TestSparseNegativeKey(); TestHashCaches(); TestMatching();
+    TestDrawPathBench();
     std::printf("ALL PASS; no project build or GPU performance claim\n");
 }

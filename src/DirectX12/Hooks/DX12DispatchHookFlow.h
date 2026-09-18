@@ -482,26 +482,10 @@ public:
 		// command-list Reset the counters restart, but Reset already invalidates
 		// probeResultValid and bindingsValid, so the verdict can never alias a
 		// previous recording.
-		if (effectiveState->resolvedCompute.probeResultValid &&
-			!effectiveState->resolvedCompute.probeApplied &&
-			dispatchDecision->computeShaderHash != 0 &&
-			effectiveState->resolvedCompute.probeCsHash ==
-				dispatchDecision->computeShaderHash &&
-			effectiveState->resolvedCompute.probeReloadGeneration ==
-				outerReloadGeneration &&
-			effectiveState->resolvedCompute.probeIaContentEpoch ==
-				effectiveState->iaContentEpoch &&
-			effectiveState->resolvedCompute.probeBufferContentGeneration ==
-				DX12GetIaHashContentGeneration() &&
-			effectiveState->resolvedCompute.bindingsValid &&
-			!effectiveState->resolvedCompute.bindingsUseRootValues &&
-			effectiveState->resolvedCompute.bindingsHeap ==
-				effectiveState->cbvSrvUavHeap &&
-			effectiveState->resolvedCompute.bindingsRootSignature ==
-				effectiveState->computeRootSignature &&
-			ProbePreSkinBindingIdentity(commandList, effectiveState, &probe) &&
-			effectiveState->resolvedCompute.probeBindingDependencyFingerprint ==
-				probe.bindingDependencyFingerprint) {
+		const DX12ExecVerdictBlock blockReason = EvaluatePreSkinExecVerdict(
+			commandList, effectiveState, &probe,
+			dispatchDecision->computeShaderHash, outerReloadGeneration);
+		if (blockReason == DX12ExecVerdictBlock::Count) {
 			probe.computeShaderHash = dispatchDecision->computeShaderHash;
 			probe.computeBindingSerial = effectiveState->computeBindingSerial;
 			probe.applied = false;
@@ -537,41 +521,8 @@ public:
 			originalDispatch(commandList, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
 			return;
 		}
-		// The guard above rejected the verdict. Name the term that rejected it:
-		// the chain repeats the guard in the same order, so the first true
-		// branch below is the first term that failed. Evaluation is strictly
-		// short-circuited and ProbePreSkinBindingIdentity is memoised per
-		// dispatch, so nothing here can change the answer the guard computed.
-		DX12ExecVerdictBlock blockReason = DX12ExecVerdictBlock::ProbeNotValid;
-		if (dispatchDecision->computeShaderHash == 0)
-			blockReason = DX12ExecVerdictBlock::NoShaderHash;
-		else if (!effectiveState->resolvedCompute.probeResultValid)
-			blockReason = DX12ExecVerdictBlock::ProbeNotValid;
-		else if (effectiveState->resolvedCompute.probeApplied)
-			blockReason = DX12ExecVerdictBlock::ProbeApplied;
-		else if (effectiveState->resolvedCompute.probeCsHash !=
-				dispatchDecision->computeShaderHash ||
-			effectiveState->resolvedCompute.probeReloadGeneration !=
-				outerReloadGeneration ||
-			effectiveState->resolvedCompute.probeIaContentEpoch !=
-				effectiveState->iaContentEpoch ||
-			effectiveState->resolvedCompute.probeBufferContentGeneration !=
-				DX12GetIaHashContentGeneration())
-			blockReason = DX12ExecVerdictBlock::EpochMismatch;
-		else if (!effectiveState->resolvedCompute.bindingsValid ||
-			effectiveState->resolvedCompute.bindingsUseRootValues ||
-			effectiveState->resolvedCompute.bindingsHeap !=
-				effectiveState->cbvSrvUavHeap ||
-			effectiveState->resolvedCompute.bindingsRootSignature !=
-				effectiveState->computeRootSignature)
-			blockReason = DX12ExecVerdictBlock::BindingsInvalid;
-		else if (!ProbePreSkinBindingIdentity(commandList, effectiveState, &probe))
-			blockReason = DX12ExecVerdictBlock::IdentityProbe;
-		else if (effectiveState->resolvedCompute.probeBindingDependencyFingerprint !=
-				probe.bindingDependencyFingerprint)
-			blockReason = DX12ExecVerdictBlock::Fingerprint;
-		else
-			blockReason = DX12ExecVerdictBlock::Fingerprint; // unreachable by construction
+		// Report the decision already evaluated above, rather than scanning
+		// every guard (including the content generation) a second time.
 		DX12ExecVerdictDiag::Report(blockReason, effectiveState,
 			dispatchDecision->computeShaderHash);
 		DX12_DIAG_QPC(prepareProbeBegin);
@@ -795,6 +746,40 @@ public:
 			1,
 			DX12_DIAG_ELAPSED_US(identityProbeBegin));
 		return probe->bindingIdentityValid;
+	}
+
+	// Count is the success sentinel; all other values name the first rejecting
+	// guard. Keep acceptance and diagnostics on this single short-circuit path.
+	static DX12ExecVerdictBlock EvaluatePreSkinExecVerdict(
+		ID3D12GraphicsCommandList *commandList,
+		DX12SimulateContext *state,
+		DX12DispatchPreSkinProbe *probe,
+		UINT64 shaderHash,
+		UINT64 reloadGeneration)
+	{
+		if (!shaderHash)
+			return DX12ExecVerdictBlock::NoShaderHash;
+		if (!state->resolvedCompute.probeResultValid)
+			return DX12ExecVerdictBlock::ProbeNotValid;
+		if (state->resolvedCompute.probeApplied)
+			return DX12ExecVerdictBlock::ProbeApplied;
+		if (state->resolvedCompute.probeCsHash != shaderHash ||
+			state->resolvedCompute.probeReloadGeneration != reloadGeneration ||
+			state->resolvedCompute.probeIaContentEpoch != state->iaContentEpoch ||
+			state->resolvedCompute.probeBufferContentGeneration !=
+				DX12GetIaHashContentGeneration())
+			return DX12ExecVerdictBlock::EpochMismatch;
+		if (!state->resolvedCompute.bindingsValid ||
+			state->resolvedCompute.bindingsUseRootValues ||
+			state->resolvedCompute.bindingsHeap != state->cbvSrvUavHeap ||
+			state->resolvedCompute.bindingsRootSignature != state->computeRootSignature)
+			return DX12ExecVerdictBlock::BindingsInvalid;
+		if (!ProbePreSkinBindingIdentity(commandList, state, probe))
+			return DX12ExecVerdictBlock::IdentityProbe;
+		if (state->resolvedCompute.probeBindingDependencyFingerprint !=
+			probe->bindingDependencyFingerprint)
+			return DX12ExecVerdictBlock::Fingerprint;
+		return DX12ExecVerdictBlock::Count;
 	}
 
 	static void PreparePreSkinProbe(
@@ -1042,7 +1027,8 @@ public:
 			if (!computeTemplateLoaded) {
 				probe->uavsFound = DX12BindingTracker::CollectPreSkinBindings(
 					commandList, &probe->uavs, &probe->srvs, &probe->cbvs,
-					&probe->rootConstants, &probe->bindingDependencyFingerprint);
+					&probe->rootConstants, &probe->bindingDependencyFingerprint,
+					!probe->bindingIdentityChecked);
 			}
 			const std::vector<DX12CurrentComputeUavBinding> &uavs =
 				probe->cachedUavs ? *probe->cachedUavs : probe->uavs;

@@ -54,7 +54,7 @@ public:
 
 	static DX12CommandListExecutorScratch *AcquireScratch(
 		bool *pooled,
-		DX12CommandListExecutorScratch *fallback)
+		std::unique_ptr<DX12CommandListExecutorScratch> *fallback)
 	{
 		if (ScratchDepth < ARRAYSIZE(ScratchPool)) {
 			DX12CommandListExecutorScratch *scratch = &ScratchPool[ScratchDepth++];
@@ -62,9 +62,13 @@ public:
 			*pooled = true;
 			return scratch;
 		}
-		fallback->Reset();
+		// The normal pooled path must not construct the fallback's node-based
+		// containers (MSVC allocates sentinels even for empty unordered maps).
+		if (!*fallback)
+			*fallback = std::make_unique<DX12CommandListExecutorScratch>();
+		(*fallback)->Reset();
 		*pooled = false;
-		return fallback;
+		return fallback->get();
 	}
 
 	class CommandVmRunScope
@@ -1759,7 +1763,7 @@ public:
 	bool mGraphicsSrvBindingsByTargetResolved = false;
 	bool mGraphicsSrvTextureOverrideCacheResolved = false;
 	bool mTextureOverrideRuntimeSnapshotResolved = false;
-	DX12CommandListExecutorScratch mFallbackScratch;
+	std::unique_ptr<DX12CommandListExecutorScratch> mFallbackScratch;
 	bool mScratchPooled = false;
 	DX12CommandListExecutorScratch *mScratch = nullptr;
 	std::vector<std::wstring> &mCommandListStack;

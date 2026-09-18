@@ -471,8 +471,16 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 	gFreeResourceSlots.push_back(index);
 	if (gLiveResourceCount > 0)
 		gLiveResourceCount--;
-	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
-		&oldRecord, nullptr, "resource_invalidate", resource);
+	// Diagnostic only: every caller-side cache keyed on the global buffer
+	// resolve epoch (the IA view-hash slot memos and the IA-state negative
+	// verdict) is invalidated by this bump whether or not any range its key
+	// covers was touched, so its rate decides whether those caches need a
+	// range-scoped validity test instead of the coarse epoch.
+	const DX12BufferResolveCacheInvalidationStats invalidation =
+		DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
+			&oldRecord, nullptr, "resource_invalidate", resource);
+	if (invalidation.rangeChanged)
+		DX12_PROF_COUNT("Rm.BufferRangeInvalidations");
 }
 
 typedef HRESULT(WINAPI *PFN_D3D12_CREATE_ROOT_SIGNATURE_DESERIALIZER_LOCAL)(
@@ -748,8 +756,13 @@ void RecordResource(
 		}
 		record.publishedState->Publish(record);
 	}
-	DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
-		hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
+	// See the release path above: this is the other producer of the global
+	// resolve-epoch bumps that caller-side IA caches key on.
+	const DX12BufferResolveCacheInvalidationStats invalidation =
+		DX12BufferResolveCacheUtils::InvalidateResourceRangeChangeLocked(
+			hadOldRecord ? &oldRecord : nullptr, &record, "resource_record_update", resource);
+	if (invalidation.rangeChanged)
+		DX12_PROF_COUNT("Rm.BufferRangeInvalidations");
 	gResourcesRecordedFromCreate++;
 	ReleaseSRWLockExclusive(&gResourceLock);
 }

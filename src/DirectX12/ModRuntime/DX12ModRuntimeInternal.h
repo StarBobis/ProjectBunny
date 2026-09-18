@@ -628,6 +628,28 @@ inline volatile LONG gPresentCommandListExecutedPresent = -1;
 
 inline volatile UINT64 gPreSkinActiveGeneration = 1;
 
+// Identity of the active pre-skin SECTION SET - the union of the active
+// producer sections and the confirmed match_cs sections. It is deliberately
+// narrower than gPreSkinActiveGeneration above:
+//
+//   - The only thing a texture-override verdict reads from the pre-skin
+//     runtime is which section NAMES are active (TextureOverrideMatchCsSatisfied
+//     is a set-membership test on config.section). Which resource a section
+//     currently points at is not part of any verdict.
+//   - gPreSkinActiveGeneration moves on every active-producer store and on
+//     every clear of the active map - and the active map is cleared once per
+//     Present (RunPostPresentRuntime) and re-filled by the producer. On the
+//     profiled title that is ~2 bumps per frame, so scores of draw verdicts
+//     keyed on it were evicted per frame for a set that never changed.
+//   - Confirmed match_cs sections outlive Present by design, so the UNION is
+//     frame-stable exactly while the same sections keep matching.
+//
+// Consequently this counter moves only when membership really changes: a
+// section name entering either container, or leaving the union. Caches that
+// depend on the resolved producer resources must keep using
+// gPreSkinActiveGeneration.
+inline volatile UINT64 gPreSkinSectionSetGeneration = 1;
+
 inline std::atomic<UINT64> gPreSkinSrvCacheGeneration{1};
 
 void ClearPreSkinStickyMatchCache();
@@ -864,6 +886,16 @@ const std::unordered_set<std::wstring> &GetActivePreSkinSectionsSnapshot(
 
 
 void BumpPreSkinActiveGeneration();
+
+
+// Samples of the active pre-skin section set (see gPreSkinSectionSetGeneration).
+UINT64 CurrentPreSkinSectionSetGeneration();
+
+
+UINT64 DX12ModGetPreSkinSectionSetGenerationFast();
+
+
+void BumpPreSkinSectionSetGeneration();
 
 
 void MoveActivePreSkinTextureOverrideResourceLocked(
@@ -3778,10 +3810,18 @@ bool IaHashDefinitelyHasNoCandidate(
 // without any draw-context filtering. Only call when gIaPrefilterCountSensitive
 // is 0; the result is then independent of vertex/index counts and offsets, so
 // the draw path can cache it across draws for the same IA bindings.
+void DX12ModBuildIaStateNegativeHashSnapshot(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	DX12IaStateNegativeHashSnapshot *snapshot);
+
+
 bool DX12ModIaStateDefinitelyHasNoCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,
-	bool indexed);
+	bool indexed,
+	const DX12IaStateNegativeHashSnapshot *precomputedHashes);
 
 
 bool DX12ModIaPrefilterCountSensitive();

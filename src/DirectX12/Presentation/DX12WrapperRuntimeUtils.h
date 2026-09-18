@@ -264,10 +264,8 @@ public:
 			return;
 		DX12_PROF_COUNT("Rm.BarrierUnwrap");
 		DX12_PROF_ADD_ITEMS("Rm.BarrierUnwrap", static_cast<LONG64>(count));
-		// DX12 callers overwhelmingly submit native resources. Keep that common
-		// case on the original array. If a wrapped resource is encountered,
-		// switch to copy mode in the same pass instead of probing every element
-		// once and then looking it up again during the second pass.
+		// Keep native-only arrays zero-copy. Once a wrapper is found, unwrap
+		// the suffix directly: probing it first would duplicate every lookup.
 		for (UINT i = 0; i < count; ++i) {
 			const D3D12_RESOURCE_BARRIER &barrier = source[i];
 			ID3D12Resource *before = nullptr;
@@ -292,16 +290,18 @@ public:
 			default:
 				break;
 			}
-
-			if (*result == source && after == before)
+			if (after == before)
 				continue;
-			if (*result == source) {
-				storage->resize(count);
-				for (UINT previous = 0; previous < i; ++previous)
-					(*storage)[previous] = source[previous];
-				*result = storage->data();
-			}
-			UnwrapResourceBarrier(&source[i], &(*storage)[i]);
+
+			storage->resize(count);
+			for (UINT previous = 0; previous < i; ++previous)
+				(*storage)[previous] = source[previous];
+			// Only the first changed barrier is probed twice. No cross-call
+			// pointer cache is introduced; wrapper lifetime stays with Unwrap.
+			for (UINT remaining = i; remaining < count; ++remaining)
+				UnwrapResourceBarrier(&source[remaining], &(*storage)[remaining]);
+			*result = storage->data();
+			return;
 		}
 	}
 
@@ -1197,14 +1197,14 @@ public:
 		DX12_PROF_API_SCOPE(ResourceBarrier);
 		DX12_PROF_STAGE_BEGIN(ResourceBarrier);
 		const D3D12_RESOURCE_BARRIER *activeBarriers = barriers;
-		{
-			std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
-			std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
-				runtimeState ? runtimeState->barrierScratch : localBarriers;
-			DX12_PROF_STAGE_BEGIN(BarrierUnwrap);
-			UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
-			DX12_PROF_STAGE_END(BarrierUnwrap);
-		}
+		// The fallback owns activeBarriers too: keep it alive through capture
+		// and the native call, not just through the unwrap stage.
+		std::vector<D3D12_RESOURCE_BARRIER> localBarriers;
+		std::vector<D3D12_RESOURCE_BARRIER> &unwrappedBarriers =
+			runtimeState ? runtimeState->barrierScratch : localBarriers;
+		DX12_PROF_STAGE_BEGIN(BarrierUnwrap);
+		UnwrapResourceBarrierArray(barriers, numBarriers, &unwrappedBarriers, &activeBarriers);
+		DX12_PROF_STAGE_END(BarrierUnwrap);
 		DX12_PROF_STAGE_BEGIN(BarrierCapture);
 		DX12CommandListStateFlow::CaptureResourceBarrier(commandList, numBarriers, activeBarriers);
 		DX12_PROF_STAGE_END(BarrierCapture);
@@ -1551,10 +1551,12 @@ public:
 		}
 		DX12_PROF_COUNT("Rm.IaBindSlowPath");
 		DX12_PROF_STAGE_BEGIN(IaBindViewArraysClear);
+		// Both redirect helpers write all count entries before returning true.
+		// Only consume their output on success; no full 32-slot clear is needed.
 		D3D12_VERTEX_BUFFER_VIEW redirectedViews[
-			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 		D3D12_VERTEX_BUFFER_VIEW staticRedirectedViews[
-			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+			D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
 		DX12_PROF_STAGE_END(IaBindViewArraysClear);
 		const D3D12_VERTEX_BUFFER_VIEW *activeViews = views;
 		// Plan step 3.2: bind-time static IA replacement runs FIRST and per
@@ -1590,11 +1592,11 @@ public:
 		if (activeViews == views || activeViews == staticRedirectedViews) {
 			DX12_PROF_STAGE_SCOPE(IaBindPreSkinRedirect);
 			if (DX12WrapperRuntimeUtils::PreSkinRedirectPossible(activeViews, count)) {
-				D3D12_VERTEX_BUFFER_VIEW preSkinRedirectedViews[
-					D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
 				const D3D12_VERTEX_BUFFER_VIEW *preSkinInput = activeViews;
-				D3D12_VERTEX_BUFFER_VIEW *preSkinOutput = preSkinInput == views ?
-					redirectedViews : preSkinRedirectedViews;
+				// This array is distinct from either possible input and lives
+				// through capture/native dispatch. An inner-block third array
+				// left activeViews dangling on static + pre-skin redirection.
+				D3D12_VERTEX_BUFFER_VIEW *preSkinOutput = redirectedViews;
 				if (DX12PreSkinIaRedirectUtils::RedirectVertexBufferViews(
 					    commandList,
 					    startSlot,

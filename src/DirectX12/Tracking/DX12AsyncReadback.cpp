@@ -830,6 +830,15 @@ static void DX12ReadbackLogSubmitFailure(const char *stage, UINT64 a, UINT64 b)
 		static_cast<unsigned long long>(b));
 }
 
+static UINT DX12ReadbackCompactRecordedEvents(std::vector<DX12ReadbackEvent> &events)
+{
+	// Failed recording already released and nulled its resource. Stable linear
+	// compaction preserves copy order without shifting the remaining batch once
+	// for every skipped event while the channel lock is held.
+	return static_cast<UINT>(std::erase_if(events,
+		[](const DX12ReadbackEvent &event) { return !event.resource; }));
+}
+
 void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 {
 	DX12_DIAG_QPC(submitBegin);
@@ -974,15 +983,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 		}
 	}
 	// Drop events that were skipped at record time (unknown state etc.).
-	UINT skippedRecord = 0;
-	for (auto it = kept.begin(); it != kept.end();) {
-		if (!it->resource) {
-			++skippedRecord;
-			it = kept.erase(it);
-		} else {
-			++it;
-		}
-	}
+	const UINT skippedRecord = DX12ReadbackCompactRecordedEvents(kept);
 	if (skippedRecord != 0) {
 		static volatile LONG skippedLogCounter = 0;
 		if ((InterlockedIncrement(&skippedLogCounter) & 0xFF) == 1) {
@@ -1105,7 +1106,10 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 		gReadbackFence->SetEventOnCompletion(batch->fenceValue, batch->event);
 
 	slot->busyUntilFence = batch->fenceValue;
+	const UINT recordedEventCount = static_cast<UINT>(batch->events.size());
 	gReadbackPendingBatches.push_back(batch);
+	// Publication transfers batch ownership to the worker. It may retire the
+	// batch immediately after unlock, so telemetry below uses only local data.
 	ReleaseSRWLockExclusive(&gReadbackChannelLock);
 
 	// Rate-limited pipeline visibility keeps readback activity observable without
@@ -1115,7 +1119,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 		if ((InterlockedIncrement(&submitLogCounter) & 0xFF) == 1) {
 			DX12_LOG("DX12ReadbackSubmit",
 				"stage=submitted,events=%u,ringBytes=%llu,us=%lld,queue=%p",
-				batch->events.size(),
+				recordedEventCount,
 				static_cast<unsigned long long>(ringUsed),
 				static_cast<long long>(
 					DX12_DIAG_ELAPSED_US(submitBegin)),
@@ -1124,7 +1128,7 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 		DX12_PROF_ADD_US_ITEMS(
 			"Readback.submit",
 			DX12_DIAG_ELAPSED_US(submitBegin),
-			static_cast<LONG64>(batch->events.size()));
+			static_cast<LONG64>(recordedEventCount));
 	}
 
 	DX12ReadbackEnsureWorker();

@@ -42,6 +42,11 @@ bool DX12ModGetPipelineStateSkipFlags(
 UINT64 DX12ModGetReloadGeneration();
 UINT64 DX12ModGetReloadGenerationFast();
 UINT64 DX12ModGetPreSkinActiveGenerationFast();
+// Identity of the sampled active pre-skin SECTION SET, which moves only when
+// that set's membership moves - unlike the generation above, which also follows
+// the per-Present clear and refill of the active producer map. Verdicts that
+// read only section membership must key on this one.
+UINT64 DX12ModGetPreSkinSectionSetGenerationFast();
 bool DX12ModHasActiveTextureOverrides();
 bool DX12ModHasConfiguredTextureOverrides();
 bool DX12ModNeedsPresentReplacement();
@@ -113,10 +118,16 @@ bool DX12ModHasAnyPotentialDirectIaTextureOverrideCandidate(
 	uint32_t firstInstance);
 // DX11-style IA-state-level negative check (draw-arg independent; only valid
 // when the compiled prefilter tables are not count-sensitive).
+void DX12ModBuildIaStateNegativeHashSnapshot(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	DX12IaStateNegativeHashSnapshot *snapshot);
 bool DX12ModIaStateDefinitelyHasNoCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,
-	bool indexed);
+	bool indexed,
+	const DX12IaStateNegativeHashSnapshot *precomputedHashes = nullptr);
 bool DX12ModIaPrefilterCountSensitive();
 void DX12ModRunPostShaderOverrideReplacement(
 	ID3D12GraphicsCommandList *commandList, ID3D12PipelineState *pipelineState,

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DX12ResourcePublishedState.h"
+#include <algorithm>
 
 struct BufferResolveCacheEntry
 {
@@ -20,8 +21,14 @@ struct DX12BufferResolveCacheInvalidationStats
 struct DX12BufferResolveInvalidatedRange
 {
 	UINT64 epoch = 0;
+	// A resource range replacement can invalidate both its old and new GPUVA
+	// ranges in one epoch. Keep both instead of letting the second append
+	// overwrite the first; a third range is conservatively coalesced by the
+	// journal writer below.
 	UINT64 begin = 0;
 	UINT64 end = 0;
+	UINT64 secondBegin = 0;
+	UINT64 secondEnd = 0;
 };
 
 constexpr size_t kDX12BufferResolveInvalidationHistoryCapacity = 4096;
@@ -196,9 +203,30 @@ static void AppendInvalidatedRangeLocked(UINT64 epoch, UINT64 begin, UINT64 end)
 		return;
 	const size_t slot = static_cast<size_t>(
 		epoch % static_cast<UINT64>(kDX12BufferResolveInvalidationHistoryCapacity));
-	gBufferResolveInvalidatedRanges[slot].epoch = epoch;
-	gBufferResolveInvalidatedRanges[slot].begin = begin;
-	gBufferResolveInvalidatedRanges[slot].end = end;
+	DX12BufferResolveInvalidatedRange &record = gBufferResolveInvalidatedRanges[slot];
+	if (record.epoch != epoch) {
+		record = DX12BufferResolveInvalidatedRange();
+		record.epoch = epoch;
+	}
+	if (!record.begin) {
+		record.begin = begin;
+		record.end = end;
+		return;
+	}
+	if (record.begin == begin && record.end == end)
+		return;
+	if (!record.secondBegin) {
+		record.secondBegin = begin;
+		record.secondEnd = end;
+		return;
+	}
+	// There are currently at most two appends per epoch (old range + new
+	// range). If another producer is added later, merge conservatively rather
+	// than silently dropping an invalidation.
+	record.begin = (std::min)(record.begin, begin);
+	record.end = (std::max)(record.end, end);
+	record.secondBegin = (std::min)(record.secondBegin, begin);
+	record.secondEnd = (std::max)(record.secondEnd, end);
 }
 
 static bool RangeInvalidatedSinceLocked(UINT64 begin, UINT64 end, UINT64 sinceEpoch)
@@ -223,7 +251,10 @@ static bool RangeInvalidatedSinceLocked(UINT64 begin, UINT64 end, UINT64 sinceEp
 		if (range.epoch != epoch) {
 			return true;
 		}
-		if (DX12BufferResolveCacheUtils::RangesOverlap(begin, end, range.begin, range.end))
+		if (DX12BufferResolveCacheUtils::RangesOverlap(
+				begin, end, range.begin, range.end) ||
+			(range.secondBegin && DX12BufferResolveCacheUtils::RangesOverlap(
+				begin, end, range.secondBegin, range.secondEnd)))
 			return true;
 	}
 	return false;
@@ -267,10 +298,10 @@ static DX12BufferResolveCacheInvalidationStats InvalidateResourceRangeChangeLock
 		stats.removedEntries += DX12BufferResolveCacheUtils::PurgeRangeLocked(
 			newRecord->gpuVirtualAddress,
 			DX12BufferResolveCacheUtils::RangeEnd(*newRecord));
-	if (!oldHasRange && stats.removedEntries == 0) {
-		return stats;
-	}
-
+	// A newly published range can invalidate an unresolved IA-hash memo even
+	// when the shared resolve map had no entry to purge. Always publish the range
+	// transition to the journal; otherwise a view hashed before resource
+	// creation can remain trusted after that GPUVA becomes resolvable.
 	const UINT64 invalidationEpoch =
 		DX12BufferResolveCacheUtils::BumpInvalidationEpochLocked();
 	if (oldHasRange)

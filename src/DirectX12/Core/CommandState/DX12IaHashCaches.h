@@ -4,6 +4,7 @@
 // Split out of Core/DX12CommandState.h; include that umbrella header from existing code.
 #include "../DX12Diagnostics.h"
 #include "DX12IaDecisionState.h"
+#include <bit>
 
 class DX12CommandListTrackingState
 {
@@ -398,12 +399,10 @@ public:
 //
 // Per required slot there are exactly two "bound" inputs the verdict reads:
 // ia.hasVertexBuffer[slot] (a slot that is not bound is skipped outright, and
-// hasIndexBuffer likewise guards the index probe), and the view metadata that
-// feeds DX12HashIaBufferContentView. Stride/Format are redundant with
-// (BufferLocation, SizeInBytes) at the only producer that resolves views
-// (RememberVertexBuffers / RememberIndexBuffer), but they are folded in so the
-// signature stays a literal transcription of the predicate's inputs rather than
-// a claim about that producer.
+// hasIndexBuffer likewise guards the index probe), and the metadata hash produced
+// for that view. The raw view fields remain in the exact snapshot as a
+// conservative guard, while the validated hash is what removes unrelated global
+// resolve-epoch churn from the reusable verdict identity.
 //
 // The two accumulators are lookup accelerators, never proof of equality.
 // Exact dependency snapshots below verify every signature hit. They are lazy,
@@ -466,6 +465,35 @@ public:
 	};
 };
 
+// The IA negative verdict consumes hashes, not raw resource records. Keep the
+// exact values that were refreshed by the authoritative hash path so the
+// resident negative cache can survive unrelated resolve-epoch churn without
+// trusting a recycled GPUVA. The valid masks mirror the prefilter gates: a
+// value is present only when the verdict really probes that view.
+class DX12IaStateNegativeHashSnapshot
+{
+public:
+	bool indexHashValid = false;
+	UINT32 indexHash = 0;
+	UINT vertexHashMask = 0;
+	UINT32 vertexHashes[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
+
+	bool Matches(const DX12IaStateNegativeHashSnapshot &other) const
+	{
+		if (indexHashValid != other.indexHashValid ||
+			(indexHashValid && indexHash != other.indexHash) ||
+			vertexHashMask != other.vertexHashMask)
+			return false;
+		for (UINT remaining = vertexHashMask; remaining; remaining &= remaining - 1) {
+			const UINT slot = std::countr_zero(remaining);
+			if (vertexHashes[slot] != other.vertexHashes[slot])
+				return false;
+		}
+		return true;
+	}
+};
+
+
 // Non-owning lookup inputs: no per-draw allocation or copy of the 32-slot IA
 // state. The required mask + indexChecked are the exact effective target plan
 // read by the verdict; descriptor targets are excluded by its caller.
@@ -477,18 +505,37 @@ public:
 	bool indexChecked;
 	bool indexed;
 	UINT64 reloadGeneration;
-	UINT64 preSkinGeneration;
-	UINT64 resolveGeneration;
+	// The verdict reads the active pre-skin SECTION SET (a membership test on
+	// config.section inside TextureOverrideMatchCsSatisfied), not the pre-skin
+	// runtime generation: which resource a section currently publishes is not an
+	// input. Keying on the runtime generation made the cache unusable on a title
+	// whose Present clears and whose producer refills the active map every frame
+	// - one eviction of every stored verdict per frame for a set that never
+	// changed. This is DX12ModGetPreSkinSectionSetGenerationFast().
+	UINT64 preSkinSectionGeneration;
+	DX12IaStateNegativeHashSnapshot hashes;
 
 	DX12IaStateNegativeInputs(
 		const DX12ActiveIaState &state, const DX12IaHashTargetPlan &plan,
-		bool isIndexed, UINT64 reload, UINT64 preSkin, UINT64 resolve)
+		bool isIndexed, UINT64 reload, UINT64 preSkinSections,
+		const DX12IaStateNegativeHashSnapshot *hashSnapshot = nullptr)
 		: ia(state),
 		  requiredVertexMask(plan.requireAllIaBuffers ? UINT_MAX : plan.requireVertexBufferMask),
 		  indexChecked(plan.RequiresIndexBuffer(isIndexed)), indexed(isIndexed),
-		  reloadGeneration(reload), preSkinGeneration(preSkin),
-		  resolveGeneration(resolve)
+		  reloadGeneration(reload), preSkinSectionGeneration(preSkinSections)
 	{
+		if (hashSnapshot)
+			hashes = *hashSnapshot;
+	}
+
+	UINT BoundVertexMask() const
+	{
+		// Derive from the authoritative bindings, not a second maintained mask:
+		// replay, restore and ordinary IASet paths all remain covered.
+		UINT bound = 0;
+		for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot)
+			bound |= static_cast<UINT>(ia.hasVertexBuffer[slot]) << slot;
+		return bound & requiredVertexMask;
 	}
 };
 
@@ -502,8 +549,8 @@ public:
 	bool hasIndexBuffer = false;
 	D3D12_INDEX_BUFFER_VIEW indexView = {};
 	UINT64 reloadGeneration = 0;
-	UINT64 preSkinGeneration = 0;
-	UINT64 resolveGeneration = 0;
+	UINT64 preSkinSectionGeneration = 0;
+	DX12IaStateNegativeHashSnapshot hashes;
 	std::vector<D3D12_VERTEX_BUFFER_VIEW> vertexViews;
 
 	bool Matches(const DX12IaStateNegativeInputs &inputs) const
@@ -511,8 +558,8 @@ public:
 		if (requiredVertexMask != inputs.requiredVertexMask ||
 			indexChecked != inputs.indexChecked || indexed != inputs.indexed ||
 			reloadGeneration != inputs.reloadGeneration ||
-			preSkinGeneration != inputs.preSkinGeneration ||
-			resolveGeneration != inputs.resolveGeneration)
+			preSkinSectionGeneration != inputs.preSkinSectionGeneration ||
+			!hashes.Matches(inputs.hashes))
 			return false;
 		const DX12ActiveIaState &ia = inputs.ia;
 		if (indexChecked) {
@@ -523,14 +570,11 @@ public:
 				indexView.Format != ia.indexBuffer.Format))
 				return false;
 		}
+		if (boundVertexMask != inputs.BoundVertexMask())
+			return false;
 		size_t viewIndex = 0;
-		for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
-			if (!(requiredVertexMask & (1u << slot)))
-				continue;
-			if (((boundVertexMask & (1u << slot)) != 0) != ia.hasVertexBuffer[slot])
-				return false;
-			if (!ia.hasVertexBuffer[slot])
-				continue;
+		for (UINT remaining = boundVertexMask; remaining; remaining &= remaining - 1) {
+			const UINT slot = std::countr_zero(remaining);
 			const D3D12_VERTEX_BUFFER_VIEW &view = vertexViews[viewIndex++];
 			const D3D12_VERTEX_BUFFER_VIEW &current = ia.vertexBuffers[slot];
 			if (view.BufferLocation != current.BufferLocation ||
@@ -547,17 +591,15 @@ public:
 		indexChecked = inputs.indexChecked;
 		indexed = inputs.indexed;
 		reloadGeneration = inputs.reloadGeneration;
-		preSkinGeneration = inputs.preSkinGeneration;
-		resolveGeneration = inputs.resolveGeneration;
+		preSkinSectionGeneration = inputs.preSkinSectionGeneration;
+		hashes = inputs.hashes;
 		hasIndexBuffer = indexChecked && inputs.ia.hasIndexBuffer;
 		if (hasIndexBuffer)
 			indexView = inputs.ia.indexBuffer;
-		boundVertexMask = 0;
+		boundVertexMask = inputs.BoundVertexMask();
 		vertexViews.clear(); // retain capacity across replacement of this way
-		for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
-			if (!(requiredVertexMask & (1u << slot)) || !inputs.ia.hasVertexBuffer[slot])
-				continue;
-			boundVertexMask |= 1u << slot;
+		for (UINT remaining = boundVertexMask; remaining; remaining &= remaining - 1) {
+			const UINT slot = std::countr_zero(remaining);
 			vertexViews.push_back(inputs.ia.vertexBuffers[slot]);
 		}
 	}
@@ -569,11 +611,28 @@ public:
 // repeated views of the frame-to-frame re-recorded draws resident without an
 // LRU list or a per-hit clock update. The table and exact dependency snapshots
 // are allocated lazily on the heap; no full key array lives on the hook stack.
+//
+// Sizing is empirical, not guessed. A deterministic game replays the same
+// ~1100 signatures in the same order every frame, so the table behaves like a
+// cyclic-replay cache: any set holding more states than ways keeps its first
+// (kWayCount - 1) arrivals pinned and thrashes the rest through way 0, which
+// caps the steady-state hit rate at (kWayCount - 1) / states-in-set for
+// overfull sets. At 128x8 that predicted ~43% against the measured 44.8%
+// (Rm.IaNegCacheHit vs Rm.IaNegVerdictRuns): nearly half of all draws paid the
+// full verdict (~2.2us each, 1.26ms/frame) only because their entry had been
+// evicted since the previous frame. A discrete replay simulation of the exact
+// Store policy below (way 0 victim on a full set) gives, for a 1100-state
+// working set: 128x8 ~41%, 256x8 ~77%, 512x8 ~98%, 256x16 ~99.8%, and 512x16
+// ~100% - with 512x16 still holding ~99.9% at 2200 states and ~96% at 3300,
+// i.e. a 3x larger scene than the profiled one. Round-robin victim selection
+// scores 0% under cyclic replay and was rejected. 512x16 costs a 256KB lazy
+// heap table per simulate context and the same one-set scan per lookup as any
+// other shape; only the resident ways allocate exact keys.
 class DX12IaStateNegativeCache
 {
 public:
-	static constexpr size_t kSetCount = 128;
-	static constexpr size_t kWayCount = 8;
+	static constexpr size_t kSetCount = 512;
+	static constexpr size_t kWayCount = 16;
 	static constexpr size_t kEntryCount = kSetCount * kWayCount;
 
 	static_assert((kSetCount & (kSetCount - 1)) == 0,
@@ -673,19 +732,20 @@ public:
 // free of a dependency on DX12SimulateContext.h and states the dependency set of
 // the cached verdict in the signature.
 //
-// resolveGeneration (DX12GetIaHashResolveGeneration) is a conservative extra
-// term, not one the verdict reads itself: it is what makes "same signature
-// implies same verdict" true even if a GPU VA is recycled for a different
-// resource, whose descriptor width is an input to DX12HashIaBufferContentView
-// that no view field carries.
+// The hash snapshot replaces the old global resolve epoch. Each snapshot value
+// has just been refreshed by DX12HashIaBufferContentView, whose published-state
+// and range validation already handle VA reuse and unresolved range changes.
+// Keeping the raw view fields in the exact key remains conservative: a digest
+// collision can only lose a hit, never return another view's verdict.
 inline DX12IaStateNegativeSignature MakeIaStateNegativeSignature(
 	const DX12IaStateNegativeInputs &inputs)
 {
 	const DX12ActiveIaState &ia = inputs.ia;
 	DX12IaStateNegativeSignature::Builder signature;
 	signature.AddTerm(inputs.reloadGeneration);
-	signature.AddTerm(inputs.preSkinGeneration);
-	signature.AddTerm(inputs.resolveGeneration);
+	// Section-set membership, not the pre-skin runtime generation: see
+	// DX12IaStateNegativeInputs.
+	signature.AddTerm(inputs.preSkinSectionGeneration);
 	// DX12HashIaBufferContentView produces metadata-only hashes (including
 	// its unresolved fallback). CPU content writes cannot change this verdict;
 	// keep the full content-dependent draw caches' invalidation separate.
@@ -696,6 +756,9 @@ inline DX12IaStateNegativeSignature MakeIaStateNegativeSignature(
 	signature.AddTerm(indexChecked ? 1u : 0u);
 	if (indexChecked) {
 		signature.AddTerm(ia.hasIndexBuffer ? 1u : 0u);
+		signature.AddTerm(inputs.hashes.indexHashValid ? 1u : 0u);
+		if (inputs.hashes.indexHashValid)
+			signature.AddTerm(inputs.hashes.indexHash);
 		if (ia.hasIndexBuffer) {
 			signature.AddTerm(ia.indexBuffer.BufferLocation);
 			signature.AddTerm(ia.indexBuffer.SizeInBytes);
@@ -703,26 +766,34 @@ inline DX12IaStateNegativeSignature MakeIaStateNegativeSignature(
 		}
 	}
 
-	for (UINT slot = 0; slot < D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++slot) {
-		if (!(inputs.requiredVertexMask & (1u << slot)))
-			continue;
+	// Encode absence once as a mask, rather than serially mixing three words
+	// for every empty slot of an all-IA plan on every cache hit. Exact-key
+	// validation still checks every dependency, including forced collisions.
+	const UINT boundMask = inputs.BoundVertexMask();
+	const UINT hashMask = inputs.hashes.vertexHashMask & inputs.requiredVertexMask;
+	signature.AddSlot(boundMask);
+	signature.AddSlot(hashMask);
+	for (UINT remaining = boundMask | hashMask; remaining; remaining &= remaining - 1) {
+		const UINT slot = std::countr_zero(remaining);
 		signature.AddSlot(slot);
-		signature.AddSlot(ia.hasVertexBuffer[slot] ? 1u : 0u);
-		if (!ia.hasVertexBuffer[slot])
-			continue;
-		const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
-		signature.AddSlot(view.BufferLocation);
-		signature.AddSlot(view.SizeInBytes);
-		signature.AddSlot(view.StrideInBytes);
+		if (hashMask & (1u << slot))
+			signature.AddSlot(inputs.hashes.vertexHashes[slot]);
+		if (boundMask & (1u << slot)) {
+			const D3D12_VERTEX_BUFFER_VIEW &view = ia.vertexBuffers[slot];
+			signature.AddSlot(view.BufferLocation);
+			signature.AddSlot(view.SizeInBytes);
+			signature.AddSlot(view.StrideInBytes);
+		}
 	}
 	return signature.Finish();
 }
 
 
-// Exact, command-list-local negative result. Unlike the legacy unordered cache,
-// this key uses the IA mutation epoch as the identity of all bound views. The
-// global generations cover writes/resource reuse, so no content-hash result is
-// reused after any dependency can have changed.
+// Exact, command-list-local negative result. The raw view snapshot keeps the
+// cache conservative for binding changes, while the validated per-view hashes
+// cover resource identity and unresolved range changes. The old global resolve
+// epoch is deliberately not part of this key: unrelated buffer churn must not
+// discard a verdict whose hash inputs were revalidated by the authoritative path.
 class DX12ResidentDrawNegativeEntry
 {
 public:

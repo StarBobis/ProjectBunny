@@ -1676,6 +1676,53 @@ static bool IaHasAnyPrefilterCandidate(bool indexBuffer, uint32_t vertexSlot)
 }
 
 
+// Build the hash inputs that the IA-state-level negative verdict actually
+// probes. The prefilter gates are stable for a reload generation, so doing this
+// before the resident-cache lookup lets the cache key on validated hash values
+// instead of the coarse global resolve epoch.
+void DX12ModBuildIaStateNegativeHashSnapshot(
+	const DX12ActiveIaState &ia,
+	const DX12IaHashTargetPlan &targetPlan,
+	bool indexed,
+	DX12IaStateNegativeHashSnapshot *snapshot)
+{
+	if (!snapshot)
+		return;
+	*snapshot = DX12IaStateNegativeHashSnapshot();
+	if (!targetPlan.hasTextureOverrideChecks ||
+	    targetPlan.hasDescriptorTargets ||
+	    !targetPlan.HasIaTargets() ||
+	    DX12ModIaPrefilterCountSensitive())
+		return;
+
+	const UINT64 resolveGeneration = DX12GetIaHashResolveGeneration();
+	const bool probeIndexBuffer =
+		targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer;
+	if (probeIndexBuffer && IaHasAnyPrefilterCandidate(true, 0)) {
+		snapshot->indexHashValid = true;
+		snapshot->indexHash =
+			ia.indexBufferHashValid &&
+			ia.indexBufferHashResolveGeneration == resolveGeneration ?
+				ia.indexBufferHash :
+				DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(
+					const_cast<DX12ActiveIaState*>(&ia));
+	}
+	for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
+		if (!targetPlan.RequiresVertexBuffer(slot) || !ia.hasVertexBuffer[slot])
+			continue;
+		if (!IaHasAnyPrefilterCandidate(false, slot))
+			continue;
+		snapshot->vertexHashes[slot] =
+			ia.vertexBufferHashValid[slot] &&
+			ia.vertexBufferHashResolveGeneration[slot] == resolveGeneration ?
+				ia.vertexBufferHashes[slot] :
+				DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
+					const_cast<DX12ActiveIaState*>(&ia), slot);
+		snapshot->vertexHashMask |= 1u << slot;
+	}
+}
+
+
 // DX11-style IA-state-level negative check: the per-view hashes are computed
 // (or reused from the resident cache) and matched against the candidate tables
 // without any draw-context filtering. Only call when gIaPrefilterCountSensitive
@@ -1684,7 +1731,8 @@ static bool IaHasAnyPrefilterCandidate(bool indexBuffer, uint32_t vertexSlot)
 bool DX12ModIaStateDefinitelyHasNoCandidate(
 	const DX12ActiveIaState &ia,
 	const DX12IaHashTargetPlan &targetPlan,
-	bool indexed)
+	bool indexed,
+	const DX12IaStateNegativeHashSnapshot *precomputedHashes)
 {
 	if (!targetPlan.hasTextureOverrideChecks ||
 	    targetPlan.hasDescriptorTargets ||
@@ -1694,37 +1742,17 @@ bool DX12ModIaStateDefinitelyHasNoCandidate(
 	// requireAllIaBuffers is handled below: every bound buffer is probed
 	// against the candidate table, so an all-IA plan still resolves to
 	// "definitely no candidate" when none of the bound views match.
-	//
-	// The prefilter is consulted before any view hash is resolved. Resolving a
-	// view hash walks the shared resident resolve caches and costs microseconds,
-	// while the prefilter probe is two table lookups, and a slot whose candidate
-	// list is empty can never match: the probe below answers "no candidate" for
-	// it without ever comparing the hash. Skipping those slots therefore cannot
-	// change the verdict, it only stops paying for hashes that are thrown away.
-	uint32_t vertexSlotMask = 0;
-	uint32_t vertexHashes[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
-	uint32_t indexHash = 0;
-	const bool probeIndexBuffer =
-		targetPlan.RequiresIndexBuffer(indexed) && ia.hasIndexBuffer;
-	const bool indexHasCandidates =
-		probeIndexBuffer && IaHasAnyPrefilterCandidate(true, 0);
-	{
+	DX12IaStateNegativeHashSnapshot computedHashes;
+	const DX12IaStateNegativeHashSnapshot *hashes = precomputedHashes;
+	if (!hashes) {
 		DX12_PROF_STAGE_SCOPE(IaNegVerdictHashes);
-		if (indexHasCandidates) {
-			indexHash = DX12CommandListRuntime::GetOrBuildCachedIndexViewHash(
-				const_cast<DX12ActiveIaState*>(&ia));
-		}
-		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
-			if (!targetPlan.RequiresVertexBuffer(slot) || !ia.hasVertexBuffer[slot])
-				continue;
-			if (!IaHasAnyPrefilterCandidate(false, slot))
-				continue;
-			vertexHashes[slot] =
-				DX12CommandListRuntime::GetOrBuildCachedVertexViewHash(
-					const_cast<DX12ActiveIaState*>(&ia), slot);
-			vertexSlotMask |= 1u << slot;
-		}
+		DX12ModBuildIaStateNegativeHashSnapshot(
+			ia, targetPlan, indexed, &computedHashes);
+		hashes = &computedHashes;
 	}
+	const bool indexHasCandidates = hashes->indexHashValid;
+	const uint32_t vertexSlotMask = hashes->vertexHashMask;
+
 	// Every required binding was prefiltered away, which is the whole verdict.
 	if (!indexHasCandidates && !vertexSlotMask) {
 		DX12_PROF_COUNT("Rm.IaNegVerdictGated");
@@ -1732,12 +1760,14 @@ bool DX12ModIaStateDefinitelyHasNoCandidate(
 	}
 	{
 		DX12_PROF_STAGE_SCOPE(IaNegVerdictProbes);
-		if (indexHasCandidates && !IaHashDefinitelyHasNoCandidate(true, 0, indexHash))
+		if (indexHasCandidates &&
+		    !IaHashDefinitelyHasNoCandidate(true, 0, hashes->indexHash))
 			return false;
 		for (UINT slot = 0; slot < ARRAYSIZE(ia.vertexBuffers); ++slot) {
 			if ((vertexSlotMask & (1u << slot)) == 0)
 				continue;
-			if (!IaHashDefinitelyHasNoCandidate(false, slot, vertexHashes[slot]))
+			if (!IaHashDefinitelyHasNoCandidate(
+					false, slot, hashes->vertexHashes[slot]))
 				return false;
 		}
 	}

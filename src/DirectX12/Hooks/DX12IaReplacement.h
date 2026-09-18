@@ -1984,15 +1984,31 @@ public:
 				mutableRuntimeState->resolvedDraw.iaStateNegative;
 			// The verdict below reads the resolved hashes of the bound views
 			// and probes the compiled prefilter tables. Both are functions of
-			// (view metadata, plan, indexed, active pre-skin sections, reload
+			// (view metadata, plan, indexed, active pre-skin SECTION SET, reload
 			// generation), so the signature is that dependency set rather than
 			// the IA mutation epoch - which restarts at 1 on every command-list
 			// Reset and therefore threw away a verdict the game re-records
 			// identically every frame.
+			//
+			// The pre-skin term is the section-set identity, not the runtime
+			// generation: the latter follows the per-Present clear and refill of
+			// the active producer map, so keying on it evicted every stored
+			// verdict exactly once per frame while the set it stands for stayed
+			// identical.
+			DX12IaStateNegativeHashSnapshot iaNegHashes;
+			// Refresh only the hashes that the prefilter says this verdict can
+			// observe. The hash path validates published resource identity and
+			// unresolved ranges, so this is safe across unrelated resolve-epoch
+			// churn and lets the negative cache survive that churn too. Do not put a
+			// QPC scope around this every-draw lookup: the slot cache already records
+			// actual rebuilds, while the enclosing stage measures the complete cost.
+			DX12ModBuildIaStateNegativeHashSnapshot(
+				runtimeState.ia, directTargetPlan, draw.indexed, &iaNegHashes);
 			const DX12IaStateNegativeInputs iaNegInputs(
 				runtimeState.ia, directTargetPlan, draw.indexed,
-				drawDecision->reloadGeneration, preSkinGeneration,
-				DX12GetIaHashResolveGeneration());
+				drawDecision->reloadGeneration,
+				DX12ModGetPreSkinSectionSetGenerationFast(),
+				&iaNegHashes);
 			const DX12IaStateNegativeSignature iaNegSignature =
 				MakeIaStateNegativeSignature(iaNegInputs);
 			const DX12IaStateNegativeCache::Entry *iaNegHit =
@@ -2015,7 +2031,8 @@ public:
 					DX12_PROF_STAGE_SCOPE(DrawOvIaNegVerdict);
 					noCandidate =
 						DX12ModIaStateDefinitelyHasNoCandidate(
-							runtimeState.ia, directTargetPlan, draw.indexed);
+							runtimeState.ia, directTargetPlan, draw.indexed,
+							&iaNegHashes);
 				}
 				if (noCandidate)
 					DX12_PROF_COUNT("Rm.IaNegVerdictNegative");

@@ -424,7 +424,10 @@ public:
 		std::vector<DX12CurrentComputeUavBinding> *srvs,
 		std::vector<DX12CurrentComputeUavBinding> *cbvs,
 		std::vector<DX12CurrentRootConstants> *constants,
-		UINT64 *dependencyFingerprint = nullptr);
+		UINT64 *dependencyFingerprint = nullptr,
+		// False only skips the resident-cache attempt, never fresh collection
+		// or validation of the separate content cache.
+		bool tryResidentBindings = true);
 	static bool GetSimulateContextPreSkinBindings(
 		ID3D12GraphicsCommandList *commandList,
 		const std::vector<DX12CurrentComputeUavBinding> **uavs,
