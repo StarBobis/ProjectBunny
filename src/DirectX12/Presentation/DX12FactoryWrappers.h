@@ -242,11 +242,34 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			return mFactory->GetWindowAssociation(pWindowHandle);
 		}
 
+		static void WrapCreatedSwapChain(IUnknown *device, REFIID riid, void **swapChain)
+		{
+			if (!swapChain || !*swapChain)
+				return;
+			// A CBT-loaded proxy may miss D3D12CreateDevice entirely. A native
+			// queue means its caller still uses native devices/command lists:
+			// returning a ResourceWrapper from GetBuffer would send our layout
+			// straight into the driver (WoLong startup RTV crash). Keep that
+			// entire swapchain native, including GetDevice and subsequent QI.
+			const bool wrappedQueue = device && DX12Wrapper::Unwrap(device) != device;
+			const bool wrapped = wrappedQueue && DX12Wrapper::WrapDXGISwapChainResult(riid, swapChain);
+			DX12_LOG_FLUSH("DX12SwapChainBoundary",
+				"threadId=%lu,queue=%p,swapchain=%p,mode=%s,modInterception=%s",
+				GetCurrentThreadId(), device, *swapChain,
+				wrapped ? "wrapped" : (wrappedQueue ? "wrap_failed" : "native_passthrough"),
+				wrapped ? "active" : "unavailable_on_this_swapchain");
+			if (!wrappedQueue) {
+				DX12_LOG_FLUSH("DX12BootstrapWarning",
+					"reason=unwrapped_swapchain_queue,action=load_proxy_before_device_creation,"
+					"note=DLL_loaded_does_not_mean_D3D12_device_intercepted");
+			}
+		}
+
 		HRESULT STDMETHODCALLTYPE CreateSwapChain(IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain) override
 		{
 			HRESULT hr = mFactory->CreateSwapChain(DX12Wrapper::Unwrap(pDevice), pDesc, ppSwapChain);
 			if (SUCCEEDED(hr))
-				DX12Wrapper::WrapDXGISwapChainResult(__uuidof(IDXGISwapChain), reinterpret_cast<void**>(ppSwapChain));
+				WrapCreatedSwapChain(pDevice, __uuidof(IDXGISwapChain), reinterpret_cast<void**>(ppSwapChain));
 			return hr;
 		}
 
@@ -318,7 +341,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 				hWnd, hr, SUCCEEDED(hr) && ppSwapChain ? *ppSwapChain : nullptr);
 			if (SUCCEEDED(hr)) {
 				DX12MarkStage("swapchain_wrap_call");
-				DX12Wrapper::WrapDXGISwapChainResult(__uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
+				WrapCreatedSwapChain(pDevice, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
 			}
 			DX12MarkStage("swapchain_factory_release");
 			factory2->Release();
@@ -337,7 +360,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			hr = factory2->CreateSwapChainForCoreWindow(
 				DX12Wrapper::Unwrap(pDevice), pWindow, pDesc, pRestrictToOutput, ppSwapChain);
 			if (SUCCEEDED(hr))
-				DX12Wrapper::WrapDXGISwapChainResult(__uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
+				WrapCreatedSwapChain(pDevice, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
 			factory2->Release();
 			return hr;
 		}
@@ -426,7 +449,7 @@ class FactoryWrapper final : public IDXGIFactory7, public WrapperBase
 			hr = factory2->CreateSwapChainForComposition(
 				DX12Wrapper::Unwrap(pDevice), pDesc, pRestrictToOutput, ppSwapChain);
 			if (SUCCEEDED(hr))
-				DX12Wrapper::WrapDXGISwapChainResult(__uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
+				WrapCreatedSwapChain(pDevice, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(ppSwapChain));
 			factory2->Release();
 			return hr;
 		}

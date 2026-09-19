@@ -140,12 +140,16 @@ extern "C" HRESULT WINAPI D3D12CreateDevice(
 	D3D12ProxyRuntime::LoadRealD3D12();
 	if (!D3D12ProxyState::OrigCreateDevice)
 		return E_FAIL;
+	DX12_LOG_FLUSH("D3D12CreateDevice",
+		"event=enter,threadId=%lu,adapter=%p,minFeature=0x%x,outputRequested=%s",
+		GetCurrentThreadId(), adapter, minimumFeatureLevel, device ? "true" : "false");
 	HRESULT hr = D3D12ProxyState::OrigCreateDevice(adapter, minimumFeatureLevel, riid, device);
-	DX12_LOG("D3D12CreateDevice",
-		"adapter=%p,minFeature=0x%x,hr=0x%lx,device=%p",
-		adapter, minimumFeatureLevel, hr, device ? *device : nullptr);
-	if (SUCCEEDED(hr))
-		DX12Wrapper::WrapD3D12DeviceResult(riid, device);
+	void *nativeDevice = SUCCEEDED(hr) && device ? *device : nullptr;
+	const bool wrapped = SUCCEEDED(hr) && DX12Wrapper::WrapD3D12DeviceResult(riid, device);
+	DX12_LOG_FLUSH("D3D12CreateDevice",
+		"event=leave,threadId=%lu,hr=0x%lx,native=%p,returned=%p,wrapped=%s",
+		GetCurrentThreadId(), hr, nativeDevice, SUCCEEDED(hr) && device ? *device : nullptr,
+		wrapped ? "true" : "false");
 	return hr;
 }
 
@@ -327,6 +331,155 @@ extern "C" UINT_PTR WINAPI GetBehaviorValue(
 	return D3D12ProxyRuntime::CallRealProc("GetBehaviorValue", a1, a2, a3, a4, a5, a6, a7, a8);
 }
 
+namespace
+{
+	// Only redirect the executable's creation entry points. Process-wide export
+	// detours would also wrap Streamline's private devices and reintroduce hook
+	// chain conflicts. Fixed storage keeps attach/detach free of allocation.
+	struct D3D12ImportRedirect
+	{
+		void **slot = nullptr;
+		void *original = nullptr;
+		void *replacement = nullptr;
+	};
+	D3D12ImportRedirect gImportRedirects[64] = {};
+	size_t gImportRedirectCount = 0;
+
+	bool ImageRangeValid(DWORD rva, size_t bytes, DWORD imageSize)
+	{
+		return rva < imageSize && bytes <= imageSize - rva;
+	}
+
+	const char *ImageString(BYTE *base, DWORD rva, DWORD imageSize)
+	{
+		if (!ImageRangeValid(rva, 1, imageSize))
+			return nullptr;
+		const char *text = reinterpret_cast<const char*>(base + rva);
+		return memchr(text, '\0', imageSize - rva) ? text : nullptr;
+	}
+
+	void *CreationImportTarget(BYTE *base, ULONGLONG lookup, DWORD imageSize)
+	{
+		if (IMAGE_SNAP_BY_ORDINAL64(lookup)) {
+			switch (IMAGE_ORDINAL64(lookup)) {
+			case 101: return reinterpret_cast<void*>(&D3D12CreateDevice);
+			case 102: return reinterpret_cast<void*>(&D3D12GetDebugInterface);
+			case 110: return reinterpret_cast<void*>(&D3D12GetInterface);
+			default: return nullptr;
+			}
+		}
+		if (lookup > MAXDWORD - sizeof(WORD))
+			return nullptr;
+		const char *name = ImageString(base, static_cast<DWORD>(lookup) + sizeof(WORD), imageSize);
+		if (!name)
+			return nullptr;
+		if (strcmp(name, "D3D12CreateDevice") == 0)
+			return reinterpret_cast<void*>(&D3D12CreateDevice);
+		if (strcmp(name, "D3D12GetDebugInterface") == 0)
+			return reinterpret_cast<void*>(&D3D12GetDebugInterface);
+		if (strcmp(name, "D3D12GetInterface") == 0)
+			return reinterpret_cast<void*>(&D3D12GetInterface);
+		return nullptr;
+	}
+
+	void RedirectMainD3D12Imports()
+	{
+		BYTE *base = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
+		if (!base)
+			return;
+		const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+		if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+			return;
+		const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+		if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+			return;
+		const DWORD size = nt->OptionalHeader.SizeOfImage;
+		if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_IMPORT)
+			return;
+		const auto directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+		if (!directory.VirtualAddress || !ImageRangeValid(directory.VirtualAddress, directory.Size, size))
+			return;
+		wchar_t systemPath[MAX_PATH] = {};
+		if (!GetSystemDirectoryW(systemPath, ARRAYSIZE(systemPath)) || !PathAppendW(systemPath, L"d3d12.dll"))
+			return;
+		HMODULE systemD3D12 = GetModuleHandleW(systemPath);
+		if (!systemD3D12)
+			return;
+		const auto *imports = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + directory.VirtualAddress);
+		for (size_t i = 0; i < directory.Size / sizeof(*imports) && imports[i].Name; ++i) {
+			const auto &entry = imports[i];
+			const char *name = ImageString(base, entry.Name, size);
+			if (!name || _stricmp(name, "d3d12.dll") != 0)
+				continue;
+			// With no lookup table, a bound IAT contains addresses, not import
+			// names. Never guess which entry point an arbitrary address denotes.
+			if (!entry.OriginalFirstThunk || !entry.FirstThunk)
+				continue;
+			for (size_t index = 0; ; ++index) {
+				const size_t offset = index * sizeof(IMAGE_THUNK_DATA64);
+				if (!ImageRangeValid(entry.OriginalFirstThunk, offset + sizeof(IMAGE_THUNK_DATA64), size) ||
+					!ImageRangeValid(entry.FirstThunk, offset + sizeof(IMAGE_THUNK_DATA64), size))
+					break;
+				const auto *lookup = reinterpret_cast<const IMAGE_THUNK_DATA64*>(base + entry.OriginalFirstThunk);
+				if (!lookup[index].u1.AddressOfData)
+					break;
+				void *target = CreationImportTarget(base, lookup[index].u1.AddressOfData, size);
+				if (!target)
+					continue;
+				void **slot = reinterpret_cast<void**>(base + entry.FirstThunk + offset);
+				if (*slot == target)
+					continue; // Already bound to our proxy by the Windows loader.
+				const ULONGLONG importLookup = lookup[index].u1.AddressOfData;
+				const char *importName = IMAGE_SNAP_BY_ORDINAL64(importLookup) ?
+					MAKEINTRESOURCEA(IMAGE_ORDINAL64(importLookup)) :
+					ImageString(base, static_cast<DWORD>(importLookup) + sizeof(WORD), size);
+				void *expected = reinterpret_cast<void*>(GetProcAddress(systemD3D12, importName));
+				if (*slot != expected) {
+					DX12_LOG_FLUSH("DX12ImportRedirect", "event=foreign_hook_preserved,slot=%p,current=%p", slot, *slot);
+					continue;
+				}
+				if (gImportRedirectCount == ARRAYSIZE(gImportRedirects))
+					break;
+				DWORD protection = 0;
+				if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) {
+					DX12_LOG_FLUSH("DX12ImportRedirect", "event=protect_failed,error=%lu", GetLastError());
+					continue;
+				}
+				void *original = InterlockedCompareExchangePointer(slot, target, expected);
+				const bool installed = original == expected;
+				if (installed)
+					gImportRedirects[gImportRedirectCount++] = {slot, original, target};
+				DWORD ignored = 0;
+				const BOOL restored = VirtualProtect(slot, sizeof(*slot), protection, &ignored);
+				if (!installed) {
+					DX12_LOG_FLUSH("DX12ImportRedirect", "event=concurrent_hook_preserved,slot=%p", slot);
+					continue;
+				}
+				DX12_LOG_FLUSH("DX12ImportRedirect",
+					"event=installed,slot=%p,original=%p,target=%p,byOrdinal=%s,protectionRestored=%s",
+					slot, original, target, IMAGE_SNAP_BY_ORDINAL64(lookup[index].u1.Ordinal) ? "true" : "false",
+					restored ? "true" : "false");
+			}
+		}
+		DX12_LOG_FLUSH("DX12ImportRedirect", "event=complete,count=%llu,scope=main_executable_creation_imports",
+			static_cast<unsigned long long>(gImportRedirectCount));
+	}
+
+	void RestoreMainD3D12Imports()
+	{
+		while (gImportRedirectCount) {
+			const auto &entry = gImportRedirects[--gImportRedirectCount];
+			DWORD protection = 0;
+			if (!VirtualProtect(entry.slot, sizeof(*entry.slot), PAGE_READWRITE, &protection))
+				continue;
+			// Do not overwrite a hook installed after ours.
+			InterlockedCompareExchangePointer(entry.slot, entry.original, entry.replacement);
+			DWORD ignored = 0;
+			VirtualProtect(entry.slot, sizeof(*entry.slot), protection, &ignored);
+		}
+	}
+}
+
 extern "C" LRESULT CALLBACK CBTProc(_In_ int nCode, _In_ WPARAM wParam, _In_ LPARAM lParam)
 {
 	return CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -350,11 +503,16 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
 		}
 
 		D3D12ProxyRuntime::Initialize(module);
+		RedirectMainD3D12Imports();
+		DX12_LOG_FLUSH("DX12Bootstrap",
+			"event=attach,threadId=%lu,proxy=\"%S\",process=\"%S\",reason=\"%S\"",
+			GetCurrentThreadId(), decision.modulePath, decision.processPath, decision.reason);
 		gD3D12ProxyRuntimeInitialized = true;
 		break;
 	}
 	case DLL_PROCESS_DETACH:
 		if (gD3D12ProxyRuntimeInitialized) {
+			RestoreMainD3D12Imports();
 			// DX11 parity: DestroyDLL() saves the persistent settings before the
 			// runtime tears down. A clean game exit is the last chance to
 			// capture hotkey state the autosave interval has not written yet.

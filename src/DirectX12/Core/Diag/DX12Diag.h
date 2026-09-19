@@ -973,7 +973,7 @@ inline bool DX12DiagLog::Open()
 	wchar_t logPath[MAX_PATH];
 	wchar_t historyPath[MAX_PATH];
 	wsprintfW(logPath, L"%s\\d3d12_log.txt", path);
-	wsprintfW(historyPath, L"%s\\d3d12_log_%llu.txt", path,
+	swprintf_s(historyPath, L"%s\\d3d12_log_%llu.txt", path,
 		static_cast<unsigned long long>(GetTickCount64()));
 	if (PathFileExistsW(logPath))
 		CopyFileW(logPath, historyPath, FALSE);
@@ -1168,7 +1168,10 @@ inline void DX12DiagLog::EnqueueLine(const char *line)
 		return;
 	std::string &buffer = TlsLineBuffer();
 	buffer += line;
-	if (buffer.size() >= kTlsFlushBytes)
+	// Before the first Present, a thread may emit only a few lines and then
+	// fault or exit. The writer cannot drain another thread's TLS buffer.
+	// Publish startup lines immediately; keep normal frame-time batching.
+	if (buffer.size() >= kTlsFlushBytes || DX12RuntimeState::GetPresentCount() == 0)
 		PublishTlsBuffer();
 }
 
@@ -1192,7 +1195,9 @@ inline void DX12DiagLog::NormalizeFields(const char *input, char *output, size_t
 			escaped = false;
 			continue;
 		}
-		if (quoted && ch == '\\') {
+		// Callers also log literal Windows paths, not just escaped JSON.
+		// A backslash before an ordinary path character must survive.
+		if (quoted && ch == '\\' && (cursor[1] == '\\' || cursor[1] == '"')) {
 			escaped = true;
 			continue;
 		}

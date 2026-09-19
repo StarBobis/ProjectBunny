@@ -120,7 +120,7 @@ public:
 		DX12CrashReportSetLogQuiesce(&DX12DiagLog::QuiesceForCrash);
 #endif
 		DX12_LOG_TEXT(
-			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");
+			"\n*** 3DMigoto DX12 runtime initialized - build swapchain-boundary-v1 ***\n");
 
 		std::wstring configPath = Bunny::MigotoConfigLocator::FindDefaultConfigPath(module);
 		ConfigLoaded = Config.Load(configPath.c_str());
