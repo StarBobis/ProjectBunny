@@ -387,6 +387,23 @@ if ($Platform -eq 'x64') {
                 }
             }
 
+            # A TIMING build also ships its PDB: the in-process crash report
+            # symbolizes our own stack frames against it (the dbghelp guard
+            # keeps the symbol server off, so a local PDB is the only source).
+            if ($ReleaseTiming) {
+                $dx12Pdb = "$buildDir\src\DirectX12\d3d12.pdb"
+                if (Test-Path $dx12Pdb) {
+                    try {
+                        Copy-Item $dx12Pdb "$dx12TestDir\d3d12.pdb" -Force -ErrorAction Stop
+                        Write-Host "  Copied DX12 PDB: $dx12TestDir\d3d12.pdb" -ForegroundColor Gray
+                    } catch {
+                        Write-Host "  Failed to copy DX12 PDB (crash report will log module+offset only): $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                } else {
+                    Write-Host "  DX12 PDB not found at $dx12Pdb (crash report will log module+offset only)" -ForegroundColor Yellow
+                }
+            }
+
             # Optional DXC backend for [CustomShaderX] runtime HLSL compile.
             # Only the official dxcompiler/dxil pair is deployed, and only
             # from a repo-local drop (third_party\dxc\): the VulkanSDK

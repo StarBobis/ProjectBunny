@@ -4,6 +4,7 @@
 
 #include "DX12ResourceHookRuntime.h"
 #include "../Core/DX12Diagnostics.h"
+#include "../Core/Diag/DX12CrashReport.h"
 
 // Defined in ShaderTools/DX12NativeOverlay.cpp; the declaration also lives in
 // DX12Resources.h, but this header must stay self-contained because it is
@@ -110,6 +111,10 @@ public:
 		DX12RuntimeState::SetModule(module);
 #if DX12_TIMING_BUILD
 		DX12DiagLog::Open();
+		// Install the crash report filter before any D3D12 object exists, so a
+		// driver/engine fault on the next startup is diagnosed from inside the
+		// process (report + breadcrumbs + minidump in the log directory).
+		DX12CrashReportInstall();
 #endif
 		DX12_LOG_TEXT(
 			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");

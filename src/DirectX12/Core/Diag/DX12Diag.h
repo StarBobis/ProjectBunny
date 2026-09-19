@@ -28,6 +28,7 @@
 // ============================================================================
 
 #include "../DX12RuntimeState.h"
+#include "DX12CrashReport.h"
 #include "DX12ProfilingText.h"
 
 #include <algorithm>
@@ -303,6 +304,10 @@ public:
 		{
 			if (!mBucket)
 				return;
+			// Every instrumented wrapper entry is also the crash report's
+			// "last thing our code was doing" breadcrumb. A TIMING build pays
+			// one relaxed atomic; everywhere else this is an empty inline.
+			DX12CrashBreadcrumb(name);
 			++mBucket->calls;
 			// The bracket is taken before the clock is read and it outlives
 			// Pause/Resume/Finish: it describes the lexical region, not the
@@ -365,6 +370,9 @@ public:
 		{
 			if (!mBucketA && !mBucketB)
 				return;
+			// The pair's first name is the API entry, which is the one the crash
+			// report wants (the second is the stage it is attributed to).
+			DX12CrashBreadcrumb(nameA);
 			if (mBucketA)
 				++mBucketA->calls;
 			if (mBucketB)

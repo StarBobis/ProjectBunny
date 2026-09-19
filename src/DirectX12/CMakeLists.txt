@@ -205,6 +205,12 @@ if(DX12_RELEASE_TIMING)
     target_compile_definitions(DirectX12 PRIVATE
         DX12_RELEASE_TIMING
     )
+    # Crash self-diagnosis (report + breadcrumbs + minidump in d3d12_log.txt).
+    # TIMING-only by construction: not compiled into a normal Release binary,
+    # whose breadcrumb macro is an empty inline.
+    target_sources(DirectX12 PRIVATE
+        Core/Diag/DX12CrashReport.cpp
+    )
 endif()
 
 set_target_msvc_options(DirectX12)
