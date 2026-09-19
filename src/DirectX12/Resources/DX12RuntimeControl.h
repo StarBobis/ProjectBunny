@@ -113,8 +113,11 @@ public:
 		DX12DiagLog::Open();
 		// Install the crash report filter before any D3D12 object exists, so a
 		// driver/engine fault on the next startup is diagnosed from inside the
-		// process (report + breadcrumbs + minidump in the log directory).
+		// process (report + breadcrumbs + minidump in the log directory), and
+		// tell it how to park the log writer first: an appended report would
+		// otherwise be overwritten by the writer's next buffered flush.
 		DX12CrashReportInstall();
+		DX12CrashReportSetLogQuiesce(&DX12DiagLog::QuiesceForCrash);
 #endif
 		DX12_LOG_TEXT(
 			"\n*** 3DMigoto DX12 runtime initialized - build descriptor-churn+ia-reuse-v2 ***\n");

@@ -144,6 +144,27 @@ public:
 		return sThread ? GetThreadId(sThread) : 0;
 	}
 
+	// Crash path only (see DX12CrashReport.h). The writer owns the log's FILE*
+	// together with its own file position, so a crash report appended through a
+	// second handle is overwritten by the writer's next buffered flush - which
+	// is exactly how the 2026-09-19 13:26 report lost its exception record,
+	// registers and stack walk. Stops the writer, waits a bounded moment for it
+	// to finish its current drain, and reports whether the file is now free.
+	// A writer that is stuck is not waited for: no report is worse than a report
+	// that shares a file with a writer nobody can stop.
+	static bool QuiesceForCrash()
+	{
+		if (!sLog || !sThread)
+			return true;
+		InterlockedExchange(&sStopRequested, 1);
+		if (sEvent)
+			SetEvent(sEvent);
+		if (WaitForSingleObject(sThread, kCrashQuiesceWaitMs) != WAIT_OBJECT_0)
+			return false;
+		FlushDirect();
+		return true;
+	}
+
 private:
 	static DWORD WINAPI ThreadProc(void *);
 	static void DrainQueueToFile();
@@ -157,6 +178,9 @@ private:
 
 	static constexpr size_t kTlsFlushBytes = 8192;
 	static constexpr size_t kMaxQueuedLines = 8192;
+	// Upper bound on how long a crash report waits for the writer. The writer
+	// polls on a 100ms timeout, so a healthy one leaves well inside this.
+	static constexpr DWORD kCrashQuiesceWaitMs = 500;
 
 	inline static FILE *sLog = nullptr;
 	inline static HANDLE sThread = nullptr;

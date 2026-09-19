@@ -78,9 +78,22 @@ inline void DX12CrashBreadcrumb(const char *scope)
 // DX12Runtime::Initialize.
 void DX12CrashReportInstall();
 
+// Tells the report how to stop the asynchronous log writer. That writer owns a
+// FILE* with its own file position, so a report appended through a second
+// handle can be overwritten by the writer's next buffered flush - which is
+// exactly what happened on 2026-09-19 13:26: the report's head (exception
+// record, registers, stack walk) was erased by log lines written at the stale
+// position and only the breadcrumbs and the dump survived.
+//
+// `quiesce` must stop the writer, flush it, and return false when it could not;
+// the report then keeps out of that file and writes its own instead. Optional:
+// with no hook registered the report assumes nothing else writes the log.
+void DX12CrashReportSetLogQuiesce(bool (*quiesce)());
+
 #else
 
 inline void DX12CrashBreadcrumb(const char *) {}
 inline void DX12CrashReportInstall() {}
+inline void DX12CrashReportSetLogQuiesce(bool (*)()) {}
 
 #endif // DX12_RELEASE_TIMING

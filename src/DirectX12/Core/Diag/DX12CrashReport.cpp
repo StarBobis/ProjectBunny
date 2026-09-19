@@ -37,6 +37,8 @@ namespace
 	int gLogFd = -1;
 	char gLine[1024];
 	DWORD64 gOwnModuleBase = 0;
+	// Registered by the runtime; see DX12CrashReportSetLogQuiesce.
+	bool (*gLogQuiesce)() = nullptr;
 
 	// The deployed d3d12.dll sits next to the d3d12_log.txt the user reads and
 	// the d3d12.pdb the TIMING build copies there, so the report lands where the
@@ -279,14 +281,10 @@ namespace
 		}
 	}
 
-	void WriteDump(EXCEPTION_POINTERS *exception, const wchar_t *directory)
+	void WriteDump(EXCEPTION_POINTERS *exception, const wchar_t *directory, const wchar_t *stamp)
 	{
-		SYSTEMTIME now = {};
-		GetLocalTime(&now);
 		wchar_t path[MAX_PATH] = {};
-		swprintf(path, ARRAYSIZE(path),
-			L"%s\\d3d12_crash_%04u%02u%02u-%02u%02u%02u.dmp", directory,
-			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+		swprintf(path, ARRAYSIZE(path), L"%s\\d3d12_crash_%s.dmp", directory, stamp);
 
 		HANDLE file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
 			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -325,13 +323,31 @@ namespace
 		if (!ModuleDirectory(directory, ARRAYSIZE(directory)))
 			return;
 
+		SYSTEMTIME now = {};
+		GetLocalTime(&now);
+		wchar_t stamp[32] = {};
+		swprintf(stamp, ARRAYSIZE(stamp), L"%04u%02u%02u-%02u%02u%02u",
+			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+
+		// The asynchronous log writer owns the log's FILE* together with its own
+		// file position. Appending a report there while that writer still runs
+		// means its next buffered flush lands on top of the report - the failure
+		// this hook exists to prevent. Ask it to stop and flush first; if it
+		// cannot, keep the report in a file of its own instead of sharing one.
+		const bool logIsFree = gLogQuiesce ? gLogQuiesce() : true;
 		wchar_t logPath[MAX_PATH] = {};
 		swprintf(logPath, ARRAYSIZE(logPath), L"%s\\d3d12_log.txt", directory);
-		// Append: the log already holds everything up to the crash, and the
-		// report has to survive a process that dies before the writer thread
-		// ever drains its queue.
+		wchar_t reportPath[MAX_PATH] = {};
+		if (logIsFree)
+			wcscpy_s(reportPath, logPath);
+		else
+			swprintf(reportPath, ARRAYSIZE(reportPath),
+				L"%s\\d3d12_crash_%s.txt", directory, stamp);
+
+		// Append: the file already holds everything up to the crash, and the
+		// report has to survive a process that dies before anyone drains a queue.
 		gLogFd = -1;
-		if (_wsopen_s(&gLogFd, logPath,
+		if (_wsopen_s(&gLogFd, reportPath,
 				_O_WRONLY | _O_APPEND | _O_CREAT | _O_BINARY, _SH_DENYNO,
 				_S_IREAD | _S_IWRITE) != 0)
 			gLogFd = -1;
@@ -339,7 +355,8 @@ namespace
 			return;
 
 		const DWORD threadId = GetCurrentThreadId();
-		Report("DX12Crash", "event=detected,threadId=%lu", threadId);
+		Report("DX12Crash", "event=detected,threadId=%lu,mode=%s",
+			threadId, logIsFree ? "log" : "separate_file");
 
 		unsigned recordIndex = 0;
 		for (EXCEPTION_RECORD *record = exception ? exception->ExceptionRecord : nullptr;
@@ -399,9 +416,10 @@ namespace
 
 		// Last, because MiniDumpWriteDump suspends every other thread: by now
 		// the machine-readable part of the report is already on disk.
-		WriteDump(exception, directory);
+		WriteDump(exception, directory, stamp);
 
-		Report("DX12Crash", "event=report_done,log=%S", logPath);
+		Report("DX12Crash", "event=report_done,file=%S,mode=%s", reportPath,
+			logIsFree ? "log" : "separate_file");
 		_close(gLogFd);
 		gLogFd = -1;
 	}
@@ -421,6 +439,11 @@ namespace
 void DX12CrashReportInstall()
 {
 	gPreviousFilter = SetUnhandledExceptionFilter(DX12CrashFilter);
+}
+
+void DX12CrashReportSetLogQuiesce(bool (*quiesce)())
+{
+	gLogQuiesce = quiesce;
 }
 
 #endif // DX12_RELEASE_TIMING
