@@ -205,6 +205,12 @@ struct DX12DiagFrameRecord
 	LONG64 presentWallUs = 0;
 	LONG present = 0;
 	LONG hr = 0;
+	// Whether this present opened a game frame. Decided on the render thread
+	// (DX12DiagProf::FrameEnter) and carried in the record rather than read from
+	// profiler state by the writer thread: the writer drains the ring on its own
+	// thread, and a plain bool shared that way would be a data race for no
+	// benefit - the record is the handoff.
+	bool countsAsFrame = true;
 };
 
 // ----------------------------------------------------------------------------
@@ -598,6 +604,20 @@ public:
 	}
 
 	// --- frame boundary (render thread) ------------------------------------
+	// A present only opens a new game frame when the game recorded frame work
+	// since the previous one (DX12RuntimeState::FrameWorkItems). When it did
+	// not, this present is a frame the renderer produced without the game
+	// advancing - frame generation presents an interpolated frame through the
+	// same swap chain - and it must not become a frame of the aggregation
+	// window: the window is the denominator of every per-frame number in the
+	// report, so counting generated presents halves all of them (a 5ms bucket
+	// reads 2.5ms) while the code under measurement did not change at all.
+	//
+	// The interval and the outside time stay on the game-frame axis for the
+	// same reason: a present that starts no frame has no meaningful
+	// present-to-present interval of its own, and the next real frame's
+	// interval is measured from the last real frame's present, not from the
+	// generated one in between.
 	static void FrameEnter(const char *api, void *swapChain)
 	{
 		if (!Enabled())
@@ -605,6 +625,16 @@ public:
 		(void)api;
 		(void)swapChain;
 		const LONGLONG now = QpcNow();
+		const LONG workItems = DX12RuntimeState::FrameWorkItems();
+		sCurrentFrameHasWork = workItems != sLastFrameWorkItems;
+		sLastFrameWorkItems = workItems;
+		if (!sCurrentFrameHasWork) {
+			// The clock still moves so a later real frame measures from the
+			// present that actually opened its frame.
+			InterlockedExchange64(&sLastPresentEnterQpc, now);
+			InterlockedExchange64(&sCurrentPresentEnterQpc, now);
+			return;
+		}
 		const LONGLONG previousEnter =
 			InterlockedExchange64(&sLastPresentEnterQpc, now);
 		const LONGLONG previousLeave = ReadLong64(&sLastPresentLeaveQpc);
@@ -631,8 +661,13 @@ public:
 		record.outsideUs = sCurrentOutsideUs;
 		record.presentWallUs = enter > 0 ? DeltaUs(enter, now) : 0;
 		record.present = DX12RuntimeState::GetPresentCount();
+		record.countsAsFrame = sCurrentFrameHasWork;
 
 		InterlockedExchange64(&sLastPresentLeaveQpc, now);
+		// The frame record is pushed for every present - the present-wall and
+		// the frame-wall maxima have to see the generated one too - but the
+		// record carries whether it counts as a frame, and the accumulator obeys
+		// it (see AccumulateWindow).
 		Count("Present.leave");
 		// The per-frame diagnostic plumbing is measured so the timeline's
 		// presentPerFrameCountersUs column reports something real: it used to
@@ -836,6 +871,19 @@ private:
 
 	static void AccumulateWindow(const DX12DiagFrameRecord &record)
 	{
+		// A present that opened no game frame is not a frame of this window. It
+		// is counted as the extra present it is, and only its present wall time
+		// joins the window totals: the game did nothing in it, and the interval
+		// and outside time it carries belong to the frame it was generated
+		// inside (see FrameEnter).
+		if (!record.countsAsFrame) {
+			++sWindowExtraPresents;
+			sWindowPresentWallUs += record.presentWallUs;
+			if (record.presentWallUs > sWindowMaxPresentWallUs)
+				sWindowMaxPresentWallUs = record.presentWallUs;
+			sWindowLast = record;
+			return;
+		}
 		++sWindowFrames;
 		sWindowFrameIntervalUs += record.frameIntervalUs;
 		sWindowOutsideUs += record.outsideUs;
@@ -849,6 +897,7 @@ private:
 		if (frameWallUs > sWindowMaxFrameWallUs)
 			sWindowMaxFrameWallUs = frameWallUs;
 		sWindowLast = record;
+		sWindowLastFrame = record;
 	}
 
 	// --- summary emission (writer thread only) --------------------------------
@@ -907,8 +956,13 @@ private:
 	inline static volatile LONG64 sCurrentPresentEnterQpc = 0;
 	inline static LONG64 sCurrentFrameIntervalUs = 0;
 	inline static LONG64 sCurrentOutsideUs = 0;
+	// Frame work recorded as of the previous present, and whether the present
+	// being processed opened a new game frame. See FrameEnter.
+	inline static LONG sLastFrameWorkItems = 0;
+	inline static bool sCurrentFrameHasWork = true;
 
 	inline static LONG sWindowFrames = 0;
+	inline static LONG sWindowExtraPresents = 0;
 	inline static LONG64 sWindowFrameIntervalUs = 0;
 	inline static LONG64 sWindowOutsideUs = 0;
 	inline static LONG64 sWindowPresentWallUs = 0;
@@ -916,6 +970,9 @@ private:
 	inline static LONG64 sWindowFrameWallUs = 0;
 	inline static LONG64 sWindowMaxFrameWallUs = 0;
 	inline static DX12DiagFrameRecord sWindowLast;
+	// Separate from sWindowLast: this is the last record that counted as a
+	// frame, so a generated present cannot become the report's identity.
+	inline static DX12DiagFrameRecord sWindowLastFrame;
 
 	// Wait-probe registrations (written rarely, read on every hooked wait).
 	inline static volatile LONG64 sLastFrameLatencyHandle = 0;
@@ -1562,6 +1619,7 @@ inline void DX12DiagProf::AppendFmt(std::string &out, const char *fmt, ...)
 inline void DX12DiagProf::ResetWindow()
 {
 	sWindowFrames = 0;
+	sWindowExtraPresents = 0;
 	sWindowFrameIntervalUs = 0;
 	sWindowOutsideUs = 0;
 	sWindowPresentWallUs = 0;
@@ -1569,18 +1627,23 @@ inline void DX12DiagProf::ResetWindow()
 	sWindowFrameWallUs = 0;
 	sWindowMaxFrameWallUs = 0;
 	sWindowLast = DX12DiagFrameRecord();
+	sWindowLastFrame = DX12DiagFrameRecord();
 }
 
 // One lightweight line per frame: the per-frame wall/interval pulse that used
-// to ride inside the per-frame DX12FrameTimeline line.
+// to ride inside the per-frame DX12FrameTimeline line. `countsAsFrame` is what
+// the accumulator decided about this present - false means the game recorded no
+// frame work since the previous one, i.e. a frame generation present.
 inline void DX12DiagProf::EmitFramePulse(std::string &out)
 {
 	AppendFmt(out,
 		"func=DX12FramePulse,\"present\":%ld,\"api\":\"%s\",\"hr\":\"0x%lx\","
+		"\"countsAsFrame\":%s,"
 		"\"frameIntervalUs\":%lld,\"outsidePresentUs\":%lld,\"presentWallUs\":%lld\n",
 		sWindowLast.present,
 		sWindowLast.api ? sWindowLast.api : "",
 		static_cast<unsigned long>(sWindowLast.hr),
+		sWindowLast.countsAsFrame ? "true" : "false",
 		static_cast<long long>(sWindowLast.frameIntervalUs),
 		static_cast<long long>(sWindowLast.outsideUs),
 		static_cast<long long>(sWindowLast.presentWallUs));
@@ -1596,10 +1659,12 @@ inline DX12ProfilingWindow DX12DiagProf::BuildWindowReport(
 	const Bucket *merged, UINT mergedCount)
 {
 	DX12ProfilingWindow w;
-	w.api = sWindowLast.api;
-	w.swapChain = sWindowLast.swapChain;
-	w.hr = sWindowLast.hr;
+	w.api = sWindowLastFrame.api ? sWindowLastFrame.api : sWindowLast.api;
+	w.swapChain = sWindowLastFrame.swapChain
+		? sWindowLastFrame.swapChain : sWindowLast.swapChain;
+	w.hr = sWindowLastFrame.api ? sWindowLastFrame.hr : sWindowLast.hr;
 	w.frames = sWindowFrames;
+	w.extraPresents = sWindowExtraPresents;
 	w.present = sWindowLast.present;
 	w.frameDraws = DX12RuntimeState::TakeFrameDraws();
 	w.frameDispatches = DX12RuntimeState::TakeFrameDispatches();
@@ -1757,7 +1822,7 @@ inline void DX12DiagProf::EmitFrameTimeline(
 {
 	AppendFmt(out,
 		"func=DX12FrameTimeline,\"present\":%ld,\"api\":\"%s\",\"swapchain\":\"%p\",\"hr\":\"0x%lx\","
-		"\"frames\":%ld,"
+		"\"frames\":%ld,\"extraPresents\":%ld,"
 		"\"frameIntervalUs\":%lld,\"frameWallUs\":%lld,\"outsidePresentUs\":%lld,"
 		"\"presentWallUs\":%lld,\"maxFrameWallUs\":%lld,"
 		"\"ourRootUs\":%lld,\"ourAllUs\":%lld,"
@@ -1791,6 +1856,7 @@ inline void DX12DiagProf::EmitFrameTimeline(
 		w.swapChain,
 		static_cast<unsigned long>(w.hr),
 		static_cast<long>(w.frames),
+		static_cast<long>(w.extraPresents),
 		static_cast<long long>(w.frameIntervalUs),
 		static_cast<long long>(w.frameWallUs),
 		static_cast<long long>(w.outsidePresentUs),
@@ -2163,9 +2229,13 @@ inline UINT DX12DiagProf::BuildRankedRows(
 	do { if (DX12DiagProf::Enabled()) \
 		DX12DiagProf::AddCpuStage(category, stage, kind, items, us); } while (0)
 #define DX12_PROF_FRAME_DRAW() \
-	do { if (DX12DiagProf::Enabled()) DX12RuntimeState::IncrementFrameDraws(); } while (0)
+	do { if (DX12DiagProf::Enabled()) { \
+		DX12RuntimeState::CountFrameWork(); \
+		DX12RuntimeState::IncrementFrameDraws(); } } while (0)
 #define DX12_PROF_FRAME_DISPATCH() \
-	do { if (DX12DiagProf::Enabled()) DX12RuntimeState::IncrementFrameDispatches(); } while (0)
+	do { if (DX12DiagProf::Enabled()) { \
+		DX12RuntimeState::CountFrameWork(); \
+		DX12RuntimeState::IncrementFrameDispatches(); } } while (0)
 
 #define DX12_PROF_STAGE_SCOPE(stage) \
 	DX12DiagProf::Scope DX12_DIAG_JOIN(_diagScope_, __LINE__)("Stage." #stage)

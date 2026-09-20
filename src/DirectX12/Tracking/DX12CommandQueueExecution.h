@@ -36,6 +36,19 @@ public:
 	{
 		DX12_PROF_SCOPE("ExecuteCommandLists");
 		DX12MarkStage("queue_execute_enter");
+		// A submission through this wrapper is the game advancing a frame, and
+		// it is the signal the profiler's frame boundary uses to tell a game
+		// frame from a frame generation present. Bumped for every path below
+		// (skipAll, internal replay, no-original): all of them are the game
+		// asking for work, and none of them is our own overlay submission -
+		// that one goes to the queue directly from DX12PresentOverlayCompose,
+		// so it can never mark an otherwise idle frame as a game frame.
+		// Behind the profiler gate like the recording around it: a session with
+		// the HUD off must not pay a shared atomic per submission. The gate is
+		// tested first so the HUD-less path is a single predicted-not-taken
+		// branch on an L1-resident flag, exactly like the DX12_PROF_* macros.
+		if (DX12DiagProf::Enabled() && numCommandLists)
+			DX12RuntimeState::CountFrameWork();
 		DX12_DIAG_QPC(totalBegin);
 		// Submission-gap probe: wall clock and this thread's CPU time since the
 		// previous ExecuteCommandLists. A large wall gap with a small CPU delta

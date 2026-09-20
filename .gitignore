@@ -234,3 +234,4 @@ dev_tests/*
 !dev_tests/executor_prepare_test.ps1
 !dev_tests/crash_report_test.cpp
 !dev_tests/crash_report_test.ps1
+

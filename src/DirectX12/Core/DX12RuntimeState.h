@@ -15,6 +15,7 @@ class DX12RuntimeState
 public:
 	inline static HINSTANCE module = nullptr;
 	inline static std::atomic<LONG> presentCount{ 0 };
+	inline static std::atomic<LONG> frameWorkItems{ 0 };
 	inline static std::atomic<LONG> runtimeMode{ static_cast<LONG>(DX12RuntimeMode::Mod) };
 
 	// Per-frame draw/dispatch counters feed diagnostics logs only. Sharded by
@@ -78,6 +79,30 @@ public:
 			shard = &frameCounterShards[index];
 		}
 		return shard;
+	}
+
+	// Frame work: anything the GAME recorded for a frame - a command list
+	// submitted through our queue hook, or a draw/dispatch through our list
+	// hook. The profiler's frame boundary reads this to answer "did a real game
+	// frame happen since the last Present?", which is what separates a game
+	// frame from a frame the renderer presented without the game advancing
+	// (DLSS/FSR frame generation presents a generated frame through the same
+	// swap chain between two real ones; counting those as frames halves every
+	// per-frame number in the report).
+	//
+	// One process-wide counter rather than the per-thread shards below: the
+	// frame boundary compares it across the whole process, and those shards are
+	// consumed by the per-frame draw/dispatch report. Callers evaluate the
+	// profiler gate themselves (see the DX12_PROF_* macros), so a session with
+	// the HUD off never pays for the shared atomic here.
+	static void CountFrameWork()
+	{
+		frameWorkItems.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	static LONG FrameWorkItems()
+	{
+		return frameWorkItems.load(std::memory_order_relaxed);
 	}
 
 	static void IncrementFrameDraws()
