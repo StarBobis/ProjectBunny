@@ -22,7 +22,9 @@
 //      self-contained report to the same d3d12_log.txt the user already reads:
 //      exception record, faulting registers, stack walk symbolized against the
 //      local PDB, every thread's RIP, the breadcrumb tail, and a minidump next
-//      to the log.
+//      to the log. The dump explicitly includes executable pages around the
+//      fault stack's PCs (bounded to 576 KiB), because transformed game code
+//      cannot necessarily be reconstructed from its on-disk executable.
 //   3. The previously installed filter is still called afterwards, so a game's
 //      own crash reporter keeps working exactly as before.
 //

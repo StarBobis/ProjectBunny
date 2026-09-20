@@ -45,6 +45,40 @@ void StoreShaderBytecode(
 }
 
 
+template<typename T>
+void CopyPsoArray(const T *source, size_t count, std::vector<T> *storage)
+{
+	storage->clear();
+	if (source && count)
+		storage->assign(source, source + count);
+}
+
+void CopyPsoCreationSnapshot(const DX12StoredPso &source, DX12StoredPso *target)
+{
+	// Snapshot only creation inputs, never the cached replacement or its
+	// ownership. The caller retains device/root-signature COM references before
+	// dropping gModLock, and releases them after native creation.
+	target->kind = source.kind;
+	target->device = source.device;
+	target->graphicsRootSignature = source.graphicsRootSignature;
+	target->computeRootSignature = source.computeRootSignature;
+	target->graphicsDesc = source.graphicsDesc;
+	target->computeDesc = source.computeDesc;
+	target->vsBytecode = source.vsBytecode;
+	target->psBytecode = source.psBytecode;
+	target->dsBytecode = source.dsBytecode;
+	target->hsBytecode = source.hsBytecode;
+	target->gsBytecode = source.gsBytecode;
+	target->csBytecode = source.csBytecode;
+	target->inputElements = source.inputElements;
+	target->inputSemantics = source.inputSemantics;
+	target->streamOutputEntries = source.streamOutputEntries;
+	target->streamOutputSemantics = source.streamOutputSemantics;
+	target->streamOutputStrides = source.streamOutputStrides;
+	target->cachedPsoBytes = source.cachedPsoBytes;
+	target->RebindOwnedPointers();
+}
+
 void DeepCopyGraphicsDesc(
 	const D3D12_GRAPHICS_PIPELINE_STATE_DESC *source, DX12StoredPso *record)
 {
@@ -57,6 +91,20 @@ void DeepCopyGraphicsDesc(
 	StoreShaderBytecode(source->DS, &record->dsBytecode, &record->graphicsDesc.DS);
 	StoreShaderBytecode(source->HS, &record->hsBytecode, &record->graphicsDesc.HS);
 	StoreShaderBytecode(source->GS, &record->gsBytecode, &record->graphicsDesc.GS);
+	CopyPsoArray(source->InputLayout.pInputElementDescs, source->InputLayout.NumElements, &record->inputElements);
+	record->inputSemantics.resize(record->inputElements.size());
+	for (size_t i = 0; i < record->inputElements.size(); ++i)
+		if (record->inputElements[i].SemanticName)
+			record->inputSemantics[i] = record->inputElements[i].SemanticName;
+	CopyPsoArray(source->StreamOutput.pSODeclaration, source->StreamOutput.NumEntries, &record->streamOutputEntries);
+	record->streamOutputSemantics.resize(record->streamOutputEntries.size());
+	for (size_t i = 0; i < record->streamOutputEntries.size(); ++i)
+		if (record->streamOutputEntries[i].SemanticName)
+			record->streamOutputSemantics[i] = record->streamOutputEntries[i].SemanticName;
+	CopyPsoArray(source->StreamOutput.pBufferStrides, source->StreamOutput.NumStrides, &record->streamOutputStrides);
+	CopyPsoArray(static_cast<const unsigned char*>(source->CachedPSO.pCachedBlob),
+		source->CachedPSO.CachedBlobSizeInBytes, &record->cachedPsoBytes);
+	record->RebindOwnedPointers();
 }
 
 
@@ -68,6 +116,9 @@ void DeepCopyComputeDesc(
 	if (record->computeRootSignature)
 		record->computeRootSignature->AddRef();
 	StoreShaderBytecode(source->CS, &record->csBytecode, &record->computeDesc.CS);
+	CopyPsoArray(static_cast<const unsigned char*>(source->CachedPSO.pCachedBlob),
+		source->CachedPSO.CachedBlobSizeInBytes, &record->cachedPsoBytes);
+	record->RebindOwnedPointers();
 }
 
 
@@ -1895,7 +1946,7 @@ void DX12ModRecordGraphicsPipelineState(
 			&drawDirectTextureChecksOnly);
 	}
 
-	gPsoRecords[pipelineState] = record;
+	gPsoRecords[pipelineState] = std::move(record);
 	ReleaseSRWLockExclusive(&gModLock);
 }
 
@@ -1935,7 +1986,7 @@ void DX12ModRecordComputePipelineState(
 			nullptr);
 	}
 
-	gPsoRecords[pipelineState] = record;
+	gPsoRecords[pipelineState] = std::move(record);
 	ReleaseSRWLockExclusive(&gModLock);
 }
 
@@ -2072,30 +2123,7 @@ ID3D12PipelineState *DX12ModGetReplacementPipelineState(ID3D12PipelineState *pip
 	}
 	record.replacementNoopGeneration = 0;
 
-	createRecord.kind = record.kind;
-	createRecord.device = record.device;
-	createRecord.graphicsRootSignature = record.graphicsRootSignature;
-	createRecord.computeRootSignature = record.computeRootSignature;
-	createRecord.graphicsDesc = record.graphicsDesc;
-	createRecord.computeDesc = record.computeDesc;
-	createRecord.vsBytecode = record.vsBytecode;
-	createRecord.psBytecode = record.psBytecode;
-	createRecord.dsBytecode = record.dsBytecode;
-	createRecord.hsBytecode = record.hsBytecode;
-	createRecord.gsBytecode = record.gsBytecode;
-	createRecord.csBytecode = record.csBytecode;
-	if (!createRecord.vsBytecode.empty())
-		createRecord.graphicsDesc.VS.pShaderBytecode = createRecord.vsBytecode.data();
-	if (!createRecord.psBytecode.empty())
-		createRecord.graphicsDesc.PS.pShaderBytecode = createRecord.psBytecode.data();
-	if (!createRecord.dsBytecode.empty())
-		createRecord.graphicsDesc.DS.pShaderBytecode = createRecord.dsBytecode.data();
-	if (!createRecord.hsBytecode.empty())
-		createRecord.graphicsDesc.HS.pShaderBytecode = createRecord.hsBytecode.data();
-	if (!createRecord.gsBytecode.empty())
-		createRecord.graphicsDesc.GS.pShaderBytecode = createRecord.gsBytecode.data();
-	if (!createRecord.csBytecode.empty())
-		createRecord.computeDesc.CS.pShaderBytecode = createRecord.csBytecode.data();
+	CopyPsoCreationSnapshot(record, &createRecord);
 	if (createRecord.device)
 		createRecord.device->AddRef();
 	if (createRecord.graphicsRootSignature)

@@ -1643,6 +1643,43 @@ void ProcessDx12KeyBindingsForFrame();
 class DX12StoredPso
 {
 public:
+	DX12StoredPso() = default;
+	// Descriptors point into the vectors below. An implicit copy duplicates
+	// the vectors but leaves the descriptor pointers targeting the source.
+	// Publication transfers storage; creation snapshots explicitly copy/rebind.
+	DX12StoredPso(const DX12StoredPso&) = delete;
+	DX12StoredPso &operator=(const DX12StoredPso&) = delete;
+	DX12StoredPso(DX12StoredPso&&) noexcept = default;
+	DX12StoredPso &operator=(DX12StoredPso&&) noexcept = default;
+
+	void RebindOwnedPointers()
+	{
+		graphicsDesc.VS = {vsBytecode.empty() ? nullptr : vsBytecode.data(), vsBytecode.size()};
+		graphicsDesc.PS = {psBytecode.empty() ? nullptr : psBytecode.data(), psBytecode.size()};
+		graphicsDesc.DS = {dsBytecode.empty() ? nullptr : dsBytecode.data(), dsBytecode.size()};
+		graphicsDesc.HS = {hsBytecode.empty() ? nullptr : hsBytecode.data(), hsBytecode.size()};
+		graphicsDesc.GS = {gsBytecode.empty() ? nullptr : gsBytecode.data(), gsBytecode.size()};
+		computeDesc.CS = {csBytecode.empty() ? nullptr : csBytecode.data(), csBytecode.size()};
+		for (size_t i = 0; i < inputElements.size(); ++i)
+			if (inputElements[i].SemanticName)
+				inputElements[i].SemanticName = inputSemantics[i].c_str();
+		graphicsDesc.InputLayout = {inputElements.empty() ? nullptr : inputElements.data(),
+			static_cast<UINT>(inputElements.size())};
+		for (size_t i = 0; i < streamOutputEntries.size(); ++i)
+			if (streamOutputEntries[i].SemanticName)
+				streamOutputEntries[i].SemanticName = streamOutputSemantics[i].c_str();
+		graphicsDesc.StreamOutput.pSODeclaration = streamOutputEntries.empty() ? nullptr : streamOutputEntries.data();
+		graphicsDesc.StreamOutput.NumEntries = static_cast<UINT>(streamOutputEntries.size());
+		graphicsDesc.StreamOutput.pBufferStrides = streamOutputStrides.empty() ? nullptr : streamOutputStrides.data();
+		graphicsDesc.StreamOutput.NumStrides = static_cast<UINT>(streamOutputStrides.size());
+		const D3D12_CACHED_PIPELINE_STATE cache = {
+			cachedPsoBytes.empty() ? nullptr : cachedPsoBytes.data(), cachedPsoBytes.size()};
+		if (kind == DX12PsoKind::Graphics)
+			graphicsDesc.CachedPSO = cache;
+		else
+			computeDesc.CachedPSO = cache;
+	}
+
 	DX12PsoKind kind = DX12PsoKind::Graphics;
 	ID3D12Device *device = nullptr;
 	ID3D12RootSignature *graphicsRootSignature = nullptr;
@@ -1655,6 +1692,12 @@ public:
 	std::vector<unsigned char> hsBytecode;
 	std::vector<unsigned char> gsBytecode;
 	std::vector<unsigned char> csBytecode;
+	std::vector<D3D12_INPUT_ELEMENT_DESC> inputElements;
+	std::vector<std::string> inputSemantics;
+	std::vector<D3D12_SO_DECLARATION_ENTRY> streamOutputEntries;
+	std::vector<std::string> streamOutputSemantics;
+	std::vector<UINT> streamOutputStrides;
+	std::vector<unsigned char> cachedPsoBytes;
 	ID3D12PipelineState *replacement = nullptr;
 	UINT64 replacementGeneration = 0;
 	UINT64 replacementNoopGeneration = 0;

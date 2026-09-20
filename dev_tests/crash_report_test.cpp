@@ -17,6 +17,7 @@
 #include "../src/DirectX12/Core/Diag/DX12CrashReport.h"
 
 #include <windows.h>
+#include <dbghelp.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -96,6 +97,61 @@ namespace
 			Contains(text, "func=DX12CrashDump,status=ok");
 	}
 
+	bool CodePagesMatchDump(const std::string &report, const std::string &dump)
+	{
+		if (dump.size() < sizeof(MINIDUMP_HEADER))
+			return false;
+		PMINIDUMP_DIRECTORY directory = nullptr;
+		PVOID stream = nullptr;
+		ULONG streamBytes = 0;
+		if (!MiniDumpReadDumpStream(const_cast<char*>(dump.data()), MemoryListStream,
+				&directory, &stream, &streamBytes) || streamBytes < sizeof(ULONG))
+			return false;
+		const auto *memory = static_cast<const MINIDUMP_MEMORY_LIST*>(stream);
+		if (memory->NumberOfMemoryRanges > (streamBytes - sizeof(ULONG)) / sizeof(MINIDUMP_MEMORY_DESCRIPTOR))
+			return false;
+		unsigned checked = 0;
+		unsigned runtimeOnlyPages = 0;
+		size_t cursor = 0;
+		const char *prefix = "func=DX12CrashCode,event=requested,";
+		while ((cursor = report.find(prefix, cursor)) != std::string::npos) {
+			cursor += strlen(prefix);
+			unsigned long long address = 0;
+			unsigned long bytes = 0, expectedHash = 0;
+			if (sscanf_s(report.c_str() + cursor, "address=0x%llx,bytes=%lu,fnv1a=0x%lx",
+				&address, &bytes, &expectedHash) != 3 || bytes != 4096)
+				return false;
+			const std::string line = report.substr(cursor, report.find('\n', cursor) - cursor);
+			if (Contains(line, "where=0x"))
+				++runtimeOnlyPages;
+			const char *data = nullptr;
+			for (ULONG i = 0; i < memory->NumberOfMemoryRanges; ++i) {
+				const auto &range = memory->MemoryRanges[i];
+				if (address < range.StartOfMemoryRange)
+					continue;
+				const auto offset = address - range.StartOfMemoryRange;
+				if (offset > range.Memory.DataSize || bytes > range.Memory.DataSize - offset)
+					continue;
+				const auto fileOffset = range.Memory.Rva + offset;
+				if (fileOffset > dump.size() || bytes > dump.size() - fileOffset)
+					return false;
+				data = dump.data() + fileOffset;
+				break;
+			}
+			if (!data)
+				return false;
+			ULONG hash = 2166136261u;
+			for (ULONG i = 0; i < bytes; ++i)
+				hash = (hash ^ static_cast<BYTE>(data[i])) * 16777619u;
+			if (hash != expectedHash)
+				return false;
+			++checked;
+		}
+		// Two readable generated-code pages; the preceding NOACCESS page must
+		// not be requested. Every requested module page must match too.
+		return checked >= 2 && checked <= 48 * 3 && runtimeOnlyPages == 2;
+	}
+
 	// ------------------------------------------------------------------
 	// Mock log writer: stands in for the DX12DiagLog writer thread, i.e. a
 	// FILE* opened once (truncating) that keeps writing at a file position of
@@ -148,9 +204,24 @@ namespace
 	// The crashing child. Never inlined so the report has a symbol to resolve.
 	__declspec(noinline) void CrashChild()
 	{
-		// Volatile, so the compiler cannot fold the fault away.
-		const int value = *static_cast<volatile int *>(nullptr);
-		std::printf("unreachable %d\n", value);
+		// The faulting code exists only in runtime memory, like a transformed
+		// game image: a debugger cannot recover these bytes from an EXE/PDB.
+		// Neighboring inaccessible pages exercise the capture's safety checks.
+		BYTE *pages = static_cast<BYTE*>(VirtualAlloc(nullptr, 5 * 4096,
+			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+		if (!pages)
+			ExitProcess(2);
+		memset(pages, 0xcc, 5 * 4096);
+		const BYTE fault[] = {0x31, 0xc0, 0x8b, 0x00, 0xc3}; // xor eax,eax; mov eax,[rax]; ret
+		memcpy(pages + 4096 + 128, fault, sizeof(fault));
+		DWORD oldProtection = 0;
+		if (!VirtualProtect(pages + 4096, 3 * 4096, PAGE_EXECUTE_READ, &oldProtection) ||
+			!VirtualProtect(pages, 4096, PAGE_NOACCESS, &oldProtection) ||
+			!VirtualProtect(pages + 4 * 4096, 4096, PAGE_NOACCESS, &oldProtection))
+			ExitProcess(2);
+		FlushInstructionCache(GetCurrentProcess(), pages + 4096, 3 * 4096);
+		reinterpret_cast<void(*)()>(pages + 4096 + 128)();
+		std::printf("unreachable\n");
 	}
 
 	LONG WINAPI PreviousHandler(EXCEPTION_POINTERS *)
@@ -203,6 +274,7 @@ namespace
 		std::string log;
 		std::string separateReport;
 		bool dumpFound = false;
+		bool codePagesMatch = false;
 		bool markerFound = false;
 		DWORD exitCode = 0;
 	};
@@ -261,6 +333,9 @@ namespace
 		if (search != INVALID_HANDLE_VALUE) {
 			result.dumpFound = ((static_cast<unsigned long long>(found.nFileSizeHigh) << 32) |
 				found.nFileSizeLow) > 0;
+			result.codePagesMatch = CodePagesMatchDump(
+				result.separateReport.empty() ? result.log : result.separateReport,
+				ReadTextFile(directory + L"\\" + found.cFileName));
 			FindClose(search);
 		}
 		result.markerFound = !ReadTextFile(markerPath).empty();
@@ -297,6 +372,10 @@ namespace
 		Check(!Contains(stuck.log, "func=DX12Crash,event=detected"),
 			"stuck writer: report kept out of the log it cannot own");
 		Check(stuck.dumpFound, "stuck writer: minidump is still written");
+
+		Check(plain.codePagesMatch, "baseline: every requested code page matches dump bytes, guard page excluded");
+		Check(parked.codePagesMatch, "parked writer: runtime-only and caller code retained in dump");
+		Check(stuck.codePagesMatch, "stuck writer: runtime-only and caller code retained in dump");
 
 		if (gFailures == 0) {
 			std::printf("ALL PASS: crash report, symbolized stack, breadcrumbs, minidump, "

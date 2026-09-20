@@ -173,6 +173,71 @@ namespace
 		}
 	}
 
+	// A normal minidump omits image code and expects the debugger to reload it
+	// from disk. That fails for WoLong: the running callsite bytes differ from
+	// the on-disk image. Preserve three executable pages around each fault-stack
+	// PC, not every module's code or the full address space (at most 576 KiB).
+	constexpr ULONG kCodePageBytes = 4096;
+	constexpr unsigned kMaxCodePages = kMaxStackFrames * 3;
+	struct CodePage
+	{
+		ULONG64 address = 0;
+	};
+	CodePage gCodePages[kMaxCodePages] = {};
+	unsigned gCodePageCount = 0;
+	unsigned gCodePageCursor = 0;
+	BYTE gCodePageScratch[kCodePageBytes] = {};
+
+	void CaptureStackCode(DWORD64 pc)
+	{
+		MEMORY_BASIC_INFORMATION pcInfo = {};
+		if (!pc || !VirtualQuery(reinterpret_cast<void*>(pc), &pcInfo, sizeof(pcInfo)))
+			return;
+		const DWORD64 page = pc & ~static_cast<DWORD64>(kCodePageBytes - 1);
+		for (int delta = -1; delta <= 1; ++delta) {
+			if (delta < 0 && page < kCodePageBytes)
+				continue;
+			const DWORD64 address = delta < 0 ? page - kCodePageBytes :
+				page + static_cast<DWORD64>(delta) * kCodePageBytes;
+			bool duplicate = false;
+			for (unsigned index = 0; index < gCodePageCount; ++index)
+				duplicate |= gCodePages[index].address == address;
+			if (duplicate || gCodePageCount == kMaxCodePages)
+				continue;
+			MEMORY_BASIC_INFORMATION info = {};
+			if (!VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) ||
+				info.State != MEM_COMMIT || info.AllocationBase != pcInfo.AllocationBase ||
+				(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) || !(info.Protect & 0xf0))
+				continue;
+			SIZE_T bytes = 0;
+			if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(address),
+					gCodePageScratch, sizeof(gCodePageScratch), &bytes) || bytes != sizeof(gCodePageScratch))
+				continue;
+			// The hash also lets a dump reader detect changes between stack
+			// capture and MiniDumpWriteDump, instead of trusting stale disk code.
+			ULONG hash = 2166136261u;
+			for (BYTE value : gCodePageScratch)
+				hash = (hash ^ value) * 16777619u;
+			gCodePages[gCodePageCount++].address = address;
+			char where[192] = {};
+			DescribeAddress(address, where, sizeof(where));
+			Report("DX12CrashCode", "event=requested,address=0x%llx,bytes=%lu,fnv1a=0x%08lx,where=%s",
+				static_cast<unsigned long long>(address), kCodePageBytes, hash, where);
+		}
+	}
+
+	BOOL CALLBACK DumpMemoryCallback(PVOID, const PMINIDUMP_CALLBACK_INPUT input,
+		PMINIDUMP_CALLBACK_OUTPUT output)
+	{
+		if (input->CallbackType != MemoryCallback)
+			return TRUE;
+		if (gCodePageCursor == gCodePageCount)
+			return FALSE;
+		output->MemoryBase = gCodePages[gCodePageCursor++].address;
+		output->MemorySize = kCodePageBytes;
+		return TRUE;
+	}
+
 	// The faulting thread's own stack, walked with the unwind tables loaded
 	// above. This is the half a minidump cannot give on its own: module order
 	// plus the wrapper's function names, in the log, without a debugger.
@@ -186,6 +251,7 @@ namespace
 		frame.AddrStack.Offset = context.Rsp;
 		frame.AddrStack.Mode = AddrModeFlat;
 
+		CaptureStackCode(context.Rip); // Still useful if unwinding itself fails.
 		CONTEXT walkContext = context;
 		unsigned reported = 0;
 		for (unsigned index = 0; index < kMaxStackFrames; ++index) {
@@ -195,6 +261,7 @@ namespace
 				break;
 			if (!frame.AddrPC.Offset)
 				break;
+			CaptureStackCode(frame.AddrPC.Offset);
 
 			char where[192] = {};
 			char symbol[512] = {};
@@ -304,8 +371,11 @@ namespace
 		const MINIDUMP_TYPE type = static_cast<MINIDUMP_TYPE>(
 			MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory |
 			MiniDumpWithUnloadedModules);
+		gCodePageCursor = 0;
+		MINIDUMP_CALLBACK_INFORMATION callback = {};
+		callback.CallbackRoutine = DumpMemoryCallback;
 		const BOOL ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
-			file, type, &dumpInfo, nullptr, nullptr);
+			file, type, &dumpInfo, nullptr, &callback);
 		LARGE_INTEGER size = {};
 		GetFileSizeEx(file, &size);
 		CloseHandle(file);
