@@ -268,12 +268,29 @@ Write-Host "Packaged: $zipPath" -ForegroundColor Green
 # ----------------------------------------------------------------------------
 Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cyan
 
+# Release notes for the versions whose user-visible content needs spelling
+# out. Tags not listed here fall back to the generic one-liner, so bumping
+# the version never requires touching this switch.
+$releaseBody = "ProjectBunny $tag - d3d12 x64 binary release."
+switch ($tag) {
+    'v0.1.12' {
+        $releaseBody = @'
+修复：
+- 修复卧龙启动崩溃：接管主 EXE 导入表里的 D3D12CreateDevice / D3D12GetDebugInterface / D3D12GetInterface（兼容序号导入），并修正交换链与资源包装的对象边界，不再让代理对象进入原生调用链。
+- 回退到 3e94127 的 IA 内容哈希四步与全屏闪烁修复，保留 DX12StoredPso 自有存储化与崩溃报告的改进。
+
+其它：
+- Profiling HUD 显示方式优化。
+'@
+    }
+}
+
 $release = Invoke-GitHubApi -Method Post `
     -Uri "https://api.github.com/repos/$releaseRepo/releases" `
     -Body @{
         tag_name   = $tag
         name       = "ProjectBunny $tag"
-        body       = "ProjectBunny $tag - d3d12 x64 binary release."
+        body       = $releaseBody
         draft      = $false
         prerelease = $false
     }
