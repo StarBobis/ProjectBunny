@@ -827,6 +827,14 @@ uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBinding &b
 		uint32_t hash = 0;
 		if (DX12TryGetTextureHash(binding.descriptor.resource, &hash))
 			return hash;
+		// Self-heal the single-shot upload-time hash gate: a capture lost to
+		// queue pressure, an unrecognized upload shape, or an upload that ran
+		// before tracking was enabled would otherwise keep this texture
+		// unmatched for the whole session. The request is deduped and
+		// cooldown-gated, so this costs one map lookup per call in steady
+		// state and the hash appears a frame or two after the first check.
+		DX12RequestTextureHashOnDemand(
+			binding.descriptor.resource, &binding.descriptor.resourceDesc);
 	}
 	return 0;
 }
@@ -1109,6 +1117,235 @@ bool DX12ModHasPotentialHashedIaTextureOverrideTargetByCount(
 
 
 
+// ---------------------------------------------------------------------------
+// TIMING-build diagnostics for FindDescriptorTextureOverrides.
+//
+// The function has seven silent exits and two silent caches. In steady state
+// the exit stage for a given (kind, stage, slot) target is constant, so a
+// scene switch that breaks texture replacement appears as a stage transition
+// (e.g. computed_matched -> computed_no_match with texNoHash>0 means the new
+// scene's textures never got a content hash; -> bindings_query_failed means
+// the binding tracker lost the heap). Only transitions are logged, a target
+// that toggles every draw is sampled after the first few flips, and a sparse
+// heartbeat proves the pipeline is still being reached when no transition
+// happens at all. Empty inline in non-TIMING builds.
+// ---------------------------------------------------------------------------
+enum DX12DescriptorOverrideMatchStage : uint32_t
+{
+	DX12DescOverrideStage_CacheHitEmpty = 0,
+	DX12DescOverrideStage_CacheHitMatches,
+	DX12DescOverrideStage_NoSnapshot,
+	DX12DescOverrideStage_NoPrefilterCandidates,
+	DX12DescOverrideStage_NoAllowedSections,
+	DX12DescOverrideStage_BindingsQueryFailed,
+	DX12DescOverrideStage_BindingsEmpty,
+	DX12DescOverrideStage_ComputedNoMatch,
+	DX12DescOverrideStage_ComputedMatched,
+	DX12DescOverrideStage_Count
+};
+
+static const char *DX12DescriptorOverrideMatchStageName(uint32_t stage)
+{
+	switch (stage) {
+	case DX12DescOverrideStage_CacheHitEmpty: return "cache_hit_empty";
+	case DX12DescOverrideStage_CacheHitMatches: return "cache_hit_matches";
+	case DX12DescOverrideStage_NoSnapshot: return "no_snapshot";
+	case DX12DescOverrideStage_NoPrefilterCandidates: return "no_prefilter_candidates";
+	case DX12DescOverrideStage_NoAllowedSections: return "no_allowed_sections";
+	case DX12DescOverrideStage_BindingsQueryFailed: return "bindings_query_failed";
+	case DX12DescOverrideStage_BindingsEmpty: return "bindings_empty";
+	case DX12DescOverrideStage_ComputedNoMatch: return "computed_no_match";
+	case DX12DescOverrideStage_ComputedMatched: return "computed_matched";
+	default: return "unknown";
+	}
+}
+
+struct DX12DescriptorOverrideStageLogEntry
+{
+	uint32_t lastStage = DX12DescOverrideStage_Count;
+	uint32_t toggles = 0;
+};
+
+// Per-target check state for the resolved-bindings path (the executor's
+// checktextureoverride evaluation). The fingerprint folds every
+// target-matching binding's (resourceHash, descriptorHash) pair, so a line is
+// logged not only on matched/no_match flips but whenever the underlying hash
+// state moves - e.g. the async readback finally publishing a texture's hash.
+struct DX12ResolvedOverrideCheckLogEntry
+{
+	uint64_t lastFingerprint = 0;
+	bool lastFound = false;
+	uint32_t toggles = 0;
+	bool seen = false;
+};
+
+static void DX12LogResolvedOverrideCheck(
+	uint32_t stage,
+	const Bunny::CommandListTarget &target,
+	const std::vector<DX12ResolvedGraphicsSrvBinding> *resolvedBindings,
+	size_t candidateCount,
+	bool found,
+	const std::vector<DX12TextureOverrideMatch> *matches)
+{
+#if DX12_TIMING_BUILD
+	static thread_local std::unordered_map<
+		uint64_t, DX12ResolvedOverrideCheckLogEntry> s_checkLogByTarget;
+	uint64_t fingerprint = 14695981039361056037ull;
+	uint32_t targetBindings = 0;
+	uint32_t texNoHash = 0;
+	if (resolvedBindings) {
+		for (const DX12ResolvedGraphicsSrvBinding &resolved : *resolvedBindings) {
+			if (!DescriptorBindingMatchesTarget(resolved.binding, target))
+				continue;
+			++targetBindings;
+			fingerprint ^=
+				(static_cast<uint64_t>(resolved.resourceHash) << 32) ^
+				resolved.descriptorHash ^ targetBindings;
+			fingerprint *= 1099511628211ull;
+			if (!resolved.resourceHash && resolved.binding.hasDescriptor &&
+				resolved.binding.descriptor.hasResourceDesc &&
+				resolved.binding.descriptor.resource &&
+				resolved.binding.descriptor.resourceDesc.Dimension ==
+					D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+				++texNoHash;
+		}
+	}
+	const uint64_t key =
+		(static_cast<uint64_t>(static_cast<uint32_t>(target.kind)) << 40) |
+		(static_cast<uint64_t>(static_cast<uint32_t>(target.stage)) << 32) |
+		target.slot;
+	DX12ResolvedOverrideCheckLogEntry &entry = s_checkLogByTarget[key];
+	if (entry.seen && entry.lastFound == found &&
+		entry.lastFingerprint == fingerprint)
+		return;
+	entry.seen = true;
+	entry.lastFound = found;
+	entry.lastFingerprint = fingerprint;
+	++entry.toggles;
+	if (entry.toggles > 4 && (entry.toggles & 0x3F) != 0)
+		return;
+	DX12_LOG("DX12TextureOverrideCheck",
+		"stage=%s,kind=%u,shaderStage=%u,slot=%u,found=%d,bindings=%u,"
+		"texNoHash=%u,candidates=%zu,firstHash=%08x,fingerprint=%llx,"
+		"toggles=%u",
+		DX12DescriptorOverrideMatchStageName(stage),
+		static_cast<uint32_t>(target.kind),
+		static_cast<uint32_t>(target.stage),
+		target.slot,
+		found ? 1 : 0,
+		targetBindings,
+		texNoHash,
+		candidateCount,
+		(found && matches && !matches->empty()) ?
+			matches->front().matchedHash : 0,
+		static_cast<unsigned long long>(fingerprint),
+		entry.toggles);
+	// Detail lines naming the exact resources that carry no content hash -
+	// the pointer is the correlation key against the DX12TextureHashTrack /
+	// DX12Readback* lines that explain WHY the hash is missing.
+	if (!texNoHash || !resolvedBindings)
+		return;
+	uint32_t detailed = 0;
+	for (const DX12ResolvedGraphicsSrvBinding &resolved : *resolvedBindings) {
+		if (detailed >= 4)
+			break;
+		if (!DescriptorBindingMatchesTarget(resolved.binding, target) ||
+			resolved.resourceHash ||
+			!resolved.binding.hasDescriptor ||
+			!resolved.binding.descriptor.hasResourceDesc ||
+			!resolved.binding.descriptor.resource ||
+			resolved.binding.descriptor.resourceDesc.Dimension !=
+				D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+			continue;
+		++detailed;
+		DX12_LOG("DX12TextureOverrideCheck",
+			"stage=binding_nohash,kind=%u,shaderStage=%u,slot=%u,"
+			"resource=%p,width=%llu,height=%u,mips=%u,format=%u,"
+			"descriptorHash=%08x",
+			static_cast<uint32_t>(target.kind),
+			static_cast<uint32_t>(target.stage),
+			target.slot,
+			resolved.binding.descriptor.resource,
+			static_cast<unsigned long long>(
+				resolved.binding.descriptor.resourceDesc.Width),
+			resolved.binding.descriptor.resourceDesc.Height,
+			resolved.binding.descriptor.resourceDesc.MipLevels,
+			static_cast<UINT>(
+				resolved.binding.descriptor.resourceDesc.Format),
+			resolved.descriptorHash);
+	}
+#else
+	(void)stage;
+	(void)target;
+	(void)resolvedBindings;
+	(void)candidateCount;
+	(void)found;
+	(void)matches;
+#endif
+}
+
+
+static void DX12LogDescriptorOverrideMatchStage(
+	uint32_t stage,
+	const Bunny::CommandListTarget &target,
+	uint32_t vertexCount,
+	uint32_t indexCount,
+	size_t bindingCount,
+	uint32_t textureBindingsWithoutHash,
+	size_t candidateCount,
+	uint32_t firstMatchedHash)
+{
+#if DX12_TIMING_BUILD
+	static thread_local std::unordered_map<
+		uint64_t, DX12DescriptorOverrideStageLogEntry> s_stageLogByTarget;
+	static thread_local uint32_t s_callsSinceHeartbeat = 0;
+	const uint64_t key =
+		(static_cast<uint64_t>(static_cast<uint32_t>(target.kind)) << 40) |
+		(static_cast<uint64_t>(static_cast<uint32_t>(target.stage)) << 32) |
+		target.slot;
+	// Liveness heartbeat: silence in this log means the draw pipeline stopped
+	// reaching descriptor matching at all (a negative cache upstream, or the
+	// hook gates dropped out) - a very different failure from a stage change.
+	if ((++s_callsSinceHeartbeat & 0x3FFF) == 1) {
+		DX12_LOG("DX12TextureOverrideMatch",
+			"stage=heartbeat,currentStage=%s",
+			DX12DescriptorOverrideMatchStageName(stage));
+	}
+	DX12DescriptorOverrideStageLogEntry &entry = s_stageLogByTarget[key];
+	if (entry.lastStage == stage)
+		return;
+	entry.lastStage = stage;
+	++entry.toggles;
+	if (entry.toggles > 4 && (entry.toggles & 0x3F) != 0)
+		return;
+	DX12_LOG("DX12TextureOverrideMatch",
+		"stage=%s,kind=%u,shaderStage=%u,slot=%u,vertexCount=%u,"
+		"indexCount=%u,bindings=%zu,texNoHash=%u,candidates=%zu,"
+		"firstHash=%08x,toggles=%u",
+		DX12DescriptorOverrideMatchStageName(stage),
+		static_cast<uint32_t>(target.kind),
+		static_cast<uint32_t>(target.stage),
+		target.slot,
+		vertexCount,
+		indexCount,
+		bindingCount,
+		textureBindingsWithoutHash,
+		candidateCount,
+		firstMatchedHash,
+		entry.toggles);
+#else
+	(void)stage;
+	(void)target;
+	(void)vertexCount;
+	(void)indexCount;
+	(void)bindingCount;
+	(void)textureBindingsWithoutHash;
+	(void)candidateCount;
+	(void)firstMatchedHash;
+#endif
+}
+
+
 bool FindDescriptorTextureOverrides(
 	ID3D12GraphicsCommandList *commandList,
 	const Bunny::CommandListTarget &target,
@@ -1152,7 +1389,7 @@ bool FindDescriptorTextureOverrides(
 	if (canUseSerialCache) {
 		auto cachedCandidates = tlsDescriptorCandidateCache.find(cacheKey);
 		if (cachedCandidates != tlsDescriptorCandidateCache.end()) {
-			return FilterDescriptorTextureOverrideCandidates(
+			const bool found = FilterDescriptorTextureOverrideCandidates(
 				cachedCandidates->second,
 				vertexCount,
 				indexCount,
@@ -1161,13 +1398,26 @@ bool FindDescriptorTextureOverrides(
 				firstIndex,
 				firstInstance,
 				matches);
+			DX12LogDescriptorOverrideMatchStage(
+				found ?
+					DX12DescOverrideStage_CacheHitMatches :
+					DX12DescOverrideStage_CacheHitEmpty,
+				target, vertexCount, indexCount, 0, 0,
+				cachedCandidates->second.size(),
+				(found && matches && !matches->empty()) ?
+					matches->front().matchedHash : 0);
+			return found;
 		}
 	}
 
 	const DX12CommandExecutionRuntimeSnapshot *snapshot =
 		LoadTextureOverrideRuntimeSnapshot();
-	if (!snapshot)
+	if (!snapshot) {
+		DX12LogDescriptorOverrideMatchStage(
+			DX12DescOverrideStage_NoSnapshot,
+			target, vertexCount, indexCount, 0, 0, 0, 0);
 		return false;
+	}
 	if (!HasPotentialDescriptorTriggeredPrefilterCandidates(
 			*snapshot,
 			vertexCount,
@@ -1177,6 +1427,9 @@ bool FindDescriptorTextureOverrides(
 				tlsDescriptorCandidateCache.clear();
 			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
 		}
+		DX12LogDescriptorOverrideMatchStage(
+			DX12DescOverrideStage_NoPrefilterCandidates,
+			target, vertexCount, indexCount, 0, 0, 0, 0);
 		return false;
 	}
 	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
@@ -1191,6 +1444,9 @@ bool FindDescriptorTextureOverrides(
 				tlsDescriptorCandidateCache.clear();
 			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
 		}
+		DX12LogDescriptorOverrideMatchStage(
+			DX12DescOverrideStage_NoAllowedSections,
+			target, vertexCount, indexCount, 0, 0, 0, 0);
 		return false;
 	}
 
@@ -1215,6 +1471,9 @@ bool FindDescriptorTextureOverrides(
 					tlsDescriptorCandidateCache.clear();
 				tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
 			}
+			DX12LogDescriptorOverrideMatchStage(
+				DX12DescOverrideStage_BindingsQueryFailed,
+				target, vertexCount, indexCount, 0, 0, 0, 0);
 			return false;
 		}
 	}
@@ -1224,10 +1483,14 @@ bool FindDescriptorTextureOverrides(
 				tlsDescriptorCandidateCache.clear();
 			tlsDescriptorCandidateCache.emplace(cacheKey, std::vector<DX12TextureOverrideMatch>());
 		}
+		DX12LogDescriptorOverrideMatchStage(
+			DX12DescOverrideStage_BindingsEmpty,
+			target, vertexCount, indexCount, 0, 0, 0, 0);
 		return false;
 	}
 
 	std::vector<DX12TextureOverrideMatch> candidates;
+	uint32_t textureBindingsWithoutHash = 0;
 	for (size_t index = 0; index < bindingsView->size(); ++index) {
 		const DX12CurrentShaderResourceBinding &binding = (*bindingsView)[index];
 		if (!DescriptorBindingMatchesTarget(binding, target))
@@ -1236,6 +1499,18 @@ bool FindDescriptorTextureOverrides(
 		// the per-index memo array that used to hold this value was written and
 		// read inside the same iteration and never consulted again.
 		const uint32_t resourceHash = HashDescriptorBindingResource(binding);
+#if DX12_TIMING_BUILD
+		// Scene-switch diagnostic counter: target-matching texture bindings
+		// whose resource has no published content hash. texNoHash>0 on a
+		// computed_no_match stage is the signature of the hash pipeline
+		// (not the matching pipeline) losing the scene's textures.
+		if (!resourceHash && binding.hasDescriptor &&
+			binding.descriptor.hasResourceDesc &&
+			binding.descriptor.resource &&
+			binding.descriptor.resourceDesc.Dimension ==
+				D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+			++textureBindingsWithoutHash;
+#endif
 		const uint32_t descriptorHash =
 			HashDescriptorBinding(commandList, cachedDevice, binding);
 		AppendTextureOverrideCandidateMatchesByHash(
@@ -1266,7 +1541,7 @@ bool FindDescriptorTextureOverrides(
 		tlsDescriptorCandidateCache.emplace(cacheKey, candidates);
 	}
 
-	return FilterDescriptorTextureOverrideCandidates(
+	const bool found = FilterDescriptorTextureOverrideCandidates(
 		candidates,
 		vertexCount,
 		indexCount,
@@ -1275,6 +1550,17 @@ bool FindDescriptorTextureOverrides(
 		firstIndex,
 		firstInstance,
 		matches);
+	DX12LogDescriptorOverrideMatchStage(
+		found ?
+			DX12DescOverrideStage_ComputedMatched :
+			DX12DescOverrideStage_ComputedNoMatch,
+		target, vertexCount, indexCount,
+		bindingsView ? bindingsView->size() : 0,
+		textureBindingsWithoutHash,
+		candidates.size(),
+		(found && matches && !matches->empty()) ?
+			matches->front().matchedHash : 0);
+	return found;
 }
 
 
@@ -2084,8 +2370,12 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 	if (!HasPotentialResolvedDescriptorPrefilterCandidates(
 			*snapshot,
 			vertexCount,
-			indexCount))
+			indexCount)) {
+		DX12LogResolvedOverrideCheck(
+			DX12DescOverrideStage_NoPrefilterCandidates,
+			target, &resolvedBindings, 0, false, nullptr);
 		return false;
+	}
 
 	static thread_local std::vector<uint32_t> tlsAllowedSectionIds;
 	CollectResolvedDescriptorPrefilterSectionIds(
@@ -2093,8 +2383,12 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 		vertexCount,
 		indexCount,
 		&tlsAllowedSectionIds);
-	if (tlsAllowedSectionIds.empty())
+	if (tlsAllowedSectionIds.empty()) {
+		DX12LogResolvedOverrideCheck(
+			DX12DescOverrideStage_NoAllowedSections,
+			target, &resolvedBindings, 0, false, nullptr);
 		return false;
+	}
 
 	std::vector<DX12TextureOverrideMatch> candidates;
 	for (const DX12ResolvedGraphicsSrvBinding &resolved : resolvedBindings) {
@@ -2125,7 +2419,7 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 		}
 	}
 
-	return FilterDescriptorTextureOverrideCandidates(
+	const bool found = FilterDescriptorTextureOverrideCandidates(
 		candidates,
 		vertexCount,
 		indexCount,
@@ -2134,6 +2428,12 @@ bool FindDescriptorTextureOverridesFromResolvedBindings(
 		firstIndex,
 		firstInstance,
 		matches);
+	DX12LogResolvedOverrideCheck(
+		found ?
+			DX12DescOverrideStage_ComputedMatched :
+			DX12DescOverrideStage_ComputedNoMatch,
+		target, &resolvedBindings, candidates.size(), found, matches);
+	return found;
 }
 
 

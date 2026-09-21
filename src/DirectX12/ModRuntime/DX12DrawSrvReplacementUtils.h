@@ -937,7 +937,15 @@ return sightings;
 			queued->rootParameterIndex = request.binding.rootParameterIndex;
 			queued->originalTable = request.binding.tableGpuStart;
 		}
-		return !replacement->drawSrvPatches.empty();
+		if (replacement->drawSrvPatches.empty()) {
+			// TIMING-build diagnostic: matching produced requests but every one
+			// was dropped (null resource or null replacement descriptor). The
+			// draw then executes unmodified with no other log line.
+			DX12_LOG("DX12DrawSrvReplacement",
+				"stage=queue_empty,requests=%zu", requests.size());
+			return false;
+		}
+		return true;
 	}
 
 	static bool ResolveTableHeap(

@@ -396,6 +396,18 @@ void InvalidateDescriptorHeapLocked(ID3D12DescriptorHeap *heap)
 	if (found == gDescriptorHeapByPtr.end() || found->second >= gDescriptorHeaps.size())
 		return;
 	DescriptorHeapRecord &record = gDescriptorHeaps[found->second];
+	// TIMING-build scene-switch marker: game descriptor heaps are usually
+	// torn down and rebuilt across a scene change. After this point every
+	// (heap ptr, heapVersion)-keyed cache must re-validate against the new
+	// heap - the version restarts at 1 on the recreated heap (ABA hazard).
+	DX12_LOG("DX12SceneSwitchTrace",
+		"stage=heap_invalidate,heap=%p,cpuStart=%llu,type=%u,"
+		"numDescriptors=%u,shaderVisible=%u",
+		heap,
+		static_cast<unsigned long long>(record.cpuStart),
+		static_cast<UINT>(record.desc.Type),
+		record.desc.NumDescriptors,
+		DescriptorHeapIsShaderVisible(record) ? 1u : 0u);
 	const SIZE_T cpuStart = record.cpuStart;
 	gDescriptorHeapByCpuStart.erase(cpuStart);
 	gDescriptorHeapByPtr.erase(found);

@@ -752,6 +752,29 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						dstResource, 0, dstDesc.Width);
 				}
 			}
+#if DX12_TIMING_BUILD
+			// Diagnostic coverage note: texture->texture CopyResource uploads
+			// never enter the texture hash cache (only CopyTextureRegion is
+			// tracked). A scene that streams its textures this way gets no
+			// content hashes, and hash-based overrides silently stop matching
+			// after the switch. Sampled; one line names the resource.
+			if (DX12HotPathState::NeedsTextureHashTracking(flags) && dstResource) {
+				const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
+				if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+					static volatile LONG s_copyResourceTextureLogCounter = 0;
+					if ((InterlockedIncrement(
+							&s_copyResourceTextureLogCounter) & 0xF) == 1) {
+						DX12_LOG("DX12TextureHashTrack",
+							"stage=skip,reason=copy_resource,resource=%p,"
+							"width=%llu,height=%u,format=%u",
+							dstResource,
+							static_cast<unsigned long long>(dstDesc.Width),
+							dstDesc.Height,
+							static_cast<UINT>(dstDesc.Format));
+					}
+				}
+			}
+#endif
 		DX12_PROF_STAGE_END(CopyResourceOp);
 		}
 

@@ -734,8 +734,14 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	const DX12StaticTextureReplacementEntry &entry = entryIt->second;
 	if (outTableGeneration)
 		*outTableGeneration = table->reloadGeneration;
-	if (entry.resourceName.empty())
+	if (entry.resourceName.empty()) {
+		// TIMING-build diagnostic: the hash IS a configured replacement
+		// target, so every failure past this point silently loses a mod.
+		DX12_LOG("DX12StaticTextureReplacement",
+			"stage=resolve_fail,reason=no_resource_name,hash=%08x",
+			originalHash);
 		return false;
+	}
 
 	// Device-only texture load: uploads execute on the private channel, so
 	// this stays callable from descriptor-write hooks that have no command
@@ -743,8 +749,12 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	DX12LoadedResource *resource =
 		DX12DdsTextureLoadUtils::EnsureLoadedDrawTextureSrvDeviceOnly(
 			device, entry.resourceName);
-	if (!resource)
+	if (!resource) {
+		DX12_LOG("DX12StaticTextureReplacement",
+			"stage=resolve_fail,reason=load_failed,hash=%08x,resource=%S",
+			originalHash, entry.resourceName.c_str());
 		return false;
+	}
 
 	if (sourceRecord) {
 		DX12DescriptorSummary originalDescriptor = {};
@@ -767,8 +777,15 @@ bool DX12ResolveStaticTextureReplacementSrv(
 		D3D12_CPU_DESCRIPTOR_HANDLE compatible =
 			DX12DrawTextureSrvViewUtils::EnsureCompatibleSrv(
 				device, resource, originalDescriptor, nullptr);
-		if (!compatible.ptr)
+		if (!compatible.ptr) {
+			DX12_LOG("DX12StaticTextureReplacement",
+				"stage=resolve_fail,reason=compatible_srv_failed,hash=%08x,"
+				"resource=%S,viewFormat=%u,viewDimension=%u",
+				originalHash, entry.resourceName.c_str(),
+				originalDescriptor.viewFormat,
+				originalDescriptor.viewDimension);
 			return false;
+		}
 		*outSrv = compatible;
 		if (outResource)
 			*outResource = resource->drawSrvTextureResource;
@@ -789,8 +806,12 @@ bool DX12ResolveStaticTextureReplacementSrv(
 	}
 	ReleaseSRWLockShared(&gStaticTextureReplacementResolveLock);
 
-	if (!resource->drawSrvCpu.ptr)
+	if (!resource->drawSrvCpu.ptr) {
+		DX12_LOG("DX12StaticTextureReplacement",
+			"stage=resolve_fail,reason=no_draw_srv,hash=%08x,resource=%S",
+			originalHash, entry.resourceName.c_str());
 		return false;
+	}
 	AcquireSRWLockExclusive(&gStaticTextureReplacementResolveLock);
 	DX12StaticTextureReplacementResolveCacheEntry &stored =
 		gStaticTextureReplacementResolveCache[originalHash];

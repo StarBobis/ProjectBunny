@@ -918,6 +918,81 @@ static std::unordered_map<ID3D12Resource*, CachedTextureHash> gTextureHashByReso
 static SRWLOCK gTextureHashLock = SRWLOCK_INIT;
 static std::atomic<UINT64> gTextureHashGeneration{1};
 
+// ---------------------------------------------------------------------------
+// On-demand texture hash self-healing.
+//
+// The upload-time tracking gate (DX12TrackTextureHashFromCopyTextureRegion)
+// is single-shot: a readback event lost to a full queue/ring, an upload shape
+// the gate does not recognize, or an upload that happened before tracking was
+// enabled all lose the texture's content hash for the rest of the session,
+// which silently disables hash-based texture overrides for it (observed as
+// "replacement dies after a scene switch").
+//
+// The readback pipeline does not actually need the upload: it copies the
+// texture's current top mip, which for a static texture equals the uploaded
+// content. So when override matching encounters an unhashed TEXTURE2D it can
+// simply request a capture here and the hash appears one or two frames later.
+//
+// Requests are deduped per resource with a cooldown and an attempt cap, so a
+// texture that can never be hashed (MSAA, unsupported format, >64MB, chronic
+// queue pressure) costs a few queue attempts per session, not one per draw.
+// Entries are erased when a hash publishes or the resource is invalidated,
+// so a streamed-out-then-back texture re-arms automatically.
+// ---------------------------------------------------------------------------
+struct OnDemandTextureHashRequest
+{
+	UINT64 lastAttemptTick = 0;
+	UINT attempts = 0;
+};
+
+static std::unordered_map<ID3D12Resource*, OnDemandTextureHashRequest>
+	gOnDemandTextureHashRequests;
+static SRWLOCK gOnDemandTextureHashRequestLock = SRWLOCK_INIT;
+static constexpr UINT64 kOnDemandTextureHashCooldownMs = 2000;
+static constexpr UINT kOnDemandTextureHashMaxAttempts = 5;
+
+static void DX12ForgetOnDemandTextureHashRequest(ID3D12Resource *resource)
+{
+	AcquireSRWLockExclusive(&gOnDemandTextureHashRequestLock);
+	gOnDemandTextureHashRequests.erase(resource);
+	ReleaseSRWLockExclusive(&gOnDemandTextureHashRequestLock);
+}
+
+bool DX12RequestTextureHashOnDemand(
+	ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc)
+{
+	if (!resource || !desc ||
+		desc->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		return false;
+	UINT attempt = 0;
+	const UINT64 now = GetTickCount64();
+	AcquireSRWLockExclusive(&gOnDemandTextureHashRequestLock);
+	OnDemandTextureHashRequest &request = gOnDemandTextureHashRequests[resource];
+	if (request.attempts >= kOnDemandTextureHashMaxAttempts ||
+		(request.lastAttemptTick &&
+		 now - request.lastAttemptTick < kOnDemandTextureHashCooldownMs)) {
+		ReleaseSRWLockExclusive(&gOnDemandTextureHashRequestLock);
+		return false;
+	}
+	request.lastAttemptTick = now;
+	++request.attempts;
+	attempt = request.attempts;
+	ReleaseSRWLockExclusive(&gOnDemandTextureHashRequestLock);
+
+	const bool queued = DX12AsyncReadbackQueueTextureCapture(resource, desc);
+	if (queued) {
+		DX12_LOG("DX12TextureHashCache",
+			"stage=on_demand_request,resource=%p,width=%llu,height=%u,"
+			"format=%u,attempt=%u",
+			resource,
+			static_cast<unsigned long long>(desc->Width),
+			desc->Height,
+			static_cast<UINT>(desc->Format),
+			attempt);
+	}
+	return queued;
+}
+
 bool DX12CacheTextureHash(
 	ID3D12Resource *resource, uint32_t hash, const D3D12_RESOURCE_DESC *desc, const char *source)
 {
@@ -933,6 +1008,21 @@ bool DX12CacheTextureHash(
 	AcquireSRWLockExclusive(&gTextureHashLock);
 	gTextureHashByResource[resource] = entry;
 	ReleaseSRWLockExclusive(&gTextureHashLock);
+	// Hash arrived: the on-demand requester (if any) is satisfied.
+	DX12ForgetOnDemandTextureHashRequest(resource);
+
+	// TIMING-build scene-switch diagnostic: every hash publish, one line per
+	// texture. After a scene change the modded texture's new resource must
+	// appear here with the SAME hash the override targets; absence means the
+	// upload never passed the copy-tracking gate.
+	DX12_LOG("DX12TextureHashCache",
+		"stage=store,resource=%p,hash=%08x,width=%llu,height=%u,mips=%u,"
+		"format=%u,source=%s",
+		resource, hash,
+		static_cast<unsigned long long>(entry.desc.Width),
+		entry.desc.Height, entry.desc.MipLevels,
+		static_cast<UINT>(entry.desc.Format),
+		source ? source : "");
 
 	return true;
 }
@@ -966,12 +1056,26 @@ void DX12InvalidateTextureHash(ID3D12Resource *resource)
 {
 	if (!resource)
 		return;
+	uint32_t erasedHash = 0;
 	AcquireSRWLockExclusive(&gTextureHashLock);
-	const size_t erased = gTextureHashByResource.erase(resource);
-	ReleaseSRWLockExclusive(&gTextureHashLock);
-	if (erased) {
-		gTextureHashGeneration.fetch_add(1, std::memory_order_relaxed);
+	std::unordered_map<ID3D12Resource*, CachedTextureHash>::iterator found =
+		gTextureHashByResource.find(resource);
+	if (found != gTextureHashByResource.end()) {
+		erasedHash = found->second.hash;
+		gTextureHashByResource.erase(found);
 	}
+	ReleaseSRWLockExclusive(&gTextureHashLock);
+	// Resource invalidated: drop any pending on-demand request so a new
+	// resource reusing this pointer starts with a clean request state. Must
+	// run even when no hash had published yet (request in flight).
+	DX12ForgetOnDemandTextureHashRequest(resource);
+	if (!erasedHash)
+		return;
+	gTextureHashGeneration.fetch_add(1, std::memory_order_relaxed);
+	// TIMING-build scene-switch diagnostic: resource released with a live hash
+	// (the scene teardown half of the hash lifecycle; pair with stage=store).
+	DX12_LOG("DX12TextureHashCache",
+		"stage=invalidate,resource=%p,hash=%08x", resource, erasedHash);
 }
 
 static bool DX12CopyRegionCoversTopMip(
@@ -998,6 +1102,41 @@ static bool DX12CopyRegionCoversTopMip(
 	return true;
 }
 
+// TIMING-build diagnostic: an upload rejected by the copy-tracking gate never
+// enters gTextureHashByResource, so content-hash overrides silently stop
+// matching that texture - the "replacement lost after a scene switch" class of
+// failure. Sampled: streaming scenes upload in bursts and the signal is the
+// reason mix, not every single copy. Empty inline in non-TIMING builds.
+static void DX12LogTextureHashTrackSkip(
+	const char *reason, ID3D12Resource *resource, UINT dstSubresource,
+	UINT srcType)
+{
+#if DX12_TIMING_BUILD
+	// Subresource-0 copies are the only ones that can ever produce a hash:
+	// log every rejection of those (a single skipped top mip is a permanent
+	// hash loss), and sample the mip-level noise.
+	if (dstSubresource != 0) {
+		static volatile LONG s_trackSkipLogCounter = 0;
+		if ((InterlockedIncrement(&s_trackSkipLogCounter) & 0xF) != 1)
+			return;
+	}
+	D3D12_RESOURCE_DESC desc = {};
+	if (resource)
+		desc = resource->GetDesc();
+	DX12_LOG("DX12TextureHashTrack",
+		"stage=skip,reason=%s,resource=%p,dstSubresource=%u,srcType=%u,"
+		"width=%llu,height=%u,format=%u",
+		reason ? reason : "", resource, dstSubresource, srcType,
+		static_cast<unsigned long long>(desc.Width), desc.Height,
+		static_cast<UINT>(desc.Format));
+#else
+	(void)reason;
+	(void)resource;
+	(void)dstSubresource;
+	(void)srcType;
+#endif
+}
+
 bool DX12TrackTextureHashFromCopyTextureRegion(
 	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,
 	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox)
@@ -1006,13 +1145,23 @@ bool DX12TrackTextureHashFromCopyTextureRegion(
 		return false;
 	if (dst->Type != D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX ||
 		dst->SubresourceIndex != 0 ||
-		src->Type != D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT)
+		src->Type != D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT) {
+		DX12LogTextureHashTrackSkip(
+			"copy_shape", dst->pResource,
+			dst->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX ?
+				dst->SubresourceIndex : UINT_MAX,
+			static_cast<UINT>(src->Type));
 		return false;
+	}
 
 	const D3D12_RESOURCE_DESC desc = dst->pResource->GetDesc();
 	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &footprint = src->PlacedFootprint;
-	if (!DX12CopyRegionCoversTopMip(desc, dstX, dstY, dstZ, footprint, srcBox))
+	if (!DX12CopyRegionCoversTopMip(desc, dstX, dstY, dstZ, footprint, srcBox)) {
+		DX12LogTextureHashTrackSkip(
+			"partial_cover", dst->pResource, dst->SubresourceIndex,
+			static_cast<UINT>(src->Type));
 		return false;
+	}
 
 	// Async texture hashing: queue a GPU readback of the texture's top mip
 	// instead of hashing the upload source synchronously on the recording
@@ -1022,7 +1171,14 @@ bool DX12TrackTextureHashFromCopyTextureRegion(
 	// the post-copy bytes of this texture. The worker publishes the hash one
 	// frame later; static textures (the normal override target) hash
 	// identically, so override matching is unaffected.
-	return DX12AsyncReadbackQueueTextureCapture(dst->pResource, &desc);
+	const bool queued = DX12AsyncReadbackQueueTextureCapture(dst->pResource, &desc);
+	DX12_LOG("DX12TextureHashTrack",
+		"stage=%s,resource=%p,width=%llu,height=%u,format=%u",
+		queued ? "queued" : "queue_rejected",
+		dst->pResource,
+		static_cast<unsigned long long>(desc.Width), desc.Height,
+		static_cast<UINT>(desc.Format));
+	return queued;
 }
 UINT64 DX12GetIaHashContentGeneration()
 {

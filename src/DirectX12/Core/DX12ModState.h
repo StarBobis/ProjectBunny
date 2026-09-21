@@ -349,6 +349,13 @@ bool DX12CacheTextureHash(
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
 UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
+// On-demand self-healing for the single-shot upload-time hash gate: override
+// matching calls this when it binds an unhashed TEXTURE2D, queueing a readback
+// capture of the texture's current top mip so the hash appears a frame or two
+// later instead of staying missing for the whole session. Deduped per resource
+// with a cooldown and an attempt cap (DX12ResourceContentHashing.cpp).
+bool DX12RequestTextureHashOnDemand(
+	ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc);
 
 // ---------------------------------------------------------------------------
 // Async content capture (copy-queue readback pipeline).

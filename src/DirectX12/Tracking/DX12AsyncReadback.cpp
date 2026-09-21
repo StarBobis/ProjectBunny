@@ -388,6 +388,37 @@ bool DX12ReadbackRecordBufferCopyLocked(
 	return true;
 }
 
+// TIMING-build diagnostic: an event dropped at record time never publishes
+// its hash. Both skips are silent by design (dynamic-resolution games produce
+// them routinely), so they are sampled - a scene switch that recreates
+// textures between enqueue and record shows up here as a burst.
+static void DX12LogReadbackTextureRecordSkip(
+	UINT reasonId, const char *reason, const DX12ReadbackEvent *event)
+{
+#if DX12_TIMING_BUILD
+	// Same permanent-loss rule as the enqueue rejects: every large-texture
+	// drop is logged, small drops are sampled per reason.
+	if (!event || event->desc.Width < 512) {
+		static volatile LONG s_recordSkipLogCounters[4] = {};
+		if (reasonId >= 4 ||
+			(InterlockedIncrement(&s_recordSkipLogCounters[reasonId]) & 0xF) != 1)
+			return;
+	}
+	DX12_LOG("DX12ReadbackSubmit",
+		"stage=texture_record_skip,reason=%s,resource=%p,width=%llu,"
+		"height=%u,format=%u",
+		reason ? reason : "",
+		event ? event->resource : nullptr,
+		static_cast<unsigned long long>(event ? event->desc.Width : 0),
+		event ? event->desc.Height : 0u,
+		static_cast<UINT>(event ? event->desc.Format : 0));
+#else
+	(void)reasonId;
+	(void)reason;
+	(void)event;
+#endif
+}
+
 bool DX12ReadbackRecordTextureCopyLocked(
 	ID3D12GraphicsCommandList *list,
 	DX12ReadbackEvent *event,
@@ -412,6 +443,7 @@ bool DX12ReadbackRecordTextureCopyLocked(
 	    liveDesc.MipLevels != event->desc.MipLevels ||
 	    liveDesc.Format != event->desc.Format ||
 	    liveDesc.SampleDesc.Count != event->desc.SampleDesc.Count) {
+		DX12LogReadbackTextureRecordSkip(0, "live_desc_changed", event);
 		return false;
 	}
 
@@ -419,8 +451,10 @@ bool DX12ReadbackRecordTextureCopyLocked(
 	bool known = false;
 	bool barrierTracked = false;
 	DX12GetResourceCurrentState(event->resource, &state, &known, &barrierTracked);
-	if (!known)
+	if (!known) {
+		DX12LogReadbackTextureRecordSkip(1, "state_unknown", event);
 		return false;
+	}
 	// The tracked state only gates the capture (unknown state -> skip); the
 	// barriers themselves always go through COMMON (see below).
 	(void)state;
@@ -750,28 +784,72 @@ bool DX12AsyncReadbackQueueBufferCapture(
 	return true;
 }
 
+// TIMING-build diagnostic for texture-hash coverage gaps: every reject here
+// is a texture that will NEVER get a content hash from this upload, which
+// silently disables hash-based override matching for it (the scene-switch
+// "replacement lost" failure class). Sampled per reason: queue_full can fire
+// for hundreds of events in one scene-load burst.
+static void DX12LogReadbackTextureQueueReject(
+	UINT reasonId, const char *reason, ID3D12Resource *texture,
+	const D3D12_RESOURCE_DESC *desc, UINT64 totalBytes)
+{
+#if DX12_TIMING_BUILD
+	// A rejected large texture is a permanent hash loss for a likely mod
+	// target (character maps are >=512): log every one of those, and only
+	// sample the small-texture noise (queue_full bursts included).
+	if (!desc || desc->Width < 512) {
+		static volatile LONG s_rejectLogCounters[8] = {};
+		if (reasonId >= 8 ||
+			(InterlockedIncrement(&s_rejectLogCounters[reasonId]) & 0xF) != 1)
+			return;
+	}
+	DX12_LOG("DX12ReadbackEnqueue",
+		"stage=texture_rejected,reason=%s,resource=%p,width=%llu,height=%u,"
+		"format=%u,bytes=%llu",
+		reason ? reason : "", texture,
+		static_cast<unsigned long long>(desc ? desc->Width : 0),
+		desc ? desc->Height : 0u,
+		static_cast<UINT>(desc ? desc->Format : 0),
+		static_cast<unsigned long long>(totalBytes));
+#else
+	(void)reasonId;
+	(void)reason;
+	(void)texture;
+	(void)desc;
+	(void)totalBytes;
+#endif
+}
+
 bool DX12AsyncReadbackQueueTextureCapture(
 	ID3D12Resource *texture, const D3D12_RESOURCE_DESC *desc)
 {
 	if (!texture || !desc)
 		return false;
-	if (desc->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+	if (desc->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+		DX12LogReadbackTextureQueueReject(0, "not_texture2d", texture, desc, 0);
 		return false;
-	if (desc->SampleDesc.Count > 1)
+	}
+	if (desc->SampleDesc.Count > 1) {
+		DX12LogReadbackTextureQueueReject(1, "msaa", texture, desc, 0);
 		return false;
+	}
 	const UINT rowCount = DX12TextureHashUtils::Texture2DTopMipRowCount(
 		desc->Format, desc->Height);
 	const UINT64 rowBytes = DX12TextureHashUtils::Texture2DTopMipRowBytes(
 		desc->Format, static_cast<UINT>(desc->Width));
-	if (!rowCount || !rowBytes)
+	if (!rowCount || !rowBytes) {
+		DX12LogReadbackTextureQueueReject(2, "unsupported_format", texture, desc, 0);
 		return false;
+	}
 	const UINT64 rowPitch =
 		(rowBytes + kReadbackAlign - 1) & ~(kReadbackAlign - 1);
 	if (rowCount > UINT64_MAX / rowPitch)
 		return false;
 	const UINT64 totalBytes = static_cast<UINT64>(rowCount) * rowPitch;
-	if (totalBytes > kReadbackEventMaxBytes)
+	if (totalBytes > kReadbackEventMaxBytes) {
+		DX12LogReadbackTextureQueueReject(3, "too_large", texture, desc, totalBytes);
 		return false;
+	}
 
 	DX12ReadbackEvent event;
 	event.kind = DX12ReadbackEventKind::Texture;
@@ -786,6 +864,7 @@ bool DX12AsyncReadbackQueueTextureCapture(
 	if (gReadbackPendingEvents.size() >= kReadbackPendingEventCap) {
 		ReleaseSRWLockExclusive(&gReadbackEventLock);
 		texture->Release();
+		DX12LogReadbackTextureQueueReject(4, "queue_full", texture, desc, totalBytes);
 		return false;
 	}
 	gReadbackPendingEvents.push_back(event);
@@ -902,6 +981,9 @@ void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 			if (bytes == 0 || bytes > kReadbackSlotMaxBytes ||
 			    alignedUsed + bytes > kReadbackSlotMaxBytes ||
 			    submittedCount >= kReadbackSubmitEventCap) {
+				// Silent hash loss: the texture event is released without a
+				// publish. TIMING builds log it (sampled).
+				DX12LogReadbackTextureRecordSkip(2, "ring_slot_overflow", &event);
 				if (event.resource)
 					event.resource->Release();
 				continue;

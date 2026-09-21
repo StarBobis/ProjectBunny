@@ -88,10 +88,23 @@ void DX12ResourceTrackerHookRuntime::RecordCreatedDescriptorHeap(
 
 	AcquireSRWLockExclusive(&gDescriptorLock);
 	auto found = gDescriptorHeapByPtr.find(record.heap);
-	if (found != gDescriptorHeapByPtr.end()) {
+	const bool replacedSamePointer = found != gDescriptorHeapByPtr.end();
+	if (replacedSamePointer) {
 		DescriptorHeapRecord &old = gDescriptorHeaps[found->second];
 		InvalidateDescriptorHeapLocked(old.heap);
 	}
+	// TIMING-build scene-switch marker: heap creation/destruction bounds a
+	// scene change in the log, and a same-pointer recreate is the ABA hazard
+	// every (heap ptr, heapVersion)-keyed cache is exposed to.
+	DX12_LOG("DX12SceneSwitchTrace",
+		"stage=heap_create,heap=%p,cpuStart=%llu,type=%u,numDescriptors=%u,"
+		"flags=0x%x,replacedSamePtr=%d",
+		record.heap,
+		static_cast<unsigned long long>(record.cpuStart),
+		static_cast<UINT>(record.desc.Type),
+		record.desc.NumDescriptors,
+		static_cast<UINT>(record.desc.Flags),
+		replacedSamePointer ? 1 : 0);
 	const size_t heapIndex = gDescriptorHeaps.size();
 	gDescriptorHeapByPtr[record.heap] = heapIndex;
 	if (record.cpuStart)
@@ -170,8 +183,27 @@ static void ApplyStaticReplacementToRecordedSrv(
 		return;
 
 	uint32_t textureHash = 0;
-	if (!DX12TryGetTextureHash(record.resource, &textureHash))
+	if (!DX12TryGetTextureHash(record.resource, &textureHash)) {
+		// TIMING-build scene-switch diagnostic: this SRV-creation hook is the
+		// ONLY point where a static replacement is applied, and the texture's
+		// content hash is published by the async readback one frame after the
+		// upload. An SRV created before the hash lands permanently keeps the
+		// original texture. Log every texture SRV that skips so the affected
+		// resource is identifiable by its desc.
+		if (record.hasResourceDesc &&
+			record.resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+			DX12_LOG("DX12StaticTextureReplacement",
+				"stage=skip_no_hash,resource=%p,dest=%llu,width=%llu,"
+				"height=%u,mips=%u,format=%u",
+				record.resource,
+				static_cast<unsigned long long>(destDescriptor.ptr),
+				static_cast<unsigned long long>(record.resourceDesc.Width),
+				record.resourceDesc.Height,
+				record.resourceDesc.MipLevels,
+				static_cast<UINT>(record.resourceDesc.Format));
+		}
 		return;
+	}
 	D3D12_CPU_DESCRIPTOR_HANDLE replacementSrv = {};
 	UINT64 replacementGeneration = 0;
 	if (!DX12ResolveStaticTextureReplacementSrv(
@@ -189,6 +221,11 @@ static void ApplyStaticReplacementToRecordedSrv(
 		return;
 	originalSimple(device, 1, destDescriptor, replacementSrv,
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	DX12_LOG("DX12StaticTextureReplacement",
+		"stage=applied,resource=%p,hash=%08x,dest=%llu,generation=%llu",
+		record.resource, textureHash,
+		static_cast<unsigned long long>(destDescriptor.ptr),
+		static_cast<unsigned long long>(replacementGeneration));
 
 	// Keep the original resource in shadow state, but publish that its physical
 	// descriptor bytes already match this static-rule generation. Future copies
