@@ -273,6 +273,17 @@ Write-Host "===== Publishing $tag to $releaseRepoUrl =====" -ForegroundColor Cya
 # the version never requires touching this switch.
 $releaseBody = "ProjectBunny $tag - d3d12 x64 binary release."
 switch ($tag) {
+    'v0.1.13' {
+        $releaseBody = @'
+修复：
+- 修复贴图替换在切换场景后失效的问题。旧的贴图内容哈希是单发追踪：上传时的捕获一旦丢失（读回队列压力、上传形状不被识别、上传发生在追踪开启之前），该贴图整场游戏都无法再被内容哈希匹配，表现为换场景后 mod 贴图悄然失效。现在改为 wanted-texture 集合 + 有界重试：任何对顶层 mip 的写入都会把贴图标记为"需要哈希"，读回管线按指数退避自动重试（最多 6 次、约 20 秒窗口），丢失的捕获只带来一两帧延迟，不再永久失效。
+- 贴图匹配时遇到未哈希贴图的按需补算也切换到同一管线：补算请求去重后进入重试循环，哈希在一两帧内发布，而不是按冷却时间零散重试。
+- 通过 CopyResource 整体拷贝上传的贴图此前完全没有内容哈希覆盖（只有 CopyTextureRegion 被追踪），现已纳入，以这种方式流式加载贴图的场景也能正常匹配。
+
+其它：
+- 覆盖口径从"上传形状识别"改为"内容写入标记"，移除旧的单发上传追踪、覆盖形状判定及相关诊断代码，逻辑更直接。
+'@
+    }
     'v0.1.12' {
         $releaseBody = @'
 修复：
