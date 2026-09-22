@@ -474,9 +474,14 @@ void InvalidateResourceLocked(ID3D12Resource *resource)
 		gCanonicalCache.erase(canonical);
 	ReleaseSRWLockExclusive(&gCanonicalCacheLock);
 	DX12InvalidateTextureHash(record.resource);
+	// The resource is mid-destruction: drop its wanted-texture pin without a
+	// Release (resourceDying=true; releasing would re-enter the destructor).
+	DX12ReadbackForgetWantedTexture(record.resource, true);
 	DX12InvalidateBufferContent(record.resource);
 	if (canonical != record.resource)
 		DX12InvalidateTextureHash(canonical);
+	if (canonical != record.resource)
+		DX12ReadbackForgetWantedTexture(canonical, true);
 	if (canonical != record.resource)
 		DX12InvalidateBufferContent(canonical);
 	record = ResourceRecord();

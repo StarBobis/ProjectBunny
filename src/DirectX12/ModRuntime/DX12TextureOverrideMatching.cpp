@@ -827,14 +827,12 @@ uint32_t HashDescriptorBindingResource(const DX12CurrentShaderResourceBinding &b
 		uint32_t hash = 0;
 		if (DX12TryGetTextureHash(binding.descriptor.resource, &hash))
 			return hash;
-		// Self-heal the single-shot upload-time hash gate: a capture lost to
-		// queue pressure, an unrecognized upload shape, or an upload that ran
-		// before tracking was enabled would otherwise keep this texture
-		// unmatched for the whole session. The request is deduped and
-		// cooldown-gated, so this costs one map lookup per call in steady
-		// state and the hash appears a frame or two after the first check.
-		DX12RequestTextureHashOnDemand(
-			binding.descriptor.resource, &binding.descriptor.resourceDesc);
+		// Mark the texture wanted: the readback pipeline captures its top mip
+		// (with bounded retries), so a missing hash - upload shape not
+		// recognized, capture dropped under load, upload before tracking -
+		// heals a frame or two after the first check instead of disabling the
+		// override for the whole session. Repeat marks are one locked probe.
+		DX12MarkTextureHashWanted(binding.descriptor.resource);
 	}
 	return 0;
 }

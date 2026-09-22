@@ -349,13 +349,6 @@ bool DX12CacheTextureHash(
 bool DX12TryGetTextureHash(ID3D12Resource *resource, uint32_t *hash);
 UINT64 DX12GetTextureHashGeneration();
 void DX12InvalidateTextureHash(ID3D12Resource *resource);
-// On-demand self-healing for the single-shot upload-time hash gate: override
-// matching calls this when it binds an unhashed TEXTURE2D, queueing a readback
-// capture of the texture's current top mip so the hash appears a frame or two
-// later instead of staying missing for the whole session. Deduped per resource
-// with a cooldown and an attempt cap (DX12ResourceContentHashing.cpp).
-bool DX12RequestTextureHashOnDemand(
-	ID3D12Resource *resource, const D3D12_RESOURCE_DESC *desc);
 
 // ---------------------------------------------------------------------------
 // Async content capture (copy-queue readback pipeline).
@@ -373,8 +366,16 @@ bool DX12RequestTextureHashOnDemand(
 // Implemented in the tracking TU (DX12ResourceTracking.cpp).
 bool DX12AsyncReadbackQueueBufferCapture(
 	ID3D12Resource *resource, UINT64 offset, UINT64 size);
-bool DX12AsyncReadbackQueueTextureCapture(
-	ID3D12Resource *texture, const D3D12_RESOURCE_DESC *desc);
+// Wanted-texture hash coverage (DX12AsyncReadback.cpp): a texture marked here
+// gets a top-mip content hash one or two frames later, with bounded retries
+// when the lossy pipeline drops its capture - a missed capture is a delay,
+// never a permanent hash loss. Called by the copy hooks on top-mip writes and
+// by override matching when it binds an unhashed TEXTURE2D. Repeat marks for
+// an already-wanted texture are a single locked probe. Forget is called on
+// publish (hash satisfied) and on resource destruction (resourceDying=true:
+// the pin is dropped without a Release, the object is mid-destruction).
+void DX12MarkTextureHashWanted(ID3D12Resource *texture);
+void DX12ReadbackForgetWantedTexture(ID3D12Resource *resource, bool resourceDying);
 // Cheap volatile gate: true when at least one capture event is pending a
 // submit. Called on the game's ExecuteCommandLists hot path.
 bool DX12AsyncReadbackHasPendingWork();
@@ -468,9 +469,6 @@ bool DX12ResolveStaticIaReplacement(
 	D3D12_INDEX_BUFFER_VIEW *outIndexView,
 	const D3D12_VERTEX_BUFFER_VIEW *originalVertexView,
 	D3D12_VERTEX_BUFFER_VIEW *outVertexView);
-bool DX12TrackTextureHashFromCopyTextureRegion(
-	const D3D12_TEXTURE_COPY_LOCATION *dst, UINT dstX, UINT dstY, UINT dstZ,
-	const D3D12_TEXTURE_COPY_LOCATION *src, const D3D12_BOX *srcBox);
 UINT64 DX12GetIaHashContentGeneration();
 UINT64 DX12GetIaHashResolveGeneration();
 uint32_t DX12HashDescriptorBufferView(

@@ -713,15 +713,22 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 				const D3D12_TEXTURE_COPY_LOCATION *activeSrc = pSrc;
 				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pDst, &dstStorage, &activeDst);
 				DX12WrapperRuntimeUtils::UnwrapTextureCopyLocation(pSrc, &srcStorage, &activeSrc);
-				// DX11-style gating: only maintain the texture hash cache on
-				// copies when a consumer (override matching / hunt / capture)
-				// can actually read it. The ungated path hashed the full top
-				// mip and took a global lock on every streaming copy.
-				if (DX12HotPathState::NeedsTextureHashTracking(copyFlags)) {
-					DX12TrackTextureHashFromCopyTextureRegion(
-						activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
-				}
-				mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
+			// DX11-style gating: only maintain the texture hash cache on
+			// copies when a consumer (override matching / hunt / capture)
+			// can actually read it. The ungated path hashed the full top
+			// mip and took a global lock on every streaming copy.
+			// Coverage is content-based, not upload-shape based: any write
+			// to the top mip marks the texture wanted; the readback pipeline
+			// captures it and retries until the hash publishes, so the copy
+			// shape (placed-footprint / full-cover / partial) no longer
+			// decides whether a texture can ever be matched by content hash.
+			if (DX12HotPathState::NeedsTextureHashTracking(copyFlags) &&
+				activeDst->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX &&
+				activeDst->SubresourceIndex == 0 &&
+				activeDst->pResource) {
+				DX12MarkTextureHashWanted(activeDst->pResource);
+			}
+			mCommandList->CopyTextureRegion(activeDst, DstX, DstY, DstZ, activeSrc, pSrcBox);
 			}
 
 		void STDMETHODCALLTYPE CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) override
@@ -752,29 +759,14 @@ class GraphicsCommandListWrapper final : public ID3D12GraphicsCommandList10, pub
 						dstResource, 0, dstDesc.Width);
 				}
 			}
-#if DX12_TIMING_BUILD
-			// Diagnostic coverage note: texture->texture CopyResource uploads
-			// never enter the texture hash cache (only CopyTextureRegion is
-			// tracked). A scene that streams its textures this way gets no
-			// content hashes, and hash-based overrides silently stop matching
-			// after the switch. Sampled; one line names the resource.
-			if (DX12HotPathState::NeedsTextureHashTracking(flags) && dstResource) {
-				const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
-				if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-					static volatile LONG s_copyResourceTextureLogCounter = 0;
-					if ((InterlockedIncrement(
-							&s_copyResourceTextureLogCounter) & 0xF) == 1) {
-						DX12_LOG("DX12TextureHashTrack",
-							"stage=skip,reason=copy_resource,resource=%p,"
-							"width=%llu,height=%u,format=%u",
-							dstResource,
-							static_cast<unsigned long long>(dstDesc.Width),
-							dstDesc.Height,
-							static_cast<UINT>(dstDesc.Format));
-					}
-				}
-			}
-#endif
+		// Texture->texture CopyResource writes the top mip too: mark the
+		// destination wanted so whole-resource uploads get content hashes
+		// (previously only CopyTextureRegion uploads were covered).
+		if (DX12HotPathState::NeedsTextureHashTracking(flags) && dstResource) {
+			const D3D12_RESOURCE_DESC dstDesc = dstResource->GetDesc();
+			if (dstDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+				DX12MarkTextureHashWanted(dstResource);
+		}
 		DX12_PROF_STAGE_END(CopyResourceOp);
 		}
 

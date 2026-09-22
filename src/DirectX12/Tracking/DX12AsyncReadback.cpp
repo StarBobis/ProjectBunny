@@ -108,6 +108,63 @@ std::atomic<UINT64> gReadbackPendingBytes{0};
 // the single per-Present submit; only multi-frame bursts trip the ECL path.
 constexpr UINT64 kReadbackEarlyFlushBytes = 16ull * 1024 * 1024;
 
+// ---------------------------------------------------------------------------
+// Wanted-texture set: textures that should carry a top-mip content hash but
+// do not (yet). Marked by the copy hooks on any top-mip write and by override
+// matching when it binds an unhashed TEXTURE2D. The first mark enqueues a
+// capture immediately; if that event dies anywhere in the lossy pipeline
+// (queue_full, ring-slot overflow, Close failure, stale desc, unknown state)
+// the entry stays wanted and the per-submit drain re-enqueues it with a
+// backoff, so a missed capture is a delay, never a permanent hash loss.
+// Entries leave the set only on publish, resource invalidation, giveup, or
+// TTL.
+//
+// Entries pin their texture (AddRef) so the drain can safely re-fetch the
+// live desc; the TTL bounds that pin for textures the game has dropped.
+// Guarded by gReadbackEventLock. Erased-entry Releases run AFTER unlock: a
+// Release can cascade into the destruction callback, which re-enters this
+// lock through DX12ReadbackForgetWantedTexture.
+// ---------------------------------------------------------------------------
+struct DX12WantedTextureEntry
+{
+	ID3D12Resource *resource = nullptr; // AddRef'd while the slot is live
+	UINT32 firstSeenTick = 0;           // coarse ticks (GetTickCount64 >> 9)
+	UINT32 lastEnqueueTick = 0;         // coarse ticks
+	UINT attempts = 0;                  // enqueues so far; dead = permanent reject
+};
+
+constexpr size_t kWantedTextureSlots = 4096; // power of two
+constexpr UINT kWantedTextureMaxAttempts = 6;
+constexpr UINT32 kWantedTextureTtlTicks = 40;  // ~20s pin bound (~0.5s units)
+constexpr UINT kWantedTextureDrainScan = 256;  // slots scanned per submit
+constexpr UINT kWantedTextureDrainBudget = 32; // re-enqueues per submit
+// Probe-chain tombstone: erased slots stay probe-transparent until reused.
+ID3D12Resource *const kWantedTextureTombstone =
+	reinterpret_cast<ID3D12Resource*>(static_cast<UINT_PTR>(~0ull));
+constexpr UINT32 kWantedTextureDead = 0xFFFFFFFFu;
+DX12WantedTextureEntry gWantedTextures[kWantedTextureSlots];
+size_t gWantedTextureCursor = 0;
+std::atomic<UINT> gWantedTextureCount{0};
+
+UINT32 DX12ReadbackCoarseTick()
+{
+	return static_cast<UINT32>(GetTickCount64() >> 9);
+}
+
+// Re-enqueue backoff in coarse ticks (~0.5s each): 1, 2, 4, 8, 16, then flat.
+UINT32 DX12WantedTextureBackoffTicks(UINT attempts)
+{
+	const UINT shift = attempts == 0 ? 0 : (attempts - 1 > 4 ? 4 : attempts - 1);
+	return 1u << shift;
+}
+
+size_t DX12WantedTextureHomeSlot(ID3D12Resource *resource)
+{
+	UINT64 h = reinterpret_cast<UINT64>(resource) >> 4;
+	h *= 0x9E3779B97F4A7C15ull;
+	return static_cast<size_t>(h >> 32) & (kWantedTextureSlots - 1);
+}
+
 SRWLOCK gReadbackChannelLock = SRWLOCK_INIT;
 ID3D12Device *gReadbackDevice = nullptr;
 ID3D12CommandQueue *gReadbackQueue = nullptr; // COPY queue, mod-owned
@@ -744,6 +801,22 @@ void DX12AsyncReadbackShutdown()
 		gReadbackWorkerEvent = nullptr;
 	}
 	ReleaseSRWLockExclusive(&gReadbackWorkerLock);
+
+	// Drop the remaining wanted-texture pins (the worker is stopped, so no
+	// drain can re-add entries). Releases run after unlock, same as the
+	// drain's erase path.
+	std::vector<ID3D12Resource*> pinned;
+	AcquireSRWLockExclusive(&gReadbackEventLock);
+	for (DX12WantedTextureEntry &entry : gWantedTextures) {
+		if (entry.resource && entry.resource != kWantedTextureTombstone) {
+			pinned.push_back(entry.resource);
+			entry.resource = nullptr;
+		}
+	}
+	gWantedTextureCount.store(0, std::memory_order_relaxed);
+	ReleaseSRWLockExclusive(&gReadbackEventLock);
+	for (ID3D12Resource *resource : pinned)
+		resource->Release();
 }
 
 bool DX12AsyncReadbackQueueBufferCapture(
@@ -820,55 +893,53 @@ static void DX12LogReadbackTextureQueueReject(
 #endif
 }
 
-bool DX12AsyncReadbackQueueTextureCapture(
-	ID3D12Resource *texture, const D3D12_RESOURCE_DESC *desc)
+// Enqueue one top-mip capture. Requires gReadbackEventLock held. Returns 0
+// when queued, 1 on a permanent reject (the texture can never be hashed:
+// dimension/MSAA/format/size), 2 on a transient reject (pending queue full).
+// The desc must be fresh (the caller fetches it) so resized textures
+// re-validate on every attempt instead of against a stale enqueue-time desc.
+static UINT DX12ReadbackEnqueueTextureCaptureLocked(
+	ID3D12Resource *texture, const D3D12_RESOURCE_DESC &desc)
 {
-	if (!texture || !desc)
-		return false;
-	if (desc->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-		DX12LogReadbackTextureQueueReject(0, "not_texture2d", texture, desc, 0);
-		return false;
+	if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+		DX12LogReadbackTextureQueueReject(0, "not_texture2d", texture, &desc, 0);
+		return 1;
 	}
-	if (desc->SampleDesc.Count > 1) {
-		DX12LogReadbackTextureQueueReject(1, "msaa", texture, desc, 0);
-		return false;
+	if (desc.SampleDesc.Count > 1) {
+		DX12LogReadbackTextureQueueReject(1, "msaa", texture, &desc, 0);
+		return 1;
 	}
 	const UINT rowCount = DX12TextureHashUtils::Texture2DTopMipRowCount(
-		desc->Format, desc->Height);
+		desc.Format, desc.Height);
 	const UINT64 rowBytes = DX12TextureHashUtils::Texture2DTopMipRowBytes(
-		desc->Format, static_cast<UINT>(desc->Width));
+		desc.Format, static_cast<UINT>(desc.Width));
 	if (!rowCount || !rowBytes) {
-		DX12LogReadbackTextureQueueReject(2, "unsupported_format", texture, desc, 0);
-		return false;
+		DX12LogReadbackTextureQueueReject(2, "unsupported_format", texture, &desc, 0);
+		return 1;
 	}
 	const UINT64 rowPitch =
 		(rowBytes + kReadbackAlign - 1) & ~(kReadbackAlign - 1);
 	if (rowCount > UINT64_MAX / rowPitch)
-		return false;
+		return 1;
 	const UINT64 totalBytes = static_cast<UINT64>(rowCount) * rowPitch;
 	if (totalBytes > kReadbackEventMaxBytes) {
-		DX12LogReadbackTextureQueueReject(3, "too_large", texture, desc, totalBytes);
-		return false;
+		DX12LogReadbackTextureQueueReject(3, "too_large", texture, &desc, totalBytes);
+		return 1;
+	}
+	if (gReadbackPendingEvents.size() >= kReadbackPendingEventCap) {
+		DX12LogReadbackTextureQueueReject(4, "queue_full", texture, &desc, totalBytes);
+		return 2;
 	}
 
 	DX12ReadbackEvent event;
 	event.kind = DX12ReadbackEventKind::Texture;
 	event.resource = texture;
-	event.desc = *desc;
+	event.desc = desc;
 	event.ringPitch = rowPitch;
 	event.rowCount = rowCount;
 	event.rowBytes = rowBytes;
 	texture->AddRef();
-
-	AcquireSRWLockExclusive(&gReadbackEventLock);
-	if (gReadbackPendingEvents.size() >= kReadbackPendingEventCap) {
-		ReleaseSRWLockExclusive(&gReadbackEventLock);
-		texture->Release();
-		DX12LogReadbackTextureQueueReject(4, "queue_full", texture, desc, totalBytes);
-		return false;
-	}
 	gReadbackPendingEvents.push_back(event);
-	ReleaseSRWLockExclusive(&gReadbackEventLock);
 	gReadbackPendingCount.fetch_add(1, std::memory_order_relaxed);
 	gReadbackPendingBytes.fetch_add(totalBytes, std::memory_order_relaxed);
 	{
@@ -878,20 +949,191 @@ bool DX12AsyncReadbackQueueTextureCapture(
 				"stage=enqueued,kind=texture,resource=%p,width=%llu,height=%u,"
 				"format=%u,bytes=%llu,flags=0x%llx",
 				texture,
-				static_cast<unsigned long long>(desc->Width),
-				desc->Height,
-				static_cast<UINT>(desc->Format),
+				static_cast<unsigned long long>(desc.Width),
+				desc.Height,
+				static_cast<UINT>(desc.Format),
 				static_cast<unsigned long long>(totalBytes),
 				static_cast<unsigned long long>(
 					DX12HotPathState::HookWorkFlags.load(std::memory_order_relaxed)));
 		}
 	}
-	return true;
+	return 0;
 }
 
 bool DX12AsyncReadbackHasPendingWork()
 {
 	return gReadbackPendingCount.load(std::memory_order_acquire) != 0;
+}
+
+static void DX12LogWantedTextureMark(ID3D12Resource *texture, UINT enqueueResult)
+{
+#if DX12_TIMING_BUILD
+	// First marks are the common case (one per streamed texture) and pair
+	// with the store/publish logs; sample them like the other copy-path logs.
+	static volatile LONG s_markLogCounter = 0;
+	if ((InterlockedIncrement(&s_markLogCounter) & 0x3F) != 1)
+		return;
+	DX12_LOG("DX12TextureHashWanted",
+		"stage=mark,resource=%p,enqueue=%u,wanted=%u",
+		texture, enqueueResult,
+		gWantedTextureCount.load(std::memory_order_relaxed));
+#else
+	(void)texture;
+	(void)enqueueResult;
+#endif
+}
+
+static void DX12LogWantedTextureDrain(UINT requeued, UINT givenUp)
+{
+#if DX12_TIMING_BUILD
+	// A requeue is the self-heal visibly at work (a capture died and is being
+	// retried): log every drain that requeued, sample giveup-only drains.
+	if (requeued == 0) {
+		static volatile LONG s_drainLogCounter = 0;
+		if ((InterlockedIncrement(&s_drainLogCounter) & 0x7) != 1)
+			return;
+	}
+	DX12_LOG("DX12TextureHashWanted",
+		"stage=drain,requeued=%u,givenUp=%u,wanted=%u",
+		requeued, givenUp,
+		gWantedTextureCount.load(std::memory_order_relaxed));
+#else
+	(void)requeued;
+	(void)givenUp;
+#endif
+}
+
+// Render-thread hot path: one locked probe for an already-wanted texture
+// (the steady state once a texture is marked); the first mark also validates
+// and enqueues the initial capture event under the same lock hold.
+void DX12MarkTextureHashWanted(ID3D12Resource *texture)
+{
+	if (!texture)
+		return;
+	const UINT32 tick = DX12ReadbackCoarseTick();
+	UINT enqueueResult = 3; // 3 = already wanted / set full, nothing queued
+	AcquireSRWLockExclusive(&gReadbackEventLock);
+	const size_t home = DX12WantedTextureHomeSlot(texture);
+	DX12WantedTextureEntry *freeSlot = nullptr;
+	for (size_t probe = 0; probe < kWantedTextureSlots; ++probe) {
+		DX12WantedTextureEntry &entry =
+			gWantedTextures[(home + probe) & (kWantedTextureSlots - 1)];
+		if (entry.resource == texture)
+			break;
+		if (entry.resource == kWantedTextureTombstone) {
+			if (!freeSlot)
+				freeSlot = &entry;
+			continue;
+		}
+		if (entry.resource)
+			continue;
+		// Empty slot: end of the probe chain, the texture is not wanted yet.
+		if (!freeSlot)
+			freeSlot = &entry;
+		break;
+	}
+	if (freeSlot &&
+		gWantedTextureCount.load(std::memory_order_relaxed) * 4 <
+			kWantedTextureSlots * 3) {
+		// Fetch the desc and enqueue under the same lock hold: this runs once
+		// per texture, not per copy (repeat marks stop at the probe above).
+		const D3D12_RESOURCE_DESC desc = texture->GetDesc();
+		enqueueResult = DX12ReadbackEnqueueTextureCaptureLocked(texture, desc);
+		freeSlot->resource = texture;
+		texture->AddRef(); // the set's pin, released at erase
+		freeSlot->firstSeenTick = tick;
+		freeSlot->lastEnqueueTick = tick;
+		freeSlot->attempts =
+			enqueueResult == 1 ? kWantedTextureDead : 1;
+		gWantedTextureCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	ReleaseSRWLockExclusive(&gReadbackEventLock);
+	DX12LogWantedTextureMark(texture, enqueueResult);
+}
+
+// Per-submit retry pass over the wanted set (both the ECL early flush and
+// the per-frame Present flush reach here). Scans a fixed window from a
+// round-robin cursor, so the per-frame cost stays bounded regardless of set
+// occupancy; re-enqueues at most kWantedTextureDrainBudget entries.
+static void DX12ReadbackDrainWantedTextures()
+{
+	if (gWantedTextureCount.load(std::memory_order_acquire) == 0)
+		return;
+	const UINT32 tick = DX12ReadbackCoarseTick();
+	ID3D12Resource *erased[kWantedTextureDrainScan];
+	UINT erasedCount = 0;
+	UINT requeued = 0;
+	UINT givenUp = 0;
+	AcquireSRWLockExclusive(&gReadbackEventLock);
+	for (UINT scanned = 0; scanned < kWantedTextureDrainScan; ++scanned) {
+		gWantedTextureCursor =
+			(gWantedTextureCursor + 1) & (kWantedTextureSlots - 1);
+		DX12WantedTextureEntry &entry = gWantedTextures[gWantedTextureCursor];
+		if (!entry.resource || entry.resource == kWantedTextureTombstone)
+			continue;
+		const bool expired = static_cast<UINT32>(tick - entry.firstSeenTick) >=
+			kWantedTextureTtlTicks;
+		const bool exhausted = entry.attempts != kWantedTextureDead &&
+			entry.attempts >= kWantedTextureMaxAttempts;
+		if (expired || exhausted) {
+			// The entry's pin is released after unlock: destruction from it
+			// re-enters this lock via the invalidation callback.
+			erased[erasedCount++] = entry.resource;
+			entry.resource = kWantedTextureTombstone;
+			gWantedTextureCount.fetch_sub(1, std::memory_order_relaxed);
+			++givenUp;
+			continue;
+		}
+		if (entry.attempts == kWantedTextureDead ||
+			requeued >= kWantedTextureDrainBudget ||
+			static_cast<UINT32>(tick - entry.lastEnqueueTick) <
+				DX12WantedTextureBackoffTicks(entry.attempts)) {
+			continue;
+		}
+		// Re-fetch the live desc: dynamic-resolution textures resize between
+		// attempts, and a stale enqueued desc fails the record-time check.
+		const D3D12_RESOURCE_DESC desc = entry.resource->GetDesc();
+		const UINT result =
+			DX12ReadbackEnqueueTextureCaptureLocked(entry.resource, desc);
+		entry.lastEnqueueTick = tick;
+		entry.attempts =
+			result == 1 ? kWantedTextureDead : entry.attempts + 1;
+		++requeued;
+	}
+	ReleaseSRWLockExclusive(&gReadbackEventLock);
+	for (UINT i = 0; i < erasedCount; ++i)
+		erased[i]->Release();
+	DX12LogWantedTextureDrain(requeued, givenUp);
+}
+
+// Removal on publish, resource invalidation, or shutdown. resourceDying means
+// the caller is the destruction callback: the entry's pin must be dropped
+// WITHOUT a Release (the object is mid-destruction; a Release would re-enter
+// the destructor). Otherwise the pin is released after unlock.
+void DX12ReadbackForgetWantedTexture(ID3D12Resource *resource, bool resourceDying)
+{
+	if (!resource)
+		return;
+	ID3D12Resource *pinned = nullptr;
+	AcquireSRWLockExclusive(&gReadbackEventLock);
+	const size_t home = DX12WantedTextureHomeSlot(resource);
+	for (size_t probe = 0; probe < kWantedTextureSlots; ++probe) {
+		DX12WantedTextureEntry &entry =
+			gWantedTextures[(home + probe) & (kWantedTextureSlots - 1)];
+		if (!entry.resource)
+			break; // empty slot ends the probe chain
+		if (entry.resource == kWantedTextureTombstone ||
+			entry.resource != resource) {
+			continue;
+		}
+		pinned = entry.resource;
+		entry.resource = kWantedTextureTombstone;
+		gWantedTextureCount.fetch_sub(1, std::memory_order_relaxed);
+		break;
+	}
+	ReleaseSRWLockExclusive(&gReadbackEventLock);
+	if (pinned && !resourceDying)
+		pinned->Release();
 }
 
 // Rate-limited submit-failure diagnostics. The failure path can run on every
@@ -921,6 +1163,9 @@ static UINT DX12ReadbackCompactRecordedEvents(std::vector<DX12ReadbackEvent> &ev
 void DX12ReadbackSubmitPendingImpl(ID3D12CommandQueue *gameQueue, bool force)
 {
 	DX12_DIAG_QPC(submitBegin);
+	// Re-arm wanted textures whose capture died in the lossy pipeline. This
+	// may enqueue events, so it runs before the pending-work gate.
+	DX12ReadbackDrainWantedTextures();
 	if (!gameQueue || gReadbackPendingCount.load(std::memory_order_acquire) == 0)
 		return;
 	// Small captures wait for the per-frame Present flush; only large bursts
