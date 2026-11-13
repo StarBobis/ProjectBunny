@@ -5280,7 +5280,12 @@
       "old STATIC pool initialization pollutes new globals during Constants"
     ],
     "validation": "PASS: full production and actual proxy DLL smoke CTest4/4 (13.77s); real valid-descriptor CreateBuffer E_OUTOFMEMORY and same-descriptor retry for copy/copy_desc; real native buffer RTV CRC; actual two-generation LoadConfig; optional export output combinations.",
-    "loop": "User requires another independent review after verified fixes; round6 pending before completion.",
-    "targetRuntime": "Game testing deferred by user; isolated loaded-proxy harness is not target-game deployment or upstream binary differential run; original per-commit runtime statuses preserved."
+    "loop": "Round6 fixes verified; independent round7 ongoing. Not complete until a full review round reports no new confirmed issue.",
+    "targetRuntime": "Game testing deferred by user; isolated loaded-proxy harness is not target-game deployment or upstream binary differential run; original per-commit runtime statuses preserved.",
+    "round6Confirmed": [
+      "lazy GetImmediateContext successful QueryInterface reference imbalance",
+      "lazy GetImmediateContext1 missing IniParams binding/init and hook setup"
+    ],
+    "round6Validation": "PASS: actual DLL native-before-proxy and ordinary load modes, native COM ownership control, all three IniParams creation routes; full CTest4/4 (17.18s), DirectX12 compatibility build, diff whitespace check."
   }
 }

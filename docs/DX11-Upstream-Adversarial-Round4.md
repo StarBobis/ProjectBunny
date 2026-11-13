@@ -42,6 +42,15 @@ STATIC 池回归为 `round5_config_regression.cpp`。第五轮 GPU 源链审查�
 
 配置隔离只对相应注册表提供作用域恢复，不意味着整个 LoadConfig 的所有设置和枚举 map 都能事务回滚；早期 C++ 异常恢复目前为源码审查，未做完整 OOM/线程交错穷举。未运行目标游戏、未向目标目录部署 DLL、未运行上游预编译 DLL 全功能差分。原有兼容差异及 WARP GenerateMips 非零 first-array-slice 限制继续保留。
 
-当前修复后仍须完成下一轮独立复审，不能仅凭已有构建和回归宣布循环结束。
-
 第五轮最终检查点：DirectX11/完整生产回归/实际 DLL 冒烟目标构建通过，完整 CTest 4/4 通过（13.77 秒），38 页及 87 个本地链接的文档检查、diff whitespace 检查通过。第六轮独立复审已启动，完成前保留循环待办。
+
+## 第六轮：COM 及 extended interface 复审
+
+配置和跨 pipeline 两组复审未确认新问题。创建/所有权组通过实际 DLL 再次复现两项遗漏，因此继续修复而未收尾：
+
+- `GetImmediateContext` 第一次延迟创建时，native GetImmediateContext 和成功 QueryInterface 分别增加引用，但未释放旧接口。加载代理前完成的独立原生对照 normal/late AddRef 计数为 2/2，代理为 2/3。成功 QI 后补 Release，保持失败 QI 的原引用转移路径。
+- `GetImmediateContext1` 延迟创建缺少 Bind/Init/Hook 处理。配置 allow_platform_update=1、Constants x=1 后，PS t120 正常创建/普通延迟/Context1 延迟绑定实测为 1/1/0。补齐与普通路径相同的初始化，并按 hook 模式选择返回原生或包装 context。
+
+上述断言已合并到原 `proxy_smoke.cpp`，没有再维护第二份重复宿主。测试分别运行普通旁加载、先加载原生运行库再加载代理两种隔离子进程。原生 refcount control 在加载代理前完成，避免 LoadLibrary 重定向使“原生对照”也调用代理。fixture 明确分配 IniParams，避免 0/0/0 空资源比较掩盖绑定遗漏。
+
+修复后完整 CTest 4/4 通过（15.85 秒），两种实际 DLL 加载模式均通过。第七轮独立复审已启动，尚未依据本轮通过结果收尾。

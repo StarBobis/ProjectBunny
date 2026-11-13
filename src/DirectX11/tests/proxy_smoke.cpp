@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <wrl/client.h>
 #include <cstdio>
 #include <cstring>
@@ -24,8 +25,27 @@ bool belongs_to_proxy(void* method, HMODULE proxy)
         reinterpret_cast<LPCWSTR>(method), &owner) && owner == proxy;
 }
 
-int run_child(const wchar_t* library)
+int run_child(const wchar_t* library, bool native_control)
 {
+    if (native_control) {
+        wchar_t system_dir[MAX_PATH]{};
+        check(GetSystemDirectoryW(system_dir, MAX_PATH) != 0, "locate system runtime");
+        const std::wstring native_path = std::wstring(system_dir) + L"\\d3d11.dll";
+        HMODULE native = LoadLibraryW(native_path.c_str());
+        const auto native_create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(GetProcAddress(native, "D3D11CreateDevice"));
+        check(native_create != nullptr, "resolve native creation control");
+        ComPtr<ID3D11Device> native_both, native_only;
+        ComPtr<ID3D11DeviceContext> native_context, native_late;
+        check(SUCCEEDED(native_create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &native_both, nullptr, &native_context)), "native both outputs");
+        check(SUCCEEDED(native_create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+            D3D11_SDK_VERSION, &native_only, nullptr, nullptr)), "native device only");
+        native_only->GetImmediateContext(&native_late);
+        const ULONG native_normal_refs = native_context->AddRef(); native_context->Release();
+        const ULONG native_late_refs = native_late->AddRef(); native_late->Release();
+        std::fprintf(stderr, "NATIVE refs normal=%lu late=%lu\n", native_normal_refs, native_late_refs);
+        check(native_normal_refs == native_late_refs, "native late context control has equal ownership");
+    }
     HMODULE proxy = LoadLibraryExW(library, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     check(proxy != nullptr, "load actual built proxy DLL and execute DllMain");
     for (const char* name : {"D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain", "CBTProc"})
@@ -71,6 +91,25 @@ int run_child(const wchar_t* library)
     check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
         D3D11_SDK_VERSION, &device_only, nullptr, nullptr)) && device_only,
         "proxy supports native default feature list and optional context output");
+    ComPtr<ID3D11DeviceContext> late_context;
+    device_only->GetImmediateContext(&late_context);
+    const ULONG late_refs = late_context->AddRef(); late_context->Release();
+    const ULONG normal_refs = context->AddRef(); context->Release();
+    std::fprintf(stderr, "CREATION refs normal=%lu late=%lu\n", normal_refs, late_refs);
+    ComPtr<ID3D11Device> device_one;
+    check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+        D3D11_SDK_VERSION, &device_one, nullptr, nullptr)), "device for lazy context1");
+    ComPtr<ID3D11Device1> device1;
+    check(SUCCEEDED(device_one.As(&device1)), "device1 supported");
+    ComPtr<ID3D11DeviceContext1> late1;
+    device1->GetImmediateContext1(&late1);
+    ComPtr<ID3D11ShaderResourceView> normal_ini, late_ini, late1_ini;
+    context->PSGetShaderResources(120, 1, &normal_ini);
+    late_context->PSGetShaderResources(120, 1, &late_ini);
+    late1->PSGetShaderResources(120, 1, &late1_ini);
+    std::fprintf(stderr, "INI bound normal=%d late=%d late1=%d\n", bool(normal_ini), bool(late_ini), bool(late1_ini));
+    check(normal_ini && late_ini && late1_ini, "all creation routes bind the configured IniParams resource");
+    check(late_refs == normal_refs, "late context creation preserves same COM ownership as ordinary creation");
     ComPtr<ID3D11DeviceContext> context_only;
     check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
         D3D11_SDK_VERSION, nullptr, nullptr, &context_only)) && context_only,
@@ -99,28 +138,30 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     std::filesystem::copy_file(library, copied);
     {
         std::ofstream ini(fixture / L"d3dx.ini", std::ios::binary);
-        ini << "[Logging]\ncalls=0\ndebug=0\n[Hunting]\nhunting=0\n";
+        ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=1\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
         check(ini.good(), "write owned isolated proxy configuration");
     }
     wchar_t executable[MAX_PATH]{};
     check(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "locate proxy smoke executable");
-    std::wstring command = L"\"" + std::wstring(executable) + L"\" --child \"" + copied.wstring() + L"\"";
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    check(CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-        nullptr, fixture.c_str(), &startup, &process) != FALSE, "launch isolated proxy child");
-    CloseHandle(process.hThread);
-    const DWORD wait = WaitForSingleObject(process.hProcess, 20000);
-    if (wait != WAIT_OBJECT_0) {
-        TerminateProcess(process.hProcess, 124);
-        WaitForSingleObject(process.hProcess, 5000);
+    for (const auto* mode : {L"--child", L"--child-native-control"}) {
+        std::wstring command = L"\"" + std::wstring(executable) + L"\" " + mode + L" \"" + copied.wstring() + L"\"";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        check(CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+            nullptr, fixture.c_str(), &startup, &process) != FALSE, "launch isolated proxy child");
+        CloseHandle(process.hThread);
+        const DWORD wait = WaitForSingleObject(process.hProcess, 10000);
+        if (wait != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 124);
+            WaitForSingleObject(process.hProcess, 5000);
+        }
+        DWORD code = 1;
+        const BOOL obtained = GetExitCodeProcess(process.hProcess, &code);
+        CloseHandle(process.hProcess);
+        std::fprintf(stderr, "proxy child exit=%08lx wait=%08lx fixture=%ls\n", code, wait, fixture.c_str());
+        check(wait == WAIT_OBJECT_0 && obtained && code == 0, "proxy child completes successfully within timeout");
     }
-    DWORD code = 1;
-    const BOOL obtained = GetExitCodeProcess(process.hProcess, &code);
-    CloseHandle(process.hProcess);
-    std::fprintf(stderr, "proxy child exit=%08lx wait=%08lx fixture=%ls\n", code, wait, fixture.c_str());
-    check(wait == WAIT_OBJECT_0 && obtained && code == 0, "proxy child completes successfully within timeout");
     // Only remove this process's exclusively created fixture after child exit.
     check(std::filesystem::weakly_canonical(fixture).parent_path() == base,
         "verify exact owned cleanup boundary");
@@ -134,7 +175,10 @@ int wmain(int argc, wchar_t** argv)
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     try {
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
-        return std::wstring(argv[1]) == L"--child" ? run_child(argv[2]) : run_parent(argv[1], argv[2]);
+        const std::wstring mode(argv[1]);
+        if (mode == L"--child" || mode == L"--child-native-control")
+            return run_child(argv[2], mode == L"--child-native-control");
+        return run_parent(argv[1], argv[2]);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL loaded proxy smoke: %s (Win32=%lu)\n", error.what(), GetLastError());
         return 1;
