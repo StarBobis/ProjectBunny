@@ -456,6 +456,16 @@ PS dump 使用 original shader hash 的声明快照；缓存命中但无声明�
 
 最终完整 CMake/MSVC C++17 DLL/生产回归构建通过；测试夹具 enum 三项 OR 按本地返回 int 的 operator 适配后编译成功。完整 CTest **3/3**：legacy0.02秒、generator10.63秒、主回归1.90秒，总12.55秒，证据 `so-shader-final-{ctest,LastTest}.log`。DX12兼容目标成功、无待编项；37页84本地链接/锚点/fence零错误。无游戏、部署或 deferred SO 验证。累计250项 implemented-awaiting-validation、78项 skipped、8项 pending，已处理328/336，goal保持 active。
 
+## 第二十八批：纹理上传追踪、dHash 与 HammingDistance
+
+最后八项 `fdee8ddf..eae473b3` 已逐补丁适配，保留 CMake/C++17。完整逐项说明与验证见账本；新增生产 TextureUploadTracking/DHash64Gpu 均接入 DLL 和完整生产回归。上传追踪采用实际尺寸、多 subresource Map、执行时发布的有序 deferred journal；配置/池/THIS/range 的原始格式与64位参考哈希通过同次源解析快照传递。dHash 保留上游采样算法，隔离应用输出别名并恢复 GPU 状态；缓存区分合法零、格式/mip策略和资源身份，重验证发布，GPU计算不持 G/resources 锁。Hash 参数不经浮点；Hamming仅接受 ResourceReference，保0/64特殊规则及-2/-1错误。
+
+真实 WARP/CPU oracle、GPU状态/COM、INI、缓存命中/重载/格式/mip、更新与回绕竞态、日志、动态池/namespace/共享参数与随机一次解析均通过。主回归最后单独执行4.85秒通过，完整 CTest3/3见 `build/upstream/dhash-final-ctest.log`；两项隔离回归及DX12兼容通过，38页87本地链接/锚点/fence零错误。
+
+保留明确环境边界：独立 debug WARP（InfoQueue可用、格式autogen支持、无报错）在不同尺寸/mip数量下均复现非零 FirstArraySlice 的 GenerateMips不生成低层，slice0与全数组正常。测试保严格正常颜色断言，并对受影响路径逐像素比较原生与包装行为，选中slice元数据和源不变断言保留；目标驱动此路径仍待验证。独立证据 `build/upstream/native-mips-probe/result.log`。Deferred Map另发现该WARP返回RowPitch0，原夹具因此未写数据；仅已知RGBA夹具采用显式布局填充，原生对照和包装路径完整像素断言均通过，未修改生产Map返回。
+
+累计258项 implemented-awaiting-validation、78项 skipped、0项 pending，336项均已审查处置。实现同步至所观察tip不等于目标游戏已验证；目标环境及上述驱动差异仍保待验证，goal保持active。未部署或启动游戏。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。

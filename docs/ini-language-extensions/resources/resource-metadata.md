@@ -67,6 +67,28 @@ $mip_count = ResourceTexture->Mips
 
 Named `DXGI_FORMAT_*` values can be used as numeric expression literals. An invalid format name is rejected rather than silently becoming `UNKNOWN`.
 
+### `OriginalFormat`
+
+`ResourceReference->OriginalFormat` returns the numeric DXGI format declared by `original_format` in that custom resource's section. It describes a reference resource's expected format, rather than changing the allocation or reporting its current view format. The default is `-1`; an invalid format also leaves `-1`. Pipeline targets return `-1` for this getter. The declaration can be read before the custom resource has a native allocation.
+
+```ini
+[ResourceReference]
+original_format = R8G8B8A8_UNORM
+original_dhash = 0123456789abcdef
+
+[Constants]
+global $reference_format = -1
+
+[CommandListReadReferenceMetadata]
+$reference_format = ResourceReference->OriginalFormat
+```
+
+Both `original_format` and `original_dhash` are reference metadata. Their defaults are `-1` and `0`, respectively. `original_dhash` is parsed and stored as an exact 64-bit hexadecimal value; it does not pass through an INI float variable. Use up to 16 hexadecimal digits, without a `0x` prefix, for the full-width form. Invalid or overflowing complete literals use `0`.
+
+Successful custom-to-custom `ref`, `copy` and `copy_desc` operations carry this pair with the selected source, including resource-pool elements. Pool templates and lazy elements copy the reference metadata. A successful capture from a pipeline slot supplies the defaults `-1`/`0`. Assigning `null`, clearing a resource or resetting its runtime allocation retains its existing reference metadata; these actions do not erase the declaration pair.
+
+See [perceptual hashes](perceptual-hash.md) for comparing a texture against `original_dhash`. The hexadecimal value above is an example to replace with a hash captured for the intended reference image.
+
 ### `Width`
 
 Returns the full texture resource's width in texels, rather than the width of the selected view mip or array slice. A configured custom width override may be returned before instantiation. Otherwise a buffer returns `NOT_A_TEXTURE` (`-4`), and an unavailable resource returns `-2`.

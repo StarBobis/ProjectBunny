@@ -2843,6 +2843,8 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 			return texture_filter_target.GetResourceArray(state);
 		case ResourceCopyTargetEvaluationMode::RESOURCE_MIPS:
 			return texture_filter_target.GetResourceMips(state);
+        case ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE:
+            return texture_filter_target.GetResourceHammingDistance(state);
 		case ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS:
 			return static_cast<float>(texture_filter_target.GetResourceBindFlags(state));
 
@@ -2867,6 +2869,12 @@ float CommandListOperand::process_texture_filter(CommandListState *state)
 				// Return -1 for ResourceCopyTarget with non-custom resource
 				return -1.0f;
 		}
+
+        case ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT: {
+            const auto* resource = texture_filter_target.GetCustomResource(state);
+            return !resource || resource->original_format == static_cast<DXGI_FORMAT>(-1) ? -1.0f :
+                static_cast<float>(resource->original_format);
+        }
 
 		case ResourceCopyTargetEvaluationMode::POOL_INDEX:
 		{
@@ -4082,6 +4090,32 @@ bool CommandArgumentReader::GetFloat(float* out)
 	LogDebugW(L"  Float: '%ls'\n", token.c_str());
 
 	return true;
+}
+
+bool CommandArgumentReader::GetHash(uint64_t* out)
+{
+    if (!out) return false;
+    *out = 0;
+    std::wstring token;
+    if (!PeekToken(&token)) return false;
+    const size_t first = token.size() >= 2 && token[0] == L'0' && token[1] == L'x' ? 2 : 0;
+    const size_t digits = token.size() - first;
+    uint64_t value = 0;
+    bool valid = digits > 0 && digits <= 16;
+    for (size_t i = first; valid && i < token.size(); ++i) {
+        const wchar_t c = token[i];
+        if (c >= L'0' && c <= L'9') value = (value << 4) | (c - L'0');
+        else if (c >= L'a' && c <= L'f') value = (value << 4) | (c - L'a' + 10);
+        else valid = false;
+    }
+    if (!valid) {
+        SetError(L"Invalid hash: " + token, m_peek_start_pos);
+        return false;
+    }
+    ConsumeToken();
+    *out = value;
+    LogDebugW(L"  Hash: '%ls'\n", token.c_str());
+    return true;
 }
 
 bool CommandArgumentReader::GetExpression(unique_ptr<CommandListExpression>* out)
@@ -5750,6 +5784,8 @@ CustomResource::CustomResource() :
 	offset(0),
 	buf_size(0),
 	format(DXGI_FORMAT_UNKNOWN),
+    original_format(static_cast<DXGI_FORMAT>(-1)),
+    original_dhash(0),
 	source_stride(0),
 	max_copies_per_frame(0),
 	frame_no(0),
@@ -6322,6 +6358,8 @@ void CustomResource::CopyMetadataFrom(const CustomResource& src)
     // Only declaration/config metadata is copied. Keep runtime buf_size and
     // its count/extent discriminator together, just like resource and offset.
 	max_copies_per_frame = src.max_copies_per_frame;
+    original_format = src.original_format;
+    original_dhash = src.original_dhash;
 
 	filename = src.filename;
 
@@ -7446,6 +7484,23 @@ bool SyntaxTarget::ParseMemberArguments(
 			break;
 		}
 
+		case MemberArg::Type::Hash:
+        {
+            uint64_t hash = 0;
+            if (!args.GetHash(&hash)) return args.Fail();
+            member_args[i].constant_hash = hash;
+            member_args[i].type = MemberArg::Type::Hash;
+            break;
+        }
+        case MemberArg::Type::Resource:
+        {
+            auto resource = std::make_shared<ResourceCopyTarget>();
+            if (!args.GetTarget(resource.get(), true, CommandArgumentReader::PeekMode::Token, false, false))
+                return args.Fail();
+            member_args[i].resource = std::move(resource);
+            member_args[i].type = MemberArg::Type::Resource;
+            break;
+        }
 		case MemberArg::Type::Unsigned:
 		case MemberArg::Type::Signed:
 		case MemberArg::Type::Float:
@@ -7658,6 +7713,10 @@ IniParserResult ResourceCopyTarget::ParseTargetMember(
 		{ L"->elementoffset", 15, ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_OFFSET, {{
 			MemberArg::Type::String, MemberArg::Type::Unsigned
 		}} },
+        { L"->originalformat", 16, ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT },
+        { L"->hammingdistance", 17, ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE, {{
+            MemberArg::Type::Resource,
+        }} },
 	};
 
 	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);
@@ -9003,10 +9062,11 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 		UINT *offset,        // Used by vertex & index buffers
 		DXGI_FORMAT *format, // Used by index buffers
 		UINT *buf_size,      // Used when creating a view of the buffer
-		ResourceCopyTarget *dst, bool* size_is_length, UINT* source_original_stride) // Used to get bind flags when substantiating a custom resource
+		ResourceCopyTarget *dst, bool* size_is_length, UINT* source_original_stride, ResourceOriginalMetadata* original_metadata) // Used to get bind flags when substantiating a custom resource
 {
     if (size_is_length) *size_is_length = false;
     if (source_original_stride) *source_original_stride = 0;
+    if (original_metadata) *original_metadata = {};
 	HackerDevice *mHackerDevice = state->mHackerDevice;
 	ID3D11Device1 *mOrigDevice1 = state->mOrigDevice1;
 	ID3D11DeviceContext1 *mOrigContext1 = state->mOrigContext1;
@@ -9208,6 +9268,10 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 				*buf_size = custom_resource->buf_size;
             if (size_is_length) *size_is_length = custom_resource->buf_size_is_length;
             if (source_original_stride) *source_original_stride = custom_resource->source_stride;
+            if (original_metadata) {
+                original_metadata->format = custom_resource->original_format;
+                original_metadata->dhash = custom_resource->original_dhash;
+            }
 
 			if (custom_resource->is_null) {
 				// Optimisation to allow the resource to be set to null
@@ -9255,7 +9319,7 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 		if (state->this_target && state->this_target->type == ResourceCopyTargetType::THIS_RESOURCE)
                 return nullptr;
             if (state->this_target)
-			return state->this_target->GetResource(state, view, stride, offset, format, buf_size, dst, size_is_length, source_original_stride);
+			return state->this_target->GetResource(state, view, stride, offset, format, buf_size, dst, size_is_length, source_original_stride, original_metadata);
 
 		if (state->resource) {
 			if (state->view)
@@ -9313,7 +9377,7 @@ void ResourceCopyTarget::SetResource(
 		UINT stride,
 		UINT offset,
 		DXGI_FORMAT format,
-		UINT buf_size, bool size_is_length)
+		UINT buf_size, bool size_is_length, const ResourceOriginalMetadata* original_metadata)
 {
 	ID3D11DeviceContext1 *mOrigContext1 = state->mOrigContext1;
 	ID3D11Buffer *buf = NULL;
@@ -9519,6 +9583,10 @@ void ResourceCopyTarget::SetResource(
 			return;
 		}
 		custom_resource->is_null = false;
+        if (original_metadata) {
+            custom_resource->original_format = original_metadata->format;
+            custom_resource->original_dhash = original_metadata->dhash;
+        }
 
 		// If we are passed our own resource (might happen if the
 		// resource is used directly in the run() function, or if
@@ -9547,7 +9615,7 @@ void ResourceCopyTarget::SetResource(
 		if (state->this_target && state->this_target->type == ResourceCopyTargetType::THIS_RESOURCE)
                 return;
             if (state->this_target)
-			return state->this_target->SetResource(state, res, view, stride, offset, format, buf_size, size_is_length);
+			return state->this_target->SetResource(state, res, view, stride, offset, format, buf_size, size_is_length, original_metadata);
 
 		if (state->resource) {
 			if (*state->resource)
@@ -9992,6 +10060,40 @@ float ResourceCopyTarget::GetResourceMips(CommandListState* state)
     resource.Attach(GetResource(state, &acquired_view, nullptr, nullptr, nullptr, nullptr));
     view.Attach(acquired_view);
     return resource ? GetTextureArrayOrMips(resource.Get(), true) : ResourcePropertyResult::RESOURCE_NOT_FOUND;
+}
+
+float ResourceCopyTarget::GetResourceHammingDistance(CommandListState* state)
+{
+    if (!state || !state->mHackerDevice || !state->mOrigDevice1 || !state->mOrigContext1)
+        return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+    Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+    Microsoft::WRL::ComPtr<ID3D11View> view;
+    ID3D11View* acquired_view = nullptr;
+    resource.Attach(GetResource(state, &acquired_view, nullptr, nullptr, nullptr, nullptr));
+    view.Attach(acquired_view);
+    if (!resource) return ResourcePropertyResult::RESOURCE_NOT_FOUND;
+
+    uint64_t hash = 0;
+    UINT prefer_mip_size;
+    bool allow_rehash;
+    {
+        CriticalSectionGuard(&G->mCriticalSection);
+        prefer_mip_size = static_cast<UINT>((std::max)(0, G->dhash_mip_size));
+        allow_rehash = G->dhash_allow_rehash;
+    }
+    if (!GetDhash(state->mHackerContext, resource.Get(), prefer_mip_size,
+        allow_rehash, hash, view.Get())) return ResourcePropertyResult::UNKNOWN;
+    if (!member_args[0].resource) return ResourcePropertyResult::UNKNOWN;
+    // Parsed resource arguments are shared immutable syntax. Resolve this
+    // invocation's local copy once, without retaining a runtime pool selection.
+    ResourceCopyTarget reference = *member_args[0].resource;
+    const auto* custom = reference.GetCustomResource(state);
+    if (!custom) return ResourcePropertyResult::UNKNOWN;
+    const uint64_t reference_hash = custom->original_dhash;
+    if ((hash == 0) != (reference_hash == 0)) return 64.0f;
+    unsigned distance = 0;
+    for (uint64_t bits = hash ^ reference_hash; bits; bits &= bits - 1) ++distance;
+    return static_cast<float>(distance);
 }
 
 D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState* state)
@@ -11656,10 +11758,10 @@ static ResourceCopyTargetType EquivTarget(ResourceCopyTargetType type)
 
 static void PublishResourceBinding(ResourceCopyTarget& destination, CommandListState* state,
     ID3D11Resource* resource, ID3D11View* view, UINT stride, UINT offset, DXGI_FORMAT format, UINT size,
-    DeferredBinding* deferred, bool size_is_length = false)
+    DeferredBinding* deferred, bool size_is_length = false, ResourceOriginalMetadata original_metadata = {})
 {
     if (!deferred) {
-        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length);
+        destination.SetResource(state, resource, view, stride, offset, format, size, size_is_length, &original_metadata);
         return;
     }
     // The sink belongs to this invocation, never to a shared operation. ComPtr
@@ -11671,6 +11773,7 @@ static void PublishResourceBinding(ResourceCopyTarget& destination, CommandListS
     deferred->format = format;
     deferred->size = size;
     deferred->size_is_length = size_is_length;
+    deferred->original_metadata = original_metadata;
     deferred->assigned = true;
 }
 
@@ -11700,7 +11803,7 @@ static ID3D11View* UsableRefView(ResourceCopyTarget* destination, CommandListSta
 }
 
 void ResourceCopyOperation::CopyResourceToResource(
-	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination, DeferredBinding* deferred, bool preserve_source_view, bool source_size_is_length, UINT source_original_stride
+	CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination, DeferredBinding* deferred, bool preserve_source_view, bool source_size_is_length, UINT source_original_stride, ResourceOriginalMetadata original_metadata
 )
 {
 	ResourceCopyTarget* effective_destination = destination ? destination : &this->dst;
@@ -11904,7 +12007,7 @@ void ResourceCopyOperation::CopyResourceToResource(
 		buf_dst_size = 0;
 	}
 
-	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred, selected_window);
+	PublishResourceBinding(dst, state, dst_resource, dst_view, stride, offset, format, buf_dst_size, deferred, selected_window, original_metadata);
 
 	if (options & ResourceCopyOptions::SET_VIEWPORT)
 		SetViewportFromResource(state, dst_resource);
@@ -11920,7 +12023,7 @@ out_release:
 
 void ResourceCopyOperation::CopyResourceToPool(
     CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view,
-    UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length, UINT source_original_stride)
+    UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length, UINT source_original_stride, ResourceOriginalMetadata original_metadata)
 {
         CustomResourcePool* pool = dst.custom_resource_pool;
         ResourceCopyTarget destination = dst;
@@ -11932,7 +12035,7 @@ void ResourceCopyOperation::CopyResourceToPool(
             if (!resource)
                 continue;
             destination.SetCustomResource(resource);
-            CopyResourceToResource(state, src_resource, src_view, stride, offset, format, buf_src_size, &destination, nullptr, false, source_size_is_length, source_original_stride);
+            CopyResourceToResource(state, src_resource, src_view, stride, offset, format, buf_src_size, &destination, nullptr, false, source_size_is_length, source_original_stride, original_metadata);
         }
 }
 
@@ -12005,9 +12108,10 @@ void ResourceCopyOperation::RunWithBinding(CommandListState *state, DeferredBind
 	UINT buf_src_size = 0;
     bool source_size_is_length = false;
     UINT source_original_stride = 0;
+    ResourceOriginalMetadata original_metadata;
 
 	ID3D11View* acquired_view = nullptr;
-	src_resource.Attach(src.GetResource(state, &acquired_view, &stride, &offset, &format, &buf_src_size, ((options & ResourceCopyOptions::REFERENCE) ? &dst : NULL), &source_size_is_length, &source_original_stride));
+	src_resource.Attach(src.GetResource(state, &acquired_view, &stride, &offset, &format, &buf_src_size, ((options & ResourceCopyOptions::REFERENCE) ? &dst : NULL), &source_size_is_length, &source_original_stride, &original_metadata));
 	src_view.Attach(acquired_view);
 
 	if (src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION &&
@@ -12017,11 +12121,11 @@ void ResourceCopyOperation::RunWithBinding(CommandListState *state, DeferredBind
 
 	if (dst.type != ResourceCopyTargetType::POOL)
 	{
-		CopyResourceToResource(state, src_resource.Get(), src_view.Get(), stride, offset, format, buf_src_size, nullptr, deferred, false, source_size_is_length, source_original_stride);
+		CopyResourceToResource(state, src_resource.Get(), src_view.Get(), stride, offset, format, buf_src_size, nullptr, deferred, false, source_size_is_length, source_original_stride, original_metadata);
 	}
 	else
 	{
-		CopyResourceToPool(state, src_resource.Get(), src_view.Get(), stride, offset, format, buf_src_size, source_size_is_length, source_original_stride);
+		CopyResourceToPool(state, src_resource.Get(), src_view.Get(), stride, offset, format, buf_src_size, source_size_is_length, source_original_stride, original_metadata);
 	}
 
 }
@@ -12666,6 +12770,7 @@ bool SlotRangeCopyOperation::BindElement(CommandListState* state, SlotRangeBindi
     UINT stride = 0, offset = 0, size = 0;
     bool size_is_length = false;
     UINT source_original_stride = 0;
+    ResourceOriginalMetadata original_metadata;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     const bool cb = dst.type == ResourceCopyTargetType::CONSTANT_BUFFER;
 
@@ -12676,7 +12781,7 @@ bool SlotRangeCopyOperation::BindElement(CommandListState* state, SlotRangeBindi
     source.forbid_view_cache = src.forbid_view_cache;
     ID3D11View* raw = nullptr;
     if (element) resource.Attach(source.GetResource(state, &raw, &stride, &offset, &format, &size,
-        (options & ResourceCopyOptions::REFERENCE) ? &target : nullptr, &size_is_length, &source_original_stride));
+        (options & ResourceCopyOptions::REFERENCE) ? &target : nullptr, &size_is_length, &source_original_stride, &original_metadata));
     view.Attach(raw);
     const bool skip = !resource && (options & ResourceCopyOptions::UNLESS_NULL);
     LogSlotRangeElement(state, dst, target.slot, element ? element->name.c_str() : L"null", options, true, skip);
@@ -12705,7 +12810,7 @@ bool SlotRangeCopyOperation::BindElement(CommandListState* state, SlotRangeBindi
         ++Profiling::resource_reference_copies;
     } else {
         SlotRangeIndent indent(*state);
-        operation.CopyResourceToResource(state, resource.Get(), view.Get(), stride, offset, format, size, nullptr, &result, false, size_is_length, source_original_stride);
+        operation.CopyResourceToResource(state, resource.Get(), view.Get(), stride, offset, format, size, nullptr, &result, false, size_is_length, source_original_stride, original_metadata);
     }
     if (result.assigned && bindings.Assign(index, cb, result)) return true;
 
@@ -12754,7 +12859,7 @@ void SlotRangeCopyOperation::FetchElement(CommandListState* state, SlotRangeBind
             // Plain ref rebinding that element still binds the whole CB.
             if (cb && resource) { result.offset = offset; result.size = size; }
             destination.SetResource(state, result.resource.Get(), result.view.Get(), result.stride,
-                result.offset, result.format, result.size, result.size_is_length);
+                result.offset, result.format, result.size, result.size_is_length, &result.original_metadata);
         }
     } else {
         operation.CopyResourceToResource(state, resource.Get(), view.Get(), 0, offset, format, size);

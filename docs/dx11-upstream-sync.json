@@ -4988,42 +4988,141 @@
     {
       "sha": "fdee8ddfa0f60383697654bb46f21bddf3b55909",
       "subject": "Added texture mips data uploads tracking",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/HackerContext.cpp",
+        "src/DirectX11/HackerContext.h",
+        "src/DirectX11/HackerDevice.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/ResourceHash.h"
+      ],
+      "adaptation": "Track actual Texture2D dimensions and per-subresource upload generations, retaining original descriptors for matching. Preserve buffer diversion/hash/cache hooks with nested Map records. Deferred semantic journals own resources, seal on successful Finish and publish in execution order only after actual native Execute, including merged/replayed lists. Unknown submissions conservatively invalidate certainty and later uploads recover. Native Copy1 overlap follows actual CopyWithOverlap support. Explicit full Update boxes retain upstream conservative unknown semantics. Real mip/array/Map/copy/resolve/generation/deferred/lifetime tests execute production hooks.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "122f4c5a58eab70b3b30b29241fc1589f0f0793c",
       "subject": "Added `original_format` metadata field to Resource section and dedicated `->OriginalFormat` getter",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/IniHandler.cpp"
+      ],
+      "adaptation": "Initialize OriginalFormat to -1 and add INI/getter using free local enum bit0x04000000. Copy reference metadata through config templates, lazy pools, scalar/range/THIS/copy_desc publication via one invocation snapshot alongside the same selected resource. No second random pool resolution. Null/reset retain reference declarations per upstream; successful pipeline capture resets absent metadata. Fix upstream log to print original_format.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "a2170b8769aa17c8b9c022e8197357a9b95caf6c",
       "subject": "Added synchronous dhash GPU compute engine for textures",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/DHash64Gpu.cpp",
+        "src/DirectX11/DHash64Gpu.h",
+        "src/DirectX11/DirectX11.vcxproj",
+        "src/DirectX11/DirectX11.vcxproj.filters",
+        "src/DirectX11/HackerContext.cpp",
+        "src/DirectX11/HackerContext.h"
+      ],
+      "adaptation": "Integrate CMake/C++17 DHash64Gpu with per-immediate-context HRESULT service and retry/lifetime handling. Preserve original 9x8 equal-RGBA bilinear comparison and center-color fallback. Copy selected mip to private sampling storage to avoid implicit removal of application output aliases; restore CS shader/class instances/SRV0/sampler/UAV0 and hidden counter. Reject unsupported formats/devices/arrays/MSAA/deferred; valid zero succeeds. Plain staging descriptor. Real CPU oracle, native state/alias and COM/error tests pass; extra GPU copy is not an unmeasured performance claim.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "749656b94e5535cf9e3678a3a32b89681c4f89f9",
       "subject": "Added dhash computing and caching orchestrator `GetDhash()` to ResourceHash.cpp",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/ResourceHash.h"
+      ],
+      "adaptation": "Select initialized actual mips and cache by sampling format/preferred-mip policy, with explicit valid-zero flag. Same-key no-rehash returns retained value on the first changed call without falsely marking it fresh. Resource-lock value snapshots and held identity token cross GPU work; publication rechecks lifetime/generations/dimensions. Reset/wrap prevents ABA. Generic views use actual interface descriptors. Real GPU Map instrumentation exercises hits, rehash, format/mip policy, upload-during-compute, wrap races and retry with no G/resources lock across GPU.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "cb2ba9ff76d451f8beecbcf51b85f4fc79cc6339",
       "subject": "Added resource dhash dumping to log.txt",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/FrameAnalysis.cpp",
+        "src/DirectX11/FrameAnalysis.h",
+        "src/DirectX11/IniHandler.cpp",
+        "src/DirectX11/globals.h"
+      ],
+      "adaptation": "Add Rendering defaults dhash_mip_size256 and dhash_allow_rehashfalse with reload. Snapshot optional frame-analysis hash/contamination metadata then release G/resources locks before compute; missing optional metadata does not suppress dHash. Forward actual view and append exact16-digit valid hash including zero, never unavailable-as-zero. Real INI reload and native FrameAnalysis log tests pass.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "3e88ee38bba4a26ffd21f74a1aad3b4ca8a6f80d",
       "subject": "Added \"hash\" argument type support to SyntaxTarget",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Parse optional lowercase0x plus1..16 lowercase hex digits directly into exact uint64, validating entire token and clearing failed output. Add initialized Hash member storage and dispatch without float conversion; real reader tests cover zero/max/overflow/malformed/repeated reads/separators.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "659ee187dd8b3e1c8d239da32b5e6320163b32ed",
       "subject": "Added \"resource\" argument type support to SyntaxTarget",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Use immutable shared ResourceCopyTarget ownership for member arguments, preserving local copyable expression/target model under C++17. Parse scalar sources with ranges disabled and full-argument validation; runtime copies the syntax before resolving a dynamic pool selection. Real Hamming expressions cover namespaces with spaces, nested getters, repeated shared copies, parse failures and single random resolution.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     },
     {
       "sha": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
       "subject": "Added `->HammingDistance()` to INI API",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/IniHandler.cpp"
+      ],
+      "adaptation": "Add exact64-bit original_dhash INI/reference metadata and ResourceReference-only HammingDistance on unused bit0x08000000. Preserve zero safeguard and portable integer popcount; missing target=-2, unavailable/reference/hash=-1. Source/view ownership is RAII; options use short G-lock snapshot then unlocked compute. Null-state guard and deferred/cache-hit rejection retained. Real INI/GPU known distances, metadata-only references, namespaces/pools/shared syntax/random/error paths pass. No invented inline-hex overload.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DLL/full-production regression; dhash-full-feature-compile-fix-build.log and deferred-map-pitch-build.log.",
+        "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
+        "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      }
     }
   ]
 }

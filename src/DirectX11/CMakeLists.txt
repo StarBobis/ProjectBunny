@@ -32,6 +32,10 @@ add_library(DirectX11 SHARED
     PngColorSpace.cpp
     PngColorSpace.h
     HackerContext.cpp
+    TextureUploadTracking.cpp
+    TextureUploadTracking.h
+    DHash64Gpu.cpp
+    DHash64Gpu.h
     HackerDevice.cpp
     HackerDXGI.cpp
     HackerInputLayout.cpp
@@ -208,6 +212,12 @@ if(BUILD_TESTING)
         tests/shader_summary_regression.cpp
         tests/shader_dump_filter_regression.cpp
         tests/stream_output_append_regression.cpp
+        tests/texture_upload_state_regression.cpp
+        tests/original_resource_metadata_regression.cpp
+        tests/dhash_gpu_regression.cpp
+        tests/member_argument_regression.cpp
+        tests/dhash_cache_regression.cpp
+        tests/hamming_distance_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp

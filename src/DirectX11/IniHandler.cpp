@@ -2232,6 +2232,15 @@ static CustomResource* ParseResourceSection(const wchar_t* section_name, const w
 		}
 	}
 
+    if (GetIniString(section_name, L"original_format", nullptr, setting, MAX_PATH)) {
+        custom_resource->original_format = ParseFormatString(setting, true);
+        if (custom_resource->original_format == static_cast<DXGI_FORMAT>(-1))
+            IniWarningW(L"Unknown original_format \"%ls\"\n - [%ls]\n", setting, section_name);
+        else
+            LogInfo("  original_format=%s\n", TexFormatStr(custom_resource->original_format));
+    }
+    custom_resource->original_dhash = GetIniHash(section_name, L"original_dhash", 0, nullptr);
+
 	custom_resource->override_color_space = GetIniEnumClass(section_name, L"color_space",
 		CustomColorSpace::DEFAULT, NULL, CustomColorSpaceNames);
 
@@ -4758,6 +4767,8 @@ void LoadConfigFile()
 
 	G->shader_hash_type = GetIniEnumClass(L"Rendering", L"shader_hash", ShaderHashType::FNV, NULL, ShaderHashNames);
 	G->texture_hash_version = GetIniInt(L"Rendering", L"texture_hash", 0, NULL);
+    G->dhash_mip_size = (std::max)(0, GetIniInt(L"Rendering", L"dhash_mip_size", 256, NULL));
+    G->dhash_allow_rehash = GetIniBool(L"Rendering", L"dhash_allow_rehash", false, NULL);
 
 	if (GetIniStringAndLog(L"Rendering", L"override_directory", 0, G->SHADER_PATH, MAX_PATH))
 	{

@@ -4,9 +4,11 @@
 #include <INITGUID.h>
 
 #include "DrawCallInfo.h"
+#include "TextureUploadTracking.h"
 
 #include "CommandList.h"
 
+#include "DHash64Gpu.h"
 #include "HackerInputLayout.h"
 #include "HackerDevice.h"
 #include "Globals.h"
@@ -75,6 +77,8 @@ struct MappedResourceInfo {
 	void *orig_pData;
 	size_t size;
 	UINT bind_flags;
+    D3D11_MAP map_type = D3D11_MAP_READ;
+    bool tracks_texture_subresource = false;
 
 	MappedResourceInfo() :
 		orig_pData(NULL),
@@ -141,8 +145,10 @@ private:
 	void ResetTrackedInputLayout();
 
 	// Used for deny_cpu_read, track_texture_updates and constant buffer matching
-	typedef std::unordered_map<ID3D11Resource*, MappedResourceInfo> MappedResources;
+	typedef std::unordered_map<ID3D11Resource*, std::unordered_map<UINT, MappedResourceInfo>> MappedResources;
 	MappedResources mMappedResources;
+	DHash64Gpu mDHasher;
+    TextureUploadTracker mTextureUploads;
 	unsigned draw_number = 0;
 	unsigned dispatch_number = 0;
 	FlatHashMap<UINT, ID3D11Buffer*> mReadbackBuffers{64};
@@ -170,7 +176,7 @@ private:
 	void TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 		UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
 		D3D11_MAPPED_SUBRESOURCE *pMappedResource);
-	void TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource);
+	bool TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresource, bool* discard);
 	void ProcessShaderOverride(ShaderOverride *shaderOverride, bool isPixelShader, DrawContext *data);
 	ID3D11PixelShader* SwitchPSShader(ID3D11PixelShader *shader);
 	ID3D11VertexShader* SwitchVSShader(ID3D11VertexShader *shader);
@@ -231,6 +237,7 @@ protected:
 public:
 	HackerContext(ID3D11Device1 *pDevice1, ID3D11DeviceContext1 *pContext1);
 	virtual ~HackerContext();
+	HRESULT ComputeDHash(ID3D11Texture2D* texture, UINT mipLevel, DXGI_FORMAT srvFormat, uint64_t& outHash);
 
 	void SetHackerDevice(HackerDevice *pDevice);
 	HackerDevice* GetHackerDevice();

@@ -556,6 +556,13 @@ public:
 
 class CustomResourcePool;
 
+// Per-invocation metadata captured with the selected resource, including a
+// dynamic pool source. These reference values are never converted via float.
+struct ResourceOriginalMetadata {
+    DXGI_FORMAT format = static_cast<DXGI_FORMAT>(-1);
+    UINT64 dhash = 0;
+};
+
 class CustomResource
 {
 public:
@@ -576,6 +583,8 @@ public:
 	UINT buf_size;
     bool buf_size_is_length = false; // Explicit captured Region count; legacy metadata remains an extent.
 	DXGI_FORMAT format;
+    DXGI_FORMAT original_format;
+    UINT64 original_dhash;
 
 	UINT source_stride;
 
@@ -843,7 +852,9 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	RESOURCE_MIPS          = 0x00200000,
 	RESOURCE_BIND_FLAGS    = 0x00400000,
 
-	RESOURCE_MASK          = 0x007e01ff,
+    RESOURCE_ORIGINAL_FORMAT = 0x04000000,
+    RESOURCE_HAMMING_DISTANCE = 0x08000000,
+	RESOURCE_MASK          = 0x0c7e01ff,
 
 	// POOL
 	POOL_IDENTITY          = 0b00000000000000000000001000000000,
@@ -884,6 +895,8 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"ResourceArray", ResourceCopyTargetEvaluationMode::RESOURCE_ARRAY},
 	{L"ResourceMips", ResourceCopyTargetEvaluationMode::RESOURCE_MIPS},
 	{L"ResourceBindFlags", ResourceCopyTargetEvaluationMode::RESOURCE_BIND_FLAGS},
+    {L"ResourceOriginalFormat", ResourceCopyTargetEvaluationMode::RESOURCE_ORIGINAL_FORMAT},
+    {L"ResourceHammingDistance", ResourceCopyTargetEvaluationMode::RESOURCE_HAMMING_DISTANCE},
 
 	{L"PoolIdentity", ResourceCopyTargetEvaluationMode::POOL_IDENTITY},
 	{L"PoolSize", ResourceCopyTargetEvaluationMode::POOL_SIZE},
@@ -912,6 +925,8 @@ struct MemberArg
 		Signed,
 		Unsigned,
 		String,
+		Hash,
+		Resource,
 	};
 
 	Type type = Type::None;
@@ -919,6 +934,8 @@ struct MemberArg
 	std::shared_ptr<CommandListExpression> expression;
 
 	std::wstring constant_string;
+	uint64_t constant_hash = 0;
+	std::shared_ptr<const ResourceCopyTarget> resource;
 
 
 	float GetValue(CommandListState* state);
@@ -1061,14 +1078,14 @@ public:
 			UINT *offset,
 			DXGI_FORMAT *format,
 			UINT *buf_size,
-			ResourceCopyTarget *dst=NULL, bool* size_is_length=nullptr, UINT* source_original_stride=nullptr);
+			ResourceCopyTarget *dst=NULL, bool* size_is_length=nullptr, UINT* source_original_stride=nullptr, ResourceOriginalMetadata* original_metadata=nullptr);
 	void SetResource(CommandListState *state,
 			ID3D11Resource *res,
 			ID3D11View *view,
 			UINT stride,
 			UINT offset,
 			DXGI_FORMAT format,
-			UINT buf_size, bool size_is_length=false);
+			UINT buf_size, bool size_is_length=false, const ResourceOriginalMetadata* original_metadata=nullptr);
 
 	void FindTextureOverrides(
 			CommandListState *state,
@@ -1087,6 +1104,7 @@ public:
 	float GetResourceHeight(CommandListState* state);
 	float GetResourceArray(CommandListState* state);
 	float GetResourceMips(CommandListState* state);
+	float GetResourceHammingDistance(CommandListState* state);
 	D3D11_BIND_FLAG GetResourceBindFlags(CommandListState* state);
 	float GetPoolElementLastFrame(CommandListState* state);
 
@@ -1168,6 +1186,7 @@ struct DeferredBinding {
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool assigned = false;
     bool size_is_length = false;
+    ResourceOriginalMetadata original_metadata;
 };
 
 enum class BatchDirection { Bind, Fetch };
@@ -1186,8 +1205,8 @@ public:
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
 
-	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false, bool source_size_is_length = false, UINT source_original_stride = 0);
-	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length = false, UINT source_original_stride = 0);
+	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
+	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length = false, UINT source_original_stride = 0, ResourceOriginalMetadata original_metadata = {});
 
 	void run(CommandListState*) override;
 	virtual void RunWithBinding(CommandListState*, DeferredBinding* deferred);
@@ -1918,6 +1937,7 @@ public:
 	bool GetVariable(CommandListVariable*& out, bool is_source = true, PeekMode mode = PeekMode::Token);
 	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true, bool allow_range = false);
 	bool GetFloat(float* out);
+	bool GetHash(uint64_t* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 
 	bool ConsumeSeparator(SeparatorMode separator_mode);
