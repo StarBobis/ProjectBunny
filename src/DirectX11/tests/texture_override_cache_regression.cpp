@@ -336,9 +336,8 @@ void verify_distinct_region_candidates(CacheDevice& device, CacheConfiguration& 
         "two region lookups count separately while rebuilding descriptor candidates only once");
     check(SUCCEEDED(device.buffer->SetPrivateDataInterface(ResourceReleaseTrackerGuid, nullptr)),
         "remove actual region buffer tracker while both regions remain warm in L3");
-    check(region_matches(0) == std::vector<std::wstring>({L"region-first"}) &&
-        region_matches(8) == std::vector<std::wstring>({L"region-second"}),
-        "upstream region exact matching remains independent after tracker detach; cached descriptor fuzzy matches disappear");
+    check(region_matches(0).empty() && region_matches(8).empty(),
+        "tracker detach removes both orphaned region hashes and cached descriptor candidates");
     ID3D11Buffer* none = nullptr; UINT zero = 0; device.immediate->IASetVertexBuffers(0, 1, &none, &zero, &zero);
     {
         CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);

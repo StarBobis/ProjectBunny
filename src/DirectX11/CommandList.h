@@ -1111,6 +1111,14 @@ public:
 	D3D11_BIND_FLAG BindFlags(CommandListState *state, D3D11_RESOURCE_MISC_FLAG *misc_flags=NULL);
 
 private:
+    bool NeedsResourceResolution() const
+    {
+        return type == ResourceCopyTargetType::CUSTOM_RESOURCE &&
+            !static_custom_resource && custom_resource_pool;
+    }
+    float GetResolvedResourceProperty(CommandListState* state,
+        float (ResourceCopyTarget::*getter)(CommandListState*));
+
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	bool AcceptParsedTarget(IniParserResult result, bool allow_range) const;

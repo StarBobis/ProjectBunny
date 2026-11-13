@@ -248,6 +248,26 @@ public:
 		return true;
 	}
 
+	// Remove matching entries without allocating or invalidating other keys.
+	template<typename Predicate>
+	size_t erase_if(Predicate predicate)
+	{
+		if (!count) return 0;
+		size_t removed = 0;
+		for (size_t index = 0; count && index < table.size();) {
+			const auto& entry = table[index];
+			if (entry.generation == current_generation && predicate(entry.key, entry.value)) {
+				const K key = entry.key;
+				erase(key);
+				++removed;
+				// Backward-shift deletion may have moved a new entry here.
+			} else {
+				++index;
+			}
+		}
+		return removed;
+	}
+
 	// Clears the hash map.
 	// Behavior:
 	// - Instead of touching memory, we just bump generation

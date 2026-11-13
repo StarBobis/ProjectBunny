@@ -1299,6 +1299,8 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::AddRef(void)
 	return ret;
 }
 
+static void EraseGlobalRegionHashes(ID3D11Resource* resource);
+
 ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 {
 	ULONG ret = --ref;
@@ -1333,6 +1335,9 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);
+		// The COM address can be reused before the next frame cache reset.
+		// Do not acquire G from this native release callback.
+		EraseGlobalRegionHashes(resource);
 		delete this;
 	}
 	return ret;
@@ -2260,12 +2265,14 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 
 UINT GetVertexBufferRegionOffset(UINT stride, DrawCallInfo* call_info, UINT byte_offset)
 {
+	if (!call_info) return byte_offset;
 	UINT byte_size = stride * call_info->FirstVertex;
 	return byte_offset + byte_size;
 }
 
 UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UINT byte_offset)
 {
+	if (!call_info) return byte_offset;
 	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
 	UINT byte_size = index_stride * call_info->FirstIndex;
 	return byte_offset + byte_size;
@@ -2275,6 +2282,7 @@ UINT GetIndexBufferRegionOffset(DXGI_FORMAT format, DrawCallInfo* call_info, UIN
 // Used to determine how much data should be hashed for change detection.
 UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 {
+	if (!call_info) return 0;
 	// If VertexCount is not provided, estimate it from the index count.
 	// 0.15 * x + 3
 	UINT vertex_count = call_info->VertexCount > 0 ? call_info->VertexCount : (3 * call_info->IndexCount + 10) / 20 + 3;
@@ -2286,6 +2294,7 @@ UINT GetVertexBufferRegionSize(UINT stride, DrawCallInfo* call_info)
 // Computes the byte size of the index buffer region referenced by a draw call.
 UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 {
+	if (!call_info) return 0;
 	UINT index_stride = (format == DXGI_FORMAT_R32_UINT) ? 4 : 2;
 	UINT region_size = index_stride * call_info->IndexCount;
 	//LogInfo("GetIndexBufferRegionSize region_size=%d, stride=%d, IndexCount=%d \n", region_size, index_stride, call_info->IndexCount);
@@ -2298,6 +2307,15 @@ UINT GetIndexBufferRegionSize(DXGI_FORMAT format, DrawCallInfo* call_info)
 // So lookup in dedicated continuous container is expected to be always faster than one in huge unordered map. 
 FlatHashMap<RegionHashKeyL3, uint32_t, RegionHashKeyHasherL3> region_hashes_global_cache(1024);
 static std::mutex region_hashes_global_cache_mutex;
+
+static void EraseGlobalRegionHashes(ID3D11Resource* resource)
+{
+    const auto address = reinterpret_cast<uint64_t>(resource);
+    std::lock_guard<std::mutex> lock(region_hashes_global_cache_mutex);
+    region_hashes_global_cache.erase_if([address](const RegionHashKeyL3& key, uint32_t) {
+        return key.ptr == address;
+    });
+}
 
 void ClearRegionHashesGlobalCache()
 {

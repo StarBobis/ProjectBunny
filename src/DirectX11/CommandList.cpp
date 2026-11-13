@@ -9847,8 +9847,22 @@ namespace ResourcePropertyResult {
 	constexpr float NOT_A_TEXTURE       = -4.0f;
 }
 
+float ResourceCopyTarget::GetResolvedResourceProperty(CommandListState* state,
+    float (ResourceCopyTarget::*getter)(CommandListState*))
+{
+    // Bind only this invocation; parsed targets remain reusable and immutable.
+    ResourceCopyTarget resolved = *this;
+    resolved.SetCustomResource(GetCustomResource(state));
+    resolved.custom_resource_pool = nullptr;
+    resolved.pool_dynamic_index_expression.reset();
+    return (resolved.*getter)(state);
+}
+
 float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceStride);
+
 	switch (type) {
 		case ResourceCopyTargetType::CUSTOM_RESOURCE:
 		{
@@ -9912,6 +9926,9 @@ float ResourceCopyTarget::GetResourceStride(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceFormat(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceFormat);
+
     if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
         const auto* custom = GetCustomResource(state);
         if (!custom)
@@ -9968,6 +9985,9 @@ static float GetResourceExtent(ID3D11Resource* resource, bool height)
 
 float ResourceCopyTarget::GetResourceWidth(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceWidth);
+
     if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
         const auto* custom = GetCustomResource(state);
         if (!custom)
@@ -9987,6 +10007,9 @@ float ResourceCopyTarget::GetResourceWidth(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceHeight(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceHeight);
+
     if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
         const auto* custom = GetCustomResource(state);
         if (!custom)
@@ -10033,6 +10056,9 @@ static float GetTextureArrayOrMips(ID3D11Resource* resource, bool mips)
 
 float ResourceCopyTarget::GetResourceArray(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceArray);
+
     if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
         const auto* custom = GetCustomResource(state);
         if (!custom)
@@ -10052,6 +10078,9 @@ float ResourceCopyTarget::GetResourceArray(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceMips(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceMips);
+
     if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
         const auto* custom = GetCustomResource(state);
         if (!custom)
@@ -10148,6 +10177,9 @@ D3D11_BIND_FLAG ResourceCopyTarget::GetResourceBindFlags(CommandListState* state
 
 float ResourceCopyTarget::GetResourceSize(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceSize);
+
 	if (type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
 		if (auto custom_resource = GetCustomResource(state)) {
 			if (custom_resource->buf_size > 0)
@@ -10245,6 +10277,9 @@ float ResourceCopyTarget::GetResourceOffset(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceRegionHash(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceRegionHash);
+
 	ID3D11View* view = nullptr;
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -10308,6 +10343,9 @@ float ResourceCopyTarget::GetResourceRegionHash(CommandListState* state)
 
 float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
 {
+    if (NeedsResourceResolution())
+        return GetResolvedResourceProperty(state, &ResourceCopyTarget::GetResourceSpatialHash);
+
 	ID3D11View* view = nullptr;
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;

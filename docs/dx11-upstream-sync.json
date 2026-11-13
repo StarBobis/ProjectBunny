@@ -5245,5 +5245,24 @@
     "report": "docs/DX11-Upstream-Adversarial-Round2.md",
     "tip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
     "targetRuntime": "deferred by user; original status values are not upgraded by static review"
+  },
+  "round3AdversarialReview": {
+    "baselineLocal": "0f0bafc",
+    "upstreamTip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+    "perspectives": [
+      "cross-feature composition",
+      "resource lifetime and lock order",
+      "non-draw metadata contexts",
+      "failure recovery and test oracles"
+    ],
+    "confirmedFixes": [
+      "null draw metadata access",
+      "repeated dynamic pool selection in nine getters",
+      "retired COM address keyed L3 region hashes"
+    ],
+    "evidence": "docs/DX11-Upstream-Adversarial-Round3.md",
+    "validation": "PASS: MSVC CMake Ninja Release DirectX11 and full regression target; CTest3/3 (12.76s); isolated pool/property regressions; DirectX12 compatibility build;38-page87-link documentation check; git diff --check.",
+    "scope": "Scenario-based follow-up to prior336-commit audit, not a second assertion that all336 patches were re-read in this round.",
+    "targetRuntime": "deferred by user; no deployment/game/upstream DLL differential run; original statuses preserved"
   }
 }

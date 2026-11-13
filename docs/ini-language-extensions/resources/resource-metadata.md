@@ -115,6 +115,8 @@ For constant buffers, index buffers, and vertex buffers, the offset is derived f
 * Index buffers — binding offset plus the active draw's first-index contribution
 * Vertex buffers — binding offset plus the active draw's first-vertex contribution
 
+Outside a draw command list, vertex and index buffers report the binding offset without a draw contribution.
+
 ```ini
 $offset = vs-cb0->Offset
 $offset = ib->Offset

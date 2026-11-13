@@ -929,6 +929,10 @@ void test_dx11_round2_handle_info_exception_regression();
 void test_dx11_round2_reload_snapshot_regression();
 void test_dx11_round2_region_clamp_regression();
 void test_dx11_round2_snapshot_stride_regression();
+void test_dx11_round3_nondraw_metadata_regression();
+void test_dx11_round3_composition_regression();
+void test_dx11_round3_lifetime_regression();
+void test_dx11_round3_oracle_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -971,6 +975,17 @@ int main()
         test_dx11_round2_reload_snapshot_regression();
         test_dx11_round2_region_clamp_regression();
         test_dx11_round2_snapshot_stride_regression();
+        test_dx11_round3_nondraw_metadata_regression();
+        bool round3_passed = true;
+        for (auto test : {test_dx11_round3_composition_regression,
+                test_dx11_round3_lifetime_regression, test_dx11_round3_oracle_regression}) {
+            try { test(); }
+            catch (const std::exception& error) {
+                std::fprintf(stderr, "FAIL independent round3 scenario: %s\n", error.what());
+                round3_passed = false;
+            }
+        }
+        require(round3_passed, "independent round3 scenarios");
         test_dx11_texture_upload_state_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {

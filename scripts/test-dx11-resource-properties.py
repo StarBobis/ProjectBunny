@@ -2,6 +2,8 @@
 
 The adapter replaces pipeline slot lookup, not D3D11 resources or COM ownership.
 INI parsing and command-list integration are outside this test's scope.
+Dynamic selection is covered by the full-production round3 composition test;
+this adapter retains the production resolution helper for static targets.
 Run in an x64 MSVC developer shell.
 """
 import pathlib
@@ -16,13 +18,17 @@ def main():
     source = (ROOT / 'src/DirectX11/CommandList.cpp').read_bytes().decode('latin1')
     hashing = (ROOT / 'src/DirectX11/ResourceHash.cpp').read_bytes().decode('latin1')
     util = (ROOT / 'src/common/util.h').read_bytes().decode('latin1')
+    header = (ROOT / 'src/DirectX11/CommandList.h').read_bytes().decode('latin1')
     methods = '\n'.join(extract(hashing if signature.startswith(('float BitCast', 'float Encode', 'uint64_t Hash', 'uint32_t Hash')) else source, signature) for signature in (
         'float BitCastToFloat(', 'float EncodeFloat30(',
         'uint64_t HashPointer(', 'uint32_t HashUnsigned32(',
         'float ResourceCopyTarget::GetResourceId(', 'float ResourceCopyTarget::GetPoolId(',
         'const CustomResourcePool* CustomResourcePool::ResolvePool(',
+        'float ResourceCopyTarget::GetResolvedResourceProperty(',
         'float ResourceCopyTarget::GetResourceStride(', 'float ResourceCopyTarget::GetResourceSize('
     ))
+    methods = extract(header, 'bool NeedsResourceResolution() const').replace(
+        'bool NeedsResourceResolution()', 'bool ResourceCopyTarget::NeedsResourceResolution()', 1) + '\n' + methods
     harness = r'''
 #include <d3d11.h>
 #include <cassert>
@@ -30,7 +36,9 @@ def main():
 #include <cstring>
 #include <cmath>
 #include <initializer_list>
+#include <memory>
 struct CommandListState {};
+class CommandListExpression;
 class CustomResourcePool {
 public:
     CustomResourcePool* source_pool = nullptr;
@@ -48,12 +56,16 @@ constexpr float UNKNOWN = -1, RESOURCE_NOT_FOUND = -2, NOT_A_BUFFER = -3;
 class ResourceCopyTarget {
 public:
     ResourceCopyTargetType type = ResourceCopyTargetType::VERTEX_BUFFER;
-    CustomResource* custom = nullptr;
+    CustomResource* static_custom_resource = nullptr;
     ID3D11Resource* resource = nullptr;
     ID3D11View* bound_view = nullptr;
     UINT bound_stride = 0, bound_size = 0;
     CustomResourcePool* custom_resource_pool = nullptr;
-    CustomResource* GetCustomResource(CommandListState*) { return custom; }
+    std::shared_ptr<CommandListExpression> pool_dynamic_index_expression;
+    CustomResource* GetCustomResource(CommandListState*) { return static_custom_resource; }
+    void SetCustomResource(CustomResource* resource) { static_custom_resource = resource; }
+    bool NeedsResourceResolution() const;
+    float GetResolvedResourceProperty(CommandListState*, float (ResourceCopyTarget::*)(CommandListState*));
     ID3D11Resource* GetResource(CommandListState*, ID3D11View** view, UINT* stride = nullptr,
         UINT* = nullptr, DXGI_FORMAT* = nullptr, UINT* size = nullptr) {
         *view = bound_view;
@@ -96,12 +108,12 @@ int main() {
     target.bound_stride = 32; target.bound_size = 64;
     assert(target.GetResourceStride(nullptr) == 32 && target.GetResourceSize(nullptr) == 64);
     CustomResource custom;
-    target.type = ResourceCopyTargetType::CUSTOM_RESOURCE; target.custom = &custom;
+    target.type = ResourceCopyTargetType::CUSTOM_RESOURCE; target.static_custom_resource = &custom;
     custom.override_stride = 48; custom.buf_size = 128;
     assert(target.GetResourceStride(nullptr) == 48 && target.GetResourceSize(nullptr) == 128);
     custom.override_stride = -1; custom.override_format = DXGI_FORMAT_R32G32_FLOAT;
     assert(target.GetResourceStride(nullptr) == 8);
-    target.custom = nullptr; target.resource = nullptr; target.bound_view = nullptr;
+    target.static_custom_resource = nullptr; target.resource = nullptr; target.bound_view = nullptr;
     assert(target.GetResourceSize(nullptr) == -2 && target.GetResourceStride(nullptr) == -2);
     assert(target.GetResourceId(nullptr) == 0 && target.GetPoolId() == 0);
     CustomResourcePool pool;
@@ -114,7 +126,7 @@ int main() {
     assert(SUCCEEDED(device->CreateTexture2D(&td, nullptr, &texture)));
     // A real custom texture has a custom-resource owner. A null owner now
     // correctly means RESOURCE_NOT_FOUND before any backing-resource lookup.
-    target.custom = &custom;
+    target.static_custom_resource = &custom;
     custom.override_stride = -1; custom.override_format = DXGI_FORMAT_UNKNOWN; custom.buf_size = 0;
     target.resource = texture; target.bound_size = target.bound_stride = 0;
     assert(target.GetResourceSize(nullptr) == -3 && target.GetResourceStride(nullptr) == -3);

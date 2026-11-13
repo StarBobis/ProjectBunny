@@ -226,6 +226,10 @@ if(BUILD_TESTING)
         tests/round2_reload_snapshot_regression.cpp
         tests/round2_region_clamp_regression.cpp
         tests/round2_snapshot_stride_regression.cpp
+        tests/round3_nondraw_metadata_regression.cpp
+        tests/round3_composition_regression.cpp
+        tests/round3_lifetime_regression.cpp
+        tests/round3_oracle_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
