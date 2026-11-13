@@ -179,6 +179,9 @@ static void test_spatial_hash(CommandListState& state)
         hash == spatial_key(10, 255, 80), "final float at buffer boundary allowed");
     require(!TryGetSpatialHash(state.mHackerContext, buffer, 0, 4, 13, 0.125f, hash) &&
         !TryGetSpatialHash(state.mHackerContext, buffer, UINT_MAX, 4, 8, 0.125f, hash), "spatial offsets bounded without overflow");
+    require(!TryGetSpatialHash(state.mHackerContext, buffer, 0, UINT_MAX, 8, 0.125f, hash) &&
+        !TryGetSpatialHash(state.mHackerContext, buffer, 0, 13, 8, 0.125f, hash),
+        "spatial Y independently rejects oversized offsets including a partial final float");
     for (float invalid : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN(),
         std::numeric_limits<float>::infinity()})
         require(!TryGetSpatialHash(state.mHackerContext, buffer, 0, 4, 8, invalid, hash), "invalid cell sizes rejected");
@@ -904,6 +907,11 @@ void test_dx11_cache_resource_data_regression();
 void test_dx11_store_cache_regression();
 void test_dx11_check_to_range_regression();
 void test_dx11_view_reference_regression();
+void test_dx11_conditional_batch_regression();
+void test_dx11_conditional_batch_followup_regression();
+void test_dx11_region_reference_followup_regression();
+void test_dx11_region_followup_regression();
+void test_dx11_stream_output_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -925,6 +933,11 @@ int main()
         test_dx11_store_cache_regression();
         test_dx11_check_to_range_regression();
         test_dx11_view_reference_regression();
+        test_dx11_conditional_batch_regression();
+        test_dx11_conditional_batch_followup_regression();
+        test_dx11_region_reference_followup_regression();
+        test_dx11_region_followup_regression();
+        test_dx11_stream_output_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL DX11 upstream feature integration: %s\n", error.what());

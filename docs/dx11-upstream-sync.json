@@ -4516,130 +4516,348 @@
     {
       "sha": "a0d566d2a7a9977db07b2fdf8bc6a73f9a7054f3",
       "subject": "Merge pull request #65 from Satan1c/ranges/check-texture-override",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs are empty; integrate parent features once without replaying whole upstream snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: full merge parents and empty --cc/--remerge-diff recorded in build/upstream/conditional-batch-audit/summary.json and per-SHA evidence."
+      }
     },
     {
       "sha": "57a1b6a21d06ccfa8b24433b296eed83963ed8a9",
       "subject": "Fix max() misuse dropping offset_y in GetSpatialHash",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/ResourceHash.cpp"
+      ],
+      "adaptation": "Retain stronger local spatial byte-bound checks, memcpy and valid-zero status instead of upstream three-argument max macro. Add oversized Y specifically, including UINT_MAX and final partial float; existing distinct axes and end-boundary regressions retained.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "3d619f6604eda424a3f4820d1c2fc52e64bf5384",
       "subject": "Merge pull request #60 from Satan1c/fixes/spatial-hash-max-offset",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs are empty; integrate parent features once without replaying whole upstream snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: full merge parents and empty --cc/--remerge-diff recorded in build/upstream/conditional-batch-audit/summary.json and per-SHA evidence."
+      }
     },
     {
       "sha": "110cb7bc513889c5af2acf95c237b53ef229392d",
       "subject": "Batching: name the batch direction instead of a bool",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "60740eee04dea1e1e07897f0005983f28a1ae3d1",
       "subject": "Batching: read the batch slot through the operation",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "3d1192ae1e3d79f4fc99c527cce916291353fde3",
       "subject": "Conditional batching: fold same-slot chains into bind batches",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "5dec643b514da87c91a9edc34c134447635efdf8",
       "subject": "Conditional batching: run fetch batches through the matched branch",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "11e18fac85a85e627252c9679124a676e1c6a252",
       "subject": "Conditional batching: seed slots a branch may leave alone",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "accb52eed19d8dd428465a6c21aaaf613598c7d8",
       "subject": "Conditional batching: skip conditions that read pipeline state",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "65886d04eec7530bea794933b1bf2109da2b5b30",
       "subject": "Conditional batching: keep an unbatched chain as its own if command",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "2de76dc3886daedff1787d0ae7c78b0e1c96c022",
       "subject": "Conditional batching: log when no branch is taken",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "7d7ed40b9480616756f2b2c010d3aaa9961db071",
       "subject": "Merge pull request #66 from Satan1c/slots/conditional-batching",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs are empty; integrate parent features once without replaying whole upstream snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: full merge parents and empty --cc/--remerge-diff recorded in build/upstream/conditional-batch-audit/summary.json and per-SHA evidence."
+      }
     },
     {
       "sha": "a7847eae82aaac32175c9a7d199673d5c9323bcd",
       "subject": "Revert \"Merge pull request #66 from Satan1c/slots/conditional-batching\"",
-      "status": "pending"
+      "status": "skipped",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Audited initial conditional series is completely reverted by a7847eae. Full repository trees at 3d619f66 and a7847eae match; do not install known-bad intermediate indexing. Final corrected v2 is implemented and validated separately in 4e049386 through 189668cf.",
+      "validation": {
+        "sourceAudit": "PASS: complete initial patches and revert read; matching full tree 569ddeac2f0bd06a4e918f8ddcd510e3467f7e14, build/upstream/conditional-batch-audit/summary.json."
+      }
     },
     {
       "sha": "532a37c588e18d8e14a4f701804eec544c9d053e",
       "subject": "Fixed `->Region()` size being treated as region end pos by some `CopyResourceToResource()` paths",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Retain Region offset/count through typed and structured copy, COPY_DESC, references and captured custom/pool references. Use explicit count-versus-legacy-end metadata with complete reset/THIS/range/deferred-payload propagation; view creation gets an exclusive end only at its boundary. Captured copies allocate from offset zero. Clear uses the same selected span and recreates broader cached views. Resolve dynamic source once, including original stride output. Keep plain CB reference whole-binding behavior.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "c226158eb16589f79d0041d003defc7944f45a00",
       "subject": "Fixed `->Region()` size being clamped to SetConstantBuffers1 CB \"window\" size, fixed possible SpecialCopyBufferRegion offset overflow",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Keep requested explicit size independent of visible CB window and use physical source/destination descriptors plus subtraction before addition in SpecialCopyBufferRegion. Validate explicit structured alignment before recreation; byte copies do not inherit irrelevant metadata stride rounding. Captured spans undergo physical copy preflight; legal out-of-allocation CB reference windows remain valid references. Preserve existing immediate/deferred data-cache policy and resource ownership.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "4e049386b925fb1ef834474bee6023a83ea58dd9",
       "subject": "Batching: name the batch direction instead of a bool",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Introduce file-scope C++17 BatchDirection enum and apply direction consistently to optimizer and execution without upstream shared mutable deferred pointers.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "2811c279d5e5f6cd23a4fa15c0527243358acff4",
       "subject": "Batching: read the batch slot through the operation",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Virtual BatchTarget exposes the actual branch source/destination slot; default ordinary operations retain their original targets. Keep exact eligible operation type checks and existing dynamic-index barriers.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "9110defe02384fa04c8a6fb468ecfb6c02f50e20",
       "subject": "Conditional batching: fold same-slot chains into bind batches",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Implement final conditional-bind folding with both runtime batch array indices using BatchTarget, including nonzero lowest slots. Dispatch selected original branch through virtual RunWithBinding and invocation-local ComPtr sink. Preserve branch/expression ownership, phase selection, order, null and exception-prefix behavior; do not replay the reverted initial broken indexing.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "8fee3c16a500b16a243f6a5de1bdc2f10fbca20d",
       "subject": "Conditional batching: run fetch batches through the matched branch",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Implement conditional fetch through virtual RunWithSource using one owning prefetched slot; matching original branch writes its own destination. No matching branch causes no destination allocation/write. Original run fallback retains actual original src/dst.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "b4fc34cf26942745860ad64f2d036acba24ed8d2",
       "subject": "Conditional batching: seed slots a branch may leave alone",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Collect may-keep chains while preserving local lazy assigned-mask flush: only actual gaps/unchanged slots seed from the pipeline, fully assigned contiguous runs retain zero Get calls. No branch or unless_null must not discard earlier same-slot writes.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "2979395f9e446fa89c4156d5538a4c3f4c4eb306",
       "subject": "Conditional batching: skip conditions that read pipeline state",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Traverse condition operator trees, including functions, for TEXTURE pipeline reads and keep those chains as optimizer barriers. SHADER-only conditions remain eligible as upstream intended. Preserve dynamic pool barriers and runtime short circuit/random sampling; static optimizer probes do not evaluate random conditions.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "09e3266b64f3748dd904942b8b949a171f7590fb",
       "subject": "Conditional batching: keep an unbatched chain as its own if command",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Restore original shared IfCommand when no actual multi-operation batch forms, retaining pre/post phase, local variables and original condition lifetime. Repeated optimization remains stable.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "189668cfe22db557329d9e4a50be17806ca7d8a1",
       "subject": "Conditional batching: log when no branch is taken",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Preserve actual frame-analysis no-branch logs: bind keeps current binding, fetch performs no destination write. Exercise real logger, native state and side effects rather than source-string assertions.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "1868f8c424d9e30c777c01099079f7dbe4ce09e9",
       "subject": "Merge pull request #68 from Satan1c/slots/conditional-batching-v2",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs are empty; integrate parent features once without replaying whole upstream snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: full merge parents and empty --cc/--remerge-diff recorded in build/upstream/conditional-batch-audit/summary.json and per-SHA evidence."
+      }
     },
     {
       "sha": "1d9403c0c1b94b8f10b2e87c5060a45ce398661c",
       "subject": "Stream Output Target fixes: offset handling, reference counting, and documentation",
-      "status": "pending",
+      "status": "implemented-awaiting-validation",
       "earlyPrerequisites": [
         "Only SO caller-reference release correction was pulled forward in dynamic-slot batch: release SOGetTargets references for i != selected slot. SO offset handling and full commit validation remain pending."
-      ]
+      ],
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/resource-regions.md"
+      ],
+      "adaptation": "SO source explicitly reports offset zero because SOGetTargets cannot expose write offsets. SOSetTargets receives selected Region offset and zero for other slots at this historical checkpoint. Balance fetched-slot references without releasing the callers replacement resource. Real compiled GS/SO Draw/readback proves offset and size-not-a-write-limit, other-slot zero behavior, repeated/null binding and final COM destruction. Append behavior from later 75e52ba6 remains pending.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 C++17 DirectX11 DLL and full-production regression, build/upstream/conditional-region-so-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
+        "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      }
     },
     {
       "sha": "7b60818aaf6796e97e272926223d755b2d611490",

@@ -428,6 +428,22 @@ cca/f828/786补pool dump及最终文档。ResolveRange可一次返回原始截�
 
 最终MSVC/CMake C++17 DLL/完整生产回归构建通过；完整CTest **3/3**（legacy0.01秒、generator11.33秒、主回归1.83秒，总13.34秒），证据cache-store-batch-final-{build,ctest,LastTest}.log。两个隔离资源回归通过，cache-store-batch-isolated.log；DX12兼容目标成功且无待编项，cache-store-batch-dx12-build.log。无部署或游戏启动。累计232项implemented-awaiting-validation、62项skipped、42项pending，已处理294/336；目标游戏验证仍待进行，goal保持active。下一批从a0d566d2开始，按审查处理条件批处理的revert/v2、Region修复及SO生命周期，不把同subject重放视为等价重复。
 
+## 第二十六批：条件链 v2、Region 字节数与流输出偏移
+
+逐项处理 `a0d566d2..1d9403c0` 共25项。四个合并的 combined/remerge diff 均为空；初版条件批处理八项和其完整撤销按净零历史记录为 skipped。`3d619f66` 与 `a7847eae` 的完整树均为 `569ddeac2f0bd06a4e918f8ddcd510e3467f7e14`。最终 v2 重新逐补丁审查并实现，不能仅按相同提交标题当作重复。完整证据在 `build/upstream/conditional-batch-audit/`，逐提交说明见 [审查记录](DX11-Upstream-After-Store-Audit.md)。
+
+条件 bind/fetch 均以 `BatchTarget(direction)` 的真实分支槽位计算索引，修复初版非零起始槽错误；通过虚拟入口执行选中原分支，保留本地调用私有 ComPtr sink、原始 If 的表达式所有权、pre/post、短路顺序及异常前缀发布。未成批时恢复原 If。TEXTURE 条件维持 pipeline barrier，SHADER 条件按上游允许批处理；静态优化不消耗随机数。真实六阶段 INI flow、非零槽3/7、gap、重复槽、unless_null、单元素与重复优化、随机调用次数、pipeline 元数据及函数、日志、异常清理和原生 Get/Set 次数通过。
+
+Region 的第二个参数保持字节数，直到构造原生 view 时才转为结束位置。新增运行时区分标记，保留旧式 buf_size 的结束界限语义，并接通 custom/pool、THIS、局部延迟绑定、跨设备保留、重置和范围缓存 key。动态源的原 stride 与区间信息在同次解析中取得，避免随机池索引重复求值。捕获 `Region(16,32)` 后引用得到 FirstElement4/NumElements8，复制得到偏移0、32字节独立分配，真实逐字节读回通过；清除后旧式 offset16/size64 恢复12个元素。COPY_DESC、结构化缓冲区、失效范围不替换目标以及 UINT 边界均有实际资源回归。Clear 的视图重建同样使用选段，并丢弃更宽的已有 view，真实清除只改变16..47字节。
+
+SpecialCopyBufferRegion 查询物理源/目标容量，先做减法再加偏移，避免溢出；显式与捕获区间不被无关 metadata stride 截短，原生 structured alignment 仍验证。保留 CB 可越物理分配的合法引用窗口、copy 必须物理可读及普通 CB ref 整体绑定的既有区别。空间哈希继续使用本地更安全的逐轴字节检查，仅补 oversized Y 的真实断言，不恢复有问题的 max 宏。
+
+SOGetTargets 不能报告写入位置，源偏移明确为0；SOSetTargets 对选中槽传入 Region 偏移，本历史检查点的其他槽为0。实际编译 VS/带 SO 声明的 GS 并 Draw，读回确认目标偏移16、Region size4不限制16字节输出、其他槽从0写入。重复替换、null、调用者独立所有权、缓存写失效与最终 COM 销毁通过。最初销毁断言失败，经诊断 custom reset 前后 AddRef 计数3/2，ClearState+Flush 前后销毁观察器0/1，确认是原生延迟销毁；测试加入实际同步并保留恰好销毁一次的断言，未改生产代码掩盖问题。证据 `conditional-region-so-lifetime-LastTest.log`，临时诊断已删除。后续 `75e52ba6` 的其他槽 append 行为尚未计入本批。
+
+MSVC/CMake C++17 DLL/完整生产回归构建通过（`conditional-region-so-build.log` 105步及 `conditional-region-so-final-build.log` 最终增量）。完整 CTest **3/3**：legacy0.03秒、generator13.70秒、主回归1.90秒，总15.79秒，证据 `conditional-region-so-final-{ctest,LastTest}.log`。两个隔离回归通过（`conditional-region-so-isolated.log`）；DX12兼容目标成功、无待编项；36页82本地链接/锚点/fence零错误（`conditional-region-so-docs.log`）。未执行 deferred SO、游戏或部署。
+
+累计244项 implemented-awaiting-validation、75项 skipped、17项 pending，已处理319/336；游戏与设备特定验证待进行，goal保持 active。剩余17项的完整审查见 [最终特性审查](DX11-Upstream-Final-Feature-Audit.md)，包括 SO append、声明汇总、PS dump筛选、纹理上传追踪、dHash 与 HammingDistance。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。

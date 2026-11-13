@@ -574,6 +574,7 @@ public:
 	UINT stride;
 	UINT offset;
 	UINT buf_size;
+    bool buf_size_is_length = false; // Explicit captured Region count; legacy metadata remains an extent.
 	DXGI_FORMAT format;
 
 	UINT source_stride;
@@ -1054,14 +1055,14 @@ public:
 			UINT *offset,
 			DXGI_FORMAT *format,
 			UINT *buf_size,
-			ResourceCopyTarget *dst=NULL);
+			ResourceCopyTarget *dst=NULL, bool* size_is_length=nullptr, UINT* source_original_stride=nullptr);
 	void SetResource(CommandListState *state,
 			ID3D11Resource *res,
 			ID3D11View *view,
 			UINT stride,
 			UINT offset,
 			DXGI_FORMAT format,
-			UINT buf_size);
+			UINT buf_size, bool size_is_length=false);
 
 	void FindTextureOverrides(
 			CommandListState *state,
@@ -1160,7 +1161,10 @@ struct DeferredBinding {
 	UINT stride = 0, offset = 0, size = 0;
 	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool assigned = false;
+    bool size_is_length = false;
 };
+
+enum class BatchDirection { Bind, Fetch };
 
 class ResourceCopyOperation : public CommandListCommand {
 public:
@@ -1171,16 +1175,18 @@ public:
 	ID3D11Resource *cached_resource;
 	ResourcePool resource_pool;
 	ID3D11View *cached_view;
+    bool cached_source_size_is_length = false;
 
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
 
-	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false);
-	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
+	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false, bool source_size_is_length = false, UINT source_original_stride = 0);
+	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool source_size_is_length = false, UINT source_original_stride = 0);
 
 	void run(CommandListState*) override;
-	void RunWithBinding(CommandListState*, DeferredBinding* deferred);
-	void RunWithSource(CommandListState*, ID3D11Resource*, ID3D11View*);
+	virtual void RunWithBinding(CommandListState*, DeferredBinding* deferred);
+	virtual const ResourceCopyTarget& BatchTarget(BatchDirection direction) const;
+	virtual void RunWithSource(CommandListState*, ID3D11Resource*, ID3D11View*);
 };
 
 class ShaderResourceBatch : public CommandListCommand {
@@ -1201,13 +1207,33 @@ public:
 	void run(CommandListState*) override;
 };
 
+struct ConditionalSlotBranch {
+    CommandListExpression* condition;
+    std::shared_ptr<ResourceCopyOperation> op;
+};
+
+// Owns the original chain: conditions and branch-local variables outlive the batch.
+// Deferred bindings remain invocation-local, including when an operation throws.
+class ConditionalSlotCopyOperation : public ResourceCopyOperation {
+public:
+    BatchDirection direction = BatchDirection::Bind;
+    std::vector<ConditionalSlotBranch> branches;
+    std::shared_ptr<CommandListCommand> source_if;
+    void run(CommandListState*) override;
+    void RunWithBinding(CommandListState*, DeferredBinding*) override;
+    void RunWithSource(CommandListState*, ID3D11Resource*, ID3D11View*) override;
+    const ResourceCopyTarget& BatchTarget(BatchDirection) const override;
+private:
+    ConditionalSlotBranch* MatchingBranch(CommandListState*);
+};
+
 void merge_shader_resource_batches(CommandList* command_list);
 
 // Cache entries are leased exclusively to one invocation. No command retains
 // a temporary state/sink; driver calls happen outside the cache mutex.
 struct SlotRangeCopyCacheEntry {
     std::unique_ptr<ResourceCopyOperation> operation;
-    using ViewKey = std::tuple<ID3D11Resource*, UINT, UINT, DXGI_FORMAT, UINT, unsigned, bool>;
+    using ViewKey = std::tuple<ID3D11Resource*, UINT, UINT, DXGI_FORMAT, UINT, unsigned, bool, bool>;
     ViewKey view_key = {};
 };
 
@@ -1730,7 +1756,7 @@ public:
 
 	ID3D11View* create_best_view(ID3D11Resource *resource,
 		CommandListState *state, UINT stride,
-		UINT offset, DXGI_FORMAT format, UINT buf_src_size);
+		UINT offset, DXGI_FORMAT format, UINT buf_src_size, bool size_is_length = false);
 	void clear_unknown_view(ID3D11View*, CommandListState *state);
 
 	void run(CommandListState*) override;

@@ -200,6 +200,11 @@ if(BUILD_TESTING)
         tests/store_cache_regression.cpp
         tests/check_to_range_regression.cpp
         tests/view_reference_regression.cpp
+        tests/conditional_batch_regression.cpp
+        tests/conditional_batch_followup_regression.cpp
+        tests/region_reference_followup_regression.cpp
+        tests/region_followup_regression.cpp
+        tests/stream_output_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
