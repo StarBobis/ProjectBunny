@@ -16,7 +16,7 @@ if FRAME_NUMBER - $last_sample_frame >= 30
 endif
 ```
 
-The backing buffer must contain the requested float. The explicit frame guard prevents repeated samples across many draws in one sampling frame. A failed read leaves `$distance` unchanged; this example still advances the sampling frame, so add a game-specific retry policy if needed. `store` has no success-result variable.
+The backing buffer must contain the requested float. The explicit frame guard prevents repeated samples across many draws in one sampling frame. A valid index beyond that buffer, or a readback failure, writes zero; a missing/null source leaves `$distance` unchanged. This example still advances the sampling frame, so add a game-specific retry policy if needed. `store` has no success-result variable and a zero result alone cannot distinguish failure from a successfully read zero.
 
 `store`'s offset is an **absolute backing-buffer float index**, not a byte offset and not relative to a CB/SRV view. The addition above converts a visible CB byte offset to that absolute index. `Region`/hash APIs use different units; do not interchange their arguments.
 

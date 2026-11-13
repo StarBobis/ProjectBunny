@@ -27,7 +27,7 @@ Index selection follows [pool indexing](indexing.md). Missing FIFO/spatial reads
 store = $PoolState[$id], vs-cb1, 4
 ```
 
-The last argument is an absolute backing-buffer float index. Ordinary assignment rules, type switching, locked-value protection and persistence still apply. A failed read leaves the output unchanged and does not allocate a missing dynamic destination. Static element references still resolve during parsing. See [GPU readback](../examples/gpu-readback.md) for cache policy and offset conversion.
+The last argument is an absolute backing-buffer float index. Ordinary assignment rules, type switching, locked-value protection and persistence still apply. A valid index outside the physical buffer, or a readback failure, writes zero through ordinary assignment and can allocate a missing dynamic destination. A missing/null source performs no assignment; invalid numeric indices and device/context checks retain their safety behavior. Static element references still resolve during parsing. See [GPU readback](../examples/gpu-readback.md) for cache policy and offset conversion.
 
 ## All physical slots
 
@@ -37,7 +37,7 @@ $PoolState[*] = 7
 $PoolState[*] = null
 ```
 
-A full-range expression is evaluated once and applied to every physical variable slot, independent of FIFO/spatial keys. `null` resets variable state to its configured default. Resource state is retained; locked variables are unchanged. `$PoolState[first:last]` is not a variable range syntax. Resource full-range operations are [separate](resources.md).
+A full-range expression is evaluated once and applied to every physical variable slot, independent of FIFO/spatial keys. Like an ordinary variable assignment, it resets the opposite resource type when `pool_element_type_switch_reset = 1`; setting that option to `0` retains both kinds of state. The separate `null` reset restores variable defaults while retaining resource state. Locked variable values are unchanged. `$PoolState[first:last]` is not a variable range syntax. Resource full-range operations are [separate](resources.md).
 
 ## Persistence
 
