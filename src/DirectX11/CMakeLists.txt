@@ -230,6 +230,11 @@ if(BUILD_TESTING)
         tests/round3_composition_regression.cpp
         tests/round3_lifetime_regression.cpp
         tests/round3_oracle_regression.cpp
+        tests/round4_alias_regression.cpp
+        tests/round4_gpu_regression.cpp
+        tests/round4_config_regression.cpp
+        tests/round5_assignment_regression.cpp
+        tests/round5_config_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
@@ -262,4 +267,14 @@ if(BUILD_TESTING)
                 --work-dir "${CMAKE_SOURCE_DIR}/build/version-generator-regression")
     endif()
     add_test(NAME dx11_upstream_regression COMMAND dx11_upstream_regression)
+    add_executable(dx11_proxy_smoke tests/proxy_smoke.cpp)
+    target_include_directories(dx11_proxy_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_features(dx11_proxy_smoke PRIVATE cxx_std_17)
+    set_target_msvc_options(dx11_proxy_smoke)
+    set_target_common_definitions(dx11_proxy_smoke)
+    add_dependencies(dx11_proxy_smoke DirectX11)
+    add_dependencies(dx11_upstream_regression dx11_proxy_smoke)
+    add_test(NAME dx11_proxy_smoke COMMAND dx11_proxy_smoke
+        "$<TARGET_FILE:DirectX11>" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(dx11_proxy_smoke PROPERTIES TIMEOUT 30)
 endif()

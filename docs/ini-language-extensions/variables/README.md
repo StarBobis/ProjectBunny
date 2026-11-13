@@ -19,6 +19,8 @@ The value of `$foo` is evaluated at parse time, and the resulting value is assig
 
 Many numeric and boolean section options accept expressions. Their values are snapshots evaluated during parsing; declarations must be available in the appropriate namespace. This does not make every string-valued option an expression.
 
+Early System and Rendering options are parsed before Constants declarations, so they cannot reference those variables. Unavailable declarations use the option's normal failure/default behavior; reloading does not make the previous configuration's declarations available. Resource and pool options parsed after Constants can use the current declarations.
+
 ## Locked Variables
 
 The `locked` keyword prevents a variable from being used as an assignment target.

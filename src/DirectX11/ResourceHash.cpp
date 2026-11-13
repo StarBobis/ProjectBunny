@@ -2173,6 +2173,13 @@ void InvalidatePipelineResourceDataCaches(ID3D11DeviceContext* context, bool com
         InvalidateViewResourceDataCacheForWrite(view.Get());
     }
     if (!compute) {
+        ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+        context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, targets, nullptr);
+        for (auto* target : targets) {
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView> retained;
+            retained.Attach(target);
+            InvalidateViewResourceDataCacheForWrite(retained.Get());
+        }
         ID3D11Buffer* buffers[D3D11_SO_STREAM_COUNT]{};
         context->SOGetTargets(D3D11_SO_STREAM_COUNT, buffers);
         for (auto* buffer : buffers) {

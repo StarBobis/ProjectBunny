@@ -933,6 +933,11 @@ void test_dx11_round3_nondraw_metadata_regression();
 void test_dx11_round3_composition_regression();
 void test_dx11_round3_lifetime_regression();
 void test_dx11_round3_oracle_regression();
+void test_dx11_round4_alias_regression();
+void test_dx11_round4_gpu_regression();
+void test_dx11_round4_config_regression();
+void test_dx11_round5_assignment_regression();
+void test_dx11_round5_config_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -986,6 +991,25 @@ int main()
             }
         }
         require(round3_passed, "independent round3 scenarios");
+        bool round4_passed = true;
+        for (auto test : {test_dx11_round4_alias_regression, test_dx11_round4_gpu_regression,
+                test_dx11_round4_config_regression}) {
+            try { test(); }
+            catch (const std::exception& error) {
+                std::fprintf(stderr, "FAIL independent round4 scenario: %s\n", error.what());
+                round4_passed = false;
+            }
+        }
+        require(round4_passed, "independent round4 scenarios");
+        bool round5_passed = true;
+        for (auto test : {test_dx11_round5_assignment_regression, test_dx11_round5_config_regression}) {
+            try { test(); }
+            catch (const std::exception& error) {
+                std::fprintf(stderr, "FAIL independent round5 scenario: %s\n", error.what());
+                round5_passed = false;
+            }
+        }
+        require(round5_passed, "independent round5 scenarios");
         test_dx11_texture_upload_state_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {

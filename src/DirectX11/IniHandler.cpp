@@ -4588,8 +4588,44 @@ void BuildTextureOverrideDrawMaps()
 	}
 }
 
+// Early options must not resolve declarations belonging to the previous load.
+// Keep their objects alive until the existing parser reaches its reset points.
+class EarlyConfigRegistries {
+    CommandListVariables variables;
+    decltype(customResourcePools) pools;
+    decltype(customResources) resources;
+    bool globals_hidden = true;
+    bool resources_hidden = true;
+public:
+    EarlyConfigRegistries()
+    {
+        variables.swap(command_list_globals);
+        pools.swap(customResourcePools);
+        resources.swap(customResources);
+    }
+    ~EarlyConfigRegistries() { Restore(); }
+    EarlyConfigRegistries(const EarlyConfigRegistries&) = delete;
+    EarlyConfigRegistries& operator=(const EarlyConfigRegistries&) = delete;
+    void RestoreGlobals() noexcept
+    {
+        if (!globals_hidden) return;
+        variables.swap(command_list_globals);
+        globals_hidden = false;
+    }
+    void Restore() noexcept
+    {
+        if (resources_hidden) {
+            resources.swap(customResources);
+            pools.swap(customResourcePools);
+            resources_hidden = false;
+        }
+        RestoreGlobals();
+    }
+};
+
 void LoadConfigFile()
 {
+    EarlyConfigRegistries previous_registries;
 	wchar_t iniFile[MAX_PATH], logFilename[MAX_PATH];
 	wchar_t setting[MAX_PATH];
 
@@ -4955,9 +4991,11 @@ void LoadConfigFile()
 	// This is the only command list we permit to allocate global variables,
 	// so we parse it before all other command lists, key bindings and
 	// presets that may use those variables.
+    previous_registries.RestoreGlobals();
 	ParseConstantsSection();
 
 	// Must be done before any command lists that may refer to them:
+    previous_registries.Restore();
 	ParseResourceSections();
 
 	// Second pass for the Constants command list:

@@ -5742,8 +5742,10 @@ static ResourceType* GetResourceFromPool(
 			return NULL;
 
 		if (old_device == state->mOrigDevice1) {
-			if (resource == dst_resource)
-				return NULL;
+			if (resource == dst_resource) {
+                resource->AddRef();
+                return resource;
+            }
 
 			LogDebug("Switching cached resource %S\n", ini_line->c_str());
 			Profiling::resource_pool_swaps++;
@@ -5767,9 +5769,7 @@ static ResourceType* GetResourceFromPool(
 		LogInfo("Original resource was:\n");
 		LogResourceDesc(&old_desc);
 
-		// Prevent further attempts:
-		resource_pool->emplace(hash, NULL, NULL);
-
+        // Allocation/device failures may be transient; do not cache failure.
 		return NULL;
 	}
 	resource_pool->emplace(hash, resource, state->mOrigDevice1);
@@ -9574,6 +9574,7 @@ void ResourceCopyTarget::SetResource(
 	case ResourceCopyTargetType::CUSTOM_RESOURCE:
 	{
 		CustomResource* custom_resource = GetCustomResource(state, true);
+        if (!custom_resource) return;
 
 		custom_resource->stride = stride;
 		custom_resource->offset = offset;
@@ -10842,7 +10843,7 @@ static ResourceType* RecreateCompatibleTexture(
 		(ini_line, src_resource, dst_resource, resource_pool, state, &new_desc);
 }
 
-static void RecreateCompatibleResource(
+static bool RecreateCompatibleResource(
 		wstring *ini_line,
 		ResourceCopyTarget *src, // May be NULL
 		ResourceCopyTarget *dst, // May be NULL
@@ -10895,6 +10896,11 @@ static void RecreateCompatibleResource(
 
 	UnlockResourceCreationMode();
 
+    if (!res) return false;
+    if (res == *dst_resource) {
+        res->Release(); // Balance acquisition without discarding the cached view.
+        return true;
+    }
 	if (res) {
 		if (*dst_resource)
 			(*dst_resource)->Release();
@@ -10905,6 +10911,7 @@ static void RecreateCompatibleResource(
 		if (dst_view)
 			*dst_view = NULL;
 	}
+    return true;
 }
 
 template <typename DescType>
@@ -11859,27 +11866,33 @@ void ResourceCopyOperation::CopyResourceToResource(
             state->this_target->type == ResourceCopyTargetType::THIS_RESOURCE) return;
         effective_destination = state->this_target;
     }
-    ResourceCopyTarget& dst = *effective_destination;
-	if (!src_resource) {
-		COMMAND_LIST_LOG(state, "  Copy source was NULL\n");
-		if (!(options & ResourceCopyOptions::UNLESS_NULL)) {
-			// Still set destination to NULL - if we are copying a
-			// resource we generally expect it to be there, and
-			// this will make errors more obvious if we copy
-			// something that doesn't exist. This behaviour can be
-			// overridden with the unless_null keyword.
-			PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
-		}
-		return;
-	}
-
-    if (source_size_is_length && (options & ResourceCopyOptions::COPY_MASK)) {
+    if (!src_resource && (options & ResourceCopyOptions::UNLESS_NULL))
+        return;
+    if (src_resource && source_size_is_length && (options & ResourceCopyOptions::COPY_MASK)) {
         D3D11_RESOURCE_DIMENSION dimension;
         src_resource->GetType(&dimension);
         if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER) return;
         D3D11_BUFFER_DESC backing{};
         static_cast<ID3D11Buffer*>(src_resource)->GetDesc(&backing);
         if (!buf_src_size || offset >= backing.ByteWidth) return;
+    }
+    // Cache selection, descriptor recreation and publication must address the
+    // same element. Freeze only this invocation, after source preflight.
+    ResourceCopyTarget resolved_destination;
+    if (effective_destination->type == ResourceCopyTargetType::CUSTOM_RESOURCE) {
+        CustomResource* selected = effective_destination->GetCustomResource(state, true);
+        if (!selected) return;
+        resolved_destination = *effective_destination;
+        resolved_destination.SetCustomResource(selected);
+        resolved_destination.custom_resource_pool = nullptr;
+        resolved_destination.pool_dynamic_index_expression.reset();
+        effective_destination = &resolved_destination;
+    }
+    ResourceCopyTarget& dst = *effective_destination;
+    if (!src_resource) {
+        COMMAND_LIST_LOG(state, "  Copy source was NULL\n");
+        PublishResourceBinding(dst, state, nullptr, nullptr, 0, 0, DXGI_FORMAT_UNKNOWN, 0, deferred);
+        return;
     }
 	CustomResource* dst_custom_resource = nullptr;
 
@@ -11913,31 +11926,17 @@ void ResourceCopyOperation::CopyResourceToResource(
 		}
 
 		dst_custom_resource->OverrideOutOfBandInfo(&format, &stride);
-        // Range ref fetches retain source subviews only without overrides.
-        // Do not reuse an old same-resource view with a now-overridden format
-        // or stride. This is confined to the range source-view-preserving path.
-        if ((preserve_source_view || (!(options & ResourceCopyOptions::COPY_MASK) && src_view)) && *pp_cached_view &&
-            (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) ||
-             dst_custom_resource->override_stride != -1)) {
-            (*pp_cached_view)->Release();
-            *pp_cached_view = nullptr;
-        }
-
-
-        // Source metadata was resolved with GetResource. In particular a
-        // dynamic/random pool index must not be evaluated again for this field.
-        dst_custom_resource->source_stride = source_original_stride ? source_original_stride : stride;
 	}
 
 	const bool explicit_region = src.evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION;
     const bool selected_window = explicit_region || source_size_is_length;
 	const UINT selected_offset = offset;
 	const UINT selected_size = buf_src_size;
-    if ((selected_window || cached_source_size_is_length != source_size_is_length) && *pp_cached_view) {
-        (*pp_cached_view)->Release();
-        *pp_cached_view = nullptr;
-    }
-    cached_source_size_is_length = source_size_is_length;
+    const UINT assigned_source_stride = source_original_stride ? source_original_stride : stride;
+    const bool discard_cached_view = selected_window ||
+        cached_source_size_is_length != source_size_is_length ||
+        (dst_custom_resource && (preserve_source_view || (!(options & ResourceCopyOptions::COPY_MASK) && src_view)) &&
+            (dst_custom_resource->override_format != static_cast<DXGI_FORMAT>(-1) || dst_custom_resource->override_stride != -1));
 	FillInMissingInfo(src.type, src_resource, src_view, &stride, &offset, &buf_src_size, &format);
 	if (selected_window) {
 		offset = selected_offset;
@@ -11962,18 +11961,23 @@ void ResourceCopyOperation::CopyResourceToResource(
 	}
 
 
-	if (options & ResourceCopyOptions::COPY_MASK) {
+    if (options & ResourceCopyOptions::COPY_MASK) {
         ResourceCopyTarget copy_source = src;
-        // Captured explicit windows already carry resolved offset/count. No
-        // member/index expression is evaluated again through this local target.
         if (source_size_is_length) copy_source.evaluation_mode = ResourceCopyTargetEvaluationMode::RESOURCE_REGION;
-		RecreateCompatibleResource(&ini_line, &copy_source, &dst, src_resource, pp_cached_resource, p_resource_pool, src_view, pp_cached_view,
-			state, options, stride, offset, format, &buf_src_size, &buf_dst_size);
-
-		if (!*pp_cached_resource) {
-			COMMAND_LIST_LOG(state, "  error creating/updating destination resource\n");
-			goto out_release;
-		}
+        if (!RecreateCompatibleResource(&ini_line, &copy_source, &dst, src_resource, pp_cached_resource,
+            p_resource_pool, src_view, pp_cached_view, state, options, stride, offset, format, &buf_src_size, &buf_dst_size)) {
+            COMMAND_LIST_LOG(state, "  error creating/updating destination resource\n");
+            return;
+        }
+    }
+    // Commit metadata and cached-view changes only after acquisition succeeds.
+    if (discard_cached_view && *pp_cached_view) {
+        (*pp_cached_view)->Release();
+        *pp_cached_view = nullptr;
+    }
+    cached_source_size_is_length = source_size_is_length;
+    if (dst_custom_resource) dst_custom_resource->source_stride = assigned_source_stride;
+	if (options & ResourceCopyOptions::COPY_MASK) {
 		dst_resource = *pp_cached_resource;
 		if (pp_cached_device)
 			*pp_cached_device = state->mOrigDevice1;

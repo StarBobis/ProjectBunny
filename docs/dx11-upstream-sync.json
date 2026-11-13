@@ -5264,5 +5264,23 @@
     "validation": "PASS: MSVC CMake Ninja Release DirectX11 and full regression target; CTest3/3 (12.76s); isolated pool/property regressions; DirectX12 compatibility build;38-page87-link documentation check; git diff --check.",
     "scope": "Scenario-based follow-up to prior336-commit audit, not a second assertion that all336 patches were re-read in this round.",
     "targetRuntime": "deferred by user; no deployment/game/upstream DLL differential run; original statuses preserved"
+  },
+  "round4AndFollowingAdversarialReview": {
+    "baselineLocal": "fd3a984",
+    "upstreamTip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+    "report": "docs/DX11-Upstream-Adversarial-Round4.md",
+    "round4Confirmed": [
+      "dynamic assignment destination repeated evaluation and missing-target safety",
+      "buffer RTV raster write cache invalidation",
+      "previous-generation early option snapshots"
+    ],
+    "round5Confirmed": [
+      "context-only DLL creation missing owning device wrapper",
+      "resource recreation failure publishes old allocation with new metadata and permanently caches failure",
+      "old STATIC pool initialization pollutes new globals during Constants"
+    ],
+    "validation": "PASS: full production and actual proxy DLL smoke CTest4/4 (13.77s); real valid-descriptor CreateBuffer E_OUTOFMEMORY and same-descriptor retry for copy/copy_desc; real native buffer RTV CRC; actual two-generation LoadConfig; optional export output combinations.",
+    "loop": "User requires another independent review after verified fixes; round6 pending before completion.",
+    "targetRuntime": "Game testing deferred by user; isolated loaded-proxy harness is not target-game deployment or upstream binary differential run; original per-commit runtime statuses preserved."
   }
 }

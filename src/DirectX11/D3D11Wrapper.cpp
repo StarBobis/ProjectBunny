@@ -10,6 +10,7 @@
 #include <locale>
 #include <chrono>
 #include <thread>
+#include <wrl/client.h>
 
 //#include <Shlobj.h>
 //#include <Winuser.h>
@@ -737,6 +738,16 @@ static HackerDevice* wrap_d3d11_device_and_context(ID3D11Device **ppDevice, ID3D
 	// Optional parameters means these might be null.
 	ID3D11Device *retDevice = ppDevice ? *ppDevice : nullptr;
 	ID3D11DeviceContext *retContext = ppImmediateContext ? *ppImmediateContext : nullptr;
+
+    // A context-only call still needs its device wrapper for GetDevice and
+    // command execution. Treat the recovered output like a temporary caller
+    // reference, releasing it after the normal wrapping/linking path.
+    Microsoft::WRL::ComPtr<ID3D11Device> recovered_device;
+    if (!ppDevice && retContext) {
+        retContext->GetDevice(recovered_device.GetAddressOf());
+        ppDevice = recovered_device.GetAddressOf();
+        retDevice = recovered_device.Get();
+    }
 
 	// We now want to always upconvert to ID3D11Device1 and ID3D11DeviceContext1,
 	// and will only use the downlevel objects if we get an error on QueryInterface.
