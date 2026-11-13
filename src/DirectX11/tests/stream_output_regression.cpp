@@ -128,11 +128,12 @@ void test_dx11_stream_output_regression()
     const float expected_b[] = {55,66,77,88};
     require_batch(std::memcmp(first.data()+16, expected_a, sizeof(expected_a)) == 0,
         "SO: actual GS writes at requested selected-slot offset; Region size does not limit SO writes");
-    require_batch(std::memcmp(second.data(), expected_b, sizeof(expected_b)) == 0,
-        "SO: unmentioned slot resumes at zero rather than retaining its old offset");
+    require_batch(std::memcmp(second.data()+48, expected_b, sizeof(expected_b)) == 0,
+        "SO: unmentioned slot appends at its prior write position");
     for (UINT i = 0; i < 16; ++i) require_batch(first[i] == 0xcd, "SO: selected-slot prefix stays unchanged");
     for (UINT i = 32; i < first.size(); ++i) require_batch(first[i] == 0xcd, "SO: selected-slot suffix stays unchanged");
-    for (UINT i = 16; i < second.size(); ++i) require_batch(second[i] == 0xcd, "SO: untouched slot writes only one complete output element");
+    for (UINT i = 0; i < second.size(); ++i)
+        if (i < 48 || i >= 64) require_batch(second[i] == 0xcd, "SO: untouched slot preserves bytes outside appended output");
 
     device.context->SOSetTargets(2, initial, initial_offsets);
     scalar(device, L"so0", L"ref resourcestream_a->region(16,4)");

@@ -444,6 +444,18 @@ MSVC/CMake C++17 DLL/完整生产回归构建通过（`conditional-region-so-bui
 
 累计244项 implemented-awaiting-validation、75项 skipped、17项 pending，已处理319/336；游戏与设备特定验证待进行，goal保持 active。剩余17项的完整审查见 [最终特性审查](DX11-Upstream-Final-Feature-Audit.md)，包括 SO append、声明汇总、PS dump筛选、纹理上传追踪、dHash 与 HammingDistance。
 
+## 第二十七批：SO append、声明汇总与 PS 转储筛选
+
+处理 `7b60818a..73aa0742` 共9项。三个合并均核对完整 combined/remerge diff，无独立解决内容，记录 skipped；证据 `build/upstream/so-shader-merge-evidence.json`。六项非合并提交分别接入最终 SO append、文件作用域引用辅助函数、GS-with-SO 限制注释及文档、声明汇总、PS 声明筛选。
+
+未被赋值的 SO 槽改用 UINT(-1) append，选中槽仍用显式 offset；前批的其他槽归零夹具按最终语义迁移，保留 selected offset/size不限制输出、缓存失效及 COM 断言。新测试实际 GS 两轮 Draw 读回：目标 A 保留0和64处输出，B 从32继续到48，prefix/suffix逐字节不变。四个动态 SO 槽及无效索引、RTV/DSV replacement/hole 的身份和引用平衡通过。真正包装的 CreateGeometryShaderWithStreamOutput 在 hunting 开启下仍未登记 normal hash/binding/visited，这与上游限制一致，并无额外承诺已支持这条 interception 路径。
+
+ShaderBindings 在完整验证后从实际槽数组派生 count/first/last，count为不同声明槽数而非跨度，重复 token 不增数。六个新 zero-argument 成员使用已有互斥保护的独立快照。真实六阶段 sparse CB4/13、SRV9/63/127 与 D3DReflect 核对，包含 raw/structured/typed、无声明、坏 DXBC/重复声明、cache miss/no shader 和并发发布/快照所有权。首次测试捕获成员长度表排序错误：14字符 cb_last_slot 被前面15字符条目触发的提前退出漏过；已修正顺序，不改通用解析器或弱化测试。完整主回归随后通过。
+
+PS dump 使用 original shader hash 的声明快照；缓存命中但无声明时跳过，缺缓存保留原 dump-all 回退，VS/CS 等阶段不筛选。真实 public FrameAnalysis Draw/Dispatch 产生 DDS 并重新载入验证所有像素/尺寸，覆盖 sparse声明、undeclared slot、unbound声明、cachemissing/cachedempty、其它阶段、内部保留槽与写入失败。所有128个 Get 引用在循环前转为 ComPtr，修复内部槽 continue 和提前中止漏释放；主动取消未注入，只对 RAII 路径作源码审查。测试使用既有后台窗口 gate，原 COM apartment 断言保持。
+
+最终完整 CMake/MSVC C++17 DLL/生产回归构建通过；测试夹具 enum 三项 OR 按本地返回 int 的 operator 适配后编译成功。完整 CTest **3/3**：legacy0.02秒、generator10.63秒、主回归1.90秒，总12.55秒，证据 `so-shader-final-{ctest,LastTest}.log`。DX12兼容目标成功、无待编项；37页84本地链接/锚点/fence零错误。无游戏、部署或 deferred SO 验证。累计250项 implemented-awaiting-validation、78项 skipped、8项 pending，已处理328/336，goal保持 active。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。

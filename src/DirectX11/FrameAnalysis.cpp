@@ -22,6 +22,7 @@
 #include <shlguid.h>
 
 #include <stdexcept>
+#include <array>
 
 // Flag introduced in Windows 10 Fall Creators Update
 // Someone was clearly on crack when they decided this flag was necessary
@@ -2370,46 +2371,35 @@ void FrameAnalysisContext::_DumpCBs(char shader_type, bool compute,
 }
 
 void FrameAnalysisContext::_DumpTextures(char shader_type, bool compute,
-	ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT])
+    ID3D11ShaderResourceView *views[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT], const ShaderBindings* bindings)
 {
-	ID3D11Resource *resource;
-	D3D11_SHADER_RESOURCE_VIEW_DESC view_desc;
-	wchar_t filename[MAX_PATH];
-	HRESULT hr;
-	UINT i;
-
-	for (i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT && G->analyse_frame; i++) {
-		if (!views[i])
-			continue;
-
-		if (i == G->IniParamsReg) {
-			FALogInfo(L"Skipped 3DMigoto resource in slot %Cs-t%i\n", shader_type, i);
-			continue;
-		}
-
-		views[i]->GetResource(&resource);
-		if (!resource) {
-			views[i]->Release();
-			continue;
-		}
-
-		views[i]->GetDesc(&view_desc);
-
-		// TODO: process description to get offset, strides & size for
-		// buffer & bufferex type SRVs and pass down to dump routines,
-		// although I have no idea how to determine which of the
-		// entries in the two D3D11_BUFFER_SRV unions will be valid.
-
-		hr = FrameAnalysisFilename(filename, MAX_PATH, compute, L"t", shader_type, i, resource);
-		if (SUCCEEDED(hr)) {
-			DumpResource(resource, filename,
-					FrameAnalysisOptions::DUMP_SRV, i,
-					view_desc.Format, 0, 0);
-		}
-
-		resource->Release();
-		views[i]->Release();
-	}
+    // The native Get handed us all 128 references. Own every one before any
+    // skip, cancellation or throwing dump path, including internal slots.
+    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> owned;
+    for (unsigned i = 0; i < owned.size(); ++i) {
+        owned[i].Attach(views[i]);
+        views[i] = nullptr;
+    }
+    for (unsigned i = 0; i < owned.size() && G->analyse_frame; ++i) {
+        auto* view = owned[i].Get();
+        if (!view) continue;
+        if (i == G->IniParamsReg) {
+            FALogInfo(L"Skipped 3DMigoto resource in slot %Cs-t%i\n", shader_type, i);
+            continue;
+        }
+        if (bindings && bindings->resources[i].type == ShaderResourceType::NONE) {
+            FALogInfo(L"Skipped undeclared resource in slot %Cs-t%i\n", shader_type, i);
+            continue;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        view->GetResource(resource.GetAddressOf());
+        if (!resource) continue;
+        D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+        view->GetDesc(&desc);
+        wchar_t filename[MAX_PATH];
+        if (SUCCEEDED(FrameAnalysisFilename(filename, MAX_PATH, compute, L"t", shader_type, i, resource.Get())))
+            DumpResource(resource.Get(), filename, FrameAnalysisOptions::DUMP_SRV, i, desc.Format, 0, 0);
+    }
 }
 
 void FrameAnalysisContext::DumpCBs(bool compute)
@@ -2594,28 +2584,33 @@ void FrameAnalysisContext::DumpTextures(bool compute)
 	if (compute) {
 		if (mCurrentComputeShader) {
 			GetPassThroughOrigContext1()->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('c', compute, views);
+			_DumpTextures('c', compute, views, nullptr);
 		}
 	} else {
 		if (mCurrentVertexShader) {
 			GetPassThroughOrigContext1()->VSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('v', compute, views);
+			_DumpTextures('v', compute, views, nullptr);
 		}
 		if (mCurrentHullShader) {
 			GetPassThroughOrigContext1()->HSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('h', compute, views);
+			_DumpTextures('h', compute, views, nullptr);
 		}
 		if (mCurrentDomainShader) {
 			GetPassThroughOrigContext1()->DSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('d', compute, views);
+			_DumpTextures('d', compute, views, nullptr);
 		}
 		if (mCurrentGeometryShader) {
 			GetPassThroughOrigContext1()->GSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('g', compute, views);
+			_DumpTextures('g', compute, views, nullptr);
 		}
 		if (mCurrentPixelShader) {
+            ShaderBindings snapshot;
+            auto* device = GetHackerDevice();
+            const bool found = device && device->GetShaderBindings(mCurrentPixelShader, &snapshot);
 			GetPassThroughOrigContext1()->PSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, views);
-			_DumpTextures('p', compute, views);
+            // Missing cache preserves legacy dumping; a present empty cache
+            // declares no slots. The owned snapshot outlives the entire dump.
+			_DumpTextures('p', compute, views, found ? &snapshot : nullptr);
 		}
 	}
 }

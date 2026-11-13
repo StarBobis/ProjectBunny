@@ -912,6 +912,9 @@ void test_dx11_conditional_batch_followup_regression();
 void test_dx11_region_reference_followup_regression();
 void test_dx11_region_followup_regression();
 void test_dx11_stream_output_regression();
+void test_dx11_shader_summary_regression();
+void test_dx11_shader_dump_filter_regression();
+void test_dx11_stream_output_append_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -938,6 +941,9 @@ int main()
         test_dx11_region_reference_followup_regression();
         test_dx11_region_followup_regression();
         test_dx11_stream_output_regression();
+        test_dx11_shader_summary_regression();
+        test_dx11_shader_dump_filter_regression();
+        test_dx11_stream_output_append_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL DX11 upstream feature integration: %s\n", error.what());

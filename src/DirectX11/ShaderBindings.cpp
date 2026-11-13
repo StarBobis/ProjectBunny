@@ -168,6 +168,14 @@ bool get_shader_bindings_from_bytecode(const void* data, size_t size, ShaderBind
         }
     }
     if (!found_program) return false;
+    // Summarize only fully validated slots. Repeated declaration tokens do
+    // not inflate the number of distinct declared slots.
+    for (uint32_t slot = 0; slot < parsed.constant_buffers.size(); ++slot)
+        if (parsed.constant_buffers[slot].type != ShaderConstantBufferType::NONE)
+            parsed.constant_buffer_slots.include(slot);
+    for (uint32_t slot = 0; slot < parsed.resources.size(); ++slot)
+        if (parsed.resources[slot].type != ShaderResourceType::NONE)
+            parsed.resource_slots.include(slot);
     *out = parsed;
     return true;
 }

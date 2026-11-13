@@ -4862,47 +4862,128 @@
     {
       "sha": "7b60818aaf6796e97e272926223d755b2d611490",
       "subject": "Merge remote-tracking branch 'upstream/master' into fixes/stream-output-targets",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs are empty; parent changes are already integrated once without snapshot replay.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff; full SHA/parents recorded in build/upstream/so-shader-merge-evidence.json."
+      }
     },
     {
       "sha": "75e52ba6248dc5a2daf415afc55c6ac95cbf992a",
       "subject": "Rebind the other stream output slots to append, not to offset 0",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/resource-regions.md"
+      ],
+      "adaptation": "Set unmentioned SO slots to UINT(-1) append while the selected slot uses its explicit offset. Update the preceding zero-offset fixture to the final append contract without weakening selected offset/byte/snapshot/COM assertions. Actual two-target successive GS draws preserve selected outputs at 0/64 and append unmentioned output from 32 to 48 with complete prefix/suffix byte checks.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "69d6227a993f29b92509c5532516103a88270c3c",
       "subject": "Merge pull request #69 from Satan1c/fixes/stream-output-targets",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs are empty; parent changes are already integrated once without snapshot replay.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff; full SHA/parents recorded in build/upstream/so-shader-merge-evidence.json."
+      }
     },
     {
       "sha": "7bea12741433b38e1f312a883e55c35f5553f9b1",
       "subject": "Share the slot array reference counting between the pipeline targets that use it",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Introduce file-scope take_slot/release_slots helpers for SO/RTV/DSV native Get ownership. Preserve dynamic slot validation, selected caller ownership, holes and other slots. Actual four dynamic SO slots and repeated RTV/DSV references, selected identities, invalid indexes and native COM counts are exercised.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "6a3a630e36b8cb86d5cf115e67d3406a93e034cd",
       "subject": "Say what an unhooked stream output geometry shader misses out on",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/HackerDevice.cpp"
+      ],
+      "adaptation": "Document the existing CreateGeometryShaderWithStreamOutput bypass of normal CreateShader interception. Do not invent hunting/declaration registration beyond upstream. Real wrapper GS-with-SO creation and binding while hunting is enabled confirm absence of normal shader-map/visited/cache registration.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "cfe23c3c5376b8fe934a4a0631e329215f86411c",
       "subject": "Document the stream output targets and what they cannot report",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/resources/README.md",
+        "docs/ini-language-extensions/resources/stream-output.md"
+      ],
+      "adaptation": "Add stream-output resource documentation and links, explaining four dynamic single slots, no ranges, unknown source offset, destination Region offset-only, other slots append and GS-with-SO interception limitation. Adapt flag wording to local complete reference-graph propagation rather than upstream stale first-use-only explanation.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "065dc746c21c71ef48bbc93cb6b90b3dcdf766e6",
       "subject": "Merge pull request #70 from Satan1c/stream-output/document-pipeline",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs are empty; parent changes are already integrated once without snapshot replay.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff; full SHA/parents recorded in build/upstream/so-shader-merge-evidence.json."
+      }
     },
     {
       "sha": "e1cf32adb934c59feddbcc2cc3c4a769e9904476",
       "subject": "Added first/last/count CB and SRV slot getters to ShaderTarget context",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/ByteCodeReader.cpp",
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/ShaderRegex.h"
+      ],
+      "adaptation": "Derive unique CB/SRV count/first/last summaries from the fully validated local ShaderBindings arrays; repeated tokens cannot inflate counts. Add six zero-argument shader members using the mutex-protected owned cache snapshot and existing missing-shader/cache sentinels. Keep member table sorted by keyword length so cb_last_slot is not skipped by the existing early-exit parser. Real six-stage compiled sparse declarations are compared with reflection, plus raw/structured/typed resources, malformed/duplicate DXBC, empty declarations, missing cache and concurrent publication/snapshot ownership.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "73aa0742da9bed8fab7ae2316573f038aaf1d9d0",
       "subject": "Excluded pixel shader textures from dumping for undeclared SRV slots",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/FrameAnalysis.cpp",
+        "src/DirectX11/FrameAnalysis.h"
+      ],
+      "adaptation": "Filter PS SRV dumps using an owned declaration snapshot for the original shader hash; cached empty shaders skip undeclared slots and missing cache preserves dump-all fallback. Other stages remain unfiltered. Attach all 128 native Get references to ComPtr before any skip/cancellation/throw, fixing actual internal-slot and early-exit leaks. Real public FrameAnalysis Draw/Dispatch writes DDS files verified by reloading all pixels; test PS sparse declarations, cache miss/empty, unbound declarations, VS/CS, native reference balance and writer failure. Use existing background input gate to preserve COM apartment assertions.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 C++17 DirectX11 and full-production regression; build/upstream/so-shader-final-build.log and so-shader-compile-fix-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/so-shader-final-ctest.log. Actual native SO append/ownership, six-stage declaration summaries and reflection, original-shader PS dump filtering/fallback and DDS pixel readback; all existing regressions retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 37 pages/84 local links, zero path/case/anchor/fence errors, build/upstream/so-shader-docs.log.",
+        "runtime": "Pending target-game/device-specific validation and deferred SO. No deployment/game launch. Dump cancellation cleanup is RAII-reviewed but active cancellation was not injected."
+      }
     },
     {
       "sha": "fdee8ddfa0f60383697654bb46f21bddf3b55909",

@@ -11,3 +11,5 @@
 * [Texture Color Space](loading.md) — PNG/WIC and DDS interpretation.
 
 * [Dynamic slots and ranges](slot-indexing.md) — runtime slot selection and physical pool ranges
+
+* [Stream Output](stream-output.md) — SO targets, offsets, bind flags, and shader limitations

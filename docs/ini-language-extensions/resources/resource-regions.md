@@ -73,6 +73,6 @@ so0 = ref ResourceOutput->Region($output_offset, $output_bytes)
 
 A geometry shader created with a matching stream-output declaration writes from the selected byte offset. The INI Region still validates its arguments, but the native SO API consumes **only the offset**. `$output_bytes` is not a hardware write limit: emitted records can continue beyond it within the backing buffer's capacity. The shader output layout and buffer allocation must match the actual draw.
 
-This revision rebinds the other SO slots at offset `0`. D3D11's `SOGetTargets` returns buffers, not their bound offsets, so their previous offsets cannot be queried and restored by this command. A source such as `ResourceSaved = ref so0` reports offset `0`; an explicit `so0->Region(...)` source measures from the backing buffer's start, not from the unknown SO write position.
+SO slots this assignment does not name are rebound to append, continuing after their previous output. D3D11's `SOGetTargets` returns buffers, not their bound offsets, so their previous offsets cannot be queried and restored by this command. A source such as `ResourceSaved = ref so0` reports offset `0`; an explicit `so0->Region(...)` source measures from the backing buffer's start, not from the unknown SO write position.
 
 This is a binding pattern, not a complete game configuration. The caller must supply the resource and actual stream-output shader/draw. Referencing a Region does not create a stream-output shader.

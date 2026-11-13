@@ -205,6 +205,9 @@ if(BUILD_TESTING)
         tests/region_reference_followup_regression.cpp
         tests/region_followup_regression.cpp
         tests/stream_output_regression.cpp
+        tests/shader_summary_regression.cpp
+        tests/shader_dump_filter_regression.cpp
+        tests/stream_output_append_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp

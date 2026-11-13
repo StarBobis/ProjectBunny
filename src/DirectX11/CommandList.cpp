@@ -2958,6 +2958,24 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
     ShaderBindings bindings;
     if (!state->mHackerDevice || !state->mHackerDevice->GetShaderBindings(shader_hash, &bindings))
         return 0.0f;
+    // Summary members take no slot argument and use the same owned cache
+    // snapshot as the per-slot declaration queries below.
+    switch (shader_target.evaluation_mode) {
+    case ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT:
+        return static_cast<float>(bindings.constant_buffer_slots.count);
+    case ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT:
+        return bindings.constant_buffer_slots.count ? static_cast<float>(bindings.constant_buffer_slots.first) : -1.0f;
+    case ShaderTargetEvaluationMode::DCL_CB_LAST_SLOT:
+        return bindings.constant_buffer_slots.count ? static_cast<float>(bindings.constant_buffer_slots.last) : -1.0f;
+    case ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT:
+        return static_cast<float>(bindings.resource_slots.count);
+    case ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT:
+        return bindings.resource_slots.count ? static_cast<float>(bindings.resource_slots.first) : -1.0f;
+    case ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT:
+        return bindings.resource_slots.count ? static_cast<float>(bindings.resource_slots.last) : -1.0f;
+    default:
+        break;
+    }
     const double index = shader_target.member_args[0].GetValue(state);
     const bool cb = shader_target.evaluation_mode == ShaderTargetEvaluationMode::DCL_CB_TYPE ||
         shader_target.evaluation_mode == ShaderTargetEvaluationMode::DCL_CB_SIZE;
@@ -7581,9 +7599,15 @@ IniParserResult ShaderTarget::ParseTargetMember(
 		{ L"->srv_stride",     12, ShaderTargetEvaluationMode::DCL_SRV_STRIDE, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
+        { L"->cb_last_slot",   14, ShaderTargetEvaluationMode::DCL_CB_LAST_SLOT },
 		{ L"->srv_dimension",  15, ShaderTargetEvaluationMode::DCL_SRV_DIMENSION, {{
 			MemberArg::Type::Unsigned, // Slot ID
 		}} },
+        { L"->cb_slot_count",  15, ShaderTargetEvaluationMode::DCL_CB_SLOT_COUNT },
+        { L"->cb_first_slot",  15, ShaderTargetEvaluationMode::DCL_CB_FIRST_SLOT },
+        { L"->srv_last_slot",  15, ShaderTargetEvaluationMode::DCL_SRV_LAST_SLOT },
+        { L"->srv_slot_count", 16, ShaderTargetEvaluationMode::DCL_SRV_SLOT_COUNT },
+        { L"->srv_first_slot", 16, ShaderTargetEvaluationMode::DCL_SRV_FIRST_SLOT },
 	};
 
 	return SyntaxTarget::ParseTargetMember(members, target, length, temp_target, evaluation_mode, ini_namespace, scope);
@@ -8953,6 +8977,25 @@ bool ResourceCopyTarget::ResolveRange(CommandListState* state, unsigned* first, 
     return true;
 }
 
+// SO and render targets use whole-slot arrays. Get calls transfer one
+// reference per returned entry; replacing a single entry must not release
+// the caller's replacement reference after the Set call takes its own.
+template <typename T>
+static T* take_slot(T** array, unsigned slot)
+{
+    for (unsigned i = 0; i < slot; ++i) {
+        if (array[i]) { array[i]->Release(); array[i] = nullptr; }
+    }
+    return array[slot];
+}
+
+template <typename T>
+static void release_slots(T** array, unsigned count, unsigned keep = UINT_MAX)
+{
+    for (unsigned i = 0; i < count; ++i)
+        if (i != keep && array[i]) array[i]->Release();
+}
+
 ID3D11Resource *ResourceCopyTarget::GetResource(
 		CommandListState *state,
 		ID3D11View **view,   // Used by textures, render targets, depth/stencil buffers & UAVs
@@ -8976,7 +9019,6 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
 	ID3D11UnorderedAccessView *unordered_view = NULL;
 	D3D11_BIND_FLAG bind_flags = (D3D11_BIND_FLAG)0;
 	D3D11_RESOURCE_MISC_FLAG misc_flags = (D3D11_RESOURCE_MISC_FLAG)0;
-	unsigned i;
 
     if (IsRange()) return nullptr;
     const unsigned slot = ResolveSlot(state);
@@ -9081,28 +9123,12 @@ ID3D11Resource *ResourceCopyTarget::GetResource(
         if (offset) *offset = 0;
 		mOrigContext1->SOGetTargets(slot + 1, so_bufs);
 
-		// Release any buffers we aren't after:
-		for (i = 0; i < slot; i++) {
-			if (so_bufs[i]) {
-				so_bufs[i]->Release();
-				so_bufs[i] = NULL;
-			}
-		}
-
-		return so_bufs[slot];
+		return take_slot(so_bufs, slot);
 
 	case ResourceCopyTargetType::RENDER_TARGET:
 		mOrigContext1->OMGetRenderTargets(slot + 1, render_view, NULL);
 
-		// Release any views we aren't after:
-		for (i = 0; i < slot; i++) {
-			if (render_view[i]) {
-				render_view[i]->Release();
-				render_view[i] = NULL;
-			}
-		}
-
-		if (!render_view[slot])
+		if (!take_slot(render_view, slot))
 			return NULL;
 
 		render_view[slot]->GetResource(&res);
@@ -9297,7 +9323,6 @@ void ResourceCopyTarget::SetResource(
 	ID3D11DepthStencilView *depth_view = NULL;
 	ID3D11UnorderedAccessView *unordered_view = NULL;
 	UINT uav_counter = -1; // TODO: Allow this to be set
-	int i;
 
     if (IsRange()) return;
     const unsigned slot = ResolveSlot(state);
@@ -9417,19 +9442,14 @@ void ResourceCopyTarget::SetResource(
 		if (so_bufs[slot])
 			so_bufs[slot]->Release();
 		so_bufs[slot] = buf;
-        // The selected target uses Region's byte offset. Native Get cannot
-        // recover other offsets, so preserve upstream's existing zero policy.
-        // UINT(-1) append would change behavior and is deliberately not used.
-        UINT so_offsets[D3D11_SO_STREAM_COUNT]{};
+        // SOGetTargets cannot report the other slots' write offsets.
+        // Append continues their existing streams rather than overwriting them.
+        UINT so_offsets[D3D11_SO_STREAM_COUNT];
+        std::fill_n(so_offsets, D3D11_SO_STREAM_COUNT, UINT(-1));
         so_offsets[slot] = offset;
         mOrigContext1->SOSetTargets(D3D11_SO_STREAM_COUNT, so_bufs, so_offsets);
 
-		for (i = 0; i < D3D11_SO_STREAM_COUNT; i++) {
-            // Other slots own Get references. The replacement belongs to the
-            // caller and SOSetTargets takes its own reference.
-			if (i != slot && so_bufs[i])
-				so_bufs[i]->Release();
-		}
+		release_slots(so_bufs, D3D11_SO_STREAM_COUNT, slot);
         }
 		break;
 
@@ -9442,10 +9462,7 @@ void ResourceCopyTarget::SetResource(
 
 		mOrigContext1->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, depth_view);
 
-		for (i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
-			if (i != slot && render_view[i])
-				render_view[i]->Release();
-		}
+		release_slots(render_view, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, slot);
 		if (depth_view)
 			depth_view->Release();
 
@@ -9460,10 +9477,7 @@ void ResourceCopyTarget::SetResource(
 
 		mOrigContext1->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, render_view, depth_view);
 
-		for (i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
-			if (render_view[i])
-				render_view[i]->Release();
-		}
+		release_slots(render_view, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT);
 		break;
 
 	case ResourceCopyTargetType::UNORDERED_ACCESS_VIEW:
