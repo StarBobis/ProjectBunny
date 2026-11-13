@@ -1,0 +1,3722 @@
+{
+  "round": 2,
+  "baselineLocalCommit": "38282b7ea35e4142afd60161fe1df6f396aeb18f",
+  "upstreamTip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+  "scope": "All 336 commits; static coverage does not assert runtime equivalence; target game testing deferred by user.",
+  "commits": [
+    {
+      "index": 1,
+      "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
+      "subject": "Added \"pool\" property to the CustomResource",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "4269c75ba3ac9d5775771a190121daa5a292d664",
+        "index": 1,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp:2313",
+          "src/DirectX11/CommandList.cpp:7230"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/4269c75ba3ac9d5775771a190121daa5a292d664.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Pool template/lazy element owning pool and index identity",
+        "challenge": "Owner assigned before CopyMetadataFrom; config copy does not overwrite pool/index.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 2,
+      "sha": "572f5b2932f64d579ac602dbedf3aee6ae9deea9",
+      "subject": "Fixed multiple pool resource flags propagation scenarios",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "572f5b2932f64d579ac602dbedf3aee6ae9deea9",
+        "index": 2,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:5840",
+          "src/DirectX11/CommandList.cpp:6810",
+          "src/DirectX11/CommandList.cpp:7230"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/572f5b2932f64d579ac602dbedf3aee6ae9deea9.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Propagate bind/misc flags to template and existing/new elements",
+        "challenge": "Challenged conflicting CB flags and proxy roots: local preflight atomicity rejects invalid combinations, valid flags copied and propagated.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 3,
+      "sha": "b94661f3abdbfc56aaf9e9f15c69b812573bd654",
+      "subject": "Added few resource property getters to INI language",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "b94661f3abdbfc56aaf9e9f15c69b812573bd654",
+        "index": 3,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:2838",
+          "src/DirectX11/CommandList.cpp:9852",
+          "src/DirectX11/CommandList.cpp:10157",
+          "src/DirectX11/CommandList.cpp:11891"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/b94661f3abdbfc56aaf9e9f15c69b812573bd654.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Size/Stride/SourceStride getter syntax and runtime metadata",
+        "challenge": "Missing resources, override order, file size and same-source selection checked. Later custom Stride fallthrough differs from final upstream.",
+        "outcome": "suspected-gap",
+        "findings": [
+          "Upstream ea29 custom no-override fallthrough still returns16; local breaks and reads real stride. Requires explicit intentional-bugfix compatibility classification."
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 4,
+      "sha": "3894a79fde418239edb8a83d6ce0fd51782105ee",
+      "subject": "Implemented float30 identity hashing",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "3894a79fde418239edb8a83d6ce0fd51782105ee",
+        "index": 4,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/ResourceHash.cpp:2408",
+          "src/DirectX11/CommandList.cpp:9810"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/3894a79fde418239edb8a83d6ce0fd51782105ee.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Pointer Murmur mixing then finite positive float30 bit encoding",
+        "challenge": "Compared exact shifts/multipliers/payload/exponent/mantissa, null0 and resolved-proxy pool root identity; memcpy preserves C++17 bits.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 5,
+      "sha": "e61bb1e48e8570e1d90fea0e0a86c7ad6b8e6d4e",
+      "subject": "Minor clarity tweak for CommandList.cpp",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "e61bb1e48e8570e1d90fea0e0a86c7ad6b8e6d4e",
+        "index": 5,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:10425",
+          "src/DirectX11/CommandList.cpp:11445"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/e61bb1e48e8570e1d90fea0e0a86c7ad6b8e6d4e.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Rename conversion helper and SpecialCopyBufferRegion parameter names without functional change",
+        "challenge": "Full patch only whitespace/helper spelling/parameter renames. Current bounded copy helper retains meaning and later overflow repairs; no independent callable API lost.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 6,
+      "sha": "a5d769e1196e4dcefcb17f0d175caaabcc8fef23",
+      "subject": "Added contant_buffer bind flag conflict detection at INI parsing time",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "a5d769e1196e4dcefcb17f0d175caaabcc8fef23",
+        "index": 6,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:5840",
+          "src/DirectX11/CommandList.cpp:6810"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/a5d769e1196e4dcefcb17f0d175caaabcc8fef23.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Parse-time constant-buffer flag conflict diagnostics and failure propagation",
+        "challenge": "Compared both directions CB/nonCB conflicts, indirect misc flag route and pool flag propagation. Atomic local preflight intentionally avoids upstream partial invalid mutation; legitimate flag combinations retained.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 7,
+      "sha": "3e214ffba53e566da12a37e273aac8de736057e5",
+      "subject": "Minor GetRegionHash refactor",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "3e214ffba53e566da12a37e273aac8de736057e5",
+        "index": 7,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/ResourceHash.cpp:2376"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/3e214ffba53e566da12a37e273aac8de736057e5.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Region hash requests clip size at cached end, return0 when offset at/past end",
+        "challenge": "Full patch read including uncommented bounds change (not merely comments): local offset>=size return and requested-size clamp followed CRC retained. Shared snapshot GetCachedData accounts view offset.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 8,
+      "sha": "3570d4f7a7698e138a67d61729047a3cd988e42d",
+      "subject": "Refactorted ResourceCopyTarget parser",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "3570d4f7a7698e138a67d61729047a3cd988e42d",
+        "index": 8,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:7426",
+          "src/DirectX11/CommandList.cpp:7680",
+          "src/DirectX11/CommandList.cpp:7774",
+          "src/DirectX11/CommandList.cpp:8030",
+          "src/DirectX11/CommandList.cpp:8148"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/3570d4f7a7698e138a67d61729047a3cd988e42d.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Split target parsing into prefix/member/custom/pool/pipeline stages with exact stage/UAV/source restrictions",
+        "challenge": "Full31KB patch read in three contiguous chunks. Challenged alias suffix, invalid shader stage, SRV127/CB13/UAV63, swapchain view cache and source-only targets. Later exact-match fix e9cef6ff supersedes suffix_equals stage. Member types file-scope/C++17 adapted; current scoped parse resets failed target.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 9,
+      "sha": "1cc273f4304444e254dca0918dde811e259ed7c0",
+      "subject": "Added Offset resource property getter to INI language",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "1cc273f4304444e254dca0918dde811e259ed7c0",
+        "index": 9,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:10200",
+          "src/DirectX11/CommandList.cpp:7680"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/1cc273f4304444e254dca0918dde811e259ed7c0.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Offset getter reports VB/IB draw-derived absolute offsets and CB bytes",
+        "challenge": "Full patch read. Buffer/type/missing-resource results and native resource/view release checked; custom Offset intentionally remains unknown on both sides.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 10,
+      "sha": "8d9841a7d4bf7a9183fc5b8c3b65101833f7e8c3",
+      "subject": "Added support of constant buffer regions (defined by FirstConstant and NumConstants)",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "8d9841a7d4bf7a9183fc5b8c3b65101833f7e8c3",
+        "index": 10,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:9090",
+          "src/DirectX11/CommandList.cpp:9384",
+          "src/DirectX11/CommandList.cpp:10465",
+          "src/DirectX11/CommandList.cpp:12008"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/8d9841a7d4bf7a9183fc5b8c3b65101833f7e8c3.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Six-stage CB Get/Set windows convert16-byte constants and copy visible data with whole-copy destination binding",
+        "challenge": "Full patch read. Checked six getters and setters byte multiplication/division, whole-buffer fallback when size0, recreate visible/default vs physical extent, and copy destination offset0. Later explicit Region changes reviewed separately by root; no new gap established for this original window feature.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 11,
+      "sha": "ea29f9a56dd5cfe642b74ec8f1e4ce5743e249a6",
+      "subject": "Tweaked ->Stride to always return 16 for constant buffers",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "ea29f9a56dd5cfe642b74ec8f1e4ce5743e249a6",
+        "index": 11,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:9852"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/ea29f9a56dd5cfe642b74ec8f1e4ce5743e249a6.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Pipeline CB Stride always16; introduced CUSTOM_RESOURCE fallthrough",
+        "challenge": "Complete ea29 patch and final upstream GetResourceStride read. Custom no override falls through upstream and returns16; local break instead returns native metadata/descriptor stride.",
+        "outcome": "suspected-gap",
+        "findings": [
+          "Confirmed static valid-input output difference: custom structured buffer stride4 no overrides => upstream16/local4. Likely intentional upstream-bug repair, requires explicit classification; no tests run."
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 12,
+      "sha": "61f5ce25a24406bb272a122c9da6a4da7b931618",
+      "subject": "Fixed AddFlags incompatible flags error text being able to overflow 1080p monitors",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "61f5ce25a24406bb272a122c9da6a4da7b931618",
+        "index": 12,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:5840"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/61f5ce25a24406bb272a122c9da6a4da7b931618.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Shorten incompatible bind-flag overlay warning layout",
+        "challenge": "Full one-hunk patch read. Upstream amended format has swapped name/flag arguments; local one-resource warning avoids that diagnostic bug and longflag text. Executable AddFlags result unchanged; diagnostic wording is intentional adaptation, not missing feature.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 13,
+      "sha": "046c7bfe73998bad0b605e56466bdaa55e7bff3a",
+      "subject": "Added constant buffers data caching with region hashes system enabled",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "046c7bfe73998bad0b605e56466bdaa55e7bff3a",
+        "index": 13,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerContext.cpp:1340",
+          "src/DirectX11/HackerContext.cpp:1530",
+          "src/DirectX11/IniHandler.cpp:4811"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/046c7bfe73998bad0b605e56466bdaa55e7bff3a.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Capture CB Map data when region hashes enabled, alongside VB/IB",
+        "challenge": "Complete patch read. Current general policy maps legacy track_region_hashes to ALL_MASK including CB; immediate writable buffer map gate and Unmap policy retained. Deferred CPU cache deliberately not published at recording time.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 14,
+      "sha": "8d4dcb2fa1fa405964860d75d123ba3cd65557e1",
+      "subject": "Refactored ResourceHandleInfo data chache system",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "8d4dcb2fa1fa405964860d75d123ba3cd65557e1",
+        "index": 14,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/ResourceHash.cpp:1903",
+          "src/DirectX11/ResourceHash.cpp:2008",
+          "src/DirectX11/ResourceHash.cpp:2037"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/8d4dcb2fa1fa405964860d75d123ba3cd65557e1.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Shared CPU cache ownership, resized region-cache initialization, partial writes",
+        "challenge": "Complete patch read; memcpy mapped pointer ownership repaired in local implementation; RegionHashesCache stores data_size and clears same-size entries. Source partial writes use COW unlike upstream shared mutation.",
+        "outcome": "suspected-gap",
+        "findings": [
+          "Upstream tip SetDataCacheRegion mutates all captured custom shared views; local COW retains snapshot. This is a real valid-input observation difference but upstream custom L2 invalidation is inconsistent; classify intentional snapshot-correctness repair, not silently claim identical."
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 15,
+      "sha": "451b9d964cc94526ebc3320bb860a249f4d3fe94",
+      "subject": "Added cached buffer data \"views\" support to custom resources",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "451b9d964cc94526ebc3320bb860a249f4d3fe94",
+        "index": 15,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:5874",
+          "src/DirectX11/CommandList.cpp:11948",
+          "src/DirectX11/ResourceHash.cpp:2008"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/451b9d964cc94526ebc3320bb860a249f4d3fe94.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Custom ref/copy captures shared source snapshot offset/length and HashRegion metadata",
+        "challenge": "Complete patch read. Local source snapshot is held before initialize, view bounds subtract safely, stale view cleared if missing source; own L2 initialized. Snapshot sharing vs later mutation linked to commit14 finding.",
+        "outcome": "suspected-gap",
+        "findings": [
+          "Partial source updates after captured ref can differ because local COW preserves snapshot. No runtime probe executed; exact source proof sent to parent."
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 16,
+      "sha": "1419048c88dbeeb19d611956f72d8035727ebb99",
+      "subject": "Added custom resources support for GetRegionHash",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "1419048c88dbeeb19d611956f72d8035727ebb99",
+        "index": 16,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/ResourceHash.cpp:2326",
+          "src/DirectX11/CommandList.cpp:5880"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/1419048c88dbeeb19d611956f72d8035727ebb99.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Custom HashRegion consumes saved CPU view and never stalls GPU without one",
+        "challenge": "Complete patch read; current custom bypasses global L3 to prevent native resource key aliasing, accesses own handle and returns0 without snapshot. Normal source still GPU fallback, local lock release retained on early bounds return. Same view offset/count tested statically, no new confirmed gap beyond COW contract classification.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 17,
+      "sha": "dceb864aefdd275b0632cb74249a7cb37194d3bb",
+      "subject": "Added member arguments parsing support to ResourceCopyTarget",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "dceb864aefdd275b0632cb74249a7cb37194d3bb",
+        "index": 17,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:7450",
+          "src/DirectX11/CommandList.cpp:7510",
+          "src/DirectX11/CommandList.cpp:7570"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/dceb864aefdd275b0632cb74249a7cb37194d3bb.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Member arguments accept constants/variables with trimmed separators and expected count",
+        "challenge": "Complete patch read. Final expression-backed parser supersedes var/constant union. Challenged empty/trailing/extra args and nested parentheses; Finished and separator checks reject leftovers, shared expression lifetime survives target copies.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 18,
+      "sha": "c0c9c881ec780acfd6c3a9fe4f77be604ed6e55b",
+      "subject": "Added arbitraty buffer region hashing support",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "c0c9c881ec780acfd6c3a9fe4f77be604ed6e55b",
+        "index": 18,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:10247",
+          "src/DirectX11/ResourceHash.cpp:2326"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/c0c9c881ec780acfd6c3a9fe4f77be604ed6e55b.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "HashRegion evaluates relative byte offset/count, computes CRC and encodes float30",
+        "challenge": "Complete patch read. Checked VB/IB draw offsets, CB bytes, custom own snapshot, type/missing sentinels and encoded nonzero hash. Finite/subtraction guards replace unsafe UINT casts only for invalid numeric/overflow requests; no new valid-input gap found.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 19,
+      "sha": "e9cef6ffd2344aaa4d534351a729b6653354d5f7",
+      "subject": "Fixed ParseTargetPipelineSlot doing suffix comparison instead of exact match",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "e9cef6ffd2344aaa4d534351a729b6653354d5f7",
+        "index": 19,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:7943",
+          "src/DirectX11/CommandList.cpp:8090"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/e9cef6ffd2344aaa4d534351a729b6653354d5f7.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Pipeline symbolic targets match exact tokens rather than arbitrary suffixes",
+        "challenge": "Complete one-hunk patch read; local token_equals uses length equality and wmemcmp, while scalar numeric patterns require sscanf consumed length; names ending in ib/bb/this do not alias pipeline targets.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 20,
+      "sha": "c88a9e0b3a9c9a2f9bb7c0b9acd317862772ddad",
+      "subject": "Minor ParseTarget refactor",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-1",
+      "review": {
+        "sha": "c88a9e0b3a9c9a2f9bb7c0b9acd317862772ddad",
+        "index": 20,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp:7450",
+          "src/DirectX11/CommandList.cpp:8133"
+        ],
+        "sourceEvidence": "Complete individual saved patch patches-1/c88a9e0b3a9c9a2f9bb7c0b9acd317862772ddad.patch and listed current source bodies inspected; no runtime test executed by reviewer.",
+        "contract": "Reject empty member args and initially reject whitespace tokens",
+        "challenge": "Complete patch read. Later d76 removes global whitespace rejection for nested expressions/namespaces; local keeps only scalar pipeline lexical whitespace check, trims expression/member args. Empty arguments are rejected via reader rather than old unbounded arg-array loop.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 21,
+      "sha": "0c7341242b88b194eaa8be045f635553429c7809",
+      "subject": "Fix loading pngs on Linux",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 22,
+      "sha": "2f7436acea2590a66e3a1093e576dc6597755d9a",
+      "subject": "Merge pull request #12 from failsafe42/linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 23,
+      "sha": "11b2a1da263a401e7babc5275acc0228391ae75f",
+      "subject": "Added thread-safe lazy COM initialization for WIC/Shell COM usage",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 24,
+      "sha": "89acf4df2779a68f5c96986e86be752e1d1ef533",
+      "subject": "Refactored ResourceCopyOperation::run",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 25,
+      "sha": "3c55747f4134bdf8c23eb52e1413bc06d83a7b1c",
+      "subject": "Fixed missing region hashes cache initialization for custom resources",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 26,
+      "sha": "9fbc28d0398c3871130fae15a744a3561d7c874e",
+      "subject": "Refactored CustomResourcePool, added expiration support",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 27,
+      "sha": "189db802b57115fe985101f4404aa65dd83a0494",
+      "subject": "Added batch operations support for pools",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 28,
+      "sha": "ce5da20b587012e171f8dd711b43b84ead3fcec5",
+      "subject": "Moved few hashing related functions from CommandList to ResourceHash files",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 29,
+      "sha": "3f79f697c6fa36c8eca6c6a44252c30ac777dc6e",
+      "subject": "Added HackerInputLayout wrapper for ID3D11InputLayout",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 30,
+      "sha": "af232a90fda4e5fc8799f854f07787a3bc33bcbe",
+      "subject": "Fixed partly missing CustomResourcePool::GetResource diff",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 31,
+      "sha": "b577dc928d8eb3cea3fe177f033cd5365ad1537c",
+      "subject": "Added basic pragma regions to CommandList.cpp",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 32,
+      "sha": "3508283e61cdcb3540f3061385e565973ea37455",
+      "subject": "Refactored ResourceCopyOperation::run",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 33,
+      "sha": "d977c10ff2b66d9bf6e275b744990ad86ee9da5f",
+      "subject": "Added `erase` method to FlatHashMap",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 34,
+      "sha": "9e5ab2c9c24efb37e4874a39cb8b288003966dbf",
+      "subject": "Overhauled pool feature (INI variables pools, expressions support, full range operations and more)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 35,
+      "sha": "cc4a7ac236c1874782a8998a9b2884e22feccd3f",
+      "subject": "Minor CustomResource::expire refactor",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 36,
+      "sha": "0b9e66bc9db680c868d439283220e9fa232fe334",
+      "subject": "Reverted commit \"Fix loading pngs on Linux\"",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 37,
+      "sha": "ac1ba594231354cf2dffb49b982751dfc54530ca",
+      "subject": "Added expressions support to member arguments",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 38,
+      "sha": "5dab0f1f06b6b4cf5f87f559621148741a9db402",
+      "subject": "Added spatial hash calculations",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 39,
+      "sha": "1cc9c0c6c30aa3f066b22096f642993a37ee3f1a",
+      "subject": "Added new pool index type - SPATIAL",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 40,
+      "sha": "271e97df87e8b097936744eecb39e4c6d9d10e8c",
+      "subject": "Added hash-driven input layouts cache",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 41,
+      "sha": "e4ae63da3ef343163f077b9b06fc2ff0d24f74d6",
+      "subject": "Added input layouts management support to HackerContext",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 42,
+      "sha": "cde6bab4a5b730e1a50552a66c62d291f9133735",
+      "subject": "Added VB input layout override commands to INI API",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 43,
+      "sha": "76e6edad55fa319601e3628b84ad126a77c26ac5",
+      "subject": "Added optional static evaluation support for variables in CommandListOperand and CommandListExpression",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 44,
+      "sha": "de03a3c938eb6140730e44239917ddf0ef9b4bba",
+      "subject": "Added expressions support to Constant section variable declarations and section options (parsing time evaluation)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 45,
+      "sha": "51a23856e0ea657c854ad455bf47064d959aafb7",
+      "subject": "Refactored expression tokenizer",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 46,
+      "sha": "da86b1b9e4ec3e6f6d450730802035674f442675",
+      "subject": "Added binary literals support",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 47,
+      "sha": "d654cf76db8d2857ae6b994296f9386ac45bcf6d",
+      "subject": "Added FRAME_NUMBER evaluatable INI expressions operand",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 48,
+      "sha": "6a77c5acc70853eaaf8b358e09da6bae96c7d676",
+      "subject": "Added TIME and FRAME_NUMBER support to static_evaluate with evaluate_variables=true",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 49,
+      "sha": "db64f5b188c59be830a2414c07f897fdc296ce18",
+      "subject": "Added \"locked\" keyword to INI variables declaration that turns them into actual unchangable constants",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 50,
+      "sha": "057b4bce3fe813ffdb1414f4896a5a5b6d4f781a",
+      "subject": "Added common unary functions to INI syntax",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 51,
+      "sha": "4e624ddca22f672e76fbf71aa1e45deb35521db5",
+      "subject": "Added member getters support as alternative for # prefix for pools",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 52,
+      "sha": "d76ef27cb4d90168e30493731a883ec946b86130",
+      "subject": "Removed whitespace rejection from ParseTarget",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 53,
+      "sha": "296e988a57989e73e057399fda5d9efc6bd72eb0",
+      "subject": "Added options string parser with custom terminators support",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 54,
+      "sha": "26312d6c5204fd65480bec46bd1cf8f4c1cd06d2",
+      "subject": "Fixed options parsing in ParseCommandListResourceCopyTargetDirective reporting whitespaced brackets contents as unknown options",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 55,
+      "sha": "8c1d58b7d3365c8b4afd969a6b16ec7584eb8d47",
+      "subject": "Fixed pool copy by reference not propagating parsed resource flags",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 56,
+      "sha": "8f423e077542b56a0ce94fcfe948d11deed51e05",
+      "subject": "Minor CommandList.cpp refactor",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 57,
+      "sha": "4041d689404862330365838bad4fe9a288ef89c7",
+      "subject": "Added CommandArgumentReader token string reader class",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 58,
+      "sha": "d89560b707b00ff785138271e6d1b358e65ae4df",
+      "subject": "Refactored ResourceCopyTarget member args parser to use CommandArgumentReader",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 59,
+      "sha": "37635f6e3d7a299c285986328b082a3e3c765978",
+      "subject": "Refactored ParseCommandListResourceCopyTargetDirective to use CommandArgumentReader for SRC optioned string parsing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 60,
+      "sha": "7cf7c34d47cdc6016f016c092721d81b7d8fd9fd",
+      "subject": "Added shared pool or staging buffers to HackerContext",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 61,
+      "sha": "4a6062d14e00b75b06b44f6e670f31b61e353f7b",
+      "subject": "Refactored CacheBufferData to use shared staging buffers of HackerContext",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 62,
+      "sha": "246bd0a4226bb78a7506b422dabc712c34235075",
+      "subject": "Reimplemented `store` command",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 63,
+      "sha": "1b9df4862bf2e2848e08c4ebfa143bf7cf39f55c",
+      "subject": "Added `for_each` to FlatHashMap",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 64,
+      "sha": "be77b27e97fab209ed210244f1ce2188b6c405c3",
+      "subject": "Added proxy mode for CommandLists (callback support)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 65,
+      "sha": "76a4193982027c47497c2c59ec4b8bc70d424c78",
+      "subject": "Added DRAW_NUMBER and DISPATCH_NUMBER evaluatable INI expressions operands",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 66,
+      "sha": "ba335207af6a6253ac28b33896c88f60901188f6",
+      "subject": "Added `->Region($offset, $size)` specifier for constant buffer copies",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 67,
+      "sha": "4f3722cafe71f002e48a5a621bdff3b31290ef1d",
+      "subject": "Added pool proxy chaining support and short circuit protection",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 68,
+      "sha": "ab7b929e4f979a8657392468b464e7e72dd1da42",
+      "subject": "Added refresh-expiration-on-read option for pools",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 69,
+      "sha": "5accb5a611ceab4a595bb3a16f2e53ba49940168",
+      "subject": "Fixed ResourceCopyTarget::GetPoolObject not being able to return nullptr when no pool is set",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 70,
+      "sha": "03d562402de74e726503455be48f33643001167a",
+      "subject": "Fixed GetResourceSpatialHash not respecting stride of CB constant",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 71,
+      "sha": "aa3cad5b03a6c99955e350eda7c638982d98c73e",
+      "subject": "Added ->LastFrame getter for pool elements",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 72,
+      "sha": "f8a50f93bde03cbf0d5fda05d3b45e7910c2fc79",
+      "subject": "Fixed GetIniBoolIntOrEnum regression",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 73,
+      "sha": "609244f435bcdabd65ac0a2e8060f242ac4cc467",
+      "subject": "Fixed hyphen not being parsed as substraction operator for some tokens (INI syntax parser regression)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 74,
+      "sha": "2c5b135428cabc72b66d658beca661aef64af409",
+      "subject": "Adjusted spatial hash grid size to 4096x256x4096",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 75,
+      "sha": "4959694666e1af3477aef92d5309362c3c883397",
+      "subject": "Added check for locked non-source variable to CommandArgumentReader",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 76,
+      "sha": "37a4bb26e6a7bc803a18b64ce55693461fa47f5b",
+      "subject": "Refactored ParseCommandListVariableAssignment to use CommandArgumentReader",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 77,
+      "sha": "ce1ceea40562ba8496c6306eb444a3ba7eeebfc5",
+      "subject": "Added empty variable scope support to CommandArgumentReader::GetVariable",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 78,
+      "sha": "71c46f549a9564043d78b9cf46f019696b90335c",
+      "subject": "Switched KeyOverrideCycle::ParseIniSection to use CommandArgumentReader::GetVariable for variables",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 79,
+      "sha": "84a7d07104516620ef003905bf7bf60f7f1913fb",
+      "subject": "Switched Preset's ParseIniSection to use CommandArgumentReader::GetVariable for variables",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 80,
+      "sha": "db810e550691ff85444e718a03166d909405dd96",
+      "subject": "Added peek mode arg to GetVariable and GetTarget of CommandArgumentReader",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 81,
+      "sha": "43391f7b10bd3e7d87d680dba945507c97f62a4d",
+      "subject": "Fixed ParseCommandListVariableAssignment not allowing whitespaces in namespaces for LHS",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 82,
+      "sha": "9fc83bc0889b8982c04b6b7bbf189d62dc122bc5",
+      "subject": "Fixed regression in parsing of UTF-8 chars and hyphens in ResourceCopyTarget names",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 83,
+      "sha": "bf3eddfbd64bb0c05d11203cda2ea8ed96ab859b",
+      "subject": "Fixed missing nullptr check for GetCustomResource in ResourceCopyTarget::GetResource",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 84,
+      "sha": "b01bead3e38bd5ac446613880c12cb7702683635",
+      "subject": "Added early bail out for missing custom resource path to GetResourceStride and GetResourceSize",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 85,
+      "sha": "f8e7118a1220e43546e546efa31892b8304358df",
+      "subject": "Fixed missing nullptr check in ParseCommandListVariableAssignment",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "f8e7118a1220e43546e546efa31892b8304358df",
+        "index": 85,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:5638 variable=null/target.GetVariable then PreserveUserConfigVariable; no null dereference",
+        "contract": "Missing variable assignment must fail without dereferencing null; LOCKED still rejects",
+        "challenge": "Unknown and locked assignment paths; rollback local declaration",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 86,
+      "sha": "7d60f507eb4302f3a274b62c3fe8cd5c8629cc49",
+      "subject": "Fix for Persist Variables getting Cleared by Auto-Save",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "7d60f507eb4302f3a274b62c3fe8cd5c8629cc49",
+        "index": 86,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp:5118 SavePersistentSettingsInternal snapshots/merges owning maps and atomic replace",
+        "contract": "Autosave preserves unknown persistent values across reload grace period",
+        "challenge": "Clean autosave versus reload, unknown values removed/readded",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 87,
+      "sha": "dd1a1a5770e8905c3a8a5ef71c0569224a787666",
+      "subject": "Additions to handling Unrecognized Persist Vars",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "dd1a1a5770e8905c3a8a5ef71c0569224a787666",
+        "index": 87,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp:5060 DetectUnknownPersistentSettings values+cleanup option with failed-write retention",
+        "contract": "Unknown settings retain saved values and configurable cleanup",
+        "challenge": "cleanup disabled, changed unknown values and write failures",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 88,
+      "sha": "6d6dfb609eafef7c66317d50ef11aad3144e66b5",
+      "subject": "Change to Persisting Variables bugfix",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "6d6dfb609eafef7c66317d50ef11aad3144e66b5",
+        "index": 88,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp:5118 SnapshotPersistentVariables before collect/write; current saved-state ownership retained",
+        "contract": "Snapshot old persistent values before registry destruction",
+        "challenge": "registry destruction and user-config path switch ownership",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 89,
+      "sha": "2d6af7226c9346a7a8795a76a14a74e5dbe65f2e",
+      "subject": "Persist Vars Preservation Code Adjustment",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "2d6af7226c9346a7a8795a76a14a74e5dbe65f2e",
+        "index": 89,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp:5128 values[name]=current; excluded stale unknown removed transactionally",
+        "contract": "Known values replace preserved duplicates; cleanup only at reload",
+        "challenge": "duplicate known names, second unchanged reload and failed replacement",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 90,
+      "sha": "c05b4cae770bcba965e5a1d8511ea8a1f7446080",
+      "subject": "Persistent Variables Preservation Tweak",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "c05b4cae770bcba965e5a1d8511ea8a1f7446080",
+        "index": 90,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp:load/ParseConstants plus PreserveUserConfigVariable current path; final clear_unknown_settings name supersedes interim auto_clear",
+        "contract": "Initial user-file values retained and System option honored",
+        "challenge": "startup load after frame0 and scalar user namespaces",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 91,
+      "sha": "bf92947536b4b620ccb0d18cfc0881b51ffb65a5",
+      "subject": "Made \"failed\" state recoverable for CopyCommandListCommand::run and PoolCopyOperation::CopyPoolToPool",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "bf92947536b4b620ccb0d18cfc0881b51ffb65a5",
+        "index": 91,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:2006 resolves current pre/post and compares failed pair+destination;8290 PoolCopyOperation resets failure and compares root",
+        "contract": "Cyclic command-list/pool references recover when source root changes",
+        "challenge": "cycle then source-root change, pre/post roots diverge and null reset",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 92,
+      "sha": "fdab51e2f26438a3e9ea6b3dcc34c5a84de550f5",
+      "subject": "Fixed square and round brackets being wrongly treated as part of identifier",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "fdab51e2f26438a3e9ea6b3dcc34c5a84de550f5",
+        "index": 92,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:3775 is_operator_char explicitly includes ()[]",
+        "contract": "Brackets terminate ordinary identifiers",
+        "challenge": "a(1), pool[1] and nested getter delimiters",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 93,
+      "sha": "4e7988e768414958df1bdc825231a86105fa84b4",
+      "subject": "Fixed identifiers followed by member getter `->` being wrognly consumed by single token parsers",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "4e7988e768414958df1bdc825231a86105fa84b4",
+        "index": 93,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:4588 suppresses len when next characters are ->",
+        "contract": "Member arrow prevents ordinary identifier token consumption",
+        "challenge": "vb0->stride must not become vb0 identifier plus garbage",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 94,
+      "sha": "98d0d98d051d9414843295e25910e88cc8b6f665",
+      "subject": "Adjusted FIFO indexed pool to return default variable or resource template on read for missing UID",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "98d0d98d051d9414843295e25910e88cc8b6f665",
+        "index": 94,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:6830 GetElementIndex FIFO missing read early SIZE_MAX;7031 UsesMissingTemplate returns resource_template only read",
+        "contract": "FIFO missing reads return templates without allocating; assignments allocate",
+        "challenge": "missing UID read with allocation false/true and write; no key mutation on read",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 95,
+      "sha": "326f64cf9ab565aa7cd3d50e002270994b8d16c6",
+      "subject": "Fixed spatial pool index regression for the closest neighbor path",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "326f64cf9ab565aa7cd3d50e002270994b8d16c6",
+        "index": 95,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:SPATIAL nearest path calls AssignSlot after selection; separate occupied sentinel preserves all keys",
+        "contract": "Spatial nearest reuse must assign new key and refresh lifecycle",
+        "challenge": "nearest cell key relocation, expiry and allocate-disabled miss",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 96,
+      "sha": "0d93c3620e42925955d0eaa7bceb84922e3c0dc8",
+      "subject": "Separated member args logic from ResourceCopyTarget to SyntaxTarget class",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "0d93c3620e42925955d0eaa7bceb84922e3c0dc8",
+        "index": 96,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.h:SyntaxTarget owns shared member expressions;CommandList.cpp:ParseMemberArguments validates Finished and nested extract_arguments",
+        "contract": "Common member parser preserves target modes and argument ownership",
+        "challenge": "nested function arguments, malformed rollback, shared copied target lifetime",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No build/test run by this reviewer; source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 97,
+      "sha": "80481d190f13d3e717e3655effd0158f6183af84",
+      "subject": "Added experimental shader bytecode parsing and caching for CB and SRV declarations",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "80481d190f13d3e717e3655effd0158f6183af84",
+        "index": 97,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/d3d11TokenizedProgramFormat.hpp",
+          "src/DirectX11/CMakeLists.txt"
+        ],
+        "sourceEvidence": "Full operational patch read; thirdparty2443line header proven equal after trailing-space normalization, whole diff saved evidence-2/token-header.diff (only trailing spaces); current parser used macros and native CreateShader cache path inspected.",
+        "contract": "Cache original shader CB/SRV declarations typed/raw/structured for all6CreateShader stages",
+        "challenge": "Malformed chunks,length/extended tokens, shader replacement hash identity, cachepublication and missing cache; safer current decoder transactional out-reset",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source/blob audit only; no new tests run"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 98,
+      "sha": "1bf2d27ed99c7ec25e514399b97f3ef441074a2a",
+      "subject": "Added member syntax support to shader token",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "1bf2d27ed99c7ec25e514399b97f3ef441074a2a",
+        "index": 98,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:2919 process_shader_filter and7630 ShaderTarget parser;SyntaxTarget shared args",
+        "contract": "ShaderTarget takes all six stage prefixes and preserves signed-zero no-shader/filter behavior",
+        "challenge": "Stage-vs-resource ambiguity vs-cb0, no-bound shader negativezero and unmappedshader positivezero",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only audit; existing tests not newly executed"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 99,
+      "sha": "403e3a860511ac085f06dbd5dae25e115ad88f4e",
+      "subject": "Added member getters for properties of CB and SRV declarations from shader bytecode",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "403e3a860511ac085f06dbd5dae25e115ad88f4e",
+        "index": 99,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:2970 owned GetShaderBindings snapshot,bounds/index validation; absent properties-1",
+        "contract": "CB/SRV declaration members return types,size,stride,dimension from original shader",
+        "challenge": "typed/raw/structured slots, undeclared type0/property-1, cachemiss0, invalid slots safe-1, masks unimplemented upstream",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only audit; existing tests not newly executed"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 100,
+      "sha": "ad264db86ee7d4870215edce95287614713f2a41",
+      "subject": "Fixed INI syntax for pool proxy mode reset being rejected by the parser",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "ad264db86ee7d4870215edce95287614713f2a41",
+        "index": 100,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp:8648 EMPTY+POOL branch;8330 PoolCopyOperation EMPTY resets proxy/index state",
+        "contract": "PoolFoo=null parser enters pool operation and removes proxy/reset pool",
+        "challenge": "null scalarpool proxy vs fullrange resource-only reset must remain distinct",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only audit; existing tests not newly executed"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 101,
+      "sha": "24e2cff7b2bbfde31a8882c06d178fc008152997",
+      "subject": "Fixed `store` not working with structured buffers",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "24e2cff7b2bbfde31a8882c06d178fc008152997",
+        "index": 101,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "CommandList.cpp1620 Store uses uint64byteoffset, aligned whole structs copy_end, bounded4byte extraction memcpy and current zero-on-readfailure correction",
+        "contract": "Structured Store copies whole touched structs, value offset remains absolute float index",
+        "challenge": "Stride16 lastfloat and partial struct boundaries, physical OOB and zero/error; native structured stride0 invalid input guard retained",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "No new run by reviewer"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 102,
+      "sha": "64bcd002316352b9d79884c3d25617f5375fae04",
+      "subject": "Fixed input layout COM wrapper issues",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "64bcd002316352b9d79884c3d25617f5375fae04",
+        "index": 102,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/HackerInputLayout.cpp",
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "Full64bcd patch read; current CreateInputLayout/CreateCustomInputLayout native-validation and separated customcache path checked",
+        "contract": "Game CreateInputLayout uncached and validationonly nulloutput forwarded; customlayout cache owns refs",
+        "challenge": "Null output, native failure, allocation exception, clearingcache COM release and caller ref ownership",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source review only"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 103,
+      "sha": "fdc2539cc624f4708abfdba719b98461d5120491",
+      "subject": "Moved shader bytecode reader code to separate file",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "fdc2539cc624f4708abfdba719b98461d5120491",
+        "index": 103,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "fdc2539c complete removed/added decoder compared: sole trailing whitespace/newline diff; current CMake59 ShaderBindings.cpp singledefinition",
+        "contract": "Decoder moved to dedicated compilation unit",
+        "challenge": "Duplicate definitions, missing target registration, retained original shader calls",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 104,
+      "sha": "b2e57f124835f7319d9c062663e7605a078cbd05",
+      "subject": "Temporarily disabled experimental shader bindings reader",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "b2e57f124835f7319d9c062663e7605a078cbd05",
+        "index": 104,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "git diff b2e57f12^3572ec09 --stat empty across complete tree; current CacheShaderBindings enabled",
+        "contract": "Temporary decoder disable cancels reenable",
+        "challenge": "Do not ship transient disable or duplicate stale reader",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 105,
+      "sha": "3572ec09c79a3ed84f59063c281e4191d01b83a7",
+      "subject": "Uncommented experimental shader bindings reader",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "3572ec09c79a3ed84f59063c281e4191d01b83a7",
+        "index": 105,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "Fulltree diff between b2e57f12 parent and3572ec09 empty; full operational addition previously read80481",
+        "contract": "Decoder reenabled after temporary disable",
+        "challenge": "Restore actual CreateShader metadata path not commented stub",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 106,
+      "sha": "067f4a45905ebbc5c4749414cdc90919cab3e99e",
+      "subject": "Added RAII compliant CriticalSectionGuard",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "067f4a45905ebbc5c4749414cdc90919cab3e99e",
+        "index": 106,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "lock.h current guard has noexcept destructor, deleted copy/move and two-stage concatenation for real unique __LINE__",
+        "contract": "Critical section RAII releases on scope exit/unwind",
+        "challenge": "Multiple guards one scope, early returns and exceptions; ordinary mutex-based metadata cache safe alternative",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 107,
+      "sha": "3f2f370065efad66c615821bff95a23a2aca078e",
+      "subject": "Moved get_shader_bindings_from_bytecode to ByteCodeReader.h",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "3f2f370065efad66c615821bff95a23a2aca078e",
+        "index": 107,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "3f2f patch read; local ShaderBindings.h exports declaration; HackerDevice.cpp includes it, CMake links actual implementation",
+        "contract": "Expose decoder declaration in appropriate header",
+        "challenge": "Header dependency completeness and no stale duplicate ShaderRegex definition",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 108,
+      "sha": "3b53481caaef393c659674f5b1493241d4b94baa",
+      "subject": "Fixed `CacheShaderBindings` UB caused by concurrent `mShaderBindingsCache` access",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "3b53481caaef393c659674f5b1493241d4b94baa",
+        "index": 108,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp",
+          "src/DirectX11/ShaderBindings.h",
+          "src/DirectX11/lock.h"
+        ],
+        "sourceEvidence": "HackerDevice.cpp2407 CacheShaderBindings uses same mShaderBindingsMutex for find/emplace and2430 snapshot copies; parse outside lock",
+        "contract": "Concurrent shader cache lookup/publication serialized",
+        "challenge": "Parallel duplicate publish, reader retained across rehash, failed parse output initialized",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source/git proof only; no new runtime tests"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 109,
+      "sha": "c530d130bcadfa376b24261cac0d7e91b208730c",
+      "subject": "Refactored shader bindings parser",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "c530d130bcadfa376b24261cac0d7e91b208730c",
+        "index": 109,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp"
+        ],
+        "sourceEvidence": "ShaderBindings.cpp read_u32, DxbcWords.Read and transactional validatedchunkspans already read; malformed outputzero and separateout commit",
+        "contract": "Safe DXBC decoding memcpy/chunk validation",
+        "challenge": "Unaligned input, overflow chunk/table bounds, extended operands and customdata",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only review; no new execution"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 110,
+      "sha": "e8ea20751e4e34dd85c0e9428ce8b1ddd157619b",
+      "subject": "Fixed wrong log level being used by HackerDevice::QueryInterface on failure",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "e8ea20751e4e34dd85c0e9428ce8b1ddd157619b",
+        "index": 110,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp"
+        ],
+        "sourceEvidence": "HackerDevice.cpp nativeQI failure uses LogDebug; commented microbenchmark adds no executable behavior",
+        "contract": "QI failure diagnostics debuglevel",
+        "challenge": "UnrecognizedIID failure HRESULT unchanged and output pointers",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only review; no new execution"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 111,
+      "sha": "6bd65ce55eef91317933a88a92c0e5c159b527b5",
+      "subject": "Added option to skip token validation for CommandArgumentReader::GetTarget",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "6bd65ce55eef91317933a88a92c0e5c159b527b5",
+        "index": 111,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp"
+        ],
+        "sourceEvidence": "CommandList.cpp GetTarget checks is_source&&validate then ParseTarget; GetTarget signature defaulttrue",
+        "contract": "Optional target token validation",
+        "challenge": "Legacy resource names containing operatorchars vs strict expressions",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only review; no new execution"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 112,
+      "sha": "ceede416ae2e6e9a6ab06350b5b618928122e29c",
+      "subject": "Disabled ResourceCopyTarget SRC resource name validation",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-2",
+      "review": {
+        "sha": "ceede416ae2e6e9a6ab06350b5b618928122e29c",
+        "index": 112,
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/HackerDevice.cpp",
+          "src/DirectX11/ShaderBindings.cpp"
+        ],
+        "sourceEvidence": "CommandList.cpp parse_resource_copy_target_source calls GetTarget true Token false; resource lookup still requires fullname",
+        "contract": "Resource copy source legacy names bypass token validation",
+        "challenge": "ResourceFoo+bar copy directive accepted as literal name while expression parser remains strict",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "runtimeEvidence": "Source-only review; no new execution"
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 113,
+      "sha": "a9d7c89b1ba957ac8a65a8bbf72acefa86eec544",
+      "subject": "Fixed expression parser not supporting float literals without leading zero",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 114,
+      "sha": "bb6dc33c8beeb15468c84d11548d289793c27d80",
+      "subject": "Added INI language extensions docs for up to v0.9.2",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 115,
+      "sha": "ba1fb5d6009c59a183b4f02f8e69bfacc8e016ba",
+      "subject": "Fixed docs readme.md filename case in links",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 116,
+      "sha": "2d9f7505ec86167f749150708dedadb8d55ee78a",
+      "subject": "Removed not implemented `noise` function token",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 117,
+      "sha": "471bed39ef1675738d684672424c39d7e5a9d0e0",
+      "subject": "Moved resource-metadata.md to individual resources docs",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 118,
+      "sha": "0df206b668b0b3ea7cda8fcc116a3baa029c32e2",
+      "subject": "Added INI language extensions docs for up to v1.0.4",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 119,
+      "sha": "9e75c1404964da42ab6e5028442169ef4bbe0d20",
+      "subject": "Fixed few typos in docs",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 120,
+      "sha": "e850bd7b8b6031fc325734664029678ec8302d97",
+      "subject": "Improved TIME precision using microsecond-resolution timing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 121,
+      "sha": "4742840607b17188953ad74419d4f826c4dfd36a",
+      "subject": "Added FRAME_TIME INI runtime paramater",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 122,
+      "sha": "be6bd4eae63273e49bbff62a5e90e70e73597382",
+      "subject": "Added `FPS` INI runtime paramater",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 123,
+      "sha": "ca4d732eaa99ccfea4461d7d7027291a7623ab98",
+      "subject": "Fixed `pool_spatial_radius` being FPS-dependent",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 124,
+      "sha": "4cd308a59810d983c3a1298464d49c3e96cbd8bf",
+      "subject": "Disallowed overriding non-empty CommandList from different namespace",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 125,
+      "sha": "6c9c2ac032a4002f78f3e39cf2893eb212fd177d",
+      "subject": "Added INI language extensions docs for v1.0.5",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 126,
+      "sha": "9a8d82dd895f2699c5063e869577261ceaf164d0",
+      "subject": "Refactored FillInMissingInfo",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 127,
+      "sha": "b0c044e8b6bbde4408a0434b806ad97ef7edba6e",
+      "subject": "Added syntax ps-t0->format ps-t0->width ps-t0->height",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 128,
+      "sha": "80edf0a3e006fdced665b2314ccc02fc8c385bb2",
+      "subject": "Merge pull request #18 from XQFAAAA/more-attr",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 129,
+      "sha": "862d1b6f1015c23d40fcaca4fd97620ce9085ce0",
+      "subject": "Refactored ResourceCopyTarget::GetResourceFormat",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 130,
+      "sha": "158c8cdc790141b6124237ee8acec2745b600635",
+      "subject": "Refactored ResourceCopyTarget attribute getters",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 131,
+      "sha": "777141aaf378c2c371c611adc4821508899645fc",
+      "subject": "Added DXGI format enum literals support",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 132,
+      "sha": "bfbd33a3579369a17ca49ca9599c759f70f9753c",
+      "subject": "Add ini color space override",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 133,
+      "sha": "a2c0e172e0482664b979cff0bc3fbd06675461b5",
+      "subject": "Read PNG header to check if it's sRGB",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 134,
+      "sha": "86357a26f47defb21b4e1f3ccf7478144edc2f47",
+      "subject": "Move flag logic to a separate function",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 135,
+      "sha": "d1deb9d25d8e81589c66c40331c2d09347ba1950",
+      "subject": "Merge branch 'master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 136,
+      "sha": "311d285339309d1366a833c8aea40b3ee658679c",
+      "subject": "Check if png exists before looking for srgb chunk",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 137,
+      "sha": "b7c2e77b9656a7a42351ae9d5f03bb92b8bc6969",
+      "subject": "Compare file to nullptr instead of NULL",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 138,
+      "sha": "7576bdabd0f9f3f5a101a45215d9fa869bf673db",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 139,
+      "sha": "26ec4b1a68cd9530855369d6c5caca0d0d7ccea3",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 140,
+      "sha": "393b396f37327e22404b511376cdff578c648a40",
+      "subject": "Return en-dash that somehow went missing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 141,
+      "sha": "3c8d8f18449ba59ca3373e49b45795aae4edfd3d",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 142,
+      "sha": "19664553839e0ae2b66f19b4822c146b4b8df6bd",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 143,
+      "sha": "a3f014e5b79211cefdbb45ca24aa0d265b92aa05",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 144,
+      "sha": "b3a309b7c702bec944b8456f235ca4f84b9b9505",
+      "subject": "Merge branch 'SpectrumQT:master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 145,
+      "sha": "eb80c3e6e354bc78bdf3770ec290e83f7337649d",
+      "subject": "Fix formatting",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 146,
+      "sha": "e321caba107770d52f51322cfe058efa2ce6fdef",
+      "subject": "Move PNG header parser to its own function",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 147,
+      "sha": "1753a19a2fd02b901fcd4c876e64cb4469607e11",
+      "subject": "Use CustomColorSpace enum instead of wstring",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 148,
+      "sha": "fe943be87e4ea8ea6ec60a6fba1f75df1b240b8d",
+      "subject": "More formatting",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 149,
+      "sha": "9c9db1b3570340586b1a33bcab765f94e410b2a6",
+      "subject": "Merge branch 'master' into linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 150,
+      "sha": "c9bb920194257d271eb37512993e2d94092a0dc5",
+      "subject": "Merge pull request #16 from failsafe42/linux-png",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 151,
+      "sha": "d492122f8e70e7a8b131a81d14cea97a1cdadb45",
+      "subject": "Made sRGB PNG chunk detection optional and disabled by default",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 152,
+      "sha": "4867f53c87c8d615c4bbe736ea91a306a1dff50f",
+      "subject": "Removed unused `input` logging option (Key section logging is not implemented)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 153,
+      "sha": "440ac3a99d20cbcbaf81e08ea4790bea7571e08a",
+      "subject": "Overhauled logging options",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 154,
+      "sha": "c4e3a4499d05268bfef3896ff4eeee8ed18a34be",
+      "subject": "Fixed DLL crash on parsing empty parentheses in INI syntax expression",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 155,
+      "sha": "661dde0be647166b60b2ee01a9593091f290408b",
+      "subject": "Refactored group_parenthesis",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 156,
+      "sha": "a24d95f23bfc92a7f9c08956f563e2471152f1c7",
+      "subject": "Removed questionable cleanup from DestroyDLL (DLL_PROCESS_DETACH)",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 157,
+      "sha": "ddd144d7bad35ae6a252adf564ff495a92c55eaa",
+      "subject": "Slightly changed keyoverride hold logic",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 158,
+      "sha": "f59f8e5d6a6f66884fbd82131ab971edd9028d65",
+      "subject": "Re: fixed hold logic. Any up event returns to default",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 159,
+      "sha": "c9ddab824be6f8fec0016a3bf6f6aa6290cd42a1",
+      "subject": "Merge branch 'SpectrumQT:master' into master",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 160,
+      "sha": "da6eed94e32e99bc333e2e35c4a67f583e974a54",
+      "subject": "Merge pull request #4 from Unicornshell69/master",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 161,
+      "sha": "bb2cc9e6526e2243a2b8e32cbf8ddf3a4f1718a7",
+      "subject": "Add a global toggle for XXMI inputs",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 162,
+      "sha": "4782b0b3af5aa4e92a16466fe980c7e02bd71c44",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 163,
+      "sha": "f6f7999077bb7ac92bdf2b4a0d485c8ea3fae2a7",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 164,
+      "sha": "a7abfd581ddca7ff7a324b054543401a8d7c8a75",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 165,
+      "sha": "7663882e383102be7336b3f99e5aaaba197db2cf",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 166,
+      "sha": "6fdab35efb54cae84db879883363aaa784cc6b19",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 167,
+      "sha": "c99039021b8787f3d1f858720ee398a4dd40b7ef",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 168,
+      "sha": "0db50f3ca9c0247fa0869bafb912167bcd050c88",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 169,
+      "sha": "79b4d29f8001e3293b2cfcf83bae02a6bb800018",
+      "subject": "Merge branch 'SpectrumQT:master' into input-toggle",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 169,
+        "sha": "79b4d29f8001e3293b2cfcf83bae02a6bb800018",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/input.cpp",
+          "src/DirectX11/globals.h"
+        ],
+        "sourceEvidence": "git show --remerge-diff and default combined patch empty; parents0db50f3c/80edf0a3",
+        "contract": "No unique merge resolution; preceding parent features retain separate review.",
+        "challenge": "No resolution-only feature could disappear.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "0db50f3ca9c0247fa0869bafb912167bcd050c88",
+          "80edf0a3e006fdced665b2314ccc02fc8c385bb2"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 170,
+      "sha": "48c24f8d19b48909a2a4405c64394f42d35e9796",
+      "subject": "Merge pull request #15 from failsafe42/input-toggle",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 170,
+        "sha": "48c24f8d19b48909a2a4405c64394f42d35e9796",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/input.cpp",
+          "src/DirectX11/globals.h"
+        ],
+        "sourceEvidence": "git show --remerge-diff and default combined patch empty; parentsda6eed94/79b4d29f",
+        "contract": "Input global toggle parent integration, no independent hunk.",
+        "challenge": "Check toggle registration/default dispatch via171 finalseries.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "da6eed94e32e99bc333e2e35c4a67f583e974a54",
+          "79b4d29f8001e3293b2cfcf83bae02a6bb800018"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 171,
+      "sha": "3102185e7adaa2069397316f8d76df97dc173ff8",
+      "subject": "Overhauled user input toggle",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 171,
+        "sha": "3102185e7adaa2069397316f8d76df97dc173ff8",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/input.cpp",
+          "src/DirectX11/globals.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp1766-1818,4730-4738; input.cpp597-646; globals.h530/726",
+        "contract": "Input disable mode mods/all, toggle exempt and cycle/back share scope.",
+        "challenge": "Challenge explicit sibling-prefix path: upstream starts_with_any rawprefix differs from local path-boundary classification. Also case/relative normalization intentional local behavior differs; needs config repro.",
+        "outcome": "suspected-gap",
+        "findings": [
+          "input-prefix-policy-difference"
+        ],
+        "parents": [
+          "48c24f8d19b48909a2a4405c64394f42d35e9796"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 172,
+      "sha": "975bba806d833dec80bda715ae26dadfcb04d947",
+      "subject": "Merge remote-tracking branch 'origin/master' into pr-19",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 172,
+        "sha": "975bba806d833dec80bda715ae26dadfcb04d947",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/input.cpp",
+          "src/DirectX11/globals.h"
+        ],
+        "sourceEvidence": "Nonempty remerge diff read: Dependencies/d3dx.ini, IniHandler.cpp4598,globals.h427; local IniHandler4714/4730,globals input/tick fields",
+        "contract": "Merge retains auto-clear option plus Input section and64bit clocks.",
+        "challenge": "Challenge lost conflict half: local clear_unknown_settings is later renamed setting, Input enabled default corrected by195, both mechanisms present.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "c05b4cae770bcba965e5a1d8511ea8a1f7446080",
+          "3102185e7adaa2069397316f8d76df97dc173ff8"
+        ],
+        "--ccBytes": 3538,
+        "--remerge-diffBytes": 3531
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 173,
+      "sha": "79fd6edafee1242581256e6f4f98dd5fdf0f26ed",
+      "subject": "modified:   DirectX11/CommandList.cpp \tmodified:   DirectX11/CommandList.h \tmodified:   DirectX11/IniHandler.cpp \tmodified:   DirectX11/globals.h",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 173,
+        "sha": "79fd6edafee1242581256e6f4f98dd5fdf0f26ed",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.cpp1120-1185 capture;5070-5192 transactional preservation; CommandList variable/directive callers",
+        "contract": "Preserve unknown scalar/pool values across reload/save and clear after repeated unknown sets.",
+        "challenge": "Challenge changed unknown value between reloads, known→nonpersist and ownerpath switch: later015d policy uses bit-value identity instead of only count. No new confirmed gap in current capture/save path.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 174,
+      "sha": "f8bcae61b9b9a0c49f6bfdae4a3bff76b9d914e7",
+      "subject": "Minor DLL initialization refactor",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 174,
+        "sha": "f8bcae61b9b9a0c49f6bfdae4a3bff76b9d914e7",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "D3D11Wrapper.cpp97-121,376-407,506 gate",
+        "contract": "Serialize initialization and avoid repeated config parse.",
+        "challenge": "Challenge concurrent native-forward retry: initialization gate owns UNINITIALIZED/READY/FAILED config state; local stronger gate replaces early published bool. Do not infer whole config registry thread safety.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 175,
+      "sha": "82cc1dd3fcb7211373c6d614460808a4ab6c2b56",
+      "subject": "Removed LoadProfileManagerConfig",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 175,
+        "sha": "82cc1dd3fcb7211373c6d614460808a4ab6c2b56",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.h and IniHandler.cpp; rg LoadProfileManagerConfig no definition/caller",
+        "contract": "Remove obsolete profile-manager loader.",
+        "challenge": "Challenge dangling call/link: no remaining local symbol from removed helper; DLL normal loading path remains.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 176,
+      "sha": "a756fdec80100b5d8462a37f34a808f6da2b5f48",
+      "subject": "Fixed logging initialization issues",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 176,
+        "sha": "a756fdec80100b5d8462a37f34a808f6da2b5f48",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "Logging.cpp7-34; IniHandler.cpp4611-4638",
+        "contract": "Resolve logging before parsed helpers, invalid level falls back to legacy.",
+        "challenge": "Challenge invalid/empty level + calls/debug and fileopenfail: ParseLogVerbosity handles fallback, InitializeLogging publishes disabled if no file. Main ParseIniFile occurs after logger init.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 177,
+      "sha": "390cd643b636142c948c66c6ffd41d1ae0b625cc",
+      "subject": "Minor Include section parsing refactor",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 177,
+        "sha": "390cd643b636142c948c66c6ffd41d1ae0b625cc",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.cpp1760-1764,4674-4688; GetUserConfigPath1639",
+        "contract": "User config loaded last when includes enabled.",
+        "challenge": "Challenge skip_early_includes_load and config_initialization_delay<0: gate retains root/includes/user precedence and user final ParseNamespacedIniFile.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 178,
+      "sha": "efb0c0508eecf1dfa0104835154c6d40b05a0f1e",
+      "subject": "Overhauled unknown persistent settings notification and logging",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 178,
+        "sha": "efb0c0508eecf1dfa0104835154c6d40b05a0f1e",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.cpp5018-5019,5070-5116,5314-5321",
+        "contract": "Dedicated unknown setting detection and logging after config reload.",
+        "challenge": "Challenge empty unknown set and changing values: count refreshed from actual keys, compares bit-value map; notifications only cleanup phase, not helper side effects. Later015d final policy supersedes intermediate helper.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 179,
+      "sha": "dbf63358b4794ea142e31485bc76a126ed215de8",
+      "subject": "Refactored ReloadConfig logging",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 179,
+        "sha": "dbf63358b4794ea142e31485bc76a126ed215de8",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.cpp5204-5223,5244-5285",
+        "contract": "Clear notices/reload log ordering; wipe emits own notification.",
+        "challenge": "Challenge wipe-save failure and stale live registry: wipe failure returns before load; successful wipe avoids immediately recapturing old values. G reload lock differs because local save-before-registry-reset transaction; no executed concurrency claim.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 180,
+      "sha": "8c439438aab52f907d4a189594258965738a6a3e",
+      "subject": "Refactored unknown persistent settings clean up",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 180,
+        "sha": "8c439438aab52f907d4a189594258965738a6a3e",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/D3D11Wrapper.cpp",
+          "src/DirectX11/Logging.cpp"
+        ],
+        "sourceEvidence": "IniHandler.cpp5070-5116,5118-5202,5314-5321",
+        "contract": "Separate unknown cleanup from normal settings writes.",
+        "challenge": "Challenge normal autosave should not immediately clear unknown values; cleanup gated handle_cleanup after load/init and compares prior unknown values. Atomic save avoids half-file truncation; gameplay not executed.",
+        "outcome": "no-confirmed-gap",
+        "findings": []
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 181,
+      "sha": "7ea5e9306c51234301781d226766c01540270c32",
+      "subject": "Optimize ParseConstantsSection by replacing Vector Erasure",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 181,
+        "sha": "7ea5e9306c51234301781d226766c01540270c32",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IniHandler.cpp2536-2622, ParseFloatValue/RegisterGlobalVariable secondpass",
+        "contract": "Global declarations compacted once; retained commands preserve order.",
+        "challenge": "Challenge adjacent globals, invalid/redeclared globals and moved IniLine namespaces: local matches final consuming-invalid behavior; pointers only used before move or nextiteration.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "158c8cdc790141b6124237ee8acec2745b600635"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 182,
+      "sha": "c4009058aa9c07c569dd5b204dc7412ca289fa98",
+      "subject": "Merge pull request #22 from NurarihyonMaou/ParseConstantsSection_Optimization",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 182,
+        "sha": "c4009058aa9c07c569dd5b204dc7412ca289fa98",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "git combined/remerge zero verified below; local constantparser2536",
+        "contract": "Merge constant compaction parent without independent resolution.",
+        "challenge": "Challenge missing parent patch: actual compaction loop present.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "8c439438aab52f907d4a189594258965738a6a3e",
+          "7ea5e9306c51234301781d226766c01540270c32"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 183,
+      "sha": "d89378035550033fc2949d39813ac852de1af6b6",
+      "subject": "Improved Performance of Optimize_Command_Lists",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 183,
+        "sha": "d89378035550033fc2949d39813ac852de1af6b6",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp8878-8915; CommandList.h IfCommand weak expression stamp",
+        "contract": "Cache static If evaluation per stable expression, retain phase-specific lists.",
+        "challenge": "Challenge replace expression/reoptimize after cached noop: local invalidates on optimisation or weak identity mismatch, prevents stale branch erasure.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "158c8cdc790141b6124237ee8acec2745b600635"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 184,
+      "sha": "0271e6f79b78c449d6b66d1782091d34e6b24415",
+      "subject": "Remove redundant Variables from IfCommand::noop",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 184,
+        "sha": "0271e6f79b78c449d6b66d1782091d34e6b24415",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/IniHandler.cpp",
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp8892-8915; fieldstatic_val/is_static",
+        "contract": "Cache value/result in If fields, not redundant locals.",
+        "challenge": "Challenge cached false vs nonstatic false: is_static separate from static_val and only prunes when true.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "d89378035550033fc2949d39813ac852de1af6b6"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 185,
+      "sha": "60947bec02c5c3327184f4d5631b3646fa4991cf",
+      "subject": "Merge pull request #23 from NurarihyonMaou/Cache_for_Optimize_Command_Lists",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 185,
+        "sha": "60947bec02c5c3327184f4d5631b3646fa4991cf",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "IfCommand current8878-8915",
+        "contract": "Merge static If cache with no independent resolution.",
+        "challenge": "Challenge parent loss; actual per-expression result/value cache present.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "c4009058aa9c07c569dd5b204dc7412ca289fa98",
+          "0271e6f79b78c449d6b66d1782091d34e6b24415"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 186,
+      "sha": "1ff00d94096fffef76122bde8c0c88eb1dc1253b",
+      "subject": "Optimize CommandList Operator Parsing",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 186,
+        "sha": "1ff00d94096fffef76122bde8c0c88eb1dc1253b",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp4385-4515,5124-5162",
+        "contract": "Skip absent operator passes but preserve precedence/associativity.",
+        "challenge": "Challenge unary minus with exponent, nested functions and ===/!==: token-category map includes all12 categories, unary +/- sets two masks, function setsunary, recursion handlesnested nodes.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "48c24f8d19b48909a2a4405c64394f42d35e9796"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 187,
+      "sha": "635a57aaea14690d857da97e312aa98b5bbb21c4",
+      "subject": "Merge pull request #24 from NurarihyonMaou/Optimize_CommandList_Operator_Parsing",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 187,
+        "sha": "635a57aaea14690d857da97e312aa98b5bbb21c4",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp4385-4515,5124-5162",
+        "contract": "Merge operator masks with no independent resolution.",
+        "challenge": "Challenge omitted function pass: OP_UNARY set before function token and same passorder retained.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "60947bec02c5c3327184f4d5631b3646fa4991cf",
+          "1ff00d94096fffef76122bde8c0c88eb1dc1253b"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 188,
+      "sha": "87fa9479cfc8e1f5c1ae9dcdcd3cb2a4d3a336d8",
+      "subject": "Optimize Transform_Operators_Recursive traversal",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 188,
+        "sha": "87fa9479cfc8e1f5c1ae9dcdcd3cb2a4d3a336d8",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp",
+          "src/DirectX11/CommandList.h"
+        ],
+        "sourceEvidence": "CommandList.cpp5009-5048",
+        "contract": "Explicit depth-first token/lhs_tree/rhs_tree traversal.",
+        "challenge": "Challenge operator childtrees vs syntax tokenchildren: both branches visited before parent transformation, including prebuilt nested nodes.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "48c24f8d19b48909a2a4405c64394f42d35e9796"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 189,
+      "sha": "589b7fcaaaefdae225caf5592033dfcca2c06497",
+      "subject": "Remove AI Formatting",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 189,
+        "sha": "589b7fcaaaefdae225caf5592033dfcca2c06497",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "Full589b diff read; localCommandList5009-5048 same token andchild traversal.",
+        "contract": "Whitespace-only reformat of direct traversal.",
+        "challenge": "Challenge hidden behavior among removedbraces: each single ifbody stillsinglecall; no changed expression/operators.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "87fa9479cfc8e1f5c1ae9dcdcd3cb2a4d3a336d8"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 190,
+      "sha": "caf94da1088a4adb902f6cc0123cc0eccacfc0d1",
+      "subject": "Merge pull request #25 from NurarihyonMaou/Optimize_Transform_Operators_Recursive_traversal",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 190,
+        "sha": "caf94da1088a4adb902f6cc0123cc0eccacfc0d1",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "CurrentCommandList5009-5048 and rawmerge proofs.",
+        "contract": "Merge traversal with no independent resolution.",
+        "challenge": "Challenge loss of lhs/rhs traversal, bothpresent.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "635a57aaea14690d857da97e312aa98b5bbb21c4",
+          "589b7fcaaaefdae225caf5592033dfcca2c06497"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 191,
+      "sha": "ec9e57136d66738e6fb9ceb7501483be4e3c119d",
+      "subject": "Optimize CommandList Variable Lookup",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 191,
+        "sha": "ec9e57136d66738e6fb9ceb7501483be4e3c119d",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "CommandList.cpp5460-5488 and existing parser_optimization_regression145-151 source",
+        "contract": "ASCII basename lowercase lookup with namespace-first precedence.",
+        "challenge": "Challenge explicit Unicode namespace and null namespace: local fullyqualified useswidecasefold; ordinary basename ASCII, namespaced lookup precedesglobal fallback, no rootmutation.",
+        "outcome": "no-confirmed-gap",
+        "findings": [],
+        "parents": [
+          "48c24f8d19b48909a2a4405c64394f42d35e9796"
+        ]
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 192,
+      "sha": "4fad1e3d1efa8cc5309826515c1025e27bd9cce4",
+      "subject": "Merge pull request #26 from NurarihyonMaou/Optimize_CommandList_Variable_Lookup",
+      "status": "agent-reviewed-static",
+      "evidence": [],
+      "reviewer": "round2-scope-3",
+      "review": {
+        "index": 192,
+        "sha": "4fad1e3d1efa8cc5309826515c1025e27bd9cce4",
+        "patchRead": true,
+        "localPaths": [
+          "src/DirectX11/CommandList.cpp"
+        ],
+        "sourceEvidence": "CurrentCommandList5460-5488 and rawmergeproofs.",
+        "contract": "Merge variable lookup with no independent resolution.",
+        "challenge": "Challenge leaf vs namespace lowercasing: actualhelpercall preserveswide namespace folding.",
+        "outcome": "superseded-with-proof",
+        "findings": [],
+        "parents": [
+          "caf94da1088a4adb902f6cc0123cc0eccacfc0d1",
+          "ec9e57136d66738e6fb9ceb7501483be4e3c119d"
+        ],
+        "--ccBytes": 0,
+        "--remerge-diffBytes": 0
+      },
+      "parentVerification": "pending"
+    },
+    {
+      "index": 193,
+      "sha": "5c77f4b0907906751626bb28e831edfeb22851b6",
+      "subject": "Optimized ParseConstantsSection var name lowercasing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 194,
+      "sha": "2806c7a507a09a34f0da88a9e58b6f07e6b7e8fb",
+      "subject": "Added INI language extensions docs for v1.1.0",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 195,
+      "sha": "45a8ff4e51c08b97fd2c4eaa3d29616e77ac762a",
+      "subject": "Fixed `input` option wrongly defaulting to `false`",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 196,
+      "sha": "4bd226f7dcee8bc723b3014de748dd62cbd4e017",
+      "subject": "Fixed unknown settings count in related notification not updating when `auto_clear_persist_vars` is disabled",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 197,
+      "sha": "13f88a7ac6195d77d59d884558ac3231cc908a99",
+      "subject": "Refactored `G->user_config_dirty` handling",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 198,
+      "sha": "c0675d4beb7f737eac0347b6bd400d26f74c3dd9",
+      "subject": "Fixed persistent variables still getting loaded from d3dx_user.ini after `persist` flag removal",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 199,
+      "sha": "fa3c42cd5ba5d9214798aff80aa7c089e0aa89a9",
+      "subject": "Added non-concurrent append support to wfopen_ensuring_access",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 200,
+      "sha": "015d33945e12b2d355c2735129083cdcd5a5c1b9",
+      "subject": "Refactored unknown persistent settings handling",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 201,
+      "sha": "4e384d877be14bfd49f9723002417c131e55942e",
+      "subject": "Adjusted input option default value format in d3dx.ini",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 202,
+      "sha": "13cc0ae46e5b8f638d93993721827be26a3684bf",
+      "subject": "add resource attribute getters for: array, mips and bind_flags",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 203,
+      "sha": "3f5538a5c7e930ee871ce2041ec6b7daeee2dad8",
+      "subject": "formatting adjustments to not request additional resource properties with GetResource MemberInfo members[] re-order to match length ASC format",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 204,
+      "sha": "1dd8c5075d41d3320f2c3dbf895f8454e37ee5dc",
+      "subject": "Merge pull request #29 from Satan1c/master",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 205,
+      "sha": "e8e2d7305d6c5dff0140c063fd3d97b10d5ae22a",
+      "subject": "Fixed invalid default D3D11_BIND_FLAG in ResourceCopyTarget::GetResourceBindFlags",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 206,
+      "sha": "5510cce23d3bd2383d1e46f7c13c0b04763193f1",
+      "subject": "Renamed `->bind_flags` getter to `->BindFlags`",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 207,
+      "sha": "812a392a8b2c812e3081dc6dd280d4295ae0a6ec",
+      "subject": "Fixed wrong char count in DXGI_FORMAT enum INI literal prefix check",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 208,
+      "sha": "f9d665e220d8551015b88b5bb22976929e509bdf",
+      "subject": "Fixed pool variables identifier being limited to regular variables identifier chars in iNI expressions",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 209,
+      "sha": "96aee72048d1ebe5a81aca51e2f5bbdf39c31fa4",
+      "subject": "Added INI language extensions docs for v1.1.5",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 210,
+      "sha": "60f2cd44b547bac50972d8c9039017f3dbcf7d92",
+      "subject": "Fixed non-modified persistent variables being able to affect scheduled d3dx_user.ini update",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 211,
+      "sha": "f3c997881a07a6f61f06aecce8e80f68ea5f68f2",
+      "subject": "length update, fix for unrecognized",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 212,
+      "sha": "849feef145337a84371a342dfb944cdbb10570c3",
+      "subject": "custom resource ->Array and ->Mips getters fix",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 213,
+      "sha": "0f5275b3b858759c5ba091ca14f236d7663c7eab",
+      "subject": "Merge pull request #34 from Satan1c/master",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 214,
+      "sha": "06962f170a36eeaf9bfa5cd9d7ce4b748fbf56cd",
+      "subject": "During Parsing - Pass the IniSection directly instead of repeatedly looking it up",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 215,
+      "sha": "8d156caad87180bf038f0892451a6a6a91fcf264",
+      "subject": "Make use of the IniSection Pass",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 216,
+      "sha": "3b2907250ad89ce397ecc1f4f1aab01eee9791bf",
+      "subject": "Merge pull request #33 from NurarihyonMaou/Pass_the_IniSection",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 217,
+      "sha": "e624dcf1fa1b66a61618d7f6164303d604456372",
+      "subject": "Change execution order of ParseCommandListLine",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 218,
+      "sha": "f82a5aed52c3827aeb4396cd83ad9fafeedb351b",
+      "subject": "Merge pull request #30 from NurarihyonMaou/ParseCommandListLine_Execution_Order",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 219,
+      "sha": "8d4d2cb3cab28fccc151b2e458c39f0a349b20ca",
+      "subject": "Optimize Ini include directive Parsing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 220,
+      "sha": "6bf6a746a198c82fb34dbd336cac7ad8e0f4ddc9",
+      "subject": "Merge pull request #32 from NurarihyonMaou/Optimize_Ini_include_directive_Parsing",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 221,
+      "sha": "f02bb2f1f0c547cf65fceae77b35dd515aa2d35b",
+      "subject": "Added elements type filter to CustomResourcePool::ResetElements",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 222,
+      "sha": "4b48720e68c12d1857825cdcce83cd0185a90964",
+      "subject": "Limited scope of full pool range reset to either pool resources or variables, fixed pool full range operations parsing errors,",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 223,
+      "sha": "9b3d52f2e9249c35cabbd00a4b95b68899ceb042",
+      "subject": "add fuzzy texture override matching overhead tracking",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 224,
+      "sha": "5aa2fb35cdc3c67bb221d8bf71d004382ea79ea6",
+      "subject": "Log bind flags of resource copies in frame analysis log",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 225,
+      "sha": "038af0099ed5be1c33fe1e8a7485fffd03ed704a",
+      "subject": "Propagate custom resource bind flags through reference chains",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 226,
+      "sha": "851c28cb899f6e3b60085d4871c784379049c5cb",
+      "subject": "Merge pull request #36 from Satan1c/bind-flags",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 227,
+      "sha": "6cbdf23f90e80644928e390579a281fcf9f0e38b",
+      "subject": "add fuzzy texture override matching overhead tracking",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 228,
+      "sha": "69c26c3da29f6f7c39d76f5b20e60197627bb722",
+      "subject": "Merge pull request #40 from Satan1c/profiler-fuzzy-overhead",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 229,
+      "sha": "abaed4e420f5aec115a169740db74876874ed629",
+      "subject": "Skip hash contamination tracking for buffers before taking locks",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 230,
+      "sha": "d6b27426894739d792edf64745949aee21f231f4",
+      "subject": "Merge pull request #44 from Satan1c/buffer-hash-contamination",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 231,
+      "sha": "a6b30761912f46c3e97e6692d482ca8a217fde9c",
+      "subject": "Profiler: register command lists once per collection window",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 232,
+      "sha": "43e5c9b16f12526f3dbf65355cc2b8f4f3e69138",
+      "subject": "Merge pull request #45 from Satan1c/profiler-command-list-registration",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 233,
+      "sha": "d92e5ce7e8ee8c12554e8405ed8c4f78f7f6c8ec",
+      "subject": "Setup automated DLL versioning and updated file description",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 234,
+      "sha": "9f04a753391bc20f655d1e991c088718ac433896",
+      "subject": "Batch adjacent shader resource slot binds and fetches",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 235,
+      "sha": "c3ae4fd5cca9a2830b4893472505e26696bf1b4b",
+      "subject": "Batch slot binds and fetches regardless of copy options",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 236,
+      "sha": "c6b63cdd7872cb59d947ebcbe1c74c51e9838b7d",
+      "subject": "Document slot operation batching",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 237,
+      "sha": "dc2d565f10c0f4566b12b9649d28618de6c8edcf",
+      "subject": "Remove slot operation batching from the docs",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 238,
+      "sha": "c5d0caa7c166e9689366101864993caaeebbb8dc",
+      "subject": "Tidy slot batch merging and comment it",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 239,
+      "sha": "ef97cf7239aa2642b50de3fd85040028282056fa",
+      "subject": "Rename seed_with_current to prefetch_current_bindings",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 240,
+      "sha": "50c9fc8c960b8bd7e496f0ee32bfe4771587debf",
+      "subject": "Merge pull request #46 from Satan1c/slot-bind-batching",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 241,
+      "sha": "a02418316be1c7e03d839d1322919f98b8f7ad38",
+      "subject": "Merge branch 'master' of https://github.com/SpectrumQT/XXMI-Libs-Package",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 242,
+      "sha": "fb2b5b0dc3f0456a431ec0d9a8211ba7442664d5",
+      "subject": "Memoise TextureOverride lookup per resource",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 243,
+      "sha": "76a381d6c9d0bed31e86497569f208bc7868420f",
+      "subject": "Profiler: split TextureOverride row into candidates rebuild / lookup",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 244,
+      "sha": "034e2875ff7b04eefa75a312144cd5338d8c6cce",
+      "subject": "Read texture override candidates under G->mCriticalSection",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 245,
+      "sha": "48f3b6db03814bac65b0ac990e0a26446c3bd73f",
+      "subject": "Comment how the texture override cache relates to region hashes",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 246,
+      "sha": "fbd5f9d48c0d8066b9412102c93203050eaffe79",
+      "subject": "Merge remote-tracking branch 'upstream/master' into texture-override-memo",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 247,
+      "sha": "c1378828238f165cec8efbaf78cab985373e7bbd",
+      "subject": "Match nothing for resources without handle info, drop the uncached lookup",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 248,
+      "sha": "e414c5feb37c2bc9457ebea99ba08fbef1da4a5d",
+      "subject": "Merge pull request #47 from Satan1c/texture-override-memo",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 249,
+      "sha": "a4f0fe512e0e3df45f5421168bb78425a70de8b7",
+      "subject": "Add dynamic slot indices to the ini syntax",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 250,
+      "sha": "1011b2183406868e5467b5641a864390ba2f70c3",
+      "subject": "Merge pull request #53 from Satan1c/dynamic-slot-index-standalone",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 251,
+      "sha": "b779e7e2ec9a5519ef2b00be0f89ab94aee015fa",
+      "subject": "Add slot and pool ranges to the ini syntax",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 252,
+      "sha": "595de8fadcc76c47445f4ccb5b86cd7fc25a5d31",
+      "subject": "Document slot and pool ranges",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 253,
+      "sha": "8fe6aac1b2e93fab004cc85931dae63bc7c2768f",
+      "subject": "Slot ranges: support copy and all copy options",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "src/DirectX11/CommandList.cpp:12641,12772,12830,12880; upstream tip parse_slot_range_operation13622 also disallows direct Region broadcast, so candidate rejection is not a local divergence.",
+        "Full raw patch read this round; runtime challenge not newly executed."
+      ],
+      "patchRead": true,
+      "contract": "Slot-range copy types/options route through per-element scalar copy; plain ref preserves matching views and CB windows."
+    },
+    {
+      "index": 254,
+      "sha": "cf8ba704a5b295601ff40ad6caa5348e468dbcd8",
+      "subject": "Slot ranges: log each slot in the frame analysis log",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "LogSlotRangeElement12748, SlotRangeIndent/BindElement/FetchElement12772..12880; full cf8 patch read, null/ref diagnostic spelling differs but source/destination/skip content retained; exact textual logging equivalence not claimed.",
+        "No new runtime execution."
+      ],
+      "patchRead": true,
+      "contract": "Per-slot frame analysis logging gated before formatting; copy details scoped by RAII indentation."
+    },
+    {
+      "index": 255,
+      "sha": "407920fb27e023cf2ab067f5759d1f7bff49438a",
+      "subject": "Updated GitHub Actions build job to checkout@v4",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "cmake/GenerateDX11Version.cmake:1-70 read; src/DirectX11/CMakeLists.txt dx11_version_header already examined. No runtime change in full upstream patch.",
+        "Full raw patch read this round; runtime challenge not newly executed."
+      ],
+      "patchRead": true,
+      "contract": "Workflow-only checkout/history ordering; local CMake provenance uses Git tags/history rather than transplanting MSBuild workflow."
+    },
+    {
+      "index": 256,
+      "sha": "84c4948fca067caf3b0dbd0bb51de5fdf457be7d",
+      "subject": "Exclude dynamic slot indices from slot batching",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "src/DirectX11/CommandList.cpp:12260 BatchableSlotOperation has !slot.slot_expression on direction-selected target; conditional extraction reuses eligibility.",
+        "Full raw patch read this round; runtime challenge not newly executed."
+      ],
+      "patchRead": true,
+      "contract": "Dynamic slot indices remain batch barriers, retaining runtime expression evaluation."
+    },
+    {
+      "index": 257,
+      "sha": "4a20acd20d0b4733dc5e0a61061b4880be2e6306",
+      "subject": "Merge pull request #54 from Satan1c/slot-batching-dynamic-guard",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "merge-evidence-257-258.json records exact parents and zero combined/remerge bytes; current BatchableSlotOperation12260 retains guard.",
+        "No new runtime execution."
+      ],
+      "patchRead": true,
+      "contract": "Merge has no unique resolution; dynamic slot guard parent retained."
+    },
+    {
+      "index": 258,
+      "sha": "ef24b4316629a9cc966c8688abafe85eea280a88",
+      "subject": "Merge remote-tracking branch 'upstream/master' into slot-pool-ranges",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "merge-evidence-257-258.json zero combined/remerge bytes and exact parents; current LogSlotRangeElement and BatchableSlotOperation read.",
+        "No new runtime execution."
+      ],
+      "patchRead": true,
+      "contract": "Integration merge has no unique resolution; range logging and dynamic guard both retained."
+    },
+    {
+      "index": 259,
+      "sha": "190400dc76641b463a9feaf4afbbe58c32f8797a",
+      "subject": "Slot ranges: keep the fetched cb region for slots unless_null leaves alone",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "SlotRangeBindings::Fetch/Assign/Publish at12700; BindElement skip returns before assigning and SetSlotRange12571 preserves windows.",
+        "Full raw patch read this round; runtime challenge not newly executed."
+      ],
+      "patchRead": true,
+      "contract": "unless_null retains fetched CB offsets/counts for untouched slots."
+    },
+    {
+      "index": 260,
+      "sha": "c45db630757f99f6f56aa0dcfc6f60621416e800",
+      "subject": "Slot ranges: address pool elements by index on every pool type",
+      "status": "reviewed-static-no-confirmed-gap",
+      "evidence": [
+        "PoolRangeElement1136 uses GetResource(...false,true,assignment); BindElement/FetchElement12830/run12880 use this helper; unsigned physical wrapping avoids key lookup.",
+        "Full raw patch read this round; runtime challenge not newly executed."
+      ],
+      "patchRead": true,
+      "contract": "Pool ranges address physical slots for FIFO/spatial as well as ring, retaining assignment expiration semantics."
+    },
+    {
+      "index": 261,
+      "sha": "5a852ccac15325dd31e3c4ddf7a5505ed3a6340d",
+      "subject": "Document variable pools and all pool_ options",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 262,
+      "sha": "7800bd060b118dee3991566821fc3d92473299e3",
+      "subject": "Document pool operations, ->HashRegion and ->SpatialHash",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 263,
+      "sha": "83bcd3f2a5bfda09399656a5ca1e5b14b2d9f4c6",
+      "subject": "Warn about the cost of store",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 264,
+      "sha": "893e3072bf5b7841151d6007c6bb252bed23a768",
+      "subject": "Add INI feature examples",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 265,
+      "sha": "278c4e63b7f82bfe4c024693aaf3bef996d35bc9",
+      "subject": "Drop the accessory mesh and material borrowing examples",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 266,
+      "sha": "91d4aae517b48228f3494be7bbe10bb1dc521069",
+      "subject": "Slot ranges: leave elements alone when unless_null skips them",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 267,
+      "sha": "b693992829dddaddb4ee1bf149e3853cf1d07be8",
+      "subject": "Slot ranges: bind cb regions in one XXSetConstantBuffers1 call",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 268,
+      "sha": "99db72f363cd8023644dc42e572b851608989603",
+      "subject": "Slot ranges: stop special casing a pool range without a slot range",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 269,
+      "sha": "ac9947bf122137f9f6aba56c25c0f200c4b149ef",
+      "subject": "Slot ranges: accept a range where the target is parsed",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 270,
+      "sha": "99751321d9a9963243b2d1b9933a353fab86695e",
+      "subject": "Slot ranges: split the per-slot work out of RunBind and RunFetch",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 271,
+      "sha": "2e1c6a963713383549bcf93de92817f5e8dd462a",
+      "subject": "Slot ranges: parse range bounds in one place",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 272,
+      "sha": "bb0b7aa2b36beea1efe5b5b2d302227a25be6f19",
+      "subject": "Slot ranges: require explicit bounds on both sides",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 273,
+      "sha": "0c7905e23d783d2f29992cb68caf321ff46226bf",
+      "subject": "Added cache_resource_data option",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 274,
+      "sha": "1fba754a6bf50e5fbeb01e3087353b296595661e",
+      "subject": "Data cache and pool variables support for store command",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 275,
+      "sha": "0b5b27740183157dfeb2dd6a3dbc066d6f0dd9ee",
+      "subject": "Merge remote-tracking branch 'upstream/master' into slot-pool-ranges",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 276,
+      "sha": "ce164058d36ad7c42afc4d0b86750348d9edd47d",
+      "subject": "Document the pool expiration timeout default",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 277,
+      "sha": "3eba77be7e2be20e9eeb52507ae9b8b4b7f20a37",
+      "subject": "Rewrite the slot range capture example",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 278,
+      "sha": "b399bae703fa4090f6b19157f837cb19f525a0ab",
+      "subject": "Document cache_resource_data for region hashes",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 279,
+      "sha": "bd6298877261db67ea6fa6ccbc9a71d375e90ce1",
+      "subject": "Document store data caching and pool variable targets",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 280,
+      "sha": "34fa32fab97b828319f01a0af29ba36228c6d12e",
+      "subject": "Merge pull request #55 from Satan1c/slot-pool-ranges",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 281,
+      "sha": "894cb094c79f2f04ce54f59305fd980e058ed0ff",
+      "subject": "Accept slot ranges in checktextureoverride",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 282,
+      "sha": "7abb57cfd75363a7a8ded3f4be0a50e0f64c4af2",
+      "subject": "Accept pool ranges in checktextureoverride",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 283,
+      "sha": "ace1f29f3c067dcac736a2a8932dc35d31d03d13",
+      "subject": "Reuse the source view when the destination takes its kind",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 284,
+      "sha": "9d60387ce802705d595b1e737445b18be948c8fa",
+      "subject": "Merge pull request #67 from Satan1c/fixes/ref-view-reuse",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 285,
+      "sha": "6b2d803f50892ee87685e80ce4f561bdeb12f173",
+      "subject": "Clear StructureByteStride when recreating a buffer as a constant buffer",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 286,
+      "sha": "70d662ff75774ebb877d4ccb4670802b2c01e733",
+      "subject": "Merge pull request #63 from Satan1c/fixes/cb-structure-byte-stride",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 287,
+      "sha": "7ff1fe7b1f7f1914abad0bd2644bde3cae3dfc68",
+      "subject": "Release shader compile error blob when logging is off",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 288,
+      "sha": "bf0c027deef5a32c21d42604f81c5d35db8f276f",
+      "subject": "Merge pull request #62 from Satan1c/fixes/shader-error-blob-leak",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 289,
+      "sha": "7d2c47051f1cceb6abe4294e391bcc526d678e50",
+      "subject": "Read pool bind flags from the template instead of an element",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 290,
+      "sha": "a92e53fabca0d71aaa500dc472363d47d354f2f3",
+      "subject": "Merge pull request #61 from Satan1c/fixes/pool-bind-flags-template-lookup",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 291,
+      "sha": "cca39fe7998108f268dad159fd64c74c7ca22275",
+      "subject": "Accept pool ranges in dump",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 292,
+      "sha": "c9391cfa428a90676648e9e306113995bac9c416",
+      "subject": "Merge pull request #64 from Satan1c/ranges/frame-analysis-dump",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 293,
+      "sha": "f8283084f3c80d3f5628327bb829d9d53c1ecd09",
+      "subject": "Merge remote-tracking branch 'upstream/master' into ranges/check-texture-override",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 294,
+      "sha": "786dbbffc284ba035858c68deb700dfafe9a056d",
+      "subject": "Describe the loop as covering both range kinds",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 295,
+      "sha": "a0d566d2a7a9977db07b2fdf8bc6a73f9a7054f3",
+      "subject": "Merge pull request #65 from Satan1c/ranges/check-texture-override",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 296,
+      "sha": "57a1b6a21d06ccfa8b24433b296eed83963ed8a9",
+      "subject": "Fix max() misuse dropping offset_y in GetSpatialHash",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 297,
+      "sha": "3d619f6604eda424a3f4820d1c2fc52e64bf5384",
+      "subject": "Merge pull request #60 from Satan1c/fixes/spatial-hash-max-offset",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 298,
+      "sha": "110cb7bc513889c5af2acf95c237b53ef229392d",
+      "subject": "Batching: name the batch direction instead of a bool",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 299,
+      "sha": "60740eee04dea1e1e07897f0005983f28a1ae3d1",
+      "subject": "Batching: read the batch slot through the operation",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 300,
+      "sha": "3d1192ae1e3d79f4fc99c527cce916291353fde3",
+      "subject": "Conditional batching: fold same-slot chains into bind batches",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 301,
+      "sha": "5dec643b514da87c91a9edc34c134447635efdf8",
+      "subject": "Conditional batching: run fetch batches through the matched branch",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 302,
+      "sha": "11e18fac85a85e627252c9679124a676e1c6a252",
+      "subject": "Conditional batching: seed slots a branch may leave alone",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 303,
+      "sha": "accb52eed19d8dd428465a6c21aaaf613598c7d8",
+      "subject": "Conditional batching: skip conditions that read pipeline state",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 304,
+      "sha": "65886d04eec7530bea794933b1bf2109da2b5b30",
+      "subject": "Conditional batching: keep an unbatched chain as its own if command",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 305,
+      "sha": "2de76dc3886daedff1787d0ae7c78b0e1c96c022",
+      "subject": "Conditional batching: log when no branch is taken",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 306,
+      "sha": "7d7ed40b9480616756f2b2c010d3aaa9961db071",
+      "subject": "Merge pull request #66 from Satan1c/slots/conditional-batching",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 307,
+      "sha": "a7847eae82aaac32175c9a7d199673d5c9323bcd",
+      "subject": "Revert \"Merge pull request #66 from Satan1c/slots/conditional-batching\"",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 308,
+      "sha": "532a37c588e18d8e14a4f701804eec544c9d053e",
+      "subject": "Fixed `->Region()` size being treated as region end pos by some `CopyResourceToResource()` paths",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 309,
+      "sha": "c226158eb16589f79d0041d003defc7944f45a00",
+      "subject": "Fixed `->Region()` size being clamped to SetConstantBuffers1 CB \"window\" size, fixed possible SpecialCopyBufferRegion offset overflow",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 310,
+      "sha": "4e049386b925fb1ef834474bee6023a83ea58dd9",
+      "subject": "Batching: name the batch direction instead of a bool",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 311,
+      "sha": "2811c279d5e5f6cd23a4fa15c0527243358acff4",
+      "subject": "Batching: read the batch slot through the operation",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 312,
+      "sha": "9110defe02384fa04c8a6fb468ecfb6c02f50e20",
+      "subject": "Conditional batching: fold same-slot chains into bind batches",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 313,
+      "sha": "8fee3c16a500b16a243f6a5de1bdc2f10fbca20d",
+      "subject": "Conditional batching: run fetch batches through the matched branch",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 314,
+      "sha": "b4fc34cf26942745860ad64f2d036acba24ed8d2",
+      "subject": "Conditional batching: seed slots a branch may leave alone",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 315,
+      "sha": "2979395f9e446fa89c4156d5538a4c3f4c4eb306",
+      "subject": "Conditional batching: skip conditions that read pipeline state",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 316,
+      "sha": "09e3266b64f3748dd904942b8b949a171f7590fb",
+      "subject": "Conditional batching: keep an unbatched chain as its own if command",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 317,
+      "sha": "189668cfe22db557329d9e4a50be17806ca7d8a1",
+      "subject": "Conditional batching: log when no branch is taken",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 318,
+      "sha": "1868f8c424d9e30c777c01099079f7dbe4ce09e9",
+      "subject": "Merge pull request #68 from Satan1c/slots/conditional-batching-v2",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 319,
+      "sha": "1d9403c0c1b94b8f10b2e87c5060a45ce398661c",
+      "subject": "Stream Output Target fixes: offset handling, reference counting, and documentation",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 320,
+      "sha": "7b60818aaf6796e97e272926223d755b2d611490",
+      "subject": "Merge remote-tracking branch 'upstream/master' into fixes/stream-output-targets",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 321,
+      "sha": "75e52ba6248dc5a2daf415afc55c6ac95cbf992a",
+      "subject": "Rebind the other stream output slots to append, not to offset 0",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 322,
+      "sha": "69d6227a993f29b92509c5532516103a88270c3c",
+      "subject": "Merge pull request #69 from Satan1c/fixes/stream-output-targets",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 323,
+      "sha": "7bea12741433b38e1f312a883e55c35f5553f9b1",
+      "subject": "Share the slot array reference counting between the pipeline targets that use it",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 324,
+      "sha": "6a3a630e36b8cb86d5cf115e67d3406a93e034cd",
+      "subject": "Say what an unhooked stream output geometry shader misses out on",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 325,
+      "sha": "cfe23c3c5376b8fe934a4a0631e329215f86411c",
+      "subject": "Document the stream output targets and what they cannot report",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 326,
+      "sha": "065dc746c21c71ef48bbc93cb6b90b3dcdf766e6",
+      "subject": "Merge pull request #70 from Satan1c/stream-output/document-pipeline",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 327,
+      "sha": "e1cf32adb934c59feddbcc2cc3c4a769e9904476",
+      "subject": "Added first/last/count CB and SRV slot getters to ShaderTarget context",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 328,
+      "sha": "73aa0742da9bed8fab7ae2316573f038aaf1d9d0",
+      "subject": "Excluded pixel shader textures from dumping for undeclared SRV slots",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 329,
+      "sha": "fdee8ddfa0f60383697654bb46f21bddf3b55909",
+      "subject": "Added texture mips data uploads tracking",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 330,
+      "sha": "122f4c5a58eab70b3b30b29241fc1589f0f0793c",
+      "subject": "Added `original_format` metadata field to Resource section and dedicated `->OriginalFormat` getter",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 331,
+      "sha": "a2170b8769aa17c8b9c022e8197357a9b95caf6c",
+      "subject": "Added synchronous dhash GPU compute engine for textures",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 332,
+      "sha": "749656b94e5535cf9e3678a3a32b89681c4f89f9",
+      "subject": "Added dhash computing and caching orchestrator `GetDhash()` to ResourceHash.cpp",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 333,
+      "sha": "cb2ba9ff76d451f8beecbcf51b85f4fc79cc6339",
+      "subject": "Added resource dhash dumping to log.txt",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 334,
+      "sha": "3e88ee38bba4a26ffd21f74a1aad3b4ca8a6f80d",
+      "subject": "Added \"hash\" argument type support to SyntaxTarget",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 335,
+      "sha": "659ee187dd8b3e1c8d239da32b5e6320163b32ed",
+      "subject": "Added \"resource\" argument type support to SyntaxTarget",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "index": 336,
+      "sha": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+      "subject": "Added `->HammingDistance()` to INI API",
+      "status": "pending",
+      "evidence": []
+    }
+  ]
+}
