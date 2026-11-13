@@ -190,7 +190,7 @@ static void test_spatial_hash(CommandListState& state)
     ClearResourceRegionHashCache(buffer);
     require(TryGetSpatialHash(state.mHackerContext, buffer, 0, 4, 8, 0.125f, hash) && hash == 0, "origin has valid zero hash");
     state.mOrigContext1->VSSetConstantBuffers(0, 1, &buffer);
-    const std::wstring text = L"vs-cb0->spatialhash(0, 4, 8, 0.125)";
+    const std::wstring text = L"vs-cb0->spatialhash(0, 1, 2, 0.125)";
     const std::wstring ini_namespace;
     CommandListScope scope;
     CommandListOperand operand(0);
@@ -924,6 +924,11 @@ void test_dx11_hamming_distance_regression();
 void test_dx11_adversarial_region_regression();
 void test_dx11_adversarial_dhash_regression();
 void test_dx11_adversarial_store_regression();
+void test_dx11_round2_spatial_boundary_regression();
+void test_dx11_round2_handle_info_exception_regression();
+void test_dx11_round2_reload_snapshot_regression();
+void test_dx11_round2_region_clamp_regression();
+void test_dx11_round2_snapshot_stride_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -961,6 +966,11 @@ int main()
         test_dx11_adversarial_region_regression();
         test_dx11_adversarial_dhash_regression();
         test_dx11_adversarial_store_regression();
+        test_dx11_round2_spatial_boundary_regression();
+        test_dx11_round2_handle_info_exception_regression();
+        test_dx11_round2_reload_snapshot_regression();
+        test_dx11_round2_region_clamp_regression();
+        test_dx11_round2_snapshot_stride_regression();
         test_dx11_texture_upload_state_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {

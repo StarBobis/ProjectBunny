@@ -5250,45 +5250,42 @@ void ReloadConfig(HackerDevice *device)
 	ClearNotices();
 	LogWarningW(L"\nReloading " INI_FILENAME L"...\n");
 
-	if (G->gWipeUserConfig) {
-		if (!WipeUserConfig())
+	{
+		// Keep saving and replacing the live registry in the same reload transaction.
+		CriticalSectionGuard(&G->mCriticalSection);
+
+		if (G->gWipeUserConfig) {
+			if (!WipeUserConfig())
+				return;
+			// Do not immediately capture the old live values after wiping them.
+		} else if (!SavePersistentSettingsInternal(false)) {
+			// Keep the old live registry and dirty state intact for a retry.
 			return;
-		// Do not immediately capture the old live values after wiping them.
-	} else if (!SavePersistentSettingsInternal(false)) {
-		// Keep the old live registry and dirty state intact for a retry.
-		return;
+		}
+
+		G->gReloadConfigPending = false;
+		G->iniParamsReserved = 0;
+
+		// Clear the key bindings. There may be other things that need to be
+		// cleared as well, but for the sake of clarity I'd rather clear as
+		// many as possible inside LoadConfigFile() where they are set.
+		ClearKeyBindings();
+
+		// Clear active command lists set, as the pointers in this set will
+		// become invalid as the config is reloaded:
+	    clear_command_list_profiling();
+
+		// Reset the counters on the global parameter save area:
+		OverrideSave.Reset(device);
+
+		LoadConfigFile();
+
+		setlocale(LC_CTYPE, "en_US.UTF-8");
+
+		optimise_command_lists(device);
+
+		MarkAllShadersDeferredUnprocessed();
 	}
-
-
-	G->gReloadConfigPending = false;
-	G->iniParamsReserved = 0;
-
-	// Lock the entire config reload as it touches many global structures
-	// that could potentially be accessed from other threads (e.g. deferred
-	// contexts) while we do this
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-
-	// Clear the key bindings. There may be other things that need to be
-	// cleared as well, but for the sake of clarity I'd rather clear as
-	// many as possible inside LoadConfigFile() where they are set.
-	ClearKeyBindings();
-
-	// Clear active command lists set, as the pointers in this set will
-	// become invalid as the config is reloaded:
-    clear_command_list_profiling();
-
-	// Reset the counters on the global parameter save area:
-	OverrideSave.Reset(device);
-
-	LoadConfigFile();
-
-	setlocale(LC_CTYPE, "en_US.UTF-8");
-
-	optimise_command_lists(device);
-
-	MarkAllShadersDeferredUnprocessed();
-
-	LeaveCriticalSection(&G->mCriticalSection);
 
 	// Execute the [Constants] command list in the immediate context to
 	// initialise iniParams and perform any other custom initialisation the

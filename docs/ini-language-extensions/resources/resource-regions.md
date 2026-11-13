@@ -42,7 +42,7 @@ The offset is absolute in the backing buffer; it is not added to an existing vie
 cs-cb0 = copy vs-cb0->Region($byte_offset, $byte_size)
 ```
 
-Only the specified region of the underlying buffer is copied. The range must fit inside the physical buffer. Copy ranges do not require 256-byte alignment: `Region(20, 32)` is valid for a sufficiently large buffer. A constant-buffer destination's allocation is rounded to its required 16-byte size alignment.
+The offset must start inside the physical buffer. If the requested range crosses its end, only the available source prefix is copied. The destination allocation is bounded by the requested size and the physical backing size, with constant-buffer alignment and the 65,536-byte CB limit applied. Any destination tail beyond the copied prefix is unspecified. Copy ranges do not require 256-byte alignment: `Region(20, 32)` is valid for a sufficiently large buffer.
 
 ### Referencing a Region
 
@@ -54,7 +54,7 @@ The same underlying buffer is referenced using the specified region without copy
 
 Saving an explicit Region in a custom resource or pool element retains its absolute offset and byte count. Later SRV/UAV references use that selected window, and a later copy reads that window into independent storage starting at offset zero. For example, a typed four-byte buffer selected with `Region(16, 32)` exposes eight elements starting at element four; it does not treat `32` as the end offset. A plain CB reference still selects the whole buffer; specify `->Region(...)` again when binding a CB window.
 
-The CB reference window may extend beyond the physical allocation: for a 1,024-byte source, `Region(768, 512)` is a valid reference window, but is invalid for `copy`. Only the intersection has stored data; out-of-range shader reads return zero. These window rules come from [SetConstantBuffers1](https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/nf-d3d11_1-id3d11devicecontext1-vssetconstantbuffers1).
+The CB reference window may extend beyond the physical allocation: for a 1,024-byte source, `Region(768, 512)` is a valid reference window. Copying it instead allocates 512 bytes and copies the available 256-byte prefix; the remaining destination bytes are unspecified. For the reference, out-of-range shader reads return zero. These window rules come from [SetConstantBuffers1](https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/nf-d3d11_1-id3d11devicecontext1-vssetconstantbuffers1).
 
 See [constant-buffer region](../examples/constant-buffer-region.md) for a worked pattern.
 

@@ -49,6 +49,11 @@
         "releaseBuild": "PASS: CMake Ninja Release DirectX11 x64; build/upstream/build-dx11.log",
         "regressions": "PASS: scripts/test-dx11-pool-flags.py and scripts/test-dx11-resource-properties.py. Production getters/hash functions extracted unchanged; reduced pipeline adapter and real WARP buffer/texture/SRV. Covers stride/size metadata, overrides, missing/non-buffer, repeated calls/reference balance, float30 endpoints.",
         "remaining": "Real INI suffix tokenization and SourceStride assignment integration, target game resource copies/reload pending."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence: custom getter returns actual captured/native stride, not upstream CUSTOM fallthrough default16. Real WARP regression for stride4/8 passes.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -171,6 +176,11 @@
         "integration": "PASS: CTest 1/1; actual WARP, real production GetResource/SetResource/GetResourceOffset/GetResourceSize on all six shader stages, 256-byte offset/512-byte window, stride16, whole-buffer fallback, unbind and reference release. Region hash tail clamping, cache hit, invalid offsets/empty range, cache invalidation + GPU refresh verified.",
         "isolated": "PASS: both Python regression scripts in MSVC environment",
         "remaining": "Hooked Map/Unmap cache integration, region copy command execution and target-game reload still pending."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence: same custom stride fallthrough; retain documented resource-stride meaning and local behavior.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -220,6 +230,11 @@
         "isolated": "PASS: both Python regression scripts",
         "remaining": "End-to-end hooked Map/Unmap and resource-copy commands, shared-view partial update invalidation, actual game reload remain to verify.",
         "partialUpdateFollowup": "PASS in sixth batch: COW keeps captured view bytes/hash stable, source partial mutation changes source hash, later-page mutation invalidates multi-page hash."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence: capture-time CPU snapshots retained under partial writes (COW); real tracked partial-copy/WARP regression passes for warm and cold captured hashes and GPU/source consistency.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -240,6 +255,11 @@
         "isolated": "PASS: both Python regression scripts",
         "remaining": "End-to-end hooked Map/Unmap and resource-copy commands, shared-view partial update invalidation, actual game reload remain to verify.",
         "partialUpdateFollowup": "PASS in sixth batch: COW keeps captured view bytes/hash stable, source partial mutation changes source hash, later-page mutation invalidates multi-page hash."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence: same captured snapshot ownership choice; preserve local COW and avoid upstream independent-L2 query-order inconsistency.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -623,6 +643,11 @@
         "releaseBuild": "PASS: DirectX11 and full production regression executable, MSVC x64 CMake Ninja Release.",
         "regressions": "PASS: CTest 1/1; actual WARP snapshots, swapped offsets/cell size, final valid float, unaligned custom cache, invalid coordinates/offsets/cell size, origin zero, spatial neighbor/torus lookup and FIFO fallback.",
         "remaining": "Target game runtime validation pending."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Confirmed gaps repaired: float division grid boundary and public float-element indices. Production regression .5f/.1f and nonzero CB base passes.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -1181,6 +1206,11 @@
       ],
       "validation": {
         "regressions": "PASS: full CTest 1/1 0.36s. CB spatial expression returns exact0x400fffff for the nonzero window; then UINT32_MAX NaN bits survive a data update. This would fail if byte offset were divided by four."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Confirmed public-unit gap repaired: multiply public element indices once and add byte-valued source base; internal byte-cache API retained. Nonzero CB window regression passes.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -1243,6 +1273,11 @@
         "releaseBuild": "PASS: MSVC x64 CMake Ninja Release DirectX11 and full production-source regression target; all changed production/test objects rebuilt during integration; final incremental 3/3 PASS.",
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30, 1/1 (0.36s, total0.58s). Full WARP/parser/config suite includes Store bounds/devices/borrowed staging/reference balance/dirty bits, callback runtime-empty/link/256 recursion and real reload source removal, real draw/dispatch entrypoints/skip/isolation/reset, enum diagnostics, no-space subtraction and 32-bit grid/CB offsets/NaN pool keys. Existing isolated pool flags and resource properties scripts also PASS.",
         "remaining": "Target game injection not run; full SwapChain Present path and regex-generated callback runtime not exercised. No forced native allocation OOM/driver Map failure injection."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Float quantization uses upstream float division for representable coordinates while retaining defined overflow fallback.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -2696,6 +2731,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30; 1/1 test1.41s,total1.56s. Full evidence build/upstream/persist-unknown-integrated-{ctest,LastTest}.log; includes new input-scope/persistence/parser/initialization and all previous regressions.",
         "compatibility": "PASS: DirectX12 target in the same configured environment; ninja no work to do (no shared production changes this batch). Both isolated DX11 flag/property scripts pass. No deployment.",
         "runtime": "pending: target-game execution, real foreground/hardware input, overlay rendering/audio and complete DLL loader/exception/retry pipeline; helper/WARP tests do not prove these."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence confirmed at upstream tip: commit219 removes sole recursive root insertion, disabling upstream mods classification; preserve local recursive provenance. Source evidence, no upstream DLL run.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -3152,6 +3192,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30;1/1,test1.57s,total1.58s. Evidence build/upstream/persist-v2-integrated-{ctest,LastTest}.log includes four new append/metadata/parser/persistV2 entries and every existing entry.",
         "compatibility": "PASS: sequential DirectX12 build recompiled shared util consumers and linked9/9,exit0;build/upstream/build-dx12-compat.log. Both isolated pool-flags/property scripts pass. No deployment.",
         "runtime": "pending: target-game run, hardware input/foreground/overlay and complete loader/deferred-context concurrency behavior. WARP and controlled file locks do not prove those."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Confirmed gap repaired: save/wipe and registry replacement share RAII G scope. Real MoveFileExW-boundary command-writer test failed before, passes after. Inherited unguarded command-writer concurrency is not claimed solved.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -3430,6 +3475,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30;1/1,test1.57s,total1.58s. Evidence build/upstream/persist-v2-integrated-{ctest,LastTest}.log includes four new append/metadata/parser/persistV2 entries and every existing entry.",
         "compatibility": "PASS: sequential DirectX12 build recompiled shared util consumers and linked9/9,exit0;build/upstream/build-dx12-compat.log. Both isolated pool-flags/property scripts pass. No deployment.",
         "runtime": "pending: target-game run, hardware input/foreground/overlay and complete loader/deferred-context concurrency behavior. WARP and controlled file locks do not prove those."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Intentional divergence: retain recursive include provenance/input mods filtering; see171. Earlier pure-refactor disposition superseded by follow-up source audit.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -4043,6 +4093,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
         "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Documentation corrected for public SpatialHash float-element units; other pool operations checked against production.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -4154,6 +4209,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
         "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Retain standalone pool-range rejection: upstream docs allow pool ranges only opposite slot ranges; upstream parser accepts but ignores standalone bounds and aliases entire pool. Supported slot/pool range operations retained.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -4240,6 +4300,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
         "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      },
+      "round2AdversarialReview": {
+        "disposition": "Confirmed gap repaired: RAII SetHandleInfo guard releases G after either ResourceHandleInfo or nested RegionHashesCache allocation throws. Actual one-shot allocation-hook and cross-thread lock-probe regression passes.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -4718,6 +4783,11 @@
         "result": "fixed-and-regression-tested",
         "correction": "Adversarial audit fixes CB COPY requests above64KiB: retain upstream native-capacity clipping for copy; apply64KiB rejection only to reference windows. Physical source validation retained.",
         "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
+      },
+      "round2AdversarialReview": {
+        "disposition": "Confirmed valid-start cross-end Region gap repaired. Real2048B stride4 VB Region1792,512 allocates512/copies256 prefix;0,4096 allocates2048; at/beyond-end offsets preserve old binding. Tail unspecified.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -4738,6 +4808,11 @@
         "result": "fixed-and-regression-tested",
         "correction": "Adversarial audit fixes CB COPY requests above64KiB: retain upstream native-capacity clipping for copy; apply64KiB rejection only to reference windows. Physical source validation retained.",
         "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
+      },
+      "round2AdversarialReview": {
+        "disposition": "Same Region prefix-clamp repair; physical bounds stay enforced at copy, invalid starts rejected. Previous strict rejection tests corrected; new production WARP regression passes.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Round2.md; docs/dx11-adversarial-round2.json",
+        "targetRuntime": "deferred by user"
       }
     },
     {
@@ -5164,5 +5239,11 @@
         "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
       }
     }
-  ]
+  ],
+  "round2AdversarialReview": {
+    "coverage": 336,
+    "report": "docs/DX11-Upstream-Adversarial-Round2.md",
+    "tip": "eae473b3c3b833380e70ba9dc61a45c9937ef924",
+    "targetRuntime": "deferred by user; original status values are not upgraded by static review"
+  }
 }

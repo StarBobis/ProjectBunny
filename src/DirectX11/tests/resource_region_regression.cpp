@@ -221,6 +221,9 @@ void test_dx11_resource_region_regression()
     for (const wchar_t* region : {L"(0,0)", L"(-1,256)", L"(nan,256)", L"(inf,256)",
         L"(0,nan)", L"(0,inf)", L"(4294967296,256)", L"(0,65792)"}) {
         for (const wchar_t* option : {L"copy ", L"ref "}) {
+            // Oversized copies clamp; only CB references retain the window-size limit.
+            if (std::wcscmp(region, L"(0,65792)") == 0 && std::wcscmp(option, L"copy ") == 0)
+                continue;
             first = 0; count = 16;
             fixture.context->CSSetConstantBuffers1(7, 1, &source_ptr, &first, &count);
             CommandList commands;
@@ -232,7 +235,7 @@ void test_dx11_resource_region_regression()
                 "invalid region leaves existing destination resource and window unchanged");
         }
     }
-    for (const wchar_t* region : {L"(2048,256)", L"(1792,512)", L"(0,4096)"}) {
+    for (const wchar_t* region : {L"(2048,256)", L"(2304,512)"}) {
         first = 0; count = 16;
         fixture.context->CSSetConstantBuffers1(7, 1, &source_ptr, &first, &count);
         CommandList commands;
@@ -241,7 +244,7 @@ void test_dx11_resource_region_regression()
             RunCommandList(fixture.device, fixture.wrapper.get(), &commands, nullptr, false);
         auto unchanged = get_region_binding(fixture, 7, actual_first, actual_count);
         require_region(unchanged.Get() == source.Get() && actual_first == 0 && actual_count == 16,
-            "copy region beyond allocation fails although corresponding reference window is legal");
+            "copy region starting at or beyond allocation fails while a CB reference window is legal");
     }
     for (const wchar_t* region : {L"(16,256)", L"(256,16)", L"(20,32)"}) {
         first = 0; count = 16;

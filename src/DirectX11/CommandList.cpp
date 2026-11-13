@@ -5872,14 +5872,13 @@ void CustomResource::InitializeHandleInfo(void* data, size_t data_size)
 // Enables GetRegionHash() on subregions of GPU-copy-like resources with minimal overhead.
 void CustomResource::SetHandleInfo(ID3D11Resource* source, size_t offset, size_t data_size)
 {
-    EnterCriticalSectionPretty(&G->mCriticalSection);
+    CriticalSectionGuard(&G->mCriticalSection);
     ResourceHandleInfo* src_handle_info = source ? GetResourceHandleInfo(source) : nullptr;
     if (!src_handle_info || !src_handle_info->cached_data ||
         offset >= src_handle_info->cached_data_size ||
         src_handle_info->cached_data_offset > SIZE_MAX - offset) {
         if (handle_info)
             handle_info->ClearDataCache();
-        LeaveCriticalSection(&G->mCriticalSection);
         return;
     }
 
@@ -5892,7 +5891,6 @@ void CustomResource::SetHandleInfo(ID3D11Resource* source, size_t offset, size_t
         handle_info = std::make_unique<ResourceHandleInfo>();
     handle_info->InitializeDataCache(view_size, view_offset);
     handle_info->cached_data = std::move(snapshot);
-    LeaveCriticalSection(&G->mCriticalSection);
 }
 
 ResourceHandleInfo* CustomResource::GetHandleInfo()
@@ -10351,13 +10349,15 @@ float ResourceCopyTarget::GetResourceSpatialHash(CommandListState* state)
             const double y = member_args[1].GetValue(state);
             const double z = member_args[2].GetValue(state);
             const float cell_size = member_args[3].GetValue(state);
-            const double maximum = UINT_MAX - region_offset;
+            // Public arguments count float32 elements; the cache helper takes
+            // bytes. Keep the CB/VB/IB region base in bytes and convert once.
+            const double maximum = (UINT_MAX - region_offset) / sizeof(float);
             if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
                 x >= 0 && y >= 0 && z >= 0 && x <= maximum && y <= maximum && z <= maximum) {
                 uint32_t spatial_hash = 0;
                 if (TryGetSpatialHash(state->mHackerContext, buf,
-                    region_offset + static_cast<UINT>(x), region_offset + static_cast<UINT>(y),
-                    region_offset + static_cast<UINT>(z), cell_size, spatial_hash, GetCustomResource(state)))
+                    region_offset + static_cast<UINT>(x) * sizeof(float), region_offset + static_cast<UINT>(y) * sizeof(float),
+                    region_offset + static_cast<UINT>(z) * sizeof(float), cell_size, spatial_hash, GetCustomResource(state)))
                     ret = BitCastToFloat(spatial_hash);
             }
 
@@ -10465,7 +10465,7 @@ static ID3D11Buffer *RecreateCompatibleBuffer(
 
 	const bool explicit_region = src && src->evaluation_mode == ResourceCopyTargetEvaluationMode::RESOURCE_REGION;
 	if (explicit_region) {
-		*buf_dst_size = *buf_src_size;
+		*buf_dst_size = (std::min)(*buf_src_size, new_desc.ByteWidth);
 		*buf_src_size = new_desc.ByteWidth;
 		new_desc.ByteWidth = *buf_dst_size;
 	}
@@ -11841,7 +11841,7 @@ void ResourceCopyOperation::CopyResourceToResource(
         if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER) return;
         D3D11_BUFFER_DESC backing{};
         static_cast<ID3D11Buffer*>(src_resource)->GetDesc(&backing);
-        if (!buf_src_size || offset > backing.ByteWidth || buf_src_size > backing.ByteWidth - offset) return;
+        if (!buf_src_size || offset >= backing.ByteWidth) return;
     }
 	CustomResource* dst_custom_resource = nullptr;
 
@@ -12078,7 +12078,8 @@ static bool SelectCopyRegion(CommandListState* state, ResourceCopyTarget& source
         // first/count must be multiples of sixteen shader constants (256B).
         if (start % 256 || length % 256)
             return false;
-    } else if (start > desc.ByteWidth || length > desc.ByteWidth - start) {
+    } else if (start >= desc.ByteWidth ||
+        (!(options & ResourceCopyOptions::COPY_MASK) && length > desc.ByteWidth - start)) {
         return false;
     }
     if ((options & ResourceCopyOptions::COPY_MASK) &&

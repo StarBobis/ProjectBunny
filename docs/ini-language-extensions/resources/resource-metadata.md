@@ -194,9 +194,9 @@ Attribute getters return the following values when data retrieval fails:
 
 Hashes buffer bytes with CRC32C and returns a compact 30-bit float encoding. Offset is in **bytes relative to the target's current region**, unlike the absolute backing-buffer offset used by `Region`. Arguments must be finite, nonnegative for offset and positive for size; the starting byte must be available in the cached/readback data. A size extending past that snapshot is truncated to its remaining bytes. Missing resources return `-2`, non-buffers `-3`, and unavailable/invalid hash data `-1`. Hashes can collide; equal hashes do not prove equal content.
 
-### `SpatialHash(x_byte_offset, y_byte_offset, z_byte_offset, cell_size)`
+### `SpatialHash(x, y, z, cell_size)`
 
-Reads three finite float32 coordinates at the specified **byte** offsets relative to the current region, then quantizes them using a finite positive cell size. For consecutive floats, use offsets `0, 4, 8`, not `0, 1, 2`. The packed spatial key wraps on a 4096 × 256 × 4096 cell grid; different positions can share a key. A packed zero cell is valid. Missing/non-buffer/unavailable results follow the error values above.
+Reads three finite float32 coordinates at the specified **float element indices** relative to the current region, then quantizes them using a finite positive cell size. For consecutive floats, use `0, 1, 2`; each index is converted to four bytes internally, and the region's byte base is added once. Division uses float arithmetic before flooring, matching upstream cell boundaries. The packed spatial key wraps on a 4096 × 256 × 4096 cell grid; different positions can share a key. A packed zero cell is valid. Missing/non-buffer/unavailable results follow the error values above.
 
 These operations require available CPU-side buffer tracking/cache data. Select the needed buffer types in `[Rendering]`:
 

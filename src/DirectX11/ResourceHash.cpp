@@ -2480,11 +2480,15 @@ static constexpr uint32_t SpatialZSize = 4096;
 
 static uint32_t WorldToCell(float value, float cell_size, uint32_t axis_size)
 {
-    const double cell = std::floor(static_cast<double>(value) / cell_size);
+    // The public grid contract uses float division. Widening before division
+    // moves valid rounded boundaries (0.5f / 0.1f) into the preceding cell.
+    const float quotient = value / cell_size;
+    double cell = std::floor(static_cast<double>(quotient));
     if (cell >= INT32_MIN && cell <= INT32_MAX)
         return static_cast<uint32_t>(static_cast<int32_t>(cell)) & (axis_size - 1);
     // Keep very large finite coordinates defined without narrowing an
     // out-of-range float to a signed integer. Each axis has its own modulus.
+    cell = std::floor(static_cast<double>(value) / cell_size);
     double wrapped = std::fmod(cell, static_cast<double>(axis_size));
     if (wrapped < 0)
         wrapped += axis_size;

@@ -56,13 +56,13 @@ void test_dx11_spatial_grid_regression(CommandListState& state)
     target.shader_type = L'v';
     target.slot = 0;
     target.SetResource(&state, buffer, nullptr, 0, 256, DXGI_FORMAT_UNKNOWN, 256);
-    const std::wstring text = L"vs-cb0->spatialhash(0, 4, 8, 0.125)";
+    const std::wstring text = L"vs-cb0->spatialhash(0, 1, 2, 0.125)";
     const std::wstring ini_namespace;
     CommandListScope scope;
     CommandListExpression expression;
     require_grid(expression.parse(&text, &ini_namespace, &scope) &&
         BitCastToUint(expression.evaluate(&state)) == 0x400fffffu,
-        "nonzero CB view offset remains a byte offset in spatial hashing");
+        "nonzero CB byte base is combined with public float element indices");
     const float negative[3] = {-0.125f, -0.125f, -0.125f};
     std::memcpy(data + 64, negative, sizeof(negative));
     state.mOrigContext1->UpdateSubresource(buffer, 0, nullptr, data, 0, 0);

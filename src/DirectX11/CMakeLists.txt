@@ -221,6 +221,11 @@ if(BUILD_TESTING)
         tests/adversarial_region_regression.cpp
         tests/adversarial_dhash_regression.cpp
         tests/adversarial_store_regression.cpp
+        tests/round2_spatial_boundary_regression.cpp
+        tests/round2_handle_info_exception_regression.cpp
+        tests/round2_reload_snapshot_regression.cpp
+        tests/round2_region_clamp_regression.cpp
+        tests/round2_snapshot_stride_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
