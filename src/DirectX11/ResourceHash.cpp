@@ -2129,6 +2129,83 @@ void ClearResourceRegionHashCache(ID3D11Resource* resource)
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 
+void InvalidateResourceDataCacheForWrite(ID3D11Resource* resource)
+{
+    if (!resource || G->cache_resource_data.load(std::memory_order_relaxed) == DataCacheBindFlags::INVALID) return;
+    Microsoft::WRL::ComPtr<ID3D11Resource> lifetime(resource);
+    D3D11_RESOURCE_DIMENSION dimension;
+    resource->GetType(&dimension);
+    if (dimension == D3D11_RESOURCE_DIMENSION_BUFFER)
+        ClearResourceRegionHashCache(resource);
+}
+
+void InvalidateViewResourceDataCacheForWrite(ID3D11View* view)
+{
+    if (!view || G->cache_resource_data.load(std::memory_order_relaxed) == DataCacheBindFlags::INVALID) return;
+    Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+    view->GetResource(resource.GetAddressOf());
+    InvalidateResourceDataCacheForWrite(resource.Get());
+}
+
+void InvalidatePipelineResourceDataCaches(ID3D11DeviceContext* context, bool compute)
+{
+    // A constant buffer cannot also be a UAV or stream-output buffer.
+    // None/CB-only caching has no pipeline write set to inspect, even on draws.
+    const auto policy = static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed));
+    if (!(policy & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER)) ||
+        !context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    context->GetDevice(device.GetAddressOf());
+    if (!device) return;
+    const UINT count = device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1 ?
+        D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
+    ID3D11UnorderedAccessView* views[D3D11_1_UAV_SLOT_COUNT]{};
+    if (compute) context->CSGetUnorderedAccessViews(0, count, views);
+    else context->OMGetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, count, views);
+    for (UINT i = 0; i < count; ++i) {
+        Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> view;
+        view.Attach(views[i]);
+        InvalidateViewResourceDataCacheForWrite(view.Get());
+    }
+    if (!compute) {
+        ID3D11Buffer* buffers[D3D11_SO_STREAM_COUNT]{};
+        context->SOGetTargets(D3D11_SO_STREAM_COUNT, buffers);
+        for (auto* buffer : buffers) {
+            Microsoft::WRL::ComPtr<ID3D11Buffer> retained;
+            retained.Attach(buffer);
+            InvalidateResourceDataCacheForWrite(retained.Get());
+        }
+    }
+}
+
+void InvalidateResourceDataCaches()
+{
+    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    ClearRegionHashesGlobalCache();
+    CriticalSectionLockGuard resources_lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+    for (auto& entry : G->mResources) entry.second.ClearDataCache();
+}
+
+bool TryReadResourceDataCache(ID3D11Resource* resource, UINT64 byte_offset, void* output, size_t bytes)
+{
+    if (!resource || !output || !bytes ||
+        G->cache_resource_data.load(std::memory_order_relaxed) == DataCacheBindFlags::INVALID) return false;
+    Microsoft::WRL::ComPtr<ID3D11Resource> lifetime(resource);
+    D3D11_RESOURCE_DIMENSION dimension;
+    resource->GetType(&dimension);
+    if (dimension != D3D11_RESOURCE_DIMENSION_BUFFER) return false;
+    D3D11_BUFFER_DESC desc{};
+    static_cast<ID3D11Buffer*>(resource)->GetDesc(&desc);
+    if (byte_offset > desc.ByteWidth || bytes > desc.ByteWidth - byte_offset) return false;
+    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    if (!(desc.BindFlags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed)))) return false;
+    auto* info = GetResourceHandleInfo(resource);
+    if (!info || !info->cached_data || byte_offset > info->cached_data_size ||
+        bytes > info->cached_data_size - byte_offset) return false;
+    memcpy(output, info->GetCachedData() + static_cast<size_t>(byte_offset), bytes);
+    return true;
+}
+
 // Creates a CPU-readable snapshot of the buffer contents and stores it
 // in handle_info->cached_data. The snapshot is taken through a staging
 // resource so the GPU buffer can be safely read by the CPU.
@@ -2137,7 +2214,8 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 	// A context owns its staging buckets. The pointer is borrowed and must not
 	// be released here. Readback stays on the original immediate context to
 	// avoid re-entering map hooks and publishing staging data as source data.
-	if (!context || !buffer || !handle_info)
+	if (!context || !buffer || !handle_info ||
+        G->cache_resource_data.load(std::memory_order_relaxed) == DataCacheBindFlags::INVALID)
 		return false;
 	auto* original = context->GetPassThroughOrigContext1();
 	if (!original || original->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
@@ -2151,6 +2229,7 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 		return false;
 	D3D11_BUFFER_DESC desc = {};
 	buffer->GetDesc(&desc);
+    if (!(desc.BindFlags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed)))) return false;
 	auto* staging = context->GetReadbackBuffer(desc.ByteWidth);
 	if (!staging)
 		return false;
@@ -2171,6 +2250,9 @@ static bool CacheBufferData(HackerContext* context, ID3D11Buffer* buffer, Resour
 	memcpy(snapshot, mapped.pData, desc.ByteWidth);
 	original->Unmap(staging, 0);
 	EnterCriticalSectionPretty(&G->mCriticalSection);
+    if (!(desc.BindFlags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed)))) {
+        LeaveCriticalSection(&G->mCriticalSection); free(snapshot); return false;
+    }
 	handle_info->SetDataCache(snapshot, desc.ByteWidth);
 	LeaveCriticalSection(&G->mCriticalSection);
 	return true;

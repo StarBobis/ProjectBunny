@@ -1322,15 +1322,13 @@ bool HackerContext::MapDenyCPURead(
 // Checks resource for being an index or vertex buffer.
 bool HackerContext::MapTrackRegionHashes(ID3D11Resource* pResource, D3D11_MAP MapType, D3D11_RESOURCE_DIMENSION* dim)
 {
-	if (MapType == D3D11_MAP_READ || *dim != D3D11_RESOURCE_DIMENSION_BUFFER)
+	if (!mOrigContext1 || mOrigContext1->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE ||
+        MapType == D3D11_MAP_READ || *dim != D3D11_RESOURCE_DIMENSION_BUFFER)
 		return false;
 	ID3D11Buffer* buf = (ID3D11Buffer*)pResource;
 	D3D11_BUFFER_DESC buf_desc;
 	buf->GetDesc(&buf_desc);
-	if (buf_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER)) {
-		return true;
-	}
-	return false;
+	return (buf_desc.BindFlags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed))) != 0;
 }
 
 void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
@@ -1389,13 +1387,15 @@ void HackerContext::TrackAndDivertMap(HRESULT map_hr, ID3D11Resource *pResource,
 	}
 
 	pResource->GetType(&dim);
+    if (write && dim == D3D11_RESOURCE_DIMENSION_BUFFER &&
+        G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        ClearResourceRegionHashCache(pResource);
 
 	// Divert IB or VB buffer for use in region hashes system cache.
 	// Data will be copied during TrackAndDivertUnmap from allocated replacement.
-	if (G->track_region_hashes) {
-		if (!divert)
-			divert = MapTrackRegionHashes(pResource, MapType, &dim);
-	}
+    if (!divert && G->cache_resource_data != DataCacheBindFlags::INVALID)
+        divert = MapTrackRegionHashes(pResource, MapType, &dim);
 
 	if (!track && !divert)
 		goto out_profile;
@@ -1498,7 +1498,8 @@ void HackerContext::TrackAndDivertUnmap(ID3D11Resource *pResource, UINT Subresou
 
 	bool deallocate_diverted_memory = true;
 
-	if (G->track_region_hashes && map_info->bind_flags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER))
+	if (mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE &&
+        (map_info->bind_flags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed))))
 		UpdateResourceDataCacheFromMap(pResource, map_info->map.pData, map_info->size, &deallocate_diverted_memory);
 
 	if (G->track_texture_updates == 1 && Subresource == 0 && map_info->mapped_writable)
@@ -1820,8 +1821,10 @@ STDMETHODIMP_(void) HackerContext::Dispatch(THIS_
 {
 	DispatchContext context{ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ};
 
-	if (BeforeDispatch(&context))
+	if (BeforeDispatch(&context)) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, true);
 		mOrigContext1->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
+    }
 	else
 		Profiling::skipped_draw_calls++;
 
@@ -1836,8 +1839,10 @@ STDMETHODIMP_(void) HackerContext::DispatchIndirect(THIS_
 {
 	DispatchContext context{&pBufferForArgs, AlignedByteOffsetForArgs};
 
-	if (BeforeDispatch(&context))
+	if (BeforeDispatch(&context)) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, true);
 		mOrigContext1->DispatchIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+    }
 	else
 		Profiling::skipped_draw_calls++;
 
@@ -1921,59 +1926,47 @@ bool HackerContext::ExpandRegionCopy(ID3D11Resource *pDstResource, UINT DstX,
 
 // Replicate current region copy on cached data for region hash tracking system.
 // Useful when game constructs semi-static buffer out of multiple resources that are set via Map().
-void CopySubresourceRegionCache(ID3D11Resource* pSrcResource, ID3D11Resource* pDstResource, UINT DstX, const D3D11_BOX* pSrcBox)
+static void CopySubresourceRegionCache(ID3D11DeviceContext* context, ID3D11Resource* source, ID3D11Resource* destination,
+    UINT destination_offset, const D3D11_BOX* box)
 {
-	D3D11_RESOURCE_DIMENSION dim;
-	pDstResource->GetType(&dim);
-	if (dim != D3D11_RESOURCE_DIMENSION_BUFFER)
-		return;
-
-	UINT src_offset = 0;
-	UINT region_size = 0;
-
-	// Calculate src data copy range.
-	if (pSrcBox) {
-		// Use range from D3D11_BOX.
-		src_offset = pSrcBox->left;
-		region_size = pSrcBox->right - pSrcBox->left;
-	}
-
-	EnterCriticalSectionPretty(&G->mCriticalSection);
-
-	ResourceHandleInfo* src_info = GetResourceHandleInfo(pSrcResource);
-	ResourceHandleInfo* dst_info = GetResourceHandleInfo(pDstResource);
-
-	if (!src_info || !dst_info) {
-		LeaveCriticalSection(&G->mCriticalSection);
-		return;
-	}
-
-	if (!src_info->cached_data_size || src_offset + region_size > src_info->cached_data_size) {
-		// Copy is happening from uncached data -> reset dst cache and leave it to slow fallback path.
-		dst_info->ClearDataCache();
-		LeaveCriticalSection(&G->mCriticalSection);
-		return;
-	}
-
-	// If range is not specified, we must copy the entire src buffer.
-	if (!region_size)
-		region_size = src_info->cached_data_size;
-
-	// Initialize new cache of dst size.
-	if (!dst_info->cached_data_size) {
-		D3D11_BUFFER_DESC dst_desc;
-		((ID3D11Buffer*)pDstResource)->GetDesc(&dst_desc);
-		dst_info->InitializeDataCache(dst_desc.ByteWidth);
-	}
-
-	dst_info->SetDataCacheRegion(src_info->GetCachedData() + src_offset, region_size, DstX);
-
-	//dst_info->cached_data_hash = crc32c_hw(0, dst_info->cached_data, dst_desc.ByteWidth);
-
-	LeaveCriticalSection(&G->mCriticalSection);
-
-	//LogInfo("CopySubresourceRegion CacheBufferData region_size=%d, src_offset=%d, dst_offset=%d, src_hash=%08lx, src_data_hash=%08lx, dst_hash=%08lx, dst_data_hash=%08lx, srcResource=0x%p, dstResource=0x%p\n",
-	//	region_size, src_offset, DstX, src_info->hash, src_info->cached_data_hash, dst_info->hash, dst_info->cached_data_hash, pSrcResource, pDstResource);
+    if (!source || !destination ||
+        G->cache_resource_data.load(std::memory_order_relaxed) == DataCacheBindFlags::INVALID ||
+        !context || context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) return;
+    Microsoft::WRL::ComPtr<ID3D11Resource> source_lifetime(source), destination_lifetime(destination);
+    D3D11_RESOURCE_DIMENSION source_type, destination_type;
+    source->GetType(&source_type); destination->GetType(&destination_type);
+    if (destination_type != D3D11_RESOURCE_DIMENSION_BUFFER) return;
+    if (source_type != D3D11_RESOURCE_DIMENSION_BUFFER) {
+        ClearResourceRegionHashCache(destination); return;
+    }
+    D3D11_BUFFER_DESC source_desc{}, destination_desc{};
+    static_cast<ID3D11Buffer*>(source)->GetDesc(&source_desc);
+    static_cast<ID3D11Buffer*>(destination)->GetDesc(&destination_desc);
+    const UINT start = box ? box->left : 0;
+    const UINT end = box ? box->right : source_desc.ByteWidth;
+    CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+    ClearRegionHashesGlobalCache();
+    auto* dst = GetResourceHandleInfo(destination);
+    if (!dst) return;
+    auto* src = GetResourceHandleInfo(source);
+    if (!(destination_desc.BindFlags & static_cast<UINT>(G->cache_resource_data.load(std::memory_order_relaxed))) ||
+        !src || !src->cached_data || start > end || end > source_desc.ByteWidth ||
+        (box && (box->top || box->front || box->bottom != 1 || box->back != 1)) ||
+        start > src->cached_data_size || end - start > src->cached_data_size - start ||
+        destination_offset > destination_desc.ByteWidth || end - start > destination_desc.ByteWidth - destination_offset ||
+        source == destination) {
+        dst->ClearDataCache(); return;
+    }
+    const size_t length = end - start;
+    if (!length) return;
+    // A partial write cannot fabricate the untouched bytes of an unknown snapshot.
+    if (!dst->cached_data || dst->cached_data_size != destination_desc.ByteWidth) {
+        if (destination_offset || length != destination_desc.ByteWidth) {
+            dst->ClearDataCache(); return;
+        }
+        dst->InitializeDataCache(destination_desc.ByteWidth);
+    }
+    dst->SetDataCacheRegion(src->GetCachedData() + start, length, destination_offset);
 }
 
 STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
@@ -2016,8 +2009,7 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	if (G->track_texture_updates == 1 && DstSubresource == 0 && DstX == 0 && DstY == 0 && DstZ == 0 && pSrcBox == NULL)
 		PropagateResourceHash(pDstResource, pSrcResource);
 
-	if (G->track_region_hashes)
-		CopySubresourceRegionCache(pSrcResource, pDstResource, DstX, pSrcBox);
+    CopySubresourceRegionCache(mOrigContext1, pSrcResource, pDstResource, DstX, pSrcBox);
 }
 
 STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
@@ -2030,9 +2022,9 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pDstResource);
-	}
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pDstResource);
 
     int override_byte_width = -1;
     {
@@ -2084,9 +2076,9 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
 		MarkResourceHashContaminated(pDstResource, DstSubresource, NULL, 0, 'U', 0, 0, 0, NULL);
 	}
 
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pDstResource);
-	}
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pDstResource);
 
 	 mOrigContext1->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
 		SrcDepthPitch);
@@ -2109,6 +2101,9 @@ STDMETHODIMP_(void) HackerContext::CopyStructureCount(THIS_
 	/* [annotation] */
 	__in  ID3D11UnorderedAccessView *pSrcView)
 {
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pDstBuffer);
 	 mOrigContext1->CopyStructureCount(pDstBuffer, DstAlignedByteOffset, pSrcView);
 }
 
@@ -2119,6 +2114,9 @@ STDMETHODIMP_(void) HackerContext::ClearUnorderedAccessViewUint(THIS_
 	__in  const UINT Values[4])
 {
 	RunViewCommandList(mHackerDevice, this, &G->clear_uav_uint_command_list, pUnorderedAccessView, false);
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateViewResourceDataCacheForWrite(pUnorderedAccessView);
 	mOrigContext1->ClearUnorderedAccessViewUint(pUnorderedAccessView, Values);
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_uav_uint_command_list, pUnorderedAccessView, true);
 }
@@ -2130,6 +2128,9 @@ STDMETHODIMP_(void) HackerContext::ClearUnorderedAccessViewFloat(THIS_
 	__in  const FLOAT Values[4])
 {
 	RunViewCommandList(mHackerDevice, this, &G->clear_uav_float_command_list, pUnorderedAccessView, false);
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateViewResourceDataCacheForWrite(pUnorderedAccessView);
 	mOrigContext1->ClearUnorderedAccessViewFloat(pUnorderedAccessView, Values);
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_uav_float_command_list, pUnorderedAccessView, true);
 }
@@ -2194,8 +2195,14 @@ STDMETHODIMP_(void) HackerContext::ExecuteCommandList(THIS_
 	__in  ID3D11CommandList *pCommandList,
 	BOOL RestoreContextState)
 {
-	if (G->deferred_contexts_enabled)
+	if (G->deferred_contexts_enabled) {
+        // Deferred Get methods cannot reveal the command list write set.
+        // Invalidate conservatively at actual submission, not while recording.
+        if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+            mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+            InvalidateResourceDataCaches();
 		mOrigContext1->ExecuteCommandList(pCommandList, RestoreContextState);
+    }
 
 	if (!RestoreContextState) {
 		ResetTrackedInputLayout();
@@ -3147,8 +3154,10 @@ STDMETHODIMP_(void) HackerContext::DrawIndexed(THIS_
 	DrawContext c = DrawContext(DrawCall::DrawIndexed, 0, IndexCount, 0, BaseVertexLocation, StartIndexLocation, 0, NULL, 0);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		 mOrigContext1->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
+    }
 	AfterDraw(c);
 }
 
@@ -3161,8 +3170,10 @@ STDMETHODIMP_(void) HackerContext::Draw(THIS_
 	DrawContext c = DrawContext(DrawCall::Draw, VertexCount, 0, 0, StartVertexLocation, 0, 0, NULL, 0);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		 mOrigContext1->Draw(VertexCount, StartVertexLocation);
+    }
 	AfterDraw(c);
 }
 
@@ -3213,9 +3224,11 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstanced(THIS_
 	DrawContext c = DrawContext(DrawCall::DrawIndexedInstanced, 0, IndexCountPerInstance, InstanceCount, BaseVertexLocation, StartIndexLocation, StartInstanceLocation, NULL, 0);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation,
 		BaseVertexLocation, StartInstanceLocation);
+    }
 	AfterDraw(c);
 }
 
@@ -3232,8 +3245,10 @@ STDMETHODIMP_(void) HackerContext::DrawInstanced(THIS_
 	DrawContext c = DrawContext(DrawCall::DrawInstanced, VertexCountPerInstance, 0, InstanceCount, StartVertexLocation, 0, StartInstanceLocation, NULL, 0);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
+    }
 	AfterDraw(c);
 }
 
@@ -3346,8 +3361,10 @@ STDMETHODIMP_(void) HackerContext::DrawAuto(THIS)
 	DrawContext c = DrawContext(DrawCall::DrawAuto, 0, 0, 0, 0, 0, 0, NULL, 0);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawAuto();
+    }
 	AfterDraw(c);
 }
 
@@ -3360,8 +3377,10 @@ STDMETHODIMP_(void) HackerContext::DrawIndexedInstancedIndirect(THIS_
 	DrawContext c = DrawContext(DrawCall::DrawIndexedInstancedIndirect, 0, 0, 0, 0, 0, 0, &pBufferForArgs, AlignedByteOffsetForArgs);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+    }
 	AfterDraw(c);
 }
 
@@ -3374,8 +3393,10 @@ STDMETHODIMP_(void) HackerContext::DrawInstancedIndirect(THIS_
 	DrawContext c = DrawContext(DrawCall::DrawInstancedIndirect, 0, 0, 0, 0, 0, 0, &pBufferForArgs, AlignedByteOffsetForArgs);
 	BeforeDraw(c);
 
-	if (!c.call_info.skip)
+	if (!c.call_info.skip) {
+        InvalidatePipelineResourceDataCaches(mOrigContext1, false);
 		mOrigContext1->DrawInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
+    }
 	AfterDraw(c);
 }
 
@@ -3386,6 +3407,9 @@ STDMETHODIMP_(void) HackerContext::ClearRenderTargetView(THIS_
 	__in  const FLOAT ColorRGBA[4])
 {
 	RunViewCommandList(mHackerDevice, this, &G->clear_rtv_command_list, pRenderTargetView, false);
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateViewResourceDataCacheForWrite(pRenderTargetView);
 	mOrigContext1->ClearRenderTargetView(pRenderTargetView, ColorRGBA);
 	RunViewCommandList(mHackerDevice, this, &G->post_clear_rtv_command_list, pRenderTargetView, true);
 }
@@ -3419,9 +3443,9 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pDstResource);
-	}
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pDstResource);
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
 }
 
@@ -3441,9 +3465,9 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pDstResource);
-	}
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pDstResource);
 
 	mOrigContext1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
 
@@ -3455,9 +3479,9 @@ void STDMETHODCALLTYPE HackerContext::DiscardResource(
 	/* [annotation] */
 	_In_  ID3D11Resource *pResource)
 {
-	if (G->track_region_hashes) {
-		ClearResourceRegionHashCache(pResource);
-	}
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateResourceDataCacheForWrite(pResource);
 	mOrigContext1->DiscardResource(pResource);
 }
 
@@ -3465,6 +3489,9 @@ void STDMETHODCALLTYPE HackerContext::DiscardView(
 	/* [annotation] */
 	_In_  ID3D11View *pResourceView)
 {
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateViewResourceDataCacheForWrite(pResourceView);
 	mOrigContext1->DiscardView(pResourceView);
 }
 
@@ -3706,5 +3733,8 @@ void STDMETHODCALLTYPE HackerContext::DiscardView1(
 	_In_reads_opt_(NumRects)  const D3D11_RECT *pRects,
 	UINT NumRects)
 {
+    if (G->cache_resource_data.load(std::memory_order_relaxed) != DataCacheBindFlags::INVALID &&
+        mOrigContext1->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE)
+        InvalidateViewResourceDataCacheForWrite(pResourceView);
 	mOrigContext1->DiscardView1(pResourceView, pRects, NumRects);
 }

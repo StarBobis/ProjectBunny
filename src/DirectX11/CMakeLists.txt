@@ -195,6 +195,12 @@ if(BUILD_TESTING)
         tests/slot_range_regression.cpp
         tests/slot_range_cb_regression.cpp
         tests/slot_range_exception_regression.cpp
+        tests/range_capture_example_regression.cpp
+        tests/cache_resource_data_regression.cpp
+        tests/store_cache_regression.cpp
+        tests/check_to_range_regression.cpp
+        tests/view_reference_regression.cpp
+        tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
         tests/dx11_version_regression.cpp

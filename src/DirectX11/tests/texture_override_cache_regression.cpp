@@ -4,6 +4,7 @@
 #include "IniHandler.h"
 #include "Input.h"
 #include "globals.h"
+#include "cache_policy_test_scope.h"
 #include "lock.h"
 #include <wrl/client.h>
 #include <atomic>
@@ -74,6 +75,7 @@ public:
     const decltype(G->hunting) hunting = G->hunting;
     const decltype(G->mResolutionInfo) resolution = G->mResolutionInfo;
     bool region = G->track_region_hashes;
+    DataCacheTestScope cache_policy;
     ResourceInfoMap resource_info = G->mResourceInfo;
     std::shared_ptr<FuzzyMatchResourceDesc> low, draw, dynamic;
     CacheConfiguration()

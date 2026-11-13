@@ -176,4 +176,13 @@ Hashes buffer bytes with CRC32C and returns a compact 30-bit float encoding. Off
 
 Reads three finite float32 coordinates at the specified **byte** offsets relative to the current region, then quantizes them using a finite positive cell size. For consecutive floats, use offsets `0, 4, 8`, not `0, 1, 2`. The packed spatial key wraps on a 4096 × 256 × 4096 cell grid; different positions can share a key. A packed zero cell is valid. Missing/non-buffer/unavailable results follow the error values above.
 
-These operations use available CPU-side buffer tracking/cache data; a supported native-buffer cache miss can require synchronous GPU readback. Custom resources require their tracked data to be available. GPU-side changes are not automatically equivalent to a fresh CPU cache. Enable `[Rendering] track_region_hashes = 1` to capture supported Map/UpdateSubresource updates. Custom-resource hashes use tracked data captured from pipeline resources through supported ref/copy paths; an arbitrary file-backed custom resource does not acquire a hash snapshot merely by enabling this option. Validate the actual update path. Do not assume these getters are free or collision-free object identifiers. See [per-object state](../examples/per-object-state.md) and [GPU readback](../examples/gpu-readback.md).
+These operations require available CPU-side buffer tracking/cache data. Select the needed buffer types in `[Rendering]`:
+
+```ini
+[Rendering]
+cache_resource_data = constant_buffer
+```
+
+The selection accepts `none`, `all` (supported VB/IB/CB buffers), or a space-separated combination of `vertex_buffer`, `index_buffer` and `constant_buffer`. The default is `none`; `track_region_hashes = 1` additionally enables all three types for compatibility. Unsupported or disabled native-buffer capture returns the documented error result rather than promising a hash.
+
+Selected types capture supported Map/Unmap writes. UpdateSubresource and GPU writes invalidate cached data rather than guaranteeing an immediately refreshed CPU snapshot; a later cache miss can require synchronous GPU readback. Mode selection alone does not prove freshness. Custom-resource hashes use tracked data captured through supported ref/copy paths; an arbitrary file-backed custom resource does not acquire a snapshot merely by enabling the option. Validate the actual update path. Do not assume these getters are free or collision-free object identifiers. See [per-object state](../examples/per-object-state.md) and [GPU readback](../examples/gpu-readback.md).

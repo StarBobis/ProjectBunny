@@ -913,3 +913,13 @@ TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resou
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 // Takes G->mCriticalSection before mResourcesLock; call before old maps die.
 void InvalidateTextureOverrideCandidates();
+
+// Discard tracked CPU snapshots and both region hash cache layers on policy reload.
+void InvalidateResourceDataCaches();
+// Copies from a current tracked snapshot; never returns a borrowed cache pointer.
+bool TryReadResourceDataCache(ID3D11Resource* resource, UINT64 byte_offset, void* output, size_t bytes);
+
+// Invalidate only buffers written by an actual native command; no GPU calls under Resources.
+void InvalidateResourceDataCacheForWrite(ID3D11Resource* resource);
+void InvalidateViewResourceDataCacheForWrite(ID3D11View* view);
+void InvalidatePipelineResourceDataCaches(ID3D11DeviceContext* context, bool compute);

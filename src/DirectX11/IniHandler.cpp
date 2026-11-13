@@ -4791,7 +4791,18 @@ void LoadConfigFile()
 	G->CACHE_SHADERS = GetIniBool(L"Rendering", L"cache_shaders", false, NULL);
 	G->SCISSOR_DISABLE = GetIniBool(L"Rendering", L"rasterizer_disable_scissor", false, NULL);
 	G->track_texture_updates = GetIniBoolOrInt(L"Rendering", L"track_texture_updates", 0, NULL);
+    DataCacheBindFlags data_cache_flags = DataCacheBindFlags::INVALID;
+    if (GetIniStringAndLog(L"Rendering", L"cache_resource_data", nullptr, setting, MAX_PATH)) {
+        if (_wcsicmp(setting, L"none"))
+            data_cache_flags = parse_enum_option_string<const wchar_t*, DataCacheBindFlags, wchar_t*>(
+                DataCacheBindFlagNames, setting, nullptr);
+    }
 	G->track_region_hashes = GetIniBool(L"Rendering", L"track_region_hashes", false, NULL);
+    if (G->track_region_hashes)
+        data_cache_flags |= DataCacheBindFlags::ALL_MASK;
+    G->cache_resource_data.store(data_cache_flags, std::memory_order_relaxed);
+    // Policies belong to this load, not the prior configuration or its snapshots.
+    InvalidateResourceDataCaches();
 	G->track_implicit_index_buffers = GetIniBool(L"Rendering", L"track_implicit_index_buffers", false, NULL);
 	G->allow_buffer_resize = GetIniBool(L"Rendering", L"allow_buffer_resize", true, NULL);
 	G->assemble_signature_comments = GetIniBool(L"Rendering", L"assemble_signature_comments", false, NULL);

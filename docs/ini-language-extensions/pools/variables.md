@@ -19,6 +19,16 @@ $PoolState[$id] = $value + 1
 
 Index selection follows [pool indexing](indexing.md). Missing FIFO/spatial reads normally return the variable template without allocating a slot; `pool_allocate_slot_on_missing = 1` enables allocating reads. Assignment allocates/selects an element. Resource and variable state share a slot; with `pool_element_type_switch_reset = 1`, assignment changes its active type and resets the previous type. Setting this option to `0` retains both types; reading does not switch types.
 
+## Store output
+
+[`store`](../commands/README.md#store) can write a successful buffer read into an explicit pool variable:
+
+```ini
+store = $PoolState[$id], vs-cb1, 4
+```
+
+The last argument is an absolute backing-buffer float index. Ordinary assignment rules, type switching, locked-value protection and persistence still apply. A failed read leaves the output unchanged and does not allocate a missing dynamic destination. Static element references still resolve during parsing. See [GPU readback](../examples/gpu-readback.md) for cache policy and offset conversion.
+
 ## All physical slots
 
 ```ini

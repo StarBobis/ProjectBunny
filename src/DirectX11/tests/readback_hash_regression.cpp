@@ -1,6 +1,7 @@
 #include "CommandList.h"
 #include "HackerContext.h"
 #include "globals.h"
+#include "cache_policy_test_scope.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@ static void require_readback_hash(bool condition, const char* message)
 
 void test_dx11_readback_hash_regression(CommandListState& state)
 {
+    DataCacheTestScope cache_policy;
     auto* context = state.mHackerContext;
     auto* native = state.mOrigContext1;
     auto* staging = context->GetReadbackBuffer(4100);

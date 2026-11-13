@@ -406,6 +406,28 @@ CB范围保unless_null旧窗口，包括超物理存储但合法的CB1窗口；m
 
 累计214项implemented-awaiting-validation、55项skipped、67项pending，已处理269/336。目标游戏与设备特定行为仍待验证，goal保持active；下一连续批从99751321开始，包含显式范围语法迁移、CPU数据缓存、Store和CheckTO/dump范围扩展。
 
+## 第二十五批：数据缓存、Store 与范围检查/输出（25项）
+
+连续处理 `99751321` 至 `786dbbff`，18项实现、7项无独有解决的merge跳过。独立重查8个merge的combined/remerge：7项均空，f828分别1979/1968字节，保留了dump与CheckTextureOverride两支文档解决内容，不能当空merge跳过。父SHA和原始patch保存在build/upstream/cache-store-merge-evidence/；上游检查仍为eae473b3、336项、无新增。
+
+997/2e将范围bind/fetch逐元素逻辑与边界解析共用，保留本地ComPtr128数组、每次调用独占缓存租借、deferred sink及成功prefix异常发布。解析失败不残留半个边界，新增真实slot/pool首尾非法表达式、嵌套表达式与同一target重解析恢复测试。bb明确移除单侧继承，池与槽都写显式范围，可起点不同但数量必须相等；旧成功夹具迁为显式成功和旧语法拒绝，未保留上游已经移除的兼容别名。
+
+0c接cache_resource_data的none/all/VB/IB/CB选择，默认none、每次Load从0解析后一次原子发布，track_region_hashes兼容强制三类。重载清旧tracked数据/L2/L3，删key不会保留上次策略。CPU Map/Unmap捕获、copy传播和原GPU readback遵守策略；保本地COW、null清理、overflow/physical边界、G→Resources与L3独立mutex。未知目的buffer的部分copy不捏造剩余字节，actual GPU写入失效，none路径不进缓存锁，CB-only不枚举不可能写CB的UAV/SO集合。
+
+延迟上下文录制不发布“未来”CPU快照，也不在录制时失效当前快照；真正ExecuteCommandList提交时保守清tracked缓存，因为deferred Get无法提供写集合。这一取舍避免错误cache hit，不宣称无成本。真实deferred Map/Copy测试在提交前用helper、Store和GPU读回核对旧值，提交后核对失效和新值；还覆盖wrapper/native CommandList Dispatch、UAV清理、Update/Discard、策略切换和外设备拒绝。没有为Store新增上游不存在的custom own-snapshot快路，custom的既有捕获快照生命周期保留。
+
+1f Store优先读实际tracked RAM快照，未命中仍走原GPU流程。绝对backing float索引、有限/物理/structured范围、设备/立即上下文、LOCKED和失败不改输出均保留。池输出动态索引只求一次，STATIC成功写必须经过真实assignment以更新类型/相反状态/时间戳；ResolvePoolIndex封装其私有索引信息。实际native Map观察器转发原调用，证明命中0次READ Map、fallback1次且真实值正确，覆盖脏位、池变量、STATIC、失败、锁模板、custom切片绝对坐标。STATIC引用的通常解析期设置仍有文档说明。
+
+894/7abb CheckTextureOverride按slot/physical pool顺序执行，this指当前局部目标，G锁覆盖匹配和全部子列表；异常恢复this/post/recursion/缩进。先解析动态目标，防this自指与重复随机求值；无具体this_target时保留state.resource的间接资源读取回退。池this写进入正常custom复制metadata/snapshot管线，避免旧快照。检查和dump采用非assignment读，不rekey或强制延期，但保正常read_refreshes_expiration政策。旧间接THIS写入的borrowed/owned引用契约没有顺手重写，本批只验证其读取回退。
+
+ace按真实目标类型和resource identity验证复用view，包括THIS与custom；不同目标类型不复用错误接口，Region/override规则保留。真实SRV数组/mip子视图、RTV/DSV回环、SRV→UAV和同一THIS命令跨kind通过。6b重建CB清StructureByteStride，实际structured→CB descriptor和全部字节读回通过。7d flags只查动态pool模板，不分配/改key/延期。7ff两条编译诊断blob改ComPtr，与LogFile是否开启无关；真实CreateVertexShader替换HLSL warning/error×日志开/关，通过转发真D3DCompile的IAT观察器核对诊断释放，未伪造编译结果，全部hook和文件作用域恢复。完整游戏反编译管线未执行。
+
+cca/f828/786补pool dump及最终文档。ResolveRange可一次返回原始截断start，输出名保上游负数和溢出范围的原始标签（-1/0/1及3/4/5/6），物理寻址仍安全环绕；超大有限数用固定十进制而不越界cast int。真实FrameAnalysis文件/字节、slot/pool、null、分析开关与expiration/key检查通过。完整writer会顺带轮询XInput：独立Win32/Ole32/XInput程序与不调用API的对照证明，轮询后100/500ms会出现type1/qualifier1的系统隐式MTA（[Microsoft定义](https://learn.microsoft.com/en-us/windows/win32/api/objidlbase/ne-objidlbase-apttypequalifier)），不是据此可断定的ComScope泄漏。dump夹具以真实后台窗口gate隔离无关硬件轮询，未改生产COM逻辑、原COM断言、文件或payload检查。证据在build/upstream/com-input-probe/，临时诊断probe已从测试移除。
+
+文档覆盖显式范围迁移、三slot与三pool不同起点捕获、一次cycle guard及恢复null不加unless_null；生产flow/assignment/range解析和WARP两轮capture/restore已执行。缓存说明区分Map捕获与UpdateSubresource失效，保Store绝对索引/独立fallback Map和CB ref/copy边界，未照搬上游未测量的FPS/stall断言。36页82本地链接/锚点/fence零错误；外部纹理与完整游戏配置未执行。
+
+最终MSVC/CMake C++17 DLL/完整生产回归构建通过；完整CTest **3/3**（legacy0.01秒、generator11.33秒、主回归1.83秒，总13.34秒），证据cache-store-batch-final-{build,ctest,LastTest}.log。两个隔离资源回归通过，cache-store-batch-isolated.log；DX12兼容目标成功且无待编项，cache-store-batch-dx12-build.log。无部署或游戏启动。累计232项implemented-awaiting-validation、62项skipped、42项pending，已处理294/336；目标游戏验证仍待进行，goal保持active。下一批从a0d566d2开始，按审查处理条件批处理的revert/v2、Region修复及SO生命周期，不把同subject重放视为等价重复。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。

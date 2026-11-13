@@ -1,4 +1,5 @@
 #include "slot_range_test_support.h"
+#include "cache_policy_test_scope.h"
 using namespace dx11_slot_test;
 
 
@@ -6,6 +7,7 @@ extern uint32_t PackCellCoords(float, float, float, float);
 
 namespace {
 class RangeGlobals {
+    DataCacheTestScope cache_policy;
     bool tracking = G->track_region_hashes;
     unsigned frame = G->frame_no;
     int dirty = G->user_config_dirty;
@@ -141,23 +143,27 @@ void physical_keys_and_bounds(BatchDevice& device, Registry& registry)
         scalar(device, name + L"[3:6]", L"ref ps-t[0:3]");
         require_batch(pool.GetResource(key_a, false, false, false) == slot_a &&
             pool.GetResource(key_b, false, false, false) == slot_b, "range: physical writes retain original UID/spatial keys");
-        scalar(device, L"ps-t[4:7]", L"ref " + name);
+        scalar(device, L"ps-t[4:7]", L"ref " + name + L"[0:3]");
         for (UINT i = 0; i < 4; ++i) {
             auto* physical = pool.GetResource(static_cast<float>(i), false, true, false);
             require_batch(bound_resource(device, L'p', 4 + i).Get() == (physical->is_null ? nullptr : physical->resource),
-                "range: slot-to-pool bounds inheritance wraps physical indices");
+                "range: explicit unequal slot and pool starts map physical indices");
         }
-        scalar(device, L"ps-t", L"ref " + name + L"[0:3]");
+        CommandList legacy;
+        require_batch(!parse(legacy, L"ps-t", L"ref " + name + L"[0:3]"), "range: bare slot side is rejected after explicit-bounds migration");
+        require_batch(!parse(legacy, L"ps-t[0:3]", L"ref " + name), "range: bare pool side is rejected after explicit-bounds migration");
         CommandList invalid;
         append(invalid, L"ps-t[0:2]", L"ref " + name + L"[0:3]");
         auto before = get_slot(device, L'p', 0);
         const auto stats = execute(invalid, device);
         require_batch(stats.get_calls == 0 && stats.set_calls == 0 && get_slot(device, L'p', 0).Get() == before.Get(),
             "range: incompatible explicit lengths fail before actual native access");
-        CommandList wrapped;
-        append(wrapped, L"ps-t", L"ref " + name + L"[3:6]");
-        const auto wrapped_stats = execute(wrapped, device);
-        require_batch(wrapped_stats.get_calls == 0 && wrapped_stats.set_calls == 0, "range: inherited slot bounds cannot wrap across pool end");
+        scalar(device, L"ps-t[0:3]", L"ref " + name + L"[3:6]");
+        for (UINT i = 0; i < 4; ++i) {
+            auto* physical = pool.GetResource(static_cast<float>((3 + i) % 4), false, true, false);
+            require_batch(bound_resource(device, L'p', i).Get() == (physical->is_null ? nullptr : physical->resource),
+                "range: explicit pool bounds retain legal ring wrapping");
+        }
     }
 }
 
@@ -246,7 +252,7 @@ ComPtr<ID3D11Buffer> tracked_buffer(BatchDevice& device, unsigned seed)
 {
     UINT values[16];
     for (UINT i = 0; i < 16; ++i) values[i] = seed + i * 79;
-    D3D11_BUFFER_DESC desc = {}; desc.ByteWidth = sizeof(values); desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_BUFFER_DESC desc = {}; desc.ByteWidth = sizeof(values); desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA data = {}; data.pSysMem = values;
     ComPtr<ID3D11Buffer> result;
     require_batch(SUCCEEDED(device.device->CreateBuffer(&desc, &data, &result)), "range: actual wrapper registers source buffer");

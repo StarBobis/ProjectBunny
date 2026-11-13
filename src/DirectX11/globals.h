@@ -2,6 +2,7 @@
 
 #include <d3d11_1.h>
 #include <ctime>
+#include <atomic>
 #include <vector>
 #include <set>
 #include <map>
@@ -484,6 +485,7 @@ struct Globals
 
 	ShaderHashType shader_hash_type;
 	bool track_region_hashes;
+    std::atomic<DataCacheBindFlags> cache_resource_data{DataCacheBindFlags::INVALID};
 	bool track_implicit_index_buffers;
 	bool allow_buffer_resize;
 	int texture_hash_version;

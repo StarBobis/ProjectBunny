@@ -513,6 +513,23 @@ static EnumName_t<const wchar_t *, CustomResourceBindFlags> CustomResourceBindFl
 	{NULL, CustomResourceBindFlags::INVALID} // End of list marker
 };
 
+// Buffer categories retained in the CPU snapshot cache. Values match D3D11_BIND_FLAG.
+enum class DataCacheBindFlags {
+    INVALID = 0,
+    VERTEX_BUFFER = D3D11_BIND_VERTEX_BUFFER,
+    INDEX_BUFFER = D3D11_BIND_INDEX_BUFFER,
+    CONSTANT_BUFFER = D3D11_BIND_CONSTANT_BUFFER,
+    ALL_MASK = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_CONSTANT_BUFFER,
+};
+SENSIBLE_ENUM(DataCacheBindFlags);
+static EnumName_t<const wchar_t*, DataCacheBindFlags> DataCacheBindFlagNames[] = {
+    {L"vertex_buffer", DataCacheBindFlags::VERTEX_BUFFER},
+    {L"index_buffer", DataCacheBindFlags::INDEX_BUFFER},
+    {L"constant_buffer", DataCacheBindFlags::CONSTANT_BUFFER},
+    {L"all", DataCacheBindFlags::ALL_MASK},
+    {nullptr, DataCacheBindFlags::INVALID},
+};
+
 // The ResourcePool holds a pool of cached resources for when a single copy
 // operation or a custom resource may be copied to from multiple distinct
 // incompatible resources (e.g. they may have differing sizes). This saves us
@@ -1020,7 +1037,7 @@ public:
 	bool IsRange() const;
 	unsigned ResolveSlot(CommandListState* state);
 	unsigned RangeLimit() const;
-	bool ResolveRange(CommandListState* state, unsigned* first, unsigned* count);
+	bool ResolveRange(CommandListState* state, unsigned* first, unsigned* count, double* raw_first = nullptr);
 
 	void SetCustomResource(CustomResource* resource);
 
@@ -1029,6 +1046,7 @@ public:
 
 	CustomResource* GetCustomResource(CommandListState* state, bool is_assignment = false);
 	CommandListVariable* GetPoolVariable(CommandListState* state, bool is_assignment = false);
+	bool ResolvePoolIndex(CommandListState* state, float* index) const;
 
 	ID3D11Resource *GetResource(CommandListState *state,
 			ID3D11View **view,
@@ -1071,6 +1089,7 @@ private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
 	bool AcceptParsedTarget(IniParserResult result, bool allow_range) const;
+	bool ParseRangeBounds(const wstring& text, size_t colon, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetSlotExpression(const wchar_t* text, size_t length, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
@@ -1192,6 +1211,8 @@ struct SlotRangeCopyCacheEntry {
     ViewKey view_key = {};
 };
 
+struct SlotRangeBindings;
+
 class SlotRangeCopyOperation : public CommandListCommand {
 public:
     ResourceCopyTarget src, dst;
@@ -1199,6 +1220,10 @@ public:
     void run(CommandListState*) override;
     bool optimise(HackerDevice*) override;
 private:
+    bool BindElement(CommandListState*, SlotRangeBindings&, SlotRangeCopyCacheEntry&, unsigned index,
+        ResourceCopyTarget target, CustomResource* source, bool fast_ref);
+    void FetchElement(CommandListState*, SlotRangeBindings&, SlotRangeCopyCacheEntry&, unsigned index,
+        ResourceCopyTarget target, unsigned pool_index, bool fast_ref);
     std::mutex cache_mutex;
     std::vector<SlotRangeCopyCacheEntry> available_cache;
 };
@@ -1674,11 +1699,13 @@ class StoreCommand : public CommandListCommand {
 public:
 	ResourceCopyTarget src;
 	CommandListVariable* var = nullptr;
+	ResourceCopyTarget pool_var;
 	std::unique_ptr<CommandListExpression> offset_expression;
 
 	wstring ini_section;
 
 	void run(CommandListState*) override;
+	void SetOutputValue(CommandListState*, float);
 };
 
 class ClearViewCommand : public CommandListCommand {

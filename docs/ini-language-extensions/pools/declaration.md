@@ -81,7 +81,7 @@ See [Template Resource](resources.md#template-resource) for more details.
 
 * `pool_element_type_switch_reset` defaults to `1`: changing an element between resource and variable usage resets the previous type. Setting `0` retains both kinds of state.
 * `pool_allocate_slot_on_missing` defaults to `0`: a missing keyed read returns the template. Setting `1` restores allocating reads.
-* `pool_expiration_timeout_frames` defaults to disabled. A nonnegative value expires an element when its last update is older than that many frames.
+* `pool_expiration_timeout_frames` defaults to `-1`. Any negative value disables expiration. A nonnegative value expires an element when its last update is older than that many frames.
 * `pool_expiration_reset_elements` defaults to `1`: expiration also resets stored contents.
 * `pool_expiration_refresh_on_read` defaults to `0`: enable it to refresh an existing element's timestamp on reads as well as writes.
 
@@ -96,7 +96,7 @@ The older names `pool_keep_alive_frames` and `pool_reset_expired_elements` remai
 | `pool_lazy_initialization` | `1` | Create element objects on demand. |
 | `pool_allocate_slot_on_missing` | `0` | Allocate a missing keyed read instead of returning the template. |
 | `pool_spatial_radius` | `1` | Spatial nearest-cell search radius; see indexing for frame-time scaling. |
-| `pool_expiration_timeout_frames` | disabled | Expire when age exceeds the configured frame count. |
+| `pool_expiration_timeout_frames` | `-1` | Any negative value disables expiration; otherwise expire when age exceeds the configured frame count. |
 | `pool_expiration_reset_elements` | `1` | Reset expired contents as well as forgetting keys. |
 | `pool_expiration_refresh_on_read` | `0` | Refresh existing elements when read. |
 | `pool_element_type_switch_reset` | `1` | Reset the opposite type on assignment. |

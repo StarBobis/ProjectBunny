@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "ComScope.h"
 #include "HackerContext.h"
+#include "cache_policy_test_scope.h"
 #include <ScreenGrab.h>
 #include <wincodec.h>
 
@@ -325,6 +326,7 @@ static void test_input_layout(CommandListState& state)
 
 static void test_constant_buffer_windows()
 {
+    DataCacheTestScope cache_policy;
     HMODULE runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     require(runtime != nullptr, "load system D3D11 runtime");
     auto create_device = reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(runtime, "D3D11CreateDevice"));
@@ -897,6 +899,12 @@ void test_dx11_dynamic_pipeline_slot_regression();
 void test_dx11_slot_range_regression();
 void test_dx11_slot_range_cb_regression();
 void test_dx11_slot_range_exception_regression();
+void test_dx11_range_capture_example_regression();
+void test_dx11_cache_resource_data_regression();
+void test_dx11_store_cache_regression();
+void test_dx11_check_to_range_regression();
+void test_dx11_view_reference_regression();
+void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
 int main()
@@ -912,8 +920,14 @@ int main()
         test_dx11_slot_range_regression();
         test_dx11_slot_range_cb_regression();
         test_dx11_slot_range_exception_regression();
+        test_dx11_range_capture_example_regression();
+        test_dx11_cache_resource_data_regression();
+        test_dx11_store_cache_regression();
+        test_dx11_check_to_range_regression();
+        test_dx11_view_reference_regression();
+        test_dx11_dump_range_regression();
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL dynamic slot/range integration: %s\n", error.what());
+        std::fprintf(stderr, "FAIL DX11 upstream feature integration: %s\n", error.what());
         return EXIT_FAILURE;
     }
     test_dx11_slot_batch_regression();

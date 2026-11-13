@@ -17,6 +17,7 @@
 #include "FrameAnalysis.h"
 
 #include <D3Dcompiler.h>
+#include <wrl/client.h>
 #include <codecvt>
 
 #include "log.h"
@@ -722,7 +723,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 
 			// TODO: Add #defines for StereoParams and IniParams
 
-			ID3DBlob *errorMsgs; // FIXME: This can leak
+			Microsoft::WRL::ComPtr<ID3DBlob> errorMsgs;
 			ID3DBlob *compiledOutput = 0;
 			// Pass the real filename and use the standard include handler so that
 			// #include will work with a relative path from the shader itself.
@@ -732,7 +733,7 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 			MigotoIncludeHandler include_handler(apath);
 			HRESULT ret = D3DCompile(srcData, srcDataSize, apath, 0,
 				G->recursive_include == -1 ? D3D_COMPILE_STANDARD_FILE_INCLUDE : &include_handler,
-				"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &compiledOutput, &errorMsgs);
+				"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &compiledOutput, errorMsgs.GetAddressOf());
 			delete[] srcData; srcData = 0;
 			if (compiledOutput)
 			{
@@ -751,7 +752,6 @@ static bool ReplaceHLSLShader(__in UINT64 hash, const wchar_t *pShaderType,
 				LogInfo("--------------------------------------------- BEGIN ---------------------------------------------\n");
 				fwrite(errMsg, 1, errSize - 1, LogFile);
 				LogInfo("---------------------------------------------- END ----------------------------------------------\n");
-				errorMsgs->Release();
 			}
 
 			// Cache binary replacement.
@@ -1000,7 +1000,7 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 
 	// TODO: Add #defines for StereoParams and IniParams
 
-	ID3DBlob *pErrorMsgs;
+	Microsoft::WRL::ComPtr<ID3DBlob> pErrorMsgs;
 	ID3DBlob *pCompiledOutput = NULL;
 	// Probably unecessary here since this shader is one we freshly decompiled,
 	// but for consistency pass the path here as well so that the standard
@@ -1008,7 +1008,7 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 	// shader itself:
 	wcstombs(apath, val, MAX_PATH);
 	hr = D3DCompile(decompiledCode.c_str(), decompiledCode.size(), apath, 0, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-		"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pCompiledOutput, &pErrorMsgs);
+		"main", tmpShaderModel, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pCompiledOutput, pErrorMsgs.GetAddressOf());
 	LogInfo("    compile result of fixed HLSL shader: %x\n", hr);
 
 	if (LogFile && pErrorMsgs)
@@ -1026,8 +1026,6 @@ static bool DecompileAndPossiblyPatchShader(__in UINT64 hash,
 		fwrite(errMsg, 1, errSize - 1, fw);
 		fprintf_s(fw, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/\n");
 	}
-	if (pErrorMsgs)
-		pErrorMsgs->Release();
 
 	// If requested by .ini, also write the newly re-compiled assembly code to the file.  This gives a direct
 	// comparison between original ASM, and recompiled ASM.

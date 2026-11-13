@@ -4160,127 +4160,358 @@
     {
       "sha": "99751321d9a9963243b2d1b9933a353fab86695e",
       "subject": "Slot ranges: split the per-slot work out of RunBind and RunFetch",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Split native range binding/fetch into per-element methods while retaining local 128-entry ComPtr packets, exclusive short-lock cache leases, invocation-local sinks/targets, metadata and exception-prefix publication. Do not restore upstream raw COM arrays or shared temporary deferred pointers.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "2e1c6a963713383549bcf93de92817f5e8dd462a",
       "subject": "Slot ranges: parse range bounds in one place",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Share transactional range-bound parsing between slot and pool targets. Commit both shared expression nodes only after success, clear failed state and preserve nested syntax, repeated target reset, finite checks and C++17 ownership. Real parser rollback/recovery regressions cover invalid first/last bounds.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "bb0b7aa2b36beea1efe5b5b2d302227a25be6f19",
       "subject": "Slot ranges: require explicit bounds on both sides",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/examples/slot-range-capture.md",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Require explicit slot and pool bounds on both sides, remove bare stage targets and inheritance, preserve equal counts and independent physical start positions. Replace legacy success fixtures with explicit success and legacy rejection checks; migrate documentation.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "0c7905e23d783d2f29992cb68caf321ff46226bf",
       "subject": "Added cache_resource_data option",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "Dependencies/d3dx.ini",
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "src/DirectX11/HackerContext.cpp",
+        "src/DirectX11/IniHandler.cpp",
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/globals.h"
+      ],
+      "adaptation": "Add atomic default-none cache policy, per-load reset/publication and track_region_hashes VB/IB/CB compatibility. Gate CPU capture/readback and custom snapshot propagation while retaining COW, null clearing, bounded regions, G-before-Resources and L3 mutex. Do not fabricate untouched partial-copy bytes. Invalidate observed GPU writes and actual deferred submissions; deferred recording cannot publish future CPU data. none/CB-only policies avoid unnecessary pipeline scans. Cache-only configuration reload clears old snapshots.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "1fba754a6bf50e5fbeb01e3087353b296595661e",
       "subject": "Data cache and pool variables support for store command",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Add pool Store outputs and prefer valid global tracked CPU snapshots before existing GPU fallback. Preserve absolute backing float indices, finite/physical/structured/device/immediate guards, LOCKED and bitwise persist dirty/failure-no-change semantics. Resolve source and destination indices once; ResolvePoolIndex encapsulates private static index metadata and successful STATIC writes use real assignment. Untracked custom snapshots do not become an invented Store cache path.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "0b5b27740183157dfeb2dd6a3dbc066d6f0dd9ee",
       "subject": "Merge remote-tracking branch 'upstream/master' into slot-pool-ranges",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "ce164058d36ad7c42afc4d0b86750348d9edd47d",
       "subject": "Document the pool expiration timeout default",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/pools/declaration.md"
+      ],
+      "adaptation": "Document actual expiration default -1 and negative values disabling expiration, checked against the production integer parser and unchanged pool defaults.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "3eba77be7e2be20e9eeb52507ae9b8b4b7f20a37",
       "subject": "Rewrite the slot range capture example",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/examples/slot-range-capture.md"
+      ],
+      "adaptation": "Rewrite explicit unequal-origin slot capture/restoration, restore null slots without unless_null and add guarded once-per-cycle capture/full-pool clear. Real production flow/assignment/range parsing and WARP state regression executes two cycles; external texture assets and full target-game configuration remain unexecuted.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "b399bae703fa4090f6b19157f837cb19f525a0ab",
       "subject": "Document cache_resource_data for region hashes",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/resources/resource-metadata.md"
+      ],
+      "adaptation": "Document buffer cache selection, default-none, legacy region compatibility, snapshot requirements and readback/error boundaries. Correct upstream prose: supported Map/Unmap captures data, while UpdateSubresource invalidates rather than guaranteeing an immediately refreshed RAM snapshot.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "bd6298877261db67ea6fa6ccbc9a71d375e90ce1",
       "subject": "Document store data caching and pool variable targets",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/commands/README.md",
+        "docs/ini-language-extensions/examples/gpu-readback.md",
+        "docs/ini-language-extensions/pools/variables.md"
+      ],
+      "adaptation": "Document Store pool output and cache hits versus GPU fallback without unmeasured stall/frame-rate claims. Retain absolute float index, valid coverage/freshness, independent GPU-path Maps and parse-time STATIC reference caveat.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "34fa32fab97b828319f01a0af29ba36228c6d12e",
       "subject": "Merge pull request #55 from Satan1c/slot-pool-ranges",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "894cb094c79f2f04ce54f59305fd980e058ed0ff",
       "subject": "Accept slot ranges in checktextureoverride",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Check slot ranges in order with per-element this targets and G guard across matching plus child execution. Resolve dynamic targets once before this scope, restore this/post/recursion/indent on exceptions and retain no-target indirect state.resource read fallback without self-recursion.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "7abb57cfd75363a7a8ded3f4be0a50e0f64c4af2",
       "subject": "Accept pool ranges in checktextureoverride",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Check explicit physical pool ranges and individual elements, rejecting whole pools. Non-assignment reads preserve keys and ordinary configured read-expiration policy; writes through pool this use normal destination metadata/snapshot handling.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "ace1f29f3c067dcac736a2a8932dc35d31d03d13",
       "subject": "Reuse the source view when the destination takes its kind",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Reuse reference source views only for matching resource identity and actual destination interface kind, including concrete THIS and custom targets. Validate cached view kind across destination changes; preserve explicit Region policy and format/stride override behavior. Real sliced/mipped SRV, RTV/DSV/UAV and snapshot tests retain local lifetime rules.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "9d60387ce802705d595b1e737445b18be948c8fa",
       "subject": "Merge pull request #67 from Satan1c/fixes/ref-view-reuse",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "6b2d803f50892ee87685e80ce4f561bdeb12f173",
       "subject": "Clear StructureByteStride when recreating a buffer as a constant buffer",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Clear StructureByteStride when recreating CBs as well as STRUCTURED misc flag. Preserve CB alignment, Region physical/reference window rules and raw compatibility guard. Actual structured-to-CB descriptor and every-byte readback pass.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "70d662ff75774ebb877d4ccb4670802b2c01e733",
       "subject": "Merge pull request #63 from Satan1c/fixes/cb-structure-byte-stride",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "7ff1fe7b1f7f1914abad0bd2644bde3cae3dfc68",
       "subject": "Release shader compile error blob when logging is off",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/HackerDevice.cpp"
+      ],
+      "adaptation": "Use initialized ComPtr diagnostic blobs in both replacement and decompile/recompile compile paths, releasing independently of LogFile. Actual CreateVertexShader replacement warning/error cases with logging on/off forward the real compiler through a scoped IAT observer and check exact blob ownership; full game decompiler flow remains unexecuted.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "bf0c027deef5a32c21d42604f81c5d35db8f276f",
       "subject": "Merge pull request #62 from Satan1c/fixes/shader-error-blob-leak",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "7d2c47051f1cceb6abe4294e391bcc526d678e50",
       "subject": "Read pool bind flags from the template instead of an element",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "BindFlags resolves dynamic pool templates via GetCustomResource(nullptr), avoiding allocation, key/timestamp changes or expiration refresh merely to inspect flags. Preserve already-resolved static endpoint semantics and deferred flag propagation.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "a92e53fabca0d71aaa500dc472363d47d354f2f3",
       "subject": "Merge pull request #61 from Satan1c/fixes/pool-bind-flags-template-lookup",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "cca39fe7998108f268dad159fd64c74c7ca22275",
       "subject": "Accept pool ranges in dump",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Dump physical pool ranges through local targets and owning resources/views, reject whole pools, preserve non-assignment read policy. Preserve raw negative/wrapped index filename suffixes with optional original-range-start output evaluated once; fixed decimal labels safely cover huge finite indices without int conversion UB. Real FrameAnalysis files and payloads are verified.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "c9391cfa428a90676648e9e306113995bac9c416",
       "subject": "Merge pull request #64 from Satan1c/ranges/frame-analysis-dump",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Complete combined and remerge diffs contain no unique resolution hunks; parent changes are integrated once without replaying upstream file snapshots.",
+      "validation": {
+        "sourceAudit": "PASS: git show --format= --cc and --remerge-diff both empty. Full parents and raw evidence: build/upstream/cache-store-merge-evidence/summary.json and per-SHA .diff files. Parent implementations covered by final integrated build/CTest."
+      }
     },
     {
       "sha": "f8283084f3c80d3f5628327bb829d9d53c1ecd09",
       "subject": "Merge remote-tracking branch 'upstream/master' into ranges/check-texture-override",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Apply nonempty merge documentation resolution retaining both pool dump and CheckTextureOverride sections and their restrictions; do not classify this as an empty merge. Qualify normal read-expiration policy and preserve local tested CB/Store boundaries.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "786dbbffc284ba035858c68deb700dfafe9a056d",
       "subject": "Describe the loop as covering both range kinds",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Update CheckTextureOverride loop comment to cover both slots and pool elements after the actual range implementation. No independent runtime feature beyond the preceding range group.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd, CMake Ninja Release x64 DirectX11 and full-production dx11_upstream_regression; build/upstream/cache-store-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
+        "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      }
     },
     {
       "sha": "a0d566d2a7a9977db07b2fdf8bc6a73f9a7054f3",

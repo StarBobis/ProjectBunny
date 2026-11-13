@@ -3,6 +3,7 @@
 #include "HackerDevice.h"
 #include "ResourceHash.h"
 #include "globals.h"
+#include "cache_policy_test_scope.h"
 
 #include <wrl/client.h>
 #include <cstdio>
@@ -63,6 +64,7 @@ public:
 class RegionGlobals
 {
 public:
+    DataCacheTestScope cache_policy;
     const std::wstring alias_name = L"resourceregion_regression_alias";
     const bool saved_tracking = G->track_region_hashes;
 
