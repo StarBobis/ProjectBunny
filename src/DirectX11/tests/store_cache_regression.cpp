@@ -198,14 +198,15 @@ void test_store_cache_paths()
     require_batch(parse_cached_store(fixed_store, L"$poolstore_cache_static[0], vs-cb0, $store_cache_offset"),
         "Store cache: actual parser resolves a STATIC destination variable");
     // Baseline STATIC parsing eagerly creates the variable object. It must not
-    // perform an assignment/type reset until the source read actually succeeds.
+    // perform an assignment/type reset until runtime publishes an output.
     require_batch(fixed_resource && !fixed_resource->is_null,
         "Store cache: parse-time STATIC variable resolution preserves resource state");
     offset.fval = 64;
     G->frame_no = 41;
     execute(fixed_store, device);
-    require_batch(!fixed_resource->is_null && fixed.GetLastUpdateFrame(0, false, &fixed_frame) && fixed_frame == 40,
-        "Store cache: failed STATIC source read preserves opposite resource and update frame");
+    require_batch(fixed_resource->is_null && fixed.GetVariable(0, false, false, false)->fval == 0 &&
+        fixed.GetLastUpdateFrame(0, false, &fixed_frame) && fixed_frame == 41,
+        "Store cache: physical read failure publishes zero through STATIC assignment, type reset and write frame");
     offset.fval = 2;
     execute(fixed_store, device);
     require_batch(fixed_resource->is_null && fixed.GetVariable(0, false, false, false)->fval == values[2] &&
@@ -234,7 +235,14 @@ void test_store_cache_paths()
     }
     output.fval = -71;
     G->user_config_dirty = 2;
-    for (float invalid : {-1.0f, 64.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+    offset.fval = 64.0f;
+    monitor.reset();
+    store(device, L"$store_cache_output, vs-cb0, $store_cache_offset");
+    require_batch(output.fval == 0 && G->user_config_dirty == 3 && monitor.count() == 0,
+        "Store cache: valid UINT physical out-of-bounds publishes upstream zero and persistence dirty bit without Map");
+    output.fval = -71;
+    G->user_config_dirty = 2;
+    for (float invalid : {-1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         offset.fval = invalid;
         monitor.reset();
         store(device, L"$store_cache_output, vs-cb0, $store_cache_offset");

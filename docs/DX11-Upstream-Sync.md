@@ -472,6 +472,8 @@ PS dump 使用 original shader hash 的声明快照；缓存命中但无声明�
 
 ## 当前复现命令
 
+用户追加的一轮对抗审查确认并修复了CB大Region复制、BC小mip哈希和Store失败输出三处差异，详见 [对抗审查与复现记录](DX11-Upstream-Adversarial-Review.md)。本次明确取代历史记录中Store所有失败保旧值的适配选择；有效物理越界与读回失败按上游写零，安全非法输入防护保留。三项修复与全部原回归已通过完整CTest3/3。
+
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。
 2. 在 x64 MSVC 开发环境中：`cmake -S . -B build/dx11-upstream-en -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON`，然后 `cmake --build build/dx11-upstream-en --target DirectX11 dx11_upstream_regression -j 6`。首次验证已有旧缓存时添加 `--clean-first`。
 3. 同一环境：`python scripts/test-dx11-pool-flags.py`。

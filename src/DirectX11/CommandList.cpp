@@ -1624,7 +1624,7 @@ void StoreCommand::run(CommandListState* state)
 		state->mOrigContext1->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
 		return;
 	const double index = offset_expression->evaluate(state);
-	if (!std::isfinite(index) || index < 0 || index > (UINT32_MAX - sizeof(float)) / sizeof(float))
+	if (!std::isfinite(index) || index < 0 || index > UINT32_MAX)
 		return;
 	// Preserve the INI API's original unit and truncation: an absolute float
 	// index into the backing buffer, irrespective of a CB/SRV view's offset.
@@ -1653,21 +1653,6 @@ void StoreCommand::run(CommandListState* state)
 		return;
 	D3D11_BUFFER_DESC desc = {};
 	buffer->GetDesc(&desc);
-	if (byte_offset + sizeof(float) > desc.ByteWidth)
-		return;
-
-    uint64_t copy_offset = byte_offset;
-    uint64_t copy_end = byte_offset + sizeof(float);
-    if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) {
-        const uint64_t stride = desc.StructureByteStride;
-        if (!stride) return;
-        copy_offset = (byte_offset / stride) * stride;
-        copy_end = ((copy_end + stride - 1) / stride) * stride;
-    }
-    if (copy_end > desc.ByteWidth || copy_end <= copy_offset) return;
-    const UINT copy_size = static_cast<UINT>(copy_end - copy_offset);
-    const size_t value_offset = static_cast<size_t>(byte_offset - copy_offset);
-
 	Microsoft::WRL::ComPtr<ID3D11Device> source_device;
 	resource->GetDevice(source_device.GetAddressOf());
 	Microsoft::WRL::ComPtr<ID3D11Device> context_device;
@@ -1677,14 +1662,36 @@ void StoreCommand::run(CommandListState* state)
 		FAILED(state->mOrigDevice1->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(state_identity.GetAddressOf()))) ||
 		source_identity.Get() != context_identity.Get() || source_identity.Get() != state_identity.Get())
 		return;
+	if (byte_offset + sizeof(float) > desc.ByteWidth) {
+        SetOutputValue(state, 0.0f);
+        return;
+    }
+
+    uint64_t copy_offset = byte_offset;
+    uint64_t copy_end = byte_offset + sizeof(float);
+    if (desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) {
+        const uint64_t stride = desc.StructureByteStride;
+        if (!stride) return;
+        copy_offset = (byte_offset / stride) * stride;
+        copy_end = ((copy_end + stride - 1) / stride) * stride;
+    }
+    if (copy_end > desc.ByteWidth || copy_end <= copy_offset) {
+        SetOutputValue(state, 0.0f);
+        return;
+    }
+    const UINT copy_size = static_cast<UINT>(copy_end - copy_offset);
+    const size_t value_offset = static_cast<size_t>(byte_offset - copy_offset);
+
 	float cached_value;
 	if (TryReadResourceDataCache(resource.Get(), byte_offset, &cached_value, sizeof(cached_value))) {
 		SetOutputValue(state, cached_value);
 		return;
 	}
 	ID3D11Buffer* staging = state->mHackerContext->GetReadbackBuffer(copy_size);
-	if (!staging)
-		return;
+	if (!staging) {
+        SetOutputValue(state, 0.0f);
+        return;
+    }
 	Microsoft::WRL::ComPtr<ID3D11Device> staging_device;
 	Microsoft::WRL::ComPtr<IUnknown> staging_identity;
 	staging->GetDevice(staging_device.GetAddressOf());
@@ -1697,8 +1704,10 @@ void StoreCommand::run(CommandListState* state)
 	box.bottom = box.back = 1;
 	state->mOrigContext1->CopySubresourceRegion(staging, 0, 0, 0, 0, resource.Get(), 0, &box);
 	D3D11_MAPPED_SUBRESOURCE mapped = {};
-	if (FAILED(state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped)))
-		return;
+	if (FAILED(state->mOrigContext1->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+        SetOutputValue(state, 0.0f);
+        return;
+    }
 	float value;
 	memcpy(&value, static_cast<const uint8_t*>(mapped.pData) + value_offset, sizeof(value));
 	state->mOrigContext1->Unmap(staging, 0);
@@ -12061,7 +12070,8 @@ static bool SelectCopyRegion(CommandListState* state, ResourceCopyTarget& source
     if (target->type == ResourceCopyTargetType::THIS_RESOURCE && state->this_target)
         target = state->this_target;
     const bool constant_target = target->type == ResourceCopyTargetType::CONSTANT_BUFFER;
-    if (constant_target && length > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u)
+    if (constant_target && !(options & ResourceCopyOptions::COPY_MASK) &&
+        length > D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u)
         return false;
     if (constant_target && !(options & ResourceCopyOptions::COPY_MASK)) {
         // D3D11.1 permits CB windows beyond the physical allocation, but both

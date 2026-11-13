@@ -22,7 +22,7 @@ store = $out, ResourceFoo, 4
 
 The offset is interpreted as a **32-bit value index**, so `4` reads the fifth 32-bit value from the resource.
 
-The index is absolute in the backing buffer, even if the source CB/SRV view starts at a nonzero offset. Finite nonnegative indices are truncated to integers. Non-buffer sources, out-of-range indices, device mismatches, failed readback and deferred contexts leave the output unchanged. A locked variable cannot be the output.
+The index is absolute in the backing buffer, even if the source CB/SRV view starts at a nonzero offset. Finite nonnegative indices within the unsigned 32-bit index range are truncated to integers. A valid index outside the physical buffer, or a failed readback, writes zero as upstream does. Missing/null or non-buffer sources, device mismatches, deferred contexts and invalid numeric indices leave the output unchanged. A locked variable cannot be the output.
 
 ### GPU Readback
 
@@ -45,7 +45,7 @@ cache_resource_data = constant_buffer
 
 `cache_resource_data` accepts `none`, `all` (supported VB/IB/CB types), or a space-separated selection of `vertex_buffer`, `index_buffer` and `constant_buffer`. A valid tracked CPU snapshot covering the requested absolute byte range lets `store` read that value without a staging copy/Map. Mode selection alone does not establish that a snapshot exists or is current. An uncached buffer, uncovered range or invalidated snapshot uses the GPU readback path.
 
-`track_region_hashes = 1` also enables the VB/IB/CB cache types for compatibility. Custom resources with no tracked native snapshot use GPU readback; a captured region-hash snapshot is not automatically a Store cache entry. Physical bounds, device/context validation, locked-output protection and failure-no-change apply to both paths.
+`track_region_hashes = 1` also enables the VB/IB/CB cache types for compatibility. Custom resources with no tracked native snapshot use GPU readback; a captured region-hash snapshot is not automatically a Store cache entry. Physical bounds, device/context validation, locked-output protection and the output rules above apply to both paths.
 
 ### Pool output
 
@@ -53,4 +53,4 @@ cache_resource_data = constant_buffer
 store = $PoolObjects[$object_id], vs-cb1, 4
 ```
 
-Declare the pool and index variable first. The destination follows ordinary pool-variable assignment semantics, including type switching, expiration and persistence. A failed source read does not perform a runtime assignment or allocate a missing dynamic destination. Static pool references retain their ordinary parse-time resolution; a later read failure does not undo that setup. Whole-pool output and variable subranges are not supported.
+Declare the pool and index variable first. The destination follows ordinary pool-variable assignment semantics, including type switching, expiration and persistence. A physical read failure writes zero through those assignment semantics and can allocate a missing dynamic destination; a missing/null source performs no assignment. Static pool references retain their ordinary parse-time resolution. Whole-pool output and variable subranges are not supported.

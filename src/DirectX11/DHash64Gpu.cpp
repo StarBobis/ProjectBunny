@@ -217,7 +217,22 @@ HRESULT DHash64Gpu::ComputeHash(ID3D11DeviceContext* context, ID3D11Texture2D* t
     D3D11_TEXTURE2D_DESC sample_desc = desc;
     sample_desc.Width = (std::max)(1u, desc.Width >> mipLevel);
     sample_desc.Height = (std::max)(1u, desc.Height >> mipLevel);
-    sample_desc.MipLevels = sample_desc.ArraySize = 1;
+    UINT sample_mip = 0;
+    const bool compressed = (desc.Format >= DXGI_FORMAT_BC1_TYPELESS && desc.Format <= DXGI_FORMAT_BC5_SNORM) ||
+        (desc.Format >= DXGI_FORMAT_BC6H_TYPELESS && desc.Format <= DXGI_FORMAT_BC7_UNORM_SRGB);
+    // BC top levels must have block-aligned dimensions, although their lower
+    // mips may be smaller than a block. Preserve the selected mip dimensions
+    // by placing it below an aligned private top level, rather than padding
+    // the sampled image and changing its normalized sampling coordinates.
+    if (compressed) {
+        while (sample_desc.Width % 4 || sample_desc.Height % 4) {
+            sample_desc.Width *= 2;
+            sample_desc.Height *= 2;
+            ++sample_mip;
+        }
+    }
+    sample_desc.MipLevels = sample_mip + 1;
+    sample_desc.ArraySize = 1;
     sample_desc.Usage = D3D11_USAGE_DEFAULT;
     sample_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     sample_desc.CPUAccessFlags = sample_desc.MiscFlags = 0;
@@ -226,11 +241,12 @@ HRESULT DHash64Gpu::ComputeHash(ID3D11DeviceContext* context, ID3D11Texture2D* t
     if (FAILED(hr)) return hr;
     D3D11_SHADER_RESOURCE_VIEW_DESC view{};
     view.Format = format; view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    view.Texture2D.MostDetailedMip = sample_mip;
     view.Texture2D.MipLevels = 1;
     ComPtr<ID3D11ShaderResourceView> input;
     hr = mOrigDevice1->CreateShaderResourceView(snapshot.Get(), &view, &input);
     if (FAILED(hr)) return hr;
-    context->CopySubresourceRegion(snapshot.Get(), 0, 0, 0, 0, texture,
+    context->CopySubresourceRegion(snapshot.Get(), sample_mip, 0, 0, 0, texture,
         D3D11CalcSubresource(mipLevel, 0, desc.MipLevels), nullptr);
     {
         ScopedDHashCSState saved(context);

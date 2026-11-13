@@ -218,6 +218,9 @@ if(BUILD_TESTING)
         tests/member_argument_regression.cpp
         tests/dhash_cache_regression.cpp
         tests/hamming_distance_regression.cpp
+        tests/adversarial_region_regression.cpp
+        tests/adversarial_dhash_regression.cpp
+        tests/adversarial_store_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp

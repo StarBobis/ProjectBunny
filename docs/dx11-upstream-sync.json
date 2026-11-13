@@ -1045,6 +1045,11 @@
         "releaseBuild": "PASS: MSVC x64 CMake Ninja Release DirectX11 and full production-source regression target; all changed production/test objects rebuilt during integration; final incremental 3/3 PASS.",
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30, 1/1 (0.36s, total0.58s). Full WARP/parser/config suite includes Store bounds/devices/borrowed staging/reference balance/dirty bits, callback runtime-empty/link/256 recursion and real reload source removal, real draw/dispatch entrypoints/skip/isolation/reset, enum diagnostics, no-space subtraction and 32-bit grid/CB offsets/NaN pool keys. Existing isolated pool flags and resource properties scripts also PASS.",
         "remaining": "Target game injection not run; full SwapChain Present path and regex-generated callback runtime not exercised. No forced native allocation OOM/driver Map failure injection."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit supersedes earlier failure-no-change adaptation: valid UINT physical bounds/copy-region/readback failures publish zero through ordinary assignment, including STATIC pool type/reset/frame and persist dirty. Null/missing source, LOCKED and invalid numeric/device/context guards remain. UINT64 byte offsets preserve large valid UINT index failure semantics.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -1698,6 +1703,11 @@
         "releaseBuild": "PASS: MSVC x64 CMake Ninja Release DirectX11 and full-production dx11_upstream_regression; final build/upstream/build-dx11.log.",
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30, 1/1, 0.59s (total0.76s). Real six-stage CreateShader/reflection/member/cache-concurrency, malformed/unaligned DXBC, structured Store debug layer, layout policies, scope guards and legacy parser. Existing isolated pool-flags/resource-properties PASS.",
         "remaining": "Target-game/replacement shader validation pending; no full DXBC validation claim. Active lock-dependency diagnostic mode, allocation-failure injection, all possible shader instruction variants and full game examples not covered by this regression."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit supersedes earlier failure-no-change adaptation: valid UINT physical bounds/copy-region/readback failures publish zero through ordinary assignment, including STATIC pool type/reset/frame and persist dirty. Null/missing source, LOCKED and invalid numeric/device/context guards remain. UINT64 byte offsets preserve large valid UINT index failure semantics.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -4048,6 +4058,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
         "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit supersedes earlier failure-no-change adaptation: valid UINT physical bounds/copy-region/readback failures publish zero through ordinary assignment, including STATIC pool type/reset/frame and persist dirty. Null/missing source, LOCKED and invalid numeric/device/context guards remain. UINT64 byte offsets preserve large valid UINT index failure semantics.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -4241,6 +4256,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
         "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit supersedes earlier failure-no-change adaptation: valid UINT physical bounds/copy-region/readback failures publish zero through ordinary assignment, including STATIC pool type/reset/frame and persist dirty. Null/missing source, LOCKED and invalid numeric/device/context guards remain. UINT64 byte offsets preserve large valid UINT index failure semantics.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -4313,6 +4333,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3); build/upstream/cache-store-batch-final-ctest.log. Actual cache policy/reload, native Map/copy/Dispatch/deferred submission/clear, Store real Map counts and values, STATIC/pool/LOCKED/dirty, real compiler diagnostic ownership, CheckTO/THIS/throw, view kinds/CB stride, parser rollback/capture cycles and actual dump names/bytes; existing suite retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py (36 pages, 82 local links, zero path/anchor/fence errors); build/upstream/cache-store-batch-docs.log. Seven empty merges and nonempty f828 resolution independently verified.",
         "runtime": "Pending: target-game/device-specific integration and full external-asset example configurations. No deployment or game launch. Existing indirect THIS write ownership is unchanged and not claimed verified; its read fallback is exercised."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit supersedes earlier failure-no-change adaptation: valid UINT physical bounds/copy-region/readback failures publish zero through ordinary assignment, including STATIC pool type/reset/frame and persist dirty. Null/missing source, LOCKED and invalid numeric/device/context guards remain. UINT64 byte offsets preserve large valid UINT index failure semantics.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -4688,6 +4713,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
         "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit fixes CB COPY requests above64KiB: retain upstream native-capacity clipping for copy; apply64KiB rejection only to reference windows. Physical source validation retained.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -4703,6 +4733,11 @@
         "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/conditional-region-so-final-ctest.log. Actual six-stage conditional flow/API counts/random/barriers/exception prefix, native Region view and byte readback/captured span/reset/clear/structured and physical bounds, real SO shader Draw/readback and COM ownership; existing regressions retained.",
         "documentation": "PASS: python build/upstream/check-ini-docs.py; 36 pages/82 local links, zero case/path/anchor/fence errors, build/upstream/conditional-region-so-docs.log.",
         "runtime": "Pending target-game/device-specific validation. SO regression covers immediate context; deferred SO and full external-asset configurations not executed. No deployment/game launch."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit fixes CB COPY requests above64KiB: retain upstream native-capacity clipping for copy; apply64KiB rejection only to reference windows. Physical source validation retained.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {
@@ -5039,6 +5074,11 @@
         "regressions": "PASS: full CTest3/3, build/upstream/dhash-final-ctest.log; all existing tests and six new production/WARP/INI regression files. Two isolated flags/properties regressions pass, dhash-final-isolated.log. DX12 compatibility build passes, dhash-final-dx12-build.log.",
         "documentation": "PASS: exact-case links/anchors/fences,38pages87links, dhash-final-docs.log.",
         "runtime": "Pending target-game/device-specific validation. Native debug WARP probe independently reproduces nonzero FirstArraySlice GenerateMips yielding unchanged lower mips; production wrapper matches native full pixels, strict slice0/all-array generation passes. Evidence native-mips-probe/result.log. Deferred Map fixture uses explicit RGBA pitch when native WARP returns zero; both independent native and wrapper strict full pixels pass. No production pitch rewrite, deployment or game launch."
+      },
+      "adversarialReview": {
+        "result": "fixed-and-regression-tested",
+        "correction": "Adversarial audit fixes valid BC sub-block mips: aligned private top plus matching lower mip/SRV preserves source dimensions and sampling coordinates.",
+        "evidence": "docs/DX11-Upstream-Adversarial-Review.md; build/upstream/adversarial-final-ctest.log (3/3)"
       }
     },
     {

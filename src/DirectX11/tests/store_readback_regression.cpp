@@ -216,7 +216,12 @@ void test_store_success(StoreDevice& device, StoreVariables& variables)
     check(references(buffer.Get()) == buffer_refs && references(view.Get()) == view_refs,
         "repeated successful Store releases both acquired resource and source-view references");
 
-    for (const wchar_t* offset : {L"-1", L"-0.5", L"nan", L"inf", L"-inf", L"1e30", L"4294967295", L"128"}) {
+    variables.output().fval = -713;
+    G->user_config_dirty = 0;
+    execute(device, variables.output_name + L", vs-t0, 128");
+    check(variables.output().fval == 0 && G->user_config_dirty,
+        "Store valid UINT physical out-of-bounds publishes upstream zero and marks persistence");
+    for (const wchar_t* offset : {L"-1", L"-0.5", L"nan", L"inf", L"-inf", L"1e30", L"4294967295"}) {
         const float previous = variables.output().fval;
         G->user_config_dirty = 0;
         execute(device, variables.output_name + L", vs-t0, " + offset);

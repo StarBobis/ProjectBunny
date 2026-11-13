@@ -183,7 +183,13 @@ void test_structured_stride(StructuredStoreDevice& device, StoreVariables& varia
         check(!G->user_config_dirty, "identical structured read does not dirty persistence");
         check(device.wrapper->GetReadbackBuffer(stride) == staging, "complete-structure staging buffer reused");
     }
-    for (float invalid : {float(values.size()), -1.0f, std::numeric_limits<float>::infinity(),
+    variables.index().fval = static_cast<float>(values.size());
+    variables.output().fval = -713;
+    G->user_config_dirty = 0;
+    run_store(device, command);
+    check(variables.output().fval == 0 && G->user_config_dirty,
+        "structured Store: valid UINT physical out-of-bounds publishes upstream zero and marks persistence");
+    for (float invalid : {-1.0f, std::numeric_limits<float>::infinity(),
         std::numeric_limits<float>::quiet_NaN(), (std::numeric_limits<float>::max)()}) {
         variables.index().fval = invalid;
         const float before = variables.output().fval;

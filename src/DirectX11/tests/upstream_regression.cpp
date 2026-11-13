@@ -921,6 +921,9 @@ void test_dx11_dhash_gpu_regression();
 void test_dx11_member_argument_regression();
 void test_dx11_dhash_cache_regression();
 void test_dx11_hamming_distance_regression();
+void test_dx11_adversarial_region_regression();
+void test_dx11_adversarial_dhash_regression();
+void test_dx11_adversarial_store_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -955,6 +958,9 @@ int main()
         test_dx11_member_argument_regression();
         test_dx11_dhash_cache_regression();
         test_dx11_hamming_distance_regression();
+        test_dx11_adversarial_region_regression();
+        test_dx11_adversarial_dhash_regression();
+        test_dx11_adversarial_store_regression();
         test_dx11_texture_upload_state_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {
