@@ -26,7 +26,7 @@ Every resource created within the pool inherits the template configuration and i
 
 A pool element resource is accessed using its element index in square brackets.
 
-The element index is evaluated as an INI expression at runtime:
+Except for Static pools, the element index is evaluated as an INI expression at runtime:
 
 ```ini
 PoolFoo[0]
@@ -78,3 +78,7 @@ $PoolFoo[*] = null  ; Reset variable values to their configured default; preserv
 A mixed element keeps its other type's state when only one kind is reset. Locked variables remain unchanged. Resource reset clears region/CPU-cache metadata and marks the element null; the underlying D3D allocation and cached view may remain available for reuse. A subsequent resource read still returns null until it is populated again.
 
 The `$` prefix is required for a variable-range expression. An invalid resource source is rejected instead of being retried as a variable assignment. For a normal pool, `PoolFoo = null` also resets indexing state. For a proxy, it detaches the source without resetting that source pool's elements.
+
+## Physical ranges
+
+`PoolFoo[first:last]` selects physical slots with Ring wrapping, regardless of the pool's keyed indexing mode. It can be paired with a matching pipeline slot range for resource assignment. It does not perform FIFO/spatial key lookup. See [slot ranges](../resources/slot-indexing.md).

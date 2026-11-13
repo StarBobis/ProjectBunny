@@ -1,16 +1,13 @@
 # Pools
 
-Pools provide indexed storage for INI scripting entities.
+Pools combine indexed resource and floating-point state with fixed physical capacity.
 
-A pool manages a fixed number of elements that can be accessed using different indexing strategies. Elements can store resources and INI variables. `PoolFoo[$id]` selects a resource, while `$PoolFoo[$id]` selects its variable value. Type-switch/reset behavior is controlled by the pool configuration.
+* [Declaration](declaration.md) — all eleven configuration options and templates
+* [Indexing](indexing.md) — Ring, Static, FIFO and spatial selection
+* [Metadata](pool-metadata.md) — identity, capacity, selected index and timestamps
+* [Resources](resources.md) — resource assignment and type-filtered reset
+* [Variables](variables.md) — variable assignment, full-range reset and persistence
+* [Whole-pool operations](pool-operations.md) — references, configuration and clearing
+* [Slot ranges](../resources/slot-indexing.md) — physical pool ranges paired with pipeline slots
 
-## Topics
-
-- [Declaration](declaration.md) — pool configuration and element initialization
-- [Indexing](indexing.md) — Ring, FIFO and spatial indexing
-- [Pool Metadata](pool-metadata.md) — pool and element identity, indices, size, etc
-- [Resources](resources.md) — pool resource templates, access, assignment, and usage
-
-## Examples
-
-- [Pool-Based Tracker](../examples/pool-based-tracker.md) — keep resource results from the last N frames using a Ring pool
+Examples: [Pool-based tracker](../examples/pool-based-tracker.md), [per-object state](../examples/per-object-state.md).

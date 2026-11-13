@@ -386,6 +386,26 @@ d92版本生成走CMake目标和build内header：三/四段tag、距tag提交数
 
 下一25项48f3b6db至ac9947bf已逐项审查，见DX11-Upstream-After-Cache-Batch-Audit.md。包括无handle不匹配的新语义、动态slot/ranges、CB窗口/physical pool index；发现上游NaN整数转换、SRV/UAV访问14元素CB数组越界及无cachedview丢buffer metadata等问题，需适配和实际回归。
 
+## 第二十四批：动态槽位、范围复制与未跟踪资源（25项）
+
+按账本顺序处理 `48f3b6db` 至 `ac9947bf`：19项实现，5项无独有解决的merge和1项本地不存在的GitHub workflow更新跳过。保持DX11 CMake/C++17；每项适配和验证记录在JSON账本。上游仍为eae473b3、336项。
+
+c137删除未跟踪资源的普通/fuzzy候选回退，不清空调用方已有matches；独立region exact路径仍保留，真实tracker卸载后的暖L3只保region exact。保留本地0/MAX有效位、COM活期、G→Resources锁序和缓存失效。回归覆盖真实tracker卸载/销毁、自定义资源引用、两个真实buffer区域和候选计数。
+
+a4/84接运行时动态槽位及旧静态batch屏障，包含常量方括号表达式。非法源按null传播，普通赋值会清目标，unless_null保目标；非法目标不改绑定。finite/截断前边界检查避免NaN和越界转换，真实WARP覆盖六阶段SRV/CB及VB/RT/SO/pixel和compute UAV的首末槽、动态重用和失败路径。
+
+b779至ac范围组支持包含端点的表达式边界、物理pool索引、当前上游的单侧继承和普通copy/ref选项。double检查后归一化环绕，超大相等pool端点仍计1项；截断后计数另受capacity限制。128容量的ComPtr数组替代上游14项CB数组被SRV/UAV路径访问的越界。每次调用拥有target和deferred sink，短mutex独占借用缓存，不在native/G调用时持cache锁；异常保留成功prefix、旧holes和尾部，缩进及COM引用通过真实虚拟日志抛错验证。视图key包含resource/stride/offset/size/format/options，验证首次无view的typed/structured/raw创建、metadata变化、原SRV子视图与no_view_cache真实释放。
+
+范围fetch复用真实scalar复制管线，更新CPU snapshot/source_stride、目的override和max_copies；不以直接SetResource留下旧A快照。引用快照测试先通过真实GetRegionHash→GPU readback建立生产前置快照，再验证A→B切换，未补造handle数据。自定义资源可没有pipeline view，override通过最终真实槽位view验证。raw慢copy测试发现已有自动structured推断会生成RAW+STRUCTURED互斥flags；现保留raw表示，真实descriptor与全部64字节Map读回通过。动态SO测试另提前补未来1d9403的caller引用释放修正；该提交的offset行为尚未移植，仍为pending，账本单独注明前置修复。
+
+CB范围保unless_null旧窗口，包括超物理存储但合法的CB1窗口；mixed group一次SetCB1，whole项0/4096。普通ref重绑whole，与本地scalar及该版上游一致；copy按物理范围，六阶段真实1024字节完整读回。空源fetch在assignment lookup前退出，不分配、不切类型、不延期或制造写入记录。FIFO/Spatial等范围保物理key；不支持的未配对pool范围仍拒绝。
+
+文档同步最终6个提交，36页79本地链接/锚点/fence零错误，保Input默认on、typed reset、Store绝对float索引/独立readback、SpatialHash字节单位、CB ref/copy边界和取消示例。完整游戏示例及外部shader/assets未执行。后续67项已分组只读审查，见After-No-Handle、After-Store及Final-Feature审查文档；审查不等于实现。
+
+实际最终验证：MSVC x64 DLL/完整生产回归构建通过；完整CTest **3/3**，legacy0.02秒、version generator11.88秒、主回归1.68秒，共13.60秒。证据为build/upstream/range-batch-final-{build,ctest}.log；两个隔离资源脚本通过，range-batch-isolated.log；DX12兼容目标成功且无待编项，range-batch-dx12-build.log。D3D11延迟销毁测试先ClearState/释放观察引用/Flush，再检查命令仍存活时view释放，未降低生命周期断言。未部署或启动游戏。
+
+累计214项implemented-awaiting-validation、55项skipped、67项pending，已处理269/336。目标游戏与设备特定行为仍待验证，goal保持active；下一连续批从99751321开始，包含显式范围语法迁移、CPU数据缓存、Store和CheckTO/dump范围扩展。
+
 ## 当前复现命令
 
 1. `python scripts/check-dx11-upstream.py`：拉取远端，报告新提交，不改生产代码或同步状态。

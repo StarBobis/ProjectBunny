@@ -119,3 +119,7 @@ A valid spatial miss uses the same missing-template policy as FIFO. Reads can re
 ### Frame-time scaling of spatial reuse
 
 The configured spatial radius is a 120 FPS reference radius. Effective reuse distance scales by `FRAME_TIME * 120` and rounds upward: radius 2 gives distance 4/2/1 at 60/120/240 FPS. A zero or invalid frame interval gives radius zero. The local 12/8/12 toroidal grid bounds the useful Chebyshev radius at 2048 cells. This changes nearby matching, not exact-key lookup or the default policy that a missing read returns the template without allocating a slot.
+
+## Static indexing
+
+`pool_index_type = static` resolves a single element at parse time. Its index must be a numeric literal; negative values and wrapping follow Ring selection. `PoolFixed[0]` and `$PoolFixed[-1]` are valid, while `PoolFixed[$index]` is rejected. Directly resolved elements bypass runtime lookup/expiration. Full-range operations and physical pool ranges are separate operations and may use their supported runtime expressions even on a Static pool.

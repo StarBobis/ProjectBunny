@@ -117,3 +117,5 @@ CommandListC = ref CommandListA ; No-op
 ```
 
 The circular reference creation is avoided, leaving the already-established chain intact.
+
+See [command-list callbacks](../examples/command-list-callbacks.md) for an explicitly namespaced library/consumer example.

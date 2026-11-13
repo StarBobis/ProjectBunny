@@ -33,3 +33,5 @@ Only the required data is read back whenever possible. For regular buffers, only
 Readback staging buffers are reused across `store` invocations rather than recreated for every call.
 
 Despite these optimizations, GPU → CPU readback is **expensive** and `store` should therefore generally be used only when the value is actually needed by the CPU-side INI runtime, and there is no other way around it.
+
+Each `store` performs its own copy and blocking Map, even when staging allocations are reused. See [GPU readback](../examples/gpu-readback.md) for frame gating and offset conversion.

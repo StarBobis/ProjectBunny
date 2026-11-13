@@ -18,6 +18,8 @@
 #include <thread>
 #include <vector>
 
+extern "C" const GUID ResourceReleaseTrackerGuid;
+
 namespace {
 using Microsoft::WRL::ComPtr;
 void check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
@@ -140,13 +142,27 @@ void verify_lookup(CacheDevice& device, CacheConfiguration& config)
     set_hash(device.texture.Get(), 0);
     check(lookup(device.texture.Get(), 7) == std::vector<std::wstring>({L"exact-low", L"fuzzy-low"}), "returning to zero invalidates exact candidates");
     const auto before = Profiling::texture_override_fuzzy_match_overhead.count;
-    check(lookup(device.untracked.Get(), 7) == std::vector<std::wstring>({L"fuzzy-low"}) &&
-        Profiling::texture_override_fuzzy_match_overhead.count == before + 1, "untracked native resource uses real descriptor fallback without fabricated hash zero");
+    const auto lookups_before = Profiling::texture_override_candidates_lookup_overhead.count;
+    const auto hits_before_untracked = Profiling::texture_override_candidates_lookup_overhead.hits;
+    check(lookup(device.untracked.Get(), 7).empty() &&
+        Profiling::texture_override_fuzzy_match_overhead.count == before &&
+        Profiling::texture_override_candidates_lookup_overhead.count == lookups_before + 1 &&
+        Profiling::texture_override_candidates_lookup_overhead.hits == hits_before_untracked,
+        "untracked native resource matches nothing, does no descriptor scan, and counts lookup without hit");
+    TextureOverrideMatches preserved{config.low->texture_override};
+    DrawCallInfo untracked_info; untracked_info.IndexCount = 7;
+    find_texture_overrides_for_resource(device.untracked.Get(), &preserved, &untracked_info);
+    find_fuzzy_texture_overrides_for_resource(device.untracked.Get(), &preserved, &untracked_info);
+    check(preserved == TextureOverrideMatches{config.low->texture_override} &&
+        Profiling::texture_override_candidates_lookup_overhead.count == lookups_before + 3 &&
+        Profiling::texture_override_candidates_lookup_overhead.hits == hits_before_untracked &&
+        Profiling::texture_override_fuzzy_match_overhead.count == before,
+        "both untracked entry points preserve existing output and accurate miss counts without descriptor scans");
     DrawCallInfo miss; miss.IndexCount = 7;
     TextureOverrideMatches preset{config.low->texture_override};
     const auto hits_before = Profiling::texture_override_fuzzy_match_overhead.hits;
     const auto scans_before = Profiling::texture_override_fuzzy_match_overhead.count;
-    find_texture_overrides_for_resource_desc(device.texture1.Get(), &preset, &miss);
+    find_fuzzy_texture_overrides_for_resource(device.texture1.Get(), &preset, &miss);
     check(Profiling::texture_override_fuzzy_match_overhead.hits == hits_before &&
         Profiling::texture_override_fuzzy_match_overhead.count == scans_before + 1,
         "an existing output match is not counted as a new fuzzy hit");
@@ -234,6 +250,99 @@ CommandListState consumer_state(CacheDevice& device, DrawCallInfo* info = nullpt
     state.mHackerDevice = device.device; state.mHackerContext = device.context.get();
     state.mOrigDevice1 = device.native.Get(); state.mOrigContext1 = device.immediate.Get(); state.call_info = info;
     return state;
+}
+void verify_tracking_lifetime(CacheDevice& device, CacheConfiguration& config)
+{
+    config.populate(); Profiling::mode = Profiling::Mode::NONE;
+    ComPtr<ID3D11Texture2D> tracked;
+    check(SUCCEEDED(device.device->CreateTexture2D(&device.desc, nullptr, &tracked)), "actual tracked lifetime texture");
+    set_hash(tracked.Get(), 0);
+    check(lookup(tracked.Get(), 7) == std::vector<std::wstring>({L"exact-low", L"fuzzy-low", L"fuzzy-resolution"}),
+        "tracked zero hash has exact and descriptor candidates before tracker removal");
+    check(SUCCEEDED(tracked->SetPrivateDataInterface(ResourceReleaseTrackerGuid, nullptr)), "actual COM tracker removal");
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        check(G->mResources.count(tracked.Get()) == 0, "real tracker Release removes handle and its memoized candidates");
+    }
+    check(lookup(tracked.Get(), 7).empty(), "resource stays alive but never matches after its tracker is removed");
+    auto state = consumer_state(device);
+    const std::wstring ns, name = L"resourcecache_untracked_custom";
+    check(customResources.count(name) == 0, "unique actual untracked custom reference");
+    customResources[name].name = name;
+    ResourceCopyTarget custom;
+    check(custom.ParseTarget(name.c_str(), false, &ns, nullptr), "parse actual custom target");
+    custom.SetResource(&state, tracked.Get(), nullptr, 0, 0, device.desc.Format, 0);
+    TextureOverrideMatches matches;
+    custom.FindTextureOverrides(&state, nullptr, &matches);
+    check(matches.empty(), "actual custom target referencing untracked resource does not fabricate candidates");
+    customResources.erase(name); tracked.Reset();
+    ComPtr<ID3D11Texture2D> fresh;
+    check(SUCCEEDED(device.device->CreateTexture2D(&device.desc, nullptr, &fresh)), "create fresh wrapper resource after tracked cache destruction");
+    set_hash(fresh.Get(), UINT32_MAX);
+    check(lookup(fresh.Get(), 7) == std::vector<std::wstring>({L"exact-max", L"fuzzy-low", L"fuzzy-resolution"}),
+        "fresh handle has its own current hash candidates, even if allocator reuses the old address");
+    auto* released_address = fresh.Get(); fresh.Reset();
+    {
+        CriticalSectionLockGuard lock(&G->mResourcesLock, __FUNCTION__, __LINE__);
+        check(G->mResources.count(released_address) == 0, "actual resource destruction releases the candidate cache with the tracked handle");
+    }
+}
+void verify_distinct_region_candidates(CacheDevice& device, CacheConfiguration& config)
+{
+    config.populate(); G->track_region_hashes = true; Profiling::mode = Profiling::Mode::SUMMARY; Profiling::clear();
+    const auto first_hash = GetRegionHash(device.context.get(), device.buffer.Get(), 0, 8);
+    const auto second_hash = GetRegionHash(device.context.get(), device.buffer.Get(), 8, 8);
+    check(first_hash && second_hash && first_hash != second_hash, "actual two buffer meshes have different region hashes");
+    uint32_t whole_hash = 0xcace0020;
+    while (whole_hash == first_hash || whole_hash == second_hash) ++whole_hash;
+    set_hash(device.buffer.Get(), whole_hash);
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        InvalidateTextureOverrideCandidates(); G->mTextureOverrideMap.clear(); G->mFuzzyTextureOverrides.clear();
+        G->mTextureOverrideDrawVertexMap.clear(); G->mTextureOverrideDrawIndexMap.clear();
+        auto add = [&](uint32_t hash, const wchar_t* name) {
+            auto& list = G->mTextureOverrideMap[hash]; list.resize(1);
+            auto& match = list.front(); match.ini_section = name; match.has_draw_context_match = true;
+            match.match_vertex_count.op = FuzzyMatchOp::EQUAL; match.match_vertex_count.val = 2;
+            G->mTextureOverrideDrawVertexMap[2].push_back({hash, &match});
+        };
+        add(first_hash, L"region-first"); add(second_hash, L"region-second"); add(whole_hash, L"whole-resource");
+        auto fuzzy = std::make_shared<FuzzyMatchResourceDesc>(L"region-fuzzy-buffer");
+        fuzzy->set_resource_type(D3D11_RESOURCE_DIMENSION_BUFFER);
+        fuzzy->ByteWidth.op = FuzzyMatchOp::EQUAL; fuzzy->ByteWidth.val = 16;
+        G->mFuzzyTextureOverrides.insert(fuzzy);
+    }
+    DrawCallInfo info; info.VertexCount = 2;
+    auto state = consumer_state(device, &info);
+    ResourceCopyTarget target; const std::wstring ns;
+    check(target.ParseTarget(L"vb0", false, &ns, nullptr), "parse actual region buffer target");
+    auto region_matches = [&](UINT offset) {
+        ID3D11Buffer* buffer = device.buffer.Get(); UINT stride = 4;
+        device.immediate->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        TextureOverrideMatches found; target.FindTextureOverrides(&state, nullptr, &found);
+        std::vector<std::wstring> names; for (const auto* entry : found) names.push_back(entry->ini_section);
+        return names;
+    };
+    const auto before = Profiling::texture_override_candidates_lookup_overhead.count;
+    check(region_matches(0) == std::vector<std::wstring>({L"region-first", L"region-fuzzy-buffer"}) &&
+        region_matches(8) == std::vector<std::wstring>({L"region-second", L"region-fuzzy-buffer"}),
+        "actual two-region target uses each region exact hash plus shared descriptor fuzzy list, never cached whole hash");
+    check(Profiling::texture_override_candidates_lookup_overhead.count == before + 2 &&
+        Profiling::texture_override_candidates_lookup_overhead.hits == 2 &&
+        Profiling::texture_override_fuzzy_match_overhead.count == 1,
+        "two region lookups count separately while rebuilding descriptor candidates only once");
+    check(SUCCEEDED(device.buffer->SetPrivateDataInterface(ResourceReleaseTrackerGuid, nullptr)),
+        "remove actual region buffer tracker while both regions remain warm in L3");
+    check(region_matches(0) == std::vector<std::wstring>({L"region-first"}) &&
+        region_matches(8) == std::vector<std::wstring>({L"region-second"}),
+        "upstream region exact matching remains independent after tracker detach; cached descriptor fuzzy matches disappear");
+    ID3D11Buffer* none = nullptr; UINT zero = 0; device.immediate->IASetVertexBuffers(0, 1, &none, &zero, &zero);
+    {
+        CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
+        G->mTextureOverrideDrawVertexMap.clear(); G->mTextureOverrideDrawIndexMap.clear();
+    }
+    config.populate(); Profiling::clear();
 }
 float evaluate_consumer(CacheDevice& device, const wchar_t* source, DrawCallInfo* info)
 {
@@ -433,8 +542,9 @@ void test_dx11_texture_override_cache_regression()
         CacheConfiguration config; CacheDevice device;
         verify_lookup(device, config); verify_contamination_and_regions(device); verify_concurrent_region_cache(device);
         verify_concurrent_invalidation(device, config);
+        verify_tracking_lifetime(device, config); verify_distinct_region_candidates(device, config);
         verify_filter_and_child_consumers(device, config); verify_uav_and_copy_consumers(device, config);
         verify_real_reload(device);
-        std::fputs("PASS: real TO cache, draw/hash/resolution/reload, L3 invalidation/concurrency and filter/CheckTO/UAV/CopyResource consumers\n", stderr);
+        std::fputs("PASS: real tracked/untracked TO cache, independent region exact/fuzzy, lifetime/reload/concurrency and four consumers\n", stderr);
     } catch (const std::exception& error) { std::fprintf(stderr, "FAIL texture override cache: %s\n", error.what()); std::exit(EXIT_FAILURE); }
 }

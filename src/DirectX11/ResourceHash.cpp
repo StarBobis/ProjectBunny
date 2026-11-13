@@ -1681,21 +1681,6 @@ static uint32_t get_hash_for_resource(ID3D11Resource* resource)
 	return hash;
 }
 
-void find_texture_overrides_for_resource_by_hash(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info)
-{
-    if (!resource || !matches) return;
-    Microsoft::WRL::ComPtr<ID3D11Resource> keep_alive(resource);
-    CriticalSectionLockGuard state_lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
-	if (G->mTextureOverrideMap.empty())
-		return;
-
-	uint32_t hash = get_hash_for_resource(resource);
-	if (!hash)
-		return;
-
-	find_texture_override_for_hash(hash, matches, call_info);
-}
-
 TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_info)
 {
 	if (call_info->IndexCount)
@@ -1802,6 +1787,10 @@ void InvalidateTextureOverrideCandidates()
     }
 }
 
+// Caller holds G and a live resource reference, and consumes candidates
+// before releasing G. hash_matches belongs to the whole-resource hash only;
+// region lookups do their own exact match and reuse just fuzzy_matches.
+// A resource without tracked handle info has no candidates and matches nothing.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource)
 {
     if (!resource) return nullptr;
@@ -1858,20 +1847,8 @@ static void AppendFuzzyCandidates(const TextureOverrideCandidates& candidates, T
             matches->push_back(candidate.texture_override);
 }
 
-void find_texture_overrides_for_resource_desc(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
-{
-    if (!resource || !matches) return;
-    Microsoft::WRL::ComPtr<ID3D11Resource> lifetime(resource);
-    const auto descriptor = ReadResourceDescriptor(resource);
-    CriticalSectionLockGuard lock(&G->mCriticalSection, __FUNCTION__, __LINE__);
-    Profiling::Sample sample(Profiling::texture_override_fuzzy_match_overhead);
-    const size_t before = matches->size();
-    for (const auto& matcher : G->mFuzzyTextureOverrides)
-        if (MatchesResourceDescriptor(*matcher, descriptor) && matches_draw_info(matcher->texture_override, call_info))
-            matches->push_back(matcher->texture_override);
-    sample.Finish(matches->size() > before);
-}
-
+// The region path has already selected its exact region hash; never append
+// the cached whole-resource exact matches here.
 void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info)
 {
     if (!resource || !matches) return;
@@ -1881,7 +1858,6 @@ void find_fuzzy_texture_overrides_for_resource(ID3D11Resource* resource, Texture
     Profiling::Sample sample(Profiling::texture_override_candidates_lookup_overhead);
     const size_t before = matches->size();
     if (auto* candidates = get_texture_override_candidates(resource)) AppendFuzzyCandidates(*candidates, matches, call_info);
-    else find_texture_overrides_for_resource_desc(resource, matches, call_info);
     sample.Finish(matches->size() > before);
 }
 
@@ -1898,9 +1874,6 @@ void find_texture_overrides_for_resource(ID3D11Resource* resource, TextureOverri
             for (auto& match : *candidates->hash_matches)
                 if (matches_draw_info(&match, call_info)) matches->push_back(&match);
         AppendFuzzyCandidates(*candidates, matches, call_info);
-    } else {
-        find_texture_overrides_for_resource_by_hash(resource, matches, call_info);
-        find_texture_overrides_for_resource_desc(resource, matches, call_info);
     }
     sample.Finish(matches->size() > before);
 }

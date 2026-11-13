@@ -16,3 +16,5 @@ The DX11 extensions include:
 * [Input Layouts](input-layouts/README.md) — vertex input layout overrides
 * [Input Control](input/README.md) — mod/tool binding scopes and repeated HOLD events
 * [DX11 Logging](logging.md) — verbosity and warning display
+
+* [Examples](examples/README.md) — integration patterns and required dependencies

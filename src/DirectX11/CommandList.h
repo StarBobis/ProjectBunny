@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <array>
+#include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <forward_list>
@@ -49,6 +51,8 @@ struct InputLayoutElementOverride {
 struct ShaderResourceBatchStats {
 	unsigned get_calls = 0;
 	unsigned set_calls = 0;
+	unsigned cb_get_calls = 0, cb_set_calls = 0, cb1_set_calls = 0;
+	unsigned uav_get_calls = 0, uav_set_calls = 0;
 };
 
 class CommandListState {
@@ -832,7 +836,8 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	POOL_FULL_RANGE_VARIABLE = 0x00800000,
 	POOL_LAST_FRAME        = 0b00000000000000000010000000000000,
 
-	POOL_MASK              = 0x00803e00,
+	POOL_RANGE             = 0x01000000,
+	POOL_MASK              = 0x01803e00,
 
 	// VARIABLE
 	VARIABLE               = 0b00000000000000000100000000000000,
@@ -841,6 +846,7 @@ enum class ResourceCopyTargetEvaluationMode : uint32_t {
 	LAYOUT_ELEMENT_FORMAT  = 0b00000000000000001000000000000000,
 	LAYOUT_ELEMENT_OFFSET  = 0b00000000000000010000000000000000,
 
+	SLOT_RANGE             = 0x02000000,
 	LAYOUT_MASK            = 0b00000000000000011000000000000000
 };
 SENSIBLE_ENUM(ResourceCopyTargetEvaluationMode);
@@ -867,6 +873,8 @@ static EnumName_t<const wchar_t*, ResourceCopyTargetEvaluationMode> ResourceCopy
 	{L"PoolFullRangeResource", ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_RESOURCE},
 	{L"PoolFullRangeVariable", ResourceCopyTargetEvaluationMode::POOL_FULL_RANGE_VARIABLE},
 	{L"PoolLastFrame", ResourceCopyTargetEvaluationMode::POOL_LAST_FRAME},
+	{L"PoolRange", ResourceCopyTargetEvaluationMode::POOL_RANGE},
+	{L"SlotRange", ResourceCopyTargetEvaluationMode::SLOT_RANGE},
 
 	{L"Variable", ResourceCopyTargetEvaluationMode::VARIABLE},
 	{L"LayoutElementFormat", ResourceCopyTargetEvaluationMode::LAYOUT_ELEMENT_FORMAT},
@@ -1001,11 +1009,18 @@ public:
 
 	CustomResourcePool* custom_resource_pool = nullptr;
 	std::shared_ptr<CommandListExpression> pool_dynamic_index_expression = nullptr;
+	std::shared_ptr<CommandListExpression> slot_expression;
+	std::shared_ptr<CommandListExpression> range_start, range_end;
+	unsigned max_slot = 0;
 
 
 	bool forbid_view_cache = false;
 
-	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom = true);
+	bool ParseTarget(const wchar_t *target, bool is_source, const wstring *ini_namespace, CommandListScope* scope, bool allow_custom = true, bool allow_range = false);
+	bool IsRange() const;
+	unsigned ResolveSlot(CommandListState* state);
+	unsigned RangeLimit() const;
+	bool ResolveRange(CommandListState* state, unsigned* first, unsigned* count);
 
 	void SetCustomResource(CustomResource* resource);
 
@@ -1055,7 +1070,9 @@ public:
 private:
 	IniParserResult ParseTargetPrefix(const wchar_t*& target, size_t& length);
 	IniParserResult ParseTargetMember(const wchar_t*& target, size_t& length, wstring& temp_target, const wstring* ini_namespace, CommandListScope* scope);
-	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source);
+	bool AcceptParsedTarget(IniParserResult result, bool allow_range) const;
+	IniParserResult ParseTargetSlotExpression(const wchar_t* text, size_t length, const wstring* ini_namespace, CommandListScope* scope);
+	IniParserResult ParseTargetPipelineSlot(const wchar_t*& target, size_t length, bool is_source, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetCustomResource(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope);
 	IniParserResult ParseTargetPool(const wchar_t*& target, size_t length, const wstring* ini_namespace, CommandListScope* scope, bool is_source);
 
@@ -1121,6 +1138,8 @@ static EnumName_t<const wchar_t *, ResourceCopyOptions> ResourceCopyOptionNames[
 struct DeferredBinding {
 	Microsoft::WRL::ComPtr<ID3D11Resource> resource;
 	Microsoft::WRL::ComPtr<ID3D11View> view;
+	UINT stride = 0, offset = 0, size = 0;
+	DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 	bool assigned = false;
 };
 
@@ -1137,7 +1156,7 @@ public:
 	ResourceCopyOperation();
 	~ResourceCopyOperation();
 
-	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr);
+	void CopyResourceToResource(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size, ResourceCopyTarget* destination = nullptr, DeferredBinding* deferred = nullptr, bool preserve_source_view = false);
 	void CopyResourceToPool(CommandListState* state, ID3D11Resource* src_resource, ID3D11View* src_view, UINT stride, UINT offset, DXGI_FORMAT format, UINT buf_src_size);
 
 	void run(CommandListState*) override;
@@ -1164,6 +1183,25 @@ public:
 };
 
 void merge_shader_resource_batches(CommandList* command_list);
+
+// Cache entries are leased exclusively to one invocation. No command retains
+// a temporary state/sink; driver calls happen outside the cache mutex.
+struct SlotRangeCopyCacheEntry {
+    std::unique_ptr<ResourceCopyOperation> operation;
+    using ViewKey = std::tuple<ID3D11Resource*, UINT, UINT, DXGI_FORMAT, UINT, unsigned, bool>;
+    ViewKey view_key = {};
+};
+
+class SlotRangeCopyOperation : public CommandListCommand {
+public:
+    ResourceCopyTarget src, dst;
+    ResourceCopyOptions options = ResourceCopyOptions::INVALID;
+    void run(CommandListState*) override;
+    bool optimise(HackerDevice*) override;
+private:
+    std::mutex cache_mutex;
+    std::vector<SlotRangeCopyCacheEntry> available_cache;
+};
 
 class PoolCopyOperation : public CommandListCommand {
 public:
@@ -1819,7 +1857,7 @@ public:
 	template<typename T>
 	bool GetEnum(const EnumName_t<const wchar_t*, T>* names, T invalid, T* out);
 	bool GetVariable(CommandListVariable*& out, bool is_source = true, PeekMode mode = PeekMode::Token);
-	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true);
+	bool GetTarget(ResourceCopyTarget* out, bool is_source, PeekMode mode = PeekMode::Token, bool validate = true, bool allow_range = false);
 	bool GetFloat(float* out);
 	bool GetExpression(unique_ptr<CommandListExpression>* out);
 

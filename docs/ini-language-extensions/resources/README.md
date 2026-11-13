@@ -9,3 +9,5 @@
 * [Resource Regions](resource-regions.md) — existing buffer regions and explicit regions for `copy` and `ref` operations
 * [Shader Declarations](shader-declarations.md) — original shader bytecode CB/SRV declarations
 * [Texture Color Space](loading.md) — PNG/WIC and DDS interpretation.
+
+* [Dynamic slots and ranges](slot-indexing.md) — runtime slot selection and physical pool ranges

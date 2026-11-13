@@ -897,8 +897,6 @@ TextureOverrideFuzzyMatches* get_fuzzy_matches_by_draw_info(DrawCallInfo* call_i
 
 template <typename DescType>
 void find_texture_overrides(uint32_t hash, const DescType *desc, TextureOverrideMatches *matches, DrawCallInfo *call_info);
-void find_texture_overrides_for_resource_by_hash(ID3D11Resource* resource, TextureOverrideMatches* matches, DrawCallInfo* call_info);
-void find_texture_overrides_for_resource_desc(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_overrides_for_resource(ID3D11Resource *resource, TextureOverrideMatches *matches, DrawCallInfo *call_info);
 void find_texture_override_for_hash(uint32_t hash, TextureOverrideMatches* matches, DrawCallInfo* call_info);
 
@@ -907,6 +905,8 @@ void find_texture_overrides_for_resource_by_hash_from_fuzzy_matches(ID3D11Resour
 
 void ClearRegionHashesGlobalCache();
 
+// Ordinary/fuzzy candidate lookup never matches an untracked resource.
+// Explicit region exact matching is a separate path.
 // Caller must hold G->mCriticalSection and a live resource reference; consume
 // returned pointers before unlocking. Untracked resources return nullptr.
 TextureOverrideCandidates* get_texture_override_candidates(ID3D11Resource* resource);

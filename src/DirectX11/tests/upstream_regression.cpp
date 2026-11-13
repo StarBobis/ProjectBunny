@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <thread>
 
@@ -891,6 +892,12 @@ void test_dx11_pool_range_flags_regression();
 void test_dx11_texture_override_cache_regression();
 void test_dx11_profiling_generation_regression();
 void test_dx11_version_regression();
+void test_dx11_dynamic_slot_regression();
+void test_dx11_dynamic_pipeline_slot_regression();
+void test_dx11_slot_range_regression();
+void test_dx11_slot_range_cb_regression();
+void test_dx11_slot_range_exception_regression();
+void test_dx11_slot_range_numeric_regression();
 
 int main()
 {
@@ -898,6 +905,17 @@ int main()
     InitializeCriticalSection(&G->mResourcesLock);
     InitializeCriticalSection(&resource_creation_mode_lock);
     test_dx11_version_regression();
+    try {
+        test_dx11_slot_range_numeric_regression();
+        test_dx11_dynamic_slot_regression();
+        test_dx11_dynamic_pipeline_slot_regression();
+        test_dx11_slot_range_regression();
+        test_dx11_slot_range_cb_regression();
+        test_dx11_slot_range_exception_regression();
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "FAIL dynamic slot/range integration: %s\n", error.what());
+        return EXIT_FAILURE;
+    }
     test_dx11_slot_batch_regression();
     test_dx11_pool_range_flags_regression();
     test_dx11_texture_override_cache_regression();

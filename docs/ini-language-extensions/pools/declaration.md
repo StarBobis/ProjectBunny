@@ -86,3 +86,21 @@ See [Template Resource](resources.md#template-resource) for more details.
 * `pool_expiration_refresh_on_read` defaults to `0`: enable it to refresh an existing element's timestamp on reads as well as writes.
 
 The older names `pool_keep_alive_frames` and `pool_reset_expired_elements` remain accepted. If both old and new names appear, the new name takes precedence.
+
+## Configuration summary
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `pool_size` | `1` | Physical capacity; values below 1 do not create a pool. |
+| `pool_index_type` | `ring` | `ring`, `static`, `fifo` or `spatial`. |
+| `pool_lazy_initialization` | `1` | Create element objects on demand. |
+| `pool_allocate_slot_on_missing` | `0` | Allocate a missing keyed read instead of returning the template. |
+| `pool_spatial_radius` | `1` | Spatial nearest-cell search radius; see indexing for frame-time scaling. |
+| `pool_expiration_timeout_frames` | disabled | Expire when age exceeds the configured frame count. |
+| `pool_expiration_reset_elements` | `1` | Reset expired contents as well as forgetting keys. |
+| `pool_expiration_refresh_on_read` | `0` | Refresh existing elements when read. |
+| `pool_element_type_switch_reset` | `1` | Reset the opposite type on assignment. |
+| `pool_variable_default_value` | `0` | Variable initialization/reset value. |
+| `pool_persist_variables` | `0` | Persist initialized Ring variable slots. |
+
+Expiration is checked on access, at most once per frame. Writes update timestamps; ordinary reads do so only with read refresh enabled. With reset disabled, key expiry can leave stored contents available for reuse. Static element references resolved at parse time bypass ordinary runtime index lookup. See [variables](variables.md) and [per-object state](../examples/per-object-state.md).

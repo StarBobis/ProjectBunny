@@ -190,6 +190,12 @@ if(BUILD_TESTING)
         tests/slot_batch_regression.cpp
         tests/pool_range_flags_regression.cpp
         tests/texture_override_cache_regression.cpp
+        tests/dynamic_slot_regression.cpp
+        tests/dynamic_pipeline_slot_regression.cpp
+        tests/slot_range_regression.cpp
+        tests/slot_range_cb_regression.cpp
+        tests/slot_range_exception_regression.cpp
+        tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp
         tests/dx11_version_regression.cpp
     )

@@ -3776,127 +3776,386 @@
     {
       "sha": "48f3b6db03814bac65b0ac990e0a26446c3bd73f",
       "subject": "Comment how the texture override cache relates to region hashes",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/ResourceHash.cpp"
+      ],
+      "adaptation": "Document independent region exact matching and reuse only descriptor fuzzy candidates; discard the comment about uncached fallback superseded by c137. Preserve local cache ownership and locking.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "fbd5f9d48c0d8066b9412102c93203050eaffe79",
       "subject": "Merge remote-tracking branch 'upstream/master' into texture-override-memo",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs contain no unique resolution hunks. Parent features are integrated once in this batch; do not reapply upstream directory snapshots.",
+      "validation": {
+        "sourceAudit": "Full parent/combined/remerge evidence: docs/DX11-Upstream-After-Cache-Batch-Audit.md and build/upstream/audit-after-cache-batch/. Integrated parents covered by range-batch-final build/CTest."
+      }
     },
     {
       "sha": "c1378828238f165cec8efbaf78cab985373e7bbd",
       "subject": "Match nothing for resources without handle info, drop the uncached lookup",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/ResourceHash.cpp",
+        "src/DirectX11/ResourceHash.h"
+      ],
+      "adaptation": "Remove ordinary/fuzzy uncached descriptor and whole-hash fallback and its two public APIs. Preserve output entries, tracked zero/MAX validity, COM/G-before-Resources lifetime and independent region exact matching, including warm L3 after tracker detach.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "e414c5feb37c2bc9457ebea99ba08fbef1da4a5d",
       "subject": "Merge pull request #47 from Satan1c/texture-override-memo",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs contain no unique resolution hunks. Parent features are integrated once in this batch; do not reapply upstream directory snapshots.",
+      "validation": {
+        "sourceAudit": "Full parent/combined/remerge evidence: docs/DX11-Upstream-After-Cache-Batch-Audit.md and build/upstream/audit-after-cache-batch/. Integrated parents covered by range-batch-final build/CTest."
+      }
     },
     {
       "sha": "a4f0fe512e0e3df45f5421168bb78425a70de8b7",
       "subject": "Add dynamic slot indices to the ini syntax",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "docs/ini-language-extensions/resources/README.md",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Add runtime bracket slots for all supported pipeline targets with shared immutable expression trees, file-scope descriptors, finite/pre-truncation bounds checks and C++17/CMake integration. Preserve invalid source null propagation and invalid destination no-op. Pull forward only the future SO caller-reference fix needed for dynamic SO lifetime.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "1011b2183406868e5467b5641a864390ba2f70c3",
       "subject": "Merge pull request #53 from Satan1c/dynamic-slot-index-standalone",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs contain no unique resolution hunks. Parent features are integrated once in this batch; do not reapply upstream directory snapshots.",
+      "validation": {
+        "sourceAudit": "Full parent/combined/remerge evidence: docs/DX11-Upstream-After-Cache-Batch-Audit.md and build/upstream/audit-after-cache-batch/. Integrated parents covered by range-batch-final build/CTest."
+      }
     },
     {
       "sha": "b779e7e2ec9a5519ef2b00be0f89ab94aee015fa",
       "subject": "Add slot and pool ranges to the ini syntax",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Add inclusive slot/pool ranges and inheritance using bounded finite double arithmetic, normalized physical pool indices and invocation-local targets/sinks. Own all temporary view/buffer arrays at 128 entries, use scoped indentation and publish successful prefix on exceptions. Lease reusable operation caches exclusively under a short mutex outside native calls.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "595de8fadcc76c47445f4ccb5b86cd7fc25a5d31",
       "subject": "Document slot and pool ranges",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/README.md",
+        "docs/ini-language-extensions/pools/resources.md",
+        "docs/ini-language-extensions/resources/README.md",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Integrate final dynamic-slot/range documentation with actual parser, physical-index and inheritance constraints; explicit slot-only dump and default-deny range opt-in. Qualify game examples and performance claims.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "8fe6aac1b2e93fab004cc85931dae63bc7c2768f",
       "subject": "Slot ranges: support copy and all copy options",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Support ordinary copy/ref/options through real per-element CopyResourceToResource while retaining original source subviews for compatible references, complete view cache keys and local metadata/snapshot/max-copies semantics. Preserve physical copy bounds and ordinary CB whole references.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "cf8ba704a5b295601ff40ad6caa5348e468dbcd8",
       "subject": "Slot ranges: log each slot in the frame analysis log",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Log actual per-slot copy/ref/skip results with scoped indentation; verify exception behavior through the real virtual logger rather than production fault hooks.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "407920fb27e023cf2ab067f5759d1f7bff49438a",
       "subject": "Updated GitHub Actions build job to checkout@v4",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Upstream checkout action v4 affects only its GitHub workflow. ProjectBunny has no .github workflow; retain local CMake/build infrastructure instead of adding unrelated CI.",
+      "validation": {
+        "sourceAudit": "Read complete upstream patch; verified local .github directory absent."
+      }
     },
     {
       "sha": "84c4948fca067caf3b0dbd0bb51de5fdf457be7d",
       "subject": "Exclude dynamic slot indices from slot batching",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Exclude every bracket slot_expression, including constant expressions, from legacy static SRV batching. Retain original order, dynamic pool barriers and lazy assigned-mask native publication.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "4a20acd20d0b4733dc5e0a61061b4880be2e6306",
       "subject": "Merge pull request #54 from Satan1c/slot-batching-dynamic-guard",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs contain no unique resolution hunks. Parent features are integrated once in this batch; do not reapply upstream directory snapshots.",
+      "validation": {
+        "sourceAudit": "Full parent/combined/remerge evidence: docs/DX11-Upstream-After-Cache-Batch-Audit.md and build/upstream/audit-after-cache-batch/. Integrated parents covered by range-batch-final build/CTest."
+      }
     },
     {
       "sha": "ef24b4316629a9cc966c8688abafe85eea280a88",
       "subject": "Merge remote-tracking branch 'upstream/master' into slot-pool-ranges",
-      "status": "pending"
+      "status": "skipped",
+      "files": [],
+      "adaptation": "Combined and remerge diffs contain no unique resolution hunks. Parent features are integrated once in this batch; do not reapply upstream directory snapshots.",
+      "validation": {
+        "sourceAudit": "Full parent/combined/remerge evidence: docs/DX11-Upstream-After-Cache-Batch-Audit.md and build/upstream/audit-after-cache-batch/. Integrated parents covered by range-batch-final build/CTest."
+      }
     },
     {
       "sha": "190400dc76641b463a9feaf4afbbe58c32f8797a",
       "subject": "Slot ranges: keep the fetched cb region for slots unless_null leaves alone",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Preserve original per-slot CB1 byte offset/count on unless_null skips, including hardware-legal windows beyond the physical allocation; do not impose reference alignment on copies.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "c45db630757f99f6f56aa0dcfc6f60621416e800",
       "subject": "Slot ranges: address pool elements by index on every pool type",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Use physical ring element indexing for Static/Ring/FIFO/Spatial ranges with bounded normalization, preserving existing keyed lookup mappings and pool proxy size behavior.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "5a852ccac15325dd31e3c4ddf7a5505ed3a6340d",
       "subject": "Document variable pools and all pool_ options",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/examples/per-object-state.md",
+        "docs/ini-language-extensions/pools/README.md",
+        "docs/ini-language-extensions/pools/declaration.md",
+        "docs/ini-language-extensions/pools/indexing.md",
+        "docs/ini-language-extensions/pools/pool-metadata.md",
+        "docs/ini-language-extensions/pools/resources.md",
+        "docs/ini-language-extensions/pools/variables.md",
+        "docs/ini-language-extensions/variables/README.md"
+      ],
+      "adaptation": "Document all eleven pool options, Static and variable pools, metadata and per-object state. Preserve typed resets and local default-on Input and persistence semantics; examples declare variables and integration dependencies.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "7800bd060b118dee3991566821fc3d92473299e3",
       "subject": "Document pool operations, ->HashRegion and ->SpatialHash",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/pools/pool-operations.md",
+        "docs/ini-language-extensions/resources/README.md",
+        "docs/ini-language-extensions/resources/resource-metadata.md"
+      ],
+      "adaptation": "Document whole-pool operations, proxies/reset, HashRegion and SpatialHash using actual byte offsets, tracking/snapshot preconditions and collision limitations.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "83bcd3f2a5bfda09399656a5ca1e5b14b2d9f4c6",
       "subject": "Warn about the cost of store",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/commands/README.md"
+      ],
+      "adaptation": "Describe independent synchronous Store readbacks without unmeasured frame-rate estimates or implying commands share one cached Map; retain absolute backing float indices.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "893e3072bf5b7841151d6007c6bb252bed23a768",
       "subject": "Add INI feature examples",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/README.md",
+        "docs/ini-language-extensions/command-lists/README.md",
+        "docs/ini-language-extensions/examples/README.md",
+        "docs/ini-language-extensions/examples/accessory-mesh.md",
+        "docs/ini-language-extensions/examples/command-list-callbacks.md",
+        "docs/ini-language-extensions/examples/constant-buffer-region.md",
+        "docs/ini-language-extensions/examples/gpu-readback.md",
+        "docs/ini-language-extensions/examples/material-borrowing.md",
+        "docs/ini-language-extensions/examples/slot-range-capture.md",
+        "docs/ini-language-extensions/examples/slot-scan.md",
+        "docs/ini-language-extensions/resources/resource-regions.md",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Add final examples index and five retained examples with valid hashes, declared variables, full slot restoration and explicit external shader/asset dependencies. Whole target-game configurations remain unexecuted.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "278c4e63b7f82bfe4c024693aaf3bef996d35bc9",
       "subject": "Drop the accessory mesh and material borrowing examples",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "docs/ini-language-extensions/examples/README.md",
+        "docs/ini-language-extensions/examples/accessory-mesh.md",
+        "docs/ini-language-extensions/examples/material-borrowing.md",
+        "docs/ini-language-extensions/pools/README.md",
+        "docs/ini-language-extensions/resources/resource-regions.md"
+      ],
+      "adaptation": "Exclude canceled accessory/material examples and links from the imported final documentation tree; retain the remaining examples.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "91d4aae517b48228f3494be7bbe10bb1dc521069",
       "subject": "Slot ranges: leave elements alone when unless_null skips them",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "docs/ini-language-extensions/resources/slot-indexing.md"
+      ],
+      "adaptation": "Check null fetched source before resolving an assignment element so unless_null preserves lazy registrations, variable/resource type and values, keys and update timestamps.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "b693992829dddaddb4ee1bf149e3853cf1d07be8",
       "subject": "Slot ranges: bind cb regions in one XXSetConstantBuffers1 call",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Publish mixed CB windows and whole references in one SetConstantBuffers1 group; whole entries use first=0/count=4096, skipped windows remain exact. All six stages verified through native GetCB1 and real helper API counters.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "99db72f363cd8023644dc42e572b851608989603",
       "subject": "Slot ranges: stop special casing a pool range without a slot range",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp"
+      ],
+      "adaptation": "Remove obsolete special pool-range failure handling while retaining deliberate rejection of unpaired pool ranges; no unsupported pool-to-single-resource interpretation.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "ac9947bf122137f9f6aba56c25c0f200c4b149ef",
       "subject": "Slot ranges: accept a range where the target is parsed",
-      "status": "pending"
+      "status": "implemented-awaiting-validation",
+      "files": [
+        "src/DirectX11/CommandList.cpp",
+        "src/DirectX11/CommandList.h"
+      ],
+      "adaptation": "Centralize parsed-target acceptance with default range rejection and explicit resource-copy/dump opt-in. Keep expressions, Store and other commands on ordinary target grammar.",
+      "validation": {
+        "releaseBuild": "PASS: build/upstream/build-dx11.cmd; CMake Ninja Release x64 DirectX11 plus full-production dx11_upstream_regression; build/upstream/range-batch-final-build.log.",
+        "regressions": "PASS: ctest --test-dir build/dx11-upstream-en --output-on-failure --timeout 30 (3/3), build/upstream/range-batch-final-ctest.log. Actual WARP dynamic slots, SRV128/UAV64 ranges/options/metadata/lifetime, six-stage CB windows/copy bytes, no-handle/region caches, numeric extremes and injected real-logger exception prefix/cleanup; existing suite retained.",
+        "documentation": "PASS: python build/upstream/check-ini-docs.py, 36 files/79 local links/zero errors; build/upstream/range-batch-docs.log. This checks links/anchors/fences, not game execution.",
+        "runtime": "Pending: target-game DX11 integration, hardware/device-specific behavior and external shader/assets in complete examples. No deployment or game launch performed."
+      }
     },
     {
       "sha": "99751321d9a9963243b2d1b9933a353fab86695e",
@@ -4146,7 +4405,10 @@
     {
       "sha": "1d9403c0c1b94b8f10b2e87c5060a45ce398661c",
       "subject": "Stream Output Target fixes: offset handling, reference counting, and documentation",
-      "status": "pending"
+      "status": "pending",
+      "earlyPrerequisites": [
+        "Only SO caller-reference release correction was pulled forward in dynamic-slot batch: release SOGetTargets references for i != selected slot. SO offset handling and full commit validation remain pending."
+      ]
     },
     {
       "sha": "7b60818aaf6796e97e272926223d755b2d611490",

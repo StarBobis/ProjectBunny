@@ -53,3 +53,5 @@ cs-cb0 = ref vs-cb0->Region($byte_offset, $byte_size)
 The same underlying buffer is referenced using the specified region without copying its contents. For a CB destination, offset and size must both be multiples of 256 bytes, and size must be at most 65,536 bytes. Zero size is rejected rather than interpreted as a whole-buffer binding.
 
 The CB reference window may extend beyond the physical allocation: for a 1,024-byte source, `Region(768, 512)` is a valid reference window, but is invalid for `copy`. Only the intersection has stored data; out-of-range shader reads return zero. These window rules come from [SetConstantBuffers1](https://learn.microsoft.com/en-us/windows/win32/api/d3d11_1/nf-d3d11_1-id3d11devicecontext1-vssetconstantbuffers1).
+
+See [constant-buffer region](../examples/constant-buffer-region.md) for a worked pattern.

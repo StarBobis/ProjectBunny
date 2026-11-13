@@ -30,3 +30,16 @@ The synchronization task checks relative links with exact case and checks Markdo
 The standalone [Binary Flags](examples/binary-flags.md) snippet needs a command-list context. The [Pool-Based Tracker](examples/pool-based-tracker.md) needs actual game shader/resource hashes and a suitable compute output. Neither complete example has been run against a target game as part of this documentation import. Other snippets also require their surrounding declarations, resources or pipeline state; they are not claimed to be independent runnable files.
 
 Local production regressions cover selected parser, pool, copy/reference, WARP resource, layout and shader-declaration behavior. Consult the repository synchronization report for the commands actually run and their results. Full target-game validation remains pending.
+
+## Range and pool reference update
+
+| Upstream commit | Final documentation effect |
+| --- | --- |
+| `595de8fadcc76c47445f4ccb5b86cd7fc25a5d31` | Dynamic slots, inclusive ranges, physical pool ranges, inherited bounds and dump restrictions. |
+| `5a852ccac15325dd31e3c4ddf7a5505ed3a6340d` | All eleven pool options, Static indexing, variable pools, metadata and per-object state. |
+| `7800bd060b118dee3991566821fc3d92473299e3` | Whole-pool references/configuration/reset and content/spatial hash getters. |
+| `83bcd3f2a5bfda09399656a5ca1e5b14b2d9f4c6` | Readback warning, qualified to blocking dependent work rather than an unmeasured universal frame-rate claim. |
+| `893e3072bf5b7841151d6007c6bb252bed23a768` | Example directory and five retained range/scan/callback/readback/CB-region examples. |
+| `278c4e63b7f82bfe4c024693aaf3bef996d35bc9` | Final tree excludes the removed accessory-mesh/material-borrowing examples and links. |
+
+These adaptations retain the later Input default-on and logging fallback rules, type-filtered pool resets and `clear_unknown_settings`. Hashes are explicitly collision-prone; binary literals accept 64 bits but float variables do not preserve arbitrary 64-bit integers. Store is an absolute backing float index and each command maps independently. CB reference windows and physical copy bounds are distinguished. Example variables and dependencies are explicit; examples are not claimed to have been executed as whole game configurations. The range reference records syntax/semantics, not a measured performance claim or a guarantee of CB per-slot execution.
