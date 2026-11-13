@@ -25,7 +25,14 @@ bool belongs_to_proxy(void* method, HMODULE proxy)
         reinterpret_cast<LPCWSTR>(method), &owner) && owner == proxy;
 }
 
-int run_child(const wchar_t* library, bool native_control)
+ULONG references(IUnknown* object)
+{
+    const ULONG count = object->AddRef();
+    object->Release();
+    return count;
+}
+
+int run_child(const wchar_t* library, bool native_control, bool denied_interfaces)
 {
     if (native_control) {
         wchar_t system_dir[MAX_PATH]{};
@@ -45,6 +52,18 @@ int run_child(const wchar_t* library, bool native_control)
         const ULONG native_late_refs = native_late->AddRef(); native_late->Release();
         std::fprintf(stderr, "NATIVE refs normal=%lu late=%lu\n", native_normal_refs, native_late_refs);
         check(native_normal_refs == native_late_refs, "native late context control has equal ownership");
+        ComPtr<ID3D11Device1> native1;
+        check(SUCCEEDED(native_both.As(&native1)), "native extended device control");
+        check(native_both->CreateDeferredContext(0,nullptr) == S_FALSE &&
+            native1->CreateDeferredContext1(0,nullptr) == S_FALSE,
+            "native deferred APIs accept validation-only outputs");
+        ComPtr<ID3D11DeviceContext> deferred;
+        ComPtr<ID3D11DeviceContext1> deferred1;
+        check(SUCCEEDED(native_both->CreateDeferredContext(0,&deferred)) &&
+            SUCCEEDED(native1->CreateDeferredContext1(0,&deferred1)), "native deferred creation control");
+        check(references(deferred.Get()) == references(deferred1.Get()) &&
+            deferred.Detach()->Release() == 0 && deferred1.Detach()->Release() == 0,
+            "native deferred APIs transfer one balanced caller reference");
     }
     HMODULE proxy = LoadLibraryExW(library, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     check(proxy != nullptr, "load actual built proxy DLL and execute DllMain");
@@ -68,6 +87,26 @@ int run_child(const wchar_t* library, bool native_control)
     auto** context_table = *reinterpret_cast<void***>(context.Get());
     check(belongs_to_proxy(device_table[3], proxy) && belongs_to_proxy(context_table[14], proxy),
         "returned CreateBuffer and Map methods execute loaded proxy code");
+    if (denied_interfaces) {
+        void* output = nullptr;
+        const auto device_before = references(device.Get());
+        const auto device_hr = device->QueryInterface(__uuidof(ID3D11Device1),&output);
+        const bool device_null = output == nullptr;
+        if (output) static_cast<IUnknown*>(output)->Release();
+        const auto device_after = references(device.Get());
+        output = nullptr;
+        const auto context_before = references(context.Get());
+        const auto context_hr = context->QueryInterface(__uuidof(ID3D11DeviceContext1),&output);
+        const bool context_null = output == nullptr;
+        if (output) static_cast<IUnknown*>(output)->Release();
+        const auto context_after = references(context.Get());
+        std::fprintf(stderr,"denied QI device refs%lu/%lu context refs%lu/%lu\n",
+            device_before,device_after,context_before,context_after);
+        check(device_hr == E_NOINTERFACE && context_hr == E_NOINTERFACE && device_null && context_null &&
+            device_before == device_after && context_before == context_after,
+            "configured QI rejection returns null without retaining the native interface");
+        return 0;
+    }
     const UINT values[] = {11, 22, 33, 44};
     D3D11_BUFFER_DESC desc{};
     desc.ByteWidth = sizeof(values);
@@ -110,6 +149,18 @@ int run_child(const wchar_t* library, bool native_control)
     std::fprintf(stderr, "INI bound normal=%d late=%d late1=%d\n", bool(normal_ini), bool(late_ini), bool(late1_ini));
     check(normal_ini && late_ini && late1_ini, "all creation routes bind the configured IniParams resource");
     check(late_refs == normal_refs, "late context creation preserves same COM ownership as ordinary creation");
+    check(device->CreateDeferredContext(0,nullptr) == S_FALSE &&
+        device1->CreateDeferredContext1(0,nullptr) == S_FALSE,
+        "proxy deferred APIs preserve validation-only calls");
+    ComPtr<ID3D11DeviceContext> deferred;
+    ComPtr<ID3D11DeviceContext1> deferred1;
+    check(SUCCEEDED(device->CreateDeferredContext(0,&deferred)) &&
+        SUCCEEDED(device1->CreateDeferredContext1(0,&deferred1)), "proxy deferred context creation");
+    const auto deferred_refs = references(deferred.Get()), deferred1_refs = references(deferred1.Get());
+    const auto remaining = deferred.Detach()->Release(), remaining1 = deferred1.Detach()->Release();
+    std::fprintf(stderr,"deferred refs%lu/%lu final%lu/%lu\n",deferred_refs,deferred1_refs,remaining,remaining1);
+    check(deferred_refs == deferred1_refs && remaining == 0 && remaining1 == 0,
+        "proxy deferred contexts have the same balanced lifetime as native control");
     ComPtr<ID3D11DeviceContext> context_only;
     check(SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
         D3D11_SDK_VERSION, nullptr, nullptr, &context_only)) && context_only,
@@ -143,7 +194,15 @@ int run_parent(const wchar_t* library, const wchar_t* root)
     }
     wchar_t executable[MAX_PATH]{};
     check(GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0, "locate proxy smoke executable");
-    for (const auto* mode : {L"--child", L"--child-native-control"}) {
+    const ULONGLONG deadline = GetTickCount64() + 20000;
+    for (const auto* mode : {L"--child", L"--child-native-control", L"--child-denied-qi"}) {
+        if (std::wstring(mode) == L"--child-denied-qi") {
+            std::ofstream ini(fixture / L"d3dx.ini",std::ios::binary | std::ios::trunc);
+            ini << "[Logging]\ncalls=0\ndebug=0\n[System]\nallow_platform_update=0\n[Hunting]\nhunting=0\n[Constants]\nx=1\n";
+            ini.close();
+            check(!ini.fail(),"write owned disabled-platform configuration");
+        }
+        check(GetTickCount64() < deadline,"proxy children remain within aggregate timeout");
         std::wstring command = L"\"" + std::wstring(executable) + L"\" " + mode + L" \"" + copied.wstring() + L"\"";
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
@@ -151,7 +210,10 @@ int run_parent(const wchar_t* library, const wchar_t* root)
         check(CreateProcessW(executable, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
             nullptr, fixture.c_str(), &startup, &process) != FALSE, "launch isolated proxy child");
         CloseHandle(process.hThread);
-        const DWORD wait = WaitForSingleObject(process.hProcess, 10000);
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG available = deadline > now ? deadline - now : 0;
+        const DWORD wait = WaitForSingleObject(process.hProcess,
+            static_cast<DWORD>(available < 10000 ? available : 10000));
         if (wait != WAIT_OBJECT_0) {
             TerminateProcess(process.hProcess, 124);
             WaitForSingleObject(process.hProcess, 5000);
@@ -176,8 +238,8 @@ int wmain(int argc, wchar_t** argv)
     try {
         check(argc == 3, "expected proxy DLL path and fixture parent, or --child and DLL path");
         const std::wstring mode(argv[1]);
-        if (mode == L"--child" || mode == L"--child-native-control")
-            return run_child(argv[2], mode == L"--child-native-control");
+        if (mode == L"--child" || mode == L"--child-native-control" || mode == L"--child-denied-qi")
+            return run_child(argv[2], mode == L"--child-native-control", mode == L"--child-denied-qi");
         return run_parent(argv[1], argv[2]);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL loaded proxy smoke: %s (Win32=%lu)\n", error.what(), GetLastError());

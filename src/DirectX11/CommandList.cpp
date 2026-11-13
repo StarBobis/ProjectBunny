@@ -6,6 +6,7 @@
 #include "lock.h"
 
 #include "CommandList.h"
+#include <type_traits>
 
 #include <DDSTextureLoader.h>
 #include <WICTextureLoader.h>
@@ -5700,9 +5701,32 @@ ResourcePool::~ResourcePool()
 
 void ResourcePool::emplace(uint32_t hash, ID3D11Resource *resource, ID3D11Device *device)
 {
-	if (resource)
-		resource->AddRef();
-	cache.emplace(hash, pair<ID3D11Resource*, ID3D11Device*>{resource, device});
+    Microsoft::WRL::ComPtr<ID3D11Resource> retained(resource);
+    const auto found = cache.find(hash);
+    if (found == cache.end()) {
+        cache.emplace(hash, pair<ID3D11Resource*, ID3D11Device*>{retained.Get(), device});
+        retained.Detach();
+    } else {
+        ID3D11Resource* previous = found->second.first;
+        found->second = {retained.Detach(), device};
+        if (previous) previous->Release();
+    }
+}
+
+template<typename Descriptor>
+static Descriptor ResolvePoolDescriptor(Descriptor desc)
+{
+    if constexpr (!std::is_same<Descriptor, D3D11_BUFFER_DESC>::value) {
+        if (!desc.MipLevels) {
+            UINT extent = desc.Width;
+            if constexpr (!std::is_same<Descriptor, D3D11_TEXTURE1D_DESC>::value)
+                extent = (std::max)(extent, desc.Height);
+            if constexpr (std::is_same<Descriptor, D3D11_TEXTURE3D_DESC>::value)
+                extent = (std::max)(extent, desc.Depth);
+            do { ++desc.MipLevels; extent >>= 1; } while (extent);
+        }
+    }
+    return desc;
 }
 
 template <typename ResourceType,
@@ -5726,42 +5750,38 @@ static ResourceType* GetResourceFromPool(
 	size_t size;
 	HRESULT hr;
 	ResourcePoolCache::iterator pool_i;
-	ID3D11Device *old_device = NULL;
 
 	// We don't want to use the CalTexture2D/3DDescHash functions because
 	// the resolution override could produce the same hash for distinct
-	// texture descriptions. This hash isn't exposed to the user, so
-	// doesn't matter what we use - just has to be fast.
+	// texture descriptions. The fast hash selects a bucket; full device,
+    // dimension and descriptor checks establish reusable resource identity.
 	hash = crc32c_hw(0, desc, sizeof(DescType));
 
 	pool_i = Profiling::lookup_map(resource_pool->cache, hash, &Profiling::resource_pool_lookup_overhead);
-	if (pool_i != resource_pool->cache.end()) {
-		resource = (ResourceType*)pool_i->second.first;
-		old_device = pool_i->second.second;
-		if (!resource)
-			return NULL;
-
-		if (old_device == state->mOrigDevice1) {
-			if (resource == dst_resource) {
+    if (pool_i != resource_pool->cache.end() && pool_i->second.first &&
+        pool_i->second.second == state->mOrigDevice1) {
+        D3D11_RESOURCE_DIMENSION requested_type, cached_type;
+        src_resource->GetType(&requested_type);
+        pool_i->second.first->GetType(&cached_type);
+        if (requested_type == cached_type) {
+            resource = static_cast<ResourceType*>(pool_i->second.first);
+            DescType cached_desc{};
+            resource->GetDesc(&cached_desc);
+            const DescType expected = ResolvePoolDescriptor(*desc);
+            if (std::memcmp(&cached_desc, &expected, sizeof(expected)) == 0) {
+                if (resource != dst_resource) Profiling::resource_pool_swaps++;
                 resource->AddRef();
                 return resource;
             }
-
-			LogDebug("Switching cached resource %S\n", ini_line->c_str());
-			Profiling::resource_pool_swaps++;
-			resource->AddRef();
-			return resource;
-		}
-
-		LogInfo("Device mismatch, discarding %S from resource pool\n", ini_line->c_str());
-		resource_pool->cache.erase(pool_i);
-		resource->Release();
-	}
-
+        }
+        // A lookup hash is only a bucket, never resource identity. Keep the
+        // old entry intact until its replacement is successfully created.
+    }
 	LogInfo("Creating cached resource %S\n", ini_line->c_str());
 	Profiling::resources_created++;
 
-	hr = (state->mOrigDevice1->*CreateResource)(desc, NULL, &resource);
+    Microsoft::WRL::ComPtr<ResourceType> created;
+	hr = (state->mOrigDevice1->*CreateResource)(desc, NULL, created.GetAddressOf());
 	if (FAILED(hr)) {
 		LogInfo("Resource copy failed %S: 0x%x\n", ini_line->c_str(), hr);
 		LogResourceDesc(desc);
@@ -5772,13 +5792,13 @@ static ResourceType* GetResourceFromPool(
         // Allocation/device failures may be transient; do not cache failure.
 		return NULL;
 	}
-	resource_pool->emplace(hash, resource, state->mOrigDevice1);
+	resource_pool->emplace(hash, created.Get(), state->mOrigDevice1);
 	size = resource_pool->cache.size();
 	if (size > 1)
 		LogInfo("  NOTICE: cache now contains %Ii resources\n", size);
 
 	LogDebugResourceDesc(desc);
-	return resource;
+	return created.Detach();
 }
 
 CustomResource::CustomResource() :
@@ -10843,6 +10863,14 @@ static ResourceType* RecreateCompatibleTexture(
 		(ini_line, src_resource, dst_resource, resource_pool, state, &new_desc);
 }
 
+class ResourceCreationModeScope {
+public:
+    ResourceCreationModeScope() { LockResourceCreationMode(); }
+    ~ResourceCreationModeScope() { UnlockResourceCreationMode(); }
+    ResourceCreationModeScope(const ResourceCreationModeScope&) = delete;
+    ResourceCreationModeScope& operator=(const ResourceCreationModeScope&) = delete;
+};
+
 static bool RecreateCompatibleResource(
 		wstring *ini_line,
 		ResourceCopyTarget *src, // May be NULL
@@ -10869,32 +10897,33 @@ static bool RecreateCompatibleResource(
 	if (dst)
 		bind_flags = dst->BindFlags(state, &misc_flags);
 
-	LockResourceCreationMode();
+    {
+        ResourceCreationModeScope creation_mode;
 
-	src_resource->GetType(&src_dimension);
-	switch (src_dimension) {
-		case D3D11_RESOURCE_DIMENSION_BUFFER:
-			res = RecreateCompatibleBuffer(ini_line, src, dst, (ID3D11Buffer*)src_resource, (ID3D11Buffer*)*dst_resource,
-				resource_pool, src_view, bind_flags, misc_flags, state, stride, offset, format, buf_src_size, buf_dst_size);
-			break;
-		case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-			res = RecreateCompatibleTexture<ID3D11Texture1D, D3D11_TEXTURE1D_DESC, &ID3D11Device::CreateTexture1D>
-				(ini_line, dst, (ID3D11Texture1D*)src_resource, (ID3D11Texture1D*)*dst_resource, resource_pool,
-				 bind_flags, state, options);
-			break;
-		case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-			res = RecreateCompatibleTexture<ID3D11Texture2D, D3D11_TEXTURE2D_DESC, &ID3D11Device::CreateTexture2D>
-				(ini_line, dst, (ID3D11Texture2D*)src_resource, (ID3D11Texture2D*)*dst_resource, resource_pool,
-				 bind_flags, state,options);
-			break;
-		case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-			res = RecreateCompatibleTexture<ID3D11Texture3D, D3D11_TEXTURE3D_DESC, &ID3D11Device::CreateTexture3D>
-				(ini_line, dst, (ID3D11Texture3D*)src_resource, (ID3D11Texture3D*)*dst_resource, resource_pool,
-				 bind_flags, state, options);
-			break;
-	}
+        src_resource->GetType(&src_dimension);
+        switch (src_dimension) {
+            case D3D11_RESOURCE_DIMENSION_BUFFER:
+                res = RecreateCompatibleBuffer(ini_line, src, dst, (ID3D11Buffer*)src_resource, (ID3D11Buffer*)*dst_resource,
+                    resource_pool, src_view, bind_flags, misc_flags, state, stride, offset, format, buf_src_size, buf_dst_size);
+                break;
+            case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+                res = RecreateCompatibleTexture<ID3D11Texture1D, D3D11_TEXTURE1D_DESC, &ID3D11Device::CreateTexture1D>
+                    (ini_line, dst, (ID3D11Texture1D*)src_resource, (ID3D11Texture1D*)*dst_resource, resource_pool,
+                     bind_flags, state, options);
+                break;
+            case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+                res = RecreateCompatibleTexture<ID3D11Texture2D, D3D11_TEXTURE2D_DESC, &ID3D11Device::CreateTexture2D>
+                    (ini_line, dst, (ID3D11Texture2D*)src_resource, (ID3D11Texture2D*)*dst_resource, resource_pool,
+                     bind_flags, state,options);
+                break;
+            case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+                res = RecreateCompatibleTexture<ID3D11Texture3D, D3D11_TEXTURE3D_DESC, &ID3D11Device::CreateTexture3D>
+                    (ini_line, dst, (ID3D11Texture3D*)src_resource, (ID3D11Texture3D*)*dst_resource, resource_pool,
+                     bind_flags, state, options);
+                break;
+        }
 
-	UnlockResourceCreationMode();
+    }
 
     if (!res) return false;
     if (res == *dst_resource) {

@@ -54,3 +54,18 @@ STATIC 池回归为 `round5_config_regression.cpp`。第五轮 GPU 源链审查�
 上述断言已合并到原 `proxy_smoke.cpp`，没有再维护第二份重复宿主。测试分别运行普通旁加载、先加载原生运行库再加载代理两种隔离子进程。原生 refcount control 在加载代理前完成，避免 LoadLibrary 重定向使“原生对照”也调用代理。fixture 明确分配 IniParams，避免 0/0/0 空资源比较掩盖绑定遗漏。
 
 修复后完整 CTest 4/4 通过（15.85 秒），两种实际 DLL 加载模式均通过。第七轮独立复审已启动，尚未依据本轮通过结果收尾。
+
+## 第七轮：deferred/QI 所有权及描述符身份
+
+运行语义组未确认新问题；其他审查实际复现四类问题，继续修复：
+
+- 普通 CreateDeferredContext 成功 QI 后多持一个引用。原生 deferred0/1 的最终 Release 均为 0，代理普通接口为 1。补释放旧接口引用。
+- CreateDeferredContext/1 的合法 null 输出验证调用，原生返回 S_FALSE，代理在日志参数取值时解引用 null。日志改为安全取值，不改变 native 返回值。
+- allow_platform_update=0 时 Device1/Context1 的 native QI 已成功，代理返回 E_NOINTERFACE 却未释放 native 接口。拒绝前平衡引用；新增关闭平台更新的独立子进程，核对输出 null 和调用前后引用数。
+- 资源池用 32 位索引代替完整资源身份。主审核对 typeless 转换后，用两份实际可创建的描述符复现 A→B→A 错复用：A 为 Texture2D 178×439、6 mips、4 slices、R8G8_TYPELESS；B 为 915×667、2 mips、16 slices、R16_TYPELESS。修复前第二步仍得到 A。
+
+缓存命中现在核对设备、维度及完整描述符；auto MipLevels=0 按真实完整链归一化。新 allocation 成功后才替换旧条目，失败保留旧条目；ComPtr 保护池引用与新建资源的所有权，创建模式锁使用相同作用域的 RAII，不扩大原锁覆盖的 native 调用区域。回归 `round7_descriptor_regression.cpp` 同时验证两份描述符往返和自动 mip 相同 allocation 复用，未声称性能无开销。
+
+最初的一组描述符在源端索引相同，经过 typeless 转换后却不同，不能据此确认错误；主审更换为池实际使用的 typeless 描述符后重新观察了 red/green。资源矩阵子代理曾被自动安全审查中断，主审接手完成了独立复现，该中断未计为审查通过。
+
+第七轮修复后完整 CTest 4/4 通过（16.56 秒），实际代理测试覆盖三种子进程模式：普通加载、原生库先加载、关闭 platform update。第八轮独立复审继续进行，仍未收尾。

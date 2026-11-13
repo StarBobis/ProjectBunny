@@ -235,6 +235,7 @@ if(BUILD_TESTING)
         tests/round4_config_regression.cpp
         tests/round5_assignment_regression.cpp
         tests/round5_config_regression.cpp
+        tests/round7_descriptor_regression.cpp
         tests/dump_range_regression.cpp
         tests/slot_range_numeric_regression.cpp
         tests/profiling_generation_regression.cpp

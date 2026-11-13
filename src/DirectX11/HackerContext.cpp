@@ -1193,6 +1193,7 @@ HRESULT STDMETHODCALLTYPE HackerContext::QueryInterface(
 		if (!G->enable_platform_update) 
 		{
 			LogInfo("***  returns E_NOINTERFACE as error for ID3D11DeviceContext1 (try allow_platform_update=1 if the game refuses to run).\n");
+            static_cast<IUnknown*>(*ppvObject)->Release();
 			*ppvObject = NULL;
 			return E_NOINTERFACE;
 		}

@@ -1540,6 +1540,7 @@ HRESULT STDMETHODCALLTYPE HackerDevice::QueryInterface(
 
 		if (!G->enable_platform_update) {
 			LogInfo("  returns E_NOINTERFACE as error for ID3D11Device1 (try allow_platform_update=1 if the game refuses to run).\n");
+            static_cast<IUnknown*>(*ppvObject)->Release();
 			*ppvObject = NULL;
 			return E_NOINTERFACE;
 		}
@@ -2680,6 +2681,8 @@ STDMETHODIMP HackerDevice::CreateDeferredContext(THIS_
 		HRESULT res = (*ppDeferredContext)->QueryInterface(IID_PPV_ARGS(&origContext1));
 		if (FAILED(res))
 			origContext1 = static_cast<ID3D11DeviceContext1*>(*ppDeferredContext);
+        else
+            (*ppDeferredContext)->Release();
 		HackerContext *hackerContext = HackerContextFactory(mRealOrigDevice1, origContext1);
 		hackerContext->SetHackerDevice(this);
 		hackerContext->Bind3DMigotoResources();
@@ -2692,7 +2695,7 @@ STDMETHODIMP HackerDevice::CreateDeferredContext(THIS_
 		LogInfo("  created HackerContext(%s@%p) wrapper of %p\n", type_name(hackerContext), hackerContext, origContext1);
 	}
 
-	LogInfo("  returns result = %x for %p\n", hr, *ppDeferredContext);
+	LogInfo("  returns result = %x for %p\n", hr, ppDeferredContext ? *ppDeferredContext : nullptr);
 	return hr;
 }
 
@@ -2871,7 +2874,7 @@ STDMETHODIMP HackerDevice::CreateDeferredContext1(
 		LogInfo("  created HackerContext(%s@%p) wrapper of %p\n", type_name(hackerContext), hackerContext, *ppDeferredContext);
 	}
 
-	LogInfo("  returns result = %x for %p\n", hr, *ppDeferredContext);
+	LogInfo("  returns result = %x for %p\n", hr, ppDeferredContext ? *ppDeferredContext : nullptr);
 	return hr;
 }
 

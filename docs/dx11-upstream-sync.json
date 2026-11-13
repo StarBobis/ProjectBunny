@@ -5280,12 +5280,19 @@
       "old STATIC pool initialization pollutes new globals during Constants"
     ],
     "validation": "PASS: full production and actual proxy DLL smoke CTest4/4 (13.77s); real valid-descriptor CreateBuffer E_OUTOFMEMORY and same-descriptor retry for copy/copy_desc; real native buffer RTV CRC; actual two-generation LoadConfig; optional export output combinations.",
-    "loop": "Round6 fixes verified; independent round7 ongoing. Not complete until a full review round reports no new confirmed issue.",
+    "loop": "Round7 fixes verified; independent round8 ongoing. Review interruptions are not treated as passes.",
     "targetRuntime": "Game testing deferred by user; isolated loaded-proxy harness is not target-game deployment or upstream binary differential run; original per-commit runtime statuses preserved.",
     "round6Confirmed": [
       "lazy GetImmediateContext successful QueryInterface reference imbalance",
       "lazy GetImmediateContext1 missing IniParams binding/init and hook setup"
     ],
-    "round6Validation": "PASS: actual DLL native-before-proxy and ordinary load modes, native COM ownership control, all three IniParams creation routes; full CTest4/4 (17.18s), DirectX12 compatibility build, diff whitespace check."
+    "round6Validation": "PASS: actual DLL native-before-proxy and ordinary load modes, native COM ownership control, all three IniParams creation routes; full CTest4/4 (17.18s), DirectX12 compatibility build, diff whitespace check.",
+    "round7Confirmed": [
+      "deferred context successful QI reference imbalance",
+      "deferred validation-only null output logging access violation",
+      "rejected extended QI retains native interface",
+      "pool lookup hash used as resource identity instead of complete normalized descriptor"
+    ],
+    "round7Validation": "PASS: actual DLL deferred lifetime/null validation/denied QI controls; two real native texture descriptors with the same pool key A-B-A; normalized automatic mips allocation reuse; CTest4/4 (16.56s)."
   }
 }

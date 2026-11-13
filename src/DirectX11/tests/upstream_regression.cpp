@@ -938,6 +938,7 @@ void test_dx11_round4_gpu_regression();
 void test_dx11_round4_config_regression();
 void test_dx11_round5_assignment_regression();
 void test_dx11_round5_config_regression();
+void test_dx11_round7_descriptor_regression();
 void test_dx11_dump_range_regression();
 void test_dx11_slot_range_numeric_regression();
 
@@ -1010,6 +1011,7 @@ int main()
             }
         }
         require(round5_passed, "independent round5 scenarios");
+        test_dx11_round7_descriptor_regression();
         test_dx11_texture_upload_state_regression();
         test_dx11_dump_range_regression();
     } catch (const std::exception& error) {
